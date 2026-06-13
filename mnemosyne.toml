@@ -1,0 +1,16 @@
+[workspace]
+# Greenfield project — atomic-first design. The atomic store
+# (docs/.atomic/workspace.atomic.json) is the sole directly-validated SSOT
+# (Mnemosyne store-direct model, mirroring pinion). Authoring happens through
+# the Mnemosyne MCP typed primitives (add-section, set-section-*) + the
+# `append-changelog-entry` CLI; humans read the store via `mnemosyne-cli query`.
+
+[schema]
+changelog_titles = ["Changelog"]
+# Empty prefix = append-gate disabled (greenfield: no entry-id convention
+# locked yet — mirrors pinion's open-prefix choice so `R<N>` and `Round N`
+# both append cleanly). Tighten to a concrete prefix once a convention sticks.
+entry_id_prefix = ""
+
+[style]
+locale = "en"

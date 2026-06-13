@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# pre-push hook — re-run integrity + lint gates before publishing to a remote.
+#
+# Push is the natural integrity-gate point: this is where the project's
+# audit-traced state becomes shared. Catches state changes since the last
+# commit (manual atomic.json edits, amends, rebases, `--no-verify` bypasses)
+# that pre-commit may have missed.
+#
+# Checks:
+#   1. `mnemosyne-cli validate-workspace` (unconditional)
+#      - T1 cross-ref orphan delta + atomic ledger consistency (store-direct)
+#   2. `cargo clippy --workspace --all-targets`
+#      - only when a Cargo workspace exists (Cargo.toml present); dormant
+#        until sprag grows Rust crates.
+#
+# Install via `git config core.hooksPath .githooks` (one-time per clone).
+set -euo pipefail
+
+if ! command -v mnemosyne-cli >/dev/null 2>&1; then
+    echo "pre-push: mnemosyne-cli not on PATH — install mnemosyne-cli first" >&2
+    exit 1
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+echo "pre-push: mnemosyne-cli validate-workspace ..." >&2
+if ! mnemosyne-cli validate-workspace; then
+    echo "pre-push: validate-workspace failed — fix violations before push" >&2
+    exit 1
+fi
+
+if [ -f Cargo.toml ]; then
+    echo "pre-push: cargo clippy --workspace --all-targets ..." >&2
+    if ! cargo clippy --workspace --all-targets; then
+        echo "pre-push: clippy failed — fix violations before push" >&2
+        exit 1
+    fi
+fi
+
+exit 0

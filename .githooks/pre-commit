@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Mnemosyne SSOT gate (+ clippy once Rust lands) — runs on every `git commit`.
+#
+# Blocks the commit if either gate trips:
+#
+#   1. `mnemosyne-cli validate-workspace`
+#      - new T1 cross-ref orphans (not registered in [[orphan_ledger]])
+#      - resolved ledger entries (entry stale, drift catch)
+#      - atomic-store consistency (entries / sections; store-direct)
+#
+#   2. `cargo clippy --workspace --all-targets`
+#      - only runs when a Cargo workspace exists (Cargo.toml present) AND
+#        staged files include `*.rs`. sprag has no Rust yet, so this stays
+#        dormant; docs/atomic-only commits stay cheap regardless.
+#
+# Install via:
+#   git config core.hooksPath .githooks
+# (one-time per clone; `.githooks/` is tracked, `.git/hooks/` is not)
+set -euo pipefail
+
+if ! command -v mnemosyne-cli >/dev/null 2>&1; then
+    echo "pre-commit: mnemosyne-cli not on PATH — install mnemosyne-cli first" >&2
+    exit 1
+fi
+
+# Discover repo root so `mnemosyne.toml` discovery walks upward correctly
+# regardless of where `git commit` was invoked.
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+mnemosyne-cli validate-workspace
+
+if [ -f Cargo.toml ] && git diff --cached --name-only --diff-filter=ACMR | grep -qE '\.rs$'; then
+    echo "pre-commit: cargo clippy --workspace --all-targets ..." >&2
+    cargo clippy --workspace --all-targets
+fi
