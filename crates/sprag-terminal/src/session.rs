@@ -18,11 +18,17 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 
 use portable_pty::{native_pty_system, Child, MasterPty, PtySize};
-use sprag_vt::{Emulator, Screen, VtPort};
+use sprag_vt::{Emulator, InputModes, Screen, VtPort};
 
 // Re-exported so callers build commands without depending on portable-pty
 // directly (it is an implementation detail of the PTY seam).
 pub use portable_pty::CommandBuilder;
+
+/// The PTY master writer, shared (and interior-mutable) so both the owning
+/// [`TerminalSession`] and any [`SessionHandle`] can inject input without a
+/// `&mut` borrow — the session is already concurrent (the reader thread
+/// holds the emulator lock), so the writer is shared the same way.
+type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
 /// A failure setting up or driving the pseudoterminal. Wraps the underlying
 /// `portable-pty` / IO error message with the operation that produced it.
@@ -54,7 +60,7 @@ impl std::error::Error for SessionError {}
 pub struct TerminalSession {
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
-    writer: Box<dyn Write + Send>,
+    writer: SharedWriter,
     emulator: Arc<Mutex<Emulator>>,
     eof: Arc<AtomicBool>,
     reader_thread: Option<JoinHandle<()>>,
@@ -93,10 +99,11 @@ impl TerminalSession {
             .master
             .try_clone_reader()
             .map_err(|e| SessionError::new("clone reader", &e))?;
-        let writer = pair
-            .master
-            .take_writer()
-            .map_err(|e| SessionError::new("take writer", &e))?;
+        let writer: SharedWriter = Arc::new(Mutex::new(
+            pair.master
+                .take_writer()
+                .map_err(|e| SessionError::new("take writer", &e))?,
+        ));
 
         let emulator = Arc::new(Mutex::new(Emulator::new(cols, rows)));
         let eof = Arc::new(AtomicBool::new(false));
@@ -154,9 +161,20 @@ impl TerminalSession {
     /// # Errors
     ///
     /// Returns an IO error if the write to the master fails.
-    pub fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
-        self.writer.write_all(bytes)?;
-        self.writer.flush()
+    pub fn write(&self, bytes: &[u8]) -> io::Result<()> {
+        write_shared(&self.writer, bytes)
+    }
+
+    /// A cloneable [`SessionHandle`] sharing this session's emulator and
+    /// PTY writer — the seam an input-injecting consumer (the host's pane
+    /// `External`) holds to read the screen/modes and write encoded keys
+    /// without owning the session.
+    #[must_use]
+    pub fn handle(&self) -> SessionHandle {
+        SessionHandle {
+            emulator: Arc::clone(&self.emulator),
+            writer: Arc::clone(&self.writer),
+        }
     }
 
     /// Resize the pseudoterminal and the emulator to `cols × rows`, notifying
@@ -189,10 +207,53 @@ impl TerminalSession {
     }
 }
 
+/// A cloneable handle to a live session's shared I/O: the emulator (read
+/// the screen and input modes) and the PTY writer (inject input bytes).
+/// Both are `Arc`-shared with the owning [`TerminalSession`] and its reader
+/// thread, so a handle stays valid for the session's lifetime. This is the
+/// producer-side seam the host's pane `External` holds to drive input
+/// without owning the session (DESIGN.md §3 producer ownership; R2.6).
+#[derive(Clone)]
+pub struct SessionHandle {
+    emulator: Arc<Mutex<Emulator>>,
+    writer: SharedWriter,
+}
+
+impl SessionHandle {
+    /// Read the current authoritative screen under the emulator lock.
+    pub fn with_screen<R>(&self, f: impl FnOnce(&Screen) -> R) -> R {
+        f(lock(&self.emulator).screen())
+    }
+
+    /// The current input modes (DECCKM, …) the key encoder consults.
+    #[must_use]
+    pub fn input_modes(&self) -> InputModes {
+        lock(&self.emulator).input_modes()
+    }
+
+    /// Write already-encoded input bytes to the child (R2.6: the caller
+    /// owns key→byte encoding).
+    ///
+    /// # Errors
+    ///
+    /// Returns an IO error if the write to the master fails.
+    pub fn write(&self, bytes: &[u8]) -> io::Result<()> {
+        write_shared(&self.writer, bytes)
+    }
+}
+
 /// Lock the emulator, recovering the guard if a holder panicked (the screen
 /// grid stays structurally valid; `advance` does not panic in practice).
 fn lock(emulator: &Mutex<Emulator>) -> MutexGuard<'_, Emulator> {
     emulator.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Write all bytes to the shared PTY writer and flush, recovering the lock
+/// if a holder panicked.
+fn write_shared(writer: &SharedWriter, bytes: &[u8]) -> io::Result<()> {
+    let mut writer = writer.lock().unwrap_or_else(PoisonError::into_inner);
+    writer.write_all(bytes)?;
+    writer.flush()
 }
 
 impl Drop for TerminalSession {

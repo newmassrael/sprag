@@ -389,6 +389,60 @@
         "Windowed host via pinion_shell::run + compute_layout to fill the GUI rect properly",
         "Durable design-state changes may warrant a section-rationale update path; append-only caveats accrete status corrections (process note)"
       ]
+    },
+    "Round 6": {
+      "decision_summary": "Inject input via the External + scene/invoke carrier: a sprag-owned key encoder writes PTY bytes behind the pane's engine External, lifting the read-only boundary (R2.6 encoding / R1.7 data-engine split).",
+      "changes_bullets": [
+        "New crate sprag-input: pinion-free W3C-key -> PTY-byte encoder (xterm scheme: C0 controls, ESC-prefix meta, CSI/SS3 named keys, PC modifier param, DECCKM-aware cursor keys). R2.6 places encoding on sprag.",
+        "sprag-vt emulator now tracks DECCKM (DecPrivateModeCode::ApplicationCursorKeys), exposed via new VtPort::input_modes() / InputModes so the encoder selects CSI vs SS3.",
+        "sprag-terminal shares producer I/O via a cloneable SessionHandle (Arc<Mutex<Emulator>> + Arc<Mutex<writer>>); TerminalSession::write is now &self (interior-mutable).",
+        "sprag-host models the pane as Scene::Container[TextGrid(data, tag sprag_grid) + SpragPaneExternal(engine, tag sprag_input)] (R1.7 split); input rides scene/invoke -> ExternalIntrospect::invoke(\"key\", {key,mods,state}) which encodes and writes to the live PTY behind the SessionHandle.",
+        "Read-only gate replaced by a SUPPORTED_METHODS allowlist (scene/snapshot, scene/query, scene/invoke); scene/key stays -32601 (pinion's DeferredInput drain has no headless equivalent). scene/snapshot root is now a Container (grid nested as the sprag_grid child); scene/query on the engine exposes application_cursor_keys."
+      ],
+      "verification_bullets": [
+        "Phase-0 de-risk by inspection: pinion's own invoke.rs/resolve.rs unit tests build a hand-rolled Container[External(tagged)] and drive the public invoke()/introspect_mut_at() with no CoreShell/Owner/layout/on_mount -- bare-embedding is pinion's tested public contract, so no pinion change is needed for this slice (pinion 08d29b5).",
+        "41 workspace tests pass (sprag-vt 12, sprag-input 11, sprag-grid 4, sprag-terminal 1, sprag-host 13); cargo clippy --workspace --all-targets clean.",
+        "Bin end-to-end (sprag-term -- cat): scene/invoke {key:'h'} returns null and the echoed 'h' appears in the TextGrid child of the snapshot; scene/key rejected -32601; scene/query /sprag_input/external/application_cursor_keys reports false; snapshot shows the engine External fully introspectable (R1.7 no-opaque-state invariant upheld)."
+      ],
+      "impact_refs": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Future pinion requirement (not yet needed; stop-and-report when it is): the deferred §6.3 async poll_state push, once streaming change-driven reads replace per-request TextGrid projection.",
+        "Future pinion requirement (not yet needed): bare-embedding validation only if a later non-input External surfaces an Owner/layout/on_mount assumption -- input-only confirmed to need none.",
+        "R1.8 pointer->cell hit-test stays sprag-owned, deferred until mouse reporting.",
+        "Encoder vocabulary extensions deferred: application keypad mode, modifyOtherKeys, F13-F24, left/right modifier distinction."
+      ],
+      "publishable_decision_summary": "Inject input via the External + scene/invoke carrier: a sprag-owned key encoder writes PTY bytes behind the pane's engine External, lifting the read-only boundary (R2.6 encoding / R1.7 data-engine split).",
+      "publishable_changes_bullets": [
+        "New crate sprag-input: pinion-free W3C-key -> PTY-byte encoder (xterm scheme: C0 controls, ESC-prefix meta, CSI/SS3 named keys, PC modifier param, DECCKM-aware cursor keys). R2.6 places encoding on sprag.",
+        "sprag-vt emulator now tracks DECCKM (DecPrivateModeCode::ApplicationCursorKeys), exposed via new VtPort::input_modes() / InputModes so the encoder selects CSI vs SS3.",
+        "sprag-terminal shares producer I/O via a cloneable SessionHandle (Arc<Mutex<Emulator>> + Arc<Mutex<writer>>); TerminalSession::write is now &self (interior-mutable).",
+        "sprag-host models the pane as Scene::Container[TextGrid(data, tag sprag_grid) + SpragPaneExternal(engine, tag sprag_input)] (R1.7 split); input rides scene/invoke -> ExternalIntrospect::invoke(\"key\", {key,mods,state}) which encodes and writes to the live PTY behind the SessionHandle.",
+        "Read-only gate replaced by a SUPPORTED_METHODS allowlist (scene/snapshot, scene/query, scene/invoke); scene/key stays -32601 (pinion's DeferredInput drain has no headless equivalent). scene/snapshot root is now a Container (grid nested as the sprag_grid child); scene/query on the engine exposes application_cursor_keys."
+      ],
+      "publishable_verification_bullets": [
+        "Phase-0 de-risk by inspection: pinion's own invoke.rs/resolve.rs unit tests build a hand-rolled Container[External(tagged)] and drive the public invoke()/introspect_mut_at() with no CoreShell/Owner/layout/on_mount -- bare-embedding is pinion's tested public contract, so no pinion change is needed for this slice (pinion 08d29b5).",
+        "41 workspace tests pass (sprag-vt 12, sprag-input 11, sprag-grid 4, sprag-terminal 1, sprag-host 13); cargo clippy --workspace --all-targets clean.",
+        "Bin end-to-end (sprag-term -- cat): scene/invoke {key:'h'} returns null and the echoed 'h' appears in the TextGrid child of the snapshot; scene/key rejected -32601; scene/query /sprag_input/external/application_cursor_keys reports false; snapshot shows the engine External fully introspectable (R1.7 no-opaque-state invariant upheld)."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Future pinion requirement (not yet needed; stop-and-report when it is): the deferred §6.3 async poll_state push, once streaming change-driven reads replace per-request TextGrid projection.",
+        "Future pinion requirement (not yet needed): bare-embedding validation only if a later non-input External surfaces an Owner/layout/on_mount assumption -- input-only confirmed to need none.",
+        "R1.8 pointer->cell hit-test stays sprag-owned, deferred until mouse reporting.",
+        "Encoder vocabulary extensions deferred: application keypad mode, modifyOtherKeys, F13-F24, left/right modifier distinction."
+      ]
     }
   },
   "inventory_entries": {},

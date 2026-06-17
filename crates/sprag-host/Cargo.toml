@@ -14,6 +14,9 @@ publish = false
 sprag-vt = { workspace = true }
 sprag-grid = { workspace = true }
 sprag-terminal = { workspace = true }
+# Key→PTY-byte encoder: the engine External (pane.rs) invokes it to turn an
+# injected W3C key into the bytes the child reads (PINION-REQUIREMENTS R2.6).
+sprag-input = { workspace = true }
 pinion-core = { workspace = true }
 # The RPC dispatch + scene/snapshot wire. Its heavy transitive deps are
 # confined to this host crate, never the producer/projection (DESIGN.md §5).

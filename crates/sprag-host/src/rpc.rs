@@ -6,15 +6,21 @@
 //! an external AI peer reads the terminal as data with no GPU and no shell
 //! event loop.
 //!
-//! ## Read-only boundary (enforced, not incidental)
+//! ## Method boundary (enforced, not incidental)
 //!
-//! The host is read-only this round: input encoding (keys -> PTY bytes) is
-//! sprag-owned and a later round (PINION-REQUIREMENTS R2.6). Rather than let
-//! a mutating method (`scene/key`, `scene/intervene`, ...) dispatch against
-//! a scene that is rebuilt and discarded every request — silently reporting
-//! success while doing nothing to the PTY — [`handle_request`] gates to an
-//! explicit [`READ_METHODS`] allowlist and returns a JSON-RPC
-//! method-not-found error for everything else.
+//! [`handle_request`] gates to an explicit [`SUPPORTED_METHODS`] allowlist
+//! and returns a JSON-RPC method-not-found error for everything else.
+//!
+//! Reads (`scene/snapshot`, `scene/query`) and input (`scene/invoke`)
+//! operate on the same per-request pane scene. Input does *not* go through
+//! pinion's `scene/key` (which enqueues a `DeferredInput` for an embedder
+//! drain a headless host has no equivalent for); it rides the canonical
+//! `scene/invoke` action channel against the pane's engine `External`, whose
+//! handler encodes the key (sprag-owned, R2.6) and writes to the live PTY
+//! (R1.7). The scene is rebuilt and discarded per request, but the mutation
+//! target — the PTY — lives in the session behind the External's
+//! `SessionHandle`, so the write reaches live state even though the scene
+//! does not persist.
 
 use std::io::{self, BufRead, Write};
 
@@ -23,18 +29,19 @@ use pinion_rpc::preview::PreviewLedger;
 use pinion_rpc::{dispatch, dispatch_parsed, parse_request, DispatchContext, Request};
 use sprag_terminal::TerminalSession;
 
-/// The methods the headless read-only host answers: pure reads over a static
-/// scene. Anything else gets a JSON-RPC method-not-found error (input
-/// injection is sprag-owned, a later round — see the module docs).
-pub const READ_METHODS: &[&str] = &["scene/snapshot", "scene/query"];
+/// The methods the headless host answers: pure reads over the pane scene
+/// (`scene/snapshot`, `scene/query`) plus the `scene/invoke` input channel.
+/// Anything else gets a JSON-RPC method-not-found error.
+pub const SUPPORTED_METHODS: &[&str] = &["scene/snapshot", "scene/query", "scene/invoke"];
 
-/// Answer one JSON-RPC `request_json` against the session's current screen,
+/// Answer one JSON-RPC `request_json` against the session's current pane,
 /// returning the response JSON (`None` for a notification with no reply).
 ///
-/// Projects a fresh `Scene::TextGrid` from the live screen, then either
-/// dispatches an allowlisted read method, rejects a non-allowlisted method
-/// with a method-not-found error, or lets `dispatch` produce the canonical
-/// parse-error reply for malformed input.
+/// Assembles a fresh pane scene (`Container[TextGrid + External]`) from the
+/// live session, then either dispatches an allowlisted method
+/// ([`SUPPORTED_METHODS`]: the reads plus `scene/invoke` input), rejects a
+/// non-allowlisted method with a method-not-found error, or lets `dispatch`
+/// produce the canonical parse-error reply for malformed input.
 #[must_use]
 pub fn handle_request(
     session: &TerminalSession,
@@ -42,10 +49,10 @@ pub fn handle_request(
     revision: &SceneRevision,
     request_json: &str,
 ) -> Option<String> {
-    let mut scene = session.with_screen(crate::scene);
+    let mut scene = crate::pane_scene(session);
     let mut ctx = DispatchContext::new(&mut scene, previews, revision);
     match parse_request(request_json) {
-        Ok(request) if READ_METHODS.contains(&request.method.as_str()) => {
+        Ok(request) if SUPPORTED_METHODS.contains(&request.method.as_str()) => {
             dispatch_parsed(&mut ctx, request)
         }
         Ok(request) => Some(method_not_supported(&request)),
@@ -55,7 +62,7 @@ pub fn handle_request(
 }
 
 /// Build the JSON-RPC method-not-found (-32601) reply for a well-formed but
-/// non-allowlisted request, naming the read-only boundary.
+/// non-allowlisted request, naming the supported set.
 fn method_not_supported(request: &Request) -> String {
     serde_json::json!({
         "jsonrpc": "2.0",
@@ -63,7 +70,7 @@ fn method_not_supported(request: &Request) -> String {
         "error": {
             "code": -32601,
             "message": format!(
-                "read-only host: '{}' is unsupported (input injection is a later round, R2.6)",
+                "sprag-term host: '{}' is unsupported; use scene/snapshot, scene/query, or scene/invoke",
                 request.method
             ),
         }
@@ -148,7 +155,9 @@ mod tests {
     }
 
     #[test]
-    fn serve_rejects_mutating_methods_with_method_not_found() {
+    fn serve_rejects_scene_key_in_favor_of_scene_invoke() {
+        // Input rides scene/invoke against the engine External, not pinion's
+        // widget-oriented scene/key — so scene/key stays unsupported.
         let session = run_to_eof("printf hi", 20, 4);
         let value = serve_one(
             &session,
@@ -156,5 +165,47 @@ mod tests {
         );
         assert_eq!(value["id"], 2);
         assert_eq!(value["error"]["code"], -32601);
+    }
+
+    /// Spawn a long-lived `cat` on the PTY (it echoes injected input back via
+    /// the line discipline, so keystrokes appear on the screen).
+    fn spawn_cat(cols: u16, rows: u16) -> TerminalSession {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg("cat");
+        command.env("TERM", "dumb");
+        TerminalSession::spawn(command, cols, rows).expect("spawn pty session")
+    }
+
+    fn invoke_key(session: &TerminalSession, key: &str) {
+        let request = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{{"path":"/sprag_input/external/key","args":{{"key":"{key}"}}}}}}"#
+        );
+        let value = serve_one(session, &request);
+        assert!(value.get("error").is_none(), "invoke error: {value}");
+    }
+
+    #[test]
+    fn serve_injects_key_via_scene_invoke() {
+        // End-to-end input: scene/invoke encodes "h" and "i" to PTY bytes and
+        // writes them; the line discipline echoes them, so the live snapshot
+        // shows "hi" once the reader thread has applied the echo.
+        let session = spawn_cat(20, 4);
+        invoke_key(&session, "h");
+        invoke_key(&session, "i");
+
+        let start = Instant::now();
+        let mut echoed = false;
+        while !echoed && start.elapsed() < Duration::from_secs(5) {
+            let snap = serve_one(
+                &session,
+                r#"{"jsonrpc":"2.0","id":9,"method":"scene/snapshot","params":{"path":""}}"#,
+            );
+            echoed = snap["result"].to_string().contains("hi");
+            if !echoed {
+                sleep(Duration::from_millis(20));
+            }
+        }
+        assert!(echoed, "injected 'hi' never appeared in the snapshot");
     }
 }

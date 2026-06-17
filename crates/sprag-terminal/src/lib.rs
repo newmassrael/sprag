@@ -15,4 +15,4 @@
 
 pub mod session;
 
-pub use session::{CommandBuilder, SessionError, TerminalSession};
+pub use session::{CommandBuilder, SessionError, SessionHandle, TerminalSession};

@@ -21,7 +21,9 @@ use termwiz::escape::parser::Parser;
 use termwiz::escape::{Action, ControlCode};
 use unicode_width::UnicodeWidthStr;
 
-use crate::port::{Attrs, Cell, Color, Cursor, CursorShape, Rgb, Screen, ScreenKind, VtPort, Width};
+use crate::port::{
+    Attrs, Cell, Color, Cursor, CursorShape, InputModes, Rgb, Screen, ScreenKind, VtPort, Width,
+};
 
 /// A terminal emulator: feed PTY bytes via [`VtPort::advance`], read the
 /// resulting [`Screen`] via [`VtPort::screen`].
@@ -41,6 +43,9 @@ pub struct Emulator {
     fg: Color,
     bg: Color,
     attrs: Attrs,
+    /// Input modes set by the child (DECCKM, …) that the key encoder
+    /// reads; tracked here, exposed via [`VtPort::input_modes`].
+    input_modes: InputModes,
     /// Monotonic damage stamp, bumped on every row-mutating action.
     generation: u64,
 }
@@ -62,6 +67,7 @@ impl Emulator {
             fg: Color::Default,
             bg: Color::Default,
             attrs: Attrs::default(),
+            input_modes: InputModes::default(),
             generation: 0,
         }
     }
@@ -224,6 +230,9 @@ impl Emulator {
         match m {
             Mode::SetDecPrivateMode(DecPrivateMode::Code(code)) => match code {
                 DecPrivateModeCode::ShowCursor => self.cursor_visible = true,
+                DecPrivateModeCode::ApplicationCursorKeys => {
+                    self.input_modes.application_cursor_keys = true;
+                }
                 DecPrivateModeCode::ClearAndEnableAlternateScreen
                 | DecPrivateModeCode::EnableAlternateScreen
                 | DecPrivateModeCode::OptEnableAlternateScreen => self.enter_alt(),
@@ -231,6 +240,9 @@ impl Emulator {
             },
             Mode::ResetDecPrivateMode(DecPrivateMode::Code(code)) => match code {
                 DecPrivateModeCode::ShowCursor => self.cursor_visible = false,
+                DecPrivateModeCode::ApplicationCursorKeys => {
+                    self.input_modes.application_cursor_keys = false;
+                }
                 DecPrivateModeCode::ClearAndEnableAlternateScreen
                 | DecPrivateModeCode::EnableAlternateScreen
                 | DecPrivateModeCode::OptEnableAlternateScreen => self.exit_alt(),
@@ -353,6 +365,10 @@ impl VtPort for Emulator {
 
     fn screen(&self) -> &Screen {
         &self.screen
+    }
+
+    fn input_modes(&self) -> InputModes {
+        self.input_modes
     }
 }
 
@@ -480,5 +496,22 @@ mod tests {
         let g0 = em.screen().row_generation(0).unwrap();
         em.advance(b"x");
         assert!(em.screen().row_generation(0).unwrap() > g0);
+    }
+
+    #[test]
+    fn application_cursor_keys_mode_defaults_off() {
+        let em = Emulator::new(4, 2);
+        assert!(!em.input_modes().application_cursor_keys);
+    }
+
+    #[test]
+    fn decckm_set_and_reset_tracked() {
+        let mut em = Emulator::new(4, 2);
+        // DECSET 1 (ESC [ ? 1 h) enables application cursor keys.
+        em.advance(b"\x1b[?1h");
+        assert!(em.input_modes().application_cursor_keys);
+        // DECRST 1 (ESC [ ? 1 l) restores normal cursor keys.
+        em.advance(b"\x1b[?1l");
+        assert!(!em.input_modes().application_cursor_keys);
     }
 }

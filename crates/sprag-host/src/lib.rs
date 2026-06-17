@@ -1,15 +1,24 @@
 //! sprag-host — the headless host layer.
 //!
-//! Assembles the producer's terminal [`Screen`] into a pinion
-//! `Scene::TextGrid` and exposes it as scene-as-data. This is the layer that
-//! owns the pinion-rpc dependency (the RPC dispatch + `scene/snapshot` wire),
-//! keeping the producer ([`sprag_terminal`]) and projection ([`sprag_grid`])
-//! crates free of its heavy transitive deps.
+//! Assembles the producer's terminal pane into a pinion scene and exposes it
+//! as scene-as-data. The pane is a `Scene::Container` of two children — the
+//! R1.7 data/engine split:
+//!
+//! * a `Scene::TextGrid` carrying the cell grid — the introspectable
+//!   projection an AI reads via `scene/snapshot` / `scene/query`; and
+//! * a `Scene::External` ([`SpragPaneExternal`]) standing for the PTY
+//!   engine, whose `scene/invoke` action channel injects input
+//!   (key→PTY-byte encoding is sprag-owned — PINION-REQUIREMENTS R2.6).
+//!
+//! This is the layer that owns the pinion-rpc dependency (the RPC dispatch
+//! and the `scene/snapshot` wire), keeping the producer ([`sprag_terminal`])
+//! and projection ([`sprag_grid`]) crates free of its heavy transitive deps.
 //!
 //! Pipeline (DESIGN.md §5): the producer's [`TerminalSession`] holds the
-//! emulator; [`scene`] wraps `sprag_grid::project(screen)` into a
-//! `Scene::TextGrid`; [`snapshot`] reads it back as the [`TextGridSnapshot`]
-//! an AI consumer sees; [`serve`] runs the JSON-RPC loop.
+//! emulator; [`pane_scene`] assembles the Container (refreshing the grid
+//! from the live screen, handing the engine a `SessionHandle`); [`snapshot`]
+//! reads the grid back as the [`TextGridSnapshot`] an AI consumer sees;
+//! [`serve`] runs the JSON-RPC loop.
 //!
 //! ## Why this is GPU-free (DESIGN.md §5 host-viability risk)
 //!
@@ -32,44 +41,84 @@
 //! design (not faked to mirror the buffer). A future windowed host fills the
 //! rect via `pinion_runtime::compute_layout`.
 
+pub mod pane;
 pub mod rpc;
 
-pub use rpc::{handle_request, serve, READ_METHODS};
+pub use pane::SpragPaneExternal;
+pub use rpc::{handle_request, serve, SUPPORTED_METHODS};
 
-use pinion_core::scene::TextGridNode;
+use pinion_core::scene::{ContainerNode, ExternalNode, TextGridNode};
 use pinion_core::{CellMetric, Scene};
+use sprag_terminal::TerminalSession;
 use sprag_vt::Screen;
 
 // Re-export the snapshot shapes a consumer reads, so downstream code need
 // not depend on pinion-rpc's module layout directly.
 pub use pinion_rpc::snapshot::{GridRowSnapshot, GridStyleRun, TextGridSnapshot};
 
-/// The intent tag the single terminal pane carries in the scene tree.
-/// `scene/snapshot` path routing (and future input addressing) reach the
-/// grid through this tag.
+/// The intent tag on the pane's root `Scene::Container`.
 pub const PANE_TAG: &str = "sprag_pane";
 
-/// Assemble a [`Screen`] into a single-pane `Scene::TextGrid`, using the
-/// behaviour-preserving 8×16 baseline cell metric ([`CellMetric::DEFAULT`]).
-#[must_use]
-pub fn scene(screen: &Screen) -> Scene {
-    scene_with_metric(screen, CellMetric::DEFAULT)
-}
+/// The tag on the `TextGrid` child carrying the cell-data projection.
+pub const GRID_TAG: &str = "sprag_grid";
 
-/// Assemble a [`Screen`] into a single-pane `Scene::TextGrid` using a chosen
-/// cell metric.
+/// The tag on the `External` child (the PTY engine). The `scene/invoke`
+/// input path addresses it as `/sprag_input/external/key` (R2.6).
+pub const INPUT_TAG: &str = "sprag_input";
+
+/// Project a [`Screen`] into the `TextGrid` node carrying the cell data.
 ///
 /// The node's GUI `rect` is intentionally left unset (see the module docs on
 /// headless winsize ownership): the authoritative terminal size is the
 /// projected `GridBuffer`, read via [`TextGridSnapshot::buffer_cols`] /
 /// `buffer_rows`.
+fn text_grid_node(screen: &Screen, metric: CellMetric) -> TextGridNode {
+    TextGridNode::new(metric)
+        .with_tag(GRID_TAG)
+        .with_cells(sprag_grid::project(screen))
+}
+
+/// Assemble a [`Screen`] into a bare `Scene::TextGrid` (the cell-data view),
+/// using the 8×16 baseline cell metric ([`CellMetric::DEFAULT`]).
+///
+/// This is the pure data projection — a function of the screen alone, with
+/// no live session — used by [`snapshot`] and data-only consumers. The RPC
+/// server assembles the full pane via [`pane_scene`].
+#[must_use]
+pub fn scene(screen: &Screen) -> Scene {
+    scene_with_metric(screen, CellMetric::DEFAULT)
+}
+
+/// [`scene`] with an explicit cell metric.
 #[must_use]
 pub fn scene_with_metric(screen: &Screen, metric: CellMetric) -> Scene {
-    Scene::TextGrid(
-        TextGridNode::new(metric)
-            .with_tag(PANE_TAG)
-            .with_cells(sprag_grid::project(screen)),
-    )
+    Scene::TextGrid(text_grid_node(screen, metric))
+}
+
+/// Assemble the live pane as a `Scene::Container` of its data and engine
+/// children (R1.7): a `TextGrid` refreshed from the session's current
+/// screen, and a [`SpragPaneExternal`] holding the session's
+/// [`SessionHandle`](sprag_terminal::SessionHandle) so `scene/invoke`
+/// reaches the PTY.
+///
+/// The engine is rebuilt each call holding fresh handle clones; this is
+/// sound because the mutation target (the PTY) lives in the *session*, not
+/// the scene — so the per-request scene stays a throwaway projection (R969)
+/// while input still reaches live state through the shared handle.
+#[must_use]
+pub fn pane_scene(session: &TerminalSession) -> Scene {
+    session.with_screen(|screen| {
+        Scene::Container(
+            ContainerNode::new(vec![
+                Scene::TextGrid(text_grid_node(screen, CellMetric::DEFAULT)),
+                Scene::External(
+                    ExternalNode::new(Box::new(pane::SpragPaneExternal::new(session.handle())))
+                        .with_tag(INPUT_TAG),
+                ),
+            ])
+            .with_tag(PANE_TAG),
+        )
+    })
 }
 
 /// Snapshot a [`Screen`] as scene-as-data: the [`TextGridSnapshot`] an AI

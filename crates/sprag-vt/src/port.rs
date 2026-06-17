@@ -141,6 +141,23 @@ pub enum ScreenKind {
     Alternate,
 }
 
+/// Terminal input modes that change how keys encode to PTY bytes.
+///
+/// These are set by the child process via escape sequences (parsed by
+/// the emulator) and read by the sprag-owned key encoder (encoding is
+/// sprag's responsibility — PINION-REQUIREMENTS R2.6). They are not
+/// screen-grid state, so they sit alongside the [`Screen`] on the port
+/// rather than inside it. The struct grows as more input-affecting
+/// modes are modeled (application keypad, modifyOtherKeys).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct InputModes {
+    /// DECCKM (DEC private mode 1). When set, cursor and edit keys are
+    /// sent with `SS3` (`ESC O`) introducers instead of `CSI`
+    /// (`ESC [`); full-screen apps (vim, less) enable it, so the arrow
+    /// and Home/End encodings flip on this flag.
+    pub application_cursor_keys: bool,
+}
+
 /// A queryable terminal screen: a `cols x rows` grid of cells plus the
 /// cursor, screen kind, and per-row damage generations.
 ///
@@ -291,4 +308,8 @@ pub trait VtPort {
 
     /// The current authoritative screen.
     fn screen(&self) -> &Screen;
+
+    /// The current input modes affecting key→PTY-byte encoding (DECCKM,
+    /// …). Read by the sprag-owned key encoder (R2.6).
+    fn input_modes(&self) -> InputModes;
 }

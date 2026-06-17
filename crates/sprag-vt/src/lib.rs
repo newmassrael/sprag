@@ -10,5 +10,5 @@ pub mod port;
 
 pub use emulator::Emulator;
 pub use port::{
-    Attrs, Cell, Color, Cursor, CursorShape, Rgb, Screen, ScreenKind, VtPort, Width,
+    Attrs, Cell, Color, Cursor, CursorShape, InputModes, Rgb, Screen, ScreenKind, VtPort, Width,
 };

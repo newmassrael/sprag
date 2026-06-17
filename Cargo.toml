@@ -16,6 +16,7 @@ resolver = "3"
 members = [
     "crates/sprag-vt",
     "crates/sprag-grid",
+    "crates/sprag-input",
     "crates/sprag-terminal",
     "crates/sprag-host",
 ]
@@ -61,5 +62,6 @@ vello = "0.9"
 # Internal crates.
 sprag-vt = { path = "crates/sprag-vt", version = "0.0.1" }
 sprag-grid = { path = "crates/sprag-grid", version = "0.0.1" }
+sprag-input = { path = "crates/sprag-input", version = "0.0.1" }
 sprag-terminal = { path = "crates/sprag-terminal", version = "0.0.1" }
 sprag-host = { path = "crates/sprag-host", version = "0.0.1" }
