@@ -1,37 +1,46 @@
-//! `sprag-term` — a headless terminal RPC server.
+//! `sprag-term` — a headless terminal multiplexer RPC server.
 //!
-//! Spawns a shell (or the command given after `--`) on a pseudoterminal and
-//! serves pinion's `scene/snapshot` (and `scene/query`) over stdin/stdout —
-//! one JSON-RPC request per line. The terminal is exposed as data, with no
-//! GPU and no window (DESIGN.md §1/§3). It is read-only this round; mutating
-//! methods are rejected (input injection is sprag-owned, R2.6).
+//! Starts a workspace with one initial pane (a shell, or the command after
+//! `--`) on a pseudoterminal and serves pinion's scene-as-data wire over
+//! stdin/stdout — one JSON-RPC request per line, no GPU and no window
+//! (DESIGN.md §1/§3). An AI peer reads the panes via `scene/snapshot` /
+//! `scene/query`, injects input per pane via `scene/invoke`
+//! (`/pane_<id>/sprag_input/external/key`), and manages panes via the
+//! workspace control surface (`/sprag_mux/external/{spawn,close,resize}`).
 //!
 //! ```text
 //! sprag-term [--size COLSxROWS] [-- <program> [args...]]
 //! ```
 //!
-//! With no command, runs `$SHELL` (falling back to `/bin/sh`).
+//! With no command, the initial pane runs `$SHELL` (falling back to
+//! `/bin/sh`).
 
 use std::io;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use sprag_host::serve;
-use sprag_terminal::{CommandBuilder, TerminalSession};
+use sprag_terminal::{CommandBuilder, Workspace};
 
 fn main() -> io::Result<()> {
-    let (cols, rows, command) = parse_args();
-    let session = TerminalSession::spawn(command, cols, rows).map_err(io::Error::other)?;
+    let (cols, rows, command, label) = parse_args();
+    let workspace = Arc::new(Mutex::new(Workspace::new((cols, rows))));
+    workspace
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .spawn(command, label, cols, rows)
+        .map_err(io::Error::other)?;
     let stdin = io::stdin();
     let stdout = io::stdout();
-    serve(&session, stdin.lock(), stdout.lock())
+    serve(&workspace, stdin.lock(), stdout.lock())
 }
 
 /// Parse `[--size COLSxROWS]` then an optional command (after `--`, or the
 /// first bare argument). Falls back to `$SHELL` at 80x24.
-fn parse_args() -> (u16, u16, CommandBuilder) {
+fn parse_args() -> (u16, u16, CommandBuilder, String) {
     let mut cols: u16 = 80;
     let mut rows: u16 = 24;
     let mut args = std::env::args().skip(1);
-    let mut command: Option<CommandBuilder> = None;
+    let mut command: Option<(CommandBuilder, String)> = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -54,7 +63,8 @@ fn parse_args() -> (u16, u16, CommandBuilder) {
         }
     }
 
-    (cols, rows, command.unwrap_or_else(default_shell))
+    let (command, label) = command.unwrap_or_else(default_shell);
+    (cols, rows, command, label)
 }
 
 /// Parse a `COLSxROWS` size specifier.
@@ -63,21 +73,26 @@ fn parse_size(spec: &str) -> Option<(u16, u16)> {
     Some((w.parse().ok()?, h.parse().ok()?))
 }
 
-/// Build a command from a program plus the remaining argv, setting a sane
-/// `TERM` for the child (the rest of the environment is inherited).
-fn build_command(program: String, rest: &mut impl Iterator<Item = String>) -> CommandBuilder {
+/// Build a command from a program plus the remaining argv (setting a sane
+/// `TERM`; the rest of the environment is inherited), plus the program label
+/// the workspace records for the pane.
+fn build_command(
+    program: String,
+    rest: &mut impl Iterator<Item = String>,
+) -> (CommandBuilder, String) {
+    let label = program.clone();
     let mut command = CommandBuilder::new(program);
     for arg in rest {
         command.arg(arg);
     }
     command.env("TERM", "xterm-256color");
-    command
+    (command, label)
 }
 
-/// The default child: `$SHELL`, or `/bin/sh` when it is unset.
-fn default_shell() -> CommandBuilder {
+/// The default child: `$SHELL`, or `/bin/sh` when it is unset, plus its label.
+fn default_shell() -> (CommandBuilder, String) {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-    let mut command = CommandBuilder::new(shell);
+    let mut command = CommandBuilder::new(&shell);
     command.env("TERM", "xterm-256color");
-    command
+    (command, shell)
 }

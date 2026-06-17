@@ -1,24 +1,27 @@
 //! sprag-host — the headless host layer.
 //!
-//! Assembles the producer's terminal pane into a pinion scene and exposes it
-//! as scene-as-data. The pane is a `Scene::Container` of two children — the
-//! R1.7 data/engine split:
+//! Assembles the producer's terminal panes into a pinion scene and exposes
+//! them as scene-as-data. The scene is a workspace `Scene::Container` of N
+//! pane children plus one control child:
 //!
-//! * a `Scene::TextGrid` carrying the cell grid — the introspectable
-//!   projection an AI reads via `scene/snapshot` / `scene/query`; and
-//! * a `Scene::External` ([`SpragPaneExternal`]) standing for the PTY
-//!   engine, whose `scene/invoke` action channel injects input
-//!   (key→PTY-byte encoding is sprag-owned — PINION-REQUIREMENTS R2.6).
+//! * each **pane** is a `Scene::Container` of the R1.7 data/engine split — a
+//!   `Scene::TextGrid` (the cell grid an AI reads via `scene/snapshot` /
+//!   `scene/query`) and a `Scene::External` ([`SpragPaneExternal`]) whose
+//!   `scene/invoke` action channel injects input (key→PTY-byte encoding is
+//!   sprag-owned — PINION-REQUIREMENTS R2.6); and
+//! * the **workspace control** `Scene::External` ([`WorkspaceExternal`]),
+//!   whose `scene/invoke` actions spawn / close / resize panes (the Round 7
+//!   headless multiplex control core).
 //!
 //! This is the layer that owns the pinion-rpc dependency (the RPC dispatch
 //! and the `scene/snapshot` wire), keeping the producer ([`sprag_terminal`])
 //! and projection ([`sprag_grid`]) crates free of its heavy transitive deps.
 //!
-//! Pipeline (DESIGN.md §5): the producer's [`TerminalSession`] holds the
-//! emulator; [`pane_scene`] assembles the Container (refreshing the grid
-//! from the live screen, handing the engine a `SessionHandle`); [`snapshot`]
-//! reads the grid back as the [`TextGridSnapshot`] an AI consumer sees;
-//! [`serve`] runs the JSON-RPC loop.
+//! Pipeline (DESIGN.md §5): the producer's [`Workspace`] holds the panes;
+//! [`workspace_scene`] assembles the tree (refreshing each grid from its live
+//! screen, handing engines their `SessionHandle`); [`snapshot`] reads one
+//! grid back as the [`TextGridSnapshot`] an AI consumer sees; [`serve`] runs
+//! the JSON-RPC loop.
 //!
 //! ## Why this is GPU-free (DESIGN.md §5 host-viability risk)
 //!
@@ -43,27 +46,35 @@
 
 pub mod pane;
 pub mod rpc;
+pub mod workspace;
 
 pub use pane::SpragPaneExternal;
 pub use rpc::{handle_request, serve, SUPPORTED_METHODS};
+pub use workspace::WorkspaceExternal;
+
+use std::sync::{Arc, Mutex, PoisonError};
 
 use pinion_core::scene::{ContainerNode, ExternalNode, TextGridNode};
 use pinion_core::{CellMetric, Scene};
-use sprag_terminal::TerminalSession;
+use sprag_terminal::{PaneId, TerminalSession, Workspace};
 use sprag_vt::Screen;
 
 // Re-export the snapshot shapes a consumer reads, so downstream code need
 // not depend on pinion-rpc's module layout directly.
 pub use pinion_rpc::snapshot::{GridRowSnapshot, GridStyleRun, TextGridSnapshot};
 
-/// The intent tag on the pane's root `Scene::Container`.
-pub const PANE_TAG: &str = "sprag_pane";
+/// The intent tag on the workspace's root `Scene::Container`.
+pub const WORKSPACE_TAG: &str = "sprag_workspace";
 
-/// The tag on the `TextGrid` child carrying the cell-data projection.
+/// The tag on the workspace-control `External` (pane management). The
+/// `scene/invoke` path addresses it as `/sprag_mux/external/<action>`.
+pub const MUX_TAG: &str = "sprag_mux";
+
+/// The tag on each pane's `TextGrid` child (the cell-data projection).
 pub const GRID_TAG: &str = "sprag_grid";
 
-/// The tag on the `External` child (the PTY engine). The `scene/invoke`
-/// input path addresses it as `/sprag_input/external/key` (R2.6).
+/// The tag on each pane's input `External` child. The `scene/invoke` input
+/// path addresses pane `<id>` as `/pane_<id>/sprag_input/external/key` (R2.6).
 pub const INPUT_TAG: &str = "sprag_input";
 
 /// Project a [`Screen`] into the `TextGrid` node carrying the cell data.
@@ -95,30 +106,49 @@ pub fn scene_with_metric(screen: &Screen, metric: CellMetric) -> Scene {
     Scene::TextGrid(text_grid_node(screen, metric))
 }
 
-/// Assemble the live pane as a `Scene::Container` of its data and engine
-/// children (R1.7): a `TextGrid` refreshed from the session's current
-/// screen, and a [`SpragPaneExternal`] holding the session's
-/// [`SessionHandle`](sprag_terminal::SessionHandle) so `scene/invoke`
-/// reaches the PTY.
+/// Build one pane's `Scene::Container` (tagged `pane_<id>`) — the R1.7
+/// data/engine split: a `TextGrid` projected from the pane's live screen,
+/// and a [`SpragPaneExternal`] input engine holding the pane's
+/// [`SessionHandle`](sprag_terminal::SessionHandle) so `scene/invoke` reaches
+/// that pane's PTY.
+fn pane_container(id: PaneId, session: &TerminalSession) -> Scene {
+    let children = session.with_screen(|screen| {
+        vec![
+            Scene::TextGrid(text_grid_node(screen, CellMetric::DEFAULT)),
+            Scene::External(
+                ExternalNode::new(Box::new(pane::SpragPaneExternal::new(session.handle())))
+                    .with_tag(INPUT_TAG),
+            ),
+        ]
+    });
+    Scene::Container(ContainerNode::new(children).with_tag(format!("pane_{id}")))
+}
+
+/// Assemble the live workspace as a `Scene::Container` of its panes plus the
+/// pane-management [`WorkspaceExternal`] (Round 7 multiplex control core).
 ///
-/// The engine is rebuilt each call holding fresh handle clones; this is
-/// sound because the mutation target (the PTY) lives in the *session*, not
-/// the scene — so the per-request scene stays a throwaway projection (R969)
-/// while input still reaches live state through the shared handle.
+/// Each pane child is refreshed from its session's current screen; the
+/// engines and the control surface hold shared handles (a `SessionHandle`
+/// per pane, an `Arc<Mutex<Workspace>>` for control), so the per-request
+/// scene stays a throwaway projection (R969) while input and pane lifecycle
+/// reach live state. The workspace lock is released before returning so a
+/// dispatched `scene/invoke` (spawn/close/resize) can re-acquire it without
+/// deadlock.
 #[must_use]
-pub fn pane_scene(session: &TerminalSession) -> Scene {
-    session.with_screen(|screen| {
-        Scene::Container(
-            ContainerNode::new(vec![
-                Scene::TextGrid(text_grid_node(screen, CellMetric::DEFAULT)),
-                Scene::External(
-                    ExternalNode::new(Box::new(pane::SpragPaneExternal::new(session.handle())))
-                        .with_tag(INPUT_TAG),
-                ),
-            ])
-            .with_tag(PANE_TAG),
-        )
-    })
+pub fn workspace_scene(workspace: &Arc<Mutex<Workspace>>) -> Scene {
+    let mut children: Vec<Scene> = {
+        let guard = workspace.lock().unwrap_or_else(PoisonError::into_inner);
+        guard
+            .panes()
+            .iter()
+            .map(|pane| pane_container(pane.id(), pane.session()))
+            .collect()
+    };
+    children.push(Scene::External(
+        ExternalNode::new(Box::new(workspace::WorkspaceExternal::new(Arc::clone(workspace))))
+            .with_tag(MUX_TAG),
+    ));
+    Scene::Container(ContainerNode::new(children).with_tag(WORKSPACE_TAG))
 }
 
 /// Snapshot a [`Screen`] as scene-as-data: the [`TextGridSnapshot`] an AI

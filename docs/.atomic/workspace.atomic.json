@@ -443,6 +443,56 @@
         "R1.8 pointer->cell hit-test stays sprag-owned, deferred until mouse reporting.",
         "Encoder vocabulary extensions deferred: application keypad mode, modifyOtherKeys, F13-F24, left/right modifier distinction."
       ]
+    },
+    "Round 7": {
+      "decision_summary": "Headless multiplexing: a pane registry + lifecycle (spawn/close/resize) + per-pane I/O addressing exposed through a workspace-control External; geometric tiling deferred to the GUI round as a rendering concern.",
+      "changes_bullets": [
+        "New module crates/sprag-terminal/src/workspace.rs: pinion-free pane registry (Workspace) -- PaneId, Pane, spawn/close/resize/list over TerminalSession (producer-layer concern, R5 layering).",
+        "New crates/sprag-host/src/workspace.rs: WorkspaceExternal control surface holding Arc<Mutex<Workspace>>; scene/invoke actions spawn/close/resize and scene/query panes -- generalizes the R6 External+invoke carrier (no new RPC methods).",
+        "Scene is now a workspace Container[ pane_<id>[TextGrid + input External] ... + sprag_mux control External ]: lib.rs workspace_scene() assembles it (releasing the workspace lock before dispatch so invoke can re-lock); rpc.rs serve/handle_request take Arc<Mutex<Workspace>>; bin starts a one-pane workspace.",
+        "Input addresses a pane explicitly (/pane_<id>/sprag_input/external/key) -- no focus state; per-pane sizing is producer-set (no layout pass). Geometric tiling (split tree/ratios) intentionally absent: it only has meaning relative to a display surface, so it is deferred to the GUI round."
+      ],
+      "verification_bullets": [
+        "52 workspace tests pass (sprag-vt 12, sprag-input 11, sprag-grid 4, sprag-terminal 5, sprag-host 20); cargo clippy --workspace --all-targets clean.",
+        "Bin end-to-end (sprag-term -- cat): scene/invoke /sprag_mux/external/spawn -> pane id 1; scene/query /sprag_mux/external/panes lists both panes with dims+labels; scene/snapshot root is Container[sprag_workspace] with children pane_0, pane_1, sprag_mux; per-pane scene/invoke key echoes onto the addressed pane's grid.",
+        "Stop-and-report check: pinion needs nothing new -- nested Container resolve/snapshot is rect-independent and needs no layout/Owner (pinion's own invoke.rs/resolve.rs tests), windows are SCXML statechart states (not scene primitives), and the dock split substrate (pinion-widget-paint::dock) is GUI-chrome-oriented (its home is the future GUI round)."
+      ],
+      "impact_refs": [
+        "1",
+        "2",
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Geometric tiling (split tree, ratios, screen-division -> cols/rows) deferred to the GUI render round; its home is pinion's pinion-widget-paint::dock (DockNode/DockTopology), GPU-free but GUI-chrome/drag oriented.",
+        "Organizational grouping (sessions/tabs) and a directional focus pointer are deferred -- human/GUI conveniences; headless uses explicit per-pane addressing.",
+        "Pane auto-removal on child exit is not modeled (a pane persists after its child exits, showing its final screen); revisit when a lifecycle policy is wanted.",
+        "Next headless-control-stack step (rendering-waits roadmap): orchestration -- AI<->AI loops with termination/depth/cost guardrails, to be modeled as SCXML statecharts codegen'd via SCE."
+      ],
+      "publishable_decision_summary": "Headless multiplexing: a pane registry + lifecycle (spawn/close/resize) + per-pane I/O addressing exposed through a workspace-control External; geometric tiling deferred to the GUI round as a rendering concern.",
+      "publishable_changes_bullets": [
+        "New module crates/sprag-terminal/src/workspace.rs: pinion-free pane registry (Workspace) -- PaneId, Pane, spawn/close/resize/list over TerminalSession (producer-layer concern, R5 layering).",
+        "New crates/sprag-host/src/workspace.rs: WorkspaceExternal control surface holding Arc<Mutex<Workspace>>; scene/invoke actions spawn/close/resize and scene/query panes -- generalizes the R6 External+invoke carrier (no new RPC methods).",
+        "Scene is now a workspace Container[ pane_<id>[TextGrid + input External] ... + sprag_mux control External ]: lib.rs workspace_scene() assembles it (releasing the workspace lock before dispatch so invoke can re-lock); rpc.rs serve/handle_request take Arc<Mutex<Workspace>>; bin starts a one-pane workspace.",
+        "Input addresses a pane explicitly (/pane_<id>/sprag_input/external/key) -- no focus state; per-pane sizing is producer-set (no layout pass). Geometric tiling (split tree/ratios) intentionally absent: it only has meaning relative to a display surface, so it is deferred to the GUI round."
+      ],
+      "publishable_verification_bullets": [
+        "52 workspace tests pass (sprag-vt 12, sprag-input 11, sprag-grid 4, sprag-terminal 5, sprag-host 20); cargo clippy --workspace --all-targets clean.",
+        "Bin end-to-end (sprag-term -- cat): scene/invoke /sprag_mux/external/spawn -> pane id 1; scene/query /sprag_mux/external/panes lists both panes with dims+labels; scene/snapshot root is Container[sprag_workspace] with children pane_0, pane_1, sprag_mux; per-pane scene/invoke key echoes onto the addressed pane's grid.",
+        "Stop-and-report check: pinion needs nothing new -- nested Container resolve/snapshot is rect-independent and needs no layout/Owner (pinion's own invoke.rs/resolve.rs tests), windows are SCXML statechart states (not scene primitives), and the dock split substrate (pinion-widget-paint::dock) is GUI-chrome-oriented (its home is the future GUI round)."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "2",
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Geometric tiling (split tree, ratios, screen-division -> cols/rows) deferred to the GUI render round; its home is pinion's pinion-widget-paint::dock (DockNode/DockTopology), GPU-free but GUI-chrome/drag oriented.",
+        "Organizational grouping (sessions/tabs) and a directional focus pointer are deferred -- human/GUI conveniences; headless uses explicit per-pane addressing.",
+        "Pane auto-removal on child exit is not modeled (a pane persists after its child exits, showing its final screen); revisit when a lifecycle policy is wanted.",
+        "Next headless-control-stack step (rendering-waits roadmap): orchestration -- AI<->AI loops with termination/depth/cost guardrails, to be modeled as SCXML statecharts codegen'd via SCE."
+      ]
     }
   },
   "inventory_entries": {},
