@@ -1,0 +1,20 @@
+[package]
+name = "sprag-terminal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Headless pinion host: a PTY-driven emulator projected to Scene::TextGrid and read as scene-as-data (DESIGN.md §3/§5)"
+publish = false
+
+[dependencies]
+# The walking-skeleton slice this crate closes: PTY -> emulator (sprag-vt)
+# -> GridBuffer projection (sprag-grid) -> Scene::TextGrid (pinion-core)
+# -> scene/snapshot (pinion-rpc).
+sprag-vt = { workspace = true }
+sprag-grid = { workspace = true }
+pinion-core = { workspace = true }
+pinion-rpc = { workspace = true }
+# Cross-platform PTY (README NFR: a verified portable abstraction).
+portable-pty = { workspace = true }

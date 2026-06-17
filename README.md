@@ -100,4 +100,4 @@ pinion의 RPC(query/intervene/invoke/snapshot)와 External 계약이 이 인터�
 
 ## 상태
 
-설계·요구사항 정의 단계. 코드 미착수.
+walking-skeleton 수직 슬라이스 진행 중. **PTY → VT 에뮬레이터 → 셀 격자 → pinion `Scene::TextGrid` → `scene/snapshot`** 데이터 경로가 헤드리스(무-GPU)로 동작한다 (crates: `sprag-vt`, `sprag-grid`, `sprag-terminal`). 멀티플렉싱·플러그인 호스트·렌더는 미착수.

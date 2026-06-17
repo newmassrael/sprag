@@ -80,7 +80,8 @@
       ],
       "caveats_bullets": [
         "Scrollback beyond the visible screen is not modeled by pinion (R1.4 gap); the producer projects it",
-        "Glyph paint is deferred (paint-opaque); the headless data path does not need it"
+        "Glyph paint is deferred (paint-opaque); the headless data path does not need it",
+        "Headless winsize (R3): producer sets grid rect from dims x CellMetric; compute_layout is windowed"
       ],
       "alternatives_rejected": [
         {
@@ -151,7 +152,8 @@
       "caveats_bullets": [
         "Delivered R1.1-1.3/1.5/1.7 and winsize R1.4; deferred scrollback, glyph paint R1.6, hit-test R1.8",
         "pinion is unpublished; the sprag workspace references ../pinion crates by path",
-        "Host viability: pinion_shell::run uses Vello/winit GPU; the headless path is a verification risk"
+        "Host viability: pinion_shell::run uses Vello/winit GPU; the headless path is a verification risk",
+        "Data path needs no GPU (R3): pinion-rpc/runtime GPU-free; only human GUI paint needs one"
       ],
       "alternatives_rejected": [
         {
@@ -244,6 +246,54 @@
       ],
       "publishable_carry_forward_bullets": [
         "Depend on SCE directly (sce-build) when authoring sprag's own statecharts (orchestration loops)"
+      ]
+    },
+    "Round 3": {
+      "decision_summary": "Land sprag-terminal: a PTY-driven emulator projected to Scene::TextGrid and read headlessly as scene/snapshot, with no GPU.",
+      "changes_bullets": [
+        "New crate crates/sprag-terminal: TerminalSession (portable-pty + emulator) plus scene()/snapshot() projection helpers",
+        "Closes the walking-skeleton slice PTY -> emulator -> GridBuffer -> Scene::TextGrid -> scene/snapshot, GPU-free via pinion_rpc::snapshot",
+        "Headless winsize: the producer sets the TextGrid node rect from screen dims x CellMetric (no window, no layout pass)",
+        "Workspace: added sprag-terminal member and the pinion-rpc path dependency"
+      ],
+      "verification_bullets": [
+        "19 tests pass (sprag-vt 10, sprag-grid 4, sprag-terminal 5); cargo clippy clean on all sprag crates",
+        "End-to-end smoke test: /bin/sh printf output travels through a real PTY to the TextGridSnapshot",
+        "Confirmed pinion-rpc and pinion-runtime carry no vello/winit/wgpu dependency, substantiating the headless claim"
+      ],
+      "impact_refs": [
+        "1",
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Live RPC server bin (stdin/stdout JSON-RPC) so an external AI can query a running session",
+        "Input encoding (keys -> PTY bytes) and mouse hit-test remain sprag-owned (PINION-REQUIREMENTS R2.6/R1.8)",
+        "Windowed host via pinion_shell::run + compute_layout once human GUI rendering is wanted",
+        "Decide scrollback projection (R1.4 gap) when a consumer first needs it"
+      ],
+      "publishable_decision_summary": "Land sprag-terminal: a PTY-driven emulator projected to Scene::TextGrid and read headlessly as scene/snapshot, with no GPU.",
+      "publishable_changes_bullets": [
+        "New crate crates/sprag-terminal: TerminalSession (portable-pty + emulator) plus scene()/snapshot() projection helpers",
+        "Closes the walking-skeleton slice PTY -> emulator -> GridBuffer -> Scene::TextGrid -> scene/snapshot, GPU-free via pinion_rpc::snapshot",
+        "Headless winsize: the producer sets the TextGrid node rect from screen dims x CellMetric (no window, no layout pass)",
+        "Workspace: added sprag-terminal member and the pinion-rpc path dependency"
+      ],
+      "publishable_verification_bullets": [
+        "19 tests pass (sprag-vt 10, sprag-grid 4, sprag-terminal 5); cargo clippy clean on all sprag crates",
+        "End-to-end smoke test: /bin/sh printf output travels through a real PTY to the TextGridSnapshot",
+        "Confirmed pinion-rpc and pinion-runtime carry no vello/winit/wgpu dependency, substantiating the headless claim"
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Live RPC server bin (stdin/stdout JSON-RPC) so an external AI can query a running session",
+        "Input encoding (keys -> PTY bytes) and mouse hit-test remain sprag-owned (PINION-REQUIREMENTS R2.6/R1.8)",
+        "Windowed host via pinion_shell::run + compute_layout once human GUI rendering is wanted",
+        "Decide scrollback projection (R1.4 gap) when a consumer first needs it"
       ]
     }
   },
