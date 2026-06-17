@@ -46,6 +46,9 @@ termwiz = "0.23"
 # Cross-platform PTY (README NFR: portable-pty abstraction).
 portable-pty = "0.9"
 
+# JSON parsing for tests that assert on the scene/snapshot RPC wire.
+serde_json = "1"
+
 # Cell display width (UAX#11) for the emulator's wide-cluster handling.
 unicode-width = "0.2"
 

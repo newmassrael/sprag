@@ -1616,6 +1616,7 @@ dependencies = [
  "pinion-core",
  "pinion-rpc",
  "portable-pty",
+ "serde_json",
  "sprag-grid",
  "sprag-vt",
 ]

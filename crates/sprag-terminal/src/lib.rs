@@ -31,8 +31,10 @@
 //! windowed host would instead let `pinion_runtime::compute_layout` fill
 //! the rect from a `LayoutStyle`.
 
+pub mod rpc;
 pub mod session;
 
+pub use rpc::{handle_request, serve};
 pub use session::{CommandBuilder, SessionError, TerminalSession};
 
 use pinion_core::scene::{Rect, TextGridNode};

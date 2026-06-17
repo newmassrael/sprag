@@ -81,7 +81,8 @@
       "caveats_bullets": [
         "Scrollback beyond the visible screen is not modeled by pinion (R1.4 gap); the producer projects it",
         "Glyph paint is deferred (paint-opaque); the headless data path does not need it",
-        "Headless winsize (R3): producer sets grid rect from dims x CellMetric; compute_layout is windowed"
+        "Headless winsize (R3): producer sets grid rect from dims x CellMetric; compute_layout is windowed",
+        "RPC server read-only (R4): scene/key does not reach the PTY; key->PTY encoding deferred (R2.6)"
       ],
       "alternatives_rejected": [
         {
@@ -294,6 +295,52 @@
         "Input encoding (keys -> PTY bytes) and mouse hit-test remain sprag-owned (PINION-REQUIREMENTS R2.6/R1.8)",
         "Windowed host via pinion_shell::run + compute_layout once human GUI rendering is wanted",
         "Decide scrollback projection (R1.4 gap) when a consumer first needs it"
+      ]
+    },
+    "Round 4": {
+      "decision_summary": "Add sprag-term: a headless JSON-RPC server exposing a live PTY session as scene-as-data over stdin/stdout.",
+      "changes_bullets": [
+        "New rpc module (serve/handle_request): per-request pump + Scene::TextGrid projection dispatched via pinion_rpc::dispatch (canonical wire)",
+        "New bin sprag-term: spawns $SHELL or a given command on a PTY, serves scene/snapshot and static-scene reads line-by-line over stdio",
+        "Read-only this round: scene/key does not reach the PTY (TextGrid is paint-opaque); key->PTY encoding stays sprag-owned (R2.6)",
+        "Added serde_json as a dev-dependency for the RPC response assertion"
+      ],
+      "verification_bullets": [
+        "20 tests pass (sprag-vt 10, sprag-grid 4, sprag-terminal 6); cargo clippy --workspace --all-targets clean",
+        "serve() smoke test parses the scene/snapshot JSON-RPC reply and finds the live row text",
+        "Bin end-to-end: a piped scene/snapshot request returns the live screen (row HELLO) as JSON"
+      ],
+      "impact_refs": [
+        "1",
+        "2",
+        "3"
+      ],
+      "carry_forward_bullets": [
+        "Input encoding (keys -> PTY bytes) so scene/key drives the focused pane (PINION-REQUIREMENTS R2.6)",
+        "Windowed host via pinion_shell::run + compute_layout for human GUI rendering",
+        "Change-driven reads: per-row generation deltas or scene/wait_for_frame for streaming clients"
+      ],
+      "publishable_decision_summary": "Add sprag-term: a headless JSON-RPC server exposing a live PTY session as scene-as-data over stdin/stdout.",
+      "publishable_changes_bullets": [
+        "New rpc module (serve/handle_request): per-request pump + Scene::TextGrid projection dispatched via pinion_rpc::dispatch (canonical wire)",
+        "New bin sprag-term: spawns $SHELL or a given command on a PTY, serves scene/snapshot and static-scene reads line-by-line over stdio",
+        "Read-only this round: scene/key does not reach the PTY (TextGrid is paint-opaque); key->PTY encoding stays sprag-owned (R2.6)",
+        "Added serde_json as a dev-dependency for the RPC response assertion"
+      ],
+      "publishable_verification_bullets": [
+        "20 tests pass (sprag-vt 10, sprag-grid 4, sprag-terminal 6); cargo clippy --workspace --all-targets clean",
+        "serve() smoke test parses the scene/snapshot JSON-RPC reply and finds the live row text",
+        "Bin end-to-end: a piped scene/snapshot request returns the live screen (row HELLO) as JSON"
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "2",
+        "3"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Input encoding (keys -> PTY bytes) so scene/key drives the focused pane (PINION-REQUIREMENTS R2.6)",
+        "Windowed host via pinion_shell::run + compute_layout for human GUI rendering",
+        "Change-driven reads: per-row generation deltas or scene/wait_for_frame for streaming clients"
       ]
     }
   },

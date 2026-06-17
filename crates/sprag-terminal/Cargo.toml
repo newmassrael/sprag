@@ -18,3 +18,7 @@ pinion-core = { workspace = true }
 pinion-rpc = { workspace = true }
 # Cross-platform PTY (README NFR: a verified portable abstraction).
 portable-pty = { workspace = true }
+
+[dev-dependencies]
+# Parse the scene/snapshot RPC response in the server smoke test.
+serde_json = { workspace = true }
