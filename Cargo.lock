@@ -1610,14 +1610,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "sprag-terminal"
+name = "sprag-host"
 version = "0.0.1"
 dependencies = [
  "pinion-core",
  "pinion-rpc",
- "portable-pty",
  "serde_json",
  "sprag-grid",
+ "sprag-terminal",
+ "sprag-vt",
+]
+
+[[package]]
+name = "sprag-terminal"
+version = "0.0.1"
+dependencies = [
+ "portable-pty",
  "sprag-vt",
 ]
 

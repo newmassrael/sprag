@@ -1,0 +1,22 @@
+[package]
+name = "sprag-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Headless host: assembles the producer screen into a pinion Scene::TextGrid and serves it as scene-as-data over JSON-RPC (DESIGN.md §1/§3)"
+publish = false
+
+[dependencies]
+# Producer (PTY session) + projection (screen -> GridBuffer); the host adds
+# the scene assembly + RPC server on top.
+sprag-vt = { workspace = true }
+sprag-grid = { workspace = true }
+sprag-terminal = { workspace = true }
+pinion-core = { workspace = true }
+# The RPC dispatch + scene/snapshot wire. Its heavy transitive deps are
+# confined to this host crate, never the producer/projection (DESIGN.md §5).
+pinion-rpc = { workspace = true }
+# Building the read-only method-gate error response.
+serde_json = { workspace = true }

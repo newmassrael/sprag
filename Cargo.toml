@@ -17,6 +17,7 @@ members = [
     "crates/sprag-vt",
     "crates/sprag-grid",
     "crates/sprag-terminal",
+    "crates/sprag-host",
 ]
 
 [workspace.package]
@@ -33,9 +34,10 @@ pinion-core = { path = "../pinion/crates/pinion-core", version = "0.0.1" }
 pinion-a11y = { path = "../pinion/crates/pinion-a11y", version = "0.0.1" }
 pinion-shell = { path = "../pinion/crates/pinion-shell", version = "0.0.1" }
 pinion-forge = { path = "../pinion/crates/pinion-forge", version = "0.0.1" }
-# pinion-rpc: the scene-as-data introspection wire (snapshot.rs). sprag-terminal
-# produces a TextGridSnapshot headlessly via its `snapshot()` fn — no GPU,
-# no shell event loop (DESIGN.md §3/§5: the data path needs no display).
+# pinion-rpc: the scene-as-data introspection wire (snapshot.rs) + dispatch.
+# Confined to sprag-host (the RPC server layer) so the producer/projection
+# crates stay free of its heavy transitive deps (DESIGN.md §3/§5: the data
+# path needs no display).
 pinion-rpc = { path = "../pinion/crates/pinion-rpc", version = "0.0.1" }
 
 # VT toolkit (DESIGN.md §4): termwiz is the embedded verified escape
@@ -60,3 +62,4 @@ vello = "0.9"
 sprag-vt = { path = "crates/sprag-vt", version = "0.0.1" }
 sprag-grid = { path = "crates/sprag-grid", version = "0.0.1" }
 sprag-terminal = { path = "crates/sprag-terminal", version = "0.0.1" }
+sprag-host = { path = "crates/sprag-host", version = "0.0.1" }

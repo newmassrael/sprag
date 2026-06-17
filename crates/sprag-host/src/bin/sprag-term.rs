@@ -1,27 +1,28 @@
 //! `sprag-term` — a headless terminal RPC server.
 //!
 //! Spawns a shell (or the command given after `--`) on a pseudoterminal and
-//! serves pinion's `scene/snapshot` (and the other static-scene read
-//! methods) over stdin/stdout — one JSON-RPC request per line. The terminal
-//! is exposed as data, with no GPU and no window (DESIGN.md §1/§3).
+//! serves pinion's `scene/snapshot` (and `scene/query`) over stdin/stdout —
+//! one JSON-RPC request per line. The terminal is exposed as data, with no
+//! GPU and no window (DESIGN.md §1/§3). It is read-only this round; mutating
+//! methods are rejected (input injection is sprag-owned, R2.6).
 //!
 //! ```text
 //! sprag-term [--size COLSxROWS] [-- <program> [args...]]
 //! ```
 //!
-//! With no command, runs `$SHELL` (falling back to `/bin/sh`). Each line on
-//! stdin is one JSON-RPC request; each response is one line on stdout.
+//! With no command, runs `$SHELL` (falling back to `/bin/sh`).
 
 use std::io;
 
-use sprag_terminal::{serve, CommandBuilder, TerminalSession};
+use sprag_host::serve;
+use sprag_terminal::{CommandBuilder, TerminalSession};
 
 fn main() -> io::Result<()> {
     let (cols, rows, command) = parse_args();
-    let mut session = TerminalSession::spawn(command, cols, rows).map_err(io::Error::other)?;
+    let session = TerminalSession::spawn(command, cols, rows).map_err(io::Error::other)?;
     let stdin = io::stdin();
     let stdout = io::stdout();
-    serve(&mut session, stdin.lock(), stdout.lock())
+    serve(&session, stdin.lock(), stdout.lock())
 }
 
 /// Parse `[--size COLSxROWS]` then an optional command (after `--`, or the

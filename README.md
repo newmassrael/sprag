@@ -100,4 +100,15 @@ pinion의 RPC(query/intervene/invoke/snapshot)와 External 계약이 이 인터�
 
 ## 상태
 
-walking-skeleton 수직 슬라이스 진행 중. **PTY → VT 에뮬레이터 → 셀 격자 → pinion `Scene::TextGrid` → `scene/snapshot`** 데이터 경로가 헤드리스(무-GPU)로 동작한다 (crates: `sprag-vt`, `sprag-grid`, `sprag-terminal`). 멀티플렉싱·플러그인 호스트·렌더는 미착수.
+walking-skeleton 수직 슬라이스 진행 중. **PTY → VT 에뮬레이터 → 셀 격자 → pinion `Scene::TextGrid` → `scene/snapshot`** 데이터 경로가 헤드리스(무-GPU)로 동작한다. 레이어별 크레이트:
+
+- `sprag-vt` — termwiz 기반 에뮬레이터 (`VtPort` 뒤로 격리)
+- `sprag-grid` — Screen → pinion `GridBuffer` 투영 (pinion-core만 의존)
+- `sprag-terminal` — PTY 프로듀서 (에뮬레이터 소유, pinion 비의존)
+- `sprag-host` — scene 조립 + `scene/snapshot` JSON-RPC 서버 (`sprag-term` 바이너리, 현재 읽기 전용)
+
+멀티플렉싱·입력 인코딩·플러그인 호스트·GUI 렌더는 미착수.
+
+## 설계 SSOT
+
+이 README는 사람용 개요다. **권위 있는 설계 출처는 Mnemosyne 아토믹 스토어**(`docs/.atomic/workspace.atomic.json`)이며, `mnemosyne-cli query`로 읽고 타입드 프리미티브로만 변경한다(직접 JSON 편집 금지). 라운드 단위 결정 이력은 changelog에 누적된다.

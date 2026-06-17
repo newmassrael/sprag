@@ -82,7 +82,8 @@
         "Scrollback beyond the visible screen is not modeled by pinion (R1.4 gap); the producer projects it",
         "Glyph paint is deferred (paint-opaque); the headless data path does not need it",
         "Headless winsize (R3): producer sets grid rect from dims x CellMetric; compute_layout is windowed",
-        "RPC server read-only (R4): scene/key does not reach the PTY; key->PTY encoding deferred (R2.6)"
+        "RPC server read-only (R4): scene/key does not reach the PTY; key->PTY encoding deferred (R2.6)",
+        "Winsize (R5, corrects R3): scene() leaves rect unset; authoritative dims = buffer_cols/rows"
       ],
       "alternatives_rejected": [
         {
@@ -341,6 +342,52 @@
         "Input encoding (keys -> PTY bytes) so scene/key drives the focused pane (PINION-REQUIREMENTS R2.6)",
         "Windowed host via pinion_shell::run + compute_layout for human GUI rendering",
         "Change-driven reads: per-row generation deltas or scene/wait_for_frame for streaming clients"
+      ]
+    },
+    "Round 5": {
+      "decision_summary": "Restructure into producer/projection/host layers and harden the headless host: honest winsize, bounded state, enforced read-only.",
+      "changes_bullets": [
+        "New sprag-host crate (scene assembly + snapshot + RPC server + sprag-term bin); pinion-rpc and its heavy transitive deps confined there (S1)",
+        "sprag-terminal reduced to a pure PTY producer with no pinion dependency; reader thread applies bytes to a Mutex<Emulator> (bounded state, no caller pump) (S3)",
+        "Headless winsize made honest: scene() leaves the GUI rect unset, authoritative dims are the GridBuffer buffer_cols/rows; supersedes the now-inaccurate R3 §3 caveat (S2)",
+        "RPC host enforces a read-only method allowlist, returning -32601 for the rest; removes the silent-mutation-success smell (S4)"
+      ],
+      "verification_bullets": [
+        "21 tests pass (sprag-vt 10, sprag-grid 4, sprag-terminal 1, sprag-host 6); cargo clippy --workspace --all-targets clean",
+        "Bin end-to-end: live snapshot reports buffer_cols/rows authoritative with cols/rows=0; scene/key rejected with -32601",
+        "pinion-rpc is no longer reachable from the producer/projection crates (dependency layering verified)"
+      ],
+      "impact_refs": [
+        "2",
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Input encoding (keys -> PTY bytes) to lift the read-only boundary (R2.6)",
+        "Windowed host via pinion_shell::run + compute_layout to fill the GUI rect properly",
+        "Durable design-state changes may warrant a section-rationale update path; append-only caveats accrete status corrections (process note)"
+      ],
+      "publishable_decision_summary": "Restructure into producer/projection/host layers and harden the headless host: honest winsize, bounded state, enforced read-only.",
+      "publishable_changes_bullets": [
+        "New sprag-host crate (scene assembly + snapshot + RPC server + sprag-term bin); pinion-rpc and its heavy transitive deps confined there (S1)",
+        "sprag-terminal reduced to a pure PTY producer with no pinion dependency; reader thread applies bytes to a Mutex<Emulator> (bounded state, no caller pump) (S3)",
+        "Headless winsize made honest: scene() leaves the GUI rect unset, authoritative dims are the GridBuffer buffer_cols/rows; supersedes the now-inaccurate R3 §3 caveat (S2)",
+        "RPC host enforces a read-only method allowlist, returning -32601 for the rest; removes the silent-mutation-success smell (S4)"
+      ],
+      "publishable_verification_bullets": [
+        "21 tests pass (sprag-vt 10, sprag-grid 4, sprag-terminal 1, sprag-host 6); cargo clippy --workspace --all-targets clean",
+        "Bin end-to-end: live snapshot reports buffer_cols/rows authoritative with cols/rows=0; scene/key rejected with -32601",
+        "pinion-rpc is no longer reachable from the producer/projection crates (dependency layering verified)"
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Input encoding (keys -> PTY bytes) to lift the read-only boundary (R2.6)",
+        "Windowed host via pinion_shell::run + compute_layout to fill the GUI rect properly",
+        "Durable design-state changes may warrant a section-rationale update path; append-only caveats accrete status corrections (process note)"
       ]
     }
   },
