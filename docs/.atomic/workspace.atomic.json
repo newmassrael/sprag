@@ -545,6 +545,50 @@
         "Plugin-host / extension-API extraction once orchestration + a 2nd consumer exist.",
         "SCE dep tracks pinion's vendored copy; if pinion un-vendors or the copies diverge again, revisit (stop-and-report)."
       ]
+    },
+    "Round 9": {
+      "decision_summary": "Cleanup round from the session review: harden the orchestrator substrate — reuse the producer's damage generations for observation, type the drive errors, and fix wrapped-sentinel convergence matching.",
+      "changes_bullets": [
+        "sprag-orchestrator Orchestrator::observe now waits on the producer's per-row damage generations (Screen::row_generation) instead of re-diffing the whole flattened screen each poll — it reuses the projection's incremental-read mechanism (faster and cleaner; observe latency dropped markedly).",
+        "Replaced the stimulate Result<(),()> unit error with a typed DriveError (Encode/Write variants), surfaced via a new Outcome::failure field — no discarded error context.",
+        "Sentinel convergence now matches against a collapsed screen view (each row trailing-trimmed, rows joined without separators) so a sentinel the terminal wrapped across rows still matches (a latent convergence-detection bug); added a converges_on_a_wrapped_sentinel test on a 4-column pane."
+      ],
+      "verification_bullets": [
+        "56 workspace tests pass (sprag-orchestrator now 4, including converges_on_a_wrapped_sentinel); cargo clippy --workspace --all-targets clean.",
+        "Addresses session-review findings: missed reuse of damage generations, Result<(),()> error collapse, and the wrapped-sentinel match bug. The review's read-path consistency and shared-External-boilerplate findings are deferred to the plugin-extraction round (carry-forward).",
+        "Two adversarial review agents plus self-review produced the finding list; the agents' lock-across-spawn / TERM-dumb-vs-xterm / PaneId-truncation flags were judged non-issues (single-threaded serve, intentional test hygiene, physically-impossible scale) and not acted on."
+      ],
+      "impact_refs": [
+        "2",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Read-path consistency: the in-process Orchestrator reads the raw producer Screen while external peers read the pinion projection (lossy) — unify onto one read path in the plugin-extraction round.",
+        "Extract a shared sprag-External base (backends / repaint_ownership / thread_ownership / Debug / arg-parse helpers) from SpragPaneExternal + WorkspaceExternal now that there are 2+ consumers (and a 3rd, OrchestratorExternal, coming).",
+        "Plugin-extraction round (the README #1 concern): add a 2nd control consumer (multi-pane relay) + OrchestratorExternal (RPC) to force extracting the plugin trait — concrete-first must not become never-extract.",
+        "WorkspaceExternal collapses SessionError into InvokeError::Rejected; richer error reporting is bounded by pinion's three-variant InvokeError — revisit if pinion widens it (stop-and-report if a change is needed)."
+      ],
+      "publishable_decision_summary": "Cleanup round from the session review: harden the orchestrator substrate — reuse the producer's damage generations for observation, type the drive errors, and fix wrapped-sentinel convergence matching.",
+      "publishable_changes_bullets": [
+        "sprag-orchestrator Orchestrator::observe now waits on the producer's per-row damage generations (Screen::row_generation) instead of re-diffing the whole flattened screen each poll — it reuses the projection's incremental-read mechanism (faster and cleaner; observe latency dropped markedly).",
+        "Replaced the stimulate Result<(),()> unit error with a typed DriveError (Encode/Write variants), surfaced via a new Outcome::failure field — no discarded error context.",
+        "Sentinel convergence now matches against a collapsed screen view (each row trailing-trimmed, rows joined without separators) so a sentinel the terminal wrapped across rows still matches (a latent convergence-detection bug); added a converges_on_a_wrapped_sentinel test on a 4-column pane."
+      ],
+      "publishable_verification_bullets": [
+        "56 workspace tests pass (sprag-orchestrator now 4, including converges_on_a_wrapped_sentinel); cargo clippy --workspace --all-targets clean.",
+        "Addresses session-review findings: missed reuse of damage generations, Result<(),()> error collapse, and the wrapped-sentinel match bug. The review's read-path consistency and shared-External-boilerplate findings are deferred to the plugin-extraction round (carry-forward).",
+        "Two adversarial review agents plus self-review produced the finding list; the agents' lock-across-spawn / TERM-dumb-vs-xterm / PaneId-truncation flags were judged non-issues (single-threaded serve, intentional test hygiene, physically-impossible scale) and not acted on."
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Read-path consistency: the in-process Orchestrator reads the raw producer Screen while external peers read the pinion projection (lossy) — unify onto one read path in the plugin-extraction round.",
+        "Extract a shared sprag-External base (backends / repaint_ownership / thread_ownership / Debug / arg-parse helpers) from SpragPaneExternal + WorkspaceExternal now that there are 2+ consumers (and a 3rd, OrchestratorExternal, coming).",
+        "Plugin-extraction round (the README #1 concern): add a 2nd control consumer (multi-pane relay) + OrchestratorExternal (RPC) to force extracting the plugin trait — concrete-first must not become never-extract.",
+        "WorkspaceExternal collapses SessionError into InvokeError::Rejected; richer error reporting is bounded by pinion's three-variant InvokeError — revisit if pinion widens it (stop-and-report if a change is needed)."
+      ]
     }
   },
   "inventory_entries": {},

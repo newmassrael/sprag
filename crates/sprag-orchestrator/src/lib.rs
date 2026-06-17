@@ -1,6 +1,6 @@
 //! sprag-orchestrator — a guardrailed orchestration loop over panes.
 //!
-//! The control flow is an SCE/SCXML statechart ([`orchestration.scxml`],
+//! The control flow is an SCE/SCXML statechart (`orchestration.scxml`,
 //! `datamodel="null"` — a pure controller); this crate is the effect executor
 //! that drives it. Each step reads the statechart's current state, performs
 //! the corresponding I/O against a pane (act: inject a stimulus; perceive:
@@ -8,11 +8,18 @@
 //! here, in plain Rust), and feeds back the next event. Termination is three
 //! distinct statechart `<final>` states surfaced as [`OutcomeState`].
 //!
+//! Perception reuses the producer's damage tracking: [`Orchestrator::observe`]
+//! waits on per-row `generation` stamps (the same mechanism the projection
+//! exposes for incremental reads), not a full-screen text diff. Convergence
+//! matches the sentinel against a *collapsed* screen view (trailing blanks
+//! trimmed, rows joined without separators) so a sentinel the terminal wrapped
+//! across rows still matches.
+//!
 //! This is the first dogfood of SCE for sprag's own control logic (memory
 //! `use-sce-for-statecharts`); it is pinion-free (producer/control layer),
-//! reusing the R6 input encoder and the R7 session handle. Real AI↔AI
-//! orchestration (AI-tool adapters, multi-pane relay, RPC exposure) layers on
-//! this substrate later.
+//! reusing the input encoder ([`sprag_input`]) and the session handle
+//! ([`sprag_terminal::SessionHandle`]). Real AI↔AI orchestration (AI-tool
+//! adapters, multi-pane relay, RPC exposure) layers on this substrate later.
 
 mod sm {
     // Generated code: blanket-allow rustc + clippy lints (it is machine-emitted
@@ -48,7 +55,7 @@ pub struct OrchestrationSpec {
     /// Termination guardrail: stop after this many stimulate→observe cycles.
     pub max_iterations: u32,
     /// Cost guardrail: stop once this many bytes have been injected (a headless
-    /// proxy for token/$ spend).
+    /// proxy for token/$ spend; a real adapter replaces it with token cost).
     pub max_injected_bytes: u64,
 }
 
@@ -63,12 +70,24 @@ pub enum OutcomeState {
     Failed,
 }
 
+/// Why a [`OutcomeState::Failed`] run aborted — a typed cause rather than a
+/// discarded error.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DriveError {
+    /// A key in the stimulus had no PTY-byte encoding (the offending key).
+    Encode(String),
+    /// Writing the encoded bytes to the pane failed (the IO error message).
+    Write(String),
+}
+
 /// The result of an orchestration run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Outcome {
     pub state: OutcomeState,
     pub iterations: u32,
     pub injected_bytes: u64,
+    /// The cause when `state` is [`OutcomeState::Failed`]; `None` otherwise.
+    pub failure: Option<DriveError>,
 }
 
 /// Drives a [`OrchestrationSpec`] against one pane: the effect executor for
@@ -79,7 +98,13 @@ pub struct Orchestrator {
     spec: OrchestrationSpec,
     iterations: u32,
     injected_bytes: u64,
+    /// Per-row damage generations captured before the last stimulus, so
+    /// `observe` can wait for *this* stimulus's echo.
+    baseline_generations: Vec<u64>,
+    /// The collapsed screen text from the last observe (for sentinel match).
     last_observed: String,
+    /// Set when a `stimulate` failed (surfaced in the [`Outcome`]).
+    failure: Option<DriveError>,
 }
 
 impl Orchestrator {
@@ -92,7 +117,9 @@ impl Orchestrator {
             spec,
             iterations: 0,
             injected_bytes: 0,
+            baseline_generations: Vec::new(),
             last_observed: String::new(),
+            failure: None,
         }
     }
 
@@ -109,7 +136,10 @@ impl Orchestrator {
                 OrchestrationState::Stimulating => {
                     let event = match self.stimulate() {
                         Ok(()) => OrchestrationEvent::Stimulated,
-                        Err(()) => OrchestrationEvent::Fail,
+                        Err(error) => {
+                            self.failure = Some(error);
+                            OrchestrationEvent::Fail
+                        }
                     };
                     self.engine.process_event(event);
                 }
@@ -128,32 +158,48 @@ impl Orchestrator {
         self.outcome()
     }
 
-    /// Act: encode the stimulus (plus Enter) and write it to the pane.
-    fn stimulate(&mut self) -> Result<(), ()> {
-        // Baseline the screen before injecting, so observe() waits for *this*
-        // stimulus's echo (a change relative to here) rather than returning on
-        // a stale difference (e.g. the initial blank screen vs an empty string).
-        self.last_observed = self.handle.with_screen(flatten_screen);
+    /// Act: encode the stimulus (plus Enter) and write it to the pane,
+    /// baselining the pane's damage generations first so `observe` can wait
+    /// for this stimulus's echo.
+    fn stimulate(&mut self) -> Result<(), DriveError> {
+        self.baseline_generations = self.handle.with_screen(row_generations);
         let modes = self.handle.input_modes();
         let mut bytes = Vec::new();
         for ch in self.spec.stimulus.chars() {
-            let encoded = encode(&ch.to_string(), Modifiers::default(), modes).ok_or(())?;
+            let key = ch.to_string();
+            let encoded = encode(&key, Modifiers::default(), modes)
+                .ok_or_else(|| DriveError::Encode(key.clone()))?;
             bytes.extend_from_slice(&encoded);
         }
-        bytes.extend_from_slice(&encode("Enter", Modifiers::default(), modes).ok_or(())?);
-        self.handle.write(&bytes).map_err(|_| ())?;
+        let enter = encode("Enter", Modifiers::default(), modes)
+            .ok_or_else(|| DriveError::Encode("Enter".to_string()))?;
+        bytes.extend_from_slice(&enter);
+        self.handle
+            .write(&bytes)
+            .map_err(|e| DriveError::Write(e.to_string()))?;
         self.iterations += 1;
         self.injected_bytes += bytes.len() as u64;
         Ok(())
     }
 
-    /// Perceive: bounded-poll the pane's screen until it changes (or timeout).
+    /// Perceive: wait (bounded) for any row's damage `generation` to advance
+    /// past the pre-stimulus baseline, then capture the collapsed screen text.
     fn observe(&mut self) {
         let start = Instant::now();
         loop {
-            let text = self.handle.with_screen(flatten_screen);
-            if text != self.last_observed || start.elapsed() >= OBSERVE_TIMEOUT {
-                self.last_observed = text;
+            let advanced = self.handle.with_screen(|screen| {
+                (0..screen.rows()).any(|row| {
+                    let current = screen.row_generation(row).unwrap_or(0);
+                    let baseline = self
+                        .baseline_generations
+                        .get(row as usize)
+                        .copied()
+                        .unwrap_or(0);
+                    current > baseline
+                })
+            });
+            if advanced || start.elapsed() >= OBSERVE_TIMEOUT {
+                self.last_observed = self.handle.with_screen(collapsed_text);
                 return;
             }
             sleep(OBSERVE_POLL);
@@ -178,7 +224,7 @@ impl Orchestrator {
         OrchestrationEvent::Iterate
     }
 
-    fn outcome(&self) -> Outcome {
+    fn outcome(self) -> Outcome {
         let state = match self.engine.get_current_state() {
             OrchestrationState::Converged => OutcomeState::Converged,
             OrchestrationState::Exhausted => OutcomeState::Exhausted,
@@ -189,20 +235,31 @@ impl Orchestrator {
             state,
             iterations: self.iterations,
             injected_bytes: self.injected_bytes,
+            failure: self.failure,
         }
     }
 }
 
-/// Flatten a screen's cells into row-joined text (for sentinel matching).
-fn flatten_screen(screen: &Screen) -> String {
+/// The per-row damage generations of a screen.
+fn row_generations(screen: &Screen) -> Vec<u64> {
+    (0..screen.rows())
+        .map(|row| screen.row_generation(row).unwrap_or(0))
+        .collect()
+}
+
+/// Collapse a screen to text for sentinel matching: each row's cells with
+/// trailing blanks trimmed, joined WITHOUT row separators, so a sentinel the
+/// terminal wrapped across rows still matches.
+fn collapsed_text(screen: &Screen) -> String {
     let mut out = String::new();
     for row in 0..screen.rows() {
+        let mut line = String::new();
         for col in 0..screen.cols() {
             if let Some(cell) = screen.cell(col, row) {
-                out.push_str(&cell.cluster);
+                line.push_str(&cell.cluster);
             }
         }
-        out.push('\n');
+        out.push_str(line.trim_end());
     }
     out
 }
@@ -233,6 +290,7 @@ mod tests {
         let outcome = Orchestrator::new(session.handle(), spec).run();
         assert_eq!(outcome.state, OutcomeState::Exhausted);
         assert_eq!(outcome.iterations, 3);
+        assert!(outcome.failure.is_none());
     }
 
     #[test]
@@ -247,11 +305,25 @@ mod tests {
             max_injected_bytes: u64::MAX,
         };
         let outcome = Orchestrator::new(session.handle(), spec).run();
-        // Converging is the contract; the exact iteration depends on echo
-        // timing, but the baseline-then-observe loop reaches it well within
-        // the iteration budget.
         assert_eq!(outcome.state, OutcomeState::Converged);
         assert!(outcome.iterations >= 1, "iterations: {}", outcome.iterations);
+        assert!(outcome.failure.is_none());
+    }
+
+    #[test]
+    fn converges_on_a_wrapped_sentinel() {
+        // A 4-column pane forces the 6-char echo to wrap across rows
+        // ("abcd" + "ef"). The collapsed-text match still finds "abcdef",
+        // which a row-newline-joined match would miss.
+        let session = cat_session(4, 4);
+        let spec = OrchestrationSpec {
+            stimulus: "abcdef".to_string(),
+            sentinel: Some("abcdef".to_string()),
+            max_iterations: 10,
+            max_injected_bytes: u64::MAX,
+        };
+        let outcome = Orchestrator::new(session.handle(), spec).run();
+        assert_eq!(outcome.state, OutcomeState::Converged);
     }
 
     #[test]
