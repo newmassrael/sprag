@@ -1,0 +1,53 @@
+# sprag cargo workspace.
+#
+# Structure mirrors the core/plugin split recorded in the design SSOT
+# (docs/.atomic, DESIGN.md §2). This iteration is the walking-skeleton
+# vertical slice (DESIGN.md §5): PTY -> termwiz parser -> sprag emulator
+# -> GridBuffer projection -> pinion Scene::TextGrid -> scene/snapshot.
+#
+# pinion is referenced by path because it is unpublished (DESIGN.md §5
+# caveat). sprag and pinion are sibling checkouts under the same parent.
+
+[workspace]
+resolver = "3"
+# Members are added incrementally as each crate of the walking-skeleton
+# slice lands: sprag-vt (emulator) -> sprag-grid (projection) ->
+# sprag-terminal (pinion host).
+members = [
+    "crates/sprag-vt",
+    "crates/sprag-grid",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.88.0"
+license = "MIT OR Apache-2.0"
+authors = ["newmassrael <newmassrael@gmail.com>"]
+repository = "https://github.com/newmassrael/sprag"
+
+[workspace.dependencies]
+# pinion (path deps — pinion is unpublished; DESIGN.md §5).
+pinion-core = { path = "../pinion/crates/pinion-core", version = "0.0.1" }
+pinion-a11y = { path = "../pinion/crates/pinion-a11y", version = "0.0.1" }
+pinion-shell = { path = "../pinion/crates/pinion-shell", version = "0.0.1" }
+pinion-forge = { path = "../pinion/crates/pinion-forge", version = "0.0.1" }
+
+# VT toolkit (DESIGN.md §4): termwiz is the embedded verified escape
+# parser + cell/color/input primitives. The emulator state machine is
+# sprag-owned (sprag-vt), isolated behind VtPort.
+termwiz = "0.23"
+
+# Cross-platform PTY (README NFR: portable-pty abstraction).
+portable-pty = "0.9"
+
+# Cell display width (UAX#11) for the emulator's wide-cluster handling.
+unicode-width = "0.2"
+
+# Vello pinned to pinion-shell's version so the forge renderer macro
+# output type-checks against pinion's vello.
+vello = "0.9"
+
+# Internal crates.
+sprag-vt = { path = "crates/sprag-vt", version = "0.0.1" }
+sprag-grid = { path = "crates/sprag-grid", version = "0.0.1" }

@@ -1,0 +1,16 @@
+[package]
+name = "sprag-vt"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "VtPort + termwiz-based terminal emulator owning screen state (sprag DESIGN.md §4)"
+publish = false
+
+[dependencies]
+# termwiz: embedded verified escape parser + cell/color primitives.
+# The emulator state machine on top is sprag-owned (DESIGN.md §4).
+termwiz = { workspace = true }
+# Cell display width (UAX#11) for wide-cluster (CJK) head/trailer.
+unicode-width = { workspace = true }
