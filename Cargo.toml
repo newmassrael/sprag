@@ -19,6 +19,7 @@ members = [
     "crates/sprag-input",
     "crates/sprag-terminal",
     "crates/sprag-host",
+    "crates/sprag-orchestrator",
 ]
 
 [workspace.package]
@@ -59,9 +60,23 @@ unicode-width = "0.2"
 # output type-checks against pinion's vello.
 vello = "0.9"
 
+# SCE (SCXML Core Engine) — the user's W3C SCXML 1.0 engine with multi-language
+# AOT codegen. sprag's orchestration control logic is authored as SCXML and
+# codegen'd via SCE (memory: use-sce-for-statecharts), mirroring pinion-forge's
+# usage. We depend on *pinion's vendored* SCE (kept synced to the canonical
+# /home/coin/scxml-core-engine) rather than the canonical path directly: pinion
+# already path-deps vendor/sce, so a second same-version path source would
+# collide in the Cargo lockfile. Sharing pinion's path yields one SCE package,
+# and the vendored copy is content-identical to canonical (the SSOT in substance).
+# sce-build is a build-dependency (build.rs codegen); the runtime carries the
+# generated state machine. default-features off keeps http-send out.
+sce-build = { path = "../pinion/vendor/sce/sce-build" }
+sce-rust-runtime = { path = "../pinion/vendor/sce/sce-rust-runtime", default-features = false }
+
 # Internal crates.
 sprag-vt = { path = "crates/sprag-vt", version = "0.0.1" }
 sprag-grid = { path = "crates/sprag-grid", version = "0.0.1" }
 sprag-input = { path = "crates/sprag-input", version = "0.0.1" }
 sprag-terminal = { path = "crates/sprag-terminal", version = "0.0.1" }
 sprag-host = { path = "crates/sprag-host", version = "0.0.1" }
+sprag-orchestrator = { path = "crates/sprag-orchestrator", version = "0.0.1" }

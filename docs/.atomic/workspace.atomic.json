@@ -493,6 +493,58 @@
         "Pane auto-removal on child exit is not modeled (a pane persists after its child exits, showing its final screen); revisit when a lifecycle policy is wanted.",
         "Next headless-control-stack step (rendering-waits roadmap): orchestration -- AI<->AI loops with termination/depth/cost guardrails, to be modeled as SCXML statecharts codegen'd via SCE."
       ]
+    },
+    "Round 8": {
+      "decision_summary": "Orchestration control substrate: a guardrailed perceive-act-judge loop over a pane, modeled as an SCE/SCXML statechart (sprag's first direct SCE dogfood); built in-process, with the plugin host/API to be extracted later.",
+      "changes_bullets": [
+        "New crate crates/sprag-orchestrator: orchestration.scxml (datamodel=null pure-control perceive->act->judge loop) codegen'd in build.rs via sce_build::compile_scxml, driven by an Orchestrator over a pane's SessionHandle (R7) using the R6 sprag-input encoder. Pinion-free.",
+        "Guardrails: iteration budget + cost budget (injected-bytes proxy) + sentinel convergence, surfaced as three <final> states (Converged/Exhausted/Failed). Counters live in the Rust loop; the statechart owns the control topology + termination branching (pinion's datamodel=null widget pattern).",
+        "SCE dependency wired to pinion's vendored vendor/sce (kept synced to canonical scxml-core-engine), NOT the canonical path directly: pinion already path-deps vendor/sce, so a second same-version path source collides in the Cargo lockfile. Sharing pinion's path yields one SCE package, content-identical to canonical.",
+        "Framing: orchestration built as a concrete in-process capability first; the plugin host / extension API is extracted later once a 2nd consumer reveals the contract (abstraction-needs-second-consumer). Real AI<->AI (adapters), multi-pane relay, and RPC exposure deferred."
+      ],
+      "verification_bullets": [
+        "55 workspace tests pass (+3 orchestrator: exhaust-after-N-iterations, converge-on-sentinel, cost-budget-terminates); cargo clippy --workspace --all-targets clean (generated state machine is allow-wrapped).",
+        "SCE codegen runs in sprag-orchestrator/build.rs (orchestration_sm.rs in OUT_DIR, inner-attrs stripped per pinion's pattern); runtime drives Engine<OrchestrationPolicy> via initialize/process_event/get_current_state/is_in_final_state. Confirmed pinion's vendored SCE sce-build+sce-rust-runtime are content-identical to canonical before depending on them.",
+        "Stop-and-report exercised: a Cargo lockfile package collision (canonical vs pinion-vendored sce-build v0.1.0, same version, different paths) halted the build and was reported, not worked around; resolved after the user synced pinion's vendored SCE to canonical, by depending on pinion's vendored path (one SCE package == canonical)."
+      ],
+      "impact_refs": [
+        "1",
+        "2",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "RPC OrchestratorExternal: start/configure an orchestration via scene/invoke and observe it via scene/query (mirror WorkspaceExternal), so an external AI peer drives orchestration as scene-as-data.",
+        "Multi-pane relay (A<->B): route a source pane's output as a destination pane's input -- two cross-wired drive loops; the substrate primitive generalizes to it.",
+        "AI-tool adapters (claude/aider in panes with structured I/O) are the real AI<->AI consumers; cost guardrail becomes real token/$ accounting (currently an injected-bytes proxy; SCE has no f64, so integer-only).",
+        "A depth/recursion guardrail for nested orchestration (statechart edit).",
+        "Plugin-host / extension-API extraction once orchestration + a 2nd consumer exist.",
+        "SCE dep tracks pinion's vendored copy; if pinion un-vendors or the copies diverge again, revisit (stop-and-report)."
+      ],
+      "publishable_decision_summary": "Orchestration control substrate: a guardrailed perceive-act-judge loop over a pane, modeled as an SCE/SCXML statechart (sprag's first direct SCE dogfood); built in-process, with the plugin host/API to be extracted later.",
+      "publishable_changes_bullets": [
+        "New crate crates/sprag-orchestrator: orchestration.scxml (datamodel=null pure-control perceive->act->judge loop) codegen'd in build.rs via sce_build::compile_scxml, driven by an Orchestrator over a pane's SessionHandle (R7) using the R6 sprag-input encoder. Pinion-free.",
+        "Guardrails: iteration budget + cost budget (injected-bytes proxy) + sentinel convergence, surfaced as three <final> states (Converged/Exhausted/Failed). Counters live in the Rust loop; the statechart owns the control topology + termination branching (pinion's datamodel=null widget pattern).",
+        "SCE dependency wired to pinion's vendored vendor/sce (kept synced to canonical scxml-core-engine), NOT the canonical path directly: pinion already path-deps vendor/sce, so a second same-version path source collides in the Cargo lockfile. Sharing pinion's path yields one SCE package, content-identical to canonical.",
+        "Framing: orchestration built as a concrete in-process capability first; the plugin host / extension API is extracted later once a 2nd consumer reveals the contract (abstraction-needs-second-consumer). Real AI<->AI (adapters), multi-pane relay, and RPC exposure deferred."
+      ],
+      "publishable_verification_bullets": [
+        "55 workspace tests pass (+3 orchestrator: exhaust-after-N-iterations, converge-on-sentinel, cost-budget-terminates); cargo clippy --workspace --all-targets clean (generated state machine is allow-wrapped).",
+        "SCE codegen runs in sprag-orchestrator/build.rs (orchestration_sm.rs in OUT_DIR, inner-attrs stripped per pinion's pattern); runtime drives Engine<OrchestrationPolicy> via initialize/process_event/get_current_state/is_in_final_state. Confirmed pinion's vendored SCE sce-build+sce-rust-runtime are content-identical to canonical before depending on them.",
+        "Stop-and-report exercised: a Cargo lockfile package collision (canonical vs pinion-vendored sce-build v0.1.0, same version, different paths) halted the build and was reported, not worked around; resolved after the user synced pinion's vendored SCE to canonical, by depending on pinion's vendored path (one SCE package == canonical)."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "2",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "RPC OrchestratorExternal: start/configure an orchestration via scene/invoke and observe it via scene/query (mirror WorkspaceExternal), so an external AI peer drives orchestration as scene-as-data.",
+        "Multi-pane relay (A<->B): route a source pane's output as a destination pane's input -- two cross-wired drive loops; the substrate primitive generalizes to it.",
+        "AI-tool adapters (claude/aider in panes with structured I/O) are the real AI<->AI consumers; cost guardrail becomes real token/$ accounting (currently an injected-bytes proxy; SCE has no f64, so integer-only).",
+        "A depth/recursion guardrail for nested orchestration (statechart edit).",
+        "Plugin-host / extension-API extraction once orchestration + a 2nd consumer exist.",
+        "SCE dep tracks pinion's vendored copy; if pinion un-vendors or the copies diverge again, revisit (stop-and-report)."
+      ]
     }
   },
   "inventory_entries": {},
