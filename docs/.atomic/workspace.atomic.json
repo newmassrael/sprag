@@ -1,0 +1,259 @@
+{
+  "sections": {
+    "1": {
+      "title": "Vision and Core Invariant",
+      "parent_doc": "DESIGN.md",
+      "decision_status": "active",
+      "intent": "sprag is an extensible terminal platform exposing each pane as structured cell data, not pixels, so plugins read and drive AI tools.",
+      "rationale_bullets": [
+        "AI reads the screen as structured cell data, never pixels — the platform's reason to exist",
+        "Core stays closed for modification; AI-tool features attach as swappable plugins",
+        "scene-as-data is an invariant every plugin upholds, not a replaceable feature",
+        "Built on pinion as consumer and dogfood, reusing its scene-as-data RPC surface"
+      ],
+      "caveats_bullets": [
+        "no-pixels binds the core AND every plugin; it is the platform's purpose, not a default"
+      ],
+      "alternatives_rejected": [
+        {
+          "alternative": "Screen-scrape a TUI multiplexer like tmux",
+          "reason": "state only visible as pixels, no extension points"
+        },
+        {
+          "alternative": "Hardcode AI loops into the core",
+          "reason": "violates open/closed; the AI ecosystem changes fast"
+        }
+      ],
+      "impact_scope": [
+        "2",
+        "3",
+        "4"
+      ]
+    },
+    "2": {
+      "title": "Architecture: Core and Plugin Split",
+      "parent_doc": "DESIGN.md",
+      "decision_status": "active",
+      "intent": "The core owns scene-as-data consumption and the plugin extension API; AI-tool adapters, loops, and policies are swappable plugins.",
+      "rationale_bullets": [
+        "Plugin extension API is the #1 core design task per README, above PTY and the cell grid",
+        "Core is the stable foundation; plugins extend it without modifying the core",
+        "The first dogfood consumer (terminal) informs the extension API; no speculative design"
+      ],
+      "caveats_bullets": [
+        "Extension API core is not built speculatively this iteration; the terminal slice informs it first",
+        "Statechart/codegen logic uses SCE (scxml-core-engine); pinion-forge already builds on it"
+      ],
+      "alternatives_rejected": [
+        {
+          "alternative": "Design the extension API with no consumer",
+          "reason": "nothing validates it; YAGNI risk"
+        },
+        {
+          "alternative": "Monolithic terminal app",
+          "reason": "no plugin boundary; fails the platform purpose"
+        }
+      ],
+      "impact_scope": [
+        "1",
+        "3",
+        "4"
+      ]
+    },
+    "3": {
+      "title": "pinion Consumer Contract",
+      "parent_doc": "DESIGN.md",
+      "decision_status": "active",
+      "intent": "sprag owns terminal state and projects it into pinion's GridBuffer each frame; pinion is a read-only projection, not an emulator.",
+      "rationale_bullets": [
+        "pinion R969: the producer owns authoritative state; pinion projects with no per-cell mutation",
+        "Single owner of terminal state is the SSOT; GridBuffer is a one-directional derivation",
+        "Scene::TextGrid (pinion 5.41, d9f8d39) is delivered: cells, cursor, attrs, color, screen, damage",
+        "winsize SSOT: cols/rows derive from layout rect; sprag sets PTY TIOCSWINSZ from the snapshot"
+      ],
+      "inputs_bullets": [
+        "pinion GridBuffer/TermCell/TextGridNode API (pinion-core term_grid.rs, scene.rs)",
+        "scene/snapshot RPC wire (pinion-rpc snapshot.rs)"
+      ],
+      "outputs_bullets": [
+        "Per-frame GridBuffer projected into Scene::TextGrid, served over scene/snapshot"
+      ],
+      "caveats_bullets": [
+        "Scrollback beyond the visible screen is not modeled by pinion (R1.4 gap); the producer projects it",
+        "Glyph paint is deferred (paint-opaque); the headless data path does not need it"
+      ],
+      "alternatives_rejected": [
+        {
+          "alternative": "pinion owns terminal emulation",
+          "reason": "breaks producer/projection; sprag loses the state SSOT"
+        },
+        {
+          "alternative": "Per-cell mutation API",
+          "reason": "not how TextGrid works; the buffer is replaced wholesale each frame"
+        }
+      ],
+      "impact_scope": [
+        "1",
+        "4",
+        "5"
+      ]
+    },
+    "4": {
+      "title": "VT Strategy: termwiz Parser plus Owned Emulator",
+      "parent_doc": "DESIGN.md",
+      "decision_status": "active",
+      "intent": "Embed termwiz as the verified escape parser and cell/input primitives; sprag owns the emulator state machine behind a VtPort.",
+      "rationale_bullets": [
+        "README mandate: embed a verified VT parser, do not implement it (the max-risk point)",
+        "termwiz (published, semver) supplies the verified parser, Cell/color types, and input encoding",
+        "The emulator state machine (cursor, scroll, modes, alt-screen) is sprag core IP on termwiz",
+        "VtPort isolates the VT library (open/closed) so the choice stays reversible"
+      ],
+      "inputs_bullets": [
+        "termwiz crate modules: escape parser, surface/cell, color, input"
+      ],
+      "outputs_bullets": [
+        "sprag-vt crate: VtPort trait plus a termwiz-based emulator owning screen state"
+      ],
+      "caveats_bullets": [
+        "termwiz gives no full emulator state machine; that layer is sprag's responsibility",
+        "Self-owned emulator reintroduces VT risk; mitigate via a conformance harness behind VtPort"
+      ],
+      "alternatives_rejected": [
+        {
+          "alternative": "vt100",
+          "reason": "effectively abandoned, fork-dependent, missing SGR attrs; fails the standard"
+        },
+        {
+          "alternative": "alacritty_terminal",
+          "reason": "published full emulator but API churn; less input-encoding surface"
+        },
+        {
+          "alternative": "wezterm-term",
+          "reason": "most complete but unpublished (git-rev/fork only); dependency-hygiene smell"
+        }
+      ],
+      "impact_scope": [
+        "1",
+        "3"
+      ]
+    },
+    "5": {
+      "title": "Delivery Status, Dependencies, and Risk Register",
+      "parent_doc": "DESIGN.md",
+      "decision_status": "active",
+      "intent": "Records pinion 5.41 delivery against sprag requirements, the dependency set, and open risks for the walking-skeleton iteration.",
+      "rationale_bullets": [
+        "pinion 5.41 (d9f8d39) delivered the TextGrid data model and scene/snapshot introspection",
+        "The hard blocker (cell-grid primitive) is resolved; remaining work is the sprag-side connection",
+        "Human-readable detail lives in claudedocs/PINION-REQUIREMENTS.md as a derived artifact"
+      ],
+      "caveats_bullets": [
+        "Delivered R1.1-1.3/1.5/1.7 and winsize R1.4; deferred scrollback, glyph paint R1.6, hit-test R1.8",
+        "pinion is unpublished; the sprag workspace references ../pinion crates by path",
+        "Host viability: pinion_shell::run uses Vello/winit GPU; the headless path is a verification risk"
+      ],
+      "alternatives_rejected": [
+        {
+          "alternative": "Keep design only in git-ignored markdown",
+          "reason": "conflicts with the declared Mnemosyne SSOT"
+        }
+      ],
+      "impact_scope": [
+        "3",
+        "4"
+      ]
+    }
+  },
+  "changelog_entries": {
+    "Round 1": {
+      "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
+      "changes_bullets": [
+        "Created 5 DESIGN.md sections: vision, architecture, pinion contract, VT strategy, status",
+        "VT strategy: termwiz parser + sprag-owned emulator behind VtPort",
+        "pinion contract: R969 producer/projection, GridBuffer projection, winsize SSOT"
+      ],
+      "verification_bullets": [
+        "validate_workspace clean baseline before authoring (sections=0, entries=0)",
+        "Each section populated via typed primitives; impact_scope refs resolve, no T1 orphan",
+        "validate_workspace re-run after authoring confirms no new T1/T2"
+      ],
+      "impact_refs": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Scaffold sprag cargo workspace (sprag-vt, sprag-grid, sprag-terminal)",
+        "Verify pinion host viability (GPU/headless) before walking-skeleton wiring"
+      ],
+      "publishable_decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
+      "publishable_changes_bullets": [
+        "Created 5 DESIGN.md sections: vision, architecture, pinion contract, VT strategy, status",
+        "VT strategy: termwiz parser + sprag-owned emulator behind VtPort",
+        "pinion contract: R969 producer/projection, GridBuffer projection, winsize SSOT"
+      ],
+      "publishable_verification_bullets": [
+        "validate_workspace clean baseline before authoring (sections=0, entries=0)",
+        "Each section populated via typed primitives; impact_scope refs resolve, no T1 orphan",
+        "validate_workspace re-run after authoring confirms no new T1/T2"
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Scaffold sprag cargo workspace (sprag-vt, sprag-grid, sprag-terminal)",
+        "Verify pinion host viability (GPU/headless) before walking-skeleton wiring"
+      ]
+    },
+    "Round 2": {
+      "decision_summary": "Project rule: use SCE (SCXML Core Engine) for sprag statechart and codegen logic where applicable.",
+      "changes_bullets": [
+        "DESIGN.md §2 caveat: statechart/codegen logic uses SCE (/home/coin/scxml-core-engine)",
+        "pinion-forge already builds on SCE; app.pinion.xml is an SCE Forge kind=renderer document",
+        "Future plugin orchestration loops to be SCXML statecharts codegen'd via SCE"
+      ],
+      "verification_bullets": [
+        "Confirmed pinion vendors sce-build/sce-rust-runtime/sce-forge-runtime under vendor/sce",
+        "validate_workspace clean after the §2 caveat append"
+      ],
+      "impact_refs": [
+        "2"
+      ],
+      "carry_forward_bullets": [
+        "Depend on SCE directly (sce-build) when authoring sprag's own statecharts (orchestration loops)"
+      ],
+      "publishable_decision_summary": "Project rule: use SCE (SCXML Core Engine) for sprag statechart and codegen logic where applicable.",
+      "publishable_changes_bullets": [
+        "DESIGN.md §2 caveat: statechart/codegen logic uses SCE (/home/coin/scxml-core-engine)",
+        "pinion-forge already builds on SCE; app.pinion.xml is an SCE Forge kind=renderer document",
+        "Future plugin orchestration loops to be SCXML statecharts codegen'd via SCE"
+      ],
+      "publishable_verification_bullets": [
+        "Confirmed pinion vendors sce-build/sce-rust-runtime/sce-forge-runtime under vendor/sce",
+        "validate_workspace clean after the §2 caveat append"
+      ],
+      "publishable_impact_refs": [
+        "2"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Depend on SCE directly (sce-build) when authoring sprag's own statecharts (orchestration loops)"
+      ]
+    }
+  },
+  "inventory_entries": {},
+  "confirmation_events": {},
+  "frames": {},
+  "branches": {},
+  "entities": {},
+  "predicates": {},
+  "narrative_facts": {},
+  "disclosure_plans": {},
+  "schema_version": 23
+}
