@@ -11,6 +11,12 @@
 //! and per-row damage generations) so the projection is a flat mapping
 //! rather than a translation (DESIGN.md §3).
 
+use std::collections::VecDeque;
+
+/// Maximum number of scrolled-off lines [`Screen`] retains (FIFO). Bounds
+/// memory under unbounded output; the oldest line drops past this.
+pub(crate) const SCROLLBACK_CAP: usize = 1000;
+
 /// A 24-bit truecolor value.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Rgb {
@@ -174,6 +180,11 @@ pub struct Screen {
     kind: ScreenKind,
     /// One monotonic damage stamp per row.
     generations: Vec<u64>,
+    /// Trailing-trimmed TEXT of rows scrolled off the top of the MAIN screen,
+    /// oldest first, bounded by [`SCROLLBACK_CAP`] (FIFO). Text-only (not full
+    /// cells) — the consumer is data capture, not rendering; lines are NOT
+    /// reflowed on resize. The visible scene projection ignores this.
+    scrollback: VecDeque<String>,
 }
 
 impl Screen {
@@ -188,6 +199,7 @@ impl Screen {
             cursor: Cursor::default(),
             kind: ScreenKind::Main,
             generations: vec![0; rows as usize],
+            scrollback: VecDeque::new(),
         }
     }
 
@@ -229,6 +241,32 @@ impl Screen {
     #[must_use]
     pub fn row_generation(&self, row: u16) -> Option<u64> {
         self.generations.get(row as usize).copied()
+    }
+
+    /// A row's text: its cells' clusters concatenated, trailing blanks trimmed.
+    /// The canonical row-to-text mapping (the capture path and scrollback both
+    /// use it, so they never drift). Wide trailers contribute `""`, blanks `" "`.
+    #[must_use]
+    pub fn row_text(&self, row: u16) -> String {
+        let mut line = String::new();
+        for col in 0..self.cols {
+            if let Some(cell) = self.cell(col, row) {
+                line.push_str(&cell.cluster);
+            }
+        }
+        line.trim_end().to_string()
+    }
+
+    /// The scrolled-off lines (oldest first) — the MAIN screen's history beyond
+    /// the visible grid, for full-output capture.
+    pub fn scrollback_rows(&self) -> impl Iterator<Item = &str> {
+        self.scrollback.iter().map(String::as_str)
+    }
+
+    /// How many scrolled-off lines are retained.
+    #[must_use]
+    pub fn scrollback_len(&self) -> usize {
+        self.scrollback.len()
     }
 
     // --- mutation surface for VT backends (crate-internal) ---
@@ -277,6 +315,9 @@ impl Screen {
         }
         next.cursor = self.cursor;
         next.kind = self.kind;
+        // Scrollback is text history, independent of the grid dimensions; carry
+        // it across verbatim (lines are not reflowed to the new width).
+        next.scrollback = self.scrollback.clone();
         next
     }
 
@@ -285,6 +326,14 @@ impl Screen {
     pub(crate) fn scroll_up(&mut self, generation: u64) {
         if self.rows == 0 {
             return;
+        }
+        // Retain the evicted top row's text (MAIN screen only — the alternate
+        // screen has no scrollback). Captured before the drain, bounded FIFO.
+        if self.kind == ScreenKind::Main && self.cols > 0 {
+            self.scrollback.push_back(self.row_text(0));
+            while self.scrollback.len() > SCROLLBACK_CAP {
+                self.scrollback.pop_front();
+            }
         }
         let cols = self.cols as usize;
         self.cells.drain(0..cols);
@@ -312,4 +361,66 @@ pub trait VtPort {
     /// The current input modes affecting key→PTY-byte encoding (DECCKM,
     /// …). Read by the sprag-owned key encoder (R2.6).
     fn input_modes(&self) -> InputModes;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::emulator::Emulator;
+
+    /// Drive scrollback through the real path (advance -> line_feed -> scroll_up).
+    fn em(cols: u16, rows: u16, bytes: &str) -> Emulator {
+        let mut e = Emulator::new(cols, rows);
+        e.advance(bytes.as_bytes());
+        e
+    }
+
+    #[test]
+    fn scrollback_captures_evicted_lines_in_order() {
+        // A 2-row screen; four lines push the first two into scrollback.
+        let e = em(8, 2, "1\r\n2\r\n3\r\n4");
+        let sb: Vec<&str> = e.screen().scrollback_rows().collect();
+        assert_eq!(sb, ["1", "2"], "scrolled-off lines, oldest first");
+        // The visible grid holds the last two.
+        assert_eq!(e.screen().row_text(0), "3");
+        assert_eq!(e.screen().row_text(1), "4");
+    }
+
+    #[test]
+    fn scrollback_cap_is_fifo() {
+        // On a 1-row screen each newline scrolls; feed past the cap.
+        let n = SCROLLBACK_CAP + 100;
+        let input: String = (0..n).map(|i| format!("{i}\r\n")).collect();
+        let e = em(12, 1, &input);
+        assert_eq!(e.screen().scrollback_len(), SCROLLBACK_CAP, "bounded");
+        // The oldest 100 lines (0..100) were dropped; 100 is now the oldest.
+        assert_eq!(e.screen().scrollback_rows().next(), Some("100"));
+    }
+
+    #[test]
+    fn alt_screen_does_not_accumulate_or_disturb_scrollback() {
+        let mut e = em(8, 2, "a\r\nb\r\nc"); // main scrolls: scrollback ["a"]
+        assert_eq!(e.screen().scrollback_rows().collect::<Vec<_>>(), ["a"]);
+        // Enter alt and scroll it a lot — must not touch main's scrollback.
+        e.advance(b"\x1b[?1049h");
+        e.advance(b"p\r\nq\r\nr\r\ns\r\nt");
+        assert_eq!(e.screen().scrollback_len(), 0, "alt screen has no scrollback");
+        // Exit alt: the parked main screen (and its scrollback) is restored.
+        e.advance(b"\x1b[?1049l");
+        assert_eq!(e.screen().scrollback_rows().collect::<Vec<_>>(), ["a"]);
+    }
+
+    #[test]
+    fn resize_preserves_scrollback() {
+        let mut e = em(8, 2, "a\r\nb\r\nc"); // scrollback ["a"]
+        e.resize(12, 4);
+        assert_eq!(e.screen().scrollback_rows().collect::<Vec<_>>(), ["a"]);
+    }
+
+    #[test]
+    fn wide_cluster_scrolled_off_keeps_full_text() {
+        // A wide head + empty trailer must reconstruct to the single cluster.
+        let e = em(8, 2, "\u{4e16}\r\n\r\n");
+        assert_eq!(e.screen().scrollback_rows().next(), Some("\u{4e16}"));
+    }
 }

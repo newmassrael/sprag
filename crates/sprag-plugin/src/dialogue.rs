@@ -29,9 +29,11 @@
 //! fails loudly (`InjectError::Spawn`) rather than corrupting — `claude -p
 //! --resume` (server-side session state) is the future optimization. Each
 //! captured reply is collapsed to a single line so it stays one labelled
-//! transcript entry; intentional line breaks in a reply are lost. Capture
-//! inherits [`Agent`]'s: a reply longer than the pane scrolls loses the
-//! off-screen rows (no scrollback projection yet).
+//! transcript entry; intentional line breaks in a reply are lost. Capture reads
+//! the pane's full output (scrollback + visible, R16), so a reply longer than
+//! the pane is captured whole — unlike [`Agent`], which still reads the visible
+//! screen only (it injects into a non-fresh pane, so its reply region is the
+//! damage delta, where scrollback is ambiguous).
 //!
 //! [`Agent`]: crate::agent::Agent
 //! [`Driver`]: crate::driver::Driver
@@ -223,19 +225,11 @@ fn await_reply(panes: &dyn PaneAccess, id: PaneId, timeout: Duration) {
     }
 }
 
-/// The reply on a fresh per-turn pane: its non-empty rows, joined. Nothing was
+/// The reply on a fresh per-turn pane: its full output text (scrollback +
+/// visible), so a reply longer than the pane is captured whole. Nothing was
 /// injected, so the screen holds only the endpoint's output.
 fn capture(panes: &dyn PaneAccess, id: PaneId) -> String {
-    panes
-        .pane_rows(id)
-        .map(|rows| {
-            rows.iter()
-                .filter(|row| !row.text.is_empty())
-                .map(|row| row.text.as_str())
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .unwrap_or_default()
+    panes.pane_full_text(id).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -286,6 +280,32 @@ mod tests {
         assert!(t.contains("A: saw1"), "turn 0 (1-line prompt): {t:?}");
         assert!(t.contains("B: saw2"), "turn 1 (2-line prompt): {t:?}");
         assert!(t.contains("A: saw3"), "turn 2 (3-line prompt): {t:?}");
+    }
+
+    #[test]
+    fn long_reply_captured_in_full_including_scrolled_off_rows() {
+        // An endpoint that emits 30 lines onto a 4-row pane: 26 scroll off.
+        // Full-output capture keeps them, so the transcript has the early lines
+        // a visible-only read would have lost. (Endpoint B is a quick no-op.)
+        let mut spec = DialogueSpec::new(
+            vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "seq 1 30".to_string(),
+            ],
+            vec!["true".to_string()],
+            "go",
+        );
+        spec.cols = 20;
+        spec.rows = 4;
+        let (_ws, outcome, transcript) = run(spec, 1);
+
+        assert_eq!(outcome.state, OutcomeState::Exhausted);
+        let t = transcript.expect("a transcript");
+        // The reply is collapsed to one space-joined line; use space-delimited
+        // needles so "5" can't match "15"/"25"/"50".
+        assert!(t.contains(" 5 "), "scrolled-off line 5 missing: {t:?}");
+        assert!(t.contains(" 30") || t.ends_with("30"), "last line missing: {t:?}");
     }
 
     #[test]
@@ -391,6 +411,9 @@ mod tests {
                 None
             }
             fn pane_eof(&self, _id: PaneId) -> Option<bool> {
+                None
+            }
+            fn pane_full_text(&self, _id: PaneId) -> Option<String> {
                 None
             }
             fn inject(&self, _id: PaneId, _keys: &[KeyStroke]) -> Result<u64, InjectError> {

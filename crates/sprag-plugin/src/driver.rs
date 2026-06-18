@@ -157,6 +157,9 @@ mod tests {
         fn pane_eof(&self, _id: PaneId) -> Option<bool> {
             None
         }
+        fn pane_full_text(&self, _id: PaneId) -> Option<String> {
+            None
+        }
         fn inject(&self, _id: PaneId, _keys: &[KeyStroke]) -> Result<u64, InjectError> {
             Err(InjectError::UnknownPane(PaneId(0)))
         }
@@ -188,6 +191,9 @@ mod tests {
             None
         }
         fn pane_eof(&self, _id: PaneId) -> Option<bool> {
+            None
+        }
+        fn pane_full_text(&self, _id: PaneId) -> Option<String> {
             None
         }
         fn inject(&self, _id: PaneId, _keys: &[KeyStroke]) -> Result<u64, InjectError> {

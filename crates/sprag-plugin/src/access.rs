@@ -89,6 +89,12 @@ pub trait PaneAccess {
     /// signal a one-shot adapter (a tool that replies then exits) converges on.
     fn pane_eof(&self, id: PaneId) -> Option<bool>;
 
+    /// The pane's full output text: scrolled-off lines (scrollback) then the
+    /// visible rows, trailing blank lines stripped, joined by `"\n"`. `None` if
+    /// no pane has that id. Unlike `pane_rows`/`pane_collapsed` (visible screen
+    /// only), this captures output longer than the grid — a scrolled AI reply.
+    fn pane_full_text(&self, id: PaneId) -> Option<String>;
+
     /// Inject `keys` into the pane, returning the number of PTY bytes written.
     ///
     /// # Errors
@@ -194,6 +200,10 @@ impl PaneAccess for WorkspacePaneAccess {
             .map(|pane| pane.session().is_eof())
     }
 
+    fn pane_full_text(&self, id: PaneId) -> Option<String> {
+        Some(self.handle(id)?.with_screen(read_full_text))
+    }
+
     fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<u64, InjectError> {
         let handle = self.handle(id).ok_or(InjectError::UnknownPane(id))?;
         let modes = handle.input_modes();
@@ -249,23 +259,13 @@ fn lock(workspace: &Mutex<Workspace>) -> MutexGuard<'_, Workspace> {
     workspace.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// One row's cells as text, with trailing blanks trimmed.
-fn row_text(screen: &Screen, row: u16) -> String {
-    let mut line = String::new();
-    for col in 0..screen.cols() {
-        if let Some(cell) = screen.cell(col, row) {
-            line.push_str(&cell.cluster);
-        }
-    }
-    line.trim_end().to_string()
-}
-
-/// Per-row `(generation, text)` for the whole screen.
+/// Per-row `(generation, text)` for the whole screen. Text via the canonical
+/// [`Screen::row_text`] so capture and the emulator's scrollback never drift.
 fn read_rows(screen: &Screen) -> Vec<PaneRow> {
     (0..screen.rows())
         .map(|row| PaneRow {
             generation: screen.row_generation(row).unwrap_or(0),
-            text: row_text(screen, row),
+            text: screen.row_text(row),
         })
         .collect()
 }
@@ -273,7 +273,21 @@ fn read_rows(screen: &Screen) -> Vec<PaneRow> {
 /// Collapsed screen text: trailing-trimmed rows joined without separators, so
 /// a sentinel the terminal wrapped across rows still matches.
 fn read_collapsed(screen: &Screen) -> String {
-    (0..screen.rows()).map(|row| row_text(screen, row)).collect()
+    (0..screen.rows()).map(|row| screen.row_text(row)).collect()
+}
+
+/// Full output text: scrolled-off lines (scrollback) then the visible rows,
+/// trailing empty lines stripped, joined by `"\n"`. Captures output longer
+/// than the visible grid (the visible-only reads cannot).
+fn read_full_text(screen: &Screen) -> String {
+    let mut lines: Vec<String> = screen.scrollback_rows().map(str::to_string).collect();
+    for row in 0..screen.rows() {
+        lines.push(screen.row_text(row));
+    }
+    while lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    lines.join("\n")
 }
 
 #[cfg(test)]
@@ -354,5 +368,35 @@ mod tests {
         let access = WorkspacePaneAccess::new(Arc::new(Mutex::new(Workspace::new((20, 4)))));
         let life = access.lifecycle().unwrap();
         assert!(matches!(life.spawn(&[], 20, 4), Err(InjectError::Spawn(_))));
+    }
+
+    #[test]
+    fn pane_full_text_includes_scrolled_off_lines() {
+        // 30 numbered lines on a 4-row pane: the early ones scroll off. Full
+        // text must include a line the visible-only read has lost.
+        let workspace = Arc::new(Mutex::new(Workspace::new((20, 4))));
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg("seq 1 30");
+        command.env("TERM", "dumb");
+        let id = lock(&workspace)
+            .spawn(command, "seq".to_string(), 20, 4)
+            .expect("spawn");
+        let access = WorkspacePaneAccess::new(workspace);
+
+        // Wait until the child has finished (all output applied at EOF).
+        let start = Instant::now();
+        while access.pane_eof(id) != Some(true) && start.elapsed() < Duration::from_secs(5) {
+            sleep(Duration::from_millis(20));
+        }
+
+        let full = access.pane_full_text(id).expect("full text");
+        // "\n5\n": line 5 as a standalone line — deep in the scrolled-off region.
+        assert!(full.contains("\n5\n"), "scrolled-off line 5 missing: {full:?}");
+        assert!(full.contains("30"), "last line missing from full text: {full:?}");
+        // The visible-only read lost it — proving scrollback was needed (the
+        // last visible rows are ~27..30, none containing '5').
+        let visible = access.pane_collapsed(id).expect("visible");
+        assert!(!visible.contains('5'), "line 5 should have scrolled off: {visible:?}");
     }
 }

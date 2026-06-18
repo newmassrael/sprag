@@ -500,6 +500,54 @@
         "Scrollback capture + interactive-TUI adapters still deferred (R12/R13 capture limits)."
       ]
     },
+    "Round 16": {
+      "decision_summary": "Scrollback projection (the R1.4 gap): the emulator retains scrolled-off line text and a new pane_full_text capture reads it, so an AI reply longer than the pane is captured whole.",
+      "changes_bullets": [
+        "sprag-vt/port.rs: Screen gains a bounded VecDeque<String> scrollback (SCROLLBACK_CAP=1000, FIFO) — the trailing-trimmed TEXT of rows scrolled off the MAIN screen (text-only: capture is data, not rendering; lines are NOT reflowed on resize). scroll_up captures the evicted top row's text BEFORE draining and only when kind==Main (the alternate screen has no scrollback; its Screen instance is dropped on exit_alt). New canonical Screen::row_text (the single row->text mapping, shared with the capture path so they cannot drift); scrollback_rows()/scrollback_len() accessors; resized() carries the deque over.",
+        "sprag-plugin/access.rs: new PaneAccess::pane_full_text(id) = scrollback rows ++ visible rows, trailing empty lines stripped, joined by \\n (read_full_text). read_rows/read_collapsed now delegate to Screen::row_text (removing the duplicated row-text helper). The three test doubles (driver.rs NoPanes + CancelledPanes, dialogue.rs NoPanes) return None.",
+        "sprag-plugin/dialogue.rs: capture() switched from visible-only pane_rows to pane_full_text, so a Dialogue turn whose endpoint output scrolls past the pane is captured whole — fixing the R12/R13 truncation for the fresh-pane Dialogue case. Agent stays visible-only (it injects into a non-fresh pane, so its reply region is the damage delta where scrollback is ambiguous; documented).",
+        "The VISIBLE scene projection (sprag-grid GridBuffer / the scene-as-data snapshot) is unchanged — scrollback is a capture-path-only concern. No pinion/SCE/termwiz change (scroll_up is sprag-owned; the parser is untouched)."
+      ],
+      "verification_bullets": [
+        "86 workspace tests pass (+7), all deterministic (no network): sprag-vt port scrollback (evicted-lines-in-order, FIFO cap, alt-screen isolation + non-disturbance, resize-preserves, wide-cluster-text-reconstruction); access pane_full_text_includes_scrolled_off_lines (a real `seq 1 30` pane at 4 rows — full text contains the standalone line 5 while visible-only pane_collapsed lacks '5'); dialogue long_reply_captured_in_full_including_scrolled_off_rows (a `seq 1 30` endpoint — the collapsed transcript contains ' 5 ' and '30', using space-delimited needles). cargo clippy --workspace --all-targets clean.",
+        "Visible projection untouched: the sprag-grid and sprag-host suites pass unchanged, confirming scrollback is a capture-only field and the GridBuffer scene still reads only the visible grid.",
+        "Design pressure-tested by a Plan agent: confirmed NO pinion/SCE/termwiz change. It had me put row_text canonically on Screen (one source of truth, no drift between capture and scrollback), capture-before-drain (MAIN-only, cols>0 guarded), and use space-delimited test needles (avoiding the '5' substring-of-'15'/'25'/'50' false positive); it also caught the R15 CancelledPanes double in the impl ripple inventory."
+      ],
+      "impact_refs": [
+        "3",
+        "4",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Real token/$ cost accounting is now UNBLOCKED: parse `claude -p --output-format json` usage off pane_full_text (the full JSON survives scrolling now). Still needs a cost channel on Step/Driver (max_iterations is the only Dialogue bound today; injected_bytes is 0 for Dialogue).",
+        "The --resume optimization for Dialogue (avoid the O(n^2) whole-history resend and the MAX_ARG_STRLEN single-arg ceiling).",
+        "Scrollback is text-only (no per-cell attrs) and not reflowed on resize; a GUI scrollback view would need cells + reflow (deferred rendering concern). Cap is 1000 lines FIFO (output beyond drops the oldest). EraseInDisplay ED-3 (clear-scrollback) is still a no-op.",
+        "Agent capture is still visible-only (non-fresh pane); interactive-TUI adapters still deferred."
+      ],
+      "publishable_decision_summary": "Scrollback projection (the R1.4 gap): the emulator retains scrolled-off line text and a new pane_full_text capture reads it, so an AI reply longer than the pane is captured whole.",
+      "publishable_changes_bullets": [
+        "sprag-vt/port.rs: Screen gains a bounded VecDeque<String> scrollback (SCROLLBACK_CAP=1000, FIFO) — the trailing-trimmed TEXT of rows scrolled off the MAIN screen (text-only: capture is data, not rendering; lines are NOT reflowed on resize). scroll_up captures the evicted top row's text BEFORE draining and only when kind==Main (the alternate screen has no scrollback; its Screen instance is dropped on exit_alt). New canonical Screen::row_text (the single row->text mapping, shared with the capture path so they cannot drift); scrollback_rows()/scrollback_len() accessors; resized() carries the deque over.",
+        "sprag-plugin/access.rs: new PaneAccess::pane_full_text(id) = scrollback rows ++ visible rows, trailing empty lines stripped, joined by \\n (read_full_text). read_rows/read_collapsed now delegate to Screen::row_text (removing the duplicated row-text helper). The three test doubles (driver.rs NoPanes + CancelledPanes, dialogue.rs NoPanes) return None.",
+        "sprag-plugin/dialogue.rs: capture() switched from visible-only pane_rows to pane_full_text, so a Dialogue turn whose endpoint output scrolls past the pane is captured whole — fixing the R12/R13 truncation for the fresh-pane Dialogue case. Agent stays visible-only (it injects into a non-fresh pane, so its reply region is the damage delta where scrollback is ambiguous; documented).",
+        "The VISIBLE scene projection (sprag-grid GridBuffer / the scene-as-data snapshot) is unchanged — scrollback is a capture-path-only concern. No pinion/SCE/termwiz change (scroll_up is sprag-owned; the parser is untouched)."
+      ],
+      "publishable_verification_bullets": [
+        "86 workspace tests pass (+7), all deterministic (no network): sprag-vt port scrollback (evicted-lines-in-order, FIFO cap, alt-screen isolation + non-disturbance, resize-preserves, wide-cluster-text-reconstruction); access pane_full_text_includes_scrolled_off_lines (a real `seq 1 30` pane at 4 rows — full text contains the standalone line 5 while visible-only pane_collapsed lacks '5'); dialogue long_reply_captured_in_full_including_scrolled_off_rows (a `seq 1 30` endpoint — the collapsed transcript contains ' 5 ' and '30', using space-delimited needles). cargo clippy --workspace --all-targets clean.",
+        "Visible projection untouched: the sprag-grid and sprag-host suites pass unchanged, confirming scrollback is a capture-only field and the GridBuffer scene still reads only the visible grid.",
+        "Design pressure-tested by a Plan agent: confirmed NO pinion/SCE/termwiz change. It had me put row_text canonically on Screen (one source of truth, no drift between capture and scrollback), capture-before-drain (MAIN-only, cols>0 guarded), and use space-delimited test needles (avoiding the '5' substring-of-'15'/'25'/'50' false positive); it also caught the R15 CancelledPanes double in the impl ripple inventory."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "4",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Real token/$ cost accounting is now UNBLOCKED: parse `claude -p --output-format json` usage off pane_full_text (the full JSON survives scrolling now). Still needs a cost channel on Step/Driver (max_iterations is the only Dialogue bound today; injected_bytes is 0 for Dialogue).",
+        "The --resume optimization for Dialogue (avoid the O(n^2) whole-history resend and the MAX_ARG_STRLEN single-arg ceiling).",
+        "Scrollback is text-only (no per-cell attrs) and not reflowed on resize; a GUI scrollback view would need cells + reflow (deferred rendering concern). Cap is 1000 lines FIFO (output beyond drops the oldest). EraseInDisplay ED-3 (clear-scrollback) is still a no-op.",
+        "Agent capture is still visible-only (non-fresh pane); interactive-TUI adapters still deferred."
+      ]
+    },
     "Round 2": {
       "decision_summary": "Project rule: use SCE (SCXML Core Engine) for sprag statechart and codegen logic where applicable.",
       "changes_bullets": [
