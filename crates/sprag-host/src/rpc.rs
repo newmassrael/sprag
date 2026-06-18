@@ -134,9 +134,14 @@ pub fn serve(state: &HostState, input: impl BufRead, mut output: impl Write) -> 
             output.flush()?;
         }
     }
-    // Shutdown: join in-flight plugin runs (bounded by their guardrails) so
-    // their worker threads and child panes reap before serve returns.
-    lock(&state.runs).join_all();
+    // Shutdown: cancel in-flight plugin runs first so they abort promptly
+    // (a slow AI turn would otherwise block join), then join so their worker
+    // threads and child panes reap before serve returns.
+    {
+        let mut runs = lock(&state.runs);
+        runs.cancel_all();
+        runs.join_all();
+    }
     Ok(())
 }
 
@@ -445,5 +450,61 @@ mod tests {
             "snapshot blocked behind the run: {:?}",
             start.elapsed()
         );
+    }
+
+    #[test]
+    fn cancels_a_running_plugin_over_rpc() {
+        // A sleep pane never echoes, so the orchestrator loops until cancelled.
+        let state = host_with("sleep 30", 20, 4);
+        let started = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"orchestrator","pane":0,"stimulus":"x","guardrails":{"max_iterations":1000000,"max_injected_bytes":1073741824}}}}"#,
+        );
+        assert_eq!(started["result"].as_i64(), Some(0), "run id: {started}");
+
+        // An unknown run id is a synchronous rejection.
+        let bad = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":2,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/cancel","args":{"id":999}}}"#,
+        );
+        assert!(bad.get("error").is_some(), "unknown id should reject: {bad}");
+
+        // Cancel the live run; it then reaches done = cancelled.
+        let cancelled = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":3,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/cancel","args":{"id":0}}}"#,
+        );
+        assert!(cancelled.get("error").is_none(), "cancel error: {cancelled}");
+        assert_eq!(wait_for_run_done(&state).as_deref(), Some("cancelled"));
+    }
+
+    #[test]
+    fn shutdown_cancels_in_flight_runs_promptly() {
+        // The serve-shutdown path: cancel_all() then join_all(). With a sleep
+        // pane and no cancel, join would block on the looping orchestrator;
+        // cancelling first makes shutdown return promptly with the run reaped.
+        let state = host_with("sleep 30", 20, 4);
+        serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"orchestrator","pane":0,"stimulus":"x","guardrails":{"max_iterations":1000000,"max_injected_bytes":1073741824}}}}"#,
+        );
+
+        let start = Instant::now();
+        {
+            let mut runs = lock(state.runs());
+            runs.cancel_all();
+            runs.join_all();
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "shutdown blocked on the in-flight run: {:?}",
+            start.elapsed()
+        );
+
+        let runs = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":2,"method":"scene/query","params":{"path":"/sprag_plugins/external/runs"}}"#,
+        );
+        assert_eq!(runs["result"][0]["state"]["outcome"]["state"], "cancelled");
     }
 }

@@ -106,6 +106,10 @@ impl Agent {
     fn await_reply(&self, panes: &dyn PaneAccess) {
         let start = Instant::now();
         while start.elapsed() < self.spec.timeout {
+            // Cancel wins over waiting: bail so the run ends promptly.
+            if panes.cancelled() {
+                return;
+            }
             // An unknown pane (`None`) is treated as done: there is nothing to
             // wait for, and `capture` will return empty.
             if panes.pane_eof(self.pane).unwrap_or(true) {
@@ -140,6 +144,14 @@ impl Plugin for Agent {
         let injected_bytes = panes.inject(self.pane, &self.prompt_keys())?;
 
         self.await_reply(panes);
+        // If cancelled mid-wait, don't converge or record a partial reply —
+        // return Continue so the Driver's loop-top ends the run Cancelled.
+        if panes.cancelled() {
+            return Ok(Step {
+                injected_bytes,
+                verdict: Verdict::Continue,
+            });
+        }
         self.response = Some(self.capture(panes, &baseline));
 
         // One-shot: one prompt, one captured reply, then converge. The Driver's

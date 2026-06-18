@@ -15,6 +15,7 @@
 //! not an async `Failed`.
 
 use std::fmt;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -35,6 +36,7 @@ use crate::external::{
 use crate::runs::{RunId, RunRegistry, RunState};
 
 const RUN_ACTION: &str = "run";
+const CANCEL_ACTION: &str = "cancel";
 const RUNS_SLOT: &str = "runs";
 const PLUGINS_SLOT: &str = "plugins";
 
@@ -70,6 +72,22 @@ impl PluginsExternal {
         let (plugin, label) = self.build_plugin(map)?;
         let id = self.spawn_run(label, plugin, guardrails);
         Ok(IntrospectValue::Int(i64::try_from(id.0).unwrap_or(i64::MAX)))
+    }
+
+    /// `cancel` action: raise the cancel flag for run `id`. A synchronous
+    /// `Rejected` if no run has that id; the run itself ends `Cancelled`
+    /// asynchronously (observe it via `query("runs")`).
+    fn cancel(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let map = as_object(args)?;
+        let id = map
+            .get("id")
+            .and_then(Value::as_u64)
+            .ok_or(InvokeError::TypeMismatch)?;
+        if lock(&self.runs).cancel(RunId(id)) {
+            Ok(IntrospectValue::Null)
+        } else {
+            Err(InvokeError::Rejected)
+        }
     }
 
     /// Parse the plugin discriminator + its args, validating target panes
@@ -150,7 +168,10 @@ impl PluginsExternal {
     fn spawn_run(&self, label: String, mut plugin: BoxedPlugin, guardrails: Guardrails) -> RunId {
         let state = Arc::new(Mutex::new(RunState::Running));
         let worker_state = Arc::clone(&state);
-        let access = WorkspacePaneAccess::new(Arc::clone(&self.workspace));
+        // The cancel flag is shared three ways: the worker's pane-access reads
+        // it, and the registry holds a clone so a `cancel`/shutdown can set it.
+        let cancel = Arc::new(AtomicBool::new(false));
+        let access = WorkspacePaneAccess::with_cancel(Arc::clone(&self.workspace), Arc::clone(&cancel));
         let handle = thread::spawn(move || {
             let outcome = Driver::new(guardrails).run(plugin.as_plugin(), &access);
             // The worker still owns the plugin after the run, so it can read any
@@ -158,7 +179,7 @@ impl PluginsExternal {
             let output = plugin.as_plugin().captured();
             *lock(&worker_state) = RunState::Done { outcome, output };
         });
-        lock(&self.runs).submit(label, state, handle)
+        lock(&self.runs).submit(label, state, handle, cancel)
     }
 }
 
@@ -174,6 +195,7 @@ impl ExternalIntrospect for PluginsExternal {
     fn schema(&self) -> IntrospectSchema {
         IntrospectSchema::new(&[
             (RUN_ACTION, "action"),
+            (CANCEL_ACTION, "action"),
             (RUNS_SLOT, "list"),
             (PLUGINS_SLOT, "list"),
         ])
@@ -200,6 +222,7 @@ impl ExternalIntrospect for PluginsExternal {
     fn invoke(&mut self, path: &str, args: IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         match path {
             RUN_ACTION => self.run(&args),
+            CANCEL_ACTION => self.cancel(&args),
             _ => Err(InvokeError::UnknownPath),
         }
     }
@@ -293,6 +316,7 @@ fn outcome_to_json(outcome: &Outcome) -> Value {
         OutcomeState::Converged => "converged",
         OutcomeState::Exhausted => "exhausted",
         OutcomeState::Failed => "failed",
+        OutcomeState::Cancelled => "cancelled",
     };
     json!({
         "state": state,

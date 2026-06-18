@@ -452,6 +452,54 @@
         "Interactive cancel (designed since R11): an Arc<AtomicBool> trigger + a cancelled statechart final + OutcomeState::Cancelled — wanted now that runs spawn real network-bound child processes."
       ]
     },
+    "Round 15": {
+      "decision_summary": "Interactive cancel: a run-lifecycle cancel signal ends a run in a new SCE 'cancelled' statechart final; the host cancels a run over RPC and shutdown aborts in-flight runs promptly.",
+      "changes_bullets": [
+        "orchestration.scxml: added a `cancel` transition out of `running` to a new `<final id=\"cancelled\"/>` — SCE regenerated OrchestrationEvent::Cancel / OrchestrationState::Cancelled (another statechart final, the SCE dogfood). driver.rs: new OutcomeState::Cancelled; Driver::run checks panes.cancelled() at the loop TOP (fires Cancel before stepping, so a cancel pre-empts the next step); outcome() maps Cancelled explicitly, above the Failed wildcard.",
+        "Cancel rides the handle the Driver and every plugin already share: new PaneAccess::cancelled() default-false (a RUN-lifecycle signal, documented as not pane-scoped; same default-off pattern as lifecycle(), zero ripple to test doubles). WorkspacePaneAccess holds an Arc<AtomicBool> read with Acquire; new with_cancel(workspace, flag) for the host (new() keeps a never-set flag, so existing call sites are unchanged).",
+        "The three plugins' wait loops (Orchestrator::observe, Agent::await_reply, Dialogue::await_reply) check cancelled() each ~10ms poll and bail; crucially a cancelled step returns Verdict::Continue WITHOUT converging or recording a junk turn (so cancel strictly dominates a would-be Converged/partial reply) and the Driver loop-top then ends Cancelled. Dialogue's PaneGuard still reaps the per-turn pane on the cancel path.",
+        "Host: each run gets an Arc<AtomicBool>; spawn_run builds WorkspacePaneAccess::with_cancel and stores a clone in the RunRegistry (RunRecord.cancel). New PluginsExternal `cancel {id}` action (rides scene/invoke; synchronous Rejected for an unknown id) -> RunRegistry::cancel(id) stores the flag (Release). New RunRegistry::cancel_all(); serve shutdown and RunRegistry::Drop now cancel_all() BEFORE join_all(), so in-flight runs abort promptly (fixes R11's shutdown-blocks honest cost). outcome_to_json maps Cancelled -> \"cancelled\". No pinion change."
+      ],
+      "verification_bullets": [
+        "79 workspace tests pass (+4), all deterministic (cancel is provider-independent, no network): driver driver_ends_cancelled_without_running_a_step (loop-top pre-empts the step — Cancelled, 0 iterations, no failure); dialogue cancel_mid_turn_ends_cancelled_with_no_leak_or_junk (threaded — a sleep endpoint cancelled mid-await aborts in <5s, OutcomeState::Cancelled, the per-turn pane reaped, transcript None); rpc cancels_a_running_plugin_over_rpc (cancel {id} -> run reaches done=cancelled; unknown id rejects synchronously); rpc shutdown_cancels_in_flight_runs_promptly (cancel_all+join_all returns in <5s on a looping sleep-pane run, reaped cancelled). cargo clippy --workspace --all-targets clean.",
+        "SCE codegen verified before building the rest: adding the cancel transition + cancelled final regenerated OrchestrationEvent::Cancel / OrchestrationState::Cancelled and is_in_final_state() covers Cancelled; the Driver uses only the existing Engine API (process_event/is_in_final_state/get_current_state).",
+        "Design pressure-tested by a Plan agent: confirmed NO pinion/SCE change. It caught the mid-step masking bug (a cancelled await must NOT return Converged or push a junk turn -> the plugins return Continue and record nothing), the outcome() wildcard silently mapping Cancelled->Failed (-> explicit arm above the wildcard), and the memory ordering (Acquire/Release, not Relaxed)."
+      ],
+      "impact_refs": [
+        "1",
+        "2",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Real token/$ cost accounting (claude -p --output-format json carries usage) still wants scrollback FIRST: parsing the usage JSON off the lossy grid is fragile (a long reply scrolls, breaking both the cost AND the reply extraction). Do scrollback projection (the R1.4 gap) or a capture side-channel before token accounting — this is why R15 reordered cancel ahead of it.",
+        "The --resume optimization for Dialogue (avoid the O(n^2) whole-history resend and the MAX_ARG_STRLEN single-arg ceiling).",
+        "Cancel granularity: it is observed at the Driver loop-top and the plugins' poll loops (~10ms); a future plugin doing long non-polling work between checks would delay cancel — fine for the current plugins.",
+        "Scrollback capture + interactive-TUI adapters still deferred (R12/R13 capture limits)."
+      ],
+      "publishable_decision_summary": "Interactive cancel: a run-lifecycle cancel signal ends a run in a new SCE 'cancelled' statechart final; the host cancels a run over RPC and shutdown aborts in-flight runs promptly.",
+      "publishable_changes_bullets": [
+        "orchestration.scxml: added a `cancel` transition out of `running` to a new `<final id=\"cancelled\"/>` — SCE regenerated OrchestrationEvent::Cancel / OrchestrationState::Cancelled (another statechart final, the SCE dogfood). driver.rs: new OutcomeState::Cancelled; Driver::run checks panes.cancelled() at the loop TOP (fires Cancel before stepping, so a cancel pre-empts the next step); outcome() maps Cancelled explicitly, above the Failed wildcard.",
+        "Cancel rides the handle the Driver and every plugin already share: new PaneAccess::cancelled() default-false (a RUN-lifecycle signal, documented as not pane-scoped; same default-off pattern as lifecycle(), zero ripple to test doubles). WorkspacePaneAccess holds an Arc<AtomicBool> read with Acquire; new with_cancel(workspace, flag) for the host (new() keeps a never-set flag, so existing call sites are unchanged).",
+        "The three plugins' wait loops (Orchestrator::observe, Agent::await_reply, Dialogue::await_reply) check cancelled() each ~10ms poll and bail; crucially a cancelled step returns Verdict::Continue WITHOUT converging or recording a junk turn (so cancel strictly dominates a would-be Converged/partial reply) and the Driver loop-top then ends Cancelled. Dialogue's PaneGuard still reaps the per-turn pane on the cancel path.",
+        "Host: each run gets an Arc<AtomicBool>; spawn_run builds WorkspacePaneAccess::with_cancel and stores a clone in the RunRegistry (RunRecord.cancel). New PluginsExternal `cancel {id}` action (rides scene/invoke; synchronous Rejected for an unknown id) -> RunRegistry::cancel(id) stores the flag (Release). New RunRegistry::cancel_all(); serve shutdown and RunRegistry::Drop now cancel_all() BEFORE join_all(), so in-flight runs abort promptly (fixes R11's shutdown-blocks honest cost). outcome_to_json maps Cancelled -> \"cancelled\". No pinion change."
+      ],
+      "publishable_verification_bullets": [
+        "79 workspace tests pass (+4), all deterministic (cancel is provider-independent, no network): driver driver_ends_cancelled_without_running_a_step (loop-top pre-empts the step — Cancelled, 0 iterations, no failure); dialogue cancel_mid_turn_ends_cancelled_with_no_leak_or_junk (threaded — a sleep endpoint cancelled mid-await aborts in <5s, OutcomeState::Cancelled, the per-turn pane reaped, transcript None); rpc cancels_a_running_plugin_over_rpc (cancel {id} -> run reaches done=cancelled; unknown id rejects synchronously); rpc shutdown_cancels_in_flight_runs_promptly (cancel_all+join_all returns in <5s on a looping sleep-pane run, reaped cancelled). cargo clippy --workspace --all-targets clean.",
+        "SCE codegen verified before building the rest: adding the cancel transition + cancelled final regenerated OrchestrationEvent::Cancel / OrchestrationState::Cancelled and is_in_final_state() covers Cancelled; the Driver uses only the existing Engine API (process_event/is_in_final_state/get_current_state).",
+        "Design pressure-tested by a Plan agent: confirmed NO pinion/SCE change. It caught the mid-step masking bug (a cancelled await must NOT return Converged or push a junk turn -> the plugins return Continue and record nothing), the outcome() wildcard silently mapping Cancelled->Failed (-> explicit arm above the wildcard), and the memory ordering (Acquire/Release, not Relaxed)."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "2",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Real token/$ cost accounting (claude -p --output-format json carries usage) still wants scrollback FIRST: parsing the usage JSON off the lossy grid is fragile (a long reply scrolls, breaking both the cost AND the reply extraction). Do scrollback projection (the R1.4 gap) or a capture side-channel before token accounting — this is why R15 reordered cancel ahead of it.",
+        "The --resume optimization for Dialogue (avoid the O(n^2) whole-history resend and the MAX_ARG_STRLEN single-arg ceiling).",
+        "Cancel granularity: it is observed at the Driver loop-top and the plugins' poll loops (~10ms); a future plugin doing long non-polling work between checks would delay cancel — fine for the current plugins.",
+        "Scrollback capture + interactive-TUI adapters still deferred (R12/R13 capture limits)."
+      ]
+    },
     "Round 2": {
       "decision_summary": "Project rule: use SCE (SCXML Core Engine) for sprag statechart and codegen logic where applicable.",
       "changes_bullets": [

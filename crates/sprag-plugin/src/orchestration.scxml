@@ -27,9 +27,11 @@
     <transition event="converge" target="converged"/>  <!-- step: Verdict::Converged -->
     <transition event="exhaust"  target="exhausted"/>   <!-- Driver: iteration/cost budget hit -->
     <transition event="fail"     target="failed"/>      <!-- step: Err -->
+    <transition event="cancel"   target="cancelled"/>   <!-- Driver: cancel signal raised -->
   </state>
 
   <final id="converged"/>
   <final id="exhausted"/>
   <final id="failed"/>
+  <final id="cancelled"/>
 </scxml>

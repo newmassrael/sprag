@@ -58,6 +58,9 @@ impl Orchestrator {
     fn observe(&self, panes: &dyn PaneAccess) {
         let start = Instant::now();
         loop {
+            if panes.cancelled() {
+                return;
+            }
             let advanced = panes.pane_rows(self.pane).is_some_and(|rows| {
                 rows.iter().enumerate().any(|(i, row)| {
                     row.generation > self.baseline_generations.get(i).copied().unwrap_or(0)
@@ -86,6 +89,14 @@ impl Plugin for Orchestrator {
 
         // Perceive, then judge against the collapsed (wrap-safe) screen text.
         self.observe(panes);
+        // If cancelled mid-observe, don't judge — return Continue so the
+        // Driver's loop-top ends the run Cancelled (not a spurious Converged).
+        if panes.cancelled() {
+            return Ok(Step {
+                injected_bytes,
+                verdict: Verdict::Continue,
+            });
+        }
         let observed = panes.pane_collapsed(self.pane).unwrap_or_default();
         let verdict = if self
             .spec

@@ -32,6 +32,8 @@ pub enum OutcomeState {
     Exhausted,
     /// A plugin step failed.
     Failed,
+    /// The run was cancelled (the host raised the cancel signal).
+    Cancelled,
 }
 
 /// The result of a plugin run.
@@ -75,6 +77,13 @@ impl Driver {
         self.engine.process_event(OrchestrationEvent::Start);
         // `running` is the only non-final state in the loop.
         while !self.engine.is_in_final_state() {
+            // Cancel is checked before each step (and again by the plugin's own
+            // wait loops mid-step), so a cancel ends the run promptly without
+            // running another step.
+            if panes.cancelled() {
+                self.engine.process_event(OrchestrationEvent::Cancel);
+                continue;
+            }
             let event = match plugin.step(panes) {
                 Err(error) => {
                     self.failure = Some(error);
@@ -104,6 +113,7 @@ impl Driver {
         let state = match self.engine.get_current_state() {
             OrchestrationState::Converged => OutcomeState::Converged,
             OrchestrationState::Exhausted => OutcomeState::Exhausted,
+            OrchestrationState::Cancelled => OutcomeState::Cancelled,
             // Failed, or any state the loop left unexpectedly.
             _ => OutcomeState::Failed,
         };
@@ -162,5 +172,43 @@ mod tests {
         assert_eq!(outcome.state, OutcomeState::Failed);
         assert_eq!(outcome.iterations, 0);
         assert_eq!(outcome.failure, Some(InjectError::UnknownPane(PaneId(0))));
+    }
+
+    /// Panes whose cancel signal is already raised — the loop-top check ends the
+    /// run before any step runs.
+    struct CancelledPanes;
+    impl PaneAccess for CancelledPanes {
+        fn pane_ids(&self) -> Vec<PaneId> {
+            Vec::new()
+        }
+        fn pane_collapsed(&self, _id: PaneId) -> Option<String> {
+            None
+        }
+        fn pane_rows(&self, _id: PaneId) -> Option<Vec<PaneRow>> {
+            None
+        }
+        fn pane_eof(&self, _id: PaneId) -> Option<bool> {
+            None
+        }
+        fn inject(&self, _id: PaneId, _keys: &[KeyStroke]) -> Result<u64, InjectError> {
+            Err(InjectError::UnknownPane(PaneId(0)))
+        }
+        fn cancelled(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn driver_ends_cancelled_without_running_a_step() {
+        // The plugin would fail if stepped, but cancel pre-empts it: Cancelled,
+        // zero iterations, no failure recorded.
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 5,
+            max_injected_bytes: 100,
+        })
+        .run(&mut FailingPlugin, &CancelledPanes);
+        assert_eq!(outcome.state, OutcomeState::Cancelled);
+        assert_eq!(outcome.iterations, 0);
+        assert!(outcome.failure.is_none());
     }
 }

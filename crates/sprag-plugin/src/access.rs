@@ -10,6 +10,7 @@
 //! [`WorkspacePaneAccess`] is the production implementation over a shared
 //! [`Workspace`]; it stays pinion-free (the producer/control layer).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use sprag_input::{encode, Modifiers};
@@ -105,6 +106,18 @@ pub trait PaneAccess {
     fn lifecycle(&self) -> Option<&dyn PaneLifecycle> {
         None
     }
+
+    /// Whether this run has been asked to stop. A *run-lifecycle* signal (the
+    /// host raises it), surfaced here because the [`Driver`] and every plugin
+    /// already share `&dyn PaneAccess` — it is not pane-scoped. Defaults off,
+    /// like [`PaneAccess::lifecycle`]: the Driver checks it between steps and a
+    /// plugin's wait loop checks it mid-step, so a long in-flight turn aborts
+    /// promptly.
+    ///
+    /// [`Driver`]: crate::driver::Driver
+    fn cancelled(&self) -> bool {
+        false
+    }
 }
 
 /// Pane *lifecycle* control: spawn and close panes. The capability a plugin
@@ -128,13 +141,28 @@ pub trait PaneLifecycle {
 /// [`PaneAccess`] over a shared [`Workspace`] — the production implementation.
 pub struct WorkspacePaneAccess {
     workspace: Arc<Mutex<Workspace>>,
+    /// The run's cancel flag, shared with the host (which sets it). The default
+    /// from [`new`](WorkspacePaneAccess::new) is never set; the host injects a
+    /// shared flag via [`with_cancel`](WorkspacePaneAccess::with_cancel).
+    cancel: Arc<AtomicBool>,
 }
 
 impl WorkspacePaneAccess {
-    /// Wrap a shared workspace as the plugin pane-access surface.
+    /// Wrap a shared workspace as the plugin pane-access surface, with a private
+    /// never-set cancel flag (the run cannot be cancelled).
     #[must_use]
     pub fn new(workspace: Arc<Mutex<Workspace>>) -> Self {
-        Self { workspace }
+        Self {
+            workspace,
+            cancel: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Wrap a shared workspace with a host-shared `cancel` flag, so the host can
+    /// stop this run by setting it.
+    #[must_use]
+    pub fn with_cancel(workspace: Arc<Mutex<Workspace>>, cancel: Arc<AtomicBool>) -> Self {
+        Self { workspace, cancel }
     }
 
     /// Clone the pane's I/O handle under the workspace lock (released before
@@ -183,6 +211,10 @@ impl PaneAccess for WorkspacePaneAccess {
 
     fn lifecycle(&self) -> Option<&dyn PaneLifecycle> {
         Some(self)
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Acquire)
     }
 }
 

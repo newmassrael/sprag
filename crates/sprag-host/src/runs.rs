@@ -10,6 +10,7 @@
 //! holds only that cell (never the registry), so reading the registry never
 //! blocks behind a running plugin.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -41,6 +42,9 @@ struct RunRecord {
     label: String,
     state: Arc<Mutex<RunState>>,
     handle: Option<JoinHandle<()>>,
+    /// The run's cancel flag, shared with its `WorkspacePaneAccess`; setting it
+    /// makes the worker's Driver/plugin stop at its next check.
+    cancel: Arc<AtomicBool>,
 }
 
 /// The registry of background plugin runs. Owned by the host (`serve`),
@@ -59,6 +63,7 @@ impl RunRegistry {
         label: String,
         state: Arc<Mutex<RunState>>,
         handle: JoinHandle<()>,
+        cancel: Arc<AtomicBool>,
     ) -> RunId {
         let id = RunId(self.next_id);
         self.next_id += 1;
@@ -67,8 +72,30 @@ impl RunRegistry {
             label,
             state,
             handle: Some(handle),
+            cancel,
         });
         id
+    }
+
+    /// Raise the cancel flag for run `id`, returning whether such a run exists.
+    /// The worker observes it at its next loop-top / wait-poll and ends
+    /// [`crate::runs::RunState`]'s outcome as cancelled.
+    pub fn cancel(&self, id: RunId) -> bool {
+        match self.runs.iter().find(|record| record.id == id) {
+            Some(record) => {
+                record.cancel.store(true, Ordering::Release);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Raise every run's cancel flag — used on host shutdown so in-flight runs
+    /// abort promptly instead of `join_all` blocking on them.
+    pub fn cancel_all(&self) {
+        for record in &self.runs {
+            record.cancel.store(true, Ordering::Release);
+        }
     }
 
     /// Join any finished worker threads (non-blocking via `is_finished`),
@@ -109,9 +136,11 @@ impl RunRegistry {
 impl Drop for RunRegistry {
     fn drop(&mut self) {
         // Catch-all: no run thread outlives the registry (so no detached worker
-        // keeps a pane/child alive). Bounded by the runs' guardrails. `serve`
-        // also calls `join_all` for deterministic shutdown; the take() makes
-        // this idempotent.
+        // keeps a pane/child alive). Cancel first so an in-flight run aborts
+        // promptly rather than `join_all` blocking on it (e.g. a slow AI turn).
+        // `serve` also does this for deterministic shutdown; the take() / flag
+        // make both idempotent.
+        self.cancel_all();
         self.join_all();
     }
 }
@@ -137,7 +166,8 @@ mod tests {
                 output: None,
             };
         });
-        let id = registry.submit("test".to_string(), state, handle);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let id = registry.submit("test".to_string(), state, handle, cancel);
         assert_eq!(id, RunId(0));
 
         // Join (bounded — the worker is trivial) then observe Done.

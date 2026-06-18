@@ -145,6 +145,16 @@ impl Plugin for Dialogue {
         let reply = capture(panes, id);
         drop(guard); // close the pane now (its blocking teardown is lock-free).
 
+        // If cancelled mid-turn, record nothing (no junk partial turn) and
+        // return Continue; the Driver's loop-top ends the run Cancelled. The
+        // guard above already closed the spawned pane.
+        if panes.cancelled() {
+            return Ok(Step {
+                injected_bytes: 0,
+                verdict: Verdict::Continue,
+            });
+        }
+
         // Collapse to a single line so the turn is one labelled transcript
         // entry; otherwise a multi-line reply would inject unlabelled lines
         // into the next turn's prompt.
@@ -202,6 +212,10 @@ impl Drop for PaneGuard<'_> {
 fn await_reply(panes: &dyn PaneAccess, id: PaneId, timeout: Duration) {
     let start = Instant::now();
     while start.elapsed() < timeout {
+        // Cancel wins over waiting: bail so the turn (and the run) ends promptly.
+        if panes.cancelled() {
+            return;
+        }
         if panes.pane_eof(id).unwrap_or(true) {
             return;
         }
@@ -308,6 +322,56 @@ mod tests {
         assert!(
             workspace.lock().unwrap().panes().is_empty(),
             "a timed-out turn leaked its pane"
+        );
+    }
+
+    #[test]
+    fn cancel_mid_turn_ends_cancelled_with_no_leak_or_junk() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::thread;
+        use std::time::Instant;
+
+        // A non-exiting endpoint: the turn blocks in await_reply until cancelled.
+        let spec = DialogueSpec::new(
+            vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "sleep 30".to_string(),
+            ],
+            vec!["true".to_string()],
+            "x",
+        );
+        let workspace = Arc::new(Mutex::new(Workspace::new((spec.cols, spec.rows))));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let access = WorkspacePaneAccess::with_cancel(Arc::clone(&workspace), Arc::clone(&cancel));
+
+        let worker = thread::spawn(move || {
+            let mut dialogue = Dialogue::new(spec);
+            let outcome = Driver::new(Guardrails {
+                max_iterations: 100,
+                max_injected_bytes: u64::MAX,
+            })
+            .run(&mut dialogue, &access);
+            (outcome, dialogue.captured())
+        });
+
+        // Let the first turn spawn its pane and enter await_reply, then cancel.
+        sleep(Duration::from_millis(80));
+        cancel.store(true, Ordering::Release);
+
+        let start = Instant::now();
+        let (outcome, transcript) = worker.join().expect("worker");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "cancel did not abort the in-flight turn promptly: {:?}",
+            start.elapsed()
+        );
+        assert_eq!(outcome.state, OutcomeState::Cancelled);
+        // No junk partial turn recorded, and the per-turn pane was reaped.
+        assert!(transcript.is_none(), "recorded a junk turn: {transcript:?}");
+        assert!(
+            workspace.lock().unwrap().panes().is_empty(),
+            "cancel leaked the per-turn pane"
         );
     }
 
