@@ -65,19 +65,21 @@ use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::reply::parse_claude_json;
 use crate::run::{poll_until, RunContext, Waited, DEFAULT_REPLY_TIMEOUT};
 
-/// How a turn's reply text and cost are decoded from the endpoint's output.
+/// How a turn's reply text and cost are decoded. Dialogue is token-denominated,
+/// so every variant's cost is [`Cost::Tokens`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ReplyFormat {
     /// The endpoint prints human text: the whole rendered pane output is the
-    /// reply, and the cost is the prompt-byte proxy. The default — back-
-    /// compatible with print-mode tools and the deterministic test fakes.
+    /// reply, and the cost is `Tokens(0)` — a print-mode tool has no token
+    /// accounting. The default — back-compatible with print-mode tools and the
+    /// deterministic test fakes.
     #[default]
     Text,
     /// The endpoint prints a `claude -p --output-format json` envelope: the
     /// reply is its `result` and the cost is its real billed tokens
     /// (input + output). Read from the pane's RAW output, because the grid
     /// would corrupt the wrapped single-line JSON; on any parse failure it
-    /// degrades to the raw text and the byte proxy (never breaks the run).
+    /// degrades to the raw text and `Tokens(0)` (never breaks the run).
     ClaudeJson,
 }
 
@@ -228,8 +230,8 @@ impl Plugin for Dialogue {
 
         // Decode the reply + real cost + session id while the pane is still
         // alive; the guard closes it next. A structured endpoint whose envelope
-        // is unparsable degrades to the raw text and the byte proxy (never fails
-        // the turn).
+        // is unparsable degrades to the raw text and Tokens(0) (never fails the
+        // turn).
         let decoded = decode_reply(format, panes, id);
         drop(guard); // close the pane now (its blocking teardown is lock-free).
 
@@ -556,7 +558,7 @@ mod tests {
     fn claude_json_reply_reports_real_token_cost() {
         // A wide reply with interior spaces that the grid would wrap and trim;
         // reading the raw source captures it verbatim, and the cost is the real
-        // tokens — not the prompt-byte proxy.
+        // billed token count.
         let result = "the quick brown fox ".repeat(8); // 160 chars, many spaces
         let mut spec = DialogueSpec::new(
             json_fake(&result, 30, 20),
@@ -569,7 +571,7 @@ mod tests {
 
         assert_eq!(outcome.state, OutcomeState::Exhausted);
         // Two turns × (30 + 20) tokens — proof the Driver accumulates real
-        // tokens, not the byte proxy (the render_prompt length would differ).
+        // tokens (a byte count would differ from the render_prompt length).
         assert_eq!(outcome.cost, Some(Cost::Tokens(100)), "cost must be the summed real tokens");
         let t = transcript.expect("a transcript");
         // The full wide result survives verbatim; a grid read would have dropped
@@ -599,7 +601,7 @@ mod tests {
     fn claude_json_degrades_on_unparsable_reply() {
         // The endpoint declares ClaudeJson but emits plain text (a misconfig or
         // a truncated envelope): the turn must NOT fail — it records the raw
-        // text and bills the byte proxy, keeping the conversation alive.
+        // text and bills no tokens (Tokens(0)), keeping the conversation alive.
         let garbage = vec![
             "/bin/sh".to_string(),
             "-c".to_string(),
@@ -827,7 +829,7 @@ mod tests {
         // Run both sides as `claude -p --output-format json` and decode each
         // turn as a JSON envelope — the real-PTY check that the envelope parses
         // off the raw source (no wrap corruption, no stderr pollution), that the
-        // cost is the real billed tokens (not the byte proxy), and that --resume
+        // cost is the real billed tokens, and that --resume
         // carries context across turns.
         let claude = vec![
             "claude".to_string(),

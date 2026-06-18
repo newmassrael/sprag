@@ -12,8 +12,8 @@
 //!
 //! Robustness is the whole point. Every field is optional and any malformed,
 //! truncated, or unrecognized input degrades to `None`, so a broken envelope
-//! never breaks a run — the caller falls back to the raw text and the
-//! byte-count cost. The function never panics.
+//! never breaks a run — the caller falls back to the raw text and no measured
+//! cost (`Tokens(0)`). The function never panics.
 
 use serde_json::Value;
 
@@ -46,7 +46,7 @@ pub struct AgentReply {
 /// Tolerates framing noise: the `{`…`}` span is extracted first, so a trailing
 /// newline, a kernel `\r\n` (ONLCR over a PTY), or stray bytes outside the
 /// object are ignored. Returns `None` — and the caller degrades to the raw text
-/// and the byte-count cost — when the bytes hold no JSON object, the JSON is
+/// and `Tokens(0)` — when the bytes hold no JSON object, the JSON is
 /// malformed (a truncated/oversized capture), or the object is not a result
 /// envelope (no `result` and no `usage` key). Never panics.
 #[must_use]

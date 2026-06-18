@@ -9,10 +9,12 @@
 //! * `query("runs")` → observes each run's terminal `Outcome` as scene-as-data;
 //! * `query("plugins")` → the available plugin set.
 //!
-//! Runs are guardrail-bounded by construction (a `run` omitting guardrails still
-//! gets the default iteration ceiling and the plugin's default cost ceiling,
-//! never unbounded — loop safety is first-class). Target panes are validated at
-//! submit time, so a typo is a synchronous `Rejected`, not an async `Failed`.
+//! Runs are guardrail-bounded by construction: a `run` always gets the default
+//! iteration ceiling (the liveness floor) plus the plugin's default cost ceiling
+//! in its unit, never unbounded — loop safety is first-class. (A print-mode Text
+//! dialogue accumulates `Tokens(0)`, so iterations are its sole effective bound.)
+//! Target panes are validated at submit time, so a typo is a synchronous
+//! `Rejected`, not an async `Failed`.
 
 use std::fmt;
 use std::sync::atomic::AtomicBool;
@@ -51,9 +53,12 @@ const DEFAULT_MAX_ITERATIONS: u32 = 100;
 /// in injected PTY bytes.
 const DEFAULT_MAX_BYTES: u64 = 64 * 1024;
 /// The default cost ceiling for the token-denominated Dialogue plugin, in real
-/// billed tokens. Sized generously — a real multi-turn dialogue runs to a few
-/// thousand tokens per turn — so it bounds runaway spend without strangling a
-/// legitimate conversation; the iteration cap backstops it either way.
+/// input+output tokens (cache tokens are excluded — see `reply::parse_tokens`).
+/// A COARSE backstop, not the primary bound: at the default 100-iteration cap
+/// (~2k tokens/turn for a real dialogue) the iteration cap bites first, and a
+/// print-mode Text dialogue reports `Tokens(0)` so only iterations bound it.
+/// This ceiling exists to stop a single pathological high-token turn; tune it to
+/// the model's pricing if a dollar-aware bound is ever needed.
 const DEFAULT_MAX_TOKENS: u64 = 200_000;
 
 /// The plugin host as a pinion `External`: starts background plugin runs over
@@ -312,11 +317,11 @@ fn parse_reply_format(
 }
 
 /// Read the optional `guardrails` sub-object. `max_iterations` defaults to
-/// [`DEFAULT_MAX_ITERATIONS`]; an omitted `max_cost` defaults to the plugin's
-/// `default_cost`, and an explicit bare `max_cost` number is read in that
-/// plugin's unit (the caller chose the plugin, so the unit is implied). A run is
-/// thus always bounded — by iterations, and by a cost ceiling in the right
-/// currency.
+/// [`DEFAULT_MAX_ITERATIONS`] (always present — the liveness floor). The cost
+/// bound is self-describing: `max_bytes` xor `max_tokens` in the plugin's unit
+/// (omitted → the plugin's default ceiling). NB a `Tokens(0)`-only run (a
+/// print-mode Text dialogue) accumulates no measured cost, so its cost ceiling
+/// never binds and `max_iterations` is its sole effective bound — by design.
 fn parse_guardrails(
     map: &Map<String, Value>,
     default_cost: Cost,
@@ -337,25 +342,29 @@ fn parse_guardrails(
             .and_then(|n| u32::try_from(n).ok())
             .ok_or(InvokeError::TypeMismatch)?,
     };
-    // A bare `max_cost` is read in the plugin's unit; omitted → its default.
-    let max_cost = match g.get("max_cost") {
-        None => Some(default_cost),
-        Some(v) => {
-            Some(cost_in_unit_of(default_cost, v.as_u64().ok_or(InvokeError::TypeMismatch)?))
-        }
-    };
     Ok(Guardrails {
         max_iterations,
-        max_cost,
+        max_cost: parse_max_cost(g, default_cost)?,
     })
 }
 
-/// Wrap a bare amount in the same unit as `unit` (the plugin's cost unit).
-fn cost_in_unit_of(unit: Cost, amount: u64) -> Cost {
-    match unit {
-        Cost::Bytes(_) => Cost::Bytes(amount),
-        Cost::Tokens(_) => Cost::Tokens(amount),
+/// Parse the optional cost bound: `max_bytes` XOR `max_tokens` (a run has ONE
+/// cost unit), or the plugin's default when neither is given. The chosen unit
+/// must match the plugin's — so a guardrail cannot be misloaded into the wrong
+/// currency. Both keys present, a non-integer, or the wrong unit → a synchronous
+/// [`InvokeError`] (a misloaded spend guardrail is a submit-time error, never a
+/// silently looser-by-a-factor bound).
+fn parse_max_cost(g: &Map<String, Value>, default_cost: Cost) -> Result<Option<Cost>, InvokeError> {
+    let bound = match (g.get("max_bytes"), g.get("max_tokens")) {
+        (Some(_), Some(_)) => return Err(InvokeError::Rejected),
+        (Some(v), None) => Cost::Bytes(v.as_u64().ok_or(InvokeError::TypeMismatch)?),
+        (None, Some(v)) => Cost::Tokens(v.as_u64().ok_or(InvokeError::TypeMismatch)?),
+        (None, None) => return Ok(Some(default_cost)),
+    };
+    if bound.unit() != default_cost.unit() {
+        return Err(InvokeError::Rejected); // wrong cost unit for this plugin
     }
+    Ok(Some(bound))
 }
 
 /// Render one run's `(id, label, state)` as JSON for `query("runs")`.
@@ -381,14 +390,13 @@ fn outcome_to_json(outcome: &Outcome) -> Value {
         OutcomeState::Failed => "failed",
         OutcomeState::Cancelled => "cancelled",
     };
-    // Cost is self-describing on the wire: the scalar amount plus its unit, so a
-    // peer reads it without knowing which plugin ran. A `null` unit means no
-    // measured step (e.g. cancelled before any step ran).
-    let (cost, unit) = match outcome.cost {
-        Some(Cost::Bytes(n)) => (n, Some("bytes")),
-        Some(Cost::Tokens(n)) => (n, Some("tokens")),
-        None => (0, None),
-    };
+    // Cost is self-describing on the wire: the scalar amount plus its unit label
+    // (both from `Cost` itself, so the host never names a variant), so a peer
+    // reads it without knowing which plugin ran. A `null` unit means no measured
+    // step (e.g. cancelled before any step ran).
+    let (cost, unit) = outcome
+        .cost
+        .map_or((0, None), |c| (c.amount(), Some(c.unit())));
     json!({
         "state": state,
         "iterations": outcome.iterations,

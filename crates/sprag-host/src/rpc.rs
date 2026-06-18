@@ -364,7 +364,7 @@ mod tests {
                     "endpoint_b": endpoint,
                     "seed": "count upward",
                     "cols": 40, "rows": 6,
-                    "guardrails": { "max_iterations": 3, "max_cost": 1048576 }
+                    "guardrails": { "max_iterations": 3, "max_tokens": 1048576 }
                 }
             }
         })
@@ -426,7 +426,7 @@ mod tests {
                     "format_a": "claude_json",
                     "format_b": "claude_json",
                     "cols": 40, "rows": 6,
-                    "guardrails": { "max_iterations": 2, "max_cost": 1048576 }
+                    "guardrails": { "max_iterations": 2, "max_tokens": 1048576 }
                 }
             }
         })
@@ -436,7 +436,7 @@ mod tests {
 
         let run_state = wait_for_run0_state(&state).expect("dialogue run reached done");
         assert_eq!(run_state["outcome"]["state"], "exhausted");
-        // Two turns × (30 + 20) tokens — the real cost over RPC, not byte proxy.
+        // Two turns × (30 + 20) tokens — the real billed cost over RPC.
         assert_eq!(run_state["outcome"]["cost"].as_u64(), Some(100), "{run_state}");
         assert_eq!(run_state["outcome"]["unit"], "tokens", "cost unit must be tokens: {run_state}");
         let output = run_state["output"].as_str().unwrap_or_default();
@@ -455,6 +455,19 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"dialogue","endpoint_a":["true"],"endpoint_b":["true"],"seed":"x","format_a":"yaml"}}}"#,
         );
         assert!(rejected.get("error").is_some(), "expected a rejection: {rejected}");
+    }
+
+    #[test]
+    fn rejects_a_wrong_unit_guardrail() {
+        // The dialogue is token-denominated; a `max_bytes` bound is the wrong
+        // currency for it and must be a synchronous Rejected — never a silently
+        // ignored or mis-unit bound (the guardrail is the spend defence).
+        let state = host_with("cat", 20, 4);
+        let rejected = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"dialogue","endpoint_a":["true"],"endpoint_b":["true"],"seed":"x","guardrails":{"max_bytes":4096}}}}"#,
+        );
+        assert!(rejected.get("error").is_some(), "wrong-unit guardrail must reject: {rejected}");
     }
 
     #[test]
@@ -499,7 +512,7 @@ mod tests {
         let state = host_with("cat", 20, 4);
         let started = serve_one(
             &state,
-            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"orchestrator","pane":0,"stimulus":"ping","sentinel":"ping","guardrails":{"max_iterations":5,"max_cost":4096}}}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"orchestrator","pane":0,"stimulus":"ping","sentinel":"ping","guardrails":{"max_iterations":5,"max_bytes":4096}}}}"#,
         );
         assert_eq!(started["result"].as_i64(), Some(0), "run id: {started}");
         assert_eq!(wait_for_run_done(&state).as_deref(), Some("converged"));
@@ -525,7 +538,7 @@ mod tests {
         let state = host_with("sleep 5", 20, 4);
         serve_one(
             &state,
-            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"orchestrator","pane":0,"stimulus":"x","guardrails":{"max_iterations":2,"max_cost":1048576}}}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"orchestrator","pane":0,"stimulus":"x","guardrails":{"max_iterations":2,"max_bytes":1048576}}}}"#,
         );
         let start = Instant::now();
         let snap = serve_one(
@@ -546,7 +559,7 @@ mod tests {
         let state = host_with("sleep 30", 20, 4);
         let started = serve_one(
             &state,
-            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"orchestrator","pane":0,"stimulus":"x","guardrails":{"max_iterations":1000000,"max_cost":1073741824}}}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"orchestrator","pane":0,"stimulus":"x","guardrails":{"max_iterations":1000000,"max_bytes":1073741824}}}}"#,
         );
         assert_eq!(started["result"].as_i64(), Some(0), "run id: {started}");
 
@@ -574,7 +587,7 @@ mod tests {
         let state = host_with("sleep 30", 20, 4);
         serve_one(
             &state,
-            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"orchestrator","pane":0,"stimulus":"x","guardrails":{"max_iterations":1000000,"max_cost":1073741824}}}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"orchestrator","pane":0,"stimulus":"x","guardrails":{"max_iterations":1000000,"max_bytes":1073741824}}}}"#,
         );
 
         let start = Instant::now();

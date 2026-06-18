@@ -56,6 +56,17 @@ impl Cost {
         }
     }
 
+    /// The unit label — the self-describing tag the host emits on the wire and
+    /// validates a guardrail's unit against. The ONE place the variant→name
+    /// mapping lives, so the host never names a `Cost` variant.
+    #[must_use]
+    pub const fn unit(self) -> &'static str {
+        match self {
+            Cost::Bytes(_) => "bytes",
+            Cost::Tokens(_) => "tokens",
+        }
+    }
+
     /// Sum two costs of the SAME unit (saturating). `None` if the units differ —
     /// which a single run never produces (one plugin reports one unit), so this
     /// is a defensive guard, not an expected path.
@@ -73,7 +84,15 @@ impl Cost {
     pub(crate) fn reaches(self, bound: Self) -> bool {
         match (self, bound) {
             (Cost::Bytes(a), Cost::Bytes(b)) | (Cost::Tokens(a), Cost::Tokens(b)) => a >= b,
-            _ => false,
+            // A bound of a different unit than the accumulator cannot occur (one
+            // plugin = one unit; the host sizes max_cost in that unit). If it
+            // ever did, the guardrail must NOT silently fail open — scream in
+            // debug (like `accumulate`'s `try_add` guard); in release report
+            // "not reached" so the iteration budget still bounds the run.
+            _ => {
+                debug_assert!(false, "cost guardrail unit mismatch: {self:?} reaches {bound:?}");
+                false
+            }
         }
     }
 }
