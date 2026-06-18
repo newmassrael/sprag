@@ -24,13 +24,13 @@ use pinion_core::external::{
 };
 use serde_json::{json, Map, Value};
 use sprag_plugin::{
-    Agent, AgentSpec, Driver, Guardrails, OrchestrationSpec, Orchestrator, Outcome, OutcomeState,
-    Pipe, Plugin, WorkspacePaneAccess,
+    Agent, AgentSpec, Dialogue, DialogueSpec, Driver, Guardrails, OrchestrationSpec, Orchestrator,
+    Outcome, OutcomeState, Pipe, Plugin, WorkspacePaneAccess,
 };
 use sprag_terminal::{PaneId, Workspace};
 
 use crate::external::{
-    as_object, lock, opt_str, require_pane_id, require_str, rpc_external_impl,
+    as_object, lock, opt_dim, opt_str, require_pane_id, require_str, rpc_external_impl,
 };
 use crate::runs::{RunId, RunRegistry, RunState};
 
@@ -39,7 +39,7 @@ const RUNS_SLOT: &str = "runs";
 const PLUGINS_SLOT: &str = "plugins";
 
 /// The bundled plugins a `run` can name.
-const PLUGINS: &[&str] = &["orchestrator", "pipe", "agent"];
+const PLUGINS: &[&str] = &["orchestrator", "pipe", "agent", "dialogue"];
 
 /// Conservative guardrails for a `run` that omits them — never unbounded
 /// (the README makes loop safety first-class).
@@ -105,6 +105,27 @@ impl PluginsExternal {
                 }
                 let label = format!("agent pane={}", pane.0);
                 Ok((BoxedPlugin::Agent(Agent::new(pane, spec)), label))
+            }
+            "dialogue" => {
+                // Dialogue creates its own per-turn panes, so there is no target
+                // pane to validate; the endpoints are argv templates.
+                let endpoint_a = require_string_array(map, "endpoint_a")?;
+                let endpoint_b = require_string_array(map, "endpoint_b")?;
+                let seed = require_str(map, "seed")?.to_string();
+                let mut spec = DialogueSpec::new(endpoint_a, endpoint_b, seed);
+                let (default_cols, default_rows) = lock(&self.workspace).default_size();
+                spec.cols = opt_dim(map, "cols")?.unwrap_or(default_cols);
+                spec.rows = opt_dim(map, "rows")?.unwrap_or(default_rows);
+                if let Some(v) = map.get("timeout_ms") {
+                    spec.timeout =
+                        Duration::from_millis(v.as_u64().ok_or(InvokeError::TypeMismatch)?);
+                }
+                let label = format!(
+                    "dialogue {}<->{}",
+                    spec.endpoint_a.first().map_or("?", String::as_str),
+                    spec.endpoint_b.first().map_or("?", String::as_str),
+                );
+                Ok((BoxedPlugin::Dialogue(Dialogue::new(spec)), label))
             }
             _ => Err(InvokeError::Rejected), // unknown plugin
         }
@@ -184,6 +205,7 @@ enum BoxedPlugin {
     Orchestrator(Orchestrator),
     Pipe(Pipe),
     Agent(Agent),
+    Dialogue(Dialogue),
 }
 
 impl BoxedPlugin {
@@ -192,7 +214,29 @@ impl BoxedPlugin {
             BoxedPlugin::Orchestrator(orchestrator) => orchestrator,
             BoxedPlugin::Pipe(pipe) => pipe,
             BoxedPlugin::Agent(agent) => agent,
+            BoxedPlugin::Dialogue(dialogue) => dialogue,
         }
+    }
+}
+
+/// A required argv array (`["program", "args"…]`) of strings, non-empty.
+/// A missing/non-array value is a [`InvokeError::TypeMismatch`]; an empty array
+/// is a [`InvokeError::Rejected`] (an endpoint needs at least its program).
+fn require_string_array(map: &Map<String, Value>, key: &str) -> Result<Vec<String>, InvokeError> {
+    match map.get(key) {
+        Some(Value::Array(items)) => {
+            let argv = items
+                .iter()
+                .map(|v| v.as_str().map(str::to_string))
+                .collect::<Option<Vec<String>>>()
+                .ok_or(InvokeError::TypeMismatch)?;
+            if argv.is_empty() {
+                Err(InvokeError::Rejected)
+            } else {
+                Ok(argv)
+            }
+        }
+        _ => Err(InvokeError::TypeMismatch),
     }
 }
 

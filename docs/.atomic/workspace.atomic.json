@@ -356,6 +356,54 @@
         "Interactive cancel (still designed/deferred from R11): an Arc<AtomicBool> trigger + a cancelled statechart final + OutcomeState::Cancelled."
       ]
     },
+    "Round 13": {
+      "decision_summary": "Bidirectional AI<->AI: a Dialogue plugin runs two one-shot AI endpoints (claude -p) in alternating turns, spawning a fresh pane per turn via a new pane-lifecycle extension, capturing the threaded transcript.",
+      "changes_bullets": [
+        "New crate file crates/sprag-plugin/src/dialogue.rs: the Dialogue plugin. Each step() is one turn — spawn the active endpoint as a fresh pane with the OTHER side's last message as its argv prompt (claude -p \"<msg>\"; message-as-argv, not stdin, so there is no cooked-mode echo to strip and the fresh pane's whole screen is the reply), await child-exit (R12 pane_eof), capture the reply, close the pane, hand the reply to the other side. Never self-converges; the Driver's max_iterations IS the turn budget (ends Exhausted with the transcript as payload — the Pipe pattern). Pinion-free.",
+        "Pane-lifecycle extension: new PaneLifecycle sub-trait {spawn(argv, cols, rows)->PaneId, close(id)->bool} reached via PaneAccess::lifecycle()->Option<&dyn PaneLifecycle> (default None) — kept OFF the read/inject surface every plugin depends on (interface segregation, zero ripple to Orchestrator/Pipe/Agent/test-doubles). WorkspacePaneAccess impls it over Workspace::spawn/close; new InjectError::Spawn. A RAII PaneGuard closes the per-turn pane on EVERY exit path (no leaked PTY/child even on a mid-step failure); close binds the removed Pane so its blocking Drop runs OUTSIDE the workspace lock (R11 lesson).",
+        "Honest accounting: Dialogue injects nothing (the message rides as argv), so Step.injected_bytes is 0 and the turn budget is purely max_iterations — no faking a byte cost into the guardrail.",
+        "Host wiring (sprag-host/plugins.rs): PluginsExternal 'dialogue' run arm (endpoint_a/endpoint_b argv arrays + seed + optional cols/rows/timeout_ms; NO target-pane validation — Dialogue creates its own panes), BoxedPlugin::Dialogue, PLUGINS += 'dialogue', a require_string_array argv helper. The transcript rides the R12 captured()/RunState.output seam. No new pinion RPC methods, no new SCXML states/events."
+      ],
+      "verification_bullets": [
+        "76 workspace tests pass (+8): access lifecycle_spawn_and_close_roundtrip + lifecycle_spawn_rejects_empty_argv; dialogue multi_turn_single_endpoint_threads_the_message, bidirectional_turns_alternate_endpoints (A:x -> B:A:x -> A:B:A:x -> B:A:B:A:x), leaves_no_leftover_panes, closes_the_pane_when_a_turn_times_out (the PaneGuard leak regression), no_lifecycle_fails_cleanly (NoPanes -> Failed); rpc runs_a_dialogue_plugin_to_done_with_a_transcript (background run, threaded transcript in output, only the initial pane survives). cargo clippy --workspace --all-targets clean.",
+        "Genuine AI<->AI verified manually: the #[ignore]d dialogue::tests::two_real_claudes_converse ran two real 'claude -p' turns and captured a non-empty transcript (~10.8s). Offline coverage uses deterministic printf fake endpoints; the turn-threading logic is pinned by bidirectional_turns_alternate_endpoints so the live test only proves the real-CLI end to end.",
+        "Design pressure-tested by a Plan agent: confirmed NO pinion/SCE change (a never-converge/exhaust-on-budget plugin is the existing Pipe shape on the existing statechart). It caught the pane-leak-on-early-return (-> the mandatory RAII PaneGuard), pushed back on fattening PaneAccess (-> the lifecycle() sub-trait accessor, ISP-clean), and on repurposing injected_bytes as reply bytes (-> honest 0)."
+      ],
+      "impact_refs": [
+        "1",
+        "2",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Stateful conversation: turns are STATELESS (each side sees only the other's last message — a telephone game, not memory-preserving dialogue). Add context accumulation via claude -p --resume / session ids, or whole-history prompts.",
+        "Real token/$ cost accounting (claude -p --output-format json carries usage) to replace the injected-bytes guardrail proxy — now doubly relevant since Dialogue reports 0 injected bytes and only max_iterations bounds it.",
+        "Capture limits inherited from R12: a reply that scrolls past the pane loses the off-screen rows (no scrollback projection yet); a peer that paints a UI frame would pollute the captured text (print-mode tools like claude -p do not). Interactive-TUI adapters still deferred.",
+        "Interactive cancel (designed since R11): an Arc<AtomicBool> trigger + a cancelled statechart final + OutcomeState::Cancelled — increasingly wanted now that runs spawn real network-bound child processes."
+      ],
+      "publishable_decision_summary": "Bidirectional AI<->AI: a Dialogue plugin runs two one-shot AI endpoints (claude -p) in alternating turns, spawning a fresh pane per turn via a new pane-lifecycle extension, capturing the threaded transcript.",
+      "publishable_changes_bullets": [
+        "New crate file crates/sprag-plugin/src/dialogue.rs: the Dialogue plugin. Each step() is one turn — spawn the active endpoint as a fresh pane with the OTHER side's last message as its argv prompt (claude -p \"<msg>\"; message-as-argv, not stdin, so there is no cooked-mode echo to strip and the fresh pane's whole screen is the reply), await child-exit (R12 pane_eof), capture the reply, close the pane, hand the reply to the other side. Never self-converges; the Driver's max_iterations IS the turn budget (ends Exhausted with the transcript as payload — the Pipe pattern). Pinion-free.",
+        "Pane-lifecycle extension: new PaneLifecycle sub-trait {spawn(argv, cols, rows)->PaneId, close(id)->bool} reached via PaneAccess::lifecycle()->Option<&dyn PaneLifecycle> (default None) — kept OFF the read/inject surface every plugin depends on (interface segregation, zero ripple to Orchestrator/Pipe/Agent/test-doubles). WorkspacePaneAccess impls it over Workspace::spawn/close; new InjectError::Spawn. A RAII PaneGuard closes the per-turn pane on EVERY exit path (no leaked PTY/child even on a mid-step failure); close binds the removed Pane so its blocking Drop runs OUTSIDE the workspace lock (R11 lesson).",
+        "Honest accounting: Dialogue injects nothing (the message rides as argv), so Step.injected_bytes is 0 and the turn budget is purely max_iterations — no faking a byte cost into the guardrail.",
+        "Host wiring (sprag-host/plugins.rs): PluginsExternal 'dialogue' run arm (endpoint_a/endpoint_b argv arrays + seed + optional cols/rows/timeout_ms; NO target-pane validation — Dialogue creates its own panes), BoxedPlugin::Dialogue, PLUGINS += 'dialogue', a require_string_array argv helper. The transcript rides the R12 captured()/RunState.output seam. No new pinion RPC methods, no new SCXML states/events."
+      ],
+      "publishable_verification_bullets": [
+        "76 workspace tests pass (+8): access lifecycle_spawn_and_close_roundtrip + lifecycle_spawn_rejects_empty_argv; dialogue multi_turn_single_endpoint_threads_the_message, bidirectional_turns_alternate_endpoints (A:x -> B:A:x -> A:B:A:x -> B:A:B:A:x), leaves_no_leftover_panes, closes_the_pane_when_a_turn_times_out (the PaneGuard leak regression), no_lifecycle_fails_cleanly (NoPanes -> Failed); rpc runs_a_dialogue_plugin_to_done_with_a_transcript (background run, threaded transcript in output, only the initial pane survives). cargo clippy --workspace --all-targets clean.",
+        "Genuine AI<->AI verified manually: the #[ignore]d dialogue::tests::two_real_claudes_converse ran two real 'claude -p' turns and captured a non-empty transcript (~10.8s). Offline coverage uses deterministic printf fake endpoints; the turn-threading logic is pinned by bidirectional_turns_alternate_endpoints so the live test only proves the real-CLI end to end.",
+        "Design pressure-tested by a Plan agent: confirmed NO pinion/SCE change (a never-converge/exhaust-on-budget plugin is the existing Pipe shape on the existing statechart). It caught the pane-leak-on-early-return (-> the mandatory RAII PaneGuard), pushed back on fattening PaneAccess (-> the lifecycle() sub-trait accessor, ISP-clean), and on repurposing injected_bytes as reply bytes (-> honest 0)."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "2",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Stateful conversation: turns are STATELESS (each side sees only the other's last message — a telephone game, not memory-preserving dialogue). Add context accumulation via claude -p --resume / session ids, or whole-history prompts.",
+        "Real token/$ cost accounting (claude -p --output-format json carries usage) to replace the injected-bytes guardrail proxy — now doubly relevant since Dialogue reports 0 injected bytes and only max_iterations bounds it.",
+        "Capture limits inherited from R12: a reply that scrolls past the pane loses the off-screen rows (no scrollback projection yet); a peer that paints a UI frame would pollute the captured text (print-mode tools like claude -p do not). Interactive-TUI adapters still deferred.",
+        "Interactive cancel (designed since R11): an Arc<AtomicBool> trigger + a cancelled statechart final + OutcomeState::Cancelled — increasingly wanted now that runs spawn real network-bound child processes."
+      ]
+    },
     "Round 2": {
       "decision_summary": "Project rule: use SCE (SCXML Core Engine) for sprag statechart and codegen logic where applicable.",
       "changes_bullets": [

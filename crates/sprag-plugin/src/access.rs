@@ -13,7 +13,7 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use sprag_input::{encode, Modifiers};
-use sprag_terminal::{Pane, PaneId, SessionHandle, Workspace};
+use sprag_terminal::{CommandBuilder, Pane, PaneId, SessionHandle, Workspace};
 use sprag_vt::Screen;
 
 /// One screen row: its damage `generation` paired with its (trailing-trimmed)
@@ -63,6 +63,9 @@ pub enum InjectError {
     Encode(String),
     /// Writing the encoded bytes to the pane failed (the IO error message).
     Write(String),
+    /// Spawning a pane failed: no [`PaneLifecycle`] support, an empty argv, or
+    /// the pseudoterminal/child could not start (the cause message).
+    Spawn(String),
 }
 
 /// The plugin extension API: a plugin's view of the core's panes.
@@ -92,6 +95,34 @@ pub trait PaneAccess {
     /// [`InjectError`] when the pane is unknown, a key cannot be encoded, or
     /// the write fails.
     fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<u64, InjectError>;
+
+    /// The pane *lifecycle* surface (spawn/close), if this implementation
+    /// supports it. `None` by default — read/inject plugins never need it, so
+    /// they (and test doubles) pay nothing; a plugin that manages panes (e.g.
+    /// an AI dialogue spawning one pane per turn) asks for it and fails cleanly
+    /// when it is absent. Kept a separate sub-trait so [`PaneAccess`] stays the
+    /// read/inject surface (interface segregation).
+    fn lifecycle(&self) -> Option<&dyn PaneLifecycle> {
+        None
+    }
+}
+
+/// Pane *lifecycle* control: spawn and close panes. The capability a plugin
+/// needs to orchestrate one-shot tools across turns (each turn a fresh pane).
+/// Reached via [`PaneAccess::lifecycle`] so it does not fatten the read/inject
+/// surface every plugin depends on.
+pub trait PaneLifecycle {
+    /// Spawn a pane running `argv` (`[program, args…]`) at `cols × rows`,
+    /// returning its [`PaneId`].
+    ///
+    /// # Errors
+    ///
+    /// [`InjectError::Spawn`] when `argv` is empty or the pane cannot start.
+    fn spawn(&self, argv: &[String], cols: u16, rows: u16) -> Result<PaneId, InjectError>;
+
+    /// Close (reap) the pane with `id`, returning whether it existed. The
+    /// pane's blocking teardown runs outside any shared lock.
+    fn close(&self, id: PaneId) -> bool;
 }
 
 /// [`PaneAccess`] over a shared [`Workspace`] — the production implementation.
@@ -148,6 +179,36 @@ impl PaneAccess for WorkspacePaneAccess {
             .write(&bytes)
             .map_err(|e| InjectError::Write(e.to_string()))?;
         Ok(bytes.len() as u64)
+    }
+
+    fn lifecycle(&self) -> Option<&dyn PaneLifecycle> {
+        Some(self)
+    }
+}
+
+impl PaneLifecycle for WorkspacePaneAccess {
+    fn spawn(&self, argv: &[String], cols: u16, rows: u16) -> Result<PaneId, InjectError> {
+        let (program, rest) = argv
+            .split_first()
+            .ok_or_else(|| InjectError::Spawn("empty argv".to_string()))?;
+        let mut command = CommandBuilder::new(program.as_str());
+        for arg in rest {
+            command.arg(arg.as_str());
+        }
+        // The emulator parses (and strips) escape sequences, so captured cell
+        // text stays clean regardless of TERM; match the host's spawn default.
+        command.env("TERM", "xterm-256color");
+        lock(&self.workspace)
+            .spawn(command, program.clone(), cols, rows)
+            .map_err(|e| InjectError::Spawn(e.to_string()))
+    }
+
+    fn close(&self, id: PaneId) -> bool {
+        // Bind the removed Pane so the workspace guard (the temporary) drops
+        // first; the Pane's blocking Drop (kill/wait/join) then runs OUTSIDE
+        // the workspace lock (R11 lesson).
+        let removed = lock(&self.workspace).close(id);
+        removed.is_some()
     }
 }
 
@@ -234,5 +295,32 @@ mod tests {
         let access = WorkspacePaneAccess::new(cat_workspace(20, 4));
         let err = access.inject(PaneId(999), &KeyStroke::text("x")).unwrap_err();
         assert_eq!(err, InjectError::UnknownPane(PaneId(999)));
+    }
+
+    #[test]
+    fn lifecycle_spawn_and_close_roundtrip() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((20, 4))));
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let life = access.lifecycle().expect("workspace access exposes lifecycle");
+
+        let id = life
+            .spawn(
+                &["/bin/sh".to_string(), "-c".to_string(), "cat".to_string()],
+                20,
+                4,
+            )
+            .expect("spawn");
+        assert!(lock(&workspace).pane(id).is_some(), "pane should be live");
+
+        assert!(life.close(id), "close reports the pane existed");
+        assert!(lock(&workspace).pane(id).is_none(), "pane should be gone");
+        assert!(!life.close(id), "closing again reports absence");
+    }
+
+    #[test]
+    fn lifecycle_spawn_rejects_empty_argv() {
+        let access = WorkspacePaneAccess::new(Arc::new(Mutex::new(Workspace::new((20, 4)))));
+        let life = access.lifecycle().unwrap();
+        assert!(matches!(life.spawn(&[], 20, 4), Err(InjectError::Spawn(_))));
     }
 }

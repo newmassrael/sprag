@@ -337,6 +337,29 @@ mod tests {
     }
 
     #[test]
+    fn runs_a_dialogue_plugin_to_done_with_a_transcript() {
+        // Two one-shot fake endpoints tag the message distinctly; the dialogue
+        // threads it across turns. Each turn spawns a transient pane that must
+        // be reaped, so only the host's initial pane survives.
+        let state = host_with("cat", 40, 6);
+        let started = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"dialogue","endpoint_a":["/bin/sh","-c","printf '%s\\n' \"A:$1\"","_"],"endpoint_b":["/bin/sh","-c","printf '%s\\n' \"B:$1\"","_"],"seed":"x","cols":40,"rows":6,"guardrails":{"max_iterations":3,"max_injected_bytes":1048576}}}}"#,
+        );
+        assert_eq!(started["result"].as_i64(), Some(0), "run id: {started}");
+
+        let run_state = wait_for_run0_state(&state).expect("dialogue run reached done");
+        assert_eq!(run_state["outcome"]["state"], "exhausted");
+        assert!(
+            run_state["output"].as_str().is_some_and(|o| o.contains("B:A:x")),
+            "expected the threaded transcript in output, got: {}",
+            run_state["output"]
+        );
+        // Only the initial pane remains — every per-turn pane was reaped.
+        assert_eq!(lock(state.workspace()).panes().len(), 1, "dialogue leaked a pane");
+    }
+
+    #[test]
     fn lists_the_agent_among_available_plugins() {
         let state = host_with("cat", 20, 4);
         let plugins = serve_one(
@@ -347,6 +370,11 @@ mod tests {
         assert!(
             names.iter().any(|n| n == "agent"),
             "expected 'agent' in plugins, got: {}",
+            plugins["result"]
+        );
+        assert!(
+            names.iter().any(|n| n == "dialogue"),
+            "expected 'dialogue' in plugins, got: {}",
             plugins["result"]
         );
     }
