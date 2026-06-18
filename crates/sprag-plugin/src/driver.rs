@@ -11,7 +11,7 @@ use sce_rust_runtime::Engine;
 use crate::access::{PaneAccess, PaneError};
 use crate::plugin::{Cost, Plugin, Verdict};
 use crate::run::RunContext;
-use crate::sm::{OrchestrationEvent, OrchestrationPolicy, OrchestrationState};
+use crate::sm::orchestration::{OrchestrationEvent, OrchestrationPolicy, OrchestrationState};
 
 /// The termination guardrails every plugin run is bounded by (first-class
 /// safety per the README — an AI control loop must not run unbounded).

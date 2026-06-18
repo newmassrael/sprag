@@ -144,17 +144,20 @@ impl PluginsExternal {
                 let endpoint_b = require_string_array(map, "endpoint_b")?;
                 let seed = require_str(map, "seed")?.to_string();
                 let mut spec = DialogueSpec::new(endpoint_a, endpoint_b, seed);
+                // The wire keys stay flat (endpoint_a/label_a/format_a) — the
+                // Endpoint struct is an in-Rust cohesion fix, not a protocol
+                // change; the host bridges the flat keys into endpoints[0/1].
                 if let Some(label) = opt_str(map, "label_a")? {
-                    spec.label_a = label.to_string();
+                    spec.endpoints[0].label = label.to_string();
                 }
                 if let Some(label) = opt_str(map, "label_b")? {
-                    spec.label_b = label.to_string();
+                    spec.endpoints[1].label = label.to_string();
                 }
                 if let Some(format) = parse_reply_format(map, "format_a")? {
-                    spec.format_a = format;
+                    spec.endpoints[0].format = format;
                 }
                 if let Some(format) = parse_reply_format(map, "format_b")? {
-                    spec.format_b = format;
+                    spec.endpoints[1].format = format;
                 }
                 let (default_cols, default_rows) = lock(&self.workspace).default_size();
                 spec.cols = opt_dim(map, "cols")?.unwrap_or(default_cols);
@@ -165,10 +168,10 @@ impl PluginsExternal {
                 }
                 let label = format!(
                     "dialogue {}<->{}",
-                    spec.endpoint_a.first().map_or("?", String::as_str),
-                    spec.endpoint_b.first().map_or("?", String::as_str),
+                    spec.endpoints[0].argv.first().map_or("?", String::as_str),
+                    spec.endpoints[1].argv.first().map_or("?", String::as_str),
                 );
-                Ok((PluginKind::Dialogue(Dialogue::new(spec)), label))
+                Ok((PluginKind::Dialogue(Box::new(Dialogue::new(spec))), label))
             }
             _ => Err(InvokeError::Rejected), // unknown plugin
         }
@@ -254,7 +257,10 @@ enum PluginKind {
     Orchestrator(Orchestrator),
     Pipe(Pipe),
     Agent(Agent),
-    Dialogue(Dialogue),
+    // Boxed: a `Dialogue` carries two embedded SCE session engines, so it is far
+    // larger than the byte-relay plugins; boxing the one big variant keeps the
+    // enum small instead of every value paying its footprint.
+    Dialogue(Box<Dialogue>),
 }
 
 impl PluginKind {
@@ -263,7 +269,7 @@ impl PluginKind {
             PluginKind::Orchestrator(orchestrator) => orchestrator,
             PluginKind::Pipe(pipe) => pipe,
             PluginKind::Agent(agent) => agent,
-            PluginKind::Dialogue(dialogue) => dialogue,
+            PluginKind::Dialogue(dialogue) => dialogue.as_mut(),
         }
     }
 

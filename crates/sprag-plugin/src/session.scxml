@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  sprag plugin server-session lifecycle statechart (Round 22).
+
+  The control topology of one multi-turn endpoint's server session (e.g. a
+  resumed `claude` session id): does this side hold a live session, so the next turn
+  resumes it (server keeps the context, send only the delta), or must it start
+  fresh (resend the whole transcript)?
+
+    fresh   on opened => resumed   (a reply carried a session id)
+    resumed on opened => resumed   (idempotent: the id is stable across resume)
+    resumed on absent => fresh     (a resume that returned NO id, bad/expired: self-heal)
+    fresh   on absent => fresh     (a print-mode / first / id-less reply: stay fresh)
+
+  This is a REACTIVE machine: it has no final state; it cycles on each turn for
+  the life of the run. datamodel="null" means pure control, no side effects. The
+  session id STRING is data the engine cannot hold under a null datamodel, so it
+  lives beside the engine in `Session` (session.rs), exactly as the Driver's
+  iteration/cost counters live beside its lifecycle machine. SCE owns the
+  fresh/resumed topology; `Session` owns the id and bridges decoded replies to
+  the `opened` and `absent` events.
+
+  This is sprag's SECOND SCE statechart (after the Driver's orchestration.scxml):
+  the dogfood generalizing to N machines in one crate. The 2-state space is
+  small; the value is the explicit, legible lifecycle (vs a hand-rolled match)
+  and proving the build pipeline codegens more than one machine, NOT the
+  complexity of the lifecycle itself.
+-->
+<scxml xmlns="http://www.w3.org/2005/07/scxml"
+       version="1.0"
+       datamodel="null"
+       initial="fresh">
+
+  <state id="fresh">
+    <transition event="opened" target="resumed"/>  <!-- a reply carried a session id -->
+    <transition event="absent" target="fresh"/>    <!-- no id (print-mode / first turn): stay -->
+  </state>
+
+  <state id="resumed">
+    <transition event="opened" target="resumed"/>  <!-- keep the session (id stable across resume) -->
+    <transition event="absent" target="fresh"/>    <!-- resume returned no id: reset, self-heal -->
+  </state>
+</scxml>

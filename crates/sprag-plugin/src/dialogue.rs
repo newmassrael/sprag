@@ -64,6 +64,7 @@ use crate::access::{PaneAccess, PaneError, PaneLifecycle};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::reply::parse_claude_json;
 use crate::run::{poll_until, RunContext, Waited, DEFAULT_REPLY_TIMEOUT};
+use crate::session::Session;
 
 /// How a turn's reply text and cost are decoded. Dialogue is token-denominated,
 /// so every variant's cost is [`Cost::Tokens`].
@@ -83,24 +84,34 @@ pub enum ReplyFormat {
     ClaudeJson,
 }
 
-/// Who talks to whom, with what labels, and how each turn is bounded.
+/// One side of the dialogue: how to launch it, what to call it in the
+/// transcript, and how to decode its reply. Collapsing argv + label + format
+/// into one per-side struct keeps them from drifting apart — the parity index
+/// (`turn % 2`) selects ONE `Endpoint`, not three parallel field pairs. A future
+/// per-endpoint knob (a model name, a temperature) is a new field here, touched
+/// in one place rather than as a fourth `xxx_a`/`xxx_b` pair.
 #[derive(Clone, Debug)]
-pub struct DialogueSpec {
-    /// Endpoint A's argv template (e.g. `["claude", "-p"]`); the turn's prompt
-    /// is appended as the final argument.
-    pub endpoint_a: Vec<String>,
-    /// Endpoint B's argv template.
-    pub endpoint_b: Vec<String>,
-    /// The opening message / topic, given to both sides as context.
-    pub seed: String,
-    /// Transcript label for each side (defaults `"A"`/`"B"`).
-    pub label_a: String,
-    pub label_b: String,
-    /// How each side's reply + cost is decoded (defaults [`ReplyFormat::Text`]).
+pub struct Endpoint {
+    /// The endpoint's argv template (e.g. `["claude", "-p"]`); the turn's prompt
+    /// (and a `--resume` pair when resuming) is appended before launch.
+    pub argv: Vec<String>,
+    /// Transcript label for this side (e.g. `"A"`).
+    pub label: String,
+    /// How this side's reply + cost is decoded (defaults [`ReplyFormat::Text`]).
     /// Per-endpoint because the two sides can be different tools — one a
     /// `claude --output-format json`, the other a plain print-mode peer.
-    pub format_a: ReplyFormat,
-    pub format_b: ReplyFormat,
+    pub format: ReplyFormat,
+}
+
+/// Who talks to whom, with what seed, and how each turn is bounded.
+#[derive(Clone, Debug)]
+pub struct DialogueSpec {
+    /// The two endpoints: index 0 = A (speaks on even turns), 1 = B (odd). The
+    /// `turn % 2` parity selects one `Endpoint`, so its argv, label, and format
+    /// move together and cannot desync.
+    pub endpoints: [Endpoint; 2],
+    /// The opening message / topic, given to both sides as context.
+    pub seed: String,
     /// Size of each per-turn pane.
     pub cols: u16,
     pub rows: u16,
@@ -110,18 +121,25 @@ pub struct DialogueSpec {
 }
 
 impl DialogueSpec {
-    /// A spec with default labels (`"A"`/`"B"`), pane size (80x24), and timeout;
-    /// set the fields after for overrides.
+    /// A spec from the two endpoints' argv templates, with default labels
+    /// (`"A"`/`"B"`), [`ReplyFormat::Text`], pane size (80x24), and timeout; set
+    /// `endpoints[n].format` / `.label` after for overrides.
     #[must_use]
     pub fn new(endpoint_a: Vec<String>, endpoint_b: Vec<String>, seed: impl Into<String>) -> Self {
         Self {
-            endpoint_a,
-            endpoint_b,
+            endpoints: [
+                Endpoint {
+                    argv: endpoint_a,
+                    label: "A".to_string(),
+                    format: ReplyFormat::default(),
+                },
+                Endpoint {
+                    argv: endpoint_b,
+                    label: "B".to_string(),
+                    format: ReplyFormat::default(),
+                },
+            ],
             seed: seed.into(),
-            label_a: "A".to_string(),
-            label_b: "B".to_string(),
-            format_a: ReplyFormat::default(),
-            format_b: ReplyFormat::default(),
             cols: 80,
             rows: 24,
             timeout: DEFAULT_REPLY_TIMEOUT,
@@ -151,12 +169,12 @@ pub struct Dialogue {
     /// and replayed into a turn's prompt on the fresh / Text path. Replies are
     /// kept verbatim (lossless).
     history: Vec<Turn>,
-    /// Each side's server-session id (index `turn % 2`: 0 = A, 1 = B), set from
-    /// a `ClaudeJson` reply's `session_id`. Once a side has one, its later turns
-    /// `--resume` it and send only the new message instead of the whole
-    /// transcript (server holds the context); `None` until the side has spoken,
-    /// or after a resume failure (reset to re-establish context fresh).
-    sessions: [Option<String>; 2],
+    /// Each side's server-session lifecycle (index `turn % 2`: 0 = A, 1 = B). A
+    /// side holding a resumed session sends only the new message instead of the
+    /// whole transcript; the [`Session`] state machine owns the
+    /// fresh/resumed/reset transitions (the resume + self-heal logic this plugin
+    /// used to hand-roll inline).
+    sessions: [Session; 2],
     /// Turn counter; even turns speak as A, odd as B.
     turn: usize,
 }
@@ -168,7 +186,7 @@ impl Dialogue {
         Self {
             spec,
             history: Vec::new(),
-            sessions: [None, None],
+            sessions: [Session::new(), Session::new()],
             turn: 0,
         }
     }
@@ -180,32 +198,34 @@ impl Plugin for Dialogue {
             .lifecycle()
             .ok_or_else(|| PaneError::Spawn("pane access has no lifecycle".to_string()))?;
 
-        // This turn's speaker — endpoint, label, decode format, and its session
-        // — all selected by one parity index so they cannot drift apart.
+        // This turn's speaker is one `Endpoint` chosen by the parity index, so
+        // its launch argv, transcript label, and decode format move together
+        // and cannot drift apart. Clone them out so the `&self.spec` borrow ends
+        // before the later `self.history` / `self.sessions` mutations.
         let idx = self.turn % 2;
-        let (endpoint, label, format) = if idx == 0 {
-            (&self.spec.endpoint_a, self.spec.label_a.clone(), self.spec.format_a)
-        } else {
-            (&self.spec.endpoint_b, self.spec.label_b.clone(), self.spec.format_b)
+        let (argv_template, label, format) = {
+            let endpoint = &self.spec.endpoints[idx];
+            (endpoint.argv.clone(), endpoint.label.clone(), endpoint.format)
         };
-        let session = self.sessions[idx].clone();
 
-        // Resume only a claude endpoint that already holds a session: the server
-        // keeps this side's context, so we send only the peer's new message
-        // instead of the whole transcript (the O(n^2) resend). A Text endpoint
-        // has no session, and a side that has not spoken yet has no id — both
-        // take the fresh whole-history path.
-        let resume = format == ReplyFormat::ClaudeJson && session.is_some();
-        let prompt = if resume {
+        // Resume when this side holds a live session: the server keeps its
+        // context, so we send only the peer's new message instead of the whole
+        // transcript (the O(n^2) resend). Only a structured endpoint ever opens
+        // a session — a Text turn decodes to no id, so its `Session` stays
+        // `fresh` forever and `resuming()` is None — so this state-based gate
+        // subsumes the old explicit `format == ClaudeJson` check. Clone the id
+        // out so the `&self.sessions` borrow ends before the later `record`.
+        let resume_id: Option<String> = self.sessions[idx].resuming().map(str::to_string);
+        let prompt = if resume_id.is_some() {
             render_resume_prompt(&self.spec.seed, &self.history, &label)
         } else {
             render_prompt(&self.spec.seed, &self.history, &label)
         };
         // argv = endpoint ++ (["--resume", id] when resuming) ++ [prompt].
-        let mut argv: Vec<String> = endpoint.to_vec();
-        if resume {
+        let mut argv = argv_template;
+        if let Some(id) = resume_id {
             argv.push("--resume".to_string());
-            argv.push(session.expect("resume implies a session"));
+            argv.push(id);
         }
         argv.push(prompt);
 
@@ -235,18 +255,15 @@ impl Plugin for Dialogue {
         let decoded = decode_reply(format, panes, id);
         drop(guard); // close the pane now (its blocking teardown is lock-free).
 
-        // Session bookkeeping (the resume seam). A reply that carries a session
-        // id is a healthy, continuable session — store it (idempotent; the id is
-        // stable across resume, and a reply reporting a tool-side error on a live
-        // session is still continuable). A RESUME turn that came back with NO id
-        // means the resume did not produce a usable session (bad/expired id, or a
-        // garbled envelope) — reset this side so the next same-side turn
-        // re-establishes context via the whole-history fresh path (self-healing).
-        match decoded.session_id {
-            Some(sid) => self.sessions[idx] = Some(sid),
-            None if resume => self.sessions[idx] = None,
-            None => {}
-        }
+        // Fold the decoded id into this side's lifecycle (the resume seam). A
+        // present id opens or keeps the resumed session (idempotent; the id is
+        // stable across resume, and a tool-side error on a live session is still
+        // continuable). Its absence on a resumed side is a lost resume
+        // (bad/expired id, or a garbled envelope) that self-heals to the fresh
+        // whole-history path; on a fresh side it is a no-op. The `Session` state
+        // machine owns all four transitions — this plugin no longer hand-rolls
+        // the `None if resume => reset` rule.
+        self.sessions[idx].record(decoded.session_id);
 
         // The reply is kept verbatim so the conversation payload — code blocks,
         // lists, multi-line answers — survives; turns stay delimited by
@@ -565,8 +582,8 @@ mod tests {
             json_fake(&result, 30, 20),
             "go",
         );
-        spec.format_a = ReplyFormat::ClaudeJson;
-        spec.format_b = ReplyFormat::ClaudeJson;
+        spec.endpoints[0].format = ReplyFormat::ClaudeJson;
+        spec.endpoints[1].format = ReplyFormat::ClaudeJson;
         let (_ws, outcome, transcript) = run(spec, 2);
 
         assert_eq!(outcome.state, OutcomeState::Exhausted);
@@ -585,8 +602,8 @@ mod tests {
         // 100-iteration run still stops after one turn. Proves tokens (not
         // iterations) bound the run.
         let mut spec = DialogueSpec::new(json_fake("hi", 30, 20), json_fake("hi", 30, 20), "go");
-        spec.format_a = ReplyFormat::ClaudeJson;
-        spec.format_b = ReplyFormat::ClaudeJson;
+        spec.endpoints[0].format = ReplyFormat::ClaudeJson;
+        spec.endpoints[1].format = ReplyFormat::ClaudeJson;
         let (_ws, outcome, _t) = run_with(
             spec,
             Guardrails { max_iterations: 100, max_cost: Some(Cost::Tokens(50)) },
@@ -609,7 +626,7 @@ mod tests {
             "_".to_string(),
         ];
         let mut spec = DialogueSpec::new(garbage, vec!["true".to_string()], "go");
-        spec.format_a = ReplyFormat::ClaudeJson;
+        spec.endpoints[0].format = ReplyFormat::ClaudeJson;
         let (_ws, outcome, transcript) = run(spec, 1);
 
         assert_eq!(outcome.state, OutcomeState::Exhausted, "must not Fail on bad JSON");
@@ -629,7 +646,7 @@ mod tests {
         // still billed. (Before the fix, the whole envelope was recorded as the
         // turn text.)
         let mut spec = DialogueSpec::new(usage_only_fake(7, 3), vec!["true".to_string()], "go");
-        spec.format_a = ReplyFormat::ClaudeJson;
+        spec.endpoints[0].format = ReplyFormat::ClaudeJson;
         let (_ws, outcome, transcript) = run(spec, 1);
 
         assert_eq!(outcome.state, OutcomeState::Exhausted);
@@ -649,8 +666,8 @@ mod tests {
         // its LATER turn resumes the session id it stored — proving the resume
         // seam fires on turn 2+ of each side, never turn 1. Network-free.
         let mut spec = DialogueSpec::new(resume_probe_fake(), resume_probe_fake(), "go");
-        spec.format_a = ReplyFormat::ClaudeJson;
-        spec.format_b = ReplyFormat::ClaudeJson;
+        spec.endpoints[0].format = ReplyFormat::ClaudeJson;
+        spec.endpoints[1].format = ReplyFormat::ClaudeJson;
         let (_ws, outcome, transcript) = run(spec, 4);
 
         assert_eq!(outcome.state, OutcomeState::Exhausted);
@@ -672,8 +689,8 @@ mod tests {
         // appears on BOTH turn 0 and turn 4 — without self-heal turn 4 would
         // still resume and re-garble. Network-free.
         let mut spec = DialogueSpec::new(selfheal_fake(), selfheal_fake(), "go");
-        spec.format_a = ReplyFormat::ClaudeJson;
-        spec.format_b = ReplyFormat::ClaudeJson;
+        spec.endpoints[0].format = ReplyFormat::ClaudeJson;
+        spec.endpoints[1].format = ReplyFormat::ClaudeJson;
         let (_ws, outcome, transcript) = run(spec, 5);
 
         assert_eq!(outcome.state, OutcomeState::Exhausted);
@@ -844,8 +861,8 @@ mod tests {
         );
         spec.cols = 80;
         spec.rows = 24;
-        spec.format_a = ReplyFormat::ClaudeJson;
-        spec.format_b = ReplyFormat::ClaudeJson;
+        spec.endpoints[0].format = ReplyFormat::ClaudeJson;
+        spec.endpoints[1].format = ReplyFormat::ClaudeJson;
         let (_ws, outcome, transcript) = run(spec, 4);
 
         assert_eq!(outcome.state, OutcomeState::Exhausted);

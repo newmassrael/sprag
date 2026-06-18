@@ -19,9 +19,20 @@
 //! `Driver` is its dogfood.
 
 pub(crate) mod sm {
-    // Generated code: blanket-allow rustc + clippy lints (machine-emitted).
-    #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]
-    include!(concat!(env!("OUT_DIR"), "/orchestration_sm.rs"));
+    //! Generated SCE state machines — one submodule per control statechart, each
+    //! its own `include!` so the duplicate generated imports (`use
+    //! core::time::Duration`, the runtime umbrella) stay isolated per machine.
+    //! Machine-emitted code: blanket-allow rustc + clippy lints.
+
+    pub(crate) mod orchestration {
+        #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]
+        include!(concat!(env!("OUT_DIR"), "/orchestration_sm.rs"));
+    }
+
+    pub(crate) mod session {
+        #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]
+        include!(concat!(env!("OUT_DIR"), "/session_sm.rs"));
+    }
 }
 
 pub mod access;
@@ -33,12 +44,13 @@ pub mod pipe;
 pub mod plugin;
 pub mod reply;
 pub mod run;
+pub(crate) mod session;
 
 pub use access::{
     KeyStroke, PaneAccess, PaneError, PaneLifecycle, PaneRawCapture, PaneRow, WorkspacePaneAccess,
 };
 pub use agent::{Agent, AgentSpec};
-pub use dialogue::{Dialogue, DialogueSpec, ReplyFormat};
+pub use dialogue::{Dialogue, DialogueSpec, Endpoint, ReplyFormat};
 pub use driver::{Driver, Guardrails, Outcome, OutcomeState};
 pub use orchestrator::{OrchestrationSpec, Orchestrator};
 pub use pipe::Pipe;
