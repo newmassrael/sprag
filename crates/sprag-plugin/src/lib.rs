@@ -41,5 +41,5 @@ pub use driver::{Driver, Guardrails, Outcome, OutcomeState};
 pub use orchestrator::{OrchestrationSpec, Orchestrator};
 pub use pipe::Pipe;
 pub use plugin::{Plugin, Step, Verdict};
-pub use reply::{parse_claude_json, ClaudeReply};
+pub use reply::{parse_claude_json, AgentReply};
 pub use run::{poll_until, RunContext, Waited};

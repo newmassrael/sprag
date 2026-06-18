@@ -660,6 +660,36 @@
         "Raw capture is bounded at 256 KiB head-anchored: a >256 KiB single reply truncates -> parse fails -> graceful byte-proxy fallback (a documented bound, not silent corruption)."
       ]
     },
+    "Round 19": {
+      "decision_summary": "Neutralize the decoded-reply type name to mark the abstraction boundary surfaced by review: the decoded shape is tool-agnostic (AgentReply), while the parser and format variant stay tool-specific (parse_claude_json / ReplyFormat::ClaudeJson) because AI-tool JSON schemas are not standardized.",
+      "changes_bullets": [
+        "crates/sprag-plugin/src/reply.rs + lib.rs: renamed ClaudeReply -> AgentReply (the tool-agnostic decoded shape: text + tokens + is_error); parse_claude_json now returns AgentReply, and the struct/module doc generalized to 'a decoded agent reply, independent of which tool produced it'. The parser parse_claude_json and the per-endpoint ReplyFormat::ClaudeJson stay claude-named ON PURPOSE -- they encode claude's specific envelope schema (result / usage.input_tokens), and a generic 'Json' name would be a false abstraction since no cross-tool AI-JSON standard exists.",
+        "Made the extension path for a second print-mode-JSON agent explicit: add a ReplyFormat variant + a parser mapping that tool's envelope onto the SAME AgentReply + one decode_reply match arm + one host arg mapping (~30 lines). The raw-stdout tap (pane_raw_output), the cost channel (Step::cost), and the graceful-degradation fallback are already tool-agnostic, so no new result type and no foundation change. An interactive-TUI agent (non print-mode) remains the harder, separately-tracked capture problem."
+      ],
+      "verification_bullets": [
+        "Pure rename, no behavior change: 106 workspace tests pass, cargo clippy --workspace --all-targets clean; grep confirms zero ClaudeReply references remain. Prompted by a design question (could the R18 cost path serve a non-claude agent?) -- the answer is yes via the enum+parser seam, and the result type is now named so the shape reads as generic while the parser reads as specific."
+      ],
+      "impact_refs": [
+        "2"
+      ],
+      "carry_forward_bullets": [
+        "When a second AgentReply producer lands, split the parsers into per-tool modules (e.g. reply::claude / reply::<tool>) under the shared AgentReply + a ReplyFormat variant each; only then is a trait-object decoder (vs the enum) worth its registry machinery (YAGNI until an out-of-tree decoder appears)."
+      ],
+      "publishable_decision_summary": "Neutralize the decoded-reply type name to mark the abstraction boundary surfaced by review: the decoded shape is tool-agnostic (AgentReply), while the parser and format variant stay tool-specific (parse_claude_json / ReplyFormat::ClaudeJson) because AI-tool JSON schemas are not standardized.",
+      "publishable_changes_bullets": [
+        "crates/sprag-plugin/src/reply.rs + lib.rs: renamed ClaudeReply -> AgentReply (the tool-agnostic decoded shape: text + tokens + is_error); parse_claude_json now returns AgentReply, and the struct/module doc generalized to 'a decoded agent reply, independent of which tool produced it'. The parser parse_claude_json and the per-endpoint ReplyFormat::ClaudeJson stay claude-named ON PURPOSE -- they encode claude's specific envelope schema (result / usage.input_tokens), and a generic 'Json' name would be a false abstraction since no cross-tool AI-JSON standard exists.",
+        "Made the extension path for a second print-mode-JSON agent explicit: add a ReplyFormat variant + a parser mapping that tool's envelope onto the SAME AgentReply + one decode_reply match arm + one host arg mapping (~30 lines). The raw-stdout tap (pane_raw_output), the cost channel (Step::cost), and the graceful-degradation fallback are already tool-agnostic, so no new result type and no foundation change. An interactive-TUI agent (non print-mode) remains the harder, separately-tracked capture problem."
+      ],
+      "publishable_verification_bullets": [
+        "Pure rename, no behavior change: 106 workspace tests pass, cargo clippy --workspace --all-targets clean; grep confirms zero ClaudeReply references remain. Prompted by a design question (could the R18 cost path serve a non-claude agent?) -- the answer is yes via the enum+parser seam, and the result type is now named so the shape reads as generic while the parser reads as specific."
+      ],
+      "publishable_impact_refs": [
+        "2"
+      ],
+      "publishable_carry_forward_bullets": [
+        "When a second AgentReply producer lands, split the parsers into per-tool modules (e.g. reply::claude / reply::<tool>) under the shared AgentReply + a ReplyFormat variant each; only then is a trait-object decoder (vs the enum) worth its registry machinery (YAGNI until an out-of-tree decoder appears)."
+      ]
+    },
     "Round 2": {
       "decision_summary": "Project rule: use SCE (SCXML Core Engine) for sprag statechart and codegen logic where applicable.",
       "changes_bullets": [

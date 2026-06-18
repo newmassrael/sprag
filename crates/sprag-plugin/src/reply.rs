@@ -6,8 +6,9 @@
 //! of work the emulator does parsing PTY bytes — not serialization of sprag's
 //! own types. So `serde_json` here does not breach the substrate's serde-free
 //! contract (the host still owns rendering sprag types onto the RPC wire), and
-//! the public surface stays plain: [`ClaudeReply`] carries no derives, the
-//! envelope is Value-walked rather than deserialized into a DTO.
+//! the public surface stays plain: [`AgentReply`] (the tool-agnostic decoded
+//! shape) carries no derives, the envelope is Value-walked rather than
+//! deserialized into a DTO.
 //!
 //! Robustness is the whole point. Every field is optional and any malformed,
 //! truncated, or unrecognized input degrades to `None`, so a broken envelope
@@ -16,21 +17,23 @@
 
 use serde_json::Value;
 
-/// The essentials parsed out of a Claude CLI result envelope.
+/// A decoded agent reply — the normalized result of parsing a structured
+/// AI-tool output, independent of which tool produced it. The *shape* is
+/// tool-agnostic (reply text + real token cost); a per-tool parser (today
+/// [`parse_claude_json`]) maps that tool's specific envelope onto it. A second
+/// adapter adds its own parser, not a new result type.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ClaudeReply {
-    /// The reply text (`result`), trimmed; `None` if the envelope carried no
-    /// `result` field (the caller falls back to the raw captured text).
+pub struct AgentReply {
+    /// The reply text, trimmed; `None` if the output carried no reply field
+    /// (the caller falls back to the raw captured text).
     pub text: Option<String>,
-    /// Billed tokens this turn (`usage.input_tokens + usage.output_tokens`);
-    /// `None` if the envelope had no `usage` (the caller keeps the byte proxy).
-    /// Cache tokens (`cache_creation`/`cache_read`) are deliberately excluded:
-    /// they are large and bursty, and folding them into the budget would make a
-    /// token guardrail meaningless from one turn to the next.
+    /// Real billed tokens for this turn (input + output); `None` if the output
+    /// reported no usage (the caller keeps the byte proxy). The Driver's cost
+    /// guardrail bills this when present.
     pub tokens: Option<u64>,
-    /// Whether the tool reported an error (`is_error`). A well-formed envelope
-    /// can still report a tool-side error; that is a reply to record, not a run
-    /// failure to abort on.
+    /// Whether the tool reported a tool-side error. A well-formed reply can
+    /// still report an error; that is a reply to record, not a run failure to
+    /// abort on.
     pub is_error: bool,
 }
 
@@ -43,7 +46,7 @@ pub struct ClaudeReply {
 /// malformed (a truncated/oversized capture), or the object is not a result
 /// envelope (no `result` and no `usage` key). Never panics.
 #[must_use]
-pub fn parse_claude_json(raw: &[u8]) -> Option<ClaudeReply> {
+pub fn parse_claude_json(raw: &[u8]) -> Option<AgentReply> {
     let text = String::from_utf8_lossy(raw);
     let span = json_object_span(&text)?;
     let value: Value = serde_json::from_str(span).ok()?;
@@ -53,7 +56,7 @@ pub fn parse_claude_json(raw: &[u8]) -> Option<ClaudeReply> {
     if !object.contains_key("result") && !object.contains_key("usage") {
         return None;
     }
-    Some(ClaudeReply {
+    Some(AgentReply {
         text: object
             .get("result")
             .and_then(Value::as_str)
