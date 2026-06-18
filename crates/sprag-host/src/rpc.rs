@@ -338,21 +338,42 @@ mod tests {
 
     #[test]
     fn runs_a_dialogue_plugin_to_done_with_a_transcript() {
-        // Two one-shot fake endpoints tag the message distinctly; the dialogue
-        // threads it across turns. Each turn spawns a transient pane that must
-        // be reaped, so only the host's initial pane survives.
+        // Two count-fake endpoints: each replies with the newline-count of its
+        // prompt, which grows as the transcript accumulates — proving the host
+        // run passes the WHOLE history each turn. Each turn spawns a transient
+        // pane that must be reaped, so only the host's initial pane survives.
         let state = host_with("cat", 40, 6);
-        let started = serve_one(
-            &state,
-            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"dialogue","endpoint_a":["/bin/sh","-c","printf '%s\\n' \"A:$1\"","_"],"endpoint_b":["/bin/sh","-c","printf '%s\\n' \"B:$1\"","_"],"seed":"x","cols":40,"rows":6,"guardrails":{"max_iterations":3,"max_injected_bytes":1048576}}}}"#,
-        );
+        let endpoint = serde_json::json!([
+            "/bin/sh",
+            "-c",
+            "n=$(printf '%s' \"$1\" | wc -l | tr -d ' '); printf 'saw%s\\n' \"$n\"",
+            "_"
+        ]);
+        let request = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "scene/invoke",
+            "params": {
+                "path": "/sprag_plugins/external/run",
+                "args": {
+                    "plugin": "dialogue",
+                    "endpoint_a": endpoint,
+                    "endpoint_b": endpoint,
+                    "seed": "count upward",
+                    "cols": 40, "rows": 6,
+                    "guardrails": { "max_iterations": 3, "max_injected_bytes": 1048576 }
+                }
+            }
+        })
+        .to_string();
+        let started = serve_one(&state, &request);
         assert_eq!(started["result"].as_i64(), Some(0), "run id: {started}");
 
         let run_state = wait_for_run0_state(&state).expect("dialogue run reached done");
         assert_eq!(run_state["outcome"]["state"], "exhausted");
         assert!(
-            run_state["output"].as_str().is_some_and(|o| o.contains("B:A:x")),
-            "expected the threaded transcript in output, got: {}",
+            run_state["output"]
+                .as_str()
+                .is_some_and(|o| o.contains("A: saw1") && o.contains("B: saw2")),
+            "expected the accumulating transcript in output, got: {}",
             run_state["output"]
         );
         // Only the initial pane remains — every per-turn pane was reaped.

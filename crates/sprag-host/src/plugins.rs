@@ -113,6 +113,12 @@ impl PluginsExternal {
                 let endpoint_b = require_string_array(map, "endpoint_b")?;
                 let seed = require_str(map, "seed")?.to_string();
                 let mut spec = DialogueSpec::new(endpoint_a, endpoint_b, seed);
+                if let Some(label) = opt_str(map, "label_a")? {
+                    spec.label_a = label.to_string();
+                }
+                if let Some(label) = opt_str(map, "label_b")? {
+                    spec.label_b = label.to_string();
+                }
                 let (default_cols, default_rows) = lock(&self.workspace).default_size();
                 spec.cols = opt_dim(map, "cols")?.unwrap_or(default_cols);
                 spec.rows = opt_dim(map, "rows")?.unwrap_or(default_rows);

@@ -404,6 +404,54 @@
         "Interactive cancel (designed since R11): an Arc<AtomicBool> trigger + a cancelled statechart final + OutcomeState::Cancelled — increasingly wanted now that runs spawn real network-bound child processes."
       ]
     },
+    "Round 14": {
+      "decision_summary": "Make Dialogue stateful: each turn passes the whole accumulated transcript (instruction-framed) so two AI tools converse coherently, not as a telephone game.",
+      "changes_bullets": [
+        "crates/sprag-plugin/src/dialogue.rs: Dialogue is now STATEFUL — replaced current_message (last reply only) with history: Vec<String> of \"<label>: <reply>\". Each turn renders a prompt = a one-line instruction naming the current speaker + the seed + the labelled transcript so far (render_prompt; exactly one \\n per logical line, no trailing newline), spawns the endpoint with that prompt as its final argv element, captures the reply, collapses it to one line, and appends \"<label>: <reply>\". captured() = history.join(\"\\n\"). DialogueSpec gains label_a/label_b (default A/B).",
+        "Instruction framing chosen empirically (a live claude -p probe before coding): 'You are A... reply with only A's next message' returns a bare message, vs 'A: 3' for transcript-completion — so the plugin owns the labelling. The R13 pane-lifecycle/PaneGuard/pane_eof/capture machinery is reused unchanged; the statechart is untouched (still never-converge -> Exhausted, transcript = payload).",
+        "Multi-line replies are collapsed to a single line (split_whitespace().join(\" \")) so a reply cannot inject unlabelled lines into the next turn's prompt (a correctness flaw the Plan agent caught; invisible to single-line fakes).",
+        "Host (sprag-host/plugins.rs): the 'dialogue' run arm parses optional label_a/label_b (opt_str). No BoxedPlugin change, no new RPC method, no pinion/SCE change."
+      ],
+      "verification_bullets": [
+        "75 workspace tests pass. Dialogue offline tests consolidated: DELETED the two last-message nesting tests (they asserted the telephone-game behavior, now wrong); ADDED accumulates_full_history_each_turn — two count-fake endpoints reply with the newline-count of their prompt, which grows one line per turn, so the transcript reads A: saw1 / B: saw2 / A: saw3, proving whole-history passing AND alternation. leaves_no_leftover_panes / closes_the_pane_when_a_turn_times_out / no_lifecycle_fails_cleanly kept; rpc runs_a_dialogue_plugin_to_done_with_a_transcript updated to the count-fake shape (its old B:A:x nesting assertion was load-bearing). cargo clippy --workspace --all-targets clean.",
+        "Genuine stateful AI<->AI verified manually: the #[ignore]d two_real_claudes_converse ran two real 'claude -p' instances counting upward over 4 turns (~12.8s); the transcript carried multiple distinct numbers — coherence a stateless telephone game cannot produce.",
+        "Design pressure-tested by a Plan agent: confirmed NO pinion/SCE change (statechart/PaneLifecycle/capture untouched). It caught the multi-line-reply corruption (-> collapse to one line), the count-fake's coupling to the exact render format (-> pinned with a code comment, with strict monotonic-increase as the real invariant), and the host rpc-test ripple (its B:A:x assertion had to move to the count-fake)."
+      ],
+      "impact_refs": [
+        "1",
+        "2",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Whole-history prompting resends the growing transcript every turn (O(n^2) tokens) as one argv element, so a long conversation eventually hits the OS arg-size cap (MAX_ARG_STRLEN ~128KB) and fails loudly via InjectError::Spawn rather than corrupting; claude -p --resume (server-side session) is the optimization to avoid the resend.",
+        "Real token/$ cost accounting (claude -p --output-format json carries usage) to replace the now-inert injected-bytes guardrail (Dialogue reports 0; only max_iterations bounds a run).",
+        "Capture limits inherited from R12/R13: a reply that scrolls past the pane loses off-screen rows (no scrollback projection); multi-line replies are flattened to one line (intentional breaks lost). Interactive-TUI adapters still deferred.",
+        "Interactive cancel (designed since R11): an Arc<AtomicBool> trigger + a cancelled statechart final + OutcomeState::Cancelled — wanted now that runs spawn real network-bound child processes."
+      ],
+      "publishable_decision_summary": "Make Dialogue stateful: each turn passes the whole accumulated transcript (instruction-framed) so two AI tools converse coherently, not as a telephone game.",
+      "publishable_changes_bullets": [
+        "crates/sprag-plugin/src/dialogue.rs: Dialogue is now STATEFUL — replaced current_message (last reply only) with history: Vec<String> of \"<label>: <reply>\". Each turn renders a prompt = a one-line instruction naming the current speaker + the seed + the labelled transcript so far (render_prompt; exactly one \\n per logical line, no trailing newline), spawns the endpoint with that prompt as its final argv element, captures the reply, collapses it to one line, and appends \"<label>: <reply>\". captured() = history.join(\"\\n\"). DialogueSpec gains label_a/label_b (default A/B).",
+        "Instruction framing chosen empirically (a live claude -p probe before coding): 'You are A... reply with only A's next message' returns a bare message, vs 'A: 3' for transcript-completion — so the plugin owns the labelling. The R13 pane-lifecycle/PaneGuard/pane_eof/capture machinery is reused unchanged; the statechart is untouched (still never-converge -> Exhausted, transcript = payload).",
+        "Multi-line replies are collapsed to a single line (split_whitespace().join(\" \")) so a reply cannot inject unlabelled lines into the next turn's prompt (a correctness flaw the Plan agent caught; invisible to single-line fakes).",
+        "Host (sprag-host/plugins.rs): the 'dialogue' run arm parses optional label_a/label_b (opt_str). No BoxedPlugin change, no new RPC method, no pinion/SCE change."
+      ],
+      "publishable_verification_bullets": [
+        "75 workspace tests pass. Dialogue offline tests consolidated: DELETED the two last-message nesting tests (they asserted the telephone-game behavior, now wrong); ADDED accumulates_full_history_each_turn — two count-fake endpoints reply with the newline-count of their prompt, which grows one line per turn, so the transcript reads A: saw1 / B: saw2 / A: saw3, proving whole-history passing AND alternation. leaves_no_leftover_panes / closes_the_pane_when_a_turn_times_out / no_lifecycle_fails_cleanly kept; rpc runs_a_dialogue_plugin_to_done_with_a_transcript updated to the count-fake shape (its old B:A:x nesting assertion was load-bearing). cargo clippy --workspace --all-targets clean.",
+        "Genuine stateful AI<->AI verified manually: the #[ignore]d two_real_claudes_converse ran two real 'claude -p' instances counting upward over 4 turns (~12.8s); the transcript carried multiple distinct numbers — coherence a stateless telephone game cannot produce.",
+        "Design pressure-tested by a Plan agent: confirmed NO pinion/SCE change (statechart/PaneLifecycle/capture untouched). It caught the multi-line-reply corruption (-> collapse to one line), the count-fake's coupling to the exact render format (-> pinned with a code comment, with strict monotonic-increase as the real invariant), and the host rpc-test ripple (its B:A:x assertion had to move to the count-fake)."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "2",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Whole-history prompting resends the growing transcript every turn (O(n^2) tokens) as one argv element, so a long conversation eventually hits the OS arg-size cap (MAX_ARG_STRLEN ~128KB) and fails loudly via InjectError::Spawn rather than corrupting; claude -p --resume (server-side session) is the optimization to avoid the resend.",
+        "Real token/$ cost accounting (claude -p --output-format json carries usage) to replace the now-inert injected-bytes guardrail (Dialogue reports 0; only max_iterations bounds a run).",
+        "Capture limits inherited from R12/R13: a reply that scrolls past the pane loses off-screen rows (no scrollback projection); multi-line replies are flattened to one line (intentional breaks lost). Interactive-TUI adapters still deferred.",
+        "Interactive cancel (designed since R11): an Arc<AtomicBool> trigger + a cancelled statechart final + OutcomeState::Cancelled — wanted now that runs spawn real network-bound child processes."
+      ]
+    },
     "Round 2": {
       "decision_summary": "Project rule: use SCE (SCXML Core Engine) for sprag statechart and codegen logic where applicable.",
       "changes_bullets": [
