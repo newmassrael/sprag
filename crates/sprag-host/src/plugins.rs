@@ -26,7 +26,7 @@ use pinion_core::external::{
 use serde_json::{json, Map, Value};
 use sprag_plugin::{
     Agent, AgentSpec, Dialogue, DialogueSpec, Driver, Guardrails, OrchestrationSpec, Orchestrator,
-    Outcome, OutcomeState, Pipe, Plugin, WorkspacePaneAccess,
+    Outcome, OutcomeState, Pipe, Plugin, RunContext, WorkspacePaneAccess,
 };
 use sprag_terminal::{PaneId, Workspace};
 
@@ -47,7 +47,7 @@ const PLUGINS: &[&str] = &["orchestrator", "pipe", "agent", "dialogue"];
 /// (the README makes loop safety first-class).
 const DEFAULT_GUARDRAILS: Guardrails = Guardrails {
     max_iterations: 100,
-    max_injected_bytes: 64 * 1024,
+    max_cost: 64 * 1024,
 };
 
 /// The plugin host as a pinion `External`: starts background plugin runs over
@@ -92,7 +92,7 @@ impl PluginsExternal {
 
     /// Parse the plugin discriminator + its args, validating target panes
     /// exist (fail fast → synchronous `Rejected`).
-    fn build_plugin(&self, map: &Map<String, Value>) -> Result<(BoxedPlugin, String), InvokeError> {
+    fn build_plugin(&self, map: &Map<String, Value>) -> Result<(PluginKind, String), InvokeError> {
         match require_str(map, "plugin")? {
             "orchestrator" => {
                 let pane = require_pane_id(map, "pane")?;
@@ -101,14 +101,14 @@ impl PluginsExternal {
                 let sentinel = opt_str(map, "sentinel")?.map(str::to_string);
                 let label = format!("orchestrator pane={}", pane.0);
                 let spec = OrchestrationSpec { stimulus, sentinel };
-                Ok((BoxedPlugin::Orchestrator(Orchestrator::new(pane, spec)), label))
+                Ok((PluginKind::Orchestrator(Orchestrator::new(pane, spec)), label))
             }
             "pipe" => {
                 let src = require_pane_id(map, "src")?;
                 let dst = require_pane_id(map, "dst")?;
                 self.require_pane(src)?;
                 self.require_pane(dst)?;
-                Ok((BoxedPlugin::Pipe(Pipe::new(src, dst)), format!("pipe {}->{}", src.0, dst.0)))
+                Ok((PluginKind::Pipe(Pipe::new(src, dst)), format!("pipe {}->{}", src.0, dst.0)))
             }
             "agent" => {
                 let pane = require_pane_id(map, "pane")?;
@@ -122,7 +122,7 @@ impl PluginsExternal {
                     spec.timeout = Duration::from_millis(v.as_u64().ok_or(InvokeError::TypeMismatch)?);
                 }
                 let label = format!("agent pane={}", pane.0);
-                Ok((BoxedPlugin::Agent(Agent::new(pane, spec)), label))
+                Ok((PluginKind::Agent(Agent::new(pane, spec)), label))
             }
             "dialogue" => {
                 // Dialogue creates its own per-turn panes, so there is no target
@@ -149,7 +149,7 @@ impl PluginsExternal {
                     spec.endpoint_a.first().map_or("?", String::as_str),
                     spec.endpoint_b.first().map_or("?", String::as_str),
                 );
-                Ok((BoxedPlugin::Dialogue(Dialogue::new(spec)), label))
+                Ok((PluginKind::Dialogue(Dialogue::new(spec)), label))
             }
             _ => Err(InvokeError::Rejected), // unknown plugin
         }
@@ -165,15 +165,16 @@ impl PluginsExternal {
 
     /// Spawn the plugin on a background thread that drives it to a terminal
     /// state and writes that into a shared cell; register it.
-    fn spawn_run(&self, label: String, mut plugin: BoxedPlugin, guardrails: Guardrails) -> RunId {
+    fn spawn_run(&self, label: String, mut plugin: PluginKind, guardrails: Guardrails) -> RunId {
         let state = Arc::new(Mutex::new(RunState::Running));
         let worker_state = Arc::clone(&state);
-        // The cancel flag is shared three ways: the worker's pane-access reads
-        // it, and the registry holds a clone so a `cancel`/shutdown can set it.
+        // The cancel flag is shared two ways: the run's RunContext reads it, and
+        // the registry holds a clone so a `cancel`/shutdown can set it.
         let cancel = Arc::new(AtomicBool::new(false));
-        let access = WorkspacePaneAccess::with_cancel(Arc::clone(&self.workspace), Arc::clone(&cancel));
+        let run_ctx = RunContext::new(Arc::clone(&cancel));
+        let access = WorkspacePaneAccess::new(Arc::clone(&self.workspace));
         let handle = thread::spawn(move || {
-            let outcome = Driver::new(guardrails).run(plugin.as_plugin(), &access);
+            let outcome = Driver::new(guardrails).run(plugin.as_plugin(), &access, &run_ctx);
             // The worker still owns the plugin after the run, so it can read any
             // content the plugin captured (an AI adapter's reply) for the host.
             let output = plugin.as_plugin().captured();
@@ -230,20 +231,20 @@ impl ExternalIntrospect for PluginsExternal {
 
 /// A bundled plugin chosen at `run` time. An enum (not `Box<dyn Plugin>`) so the
 /// worker thread moves a concrete `Send` value and the match stays explicit.
-enum BoxedPlugin {
+enum PluginKind {
     Orchestrator(Orchestrator),
     Pipe(Pipe),
     Agent(Agent),
     Dialogue(Dialogue),
 }
 
-impl BoxedPlugin {
+impl PluginKind {
     fn as_plugin(&mut self) -> &mut dyn Plugin {
         match self {
-            BoxedPlugin::Orchestrator(orchestrator) => orchestrator,
-            BoxedPlugin::Pipe(pipe) => pipe,
-            BoxedPlugin::Agent(agent) => agent,
-            BoxedPlugin::Dialogue(dialogue) => dialogue,
+            PluginKind::Orchestrator(orchestrator) => orchestrator,
+            PluginKind::Pipe(pipe) => pipe,
+            PluginKind::Agent(agent) => agent,
+            PluginKind::Dialogue(dialogue) => dialogue,
         }
     }
 }
@@ -285,13 +286,13 @@ fn parse_guardrails(map: &Map<String, Value>) -> Result<Guardrails, InvokeError>
             .and_then(|n| u32::try_from(n).ok())
             .ok_or(InvokeError::TypeMismatch)?,
     };
-    let max_injected_bytes = match g.get("max_injected_bytes") {
-        None => DEFAULT_GUARDRAILS.max_injected_bytes,
+    let max_cost = match g.get("max_cost") {
+        None => DEFAULT_GUARDRAILS.max_cost,
         Some(v) => v.as_u64().ok_or(InvokeError::TypeMismatch)?,
     };
     Ok(Guardrails {
         max_iterations,
-        max_injected_bytes,
+        max_cost,
     })
 }
 
@@ -321,7 +322,7 @@ fn outcome_to_json(outcome: &Outcome) -> Value {
     json!({
         "state": state,
         "iterations": outcome.iterations,
-        "injected_bytes": outcome.injected_bytes,
+        "cost": outcome.cost,
         "failure": outcome.failure.as_ref().map(|e| format!("{e:?}")),
     })
 }

@@ -269,6 +269,25 @@ impl Screen {
         self.scrollback.len()
     }
 
+    /// The pane's full output text: scrolled-off lines (scrollback) then the
+    /// visible rows, trailing empty lines stripped, joined by `"\n"`.
+    ///
+    /// This is the SINGLE definition of "the pane's text" — both the in-process
+    /// capture path (`sprag_plugin`) and the RPC `full_text` query read it, so
+    /// the system has one notion of screen text (the `Screen` is the single
+    /// source; this and the visible-grid projection are two views of it).
+    #[must_use]
+    pub fn full_text(&self) -> String {
+        let mut lines: Vec<String> = self.scrollback.iter().cloned().collect();
+        for row in 0..self.rows {
+            lines.push(self.row_text(row));
+        }
+        while lines.last().is_some_and(String::is_empty) {
+            lines.pop();
+        }
+        lines.join("\n")
+    }
+
     // --- mutation surface for VT backends (crate-internal) ---
 
     pub(crate) fn set_cursor(&mut self, cursor: Cursor) {
@@ -319,6 +338,11 @@ impl Screen {
         // it across verbatim (lines are not reflowed to the new width).
         next.scrollback = self.scrollback.clone();
         next
+    }
+
+    /// Drop all retained scrollback (the child sent `ESC [ 3 J`, ED-3).
+    pub(crate) fn clear_scrollback(&mut self) {
+        self.scrollback.clear();
     }
 
     /// Scroll the whole screen up by one row; the bottom row becomes blank.
@@ -422,5 +446,21 @@ mod tests {
         // A wide head + empty trailer must reconstruct to the single cluster.
         let e = em(8, 2, "\u{4e16}\r\n\r\n");
         assert_eq!(e.screen().scrollback_rows().next(), Some("\u{4e16}"));
+    }
+
+    #[test]
+    fn full_text_joins_scrollback_then_visible_trailing_stripped() {
+        // 4 lines on a 2-row screen: "1","2" scroll off, "3","4" visible.
+        let e = em(8, 2, "1\r\n2\r\n3\r\n4");
+        assert_eq!(e.screen().full_text(), "1\n2\n3\n4");
+    }
+
+    #[test]
+    fn ed3_clears_scrollback() {
+        // Populate scrollback, then ESC[3J drops it.
+        let mut e = em(8, 2, "1\r\n2\r\n3");
+        assert!(e.screen().scrollback_len() > 0);
+        e.advance(b"\x1b[3J");
+        assert_eq!(e.screen().scrollback_len(), 0, "ED-3 should clear scrollback");
     }
 }

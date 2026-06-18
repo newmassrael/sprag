@@ -10,7 +10,6 @@
 //! [`WorkspacePaneAccess`] is the production implementation over a shared
 //! [`Workspace`]; it stays pinion-free (the producer/control layer).
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use sprag_input::{encode, Modifiers};
@@ -57,7 +56,7 @@ impl KeyStroke {
 
 /// Why [`PaneAccess::inject`] failed — a typed cause, not a discarded error.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum InjectError {
+pub enum PaneError {
     /// No pane has the given id.
     UnknownPane(PaneId),
     /// A keystroke had no PTY-byte encoding (the offending key).
@@ -99,9 +98,9 @@ pub trait PaneAccess {
     ///
     /// # Errors
     ///
-    /// [`InjectError`] when the pane is unknown, a key cannot be encoded, or
+    /// [`PaneError`] when the pane is unknown, a key cannot be encoded, or
     /// the write fails.
-    fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<u64, InjectError>;
+    fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<u64, PaneError>;
 
     /// The pane *lifecycle* surface (spawn/close), if this implementation
     /// supports it. `None` by default — read/inject plugins never need it, so
@@ -111,18 +110,6 @@ pub trait PaneAccess {
     /// read/inject surface (interface segregation).
     fn lifecycle(&self) -> Option<&dyn PaneLifecycle> {
         None
-    }
-
-    /// Whether this run has been asked to stop. A *run-lifecycle* signal (the
-    /// host raises it), surfaced here because the [`Driver`] and every plugin
-    /// already share `&dyn PaneAccess` — it is not pane-scoped. Defaults off,
-    /// like [`PaneAccess::lifecycle`]: the Driver checks it between steps and a
-    /// plugin's wait loop checks it mid-step, so a long in-flight turn aborts
-    /// promptly.
-    ///
-    /// [`Driver`]: crate::driver::Driver
-    fn cancelled(&self) -> bool {
-        false
     }
 }
 
@@ -136,8 +123,8 @@ pub trait PaneLifecycle {
     ///
     /// # Errors
     ///
-    /// [`InjectError::Spawn`] when `argv` is empty or the pane cannot start.
-    fn spawn(&self, argv: &[String], cols: u16, rows: u16) -> Result<PaneId, InjectError>;
+    /// [`PaneError::Spawn`] when `argv` is empty or the pane cannot start.
+    fn spawn(&self, argv: &[String], cols: u16, rows: u16) -> Result<PaneId, PaneError>;
 
     /// Close (reap) the pane with `id`, returning whether it existed. The
     /// pane's blocking teardown runs outside any shared lock.
@@ -147,28 +134,13 @@ pub trait PaneLifecycle {
 /// [`PaneAccess`] over a shared [`Workspace`] — the production implementation.
 pub struct WorkspacePaneAccess {
     workspace: Arc<Mutex<Workspace>>,
-    /// The run's cancel flag, shared with the host (which sets it). The default
-    /// from [`new`](WorkspacePaneAccess::new) is never set; the host injects a
-    /// shared flag via [`with_cancel`](WorkspacePaneAccess::with_cancel).
-    cancel: Arc<AtomicBool>,
 }
 
 impl WorkspacePaneAccess {
-    /// Wrap a shared workspace as the plugin pane-access surface, with a private
-    /// never-set cancel flag (the run cannot be cancelled).
+    /// Wrap a shared workspace as the plugin pane-access surface.
     #[must_use]
     pub fn new(workspace: Arc<Mutex<Workspace>>) -> Self {
-        Self {
-            workspace,
-            cancel: Arc::new(AtomicBool::new(false)),
-        }
-    }
-
-    /// Wrap a shared workspace with a host-shared `cancel` flag, so the host can
-    /// stop this run by setting it.
-    #[must_use]
-    pub fn with_cancel(workspace: Arc<Mutex<Workspace>>, cancel: Arc<AtomicBool>) -> Self {
-        Self { workspace, cancel }
+        Self { workspace }
     }
 
     /// Clone the pane's I/O handle under the workspace lock (released before
@@ -201,38 +173,34 @@ impl PaneAccess for WorkspacePaneAccess {
     }
 
     fn pane_full_text(&self, id: PaneId) -> Option<String> {
-        Some(self.handle(id)?.with_screen(read_full_text))
+        Some(self.handle(id)?.with_screen(Screen::full_text))
     }
 
-    fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<u64, InjectError> {
-        let handle = self.handle(id).ok_or(InjectError::UnknownPane(id))?;
+    fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<u64, PaneError> {
+        let handle = self.handle(id).ok_or(PaneError::UnknownPane(id))?;
         let modes = handle.input_modes();
         let mut bytes = Vec::new();
         for stroke in keys {
             let encoded = encode(&stroke.key, stroke.mods, modes)
-                .ok_or_else(|| InjectError::Encode(stroke.key.clone()))?;
+                .ok_or_else(|| PaneError::Encode(stroke.key.clone()))?;
             bytes.extend_from_slice(&encoded);
         }
         handle
             .write(&bytes)
-            .map_err(|e| InjectError::Write(e.to_string()))?;
+            .map_err(|e| PaneError::Write(e.to_string()))?;
         Ok(bytes.len() as u64)
     }
 
     fn lifecycle(&self) -> Option<&dyn PaneLifecycle> {
         Some(self)
     }
-
-    fn cancelled(&self) -> bool {
-        self.cancel.load(Ordering::Acquire)
-    }
 }
 
 impl PaneLifecycle for WorkspacePaneAccess {
-    fn spawn(&self, argv: &[String], cols: u16, rows: u16) -> Result<PaneId, InjectError> {
+    fn spawn(&self, argv: &[String], cols: u16, rows: u16) -> Result<PaneId, PaneError> {
         let (program, rest) = argv
             .split_first()
-            .ok_or_else(|| InjectError::Spawn("empty argv".to_string()))?;
+            .ok_or_else(|| PaneError::Spawn("empty argv".to_string()))?;
         let mut command = CommandBuilder::new(program.as_str());
         for arg in rest {
             command.arg(arg.as_str());
@@ -242,7 +210,7 @@ impl PaneLifecycle for WorkspacePaneAccess {
         command.env("TERM", "xterm-256color");
         lock(&self.workspace)
             .spawn(command, program.clone(), cols, rows)
-            .map_err(|e| InjectError::Spawn(e.to_string()))
+            .map_err(|e| PaneError::Spawn(e.to_string()))
     }
 
     fn close(&self, id: PaneId) -> bool {
@@ -274,20 +242,6 @@ fn read_rows(screen: &Screen) -> Vec<PaneRow> {
 /// a sentinel the terminal wrapped across rows still matches.
 fn read_collapsed(screen: &Screen) -> String {
     (0..screen.rows()).map(|row| screen.row_text(row)).collect()
-}
-
-/// Full output text: scrolled-off lines (scrollback) then the visible rows,
-/// trailing empty lines stripped, joined by `"\n"`. Captures output longer
-/// than the visible grid (the visible-only reads cannot).
-fn read_full_text(screen: &Screen) -> String {
-    let mut lines: Vec<String> = screen.scrollback_rows().map(str::to_string).collect();
-    for row in 0..screen.rows() {
-        lines.push(screen.row_text(row));
-    }
-    while lines.last().is_some_and(String::is_empty) {
-        lines.pop();
-    }
-    lines.join("\n")
 }
 
 #[cfg(test)]
@@ -340,7 +294,7 @@ mod tests {
     fn inject_into_unknown_pane_is_typed() {
         let access = WorkspacePaneAccess::new(cat_workspace(20, 4));
         let err = access.inject(PaneId(999), &KeyStroke::text("x")).unwrap_err();
-        assert_eq!(err, InjectError::UnknownPane(PaneId(999)));
+        assert_eq!(err, PaneError::UnknownPane(PaneId(999)));
     }
 
     #[test]
@@ -367,7 +321,7 @@ mod tests {
     fn lifecycle_spawn_rejects_empty_argv() {
         let access = WorkspacePaneAccess::new(Arc::new(Mutex::new(Workspace::new((20, 4)))));
         let life = access.lifecycle().unwrap();
-        assert!(matches!(life.spawn(&[], 20, 4), Err(InjectError::Spawn(_))));
+        assert!(matches!(life.spawn(&[], 20, 4), Err(PaneError::Spawn(_))));
     }
 
     #[test]

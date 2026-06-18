@@ -16,8 +16,9 @@
 
 use sprag_terminal::PaneId;
 
-use crate::access::{InjectError, KeyStroke, PaneAccess};
+use crate::access::{KeyStroke, PaneAccess, PaneError};
 use crate::plugin::{Plugin, Step, Verdict};
+use crate::run::RunContext;
 
 /// Relays the source pane's new output into the destination pane.
 pub struct Pipe {
@@ -40,7 +41,7 @@ impl Pipe {
 }
 
 impl Plugin for Pipe {
-    fn step(&mut self, panes: &dyn PaneAccess) -> Result<Step, InjectError> {
+    fn step(&mut self, panes: &dyn PaneAccess, _run: &RunContext) -> Result<Step, PaneError> {
         let rows = panes.pane_rows(self.src).unwrap_or_default();
         if self.consumed.len() < rows.len() {
             self.consumed.resize(rows.len(), 0);
@@ -53,14 +54,14 @@ impl Plugin for Pipe {
                 self.consumed[i] = row.generation;
             }
         }
-        let injected_bytes = if relayed.is_empty() {
+        let cost = if relayed.is_empty() {
             0
         } else {
             panes.inject(self.dst, &KeyStroke::text(&relayed))?
         };
         // The pipe never self-terminates; the Driver's guardrails bind it.
         Ok(Step {
-            injected_bytes,
+            cost,
             verdict: Verdict::Continue,
         })
     }
@@ -117,9 +118,9 @@ mod tests {
         let mut pipe = Pipe::new(src, dst);
         let outcome = Driver::new(Guardrails {
             max_iterations: 5,
-            max_injected_bytes: u64::MAX,
+            max_cost: u64::MAX,
         })
-        .run(&mut pipe, &access);
+        .run(&mut pipe, &access, &RunContext::uncancellable());
         assert_eq!(outcome.state, OutcomeState::Exhausted);
 
         // The destination received the relayed text (its echo is async).

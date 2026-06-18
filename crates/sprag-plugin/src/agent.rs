@@ -23,21 +23,14 @@
 //! prompt's own cooked-mode echo; and a reply that scrolls past the screen
 //! loses the scrolled-off rows (the projection has no scrollback yet).
 
-use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use sprag_input::Modifiers;
 use sprag_terminal::PaneId;
 
-use crate::access::{InjectError, KeyStroke, PaneAccess};
+use crate::access::{KeyStroke, PaneAccess, PaneError};
 use crate::plugin::{Plugin, Step, Verdict};
-
-/// Poll interval while waiting for the pane child to finish replying.
-const REPLY_POLL: Duration = Duration::from_millis(10);
-
-/// Default overall bound on one reply — generous, since a real model thinks for
-/// seconds before answering. Overridable per run.
-pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
+use crate::run::{poll_until, RunContext, Waited, DEFAULT_REPLY_TIMEOUT};
 
 /// What the agent asks and how long it waits for the answer.
 #[derive(Clone, Debug)]
@@ -60,7 +53,7 @@ impl AgentSpec {
         Self {
             prompt: prompt.into(),
             eof: true,
-            timeout: DEFAULT_TIMEOUT,
+            timeout: DEFAULT_REPLY_TIMEOUT,
         }
     }
 }
@@ -101,22 +94,13 @@ impl Agent {
         keys
     }
 
-    /// Wait (bounded by `timeout`) for the pane child to exit — once it has,
-    /// its full reply is on screen ([`PaneAccess::pane_eof`]'s contract).
-    fn await_reply(&self, panes: &dyn PaneAccess) {
-        let start = Instant::now();
-        while start.elapsed() < self.spec.timeout {
-            // Cancel wins over waiting: bail so the run ends promptly.
-            if panes.cancelled() {
-                return;
-            }
-            // An unknown pane (`None`) is treated as done: there is nothing to
-            // wait for, and `capture` will return empty.
-            if panes.pane_eof(self.pane).unwrap_or(true) {
-                return;
-            }
-            sleep(REPLY_POLL);
-        }
+    /// Wait (bounded by `timeout`, cancellable) for the pane child to exit —
+    /// once it has, its full reply is on screen ([`PaneAccess::pane_eof`]'s
+    /// contract). An unknown pane (`None`) counts as done.
+    fn await_reply(&self, panes: &dyn PaneAccess, run: &RunContext) -> Waited {
+        poll_until(run, self.spec.timeout, || {
+            panes.pane_eof(self.pane).unwrap_or(true)
+        })
     }
 
     /// Capture the rows damaged since `baseline` — the reply region — joined as
@@ -133,7 +117,7 @@ impl Agent {
 }
 
 impl Plugin for Agent {
-    fn step(&mut self, panes: &dyn PaneAccess) -> Result<Step, InjectError> {
+    fn step(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Step, PaneError> {
         // Baseline the damage generations before acting, so `capture` isolates
         // this prompt's reply (and its cooked-mode echo) from prior content.
         let baseline: Vec<u64> = panes
@@ -141,14 +125,13 @@ impl Plugin for Agent {
             .map(|rows| rows.iter().map(|row| row.generation).collect())
             .unwrap_or_default();
 
-        let injected_bytes = panes.inject(self.pane, &self.prompt_keys())?;
+        let cost = panes.inject(self.pane, &self.prompt_keys())?;
 
-        self.await_reply(panes);
         // If cancelled mid-wait, don't converge or record a partial reply —
         // return Continue so the Driver's loop-top ends the run Cancelled.
-        if panes.cancelled() {
+        if self.await_reply(panes, run) == Waited::Cancelled {
             return Ok(Step {
-                injected_bytes,
+                cost,
                 verdict: Verdict::Continue,
             });
         }
@@ -157,7 +140,7 @@ impl Plugin for Agent {
         // One-shot: one prompt, one captured reply, then converge. The Driver's
         // guardrails still bound it; `timeout` (above) bounds a non-exiting peer.
         Ok(Step {
-            injected_bytes,
+            cost,
             verdict: Verdict::Converged,
         })
     }
@@ -193,9 +176,9 @@ mod tests {
     fn run(access: &WorkspacePaneAccess, agent: &mut Agent) -> Outcome {
         Driver::new(Guardrails {
             max_iterations: 4,
-            max_injected_bytes: u64::MAX,
+            max_cost: u64::MAX,
         })
-        .run(agent, access)
+        .run(agent, access, &RunContext::uncancellable())
     }
 
     #[test]
@@ -255,9 +238,9 @@ mod tests {
         );
         let outcome = Driver::new(Guardrails {
             max_iterations: 2,
-            max_injected_bytes: u64::MAX,
+            max_cost: u64::MAX,
         })
-        .run(&mut agent, &access);
+        .run(&mut agent, &access, &RunContext::uncancellable());
 
         assert_eq!(outcome.state, OutcomeState::Converged);
         let captured = agent.captured().unwrap_or_default();

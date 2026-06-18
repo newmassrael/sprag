@@ -364,7 +364,7 @@ mod tests {
                     "endpoint_b": endpoint,
                     "seed": "count upward",
                     "cols": 40, "rows": 6,
-                    "guardrails": { "max_iterations": 3, "max_injected_bytes": 1048576 }
+                    "guardrails": { "max_iterations": 3, "max_cost": 1048576 }
                 }
             }
         })
@@ -374,15 +374,47 @@ mod tests {
 
         let run_state = wait_for_run0_state(&state).expect("dialogue run reached done");
         assert_eq!(run_state["outcome"]["state"], "exhausted");
+        // The transcript alternates labels and the reported line-counts strictly
+        // increase (the history accumulates each turn) — asserted on the trend,
+        // not exact counts, so the prompt format can change freely.
+        let output = run_state["output"].as_str().unwrap_or_default();
         assert!(
-            run_state["output"]
-                .as_str()
-                .is_some_and(|o| o.contains("A: saw1") && o.contains("B: saw2")),
-            "expected the accumulating transcript in output, got: {}",
-            run_state["output"]
+            output.contains("A: saw") && output.contains("B: saw"),
+            "expected an alternating accumulating transcript, got: {output:?}"
+        );
+        let counts: Vec<u32> = output
+            .match_indices("saw")
+            .map(|(i, _)| {
+                output[i + 3..]
+                    .chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect::<String>()
+                    .parse()
+                    .expect("a saw count")
+            })
+            .collect();
+        assert!(
+            counts.len() == 3 && counts.windows(2).all(|w| w[0] < w[1]),
+            "history must accumulate (strictly increasing): {counts:?}"
         );
         // Only the initial pane remains — every per-turn pane was reaped.
         assert_eq!(lock(state.workspace()).panes().len(), 1, "dialogue leaked a pane");
+    }
+
+    #[test]
+    fn full_text_query_includes_scrolled_off_lines() {
+        // Read-path parity: an external RPC peer reads the same full output
+        // (scrollback + visible) the in-process capture path sees, so a scrolled
+        // reply is not invisible over the wire.
+        let state = host_with("seq 1 30", 20, 4);
+        wait_for_pane0_eof(&state);
+        let resp = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/query","params":{"path":"/pane_0/sprag_input/external/full_text"}}"#,
+        );
+        let text = resp["result"].as_str().unwrap_or_default();
+        assert!(text.contains("\n5\n"), "scrolled-off line 5 missing over RPC: {text:?}");
+        assert!(text.contains("\n30"), "last line missing over RPC: {text:?}");
     }
 
     #[test]
@@ -411,7 +443,7 @@ mod tests {
         let state = host_with("cat", 20, 4);
         let started = serve_one(
             &state,
-            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"orchestrator","pane":0,"stimulus":"ping","sentinel":"ping","guardrails":{"max_iterations":5,"max_injected_bytes":4096}}}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"orchestrator","pane":0,"stimulus":"ping","sentinel":"ping","guardrails":{"max_iterations":5,"max_cost":4096}}}}"#,
         );
         assert_eq!(started["result"].as_i64(), Some(0), "run id: {started}");
         assert_eq!(wait_for_run_done(&state).as_deref(), Some("converged"));
@@ -437,7 +469,7 @@ mod tests {
         let state = host_with("sleep 5", 20, 4);
         serve_one(
             &state,
-            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"orchestrator","pane":0,"stimulus":"x","guardrails":{"max_iterations":2,"max_injected_bytes":1048576}}}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"orchestrator","pane":0,"stimulus":"x","guardrails":{"max_iterations":2,"max_cost":1048576}}}}"#,
         );
         let start = Instant::now();
         let snap = serve_one(
@@ -458,7 +490,7 @@ mod tests {
         let state = host_with("sleep 30", 20, 4);
         let started = serve_one(
             &state,
-            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"orchestrator","pane":0,"stimulus":"x","guardrails":{"max_iterations":1000000,"max_injected_bytes":1073741824}}}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"orchestrator","pane":0,"stimulus":"x","guardrails":{"max_iterations":1000000,"max_cost":1073741824}}}}"#,
         );
         assert_eq!(started["result"].as_i64(), Some(0), "run id: {started}");
 
@@ -486,7 +518,7 @@ mod tests {
         let state = host_with("sleep 30", 20, 4);
         serve_one(
             &state,
-            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"orchestrator","pane":0,"stimulus":"x","guardrails":{"max_iterations":1000000,"max_injected_bytes":1073741824}}}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"orchestrator","pane":0,"stimulus":"x","guardrails":{"max_iterations":1000000,"max_cost":1073741824}}}}"#,
         );
 
         let start = Instant::now();

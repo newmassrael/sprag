@@ -31,11 +31,13 @@ pub mod driver;
 pub mod orchestrator;
 pub mod pipe;
 pub mod plugin;
+pub mod run;
 
-pub use access::{InjectError, KeyStroke, PaneAccess, PaneLifecycle, PaneRow, WorkspacePaneAccess};
+pub use access::{KeyStroke, PaneAccess, PaneError, PaneLifecycle, PaneRow, WorkspacePaneAccess};
 pub use agent::{Agent, AgentSpec};
 pub use dialogue::{Dialogue, DialogueSpec};
 pub use driver::{Driver, Guardrails, Outcome, OutcomeState};
 pub use orchestrator::{OrchestrationSpec, Orchestrator};
 pub use pipe::Pipe;
 pub use plugin::{Plugin, Step, Verdict};
+pub use run::{poll_until, RunContext, Waited};

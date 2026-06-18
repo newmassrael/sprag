@@ -8,8 +8,9 @@
 
 use sce_rust_runtime::Engine;
 
-use crate::access::{InjectError, PaneAccess};
+use crate::access::{PaneAccess, PaneError};
 use crate::plugin::{Plugin, Verdict};
+use crate::run::RunContext;
 use crate::sm::{OrchestrationEvent, OrchestrationPolicy, OrchestrationState};
 
 /// The termination guardrails every plugin run is bounded by (first-class
@@ -18,9 +19,11 @@ use crate::sm::{OrchestrationEvent, OrchestrationPolicy, OrchestrationState};
 pub struct Guardrails {
     /// Stop after this many steps.
     pub max_iterations: u32,
-    /// Stop once this many bytes have been injected (a headless proxy for
-    /// token/$ spend; a real AI adapter replaces it with token cost).
-    pub max_injected_bytes: u64,
+    /// Stop once the accumulated step cost reaches this — bytes spent on the
+    /// peer (injected or argv), a headless proxy for token/$ spend that a real
+    /// AI adapter replaces with token cost. Every plugin reports it (no plugin
+    /// silently opts out), so the budget binds uniformly.
+    pub max_cost: u64,
 }
 
 /// Which terminal statechart state a run reached.
@@ -41,9 +44,9 @@ pub enum OutcomeState {
 pub struct Outcome {
     pub state: OutcomeState,
     pub iterations: u32,
-    pub injected_bytes: u64,
+    pub cost: u64,
     /// The cause when `state` is [`OutcomeState::Failed`]; `None` otherwise.
-    pub failure: Option<InjectError>,
+    pub failure: Option<PaneError>,
 }
 
 /// Runs a [`Plugin`] over a [`PaneAccess`] to a terminal [`Outcome`], owning the
@@ -52,8 +55,8 @@ pub struct Driver {
     engine: Engine<OrchestrationPolicy>,
     guardrails: Guardrails,
     iterations: u32,
-    injected_bytes: u64,
-    failure: Option<InjectError>,
+    cost: u64,
+    failure: Option<PaneError>,
 }
 
 impl Driver {
@@ -64,7 +67,7 @@ impl Driver {
             engine: Engine::new(OrchestrationPolicy::new()),
             guardrails,
             iterations: 0,
-            injected_bytes: 0,
+            cost: 0,
             failure: None,
         }
     }
@@ -72,7 +75,12 @@ impl Driver {
     /// Drive `plugin` over `panes` until a terminal state, reporting the
     /// [`Outcome`].
     #[must_use]
-    pub fn run(mut self, plugin: &mut dyn Plugin, panes: &dyn PaneAccess) -> Outcome {
+    pub fn run(
+        mut self,
+        plugin: &mut dyn Plugin,
+        panes: &dyn PaneAccess,
+        run: &RunContext,
+    ) -> Outcome {
         self.engine.initialize();
         self.engine.process_event(OrchestrationEvent::Start);
         // `running` is the only non-final state in the loop.
@@ -80,18 +88,18 @@ impl Driver {
             // Cancel is checked before each step (and again by the plugin's own
             // wait loops mid-step), so a cancel ends the run promptly without
             // running another step.
-            if panes.cancelled() {
+            if run.cancelled() {
                 self.engine.process_event(OrchestrationEvent::Cancel);
                 continue;
             }
-            let event = match plugin.step(panes) {
+            let event = match plugin.step(panes, run) {
                 Err(error) => {
                     self.failure = Some(error);
                     OrchestrationEvent::Fail
                 }
                 Ok(step) => {
                     self.iterations += 1;
-                    self.injected_bytes += step.injected_bytes;
+                    self.cost += step.cost;
                     match step.verdict {
                         Verdict::Converged => OrchestrationEvent::Converge,
                         Verdict::Continue if self.budget_exhausted() => OrchestrationEvent::Exhaust,
@@ -106,7 +114,7 @@ impl Driver {
 
     fn budget_exhausted(&self) -> bool {
         self.iterations >= self.guardrails.max_iterations
-            || self.injected_bytes >= self.guardrails.max_injected_bytes
+            || self.cost >= self.guardrails.max_cost
     }
 
     fn outcome(self) -> Outcome {
@@ -120,7 +128,7 @@ impl Driver {
         Outcome {
             state,
             iterations: self.iterations,
-            injected_bytes: self.injected_bytes,
+            cost: self.cost,
             failure: self.failure,
         }
     }
@@ -131,14 +139,16 @@ mod tests {
     use super::*;
     use crate::access::{KeyStroke, PaneRow};
     use crate::plugin::Step;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
     use sprag_terminal::PaneId;
 
     /// A plugin whose step always fails — to pin the Driver's Err -> Failed
     /// mapping deterministically, no threads or PTY.
     struct FailingPlugin;
     impl Plugin for FailingPlugin {
-        fn step(&mut self, _panes: &dyn PaneAccess) -> Result<Step, InjectError> {
-            Err(InjectError::UnknownPane(PaneId(0)))
+        fn step(&mut self, _panes: &dyn PaneAccess, _run: &RunContext) -> Result<Step, PaneError> {
+            Err(PaneError::UnknownPane(PaneId(0)))
         }
     }
 
@@ -160,8 +170,8 @@ mod tests {
         fn pane_full_text(&self, _id: PaneId) -> Option<String> {
             None
         }
-        fn inject(&self, _id: PaneId, _keys: &[KeyStroke]) -> Result<u64, InjectError> {
-            Err(InjectError::UnknownPane(PaneId(0)))
+        fn inject(&self, _id: PaneId, _keys: &[KeyStroke]) -> Result<u64, PaneError> {
+            Err(PaneError::UnknownPane(PaneId(0)))
         }
     }
 
@@ -169,50 +179,24 @@ mod tests {
     fn driver_maps_a_step_error_to_failed_with_the_cause() {
         let outcome = Driver::new(Guardrails {
             max_iterations: 5,
-            max_injected_bytes: 100,
+            max_cost: 100,
         })
-        .run(&mut FailingPlugin, &NoPanes);
+        .run(&mut FailingPlugin, &NoPanes, &RunContext::uncancellable());
         assert_eq!(outcome.state, OutcomeState::Failed);
         assert_eq!(outcome.iterations, 0);
-        assert_eq!(outcome.failure, Some(InjectError::UnknownPane(PaneId(0))));
-    }
-
-    /// Panes whose cancel signal is already raised — the loop-top check ends the
-    /// run before any step runs.
-    struct CancelledPanes;
-    impl PaneAccess for CancelledPanes {
-        fn pane_ids(&self) -> Vec<PaneId> {
-            Vec::new()
-        }
-        fn pane_collapsed(&self, _id: PaneId) -> Option<String> {
-            None
-        }
-        fn pane_rows(&self, _id: PaneId) -> Option<Vec<PaneRow>> {
-            None
-        }
-        fn pane_eof(&self, _id: PaneId) -> Option<bool> {
-            None
-        }
-        fn pane_full_text(&self, _id: PaneId) -> Option<String> {
-            None
-        }
-        fn inject(&self, _id: PaneId, _keys: &[KeyStroke]) -> Result<u64, InjectError> {
-            Err(InjectError::UnknownPane(PaneId(0)))
-        }
-        fn cancelled(&self) -> bool {
-            true
-        }
+        assert_eq!(outcome.failure, Some(PaneError::UnknownPane(PaneId(0))));
     }
 
     #[test]
     fn driver_ends_cancelled_without_running_a_step() {
-        // The plugin would fail if stepped, but cancel pre-empts it: Cancelled,
-        // zero iterations, no failure recorded.
+        // The plugin would fail if stepped, but a pre-raised cancel pre-empts
+        // it at the loop top: Cancelled, zero iterations, no failure recorded.
+        let cancel = Arc::new(AtomicBool::new(true));
         let outcome = Driver::new(Guardrails {
             max_iterations: 5,
-            max_injected_bytes: 100,
+            max_cost: 100,
         })
-        .run(&mut FailingPlugin, &CancelledPanes);
+        .run(&mut FailingPlugin, &NoPanes, &RunContext::new(cancel));
         assert_eq!(outcome.state, OutcomeState::Cancelled);
         assert_eq!(outcome.iterations, 0);
         assert!(outcome.failure.is_none());

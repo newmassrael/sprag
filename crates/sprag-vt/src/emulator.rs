@@ -217,8 +217,8 @@ impl Emulator {
                             self.screen.clear_row(r, g);
                         }
                     }
-                    // No scrollback is modeled (DESIGN.md §3 R1.4 gap).
-                    EraseInDisplay::EraseScrollback => {}
+                    // ED-3: drop the retained scrollback (R16 models it).
+                    EraseInDisplay::EraseScrollback => self.screen.clear_scrollback(),
                 }
             }
             // DeleteLine/InsertLine/ScrollUp/Repeat etc.: not in the subset.

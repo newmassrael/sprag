@@ -83,7 +83,9 @@
         "Glyph paint is deferred (paint-opaque); the headless data path does not need it",
         "Headless winsize (R3): producer sets grid rect from dims x CellMetric; compute_layout is windowed",
         "RPC server read-only (R4): scene/key does not reach the PTY; key->PTY encoding deferred (R2.6)",
-        "Winsize (R5, corrects R3): scene() leaves rect unset; authoritative dims = buffer_cols/rows"
+        "Winsize (R5, corrects R3): scene() leaves rect unset; authoritative dims = buffer_cols/rows",
+        "R16: scrollback is modeled producer-side via Screen::full_text (corrects the R1.4-gap above).",
+        "Screen text is single-source: in-process capture and the RPC full_text query both read full_text."
       ],
       "alternatives_rejected": [
         {
@@ -155,7 +157,11 @@
         "Delivered R1.1-1.3/1.5/1.7 and winsize R1.4; deferred scrollback, glyph paint R1.6, hit-test R1.8",
         "pinion is unpublished; the sprag workspace references ../pinion crates by path",
         "Host viability: pinion_shell::run uses Vello/winit GPU; the headless path is a verification risk",
-        "Data path needs no GPU (R3): pinion-rpc/runtime GPU-free; only human GUI paint needs one"
+        "Data path needs no GPU (R3): pinion-rpc/runtime GPU-free; only human GUI paint needs one",
+        "Status superseded through R16: this body is R1-R5; the changelog R6-R16 is the current record.",
+        "\"deferred scrollback\" above is no longer true: scrollback was delivered in R16.",
+        "R6-R16 delivered: input, mux, SCE orchestration, plugin API+RPC, AI adapters, cancel, scrollback.",
+        "R17 reconciled the AI layer: RunContext cancel seam, poll_until, cost guardrail, lossless capture."
       ],
       "alternatives_rejected": [
         {
@@ -546,6 +552,58 @@
         "The --resume optimization for Dialogue (avoid the O(n^2) whole-history resend and the MAX_ARG_STRLEN single-arg ceiling).",
         "Scrollback is text-only (no per-cell attrs) and not reflowed on resize; a GUI scrollback view would need cells + reflow (deferred rendering concern). Cap is 1000 lines FIFO (output beyond drops the oldest). EraseInDisplay ED-3 (clear-scrollback) is still a no-op.",
         "Agent capture is still visible-only (non-fresh pane); interactive-TUI adapters still deferred."
+      ]
+    },
+    "Round 17": {
+      "decision_summary": "Textbook remediation of the AI layer: fix the smells the session review found — RunContext cancel seam, shared poll_until, coherent cost guardrail, lossless capture, single-source screen text, and SSOT/comment sync — without reworking the verified-clean foundation.",
+      "changes_bullets": [
+        "Cancel seam (ISP fix): removed PaneAccess::cancelled (a run-lifecycle signal smuggled onto a pane-scoped trait); new RunContext in crates/sprag-plugin/src/run.rs threaded into Plugin::step and Driver::run, built host-side from the run's Arc<AtomicBool>. Each client now depends only on what it uses.",
+        "De-duplicated the await loops: the three hand-rolled bounded-cancellable waits (Orchestrator::observe, Agent::await_reply, Dialogue's await) collapse to one shared run::poll_until returning a Waited enum; shared POLL_INTERVAL + DEFAULT_REPLY_TIMEOUT constants (the per-plugin copies are gone).",
+        "Coherent cost guardrail: Step.injected_bytes -> Step.cost, Guardrails.max_injected_bytes -> max_cost; Dialogue now reports its argv prompt bytes (was a hardcoded 0), so the budget binds every plugin in one currency rather than being inert for the heaviest one.",
+        "Lossless capture: Dialogue stops flattening replies (removed split_whitespace().join) — replies are kept verbatim in a structured Vec<Turn>, rendered blank-line-delimited (render_turn) so code/lists/multi-line answers survive and turn boundaries stay clear.",
+        "Single-source screen text + corrections: Screen::full_text (sprag-vt) is the one definition, read by both in-process pane_full_text and a NEW RPC full_text query on the pane External (RPC peers and plugins now see the same screen, scrollback included). ED-3 (ESC[3J) now clears scrollback (was a no-op under a now-false comment). InjectError -> PaneError (covers spawn); BoxedPlugin -> PluginKind. DESIGN §3/§5 got corrective caveats (scrollback modeled; status current through R16)."
+      ],
+      "verification_bullets": [
+        "89 workspace tests pass (sprag-vt 19, sprag-plugin 20 +2 ignored, sprag-host 30, sprag-input 11, sprag-terminal 5, sprag-grid 4); cargo clippy --workspace --all-targets clean. New/reworked tests: port ed3_clears_scrollback + full_text_*; rpc full_text_query_includes_scrolled_off_lines; the dialogue accumulation/long-reply tests made format-robust (parse strictly-increasing counts; verbatim newline needles).",
+        "Both live AI paths re-verified AFTER the refactor: the #[ignore]d drives_real_claude and two_real_claudes_converse passed (~15.8s) — genuine single-shot and stateful AI<->AI behaviour preserved.",
+        "Driven by a session review: two independent adversarial agents (a refactoring lens and an architecture lens) plus direct SSOT verification of the §sections. R17 addresses every must-fix/major they raised (await-loop duplication, cancelled()-on-PaneAccess ISP violation, inert cost guardrail, lossy Dialogue capture, stale EraseScrollback comment, read-path divergence) while leaving the foundation they verified as textbook (layering, SCE dogfood, concurrency/ownership, the PaneLifecycle sub-trait) untouched."
+      ],
+      "impact_refs": [
+        "2",
+        "3",
+        "4",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Real token/$ cost accounting is now structurally ready: the cost channel is named `cost`, and full_text survives scrolling so `claude -p --output-format json` usage is parseable. Switching Dialogue to JSON couples reply extraction to JSON parsing — design the extraction (result field -> next message, usage -> cost).",
+        "--resume optimization for Dialogue (avoid the O(n^2) whole-history resend and the MAX_ARG_STRLEN single-arg ceiling).",
+        "Agent capture is still visible-screen damage-delta (it injects into a non-fresh pane); a shared one-shot-exchange abstraction could unify Agent/Dialogue further IF a third consumer appears — poll_until already shares the wait, so don't over-abstract before then.",
+        "Driver::run is still thread+poll-blocking; an event/wake model is the ceiling for many concurrent long-lived runs (a named risk, not yet due). The DESIGN §section BODIES still describe R1-R5 (corrective caveats added); a full rewrite or a new §6 for the AI-orchestration layer is deferred."
+      ],
+      "publishable_decision_summary": "Textbook remediation of the AI layer: fix the smells the session review found — RunContext cancel seam, shared poll_until, coherent cost guardrail, lossless capture, single-source screen text, and SSOT/comment sync — without reworking the verified-clean foundation.",
+      "publishable_changes_bullets": [
+        "Cancel seam (ISP fix): removed PaneAccess::cancelled (a run-lifecycle signal smuggled onto a pane-scoped trait); new RunContext in crates/sprag-plugin/src/run.rs threaded into Plugin::step and Driver::run, built host-side from the run's Arc<AtomicBool>. Each client now depends only on what it uses.",
+        "De-duplicated the await loops: the three hand-rolled bounded-cancellable waits (Orchestrator::observe, Agent::await_reply, Dialogue's await) collapse to one shared run::poll_until returning a Waited enum; shared POLL_INTERVAL + DEFAULT_REPLY_TIMEOUT constants (the per-plugin copies are gone).",
+        "Coherent cost guardrail: Step.injected_bytes -> Step.cost, Guardrails.max_injected_bytes -> max_cost; Dialogue now reports its argv prompt bytes (was a hardcoded 0), so the budget binds every plugin in one currency rather than being inert for the heaviest one.",
+        "Lossless capture: Dialogue stops flattening replies (removed split_whitespace().join) — replies are kept verbatim in a structured Vec<Turn>, rendered blank-line-delimited (render_turn) so code/lists/multi-line answers survive and turn boundaries stay clear.",
+        "Single-source screen text + corrections: Screen::full_text (sprag-vt) is the one definition, read by both in-process pane_full_text and a NEW RPC full_text query on the pane External (RPC peers and plugins now see the same screen, scrollback included). ED-3 (ESC[3J) now clears scrollback (was a no-op under a now-false comment). InjectError -> PaneError (covers spawn); BoxedPlugin -> PluginKind. DESIGN §3/§5 got corrective caveats (scrollback modeled; status current through R16)."
+      ],
+      "publishable_verification_bullets": [
+        "89 workspace tests pass (sprag-vt 19, sprag-plugin 20 +2 ignored, sprag-host 30, sprag-input 11, sprag-terminal 5, sprag-grid 4); cargo clippy --workspace --all-targets clean. New/reworked tests: port ed3_clears_scrollback + full_text_*; rpc full_text_query_includes_scrolled_off_lines; the dialogue accumulation/long-reply tests made format-robust (parse strictly-increasing counts; verbatim newline needles).",
+        "Both live AI paths re-verified AFTER the refactor: the #[ignore]d drives_real_claude and two_real_claudes_converse passed (~15.8s) — genuine single-shot and stateful AI<->AI behaviour preserved.",
+        "Driven by a session review: two independent adversarial agents (a refactoring lens and an architecture lens) plus direct SSOT verification of the §sections. R17 addresses every must-fix/major they raised (await-loop duplication, cancelled()-on-PaneAccess ISP violation, inert cost guardrail, lossy Dialogue capture, stale EraseScrollback comment, read-path divergence) while leaving the foundation they verified as textbook (layering, SCE dogfood, concurrency/ownership, the PaneLifecycle sub-trait) untouched."
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "3",
+        "4",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Real token/$ cost accounting is now structurally ready: the cost channel is named `cost`, and full_text survives scrolling so `claude -p --output-format json` usage is parseable. Switching Dialogue to JSON couples reply extraction to JSON parsing — design the extraction (result field -> next message, usage -> cost).",
+        "--resume optimization for Dialogue (avoid the O(n^2) whole-history resend and the MAX_ARG_STRLEN single-arg ceiling).",
+        "Agent capture is still visible-screen damage-delta (it injects into a non-fresh pane); a shared one-shot-exchange abstraction could unify Agent/Dialogue further IF a third consumer appears — poll_until already shares the wait, so don't over-abstract before then.",
+        "Driver::run is still thread+poll-blocking; an event/wake model is the ceiling for many concurrent long-lived runs (a named risk, not yet due). The DESIGN §section BODIES still describe R1-R5 (corrective caveats added); a full rewrite or a new §6 for the AI-orchestration layer is deferred."
       ]
     },
     "Round 2": {

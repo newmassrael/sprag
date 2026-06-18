@@ -7,19 +7,17 @@
 //!
 //! [`Driver`]: crate::driver::Driver
 
-use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use sprag_terminal::PaneId;
 
-use crate::access::{InjectError, KeyStroke, PaneAccess};
+use crate::access::{KeyStroke, PaneAccess, PaneError};
 use crate::plugin::{Plugin, Step, Verdict};
+use crate::run::{poll_until, RunContext, Waited};
 
 /// How long a step waits for the pane to react before judging on the current
 /// screen.
 const OBSERVE_TIMEOUT: Duration = Duration::from_millis(500);
-/// Poll interval while observing.
-const OBSERVE_POLL: Duration = Duration::from_millis(10);
 
 /// What the orchestrator drives toward (the guardrails live in [`Guardrails`]).
 ///
@@ -53,29 +51,21 @@ impl Orchestrator {
         }
     }
 
-    /// Wait (bounded) for any row's damage `generation` to advance past the
-    /// pre-stimulus baseline.
-    fn observe(&self, panes: &dyn PaneAccess) {
-        let start = Instant::now();
-        loop {
-            if panes.cancelled() {
-                return;
-            }
-            let advanced = panes.pane_rows(self.pane).is_some_and(|rows| {
+    /// Wait (bounded, cancellable) for any row's damage `generation` to advance
+    /// past the pre-stimulus baseline.
+    fn observe(&self, panes: &dyn PaneAccess, run: &RunContext) -> Waited {
+        poll_until(run, OBSERVE_TIMEOUT, || {
+            panes.pane_rows(self.pane).is_some_and(|rows| {
                 rows.iter().enumerate().any(|(i, row)| {
                     row.generation > self.baseline_generations.get(i).copied().unwrap_or(0)
                 })
-            });
-            if advanced || start.elapsed() >= OBSERVE_TIMEOUT {
-                return;
-            }
-            sleep(OBSERVE_POLL);
-        }
+            })
+        })
     }
 }
 
 impl Plugin for Orchestrator {
-    fn step(&mut self, panes: &dyn PaneAccess) -> Result<Step, InjectError> {
+    fn step(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Step, PaneError> {
         // Baseline before acting, so observe() waits for this step's echo.
         self.baseline_generations = panes
             .pane_rows(self.pane)
@@ -85,15 +75,14 @@ impl Plugin for Orchestrator {
         // Act: inject the stimulus + Enter.
         let mut keys = KeyStroke::text(&self.spec.stimulus);
         keys.push(KeyStroke::named("Enter"));
-        let injected_bytes = panes.inject(self.pane, &keys)?;
+        let cost = panes.inject(self.pane, &keys)?;
 
         // Perceive, then judge against the collapsed (wrap-safe) screen text.
-        self.observe(panes);
         // If cancelled mid-observe, don't judge — return Continue so the
         // Driver's loop-top ends the run Cancelled (not a spurious Converged).
-        if panes.cancelled() {
+        if self.observe(panes, run) == Waited::Cancelled {
             return Ok(Step {
-                injected_bytes,
+                cost,
                 verdict: Verdict::Continue,
             });
         }
@@ -109,7 +98,7 @@ impl Plugin for Orchestrator {
             Verdict::Continue
         };
         Ok(Step {
-            injected_bytes,
+            cost,
             verdict,
         })
     }
@@ -143,7 +132,7 @@ mod tests {
         plugin: &mut Orchestrator,
         guardrails: Guardrails,
     ) -> crate::driver::Outcome {
-        Driver::new(guardrails).run(plugin, access)
+        Driver::new(guardrails).run(plugin, access, &crate::run::RunContext::uncancellable())
     }
 
     #[test]
@@ -161,7 +150,7 @@ mod tests {
             &mut orch,
             Guardrails {
                 max_iterations: 3,
-                max_injected_bytes: u64::MAX,
+                max_cost: u64::MAX,
             },
         );
         assert_eq!(outcome.state, OutcomeState::Exhausted);
@@ -184,7 +173,7 @@ mod tests {
             &mut orch,
             Guardrails {
                 max_iterations: 10,
-                max_injected_bytes: u64::MAX,
+                max_cost: u64::MAX,
             },
         );
         assert_eq!(outcome.state, OutcomeState::Converged);
@@ -208,7 +197,7 @@ mod tests {
             &mut orch,
             Guardrails {
                 max_iterations: 10,
-                max_injected_bytes: u64::MAX,
+                max_cost: u64::MAX,
             },
         );
         assert_eq!(outcome.state, OutcomeState::Converged);
@@ -229,10 +218,10 @@ mod tests {
             &mut orch,
             Guardrails {
                 max_iterations: u32::MAX,
-                max_injected_bytes: 12,
+                max_cost: 12,
             },
         );
         assert_eq!(outcome.state, OutcomeState::Exhausted);
-        assert!(outcome.injected_bytes >= 12, "bytes: {}", outcome.injected_bytes);
+        assert!(outcome.cost >= 12, "bytes: {}", outcome.cost);
     }
 }

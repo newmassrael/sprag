@@ -160,7 +160,7 @@ mod tests {
                 outcome: Outcome {
                     state: sprag_plugin::OutcomeState::Exhausted,
                     iterations: 0,
-                    injected_bytes: 0,
+                    cost: 0,
                     failure: None,
                 },
                 output: None,

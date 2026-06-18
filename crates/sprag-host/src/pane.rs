@@ -14,7 +14,10 @@
 //! The action channel is the R2.6 input seam: `invoke("key", {key, …})`
 //! encodes the W3C key + modifiers to PTY bytes ([`sprag_input::encode`],
 //! sprag-owned) and writes them to the child. The read channel exposes the
-//! producer-owned input modes (`query("application_cursor_keys")`).
+//! producer-owned input modes (`query("application_cursor_keys")`) and the
+//! pane's full output text (`query("full_text")`, scrollback + visible) — the
+//! same `Screen::full_text` the in-process capture path reads, so an external
+//! peer and a plugin share one notion of the screen.
 
 use std::fmt;
 
@@ -24,6 +27,7 @@ use pinion_core::external::{
 use serde_json::Value;
 use sprag_input::Modifiers;
 use sprag_terminal::SessionHandle;
+use sprag_vt::Screen;
 
 use crate::external::rpc_external_impl;
 
@@ -32,6 +36,10 @@ const KEY_ACTION: &str = "key";
 /// The query slot reporting the producer's DECCKM (application cursor
 /// keys) state.
 const CURSOR_KEYS_SLOT: &str = "application_cursor_keys";
+/// The query slot reporting the pane's full output text (scrollback +
+/// visible) — the same [`Screen::full_text`] the in-process capture path
+/// reads, so an external peer and a plugin see one notion of the screen.
+const FULL_TEXT_SLOT: &str = "full_text";
 
 /// The pane engine `External`: a thin, scene-stateless forwarder onto the
 /// live [`SessionHandle`]. Input arrives via `scene/invoke` and is encoded
@@ -79,6 +87,7 @@ impl ExternalIntrospect for SpragPaneExternal {
         IntrospectSchema::new(&[
             (KEY_ACTION, "action"),
             (CURSOR_KEYS_SLOT, "bool"),
+            (FULL_TEXT_SLOT, "string"),
         ])
     }
 
@@ -87,6 +96,7 @@ impl ExternalIntrospect for SpragPaneExternal {
             CURSOR_KEYS_SLOT => {
                 Some(IntrospectValue::Bool(self.session.input_modes().application_cursor_keys))
             }
+            FULL_TEXT_SLOT => Some(IntrospectValue::Text(self.session.with_screen(Screen::full_text))),
             _ => None,
         }
     }

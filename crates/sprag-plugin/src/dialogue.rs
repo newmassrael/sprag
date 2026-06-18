@@ -26,33 +26,27 @@
 //! Known limitations (deferred): whole-history prompting resends the growing
 //! transcript every turn (O(n²) tokens over a run) and passes it as one argv
 //! element, so a very long conversation eventually hits the OS arg-size cap and
-//! fails loudly (`InjectError::Spawn`) rather than corrupting — `claude -p
+//! fails loudly (`PaneError::Spawn`) rather than corrupting — `claude -p
 //! --resume` (server-side session state) is the future optimization. Each
-//! captured reply is collapsed to a single line so it stays one labelled
-//! transcript entry; intentional line breaks in a reply are lost. Capture reads
-//! the pane's full output (scrollback + visible, R16), so a reply longer than
-//! the pane is captured whole — unlike [`Agent`], which still reads the visible
-//! screen only (it injects into a non-fresh pane, so its reply region is the
-//! damage delta, where scrollback is ambiguous).
+//! captured reply is kept verbatim (trimmed only of surrounding blanks) and
+//! stored as a structured turn, so the conversation payload — code, lists,
+//! multi-line answers — survives; turns stay delimited by blank-line blocks
+//! (`render_turn`). Capture reads the pane's full output (scrollback + visible,
+//! R16), so a reply longer than the pane is captured whole — unlike [`Agent`],
+//! which still reads the visible screen only (it injects into a non-fresh pane,
+//! so its reply region is the damage delta, where scrollback is ambiguous).
 //!
 //! [`Agent`]: crate::agent::Agent
 //! [`Driver`]: crate::driver::Driver
 //! [`Pipe`]: crate::pipe::Pipe
 
-use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use sprag_terminal::PaneId;
 
-use crate::access::{InjectError, PaneAccess, PaneLifecycle};
+use crate::access::{PaneAccess, PaneError, PaneLifecycle};
 use crate::plugin::{Plugin, Step, Verdict};
-
-/// Poll interval while waiting for a turn's pane child to reply and exit.
-const REPLY_POLL: Duration = Duration::from_millis(10);
-
-/// Default overall bound on one turn's reply — generous, since a real model
-/// thinks for seconds. Overridable per run.
-pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
+use crate::run::{poll_until, RunContext, Waited, DEFAULT_REPLY_TIMEOUT};
 
 /// Who talks to whom, with what labels, and how each turn is bounded.
 #[derive(Clone, Debug)]
@@ -88,17 +82,31 @@ impl DialogueSpec {
             label_b: "B".to_string(),
             cols: 80,
             rows: 24,
-            timeout: DEFAULT_TIMEOUT,
+            timeout: DEFAULT_REPLY_TIMEOUT,
         }
     }
+}
+
+/// One completed turn: who spoke and their verbatim reply (may be multi-line).
+#[derive(Clone, Debug)]
+struct Turn {
+    label: String,
+    text: String,
+}
+
+/// Render a turn as a transcript block (`"<label>: <text>"`). A multi-line
+/// `text` stays grouped under its label; blocks are blank-line-delimited where
+/// joined, so turn boundaries are clear without flattening the reply.
+fn render_turn(turn: &Turn) -> String {
+    format!("{}: {}", turn.label, turn.text)
 }
 
 /// A stateful turn-based dialogue between two one-shot AI endpoints.
 pub struct Dialogue {
     spec: DialogueSpec,
-    /// Every turn's reply as `"<label>: <reply>"`, in order — the running
-    /// conversation, replayed into each turn's prompt and surfaced as output.
-    history: Vec<String>,
+    /// The running conversation, in order — replayed into each turn's prompt and
+    /// surfaced as output. Replies are kept verbatim (lossless).
+    history: Vec<Turn>,
     /// Turn counter; even turns speak as A, odd as B.
     turn: usize,
 }
@@ -116,10 +124,10 @@ impl Dialogue {
 }
 
 impl Plugin for Dialogue {
-    fn step(&mut self, panes: &dyn PaneAccess) -> Result<Step, InjectError> {
+    fn step(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Step, PaneError> {
         let life = panes
             .lifecycle()
-            .ok_or_else(|| InjectError::Spawn("pane access has no lifecycle".to_string()))?;
+            .ok_or_else(|| PaneError::Spawn("pane access has no lifecycle".to_string()))?;
 
         // This turn's speaker (endpoint + label).
         let (endpoint, label) = if self.turn.is_multiple_of(2) {
@@ -132,6 +140,9 @@ impl Plugin for Dialogue {
         // labelled history), appended as the final argv element — preserved
         // verbatim, newlines and all, because it is one argv element.
         let prompt = render_prompt(&self.spec.seed, &self.history, &label);
+        // Cost is the prompt bytes the peer ingests (argv, not injected) — so
+        // the Driver's cost guardrail binds this plugin too, not just 0.
+        let cost = prompt.len() as u64;
         let argv: Vec<String> = endpoint
             .iter()
             .cloned()
@@ -143,32 +154,30 @@ impl Plugin for Dialogue {
         // Ok, on a later `?`, and on a panic unwind. No leaked PTY or child.
         let guard = PaneGuard { life, id };
 
-        await_reply(panes, id, self.spec.timeout);
+        let waited = poll_until(run, self.spec.timeout, || panes.pane_eof(id).unwrap_or(true));
         let reply = capture(panes, id);
         drop(guard); // close the pane now (its blocking teardown is lock-free).
 
         // If cancelled mid-turn, record nothing (no junk partial turn) and
         // return Continue; the Driver's loop-top ends the run Cancelled. The
         // guard above already closed the spawned pane.
-        if panes.cancelled() {
+        if waited == Waited::Cancelled {
             return Ok(Step {
-                injected_bytes: 0,
+                cost,
                 verdict: Verdict::Continue,
             });
         }
 
-        // Collapse to a single line so the turn is one labelled transcript
-        // entry; otherwise a multi-line reply would inject unlabelled lines
-        // into the next turn's prompt.
-        let reply = reply.split_whitespace().collect::<Vec<_>>().join(" ");
-        self.history.push(format!("{label}: {reply}"));
+        // Keep the reply verbatim (trimmed only of surrounding blank lines) so
+        // the conversation payload — code blocks, lists, multi-line answers — is
+        // preserved; turns stay delimited by render_turn's blank-line blocks.
+        let text = reply.trim().to_string();
+        self.history.push(Turn { label, text });
         self.turn += 1;
 
-        // Never self-converges; the Driver's iteration budget is the turn cap.
-        // Nothing is injected (the prompt rides as argv), so injected_bytes is
-        // honestly 0 — the turn budget is max_iterations, not a byte count.
+        // Never self-converges; the Driver's iteration/cost budget is the cap.
         Ok(Step {
-            injected_bytes: 0,
+            cost,
             verdict: Verdict::Continue,
         })
     }
@@ -177,23 +186,28 @@ impl Plugin for Dialogue {
         if self.history.is_empty() {
             None
         } else {
-            Some(self.history.join("\n"))
+            Some(
+                self.history
+                    .iter()
+                    .map(render_turn)
+                    .collect::<Vec<_>>()
+                    .join("\n\n"),
+            )
         }
     }
 }
 
-/// Render one turn's prompt: a one-line instruction naming `speaker`, then the
-/// seed, then the labelled transcript so far. Joined by `\n` with **no trailing
-/// newline** — the offline count-fake test keys on this exact shape (one `\n`
-/// per logical line), so changing the line structure will shift those counts.
-fn render_prompt(seed: &str, history: &[String], speaker: &str) -> String {
-    let mut lines = Vec::with_capacity(history.len() + 2);
-    lines.push(format!(
+/// Render one turn's prompt: a one-line instruction naming `speaker`, the seed,
+/// then the labelled transcript so far — blocks joined by a blank line so a
+/// multi-line reply stays grouped under its speaker and turns stay delimited.
+fn render_prompt(seed: &str, history: &[Turn], speaker: &str) -> String {
+    let mut blocks = Vec::with_capacity(history.len() + 2);
+    blocks.push(format!(
         "You are {speaker} in this two-party dialogue. Reply with only {speaker}'s next message."
     ));
-    lines.push(seed.to_string());
-    lines.extend(history.iter().cloned());
-    lines.join("\n")
+    blocks.push(seed.to_string());
+    blocks.extend(history.iter().map(render_turn));
+    blocks.join("\n\n")
 }
 
 /// Closes a per-turn pane on drop — so a turn never leaks a PTY or child,
@@ -206,22 +220,6 @@ struct PaneGuard<'a> {
 impl Drop for PaneGuard<'_> {
     fn drop(&mut self) {
         self.life.close(self.id);
-    }
-}
-
-/// Wait (bounded by `timeout`) for the turn's pane child to reply and exit —
-/// once it has, its full reply is on screen ([`PaneAccess::pane_eof`]).
-fn await_reply(panes: &dyn PaneAccess, id: PaneId, timeout: Duration) {
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        // Cancel wins over waiting: bail so the turn (and the run) ends promptly.
-        if panes.cancelled() {
-            return;
-        }
-        if panes.pane_eof(id).unwrap_or(true) {
-            return;
-        }
-        sleep(REPLY_POLL);
     }
 }
 
@@ -260,9 +258,9 @@ mod tests {
         let mut dialogue = Dialogue::new(spec);
         let outcome = Driver::new(Guardrails {
             max_iterations: max_turns,
-            max_injected_bytes: u64::MAX,
+            max_cost: u64::MAX,
         })
-        .run(&mut dialogue, &access);
+        .run(&mut dialogue, &access, &RunContext::uncancellable());
         let transcript = dialogue.captured();
         (workspace, outcome, transcript)
     }
@@ -277,9 +275,27 @@ mod tests {
         assert_eq!(outcome.state, OutcomeState::Exhausted);
         assert_eq!(outcome.iterations, 3);
         let t = transcript.expect("a transcript");
-        assert!(t.contains("A: saw1"), "turn 0 (1-line prompt): {t:?}");
-        assert!(t.contains("B: saw2"), "turn 1 (2-line prompt): {t:?}");
-        assert!(t.contains("A: saw3"), "turn 2 (3-line prompt): {t:?}");
+        // Labels alternate, and the reported line-counts strictly increase
+        // (each turn's prompt carries one more transcript block) — proof the
+        // whole history is passed each turn. The assertion is format-robust: it
+        // checks the trend, not exact counts.
+        assert!(t.contains("A: saw") && t.contains("B: saw"), "labels alternate: {t:?}");
+        let counts: Vec<u32> = t
+            .match_indices("saw")
+            .map(|(i, _)| {
+                t[i + 3..]
+                    .chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect::<String>()
+                    .parse()
+                    .expect("a saw count")
+            })
+            .collect();
+        assert_eq!(counts.len(), 3, "three turns: {counts:?}");
+        assert!(
+            counts.windows(2).all(|w| w[0] < w[1]),
+            "history must accumulate (strictly increasing): {counts:?}"
+        );
     }
 
     #[test]
@@ -302,10 +318,10 @@ mod tests {
 
         assert_eq!(outcome.state, OutcomeState::Exhausted);
         let t = transcript.expect("a transcript");
-        // The reply is collapsed to one space-joined line; use space-delimited
-        // needles so "5" can't match "15"/"25"/"50".
-        assert!(t.contains(" 5 "), "scrolled-off line 5 missing: {t:?}");
-        assert!(t.contains(" 30") || t.ends_with("30"), "last line missing: {t:?}");
+        // The reply is kept verbatim (newline-separated), so the scrolled-off
+        // line 5 appears as its own line; "\n5\n" can't match "15"/"25"/"50".
+        assert!(t.contains("\n5\n"), "scrolled-off line 5 missing: {t:?}");
+        assert!(t.contains("\n30"), "last line missing: {t:?}");
     }
 
     #[test]
@@ -351,7 +367,7 @@ mod tests {
         use std::thread;
         use std::time::Instant;
 
-        // A non-exiting endpoint: the turn blocks in await_reply until cancelled.
+        // A non-exiting endpoint: the turn blocks in poll_until until cancelled.
         let spec = DialogueSpec::new(
             vec![
                 "/bin/sh".to_string(),
@@ -362,21 +378,22 @@ mod tests {
             "x",
         );
         let workspace = Arc::new(Mutex::new(Workspace::new((spec.cols, spec.rows))));
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
         let cancel = Arc::new(AtomicBool::new(false));
-        let access = WorkspacePaneAccess::with_cancel(Arc::clone(&workspace), Arc::clone(&cancel));
+        let run_ctx = RunContext::new(Arc::clone(&cancel));
 
         let worker = thread::spawn(move || {
             let mut dialogue = Dialogue::new(spec);
             let outcome = Driver::new(Guardrails {
                 max_iterations: 100,
-                max_injected_bytes: u64::MAX,
+                max_cost: u64::MAX,
             })
-            .run(&mut dialogue, &access);
+            .run(&mut dialogue, &access, &run_ctx);
             (outcome, dialogue.captured())
         });
 
-        // Let the first turn spawn its pane and enter await_reply, then cancel.
-        sleep(Duration::from_millis(80));
+        // Let the first turn spawn its pane and enter the wait, then cancel.
+        thread::sleep(Duration::from_millis(80));
         cancel.store(true, Ordering::Release);
 
         let start = Instant::now();
@@ -416,8 +433,8 @@ mod tests {
             fn pane_full_text(&self, _id: PaneId) -> Option<String> {
                 None
             }
-            fn inject(&self, _id: PaneId, _keys: &[KeyStroke]) -> Result<u64, InjectError> {
-                Err(InjectError::UnknownPane(PaneId(0)))
+            fn inject(&self, _id: PaneId, _keys: &[KeyStroke]) -> Result<u64, PaneError> {
+                Err(PaneError::UnknownPane(PaneId(0)))
             }
         }
 
@@ -428,11 +445,11 @@ mod tests {
         ));
         let outcome = Driver::new(Guardrails {
             max_iterations: 3,
-            max_injected_bytes: u64::MAX,
+            max_cost: u64::MAX,
         })
-        .run(&mut dialogue, &NoPanes);
+        .run(&mut dialogue, &NoPanes, &RunContext::uncancellable());
         assert_eq!(outcome.state, OutcomeState::Failed);
-        assert!(matches!(outcome.failure, Some(InjectError::Spawn(_))));
+        assert!(matches!(outcome.failure, Some(PaneError::Spawn(_))));
     }
 
     /// The genuine stateful AI↔AI proof: two real `claude -p` instances hold a
