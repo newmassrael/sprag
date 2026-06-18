@@ -1,11 +1,11 @@
 [package]
-name = "sprag-orchestrator"
+name = "sprag-plugin"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Guardrailed orchestration loop driving panes, modeled as an SCE/SCXML statechart"
+description = "Plugin extension API (PaneAccess) + SCE-statechart Driver + bundled control plugins (orchestrator, pipe)"
 publish = false
 
 [dependencies]

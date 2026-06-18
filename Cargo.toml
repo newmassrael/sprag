@@ -19,7 +19,7 @@ members = [
     "crates/sprag-input",
     "crates/sprag-terminal",
     "crates/sprag-host",
-    "crates/sprag-orchestrator",
+    "crates/sprag-plugin",
 ]
 
 [workspace.package]
@@ -79,4 +79,4 @@ sprag-grid = { path = "crates/sprag-grid", version = "0.0.1" }
 sprag-input = { path = "crates/sprag-input", version = "0.0.1" }
 sprag-terminal = { path = "crates/sprag-terminal", version = "0.0.1" }
 sprag-host = { path = "crates/sprag-host", version = "0.0.1" }
-sprag-orchestrator = { path = "crates/sprag-orchestrator", version = "0.0.1" }
+sprag-plugin = { path = "crates/sprag-plugin", version = "0.0.1" }

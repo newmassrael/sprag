@@ -216,6 +216,52 @@
         "Verify pinion host viability (GPU/headless) before walking-skeleton wiring"
       ]
     },
+    "Round 10": {
+      "decision_summary": "Extract the plugin extension API (the README #1 concern) from two real consumers: PaneAccess (data API) + a Plugin/Driver behavior-vs-substrate split, validated by the orchestrator plus a new pipe plugin.",
+      "changes_bullets": [
+        "Renamed sprag-orchestrator -> sprag-plugin; it is now the plugin substrate, split into modules: access (PaneAccess + WorkspacePaneAccess + KeyStroke/PaneRow/InjectError), plugin (Plugin::step + Step + Verdict), driver (Driver + Guardrails + Outcome/OutcomeState), and the bundled orchestrator + pipe plugins. Pinion-free.",
+        "PaneAccess is the extension API: pane_ids / pane_collapsed / pane_rows (generation+text in one locked snapshot, killing a TOCTOU race) / inject (returns bytes). WorkspacePaneAccess over Arc<Mutex<Workspace>> is the single read+inject path, so plugins stop reaching into SessionHandle directly (review finding D, read-path unification).",
+        "Split the orchestrator loop: the Driver owns the SCE statechart (flattened to idle->running->{converged,exhausted,failed}) plus the guardrails (max_iterations/max_injected_bytes moved off OrchestrationSpec onto Guardrails); Plugin::step owns perceive/act/judge. The orchestrator (fixed-stimulus drive) and a new Pipe (relay a source pane's newly-damaged rows into a destination pane; never self-converges, guardrails bind) both impl Plugin.",
+        "The Pipe is the second consumer that proves the abstraction generalizes: same damage-generation primitive as the orchestrator's observe, but a plugin-owned cursor (after-last-relay vs before-last-stimulus). act/judge were collapsed into one step (so the statechart's internal phases do not leak into the plugin contract); inject returns the byte count feeding the Driver's cost guardrail."
+      ],
+      "verification_bullets": [
+        "59 workspace tests pass. The orchestrator's four tests pass unchanged in intent via Driver::run(&mut Orchestrator, panes) -- the regression gate proving the extraction preserved behavior; plus two WorkspacePaneAccess tests and the pipe proof test (seed source, relay into destination, exhaust on the iteration budget). cargo clippy --workspace --all-targets clean.",
+        "The design was pressure-tested by a Plan agent that corrected five points before implementation: a single step (not act/judge), pane_rows folding text+generations to remove a TOCTOU race, inject returning the byte count, the flattened statechart, and deferring the host-External base to the exposure round.",
+        "Crate rename was contained (nothing depended on sprag-orchestrator yet); build stayed green at each phase. SCE needed nothing new (same usage as Round 8); pinion's vendored SCE remained content-identical to canonical."
+      ],
+      "impact_refs": [
+        "1",
+        "2",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Exposure round: OrchestratorExternal / a plugin host over RPC -- start/observe a Driver::run off the serve thread (background execution), so external AI peers drive plugins as scene-as-data -- and extract the shared host-External base (backends/repaint/thread_ownership/Debug/arg-parse) from the now three Externals at that point.",
+        "AI-tool adapters (claude/aider in panes with structured I/O) + bidirectional A<->B relay + character-level delta diffing (the pipe relays whole rows on a generation bump today) are the real AI<->AI layer beyond this substrate.",
+        "PaneAccess additions (cell/style read, scrollback) stay additive until a consumer needs them (YAGNI)."
+      ],
+      "publishable_decision_summary": "Extract the plugin extension API (the README #1 concern) from two real consumers: PaneAccess (data API) + a Plugin/Driver behavior-vs-substrate split, validated by the orchestrator plus a new pipe plugin.",
+      "publishable_changes_bullets": [
+        "Renamed sprag-orchestrator -> sprag-plugin; it is now the plugin substrate, split into modules: access (PaneAccess + WorkspacePaneAccess + KeyStroke/PaneRow/InjectError), plugin (Plugin::step + Step + Verdict), driver (Driver + Guardrails + Outcome/OutcomeState), and the bundled orchestrator + pipe plugins. Pinion-free.",
+        "PaneAccess is the extension API: pane_ids / pane_collapsed / pane_rows (generation+text in one locked snapshot, killing a TOCTOU race) / inject (returns bytes). WorkspacePaneAccess over Arc<Mutex<Workspace>> is the single read+inject path, so plugins stop reaching into SessionHandle directly (review finding D, read-path unification).",
+        "Split the orchestrator loop: the Driver owns the SCE statechart (flattened to idle->running->{converged,exhausted,failed}) plus the guardrails (max_iterations/max_injected_bytes moved off OrchestrationSpec onto Guardrails); Plugin::step owns perceive/act/judge. The orchestrator (fixed-stimulus drive) and a new Pipe (relay a source pane's newly-damaged rows into a destination pane; never self-converges, guardrails bind) both impl Plugin.",
+        "The Pipe is the second consumer that proves the abstraction generalizes: same damage-generation primitive as the orchestrator's observe, but a plugin-owned cursor (after-last-relay vs before-last-stimulus). act/judge were collapsed into one step (so the statechart's internal phases do not leak into the plugin contract); inject returns the byte count feeding the Driver's cost guardrail."
+      ],
+      "publishable_verification_bullets": [
+        "59 workspace tests pass. The orchestrator's four tests pass unchanged in intent via Driver::run(&mut Orchestrator, panes) -- the regression gate proving the extraction preserved behavior; plus two WorkspacePaneAccess tests and the pipe proof test (seed source, relay into destination, exhaust on the iteration budget). cargo clippy --workspace --all-targets clean.",
+        "The design was pressure-tested by a Plan agent that corrected five points before implementation: a single step (not act/judge), pane_rows folding text+generations to remove a TOCTOU race, inject returning the byte count, the flattened statechart, and deferring the host-External base to the exposure round.",
+        "Crate rename was contained (nothing depended on sprag-orchestrator yet); build stayed green at each phase. SCE needed nothing new (same usage as Round 8); pinion's vendored SCE remained content-identical to canonical."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "2",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Exposure round: OrchestratorExternal / a plugin host over RPC -- start/observe a Driver::run off the serve thread (background execution), so external AI peers drive plugins as scene-as-data -- and extract the shared host-External base (backends/repaint/thread_ownership/Debug/arg-parse) from the now three Externals at that point.",
+        "AI-tool adapters (claude/aider in panes with structured I/O) + bidirectional A<->B relay + character-level delta diffing (the pipe relays whole rows on a generation bump today) are the real AI<->AI layer beyond this substrate.",
+        "PaneAccess additions (cell/style read, scrollback) stay additive until a consumer needs them (YAGNI)."
+      ]
+    },
     "Round 2": {
       "decision_summary": "Project rule: use SCE (SCXML Core Engine) for sprag statechart and codegen logic where applicable.",
       "changes_bullets": [

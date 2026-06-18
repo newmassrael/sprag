@@ -1663,7 +1663,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sprag-orchestrator"
+name = "sprag-plugin"
 version = "0.0.1"
 dependencies = [
  "sce-build",

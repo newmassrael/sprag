@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  sprag plugin Driver control statechart (Round 10).
+
+  The genuine control topology a Driver enforces around any Plugin: idle until
+  started, then `running` (each microstep is one Plugin::step call), branching
+  to one of three terminal outcomes. datamodel="null" (pure control, no side
+  effects); the Driver (sprag-plugin's driver.rs) is the effect executor and
+  the Plugin owns perceive/act/judge.
+
+  The earlier per-step states (stimulating/observing/judging) were one plugin's
+  internal phases and now live inside that plugin's step(). Future Driver-level
+  control gates (a depth/recursion limit, a human-approval pause, cost-routing)
+  slot in as new transitions out of `running`.
+-->
+<scxml xmlns="http://www.w3.org/2005/07/scxml"
+       version="1.0"
+       datamodel="null"
+       initial="idle">
+
+  <state id="idle">
+    <transition event="start" target="running"/>
+  </state>
+
+  <state id="running">
+    <transition event="continue" target="running"/>   <!-- step ok, guardrails ok -->
+    <transition event="converge" target="converged"/>  <!-- step: Verdict::Converged -->
+    <transition event="exhaust"  target="exhausted"/>   <!-- Driver: iteration/cost budget hit -->
+    <transition event="fail"     target="failed"/>      <!-- step: Err -->
+  </state>
+
+  <final id="converged"/>
+  <final id="exhausted"/>
+  <final id="failed"/>
+</scxml>
