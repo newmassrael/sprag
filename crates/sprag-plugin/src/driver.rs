@@ -19,10 +19,11 @@ use crate::sm::{OrchestrationEvent, OrchestrationPolicy, OrchestrationState};
 pub struct Guardrails {
     /// Stop after this many steps.
     pub max_iterations: u32,
-    /// Stop once the accumulated step cost reaches this — bytes spent on the
-    /// peer (injected or argv), a headless proxy for token/$ spend that a real
-    /// AI adapter replaces with token cost. Every plugin reports it (no plugin
-    /// silently opts out), so the budget binds uniformly.
+    /// Stop once the accumulated step cost reaches this. Cost is each plugin's
+    /// natural spend unit (see [`Step::cost`](crate::plugin::Step::cost)):
+    /// injected/argv bytes for the byte-relay plugins, real billed tokens for an
+    /// AI adapter. A run drives one plugin, so set this in that plugin's unit.
+    /// The Driver stays unit-agnostic — it only accumulates and compares.
     pub max_cost: u64,
 }
 

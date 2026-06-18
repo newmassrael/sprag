@@ -30,6 +30,65 @@ pub use portable_pty::CommandBuilder;
 /// holds the emulator lock), so the writer is shared the same way.
 type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
+/// Upper bound on the raw-output capture buffer ([`RawCapture`]). Generous
+/// enough for a large structured envelope (a `claude -p --output-format json`
+/// reply with a code-block `result` is a few KiB to tens of KiB), bounded so a
+/// runaway child cannot grow it without limit. A child that exceeds it marks
+/// the capture `truncated`, which a structured reader treats as an unparseable
+/// reply and degrades gracefully.
+const RAW_CAPTURE_CAP: usize = 256 * 1024;
+
+/// A bounded, head-anchored capture of the child's raw output bytes — the
+/// **source** stream, before the emulator renders it onto the grid. Structured
+/// machine output (a JSON envelope) must be read from here, not reconstructed
+/// from the display grid: the grid wraps a long logical line across rows,
+/// trailing-trims each row, and strips control bytes, none of which is
+/// reversible. The source bytes are exact.
+///
+/// Head-anchored (append until the cap, then stop and mark `truncated`) rather
+/// than a tail ring, because a structured envelope is parsed from its **start**
+/// (`{`…); evicting the head to keep the tail would corrupt every parse. An
+/// over-cap child is the bounded-degradation case, not the common one.
+struct RawCapture {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+impl RawCapture {
+    fn new() -> Self {
+        Self {
+            bytes: Vec::new(),
+            truncated: false,
+        }
+    }
+
+    /// Append `more`, up to [`RAW_CAPTURE_CAP`]; past the cap, keep the head
+    /// already captured and latch `truncated`.
+    fn push(&mut self, more: &[u8]) {
+        if self.truncated {
+            return;
+        }
+        let room = RAW_CAPTURE_CAP - self.bytes.len();
+        if more.len() <= room {
+            self.bytes.extend_from_slice(more);
+        } else {
+            self.bytes.extend_from_slice(&more[..room]);
+            self.truncated = true;
+        }
+    }
+
+    /// The bytes captured so far, paired with whether the cap was hit (the
+    /// capture is incomplete and a structured read should degrade).
+    fn snapshot(&self) -> (Vec<u8>, bool) {
+        (self.bytes.clone(), self.truncated)
+    }
+}
+
+/// Shared raw-output capture: the reader thread appends to it as it reads the
+/// PTY master; a [`SessionHandle`] snapshots it. Shared the same `Arc<Mutex>`
+/// way as the emulator and the eof flag.
+type SharedRawCapture = Arc<Mutex<RawCapture>>;
+
 /// A failure setting up or driving the pseudoterminal. Wraps the underlying
 /// `portable-pty` / IO error message with the operation that produced it.
 #[derive(Debug)]
@@ -62,6 +121,7 @@ pub struct TerminalSession {
     child: Box<dyn Child + Send + Sync>,
     writer: SharedWriter,
     emulator: Arc<Mutex<Emulator>>,
+    raw_output: SharedRawCapture,
     eof: Arc<AtomicBool>,
     reader_thread: Option<JoinHandle<()>>,
     cols: u16,
@@ -106,8 +166,10 @@ impl TerminalSession {
         ));
 
         let emulator = Arc::new(Mutex::new(Emulator::new(cols, rows)));
+        let raw_output: SharedRawCapture = Arc::new(Mutex::new(RawCapture::new()));
         let eof = Arc::new(AtomicBool::new(false));
         let reader_emulator = Arc::clone(&emulator);
+        let reader_raw = Arc::clone(&raw_output);
         let reader_eof = Arc::clone(&eof);
         let reader_thread = std::thread::Builder::new()
             .name("sprag-pty-reader".to_string())
@@ -116,7 +178,15 @@ impl TerminalSession {
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) => break,
-                        Ok(n) => lock(&reader_emulator).advance(&buf[..n]),
+                        Ok(n) => {
+                            // Tee the source bytes into the capture, then render
+                            // them. Both happen in this iteration before the loop
+                            // can break, so once `eof` is observed every byte is
+                            // BOTH captured and applied to the screen — the same
+                            // completeness guarantee `is_eof` gives the grid.
+                            lock(&reader_raw).push(&buf[..n]);
+                            lock(&reader_emulator).advance(&buf[..n]);
+                        }
                         Err(ref e) if e.kind() == io::ErrorKind::Interrupted => {}
                         Err(_) => break,
                     }
@@ -130,6 +200,7 @@ impl TerminalSession {
             child,
             writer,
             emulator,
+            raw_output,
             eof,
             reader_thread: Some(reader_thread),
             cols,
@@ -155,6 +226,16 @@ impl TerminalSession {
         self.eof.load(Ordering::Acquire)
     }
 
+    /// A snapshot of the child's raw output bytes (the source stream, before
+    /// emulation) paired with whether the capture was truncated at the cap.
+    /// Once [`is_eof`](Self::is_eof) holds, this is the child's complete output.
+    /// Use it — not the rendered screen — to read structured machine output (a
+    /// JSON envelope), which the grid would corrupt by wrapping and trimming.
+    #[must_use]
+    pub fn raw_output(&self) -> (Vec<u8>, bool) {
+        lock(&self.raw_output).snapshot()
+    }
+
     /// Write input bytes to the child. Keys are encoded to PTY bytes by the
     /// caller (encoding ownership is sprag's, per PINION-REQUIREMENTS R2.6).
     ///
@@ -174,6 +255,7 @@ impl TerminalSession {
         SessionHandle {
             emulator: Arc::clone(&self.emulator),
             writer: Arc::clone(&self.writer),
+            raw_output: Arc::clone(&self.raw_output),
         }
     }
 
@@ -217,6 +299,7 @@ impl TerminalSession {
 pub struct SessionHandle {
     emulator: Arc<Mutex<Emulator>>,
     writer: SharedWriter,
+    raw_output: SharedRawCapture,
 }
 
 impl SessionHandle {
@@ -231,6 +314,15 @@ impl SessionHandle {
         lock(&self.emulator).input_modes()
     }
 
+    /// A snapshot of the child's raw output bytes (the source stream, before
+    /// emulation) paired with whether the capture was truncated at the cap —
+    /// the seam a control plugin reads to parse structured output from a pane
+    /// it does not own. See [`TerminalSession::raw_output`].
+    #[must_use]
+    pub fn raw_output(&self) -> (Vec<u8>, bool) {
+        lock(&self.raw_output).snapshot()
+    }
+
     /// Write already-encoded input bytes to the child (R2.6: the caller
     /// owns key→byte encoding).
     ///
@@ -242,10 +334,11 @@ impl SessionHandle {
     }
 }
 
-/// Lock the emulator, recovering the guard if a holder panicked (the screen
-/// grid stays structurally valid; `advance` does not panic in practice).
-fn lock(emulator: &Mutex<Emulator>) -> MutexGuard<'_, Emulator> {
-    emulator.lock().unwrap_or_else(PoisonError::into_inner)
+/// Lock a session mutex (emulator or raw capture), recovering the guard if a
+/// holder panicked (the grid stays structurally valid and the byte buffer is
+/// plain data; neither `advance` nor `push` panics in practice).
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Write all bytes to the shared PTY writer and flush, recovering the lock
@@ -296,5 +389,61 @@ mod tests {
         });
         assert!(row0.starts_with("hi"), "row0 = {row0:?}");
         assert_eq!(session.dimensions(), (20, 4));
+    }
+
+    /// Wait (bounded) until the child has exited and all its bytes are applied.
+    fn wait_eof(session: &TerminalSession) {
+        let start = Instant::now();
+        while !session.is_eof() && start.elapsed() < Duration::from_secs(5) {
+            sleep(Duration::from_millis(20));
+        }
+        assert!(session.is_eof(), "child did not reach EOF in time");
+    }
+
+    /// The raw capture is byte-faithful even when the output is a single
+    /// logical line far longer than the grid width — exactly the case the
+    /// rendered screen mangles (wrap `\n` injection + trailing-trim). This is
+    /// why structured output is read from the source stream, not the grid.
+    #[test]
+    fn raw_output_captures_a_wrapping_line_byte_for_byte() {
+        // A 300-char single line with no trailing newline, on a 20-col pane:
+        // the grid wraps it across 15 rows; the source bytes are one line.
+        let payload = "x".repeat(150) + &" spaced  words ".repeat(10);
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg(format!("printf '%s' '{payload}'"));
+        command.env("TERM", "dumb");
+        let session = TerminalSession::spawn(command, 20, 4).expect("spawn pty session");
+        wait_eof(&session);
+
+        let (bytes, truncated) = session.raw_output();
+        assert!(!truncated, "small payload must not truncate");
+        assert_eq!(
+            String::from_utf8_lossy(&bytes),
+            payload,
+            "raw capture must equal the emitted bytes exactly (no wrap, no trim)"
+        );
+        // The handle sees the same capture.
+        assert_eq!(session.handle().raw_output().0, bytes);
+    }
+
+    /// A child that emits more than the cap latches `truncated` and keeps the
+    /// head it already captured — the bounded-degradation path a structured
+    /// reader treats as unparseable.
+    #[test]
+    fn raw_output_truncates_past_the_cap() {
+        // Emit one more KiB than the cap with `yes` piped through `head -c`.
+        let want = RAW_CAPTURE_CAP + 1024;
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg(format!("yes a | tr -d '\\n' | head -c {want}"));
+        command.env("TERM", "dumb");
+        let session = TerminalSession::spawn(command, 80, 24).expect("spawn pty session");
+        wait_eof(&session);
+
+        let (bytes, truncated) = session.raw_output();
+        assert!(truncated, "an over-cap child must mark the capture truncated");
+        assert_eq!(bytes.len(), RAW_CAPTURE_CAP, "capture is bounded at the cap");
+        assert!(bytes.iter().all(|&b| b == b'a'), "the head bytes are kept");
     }
 }

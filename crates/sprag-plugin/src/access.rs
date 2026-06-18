@@ -94,6 +94,27 @@ pub trait PaneAccess {
     /// only), this captures output longer than the grid — a scrolled AI reply.
     fn pane_full_text(&self, id: PaneId) -> Option<String>;
 
+    /// The pane child's raw output bytes — the **source** stream, before the
+    /// emulator renders it — paired with whether the capture was truncated at
+    /// the producer's cap. `None` if no pane has that id, or if this access is
+    /// not backed by a real producer (the default).
+    ///
+    /// This is a fundamentally different read from the `pane_*_text` family:
+    /// those return the *rendered grid* (wrapped to the pane width, trailing-
+    /// trimmed, control-stripped — a lossy projection for display); this returns
+    /// the *exact bytes* the child emitted. It is the read for **structured
+    /// machine output**: a single-line JSON envelope a long reply wraps across
+    /// rows would be corrupted by the grid's wrap-`\n` insertion and trailing-
+    /// trim, but is byte-exact here. Default `None`, like [`lifecycle`]: only an
+    /// implementation over a real session provides it, so plugins and test
+    /// doubles that never read structured output pay nothing (interface
+    /// segregation).
+    ///
+    /// [`lifecycle`]: PaneAccess::lifecycle
+    fn pane_raw_output(&self, _id: PaneId) -> Option<(Vec<u8>, bool)> {
+        None
+    }
+
     /// Inject `keys` into the pane, returning the number of PTY bytes written.
     ///
     /// # Errors
@@ -174,6 +195,10 @@ impl PaneAccess for WorkspacePaneAccess {
 
     fn pane_full_text(&self, id: PaneId) -> Option<String> {
         Some(self.handle(id)?.with_screen(Screen::full_text))
+    }
+
+    fn pane_raw_output(&self, id: PaneId) -> Option<(Vec<u8>, bool)> {
+        Some(self.handle(id)?.raw_output())
     }
 
     fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<u64, PaneError> {
@@ -352,5 +377,34 @@ mod tests {
         // last visible rows are ~27..30, none containing '5').
         let visible = access.pane_collapsed(id).expect("visible");
         assert!(!visible.contains('5'), "line 5 should have scrolled off: {visible:?}");
+    }
+
+    #[test]
+    fn pane_raw_output_is_byte_exact_for_a_wrapping_line() {
+        // A single logical line wider than the pane: the grid wraps and trims
+        // it, but the raw source read returns the emitted bytes verbatim — the
+        // capture path structured output (a wrapped JSON envelope) relies on.
+        let payload = "abc def  ghi   ".repeat(12); // 180 chars, embedded runs of spaces
+        let workspace = Arc::new(Mutex::new(Workspace::new((20, 4))));
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg(format!("printf '%s' '{payload}'"));
+        command.env("TERM", "dumb");
+        let id = lock(&workspace)
+            .spawn(command, "printf".to_string(), 20, 4)
+            .expect("spawn");
+        let access = WorkspacePaneAccess::new(workspace);
+
+        let start = Instant::now();
+        while access.pane_eof(id) != Some(true) && start.elapsed() < Duration::from_secs(5) {
+            sleep(Duration::from_millis(20));
+        }
+
+        let (bytes, truncated) = access.pane_raw_output(id).expect("raw output");
+        assert!(!truncated);
+        assert_eq!(String::from_utf8_lossy(&bytes), payload, "raw bytes must be verbatim");
+        // The grid lost interior spaces to trailing-trim at wrap boundaries, so
+        // it cannot reconstruct the source — exactly why raw capture exists.
+        assert!(access.pane_raw_output(PaneId(999)).is_none(), "unknown pane is None");
     }
 }

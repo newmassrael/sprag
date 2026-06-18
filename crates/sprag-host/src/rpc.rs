@@ -402,6 +402,61 @@ mod tests {
     }
 
     #[test]
+    fn runs_a_claude_json_dialogue_with_real_token_cost() {
+        // A JSON fake emits a one-line `--output-format json` envelope with
+        // fixed usage; `format_*: claude_json` makes the run parse it off the
+        // RAW source for the real token cost and the clean reply text — the
+        // round's whole point, surfaced over RPC.
+        let state = host_with("cat", 40, 6);
+        let endpoint = serde_json::json!([
+            "/bin/sh",
+            "-c",
+            "printf '%s' '{\"result\":\"hi there\",\"usage\":{\"input_tokens\":30,\"output_tokens\":20}}'",
+            "_"
+        ]);
+        let request = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "scene/invoke",
+            "params": {
+                "path": "/sprag_plugins/external/run",
+                "args": {
+                    "plugin": "dialogue",
+                    "endpoint_a": endpoint,
+                    "endpoint_b": endpoint,
+                    "seed": "go",
+                    "format_a": "claude_json",
+                    "format_b": "claude_json",
+                    "cols": 40, "rows": 6,
+                    "guardrails": { "max_iterations": 2, "max_cost": 1048576 }
+                }
+            }
+        })
+        .to_string();
+        let started = serve_one(&state, &request);
+        assert_eq!(started["result"].as_i64(), Some(0), "run id: {started}");
+
+        let run_state = wait_for_run0_state(&state).expect("dialogue run reached done");
+        assert_eq!(run_state["outcome"]["state"], "exhausted");
+        // Two turns × (30 + 20) tokens — the real cost over RPC, not byte proxy.
+        assert_eq!(run_state["outcome"]["cost"].as_u64(), Some(100), "{run_state}");
+        let output = run_state["output"].as_str().unwrap_or_default();
+        // The clean `result` is the transcript, not the raw envelope.
+        assert!(output.contains("hi there"), "clean reply missing: {output:?}");
+        assert!(!output.contains("input_tokens"), "raw envelope leaked: {output:?}");
+        assert_eq!(lock(state.workspace()).panes().len(), 1, "dialogue leaked a pane");
+    }
+
+    #[test]
+    fn rejects_an_unknown_reply_format() {
+        // A bad `format_*` is a synchronous Rejected (a typo, not an async Fail).
+        let state = host_with("cat", 20, 4);
+        let rejected = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"dialogue","endpoint_a":["true"],"endpoint_b":["true"],"seed":"x","format_a":"yaml"}}}"#,
+        );
+        assert!(rejected.get("error").is_some(), "expected a rejection: {rejected}");
+    }
+
+    #[test]
     fn full_text_query_includes_scrolled_off_lines() {
         // Read-path parity: an external RPC peer reads the same full output
         // (scrollback + visible) the in-process capture path sees, so a scrolled

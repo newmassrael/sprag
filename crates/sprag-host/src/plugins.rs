@@ -26,7 +26,7 @@ use pinion_core::external::{
 use serde_json::{json, Map, Value};
 use sprag_plugin::{
     Agent, AgentSpec, Dialogue, DialogueSpec, Driver, Guardrails, OrchestrationSpec, Orchestrator,
-    Outcome, OutcomeState, Pipe, Plugin, RunContext, WorkspacePaneAccess,
+    Outcome, OutcomeState, Pipe, Plugin, ReplyFormat, RunContext, WorkspacePaneAccess,
 };
 use sprag_terminal::{PaneId, Workspace};
 
@@ -136,6 +136,12 @@ impl PluginsExternal {
                 }
                 if let Some(label) = opt_str(map, "label_b")? {
                     spec.label_b = label.to_string();
+                }
+                if let Some(format) = parse_reply_format(map, "format_a")? {
+                    spec.format_a = format;
+                }
+                if let Some(format) = parse_reply_format(map, "format_b")? {
+                    spec.format_b = format;
                 }
                 let (default_cols, default_rows) = lock(&self.workspace).default_size();
                 spec.cols = opt_dim(map, "cols")?.unwrap_or(default_cols);
@@ -267,6 +273,21 @@ fn require_string_array(map: &Map<String, Value>, key: &str) -> Result<Vec<Strin
             }
         }
         _ => Err(InvokeError::TypeMismatch),
+    }
+}
+
+/// Parse an optional reply-format key (`"text"` | `"claude_json"`) into a
+/// [`ReplyFormat`]. Absent → `None` (the spec keeps its default); an unknown
+/// string → [`InvokeError::Rejected`].
+fn parse_reply_format(
+    map: &Map<String, Value>,
+    key: &str,
+) -> Result<Option<ReplyFormat>, InvokeError> {
+    match opt_str(map, key)? {
+        None => Ok(None),
+        Some("text") => Ok(Some(ReplyFormat::Text)),
+        Some("claude_json") => Ok(Some(ReplyFormat::ClaudeJson)),
+        Some(_) => Err(InvokeError::Rejected),
     }
 }
 

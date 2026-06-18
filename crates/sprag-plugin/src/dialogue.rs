@@ -23,6 +23,17 @@
 //! run ends `Exhausted` with the transcript as its payload (the [`Pipe`]
 //! pattern).
 //!
+//! Each endpoint declares a [`ReplyFormat`] that decides how its reply and cost
+//! are read. `Text` (the default) takes the whole rendered pane output as the
+//! reply and the prompt-byte count as a proxy cost. `ClaudeJson` runs the
+//! endpoint as `claude -p --output-format json` and parses the envelope off the
+//! pane's RAW output (the grid would corrupt the wrapped single-line JSON) to
+//! get the real `result` text and the real billed tokens (input + output) as
+//! the cost — replacing the byte proxy with true spend in the [`Driver`]'s cost
+//! guardrail. Parsing degrades gracefully: a truncated, oversized, or unparsable
+//! envelope falls back to the raw text and the byte proxy, so a broken reply
+//! never breaks the conversation.
+//!
 //! Known limitations (deferred): whole-history prompting resends the growing
 //! transcript every turn (O(n²) tokens over a run) and passes it as one argv
 //! element, so a very long conversation eventually hits the OS arg-size cap and
@@ -46,7 +57,24 @@ use sprag_terminal::PaneId;
 
 use crate::access::{PaneAccess, PaneError, PaneLifecycle};
 use crate::plugin::{Plugin, Step, Verdict};
+use crate::reply::parse_claude_json;
 use crate::run::{poll_until, RunContext, Waited, DEFAULT_REPLY_TIMEOUT};
+
+/// How a turn's reply text and cost are decoded from the endpoint's output.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ReplyFormat {
+    /// The endpoint prints human text: the whole rendered pane output is the
+    /// reply, and the cost is the prompt-byte proxy. The default — back-
+    /// compatible with print-mode tools and the deterministic test fakes.
+    #[default]
+    Text,
+    /// The endpoint prints a `claude -p --output-format json` envelope: the
+    /// reply is its `result` and the cost is its real billed tokens
+    /// (input + output). Read from the pane's RAW output, because the grid
+    /// would corrupt the wrapped single-line JSON; on any parse failure it
+    /// degrades to the raw text and the byte proxy (never breaks the run).
+    ClaudeJson,
+}
 
 /// Who talks to whom, with what labels, and how each turn is bounded.
 #[derive(Clone, Debug)]
@@ -61,6 +89,11 @@ pub struct DialogueSpec {
     /// Transcript label for each side (defaults `"A"`/`"B"`).
     pub label_a: String,
     pub label_b: String,
+    /// How each side's reply + cost is decoded (defaults [`ReplyFormat::Text`]).
+    /// Per-endpoint because the two sides can be different tools — one a
+    /// `claude --output-format json`, the other a plain print-mode peer.
+    pub format_a: ReplyFormat,
+    pub format_b: ReplyFormat,
     /// Size of each per-turn pane.
     pub cols: u16,
     pub rows: u16,
@@ -80,6 +113,8 @@ impl DialogueSpec {
             seed: seed.into(),
             label_a: "A".to_string(),
             label_b: "B".to_string(),
+            format_a: ReplyFormat::default(),
+            format_b: ReplyFormat::default(),
             cols: 80,
             rows: 24,
             timeout: DEFAULT_REPLY_TIMEOUT,
@@ -129,20 +164,21 @@ impl Plugin for Dialogue {
             .lifecycle()
             .ok_or_else(|| PaneError::Spawn("pane access has no lifecycle".to_string()))?;
 
-        // This turn's speaker (endpoint + label).
-        let (endpoint, label) = if self.turn.is_multiple_of(2) {
-            (&self.spec.endpoint_a, self.spec.label_a.clone())
+        // This turn's speaker (endpoint + label + how to decode its reply).
+        let (endpoint, label, format) = if self.turn.is_multiple_of(2) {
+            (&self.spec.endpoint_a, self.spec.label_a.clone(), self.spec.format_a)
         } else {
-            (&self.spec.endpoint_b, self.spec.label_b.clone())
+            (&self.spec.endpoint_b, self.spec.label_b.clone(), self.spec.format_b)
         };
 
         // The prompt is the whole conversation so far (instruction + seed +
         // labelled history), appended as the final argv element — preserved
         // verbatim, newlines and all, because it is one argv element.
         let prompt = render_prompt(&self.spec.seed, &self.history, &label);
-        // Cost is the prompt bytes the peer ingests (argv, not injected) — so
-        // the Driver's cost guardrail binds this plugin too, not just 0.
-        let cost = prompt.len() as u64;
+        // The prompt-byte proxy: the honest fallback when real token cost is
+        // unavailable, and the spend already committed by spawning the peer (so
+        // it is the cost reported on the cancel path).
+        let prompt_cost = prompt.len() as u64;
         let argv: Vec<String> = endpoint
             .iter()
             .cloned()
@@ -151,27 +187,30 @@ impl Plugin for Dialogue {
 
         let id = life.spawn(&argv, self.spec.cols, self.spec.rows)?;
         // From here every exit path must close the pane — the guard does it on
-        // Ok, on a later `?`, and on a panic unwind. No leaked PTY or child.
+        // Ok, on the cancel early-return, on a later `?`, and on a panic unwind.
         let guard = PaneGuard { life, id };
 
         let waited = poll_until(run, self.spec.timeout, || panes.pane_eof(id).unwrap_or(true));
-        let reply = capture(panes, id);
-        drop(guard); // close the pane now (its blocking teardown is lock-free).
 
         // If cancelled mid-turn, record nothing (no junk partial turn) and
-        // return Continue; the Driver's loop-top ends the run Cancelled. The
-        // guard above already closed the spawned pane.
+        // return Continue with the spend committed so far; the Driver's loop-top
+        // ends the run Cancelled. The guard closes the pane on this return.
         if waited == Waited::Cancelled {
             return Ok(Step {
-                cost,
+                cost: prompt_cost,
                 verdict: Verdict::Continue,
             });
         }
 
-        // Keep the reply verbatim (trimmed only of surrounding blank lines) so
-        // the conversation payload — code blocks, lists, multi-line answers — is
-        // preserved; turns stay delimited by render_turn's blank-line blocks.
-        let text = reply.trim().to_string();
+        // Decode the reply + real cost while the pane is still alive; the guard
+        // closes it next. A structured endpoint whose envelope is unparsable
+        // degrades to the raw text and the byte proxy (never fails the turn).
+        let (text, cost) = decode_reply(format, panes, id, prompt_cost);
+        drop(guard); // close the pane now (its blocking teardown is lock-free).
+
+        // The reply is kept verbatim so the conversation payload — code blocks,
+        // lists, multi-line answers — survives; turns stay delimited by
+        // render_turn's blank-line blocks.
         self.history.push(Turn { label, text });
         self.turn += 1;
 
@@ -223,11 +262,48 @@ impl Drop for PaneGuard<'_> {
     }
 }
 
-/// The reply on a fresh per-turn pane: its full output text (scrollback +
-/// visible), so a reply longer than the pane is captured whole. Nothing was
-/// injected, so the screen holds only the endpoint's output.
-fn capture(panes: &dyn PaneAccess, id: PaneId) -> String {
-    panes.pane_full_text(id).unwrap_or_default()
+/// Decode this turn's reply text and cost from the finished pane, per the
+/// endpoint's [`ReplyFormat`]. Always succeeds: a structured endpoint whose
+/// envelope is missing or garbled degrades to the raw text and the byte-count
+/// `fallback_cost`, so a parse problem never fails a turn.
+fn decode_reply(
+    format: ReplyFormat,
+    panes: &dyn PaneAccess,
+    id: PaneId,
+    fallback_cost: u64,
+) -> (String, u64) {
+    match format {
+        ReplyFormat::Text => (capture_text(panes, id), fallback_cost),
+        ReplyFormat::ClaudeJson => decode_claude_json(panes, id, fallback_cost),
+    }
+}
+
+/// The rendered full-output text of a fresh per-turn pane (scrollback +
+/// visible), trimmed. Nothing was injected, so the screen holds only the
+/// endpoint's output; a reply longer than the pane is captured whole (R16).
+fn capture_text(panes: &dyn PaneAccess, id: PaneId) -> String {
+    panes.pane_full_text(id).unwrap_or_default().trim().to_string()
+}
+
+/// Decode a `claude -p --output-format json` reply from the pane's RAW output —
+/// the grid would corrupt the wrapped single-line envelope (it inserts a `\n` at
+/// every wrap and trailing-trims each row), so the source bytes are the only
+/// faithful read. On any failure — no raw capture, a truncated/over-cap buffer,
+/// or an unparsable envelope — fall back to the raw text and the byte-count
+/// `fallback_cost`, so a broken reply degrades gracefully instead of breaking
+/// the conversation.
+fn decode_claude_json(panes: &dyn PaneAccess, id: PaneId, fallback_cost: u64) -> (String, u64) {
+    let (raw, truncated) = panes.pane_raw_output(id).unwrap_or_default();
+    let raw_text = || String::from_utf8_lossy(&raw).trim().to_string();
+    // A truncated capture is never trusted — its envelope is incomplete.
+    let parsed = if truncated { None } else { parse_claude_json(&raw) };
+    match parsed {
+        Some(reply) => {
+            let text = reply.text.filter(|t| !t.is_empty()).unwrap_or_else(raw_text);
+            (text, reply.tokens.unwrap_or(fallback_cost))
+        }
+        None => (raw_text(), fallback_cost),
+    }
 }
 
 #[cfg(test)]
@@ -248,6 +324,25 @@ mod tests {
             "/bin/sh".to_string(),
             "-c".to_string(),
             "n=$(printf '%s' \"$1\" | wc -l | tr -d ' '); printf 'saw%s\\n' \"$n\"".to_string(),
+            "_".to_string(),
+        ]
+    }
+
+    /// A one-shot fake that prints a single-line `--output-format json`
+    /// envelope: a fixed `result` and `usage` token counts, independent of the
+    /// prompt (the `_` is the `$0` placeholder before the appended prompt `$1`).
+    /// `result` must be free of single quotes (it rides in a single-quoted shell
+    /// string). The JSON is one physical line, so on a normal pane it wraps —
+    /// which is exactly why the reply must be read from the raw source, not the
+    /// grid.
+    fn json_fake(result: &str, input: u64, output: u64) -> Vec<String> {
+        let json = format!(
+            r#"{{"result":"{result}","usage":{{"input_tokens":{input},"output_tokens":{output}}}}}"#
+        );
+        vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            format!("printf '%s' '{json}'"),
             "_".to_string(),
         ]
     }
@@ -322,6 +417,76 @@ mod tests {
         // line 5 appears as its own line; "\n5\n" can't match "15"/"25"/"50".
         assert!(t.contains("\n5\n"), "scrolled-off line 5 missing: {t:?}");
         assert!(t.contains("\n30"), "last line missing: {t:?}");
+    }
+
+    #[test]
+    fn claude_json_reply_reports_real_token_cost() {
+        // A wide reply with interior spaces that the grid would wrap and trim;
+        // reading the raw source captures it verbatim, and the cost is the real
+        // tokens — not the prompt-byte proxy.
+        let result = "the quick brown fox ".repeat(8); // 160 chars, many spaces
+        let mut spec = DialogueSpec::new(
+            json_fake(&result, 30, 20),
+            json_fake(&result, 30, 20),
+            "go",
+        );
+        spec.format_a = ReplyFormat::ClaudeJson;
+        spec.format_b = ReplyFormat::ClaudeJson;
+        let (_ws, outcome, transcript) = run(spec, 2);
+
+        assert_eq!(outcome.state, OutcomeState::Exhausted);
+        // Two turns × (30 + 20) tokens — proof the Driver accumulates real
+        // tokens, not the byte proxy (the render_prompt length would differ).
+        assert_eq!(outcome.cost, 100, "cost must be the summed real tokens");
+        let t = transcript.expect("a transcript");
+        // The full wide result survives verbatim; a grid read would have dropped
+        // interior spaces at wrap boundaries (e.g. "fox the" -> "foxthe").
+        assert!(t.contains(result.trim()), "faithful reply missing: {t:?}");
+    }
+
+    #[test]
+    fn claude_json_cost_binds_the_guardrail_in_tokens() {
+        // One turn spends 50 tokens, hitting a 50-token budget — so a
+        // 100-iteration run still stops after one turn. Proves tokens (not the
+        // byte proxy, not iterations) bound the run.
+        let mut spec = DialogueSpec::new(json_fake("hi", 30, 20), json_fake("hi", 30, 20), "go");
+        spec.format_a = ReplyFormat::ClaudeJson;
+        spec.format_b = ReplyFormat::ClaudeJson;
+
+        let workspace = Arc::new(Mutex::new(Workspace::new((spec.cols, spec.rows))));
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let mut dialogue = Dialogue::new(spec);
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 100,
+            max_cost: 50,
+        })
+        .run(&mut dialogue, &access, &RunContext::uncancellable());
+
+        assert_eq!(outcome.state, OutcomeState::Exhausted);
+        assert_eq!(outcome.iterations, 1, "one turn must exhaust the 50-token budget");
+        assert_eq!(outcome.cost, 50);
+    }
+
+    #[test]
+    fn claude_json_degrades_on_unparsable_reply() {
+        // The endpoint declares ClaudeJson but emits plain text (a misconfig or
+        // a truncated envelope): the turn must NOT fail — it records the raw
+        // text and bills the byte proxy, keeping the conversation alive.
+        let garbage = vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "printf 'just plain text, not json'".to_string(),
+            "_".to_string(),
+        ];
+        let mut spec = DialogueSpec::new(garbage, vec!["true".to_string()], "go");
+        spec.format_a = ReplyFormat::ClaudeJson;
+        let (_ws, outcome, transcript) = run(spec, 1);
+
+        assert_eq!(outcome.state, OutcomeState::Exhausted, "must not Fail on bad JSON");
+        let t = transcript.expect("a transcript");
+        assert!(t.contains("just plain text"), "raw fallback text missing: {t:?}");
+        // The byte proxy still bound the run (a positive fallback cost).
+        assert!(outcome.cost > 0, "fallback cost must be the positive byte proxy");
     }
 
     #[test]
@@ -459,7 +624,16 @@ mod tests {
     #[test]
     #[ignore = "needs the claude CLI + network + auth; run manually with --ignored"]
     fn two_real_claudes_converse() {
-        let claude = vec!["claude".to_string(), "-p".to_string()];
+        // Run both sides as `claude -p --output-format json` and decode each
+        // turn as a JSON envelope — the real-PTY check that the envelope parses
+        // off the raw source (no wrap corruption, no stderr pollution) and that
+        // the cost is the real billed tokens, not the byte proxy.
+        let claude = vec![
+            "claude".to_string(),
+            "-p".to_string(),
+            "--output-format".to_string(),
+            "json".to_string(),
+        ];
         let mut spec = DialogueSpec::new(
             claude.clone(),
             claude,
@@ -467,11 +641,19 @@ mod tests {
         );
         spec.cols = 80;
         spec.rows = 24;
+        spec.format_a = ReplyFormat::ClaudeJson;
+        spec.format_b = ReplyFormat::ClaudeJson;
         let (_ws, outcome, transcript) = run(spec, 4);
 
         assert_eq!(outcome.state, OutcomeState::Exhausted);
+        // Real token cost accumulated over the turns (the round's whole point).
+        eprintln!("two_real_claudes_converse: real token cost = {}", outcome.cost);
+        assert!(outcome.cost > 0, "expected real token cost, got {}", outcome.cost);
         let t = transcript.expect("a transcript");
         assert!(!t.trim().is_empty(), "transcript: {t:?}");
+        // JSON parse succeeded (not degraded to raw): the transcript holds the
+        // clean `result` text, so it must not carry the raw envelope's fields.
+        assert!(!t.contains("input_tokens"), "transcript leaked the raw envelope: {t:?}");
         // Stateful coherence: a counting dialogue surfaces several distinct
         // numbers (a stateless telephone game could not count past the seed).
         let distinct = ["1", "2", "3", "4"].iter().filter(|n| t.contains(**n)).count();

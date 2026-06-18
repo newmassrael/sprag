@@ -23,10 +23,13 @@ pub enum Verdict {
 /// What a [`Plugin::step`] did and decided.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Step {
-    /// The bytes this step spent on the peer — injected keystrokes, or the argv
-    /// prompt an adapter spawned. Reported in one currency by every plugin so
-    /// the Driver's cost guardrail (the budget lives in the Driver) means the
-    /// same thing for all of them. (A future adapter swaps it for token cost.)
+    /// What this step spent on the peer, in the plugin's natural unit: injected
+    /// or argv bytes for the byte-relay plugins, real billed tokens for an AI
+    /// adapter that read a `--output-format json` reply. The Driver only sums
+    /// and bounds it — it is unit-agnostic — and because a run drives exactly
+    /// ONE plugin, the caller sizes `max_cost` to that plugin's unit. Every
+    /// plugin reports a positive, monotonic cost (none silently opts out), so
+    /// the guardrail always binds.
     pub cost: u64,
     pub verdict: Verdict,
 }

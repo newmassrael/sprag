@@ -31,13 +31,15 @@ pub mod driver;
 pub mod orchestrator;
 pub mod pipe;
 pub mod plugin;
+pub mod reply;
 pub mod run;
 
 pub use access::{KeyStroke, PaneAccess, PaneError, PaneLifecycle, PaneRow, WorkspacePaneAccess};
 pub use agent::{Agent, AgentSpec};
-pub use dialogue::{Dialogue, DialogueSpec};
+pub use dialogue::{Dialogue, DialogueSpec, ReplyFormat};
 pub use driver::{Driver, Guardrails, Outcome, OutcomeState};
 pub use orchestrator::{OrchestrationSpec, Orchestrator};
 pub use pipe::Pipe;
 pub use plugin::{Plugin, Step, Verdict};
+pub use reply::{parse_claude_json, ClaudeReply};
 pub use run::{poll_until, RunContext, Waited};

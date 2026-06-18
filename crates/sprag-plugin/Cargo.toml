@@ -15,6 +15,11 @@ sprag-vt = { workspace = true }
 sprag-input = { workspace = true }
 # The generated state machine's runtime (Engine + StatePolicy).
 sce-rust-runtime = { workspace = true }
+# Parse a foreign AI tool's structured stdout (a `claude -p --output-format
+# json` envelope) — perception of an external program, NOT serialization of
+# sprag's own types (the host still owns the RPC-wire mapping), so this does
+# not breach the substrate's serde-free contract. Value-walked, no derives.
+serde_json = { workspace = true }
 
 [build-dependencies]
 # Build-time codegen: orchestration.scxml -> OUT_DIR/orchestration_sm.rs.
