@@ -31,6 +31,12 @@ pub struct AgentReply {
     /// reported no usage (the caller keeps the byte proxy). The Driver's cost
     /// guardrail bills this when present.
     pub tokens: Option<u64>,
+    /// The tool's conversation/session id, if it reports one. A multi-turn
+    /// adapter reuses it to resume server-side context (e.g. `claude --resume
+    /// <id>`) instead of resending the whole transcript. `None` for outputs
+    /// that carry no session. A present id signals a healthy, continuable
+    /// session; its absence on a resume turn is the cue to start fresh.
+    pub session_id: Option<String>,
     /// Whether the tool reported a tool-side error. A well-formed reply can
     /// still report an error; that is a reply to record, not a run failure to
     /// abort on.
@@ -62,6 +68,10 @@ pub fn parse_claude_json(raw: &[u8]) -> Option<AgentReply> {
             .and_then(Value::as_str)
             .map(|s| s.trim().to_string()),
         tokens: parse_tokens(&value),
+        session_id: object
+            .get("session_id")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         is_error: object
             .get("is_error")
             .and_then(Value::as_bool)
@@ -102,6 +112,7 @@ mod tests {
         assert_eq!(reply.text.as_deref(), Some("PONG"));
         // input + output only; cache (19043 + 15626) is excluded by design.
         assert_eq!(reply.tokens, Some(5905));
+        assert_eq!(reply.session_id.as_deref(), Some("abc"));
         assert!(!reply.is_error);
     }
 
@@ -157,6 +168,15 @@ mod tests {
         let reply = parse_claude_json(raw.as_bytes()).expect("a reply");
         assert_eq!(reply.text.as_deref(), Some("hi"));
         assert_eq!(reply.tokens, None);
+        // No session_id key -> None (the cue a resume turn uses to start fresh).
+        assert_eq!(reply.session_id, None);
+    }
+
+    #[test]
+    fn extracts_session_id_when_present() {
+        let raw = r#"{"result":"hi","session_id":"sess-123","usage":{"input_tokens":1,"output_tokens":1}}"#;
+        let reply = parse_claude_json(raw.as_bytes()).expect("a reply");
+        assert_eq!(reply.session_id.as_deref(), Some("sess-123"));
     }
 
     #[test]

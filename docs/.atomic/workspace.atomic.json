@@ -724,6 +724,52 @@
         "Depend on SCE directly (sce-build) when authoring sprag's own statecharts (orchestration loops)"
       ]
     },
+    "Round 20": {
+      "decision_summary": "Make a ClaudeJson Dialogue resume each side's server session (claude -p --resume <session_id>) and send only the peer's last message, replacing the O(n^2) whole-history resend; a resume that returns no session id self-heals to the fresh whole-history path.",
+      "changes_bullets": [
+        "crates/sprag-plugin/src/reply.rs: AgentReply gains session_id: Option<String>, extracted from the envelope's session_id key (previously unread). A real-CLI probe confirmed the id is STABLE across a resume, so a side keeps ONE id for the whole run.",
+        "crates/sprag-plugin/src/dialogue.rs: Dialogue holds sessions: [Option<String>; 2] indexed by turn%2 and selected by the SAME parity branch as endpoint/label/format (one SSOT, no drifting second branch). A side's FIRST turn (session None) and every Text endpoint take the UNCHANGED whole-history render_prompt; a ClaudeJson side that already holds a session RESUMES: argv gets ['--resume', id] before the prompt, and the prompt is a new render_resume_prompt = just the peer's last turn (render_turn(history.last())) since the server holds this side's prior context. History still accumulates for the transcript and the fresh/Text path.",
+        "decode_reply / decode_claude_json now return a named DecodedTurn{text, cost, session_id} (was a (String,u64) tuple). step() stores the id on every reply that carries one (idempotent; an is_error reply WITH an id is still a continuable session), and RESETS the side to None only when a RESUME turn returns NO id (bad/expired id, or a garbled envelope) -- self-healing to the whole-history fresh path on the next same-side turn. A broken resume never fails the turn (the R18 graceful-degradation philosophy).",
+        "Resume is automatic and internal -- gated by ReplyFormat::ClaudeJson + session presence, so NO new spec field, NO RPC arg, NO sprag-host change. NO statechart change (the Step{cost,verdict} contract is unchanged; verdict stays Continue every turn). Only sprag-plugin (reply.rs + dialogue.rs) changed; lib.rs re-exports unchanged (the new AgentReply field rides the existing export)."
+      ],
+      "verification_bullets": [
+        "109 workspace tests pass (+3 over R19's 106), cargo clippy --workspace --all-targets clean. New network-free tests: reply extracts_session_id_when_present + missing_session_id_yields_none; dialogue claude_json_resumes_after_the_first_turn (an argv-self-inspecting fake proves --resume appears on turn 2+ of EACH side but not turn 1) + resume_failure_self_heals_to_fresh (a fake emitting non-JSON on a --resume call -> the side resets and its next turn parses cleanly again). All prior tests unchanged -- the Text and json_fake paths emit no session_id so they stay on the fresh path.",
+        "Live AI re-verified: two_real_claudes_converse (now exercising --resume on turns 2-3) ran two real claude -p --output-format json instances over 4 turns (~14s) with a coherent count ACROSS the resumed turns (proves the server preserved context via --resume). Real token cost = 9129, roughly HALF of R18's 18214 for the same 4-turn conversation -- direct evidence resume cut the per-turn input tokens (delta-only prompts vs whole-history resend).",
+        "Probe-grounded (real 2-turn CLI run): claude -p --output-format json --resume <id> works with the prompt as the final positional arg; the session_id is stable across resume; context is preserved (a resumed turn recalled a fact from turn 1). Design pressure-tested by a Plan agent: it endorsed the single-parity-index session shape, the DecodedTurn struct over a tuple, and SHARPENED the resume-failure trigger to 'reset only when a resume turn returns no session_id', NOT on is_error:true-with-id (a tool-side error on a live session is still continuable). NO pinion/SCE/SCXML/host change."
+      ],
+      "impact_refs": [
+        "2",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "The real claude behavior for a bad/expired --resume id is UNVERIFIED at the CLI -- the deterministic self-heal test covers the MECHANISM (no-session-id-on-a-resume-turn -> reset), and the detector is robust to both a valid {is_error, no-session} envelope and a non-JSON error. Pin it only if a live bad-id case surfaces.",
+        "render_resume_prompt sends the peer's last turn labelled; the turn-0/1 fresh prompt established the per-side instruction in each server session, so the minimal resume prompt relies on that persisting (probe-confirmed). If a future model drifts without re-instruction, re-add a tiny per-turn framing to the resume prompt.",
+        "Agent (one-shot) does not use resume; a future multi-turn Agent could reuse this per-side session pattern. Agent token cost + clean reply-region capture remains the separate backlog item.",
+        "The Endpoint{argv, format, label} struct refactor (collapse endpoint_a/b + label_a/b + format_a/b into one per-side struct) is still the recommended cohesion follow-up."
+      ],
+      "publishable_decision_summary": "Make a ClaudeJson Dialogue resume each side's server session (claude -p --resume <session_id>) and send only the peer's last message, replacing the O(n^2) whole-history resend; a resume that returns no session id self-heals to the fresh whole-history path.",
+      "publishable_changes_bullets": [
+        "crates/sprag-plugin/src/reply.rs: AgentReply gains session_id: Option<String>, extracted from the envelope's session_id key (previously unread). A real-CLI probe confirmed the id is STABLE across a resume, so a side keeps ONE id for the whole run.",
+        "crates/sprag-plugin/src/dialogue.rs: Dialogue holds sessions: [Option<String>; 2] indexed by turn%2 and selected by the SAME parity branch as endpoint/label/format (one SSOT, no drifting second branch). A side's FIRST turn (session None) and every Text endpoint take the UNCHANGED whole-history render_prompt; a ClaudeJson side that already holds a session RESUMES: argv gets ['--resume', id] before the prompt, and the prompt is a new render_resume_prompt = just the peer's last turn (render_turn(history.last())) since the server holds this side's prior context. History still accumulates for the transcript and the fresh/Text path.",
+        "decode_reply / decode_claude_json now return a named DecodedTurn{text, cost, session_id} (was a (String,u64) tuple). step() stores the id on every reply that carries one (idempotent; an is_error reply WITH an id is still a continuable session), and RESETS the side to None only when a RESUME turn returns NO id (bad/expired id, or a garbled envelope) -- self-healing to the whole-history fresh path on the next same-side turn. A broken resume never fails the turn (the R18 graceful-degradation philosophy).",
+        "Resume is automatic and internal -- gated by ReplyFormat::ClaudeJson + session presence, so NO new spec field, NO RPC arg, NO sprag-host change. NO statechart change (the Step{cost,verdict} contract is unchanged; verdict stays Continue every turn). Only sprag-plugin (reply.rs + dialogue.rs) changed; lib.rs re-exports unchanged (the new AgentReply field rides the existing export)."
+      ],
+      "publishable_verification_bullets": [
+        "109 workspace tests pass (+3 over R19's 106), cargo clippy --workspace --all-targets clean. New network-free tests: reply extracts_session_id_when_present + missing_session_id_yields_none; dialogue claude_json_resumes_after_the_first_turn (an argv-self-inspecting fake proves --resume appears on turn 2+ of EACH side but not turn 1) + resume_failure_self_heals_to_fresh (a fake emitting non-JSON on a --resume call -> the side resets and its next turn parses cleanly again). All prior tests unchanged -- the Text and json_fake paths emit no session_id so they stay on the fresh path.",
+        "Live AI re-verified: two_real_claudes_converse (now exercising --resume on turns 2-3) ran two real claude -p --output-format json instances over 4 turns (~14s) with a coherent count ACROSS the resumed turns (proves the server preserved context via --resume). Real token cost = 9129, roughly HALF of R18's 18214 for the same 4-turn conversation -- direct evidence resume cut the per-turn input tokens (delta-only prompts vs whole-history resend).",
+        "Probe-grounded (real 2-turn CLI run): claude -p --output-format json --resume <id> works with the prompt as the final positional arg; the session_id is stable across resume; context is preserved (a resumed turn recalled a fact from turn 1). Design pressure-tested by a Plan agent: it endorsed the single-parity-index session shape, the DecodedTurn struct over a tuple, and SHARPENED the resume-failure trigger to 'reset only when a resume turn returns no session_id', NOT on is_error:true-with-id (a tool-side error on a live session is still continuable). NO pinion/SCE/SCXML/host change."
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "The real claude behavior for a bad/expired --resume id is UNVERIFIED at the CLI -- the deterministic self-heal test covers the MECHANISM (no-session-id-on-a-resume-turn -> reset), and the detector is robust to both a valid {is_error, no-session} envelope and a non-JSON error. Pin it only if a live bad-id case surfaces.",
+        "render_resume_prompt sends the peer's last turn labelled; the turn-0/1 fresh prompt established the per-side instruction in each server session, so the minimal resume prompt relies on that persisting (probe-confirmed). If a future model drifts without re-instruction, re-add a tiny per-turn framing to the resume prompt.",
+        "Agent (one-shot) does not use resume; a future multi-turn Agent could reuse this per-side session pattern. Agent token cost + clean reply-region capture remains the separate backlog item.",
+        "The Endpoint{argv, format, label} struct refactor (collapse endpoint_a/b + label_a/b + format_a/b into one per-side struct) is still the recommended cohesion follow-up."
+      ]
+    },
     "Round 3": {
       "decision_summary": "Land sprag-terminal: a PTY-driven emulator projected to Scene::TextGrid and read headlessly as scene/snapshot, with no GPU.",
       "changes_bullets": [
