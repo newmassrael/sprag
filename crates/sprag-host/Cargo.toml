@@ -17,6 +17,9 @@ sprag-terminal = { workspace = true }
 # Key→PTY-byte encoder: the engine External (pane.rs) invokes it to turn an
 # injected W3C key into the bytes the child reads (PINION-REQUIREMENTS R2.6).
 sprag-input = { workspace = true }
+# The plugin substrate (PaneAccess + Driver + bundled plugins): the plugin-host
+# External (plugins.rs) runs plugins over it on background threads.
+sprag-plugin = { workspace = true }
 pinion-core = { workspace = true }
 # The RPC dispatch + scene/snapshot wire. Its heavy transitive deps are
 # confined to this host crate, never the producer/projection (DESIGN.md §5).

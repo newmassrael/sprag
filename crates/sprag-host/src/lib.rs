@@ -44,20 +44,27 @@
 //! design (not faked to mirror the buffer). A future windowed host fills the
 //! rect via `pinion_runtime::compute_layout`.
 
+mod external;
 pub mod pane;
+pub mod plugins;
 pub mod rpc;
+pub mod runs;
 pub mod workspace;
 
 pub use pane::SpragPaneExternal;
-pub use rpc::{handle_request, serve, SUPPORTED_METHODS};
+pub use plugins::PluginsExternal;
+pub use rpc::{handle_request, serve, HostState, SUPPORTED_METHODS};
+pub use runs::{RunId, RunRegistry, RunState};
 pub use workspace::WorkspaceExternal;
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use pinion_core::scene::{ContainerNode, ExternalNode, TextGridNode};
 use pinion_core::{CellMetric, Scene};
 use sprag_terminal::{PaneId, TerminalSession, Workspace};
 use sprag_vt::Screen;
+
+use crate::external::lock;
 
 // Re-export the snapshot shapes a consumer reads, so downstream code need
 // not depend on pinion-rpc's module layout directly.
@@ -69,6 +76,10 @@ pub const WORKSPACE_TAG: &str = "sprag_workspace";
 /// The tag on the workspace-control `External` (pane management). The
 /// `scene/invoke` path addresses it as `/sprag_mux/external/<action>`.
 pub const MUX_TAG: &str = "sprag_mux";
+
+/// The tag on the plugin-host `External`. The `scene/invoke` path addresses it
+/// as `/sprag_plugins/external/run`.
+pub const PLUGINS_TAG: &str = "sprag_plugins";
 
 /// The tag on each pane's `TextGrid` child (the cell-data projection).
 pub const GRID_TAG: &str = "sprag_grid";
@@ -135,9 +146,12 @@ fn pane_container(id: PaneId, session: &TerminalSession) -> Scene {
 /// dispatched `scene/invoke` (spawn/close/resize) can re-acquire it without
 /// deadlock.
 #[must_use]
-pub fn workspace_scene(workspace: &Arc<Mutex<Workspace>>) -> Scene {
+pub fn workspace_scene(
+    workspace: &Arc<Mutex<Workspace>>,
+    runs: &Arc<Mutex<RunRegistry>>,
+) -> Scene {
     let mut children: Vec<Scene> = {
-        let guard = workspace.lock().unwrap_or_else(PoisonError::into_inner);
+        let guard = lock(workspace);
         guard
             .panes()
             .iter()
@@ -147,6 +161,13 @@ pub fn workspace_scene(workspace: &Arc<Mutex<Workspace>>) -> Scene {
     children.push(Scene::External(
         ExternalNode::new(Box::new(workspace::WorkspaceExternal::new(Arc::clone(workspace))))
             .with_tag(MUX_TAG),
+    ));
+    children.push(Scene::External(
+        ExternalNode::new(Box::new(plugins::PluginsExternal::new(
+            Arc::clone(workspace),
+            Arc::clone(runs),
+        )))
+        .with_tag(PLUGINS_TAG),
     ));
     Scene::Container(ContainerNode::new(children).with_tag(WORKSPACE_TAG))
 }

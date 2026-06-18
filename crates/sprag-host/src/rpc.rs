@@ -30,9 +30,48 @@ use pinion_rpc::preview::PreviewLedger;
 use pinion_rpc::{dispatch, dispatch_parsed, parse_request, DispatchContext, Request};
 use sprag_terminal::Workspace;
 
+use crate::external::lock;
+use crate::runs::RunRegistry;
+
+/// The long-lived host state threaded through the serve loop: the shared pane
+/// workspace, the background plugin-run registry, and pinion's per-session
+/// dispatch ledgers. Bundled so the per-request handler signature stays stable
+/// as future control surfaces are added.
+pub struct HostState {
+    workspace: Arc<Mutex<Workspace>>,
+    runs: Arc<Mutex<RunRegistry>>,
+    previews: PreviewLedger,
+    revision: SceneRevision,
+}
+
+impl HostState {
+    /// Build host state over a shared workspace, with a fresh run registry.
+    #[must_use]
+    pub fn new(workspace: Arc<Mutex<Workspace>>) -> Self {
+        Self {
+            workspace,
+            runs: Arc::new(Mutex::new(RunRegistry::default())),
+            previews: PreviewLedger::default(),
+            revision: SceneRevision::default(),
+        }
+    }
+
+    /// The shared pane workspace.
+    #[must_use]
+    pub fn workspace(&self) -> &Arc<Mutex<Workspace>> {
+        &self.workspace
+    }
+
+    /// The shared background plugin-run registry.
+    #[must_use]
+    pub fn runs(&self) -> &Arc<Mutex<RunRegistry>> {
+        &self.runs
+    }
+}
+
 /// The methods the headless host answers: pure reads over the pane scene
-/// (`scene/snapshot`, `scene/query`) plus the `scene/invoke` input channel.
-/// Anything else gets a JSON-RPC method-not-found error.
+/// (`scene/snapshot`, `scene/query`) plus the `scene/invoke` input + plugin
+/// channels. Anything else gets a JSON-RPC method-not-found error.
 pub const SUPPORTED_METHODS: &[&str] = &["scene/snapshot", "scene/query", "scene/invoke"];
 
 /// Answer one JSON-RPC `request_json` against the workspace's current panes,
@@ -45,14 +84,9 @@ pub const SUPPORTED_METHODS: &[&str] = &["scene/snapshot", "scene/query", "scene
 /// error, or lets `dispatch` produce the canonical parse-error reply for
 /// malformed input.
 #[must_use]
-pub fn handle_request(
-    workspace: &Arc<Mutex<Workspace>>,
-    previews: &PreviewLedger,
-    revision: &SceneRevision,
-    request_json: &str,
-) -> Option<String> {
-    let mut scene = crate::workspace_scene(workspace);
-    let mut ctx = DispatchContext::new(&mut scene, previews, revision);
+pub fn handle_request(state: &HostState, request_json: &str) -> Option<String> {
+    let mut scene = crate::workspace_scene(&state.workspace, &state.runs);
+    let mut ctx = DispatchContext::new(&mut scene, &state.previews, &state.revision);
     match parse_request(request_json) {
         Ok(request) if SUPPORTED_METHODS.contains(&request.method.as_str()) => {
             dispatch_parsed(&mut ctx, request)
@@ -88,32 +122,29 @@ fn method_not_supported(request: &Request) -> String {
 ///
 /// Returns an IO error if reading a request line or writing a response
 /// fails.
-pub fn serve(
-    workspace: &Arc<Mutex<Workspace>>,
-    input: impl BufRead,
-    mut output: impl Write,
-) -> io::Result<()> {
-    let previews = PreviewLedger::default();
-    let revision = SceneRevision::default();
+pub fn serve(state: &HostState, input: impl BufRead, mut output: impl Write) -> io::Result<()> {
     for line in input.lines() {
         let line = line?;
         let request = line.trim();
         if request.is_empty() {
             continue;
         }
-        if let Some(response) = handle_request(workspace, &previews, &revision, request) {
+        if let Some(response) = handle_request(state, request) {
             writeln!(output, "{response}")?;
             output.flush()?;
         }
     }
+    // Shutdown: join in-flight plugin runs (bounded by their guardrails) so
+    // their worker threads and child panes reap before serve returns.
+    lock(&state.runs).join_all();
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::external::lock;
     use sprag_terminal::{CommandBuilder, PaneId};
-    use std::io::Cursor;
     use std::thread::sleep;
     use std::time::{Duration, Instant};
 
@@ -125,25 +156,28 @@ mod tests {
         command
     }
 
-    /// A workspace with one initial pane running `script`.
-    fn workspace_with(script: &str, cols: u16, rows: u16) -> Arc<Mutex<Workspace>> {
+    /// Host state with one initial pane running `script`.
+    fn host_with(script: &str, cols: u16, rows: u16) -> HostState {
         let workspace = Arc::new(Mutex::new(Workspace::new((cols, rows))));
-        workspace
-            .lock()
-            .unwrap()
+        lock(&workspace)
             .spawn(sh(script), "sh".to_string(), cols, rows)
             .expect("spawn pane");
-        workspace
+        HostState::new(workspace)
     }
 
-    /// Block (bounded) until pane 0's child has closed its PTY, so the reader
-    /// thread has applied all of its output.
-    fn wait_for_pane0_eof(workspace: &Arc<Mutex<Workspace>>) {
+    /// One request through the dispatch path (no serve loop / shutdown join), so
+    /// the `HostState` persists across calls and a background run is not joined
+    /// between requests.
+    fn serve_one(state: &HostState, request: &str) -> serde_json::Value {
+        let response = handle_request(state, request).expect("a response");
+        serde_json::from_str(response.trim()).expect("valid json-rpc response")
+    }
+
+    /// Block (bounded) until pane 0's child has closed its PTY.
+    fn wait_for_pane0_eof(state: &HostState) {
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(5) {
-            let eof = workspace
-                .lock()
-                .unwrap()
+            let eof = lock(state.workspace())
                 .pane(PaneId(0))
                 .is_none_or(|p| p.session().is_eof());
             if eof {
@@ -153,29 +187,20 @@ mod tests {
         }
     }
 
-    fn serve_one(workspace: &Arc<Mutex<Workspace>>, request: &str) -> serde_json::Value {
-        let input = Cursor::new(format!("{request}\n").into_bytes());
-        let mut output: Vec<u8> = Vec::new();
-        serve(workspace, input, &mut output).expect("serve loop");
-        let response = String::from_utf8(output).expect("utf8 response");
-        serde_json::from_str(response.trim()).expect("valid json-rpc response")
-    }
-
-    fn invoke_key(workspace: &Arc<Mutex<Workspace>>, pane: u64, key: &str) {
+    fn invoke_key(state: &HostState, pane: u64, key: &str) {
         let request = format!(
             r#"{{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{{"path":"/pane_{pane}/sprag_input/external/key","args":{{"key":"{key}"}}}}}}"#
         );
-        let value = serve_one(workspace, &request);
+        let value = serve_one(state, &request);
         assert!(value.get("error").is_none(), "invoke error: {value}");
     }
 
-    /// Poll the live snapshot until it contains `needle` (the reader thread
-    /// applies echoed input asynchronously).
-    fn wait_for_snapshot(workspace: &Arc<Mutex<Workspace>>, needle: &str) -> bool {
+    /// Poll the live snapshot until it contains `needle`.
+    fn wait_for_snapshot(state: &HostState, needle: &str) -> bool {
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(5) {
             let snap = serve_one(
-                workspace,
+                state,
                 r#"{"jsonrpc":"2.0","id":9,"method":"scene/snapshot","params":{"path":""}}"#,
             );
             if snap["result"].to_string().contains(needle) {
@@ -188,10 +213,10 @@ mod tests {
 
     #[test]
     fn serve_answers_scene_snapshot_with_live_screen() {
-        let workspace = workspace_with("printf hi", 20, 4);
-        wait_for_pane0_eof(&workspace);
+        let state = host_with("printf hi", 20, 4);
+        wait_for_pane0_eof(&state);
         let value = serve_one(
-            &workspace,
+            &state,
             r#"{"jsonrpc":"2.0","id":1,"method":"scene/snapshot","params":{"path":""}}"#,
         );
         assert_eq!(value["id"], 1);
@@ -208,9 +233,9 @@ mod tests {
     fn serve_rejects_scene_key_in_favor_of_scene_invoke() {
         // Input rides scene/invoke against a pane's engine External, not
         // pinion's widget-oriented scene/key — so scene/key stays unsupported.
-        let workspace = workspace_with("printf hi", 20, 4);
+        let state = host_with("printf hi", 20, 4);
         let value = serve_one(
-            &workspace,
+            &state,
             r#"{"jsonrpc":"2.0","id":2,"method":"scene/key","params":{"key":"a"}}"#,
         );
         assert_eq!(value["id"], 2);
@@ -219,42 +244,102 @@ mod tests {
 
     #[test]
     fn serve_injects_key_into_a_pane() {
-        // End-to-end input into pane 0: scene/invoke encodes "h"/"i" to PTY
-        // bytes; the line discipline echoes them onto the pane's grid.
-        let workspace = workspace_with("cat", 20, 4);
-        invoke_key(&workspace, 0, "h");
-        invoke_key(&workspace, 0, "i");
-        assert!(wait_for_snapshot(&workspace, "hi"), "injected 'hi' never appeared");
+        let state = host_with("cat", 20, 4);
+        invoke_key(&state, 0, "h");
+        invoke_key(&state, 0, "i");
+        assert!(wait_for_snapshot(&state, "hi"), "injected 'hi' never appeared");
     }
 
     #[test]
     fn serve_spawns_addresses_and_closes_panes() {
         // Multiplex lifecycle over the wire: spawn a 2nd pane, address it,
         // list panes, close one.
-        let workspace = workspace_with("cat", 20, 4);
+        let state = host_with("cat", 20, 4);
         let spawned = serve_one(
-            &workspace,
+            &state,
             r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_mux/external/spawn","args":{"cmd":["cat"],"cols":20,"rows":4}}}"#,
         );
         assert_eq!(spawned["result"].as_i64(), Some(1), "new pane id: {spawned}");
 
-        // Input addressed to pane 1 echoes onto pane 1's grid.
-        invoke_key(&workspace, 1, "Z");
-        assert!(wait_for_snapshot(&workspace, "Z"), "pane 1 never echoed 'Z'");
+        invoke_key(&state, 1, "Z");
+        assert!(wait_for_snapshot(&state, "Z"), "pane 1 never echoed 'Z'");
 
-        // The control surface lists both panes.
         let panes = serve_one(
-            &workspace,
+            &state,
             r#"{"jsonrpc":"2.0","id":2,"method":"scene/query","params":{"path":"/sprag_mux/external/panes"}}"#,
         );
         assert_eq!(panes["result"].as_array().map(Vec::len), Some(2));
 
-        // Closing pane 0 leaves one pane.
         let closed = serve_one(
-            &workspace,
+            &state,
             r#"{"jsonrpc":"2.0","id":3,"method":"scene/invoke","params":{"path":"/sprag_mux/external/close","args":{"id":0}}}"#,
         );
         assert!(closed.get("error").is_none(), "close error: {closed}");
-        assert_eq!(workspace.lock().unwrap().panes().len(), 1);
+        assert_eq!(lock(state.workspace()).panes().len(), 1);
+    }
+
+    /// Poll `query("runs")` until run 0 reports `done`, returning its outcome
+    /// state (or `None` on timeout).
+    fn wait_for_run_done(state: &HostState) -> Option<String> {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            let runs = serve_one(
+                state,
+                r#"{"jsonrpc":"2.0","id":7,"method":"scene/query","params":{"path":"/sprag_plugins/external/runs"}}"#,
+            );
+            let run = &runs["result"][0];
+            if run["state"]["status"] == "done" {
+                return run["state"]["outcome"]["state"].as_str().map(str::to_string);
+            }
+            sleep(Duration::from_millis(20));
+        }
+        None
+    }
+
+    #[test]
+    fn runs_an_orchestrator_plugin_in_the_background_to_convergence() {
+        // cat echoes the stimulus, so the orchestrator converges on the sentinel.
+        let state = host_with("cat", 20, 4);
+        let started = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"orchestrator","pane":0,"stimulus":"ping","sentinel":"ping","guardrails":{"max_iterations":5,"max_injected_bytes":4096}}}}"#,
+        );
+        assert_eq!(started["result"].as_i64(), Some(0), "run id: {started}");
+        assert_eq!(wait_for_run_done(&state).as_deref(), Some("converged"));
+    }
+
+    #[test]
+    fn run_with_an_unknown_pane_is_rejected_synchronously() {
+        // Submit-time validation: a missing pane is a synchronous Rejected,
+        // not an async Failed the peer has to poll for.
+        let state = host_with("cat", 20, 4);
+        let rejected = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"orchestrator","pane":99,"stimulus":"x"}}}"#,
+        );
+        assert!(rejected.get("error").is_some(), "expected a rejection: {rejected}");
+    }
+
+    #[test]
+    fn a_running_plugin_does_not_block_the_serve_loop() {
+        // A `sleep` pane never echoes, so each orchestrator step burns its full
+        // observe timeout — the run takes ~1s. Meanwhile an immediate snapshot
+        // must still return promptly, proving the run is off the serve path.
+        let state = host_with("sleep 5", 20, 4);
+        serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"orchestrator","pane":0,"stimulus":"x","guardrails":{"max_iterations":2,"max_injected_bytes":1048576}}}}"#,
+        );
+        let start = Instant::now();
+        let snap = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":2,"method":"scene/snapshot","params":{"path":""}}"#,
+        );
+        assert!(snap.get("error").is_none(), "snapshot error: {snap}");
+        assert!(
+            start.elapsed() < Duration::from_millis(500),
+            "snapshot blocked behind the run: {:?}",
+            start.elapsed()
+        );
     }
 }

@@ -128,13 +128,15 @@ impl Workspace {
         Ok(id)
     }
 
-    /// Close and reap the pane with `id` (the `TerminalSession` drop kills
-    /// the child and joins its reader thread). Returns whether a pane was
-    /// removed.
-    pub fn close(&mut self, id: PaneId) -> bool {
-        let before = self.panes.len();
-        self.panes.retain(|p| p.id != id);
-        self.panes.len() != before
+    /// Remove the pane with `id`, **returning it** so the caller drops it —
+    /// running [`TerminalSession`]'s `kill` / `wait` / `join` on `Drop` —
+    /// *outside* any lock the caller is holding (those are blocking process
+    /// ops; reaping under a shared lock would stall everything contending on
+    /// it, e.g. an in-flight plugin run). Returns `None` if no pane has `id`.
+    #[must_use]
+    pub fn close(&mut self, id: PaneId) -> Option<Pane> {
+        let index = self.panes.iter().position(|pane| pane.id == id)?;
+        Some(self.panes.remove(index))
     }
 
     /// Resize the pane with `id` to `cols x rows` (PTY + emulator).
@@ -214,8 +216,8 @@ mod tests {
         let mut ws = Workspace::new((80, 24));
         let a = ws.spawn(cmd(), "sh".to_string(), 80, 24).unwrap();
         let _b = ws.spawn(cmd(), "sh".to_string(), 80, 24).unwrap();
-        assert!(ws.close(a));
-        assert!(!ws.close(a)); // already gone
+        assert!(ws.close(a).is_some());
+        assert!(ws.close(a).is_none()); // already gone
         assert!(ws.pane(a).is_none());
         // The freed id is not reclaimed by the next spawn.
         let c = ws.spawn(cmd(), "sh".to_string(), 80, 24).unwrap();

@@ -115,3 +115,49 @@ impl Driver {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::access::{KeyStroke, PaneRow};
+    use crate::plugin::Step;
+    use sprag_terminal::PaneId;
+
+    /// A plugin whose step always fails — to pin the Driver's Err -> Failed
+    /// mapping deterministically, no threads or PTY.
+    struct FailingPlugin;
+    impl Plugin for FailingPlugin {
+        fn step(&mut self, _panes: &dyn PaneAccess) -> Result<Step, InjectError> {
+            Err(InjectError::UnknownPane(PaneId(0)))
+        }
+    }
+
+    /// An empty pane access (the failing plugin ignores it).
+    struct NoPanes;
+    impl PaneAccess for NoPanes {
+        fn pane_ids(&self) -> Vec<PaneId> {
+            Vec::new()
+        }
+        fn pane_collapsed(&self, _id: PaneId) -> Option<String> {
+            None
+        }
+        fn pane_rows(&self, _id: PaneId) -> Option<Vec<PaneRow>> {
+            None
+        }
+        fn inject(&self, _id: PaneId, _keys: &[KeyStroke]) -> Result<u64, InjectError> {
+            Err(InjectError::UnknownPane(PaneId(0)))
+        }
+    }
+
+    #[test]
+    fn driver_maps_a_step_error_to_failed_with_the_cause() {
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 5,
+            max_injected_bytes: 100,
+        })
+        .run(&mut FailingPlugin, &NoPanes);
+        assert_eq!(outcome.state, OutcomeState::Failed);
+        assert_eq!(outcome.iterations, 0);
+        assert_eq!(outcome.failure, Some(InjectError::UnknownPane(PaneId(0))));
+    }
+}

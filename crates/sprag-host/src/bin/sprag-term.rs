@@ -18,7 +18,7 @@
 use std::io;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use sprag_host::serve;
+use sprag_host::{serve, HostState};
 use sprag_terminal::{CommandBuilder, Workspace};
 
 fn main() -> io::Result<()> {
@@ -29,9 +29,10 @@ fn main() -> io::Result<()> {
         .unwrap_or_else(PoisonError::into_inner)
         .spawn(command, label, cols, rows)
         .map_err(io::Error::other)?;
+    let state = HostState::new(workspace);
     let stdin = io::stdin();
     let stdout = io::stdout();
-    serve(&workspace, stdin.lock(), stdout.lock())
+    serve(&state, stdin.lock(), stdout.lock())
 }
 
 /// Parse `[--size COLSxROWS]` then an optional command (after `--`, or the

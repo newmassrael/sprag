@@ -20,14 +20,15 @@
 //! for the deferred GUI round.
 
 use std::fmt;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use pinion_core::external::{
-    Backend, BackendFallback, BackendSupport, External, ExternalIntrospect, IntrospectSchema,
-    IntrospectValue, InterveneError, InvokeError, RepaintOwner, ThreadOwnership,
+    ExternalIntrospect, IntrospectSchema, IntrospectValue, InterveneError, InvokeError,
 };
 use serde_json::{Map, Value};
-use sprag_terminal::{CommandBuilder, PaneId, Workspace};
+use sprag_terminal::{CommandBuilder, Workspace};
+
+use crate::external::{as_object, lock, opt_dim, require_pane_id, rpc_external_impl};
 
 const SPAWN_ACTION: &str = "spawn";
 const CLOSE_ACTION: &str = "close";
@@ -74,10 +75,13 @@ impl WorkspaceExternal {
         Ok(IntrospectValue::Int(i64::try_from(id.0).unwrap_or(i64::MAX)))
     }
 
-    /// `close` action: reap the pane with `id`.
+    /// `close` action: reap the pane with `id`. The removed `Pane` is bound
+    /// here so the workspace guard drops first and the pane's blocking
+    /// `Drop` (kill/wait/join) runs *outside* the lock.
     fn close(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
-        let id = parse_id(args)?;
-        if lock(&self.workspace).close(id) {
+        let id = require_pane_id(as_object(args)?, "id")?;
+        let removed = lock(&self.workspace).close(id);
+        if removed.is_some() {
             Ok(IntrospectValue::Null)
         } else {
             Err(InvokeError::Rejected) // no such pane
@@ -86,14 +90,8 @@ impl WorkspaceExternal {
 
     /// `resize` action: resize the pane with `id` to `cols x rows`.
     fn resize(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
-        let IntrospectValue::Json(Value::Object(map)) = args else {
-            return Err(InvokeError::TypeMismatch);
-        };
-        let id = map
-            .get("id")
-            .and_then(Value::as_u64)
-            .map(PaneId)
-            .ok_or(InvokeError::TypeMismatch)?;
+        let map = as_object(args)?;
+        let id = require_pane_id(map, "id")?;
         let cols = opt_dim(map, "cols")?.ok_or(InvokeError::TypeMismatch)?;
         let rows = opt_dim(map, "rows")?.ok_or(InvokeError::TypeMismatch)?;
         match lock(&self.workspace).resize(id, cols, rows) {
@@ -110,29 +108,7 @@ impl fmt::Debug for WorkspaceExternal {
     }
 }
 
-impl External for WorkspaceExternal {
-    fn backends(&self) -> BackendSupport {
-        BackendSupport::new(&[Backend::Rpc], BackendFallback::Skip)
-    }
-
-    fn repaint_ownership(&self) -> RepaintOwner {
-        RepaintOwner::Framework
-    }
-
-    fn thread_ownership(&self) -> ThreadOwnership {
-        // Each pane's reader thread sits behind the producer boundary (R1.7);
-        // this control surface's own work is synchronous.
-        ThreadOwnership::UiThreadSync
-    }
-
-    fn introspect(&self) -> Option<&dyn ExternalIntrospect> {
-        Some(self)
-    }
-
-    fn introspect_mut(&mut self) -> Option<&mut dyn ExternalIntrospect> {
-        Some(self)
-    }
-}
+rpc_external_impl!(WorkspaceExternal);
 
 impl ExternalIntrospect for WorkspaceExternal {
     fn schema(&self) -> IntrospectSchema {
@@ -180,11 +156,6 @@ impl ExternalIntrospect for WorkspaceExternal {
     }
 }
 
-/// Lock the workspace, recovering the guard if a holder panicked.
-fn lock(workspace: &Mutex<Workspace>) -> MutexGuard<'_, Workspace> {
-    workspace.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 /// Build a [`CommandBuilder`] from an argv JSON array (`[program, args…]`),
 /// returning it plus the program label. Empty or non-string argv is a
 /// [`InvokeError::TypeMismatch`].
@@ -211,36 +182,11 @@ fn default_shell_command() -> (CommandBuilder, String) {
     (command, shell)
 }
 
-/// Read an optional positive `u16` dimension: `None` when absent, `Err` when
-/// present but not a positive `u16`.
-fn opt_dim(map: &Map<String, Value>, key: &str) -> Result<Option<u16>, InvokeError> {
-    match map.get(key) {
-        None => Ok(None),
-        Some(value) => value
-            .as_u64()
-            .and_then(|n| u16::try_from(n).ok())
-            .filter(|&n| n > 0)
-            .map(Some)
-            .ok_or(InvokeError::TypeMismatch),
-    }
-}
-
-/// Parse `{id: <u64>}` from an invoke args object.
-fn parse_id(args: &IntrospectValue) -> Result<PaneId, InvokeError> {
-    match args {
-        IntrospectValue::Json(Value::Object(map)) => map
-            .get("id")
-            .and_then(Value::as_u64)
-            .map(PaneId)
-            .ok_or(InvokeError::TypeMismatch),
-        _ => Err(InvokeError::TypeMismatch),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    use sprag_terminal::PaneId;
 
     fn workspace() -> Arc<Mutex<Workspace>> {
         Arc::new(Mutex::new(Workspace::new((80, 24))))

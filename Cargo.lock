@@ -1651,6 +1651,7 @@ dependencies = [
  "serde_json",
  "sprag-grid",
  "sprag-input",
+ "sprag-plugin",
  "sprag-terminal",
  "sprag-vt",
 ]

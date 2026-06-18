@@ -19,12 +19,13 @@
 use std::fmt;
 
 use pinion_core::external::{
-    Backend, BackendFallback, BackendSupport, External, ExternalIntrospect, IntrospectSchema,
-    IntrospectValue, InterveneError, InvokeError, RepaintOwner, ThreadOwnership,
+    ExternalIntrospect, IntrospectSchema, IntrospectValue, InterveneError, InvokeError,
 };
 use serde_json::Value;
 use sprag_input::Modifiers;
 use sprag_terminal::SessionHandle;
+
+use crate::external::rpc_external_impl;
 
 /// The invoke action that injects a key into the focused pane.
 const KEY_ACTION: &str = "key";
@@ -71,31 +72,7 @@ impl fmt::Debug for SpragPaneExternal {
     }
 }
 
-impl External for SpragPaneExternal {
-    fn backends(&self) -> BackendSupport {
-        // RPC-only: the pane engine exists on the scene-as-data surface
-        // alone — there is no GUI/TUI glyph paint (R1.6 is deferred).
-        BackendSupport::new(&[Backend::Rpc], BackendFallback::Skip)
-    }
-
-    fn repaint_ownership(&self) -> RepaintOwner {
-        RepaintOwner::Framework
-    }
-
-    fn thread_ownership(&self) -> ThreadOwnership {
-        // The producer's reader thread sits behind this boundary (R1.7);
-        // the External's own work (encode + write) is synchronous.
-        ThreadOwnership::UiThreadSync
-    }
-
-    fn introspect(&self) -> Option<&dyn ExternalIntrospect> {
-        Some(self)
-    }
-
-    fn introspect_mut(&mut self) -> Option<&mut dyn ExternalIntrospect> {
-        Some(self)
-    }
-}
+rpc_external_impl!(SpragPaneExternal);
 
 impl ExternalIntrospect for SpragPaneExternal {
     fn schema(&self) -> IntrospectSchema {

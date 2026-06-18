@@ -262,6 +262,52 @@
         "PaneAccess additions (cell/style read, scrollback) stay additive until a consumer needs them (YAGNI)."
       ]
     },
+    "Round 11": {
+      "decision_summary": "Expose plugins over RPC, completing the plugin-platform contract: a PluginsExternal runs plugins on background threads (non-blocking serve) tracked in a shared RunRegistry, plus the shared host-External boilerplate extraction.",
+      "changes_bullets": [
+        "New PluginsExternal (sprag-host): scene/invoke run (a plugin discriminator orchestrator|pipe, submit-time pane validation -> synchronous Rejected, DEFAULT_GUARDRAILS, spawns a background Driver::run that writes the terminal RunState) + scene/query runs/plugins; the plugin Outcome is rendered to JSON in the host so sprag-plugin stays serde-free. Added as the sprag_plugins child of workspace_scene.",
+        "Run registry: the long-lived state is a shared Arc<Mutex<RunRegistry>> owned by serve and threaded via a HostState{workspace,runs,previews,revision} bundle -- NOT owned by the per-request PluginsExternal, which is a throwaway projection rebuilt each request (the critical bug a Plan agent caught). Each run carries its own Arc<Mutex<RunState>> cell so reading the registry never blocks behind a run; sweep joins finished threads (is_finished, non-blocking; a panic becomes Panicked); join_all on RunRegistry Drop and serve shutdown reaps threads (bounded by guardrails).",
+        "E-extraction: a sprag-host-local rpc_external_impl! macro (mirroring pinion's query_proxy_external_impl!, but &[Rpc]-only) plus a shared lock and arg helpers (as_object/require_pane_id/require_str/opt_str/opt_dim) in a new external module; SpragPaneExternal and WorkspaceExternal rewritten onto them (each keeps its own ExternalIntrospect and Debug).",
+        "Producer correctness: Workspace::close now returns the removed Pane so the caller drops it (TerminalSession::drop's kill/wait/join) OUTSIDE the workspace lock, so a close can no longer stall an in-flight plugin run contending on that lock."
+      ],
+      "verification_bullets": [
+        "64 workspace tests pass: a background converged run over RPC (poll query(runs) to done), a synchronous Rejected for an unknown target pane, a non-blocking responsiveness test (a sleep pane's slow run does not delay an immediate snapshot), a Driver Err->Failed unit test via a mock PaneAccess (no threads), the registry submit/sweep/join lifecycle, and the existing host/producer suites. cargo clippy --workspace --all-targets clean.",
+        "Bin end-to-end (sprag-term -- cat): scene/invoke /sprag_plugins/external/run returns a run id; scene/query plugins returns [orchestrator, pipe]; query runs shows the run reaching done with outcome converged (iterations 1, injected_bytes 5).",
+        "Design pressure-tested by a Plan agent which caught the registry-ownership bug and refined the reaping (is_finished join), shutdown (join_all on Drop), and guardrail-default model. pinion/SCE needed nothing new."
+      ],
+      "impact_refs": [
+        "1",
+        "2",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Interactive cancel (designed, deferred): an Arc<AtomicBool> trigger checked atop Driver::run's loop firing a cancel event to a new cancelled statechart final + OutcomeState::Cancelled -- the terminal state stays in the chart (SCE dogfood), the flag is only the trigger. Without it, host shutdown blocks until in-flight runs finish (the honest cost).",
+        "AI-tool adapters (claude/aider in panes with structured I/O) as the real AI<->AI plugins over this exposed substrate; bidirectional A<->B relay; character-level delta diffing for the pipe.",
+        "Live per-iteration run progress and run GC from the registry are deferred until a consumer needs them (YAGNI; Outcome already carries iterations/injected_bytes)."
+      ],
+      "publishable_decision_summary": "Expose plugins over RPC, completing the plugin-platform contract: a PluginsExternal runs plugins on background threads (non-blocking serve) tracked in a shared RunRegistry, plus the shared host-External boilerplate extraction.",
+      "publishable_changes_bullets": [
+        "New PluginsExternal (sprag-host): scene/invoke run (a plugin discriminator orchestrator|pipe, submit-time pane validation -> synchronous Rejected, DEFAULT_GUARDRAILS, spawns a background Driver::run that writes the terminal RunState) + scene/query runs/plugins; the plugin Outcome is rendered to JSON in the host so sprag-plugin stays serde-free. Added as the sprag_plugins child of workspace_scene.",
+        "Run registry: the long-lived state is a shared Arc<Mutex<RunRegistry>> owned by serve and threaded via a HostState{workspace,runs,previews,revision} bundle -- NOT owned by the per-request PluginsExternal, which is a throwaway projection rebuilt each request (the critical bug a Plan agent caught). Each run carries its own Arc<Mutex<RunState>> cell so reading the registry never blocks behind a run; sweep joins finished threads (is_finished, non-blocking; a panic becomes Panicked); join_all on RunRegistry Drop and serve shutdown reaps threads (bounded by guardrails).",
+        "E-extraction: a sprag-host-local rpc_external_impl! macro (mirroring pinion's query_proxy_external_impl!, but &[Rpc]-only) plus a shared lock and arg helpers (as_object/require_pane_id/require_str/opt_str/opt_dim) in a new external module; SpragPaneExternal and WorkspaceExternal rewritten onto them (each keeps its own ExternalIntrospect and Debug).",
+        "Producer correctness: Workspace::close now returns the removed Pane so the caller drops it (TerminalSession::drop's kill/wait/join) OUTSIDE the workspace lock, so a close can no longer stall an in-flight plugin run contending on that lock."
+      ],
+      "publishable_verification_bullets": [
+        "64 workspace tests pass: a background converged run over RPC (poll query(runs) to done), a synchronous Rejected for an unknown target pane, a non-blocking responsiveness test (a sleep pane's slow run does not delay an immediate snapshot), a Driver Err->Failed unit test via a mock PaneAccess (no threads), the registry submit/sweep/join lifecycle, and the existing host/producer suites. cargo clippy --workspace --all-targets clean.",
+        "Bin end-to-end (sprag-term -- cat): scene/invoke /sprag_plugins/external/run returns a run id; scene/query plugins returns [orchestrator, pipe]; query runs shows the run reaching done with outcome converged (iterations 1, injected_bytes 5).",
+        "Design pressure-tested by a Plan agent which caught the registry-ownership bug and refined the reaping (is_finished join), shutdown (join_all on Drop), and guardrail-default model. pinion/SCE needed nothing new."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "2",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Interactive cancel (designed, deferred): an Arc<AtomicBool> trigger checked atop Driver::run's loop firing a cancel event to a new cancelled statechart final + OutcomeState::Cancelled -- the terminal state stays in the chart (SCE dogfood), the flag is only the trigger. Without it, host shutdown blocks until in-flight runs finish (the honest cost).",
+        "AI-tool adapters (claude/aider in panes with structured I/O) as the real AI<->AI plugins over this exposed substrate; bidirectional A<->B relay; character-level delta diffing for the pipe.",
+        "Live per-iteration run progress and run GC from the registry are deferred until a consumer needs them (YAGNI; Outcome already carries iterations/injected_bytes)."
+      ]
+    },
     "Round 2": {
       "decision_summary": "Project rule: use SCE (SCXML Core Engine) for sprag statechart and codegen logic where applicable.",
       "changes_bullets": [
