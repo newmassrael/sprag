@@ -27,9 +27,11 @@ pub struct AgentReply {
     /// The reply text, trimmed; `None` if the output carried no reply field
     /// (the caller falls back to the raw captured text).
     pub text: Option<String>,
-    /// Real billed tokens for this turn (input + output); `None` if the output
-    /// reported no usage (the caller keeps the byte proxy). The Driver's cost
-    /// guardrail bills this when present.
+    /// Real billed tokens for this turn (input + output), the cost a
+    /// token-denominated run bills; `None` if the output reported no usage.
+    /// Cache-creation / cache-read tokens are excluded: they are large and
+    /// bursty (a single cache-warm turn can dwarf the input+output count), so
+    /// counting them would make a token budget meaningless.
     pub tokens: Option<u64>,
     /// The tool's conversation/session id, if it reports one. A multi-turn
     /// adapter reuses it to resume server-side context (e.g. `claude --resume
@@ -37,10 +39,6 @@ pub struct AgentReply {
     /// that carry no session. A present id signals a healthy, continuable
     /// session; its absence on a resume turn is the cue to start fresh.
     pub session_id: Option<String>,
-    /// Whether the tool reported a tool-side error. A well-formed reply can
-    /// still report an error; that is a reply to record, not a run failure to
-    /// abort on.
-    pub is_error: bool,
 }
 
 /// Parse a Claude `--output-format json` envelope from `raw` output bytes.
@@ -72,15 +70,13 @@ pub fn parse_claude_json(raw: &[u8]) -> Option<AgentReply> {
             .get("session_id")
             .and_then(Value::as_str)
             .map(str::to_string),
-        is_error: object
-            .get("is_error")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
     })
 }
 
 /// Billed tokens = `usage.input_tokens + usage.output_tokens`, or `None` if
-/// `usage` is absent (neither count present). Cache counts are excluded.
+/// `usage` is absent (neither count present). Cache-creation / cache-read counts
+/// are excluded on purpose: they are large and bursty, so folding them in would
+/// void a token budget (one cache-warm turn could blow any sane ceiling).
 fn parse_tokens(value: &Value) -> Option<u64> {
     let usage = value.get("usage")?;
     let input = usage.get("input_tokens").and_then(Value::as_u64);
@@ -113,7 +109,6 @@ mod tests {
         // input + output only; cache (19043 + 15626) is excluded by design.
         assert_eq!(reply.tokens, Some(5905));
         assert_eq!(reply.session_id.as_deref(), Some("abc"));
-        assert!(!reply.is_error);
     }
 
     #[test]
@@ -154,10 +149,13 @@ mod tests {
     }
 
     #[test]
-    fn is_error_envelope_still_parses() {
+    fn error_envelope_still_extracts_text_and_tokens() {
+        // An envelope carrying `is_error:true` (a tool-side error). We no longer
+        // model that flag, but the unrecognized key must not derail parsing: the
+        // reply text and real tokens still extract, so a tool-side error stays a
+        // reply to record (continuable via its session_id), not a parse failure.
         let raw = r#"{"is_error":true,"result":"rate limited","usage":{"input_tokens":4,"output_tokens":0}}"#;
         let reply = parse_claude_json(raw.as_bytes()).expect("a reply");
-        assert!(reply.is_error);
         assert_eq!(reply.text.as_deref(), Some("rate limited"));
         assert_eq!(reply.tokens, Some(4));
     }

@@ -12,7 +12,7 @@ use std::time::Duration;
 use sprag_terminal::PaneId;
 
 use crate::access::{KeyStroke, PaneAccess, PaneError};
-use crate::plugin::{Plugin, Step, Verdict};
+use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::run::{poll_until, RunContext, Waited};
 
 /// How long a step waits for the pane to react before judging on the current
@@ -82,7 +82,7 @@ impl Plugin for Orchestrator {
         // Driver's loop-top ends the run Cancelled (not a spurious Converged).
         if self.observe(panes, run) == Waited::Cancelled {
             return Ok(Step {
-                cost,
+                cost: Cost::Bytes(cost),
                 verdict: Verdict::Continue,
             });
         }
@@ -98,7 +98,7 @@ impl Plugin for Orchestrator {
             Verdict::Continue
         };
         Ok(Step {
-            cost,
+            cost: Cost::Bytes(cost),
             verdict,
         })
     }
@@ -150,7 +150,7 @@ mod tests {
             &mut orch,
             Guardrails {
                 max_iterations: 3,
-                max_cost: u64::MAX,
+                max_cost: None,
             },
         );
         assert_eq!(outcome.state, OutcomeState::Exhausted);
@@ -173,7 +173,7 @@ mod tests {
             &mut orch,
             Guardrails {
                 max_iterations: 10,
-                max_cost: u64::MAX,
+                max_cost: None,
             },
         );
         assert_eq!(outcome.state, OutcomeState::Converged);
@@ -197,7 +197,7 @@ mod tests {
             &mut orch,
             Guardrails {
                 max_iterations: 10,
-                max_cost: u64::MAX,
+                max_cost: None,
             },
         );
         assert_eq!(outcome.state, OutcomeState::Converged);
@@ -218,10 +218,14 @@ mod tests {
             &mut orch,
             Guardrails {
                 max_iterations: u32::MAX,
-                max_cost: 12,
+                max_cost: Some(Cost::Bytes(12)),
             },
         );
         assert_eq!(outcome.state, OutcomeState::Exhausted);
-        assert!(outcome.cost >= 12, "bytes: {}", outcome.cost);
+        assert!(
+            matches!(outcome.cost, Some(Cost::Bytes(n)) if n >= 12),
+            "cost: {:?}",
+            outcome.cost
+        );
     }
 }

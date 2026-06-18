@@ -16,5 +16,5 @@
 pub mod session;
 pub mod workspace;
 
-pub use session::{CommandBuilder, SessionError, SessionHandle, TerminalSession};
+pub use session::{CommandBuilder, RawOutput, SessionError, SessionHandle, TerminalSession};
 pub use workspace::{Pane, PaneId, PaneInfo, Workspace};

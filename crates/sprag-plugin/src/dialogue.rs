@@ -23,15 +23,17 @@
 //! run ends `Exhausted` with the transcript as its payload (the [`Pipe`]
 //! pattern).
 //!
-//! Each endpoint declares a [`ReplyFormat`] that decides how its reply and cost
-//! are read. `Text` (the default) takes the whole rendered pane output as the
-//! reply and the prompt-byte count as a proxy cost. `ClaudeJson` runs the
-//! endpoint as `claude -p --output-format json` and parses the envelope off the
-//! pane's RAW output (the grid would corrupt the wrapped single-line JSON) to
-//! get the real `result` text, the real billed tokens (input + output) as the
-//! cost, and the `session_id` used for resume. Parsing degrades gracefully: a
-//! truncated, oversized, or unparsable envelope falls back to the raw text and
-//! the byte proxy, so a broken reply never breaks the conversation.
+//! Dialogue is a TOKEN-denominated plugin: every turn's [`Cost`] is
+//! [`Cost::Tokens`]. Each endpoint declares a [`ReplyFormat`] that decides how
+//! its reply and tokens are read. `Text` (the default) takes the whole rendered
+//! pane output as the reply and reports `Tokens(0)` (a print-mode tool has no
+//! token accounting). `ClaudeJson` runs the endpoint as `claude -p
+//! --output-format json` and parses the envelope off the pane's RAW output (the
+//! grid would corrupt the wrapped single-line JSON) to get the real `result`
+//! text, the real billed tokens (input + output) as the cost, and the
+//! `session_id` used for resume. Parsing degrades gracefully: a truncated,
+//! oversized, or unparsable envelope falls back to the raw text and `Tokens(0)`,
+//! so a broken reply never breaks the conversation.
 //!
 //! Prompting has two modes. A side's FIRST turn (and every `Text` endpoint)
 //! sends the whole transcript so far (instruction + seed + labelled history) so
@@ -56,10 +58,10 @@
 
 use std::time::Duration;
 
-use sprag_terminal::PaneId;
+use sprag_terminal::{PaneId, RawOutput};
 
 use crate::access::{PaneAccess, PaneError, PaneLifecycle};
-use crate::plugin::{Plugin, Step, Verdict};
+use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::reply::parse_claude_json;
 use crate::run::{poll_until, RunContext, Waited, DEFAULT_REPLY_TIMEOUT};
 
@@ -132,9 +134,10 @@ struct Turn {
     text: String,
 }
 
-/// Render a turn as a transcript block (`"<label>: <text>"`). A multi-line
-/// `text` stays grouped under its label; blocks are blank-line-delimited where
-/// joined, so turn boundaries are clear without flattening the reply.
+/// Render one turn as a transcript block (`"<label>: <text>"`). A multi-line
+/// `text` stays grouped under its label. The blank-line delimiting BETWEEN
+/// blocks happens at the join sites ([`Dialogue::captured`] and
+/// [`render_prompt`], which `join("\n\n")` these blocks) — not here.
 fn render_turn(turn: &Turn) -> String {
     format!("{}: {}", turn.label, turn.text)
 }
@@ -196,10 +199,6 @@ impl Plugin for Dialogue {
         } else {
             render_prompt(&self.spec.seed, &self.history, &label)
         };
-        // The prompt-byte proxy: the honest fallback when real token cost is
-        // unavailable, and the spend already committed by spawning the peer (so
-        // it is the cost reported on the cancel path).
-        let prompt_cost = prompt.len() as u64;
         // argv = endpoint ++ (["--resume", id] when resuming) ++ [prompt].
         let mut argv: Vec<String> = endpoint.to_vec();
         if resume {
@@ -220,7 +219,9 @@ impl Plugin for Dialogue {
         // ends the run Cancelled. The guard closes the pane on this return.
         if waited == Waited::Cancelled {
             return Ok(Step {
-                cost: prompt_cost,
+                // Token-denominated plugin: a cancelled turn has no measured
+                // token spend (Tokens(0)); the run ends Cancelled at the loop top.
+                cost: Cost::Tokens(0),
                 verdict: Verdict::Continue,
             });
         }
@@ -229,16 +230,16 @@ impl Plugin for Dialogue {
         // alive; the guard closes it next. A structured endpoint whose envelope
         // is unparsable degrades to the raw text and the byte proxy (never fails
         // the turn).
-        let decoded = decode_reply(format, panes, id, prompt_cost);
+        let decoded = decode_reply(format, panes, id);
         drop(guard); // close the pane now (its blocking teardown is lock-free).
 
         // Session bookkeeping (the resume seam). A reply that carries a session
         // id is a healthy, continuable session — store it (idempotent; the id is
-        // stable across resume, and an `is_error` reply on a live session is
-        // still continuable). A RESUME turn that came back with NO id means the
-        // resume did not produce a usable session (bad/expired id, or a garbled
-        // envelope) — reset this side so the next same-side turn re-establishes
-        // context via the whole-history fresh path (self-healing over one turn).
+        // stable across resume, and a reply reporting a tool-side error on a live
+        // session is still continuable). A RESUME turn that came back with NO id
+        // means the resume did not produce a usable session (bad/expired id, or a
+        // garbled envelope) — reset this side so the next same-side turn
+        // re-establishes context via the whole-history fresh path (self-healing).
         match decoded.session_id {
             Some(sid) => self.sessions[idx] = Some(sid),
             None if resume => self.sessions[idx] = None,
@@ -319,28 +320,24 @@ impl Drop for PaneGuard<'_> {
 /// did not parse or carried none — the latter being the cue to reset a resume.
 struct DecodedTurn {
     text: String,
-    cost: u64,
+    cost: Cost,
     session_id: Option<String>,
 }
 
 /// Decode this turn's reply text, cost, and session id from the finished pane,
-/// per the endpoint's [`ReplyFormat`]. Always succeeds: a structured endpoint
-/// whose envelope is missing or garbled degrades to the raw text and the
-/// byte-count `fallback_cost` (and no session id), so a parse problem never
-/// fails a turn.
-fn decode_reply(
-    format: ReplyFormat,
-    panes: &dyn PaneAccess,
-    id: PaneId,
-    fallback_cost: u64,
-) -> DecodedTurn {
+/// per the endpoint's [`ReplyFormat`]. Dialogue is token-denominated, so every
+/// turn's cost is [`Cost::Tokens`]: a `Text` endpoint has no token accounting
+/// and reports `Tokens(0)` (a print-mode tool whose spend we cannot measure); a
+/// `ClaudeJson` endpoint reports its real billed tokens and degrades to
+/// `Tokens(0)` on any parse problem, so a parse problem never fails a turn.
+fn decode_reply(format: ReplyFormat, panes: &dyn PaneAccess, id: PaneId) -> DecodedTurn {
     match format {
         ReplyFormat::Text => DecodedTurn {
             text: capture_text(panes, id),
-            cost: fallback_cost,
+            cost: Cost::Tokens(0),
             session_id: None,
         },
-        ReplyFormat::ClaudeJson => decode_claude_json(panes, id, fallback_cost),
+        ReplyFormat::ClaudeJson => decode_claude_json(panes, id),
     }
 }
 
@@ -354,25 +351,36 @@ fn capture_text(panes: &dyn PaneAccess, id: PaneId) -> String {
 /// Decode a `claude -p --output-format json` reply from the pane's RAW output —
 /// the grid would corrupt the wrapped single-line envelope (it inserts a `\n` at
 /// every wrap and trailing-trims each row), so the source bytes are the only
-/// faithful read. On any failure — no raw capture, a truncated/over-cap buffer,
-/// or an unparsable envelope — fall back to the raw text and the byte-count
-/// `fallback_cost`, so a broken reply degrades gracefully instead of breaking
-/// the conversation.
-fn decode_claude_json(panes: &dyn PaneAccess, id: PaneId, fallback_cost: u64) -> DecodedTurn {
-    let (raw, truncated) = panes.pane_raw_output(id).unwrap_or_default();
+/// faithful read. The cost is the reply's real billed tokens; on any failure —
+/// no raw capture, a truncated/over-cap buffer, or an unparsable envelope — the
+/// turn degrades to the raw text and `Tokens(0)` (no measured spend), so a
+/// broken reply degrades gracefully instead of breaking the conversation.
+fn decode_claude_json(panes: &dyn PaneAccess, id: PaneId) -> DecodedTurn {
+    // Raw source bytes via the raw-capture capability (absent on a pane access
+    // that does not provide one → degrade like an unparsable reply).
+    let RawOutput { bytes: raw, truncated } = panes
+        .raw_capture()
+        .and_then(|rc| rc.pane_raw_output(id))
+        .unwrap_or_default();
     let raw_text = || String::from_utf8_lossy(&raw).trim().to_string();
     // A truncated capture is never trusted — its envelope is incomplete.
     let parsed = if truncated { None } else { parse_claude_json(&raw) };
     match parsed {
+        // A cleanly parsed envelope: record its `result`. An empty or missing
+        // `result` becomes an EMPTY turn (not the raw envelope) — the raw-text
+        // fallback belongs ONLY to the parse-FAILED arm below, so a result-less
+        // reply never leaks its usage/session_id into the transcript or the next
+        // prompt's history. The real tokens are still billed (absent usage → 0).
         Some(reply) => DecodedTurn {
-            text: reply.text.filter(|t| !t.is_empty()).unwrap_or_else(raw_text),
-            cost: reply.tokens.unwrap_or(fallback_cost),
+            text: reply.text.unwrap_or_default(),
+            cost: Cost::Tokens(reply.tokens.unwrap_or(0)),
             session_id: reply.session_id,
         },
-        // No parse → no session id, so a resume turn here self-heals to fresh.
+        // No parse → the raw text, no measured tokens (Tokens(0)), and no session
+        // id (so a resume turn here self-heals to the fresh whole-history path).
         None => DecodedTurn {
             text: raw_text(),
-            cost: fallback_cost,
+            cost: Cost::Tokens(0),
             session_id: None,
         },
     }
@@ -419,6 +427,21 @@ mod tests {
         ]
     }
 
+    /// A one-shot fake that prints a `--output-format json` envelope with `usage`
+    /// (real tokens) but NO `result` field — a cleanly-parseable yet result-less
+    /// reply (reachable: a turn that billed tokens but returned no message). The
+    /// decoder must record an EMPTY turn here, not the raw envelope (whose
+    /// `usage`/`session_id` would otherwise leak into the transcript).
+    fn usage_only_fake(input: u64, output: u64) -> Vec<String> {
+        let json = format!(r#"{{"usage":{{"input_tokens":{input},"output_tokens":{output}}}}}"#);
+        vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            format!("printf '%s' '{json}'"),
+            "_".to_string(),
+        ]
+    }
+
     /// A fake that self-reports whether its argv carried `--resume`: it prints a
     /// JSON envelope whose `result` is `"resumed"` if `$*` contains `--resume`,
     /// else `"fresh"`, and always a stable `session_id` `"S"` (like real
@@ -450,17 +473,24 @@ mod tests {
         ]
     }
 
-    fn run(spec: DialogueSpec, max_turns: u32) -> (Arc<Mutex<Workspace>>, Outcome, Option<String>) {
+    /// Drive `spec` to a terminal outcome under `guardrails`, returning the
+    /// workspace (to assert no leaked panes), the outcome, and the transcript.
+    fn run_with(
+        spec: DialogueSpec,
+        guardrails: Guardrails,
+    ) -> (Arc<Mutex<Workspace>>, Outcome, Option<String>) {
         let workspace = Arc::new(Mutex::new(Workspace::new((spec.cols, spec.rows))));
         let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
         let mut dialogue = Dialogue::new(spec);
-        let outcome = Driver::new(Guardrails {
-            max_iterations: max_turns,
-            max_cost: u64::MAX,
-        })
-        .run(&mut dialogue, &access, &RunContext::uncancellable());
+        let outcome =
+            Driver::new(guardrails).run(&mut dialogue, &access, &RunContext::uncancellable());
         let transcript = dialogue.captured();
         (workspace, outcome, transcript)
+    }
+
+    /// The common case: bound only by `max_turns` iterations (cost unbounded).
+    fn run(spec: DialogueSpec, max_turns: u32) -> (Arc<Mutex<Workspace>>, Outcome, Option<String>) {
+        run_with(spec, Guardrails { max_iterations: max_turns, max_cost: None })
     }
 
     #[test]
@@ -540,7 +570,7 @@ mod tests {
         assert_eq!(outcome.state, OutcomeState::Exhausted);
         // Two turns × (30 + 20) tokens — proof the Driver accumulates real
         // tokens, not the byte proxy (the render_prompt length would differ).
-        assert_eq!(outcome.cost, 100, "cost must be the summed real tokens");
+        assert_eq!(outcome.cost, Some(Cost::Tokens(100)), "cost must be the summed real tokens");
         let t = transcript.expect("a transcript");
         // The full wide result survives verbatim; a grid read would have dropped
         // interior spaces at wrap boundaries (e.g. "fox the" -> "foxthe").
@@ -550,24 +580,19 @@ mod tests {
     #[test]
     fn claude_json_cost_binds_the_guardrail_in_tokens() {
         // One turn spends 50 tokens, hitting a 50-token budget — so a
-        // 100-iteration run still stops after one turn. Proves tokens (not the
-        // byte proxy, not iterations) bound the run.
+        // 100-iteration run still stops after one turn. Proves tokens (not
+        // iterations) bound the run.
         let mut spec = DialogueSpec::new(json_fake("hi", 30, 20), json_fake("hi", 30, 20), "go");
         spec.format_a = ReplyFormat::ClaudeJson;
         spec.format_b = ReplyFormat::ClaudeJson;
-
-        let workspace = Arc::new(Mutex::new(Workspace::new((spec.cols, spec.rows))));
-        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
-        let mut dialogue = Dialogue::new(spec);
-        let outcome = Driver::new(Guardrails {
-            max_iterations: 100,
-            max_cost: 50,
-        })
-        .run(&mut dialogue, &access, &RunContext::uncancellable());
+        let (_ws, outcome, _t) = run_with(
+            spec,
+            Guardrails { max_iterations: 100, max_cost: Some(Cost::Tokens(50)) },
+        );
 
         assert_eq!(outcome.state, OutcomeState::Exhausted);
         assert_eq!(outcome.iterations, 1, "one turn must exhaust the 50-token budget");
-        assert_eq!(outcome.cost, 50);
+        assert_eq!(outcome.cost, Some(Cost::Tokens(50)));
     }
 
     #[test]
@@ -588,8 +613,31 @@ mod tests {
         assert_eq!(outcome.state, OutcomeState::Exhausted, "must not Fail on bad JSON");
         let t = transcript.expect("a transcript");
         assert!(t.contains("just plain text"), "raw fallback text missing: {t:?}");
-        // The byte proxy still bound the run (a positive fallback cost).
-        assert!(outcome.cost > 0, "fallback cost must be the positive byte proxy");
+        // A degraded ClaudeJson turn has no measured tokens (Tokens(0)); the
+        // iteration budget — not cost — is the liveness guarantee, so the run
+        // still Exhausts. (The retired byte proxy used to bill bytes here.)
+        assert_eq!(outcome.cost, Some(Cost::Tokens(0)), "a degraded turn bills no tokens");
+    }
+
+    #[test]
+    fn clean_empty_result_records_an_empty_turn_not_the_envelope() {
+        // A's reply parses cleanly but carries `usage` and NO `result`. The turn
+        // must be recorded EMPTY — so the JSON envelope's usage/session_id never
+        // leak into the transcript or the next prompt — while the real tokens are
+        // still billed. (Before the fix, the whole envelope was recorded as the
+        // turn text.)
+        let mut spec = DialogueSpec::new(usage_only_fake(7, 3), vec!["true".to_string()], "go");
+        spec.format_a = ReplyFormat::ClaudeJson;
+        let (_ws, outcome, transcript) = run(spec, 1);
+
+        assert_eq!(outcome.state, OutcomeState::Exhausted);
+        // Real usage tokens (7 + 3) still bill the cost, even with no result text.
+        assert_eq!(outcome.cost, Some(Cost::Tokens(10)), "real usage tokens must still bind the cost");
+        let t = transcript.expect("a transcript");
+        assert!(!t.contains("usage"), "envelope leaked into transcript: {t:?}");
+        assert!(!t.contains("input_tokens"), "envelope leaked into transcript: {t:?}");
+        // The recorded turn is empty — just the speaker label.
+        assert_eq!(t.trim(), "A:", "empty result should record an empty turn: {t:?}");
     }
 
     #[test]
@@ -698,7 +746,7 @@ mod tests {
             let mut dialogue = Dialogue::new(spec);
             let outcome = Driver::new(Guardrails {
                 max_iterations: 100,
-                max_cost: u64::MAX,
+                max_cost: None,
             })
             .run(&mut dialogue, &access, &run_ctx);
             (outcome, dialogue.captured())
@@ -757,7 +805,7 @@ mod tests {
         ));
         let outcome = Driver::new(Guardrails {
             max_iterations: 3,
-            max_cost: u64::MAX,
+            max_cost: None,
         })
         .run(&mut dialogue, &NoPanes, &RunContext::uncancellable());
         assert_eq!(outcome.state, OutcomeState::Failed);
@@ -800,8 +848,12 @@ mod tests {
 
         assert_eq!(outcome.state, OutcomeState::Exhausted);
         // Real token cost accumulated over the turns (the round's whole point).
-        eprintln!("two_real_claudes_converse: real token cost = {}", outcome.cost);
-        assert!(outcome.cost > 0, "expected real token cost, got {}", outcome.cost);
+        eprintln!("two_real_claudes_converse: real token cost = {:?}", outcome.cost);
+        assert!(
+            matches!(outcome.cost, Some(Cost::Tokens(n)) if n > 0),
+            "expected real token cost, got {:?}",
+            outcome.cost
+        );
         let t = transcript.expect("a transcript");
         assert!(!t.trim().is_empty(), "transcript: {t:?}");
         // JSON parse succeeded (not degraded to raw): the transcript holds the

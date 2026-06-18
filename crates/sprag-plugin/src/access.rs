@@ -13,7 +13,7 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use sprag_input::{encode, Modifiers};
-use sprag_terminal::{CommandBuilder, Pane, PaneId, SessionHandle, Workspace};
+use sprag_terminal::{CommandBuilder, Pane, PaneId, RawOutput, SessionHandle, Workspace};
 use sprag_vt::Screen;
 
 /// One screen row: its damage `generation` paired with its (trailing-trimmed)
@@ -94,27 +94,6 @@ pub trait PaneAccess {
     /// only), this captures output longer than the grid — a scrolled AI reply.
     fn pane_full_text(&self, id: PaneId) -> Option<String>;
 
-    /// The pane child's raw output bytes — the **source** stream, before the
-    /// emulator renders it — paired with whether the capture was truncated at
-    /// the producer's cap. `None` if no pane has that id, or if this access is
-    /// not backed by a real producer (the default).
-    ///
-    /// This is a fundamentally different read from the `pane_*_text` family:
-    /// those return the *rendered grid* (wrapped to the pane width, trailing-
-    /// trimmed, control-stripped — a lossy projection for display); this returns
-    /// the *exact bytes* the child emitted. It is the read for **structured
-    /// machine output**: a single-line JSON envelope a long reply wraps across
-    /// rows would be corrupted by the grid's wrap-`\n` insertion and trailing-
-    /// trim, but is byte-exact here. Default `None`, like [`lifecycle`]: only an
-    /// implementation over a real session provides it, so plugins and test
-    /// doubles that never read structured output pay nothing (interface
-    /// segregation).
-    ///
-    /// [`lifecycle`]: PaneAccess::lifecycle
-    fn pane_raw_output(&self, _id: PaneId) -> Option<(Vec<u8>, bool)> {
-        None
-    }
-
     /// Inject `keys` into the pane, returning the number of PTY bytes written.
     ///
     /// # Errors
@@ -130,6 +109,17 @@ pub trait PaneAccess {
     /// when it is absent. Kept a separate sub-trait so [`PaneAccess`] stays the
     /// read/inject surface (interface segregation).
     fn lifecycle(&self) -> Option<&dyn PaneLifecycle> {
+        None
+    }
+
+    /// The pane *raw-output capture* surface, if this implementation supports it.
+    /// `None` by default — only a plugin that parses structured machine output (a
+    /// `claude --output-format json` envelope the grid would corrupt) needs the
+    /// source bytes, so read/inject plugins and test doubles pay nothing AND
+    /// cannot reach raw bytes at all: the scene-as-data invariant ("a plugin
+    /// reads structured screen data, never raw bytes") is then enforced by the
+    /// type, not a doc comment. Mirrors [`lifecycle`](PaneAccess::lifecycle).
+    fn raw_capture(&self) -> Option<&dyn PaneRawCapture> {
         None
     }
 }
@@ -150,6 +140,25 @@ pub trait PaneLifecycle {
     /// Close (reap) the pane with `id`, returning whether it existed. The
     /// pane's blocking teardown runs outside any shared lock.
     fn close(&self, id: PaneId) -> bool;
+}
+
+/// Pane *raw-output* capture: the child's **source** bytes, before the emulator
+/// renders them onto the grid. Reached via [`PaneAccess::raw_capture`].
+///
+/// Kept a separate sub-trait (like [`PaneLifecycle`]) so [`PaneAccess`] stays
+/// the structured scene-as-data surface. The `pane_*_text` family returns the
+/// *rendered grid* (wrapped to the pane width, trailing-trimmed, control-
+/// stripped — a lossy projection for display); this returns the *exact bytes*
+/// the child emitted, the read for **structured machine output** (a single-line
+/// JSON envelope a long reply wraps across rows, which the grid's wrap-`\n`
+/// insertion and trailing-trim would corrupt). Only a plugin that parses such
+/// output asks for it, so the "structured data, never raw bytes" invariant is
+/// enforced by the type rather than by convention.
+pub trait PaneRawCapture {
+    /// The pane child's raw output bytes (the source stream, before emulation),
+    /// or `None` if no pane has that `id`. A truncated [`RawOutput`] is an
+    /// incomplete capture, and a structured read should degrade.
+    fn pane_raw_output(&self, id: PaneId) -> Option<RawOutput>;
 }
 
 /// [`PaneAccess`] over a shared [`Workspace`] — the production implementation.
@@ -197,10 +206,6 @@ impl PaneAccess for WorkspacePaneAccess {
         Some(self.handle(id)?.with_screen(Screen::full_text))
     }
 
-    fn pane_raw_output(&self, id: PaneId) -> Option<(Vec<u8>, bool)> {
-        Some(self.handle(id)?.raw_output())
-    }
-
     fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<u64, PaneError> {
         let handle = self.handle(id).ok_or(PaneError::UnknownPane(id))?;
         let modes = handle.input_modes();
@@ -218,6 +223,16 @@ impl PaneAccess for WorkspacePaneAccess {
 
     fn lifecycle(&self) -> Option<&dyn PaneLifecycle> {
         Some(self)
+    }
+
+    fn raw_capture(&self) -> Option<&dyn PaneRawCapture> {
+        Some(self)
+    }
+}
+
+impl PaneRawCapture for WorkspacePaneAccess {
+    fn pane_raw_output(&self, id: PaneId) -> Option<RawOutput> {
+        Some(self.handle(id)?.raw_output())
     }
 }
 
@@ -400,11 +415,12 @@ mod tests {
             sleep(Duration::from_millis(20));
         }
 
-        let (bytes, truncated) = access.pane_raw_output(id).expect("raw output");
+        let raw = access.raw_capture().expect("workspace access exposes raw capture");
+        let RawOutput { bytes, truncated } = raw.pane_raw_output(id).expect("raw output");
         assert!(!truncated);
         assert_eq!(String::from_utf8_lossy(&bytes), payload, "raw bytes must be verbatim");
         // The grid lost interior spaces to trailing-trim at wrap boundaries, so
         // it cannot reconstruct the source — exactly why raw capture exists.
-        assert!(access.pane_raw_output(PaneId(999)).is_none(), "unknown pane is None");
+        assert!(raw.pane_raw_output(PaneId(999)).is_none(), "unknown pane is None");
     }
 }

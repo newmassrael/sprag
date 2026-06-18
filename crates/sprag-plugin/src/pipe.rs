@@ -17,7 +17,7 @@
 use sprag_terminal::PaneId;
 
 use crate::access::{KeyStroke, PaneAccess, PaneError};
-use crate::plugin::{Plugin, Step, Verdict};
+use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::run::RunContext;
 
 /// Relays the source pane's new output into the destination pane.
@@ -61,7 +61,7 @@ impl Plugin for Pipe {
         };
         // The pipe never self-terminates; the Driver's guardrails bind it.
         Ok(Step {
-            cost,
+            cost: Cost::Bytes(cost),
             verdict: Verdict::Continue,
         })
     }
@@ -118,7 +118,7 @@ mod tests {
         let mut pipe = Pipe::new(src, dst);
         let outcome = Driver::new(Guardrails {
             max_iterations: 5,
-            max_cost: u64::MAX,
+            max_cost: None,
         })
         .run(&mut pipe, &access, &RunContext::uncancellable());
         assert_eq!(outcome.state, OutcomeState::Exhausted);

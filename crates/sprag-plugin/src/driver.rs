@@ -9,7 +9,7 @@
 use sce_rust_runtime::Engine;
 
 use crate::access::{PaneAccess, PaneError};
-use crate::plugin::{Plugin, Verdict};
+use crate::plugin::{Cost, Plugin, Verdict};
 use crate::run::RunContext;
 use crate::sm::{OrchestrationEvent, OrchestrationPolicy, OrchestrationState};
 
@@ -19,12 +19,12 @@ use crate::sm::{OrchestrationEvent, OrchestrationPolicy, OrchestrationState};
 pub struct Guardrails {
     /// Stop after this many steps.
     pub max_iterations: u32,
-    /// Stop once the accumulated step cost reaches this. Cost is each plugin's
-    /// natural spend unit (see [`Step::cost`](crate::plugin::Step::cost)):
-    /// injected/argv bytes for the byte-relay plugins, real billed tokens for an
-    /// AI adapter. A run drives one plugin, so set this in that plugin's unit.
-    /// The Driver stays unit-agnostic — it only accumulates and compares.
-    pub max_cost: u64,
+    /// Stop once the accumulated step cost reaches this bound. `None` leaves cost
+    /// unbounded (only [`max_iterations`](Self::max_iterations) applies). The
+    /// bound's unit is the run's cost currency — every step the plugin reports
+    /// shares it (see [`Cost`](crate::plugin::Cost)) — so the Driver compares
+    /// like with like and never sums bytes against tokens.
+    pub max_cost: Option<Cost>,
 }
 
 /// Which terminal statechart state a run reached.
@@ -45,7 +45,9 @@ pub enum OutcomeState {
 pub struct Outcome {
     pub state: OutcomeState,
     pub iterations: u32,
-    pub cost: u64,
+    /// The accumulated typed cost, or `None` if the run took no measured step
+    /// (e.g. cancelled at the loop top before any step ran).
+    pub cost: Option<Cost>,
     /// The cause when `state` is [`OutcomeState::Failed`]; `None` otherwise.
     pub failure: Option<PaneError>,
 }
@@ -56,7 +58,7 @@ pub struct Driver {
     engine: Engine<OrchestrationPolicy>,
     guardrails: Guardrails,
     iterations: u32,
-    cost: u64,
+    cost: Option<Cost>,
     failure: Option<PaneError>,
 }
 
@@ -68,7 +70,7 @@ impl Driver {
             engine: Engine::new(OrchestrationPolicy::new()),
             guardrails,
             iterations: 0,
-            cost: 0,
+            cost: None,
             failure: None,
         }
     }
@@ -100,7 +102,7 @@ impl Driver {
                 }
                 Ok(step) => {
                     self.iterations += 1;
-                    self.cost += step.cost;
+                    self.accumulate(step.cost);
                     match step.verdict {
                         Verdict::Converged => OrchestrationEvent::Converge,
                         Verdict::Continue if self.budget_exhausted() => OrchestrationEvent::Exhaust,
@@ -113,9 +115,28 @@ impl Driver {
         self.outcome()
     }
 
+    /// Add this step's cost to the running total, establishing the run's unit on
+    /// the first step. Later steps share that unit (one plugin reports one unit),
+    /// so the add always succeeds; a mismatch is a plugin bug (debug-asserted,
+    /// release-ignored so a stray step can never corrupt the accumulator).
+    fn accumulate(&mut self, cost: Cost) {
+        self.cost = Some(match self.cost {
+            None => cost,
+            Some(acc) => acc.try_add(cost).unwrap_or_else(|| {
+                debug_assert!(false, "a plugin changed cost unit mid-run: {acc:?} + {cost:?}");
+                acc
+            }),
+        });
+    }
+
     fn budget_exhausted(&self) -> bool {
-        self.iterations >= self.guardrails.max_iterations
-            || self.cost >= self.guardrails.max_cost
+        if self.iterations >= self.guardrails.max_iterations {
+            return true;
+        }
+        matches!(
+            (self.cost, self.guardrails.max_cost),
+            (Some(acc), Some(max)) if acc.reaches(max)
+        )
     }
 
     fn outcome(self) -> Outcome {
@@ -180,7 +201,7 @@ mod tests {
     fn driver_maps_a_step_error_to_failed_with_the_cause() {
         let outcome = Driver::new(Guardrails {
             max_iterations: 5,
-            max_cost: 100,
+            max_cost: None,
         })
         .run(&mut FailingPlugin, &NoPanes, &RunContext::uncancellable());
         assert_eq!(outcome.state, OutcomeState::Failed);
@@ -195,7 +216,7 @@ mod tests {
         let cancel = Arc::new(AtomicBool::new(true));
         let outcome = Driver::new(Guardrails {
             max_iterations: 5,
-            max_cost: 100,
+            max_cost: None,
         })
         .run(&mut FailingPlugin, &NoPanes, &RunContext::new(cancel));
         assert_eq!(outcome.state, OutcomeState::Cancelled);

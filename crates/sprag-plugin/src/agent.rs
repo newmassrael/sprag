@@ -29,7 +29,7 @@ use sprag_input::Modifiers;
 use sprag_terminal::PaneId;
 
 use crate::access::{KeyStroke, PaneAccess, PaneError};
-use crate::plugin::{Plugin, Step, Verdict};
+use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::run::{poll_until, RunContext, Waited, DEFAULT_REPLY_TIMEOUT};
 
 /// What the agent asks and how long it waits for the answer.
@@ -131,7 +131,7 @@ impl Plugin for Agent {
         // return Continue so the Driver's loop-top ends the run Cancelled.
         if self.await_reply(panes, run) == Waited::Cancelled {
             return Ok(Step {
-                cost,
+                cost: Cost::Bytes(cost),
                 verdict: Verdict::Continue,
             });
         }
@@ -140,7 +140,7 @@ impl Plugin for Agent {
         // One-shot: one prompt, one captured reply, then converge. The Driver's
         // guardrails still bound it; `timeout` (above) bounds a non-exiting peer.
         Ok(Step {
-            cost,
+            cost: Cost::Bytes(cost),
             verdict: Verdict::Converged,
         })
     }
@@ -176,7 +176,7 @@ mod tests {
     fn run(access: &WorkspacePaneAccess, agent: &mut Agent) -> Outcome {
         Driver::new(Guardrails {
             max_iterations: 4,
-            max_cost: u64::MAX,
+            max_cost: None,
         })
         .run(agent, access, &RunContext::uncancellable())
     }
@@ -238,7 +238,7 @@ mod tests {
         );
         let outcome = Driver::new(Guardrails {
             max_iterations: 2,
-            max_cost: u64::MAX,
+            max_cost: None,
         })
         .run(&mut agent, &access, &RunContext::uncancellable());
 

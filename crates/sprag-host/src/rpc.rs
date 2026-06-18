@@ -438,6 +438,7 @@ mod tests {
         assert_eq!(run_state["outcome"]["state"], "exhausted");
         // Two turns × (30 + 20) tokens — the real cost over RPC, not byte proxy.
         assert_eq!(run_state["outcome"]["cost"].as_u64(), Some(100), "{run_state}");
+        assert_eq!(run_state["outcome"]["unit"], "tokens", "cost unit must be tokens: {run_state}");
         let output = run_state["output"].as_str().unwrap_or_default();
         // The clean `result` is the transcript, not the raw envelope.
         assert!(output.contains("hi there"), "clean reply missing: {output:?}");

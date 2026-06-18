@@ -38,6 +38,20 @@ type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 /// reply and degrades gracefully.
 const RAW_CAPTURE_CAP: usize = 256 * 1024;
 
+/// A snapshot of a pane child's raw output: the captured source bytes paired
+/// with whether the capture hit its cap (so it is incomplete — a structured
+/// reader treats a truncated capture as unparseable and degrades). Named, not a
+/// bare `(Vec<u8>, bool)` tuple, so every seam reads the two fields by name. The
+/// bytes are the child's **source** stream, before the emulator renders them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RawOutput {
+    /// The captured source bytes (head-anchored, bounded by [`RAW_CAPTURE_CAP`]).
+    pub bytes: Vec<u8>,
+    /// Whether the capture hit the cap and stopped: `bytes` is a prefix of the
+    /// child's output, not the whole, so a structured read should degrade.
+    pub truncated: bool,
+}
+
 /// A bounded, head-anchored capture of the child's raw output bytes — the
 /// **source** stream, before the emulator renders it onto the grid. Structured
 /// machine output (a JSON envelope) must be read from here, not reconstructed
@@ -79,8 +93,11 @@ impl RawCapture {
 
     /// The bytes captured so far, paired with whether the cap was hit (the
     /// capture is incomplete and a structured read should degrade).
-    fn snapshot(&self) -> (Vec<u8>, bool) {
-        (self.bytes.clone(), self.truncated)
+    fn snapshot(&self) -> RawOutput {
+        RawOutput {
+            bytes: self.bytes.clone(),
+            truncated: self.truncated,
+        }
     }
 }
 
@@ -232,7 +249,7 @@ impl TerminalSession {
     /// Use it — not the rendered screen — to read structured machine output (a
     /// JSON envelope), which the grid would corrupt by wrapping and trimming.
     #[must_use]
-    pub fn raw_output(&self) -> (Vec<u8>, bool) {
+    pub fn raw_output(&self) -> RawOutput {
         lock(&self.raw_output).snapshot()
     }
 
@@ -319,7 +336,7 @@ impl SessionHandle {
     /// the seam a control plugin reads to parse structured output from a pane
     /// it does not own. See [`TerminalSession::raw_output`].
     #[must_use]
-    pub fn raw_output(&self) -> (Vec<u8>, bool) {
+    pub fn raw_output(&self) -> RawOutput {
         lock(&self.raw_output).snapshot()
     }
 
@@ -416,7 +433,7 @@ mod tests {
         let session = TerminalSession::spawn(command, 20, 4).expect("spawn pty session");
         wait_eof(&session);
 
-        let (bytes, truncated) = session.raw_output();
+        let RawOutput { bytes, truncated } = session.raw_output();
         assert!(!truncated, "small payload must not truncate");
         assert_eq!(
             String::from_utf8_lossy(&bytes),
@@ -424,7 +441,7 @@ mod tests {
             "raw capture must equal the emitted bytes exactly (no wrap, no trim)"
         );
         // The handle sees the same capture.
-        assert_eq!(session.handle().raw_output().0, bytes);
+        assert_eq!(session.handle().raw_output().bytes, bytes);
     }
 
     /// A child that emits more than the cap latches `truncated` and keeps the
@@ -441,7 +458,7 @@ mod tests {
         let session = TerminalSession::spawn(command, 80, 24).expect("spawn pty session");
         wait_eof(&session);
 
-        let (bytes, truncated) = session.raw_output();
+        let RawOutput { bytes, truncated } = session.raw_output();
         assert!(truncated, "an over-cap child must mark the capture truncated");
         assert_eq!(bytes.len(), RAW_CAPTURE_CAP, "capture is bounded at the cap");
         assert!(bytes.iter().all(|&b| b == b'a'), "the head bytes are kept");

@@ -9,10 +9,10 @@
 //! * `query("runs")` → observes each run's terminal `Outcome` as scene-as-data;
 //! * `query("plugins")` → the available plugin set.
 //!
-//! Runs are guardrail-bounded by construction (a `run` omitting guardrails gets
-//! [`DEFAULT_GUARDRAILS`], never unbounded — loop safety is first-class). Target
-//! panes are validated at submit time, so a typo is a synchronous `Rejected`,
-//! not an async `Failed`.
+//! Runs are guardrail-bounded by construction (a `run` omitting guardrails still
+//! gets the default iteration ceiling and the plugin's default cost ceiling,
+//! never unbounded — loop safety is first-class). Target panes are validated at
+//! submit time, so a typo is a synchronous `Rejected`, not an async `Failed`.
 
 use std::fmt;
 use std::sync::atomic::AtomicBool;
@@ -25,8 +25,8 @@ use pinion_core::external::{
 };
 use serde_json::{json, Map, Value};
 use sprag_plugin::{
-    Agent, AgentSpec, Dialogue, DialogueSpec, Driver, Guardrails, OrchestrationSpec, Orchestrator,
-    Outcome, OutcomeState, Pipe, Plugin, ReplyFormat, RunContext, WorkspacePaneAccess,
+    Agent, AgentSpec, Cost, Dialogue, DialogueSpec, Driver, Guardrails, OrchestrationSpec,
+    Orchestrator, Outcome, OutcomeState, Pipe, Plugin, ReplyFormat, RunContext, WorkspacePaneAccess,
 };
 use sprag_terminal::{PaneId, Workspace};
 
@@ -43,12 +43,18 @@ const PLUGINS_SLOT: &str = "plugins";
 /// The bundled plugins a `run` can name.
 const PLUGINS: &[&str] = &["orchestrator", "pipe", "agent", "dialogue"];
 
-/// Conservative guardrails for a `run` that omits them — never unbounded
-/// (the README makes loop safety first-class).
-const DEFAULT_GUARDRAILS: Guardrails = Guardrails {
-    max_iterations: 100,
-    max_cost: 64 * 1024,
-};
+/// The default iteration ceiling for a `run` that omits guardrails — never
+/// unbounded (the README makes loop safety first-class), and the floor that
+/// bounds every run regardless of its cost unit.
+const DEFAULT_MAX_ITERATIONS: u32 = 100;
+/// The default cost ceiling for a byte-relay plugin (Orchestrator/Pipe/Agent),
+/// in injected PTY bytes.
+const DEFAULT_MAX_BYTES: u64 = 64 * 1024;
+/// The default cost ceiling for the token-denominated Dialogue plugin, in real
+/// billed tokens. Sized generously — a real multi-turn dialogue runs to a few
+/// thousand tokens per turn — so it bounds runaway spend without strangling a
+/// legitimate conversation; the iteration cap backstops it either way.
+const DEFAULT_MAX_TOKENS: u64 = 200_000;
 
 /// The plugin host as a pinion `External`: starts background plugin runs over
 /// the shared [`Workspace`] and reports their outcomes as scene-as-data.
@@ -68,8 +74,10 @@ impl PluginsExternal {
     /// it on a background thread, and return its run id.
     fn run(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let map = as_object(args)?;
-        let guardrails = parse_guardrails(map)?;
+        // Build the plugin first: it determines the run's cost UNIT, which the
+        // guardrails are then sized in (a bare `max_cost` is read in that unit).
         let (plugin, label) = self.build_plugin(map)?;
+        let guardrails = parse_guardrails(map, plugin.default_cost())?;
         let id = self.spawn_run(label, plugin, guardrails);
         Ok(IntrospectValue::Int(i64::try_from(id.0).unwrap_or(i64::MAX)))
     }
@@ -253,6 +261,18 @@ impl PluginKind {
             PluginKind::Dialogue(dialogue) => dialogue,
         }
     }
+
+    /// This plugin's default cost ceiling, in its natural unit: the byte-relay
+    /// plugins spend injected bytes; the dialogue spends LLM tokens. The unit
+    /// also sizes a bare `max_cost` from the wire.
+    fn default_cost(&self) -> Cost {
+        match self {
+            PluginKind::Orchestrator(_) | PluginKind::Pipe(_) | PluginKind::Agent(_) => {
+                Cost::Bytes(DEFAULT_MAX_BYTES)
+            }
+            PluginKind::Dialogue(_) => Cost::Tokens(DEFAULT_MAX_TOKENS),
+        }
+    }
 }
 
 /// A required argv array (`["program", "args"…]`) of strings, non-empty.
@@ -291,30 +311,51 @@ fn parse_reply_format(
     }
 }
 
-/// Read the optional `guardrails` sub-object, defaulting omitted fields to
-/// [`DEFAULT_GUARDRAILS`].
-fn parse_guardrails(map: &Map<String, Value>) -> Result<Guardrails, InvokeError> {
+/// Read the optional `guardrails` sub-object. `max_iterations` defaults to
+/// [`DEFAULT_MAX_ITERATIONS`]; an omitted `max_cost` defaults to the plugin's
+/// `default_cost`, and an explicit bare `max_cost` number is read in that
+/// plugin's unit (the caller chose the plugin, so the unit is implied). A run is
+/// thus always bounded — by iterations, and by a cost ceiling in the right
+/// currency.
+fn parse_guardrails(
+    map: &Map<String, Value>,
+    default_cost: Cost,
+) -> Result<Guardrails, InvokeError> {
     let Some(value) = map.get("guardrails") else {
-        return Ok(DEFAULT_GUARDRAILS);
+        return Ok(Guardrails {
+            max_iterations: DEFAULT_MAX_ITERATIONS,
+            max_cost: Some(default_cost),
+        });
     };
     let Value::Object(g) = value else {
         return Err(InvokeError::TypeMismatch);
     };
     let max_iterations = match g.get("max_iterations") {
-        None => DEFAULT_GUARDRAILS.max_iterations,
+        None => DEFAULT_MAX_ITERATIONS,
         Some(v) => v
             .as_u64()
             .and_then(|n| u32::try_from(n).ok())
             .ok_or(InvokeError::TypeMismatch)?,
     };
+    // A bare `max_cost` is read in the plugin's unit; omitted → its default.
     let max_cost = match g.get("max_cost") {
-        None => DEFAULT_GUARDRAILS.max_cost,
-        Some(v) => v.as_u64().ok_or(InvokeError::TypeMismatch)?,
+        None => Some(default_cost),
+        Some(v) => {
+            Some(cost_in_unit_of(default_cost, v.as_u64().ok_or(InvokeError::TypeMismatch)?))
+        }
     };
     Ok(Guardrails {
         max_iterations,
         max_cost,
     })
+}
+
+/// Wrap a bare amount in the same unit as `unit` (the plugin's cost unit).
+fn cost_in_unit_of(unit: Cost, amount: u64) -> Cost {
+    match unit {
+        Cost::Bytes(_) => Cost::Bytes(amount),
+        Cost::Tokens(_) => Cost::Tokens(amount),
+    }
 }
 
 /// Render one run's `(id, label, state)` as JSON for `query("runs")`.
@@ -340,10 +381,19 @@ fn outcome_to_json(outcome: &Outcome) -> Value {
         OutcomeState::Failed => "failed",
         OutcomeState::Cancelled => "cancelled",
     };
+    // Cost is self-describing on the wire: the scalar amount plus its unit, so a
+    // peer reads it without knowing which plugin ran. A `null` unit means no
+    // measured step (e.g. cancelled before any step ran).
+    let (cost, unit) = match outcome.cost {
+        Some(Cost::Bytes(n)) => (n, Some("bytes")),
+        Some(Cost::Tokens(n)) => (n, Some("tokens")),
+        None => (0, None),
+    };
     json!({
         "state": state,
         "iterations": outcome.iterations,
-        "cost": outcome.cost,
+        "cost": cost,
+        "unit": unit,
         "failure": outcome.failure.as_ref().map(|e| format!("{e:?}")),
     })
 }

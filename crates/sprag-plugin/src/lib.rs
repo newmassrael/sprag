@@ -34,12 +34,14 @@ pub mod plugin;
 pub mod reply;
 pub mod run;
 
-pub use access::{KeyStroke, PaneAccess, PaneError, PaneLifecycle, PaneRow, WorkspacePaneAccess};
+pub use access::{
+    KeyStroke, PaneAccess, PaneError, PaneLifecycle, PaneRawCapture, PaneRow, WorkspacePaneAccess,
+};
 pub use agent::{Agent, AgentSpec};
 pub use dialogue::{Dialogue, DialogueSpec, ReplyFormat};
 pub use driver::{Driver, Guardrails, Outcome, OutcomeState};
 pub use orchestrator::{OrchestrationSpec, Orchestrator};
 pub use pipe::Pipe;
-pub use plugin::{Plugin, Step, Verdict};
+pub use plugin::{Cost, Plugin, Step, Verdict};
 pub use reply::{parse_claude_json, AgentReply};
 pub use run::{poll_until, RunContext, Waited};
