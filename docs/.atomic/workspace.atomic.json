@@ -927,6 +927,44 @@
         "SCE Engine<P> is now Send (the +Send callback bound): an SCE state machine can live in any worker-movable value, removing the prior constraint that engines be Driver-in-thread only."
       ]
     },
+    "Round 23": {
+      "decision_summary": "Round 23: sprag-side RepaintSink seam wiring — TerminalSession/Workspace spawn_with_dirty on_dirty hook (pinion R999 PR-3)",
+      "changes_bullets": [
+        "sprag-terminal TerminalSession::spawn_with_dirty(on_dirty: Option<Box<dyn Fn()+Send>>); reader thread invokes it after each advance() batch; spawn delegates None",
+        "sprag-terminal Workspace::spawn_with_dirty threads on_dirty per pane to the session; spawn delegates None (pinion-free callback keeps the crate GUI-decoupled)",
+        "this is the sprag side of the pinion R999 RepaintSink seam: a windowed host passes Some(move || sink.request_repaint()) so PTY output wakes the shell"
+      ],
+      "verification_bullets": [
+        "cargo test -p sprag-terminal 7 ok; clippy -p sprag-terminal --all-targets 0; cargo check --workspace 0; validate-workspace T1=0",
+        "headless path unchanged (callers pass None / use spawn); pinion path-dep consumes R999 RepaintSink from the local pinion checkout"
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "full windowed-host WidgetView binding in sprag-host is the remaining feature (the module-doc \"future windowed host\"): reconcile per-request-scene vs retained-WidgetView, self-create Workspace via a use_X hook, spawn initial pane in create_extra_externals with on_dirty=use_repaint_sink, view=workspace_scene with rect filled via pinion_runtime::compute_layout",
+        "per-window RepaintScope payload is deferred on the pinion side until a multi-window live-data consumer"
+      ],
+      "publishable_decision_summary": "Round 23: sprag-side RepaintSink seam wiring — TerminalSession/Workspace spawn_with_dirty on_dirty hook (pinion R999 PR-3)",
+      "publishable_changes_bullets": [
+        "sprag-terminal TerminalSession::spawn_with_dirty(on_dirty: Option<Box<dyn Fn()+Send>>); reader thread invokes it after each advance() batch; spawn delegates None",
+        "sprag-terminal Workspace::spawn_with_dirty threads on_dirty per pane to the session; spawn delegates None (pinion-free callback keeps the crate GUI-decoupled)",
+        "this is the sprag side of the pinion R999 RepaintSink seam: a windowed host passes Some(move || sink.request_repaint()) so PTY output wakes the shell"
+      ],
+      "publishable_verification_bullets": [
+        "cargo test -p sprag-terminal 7 ok; clippy -p sprag-terminal --all-targets 0; cargo check --workspace 0; validate-workspace T1=0",
+        "headless path unchanged (callers pass None / use spawn); pinion path-dep consumes R999 RepaintSink from the local pinion checkout"
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "full windowed-host WidgetView binding in sprag-host is the remaining feature (the module-doc \"future windowed host\"): reconcile per-request-scene vs retained-WidgetView, self-create Workspace via a use_X hook, spawn initial pane in create_extra_externals with on_dirty=use_repaint_sink, view=workspace_scene with rect filled via pinion_runtime::compute_layout",
+        "per-window RepaintScope payload is deferred on the pinion side until a multi-window live-data consumer"
+      ]
+    },
     "Round 3": {
       "decision_summary": "Land sprag-terminal: a PTY-driven emulator projected to Scene::TextGrid and read headlessly as scene/snapshot, with no GPU.",
       "changes_bullets": [

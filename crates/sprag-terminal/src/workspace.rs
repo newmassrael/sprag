@@ -117,7 +117,31 @@ impl Workspace {
         cols: u16,
         rows: u16,
     ) -> Result<PaneId, SessionError> {
-        let session = TerminalSession::spawn(command, cols, rows)?;
+        self.spawn_with_dirty(command, label, cols, rows, None)
+    }
+
+    /// [`Self::spawn`] with an `on_dirty` callback wired into the pane's PTY
+    /// reader (threaded to [`TerminalSession::spawn_with_dirty`]).
+    ///
+    /// A windowed host passes `Some(Box::new(move || sink.request_repaint()))`
+    /// (the pinion R999 `RepaintSink` seam) so this pane's output wakes the
+    /// shell to repaint. The callback is pinion-free (`Box<dyn Fn() + Send>`),
+    /// keeping this crate decoupled from the GUI shell. Headless callers use
+    /// [`Self::spawn`] (`None`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError`] if the pseudoterminal or child cannot be
+    /// started; on failure no pane is added and the id is not consumed.
+    pub fn spawn_with_dirty(
+        &mut self,
+        command: CommandBuilder,
+        label: String,
+        cols: u16,
+        rows: u16,
+        on_dirty: Option<Box<dyn Fn() + Send>>,
+    ) -> Result<PaneId, SessionError> {
+        let session = TerminalSession::spawn_with_dirty(command, cols, rows, on_dirty)?;
         let id = PaneId(self.next_id);
         self.next_id += 1;
         self.panes.push(Pane {

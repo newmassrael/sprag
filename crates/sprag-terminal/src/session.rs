@@ -153,6 +153,29 @@ impl TerminalSession {
     /// Returns [`SessionError`] if the PTY cannot be opened, the child
     /// cannot be spawned, or the master reader/writer cannot be acquired.
     pub fn spawn(command: CommandBuilder, cols: u16, rows: u16) -> Result<Self, SessionError> {
+        Self::spawn_with_dirty(command, cols, rows, None)
+    }
+
+    /// [`Self::spawn`] with an `on_dirty` callback invoked on the reader
+    /// thread after each parsed PTY batch is applied to the screen.
+    ///
+    /// This is the sprag side of the pinion R999 `RepaintSink` seam: a
+    /// windowed host passes `Some(Box::new(move || sink.request_repaint()))`
+    /// so PTY output wakes the shell to repaint. The callback is deliberately
+    /// pinion-free (`Box<dyn Fn() + Send>`), so this crate stays decoupled
+    /// from the GUI shell — the pinion coupling lives in the host. Headless
+    /// hosts pass `None` (the RPC `scene/snapshot` poll drives frames; no wake
+    /// is needed).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::spawn`].
+    pub fn spawn_with_dirty(
+        command: CommandBuilder,
+        cols: u16,
+        rows: u16,
+        on_dirty: Option<Box<dyn Fn() + Send>>,
+    ) -> Result<Self, SessionError> {
         let cols = cols.max(1);
         let rows = rows.max(1);
         let pty_system = native_pty_system();
@@ -203,6 +226,11 @@ impl TerminalSession {
                             // completeness guarantee `is_eof` gives the grid.
                             lock(&reader_raw).push(&buf[..n]);
                             lock(&reader_emulator).advance(&buf[..n]);
+                            // R999 seam: wake the windowed host to repaint
+                            // now that this batch is applied (no-op headless).
+                            if let Some(ref notify) = on_dirty {
+                                notify();
+                            }
                         }
                         Err(ref e) if e.kind() == io::ErrorKind::Interrupted => {}
                         Err(_) => break,
