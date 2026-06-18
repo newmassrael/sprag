@@ -25,12 +25,14 @@ pub(crate) mod sm {
 }
 
 pub mod access;
+pub mod agent;
 pub mod driver;
 pub mod orchestrator;
 pub mod pipe;
 pub mod plugin;
 
 pub use access::{InjectError, KeyStroke, PaneAccess, PaneRow, WorkspacePaneAccess};
+pub use agent::{Agent, AgentSpec};
 pub use driver::{Driver, Guardrails, Outcome, OutcomeState};
 pub use orchestrator::{OrchestrationSpec, Orchestrator};
 pub use pipe::Pipe;

@@ -17,14 +17,15 @@
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use pinion_core::external::{
     ExternalIntrospect, IntrospectSchema, IntrospectValue, InterveneError, InvokeError,
 };
 use serde_json::{json, Map, Value};
 use sprag_plugin::{
-    Driver, Guardrails, OrchestrationSpec, Orchestrator, Outcome, OutcomeState, Pipe, Plugin,
-    WorkspacePaneAccess,
+    Agent, AgentSpec, Driver, Guardrails, OrchestrationSpec, Orchestrator, Outcome, OutcomeState,
+    Pipe, Plugin, WorkspacePaneAccess,
 };
 use sprag_terminal::{PaneId, Workspace};
 
@@ -38,7 +39,7 @@ const RUNS_SLOT: &str = "runs";
 const PLUGINS_SLOT: &str = "plugins";
 
 /// The bundled plugins a `run` can name.
-const PLUGINS: &[&str] = &["orchestrator", "pipe"];
+const PLUGINS: &[&str] = &["orchestrator", "pipe", "agent"];
 
 /// Conservative guardrails for a `run` that omits them — never unbounded
 /// (the README makes loop safety first-class).
@@ -91,6 +92,20 @@ impl PluginsExternal {
                 self.require_pane(dst)?;
                 Ok((BoxedPlugin::Pipe(Pipe::new(src, dst)), format!("pipe {}->{}", src.0, dst.0)))
             }
+            "agent" => {
+                let pane = require_pane_id(map, "pane")?;
+                self.require_pane(pane)?;
+                let prompt = require_str(map, "prompt")?.to_string();
+                let mut spec = AgentSpec::new(prompt);
+                if let Some(v) = map.get("eof") {
+                    spec.eof = v.as_bool().ok_or(InvokeError::TypeMismatch)?;
+                }
+                if let Some(v) = map.get("timeout_ms") {
+                    spec.timeout = Duration::from_millis(v.as_u64().ok_or(InvokeError::TypeMismatch)?);
+                }
+                let label = format!("agent pane={}", pane.0);
+                Ok((BoxedPlugin::Agent(Agent::new(pane, spec)), label))
+            }
             _ => Err(InvokeError::Rejected), // unknown plugin
         }
     }
@@ -111,7 +126,10 @@ impl PluginsExternal {
         let access = WorkspacePaneAccess::new(Arc::clone(&self.workspace));
         let handle = thread::spawn(move || {
             let outcome = Driver::new(guardrails).run(plugin.as_plugin(), &access);
-            *lock(&worker_state) = RunState::Done(outcome);
+            // The worker still owns the plugin after the run, so it can read any
+            // content the plugin captured (an AI adapter's reply) for the host.
+            let output = plugin.as_plugin().captured();
+            *lock(&worker_state) = RunState::Done { outcome, output };
         });
         lock(&self.runs).submit(label, state, handle)
     }
@@ -165,6 +183,7 @@ impl ExternalIntrospect for PluginsExternal {
 enum BoxedPlugin {
     Orchestrator(Orchestrator),
     Pipe(Pipe),
+    Agent(Agent),
 }
 
 impl BoxedPlugin {
@@ -172,6 +191,7 @@ impl BoxedPlugin {
         match self {
             BoxedPlugin::Orchestrator(orchestrator) => orchestrator,
             BoxedPlugin::Pipe(pipe) => pipe,
+            BoxedPlugin::Agent(agent) => agent,
         }
     }
 }
@@ -206,7 +226,11 @@ fn parse_guardrails(map: &Map<String, Value>) -> Result<Guardrails, InvokeError>
 fn run_to_json((id, label, state): &(RunId, String, RunState)) -> Value {
     let state_json = match state {
         RunState::Running => json!({ "status": "running" }),
-        RunState::Done(outcome) => json!({ "status": "done", "outcome": outcome_to_json(outcome) }),
+        RunState::Done { outcome, output } => json!({
+            "status": "done",
+            "outcome": outcome_to_json(outcome),
+            "output": output,
+        }),
         RunState::Panicked(message) => json!({ "status": "panicked", "error": message }),
     };
     json!({ "id": id.0, "label": label, "state": state_json })

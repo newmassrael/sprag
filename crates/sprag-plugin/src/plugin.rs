@@ -41,4 +41,15 @@ pub trait Plugin {
     /// [`InjectError`] when injecting input fails (unknown pane, unencodable
     /// key, or write failure).
     fn step(&mut self, panes: &dyn PaneAccess) -> Result<Step, InjectError>;
+
+    /// Content the plugin captured during its run — e.g. an AI adapter's
+    /// response text — read by the host after the run completes and surfaced as
+    /// scene-as-data. The [`Driver`] never touches it (it stays content-
+    /// agnostic); control plugins that produce no content keep the default
+    /// `None`.
+    ///
+    /// [`Driver`]: crate::driver::Driver
+    fn captured(&self) -> Option<String> {
+        None
+    }
 }

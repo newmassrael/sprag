@@ -308,6 +308,54 @@
         "Live per-iteration run progress and run GC from the registry are deferred until a consumer needs them (YAGNI; Outcome already carries iterations/injected_bytes)."
       ]
     },
+    "Round 12": {
+      "decision_summary": "First AI-tool adapter: an Agent plugin runs a real AI CLI (claude -p) in a pane, drives it via injected keystrokes, and captures its reply as structured output surfaced over RPC — converging on child-exit.",
+      "changes_bullets": [
+        "New crate file crates/sprag-plugin/src/agent.rs: the one-shot Agent plugin (AgentSpec{prompt, eof, timeout}). step() injects prompt + Enter + (Ctrl-D/EOF if eof) via the R6 sprag-input encoder, waits for the pane child to finish, then captures the damaged-row delta since the prompt as the reply. Pinion-free.",
+        "Completion via child-exit, not output quiescence: new PaneAccess::pane_eof (WorkspacePaneAccess reads TerminalSession::is_eof under the workspace lock; NO sprag-terminal change, is_eof was already public via Pane::session()). is_eof's 'all bytes applied once EOF observed' contract makes the capture race-free and defeats the prompt-echo/think-time race a debounce would hit (the injected prompt echoes back before the model starts replying).",
+        "New content seam: Plugin::captured() default-None trait method — the Driver stays content-agnostic; the host worker reads plugin.captured() after Driver::run (it still owns the plugin) and stores it. RunState::Done became a struct variant {outcome, output: Option<String>}; run_to_json renders the captured reply as the run's 'output'.",
+        "Host wiring (sprag-host/plugins.rs): PluginsExternal 'agent' run arm (require pane + prompt; optional eof/timeout_ms), BoxedPlugin::Agent variant, PLUGINS gains 'agent'. No new pinion RPC methods and no new SCXML states/events — the Agent maps to Verdict::Converged after one step on the existing idle->running->converged statechart."
+      ],
+      "verification_bullets": [
+        "68 workspace tests pass (+4): agent.rs converges_and_captures_a_reply and captures_a_complete_multiline_reply (real PTY + a deterministic read-until-EOF fake-AI shell fixture, sh -c 'in=$(cat); echo REPLY[$in]'); rpc.rs runs_an_agent_plugin_to_done_capturing_its_reply (background run over the dispatch path, reply surfaced as the run's output) and lists_the_agent_among_available_plugins. cargo clippy --workspace --all-targets clean.",
+        "Genuine AI<->AI verified manually: the #[ignore]d agent::tests::drives_real_claude spawns a real 'claude -p' pane, injects the prompt via the encoder, and captures 'PONG' (cargo test -- --ignored, passed in ~1.2s). Gated #[ignore] because it needs the claude CLI + network + auth and is non-deterministic; offline coverage is the fake-AI fixture.",
+        "Design pressure-tested by a Plan agent: confirmed NO pinion/SCE change is needed (stop-and-report clean), validated the captured()/RunState ripple and the worker-still-owns-plugin-after-run ownership, and flagged that pure quiescence-debounce converges on the prompt echo during model think-time — fixed at the root by converging on child-exit (is_eof) instead of hand-waving the echo away."
+      ],
+      "impact_refs": [
+        "1",
+        "2",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Multi-turn conversation (a prompt queue, converge after the last) + bidirectional AI<->AI relay (agent A's reply becomes agent B's prompt) — the full '<->'; this round makes one side real (one-shot).",
+        "Real token/$ cost accounting (claude -p --output-format json carries usage) to replace the injected-bytes guardrail proxy; needs a cost channel on Step/Driver, not just the byte count.",
+        "Interactive-TUI adapters (alt-screen, spinners, non-line-oriented capture) are harder than print-mode; the CLI's --ax-screen-reader flat mode may help. Echo-stripping (capture currently includes the prompt's cooked-mode echo) and scrollback capture (a reply that scrolls loses the off-screen rows) are also deferred.",
+        "Interactive cancel (still designed/deferred from R11): an Arc<AtomicBool> trigger + a cancelled statechart final + OutcomeState::Cancelled."
+      ],
+      "publishable_decision_summary": "First AI-tool adapter: an Agent plugin runs a real AI CLI (claude -p) in a pane, drives it via injected keystrokes, and captures its reply as structured output surfaced over RPC — converging on child-exit.",
+      "publishable_changes_bullets": [
+        "New crate file crates/sprag-plugin/src/agent.rs: the one-shot Agent plugin (AgentSpec{prompt, eof, timeout}). step() injects prompt + Enter + (Ctrl-D/EOF if eof) via the R6 sprag-input encoder, waits for the pane child to finish, then captures the damaged-row delta since the prompt as the reply. Pinion-free.",
+        "Completion via child-exit, not output quiescence: new PaneAccess::pane_eof (WorkspacePaneAccess reads TerminalSession::is_eof under the workspace lock; NO sprag-terminal change, is_eof was already public via Pane::session()). is_eof's 'all bytes applied once EOF observed' contract makes the capture race-free and defeats the prompt-echo/think-time race a debounce would hit (the injected prompt echoes back before the model starts replying).",
+        "New content seam: Plugin::captured() default-None trait method — the Driver stays content-agnostic; the host worker reads plugin.captured() after Driver::run (it still owns the plugin) and stores it. RunState::Done became a struct variant {outcome, output: Option<String>}; run_to_json renders the captured reply as the run's 'output'.",
+        "Host wiring (sprag-host/plugins.rs): PluginsExternal 'agent' run arm (require pane + prompt; optional eof/timeout_ms), BoxedPlugin::Agent variant, PLUGINS gains 'agent'. No new pinion RPC methods and no new SCXML states/events — the Agent maps to Verdict::Converged after one step on the existing idle->running->converged statechart."
+      ],
+      "publishable_verification_bullets": [
+        "68 workspace tests pass (+4): agent.rs converges_and_captures_a_reply and captures_a_complete_multiline_reply (real PTY + a deterministic read-until-EOF fake-AI shell fixture, sh -c 'in=$(cat); echo REPLY[$in]'); rpc.rs runs_an_agent_plugin_to_done_capturing_its_reply (background run over the dispatch path, reply surfaced as the run's output) and lists_the_agent_among_available_plugins. cargo clippy --workspace --all-targets clean.",
+        "Genuine AI<->AI verified manually: the #[ignore]d agent::tests::drives_real_claude spawns a real 'claude -p' pane, injects the prompt via the encoder, and captures 'PONG' (cargo test -- --ignored, passed in ~1.2s). Gated #[ignore] because it needs the claude CLI + network + auth and is non-deterministic; offline coverage is the fake-AI fixture.",
+        "Design pressure-tested by a Plan agent: confirmed NO pinion/SCE change is needed (stop-and-report clean), validated the captured()/RunState ripple and the worker-still-owns-plugin-after-run ownership, and flagged that pure quiescence-debounce converges on the prompt echo during model think-time — fixed at the root by converging on child-exit (is_eof) instead of hand-waving the echo away."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "2",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Multi-turn conversation (a prompt queue, converge after the last) + bidirectional AI<->AI relay (agent A's reply becomes agent B's prompt) — the full '<->'; this round makes one side real (one-shot).",
+        "Real token/$ cost accounting (claude -p --output-format json carries usage) to replace the injected-bytes guardrail proxy; needs a cost channel on Step/Driver, not just the byte count.",
+        "Interactive-TUI adapters (alt-screen, spinners, non-line-oriented capture) are harder than print-mode; the CLI's --ax-screen-reader flat mode may help. Echo-stripping (capture currently includes the prompt's cooked-mode echo) and scrollback capture (a reply that scrolls loses the off-screen rows) are also deferred.",
+        "Interactive cancel (still designed/deferred from R11): an Arc<AtomicBool> trigger + a cancelled statechart final + OutcomeState::Cancelled."
+      ]
+    },
     "Round 2": {
       "decision_summary": "Project rule: use SCE (SCXML Core Engine) for sprag statechart and codegen logic where applicable.",
       "changes_bullets": [

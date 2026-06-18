@@ -79,6 +79,12 @@ pub trait PaneAccess {
     /// `None` if no pane has that id.
     fn pane_rows(&self, id: PaneId) -> Option<Vec<PaneRow>>;
 
+    /// Whether the pane's child has closed its PTY (exited): no more output is
+    /// coming and every byte it produced has already been applied to the
+    /// screen. `None` if no pane has that id. This is the race-free completion
+    /// signal a one-shot adapter (a tool that replies then exits) converges on.
+    fn pane_eof(&self, id: PaneId) -> Option<bool>;
+
     /// Inject `keys` into the pane, returning the number of PTY bytes written.
     ///
     /// # Errors
@@ -119,6 +125,14 @@ impl PaneAccess for WorkspacePaneAccess {
 
     fn pane_rows(&self, id: PaneId) -> Option<Vec<PaneRow>> {
         Some(self.handle(id)?.with_screen(read_rows))
+    }
+
+    fn pane_eof(&self, id: PaneId) -> Option<bool> {
+        // A quick atomic load; reading it under the workspace lock (rather than
+        // cloning the handle) is negligible and needs no producer change.
+        lock(&self.workspace)
+            .pane(id)
+            .map(|pane| pane.session().is_eof())
     }
 
     fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<u64, InjectError> {

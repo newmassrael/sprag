@@ -26,8 +26,12 @@ pub struct RunId(pub u64);
 pub enum RunState {
     /// The worker thread is still driving the plugin.
     Running,
-    /// The run finished with this outcome.
-    Done(Outcome),
+    /// The run finished with this outcome, plus any content the plugin captured
+    /// (an AI adapter's reply); `output` is `None` for control plugins.
+    Done {
+        outcome: Outcome,
+        output: Option<String>,
+    },
     /// The worker thread panicked (defensive — a plugin step should not).
     Panicked(String),
 }
@@ -123,12 +127,15 @@ mod tests {
         let worker_state = Arc::clone(&state);
         let handle = std::thread::spawn(move || {
             // A trivial "run" that completes immediately.
-            *lock(&worker_state) = RunState::Done(Outcome {
-                state: sprag_plugin::OutcomeState::Exhausted,
-                iterations: 0,
-                injected_bytes: 0,
-                failure: None,
-            });
+            *lock(&worker_state) = RunState::Done {
+                outcome: Outcome {
+                    state: sprag_plugin::OutcomeState::Exhausted,
+                    iterations: 0,
+                    injected_bytes: 0,
+                    failure: None,
+                },
+                output: None,
+            };
         });
         let id = registry.submit("test".to_string(), state, handle);
         assert_eq!(id, RunId(0));
@@ -138,6 +145,6 @@ mod tests {
         registry.sweep();
         let snap = registry.snapshot();
         assert_eq!(snap.len(), 1);
-        assert!(matches!(snap[0].2, RunState::Done(_)));
+        assert!(matches!(snap[0].2, RunState::Done { .. }));
     }
 }

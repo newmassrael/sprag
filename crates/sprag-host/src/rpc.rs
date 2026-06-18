@@ -296,6 +296,61 @@ mod tests {
         None
     }
 
+    /// Poll `query("runs")` until run 0 reports `done`, returning its full
+    /// `state` JSON (outcome + any captured `output`), or `None` on timeout.
+    fn wait_for_run0_state(state: &HostState) -> Option<serde_json::Value> {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(10) {
+            let runs = serve_one(
+                state,
+                r#"{"jsonrpc":"2.0","id":7,"method":"scene/query","params":{"path":"/sprag_plugins/external/runs"}}"#,
+            );
+            let run = &runs["result"][0];
+            if run["state"]["status"] == "done" {
+                return Some(run["state"].clone());
+            }
+            sleep(Duration::from_millis(20));
+        }
+        None
+    }
+
+    #[test]
+    fn runs_an_agent_plugin_to_done_capturing_its_reply() {
+        // The agent adapter over a one-shot fake AI (read the prompt until EOF,
+        // reply deterministically). The reply is surfaced as the run's `output`.
+        let state = host_with("in=$(cat); echo \"REPLY[$in]\"", 40, 6);
+        let started = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"agent","pane":0,"prompt":"ping"}}}"#,
+        );
+        assert_eq!(started["result"].as_i64(), Some(0), "run id: {started}");
+
+        let run_state = wait_for_run0_state(&state).expect("agent run reached done");
+        assert_eq!(run_state["outcome"]["state"], "converged");
+        assert!(
+            run_state["output"]
+                .as_str()
+                .is_some_and(|o| o.contains("REPLY[ping]")),
+            "expected the captured reply in output, got: {}",
+            run_state["output"]
+        );
+    }
+
+    #[test]
+    fn lists_the_agent_among_available_plugins() {
+        let state = host_with("cat", 20, 4);
+        let plugins = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/query","params":{"path":"/sprag_plugins/external/plugins"}}"#,
+        );
+        let names = plugins["result"].as_array().expect("a plugins array");
+        assert!(
+            names.iter().any(|n| n == "agent"),
+            "expected 'agent' in plugins, got: {}",
+            plugins["result"]
+        );
+    }
+
     #[test]
     fn runs_an_orchestrator_plugin_in_the_background_to_convergence() {
         // cat echoes the stimulus, so the orchestrator converges on the sentinel.

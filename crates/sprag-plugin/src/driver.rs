@@ -144,6 +144,9 @@ mod tests {
         fn pane_rows(&self, _id: PaneId) -> Option<Vec<PaneRow>> {
             None
         }
+        fn pane_eof(&self, _id: PaneId) -> Option<bool> {
+            None
+        }
         fn inject(&self, _id: PaneId, _keys: &[KeyStroke]) -> Result<u64, InjectError> {
             Err(InjectError::UnknownPane(PaneId(0)))
         }
