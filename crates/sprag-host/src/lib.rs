@@ -61,7 +61,7 @@ use std::sync::{Arc, Mutex};
 
 use pinion_core::scene::{ContainerNode, ExternalNode, TextGridNode};
 use pinion_core::style::{LayoutStyle, Size, SizeValue};
-use pinion_core::{CellMetric, Scene};
+use pinion_core::{CellMetric, GridBuffer, Scene};
 use sprag_terminal::{PaneId, TerminalSession, Workspace};
 use sprag_vt::Screen;
 
@@ -89,19 +89,24 @@ pub const GRID_TAG: &str = "sprag_grid";
 /// path addresses pane `<id>` as `/pane_<id>/sprag_input/external/key` (R2.6).
 pub const INPUT_TAG: &str = "sprag_input";
 
-/// Project a [`Screen`] into the `TextGrid` node carrying the cell data.
-///
-/// This is the **single** `Screen` → `TextGridNode` projection — the one call
-/// site of [`sprag_grid::project`], shared by the headless data path ([`scene`]
-/// / [`pane_container`]) and the GUI windowed seam ([`pane_view_scene`]), so
-/// the cell projection has exactly one authority. The node carries no layout:
-/// the headless path leaves the GUI `rect` unset (the authoritative terminal
-/// size is the projected `GridBuffer`, read via [`TextGridSnapshot::buffer_cols`]
-/// / `buffer_rows`); the GUI seam adds layout + font size via [`pane_view_scene`].
+/// The tagged `TextGrid` node carrying a pre-projected cell buffer — the
+/// node-shape SSOT (tag + metric + cells), shared by the headless data path
+/// ([`text_grid_node`]) and the GUI view path ([`view_text_grid`]). The
+/// projection itself is [`sprag_grid::project`] / [`sprag_grid::project_scrolled`];
+/// this assembles the node around whatever cells the caller projected.
+fn grid_node(metric: CellMetric, cells: GridBuffer) -> TextGridNode {
+    TextGridNode::new(metric).with_tag(GRID_TAG).with_cells(cells)
+}
+
+/// Project a [`Screen`] into the bare `TextGrid` node carrying the cell data
+/// (the headless data path: [`scene`] / [`pane_container`]). The one call site
+/// of [`sprag_grid::project`] for the data path, so the cell projection has one
+/// authority. The node carries no layout: the headless path leaves the GUI
+/// `rect` unset (the authoritative terminal size is the projected `GridBuffer`,
+/// read via [`TextGridSnapshot::buffer_cols`] / `buffer_rows`); the GUI seam
+/// adds layout + font size via [`view_text_grid`].
 pub(crate) fn text_grid_node(screen: &Screen, metric: CellMetric) -> TextGridNode {
-    TextGridNode::new(metric)
-        .with_tag(GRID_TAG)
-        .with_cells(sprag_grid::project(screen))
+    grid_node(metric, sprag_grid::project(screen))
 }
 
 /// Assemble a [`Screen`] into the **windowed-host** `Scene::TextGrid`: the same
@@ -120,8 +125,31 @@ pub(crate) fn text_grid_node(screen: &Screen, metric: CellMetric) -> TextGridNod
 /// headless `scene/invoke` wire, not the pixel view.
 #[must_use]
 pub fn pane_view_scene(screen: &Screen, metric: CellMetric, font_size_px: u32) -> Scene {
+    pane_view_scene_scrolled(screen, metric, font_size_px, 0)
+}
+
+/// [`pane_view_scene`] scrolled up by `offset_lines` rows of history (the GUI
+/// scrollback view; `offset_lines == 0` is the live view, byte-identical to
+/// [`pane_view_scene`]). The single projection seam is reused at its scrolled
+/// entry ([`sprag_grid::project_scrolled`]); only the windowing differs, so the
+/// pixel view of history shares one authority with the live view. Scrolled
+/// history is text-only (the R16 scrollback model) — see `project_scrolled`.
+#[must_use]
+pub fn pane_view_scene_scrolled(
+    screen: &Screen,
+    metric: CellMetric,
+    font_size_px: u32,
+    offset_lines: usize,
+) -> Scene {
+    view_text_grid(sprag_grid::project_scrolled(screen, offset_lines), metric, font_size_px)
+}
+
+/// Assemble the windowed-host `Scene::TextGrid` from a pre-projected cell buffer
+/// — the GUI presentation (tag + R1002 font-size pin + fill layout) shared by
+/// the live and scrolled seams, so the node shape lives in one place.
+fn view_text_grid(cells: GridBuffer, metric: CellMetric, font_size_px: u32) -> Scene {
     Scene::TextGrid(
-        text_grid_node(screen, metric)
+        grid_node(metric, cells)
             .with_font_size_px(font_size_px)
             .with_layout(LayoutStyle::new().with_size(
                 Size::auto()

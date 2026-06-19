@@ -1,6 +1,7 @@
-//! `sprag-gui` — the **interactive GPU windowed terminal** (R24-R27).
+//! `sprag-gui` — the **interactive GPU windowed terminal** (R24-R29).
 //!
-//! A window that paints one terminal pane's **live** screen and types into it.
+//! A window that paints one terminal pane's **live** screen (and its scrollback
+//! history) and types into it.
 //! It is the human observation/interaction path; the north star (an AI
 //! reading/driving the terminal as *data*) is the headless `sprag-host` RPC
 //! path, which needs none of this. This binding is a faithful pixel projection
@@ -54,10 +55,23 @@
 //! ([`sprag_input`](https://docs.rs/sprag-input)) turns the key into PTY bytes
 //! (R2.6). Returning `true` swallows Escape/Tab from the shell's quit/traverse
 //! defaults so a full-screen TUI (vim) receives them.
+//!
+//! ## Scrollback (R29): scroll the history view
+//!
+//! `Shift+PageUp` / `Shift+PageDown` scroll a view over the pane's history (a
+//! [`Signal`]-backed offset in lines from the live bottom; `apply_key` writes
+//! it, `view` reads it, so a scroll re-renders). The view reuses the host's one
+//! projection seam at its scrolled entry ([`sprag_host::pane_view_scene_scrolled`]),
+//! so history and the live screen share one authority. The scroll keys do NOT
+//! reach the PTY; any other key snaps back to the live bottom (you type at the
+//! prompt). Scrolled history is **text-only** (the R16 scrollback model keeps
+//! text, not cells) — it renders in default colors; the live screen is exact.
+//! `offset == 0` follows the bottom with no drift; scrolling *during* active
+//! output may shift (the offset is relative to the live bottom) — a v1 limit.
 
 use pinion_a11y::{AccessNode, AccessValue, AriaRole, WidgetA11y};
 use pinion_core::external::{External, IntrospectValue};
-use pinion_core::reactive::{Effect, Owner};
+use pinion_core::reactive::{Effect, Owner, Signal};
 use pinion_core::scene::ContainerNode;
 use pinion_core::style::{BoxStyle, LayoutStyle, Size, SizeValue};
 use pinion_core::theme::{use_theme, ColorRole, Theme};
@@ -93,6 +107,9 @@ const SESSION_KEY: &str = "sprag_gui.terminal";
 /// `Owner::cache` key for the resize -> reflow [`Effect`] (kept alive across
 /// frames by the cache — a dropped [`Effect`] handle stops firing).
 const REFLOW_KEY: &str = "sprag_gui.reflow";
+/// `Owner::cache` key for the scrollback view offset (lines scrolled up from
+/// the live bottom; `0` = live).
+const SCROLL_KEY: &str = "sprag_gui.scroll";
 
 /// Parse a `SPRAG_GUI_FONT` spec into a glyph px size. Absent / malformed /
 /// zero falls back to `default`. Pure (no env) so it is unit-testable.
@@ -296,14 +313,52 @@ fn fill() -> Size {
         .with_height(SizeValue::Percent(100))
 }
 
+/// The scrollback view offset (lines scrolled up from the live bottom), an
+/// `Owner::cache`-backed [`Signal`] so `apply_key` writes it and `view` reads it
+/// reactively (a `set` re-renders the view). `0` = live (follow the bottom).
+fn use_scroll_offset() -> Signal<usize> {
+    let owner = Owner::current().expect("use_scroll_offset() requires an active Owner scope");
+    owner.cache(SCROLL_KEY, || Signal::new(0_usize)).as_ref().clone()
+}
+
+/// The scrollback offset after a `PageUp` / `PageDown` of `page` rows from
+/// `current`, clamped to `[0, scrollback_len]`. Pure, so it is unit-testable;
+/// `PageUp` walks into history (clamped at the depth), `PageDown` back toward
+/// the live bottom (saturating at `0`).
+fn next_scroll_offset(key: &str, current: usize, page: usize, scrollback_len: usize) -> usize {
+    match key {
+        "PageUp" => (current + page).min(scrollback_len),
+        "PageDown" => current.saturating_sub(page),
+        _ => current,
+    }
+}
+
+/// Adjust the scrollback offset for a `Shift+PageUp` / `Shift+PageDown`, clamped
+/// to the pane's retained scrollback depth. A page is the viewport height less
+/// one row (one row of overlap for continuity). Reads the live pane for the
+/// depth + row count; called from `apply_key` (outside any cache factory).
+fn scroll_view(key: &str) {
+    let terminal = use_terminal();
+    let offset = use_scroll_offset();
+    let Some(pane) = terminal.workspace.panes().first() else {
+        return;
+    };
+    let (scrollback_len, rows) =
+        pane.session().with_screen(|screen| (screen.scrollback_len(), screen.rows()));
+    let page = usize::from(rows).saturating_sub(1).max(1);
+    offset.set(next_scroll_offset(key, offset.get(), page, scrollback_len));
+}
+
 /// view-fn (§6.3): pure sync `() -> Scene`. Reads the producer-authoritative
-/// screen of the (single) pane each frame and paints it via the host's
-/// projection seam; the producer thread (the PTY reader) lives in
-/// `create_extra_externals`, not here.
+/// screen of the (single) pane each frame and paints it (live, or a scrollback
+/// window when [`use_scroll_offset`] is non-zero) via the host's projection
+/// seam; the producer thread (the PTY reader) lives in `create_extra_externals`,
+/// not here.
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn view(_state: (), _frame: &Frame) -> Scene {
     let theme = use_theme(THEME_TAG).theme_animated();
     let tv = use_terminal();
+    let offset = use_scroll_offset().get();
     // The boot pane is always present (spawned at boot, never closed). On child
     // EOF the pane stays and `view` paints its frozen final screen — the
     // deliberate read-only behavior (the program exited; its last output shows).
@@ -312,9 +367,11 @@ fn view(_state: (), _frame: &Frame) -> Scene {
         .panes()
         .first()
         .expect("the boot pane is always present (spawned at boot, never closed)");
-    let grid = pane
-        .session()
-        .with_screen(|screen| sprag_host::pane_view_scene(screen, tv.metric, tv.font_size_px));
+    // `offset == 0` is the live screen; a positive offset windows into history
+    // (text-only, the R16 scrollback model) — one projection seam for both.
+    let grid = pane.session().with_screen(|screen| {
+        sprag_host::pane_view_scene_scrolled(screen, tv.metric, tv.font_size_px, offset)
+    });
     compose(grid, &theme)
 }
 
@@ -363,6 +420,15 @@ impl WidgetCore for TerminalViewer {
         if focused != Some(ROOT_TAG) {
             return false;
         }
+        // Scrollback: Shift+PageUp / Shift+PageDown scroll the history view and do
+        // NOT reach the PTY (a terminal app sees an unmodified PageUp). Every
+        // other key is a live interaction, so it first snaps the view back to the
+        // bottom — you type at the prompt, which is at the live bottom.
+        if modifiers.shift && matches!(key, "PageUp" | "PageDown") {
+            scroll_view(key);
+            return true;
+        }
+        use_scroll_offset().set(0);
         let Scene::External(node) = scene else {
             return false;
         };
@@ -594,14 +660,18 @@ mod tests {
             ExternalNode::new(Box::new(SpragPaneExternal::new(handle.clone()))).with_tag(ROOT_TAG),
         );
 
-        // Focus gate: an unfocused / wrong-tag keystroke is a no-op.
-        assert!(!TerminalViewer::apply_key(&mut scene, None, "a", Modifiers::default()));
-        assert!(!TerminalViewer::apply_key(&mut scene, Some("other"), "a", Modifiers::default()));
-
-        // Focused: each key is injected and the cooked-mode PTY echoes it back.
-        for ch in ["h", "i"] {
-            assert!(TerminalViewer::apply_key(&mut scene, Some(ROOT_TAG), ch, Modifiers::default()));
-        }
+        // apply_key runs inside the shell's root Owner scope (it reads the
+        // scrollback-offset Signal); mirror that here.
+        let owner = Owner::new();
+        owner.run(|| {
+            // Focus gate: an unfocused / wrong-tag keystroke is a no-op.
+            assert!(!TerminalViewer::apply_key(&mut scene, None, "a", Modifiers::default()));
+            assert!(!TerminalViewer::apply_key(&mut scene, Some("other"), "a", Modifiers::default()));
+            // Focused: each key is injected and the cooked-mode PTY echoes it back.
+            for ch in ["h", "i"] {
+                assert!(TerminalViewer::apply_key(&mut scene, Some(ROOT_TAG), ch, Modifiers::default()));
+            }
+        });
         let start = Instant::now();
         let mut row0 = String::new();
         while start.elapsed() < Duration::from_secs(5) {
@@ -645,5 +715,48 @@ mod tests {
         // Same cached pane, unfocused dispatch -> the focus flag clears.
         let unfocused = owner.run(|| TerminalViewer::access_node(&(), None));
         assert!(!unfocused[0].state.focused);
+    }
+
+    #[test]
+    fn next_scroll_offset_clamps_and_saturates() {
+        // PageUp accumulates up to the scrollback depth (clamped).
+        assert_eq!(next_scroll_offset("PageUp", 0, 10, 25), 10);
+        assert_eq!(next_scroll_offset("PageUp", 20, 10, 25), 25); // clamp at depth
+        // PageDown walks back toward the live bottom (saturating at 0).
+        assert_eq!(next_scroll_offset("PageDown", 25, 10, 25), 15);
+        assert_eq!(next_scroll_offset("PageDown", 5, 10, 25), 0); // saturate
+        // No scrollback -> stays live regardless of the key.
+        assert_eq!(next_scroll_offset("PageUp", 0, 10, 0), 0);
+    }
+
+    #[test]
+    fn scroll_offset_signal_defaults_live_and_round_trips() {
+        let owner = Owner::new();
+        assert_eq!(owner.run(|| use_scroll_offset().get()), 0, "boots at the live bottom");
+        owner.run(|| use_scroll_offset().set(7));
+        assert_eq!(owner.run(|| use_scroll_offset().get()), 7);
+    }
+
+    /// `apply_key` treats Shift+PageUp as a scroll (handled, not sent to the PTY)
+    /// and snaps the view back to the live bottom on any other (typed) key.
+    #[test]
+    fn apply_key_scrolls_and_snaps_to_bottom() {
+        use pinion_core::scene::ExternalNode;
+        let owner = Owner::new();
+        owner.run(|| {
+            // The model scene over the live boot pane (same pane use_terminal
+            // caches), so the PTY routing reaches the pane scroll_view reads.
+            let handle = use_terminal().pane_handle();
+            let mut scene = Scene::External(
+                ExternalNode::new(Box::new(SpragPaneExternal::new(handle))).with_tag(ROOT_TAG),
+            );
+            // Shift+PageUp is consumed as a scroll (true = handled, not the PTY).
+            let shift = Modifiers { shift: true, ..Modifiers::default() };
+            assert!(TerminalViewer::apply_key(&mut scene, Some(ROOT_TAG), "PageUp", shift));
+            // A scrolled-up view snaps to the live bottom when the user types.
+            use_scroll_offset().set(5);
+            assert!(TerminalViewer::apply_key(&mut scene, Some(ROOT_TAG), "a", Modifiers::default()));
+            assert_eq!(use_scroll_offset().get(), 0, "typing snaps to the live bottom");
+        });
     }
 }

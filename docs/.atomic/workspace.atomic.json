@@ -1176,6 +1176,48 @@
         "Mouse / pointer->cell (R1.8): vim/htop mouse + selection need a pinion seam (a click delivered to a TextGrid widget with cell coords) - a stop-and-report pinion round, not this one."
       ]
     },
+    "Round 29": {
+      "decision_summary": "Round 29: add scrollback viewing to the GUI terminal - Shift+PageUp/PageDown scroll a history window over the pane's retained scrollback, reusing the one projection seam at a scrolled entry; the live view is unchanged.",
+      "changes_bullets": [
+        "sprag-grid: project_scrolled(screen, offset_lines) windows offset_lines of scrollback above the live bottom, reusing project() (offset 0) + project_row() (visible rows) + history_row() (scrollback text -> default-color cells); a stale offset clamped to live returns project() WITH the cursor. History is text-only (the R16 scrollback model).",
+        "sprag-host: pane_view_scene_scrolled(.., offset) GUI seam; pane_view_scene delegates (offset 0, byte-identical); both assemble via a shared grid_node node-base + view_text_grid (the headless data path is unchanged).",
+        "sprag-gui: use_scroll_offset Signal (Owner::cache) + pure next_scroll_offset clamp + scroll_view; apply_key consumes Shift+PageUp/PageDown as a scroll (not to the PTY) and snaps to the live bottom on any typed key; view reads the offset. offset=0 follows with no drift."
+      ],
+      "verification_bullets": [
+        "sprag-grid 6 + sprag-host 34 + sprag-gui 11 tests pass (project_scrolled windowing + stale-offset cursor clamp; pure next_scroll_offset clamp/saturate; apply_key scroll-gate + snap-to-bottom); full sprag workspace 130, cargo clippy --workspace --all-targets clean, cargo doc no new broken links.",
+        "Headless screenshot boots + renders 960x600 byte-identical to R26-R28 (offset 0 == project, paint-transparent).",
+        "Two adversarial reviewers cleared the windowing math / reactivity / layering / SSOT-reuse and caught a cursor-omit on a stale-offset-clamped-to-live path (fixed: early-return on the clamped offset) + an orphaned view doc + a node-base micro-duplication (both fixed)."
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Scrollback is text-only (R16 model) - history renders in default colors; a full-cell scrollback model (colors/attrs retained in history) is a sprag-vt enhancement, deferred.",
+        "Scroll-during-output drift: the offset is relative to the live bottom, so output arriving while scrolled shifts the view; an absolute (content-anchored) pin needs producer-side scrollback-growth reactivity, deferred.",
+        "Mouse / pointer->cell (R1.8) + multi-pane remain the next big directions (mouse = a pinion seam; multi-pane = an External-model restructure)."
+      ],
+      "publishable_decision_summary": "Round 29: add scrollback viewing to the GUI terminal - Shift+PageUp/PageDown scroll a history window over the pane's retained scrollback, reusing the one projection seam at a scrolled entry; the live view is unchanged.",
+      "publishable_changes_bullets": [
+        "sprag-grid: project_scrolled(screen, offset_lines) windows offset_lines of scrollback above the live bottom, reusing project() (offset 0) + project_row() (visible rows) + history_row() (scrollback text -> default-color cells); a stale offset clamped to live returns project() WITH the cursor. History is text-only (the R16 scrollback model).",
+        "sprag-host: pane_view_scene_scrolled(.., offset) GUI seam; pane_view_scene delegates (offset 0, byte-identical); both assemble via a shared grid_node node-base + view_text_grid (the headless data path is unchanged).",
+        "sprag-gui: use_scroll_offset Signal (Owner::cache) + pure next_scroll_offset clamp + scroll_view; apply_key consumes Shift+PageUp/PageDown as a scroll (not to the PTY) and snaps to the live bottom on any typed key; view reads the offset. offset=0 follows with no drift."
+      ],
+      "publishable_verification_bullets": [
+        "sprag-grid 6 + sprag-host 34 + sprag-gui 11 tests pass (project_scrolled windowing + stale-offset cursor clamp; pure next_scroll_offset clamp/saturate; apply_key scroll-gate + snap-to-bottom); full sprag workspace 130, cargo clippy --workspace --all-targets clean, cargo doc no new broken links.",
+        "Headless screenshot boots + renders 960x600 byte-identical to R26-R28 (offset 0 == project, paint-transparent).",
+        "Two adversarial reviewers cleared the windowing math / reactivity / layering / SSOT-reuse and caught a cursor-omit on a stale-offset-clamped-to-live path (fixed: early-return on the clamped offset) + an orphaned view doc + a node-base micro-duplication (both fixed)."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Scrollback is text-only (R16 model) - history renders in default colors; a full-cell scrollback model (colors/attrs retained in history) is a sprag-vt enhancement, deferred.",
+        "Scroll-during-output drift: the offset is relative to the live bottom, so output arriving while scrolled shifts the view; an absolute (content-anchored) pin needs producer-side scrollback-growth reactivity, deferred.",
+        "Mouse / pointer->cell (R1.8) + multi-pane remain the next big directions (mouse = a pinion seam; multi-pane = an External-model restructure)."
+      ]
+    },
     "Round 3": {
       "decision_summary": "Land sprag-terminal: a PTY-driven emulator projected to Scene::TextGrid and read headlessly as scene/snapshot, with no GPU.",
       "changes_bullets": [

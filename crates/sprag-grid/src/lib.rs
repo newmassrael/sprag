@@ -41,6 +41,75 @@ pub fn project(screen: &Screen) -> GridBuffer {
     buffer.with_screen(screen_kind(screen.screen_kind()))
 }
 
+/// Project a screen into a `GridBuffer` scrolled up by `offset_lines` rows of
+/// history. `offset_lines == 0` is the live view, byte-identical to [`project`].
+///
+/// A positive offset shows the pane's scrollback: the displayed window of
+/// `screen.rows()` logical rows ends `offset_lines` rows above the live bottom.
+/// Rows that fall in the scrollback region are **text-only** — the R16
+/// scrollback model retains trailing-trimmed text, not full cells — so scrolled
+/// history renders in the default fg/bg with no attributes (and wide clusters as
+/// a single cell: the head/trailer split is not recoverable from text); rows
+/// still in the visible region keep their exact cells. The cursor is omitted
+/// while scrolled (it lives in the live region below the view). `offset_lines`
+/// is clamped to the retained scrollback depth.
+#[must_use]
+pub fn project_scrolled(screen: &Screen, offset_lines: usize) -> GridBuffer {
+    if offset_lines == 0 {
+        return project(screen);
+    }
+    let cols = screen.cols();
+    let rows = screen.rows();
+    let scrollback: Vec<&str> = screen.scrollback_rows().collect();
+    let scrollback_len = scrollback.len();
+    let offset = offset_lines.min(scrollback_len);
+    if offset == 0 {
+        // A stale positive offset against now-empty scrollback (the screen
+        // cleared its history, or switched to the alternate screen) IS the live
+        // view — return it with the cursor, not a cursor-less window.
+        return project(screen);
+    }
+    // First displayed row's index into the logical [scrollback .. visible]
+    // sequence: the window of `rows` rows ends `offset` above the live bottom
+    // (offset <= scrollback_len, so this never underflows).
+    let top = scrollback_len - offset;
+
+    let mut buffer = GridBuffer::new(cols, rows);
+    for display in 0..rows {
+        let logical = top + display as usize;
+        let cells = if logical < scrollback_len {
+            history_row(scrollback[logical], cols)
+        } else {
+            project_row(screen, (logical - scrollback_len) as u16, cols)
+        };
+        buffer = buffer.with_row(display, cells);
+    }
+    // No cursor while scrolled; the screen kind matches the live screen.
+    buffer.with_screen(screen_kind(screen.screen_kind()))
+}
+
+/// Build a scrollback (text-only) row's `TermCell`s: each `char` as a
+/// default-color narrow cell, padded with blanks / truncated to `cols`. The
+/// text model has lost the cell structure, so this is an approximation of the
+/// original row (the live grid is exact); the common ASCII case is faithful.
+fn history_row(text: &str, cols: u16) -> Vec<TermCell> {
+    let mut out = Vec::with_capacity(cols as usize);
+    for ch in text.chars() {
+        if out.len() >= cols as usize {
+            break;
+        }
+        out.push(TermCell::new(
+            ch.to_string(),
+            TermColor::Default,
+            TermColor::Default,
+        ));
+    }
+    while out.len() < cols as usize {
+        out.push(TermCell::blank());
+    }
+    out
+}
+
 /// Build one row's `TermCell`s, expanding wide heads into pinion's
 /// head + trailer pair (DESIGN.md §3: producer determines width).
 fn project_row(screen: &Screen, row: u16, cols: u16) -> Vec<TermCell> {
@@ -157,5 +226,53 @@ mod tests {
         let buffer = project(&screen);
         assert_eq!(buffer.cursor().col, 3);
         assert_eq!(buffer.cursor().row, 0);
+    }
+
+    /// A 2-row screen fed 5 lines scrolls 3 off the top into scrollback;
+    /// `project_scrolled` windows over [scrollback .. visible].
+    #[test]
+    fn project_scrolled_windows_history() {
+        // 5 lines on a 2-row screen: rows "d","e" visible, "a","b","c" scrolled.
+        let screen = screen_from(b"a\r\nb\r\nc\r\nd\r\ne", 4, 2);
+        assert_eq!(screen.scrollback_len(), 3);
+        let row0 = |buf: &GridBuffer| {
+            (0..buf.cols())
+                .filter_map(|c| buf.cell(c, 0).map(|cell| cell.cluster.clone()))
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        };
+        let row1 = |buf: &GridBuffer| {
+            (0..buf.cols())
+                .filter_map(|c| buf.cell(c, 1).map(|cell| cell.cluster.clone()))
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        };
+        // offset 0 == live (rows d, e), identical to project().
+        let live = project_scrolled(&screen, 0);
+        assert_eq!((row0(&live), row1(&live)), ("d".into(), "e".into()));
+        // offset 1: one scrollback line ("c") on top, visible "d" below.
+        let up1 = project_scrolled(&screen, 1);
+        assert_eq!((row0(&up1), row1(&up1)), ("c".into(), "d".into()));
+        // offset 3: top of history ("a", "b").
+        let up3 = project_scrolled(&screen, 3);
+        assert_eq!((row0(&up3), row1(&up3)), ("a".into(), "b".into()));
+        // Clamp: a larger offset cannot scroll past the oldest line.
+        let up99 = project_scrolled(&screen, 99);
+        assert_eq!((row0(&up99), row1(&up99)), ("a".into(), "b".into()));
+    }
+
+    /// A stale positive offset against empty scrollback (history cleared, or
+    /// alt-screen) clamps to the live view and KEEPS the cursor — not a
+    /// cursor-less window.
+    #[test]
+    fn project_scrolled_clamps_stale_offset_to_live_with_cursor() {
+        let screen = screen_from(b"abc", 10, 2);
+        assert_eq!(screen.scrollback_len(), 0);
+        let scrolled = project_scrolled(&screen, 7); // stale offset, no history
+        let live = project(&screen);
+        assert_eq!(scrolled.cursor().col, live.cursor().col);
+        assert!(scrolled.cursor().visible, "the live cursor is present after the clamp");
     }
 }
