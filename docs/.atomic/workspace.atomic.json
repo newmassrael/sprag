@@ -1442,6 +1442,62 @@
         "Rolled forward from R31/R32: multi-pane (R34+: boot_pane()->active_pane() + per-pane tags, pinion has the Splitter substrate); scroll content-anchoring (producer-side scrollback-growth reactivity); full-cell scrollback (R16 text-only history loses color); mouse/pointer->cell consumer."
       ]
     },
+    "Round 34": {
+      "decision_summary": "Round 34: Korean/CJK IME made usable via an inline preedit overlay. Root cause found with live data (ibus-hangul over X11+XIM, driven by XTEST, read back as scene/snapshot DATA): the commit->PTY seam and multi-jamo coalescence already worked, but the in-progress preedit was invisible — under winit+XIM the platform IME emits Ime::Preedit for the app to render (it does not paint over-the-spot), and sprag ignored Update, so nothing showed until commit (the 'jamo dont coalesce live' symptom). Fix is fully sprag-side, no pinion change: route_composition mirrors Start/Update/Commit/Cancel into an Owner::cache preedit Signal, view overlays it underlined at the cursor via new seams (sprag_grid::overlay_preedit + sprag_host::pane_view_scene_scrolled_with_preedit), and returns true so the shells R705.1 reactive dirty bridge repaints live. Display-only: the preedit never reaches the PTY. ime_caret_rect (Hanja candidate positioning) remains unwired polish.",
+      "changes_bullets": [
+        "sprag-grid: overlay_preedit() splices underlined preedit at the cursor (wide CJK -> head+trailer)",
+        "sprag-grid: + unicode-width dep (same width model as the emulator); 3 overlay unit tests",
+        "sprag-host: pane_view_scene_scrolled_with_preedit overlays preedit on live view only (offset 0)",
+        "sprag-gui input: use_preedit() Owner::cache Signal; route_composition handles all 4 comp events",
+        "sprag-gui input: Update mirrors preedit (no PTY); Commit clears overlay + writes text; returns true",
+        "sprag-gui view: reads use_preedit() each frame; R705.1 dirty bridge repaints composition live",
+        "main.rs IME module doc updated (preedit now rendered inline; was \"a later round\")"
+      ],
+      "verification_bullets": [
+        "Live: ibus-hangul via XTEST into the real window, read back as scene/snapshot + full_text data",
+        "Compose 한 uncommitted: PTY empty, painted grid shows 한 (overlay only; not in the PTY)",
+        "Partial 하 (gk) shows live; 한글 / 안녕 commit -> PTY and painted agree, overlay cleared",
+        "cargo test --workspace green; cargo clippy --workspace --all-targets clean",
+        "Added overlay_preedit, host live-view-only, and composition-lifecycle unit tests"
+      ],
+      "impact_refs": [
+        "2",
+        "3"
+      ],
+      "carry_forward_bullets": [
+        "ime_caret_rect unwired: places Hanja candidate window at cursor (not shown in plain Hangul); polish",
+        "preedit caret offset dropped (winit Ime::Preedit cursor not surfaced by CompositionEvent::Update)",
+        "preedit overlay width via unicode-width approximation; emulator owns exact committed-cell width",
+        "HiDPI half-font (pinion scale-naive) workaround WINIT_X11_SCALE_FACTOR=1 still open (separate gap)"
+      ],
+      "publishable_decision_summary": "Round 34: Korean/CJK IME made usable via an inline preedit overlay. Root cause found with live data (ibus-hangul over X11+XIM, driven by XTEST, read back as scene/snapshot DATA): the commit->PTY seam and multi-jamo coalescence already worked, but the in-progress preedit was invisible — under winit+XIM the platform IME emits Ime::Preedit for the app to render (it does not paint over-the-spot), and sprag ignored Update, so nothing showed until commit (the 'jamo dont coalesce live' symptom). Fix is fully sprag-side, no pinion change: route_composition mirrors Start/Update/Commit/Cancel into an Owner::cache preedit Signal, view overlays it underlined at the cursor via new seams (sprag_grid::overlay_preedit + sprag_host::pane_view_scene_scrolled_with_preedit), and returns true so the shells R705.1 reactive dirty bridge repaints live. Display-only: the preedit never reaches the PTY. ime_caret_rect (Hanja candidate positioning) remains unwired polish.",
+      "publishable_changes_bullets": [
+        "sprag-grid: overlay_preedit() splices underlined preedit at the cursor (wide CJK -> head+trailer)",
+        "sprag-grid: + unicode-width dep (same width model as the emulator); 3 overlay unit tests",
+        "sprag-host: pane_view_scene_scrolled_with_preedit overlays preedit on live view only (offset 0)",
+        "sprag-gui input: use_preedit() Owner::cache Signal; route_composition handles all 4 comp events",
+        "sprag-gui input: Update mirrors preedit (no PTY); Commit clears overlay + writes text; returns true",
+        "sprag-gui view: reads use_preedit() each frame; R705.1 dirty bridge repaints composition live",
+        "main.rs IME module doc updated (preedit now rendered inline; was \"a later round\")"
+      ],
+      "publishable_verification_bullets": [
+        "Live: ibus-hangul via XTEST into the real window, read back as scene/snapshot + full_text data",
+        "Compose 한 uncommitted: PTY empty, painted grid shows 한 (overlay only; not in the PTY)",
+        "Partial 하 (gk) shows live; 한글 / 안녕 commit -> PTY and painted agree, overlay cleared",
+        "cargo test --workspace green; cargo clippy --workspace --all-targets clean",
+        "Added overlay_preedit, host live-view-only, and composition-lifecycle unit tests"
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "3"
+      ],
+      "publishable_carry_forward_bullets": [
+        "ime_caret_rect unwired: places Hanja candidate window at cursor (not shown in plain Hangul); polish",
+        "preedit caret offset dropped (winit Ime::Preedit cursor not surfaced by CompositionEvent::Update)",
+        "preedit overlay width via unicode-width approximation; emulator owns exact committed-cell width",
+        "HiDPI half-font (pinion scale-naive) workaround WINIT_X11_SCALE_FACTOR=1 still open (separate gap)"
+      ]
+    },
     "Round 4": {
       "decision_summary": "Add sprag-term: a headless JSON-RPC server exposing a live PTY session as scene-as-data over stdin/stdout.",
       "changes_bullets": [

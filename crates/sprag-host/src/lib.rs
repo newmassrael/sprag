@@ -141,7 +141,36 @@ pub fn pane_view_scene_scrolled(
     font_size_px: u32,
     offset_lines: usize,
 ) -> Scene {
-    view_text_grid(sprag_grid::project_scrolled(screen, offset_lines), metric, font_size_px)
+    pane_view_scene_scrolled_with_preedit(screen, metric, font_size_px, offset_lines, "")
+}
+
+/// [`pane_view_scene_scrolled`] with an IME `preedit` (in-progress composition)
+/// overlaid at the cursor — the windowed host's live composition feedback. Under
+/// winit + XIM the platform IME does not paint the preedit; it emits
+/// `Ime::Preedit` for the app to render, so the terminal draws the half-composed
+/// syllable itself ([`sprag_grid::overlay_preedit`], underlined at the cursor).
+/// Display-only: the preedit never reaches the PTY — only a committed
+/// [`CompositionEvent::Commit`](pinion_core::CompositionEvent) writes (via
+/// [`SpragPaneExternal`]'s `text` action).
+///
+/// The overlay applies only to the **live** view (`offset_lines == 0`): the
+/// cursor — the compose position — exists only there ([`sprag_grid::project_scrolled`]
+/// omits it while scrolled), and composition snaps the view back to the live
+/// bottom anyway (you type at the prompt). An empty `preedit` is a no-op, so the
+/// no-composition path is byte-identical to [`pane_view_scene_scrolled`].
+#[must_use]
+pub fn pane_view_scene_scrolled_with_preedit(
+    screen: &Screen,
+    metric: CellMetric,
+    font_size_px: u32,
+    offset_lines: usize,
+    preedit: &str,
+) -> Scene {
+    let mut cells = sprag_grid::project_scrolled(screen, offset_lines);
+    if offset_lines == 0 {
+        cells = sprag_grid::overlay_preedit(cells, preedit);
+    }
+    view_text_grid(cells, metric, font_size_px)
 }
 
 /// Assemble the windowed-host `Scene::TextGrid` from a pre-projected cell buffer
@@ -321,5 +350,23 @@ mod tests {
             }
             other => unreachable!("pane_view_scene is a TextGrid, got {other:?}"),
         }
+    }
+
+    /// The live view (`offset 0`) overlays the IME preedit at the cursor (after
+    /// "hi", col 2), underlined; scrolling away from the live bottom drops it
+    /// (the cursor — the compose position — lives only in the live view).
+    #[test]
+    fn pane_view_scene_overlays_preedit_only_on_the_live_view() {
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"hi");
+        let cluster_at = |scene: &Scene, col: u16| match scene {
+            Scene::TextGrid(node) => node.cells().cell(col, 0).map(|c| c.cluster.to_string()),
+            other => unreachable!("expected TextGrid, got {other:?}"),
+        };
+        let live = super::pane_view_scene_scrolled_with_preedit(em.screen(), CellMetric::DEFAULT, 18, 0, "한");
+        assert_eq!(cluster_at(&live, 2).as_deref(), Some("한"), "preedit shows at the cursor on the live view");
+        // Empty preedit is byte-identical to the bare live scene at the cursor.
+        let bare = super::pane_view_scene_scrolled_with_preedit(em.screen(), CellMetric::DEFAULT, 18, 0, "");
+        assert_ne!(cluster_at(&bare, 2).as_deref(), Some("한"), "no composition -> no overlay");
     }
 }

@@ -13,6 +13,7 @@ use pinion_core::{
     TermCell, TermColor,
 };
 use sprag_vt::{Attrs, Cell, Color, CursorShape, Screen, ScreenKind, Width};
+use unicode_width::UnicodeWidthStr;
 
 /// Project a screen into a fresh pinion `GridBuffer`.
 ///
@@ -86,6 +87,73 @@ pub fn project_scrolled(screen: &Screen, offset_lines: usize) -> GridBuffer {
     }
     // No cursor while scrolled; the screen kind matches the live screen.
     buffer.with_screen(screen_kind(screen.screen_kind()))
+}
+
+/// Overlay an in-progress IME preedit (composition) string onto `buffer` at its
+/// cursor, drawn underlined to mark it as composing. Display-only: the preedit
+/// never reaches the PTY — only a committed
+/// [`CompositionEvent::Commit`](pinion_core::CompositionEvent) writes (via the
+/// host text seam). Under winit + XIM the platform IME does **not** paint the
+/// preedit over-the-spot; it emits `Ime::Preedit` for the application to render,
+/// so a terminal must draw the half-composed syllable itself — this is that
+/// rendering, the visual feedback that makes Hangul/CJK composition visible
+/// before commit.
+///
+/// Wide (CJK) preedit chars expand to pinion's head + trailer pair using the same
+/// `unicode-width` model the emulator uses, so a composing Hangul syllable
+/// occupies the two cells its committed form will.
+/// Preedit cells past the row's right edge are clipped (a transient pre-commit
+/// overflow, not wrapped), and zero-width combining marks are skipped (the
+/// emulator's documented grapheme-cluster gap). An empty preedit returns
+/// `buffer` unchanged, so the live view with no active composition is identical.
+#[must_use]
+pub fn overlay_preedit(buffer: GridBuffer, preedit: &str) -> GridBuffer {
+    if preedit.is_empty() {
+        return buffer;
+    }
+    let cols = buffer.cols();
+    let cursor = buffer.cursor();
+    let row = cursor.row;
+    if cols == 0 || row >= buffer.rows() {
+        return buffer;
+    }
+    // Copy the cursor row, then splice the preedit in starting at the cursor
+    // column. `with_row` rewrites the whole row, so the copy preserves the
+    // committed cells to the left/right of the composition.
+    let width = usize::from(cols);
+    let mut cells: Vec<TermCell> =
+        (0..cols).map(|col| buffer.cell(col, row).cloned().unwrap_or_else(TermCell::blank)).collect();
+    let mut col = usize::from(cursor.col);
+    for ch in preedit.chars() {
+        let w = UnicodeWidthStr::width(ch.to_string().as_str());
+        if w == 0 {
+            continue; // combining mark — the emulator merges these (skeleton gap)
+        }
+        if col >= width {
+            break; // clip the preedit at the right edge (transient pre-commit)
+        }
+        let head = preedit_cell(ch);
+        if w == 2 && col + 1 < width {
+            let wide = head.wide();
+            let trailer = wide.trailer();
+            cells[col] = wide;
+            cells[col + 1] = trailer;
+            col += 2;
+        } else {
+            cells[col] = head;
+            col += 1;
+        }
+    }
+    buffer.with_row(row, cells)
+}
+
+/// One preedit cell: the char in default colors, underlined to mark an
+/// in-progress composition. The grid cursor (a block at the compose position)
+/// highlights the active cell; the underline distinguishes the rest of the
+/// composing run from committed text.
+fn preedit_cell(ch: char) -> TermCell {
+    TermCell::new(ch.to_string(), TermColor::Default, TermColor::Default)
+        .with_attrs(CellAttrs::empty().with_underline(true))
 }
 
 /// Build a scrollback (text-only) row's `TermCell`s: each `char` as a
@@ -274,5 +342,43 @@ mod tests {
         let live = project(&screen);
         assert_eq!(scrolled.cursor().col, live.cursor().col);
         assert!(scrolled.cursor().visible, "the live cursor is present after the clamp");
+    }
+
+    /// A narrow preedit is spliced in at the cursor (col 2 after "ab"),
+    /// underlined, leaving the committed cells to its left intact.
+    #[test]
+    fn overlay_preedit_underlines_narrow_text_at_the_cursor() {
+        let screen = screen_from(b"ab", 10, 1);
+        let buffer = overlay_preedit(project(&screen), "x");
+        assert_eq!(buffer.cell(0, 0).unwrap().cluster, "a", "committed text is preserved");
+        assert_eq!(buffer.cell(1, 0).unwrap().cluster, "b");
+        let composed = buffer.cell(2, 0).unwrap(); // cursor sat at col 2
+        assert_eq!(composed.cluster, "x");
+        assert!(composed.attrs.underline, "the preedit is underlined (composing marker)");
+    }
+
+    /// A wide (Hangul) preedit syllable expands to pinion's head + trailer pair,
+    /// occupying the two cells its committed form will.
+    #[test]
+    fn overlay_preedit_expands_a_wide_syllable_to_head_and_trailer() {
+        let screen = screen_from(b"ab", 10, 1);
+        let buffer = overlay_preedit(project(&screen), "한");
+        let head = buffer.cell(2, 0).unwrap();
+        assert_eq!(head.cluster, "한");
+        assert_eq!(head.width, pinion_core::CellWidth::Wide);
+        assert!(head.attrs.underline);
+        assert_eq!(buffer.cell(3, 0).unwrap().width, pinion_core::CellWidth::Trailer);
+    }
+
+    /// An empty preedit (no active composition) is a no-op — the live view is
+    /// byte-identical to the bare projection.
+    #[test]
+    fn overlay_preedit_empty_is_a_no_op() {
+        let screen = screen_from(b"ab", 10, 1);
+        let plain = project(&screen);
+        let overlaid = overlay_preedit(project(&screen), "");
+        for col in 0..plain.cols() {
+            assert_eq!(plain.cell(col, 0).unwrap().cluster, overlaid.cell(col, 0).unwrap().cluster);
+        }
     }
 }

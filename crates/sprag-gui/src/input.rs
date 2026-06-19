@@ -21,6 +21,23 @@ pub(crate) fn use_scroll_offset() -> Signal<usize> {
     owner.cache(SCROLL_KEY, || Signal::new(0_usize)).as_ref().clone()
 }
 
+/// `Owner::cache` key for the IME preedit (in-progress composition) overlay.
+const PREEDIT_KEY: &str = "sprag_gui.preedit";
+
+/// The IME preedit (in-progress composition) string, an `Owner::cache`-backed
+/// [`Signal`] that [`route_composition`] writes on `Start`/`Update`/`Cancel`/`Commit`
+/// and `view` reads each frame to overlay the half-composed syllable on the grid
+/// at the cursor (the visual feedback a terminal must render itself under
+/// winit + XIM — the platform IME emits `Ime::Preedit` rather than painting it).
+/// Empty = not composing. Display-only: the preedit never reaches the PTY (only
+/// a `Commit` writes, via the `text` seam). Because `view` reads it every frame,
+/// a `set` flips the root owner dirty so the shell's R705.1 reactive bridge arms
+/// a redraw — the composition repaints live as you type.
+pub(crate) fn use_preedit() -> Signal<String> {
+    let owner = Owner::current().expect("use_preedit() requires an active Owner scope");
+    owner.cache(PREEDIT_KEY, || Signal::new(String::new())).as_ref().clone()
+}
+
 /// The scrollback offset after a `PageUp` / `PageDown` of `page` rows from
 /// `current`, clamped to `[0, scrollback_len]`. Pure, so it is unit-testable;
 /// `PageUp` walks into history (clamped at the depth), `PageDown` back toward
@@ -89,23 +106,31 @@ pub(crate) fn route_key(scene: &mut Scene, focused: Option<&str>, key: &str, mod
     intro.invoke("key", IntrospectValue::Json(args)).is_ok()
 }
 
-/// Route committed IME text (Hangul / CJK / any composed input) to the boot
-/// pane's PTY. The platform IME composes off-grid (its own preedit popup) and
-/// emits [`CompositionEvent::Commit`] with the finished text; we write it
-/// **literally** via the root [`SpragPaneExternal`](sprag_host::SpragPaneExternal)'s
-/// `invoke("text", …)` — composed text is not a keystroke, so it bypasses the
-/// key encoder (the same `scene/invoke` wire the AI peer drives, §2 #2).
-/// `Start`/`Update` (preedit) and `Cancel` are not consumed here: the IME
-/// renders the in-progress composition itself; an inline-preedit overlay on the
-/// grid is a later round. Focus-gated on [`ROOT_TAG`] like [`route_key`].
+/// Route an IME composition (Hangul / CJK / any composed input) — rendering the
+/// in-progress preedit on the grid and writing the committed text to the PTY.
 ///
-/// Scope (honest): this handles the **commit -> PTY** seam only. Whether a given
-/// platform IME composes a syllable correctly (the live `Start`/`Update`/`Commit`
-/// behavior) is the IME's own and is verified only in a live window, not by the
-/// headless tests — so "IME input works" is substantiated for the write seam,
-/// not end-to-end live. Caret-area positioning (`WidgetView::ime_caret_rect`, a
-/// sprag-overridable hint that places the candidate popup at the cursor) is an
-/// unwired follow-up, not a pinion gap.
+/// Under winit + XIM the platform IME does **not** paint the preedit
+/// over-the-spot; it emits an `Ime::Preedit` (mapped to
+/// [`CompositionEvent::Start`]/[`Update`](CompositionEvent::Update)) for the
+/// application to render, so the terminal mirrors the half-composed syllable
+/// into the [`use_preedit`] overlay Signal — `view` reads it each frame and
+/// [`sprag_host::pane_view_scene_scrolled_with_preedit`] draws it underlined at
+/// the cursor. That overlay is display-only; it never reaches the PTY.
+///
+/// Only [`CompositionEvent::Commit`] writes: the finished text goes **literally**
+/// via the root [`SpragPaneExternal`](sprag_host::SpragPaneExternal)'s
+/// `invoke("text", …)` (composed text is not a keystroke, so it bypasses the key
+/// encoder — the same `scene/invoke` wire the AI peer drives, §2 #2), and the
+/// preedit overlay clears (the committed glyphs now arrive echoed through the
+/// PTY). Returning `true` for the events it handles bumps the shell revision and
+/// arms a redraw (the R705.1 reactive dirty bridge — `view` subscribed to
+/// [`use_preedit`]), so the composition repaints live. Focus-gated on
+/// [`ROOT_TAG`] like [`route_key`].
+///
+/// Not yet wired: `WidgetView::ime_caret_rect` (a sprag-overridable hint that
+/// places the IME candidate window — e.g. the Hanja conversion list — at the
+/// cursor; not shown during plain Hangul composition, so it is positioning
+/// polish, not a pinion gap).
 pub(crate) fn route_composition(
     scene: &mut Scene,
     focused: Option<&str>,
@@ -114,24 +139,49 @@ pub(crate) fn route_composition(
     if focused != Some(ROOT_TAG) {
         return false;
     }
-    let CompositionEvent::Commit(text) = event else {
-        return false; // preedit / cancel: nothing to insert into the PTY
-    };
-    if text.is_empty() {
-        return false; // empty commit == cancel (the no-data compositionend shape)
+    match event {
+        // A composition begins at the live prompt: snap the scrollback view to
+        // the bottom so the preedit overlays the live screen, and clear any
+        // stale composition. (winit always emits Start before the first
+        // Update/Commit of a session, so snapping here covers the session.)
+        CompositionEvent::Start => {
+            use_scroll_offset().set(0);
+            use_preedit().set(String::new());
+            true
+        }
+        // Preedit progresses (ㅎ -> 하 -> 한): mirror it into the overlay. Not
+        // written to the PTY — only a Commit is.
+        CompositionEvent::Update(text) => {
+            use_preedit().set(text.clone());
+            true
+        }
+        // The user cancelled mid-composition: drop the overlay.
+        CompositionEvent::Cancel => {
+            use_preedit().set(String::new());
+            true
+        }
+        // The composition is finished: clear the overlay (the committed glyphs
+        // now arrive echoed through the PTY) and write the literal text. An
+        // empty commit is the cancel-shaped `compositionend` — clearing the
+        // overlay is the whole job, so write nothing but still report handled
+        // (a stale preedit had to be cleared).
+        CompositionEvent::Commit(text) => {
+            use_preedit().set(String::new());
+            if text.is_empty() {
+                return true;
+            }
+            use_scroll_offset().set(0);
+            if let Scene::External(node) = scene
+                && let Some(intro) = node.handle.introspect_mut()
+            {
+                let _ = intro.invoke("text", IntrospectValue::Text(text.clone()));
+            }
+            true
+        }
+        // `CompositionEvent` is `#[non_exhaustive]`: a future variant is
+        // unhandled (falls through to the shell default), not silently consumed.
+        _ => false,
     }
-    // Committing text is a live interaction — snap the scrollback view back
-    // to the live bottom (you type at the prompt), matching route_key.
-    use_scroll_offset().set(0);
-    let Scene::External(node) = scene else {
-        return false;
-    };
-    let Some(intro) = node.handle.introspect_mut() else {
-        return false;
-    };
-    intro
-        .invoke("text", IntrospectValue::Text(text.clone()))
-        .is_ok()
 }
 
 #[cfg(test)]
@@ -187,19 +237,19 @@ mod tests {
         assert!(row0.contains("hi"), "typed keys echo to the pane screen; row0 = {row0:?}");
     }
 
-    /// Verify `route_composition` WRITES a committed composition's text to the
-    /// PTY — the R31 `Commit` -> `invoke("text")` -> `session.write` seam — by
-    /// driving a synthetic `CompositionEvent::Commit` over a live `cat` pane and
-    /// confirming the literal UTF-8 echoes back through the cooked-mode PTY.
+    /// Verify the composition lifecycle: `Update` (preedit) mirrors into the
+    /// [`use_preedit`] overlay Signal WITHOUT touching the PTY, and `Commit`
+    /// clears the overlay and WRITES the literal UTF-8 (the R31 `Commit` ->
+    /// `invoke("text")` -> `session.write` seam), confirmed by the text echoing
+    /// back through the cooked-mode `cat` PTY.
     ///
-    /// Scope (honest): this exercises the commit->write SEAM, NOT the live
-    /// platform IME. It injects the terminal `Commit` directly, so it does not
-    /// reproduce the real `Start`/`Update`(preedit)/`Commit` lifecycle a platform
-    /// IME emits while composing — that behavior is the IME's own and is not
-    /// reproducible headlessly (it needs a live window + IME engine). The focus
-    /// gate, preedit (`Update`), and empty-commit cases are deterministic no-ops.
+    /// Scope (honest): this drives synthetic `CompositionEvent`s, so it exercises
+    /// sprag's preedit-overlay + commit-write seams, NOT the live platform IME's
+    /// `Start`/`Update`/`Commit` sequencing (the IME's own, reproducible only in
+    /// a live window — verified separately against ibus-hangul). The focus gate
+    /// is a deterministic no-op.
     #[test]
-    fn apply_composition_writes_committed_text_to_the_pane() {
+    fn apply_composition_overlays_preedit_and_writes_commit() {
         let mut ws = Workspace::new((40, 6));
         let mut command = CommandBuilder::new("/bin/sh");
         command.arg("-c");
@@ -211,20 +261,27 @@ mod tests {
             ExternalNode::new(Box::new(SpragPaneExternal::new(handle.clone()))).with_tag(ROOT_TAG),
         );
 
-        // apply_composition reads the scrollback-offset Signal, so run it inside
-        // a root Owner scope (mirrors the shell).
+        // apply_composition reads the scrollback-offset + preedit Signals, so run
+        // it inside a root Owner scope (mirrors the shell).
         let owner = Owner::new();
         owner.run(|| {
             let commit = |t: &str| CompositionEvent::Commit(t.to_owned());
-            // Focus gate: a wrong-tag commit injects nothing.
+            // Focus gate: a wrong-tag composition is a no-op.
             assert!(!TerminalViewer::apply_composition(&mut scene, None, &commit("한")));
-            // Preedit (Update) and an empty commit are not written to the PTY —
-            // the IME renders the in-progress composition itself.
+            // Preedit (Update) is handled (mirrored into the overlay) but is NOT
+            // written to the PTY — only a Commit writes.
             let preedit = CompositionEvent::Update("ㅎ".to_owned());
-            assert!(!TerminalViewer::apply_composition(&mut scene, Some(ROOT_TAG), &preedit));
-            assert!(!TerminalViewer::apply_composition(&mut scene, Some(ROOT_TAG), &commit("")));
-            // Focused commit: the literal Hangul is written and echoes back.
+            assert!(TerminalViewer::apply_composition(&mut scene, Some(ROOT_TAG), &preedit));
+            assert_eq!(use_preedit().get(), "ㅎ", "the overlay mirrors the in-progress composition");
+            // An empty commit is the cancel-shaped end: it clears the overlay and
+            // writes nothing.
+            assert!(TerminalViewer::apply_composition(&mut scene, Some(ROOT_TAG), &commit("")));
+            assert_eq!(use_preedit().get(), "", "an empty commit clears the overlay");
+            // A real commit clears the overlay and writes the literal Hangul.
+            let update_han = CompositionEvent::Update("한".to_owned());
+            assert!(TerminalViewer::apply_composition(&mut scene, Some(ROOT_TAG), &update_han));
             assert!(TerminalViewer::apply_composition(&mut scene, Some(ROOT_TAG), &commit("한글")));
+            assert_eq!(use_preedit().get(), "", "the commit clears the overlay");
         });
         let start = Instant::now();
         let mut row0 = String::new();

@@ -3,7 +3,7 @@
 //! paint root. The PTY producer thread lives in `create_extra_externals`, not
 //! here. See the crate-root module docs.
 
-use crate::input::use_scroll_offset;
+use crate::input::{use_preedit, use_scroll_offset};
 use crate::terminal::use_terminal;
 use crate::ROOT_TAG;
 use pinion_core::scene::ContainerNode;
@@ -24,14 +24,25 @@ pub(crate) fn view(_state: (), _frame: &Frame) -> Scene {
     let theme = use_theme(THEME_TAG).theme_animated();
     let tv = use_terminal();
     let offset = use_scroll_offset().get();
+    // Read the IME preedit every frame so a `set` (a composing keystroke) flips
+    // the owner dirty and arms a redraw (the R705.1 reactive bridge) — the
+    // half-composed syllable repaints live. Empty when not composing (no overlay).
+    let preedit = use_preedit().get();
     // On child EOF the pane stays and `view` paints its frozen final screen
     // (the program exited; its last output shows) — not a loss of interactivity,
     // just no more PTY output to read.
     let pane = tv.boot_pane();
     // `offset == 0` is the live screen; a positive offset windows into history
-    // (text-only, the R16 scrollback model) — one projection seam for both.
+    // (text-only, the R16 scrollback model) — one projection seam for both. The
+    // preedit overlays only the live view (the host seam gates on `offset`).
     let grid = pane.session().with_screen(|screen| {
-        sprag_host::pane_view_scene_scrolled(screen, tv.metric, tv.font_size_px, offset)
+        sprag_host::pane_view_scene_scrolled_with_preedit(
+            screen,
+            tv.metric,
+            tv.font_size_px,
+            offset,
+            &preedit,
+        )
     });
     compose(grid, &theme)
 }
