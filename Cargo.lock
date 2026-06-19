@@ -3408,6 +3408,7 @@ dependencies = [
  "pinion-core",
  "pinion-forge",
  "pinion-shell",
+ "serde_json",
  "sprag-host",
  "sprag-terminal",
  "vello",

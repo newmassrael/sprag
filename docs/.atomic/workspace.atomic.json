@@ -1092,6 +1092,48 @@
         "Interactive input (keyboard -> PTY) still reuses sprag-input + SpragPaneExternal; sprag-gui stays display-only (StubExternal) - the input-wiring round is unaffected by R26."
       ]
     },
+    "Round 27": {
+      "decision_summary": "Round 27: make the GUI terminal interactive - route focused keystrokes to the boot pane's PTY through the same SpragPaneExternal invoke('key', ...) wire the headless RPC path drives (one input substrate, R2.6 / section 2 #2).",
+      "changes_bullets": [
+        "sprag-gui: create_external() returns SpragPaneExternal over the boot pane handle (was a no-op StubExternal); focusable_tags()=[ROOT_TAG] + focus_request at boot; new apply_key focus-gates on ROOT_TAG and routes (key + W3C modifiers, meta->super) to the External's invoke(\"key\", {...}).",
+        "Keystrokes reuse the RPC input substrate, not a parallel encoder: sprag-gui does not import sprag-input; key->PTY-byte encoding stays in SpragPaneExternal::inject_key (sprag-input, R2.6). Escape/Tab return true so they reach a full-screen TUI (vim) instead of the shell's quit/traverse defaults.",
+        "Added serde_json to sprag-gui only to build the invoke args object (the External's wire contract is JSON); updated module/const/method docs from \"read-only / display-only\" to interactive."
+      ],
+      "verification_bullets": [
+        "sprag-gui 6 tests pass incl. a headless end-to-end apply_key test (focus-gate deterministic + key->PTY->cooked-mode-echo over a real cat pane, 0/10 flakes); full sprag workspace 124 tests + cargo clippy --workspace --all-targets clean.",
+        "Headless sprag-gui screenshot boots + renders 960x600 byte-identical to R26 - the SpragPaneExternal create_external + boot focus request + apply_key registration are paint-transparent and do not break boot.",
+        "Two adversarial reviewers cleared correctness + the substrate-reuse thesis (same invoke wire, no duplicated encode, meta->super symmetric, clean layering); fixed their 3 R27-introduced cargo-doc broken-link findings (the commit gate runs clippy, not cargo doc)."
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Per-cell a11y tree: the terminal is now focusable but access_node still returns empty (no screen-reader role for the grid); a per-cell/role a11y round is deferred.",
+        "Multi-pane input: apply_key targets the single boot pane (the root External); a multi-pane host routes keys to the focused pane (per-pane externals + focus tags).",
+        "Vocabulary completeness + mouse reporting (R1.8 pointer->cell): F13-24 / keypad encoding and xterm mouse reporting are unaddressed; sprag-input covers the common keys today."
+      ],
+      "publishable_decision_summary": "Round 27: make the GUI terminal interactive - route focused keystrokes to the boot pane's PTY through the same SpragPaneExternal invoke('key', ...) wire the headless RPC path drives (one input substrate, R2.6 / section 2 #2).",
+      "publishable_changes_bullets": [
+        "sprag-gui: create_external() returns SpragPaneExternal over the boot pane handle (was a no-op StubExternal); focusable_tags()=[ROOT_TAG] + focus_request at boot; new apply_key focus-gates on ROOT_TAG and routes (key + W3C modifiers, meta->super) to the External's invoke(\"key\", {...}).",
+        "Keystrokes reuse the RPC input substrate, not a parallel encoder: sprag-gui does not import sprag-input; key->PTY-byte encoding stays in SpragPaneExternal::inject_key (sprag-input, R2.6). Escape/Tab return true so they reach a full-screen TUI (vim) instead of the shell's quit/traverse defaults.",
+        "Added serde_json to sprag-gui only to build the invoke args object (the External's wire contract is JSON); updated module/const/method docs from \"read-only / display-only\" to interactive."
+      ],
+      "publishable_verification_bullets": [
+        "sprag-gui 6 tests pass incl. a headless end-to-end apply_key test (focus-gate deterministic + key->PTY->cooked-mode-echo over a real cat pane, 0/10 flakes); full sprag workspace 124 tests + cargo clippy --workspace --all-targets clean.",
+        "Headless sprag-gui screenshot boots + renders 960x600 byte-identical to R26 - the SpragPaneExternal create_external + boot focus request + apply_key registration are paint-transparent and do not break boot.",
+        "Two adversarial reviewers cleared correctness + the substrate-reuse thesis (same invoke wire, no duplicated encode, meta->super symmetric, clean layering); fixed their 3 R27-introduced cargo-doc broken-link findings (the commit gate runs clippy, not cargo doc)."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Per-cell a11y tree: the terminal is now focusable but access_node still returns empty (no screen-reader role for the grid); a per-cell/role a11y round is deferred.",
+        "Multi-pane input: apply_key targets the single boot pane (the root External); a multi-pane host routes keys to the focused pane (per-pane externals + focus tags).",
+        "Vocabulary completeness + mouse reporting (R1.8 pointer->cell): F13-24 / keypad encoding and xterm mouse reporting are unaddressed; sprag-input covers the common keys today."
+      ]
+    },
     "Round 3": {
       "decision_summary": "Land sprag-terminal: a PTY-driven emulator projected to Scene::TextGrid and read headlessly as scene/snapshot, with no GPU.",
       "changes_bullets": [

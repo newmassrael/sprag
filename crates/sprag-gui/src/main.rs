@@ -1,11 +1,13 @@
-//! `sprag-gui` — the read-only **GPU windowed terminal viewer** (R24, R25, R26).
+//! `sprag-gui` — the **interactive GPU windowed terminal** (R24-R27).
 //!
-//! A window that paints one terminal pane's **live** screen. It is the human
-//! observation path; the north star (an AI reading/driving the terminal as
-//! *data*) is the headless `sprag-host` RPC path, which needs none of this.
-//! This binding is a faithful pixel projection of the *same* cell data the AI
-//! reads — it reuses the single projection through the host's
-//! [`sprag_host::pane_view_scene`] seam rather than re-deriving it.
+//! A window that paints one terminal pane's **live** screen and types into it.
+//! It is the human observation/interaction path; the north star (an AI
+//! reading/driving the terminal as *data*) is the headless `sprag-host` RPC
+//! path, which needs none of this. This binding is a faithful pixel projection
+//! of the *same* cell data the AI reads — it reuses the single projection
+//! through the host's [`sprag_host::pane_view_scene`] seam rather than
+//! re-deriving it — and routes keystrokes through the *same*
+//! [`SpragPaneExternal`] `invoke("key", ...)` wire the AI drives (§2 #2).
 //!
 //! ## How it stays on the substrate (no hacks)
 //!
@@ -41,21 +43,30 @@
 //! it lives in an [`Effect`] — gated out of `dry_run` / snapshot paint by the
 //! R1006 seam — never the pure `view`.
 //!
-//! Input (keyboard -> PTY) is a later additive round reusing the existing
-//! `sprag-input` encoder + `SpragPaneExternal`; this viewer is display-only
-//! (a [`StubExternal`], no focusable tags).
+//! ## Input (R27): keystroke -> PTY through the one input wire
+//!
+//! The root model External is the boot pane's [`SpragPaneExternal`] (built in
+//! [`WidgetCore::create_external`] over the pane's `SessionHandle`). The
+//! terminal is the single focusable tag ([`ROOT_TAG`], focused at boot), so
+//! [`WidgetCore::apply_key`] routes a focused keystroke + W3C modifiers to that
+//! External's `invoke("key", {key, ctrl, alt, shift, super})` — the *same*
+//! `scene/invoke` channel the RPC client uses, where the sprag-owned encoder
+//! ([`sprag_input`](https://docs.rs/sprag-input)) turns the key into PTY bytes
+//! (R2.6). Returning `true` swallows Escape/Tab from the shell's quit/traverse
+//! defaults so a full-screen TUI (vim) receives them.
 
 use pinion_a11y::{AccessNode, WidgetA11y};
-use pinion_core::external::{External, StubExternal};
+use pinion_core::external::{External, IntrospectValue};
 use pinion_core::reactive::{Effect, Owner};
 use pinion_core::scene::ContainerNode;
 use pinion_core::style::{BoxStyle, LayoutStyle, Size, SizeValue};
 use pinion_core::theme::{use_theme, ColorRole, Theme};
 use pinion_core::use_repaint_sink;
 use pinion_core::widget_core::ExtraExternal;
-use pinion_core::{CellMetric, Frame, Scene, WidgetCore};
+use pinion_core::{CellMetric, Frame, Modifiers, Scene, WidgetCore};
 use pinion_shell::{vello_renderer_impl, SizeStrategy, WidgetView};
-use sprag_terminal::{CommandBuilder, Workspace};
+use sprag_host::SpragPaneExternal;
+use sprag_terminal::{CommandBuilder, SessionHandle, Workspace};
 use std::rc::Rc;
 
 include!(concat!(env!("OUT_DIR"), "/app.rs"));
@@ -74,7 +85,8 @@ const FONT_SIZE_PX: u32 = 20;
 
 /// Shared [`ThemeProvider`] cache key (the surface fill behind the grid).
 const THEME_TAG: &str = "app";
-/// Paint-root + [`StubExternal`] anchor tag (`V::tag()` on the root container).
+/// Paint-root + input-engine ([`SpragPaneExternal`]) anchor tag, and the single
+/// focus tab stop (`V::tag()` on the root container).
 const ROOT_TAG: &str = "sprag_gui";
 /// `Owner::cache` key for the live terminal (created once at boot).
 const SESSION_KEY: &str = "sprag_gui.terminal";
@@ -134,6 +146,19 @@ struct TerminalView {
     workspace: Workspace,
     metric: CellMetric,
     font_size_px: u32,
+}
+
+impl TerminalView {
+    /// The boot pane's cloneable I/O handle. The pane is spawned at boot and
+    /// never closed, so `first()` is always present — the input engine
+    /// ([`SpragPaneExternal`]) and the reflow share this single pane.
+    fn pane_handle(&self) -> SessionHandle {
+        self.workspace
+            .panes()
+            .first()
+            .expect("the boot pane is always present (spawned at boot, never closed)")
+            .handle()
+    }
 }
 
 /// Derive the terminal `(cols, rows)` that fill `viewport` (logical px) at
@@ -299,20 +324,60 @@ impl WidgetCore for TerminalViewer {
     type State = ();
     type Event = ();
 
-    /// Display-only: the only anchor is the no-op [`StubExternal`] at
-    /// [`ROOT_TAG`]. No input routing into the grid yet (a later additive
-    /// round reuses `sprag-input` / `SpragPaneExternal`).
+    /// The root model is the boot pane's input engine ([`SpragPaneExternal`],
+    /// tagged [`ROOT_TAG`]) over the pane's live [`SessionHandle`]. The shell
+    /// runs this inside the root Owner scope, so [`use_terminal`] resolves the
+    /// (already-booted) pane here. [`Self::apply_key`] routes keystrokes to this
+    /// External's `invoke("key", ...)` — the **same** wire the headless RPC path
+    /// drives (one input substrate, §2 #2; key->PTY-byte encoding is sprag's,
+    /// R2.6).
     fn create_external() -> Box<dyn External> {
-        Box::new(StubExternal::new())
+        let terminal = use_terminal();
+        Box::new(SpragPaneExternal::new(terminal.pane_handle()))
     }
 
     /// Boot the live terminal (spawn the PTY + wire `on_dirty` -> repaint) AND
     /// install the resize -> reflow [`Effect`], before the first paint and off
     /// the pure `view`. [`install_reflow`] resolves [`use_terminal`], so it both
-    /// boots the pane and wires the reflow in one call.
+    /// boots the pane and wires the reflow in one call. Then focus the terminal
+    /// (the single tab stop) so keystrokes reach the pane without a click — the
+    /// shell drains this focus request before the first paint.
     fn create_extra_externals() -> Vec<ExtraExternal> {
         let _reflow = install_reflow();
+        pinion_core::focus_request::request(ROOT_TAG);
         Vec::new()
+    }
+
+    /// Route a focused keystroke to the boot pane's PTY. The roving-tabindex
+    /// gate (`focused == Some(ROOT_TAG)`) keeps keys scoped to the terminal, and
+    /// the key + W3C modifiers go to the root [`SpragPaneExternal`]'s
+    /// `invoke("key", {key, ctrl, alt, shift, super})` — the same `scene/invoke`
+    /// wire the RPC client uses (§2 #2), where the sprag-owned encoder turns the
+    /// key into PTY bytes (R2.6). An unencodable key (a bare modifier press, an
+    /// `Fn`-style key the encoder does not map) returns `Err` -> `false`, so it
+    /// falls through to the shell default rather than injecting nothing silently.
+    /// The terminal keys that matter all encode: returning `true` for them
+    /// swallows the key from the shell's Escape-quits / Tab-traverses defaults,
+    /// so Escape and Tab reach a full-screen TUI (vim) instead of the window.
+    fn apply_key(scene: &mut Scene, focused: Option<&str>, key: &str, modifiers: Modifiers) -> bool {
+        if focused != Some(ROOT_TAG) {
+            return false;
+        }
+        let Scene::External(node) = scene else {
+            return false;
+        };
+        let Some(intro) = node.handle.introspect_mut() else {
+            return false;
+        };
+        let args = serde_json::json!({
+            "key": key,
+            "ctrl": modifiers.ctrl,
+            "alt": modifiers.alt,
+            "shift": modifiers.shift,
+            // pinion's `meta` (Cmd/Super/Win) maps to the encoder's "super".
+            "super": modifiers.meta,
+        });
+        intro.invoke("key", IntrospectValue::Json(args)).is_ok()
     }
 
     fn tag() -> &'static str {
@@ -329,12 +394,16 @@ impl WidgetCore for TerminalViewer {
         "__internal__"
     }
 
+    /// The terminal is the single tab stop — focusing [`ROOT_TAG`] gates
+    /// [`Self::apply_key`] (and lets a click re-focus the pane).
+    /// [`Self::create_extra_externals`] requests this focus at boot so typing
+    /// works without a click.
     fn focusable_tags() -> Vec<&'static str> {
-        Vec::new()
+        vec![ROOT_TAG]
     }
 
     fn title() -> &'static str {
-        "sprag terminal viewer (R24 read-only windowed host)"
+        "sprag terminal viewer (R26 windowed host, R27 keyboard input)"
     }
 }
 
@@ -466,5 +535,47 @@ mod tests {
         // A repaint at the same viewport is inert (Signal equality-skip).
         owner.run(|| viewport.set((400, 200)));
         assert_eq!(dims(), after, "a same-size frame is a no-op");
+    }
+
+    /// End-to-end keyboard input: build the model scene the shell assembles
+    /// (`Scene::External(SpragPaneExternal, ROOT_TAG)`) over a live `cat` pane
+    /// and drive `apply_key`. The focus gate is deterministic; the typed text
+    /// echoes back through the cooked-mode PTY (bounded poll, the sprag-terminal
+    /// test idiom).
+    #[test]
+    fn apply_key_routes_focused_keystrokes_to_the_pane() {
+        use pinion_core::scene::ExternalNode;
+        use std::thread::sleep;
+        use std::time::{Duration, Instant};
+
+        let mut ws = Workspace::new((40, 6));
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg("cat"); // echoes stdin; keeps the PTY open across the keys
+        command.env("TERM", "dumb");
+        let id = ws.spawn(command, "cat".to_owned(), 40, 6).unwrap();
+        let handle = ws.pane(id).unwrap().handle();
+        let mut scene = Scene::External(
+            ExternalNode::new(Box::new(SpragPaneExternal::new(handle.clone()))).with_tag(ROOT_TAG),
+        );
+
+        // Focus gate: an unfocused / wrong-tag keystroke is a no-op.
+        assert!(!TerminalViewer::apply_key(&mut scene, None, "a", Modifiers::default()));
+        assert!(!TerminalViewer::apply_key(&mut scene, Some("other"), "a", Modifiers::default()));
+
+        // Focused: each key is injected and the cooked-mode PTY echoes it back.
+        for ch in ["h", "i"] {
+            assert!(TerminalViewer::apply_key(&mut scene, Some(ROOT_TAG), ch, Modifiers::default()));
+        }
+        let start = Instant::now();
+        let mut row0 = String::new();
+        while start.elapsed() < Duration::from_secs(5) {
+            row0 = handle.with_screen(|screen| screen.row_text(0));
+            if row0.contains("hi") {
+                break;
+            }
+            sleep(Duration::from_millis(20));
+        }
+        assert!(row0.contains("hi"), "typed keys echo to the pane screen; row0 = {row0:?}");
     }
 }

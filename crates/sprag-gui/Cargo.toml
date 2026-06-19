@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "GPU windowed host: a read-only terminal viewer that paints a pane's live Scene::TextGrid via pinion-shell/Vello, woken by the pinion R999 RepaintSink seam (the sprag R23 on_dirty hook). The only sprag crate with a GPU dependency; the headless RPC path (sprag-host) stays GPU-free."
+description = "GPU windowed host: an interactive terminal viewer that paints a pane's live Scene::TextGrid via pinion-shell/Vello (woken by the pinion R999 RepaintSink seam, the sprag R23 on_dirty hook) and routes keystrokes to the PTY through the pane External's invoke(\"key\") wire. The only sprag crate with a GPU dependency; the headless RPC path (sprag-host) stays GPU-free."
 publish = false
 
 [[bin]]
@@ -25,6 +25,9 @@ pinion-a11y = { workspace = true }
 pinion-shell = { workspace = true }
 # Pinned to pinion-shell's vello so the forge renderer macro output type-checks.
 vello = { workspace = true }
+# Build the {key, ctrl, ...} args for the pane External's invoke("key", ...)
+# wire (the same scene/invoke channel the RPC path drives, R2.6).
+serde_json = { workspace = true }
 
 [build-dependencies]
 # Compiles app.pinion.xml -> OUT_DIR/app.rs (the Vello renderer scaffold).
