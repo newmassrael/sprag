@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  sprag-gui: pinion-forge renderer manifest for the windowed terminal viewer.
+  Emits `SpragGuiRenderer` (Vello-backed). Same manifest shape as pinion's
+  hello-live-data / hello-textgrid — only the struct name diverges; the scene
+  structure lives entirely in the binding's view fn (src/main.rs).
+-->
+<pinion xmlns="https://pinion.dev/dsl/v1"
+        kind="renderer"
+        name="SpragGuiRenderer"
+        backend="vello"/>

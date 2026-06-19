@@ -1,0 +1,36 @@
+[package]
+name = "sprag-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "GPU windowed host: a read-only terminal viewer that paints a pane's live Scene::TextGrid via pinion-shell/Vello, woken by the pinion R999 RepaintSink seam (the sprag R23 on_dirty hook). The only sprag crate with a GPU dependency; the headless RPC path (sprag-host) stays GPU-free."
+publish = false
+
+[[bin]]
+name = "sprag-gui"
+path = "src/main.rs"
+
+[dependencies]
+# The Screen -> Scene::TextGrid projection SSOT (text_grid_node) + scene tags.
+sprag-host = { workspace = true }
+# The PTY producer: Workspace::spawn_with_dirty wires the R23 on_dirty hook to
+# the RepaintSink, and the emulator screen is read each frame via with_screen.
+sprag-terminal = { workspace = true }
+# The Screen type read by the projection (grid_scene), and Emulator in tests.
+sprag-vt = { workspace = true }
+pinion-core = { workspace = true }
+# Monospace cell measurement (LayoutCache::measure_monospace_cell, R1002): the
+# GUI measures the resolved font once at boot so cell_w == the painted advance.
+pinion-text = { workspace = true }
+# WidgetA11y for the (empty) access tree.
+pinion-a11y = { workspace = true }
+# The windowed GPU shell entry point (pinion_shell::run) + RepaintSink impl.
+pinion-shell = { workspace = true }
+# Pinned to pinion-shell's vello so the forge renderer macro output type-checks.
+vello = { workspace = true }
+
+[build-dependencies]
+# Compiles app.pinion.xml -> OUT_DIR/app.rs (the Vello renderer scaffold).
+pinion-forge = { workspace = true }

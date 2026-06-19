@@ -90,11 +90,21 @@ pub const INPUT_TAG: &str = "sprag_input";
 
 /// Project a [`Screen`] into the `TextGrid` node carrying the cell data.
 ///
-/// The node's GUI `rect` is intentionally left unset (see the module docs on
-/// headless winsize ownership): the authoritative terminal size is the
-/// projected `GridBuffer`, read via [`TextGridSnapshot::buffer_cols`] /
-/// `buffer_rows`.
-fn text_grid_node(screen: &Screen, metric: CellMetric) -> TextGridNode {
+/// This is the **single** `Screen` → `TextGridNode` projection — the one call
+/// site of [`sprag_grid::project`]. Both the headless data path ([`scene`] /
+/// [`pane_container`]) and the GUI windowed host (`sprag-gui`) read it, so the
+/// cell projection has exactly one authority (no GUI-side duplicate).
+///
+/// The node carries **no layout** here: the headless path leaves the GUI
+/// `rect` unset (the authoritative terminal size is the projected
+/// `GridBuffer`, read via [`TextGridSnapshot::buffer_cols`] / `buffer_rows`),
+/// while a windowed host attaches its own [`LayoutStyle`](pinion_core::style::LayoutStyle)
+/// via [`TextGridNode::with_layout`] so `pinion_runtime::compute_layout`
+/// derives the cell `(cols, rows)` from the resolved rect (the §3 GUI winsize
+/// SSOT, inverse of the headless contract). Layout is therefore the host's
+/// concern, kept out of this projection so this crate stays presentation-free.
+#[must_use]
+pub fn text_grid_node(screen: &Screen, metric: CellMetric) -> TextGridNode {
     TextGridNode::new(metric)
         .with_tag(GRID_TAG)
         .with_cells(sprag_grid::project(screen))

@@ -14,3 +14,17 @@ entry_id_prefix = ""
 
 [style]
 locale = "en"
+
+# Audit row for a publishable/atomic divergence (mnemosyne-cli
+# emit-publishable-override-ledger-draft). Round 24's atomic decision_summary
+# was a placeholder written by a CLI flag-probe slip; the frozen ledger is
+# append-only, so the publishable view corrects it here (atomic
+# changes/verification/impact are correct and unchanged).
+[[publishable_override_ledger]]
+kind = "correction"
+target_id = "Round 24"
+fields = ["publishable_decision_summary", "publishable_carry_forward_bullets"]
+reason = "Atomic decision_summary was a placeholder 'x' written by a CLI flag-probe slip during the Round 24 append; the publishable view restores the intended headline and adds the carry-forward bullets. Atomic changes/verification/impact bullets are correct and unchanged."
+applied_in = "Round 24"
+content_hash_before = "cac3fc8a279c08df99a50cde4a74171568f0009848655e484aadd3a5cd34486c"
+content_hash_after = "cabcc4e62a9c22dd324b65543d505cd78a9a96a73b536d42e71bcf0ad02974e1"

@@ -965,6 +965,45 @@
         "per-window RepaintScope payload is deferred on the pinion side until a multi-window live-data consumer"
       ]
     },
+    "Round 24": {
+      "decision_summary": "x",
+      "changes_bullets": [
+        "crates/sprag-gui (new GPU-quarantined crate, the only sprag crate on pinion-shell/vello; the headless RPC path stays GPU-free): a WidgetView TerminalViewer paints one pane's live Scene::TextGrid via pinion_shell::run + a forge scaffold (app.pinion.xml SpragGuiRenderer, vello_renderer_impl!)",
+        "sprag-host: text_grid_node made pub — the single Screen->TextGridNode projection (sprag_grid::project) reused by the GUI (which adds .with_layout + .with_font_size_px); no projection duplicated, one authority",
+        "Live-data seam: a use_terminal Owner::cache hook spawns the pane via Workspace::spawn_with_dirty(on_dirty = use_repaint_sink().request_repaint()) = the R23 hook -> pinion R999 RepaintSink; State stays () (Copy), the producer-authoritative screen is read each frame in view; SPRAG_GUI_CMD launches a chosen program (sprag-term parity)",
+        "Font fidelity: adopted pinion R1002 measure_monospace_cell + TextGridNode::with_font_size_px (deps pinion-text) so cell_w == the painted advance (tight monospace); FONT_SIZE_PX=20 default + a SPRAG_GUI_FONT=<px> live knob; the window auto-sizes from the measured metric"
+      ],
+      "verification_bullets": [
+        "120 workspace tests pass (+4 sprag-gui: projection-reuse+font_size, paint-root tag, window geometry, default font), cargo clippy --workspace --all-targets clean",
+        "Headless GPU render verified via PINION_SCREENSHOT (offscreen, no winit surface): the full forge->view->projection->Vello path; SPRAG_GUI_CMD='ls /usr/bin' renders tight true-monospace at font 20 (cell 10x30, window 800x720), descenders intact",
+        "Drove two pinion upstream fixes (stop-and-report, not worked around): R1001 abe30ca descender cell-fit + R1002 9d07e51 measured monospace metric; both re-verified headlessly after sprag-gui adoption"
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_decision_summary": "Round 24: sprag-gui read-only GPU windowed terminal viewer (a WidgetView painting one pane's live Scene::TextGrid via pinion-shell/Vello, woken by the R23 on_dirty -> pinion R999 RepaintSink seam); building it drove two pinion glyph-paint fixes upstream (R1001 descender cell-fit, R1002 measured monospace metric).",
+      "publishable_changes_bullets": [
+        "crates/sprag-gui (new GPU-quarantined crate, the only sprag crate on pinion-shell/vello; the headless RPC path stays GPU-free): a WidgetView TerminalViewer paints one pane's live Scene::TextGrid via pinion_shell::run + a forge scaffold (app.pinion.xml SpragGuiRenderer, vello_renderer_impl!)",
+        "sprag-host: text_grid_node made pub — the single Screen->TextGridNode projection (sprag_grid::project) reused by the GUI (which adds .with_layout + .with_font_size_px); no projection duplicated, one authority",
+        "Live-data seam: a use_terminal Owner::cache hook spawns the pane via Workspace::spawn_with_dirty(on_dirty = use_repaint_sink().request_repaint()) = the R23 hook -> pinion R999 RepaintSink; State stays () (Copy), the producer-authoritative screen is read each frame in view; SPRAG_GUI_CMD launches a chosen program (sprag-term parity)",
+        "Font fidelity: adopted pinion R1002 measure_monospace_cell + TextGridNode::with_font_size_px (deps pinion-text) so cell_w == the painted advance (tight monospace); FONT_SIZE_PX=20 default + a SPRAG_GUI_FONT=<px> live knob; the window auto-sizes from the measured metric"
+      ],
+      "publishable_verification_bullets": [
+        "120 workspace tests pass (+4 sprag-gui: projection-reuse+font_size, paint-root tag, window geometry, default font), cargo clippy --workspace --all-targets clean",
+        "Headless GPU render verified via PINION_SCREENSHOT (offscreen, no winit surface): the full forge->view->projection->Vello path; SPRAG_GUI_CMD='ls /usr/bin' renders tight true-monospace at font 20 (cell 10x30, window 800x720), descenders intact",
+        "Drove two pinion upstream fixes (stop-and-report, not worked around): R1001 abe30ca descender cell-fit + R1002 9d07e51 measured monospace metric; both re-verified headlessly after sprag-gui adoption"
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Interactive input (keyboard -> PTY) is the next additive round: reuse the sprag-input encoder + SpragPaneExternal via the shell's focused-External key path; the viewer stays display-only (StubExternal) until then",
+        "Multi-pane layout + window-resize -> PTY winsize (compute_layout across N panes) deferred; the single pane is N=1 of the same workspace_scene path",
+        "pinion per-window RepaintScope payload still deferred until a multi-window live-data consumer (R23 carry, unchanged)"
+      ]
+    },
     "Round 3": {
       "decision_summary": "Land sprag-terminal: a PTY-driven emulator projected to Scene::TextGrid and read headlessly as scene/snapshot, with no GPU.",
       "changes_bullets": [
