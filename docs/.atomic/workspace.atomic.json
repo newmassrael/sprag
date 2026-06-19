@@ -1350,6 +1350,54 @@
         "IME inline preedit overlay: the platform IME renders the in-progress composition off-grid; an on-grid preedit overlay (plus set_ime_cursor_area positioning) is a later round. Mouse / pointer->cell is now unblocked pinion-side (R1008 px_to_cell + R1009 named-key + R1010 focus-ring opt-out); the remaining sprag work is the pane mouse-report consumer (byte encoding + per-pane routing)."
       ]
     },
+    "Round 32": {
+      "decision_summary": "Round 32: behavior-preserving modularization of the single sprag-gui main.rs into five concern-scoped modules (terminal/reflow/input/a11y/view) — the refactor-first step R30's carry required before the multi-pane round; no behavior change (135 tests unchanged, screenshot byte-identical 121434).",
+      "changes_bullets": [
+        "main.rs slimmed to the crate-level docs, the five `mod` declarations, the forge renderer macro (crate-root-required), ROOT_TAG/WINDOW_W/WINDOW_H, the TerminalViewer struct, and the WidgetCore/WidgetView impl that delegates to the module helpers (use_terminal/install_reflow/route_key/route_composition/view) — no logic in main beyond wiring.",
+        "terminal.rs: the terminal model and config — TerminalView{workspace,metric,font_size_px} + boot_pane/pane_handle, use_terminal (the Owner::cache self-create hook), grid_dims (the window->winsize SSOT), pane_command/split_command, parse_font_size/font_size_px.",
+        "reflow.rs: install_reflow + ReflowMarker + REFLOW_KEY — the R1006 viewport-size Signal subscription that reflows the boot pane on OS resize.",
+        "input.rs: route_key / route_composition (the apply_key / apply_composition bodies: focus gate + invoke(\"key\"/\"text\") wire + the scrollback keys) plus the scrollback-offset Signal (use_scroll_offset/next_scroll_offset/scroll_view).",
+        "a11y.rs: the WidgetA11y impl + terminal_a11y_node; view.rs: the pure view-fn + compose + fill + THEME_TAG (the surface-filled paint root).",
+        "Visibility: crate-root-private consts/struct reached via crate:: from descendant modules (no pub); module->parent helpers are pub(crate); doc intra-links fixed (redundant explicit targets on imported names dropped, RepaintSink/ThemeProvider given explicit paths)."
+      ],
+      "verification_bullets": [
+        "Behavior-preserving: all 135 workspace tests pass unchanged (sprag-gui 12, the exact pre-modularization set, now split across the five module test submodules) — relocating the code changed no tested behavior.",
+        "Gates clean with real exit captured (no pipe): cargo clippy --workspace --all-targets exit 0; RUSTDOCFLAGS=\"-D warnings\" cargo doc -p sprag-gui exit 0 (fixed 10 redundant_explicit_links on imported names + 2 unresolved links RepaintSink/ThemeProvider missed by the WIP).",
+        "Headless screenshot byte-identical to the R30 baseline: SPRAG_GUI_CMD='ls /usr/bin' PINION_SCREENSHOT rendered 121434 bytes, deterministic across two runs — the refactor changed no pixels."
+      ],
+      "impact_refs": [
+        "3"
+      ],
+      "carry_forward_bullets": [
+        "Multi-pane (R33+): generalize boot_pane() -> active_pane() + per-pane tags (the ROOT_TAG singleton) + focused-pane input routing (key/composition/future mouse). pinion has the substrate (Splitter + SplitterExternal + create_extra_externals multi-external dispatch + Workspace N-pane); the v1 per-pane winsize derives from the R1006 viewport Signal + sprag's split-ratio Signal (a pinion per-pane measured-rect seam is the forcing-consumer-first follow-up).",
+        "IME inline preedit overlay: the platform IME renders the in-progress composition off-grid today; an on-grid overlay at the cursor (+ set_ime_cursor_area positioning) handling Start/Update/Cancel (R31 handles Commit only) is deferred.",
+        "Scroll content-anchoring: expose scrollback growth reactively from the producer (sprag-vt) so the view pins to absolute content during output (removing the v1 bottom-relative drift); full-cell scrollback (the R16 text-only history loses color) is its sibling.",
+        "Mouse/pointer->cell: the remaining sprag work is the pane mouse-report consumer (byte encoding + per-pane routing), pending the pinion px_to_cell/named-key/focus-ring seams."
+      ],
+      "publishable_decision_summary": "Round 32: behavior-preserving modularization of the single sprag-gui main.rs into five concern-scoped modules (terminal/reflow/input/a11y/view) — the refactor-first step R30's carry required before the multi-pane round; no behavior change (135 tests unchanged, screenshot byte-identical 121434).",
+      "publishable_changes_bullets": [
+        "main.rs slimmed to the crate-level docs, the five `mod` declarations, the forge renderer macro (crate-root-required), ROOT_TAG/WINDOW_W/WINDOW_H, the TerminalViewer struct, and the WidgetCore/WidgetView impl that delegates to the module helpers (use_terminal/install_reflow/route_key/route_composition/view) — no logic in main beyond wiring.",
+        "terminal.rs: the terminal model and config — TerminalView{workspace,metric,font_size_px} + boot_pane/pane_handle, use_terminal (the Owner::cache self-create hook), grid_dims (the window->winsize SSOT), pane_command/split_command, parse_font_size/font_size_px.",
+        "reflow.rs: install_reflow + ReflowMarker + REFLOW_KEY — the R1006 viewport-size Signal subscription that reflows the boot pane on OS resize.",
+        "input.rs: route_key / route_composition (the apply_key / apply_composition bodies: focus gate + invoke(\"key\"/\"text\") wire + the scrollback keys) plus the scrollback-offset Signal (use_scroll_offset/next_scroll_offset/scroll_view).",
+        "a11y.rs: the WidgetA11y impl + terminal_a11y_node; view.rs: the pure view-fn + compose + fill + THEME_TAG (the surface-filled paint root).",
+        "Visibility: crate-root-private consts/struct reached via crate:: from descendant modules (no pub); module->parent helpers are pub(crate); doc intra-links fixed (redundant explicit targets on imported names dropped, RepaintSink/ThemeProvider given explicit paths)."
+      ],
+      "publishable_verification_bullets": [
+        "Behavior-preserving: all 135 workspace tests pass unchanged (sprag-gui 12, the exact pre-modularization set, now split across the five module test submodules) — relocating the code changed no tested behavior.",
+        "Gates clean with real exit captured (no pipe): cargo clippy --workspace --all-targets exit 0; RUSTDOCFLAGS=\"-D warnings\" cargo doc -p sprag-gui exit 0 (fixed 10 redundant_explicit_links on imported names + 2 unresolved links RepaintSink/ThemeProvider missed by the WIP).",
+        "Headless screenshot byte-identical to the R30 baseline: SPRAG_GUI_CMD='ls /usr/bin' PINION_SCREENSHOT rendered 121434 bytes, deterministic across two runs — the refactor changed no pixels."
+      ],
+      "publishable_impact_refs": [
+        "3"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Multi-pane (R33+): generalize boot_pane() -> active_pane() + per-pane tags (the ROOT_TAG singleton) + focused-pane input routing (key/composition/future mouse). pinion has the substrate (Splitter + SplitterExternal + create_extra_externals multi-external dispatch + Workspace N-pane); the v1 per-pane winsize derives from the R1006 viewport Signal + sprag's split-ratio Signal (a pinion per-pane measured-rect seam is the forcing-consumer-first follow-up).",
+        "IME inline preedit overlay: the platform IME renders the in-progress composition off-grid today; an on-grid overlay at the cursor (+ set_ime_cursor_area positioning) handling Start/Update/Cancel (R31 handles Commit only) is deferred.",
+        "Scroll content-anchoring: expose scrollback growth reactively from the producer (sprag-vt) so the view pins to absolute content during output (removing the v1 bottom-relative drift); full-cell scrollback (the R16 text-only history loses color) is its sibling.",
+        "Mouse/pointer->cell: the remaining sprag work is the pane mouse-report consumer (byte encoding + per-pane routing), pending the pinion px_to_cell/named-key/focus-ring seams."
+      ]
+    },
     "Round 4": {
       "decision_summary": "Add sprag-term: a headless JSON-RPC server exposing a live PTY session as scene-as-data over stdin/stdout.",
       "changes_bullets": [
