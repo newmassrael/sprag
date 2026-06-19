@@ -1134,6 +1134,48 @@
         "Vocabulary completeness + mouse reporting (R1.8 pointer->cell): F13-24 / keypad encoding and xterm mouse reporting are unaddressed; sprag-input covers the common keys today."
       ]
     },
+    "Round 28": {
+      "decision_summary": "Round 28: give the GUI terminal an accessible node (WidgetA11y::access_node was empty) - one neutral focusable Group region tagged ROOT_TAG, named by the pane command, carrying the screen full_text as its value, focus-gated; a screen reader / AccessKit tree can now read the terminal (the AI path stays scene/snapshot).",
+      "changes_bullets": [
+        "sprag-gui: access_node returns one terminal_a11y_node (pure helper) over the boot pane - AriaRole::Group (not TextInput: pinion has no terminal/log role, and a textbox would advertise caret/set-value edit affordances the PTY-keystroke widget does not implement), name = \"Terminal: <command>\", value = AccessValue::Text(screen full_text), focused = (focus == ROOT_TAG).",
+        "The screen text reuses Screen::full_text - the same SSOT string the RPC full_text query and the plugin capture read, so the AT and the AI see one notion of the screen (scrollback + visible).",
+        "The node tag is ROOT_TAG, shared with the keyboard focus gate (apply_key) and the paint-root container, so AT focus + bounds + the key focus gate share one identity."
+      ],
+      "verification_bullets": [
+        "sprag-gui 8 tests pass incl. a pure terminal_a11y_node shape test + a headless access_node-over-a-live-pane test (0/8 flakes); full sprag workspace 126 tests, cargo clippy --workspace --all-targets clean, cargo doc clean (no new broken links).",
+        "Headless screenshot boots + renders 960x600 byte-identical to R26/R27 - building the a11y node each frame is paint-transparent and does not break boot.",
+        "Adversarial review cleared the SSOT-reuse + name-enrichment interaction and caught the original AriaRole::TextInput as advertising an unimplemented edit contract - fixed to Group (a non-editable region carrying the read value)."
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Terminal a11y is one Group region (not a per-cell/per-row tree); a richer model (live-region announcement politeness, per-row navigation, cursor/selection) is deferred - the role set lacks a terminal/log role.",
+        "Multi-pane a11y + input: access_node and apply_key both target the single boot pane (the root External / ROOT_TAG); a multi-pane host enumerates per-pane nodes + focus tags.",
+        "Mouse / pointer->cell (R1.8): vim/htop mouse + selection need a pinion seam (a click delivered to a TextGrid widget with cell coords) - a stop-and-report pinion round, not this one."
+      ],
+      "publishable_decision_summary": "Round 28: give the GUI terminal an accessible node (WidgetA11y::access_node was empty) - one neutral focusable Group region tagged ROOT_TAG, named by the pane command, carrying the screen full_text as its value, focus-gated; a screen reader / AccessKit tree can now read the terminal (the AI path stays scene/snapshot).",
+      "publishable_changes_bullets": [
+        "sprag-gui: access_node returns one terminal_a11y_node (pure helper) over the boot pane - AriaRole::Group (not TextInput: pinion has no terminal/log role, and a textbox would advertise caret/set-value edit affordances the PTY-keystroke widget does not implement), name = \"Terminal: <command>\", value = AccessValue::Text(screen full_text), focused = (focus == ROOT_TAG).",
+        "The screen text reuses Screen::full_text - the same SSOT string the RPC full_text query and the plugin capture read, so the AT and the AI see one notion of the screen (scrollback + visible).",
+        "The node tag is ROOT_TAG, shared with the keyboard focus gate (apply_key) and the paint-root container, so AT focus + bounds + the key focus gate share one identity."
+      ],
+      "publishable_verification_bullets": [
+        "sprag-gui 8 tests pass incl. a pure terminal_a11y_node shape test + a headless access_node-over-a-live-pane test (0/8 flakes); full sprag workspace 126 tests, cargo clippy --workspace --all-targets clean, cargo doc clean (no new broken links).",
+        "Headless screenshot boots + renders 960x600 byte-identical to R26/R27 - building the a11y node each frame is paint-transparent and does not break boot.",
+        "Adversarial review cleared the SSOT-reuse + name-enrichment interaction and caught the original AriaRole::TextInput as advertising an unimplemented edit contract - fixed to Group (a non-editable region carrying the read value)."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Terminal a11y is one Group region (not a per-cell/per-row tree); a richer model (live-region announcement politeness, per-row navigation, cursor/selection) is deferred - the role set lacks a terminal/log role.",
+        "Multi-pane a11y + input: access_node and apply_key both target the single boot pane (the root External / ROOT_TAG); a multi-pane host enumerates per-pane nodes + focus tags.",
+        "Mouse / pointer->cell (R1.8): vim/htop mouse + selection need a pinion seam (a click delivered to a TextGrid widget with cell coords) - a stop-and-report pinion round, not this one."
+      ]
+    },
     "Round 3": {
       "decision_summary": "Land sprag-terminal: a PTY-driven emulator projected to Scene::TextGrid and read headlessly as scene/snapshot, with no GPU.",
       "changes_bullets": [
