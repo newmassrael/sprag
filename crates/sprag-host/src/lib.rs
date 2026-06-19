@@ -110,7 +110,7 @@ pub(crate) fn text_grid_node(screen: &Screen, metric: CellMetric) -> TextGridNod
 }
 
 /// Assemble a [`Screen`] into the **windowed-host** `Scene::TextGrid`: the same
-/// single projection ([`text_grid_node`]) plus the GUI presentation a windowed
+/// single projection (`text_grid_node`) plus the GUI presentation a windowed
 /// host needs — the glyph `font_size_px` the cells were measured at (pinion
 /// R1002 `with_font_size_px`, so the painted advance equals `cell_w`) and a
 /// **fill** layout (both axes `Percent(100)`) so the shell's layout pass sizes
@@ -164,7 +164,7 @@ fn view_text_grid(cells: GridBuffer, metric: CellMetric, font_size_px: u32) -> S
 ///
 /// This is the pure data projection — a function of the screen alone, with
 /// no live session — used by [`snapshot`] and data-only consumers. The RPC
-/// server assembles the full pane via [`pane_scene`].
+/// server assembles the full pane via [`pane_view_scene`].
 #[must_use]
 pub fn scene(screen: &Screen) -> Scene {
     scene_with_metric(screen, CellMetric::DEFAULT)

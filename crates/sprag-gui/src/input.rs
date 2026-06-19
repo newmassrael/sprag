@@ -98,6 +98,14 @@ pub(crate) fn route_key(scene: &mut Scene, focused: Option<&str>, key: &str, mod
 /// `Start`/`Update` (preedit) and `Cancel` are not consumed here: the IME
 /// renders the in-progress composition itself; an inline-preedit overlay on the
 /// grid is a later round. Focus-gated on [`ROOT_TAG`] like [`route_key`].
+///
+/// Scope (honest): this handles the **commit -> PTY** seam only. Whether a given
+/// platform IME composes a syllable correctly (the live `Start`/`Update`/`Commit`
+/// behavior) is the IME's own and is verified only in a live window, not by the
+/// headless tests — so "IME input works" is substantiated for the write seam,
+/// not end-to-end live. Caret-area positioning (`WidgetView::ime_caret_rect`, a
+/// sprag-overridable hint that places the candidate popup at the cursor) is an
+/// unwired follow-up, not a pinion gap.
 pub(crate) fn route_composition(
     scene: &mut Scene,
     focused: Option<&str>,
@@ -179,12 +187,19 @@ mod tests {
         assert!(row0.contains("hi"), "typed keys echo to the pane screen; row0 = {row0:?}");
     }
 
-    /// End-to-end IME input: drive `apply_composition` with a committed Hangul
-    /// string over a live `cat` pane and confirm the literal UTF-8 echoes back
-    /// through the cooked-mode PTY (the apply_key test idiom). The focus gate,
-    /// preedit (`Update`), and empty-commit cases are deterministic no-ops.
+    /// Verify `route_composition` WRITES a committed composition's text to the
+    /// PTY — the R31 `Commit` -> `invoke("text")` -> `session.write` seam — by
+    /// driving a synthetic `CompositionEvent::Commit` over a live `cat` pane and
+    /// confirming the literal UTF-8 echoes back through the cooked-mode PTY.
+    ///
+    /// Scope (honest): this exercises the commit->write SEAM, NOT the live
+    /// platform IME. It injects the terminal `Commit` directly, so it does not
+    /// reproduce the real `Start`/`Update`(preedit)/`Commit` lifecycle a platform
+    /// IME emits while composing — that behavior is the IME's own and is not
+    /// reproducible headlessly (it needs a live window + IME engine). The focus
+    /// gate, preedit (`Update`), and empty-commit cases are deterministic no-ops.
     #[test]
-    fn apply_composition_routes_committed_ime_text_to_the_pane() {
+    fn apply_composition_writes_committed_text_to_the_pane() {
         let mut ws = Workspace::new((40, 6));
         let mut command = CommandBuilder::new("/bin/sh");
         command.arg("-c");
