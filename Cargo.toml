@@ -39,10 +39,6 @@ pinion-core = { path = "../pinion/crates/pinion-core", version = "0.0.1" }
 pinion-a11y = { path = "../pinion/crates/pinion-a11y", version = "0.0.1" }
 pinion-shell = { path = "../pinion/crates/pinion-shell", version = "0.0.1" }
 pinion-forge = { path = "../pinion/crates/pinion-forge", version = "0.0.1" }
-# pinion-text: monospace cell measurement (LayoutCache::measure_monospace_cell,
-# R1002) for the GUI's font-derived CellMetric. GUI-only (sprag-gui); the
-# headless data path needs no font measurement.
-pinion-text = { path = "../pinion/crates/pinion-text", version = "0.0.1" }
 # pinion-rpc: the scene-as-data introspection wire (snapshot.rs) + dispatch.
 # Confined to sprag-host (the RPC server layer) so the producer/projection
 # crates stay free of its heavy transitive deps (DESIGN.md §3/§5: the data

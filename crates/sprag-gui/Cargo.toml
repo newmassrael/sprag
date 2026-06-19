@@ -18,12 +18,7 @@ sprag-host = { workspace = true }
 # The PTY producer: Workspace::spawn_with_dirty wires the R23 on_dirty hook to
 # the RepaintSink, and the emulator screen is read each frame via with_screen.
 sprag-terminal = { workspace = true }
-# The Screen type read by the projection (grid_scene), and Emulator in tests.
-sprag-vt = { workspace = true }
 pinion-core = { workspace = true }
-# Monospace cell measurement (LayoutCache::measure_monospace_cell, R1002): the
-# GUI measures the resolved font once at boot so cell_w == the painted advance.
-pinion-text = { workspace = true }
 # WidgetA11y for the (empty) access tree.
 pinion-a11y = { workspace = true }
 # The windowed GPU shell entry point (pinion_shell::run) + RepaintSink impl.

@@ -3408,10 +3408,8 @@ dependencies = [
  "pinion-core",
  "pinion-forge",
  "pinion-shell",
- "pinion-text",
  "sprag-host",
  "sprag-terminal",
- "sprag-vt",
  "vello",
 ]
 

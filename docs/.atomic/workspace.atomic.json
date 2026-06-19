@@ -1004,6 +1004,52 @@
         "pinion per-window RepaintScope payload still deferred until a multi-window live-data consumer (R23 carry, unchanged)"
       ]
     },
+    "Round 25": {
+      "decision_summary": "Round 25: session-review remediation of R24 (sprag-gui) — adopt pinion's R1003 measured-monospace seam (drop the pinion-text dep + the double measurement), move the laid-out scene into a host-owned pane_view_scene seam (text_grid_node back to pub(crate)), make the grid fill the viewport so the §3 (cols,rows) derivation is live, and drop the dead empty-pane branch.",
+      "changes_bullets": [
+        "sprag-host: new pub pane_view_scene(screen, metric, font_size_px) owns the GUI scene assembly — the single text_grid_node projection + with_font_size_px (R1002) + a fill layout (both axes Percent(100)) so the shell derives (cols,rows) from the rect (the §3 GUI winsize SSOT). text_grid_node reverted to pub(crate); the GUI no longer hand-rolls the scene",
+        "sprag-gui: adopted pinion R1003 measured_monospace_cell (the shell-seeded view-time seam) for a SINGLE boot measurement — dropped the pinion-text + sprag-vt deps, the throwaway LayoutCache, and the second initial_size_strategy measurement. The window opens Fixed 960x600 and the grid fills it; cols/rows derive from window/cell and the PTY adopts them (§3)",
+        "sprag-gui: dropped the unreachable empty-pane map_or_else branch (the boot pane is never closed; .expect documents the invariant) + documented the child-EOF behavior (frozen final screen). Both cache-backed deps (use_repaint_sink + measured_monospace_cell) are pre-resolved before the Owner::cache factory (the nested-factory guard)",
+        "sprag-gui: env parsers extracted to pure parse_font_size / split_command (SPRAG_GUI_CELL renamed SPRAG_GUI_FONT) and unit-tested without env/PTY; replaced the tautological const test"
+      ],
+      "verification_bullets": [
+        "120 workspace tests pass (sprag-host 34 incl. pane_view_scene; sprag-gui 3 pure: parse_font_size clamp/fallback, split_command, compose paint-root), cargo clippy --workspace --all-targets clean",
+        "Headless GPU render (PINION_SCREENSHOT, 960x600) confirms the §3 derivation is LIVE: the window drove a 96x20 winsize, so ls /usr/bin rendered MULTI-COLUMN (the PTY saw the wide terminal) in tight true-monospace via the measured cell — behavior R24's hardcoded 80x24 could not produce",
+        "Driven by a two-lens adversarial session review (refactoring + architecture) over R24 a874625, then verified directly against pinion source: the R1003 seam, Fixed-allows-resize, and the bespoke-vs-workspace_scene findings all confirmed before fixing"
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "The host GUI seam is single-pane (pane_view_scene = N=1); multi-pane tiles N of these in a future workspace_view_scene — now genuinely additive (the projection + layout live in the host, not the GUI)",
+        "Live resize -> PTY reflow (re-derive cols/rows from the resized grid rect, call Workspace::resize) is the next additive round; the §3 derivation is already live, so only the producer-adoption leg remains",
+        "Interactive input (keyboard -> PTY) reuses sprag-input + SpragPaneExternal; the viewer stays display-only (StubExternal) until then",
+        "The R24 changelog claim \"single pane is N=1 of workspace_scene\" was inaccurate (R24 hand-rolled a bespoke scene); R25 makes the host own the GUI scene, so it holds going forward"
+      ],
+      "publishable_decision_summary": "Round 25: session-review remediation of R24 (sprag-gui) — adopt pinion's R1003 measured-monospace seam (drop the pinion-text dep + the double measurement), move the laid-out scene into a host-owned pane_view_scene seam (text_grid_node back to pub(crate)), make the grid fill the viewport so the §3 (cols,rows) derivation is live, and drop the dead empty-pane branch.",
+      "publishable_changes_bullets": [
+        "sprag-host: new pub pane_view_scene(screen, metric, font_size_px) owns the GUI scene assembly — the single text_grid_node projection + with_font_size_px (R1002) + a fill layout (both axes Percent(100)) so the shell derives (cols,rows) from the rect (the §3 GUI winsize SSOT). text_grid_node reverted to pub(crate); the GUI no longer hand-rolls the scene",
+        "sprag-gui: adopted pinion R1003 measured_monospace_cell (the shell-seeded view-time seam) for a SINGLE boot measurement — dropped the pinion-text + sprag-vt deps, the throwaway LayoutCache, and the second initial_size_strategy measurement. The window opens Fixed 960x600 and the grid fills it; cols/rows derive from window/cell and the PTY adopts them (§3)",
+        "sprag-gui: dropped the unreachable empty-pane map_or_else branch (the boot pane is never closed; .expect documents the invariant) + documented the child-EOF behavior (frozen final screen). Both cache-backed deps (use_repaint_sink + measured_monospace_cell) are pre-resolved before the Owner::cache factory (the nested-factory guard)",
+        "sprag-gui: env parsers extracted to pure parse_font_size / split_command (SPRAG_GUI_CELL renamed SPRAG_GUI_FONT) and unit-tested without env/PTY; replaced the tautological const test"
+      ],
+      "publishable_verification_bullets": [
+        "120 workspace tests pass (sprag-host 34 incl. pane_view_scene; sprag-gui 3 pure: parse_font_size clamp/fallback, split_command, compose paint-root), cargo clippy --workspace --all-targets clean",
+        "Headless GPU render (PINION_SCREENSHOT, 960x600) confirms the §3 derivation is LIVE: the window drove a 96x20 winsize, so ls /usr/bin rendered MULTI-COLUMN (the PTY saw the wide terminal) in tight true-monospace via the measured cell — behavior R24's hardcoded 80x24 could not produce",
+        "Driven by a two-lens adversarial session review (refactoring + architecture) over R24 a874625, then verified directly against pinion source: the R1003 seam, Fixed-allows-resize, and the bespoke-vs-workspace_scene findings all confirmed before fixing"
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "The host GUI seam is single-pane (pane_view_scene = N=1); multi-pane tiles N of these in a future workspace_view_scene — now genuinely additive (the projection + layout live in the host, not the GUI)",
+        "Live resize -> PTY reflow (re-derive cols/rows from the resized grid rect, call Workspace::resize) is the next additive round; the §3 derivation is already live, so only the producer-adoption leg remains",
+        "Interactive input (keyboard -> PTY) reuses sprag-input + SpragPaneExternal; the viewer stays display-only (StubExternal) until then",
+        "The R24 changelog claim \"single pane is N=1 of workspace_scene\" was inaccurate (R24 hand-rolled a bespoke scene); R25 makes the host own the GUI scene, so it holds going forward"
+      ]
+    },
     "Round 3": {
       "decision_summary": "Land sprag-terminal: a PTY-driven emulator projected to Scene::TextGrid and read headlessly as scene/snapshot, with no GPU.",
       "changes_bullets": [

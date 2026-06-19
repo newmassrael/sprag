@@ -60,6 +60,7 @@ pub use workspace::WorkspaceExternal;
 use std::sync::{Arc, Mutex};
 
 use pinion_core::scene::{ContainerNode, ExternalNode, TextGridNode};
+use pinion_core::style::{LayoutStyle, Size, SizeValue};
 use pinion_core::{CellMetric, Scene};
 use sprag_terminal::{PaneId, TerminalSession, Workspace};
 use sprag_vt::Screen;
@@ -91,23 +92,43 @@ pub const INPUT_TAG: &str = "sprag_input";
 /// Project a [`Screen`] into the `TextGrid` node carrying the cell data.
 ///
 /// This is the **single** `Screen` → `TextGridNode` projection — the one call
-/// site of [`sprag_grid::project`]. Both the headless data path ([`scene`] /
-/// [`pane_container`]) and the GUI windowed host (`sprag-gui`) read it, so the
-/// cell projection has exactly one authority (no GUI-side duplicate).
-///
-/// The node carries **no layout** here: the headless path leaves the GUI
-/// `rect` unset (the authoritative terminal size is the projected
-/// `GridBuffer`, read via [`TextGridSnapshot::buffer_cols`] / `buffer_rows`),
-/// while a windowed host attaches its own [`LayoutStyle`](pinion_core::style::LayoutStyle)
-/// via [`TextGridNode::with_layout`] so `pinion_runtime::compute_layout`
-/// derives the cell `(cols, rows)` from the resolved rect (the §3 GUI winsize
-/// SSOT, inverse of the headless contract). Layout is therefore the host's
-/// concern, kept out of this projection so this crate stays presentation-free.
-#[must_use]
-pub fn text_grid_node(screen: &Screen, metric: CellMetric) -> TextGridNode {
+/// site of [`sprag_grid::project`], shared by the headless data path ([`scene`]
+/// / [`pane_container`]) and the GUI windowed seam ([`pane_view_scene`]), so
+/// the cell projection has exactly one authority. The node carries no layout:
+/// the headless path leaves the GUI `rect` unset (the authoritative terminal
+/// size is the projected `GridBuffer`, read via [`TextGridSnapshot::buffer_cols`]
+/// / `buffer_rows`); the GUI seam adds layout + font size via [`pane_view_scene`].
+pub(crate) fn text_grid_node(screen: &Screen, metric: CellMetric) -> TextGridNode {
     TextGridNode::new(metric)
         .with_tag(GRID_TAG)
         .with_cells(sprag_grid::project(screen))
+}
+
+/// Assemble a [`Screen`] into the **windowed-host** `Scene::TextGrid`: the same
+/// single projection ([`text_grid_node`]) plus the GUI presentation a windowed
+/// host needs — the glyph `font_size_px` the cells were measured at (pinion
+/// R1002 `with_font_size_px`, so the painted advance equals `cell_w`) and a
+/// **fill** layout (both axes `Percent(100)`) so the shell's layout pass sizes
+/// the grid to its slot and `pinion_runtime::compute_layout` derives the cell
+/// `(cols, rows)` from the resolved rect (the §3 GUI winsize SSOT). Scene
+/// assembly + layout for the GUI live here, in the host, not in the GUI binding
+/// — the GUI reuses this seam rather than re-deriving the projection.
+///
+/// This is the single-pane seam (N=1); a future multi-pane host tiles N of
+/// these. It deliberately omits the RPC-control externals ([`WorkspaceExternal`]
+/// / [`PluginsExternal`]) that [`workspace_scene`] carries — those drive the
+/// headless `scene/invoke` wire, not the pixel view.
+#[must_use]
+pub fn pane_view_scene(screen: &Screen, metric: CellMetric, font_size_px: u32) -> Scene {
+    Scene::TextGrid(
+        text_grid_node(screen, metric)
+            .with_font_size_px(font_size_px)
+            .with_layout(LayoutStyle::new().with_size(
+                Size::auto()
+                    .with_width(SizeValue::Percent(100))
+                    .with_height(SizeValue::Percent(100)),
+            )),
+    )
 }
 
 /// Assemble a [`Screen`] into a bare `Scene::TextGrid` (the cell-data view),
@@ -248,5 +269,29 @@ mod tests {
         let snap = snapshot_of(b"a", 4, 2);
         assert!(snap.grid_rows[0].generation > 0);
         assert_eq!(snap.grid_rows[1].generation, 0);
+    }
+
+    #[test]
+    fn pane_view_scene_carries_projection_font_size_and_fill_layout() {
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"hi");
+        match super::pane_view_scene(em.screen(), CellMetric::DEFAULT, 18) {
+            Scene::TextGrid(node) => {
+                // The single projection, reused (tagged, cells present).
+                assert_eq!(node.tag.as_deref(), Some(GRID_TAG));
+                assert!(!node.cells().is_empty());
+                // R1002 font-size pin so the painted advance equals cell_w.
+                assert_eq!(node.font_size_px(), Some(18));
+                // Fill layout so the shell derives (cols, rows) from the rect
+                // (the §3 GUI winsize SSOT) rather than a hardcoded size.
+                assert_eq!(
+                    node.layout.size.width,
+                    SizeValue::Percent(100),
+                    "grid fills its slot (responsive winsize derivation)",
+                );
+                assert_eq!(node.layout.size.height, SizeValue::Percent(100));
+            }
+            other => unreachable!("pane_view_scene is a TextGrid, got {other:?}"),
+        }
     }
 }
