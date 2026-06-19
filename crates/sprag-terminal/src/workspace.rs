@@ -168,11 +168,17 @@ impl Workspace {
     /// Returns `Ok(true)` when the pane exists and was resized, `Ok(false)`
     /// when no pane has that id.
     ///
+    /// Takes `&self`: [`TerminalSession::resize`] is `&self` (interior-mutable
+    /// PTY + emulator), so a shared `&Workspace` — e.g. one reached through an
+    /// `Rc` in the GUI's resize Effect — can reflow a pane without owning the
+    /// pool. The host caller (which holds a `MutexGuard<Workspace>`) is
+    /// unaffected: a `&mut` guard still calls a `&self` method.
+    ///
     /// # Errors
     ///
     /// Returns [`SessionError`] if the PTY winsize ioctl fails.
-    pub fn resize(&mut self, id: PaneId, cols: u16, rows: u16) -> Result<bool, SessionError> {
-        match self.panes.iter_mut().find(|p| p.id == id) {
+    pub fn resize(&self, id: PaneId, cols: u16, rows: u16) -> Result<bool, SessionError> {
+        match self.panes.iter().find(|p| p.id == id) {
             Some(pane) => {
                 pane.session.resize(cols, rows)?;
                 Ok(true)
@@ -255,6 +261,11 @@ mod tests {
         assert!(ws.resize(a, 100, 30).unwrap());
         assert_eq!(ws.pane(a).unwrap().session().dimensions(), (100, 30));
         assert!(!ws.resize(PaneId(999), 10, 10).unwrap());
+        // Through a SHARED &Workspace — the path the GUI reflow Effect uses via
+        // an Rc; resize needs no &mut now that the session is interior-mutable.
+        let shared: &Workspace = &ws;
+        assert!(shared.resize(a, 64, 20).unwrap());
+        assert_eq!(ws.pane(a).unwrap().session().dimensions(), (64, 20));
     }
 
     #[test]

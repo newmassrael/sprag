@@ -141,8 +141,6 @@ pub struct TerminalSession {
     raw_output: SharedRawCapture,
     eof: Arc<AtomicBool>,
     reader_thread: Option<JoinHandle<()>>,
-    cols: u16,
-    rows: u16,
 }
 
 impl TerminalSession {
@@ -248,8 +246,6 @@ impl TerminalSession {
             raw_output,
             eof,
             reader_thread: Some(reader_thread),
-            cols,
-            rows,
         })
     }
 
@@ -307,10 +303,17 @@ impl TerminalSession {
     /// Resize the pseudoterminal and the emulator to `cols × rows`, notifying
     /// the child via `TIOCSWINSZ` (DESIGN.md §3 winsize ownership).
     ///
+    /// Takes `&self`: `MasterPty::resize` is `&self` and the emulator is behind
+    /// a `Mutex`, so the size is updated through interior mutability with no
+    /// exclusive borrow. This is what lets a shared `&TerminalSession` (e.g. a
+    /// pane reached through an `Rc` in the GUI's resize Effect) reflow the PTY
+    /// without owning it. The size is held only by the emulator (see
+    /// [`dimensions`](Self::dimensions)), so there is no cache field to update.
+    ///
     /// # Errors
     ///
     /// Returns [`SessionError`] if the master resize fails.
-    pub fn resize(&mut self, cols: u16, rows: u16) -> Result<(), SessionError> {
+    pub fn resize(&self, cols: u16, rows: u16) -> Result<(), SessionError> {
         let cols = cols.max(1);
         let rows = rows.max(1);
         self.master
@@ -322,15 +325,18 @@ impl TerminalSession {
             })
             .map_err(|e| SessionError::new("resize pty", &e))?;
         lock(&self.emulator).resize(cols, rows);
-        self.cols = cols;
-        self.rows = rows;
         Ok(())
     }
 
-    /// The current `(cols, rows)` the session is sized to.
+    /// The current `(cols, rows)` the session is sized to, read from the
+    /// emulator screen — the single source of the size (the PTY winsize and the
+    /// emulator are resized together in [`resize`](Self::resize), so the
+    /// emulator's dimensions are authoritative; there is no duplicate cache).
     #[must_use]
     pub fn dimensions(&self) -> (u16, u16) {
-        (self.cols, self.rows)
+        let emulator = lock(&self.emulator);
+        let screen = emulator.screen();
+        (screen.cols(), screen.rows())
     }
 }
 
@@ -434,6 +440,27 @@ mod tests {
         });
         assert!(row0.starts_with("hi"), "row0 = {row0:?}");
         assert_eq!(session.dimensions(), (20, 4));
+    }
+
+    /// `resize` is `&self`: a shared `&TerminalSession` reflows the PTY +
+    /// emulator (the capability the GUI resize Effect needs through an `Rc`),
+    /// and `dimensions()` reports the new size from the emulator — the single
+    /// source, with no stale cache field to drift.
+    #[test]
+    fn resize_through_a_shared_ref_updates_dimensions() {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg("cat"); // long-lived: keeps the PTY open across the resize
+        command.env("TERM", "dumb");
+        let session = TerminalSession::spawn(command, 20, 4).expect("spawn pty session");
+        assert_eq!(session.dimensions(), (20, 4));
+        // Through a SHARED borrow — proves the resize needs no `&mut`.
+        let shared: &TerminalSession = &session;
+        shared.resize(100, 30).expect("resize the shared session");
+        assert_eq!(session.dimensions(), (100, 30), "dimensions track the emulator");
+        // The floor at 1x1 holds (a zero dimension cannot reach the PTY).
+        shared.resize(0, 0).expect("resize floors at 1x1");
+        assert_eq!(session.dimensions(), (1, 1));
     }
 
     /// Wait (bounded) until the child has exited and all its bytes are applied.

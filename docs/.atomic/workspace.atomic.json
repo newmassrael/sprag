@@ -1050,6 +1050,48 @@
         "The R24 changelog claim \"single pane is N=1 of workspace_scene\" was inaccurate (R24 hand-rolled a bespoke scene); R25 makes the host own the GUI scene, so it holds going forward"
       ]
     },
+    "Round 26": {
+      "decision_summary": "Round 26: land the resize -> PTY reflow consumer of pinion's R1006 view-time viewport-size seam (use_viewport_size), closing PINION-REQUIREMENTS PR-6 on the sprag side - sprag-gui is pinion's first viewport-dependent producer.",
+      "changes_bullets": [
+        "sprag-gui: pure grid_dims(viewport,cell)->(cols,rows) is the single SSOT for the window-drives-winsize derivation (boot spawn + reflow share it); install_reflow registers an Effect that subscribes to pinion's R1006 viewport-size Signal and reflows the boot pane (Workspace::resize) on resize, skipping the (0,0) unknown boot value and any no-change frame.",
+        "sprag-terminal: TerminalSession::resize and Workspace::resize are now &self (MasterPty::resize is &self; the emulator is Mutex-guarded), so a shared &Workspace reached through an Rc in the reflow Effect reflows without &mut; the (cols,rows) cache fields are dropped and dimensions() reads the emulator screen (single source - a latent dual-source repair).",
+        "The reflow is a real side-effect (TIOCSWINSZ), so it lives in an Effect (gated out of dry_run/snapshot paint by the R1006 seam), never the pure view; the Effect reads the captured Signal directly (not use_viewport_size), so it never resolves Owner::current and is robust to the set scope."
+      ],
+      "verification_bullets": [
+        "Full sprag workspace tests pass (sprag-gui 5 incl. grid_dims floor + a headless end-to-end reflow driving a real viewport Signal through the Effect to a real PTY; sprag-terminal 8 incl. shared-&Workspace resize); cargo clippy --workspace --all-targets clean.",
+        "Headless sprag-gui screenshot (SPRAG_GUI_CMD='ls /usr/bin', PINION_SCREENSHOT) boots and renders 960x600 unchanged from R25 - the eager (0,0)-skip plus a first-paint publish at the boot size (no-change skip) registers the Effect with no spurious boot reflow.",
+        "Consumes pinion main f34f297 (R1006/.1/.2) by path; no pinion changes - the seam was delivered upstream as designed and R26 is the forcing consumer that exercises it."
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Multi-pane reflow: the Effect resizes only the single boot pane (panes().first()); a multi-pane host reflows each pane (or per-pane viewports) - deferred with the multi-pane round.",
+        "Per-window viewport Signal: pinion publishes one primary-window signal (DEFAULT_WINDOW gate); multi-window sprag hosts need per-window viewports (pinion RepaintScope-style deferred carry).",
+        "Interactive input (keyboard -> PTY) still reuses sprag-input + SpragPaneExternal; sprag-gui stays display-only (StubExternal) - the input-wiring round is unaffected by R26."
+      ],
+      "publishable_decision_summary": "Round 26: land the resize -> PTY reflow consumer of pinion's R1006 view-time viewport-size seam (use_viewport_size), closing PINION-REQUIREMENTS PR-6 on the sprag side - sprag-gui is pinion's first viewport-dependent producer.",
+      "publishable_changes_bullets": [
+        "sprag-gui: pure grid_dims(viewport,cell)->(cols,rows) is the single SSOT for the window-drives-winsize derivation (boot spawn + reflow share it); install_reflow registers an Effect that subscribes to pinion's R1006 viewport-size Signal and reflows the boot pane (Workspace::resize) on resize, skipping the (0,0) unknown boot value and any no-change frame.",
+        "sprag-terminal: TerminalSession::resize and Workspace::resize are now &self (MasterPty::resize is &self; the emulator is Mutex-guarded), so a shared &Workspace reached through an Rc in the reflow Effect reflows without &mut; the (cols,rows) cache fields are dropped and dimensions() reads the emulator screen (single source - a latent dual-source repair).",
+        "The reflow is a real side-effect (TIOCSWINSZ), so it lives in an Effect (gated out of dry_run/snapshot paint by the R1006 seam), never the pure view; the Effect reads the captured Signal directly (not use_viewport_size), so it never resolves Owner::current and is robust to the set scope."
+      ],
+      "publishable_verification_bullets": [
+        "Full sprag workspace tests pass (sprag-gui 5 incl. grid_dims floor + a headless end-to-end reflow driving a real viewport Signal through the Effect to a real PTY; sprag-terminal 8 incl. shared-&Workspace resize); cargo clippy --workspace --all-targets clean.",
+        "Headless sprag-gui screenshot (SPRAG_GUI_CMD='ls /usr/bin', PINION_SCREENSHOT) boots and renders 960x600 unchanged from R25 - the eager (0,0)-skip plus a first-paint publish at the boot size (no-change skip) registers the Effect with no spurious boot reflow.",
+        "Consumes pinion main f34f297 (R1006/.1/.2) by path; no pinion changes - the seam was delivered upstream as designed and R26 is the forcing consumer that exercises it."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Multi-pane reflow: the Effect resizes only the single boot pane (panes().first()); a multi-pane host reflows each pane (or per-pane viewports) - deferred with the multi-pane round.",
+        "Per-window viewport Signal: pinion publishes one primary-window signal (DEFAULT_WINDOW gate); multi-window sprag hosts need per-window viewports (pinion RepaintScope-style deferred carry).",
+        "Interactive input (keyboard -> PTY) still reuses sprag-input + SpragPaneExternal; sprag-gui stays display-only (StubExternal) - the input-wiring round is unaffected by R26."
+      ]
+    },
     "Round 3": {
       "decision_summary": "Land sprag-terminal: a PTY-driven emulator projected to Scene::TextGrid and read headlessly as scene/snapshot, with no GPU.",
       "changes_bullets": [
