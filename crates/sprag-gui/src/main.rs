@@ -1,4 +1,4 @@
-//! `sprag-gui` — the **interactive GPU windowed terminal** (R24-R29).
+//! `sprag-gui` — the **interactive GPU windowed terminal** (R24-R31).
 //!
 //! A window that paints one terminal pane's **live** screen (and its scrollback
 //! history) and types into it.
@@ -56,6 +56,12 @@
 //! (R2.6). Returning `true` swallows Escape/Tab from the shell's quit/traverse
 //! defaults so a full-screen TUI (vim) receives them.
 //!
+//! IME-composed input (R31) — Hangul, CJK — arrives not as keystrokes but as
+//! [`WidgetCore::apply_composition`] events; the committed text is written
+//! *literally* (no key-encoding) through the sibling `invoke("text", …)` wire.
+//! The in-progress preedit is rendered by the platform IME itself (an inline
+//! grid overlay is a later round).
+//!
 //! ## Scrollback (R29): scroll the history view
 //!
 //! `Shift+PageUp` / `Shift+PageDown` scroll a view over the pane's history (a
@@ -77,7 +83,7 @@ use pinion_core::style::{BoxStyle, LayoutStyle, Size, SizeValue};
 use pinion_core::theme::{use_theme, ColorRole, Theme};
 use pinion_core::use_repaint_sink;
 use pinion_core::widget_core::ExtraExternal;
-use pinion_core::{CellMetric, Frame, Modifiers, Scene, WidgetCore};
+use pinion_core::{CellMetric, CompositionEvent, Frame, Modifiers, Scene, WidgetCore};
 use pinion_shell::{vello_renderer_impl, SizeStrategy, WidgetView};
 use sprag_host::SpragPaneExternal;
 use sprag_terminal::{CommandBuilder, Pane, SessionHandle, Workspace};
@@ -444,6 +450,43 @@ impl WidgetCore for TerminalViewer {
         intro.invoke("key", IntrospectValue::Json(args)).is_ok()
     }
 
+    /// Route committed IME text (Hangul / CJK / any composed input) to the boot
+    /// pane's PTY. The platform IME composes off-grid (its own preedit popup)
+    /// and emits [`CompositionEvent::Commit`] with the finished text; we write
+    /// it **literally** via the root [`SpragPaneExternal`]'s `invoke("text", …)`
+    /// — composed text is not a keystroke, so it bypasses the key encoder (the
+    /// same `scene/invoke` wire the AI peer drives, §2 #2). `Start`/`Update`
+    /// (preedit) and `Cancel` are not consumed here: the IME renders the
+    /// in-progress composition itself; an inline-preedit overlay on the grid is
+    /// a later round. Focus-gated on [`ROOT_TAG`] like [`Self::apply_key`].
+    fn apply_composition(
+        scene: &mut Scene,
+        focused: Option<&str>,
+        event: &CompositionEvent,
+    ) -> bool {
+        if focused != Some(ROOT_TAG) {
+            return false;
+        }
+        let CompositionEvent::Commit(text) = event else {
+            return false; // preedit / cancel: nothing to insert into the PTY
+        };
+        if text.is_empty() {
+            return false; // empty commit == cancel (the no-data compositionend shape)
+        }
+        // Committing text is a live interaction — snap the scrollback view back
+        // to the live bottom (you type at the prompt), matching apply_key.
+        use_scroll_offset().set(0);
+        let Scene::External(node) = scene else {
+            return false;
+        };
+        let Some(intro) = node.handle.introspect_mut() else {
+            return false;
+        };
+        intro
+            .invoke("text", IntrospectValue::Text(text.clone()))
+            .is_ok()
+    }
+
     fn tag() -> &'static str {
         ROOT_TAG
     }
@@ -680,6 +723,57 @@ mod tests {
             sleep(Duration::from_millis(20));
         }
         assert!(row0.contains("hi"), "typed keys echo to the pane screen; row0 = {row0:?}");
+    }
+
+    /// End-to-end IME input: drive `apply_composition` with a committed Hangul
+    /// string over a live `cat` pane and confirm the literal UTF-8 echoes back
+    /// through the cooked-mode PTY (the apply_key test idiom). The focus gate,
+    /// preedit (`Update`), and empty-commit cases are deterministic no-ops.
+    #[test]
+    fn apply_composition_routes_committed_ime_text_to_the_pane() {
+        use pinion_core::scene::ExternalNode;
+        use std::thread::sleep;
+        use std::time::{Duration, Instant};
+
+        let mut ws = Workspace::new((40, 6));
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg("cat"); // echoes stdin; keeps the PTY open
+        command.env("TERM", "dumb");
+        let id = ws.spawn(command, "cat".to_owned(), 40, 6).unwrap();
+        let handle = ws.pane(id).unwrap().handle();
+        let mut scene = Scene::External(
+            ExternalNode::new(Box::new(SpragPaneExternal::new(handle.clone()))).with_tag(ROOT_TAG),
+        );
+
+        // apply_composition reads the scrollback-offset Signal, so run it inside
+        // a root Owner scope (mirrors the shell).
+        let owner = Owner::new();
+        owner.run(|| {
+            let commit = |t: &str| CompositionEvent::Commit(t.to_owned());
+            // Focus gate: a wrong-tag commit injects nothing.
+            assert!(!TerminalViewer::apply_composition(&mut scene, None, &commit("한")));
+            // Preedit (Update) and an empty commit are not written to the PTY —
+            // the IME renders the in-progress composition itself.
+            let preedit = CompositionEvent::Update("ㅎ".to_owned());
+            assert!(!TerminalViewer::apply_composition(&mut scene, Some(ROOT_TAG), &preedit));
+            assert!(!TerminalViewer::apply_composition(&mut scene, Some(ROOT_TAG), &commit("")));
+            // Focused commit: the literal Hangul is written and echoes back.
+            assert!(TerminalViewer::apply_composition(&mut scene, Some(ROOT_TAG), &commit("한글")));
+        });
+        let start = Instant::now();
+        let mut row0 = String::new();
+        while start.elapsed() < Duration::from_secs(5) {
+            row0 = handle.with_screen(|screen| screen.row_text(0));
+            if row0.contains("한글") {
+                break;
+            }
+            sleep(Duration::from_millis(20));
+        }
+        assert!(
+            row0.contains("한글"),
+            "committed IME text echoes to the pane screen; row0 = {row0:?}"
+        );
     }
 
     #[test]

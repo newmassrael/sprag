@@ -13,7 +13,10 @@
 //!
 //! The action channel is the R2.6 input seam: `invoke("key", {key, …})`
 //! encodes the W3C key + modifiers to PTY bytes ([`sprag_input::encode`],
-//! sprag-owned) and writes them to the child. The read channel exposes the
+//! sprag-owned) and writes them to the child. A sibling `invoke("text",
+//! {text})` writes **literal** UTF-8 to the child (no key-encoding) — the seam
+//! for IME-composed input (a Hangul/CJK commit is text, not a keystroke) and
+//! for pasting; the AI peer drives the same wire. The read channel exposes the
 //! producer-owned input modes (`query("application_cursor_keys")`) and the
 //! pane's full output text (`query("full_text")`, scrollback + visible) — the
 //! same `Screen::full_text` the in-process capture path reads, so an external
@@ -33,6 +36,9 @@ use crate::external::rpc_external_impl;
 
 /// The invoke action that injects a key into the focused pane.
 const KEY_ACTION: &str = "key";
+/// The invoke action that writes literal UTF-8 text into the pane (no
+/// key-encoding) — IME commit / paste. See [`SpragPaneExternal::inject_text`].
+const TEXT_ACTION: &str = "text";
 /// The query slot reporting the producer's DECCKM (application cursor
 /// keys) state.
 const CURSOR_KEYS_SLOT: &str = "application_cursor_keys";
@@ -70,6 +76,22 @@ impl SpragPaneExternal {
         self.session.write(&bytes).map_err(|_| InvokeError::Rejected)?;
         Ok(IntrospectValue::Null)
     }
+
+    /// Write a `text` action's literal UTF-8 to the PTY — **not** key-encoded.
+    /// This is the seam for IME-composed input (a Hangul/CJK
+    /// [`CompositionEvent::Commit`](pinion_core::CompositionEvent) is finished
+    /// text, not a keystroke) and for pasting. Empty text is a no-op success
+    /// (the IME's cancel-via-empty-commit shape). A write failure is an
+    /// [`InvokeError::Rejected`].
+    fn inject_text(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let text = parse_text_args(args)?;
+        if !text.is_empty() {
+            self.session
+                .write(text.as_bytes())
+                .map_err(|_| InvokeError::Rejected)?;
+        }
+        Ok(IntrospectValue::Null)
+    }
 }
 
 impl fmt::Debug for SpragPaneExternal {
@@ -86,6 +108,7 @@ impl ExternalIntrospect for SpragPaneExternal {
     fn schema(&self) -> IntrospectSchema {
         IntrospectSchema::new(&[
             (KEY_ACTION, "action"),
+            (TEXT_ACTION, "action"),
             (CURSOR_KEYS_SLOT, "bool"),
             (FULL_TEXT_SLOT, "string"),
         ])
@@ -110,8 +133,25 @@ impl ExternalIntrospect for SpragPaneExternal {
     fn invoke(&mut self, path: &str, args: IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         match path {
             KEY_ACTION => self.inject_key(&args),
+            TEXT_ACTION => self.inject_text(&args),
             _ => Err(InvokeError::UnknownPath),
         }
+    }
+}
+
+/// Parse the `text` action's args into the literal string to write. Accepts a
+/// bare string (`"한"`) or an object `{text: "한"}` (the AI/JSON wire). A
+/// missing/non-string `text`, or a non-string/non-object arg, is an
+/// [`InvokeError::TypeMismatch`]. Empty is allowed (the caller no-ops it).
+fn parse_text_args(args: &IntrospectValue) -> Result<String, InvokeError> {
+    match args {
+        IntrospectValue::Text(text) => Ok(text.clone()),
+        IntrospectValue::Json(Value::Object(map)) => map
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or(InvokeError::TypeMismatch),
+        _ => Err(InvokeError::TypeMismatch),
     }
 }
 
@@ -197,5 +237,24 @@ mod tests {
             parse_key_args(&json_args(json!({"key": "a", "state": "sideways"}))),
             Err(InvokeError::TypeMismatch),
         );
+    }
+
+    #[test]
+    fn parses_bare_string_text() {
+        assert_eq!(parse_text_args(&IntrospectValue::Text("한".to_string())), Ok("한".to_string()));
+        // Empty is allowed (the caller no-ops it — IME cancel-via-empty-commit).
+        assert_eq!(parse_text_args(&IntrospectValue::Text(String::new())), Ok(String::new()));
+    }
+
+    #[test]
+    fn parses_object_text() {
+        assert_eq!(parse_text_args(&json_args(json!({"text": "안녕"}))), Ok("안녕".to_string()));
+    }
+
+    #[test]
+    fn non_string_text_is_type_mismatch() {
+        assert_eq!(parse_text_args(&json_args(json!({}))), Err(InvokeError::TypeMismatch));
+        assert_eq!(parse_text_args(&json_args(json!({"text": 1}))), Err(InvokeError::TypeMismatch));
+        assert_eq!(parse_text_args(&IntrospectValue::Int(1)), Err(InvokeError::TypeMismatch));
     }
 }

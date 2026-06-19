@@ -1308,6 +1308,48 @@
         "Mouse / pointer->cell (R1.8) needs a pinion seam (a click delivered to a TextGrid widget with cell coords) - a separate spec-round, on the pinion side of the boundary."
       ]
     },
+    "Round 31": {
+      "decision_summary": "Round 31: IME-composed input (Hangul / CJK) routed to the PTY via a new literal-text seam. A composed commit is finished text, not a keystroke, so it must bypass the W3C key encoder: a sibling invoke(\"text\", ...) action on SpragPaneExternal writes the committed UTF-8 directly to the child, and TerminalViewer::apply_composition (a WidgetCore override, focus-gated on ROOT_TAG, a faithful mirror of apply_key) drives it. Preedit stays off-grid, rendered by the platform IME; an inline on-grid preedit overlay is a later round.",
+      "changes_bullets": [
+        "sprag-host: SpragPaneExternal gains a \"text\" invoke action (inject_text) writing literal UTF-8 to the PTY with no key-encoding - the seam for IME commits and paste, the same scene/invoke wire the AI peer drives (§2 #2). parse_text_args accepts a bare string or a {text:...} object (symmetric with the key parser); empty text is a no-op success (the IME cancel-via-empty-commit shape). The introspect schema lists text beside key.",
+        "sprag-gui: TerminalViewer::apply_composition (WidgetCore override) routes CompositionEvent::Commit to invoke(\"text\", ...), focus-gated on ROOT_TAG and snapping the scrollback view to the live bottom - a faithful mirror of apply_key. Start/Update (preedit) and Cancel are not consumed; the platform IME renders the in-progress composition itself.",
+        "A composition commit is text, not a keystroke, so it deliberately bypasses sprag-input::encode (W3C key -> control bytes); the literal-text path is the textbook seam rather than fabricating synthetic keystrokes."
+      ],
+      "verification_bullets": [
+        "cargo test --workspace: all pass, 0 failed; 4 new tests - apply_composition_routes_committed_ime_text_to_the_pane (e2e: committed Hangul echoes back through a live cat PTY in cooked mode), parses_bare_string_text, parses_object_text, non_string_text_is_type_mismatch; the focus-gate, preedit (Update), and empty-commit cases asserted as deterministic no-ops.",
+        "cargo clippy --workspace --all-targets clean (exit 0); validate-workspace T1 orphan=0; entries 31 -> 32.",
+        "Audit-first against pinion: WidgetCore::apply_composition(scene, focused, event)->bool (default false) override confirmed; ShellCore::apply_composition sources focused via focus.focused() and runs V::apply_composition inside root_owner.run (so use_scroll_offset resolves an Owner); winit WindowEvent::Ime -> winit_ime_to_composition -> Commit is wired in pinion-shell app.rs; IntrospectValue::Text(String) is the literal payload variant."
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Multi-pane: generalize boot_pane() -> active_pane() + per-pane tags (the ROOT_TAG singleton) + focused-pane input routing (key + composition + future mouse); modularize the 762-line main.rs (terminal / reflow / input / a11y / view) at the same time.",
+        "Scroll content-anchoring: expose scrollback growth reactively from the producer (sprag-vt) so the GUI pins the view to absolute content under output, removing the v1 bottom-relative drift. Full-cell scrollback (the R16 text-only history model loses colors) folds in here.",
+        "IME inline preedit overlay: the platform IME renders the in-progress composition off-grid; an on-grid preedit overlay (plus set_ime_cursor_area positioning) is a later round. Mouse / pointer->cell is now unblocked pinion-side (R1008 px_to_cell + R1009 named-key + R1010 focus-ring opt-out); the remaining sprag work is the pane mouse-report consumer (byte encoding + per-pane routing)."
+      ],
+      "publishable_decision_summary": "Round 31: IME-composed input (Hangul / CJK) routed to the PTY via a new literal-text seam. A composed commit is finished text, not a keystroke, so it must bypass the W3C key encoder: a sibling invoke(\"text\", ...) action on SpragPaneExternal writes the committed UTF-8 directly to the child, and TerminalViewer::apply_composition (a WidgetCore override, focus-gated on ROOT_TAG, a faithful mirror of apply_key) drives it. Preedit stays off-grid, rendered by the platform IME; an inline on-grid preedit overlay is a later round.",
+      "publishable_changes_bullets": [
+        "sprag-host: SpragPaneExternal gains a \"text\" invoke action (inject_text) writing literal UTF-8 to the PTY with no key-encoding - the seam for IME commits and paste, the same scene/invoke wire the AI peer drives (§2 #2). parse_text_args accepts a bare string or a {text:...} object (symmetric with the key parser); empty text is a no-op success (the IME cancel-via-empty-commit shape). The introspect schema lists text beside key.",
+        "sprag-gui: TerminalViewer::apply_composition (WidgetCore override) routes CompositionEvent::Commit to invoke(\"text\", ...), focus-gated on ROOT_TAG and snapping the scrollback view to the live bottom - a faithful mirror of apply_key. Start/Update (preedit) and Cancel are not consumed; the platform IME renders the in-progress composition itself.",
+        "A composition commit is text, not a keystroke, so it deliberately bypasses sprag-input::encode (W3C key -> control bytes); the literal-text path is the textbook seam rather than fabricating synthetic keystrokes."
+      ],
+      "publishable_verification_bullets": [
+        "cargo test --workspace: all pass, 0 failed; 4 new tests - apply_composition_routes_committed_ime_text_to_the_pane (e2e: committed Hangul echoes back through a live cat PTY in cooked mode), parses_bare_string_text, parses_object_text, non_string_text_is_type_mismatch; the focus-gate, preedit (Update), and empty-commit cases asserted as deterministic no-ops.",
+        "cargo clippy --workspace --all-targets clean (exit 0); validate-workspace T1 orphan=0; entries 31 -> 32.",
+        "Audit-first against pinion: WidgetCore::apply_composition(scene, focused, event)->bool (default false) override confirmed; ShellCore::apply_composition sources focused via focus.focused() and runs V::apply_composition inside root_owner.run (so use_scroll_offset resolves an Owner); winit WindowEvent::Ime -> winit_ime_to_composition -> Commit is wired in pinion-shell app.rs; IntrospectValue::Text(String) is the literal payload variant."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Multi-pane: generalize boot_pane() -> active_pane() + per-pane tags (the ROOT_TAG singleton) + focused-pane input routing (key + composition + future mouse); modularize the 762-line main.rs (terminal / reflow / input / a11y / view) at the same time.",
+        "Scroll content-anchoring: expose scrollback growth reactively from the producer (sprag-vt) so the GUI pins the view to absolute content under output, removing the v1 bottom-relative drift. Full-cell scrollback (the R16 text-only history model loses colors) folds in here.",
+        "IME inline preedit overlay: the platform IME renders the in-progress composition off-grid; an on-grid preedit overlay (plus set_ime_cursor_area positioning) is a later round. Mouse / pointer->cell is now unblocked pinion-side (R1008 px_to_cell + R1009 named-key + R1010 focus-ring opt-out); the remaining sprag work is the pane mouse-report consumer (byte encoding + per-pane routing)."
+      ]
+    },
     "Round 4": {
       "decision_summary": "Add sprag-term: a headless JSON-RPC server exposing a live PTY session as scene-as-data over stdin/stdout.",
       "changes_bullets": [
