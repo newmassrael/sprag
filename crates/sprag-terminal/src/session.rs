@@ -310,6 +310,13 @@ impl TerminalSession {
     /// without owning it. The size is held only by the emulator (see
     /// [`dimensions`](Self::dimensions)), so there is no cache field to update.
     ///
+    /// The PTY winsize ioctl is set BEFORE the emulator lock is taken (a blocking
+    /// ioctl must not be held across the lock, which would stall the reader
+    /// thread on every resize), so for one uncontended lock acquisition a
+    /// `SIGWINCH`-racing child can observe the new winsize before the emulator
+    /// reflects it. The disagreement is transient and self-heals within the next
+    /// batch; it is visual-only, never a lost update.
+    ///
     /// # Errors
     ///
     /// Returns [`SessionError`] if the master resize fails.
@@ -329,9 +336,10 @@ impl TerminalSession {
     }
 
     /// The current `(cols, rows)` the session is sized to, read from the
-    /// emulator screen — the single source of the size (the PTY winsize and the
-    /// emulator are resized together in [`resize`](Self::resize), so the
-    /// emulator's dimensions are authoritative; there is no duplicate cache).
+    /// emulator screen — the single source of the size (the emulator's
+    /// dimensions are authoritative; there is no duplicate cache field). The PTY
+    /// winsize is updated alongside the emulator in [`resize`](Self::resize),
+    /// though not atomically with it (see that method's note).
     #[must_use]
     pub fn dimensions(&self) -> (u16, u16) {
         let emulator = lock(&self.emulator);

@@ -1266,6 +1266,48 @@
         "Decide scrollback projection (R1.4 gap) when a consumer first needs it"
       ]
     },
+    "Round 30": {
+      "decision_summary": "Round 30: session-review remediation of R26-R29 (four-reviewer + grep audit) - extract a boot_pane() SSOT accessor unifying single-pane selection (5 sites / 3 absence idioms -> 1) and correct overstated/stale docs; no behavior change. The data-flow SSOT, concurrency, and pinion-boundary consumption were cleared as textbook.",
+      "changes_bullets": [
+        "sprag-gui: TerminalView::boot_pane() -> &Pane is the one site answering \"which pane?\" - view / access_node / scroll_view / the reflow Effect / pane_handle all route through it (was 5 panes().first() sites with 3 different absence idioms: .expect / else-return / filter-map), unified to the documented boot-pane invariant so the multi-pane round generalizes pane selection in one place.",
+        "sprag-terminal: resize/dimensions docs corrected - they overstated atomicity (the PTY winsize ioctl precedes the emulator update by one uncontended lock, so a SIGWINCH-racing child may transiently observe the new winsize first; transient, visual-only, self-healing).",
+        "Doc/staleness: window title no longer round-pinned (omitted R28/R29); the \"read-only behavior\" comment reworded (frozen final screen, not a loss of interactivity); the a11y Group-over-Generic choice documented (a Generic container drops the accessible name)."
+      ],
+      "verification_bullets": [
+        "Four independent adversarial reviewers (architecture / SSOT / concurrency / pinion-boundary) + a repo-wide grep audit. Cleared as textbook: projection / winsize / screen-text / key-encoding / dimensions SSOT; no race / deadlock / leak / UAF (reader thread + Mutex + Drop graph traced); idiomatic seam consumption (the apply_key hand-roll is justified - forward_key_to_external cannot carry modifiers and has the wrong verdict mapping); the GUI is a faithful secondary path, never a second authority.",
+        "sprag-grid 6 + sprag-host 34 + sprag-gui 11 + sprag-terminal 8 = 59 tests pass; cargo clippy --workspace --all-targets clean; cargo doc no new broken links; headless screenshot byte-identical (121434) - the refactor is behavior-preserving.",
+        "Deferred (named, not hidden): scroll-during-output drift (proper fix = content-anchor needs producer-side scrollback-growth reactivity; the bounded FIFO has no stable line identity a pure view can track); main.rs modularization (762 lines, best paid at the multi-pane round); full-cell scrollback (R16 text-only model)."
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Multi-pane round: generalize boot_pane() -> active_pane() + per-pane tags (the ROOT_TAG singleton has 26 refs) + focused-pane input routing; modularize main.rs (terminal / reflow / input / a11y / view) at the same time.",
+        "Scroll content-anchoring: expose scrollback growth reactively from the producer (sprag-vt) so the GUI can pin the view to absolute content under output, removing the v1 bottom-relative drift.",
+        "Mouse / pointer->cell (R1.8) needs a pinion seam (a click delivered to a TextGrid widget with cell coords) - a separate spec-round, on the pinion side of the boundary."
+      ],
+      "publishable_decision_summary": "Round 30: session-review remediation of R26-R29 (four-reviewer + grep audit) - extract a boot_pane() SSOT accessor unifying single-pane selection (5 sites / 3 absence idioms -> 1) and correct overstated/stale docs; no behavior change. The data-flow SSOT, concurrency, and pinion-boundary consumption were cleared as textbook.",
+      "publishable_changes_bullets": [
+        "sprag-gui: TerminalView::boot_pane() -> &Pane is the one site answering \"which pane?\" - view / access_node / scroll_view / the reflow Effect / pane_handle all route through it (was 5 panes().first() sites with 3 different absence idioms: .expect / else-return / filter-map), unified to the documented boot-pane invariant so the multi-pane round generalizes pane selection in one place.",
+        "sprag-terminal: resize/dimensions docs corrected - they overstated atomicity (the PTY winsize ioctl precedes the emulator update by one uncontended lock, so a SIGWINCH-racing child may transiently observe the new winsize first; transient, visual-only, self-healing).",
+        "Doc/staleness: window title no longer round-pinned (omitted R28/R29); the \"read-only behavior\" comment reworded (frozen final screen, not a loss of interactivity); the a11y Group-over-Generic choice documented (a Generic container drops the accessible name)."
+      ],
+      "publishable_verification_bullets": [
+        "Four independent adversarial reviewers (architecture / SSOT / concurrency / pinion-boundary) + a repo-wide grep audit. Cleared as textbook: projection / winsize / screen-text / key-encoding / dimensions SSOT; no race / deadlock / leak / UAF (reader thread + Mutex + Drop graph traced); idiomatic seam consumption (the apply_key hand-roll is justified - forward_key_to_external cannot carry modifiers and has the wrong verdict mapping); the GUI is a faithful secondary path, never a second authority.",
+        "sprag-grid 6 + sprag-host 34 + sprag-gui 11 + sprag-terminal 8 = 59 tests pass; cargo clippy --workspace --all-targets clean; cargo doc no new broken links; headless screenshot byte-identical (121434) - the refactor is behavior-preserving.",
+        "Deferred (named, not hidden): scroll-during-output drift (proper fix = content-anchor needs producer-side scrollback-growth reactivity; the bounded FIFO has no stable line identity a pure view can track); main.rs modularization (762 lines, best paid at the multi-pane round); full-cell scrollback (R16 text-only model)."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Multi-pane round: generalize boot_pane() -> active_pane() + per-pane tags (the ROOT_TAG singleton has 26 refs) + focused-pane input routing; modularize main.rs (terminal / reflow / input / a11y / view) at the same time.",
+        "Scroll content-anchoring: expose scrollback growth reactively from the producer (sprag-vt) so the GUI can pin the view to absolute content under output, removing the v1 bottom-relative drift.",
+        "Mouse / pointer->cell (R1.8) needs a pinion seam (a click delivered to a TextGrid widget with cell coords) - a separate spec-round, on the pinion side of the boundary."
+      ]
+    },
     "Round 4": {
       "decision_summary": "Add sprag-term: a headless JSON-RPC server exposing a live PTY session as scene-as-data over stdin/stdout.",
       "changes_bullets": [

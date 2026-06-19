@@ -80,7 +80,7 @@ use pinion_core::widget_core::ExtraExternal;
 use pinion_core::{CellMetric, Frame, Modifiers, Scene, WidgetCore};
 use pinion_shell::{vello_renderer_impl, SizeStrategy, WidgetView};
 use sprag_host::SpragPaneExternal;
-use sprag_terminal::{CommandBuilder, SessionHandle, Workspace};
+use sprag_terminal::{CommandBuilder, Pane, SessionHandle, Workspace};
 use std::rc::Rc;
 
 include!(concat!(env!("OUT_DIR"), "/app.rs"));
@@ -166,15 +166,22 @@ struct TerminalView {
 }
 
 impl TerminalView {
-    /// The boot pane's cloneable I/O handle. The pane is spawned at boot and
-    /// never closed, so `first()` is always present — the input engine
-    /// ([`SpragPaneExternal`]) and the reflow share this single pane.
-    fn pane_handle(&self) -> SessionHandle {
+    /// The boot pane — the single pane this viewer drives. Spawned at boot and
+    /// never closed (the GUI has no close wire), so it is a hard invariant, not
+    /// an `Option`. This is the **one** place the "which pane?" question is
+    /// answered: `view` / `access_node` / `scroll_view` / the reflow Effect all
+    /// route through here, so the multi-pane round generalizes pane selection in
+    /// one site rather than five (and the absence policy is decided once).
+    fn boot_pane(&self) -> &Pane {
         self.workspace
             .panes()
             .first()
             .expect("the boot pane is always present (spawned at boot, never closed)")
-            .handle()
+    }
+
+    /// The boot pane's cloneable I/O handle (the input engine + reflow seam).
+    fn pane_handle(&self) -> SessionHandle {
+        self.boot_pane().handle()
     }
 }
 
@@ -278,14 +285,10 @@ fn install_reflow() -> Rc<ReflowMarker> {
                 return; // "viewport unknown" (boot, before resume) — no reflow
             }
             let target = grid_dims(size, terminal.metric);
-            // The boot pane is the only pane; reflow it only when the derived
-            // size actually changed, so an unchanged frame issues no ioctl.
-            let pane_to_reflow = terminal
-                .workspace
-                .panes()
-                .first()
-                .filter(|pane| pane.session().dimensions() != target)
-                .map(|pane| pane.id());
+            // Reflow the boot pane only when the derived size actually changed,
+            // so an unchanged frame issues no ioctl.
+            let pane = terminal.boot_pane();
+            let pane_to_reflow = (pane.session().dimensions() != target).then(|| pane.id());
             if let Some(id) = pane_to_reflow {
                 let _ = terminal.workspace.resize(id, target.0, target.1);
             }
@@ -340,11 +343,10 @@ fn next_scroll_offset(key: &str, current: usize, page: usize, scrollback_len: us
 fn scroll_view(key: &str) {
     let terminal = use_terminal();
     let offset = use_scroll_offset();
-    let Some(pane) = terminal.workspace.panes().first() else {
-        return;
-    };
-    let (scrollback_len, rows) =
-        pane.session().with_screen(|screen| (screen.scrollback_len(), screen.rows()));
+    let (scrollback_len, rows) = terminal
+        .boot_pane()
+        .session()
+        .with_screen(|screen| (screen.scrollback_len(), screen.rows()));
     let page = usize::from(rows).saturating_sub(1).max(1);
     offset.set(next_scroll_offset(key, offset.get(), page, scrollback_len));
 }
@@ -359,14 +361,10 @@ fn view(_state: (), _frame: &Frame) -> Scene {
     let theme = use_theme(THEME_TAG).theme_animated();
     let tv = use_terminal();
     let offset = use_scroll_offset().get();
-    // The boot pane is always present (spawned at boot, never closed). On child
-    // EOF the pane stays and `view` paints its frozen final screen — the
-    // deliberate read-only behavior (the program exited; its last output shows).
-    let pane = tv
-        .workspace
-        .panes()
-        .first()
-        .expect("the boot pane is always present (spawned at boot, never closed)");
+    // On child EOF the pane stays and `view` paints its frozen final screen
+    // (the program exited; its last output shows) — not a loss of interactivity,
+    // just no more PTY output to read.
+    let pane = tv.boot_pane();
     // `offset == 0` is the live screen; a positive offset windows into history
     // (text-only, the R16 scrollback model) — one projection seam for both.
     let grid = pane.session().with_screen(|screen| {
@@ -469,7 +467,7 @@ impl WidgetCore for TerminalViewer {
     }
 
     fn title() -> &'static str {
-        "sprag terminal viewer (R26 windowed host, R27 keyboard input)"
+        "sprag terminal (interactive)"
     }
 }
 
@@ -482,9 +480,7 @@ impl WidgetA11y for TerminalViewer {
     /// share one identity.
     fn access_node(_state: &(), focused: Option<&str>) -> Vec<AccessNode> {
         let terminal = use_terminal();
-        let Some(pane) = terminal.workspace.panes().first() else {
-            return Vec::new();
-        };
+        let pane = terminal.boot_pane();
         // `full_text` is the pane's text SSOT — the same string the RPC
         // `full_text` query and the plugin capture read, so the AT and the AI
         // see one notion of the screen (scrollback + visible).
@@ -506,10 +502,12 @@ impl WidgetA11y for TerminalViewer {
 /// `Group` (not `TextInput`): pinion has no `terminal` / `log` role, and a
 /// textbox role advertises caret + place-click + set-value edit affordances that
 /// this widget does not implement (input is raw keystrokes funneled to the PTY
-/// by `apply_key`, not textbox editing). A neutral region carrying a
-/// read value is the honest shape — it does not promise an edit contract the
-/// terminal cannot honor. The cell data the AI reads stays the `scene/snapshot`
-/// path; this node is the human-AT label + text.
+/// by `apply_key`, not textbox editing). A neutral region carrying a read value
+/// is the honest shape — it does not promise an edit contract the terminal
+/// cannot honor. `Group` over `Generic` because a generic container drops the
+/// accessible name, whereas a `Group` announces the named region ("Terminal:
+/// bash"). The cell data the AI reads stays the `scene/snapshot` path; this node
+/// is the human-AT label + text.
 fn terminal_a11y_node(command_label: &str, text: String, focused: bool) -> AccessNode {
     AccessNode::new(ROOT_TAG, AriaRole::Group)
         .with_name(format!("Terminal: {command_label}"))
