@@ -25,14 +25,14 @@ pub(crate) fn use_scroll_offset() -> Signal<usize> {
 const PREEDIT_KEY: &str = "sprag_gui.preedit";
 
 /// The IME preedit (in-progress composition) string, an `Owner::cache`-backed
-/// [`Signal`] that [`route_composition`] writes on `Start`/`Update`/`Cancel`/`Commit`
-/// and `view` reads each frame to overlay the half-composed syllable on the grid
-/// at the cursor (the visual feedback a terminal must render itself under
-/// winit + XIM — the platform IME emits `Ime::Preedit` rather than painting it).
-/// Empty = not composing. Display-only: the preedit never reaches the PTY (only
-/// a `Commit` writes, via the `text` seam). Because `view` reads it every frame,
-/// a `set` flips the root owner dirty so the shell's R705.1 reactive bridge arms
-/// a redraw — the composition repaints live as you type.
+/// [`Signal`] that [`route_composition`] writes on each composition event and
+/// `view` reads every frame to overlay at the cursor (see
+/// [`sprag_host::pane_view_scene_scrolled_with_preedit`] /
+/// `sprag_grid::overlay_preedit` for why a terminal renders the preedit itself).
+/// Empty = not composing; display-only (the preedit never reaches the PTY — only
+/// a `Commit` writes). Because `view` reads it every frame, a `set` flips the root
+/// owner dirty so the shell's R705.1 reactive bridge arms a redraw — the
+/// composition repaints live as you type.
 pub(crate) fn use_preedit() -> Signal<String> {
     let owner = Owner::current().expect("use_preedit() requires an active Owner scope");
     owner.cache(PREEDIT_KEY, || Signal::new(String::new())).as_ref().clone()
@@ -106,31 +106,28 @@ pub(crate) fn route_key(scene: &mut Scene, focused: Option<&str>, key: &str, mod
     intro.invoke("key", IntrospectValue::Json(args)).is_ok()
 }
 
-/// Route an IME composition (Hangul / CJK / any composed input) — rendering the
-/// in-progress preedit on the grid and writing the committed text to the PTY.
+/// Route an IME composition (Hangul / CJK / any composed input): mirror the
+/// in-progress preedit into the [`use_preedit`] overlay Signal and write only the
+/// committed text to the PTY. See `sprag_grid::overlay_preedit` for why a terminal
+/// must render the preedit itself (winit + XIM) and the display-only contract.
 ///
-/// Under winit + XIM the platform IME does **not** paint the preedit
-/// over-the-spot; it emits an `Ime::Preedit` (mapped to
-/// [`CompositionEvent::Start`]/[`Update`](CompositionEvent::Update)) for the
-/// application to render, so the terminal mirrors the half-composed syllable
-/// into the [`use_preedit`] overlay Signal — `view` reads it each frame and
-/// [`sprag_host::pane_view_scene_scrolled_with_preedit`] draws it underlined at
-/// the cursor. That overlay is display-only; it never reaches the PTY.
+/// - [`Start`](CompositionEvent::Start) / [`Cancel`](CompositionEvent::Cancel):
+///   clear the overlay (begin / abort).
+/// - [`Update`](CompositionEvent::Update): mirror the preedit text into the
+///   overlay — NOT written to the PTY.
+/// - [`Commit`](CompositionEvent::Commit): clear the overlay and write the text
+///   **literally** via the root [`SpragPaneExternal`](sprag_host::SpragPaneExternal)'s
+///   `invoke("text", …)` — composed text is not a keystroke, so it bypasses the
+///   key encoder (the same `scene/invoke` wire the AI peer drives, §2 #2). For a
+///   cooked-mode program the committed glyphs then arrive echoed through the PTY;
+///   a non-echoing program (a password prompt, a TUI) shows them only when it next
+///   redraws. An empty Commit is the cancel-shaped end (clearing is the whole job).
 ///
-/// Only [`CompositionEvent::Commit`] writes: the finished text goes **literally**
-/// via the root [`SpragPaneExternal`](sprag_host::SpragPaneExternal)'s
-/// `invoke("text", …)` (composed text is not a keystroke, so it bypasses the key
-/// encoder — the same `scene/invoke` wire the AI peer drives, §2 #2), and the
-/// preedit overlay clears (the committed glyphs now arrive echoed through the
-/// PTY). Returning `true` for the events it handles bumps the shell revision and
-/// arms a redraw (the R705.1 reactive dirty bridge — `view` subscribed to
-/// [`use_preedit`]), so the composition repaints live. Focus-gated on
-/// [`ROOT_TAG`] like [`route_key`].
-///
-/// Not yet wired: `WidgetView::ime_caret_rect` (a sprag-overridable hint that
-/// places the IME candidate window — e.g. the Hanja conversion list — at the
-/// cursor; not shown during plain Hangul composition, so it is positioning
-/// polish, not a pinion gap).
+/// Focus-gated on [`ROOT_TAG`] like [`route_key`]. Returning `true` does double
+/// duty: it reports the event handled AND — because `view` subscribes to
+/// [`use_preedit`] — arms a repaint via pinion's R705.1 reactive-dirty bridge, so
+/// the composition repaints live. (`WidgetView::ime_caret_rect`, Hanja-candidate
+/// positioning, is still unwired — polish, not shown during plain Hangul.)
 pub(crate) fn route_composition(
     scene: &mut Scene,
     focused: Option<&str>,
@@ -139,39 +136,27 @@ pub(crate) fn route_composition(
     if focused != Some(ROOT_TAG) {
         return false;
     }
+    // Composition happens at the live prompt, so snap the scrollback view to the
+    // bottom once for any composition activity — one site (was duplicated across
+    // Start and Commit), and it now also covers a Commit that arrives without a
+    // preceding Start (some IMEs do that).
+    use_scroll_offset().set(0);
     match event {
-        // A composition begins at the live prompt: snap the scrollback view to
-        // the bottom so the preedit overlays the live screen, and clear any
-        // stale composition. (winit always emits Start before the first
-        // Update/Commit of a session, so snapping here covers the session.)
-        CompositionEvent::Start => {
-            use_scroll_offset().set(0);
+        // Begin / abort: clear any (stale) overlay. Update carries the live text.
+        CompositionEvent::Start | CompositionEvent::Cancel => {
             use_preedit().set(String::new());
             true
         }
-        // Preedit progresses (ㅎ -> 하 -> 한): mirror it into the overlay. Not
-        // written to the PTY — only a Commit is.
+        // Preedit progresses (ㅎ -> 하 -> 한): mirror it into the overlay.
         CompositionEvent::Update(text) => {
             use_preedit().set(text.clone());
             true
         }
-        // The user cancelled mid-composition: drop the overlay.
-        CompositionEvent::Cancel => {
-            use_preedit().set(String::new());
-            true
-        }
-        // The composition is finished: clear the overlay (the committed glyphs
-        // now arrive echoed through the PTY) and write the literal text. An
-        // empty commit is the cancel-shaped `compositionend` — clearing the
-        // overlay is the whole job, so write nothing but still report handled
-        // (a stale preedit had to be cleared).
+        // Finished: clear the overlay, then write the literal committed text.
         CompositionEvent::Commit(text) => {
             use_preedit().set(String::new());
-            if text.is_empty() {
-                return true;
-            }
-            use_scroll_offset().set(0);
-            if let Scene::External(node) = scene
+            if !text.is_empty()
+                && let Scene::External(node) = scene
                 && let Some(intro) = node.handle.introspect_mut()
             {
                 let _ = intro.invoke("text", IntrospectValue::Text(text.clone()));
@@ -296,6 +281,26 @@ mod tests {
             row0.contains("한글"),
             "committed IME text echoes to the pane screen; row0 = {row0:?}"
         );
+    }
+
+    /// The R705.1 contract sprag relies on for live preedit: a composing `set` of
+    /// the preedit Signal — which `view` subscribes to by reading it every frame —
+    /// flips the root owner dirty, which is what the shell's reactive-dirty bridge
+    /// turns into a repaint. Pins the coupling so a pinion bridge regression fails
+    /// HERE rather than silently degrading live IME (only otherwise visible in a
+    /// real window).
+    #[test]
+    fn preedit_set_flips_owner_dirty_for_repaint() {
+        let owner = Owner::new();
+        // Mirror `view`: subscribe the owner by reading the preedit Signal.
+        owner.run(|| {
+            let _ = use_preedit().get();
+        });
+        owner.clear_dirty();
+        assert!(!owner.is_dirty(), "clean after a subscribing read");
+        // A composing Update sets the subscribed Signal.
+        owner.run(|| use_preedit().set("ㅎ".to_owned()));
+        assert!(owner.is_dirty(), "a preedit set flips the owner dirty (R705.1 repaint arm)");
     }
 
     #[test]

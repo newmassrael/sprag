@@ -13,6 +13,23 @@
 
 use std::collections::VecDeque;
 
+use unicode_width::UnicodeWidthStr;
+
+/// The number of terminal columns a `char` occupies (UAX #11 via
+/// [`unicode_width`]): `0` for a zero-width combining mark (merged into the
+/// preceding cell, not its own column), `1` narrow, `2` wide (CJK / full-width).
+///
+/// The single width authority. The emulator's print path
+/// ([`Emulator::print_str`](crate::emulator)) and any out-of-band projection
+/// overlay that must place not-yet-printed text (the GUI IME preedit's
+/// `sprag_grid::overlay_preedit`) both classify a glyph's cell span through here,
+/// so they cannot disagree on width — the producer owns the width model and
+/// exposes it rather than letting each consumer recompute it.
+#[must_use]
+pub fn char_columns(ch: char) -> usize {
+    UnicodeWidthStr::width(ch.to_string().as_str())
+}
+
 /// Maximum number of scrolled-off lines [`Screen`] retains (FIFO). Bounds
 /// memory under unbounded output; the oldest line drops past this.
 pub(crate) const SCROLLBACK_CAP: usize = 1000;

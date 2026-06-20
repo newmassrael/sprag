@@ -145,19 +145,16 @@ pub fn pane_view_scene_scrolled(
 }
 
 /// [`pane_view_scene_scrolled`] with an IME `preedit` (in-progress composition)
-/// overlaid at the cursor — the windowed host's live composition feedback. Under
-/// winit + XIM the platform IME does not paint the preedit; it emits
-/// `Ime::Preedit` for the app to render, so the terminal draws the half-composed
-/// syllable itself ([`sprag_grid::overlay_preedit`], underlined at the cursor).
-/// Display-only: the preedit never reaches the PTY — only a committed
-/// [`CompositionEvent::Commit`](pinion_core::CompositionEvent) writes (via
-/// [`SpragPaneExternal`]'s `text` action).
+/// overlaid at the cursor — the windowed host's live composition feedback. The
+/// overlay (drawn underlined at the cursor by [`sprag_grid::overlay_preedit`])
+/// renders the half-composed syllable the platform IME does not paint itself; see
+/// that function for the full winit + XIM rationale and the display-only
+/// (never-to-PTY) contract.
 ///
-/// The overlay applies only to the **live** view (`offset_lines == 0`): the
-/// cursor — the compose position — exists only there ([`sprag_grid::project_scrolled`]
-/// omits it while scrolled), and composition snaps the view back to the live
-/// bottom anyway (you type at the prompt). An empty `preedit` is a no-op, so the
-/// no-composition path is byte-identical to [`pane_view_scene_scrolled`].
+/// The overlay self-gates to the live view: [`sprag_grid::project_scrolled`]
+/// drops the cursor while scrolled, and `overlay_preedit` no-ops without a
+/// visible cursor (the compose anchor) — so no `offset_lines` check is needed
+/// here, and an empty `preedit` is byte-identical to [`pane_view_scene_scrolled`].
 #[must_use]
 pub fn pane_view_scene_scrolled_with_preedit(
     screen: &Screen,
@@ -166,10 +163,10 @@ pub fn pane_view_scene_scrolled_with_preedit(
     offset_lines: usize,
     preedit: &str,
 ) -> Scene {
-    let mut cells = sprag_grid::project_scrolled(screen, offset_lines);
-    if offset_lines == 0 {
-        cells = sprag_grid::overlay_preedit(cells, preedit);
-    }
+    let cells = sprag_grid::overlay_preedit(
+        sprag_grid::project_scrolled(screen, offset_lines),
+        preedit,
+    );
     view_text_grid(cells, metric, font_size_px)
 }
 
@@ -353,20 +350,34 @@ mod tests {
     }
 
     /// The live view (`offset 0`) overlays the IME preedit at the cursor (after
-    /// "hi", col 2), underlined; scrolling away from the live bottom drops it
-    /// (the cursor — the compose position — lives only in the live view).
+    /// "hi", col 2); a scrolled history window drops it (the cursor — the compose
+    /// anchor — lives only in the live view, so `overlay_preedit` self-gates off).
     #[test]
     fn pane_view_scene_overlays_preedit_only_on_the_live_view() {
-        let mut em = Emulator::new(8, 2);
-        em.advance(b"hi");
-        let cluster_at = |scene: &Scene, col: u16| match scene {
-            Scene::TextGrid(node) => node.cells().cell(col, 0).map(|c| c.cluster.to_string()),
+        let cell_cluster = |scene: &Scene, col: u16, row: u16| match scene {
+            Scene::TextGrid(node) => node.cells().cell(col, row).map(|c| c.cluster.to_string()),
             other => unreachable!("expected TextGrid, got {other:?}"),
         };
+        let contains_han = |scene: &Scene| match scene {
+            Scene::TextGrid(node) => {
+                let g = node.cells();
+                (0..g.cols()).any(|c| (0..g.rows()).any(|r| g.cell(c, r).is_some_and(|x| x.cluster == "한")))
+            }
+            other => unreachable!("expected TextGrid, got {other:?}"),
+        };
+        // Live view: the preedit shows at the cursor; an empty preedit does not.
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"hi");
         let live = super::pane_view_scene_scrolled_with_preedit(em.screen(), CellMetric::DEFAULT, 18, 0, "한");
-        assert_eq!(cluster_at(&live, 2).as_deref(), Some("한"), "preedit shows at the cursor on the live view");
-        // Empty preedit is byte-identical to the bare live scene at the cursor.
+        assert_eq!(cell_cluster(&live, 2, 0).as_deref(), Some("한"), "preedit at the cursor on the live view");
         let bare = super::pane_view_scene_scrolled_with_preedit(em.screen(), CellMetric::DEFAULT, 18, 0, "");
-        assert_ne!(cluster_at(&bare, 2).as_deref(), Some("한"), "no composition -> no overlay");
+        assert!(!contains_han(&bare), "no composition -> no overlay");
+        // Scrolled view: the preedit must appear NOWHERE (the half the test name
+        // promises). Fails if the overlay's cursor-visible self-gate regresses.
+        let mut sc = Emulator::new(4, 2);
+        sc.advance(b"a\r\nb\r\nc\r\nd\r\ne"); // 3 rows scroll into history
+        assert_eq!(sc.screen().scrollback_len(), 3);
+        let scrolled = super::pane_view_scene_scrolled_with_preedit(sc.screen(), CellMetric::DEFAULT, 18, 1, "한");
+        assert!(!contains_han(&scrolled), "a scrolled history window shows no preedit");
     }
 }

@@ -13,7 +13,6 @@ use pinion_core::{
     TermCell, TermColor,
 };
 use sprag_vt::{Attrs, Cell, Color, CursorShape, Screen, ScreenKind, Width};
-use unicode_width::UnicodeWidthStr;
 
 /// Project a screen into a fresh pinion `GridBuffer`.
 ///
@@ -90,58 +89,77 @@ pub fn project_scrolled(screen: &Screen, offset_lines: usize) -> GridBuffer {
 }
 
 /// Overlay an in-progress IME preedit (composition) string onto `buffer` at its
-/// cursor, drawn underlined to mark it as composing. Display-only: the preedit
-/// never reaches the PTY — only a committed
-/// [`CompositionEvent::Commit`](pinion_core::CompositionEvent) writes (via the
-/// host text seam). Under winit + XIM the platform IME does **not** paint the
-/// preedit over-the-spot; it emits `Ime::Preedit` for the application to render,
-/// so a terminal must draw the half-composed syllable itself — this is that
-/// rendering, the visual feedback that makes Hangul/CJK composition visible
-/// before commit.
+/// cursor, drawn underlined to mark it as composing.
 ///
-/// Wide (CJK) preedit chars expand to pinion's head + trailer pair using the same
-/// `unicode-width` model the emulator uses, so a composing Hangul syllable
-/// occupies the two cells its committed form will.
-/// Preedit cells past the row's right edge are clipped (a transient pre-commit
-/// overflow, not wrapped), and zero-width combining marks are skipped (the
-/// emulator's documented grapheme-cluster gap). An empty preedit returns
-/// `buffer` unchanged, so the live view with no active composition is identical.
+/// **This is the one source of the rationale** the host/GUI seams cross-reference:
+/// under winit + XIM the platform IME does **not** paint the in-progress preedit
+/// over-the-spot; it emits an `Ime::Preedit` for the application to render. So a
+/// terminal must draw the half-composed syllable itself — this overlay is that
+/// rendering, the visual feedback that makes Hangul/CJK composition visible
+/// before commit. It is display-only: the preedit never reaches the PTY — only a
+/// committed [`CompositionEvent::Commit`](pinion_core::CompositionEvent) writes
+/// (via the host text seam), at which point the committed glyphs arrive through
+/// the PTY and the overlay clears.
+///
+/// Width comes from the producer's authority ([`sprag_vt::char_columns`]) — the
+/// same model the emulator prints with — not a second width computation, so a
+/// composing wide (CJK) syllable occupies the two cells (head + trailer) its
+/// committed form will. A wide head whose trailer would fall off the row's right
+/// edge is clipped *whole* (never emitted as a malformed Narrow-tagged wide
+/// cell), a narrow cluster past the edge is clipped, and zero-width combining
+/// marks are skipped (the emulator's documented grapheme-cluster gap).
+///
+/// No-ops (returns `buffer` unchanged) when the preedit is empty (no active
+/// composition) **or** the buffer has no visible cursor — the cursor is the
+/// compose anchor, so a scrolled-back history window (cursor-less per
+/// [`project_scrolled`]) or a DECTCEM-hidden cursor has nowhere to anchor. This
+/// is the single "no cursor ⇒ no overlay" gate; callers need no offset check.
 #[must_use]
 pub fn overlay_preedit(buffer: GridBuffer, preedit: &str) -> GridBuffer {
-    if preedit.is_empty() {
+    let cursor = buffer.cursor();
+    if preedit.is_empty() || !cursor.visible {
         return buffer;
     }
     let cols = buffer.cols();
-    let cursor = buffer.cursor();
     let row = cursor.row;
     if cols == 0 || row >= buffer.rows() {
         return buffer;
     }
     // Copy the cursor row, then splice the preedit in starting at the cursor
     // column. `with_row` rewrites the whole row, so the copy preserves the
-    // committed cells to the left/right of the composition.
-    let width = usize::from(cols);
-    let mut cells: Vec<TermCell> =
-        (0..cols).map(|col| buffer.cell(col, row).cloned().unwrap_or_else(TermCell::blank)).collect();
+    // committed cells to the left/right of the composition. Every (col, row)
+    // here is in bounds (col < cols, row < rows checked above), so `cell` is
+    // always `Some` — a `None` would be an internal `GridBuffer` invariant break.
+    let cols_usize = usize::from(cols);
+    let mut cells: Vec<TermCell> = (0..cols)
+        .map(|col| buffer.cell(col, row).cloned().expect("col < cols and row < rows hold above"))
+        .collect();
     let mut col = usize::from(cursor.col);
     for ch in preedit.chars() {
-        let w = UnicodeWidthStr::width(ch.to_string().as_str());
-        if w == 0 {
-            continue; // combining mark — the emulator merges these (skeleton gap)
-        }
-        if col >= width {
-            break; // clip the preedit at the right edge (transient pre-commit)
-        }
-        let head = preedit_cell(ch);
-        if w == 2 && col + 1 < width {
-            let wide = head.wide();
-            let trailer = wide.trailer();
-            cells[col] = wide;
-            cells[col + 1] = trailer;
-            col += 2;
-        } else {
-            cells[col] = head;
-            col += 1;
+        match sprag_vt::char_columns(ch) {
+            // Combining mark: merged into the previous cell by the emulator; the
+            // overlay has no previous-cell to merge into, so skip (the gap).
+            0 => continue,
+            // Wide (CJK) head needs its column AND the trailer column; clip the
+            // whole head if the trailer would run off the edge (no lone wide head).
+            2 => {
+                if col + 1 >= cols_usize {
+                    break;
+                }
+                let wide = preedit_cell(ch).wide();
+                let trailer = wide.trailer();
+                cells[col] = wide;
+                cells[col + 1] = trailer;
+                col += 2;
+            }
+            // Narrow cluster (1 column; any unexpected >2 width also renders narrow).
+            _ => {
+                if col >= cols_usize {
+                    break;
+                }
+                cells[col] = preedit_cell(ch);
+                col += 1;
+            }
         }
     }
     buffer.with_row(row, cells)
@@ -380,5 +398,28 @@ mod tests {
         for col in 0..plain.cols() {
             assert_eq!(plain.cell(col, 0).unwrap().cluster, overlaid.cell(col, 0).unwrap().cluster);
         }
+    }
+
+    /// A wide preedit whose trailer would run off the row edge is clipped WHOLE —
+    /// never written as a malformed Narrow-tagged wide cell (the M2 fix).
+    #[test]
+    fn overlay_preedit_clips_a_wide_syllable_at_the_row_edge() {
+        let screen = screen_from(b"abc", 4, 1); // 4 cols, cursor lands on the last column (3)
+        assert_eq!(project(&screen).cursor().col, 3);
+        let buffer = overlay_preedit(project(&screen), "한");
+        let last = buffer.cell(3, 0).unwrap();
+        assert_ne!(last.cluster, "한", "the wide head is clipped at the edge, not written");
+        assert_ne!(last.width, pinion_core::CellWidth::Wide, "no lone Narrow-tagged wide head");
+    }
+
+    /// No visible cursor (a scrolled history window, or a DECTCEM-hidden cursor)
+    /// is no compose anchor — the overlay is a no-op (the single S1 gate).
+    #[test]
+    fn overlay_preedit_no_op_without_a_visible_cursor() {
+        let screen = screen_from(b"ab", 10, 1);
+        let hidden = project(&screen)
+            .with_cursor(GridCursor::new(2, 0, PinCursorShape::Block, false));
+        let out = overlay_preedit(hidden, "x");
+        assert_ne!(out.cell(2, 0).unwrap().cluster, "x", "no overlay without a visible cursor");
     }
 }

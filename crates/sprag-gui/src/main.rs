@@ -74,15 +74,13 @@
 //! defaults so a full-screen TUI (vim) receives them.
 //!
 //! IME-composed input (R31, R34) — Hangul, CJK — arrives not as keystrokes but
-//! as [`WidgetCore::apply_composition`] events. Under winit + XIM the platform
-//! IME does not paint the in-progress preedit itself; it emits `Ime::Preedit`
-//! ([`CompositionEvent::Start`]/`Update`) for the app to render, so the
-//! half-composed syllable is mirrored into the [`use_preedit`](input::use_preedit)
-//! overlay Signal and drawn underlined at the cursor by `view` (R34 — the
-//! feedback that makes Hangul composition visible *before* commit). On
-//! [`CompositionEvent::Commit`] the overlay clears and the finished text is
+//! as [`WidgetCore::apply_composition`] events. The in-progress preedit is
+//! mirrored into the [`use_preedit`](input::use_preedit) overlay Signal and drawn
+//! underlined at the cursor by `view` (R34 — see [`route_composition`] and
+//! `sprag_grid::overlay_preedit` for why a terminal renders the preedit itself);
+//! on [`CompositionEvent::Commit`] the overlay clears and the finished text is
 //! written *literally* (no key-encoding) through the sibling `invoke("text", …)`
-//! wire; the committed glyphs then arrive echoed through the PTY.
+//! wire.
 //!
 //! ## Scrollback (R29): scroll the history view
 //!

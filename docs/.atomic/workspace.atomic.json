@@ -1498,6 +1498,62 @@
         "HiDPI half-font (pinion scale-naive) workaround WINIT_X11_SCALE_FACTOR=1 still open (separate gap)"
       ]
     },
+    "Round 35": {
+      "decision_summary": "Round 35: session-review remediation of R34 (inline IME preedit overlay). Two independent adversarial agents (refactoring + architecture lens) over 1ba0807 + my SSOT/source cross-check converged on 3 structural issues; each verified against source. Fixed: M1 width-SSOT — overlay_preedit recomputed char width (a 2nd unicode-width model vs the emulator), now both the emulator print_str and the overlay classify through one sprag-vt::char_columns and sprag-grid drops its unicode-width dep; M2 — a wide preedit head whose trailer ran off the row edge was emitted as a malformed Narrow-tagged wide cell, now clipped whole. Plus S1 a single 'no visible cursor => no overlay' gate in overlay_preedit (host drops its duplicate offset==0 gate), S2 the winit+XIM rationale deduped 5 sites -> 1 (the renderer) + xrefs, S3 the masking host test now asserts the scrolled-no-overlay half it names, S4 scroll-snap once at route_composition top (fixes the empty-commit asymmetry), S5 dead unwrap->expect + naming, S6 a test pins the R705.1 dirty-bridge contract, S7 commit-echo doc scoped to echoing programs. Deferred with rationale: D1 a CellOverlay/view-spec seam (premature at 1 overlay consumer) and D2 per-pane preedit (consistent with the existing global scroll-offset; pane-scope all GUI state together in the multi-pane round) — both logged as multi-pane prerequisites. Verified: workspace tests + clippy clean; live ibus-hangul 한글 renders full-width (no regression).",
+      "changes_bullets": [
+        "M1: sprag-vt char_columns = one width authority; emulator print_str + overlay_preedit both use it",
+        "M1: sprag-grid drops unicode-width dep (was a 2nd width model) — cargo/doc smell removed at root",
+        "M2: overlay_preedit clips a wide head whose trailer runs off-edge (was a Narrow-tagged wide cell)",
+        "S1: one \"no visible cursor -> no overlay\" gate in overlay_preedit; host drops its offset==0 gate",
+        "S2/S5: winit+XIM rationale 5 sites -> 1 (renderer) + xrefs; dead unwrap->expect; naming cleanup",
+        "S3/S6: host test asserts the scrolled-no-overlay half; new test pins the R705.1 dirty-bridge",
+        "S4/S7: scroll-snap once at route_composition top; commit-echo doc scoped to echoing programs"
+      ],
+      "verification_bullets": [
+        "Two adversarial agents (refactoring + architecture) + SSOT/source cross-check over 1ba0807",
+        "cargo test --workspace green; cargo clippy --workspace --all-targets clean",
+        "emulator 19 tests pass (char_columns refactor is behavior-preserving)",
+        "Live: ibus-hangul 한글 renders full-width after R35 (no regression; pinion R1013 path)",
+        "New tests: wide-at-edge clip, no-visible-cursor no-op, scrolled-no-overlay, dirty-bridge"
+      ],
+      "impact_refs": [
+        "2",
+        "3"
+      ],
+      "carry_forward_bullets": [
+        "D1 deferred: CellOverlay/view-spec seam = premature at 1 overlay consumer (2nd overlay/multi-pane)",
+        "D2 deferred: per-pane preedit -> multi-pane; pane-scope scroll+preedit+focus together (now global)",
+        "ime_caret_rect unwired (Hanja candidate positioning); preedit caret-offset dropped by winit",
+        "CJK glyph under-fill = CJK font asset (PR-8 remaining), a product decision, not a bug"
+      ],
+      "publishable_decision_summary": "Round 35: session-review remediation of R34 (inline IME preedit overlay). Two independent adversarial agents (refactoring + architecture lens) over 1ba0807 + my SSOT/source cross-check converged on 3 structural issues; each verified against source. Fixed: M1 width-SSOT — overlay_preedit recomputed char width (a 2nd unicode-width model vs the emulator), now both the emulator print_str and the overlay classify through one sprag-vt::char_columns and sprag-grid drops its unicode-width dep; M2 — a wide preedit head whose trailer ran off the row edge was emitted as a malformed Narrow-tagged wide cell, now clipped whole. Plus S1 a single 'no visible cursor => no overlay' gate in overlay_preedit (host drops its duplicate offset==0 gate), S2 the winit+XIM rationale deduped 5 sites -> 1 (the renderer) + xrefs, S3 the masking host test now asserts the scrolled-no-overlay half it names, S4 scroll-snap once at route_composition top (fixes the empty-commit asymmetry), S5 dead unwrap->expect + naming, S6 a test pins the R705.1 dirty-bridge contract, S7 commit-echo doc scoped to echoing programs. Deferred with rationale: D1 a CellOverlay/view-spec seam (premature at 1 overlay consumer) and D2 per-pane preedit (consistent with the existing global scroll-offset; pane-scope all GUI state together in the multi-pane round) — both logged as multi-pane prerequisites. Verified: workspace tests + clippy clean; live ibus-hangul 한글 renders full-width (no regression).",
+      "publishable_changes_bullets": [
+        "M1: sprag-vt char_columns = one width authority; emulator print_str + overlay_preedit both use it",
+        "M1: sprag-grid drops unicode-width dep (was a 2nd width model) — cargo/doc smell removed at root",
+        "M2: overlay_preedit clips a wide head whose trailer runs off-edge (was a Narrow-tagged wide cell)",
+        "S1: one \"no visible cursor -> no overlay\" gate in overlay_preedit; host drops its offset==0 gate",
+        "S2/S5: winit+XIM rationale 5 sites -> 1 (renderer) + xrefs; dead unwrap->expect; naming cleanup",
+        "S3/S6: host test asserts the scrolled-no-overlay half; new test pins the R705.1 dirty-bridge",
+        "S4/S7: scroll-snap once at route_composition top; commit-echo doc scoped to echoing programs"
+      ],
+      "publishable_verification_bullets": [
+        "Two adversarial agents (refactoring + architecture) + SSOT/source cross-check over 1ba0807",
+        "cargo test --workspace green; cargo clippy --workspace --all-targets clean",
+        "emulator 19 tests pass (char_columns refactor is behavior-preserving)",
+        "Live: ibus-hangul 한글 renders full-width after R35 (no regression; pinion R1013 path)",
+        "New tests: wide-at-edge clip, no-visible-cursor no-op, scrolled-no-overlay, dirty-bridge"
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "3"
+      ],
+      "publishable_carry_forward_bullets": [
+        "D1 deferred: CellOverlay/view-spec seam = premature at 1 overlay consumer (2nd overlay/multi-pane)",
+        "D2 deferred: per-pane preedit -> multi-pane; pane-scope scroll+preedit+focus together (now global)",
+        "ime_caret_rect unwired (Hanja candidate positioning); preedit caret-offset dropped by winit",
+        "CJK glyph under-fill = CJK font asset (PR-8 remaining), a product decision, not a bug"
+      ]
+    },
     "Round 4": {
       "decision_summary": "Add sprag-term: a headless JSON-RPC server exposing a live PTY session as scene-as-data over stdin/stdout.",
       "changes_bullets": [

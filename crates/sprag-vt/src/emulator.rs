@@ -19,10 +19,10 @@ use termwiz::escape::csi::{
 };
 use termwiz::escape::parser::Parser;
 use termwiz::escape::{Action, ControlCode};
-use unicode_width::UnicodeWidthStr;
 
 use crate::port::{
-    Attrs, Cell, Color, Cursor, CursorShape, InputModes, Rgb, Screen, ScreenKind, VtPort, Width,
+    char_columns, Attrs, Cell, Color, Cursor, CursorShape, InputModes, Rgb, Screen, ScreenKind,
+    VtPort, Width,
 };
 
 /// A terminal emulator: feed PTY bytes via [`VtPort::advance`], read the
@@ -277,7 +277,7 @@ impl Emulator {
         // Char-level is sufficient for the skeleton; ZWJ emoji clusters
         // are a known gap (DESIGN.md §5 — logged, not silently capped).
         for ch in s.chars() {
-            let w = UnicodeWidthStr::width(ch.to_string().as_str());
+            let w = char_columns(ch); // the one width authority (port::char_columns)
             if w == 0 {
                 // Combining mark: merge into the previous cell if possible.
                 self.merge_combining(ch);

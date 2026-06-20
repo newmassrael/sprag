@@ -11,6 +11,3 @@ publish = false
 [dependencies]
 sprag-vt = { workspace = true }
 pinion-core = { workspace = true }
-# Same width model the emulator uses, so a composing CJK preedit char occupies
-# the cell count its committed form will (overlay_preedit).
-unicode-width = { workspace = true }
