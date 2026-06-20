@@ -1662,6 +1662,60 @@
         "Next can be the deferred adversarial session-review remediation (the R25/R30/R35 rhythm) over R36+R37, or a deferred axis once PR-9 / PR-10 land."
       ]
     },
+    "Round 38": {
+      "decision_summary": "Round 38: draggable splitter — drag the divider between tiled panes to resize them (was an even split), via pinion's view_splitter + SplitterExternal (pinion-widget-paint, GPU-free). N panes nest N-1 splitters with position-keyed ratio Signals. The interactive layout lives GUI-side (new split.rs) since it needs reactive ratios + a registered External the headless host has no use for; the host keeps the per-pane projection (pane_view_scene) and the now-dead workspace_view_scene even-tiling is removed. Reflow-on-drag is automatic (ratio set -> re-layout -> R1012 pane-rect publish -> per-pane reflow; the reflow seam was built for it). DATA-proven (ratio 0.7 -> panes reflow ~70/30) AND LIVE-verified (XTEST pointer drag on the handle -> PTYs resize 47/47 -> 66/28). No pinion edit.",
+      "changes_bullets": [
+        "sprag-gui/split (new module): the draggable-divider layout. use_splitter_ratio(j) (Owner::cache-shared Rc<Signal<f32>>, default 0.5) + SPLITTER_TAGS (static, the &'static str discipline of PANE_TAGS) + view_split_row(panes, theme) (fold: 0 -> empty, 1 -> lone pane, N -> N-1 nested view_splitter, Horizontal, sized Percent(100) to fill compose). Ratios are POSITION-keyed (divider j = docked tile j vs everything to its right) — the proportional split-tree model.",
+        "sprag-gui/main: create_extra_externals registers MAX_PANES-1 SplitterExternals (Horizontal, attach_ratio(use_splitter_ratio(j))) sharing the view's ratio Signal — inert when a handle is not painted; the shell's pointer router drives the on-screen ones (NO WidgetCore pointer method). Splitter tags are NOT focusable (pointer-only). New pinion-widget-paint dep (GPU-free, already transitive via pinion-shell).",
+        "sprag-gui/view: view_main arranges the docked panes via split::view_split_row instead of the even host tiling; build_pane_scene + the dock floating filter are unchanged.",
+        "sprag-host: removed the now-dead workspace_view_scene + WORKSPACE_VIEW_TAG + PANE_GAP_PX + its test + the AlignItems/FlexDirection imports (no-dead-surface — only the GUI used it, and the GUI now owns the interactive arrangement). Kept pane_view_scene (the per-pane projection SSOT); doc honesty: the host projects each pane, the GUI arranges them.",
+        "No reflow.rs change: a drag mutates the ratio -> view re-renders -> compute_layout moves each pane_tag(i) rect -> R1012 publishes it -> the per-pane reflow Effect resizes the PTY; equality-skip bounds it to cell-boundary crossings (reflow.rs already named \"a future splitter drags\").",
+        "No pinion edit / no new PR: pinion's view_splitter + SplitterExternal seam (pinion-widget-paint) was sufficient and pointer dispatch to the External is automatic. The interactive layout lives GUI-side because it needs reactive ratios + a registered External the headless host has no use for (R25 satisfied: host owns per-pane projection, GUI owns the interactive arrangement)."
+      ],
+      "verification_bullets": [
+        "159 workspace tests pass (sprag-gui 30, +5: split shape x3 + ratio round-trip + the divider-drag reweight; sprag-host -1 = the removed workspace_view_scene test) and cargo clippy --workspace --all-targets is clean.",
+        "DATA proof: ShellCore::<TerminalViewer>::compute_paint_scene boots an even split, then setting divider 0's ratio to 0.7 (the exact write a pointer drag performs) re-weights the panes so the left pane reflows to ~70% (tracking 0.7 within tolerance) — the ratio -> layout -> R1012 reflow chain end-to-end.",
+        "LIVE-verified (the R37 XTEST harness extended with pointer events, ad-hoc): the real winit/GPU binary booted an even split (both panes 47 cols via stty size); a synthetic pointer drag of the handle to the 0.70 x-position (warp_pointer + ButtonPress/motion/ButtonRelease) reflowed the PTYs to 66/28 cols — the divider moved and the panes actually resized. Plus a boot-liveness smoke.",
+        "Split shape tests: 2 panes -> 1 divider handle, 3 -> 2 nested dividers, 1 -> none; the per-divider ratio Signals are independent and default even.",
+        "Plan-agent pressure-test before the build; load-bearing facts source-verified (view_splitter shape + apply_flex_main preserves the pane tag, SplitterExternal wants_pointer_capture + Gui backend + NO WidgetCore pointer method, pinion-widget-paint GPU-free + already transitive, the host-tiling-is-dead decision)."
+      ],
+      "impact_refs": [
+        "2",
+        "3"
+      ],
+      "carry_forward_bullets": [
+        "The divider ratios are POSITION-keyed, not pane-sticky: undock/dock re-compacts the docked set, so a remembered divider position then separates a different pane pair (the honest splitter-tree behavior; pane-identity-sticky ratios would need a real split-tree — premature at MAX_PANES=8). Nested splitters are proportional (divider j = tile j vs the rest), not independent columns.",
+        "Cosmetic gap (deferred, YAGNI): the handle does not visually brighten mid-drag (view_splitter dragging=false); the live highlight needs a per-splitter is_dragging mirror Signal.",
+        "Still gated on PR-9 (runtime focusable refresh) for dynamic split/close + per-pane tabs + DnD reorder + new-pane undock; PR-10 (per-window viewport publish) for resizable undock windows. Both reported as separate claudedocs docs.",
+        "Next can be the deferred adversarial session-review remediation (the R25/R30/R35 rhythm) over R36+R37+R38, or a deferred axis once PR-9 / PR-10 land."
+      ],
+      "publishable_decision_summary": "Round 38: draggable splitter — drag the divider between tiled panes to resize them (was an even split), via pinion's view_splitter + SplitterExternal (pinion-widget-paint, GPU-free). N panes nest N-1 splitters with position-keyed ratio Signals. The interactive layout lives GUI-side (new split.rs) since it needs reactive ratios + a registered External the headless host has no use for; the host keeps the per-pane projection (pane_view_scene) and the now-dead workspace_view_scene even-tiling is removed. Reflow-on-drag is automatic (ratio set -> re-layout -> R1012 pane-rect publish -> per-pane reflow; the reflow seam was built for it). DATA-proven (ratio 0.7 -> panes reflow ~70/30) AND LIVE-verified (XTEST pointer drag on the handle -> PTYs resize 47/47 -> 66/28). No pinion edit.",
+      "publishable_changes_bullets": [
+        "sprag-gui/split (new module): the draggable-divider layout. use_splitter_ratio(j) (Owner::cache-shared Rc<Signal<f32>>, default 0.5) + SPLITTER_TAGS (static, the &'static str discipline of PANE_TAGS) + view_split_row(panes, theme) (fold: 0 -> empty, 1 -> lone pane, N -> N-1 nested view_splitter, Horizontal, sized Percent(100) to fill compose). Ratios are POSITION-keyed (divider j = docked tile j vs everything to its right) — the proportional split-tree model.",
+        "sprag-gui/main: create_extra_externals registers MAX_PANES-1 SplitterExternals (Horizontal, attach_ratio(use_splitter_ratio(j))) sharing the view's ratio Signal — inert when a handle is not painted; the shell's pointer router drives the on-screen ones (NO WidgetCore pointer method). Splitter tags are NOT focusable (pointer-only). New pinion-widget-paint dep (GPU-free, already transitive via pinion-shell).",
+        "sprag-gui/view: view_main arranges the docked panes via split::view_split_row instead of the even host tiling; build_pane_scene + the dock floating filter are unchanged.",
+        "sprag-host: removed the now-dead workspace_view_scene + WORKSPACE_VIEW_TAG + PANE_GAP_PX + its test + the AlignItems/FlexDirection imports (no-dead-surface — only the GUI used it, and the GUI now owns the interactive arrangement). Kept pane_view_scene (the per-pane projection SSOT); doc honesty: the host projects each pane, the GUI arranges them.",
+        "No reflow.rs change: a drag mutates the ratio -> view re-renders -> compute_layout moves each pane_tag(i) rect -> R1012 publishes it -> the per-pane reflow Effect resizes the PTY; equality-skip bounds it to cell-boundary crossings (reflow.rs already named \"a future splitter drags\").",
+        "No pinion edit / no new PR: pinion's view_splitter + SplitterExternal seam (pinion-widget-paint) was sufficient and pointer dispatch to the External is automatic. The interactive layout lives GUI-side because it needs reactive ratios + a registered External the headless host has no use for (R25 satisfied: host owns per-pane projection, GUI owns the interactive arrangement)."
+      ],
+      "publishable_verification_bullets": [
+        "159 workspace tests pass (sprag-gui 30, +5: split shape x3 + ratio round-trip + the divider-drag reweight; sprag-host -1 = the removed workspace_view_scene test) and cargo clippy --workspace --all-targets is clean.",
+        "DATA proof: ShellCore::<TerminalViewer>::compute_paint_scene boots an even split, then setting divider 0's ratio to 0.7 (the exact write a pointer drag performs) re-weights the panes so the left pane reflows to ~70% (tracking 0.7 within tolerance) — the ratio -> layout -> R1012 reflow chain end-to-end.",
+        "LIVE-verified (the R37 XTEST harness extended with pointer events, ad-hoc): the real winit/GPU binary booted an even split (both panes 47 cols via stty size); a synthetic pointer drag of the handle to the 0.70 x-position (warp_pointer + ButtonPress/motion/ButtonRelease) reflowed the PTYs to 66/28 cols — the divider moved and the panes actually resized. Plus a boot-liveness smoke.",
+        "Split shape tests: 2 panes -> 1 divider handle, 3 -> 2 nested dividers, 1 -> none; the per-divider ratio Signals are independent and default even.",
+        "Plan-agent pressure-test before the build; load-bearing facts source-verified (view_splitter shape + apply_flex_main preserves the pane tag, SplitterExternal wants_pointer_capture + Gui backend + NO WidgetCore pointer method, pinion-widget-paint GPU-free + already transitive, the host-tiling-is-dead decision)."
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "3"
+      ],
+      "publishable_carry_forward_bullets": [
+        "The divider ratios are POSITION-keyed, not pane-sticky: undock/dock re-compacts the docked set, so a remembered divider position then separates a different pane pair (the honest splitter-tree behavior; pane-identity-sticky ratios would need a real split-tree — premature at MAX_PANES=8). Nested splitters are proportional (divider j = tile j vs the rest), not independent columns.",
+        "Cosmetic gap (deferred, YAGNI): the handle does not visually brighten mid-drag (view_splitter dragging=false); the live highlight needs a per-splitter is_dragging mirror Signal.",
+        "Still gated on PR-9 (runtime focusable refresh) for dynamic split/close + per-pane tabs + DnD reorder + new-pane undock; PR-10 (per-window viewport publish) for resizable undock windows. Both reported as separate claudedocs docs.",
+        "Next can be the deferred adversarial session-review remediation (the R25/R30/R35 rhythm) over R36+R37+R38, or a deferred axis once PR-9 / PR-10 land."
+      ]
+    },
     "Round 4": {
       "decision_summary": "Add sprag-term: a headless JSON-RPC server exposing a live PTY session as scene-as-data over stdin/stdout.",
       "changes_bullets": [

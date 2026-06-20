@@ -1,14 +1,15 @@
-//! `sprag-gui` — the **interactive GPU windowed terminal** (R24-R36).
+//! `sprag-gui` — the **interactive GPU windowed terminal** (R24-R38).
 //!
 //! A window that tiles N terminal panes, paints each one's **live** screen (and
 //! its scrollback history), and types into the focused one. It is the human
 //! observation/interaction path; the north star (an AI reading/driving the
 //! terminal as *data*) is the headless `sprag-host` RPC path, which needs none of
 //! this. This binding is a faithful pixel projection of the *same* cell data the
-//! AI reads — it reuses the host's per-pane projection + tiling seams
-//! ([`sprag_host::pane_view_scene`] / [`sprag_host::workspace_view_scene`]) rather
-//! than re-deriving them — and routes keystrokes through the *same*
-//! [`SpragPaneExternal`] `invoke("key", ...)` wire the AI drives (§2 #2).
+//! AI reads — it reuses the host's per-pane projection seam
+//! ([`sprag_host::pane_view_scene`]) and arranges the panes itself (the
+//! interactive [`split`] layout — reactive ratios the headless host has no use
+//! for) — and routes keystrokes through the *same* [`SpragPaneExternal`]
+//! `invoke("key", ...)` wire the AI drives (§2 #2).
 //!
 //! ## Multi-pane (R36): N tiled panes, one focused
 //!
@@ -46,7 +47,20 @@
 //! a reported gap; see `dock` docs). Per-window a11y partitions nodes
 //! ([`a11y::access_nodes_for_window`]).
 //!
-//! ## Module map (R32, R36, R37)
+//! ## Draggable dividers (R38): drag to resize panes
+//!
+//! The docked panes are arranged by [`split::view_split_row`] with pinion
+//! `view_splitter` dividers you can DRAG to resize (even at boot; N>2 nests N-1
+//! splitters). Each divider's ratio is an `Owner::cache`-shared `Signal<f32>`: the
+//! view reads it, and a [`SplitterExternal`](pinion_widget_paint::splitter::SplitterExternal)
+//! registered at the handle tag ([`create_extra_externals`](TerminalViewer))
+//! writes it on a pointer drag (the shell's pointer router delivers the drag — no
+//! `WidgetCore` pointer method). A drag re-weights the flex layout -> the pane
+//! rects change -> the R1012 reflow Effects resize the PTYs (automatic; the
+//! `reflow` seam was built for it). The interactive layout lives GUI-side (not in
+//! the host) because it needs reactive ratios + a registered External.
+//!
+//! ## Module map (R32, R36, R37, R38)
 //!
 //! The binding is split by concern so each axis grows in one place:
 //!
@@ -62,6 +76,8 @@
 //! - [`dock`] — which OS window paints each pane: the topology
 //!   [`Signal`](pinion_core::reactive::Signal) (floating SSOT) +
 //!   [`toggle_pane_floating`](dock::toggle_pane_floating).
+//! - [`split`] — the draggable-divider layout: the per-divider ratio Signals +
+//!   the [`view_split_row`](split::view_split_row) splitter fold.
 //! - [`a11y`] — the per-pane (per-window) accessible-node projection (human-AT).
 //! - [`view`] — the per-window paint ([`view::view_for_window`]: main tiling /
 //!   single undocked pane) + the surface-filled paint root.
@@ -147,6 +163,7 @@ mod a11y;
 mod dock;
 mod input;
 mod reflow;
+mod split;
 mod terminal;
 mod view;
 
@@ -156,6 +173,7 @@ use pinion_core::reactive::Signal;
 use pinion_core::widget_core::ExtraExternal;
 use pinion_core::{CompositionEvent, Frame, Modifiers, Scene, WidgetCore};
 use pinion_shell::{SizeStrategy, WidgetView, WindowSpec, vello_renderer_impl};
+use pinion_widget_paint::splitter::{SplitterExternal, SplitterOrientation};
 use sprag_host::SpragPaneExternal;
 use std::rc::Rc;
 
@@ -212,14 +230,30 @@ impl WidgetCore for TerminalViewer {
         let terminal = use_terminal();
         install_reflow();
         pinion_core::focus_request::request(pane_tag(0));
-        (1..terminal.pane_count())
+        // Panes 1.. are the extra input Externals (pane 0 is the primary).
+        let mut externals: Vec<ExtraExternal> = (1..terminal.pane_count())
             .map(|i| {
                 ExtraExternal::new(
                     pane_tag(i),
                     Box::new(SpragPaneExternal::new(terminal.pane_handle(i))),
                 )
             })
-            .collect()
+            .collect();
+        // The draggable dividers: one `SplitterExternal` per possible divider,
+        // sharing the ratio `Signal` [`view_split_row`](view::view_for_window)
+        // reads. Register ALL `SPLITTER_TAGS` at boot (inert when a handle is not
+        // painted); the shell's pointer router drives the on-screen ones. NOT
+        // focusable tab stops (pointer-only — absent from `focusable_tags`).
+        externals.extend(split::SPLITTER_TAGS.iter().enumerate().map(|(j, &tag)| {
+            ExtraExternal::new(
+                tag,
+                Box::new(
+                    SplitterExternal::new(SplitterOrientation::Horizontal)
+                        .attach_ratio(split::use_splitter_ratio(j)),
+                ),
+            )
+        }));
+        externals
     }
 
     /// Route a focused keystroke to the focused pane's PTY — delegates to
@@ -433,8 +467,42 @@ mod tests {
         assert!(main2.contains_tag(pane_tag(1)), "dock-back re-tiles pane 1");
     }
 
+    /// End-to-end divider drag through the REAL viewer: setting divider 0's ratio
+    /// Signal (the exact write a pointer drag performs via `SplitterExternal`)
+    /// re-weights the two panes — the left pane reflows wider, tracking ~0.7. Proves
+    /// the read side (`view_split_row` -> `view_splitter` -> layout -> R1012 reflow)
+    /// sprag wires; the pointer->Signal write side is pinion's `SplitterExternal`
+    /// (its own tests) + the live drag smoke.
+    #[test]
+    fn dragging_a_divider_reweights_the_panes() {
+        let mut core = ShellCore::<TerminalViewer>::new();
+        // Even split at boot — the two panes are within a cell of each other.
+        let even = painted_grid_dims(&core.compute_paint_scene(WINDOW_W, WINDOW_H));
+        assert_eq!(even.len(), 2, "two panes, got {even:?}");
+        assert!(
+            even[0].0.abs_diff(even[1].0) <= 1,
+            "boots even, got {even:?}"
+        );
+
+        // Drag divider 0 to a 0.7 left-share (the same Signal a pointer drag sets).
+        core.root_owner()
+            .run(|| split::use_splitter_ratio(0).set(0.7));
+        let weighted = painted_grid_dims(&core.compute_paint_scene(WINDOW_W, WINDOW_H));
+        assert_eq!(weighted.len(), 2);
+        let (left, right) = (weighted[0].0, weighted[1].0);
+        assert!(
+            left > right,
+            "left pane reflowed wider after ratio 0.7, got {weighted:?}"
+        );
+        let left_frac = f32::from(left) / f32::from(left + right);
+        assert!(
+            (left_frac - 0.7).abs() < 0.06,
+            "the split tracks ~0.7 (got {left_frac:.2}, {weighted:?})",
+        );
+    }
+
     /// Undocking every pane leaves the main window empty — it must not panic
-    /// (`workspace_view_scene(vec![])` is a childless Container) and paints no pane.
+    /// (`view_split_row(vec![])` is a childless Container) and paints no pane.
     #[test]
     fn undock_all_panes_yields_an_empty_main_without_panic() {
         let mut core = ShellCore::<TerminalViewer>::new();

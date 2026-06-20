@@ -38,6 +38,10 @@ repository = "https://github.com/newmassrael/sprag"
 pinion-core = { path = "../pinion/crates/pinion-core", version = "0.0.1" }
 pinion-a11y = { path = "../pinion/crates/pinion-a11y", version = "0.0.1" }
 pinion-shell = { path = "../pinion/crates/pinion-shell", version = "0.0.1" }
+# Backend-agnostic widget paint helpers (GPU-free; deps core/text/a11y, already
+# under pinion-shell). sprag-gui uses `view_splitter` + `SplitterExternal` for
+# the draggable pane dividers (R38).
+pinion-widget-paint = { path = "../pinion/crates/pinion-widget-paint", version = "0.0.1" }
 pinion-forge = { path = "../pinion/crates/pinion-forge", version = "0.0.1" }
 # pinion-rpc: the scene-as-data introspection wire (snapshot.rs) + dispatch.
 # Confined to sprag-host (the RPC server layer) so the producer/projection

@@ -61,7 +61,7 @@ use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 
 use pinion_core::scene::{ContainerNode, ExternalNode, TextGridNode};
-use pinion_core::style::{AlignItems, FlexDirection, LayoutStyle, Size, SizeValue};
+use pinion_core::style::{LayoutStyle, Size, SizeValue};
 use pinion_core::{CellMetric, GridBuffer, Scene};
 use sprag_terminal::{PaneId, TerminalSession, Workspace};
 use sprag_vt::Screen;
@@ -89,15 +89,6 @@ pub const GRID_TAG: &str = "sprag_grid";
 /// The tag on each pane's input `External` child. The `scene/invoke` input
 /// path addresses pane `<id>` as `/pane_<id>/sprag_input/external/key` (R2.6).
 pub const INPUT_TAG: &str = "sprag_input";
-
-/// The intent tag on the windowed-host workspace-view root (the flex-Row tiling
-/// `Scene::Container` [`workspace_view_scene`] returns).
-pub const WORKSPACE_VIEW_TAG: &str = "sprag_workspace_view";
-
-/// The divider gap (logical px) between tiled panes in [`workspace_view_scene`] —
-/// the window surface shows through it, so adjacent panes read as separate
-/// terminals (the framework focus ring marks which one is active).
-pub const PANE_GAP_PX: u32 = 2;
 
 /// The tagged `TextGrid` node carrying a pre-projected cell buffer — the
 /// node-shape SSOT (tag + metric + cells), shared by the headless data path
@@ -160,10 +151,12 @@ pub struct PaneViewSpec<'a> {
 /// * the framework focus ring (drawn around the focused tag's rect); and
 /// * click-to-focus (the rect a pointer press hit-tests).
 ///
-/// [`workspace_view_scene`] tiles N of these. The overlay self-gates to the live
-/// view (a scrolled `project_scrolled` drops the cursor, and `overlay_preedit`
-/// no-ops without one), so an empty `preedit` is identical to the bare scrolled
-/// projection and no `offset_lines` check is needed here.
+/// The GUI arranges N of these into the window (an even split, or draggable
+/// `view_splitter` dividers — R38; `sprag-gui` owns that interactive layout since
+/// it needs reactive ratio `Signal`s the headless host has no use for). The
+/// overlay self-gates to the live view (a scrolled `project_scrolled` drops the
+/// cursor, and `overlay_preedit` no-ops without one), so an empty `preedit` is
+/// identical to the bare scrolled projection and no `offset_lines` check is needed.
 #[must_use]
 pub fn pane_view_scene(tag: impl Into<Cow<'static, str>>, spec: PaneViewSpec<'_>) -> Scene {
     let cells = sprag_grid::overlay_preedit(
@@ -177,38 +170,6 @@ pub fn pane_view_scene(tag: impl Into<Cow<'static, str>>, spec: PaneViewSpec<'_>
                 LayoutStyle::new()
                     .with_flex_basis(SizeValue::Px(0))
                     .with_flex_grow(1.0),
-            ),
-    )
-}
-
-/// Tile N pre-built pane scenes ([`pane_view_scene`]) left-to-right as the
-/// windowed workspace: a `flex(Row)` Container, `align_items: Stretch` (each pane
-/// fills the row height), with a [`PANE_GAP_PX`] divider gap and a **fill** size
-/// (both axes `Percent(100)`) so the shell's layout pass sizes the row to the
-/// window and `pinion_runtime::compute_layout` resolves each pane's sub-rect (the
-/// §3 GUI winsize SSOT, now per-pane via R1012). The single-pane case (N=1) is
-/// one full-width pane.
-///
-/// This is the host's **tiling-layout authority** (R25: the host owns scene
-/// assembly + layout, the GUI reuses it rather than hand-rolling the flex split).
-/// It omits the RPC-control externals ([`WorkspaceExternal`] / [`PluginsExternal`])
-/// that [`workspace_scene`] carries — those drive the headless `scene/invoke`
-/// wire, not the pixel view.
-#[must_use]
-pub fn workspace_view_scene(panes: Vec<Scene>) -> Scene {
-    Scene::Container(
-        ContainerNode::new(panes)
-            .with_tag(WORKSPACE_VIEW_TAG)
-            .with_layout(
-                LayoutStyle::new()
-                    .flex(FlexDirection::Row)
-                    .with_align_items(AlignItems::Stretch)
-                    .with_gap(PANE_GAP_PX)
-                    .with_size(
-                        Size::auto()
-                            .with_width(SizeValue::Percent(100))
-                            .with_height(SizeValue::Percent(100)),
-                    ),
             ),
     )
 }
@@ -238,7 +199,7 @@ fn view_text_grid(cells: GridBuffer, metric: CellMetric, font_size_px: u32) -> S
 /// This is the pure data projection — a function of the screen alone, with
 /// no live session — used by [`snapshot`] and data-only consumers. The RPC
 /// server assembles the full pane tree via [`workspace_scene`]; the windowed
-/// host tiles panes via [`workspace_view_scene`].
+/// host builds per-pane scenes via [`pane_view_scene`] and arranges them GUI-side.
 #[must_use]
 pub fn scene(screen: &Screen) -> Scene {
     scene_with_metric(screen, CellMetric::DEFAULT)
@@ -417,54 +378,6 @@ mod tests {
         assert_eq!(node.font_size_px(), Some(18));
         assert_eq!(node.layout.size.width, SizeValue::Percent(100));
         assert_eq!(node.layout.size.height, SizeValue::Percent(100));
-    }
-
-    #[test]
-    fn workspace_view_scene_tiles_panes_in_a_flex_row() {
-        let mut a = Emulator::new(8, 2);
-        a.advance(b"A");
-        let mut b = Emulator::new(8, 2);
-        b.advance(b"B");
-        let pane = |screen, tag| {
-            super::pane_view_scene(
-                tag,
-                PaneViewSpec {
-                    screen,
-                    metric: CellMetric::DEFAULT,
-                    font_size_px: 18,
-                    offset_lines: 0,
-                    preedit: "",
-                },
-            )
-        };
-        let scene = super::workspace_view_scene(vec![
-            pane(a.screen(), "pane.0"),
-            pane(b.screen(), "pane.1"),
-        ]);
-        match scene {
-            Scene::Container(c) => {
-                assert_eq!(c.tag.as_deref(), Some(WORKSPACE_VIEW_TAG));
-                // The tiling layout: a flex Row, stretched cross-axis, with the
-                // divider gap, filling the window so the split resolves sub-rects.
-                assert_eq!(c.layout.flex_direction, FlexDirection::Row);
-                assert_eq!(c.layout.align_items, AlignItems::Stretch);
-                assert_eq!(c.layout.gap, PANE_GAP_PX);
-                assert_eq!(c.layout.size.width, SizeValue::Percent(100));
-                assert_eq!(c.layout.size.height, SizeValue::Percent(100));
-                // Both pane identity tags present (the per-pane rect targets).
-                assert_eq!(c.children.len(), 2);
-                let tags: Vec<_> = c
-                    .children
-                    .iter()
-                    .filter_map(|ch| match ch {
-                        Scene::Container(p) => p.tag.as_deref(),
-                        _ => None,
-                    })
-                    .collect();
-                assert_eq!(tags, vec!["pane.0", "pane.1"]);
-            }
-            other => unreachable!("workspace_view_scene returns a Container, got {other:?}"),
-        }
     }
 
     /// The live view (`offset 0`) overlays the IME preedit at the cursor (after

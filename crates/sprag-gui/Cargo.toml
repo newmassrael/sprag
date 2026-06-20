@@ -23,6 +23,8 @@ pinion-core = { workspace = true }
 pinion-a11y = { workspace = true }
 # The windowed GPU shell entry point (pinion_shell::run) + RepaintSink impl.
 pinion-shell = { workspace = true }
+# view_splitter + SplitterExternal — the draggable pane dividers (R38).
+pinion-widget-paint = { workspace = true }
 # Pinned to pinion-shell's vello so the forge renderer macro output type-checks.
 vello = { workspace = true }
 # Build the {key, ctrl, ...} args for the pane External's invoke("key", ...)

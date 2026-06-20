@@ -2685,6 +2685,17 @@ name = "pinion-text-unicode"
 version = "0.0.1"
 
 [[package]]
+name = "pinion-widget-paint"
+version = "0.0.1"
+dependencies = [
+ "pinion-a11y",
+ "pinion-core",
+ "pinion-text",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "piper"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3408,6 +3419,7 @@ dependencies = [
  "pinion-core",
  "pinion-forge",
  "pinion-shell",
+ "pinion-widget-paint",
  "serde_json",
  "sprag-host",
  "sprag-terminal",

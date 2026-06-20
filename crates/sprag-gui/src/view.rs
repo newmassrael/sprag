@@ -34,18 +34,19 @@ pub(crate) fn view_for_window(window_id: &str, _state: (), _frame: &Frame) -> Sc
     }
 }
 
-/// The main window: tile only the DOCKED panes (a floated pane is painted in its
-/// own undock window, not here — [`is_pane_floating`] is the partition SSOT). An
-/// all-floated workspace tiles zero panes -> an empty surface-filled root (dock
-/// any pane back to recover). `workspace_view_scene(vec![])` is a childless
-/// flex-Row Container — structurally fine.
+/// The main window: arrange the DOCKED panes with draggable dividers (a floated
+/// pane is painted in its own undock window, not here — [`is_pane_floating`] is
+/// the partition SSOT). The docked panes go through [`crate::split::view_split_row`]
+/// (R38): even at boot, draggable to resize, nested `view_splitter`s for N>2. An
+/// all-floated workspace yields zero panes -> an empty surface-filled root (dock
+/// any pane back to recover).
 fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
     let windows = use_windows_topology().get();
     let panes: Vec<Scene> = (0..tv.pane_count())
         .filter(|&i| !is_pane_floating(&windows, i))
         .map(|i| build_pane_scene(tv, i))
         .collect();
-    compose(sprag_host::workspace_view_scene(panes), theme)
+    compose(crate::split::view_split_row(panes, theme), theme)
 }
 
 /// Build ONE pane's scene from its live screen + per-pane scroll offset + IME
