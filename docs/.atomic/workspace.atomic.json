@@ -1608,6 +1608,60 @@
         "A live-window visual/interaction smoke (typing per pane, the focus ring, click-to-focus) reuses the R34 XTEST harness; the deterministic ShellCore data proof + pinion's seam test already cover the mechanism, so it is confirmation, not a gap. The natural next round is the established adversarial session-review remediation (the R25/R30/R35 rhythm)."
       ]
     },
+    "Round 37": {
+      "decision_summary": "Round 37: dock/undock — Ctrl+Shift+Enter detaches the focused terminal pane into its own OS window (and docks it back) via pinion's multi-window seam (windows_signal + view_for_window, the hello-dock-panels pattern). Input is unchanged (global model scene + global focus, so a key reaches the focused pane regardless of which window paints it); dock/undock changes only WHERE a pane is painted, so it does NOT hit the PR-9 dynamic-focusable gap. The undock window opens fixed to the pane's intrinsic (cols,rows) x cell — an honest v1 bound, since pinion's R1006/R1012 viewport publishes are gated to the default window (reported as PR-10 for resizable undock windows). Live-verified via XTEST: Ctrl+Shift+Enter opened a 2nd OS window.",
+      "changes_bullets": [
+        "sprag-gui/dock (new module): the floating SSOT is the window topology Signal<Vec<WindowSpec>> itself (a pane floats iff its pane-{i} window exists). use_windows_topology (root-owner cached), pane_window_id/pane_window_index (total fn, validated < MAX_PANES), is_pane_floating, toggle_pane_floating (push/remove a WindowSpec sized to the pane's own (cols,rows) x cell — NOT a window-side split calc).",
+        "sprag-gui/main: WidgetView::windows_signal returns the dock topology (opt into runtime windows); view_for_window dispatches per window (main tiles the docked panes, pane-{i} paints that pane); WidgetCore::view delegates to the main path (windowless/RPC fallback).",
+        "sprag-gui/view: one per-pane builder (build_pane_scene) shared by view_main (tile DOCKED panes only) and an undock window (one pane); view_for_window dispatch; an all-floated main is a childless Container (no panic).",
+        "sprag-gui/input: route_key Ctrl+Shift+Enter toggles the focused pane's dock state (toggle_pane_floating + focus_request), returns true, reaches no PTY — sibling of the Ctrl+PageUp/Down focus-cycle and Shift+PageUp/Down scroll chords; Ctrl+Shift+Enter is essentially unbound in TUIs.",
+        "sprag-gui/a11y: per-window access_nodes_for_window (main = docked panes, pane-{i} = that one pane) so a sibling window's AT tree carries no ghost nodes; shared pane_node builder.",
+        "No host / sprag-terminal change, no pinion edit: the model scene, input routing, focusable_tags, and the per-pane reflow Effects are all unchanged (a floated pane's reflow Effect stays inert — it reads (0,0) from the main publish where it is absent — keeping its last docked size)."
+      ],
+      "verification_bullets": [
+        "155 workspace tests pass (sprag-gui 25, +6: dock round-trip x2, undock partition, empty-main, the Ctrl+Shift+Enter chord, per-window a11y) and cargo clippy --workspace --all-targets is clean.",
+        "DATA proof: ShellCore::<TerminalViewer>::compute_paint_scene_for_window drives the REAL viewer's per-window paint — undocking pane 1 drops it from \"main\" and paints it alone in \"pane-1\"; dock-back re-tiles; all-floated yields an empty main without panic.",
+        "LIVE-verified (the R34 XTEST harness, ad-hoc): the real winit/GPU binary booted one window (\"sprag terminal (interactive)\"); a synthetic Ctrl+Shift+Enter opened a SECOND OS window (\"sprag terminal — pane 0\"), observed via xwininfo/Xlib; plus a boot-liveness smoke (no panic with the multi-window wiring).",
+        "Stop-and-report cleared for the FEATURE: multi-window is a public pinion seam (windows_signal/view_for_window; hello-dock-panels is the working precedent), and focus + the model scene are global (input is window-independent), so dock/undock of an existing pane does NOT hit PR-9 (it mints no new focusable tag).",
+        "Plan-agent pressure-test before the build; every load-bearing pinion fact source-verified (the two DEFAULT_WINDOW publish gates, the single global FocusManager, the view_for_window/windows_signal defaults, compute_paint_scene_for_window)."
+      ],
+      "impact_refs": [
+        "2",
+        "3"
+      ],
+      "carry_forward_bullets": [
+        "PR-10 reported (claudedocs/PINION-PR10-PER-WINDOW-VIEWPORT.md, separate doc): per-window viewport + pane-viewport publish (un-gate the DEFAULT_WINDOW check) unblocks RESIZABLE undock windows + undock-into-tiled-secondary. Until then undock windows are fixed-size (OS-resizable but non-reflowing) — the documented v1 bound. Stop-and-report; NO workaround (the fixed intrinsic size is a legitimate scope bound, not a hack).",
+        "Dynamic split/close + per-pane multi-tabs + DnD reorder remain gated on PR-9 (claudedocs/PINION-PR9-FOCUSABLE-REFRESH.md): runtime focusable refresh. Dock/undock side-stepped it (existing panes only).",
+        "Draggable splitter (pinion-widget-paint::view_splitter + SplitterExternal) is still available for the tiled layout when wanted.",
+        "Next can be the deferred adversarial session-review remediation (the R25/R30/R35 rhythm) over R36+R37, or a deferred axis once PR-9 / PR-10 land."
+      ],
+      "publishable_decision_summary": "Round 37: dock/undock — Ctrl+Shift+Enter detaches the focused terminal pane into its own OS window (and docks it back) via pinion's multi-window seam (windows_signal + view_for_window, the hello-dock-panels pattern). Input is unchanged (global model scene + global focus, so a key reaches the focused pane regardless of which window paints it); dock/undock changes only WHERE a pane is painted, so it does NOT hit the PR-9 dynamic-focusable gap. The undock window opens fixed to the pane's intrinsic (cols,rows) x cell — an honest v1 bound, since pinion's R1006/R1012 viewport publishes are gated to the default window (reported as PR-10 for resizable undock windows). Live-verified via XTEST: Ctrl+Shift+Enter opened a 2nd OS window.",
+      "publishable_changes_bullets": [
+        "sprag-gui/dock (new module): the floating SSOT is the window topology Signal<Vec<WindowSpec>> itself (a pane floats iff its pane-{i} window exists). use_windows_topology (root-owner cached), pane_window_id/pane_window_index (total fn, validated < MAX_PANES), is_pane_floating, toggle_pane_floating (push/remove a WindowSpec sized to the pane's own (cols,rows) x cell — NOT a window-side split calc).",
+        "sprag-gui/main: WidgetView::windows_signal returns the dock topology (opt into runtime windows); view_for_window dispatches per window (main tiles the docked panes, pane-{i} paints that pane); WidgetCore::view delegates to the main path (windowless/RPC fallback).",
+        "sprag-gui/view: one per-pane builder (build_pane_scene) shared by view_main (tile DOCKED panes only) and an undock window (one pane); view_for_window dispatch; an all-floated main is a childless Container (no panic).",
+        "sprag-gui/input: route_key Ctrl+Shift+Enter toggles the focused pane's dock state (toggle_pane_floating + focus_request), returns true, reaches no PTY — sibling of the Ctrl+PageUp/Down focus-cycle and Shift+PageUp/Down scroll chords; Ctrl+Shift+Enter is essentially unbound in TUIs.",
+        "sprag-gui/a11y: per-window access_nodes_for_window (main = docked panes, pane-{i} = that one pane) so a sibling window's AT tree carries no ghost nodes; shared pane_node builder.",
+        "No host / sprag-terminal change, no pinion edit: the model scene, input routing, focusable_tags, and the per-pane reflow Effects are all unchanged (a floated pane's reflow Effect stays inert — it reads (0,0) from the main publish where it is absent — keeping its last docked size)."
+      ],
+      "publishable_verification_bullets": [
+        "155 workspace tests pass (sprag-gui 25, +6: dock round-trip x2, undock partition, empty-main, the Ctrl+Shift+Enter chord, per-window a11y) and cargo clippy --workspace --all-targets is clean.",
+        "DATA proof: ShellCore::<TerminalViewer>::compute_paint_scene_for_window drives the REAL viewer's per-window paint — undocking pane 1 drops it from \"main\" and paints it alone in \"pane-1\"; dock-back re-tiles; all-floated yields an empty main without panic.",
+        "LIVE-verified (the R34 XTEST harness, ad-hoc): the real winit/GPU binary booted one window (\"sprag terminal (interactive)\"); a synthetic Ctrl+Shift+Enter opened a SECOND OS window (\"sprag terminal — pane 0\"), observed via xwininfo/Xlib; plus a boot-liveness smoke (no panic with the multi-window wiring).",
+        "Stop-and-report cleared for the FEATURE: multi-window is a public pinion seam (windows_signal/view_for_window; hello-dock-panels is the working precedent), and focus + the model scene are global (input is window-independent), so dock/undock of an existing pane does NOT hit PR-9 (it mints no new focusable tag).",
+        "Plan-agent pressure-test before the build; every load-bearing pinion fact source-verified (the two DEFAULT_WINDOW publish gates, the single global FocusManager, the view_for_window/windows_signal defaults, compute_paint_scene_for_window)."
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "3"
+      ],
+      "publishable_carry_forward_bullets": [
+        "PR-10 reported (claudedocs/PINION-PR10-PER-WINDOW-VIEWPORT.md, separate doc): per-window viewport + pane-viewport publish (un-gate the DEFAULT_WINDOW check) unblocks RESIZABLE undock windows + undock-into-tiled-secondary. Until then undock windows are fixed-size (OS-resizable but non-reflowing) — the documented v1 bound. Stop-and-report; NO workaround (the fixed intrinsic size is a legitimate scope bound, not a hack).",
+        "Dynamic split/close + per-pane multi-tabs + DnD reorder remain gated on PR-9 (claudedocs/PINION-PR9-FOCUSABLE-REFRESH.md): runtime focusable refresh. Dock/undock side-stepped it (existing panes only).",
+        "Draggable splitter (pinion-widget-paint::view_splitter + SplitterExternal) is still available for the tiled layout when wanted.",
+        "Next can be the deferred adversarial session-review remediation (the R25/R30/R35 rhythm) over R36+R37, or a deferred axis once PR-9 / PR-10 land."
+      ]
+    },
     "Round 4": {
       "decision_summary": "Add sprag-term: a headless JSON-RPC server exposing a live PTY session as scene-as-data over stdin/stdout.",
       "changes_bullets": [

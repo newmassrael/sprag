@@ -140,6 +140,17 @@ pub(crate) fn route_key(
         scroll_view(active, key);
         return true;
     }
+    // Ctrl+Shift+Enter toggles the focused pane between docked (tiled in the main
+    // window) and undocked (its own OS window) — a window-management gesture, NOT
+    // to the PTY. Ctrl+Shift+Enter is essentially unbound in TUIs (terminals
+    // historically cannot encode it distinctly), so it steals no app key.
+    if modifiers.ctrl && modifiers.shift && key == "Enter" {
+        crate::dock::toggle_pane_floating(active);
+        // Keep typing in the same pane: focus it (a no-op on undock — already
+        // focused; correct on dock-back so a dropped window cannot strand focus).
+        pinion_core::focus_request::request(pane_tag(active));
+        return true;
+    }
     // Any other key is a live interaction with the focused pane: snap its view to
     // the bottom, then inject through that pane's input External.
     use_scroll_offset(active).set(0);
@@ -480,6 +491,48 @@ mod tests {
                 Some(pane_tag(1)),
                 "Ctrl+PageUp wraps focus backward",
             );
+        });
+    }
+
+    /// `Ctrl+Shift+Enter` toggles the focused pane's dock state — handled
+    /// (`true`), reaches no PTY (the branch returns before the External invoke),
+    /// and round-trips the dock topology Signal (undock adds a window, dock-back
+    /// removes it). The window-management sibling of the focus-cycle chord.
+    #[test]
+    fn ctrl_shift_enter_toggles_dock_without_touching_the_pty() {
+        let owner = Owner::new();
+        owner.run(|| {
+            let handle = use_terminal().pane_handle(0);
+            let mut scene = Scene::External(
+                ExternalNode::new(Box::new(SpragPaneExternal::new(handle))).with_tag(pane_tag(0)),
+            );
+            let windows = crate::dock::use_windows_topology();
+            assert_eq!(windows.get().len(), 1, "starts with the main window only");
+            let ctrl_shift = Modifiers {
+                ctrl: true,
+                shift: true,
+                ..Modifiers::default()
+            };
+            // Undock the focused pane (handled, not to the PTY).
+            assert!(TerminalViewer::apply_key(
+                &mut scene,
+                Some(pane_tag(0)),
+                "Enter",
+                ctrl_shift
+            ));
+            assert_eq!(
+                windows.get().len(),
+                2,
+                "the focused pane undocked into its own window"
+            );
+            // The same chord docks it back.
+            assert!(TerminalViewer::apply_key(
+                &mut scene,
+                Some(pane_tag(0)),
+                "Enter",
+                ctrl_shift
+            ));
+            assert_eq!(windows.get().len(), 1, "docked back");
         });
     }
 

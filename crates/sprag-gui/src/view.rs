@@ -4,8 +4,9 @@
 //! here. See the crate-root module docs.
 
 use crate::ROOT_TAG;
+use crate::dock::{is_pane_floating, pane_window_index, use_windows_topology};
 use crate::input::{use_preedit, use_scroll_offset};
-use crate::terminal::{pane_tag, use_terminal};
+use crate::terminal::{TerminalView, pane_tag, use_terminal};
 use pinion_core::scene::ContainerNode;
 use pinion_core::style::{BoxStyle, LayoutStyle, Size, SizeValue};
 use pinion_core::theme::{ColorRole, Theme, use_theme};
@@ -15,44 +16,62 @@ use sprag_host::PaneViewSpec;
 /// Shared [`ThemeProvider`](pinion_core::ThemeProvider) cache key (the surface fill behind the grid).
 const THEME_TAG: &str = "app";
 
-/// view-fn (§6.3): pure sync `() -> Scene`. Builds each tiled pane's scene from
-/// its own producer-authoritative screen (live, or a scrollback window when that
-/// pane's [`use_scroll_offset`] is non-zero, with its [`use_preedit`] overlay) via
-/// the host's per-pane projection seam, then tiles them ([`workspace_view_scene`])
-/// into the surface-filled paint root. The producer threads (the PTY readers)
-/// live in `create_extra_externals`, not here.
+/// view-fn (§6.3): per-window paint. The **main** window tiles the DOCKED panes
+/// (those without an undock window); an **undock window** (`pane-{i}`) paints that
+/// one pane alone, full-window. Both reuse [`build_pane_scene`], so a docked and a
+/// floated pane are pixel-identical projections. [`WidgetCore::view`](crate::TerminalViewer)
+/// (the windowless / RPC-snapshot fallback) routes here as the main window. The
+/// producer threads (the PTY readers) live in `create_extra_externals`, not here.
 #[allow(clippy::trivially_copy_pass_by_ref)]
-pub(crate) fn view(_state: (), _frame: &Frame) -> Scene {
+pub(crate) fn view_for_window(window_id: &str, _state: (), _frame: &Frame) -> Scene {
     let theme = use_theme(THEME_TAG).theme_animated();
     let tv = use_terminal();
-    // Build each pane from its live screen + per-pane scroll offset + IME
-    // preedit. Reading every pane's offset/preedit Signal each frame subscribes
-    // `view` to them (the R705.1 reactive bridge), so a per-pane scroll or
-    // composition `set` flips the owner dirty and repaints live. On child EOF a
-    // pane stays and paints its frozen final screen (no more PTY output to read).
+    match pane_window_index(window_id) {
+        // An undock window paints its one pane (if still present); a stale window
+        // id (pane closed) falls back to the main layout, never a stranded paint.
+        Some(i) if i < tv.pane_count() => compose(build_pane_scene(&tv, i), &theme),
+        _ => view_main(&tv, &theme),
+    }
+}
+
+/// The main window: tile only the DOCKED panes (a floated pane is painted in its
+/// own undock window, not here — [`is_pane_floating`] is the partition SSOT). An
+/// all-floated workspace tiles zero panes -> an empty surface-filled root (dock
+/// any pane back to recover). `workspace_view_scene(vec![])` is a childless
+/// flex-Row Container — structurally fine.
+fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
+    let windows = use_windows_topology().get();
     let panes: Vec<Scene> = (0..tv.pane_count())
-        .map(|i| {
-            let offset = use_scroll_offset(i).get();
-            let preedit = use_preedit(i).get();
-            // `offset == 0` is the live screen; a positive offset windows into
-            // history (text-only, the R16 model). The preedit overlays only the
-            // live view (the host seam self-gates on the cursor). The String +
-            // screen borrows are confined to this `with_screen` closure.
-            tv.pane(i).session().with_screen(|screen| {
-                sprag_host::pane_view_scene(
-                    pane_tag(i),
-                    PaneViewSpec {
-                        screen,
-                        metric: tv.metric,
-                        font_size_px: tv.font_size_px,
-                        offset_lines: offset,
-                        preedit: &preedit,
-                    },
-                )
-            })
-        })
+        .filter(|&i| !is_pane_floating(&windows, i))
+        .map(|i| build_pane_scene(tv, i))
         .collect();
-    compose(sprag_host::workspace_view_scene(panes), &theme)
+    compose(sprag_host::workspace_view_scene(panes), theme)
+}
+
+/// Build ONE pane's scene from its live screen + per-pane scroll offset + IME
+/// preedit — the single per-pane builder shared by the docked tiling
+/// ([`view_main`]) and an undock window ([`view_for_window`]). Reading the pane's
+/// offset/preedit Signal subscribes the paint to them (the R705.1 reactive
+/// bridge), so a per-pane scroll or composition `set` repaints live. `offset == 0`
+/// is the live screen; a positive offset windows into history (text-only, R16);
+/// the preedit overlays only the live view (the host seam self-gates on the
+/// cursor). The String + screen borrows are confined to the `with_screen` closure.
+/// On child EOF the pane paints its frozen final screen.
+fn build_pane_scene(tv: &TerminalView, i: usize) -> Scene {
+    let offset = use_scroll_offset(i).get();
+    let preedit = use_preedit(i).get();
+    tv.pane(i).session().with_screen(|screen| {
+        sprag_host::pane_view_scene(
+            pane_tag(i),
+            PaneViewSpec {
+                screen,
+                metric: tv.metric,
+                font_size_px: tv.font_size_px,
+                offset_lines: offset,
+                preedit: &preedit,
+            },
+        )
+    })
 }
 
 /// Wrap the tiled workspace in the surface-filled paint root (tagged [`ROOT_TAG`])

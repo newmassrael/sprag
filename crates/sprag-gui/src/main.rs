@@ -28,7 +28,25 @@
 //! framework draws the focus ring around the active pane. Per-pane GUI state
 //! (scroll offset, IME preedit) is keyed by tile index ([`input`]).
 //!
-//! ## Module map (R32, R36)
+//! ## Dock / undock (R37): a pane in its own OS window
+//!
+//! `Ctrl+Shift+Enter` toggles the focused pane between **docked** (tiled in the
+//! main window) and **undocked** (painted alone in its own OS window), via
+//! pinion's multi-window seam: [`WidgetView::windows_signal`] returns the
+//! [`dock`] topology `Signal<Vec<WindowSpec>>` (the floating SSOT — a pane floats
+//! iff its `pane-{i}` window exists), and [`WidgetView::view_for_window`]
+//! dispatches per window (main tiles the docked panes; `pane-{i}` paints that
+//! pane). **Input is unchanged**: the model scene + focus are global, so a
+//! keystroke reaches the focused pane's PTY regardless of which window paints it
+//! — dock/undock changes only *where* a pane is painted, never its tag /
+//! External / focusability (so it does NOT need runtime-focusable changes).
+//! **Honest v1 bound**: the undock window opens fixed to the pane's intrinsic
+//! `(cols, rows) × cell` and does NOT reflow on OS resize — pinion's R1006/R1012
+//! viewport publishes are gated to the default window (the per-window publish is
+//! a reported gap; see `dock` docs). Per-window a11y partitions nodes
+//! ([`a11y::access_nodes_for_window`]).
+//!
+//! ## Module map (R32, R36, R37)
 //!
 //! The binding is split by concern so each axis grows in one place:
 //!
@@ -39,11 +57,14 @@
 //! - [`reflow`] — the per-pane resize -> PTY reflow [`Effect`](pinion_core::reactive::Effect)s
 //!   ([`install_reflow`]).
 //! - [`input`] — focused-pane keystroke / IME commit -> PTY routing
-//!   ([`route_key`] / [`route_composition`]), the focus-cycle chord, and the
-//!   per-pane scrollback-view offset / preedit.
-//! - [`a11y`] — the per-pane accessible-node projection (the human-AT path).
-//! - [`view`] — the pure view-fn ([`view::view`]) tiling the panes + the
-//!   surface-filled paint root.
+//!   ([`route_key`] / [`route_composition`]), the focus-cycle + dock-toggle
+//!   chords, and the per-pane scrollback-view offset / preedit.
+//! - [`dock`] — which OS window paints each pane: the topology
+//!   [`Signal`](pinion_core::reactive::Signal) (floating SSOT) +
+//!   [`toggle_pane_floating`](dock::toggle_pane_floating).
+//! - [`a11y`] — the per-pane (per-window) accessible-node projection (human-AT).
+//! - [`view`] — the per-window paint ([`view::view_for_window`]: main tiling /
+//!   single undocked pane) + the surface-filled paint root.
 //!
 //! ## How it stays on the substrate (no hacks)
 //!
@@ -123,16 +144,20 @@
 //! relative to the live bottom) — a v1 limit.
 
 mod a11y;
+mod dock;
 mod input;
 mod reflow;
 mod terminal;
 mod view;
 
+use pinion_a11y::AccessNode;
 use pinion_core::external::External;
+use pinion_core::reactive::Signal;
 use pinion_core::widget_core::ExtraExternal;
 use pinion_core::{CompositionEvent, Frame, Modifiers, Scene, WidgetCore};
-use pinion_shell::{SizeStrategy, WidgetView, vello_renderer_impl};
+use pinion_shell::{SizeStrategy, WidgetView, WindowSpec, vello_renderer_impl};
 use sprag_host::SpragPaneExternal;
+use std::rc::Rc;
 
 use crate::input::{route_composition, route_key};
 use crate::reflow::install_reflow;
@@ -230,8 +255,12 @@ impl WidgetCore for TerminalViewer {
 
     fn read_state(_scene: &Scene) {}
 
+    /// The windowless / RPC-snapshot fallback paints the **main** window (the
+    /// docked panes). The live multi-window paint goes through
+    /// [`WidgetView::view_for_window`]; this keeps the no-window-context path
+    /// (an RPC `scene/snapshot` without a window) showing what the human sees.
     fn view(state: (), frame: &Frame) -> Scene {
-        view::view(state, frame)
+        view::view_for_window(dock::MAIN_WINDOW_ID, state, frame)
     }
 
     fn event_name(_event: ()) -> &'static str {
@@ -261,6 +290,33 @@ impl WidgetView for TerminalViewer {
             width: WINDOW_W,
             height: WINDOW_H,
         }
+    }
+
+    /// Opt into runtime windows: the dock topology Signal (the floating SSOT,
+    /// [`dock::use_windows_topology`]). The shell subscribes it and reconciles
+    /// winit windows on each `set` — the `Ctrl+Shift+Enter` chord
+    /// ([`dock::toggle_pane_floating`] via [`route_key`]) undocks/docks the
+    /// focused pane.
+    fn windows_signal() -> Option<Rc<Signal<Vec<WindowSpec>>>> {
+        Some(dock::use_windows_topology())
+    }
+
+    /// Per-window paint: the main window tiles the DOCKED panes; an undock window
+    /// (`pane-{i}`) paints that pane alone. Delegates to [`view::view_for_window`].
+    fn view_for_window(window_id: &str, state: (), frame: &Frame) -> Scene {
+        view::view_for_window(window_id, state, frame)
+    }
+
+    /// Per-window a11y: each window advertises only the panes IT paints (the main
+    /// window the docked panes; an undock window its one pane), so a sibling
+    /// window's AT tree carries no ghost pane nodes. Delegates to
+    /// [`a11y::access_nodes_for_window`].
+    fn access_node_for_window(
+        window_id: &str,
+        _state: &(),
+        focused: Option<&str>,
+    ) -> Vec<AccessNode> {
+        a11y::access_nodes_for_window(window_id, focused)
     }
 }
 
@@ -329,5 +385,71 @@ mod tests {
             dims[0].0.abs_diff(dims[1].0) <= 1,
             "the two panes split the window evenly, got {dims:?}",
         );
+    }
+
+    /// End-to-end dock/undock through the REAL `TerminalViewer` + the shell's
+    /// per-window paint dispatch: undock pane 1 and assert the main window drops
+    /// it while the `pane-1` undock window paints exactly it — the docked/floating
+    /// partition as scene DATA. The secondary-window paint runs pure geometry
+    /// (R1006/R1012 publishes are default-window-gated — the documented gap), so
+    /// this asserts the partition, not a secondary reflow; the undock window is
+    /// driven at the pane's own size.
+    #[test]
+    fn undock_partitions_panes_across_windows() {
+        let mut core = ShellCore::<TerminalViewer>::new();
+        // Boot: both panes docked -> the main window tiles both.
+        let main0 = core.compute_paint_scene_for_window(dock::MAIN_WINDOW_ID, WINDOW_W, WINDOW_H);
+        assert!(main0.contains_tag(pane_tag(0)), "main tiles pane 0");
+        assert!(main0.contains_tag(pane_tag(1)), "main tiles pane 1");
+
+        // Undock pane 1 (the chord runs in the shell root owner scope).
+        core.root_owner().run(|| dock::toggle_pane_floating(1));
+
+        // The main window now drops the floated pane 1, keeps the docked pane 0.
+        let main1 = core.compute_paint_scene_for_window(dock::MAIN_WINDOW_ID, WINDOW_W, WINDOW_H);
+        assert!(
+            main1.contains_tag(pane_tag(0)),
+            "main keeps the docked pane 0"
+        );
+        assert!(
+            !main1.contains_tag(pane_tag(1)),
+            "main drops the floated pane 1"
+        );
+
+        // The undock window paints exactly pane 1 (not pane 0).
+        let undock = core.compute_paint_scene_for_window(&dock::pane_window_id(1), 400, 300);
+        assert!(
+            undock.contains_tag(pane_tag(1)),
+            "the undock window paints pane 1"
+        );
+        assert!(
+            !undock.contains_tag(pane_tag(0)),
+            "the undock window does not paint pane 0"
+        );
+
+        // Dock back: the main window tiles pane 1 again.
+        core.root_owner().run(|| dock::toggle_pane_floating(1));
+        let main2 = core.compute_paint_scene_for_window(dock::MAIN_WINDOW_ID, WINDOW_W, WINDOW_H);
+        assert!(main2.contains_tag(pane_tag(1)), "dock-back re-tiles pane 1");
+    }
+
+    /// Undocking every pane leaves the main window empty — it must not panic
+    /// (`workspace_view_scene(vec![])` is a childless Container) and paints no pane.
+    #[test]
+    fn undock_all_panes_yields_an_empty_main_without_panic() {
+        let mut core = ShellCore::<TerminalViewer>::new();
+        let n = core.root_owner().run(|| use_terminal().pane_count());
+        core.root_owner().run(|| {
+            for i in 0..n {
+                dock::toggle_pane_floating(i);
+            }
+        });
+        let main = core.compute_paint_scene_for_window(dock::MAIN_WINDOW_ID, WINDOW_W, WINDOW_H);
+        for i in 0..n {
+            assert!(
+                !main.contains_tag(pane_tag(i)),
+                "pane {i} is floated, not in main"
+            );
+        }
     }
 }

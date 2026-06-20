@@ -3,35 +3,64 @@
 //! the AI path is `scene/snapshot`). See the crate-root module docs.
 
 use crate::TerminalViewer;
-use crate::terminal::{pane_tag, use_terminal};
+use crate::terminal::{TerminalView, pane_tag, use_terminal};
 use pinion_a11y::{AccessNode, AccessValue, AriaRole, WidgetA11y};
 
 impl WidgetA11y for TerminalViewer {
-    /// Expose each tiled terminal pane as one accessible text region so a screen
-    /// reader / AccessKit tree can read them (the AI path is `scene/snapshot`;
-    /// this is the human-AT path). It runs in the root Owner scope, so
-    /// [`use_terminal`] resolves the live panes here. Each node's tag is its
-    /// [`pane_tag`], so AT focus and the keyboard focus gate
-    /// ([`route_key`](crate::input::route_key)) share one identity per pane and
-    /// the focused pane's node reports focused.
+    /// Expose each terminal pane as one accessible text region so a screen reader
+    /// / AccessKit tree can read them (the AI path is `scene/snapshot`; this is the
+    /// human-AT path). This is the **windowless / RPC** path — it advertises every
+    /// pane with no window partition; the live multi-window path is
+    /// [`access_nodes_for_window`] (via
+    /// [`WidgetView::access_node_for_window`](crate::TerminalViewer)). Runs in the
+    /// root Owner scope, so [`use_terminal`] resolves the live panes. Each node's
+    /// tag is its [`pane_tag`], so AT focus and the keyboard focus gate
+    /// ([`route_key`](crate::input::route_key)) share one identity per pane.
     fn access_node(_state: &(), focused: Option<&str>) -> Vec<AccessNode> {
         let terminal = use_terminal();
         (0..terminal.pane_count())
-            .map(|i| {
-                let pane = terminal.pane(i);
-                // `full_text` is the pane's text SSOT — the same string the RPC
-                // `full_text` query and the plugin capture read, so the AT and
-                // the AI see one notion of each screen (scrollback + visible).
-                let text = pane.session().with_screen(|screen| screen.full_text());
-                terminal_a11y_node(
-                    pane_tag(i),
-                    pane.command_label(),
-                    text,
-                    focused == Some(pane_tag(i)),
-                )
-            })
+            .map(|i| pane_node(&terminal, i, focused))
             .collect()
     }
+}
+
+/// Per-window accessible nodes: the **main** window advertises the DOCKED panes (a
+/// floated pane is announced by its own undock window, not here); an **undock**
+/// window (`pane-{i}`) advertises only pane i. So a sibling window's AT tree never
+/// carries ghost pane nodes (the per-window-host discipline). Runs in the root
+/// Owner scope (the shell calls it there). Called from
+/// [`WidgetView::access_node_for_window`](crate::TerminalViewer).
+pub(crate) fn access_nodes_for_window(window_id: &str, focused: Option<&str>) -> Vec<AccessNode> {
+    let terminal = use_terminal();
+    match crate::dock::pane_window_index(window_id) {
+        // An undock window: just its one pane (if still present).
+        Some(i) if i < terminal.pane_count() => vec![pane_node(&terminal, i, focused)],
+        // The main window (or any non-pane id): the docked panes only.
+        _ => {
+            let windows = crate::dock::use_windows_topology().get();
+            (0..terminal.pane_count())
+                .filter(|&i| !crate::dock::is_pane_floating(&windows, i))
+                .map(|i| pane_node(&terminal, i, focused))
+                .collect()
+        }
+    }
+}
+
+/// Build pane `i`'s accessible node from its live screen — the per-pane node
+/// shared by the windowless [`WidgetA11y::access_node`] and the per-window
+/// [`access_nodes_for_window`], so both announce a pane identically.
+fn pane_node(terminal: &TerminalView, i: usize, focused: Option<&str>) -> AccessNode {
+    let pane = terminal.pane(i);
+    // `full_text` is the pane's text SSOT — the same string the RPC `full_text`
+    // query and the plugin capture read, so the AT and the AI see one notion of
+    // each screen (scrollback + visible).
+    let text = pane.session().with_screen(|screen| screen.full_text());
+    terminal_a11y_node(
+        pane_tag(i),
+        pane.command_label(),
+        text,
+        focused == Some(pane_tag(i)),
+    )
 }
 
 /// Build one pane's accessible node: a neutral focusable region
@@ -115,5 +144,33 @@ mod tests {
             !nodes[1].state.focused,
             "an unfocused pane's node is not focused"
         );
+    }
+
+    /// `access_nodes_for_window` partitions by window: the main window advertises
+    /// only the docked panes (a floated pane drops out); an undock window
+    /// advertises exactly its one pane — no cross-window ghost nodes.
+    #[test]
+    fn access_nodes_partition_by_window() {
+        let owner = Owner::new();
+        owner.run(|| {
+            let n = use_terminal().pane_count();
+            // Boot: all docked -> main advertises every pane.
+            assert_eq!(
+                access_nodes_for_window(crate::dock::MAIN_WINDOW_ID, None).len(),
+                n
+            );
+
+            // Undock pane 1: main drops it; the undock window advertises only it.
+            crate::dock::toggle_pane_floating(1);
+            let main = access_nodes_for_window(crate::dock::MAIN_WINDOW_ID, None);
+            assert_eq!(main.len(), n - 1, "main drops the floated pane");
+            assert!(
+                main.iter().all(|node| node.tag != pane_tag(1)),
+                "no floated-pane node in main"
+            );
+            let undock = access_nodes_for_window(&crate::dock::pane_window_id(1), None);
+            assert_eq!(undock.len(), 1, "the undock window advertises one pane");
+            assert_eq!(undock[0].tag, pane_tag(1), "exactly pane 1");
+        });
     }
 }
