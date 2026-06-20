@@ -15,15 +15,23 @@
 //! ([`view_split_row`]) and the write side (the External), so a drag re-weights
 //! the painted panes.
 //!
-//! ## N panes -> N-1 nested splitters (position-keyed ratios)
+//! ## N panes -> N-1 nested splitters (position-keyed ratios — a v1 bound)
 //!
 //! `view_splitter` is binary, so N panes nest N-1 splitters ([`split_fold`]):
 //! divider `j` separates docked tile `j` from everything to its right (the
 //! proportional split-tree model hello-dock-panels ships). Ratios are keyed by
-//! docked POSITION, not pane identity — so undock/dock (which re-compacts the
-//! docked set) reshuffles which panes a remembered divider position separates.
-//! That is the honest splitter-tree behavior, documented, not a per-pane sticky
-//! layout (which would need a real split-tree — premature at `MAX_PANES` = 8).
+//! docked POSITION, not pane identity, so undock/dock (which re-compacts the
+//! docked set, R37) reshuffles which panes a remembered divider position
+//! separates — a visible layout jump.
+//!
+//! This is a deliberate **v1 bound, NOT the terminal model.** The correct
+//! long-term shape is a real split-tree with ratios keyed to the boundary between
+//! two pane IDENTITIES (so a divider follows its panes across dock/undock). It is
+//! deferred on purpose — premature at `MAX_PANES` = 8 with no dynamic panes yet,
+//! and its natural consumer is dynamic split/close (gated on pinion PR-9). When
+//! dynamic panes land, REPLACE the position-keyed ratios here with the
+//! identity-keyed split-tree; the asymmetry that panes get identity keys
+//! (`pane_tag`) while dividers get position keys is the marker for that work.
 //!
 //! ## Reflow-on-drag is automatic (no new code)
 //!
@@ -38,7 +46,6 @@ use crate::terminal::MAX_PANES;
 use pinion_core::Scene;
 use pinion_core::reactive::{Owner, Signal};
 use pinion_core::scene::ContainerNode;
-use pinion_core::style::{Size, SizeValue};
 use pinion_core::theme::Theme;
 use pinion_widget_paint::splitter::{SplitterOrientation, SplitterStyle, view_splitter};
 use std::rc::Rc;
@@ -48,10 +55,12 @@ use std::rc::Rc;
 const SPLITTER_COUNT: usize = MAX_PANES - 1;
 
 /// The splitter-handle tags (`sprag_gui.split.<j>`), one per possible divider
-/// (docked position `j`). Static — the `&'static str` discipline of `PANE_TAGS`;
-/// the `SplitterExternal` registered at each tag ([`create_extra_externals`](crate::TerminalViewer))
-/// shares the ratio Signal [`use_splitter_ratio`]`(j)` the fold reads.
-pub(crate) const SPLITTER_TAGS: [&str; SPLITTER_COUNT] = [
+/// (docked position `j`). Static — the `&'static str` discipline of `PANE_TAGS`
+/// (a pinion `focusable_tags`/External-tag constraint). Reached only via
+/// [`splitter_tag`]; the `SplitterExternal` registered at each
+/// ([`create_extra_externals`](crate::TerminalViewer)) shares the ratio Signal
+/// [`use_splitter_ratio`]`(j)` the fold reads.
+const SPLITTER_TAGS: [&str; SPLITTER_COUNT] = [
     "sprag_gui.split.0",
     "sprag_gui.split.1",
     "sprag_gui.split.2",
@@ -97,7 +106,7 @@ pub(crate) fn view_split_row(panes: Vec<Scene>, theme: &Theme) -> Scene {
         1 => panes.into_iter().next().expect("len == 1"),
         _ => split_fold(panes, theme),
     };
-    fill(content)
+    fill_definite(content)
 }
 
 /// Nest `view_splitter` right-to-left over `panes` (`>= 2`): the rightmost pane
@@ -120,19 +129,16 @@ fn split_fold(panes: Vec<Scene>, theme: &Theme) -> Scene {
     acc
 }
 
-/// Size a Container `Percent(100)` on both axes so it fills compose's surface root
-/// (itself a `Percent(100)` block). The `view_splitter` / lone-pane root sets no
-/// size; this gives it the definite extent its flex layout needs (avoiding the
-/// intrinsic-collapse the splitter's own R685 fix documents).
-fn fill(scene: Scene) -> Scene {
+/// Give a Container a definite `Percent(100)` size (via the one
+/// [`crate::view::fill_size`] authority) so it fills compose's surface root. The
+/// `view_splitter` / lone-pane root sets no size of its own; this supplies the
+/// definite extent its flex layout needs (avoiding the intrinsic-collapse the
+/// splitter's own R685 fix documents).
+fn fill_definite(scene: Scene) -> Scene {
     match scene {
-        Scene::Container(c) => Scene::Container(c.map_layout(|l| {
-            l.with_size(
-                Size::auto()
-                    .with_width(SizeValue::Percent(100))
-                    .with_height(SizeValue::Percent(100)),
-            )
-        })),
+        Scene::Container(c) => {
+            Scene::Container(c.map_layout(|l| l.with_size(crate::view::fill_size())))
+        }
         other => other,
     }
 }
@@ -200,6 +206,19 @@ mod tests {
             !scene.contains_tag(splitter_tag(0)),
             "a lone pane has no divider"
         );
+    }
+
+    #[test]
+    fn splitter_tag_encodes_its_index() {
+        // Pin the hand-typed table against index drift (the digits are not
+        // compiler-checked the way the array length is).
+        for j in 0..SPLITTER_COUNT {
+            assert!(
+                splitter_tag(j).ends_with(&format!(".{j}")),
+                "tag {j} = {}",
+                splitter_tag(j)
+            );
+        }
     }
 
     #[test]

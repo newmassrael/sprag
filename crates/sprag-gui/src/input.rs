@@ -102,21 +102,52 @@ fn cycle_focus(active: usize, key: &str) {
     }
 }
 
+/// A reserved chord that acts on the window / layout, NOT the focused pane's PTY.
+/// `route_key` recognizes one via [`window_chord`] and dispatches it instead of
+/// injecting.
+#[derive(Debug, PartialEq, Eq)]
+enum WindowChord {
+    /// `Ctrl+PageUp/Down` — cycle focus between tiles (the `key` carries the
+    /// direction at dispatch).
+    CycleFocus,
+    /// `Shift+PageUp/Down` — scroll the focused pane's history.
+    Scroll,
+    /// `Ctrl+Shift+Enter` — toggle the focused pane's dock state.
+    ToggleDock,
+}
+
+/// Recognize a reserved window chord from `key` + `modifiers`, or `None` for a
+/// normal keystroke (which injects). Pure — the chord-decision is separated from
+/// the side-effecting inject path and unit-tested directly. Precedence matches the
+/// historical if-ladder (Ctrl+Page before Shift+Page); `Ctrl+Shift+Enter` is
+/// essentially unbound in TUIs (terminals cannot encode it distinctly), so it
+/// steals no app key.
+fn window_chord(key: &str, modifiers: Modifiers) -> Option<WindowChord> {
+    let is_page = matches!(key, "PageUp" | "PageDown");
+    if modifiers.ctrl && is_page {
+        Some(WindowChord::CycleFocus)
+    } else if modifiers.shift && is_page {
+        Some(WindowChord::Scroll)
+    } else if modifiers.ctrl && modifiers.shift && key == "Enter" {
+        Some(WindowChord::ToggleDock)
+    } else {
+        None
+    }
+}
+
 /// Route a focused keystroke to the **focused pane's** PTY. The roving-tabindex
 /// gate maps `focused` to a pane tile ([`pane_index_of`]); a non-pane / absent
-/// focus is a no-op (falls through to the shell default). The key + W3C modifiers
-/// go to that pane's [`SpragPaneExternal`](sprag_host::SpragPaneExternal) — found
-/// in the model scene by its tag ([`Scene::find_external_with_tag_mut`]) — via
+/// focus is a no-op (falls through to the shell default). A reserved
+/// [`WindowChord`] ([`window_chord`]) acts on the window/layout and never reaches
+/// the PTY (focus-cycle / scrollback / dock-toggle). Otherwise the key + W3C
+/// modifiers go to that pane's
+/// [`SpragPaneExternal`](sprag_host::SpragPaneExternal) — found in the model scene
+/// by its tag ([`Scene::find_external_with_tag_mut`]) — via
 /// `invoke("key", {key, ctrl, alt, shift, super})`, the same `scene/invoke` wire
 /// the RPC client uses (§2 #2; key->PTY-byte encoding is sprag's, R2.6). An
 /// unencodable key returns `Err` -> `false`, so it falls through rather than
 /// injecting nothing. Returning `true` for the encodable keys swallows Escape/Tab
 /// from the shell's quit/traverse defaults so a full-screen TUI receives them.
-///
-/// Two reserved chords act on the window, not the PTY (sibling modifiers on
-/// `PageUp` / `PageDown`): `Ctrl+` cycles focus between tiles ([`cycle_focus`]),
-/// `Shift+` scrolls the focused pane's history ([`scroll_view`]). Every other key
-/// first snaps that pane's view to the live bottom — you type at the prompt.
 pub(crate) fn route_key(
     scene: &mut Scene,
     focused: Option<&str>,
@@ -129,26 +160,19 @@ pub(crate) fn route_key(
     let Some(active) = pane_index_of(tag) else {
         return false;
     };
-    // Ctrl+PageUp/Down switch focus between tiled panes (NOT to the PTY) — the
-    // sibling chord of Shift+PageUp/Down scrollback.
-    if modifiers.ctrl && matches!(key, "PageUp" | "PageDown") {
-        cycle_focus(active, key);
-        return true;
-    }
-    // Shift+PageUp/Down scroll the focused pane's history view (NOT to the PTY).
-    if modifiers.shift && matches!(key, "PageUp" | "PageDown") {
-        scroll_view(active, key);
-        return true;
-    }
-    // Ctrl+Shift+Enter toggles the focused pane between docked (tiled in the main
-    // window) and undocked (its own OS window) — a window-management gesture, NOT
-    // to the PTY. Ctrl+Shift+Enter is essentially unbound in TUIs (terminals
-    // historically cannot encode it distinctly), so it steals no app key.
-    if modifiers.ctrl && modifiers.shift && key == "Enter" {
-        crate::dock::toggle_pane_floating(active);
-        // Keep typing in the same pane: focus it (a no-op on undock — already
-        // focused; correct on dock-back so a dropped window cannot strand focus).
-        pinion_core::focus_request::request(pane_tag(active));
+    // Reserved window chords act on the layout, not the PTY.
+    if let Some(chord) = window_chord(key, modifiers) {
+        match chord {
+            WindowChord::CycleFocus => cycle_focus(active, key),
+            WindowChord::Scroll => scroll_view(active, key),
+            WindowChord::ToggleDock => {
+                crate::dock::toggle_pane_floating(active);
+                // Keep typing in the same pane: focus it (a no-op on undock —
+                // already focused; correct on dock-back so a dropped window cannot
+                // strand focus).
+                pinion_core::focus_request::request(pane_tag(active));
+            }
+        }
         return true;
     }
     // Any other key is a live interaction with the focused pane: snap its view to
@@ -433,6 +457,42 @@ mod tests {
         assert_eq!(next_scroll_offset("PageDown", 5, 10, 25), 0); // saturate
         // No scrollback -> stays live regardless of the key.
         assert_eq!(next_scroll_offset("PageUp", 0, 10, 0), 0);
+    }
+
+    #[test]
+    fn window_chord_recognizes_the_reserved_chords() {
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        };
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        let ctrl_shift = Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Modifiers::default()
+        };
+        assert_eq!(window_chord("PageUp", ctrl), Some(WindowChord::CycleFocus));
+        assert_eq!(
+            window_chord("PageDown", ctrl),
+            Some(WindowChord::CycleFocus)
+        );
+        assert_eq!(window_chord("PageUp", shift), Some(WindowChord::Scroll));
+        assert_eq!(
+            window_chord("Enter", ctrl_shift),
+            Some(WindowChord::ToggleDock)
+        );
+        // Precedence: Ctrl wins over Shift on Page (the historical if-ladder order).
+        assert_eq!(
+            window_chord("PageUp", ctrl_shift),
+            Some(WindowChord::CycleFocus)
+        );
+        // A normal keystroke is not a chord (it injects).
+        assert_eq!(window_chord("a", Modifiers::default()), None);
+        assert_eq!(window_chord("Enter", Modifiers::default()), None);
+        assert_eq!(window_chord("PageUp", Modifiers::default()), None);
     }
 
     #[test]

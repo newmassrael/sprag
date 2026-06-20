@@ -239,14 +239,16 @@ impl WidgetCore for TerminalViewer {
                 )
             })
             .collect();
-        // The draggable dividers: one `SplitterExternal` per possible divider,
-        // sharing the ratio `Signal` [`view_split_row`](view::view_for_window)
-        // reads. Register ALL `SPLITTER_TAGS` at boot (inert when a handle is not
-        // painted); the shell's pointer router drives the on-screen ones. NOT
-        // focusable tab stops (pointer-only — absent from `focusable_tags`).
-        externals.extend(split::SPLITTER_TAGS.iter().enumerate().map(|(j, &tag)| {
+        // The draggable dividers: one `SplitterExternal` per divider, bounded by
+        // the SAME `pane_count()` SSOT as the pane Externals (`pane_count - 1` is
+        // the max dividers `view_split_row` ever paints — all panes docked). Each
+        // shares the ratio `Signal` [`view_split_row`](view::view_for_window)
+        // reads; the shell's pointer router drives them (no `WidgetCore` pointer
+        // method). NOT focusable tab stops (pointer-only — absent from
+        // `focusable_tags`).
+        externals.extend((0..terminal.pane_count().saturating_sub(1)).map(|j| {
             ExtraExternal::new(
-                tag,
+                split::splitter_tag(j),
                 Box::new(
                     SplitterExternal::new(SplitterOrientation::Horizontal)
                         .attach_ratio(split::use_splitter_ratio(j)),

@@ -1716,6 +1716,60 @@
         "Next can be the deferred adversarial session-review remediation (the R25/R30/R35 rhythm) over R36+R37+R38, or a deferred axis once PR-9 / PR-10 land."
       ]
     },
+    "Round 39": {
+      "decision_summary": "Round 39: session-review remediation of R36-R38 (multi-pane / dock-undock / splitter), the R25/R30/R35 rhythm. Two adversarial agents (refactoring + architecture lens) + my SSOT/source cross-check ruled the architecture sound (north-star data path uncontaminated — verified deps; R25 host/GUI boundary sharper after R38; PR-9/PR-10 genuine gaps, no hidden workaround) but not-yet-textbook. Cleared the must-fix + 4 majors + 3 minors: dead flex props on pane_view_scene (overwritten by the splitter / ignored in Block root — vestige of the removed even-tiling), splitter-External SSOT (bound to pane_count()-1), duplicated fill() (one fill_size authority), route_key chord if-ladder (pure window_chord recognizer), the position-keyed-ratio doc (re-framed as a v1 bound for an eventual identity-keyed split-tree). No behavior change; 161 tests + live boot smoke.",
+      "changes_bullets": [
+        "MUST-FIX: sprag-host pane_view_scene's pane Container is now a BARE tagged Container (no layout). The old flex_basis(0)+flex_grow(1.0) was dead in every path — overwritten by view_splitter's apply_flex_main (N>=2, confirmed in pinion source) or ignored in compose's Block root (1-pane/undock); it was vestige of the R38-removed even-tiling. The host test was renamed/fixed (it pinned the dead props) and the doc corrected (it claimed \"even flex share\").",
+        "MAJOR: create_extra_externals registers pane_count()-1 SplitterExternals (the max dividers ever painted) via splitter_tag(j), not all MAX_PANES-1 — the SAME pane_count() SSOT as the pane Externals (was an inert phantom pool, the anti-pattern PR-9 refuses for focus tags). SPLITTER_TAGS tightened to private.",
+        "MAJOR: the Percent(100)-both-axes Size literal had two GUI copies (view::fill + split::fill — same name, different signatures) — one view::fill_size() authority now; split's renamed fill_definite reuses it.",
+        "MAJOR: route_key's three chord if-branches became a pure window_chord(key, modifiers) -> Option<WindowChord> recognizer (precedence-preserving, unit-tested) + dispatch; the inject path is separated and the duplicated matches!(PageUp|PageDown) deduped.",
+        "MAJOR: split.rs's position-keyed-ratio doc re-framed as a deliberate v1 BOUND (not terminal behavior) — undock/dock reshuffles which panes a divider position separates; the correct long-term is an identity-keyed split-tree, deferred (premature at MAX_PANES=8; its consumer is dynamic split/close, gated on PR-9).",
+        "MINORs: a splitter_tag digit-drift-pin test; terminal::cell_px (the grid_dims inverse, the one cols->px site) now used by dock for the undock-window size; pane_window_id cross-refs the distinct pane_tag namespace."
+      ],
+      "verification_bullets": [
+        "161 workspace tests pass (sprag-gui 32, +2: the window_chord recognizer + the splitter_tag digit-pin; sprag-host 38, the flex-share test renamed) and cargo clippy --workspace --all-targets is clean.",
+        "No behavior change — the DATA tests stay green through the new bare-container pane_view_scene + the splitter/fill layout: ShellCore tiles_two_panes (even half split), dragging_a_divider_reweights (ratio 0.7 -> 70/30), undock_partitions all still pass.",
+        "Live boot smoke: the real binary boots and both panes fill (stty size = 20 rows x 47 cols each, even split) — the layout cleanup (removing the dead flex props) collapsed nothing and did not panic.",
+        "Architecture verdict (my source cross-check): north-star data path UNCONTAMINATED — sprag-terminal has NO pinion dep, sprag-grid only pinion-core, sprag-host no pinion-shell/widget-paint/vello (those live only in sprag-gui); the R25 host/GUI boundary is sharper after R38 (host projects per-pane, GUI arranges interactively); apply_flex_main confirmed to OVERWRITE the child flex_grow (the must-fix premise).",
+        "Two adversarial agents (refactoring + architecture lens) ruled the architecture sound and SSOT discipline otherwise strong (floating SSOT, grid_dims SSOT, PaneViewSpec = D1 done right, justified module split, PR-9/PR-10 genuine gaps with no hidden workaround); R39 cleared the one must-fix + four majors + three minors they raised."
+      ],
+      "impact_refs": [
+        "2",
+        "3"
+      ],
+      "carry_forward_bullets": [
+        "The identity-keyed split-tree (replacing R38's position-keyed ratios) is the named next structural step, DEFERRED: its consumer is dynamic split/close, gated on pinion PR-9 (runtime focusable refresh). Building it now is premature (MAX_PANES=8, no dynamic panes yet).",
+        "MINOR not taken (unreachable today, PR-9-gated): view_for_window / access_nodes_for_window paint the MAIN layout for a stale pane-{i} window id (i >= pane_count); long-term it should paint empty. Documented, deferred until dynamic close exists.",
+        "Still gated: PR-9 (dynamic focusable -> dynamic split/close, per-pane tabs, DnD reorder, new-pane undock) and PR-10 (per-window viewport -> resizable undock windows). Both reported as separate claudedocs docs.",
+        "Next: a deferred axis once PR-9 / PR-10 land, or wire ime_caret_rect. The GUI interaction trio (multi-pane, dock/undock, splitter) is now textbook-clean."
+      ],
+      "publishable_decision_summary": "Round 39: session-review remediation of R36-R38 (multi-pane / dock-undock / splitter), the R25/R30/R35 rhythm. Two adversarial agents (refactoring + architecture lens) + my SSOT/source cross-check ruled the architecture sound (north-star data path uncontaminated — verified deps; R25 host/GUI boundary sharper after R38; PR-9/PR-10 genuine gaps, no hidden workaround) but not-yet-textbook. Cleared the must-fix + 4 majors + 3 minors: dead flex props on pane_view_scene (overwritten by the splitter / ignored in Block root — vestige of the removed even-tiling), splitter-External SSOT (bound to pane_count()-1), duplicated fill() (one fill_size authority), route_key chord if-ladder (pure window_chord recognizer), the position-keyed-ratio doc (re-framed as a v1 bound for an eventual identity-keyed split-tree). No behavior change; 161 tests + live boot smoke.",
+      "publishable_changes_bullets": [
+        "MUST-FIX: sprag-host pane_view_scene's pane Container is now a BARE tagged Container (no layout). The old flex_basis(0)+flex_grow(1.0) was dead in every path — overwritten by view_splitter's apply_flex_main (N>=2, confirmed in pinion source) or ignored in compose's Block root (1-pane/undock); it was vestige of the R38-removed even-tiling. The host test was renamed/fixed (it pinned the dead props) and the doc corrected (it claimed \"even flex share\").",
+        "MAJOR: create_extra_externals registers pane_count()-1 SplitterExternals (the max dividers ever painted) via splitter_tag(j), not all MAX_PANES-1 — the SAME pane_count() SSOT as the pane Externals (was an inert phantom pool, the anti-pattern PR-9 refuses for focus tags). SPLITTER_TAGS tightened to private.",
+        "MAJOR: the Percent(100)-both-axes Size literal had two GUI copies (view::fill + split::fill — same name, different signatures) — one view::fill_size() authority now; split's renamed fill_definite reuses it.",
+        "MAJOR: route_key's three chord if-branches became a pure window_chord(key, modifiers) -> Option<WindowChord> recognizer (precedence-preserving, unit-tested) + dispatch; the inject path is separated and the duplicated matches!(PageUp|PageDown) deduped.",
+        "MAJOR: split.rs's position-keyed-ratio doc re-framed as a deliberate v1 BOUND (not terminal behavior) — undock/dock reshuffles which panes a divider position separates; the correct long-term is an identity-keyed split-tree, deferred (premature at MAX_PANES=8; its consumer is dynamic split/close, gated on PR-9).",
+        "MINORs: a splitter_tag digit-drift-pin test; terminal::cell_px (the grid_dims inverse, the one cols->px site) now used by dock for the undock-window size; pane_window_id cross-refs the distinct pane_tag namespace."
+      ],
+      "publishable_verification_bullets": [
+        "161 workspace tests pass (sprag-gui 32, +2: the window_chord recognizer + the splitter_tag digit-pin; sprag-host 38, the flex-share test renamed) and cargo clippy --workspace --all-targets is clean.",
+        "No behavior change — the DATA tests stay green through the new bare-container pane_view_scene + the splitter/fill layout: ShellCore tiles_two_panes (even half split), dragging_a_divider_reweights (ratio 0.7 -> 70/30), undock_partitions all still pass.",
+        "Live boot smoke: the real binary boots and both panes fill (stty size = 20 rows x 47 cols each, even split) — the layout cleanup (removing the dead flex props) collapsed nothing and did not panic.",
+        "Architecture verdict (my source cross-check): north-star data path UNCONTAMINATED — sprag-terminal has NO pinion dep, sprag-grid only pinion-core, sprag-host no pinion-shell/widget-paint/vello (those live only in sprag-gui); the R25 host/GUI boundary is sharper after R38 (host projects per-pane, GUI arranges interactively); apply_flex_main confirmed to OVERWRITE the child flex_grow (the must-fix premise).",
+        "Two adversarial agents (refactoring + architecture lens) ruled the architecture sound and SSOT discipline otherwise strong (floating SSOT, grid_dims SSOT, PaneViewSpec = D1 done right, justified module split, PR-9/PR-10 genuine gaps with no hidden workaround); R39 cleared the one must-fix + four majors + three minors they raised."
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "3"
+      ],
+      "publishable_carry_forward_bullets": [
+        "The identity-keyed split-tree (replacing R38's position-keyed ratios) is the named next structural step, DEFERRED: its consumer is dynamic split/close, gated on pinion PR-9 (runtime focusable refresh). Building it now is premature (MAX_PANES=8, no dynamic panes yet).",
+        "MINOR not taken (unreachable today, PR-9-gated): view_for_window / access_nodes_for_window paint the MAIN layout for a stale pane-{i} window id (i >= pane_count); long-term it should paint empty. Documented, deferred until dynamic close exists.",
+        "Still gated: PR-9 (dynamic focusable -> dynamic split/close, per-pane tabs, DnD reorder, new-pane undock) and PR-10 (per-window viewport -> resizable undock windows). Both reported as separate claudedocs docs.",
+        "Next: a deferred axis once PR-9 / PR-10 land, or wire ime_caret_rect. The GUI interaction trio (multi-pane, dock/undock, splitter) is now textbook-clean."
+      ]
+    },
     "Round 4": {
       "decision_summary": "Add sprag-term: a headless JSON-RPC server exposing a live PTY session as scene-as-data over stdin/stdout.",
       "changes_bullets": [

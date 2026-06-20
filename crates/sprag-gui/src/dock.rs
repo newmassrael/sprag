@@ -50,7 +50,10 @@ pub(crate) const MAIN_WINDOW_ID: &str = "main";
 /// The undock-window id prefix; an undock window for pane `i` is `pane-{i}`.
 const UNDOCK_WINDOW_PREFIX: &str = "pane-";
 
-/// The undock-window id for pane `i` (`pane-{i}`).
+/// The undock-window id for pane `i` (`pane-{i}`). A DISTINCT namespace from the
+/// scene/focus [`pane_tag`](crate::terminal::pane_tag) (`sprag_gui.pane.{i}`):
+/// both keyed by the tile index `i`, but one is a pinion window id and the other
+/// a scene tag — not interchangeable.
 pub(crate) fn pane_window_id(i: usize) -> String {
     format!("{UNDOCK_WINDOW_PREFIX}{i}")
 }
@@ -118,12 +121,16 @@ pub(crate) fn toggle_pane_floating(i: usize) {
     } else {
         let tv = use_terminal();
         let (cols, rows) = tv.pane(i).session().dimensions();
-        let width = (u32::from(cols) * tv.metric.cell_w()).max(1);
-        let height = (u32::from(rows) * tv.metric.cell_h()).max(1);
+        // Open fixed to the pane's intrinsic (cols, rows) x cell — the grid_dims
+        // inverse ([`cell_px`]) — so it fits 1:1 with no reflow needed.
+        let (width, height) = crate::terminal::cell_px(tv.metric, cols, rows);
         windows.push(WindowSpec::new(
             Cow::Owned(target),
             format!("sprag terminal — pane {i}"),
-            SizeStrategy::Fixed { width, height },
+            SizeStrategy::Fixed {
+                width: width.max(1),
+                height: height.max(1),
+            },
         ));
     }
     signal.set(windows);

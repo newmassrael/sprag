@@ -85,12 +85,14 @@ fn compose(content: Scene, theme: &Theme) -> Scene {
         ContainerNode::new(vec![content])
             .with_tag(ROOT_TAG)
             .with_style(BoxStyle::filled(theme.resolve(ColorRole::Surface)))
-            .with_layout(LayoutStyle::new().with_size(fill())),
+            .with_layout(LayoutStyle::new().with_size(fill_size())),
     )
 }
 
-/// A both-axes `Percent(100)` size — fill the parent slot.
-fn fill() -> Size {
+/// A both-axes `Percent(100)` size — fill the parent slot. The ONE definition,
+/// shared by [`compose`] and [`crate::split::view_split_row`]'s fill (so the
+/// "fill the window" literal lives in one place).
+pub(crate) fn fill_size() -> Size {
     Size::auto()
         .with_width(SizeValue::Percent(100))
         .with_height(SizeValue::Percent(100))

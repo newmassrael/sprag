@@ -140,8 +140,12 @@ pub struct PaneViewSpec<'a> {
 /// building block. The same single projection
 /// ([`sprag_grid::project_scrolled`] + [`sprag_grid::overlay_preedit`]) wrapped in
 /// the [`view_text_grid`] presentation (R1002 font-size pin + fill), inside a
-/// Container that takes an **even flex share** of its row
-/// (`flex_basis 0 + flex_grow 1`, the CSS proportional-split idiom).
+/// **bare tagged** Container. The Container carries NO layout of its own: the
+/// GUI's arrangement supplies it — `sprag-gui`'s `view_splitter` overwrites
+/// `flex_basis`/`flex_grow` with the drag ratio for a tiled pane, and the
+/// lone-pane / undock-window paths size it `Percent(100)`. (R38 removed the host's
+/// even-tiling, so the old `flex_basis 0 + flex_grow 1` here was dead in every
+/// path — who sizes a pane is now solely the GUI arrangement.)
 ///
 /// The Container `tag` is the per-pane identity the windowed host keys three
 /// things on, so the GUI passes the SAME tag it registers as that pane's
@@ -165,12 +169,7 @@ pub fn pane_view_scene(tag: impl Into<Cow<'static, str>>, spec: PaneViewSpec<'_>
     );
     Scene::Container(
         ContainerNode::new(vec![view_text_grid(cells, spec.metric, spec.font_size_px)])
-            .with_tag(tag)
-            .with_layout(
-                LayoutStyle::new()
-                    .with_flex_basis(SizeValue::Px(0))
-                    .with_flex_grow(1.0),
-            ),
+            .with_tag(tag),
     )
 }
 
@@ -346,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn pane_view_scene_wraps_projection_in_a_tagged_flex_share_container() {
+    fn pane_view_scene_is_a_bare_tagged_container_around_the_grid() {
         let mut em = Emulator::new(8, 2);
         em.advance(b"hi");
         let scene = super::pane_view_scene(
@@ -364,9 +363,9 @@ mod tests {
                 // The per-pane identity tag (the use_pane_viewport_size rect
                 // target / focus-ring / click-focus anchor).
                 assert_eq!(c.tag.as_deref(), Some("pane.test"));
-                // An even flex share of its row (the proportional-split idiom).
-                assert_eq!(c.layout.flex_basis, Some(SizeValue::Px(0)));
-                assert!((c.layout.flex_grow - 1.0).abs() < f32::EPSILON);
+                // No layout of its own — the GUI arrangement (splitter / fill)
+                // supplies it; pinning a flex share here would pin dead values.
+                assert_eq!(c.layout, LayoutStyle::default());
             }
             other => unreachable!("pane_view_scene returns a Container, got {other:?}"),
         }

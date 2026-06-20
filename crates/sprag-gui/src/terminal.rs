@@ -184,6 +184,17 @@ pub(crate) fn grid_dims(viewport: (u32, u32), metric: CellMetric) -> (u16, u16) 
     )
 }
 
+/// The inverse of [`grid_dims`]: the pixel size that exactly fits `(cols, rows)`
+/// cells at `metric`. The one `cols -> px` site (a fixed-size undock window's
+/// intrinsic size, [`dock`](crate::dock)), kept beside the `px -> cols`
+/// derivation so the cell<->pixel round-trip lives in one module.
+pub(crate) fn cell_px(metric: CellMetric, cols: u16, rows: u16) -> (u32, u32) {
+    (
+        u32::from(cols) * metric.cell_w(),
+        u32::from(rows) * metric.cell_h(),
+    )
+}
+
 /// Self-create (once) the live terminal: measure the resolved monospace cell
 /// via the R1003 seam, derive `(cols, rows)` from the window + cell (§3), and
 /// spawn the [`pane_count`] tiled panes, each wired to the shell's
