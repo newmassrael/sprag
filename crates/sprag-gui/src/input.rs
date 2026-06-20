@@ -1,41 +1,53 @@
-//! Input routing: a focused keystroke / IME commit -> the pane's PTY through
-//! the one `invoke(...)` wire, plus the scrollback-view offset those keys snap.
+//! Input routing: a focused keystroke / IME commit -> the FOCUSED pane's PTY
+//! through that pane's `invoke(...)` wire, the focus-cycle chord that moves
+//! between tiled panes, and the per-pane scrollback-view offset those keys snap.
 //! The [`TerminalViewer`](crate::TerminalViewer) `apply_key` / `apply_composition`
 //! trait methods delegate here. See the crate-root "Input" / "Scrollback" docs.
 
-use crate::terminal::use_terminal;
-use crate::ROOT_TAG;
+use crate::terminal::{pane_index_of, pane_tag, use_terminal};
 use pinion_core::external::IntrospectValue;
 use pinion_core::reactive::{Owner, Signal};
 use pinion_core::{CompositionEvent, Modifiers, Scene};
 
-/// `Owner::cache` key for the scrollback view offset (lines scrolled up from
-/// the live bottom; `0` = live).
-const SCROLL_KEY: &str = "sprag_gui.scroll";
-
-/// The scrollback view offset (lines scrolled up from the live bottom), an
-/// `Owner::cache`-backed [`Signal`] so `apply_key` writes it and `view` reads it
-/// reactively (a `set` re-renders the view). `0` = live (follow the bottom).
-pub(crate) fn use_scroll_offset() -> Signal<usize> {
-    let owner = Owner::current().expect("use_scroll_offset() requires an active Owner scope");
-    owner.cache(SCROLL_KEY, || Signal::new(0_usize)).as_ref().clone()
+/// `Owner::cache` key for pane `pane`'s scrollback view offset.
+fn scroll_key(pane: usize) -> String {
+    format!("sprag_gui.scroll.{pane}")
 }
 
-/// `Owner::cache` key for the IME preedit (in-progress composition) overlay.
-const PREEDIT_KEY: &str = "sprag_gui.preedit";
+/// Pane `pane`'s scrollback view offset (lines scrolled up from the live
+/// bottom), an `Owner::cache`-backed [`Signal`] so `apply_key` writes it and
+/// `view` reads it reactively (a `set` re-renders that pane). `0` = live (follow
+/// the bottom). **Per-pane**: each tile scrolls its own history independently, so
+/// the slot is keyed by the tile index (mirroring pinion's tag-keyed
+/// `PaneViewportRegistry`) rather than the former single global slot.
+pub(crate) fn use_scroll_offset(pane: usize) -> Signal<usize> {
+    let owner = Owner::current().expect("use_scroll_offset() requires an active Owner scope");
+    owner
+        .cache(scroll_key(pane), || Signal::new(0_usize))
+        .as_ref()
+        .clone()
+}
 
-/// The IME preedit (in-progress composition) string, an `Owner::cache`-backed
-/// [`Signal`] that [`route_composition`] writes on each composition event and
-/// `view` reads every frame to overlay at the cursor (see
-/// [`sprag_host::pane_view_scene_scrolled_with_preedit`] /
-/// `sprag_grid::overlay_preedit` for why a terminal renders the preedit itself).
-/// Empty = not composing; display-only (the preedit never reaches the PTY — only
-/// a `Commit` writes). Because `view` reads it every frame, a `set` flips the root
-/// owner dirty so the shell's R705.1 reactive bridge arms a redraw — the
-/// composition repaints live as you type.
-pub(crate) fn use_preedit() -> Signal<String> {
+/// `Owner::cache` key for pane `pane`'s IME preedit overlay.
+fn preedit_key(pane: usize) -> String {
+    format!("sprag_gui.preedit.{pane}")
+}
+
+/// Pane `pane`'s IME preedit (in-progress composition) string, an
+/// `Owner::cache`-backed [`Signal`] that [`route_composition`] writes on each
+/// composition event and `view` reads every frame to overlay at that pane's
+/// cursor (see [`sprag_host::pane_view_scene`] / `sprag_grid::overlay_preedit` for
+/// why a terminal renders the preedit itself). Empty = not composing;
+/// display-only (the preedit never reaches the PTY — only a `Commit` writes).
+/// Because `view` reads it every frame, a `set` flips the root owner dirty so the
+/// shell's R705.1 reactive bridge arms a redraw — the composition repaints live
+/// as you type. **Per-pane**: composition targets the focused pane only.
+pub(crate) fn use_preedit(pane: usize) -> Signal<String> {
     let owner = Owner::current().expect("use_preedit() requires an active Owner scope");
-    owner.cache(PREEDIT_KEY, || Signal::new(String::new())).as_ref().clone()
+    owner
+        .cache(preedit_key(pane), || Signal::new(String::new()))
+        .as_ref()
+        .clone()
 }
 
 /// The scrollback offset after a `PageUp` / `PageDown` of `page` rows from
@@ -50,46 +62,88 @@ fn next_scroll_offset(key: &str, current: usize, page: usize, scrollback_len: us
     }
 }
 
-/// Adjust the scrollback offset for a `Shift+PageUp` / `Shift+PageDown`, clamped
-/// to the pane's retained scrollback depth. A page is the viewport height less
-/// one row (one row of overlap for continuity). Reads the live pane for the
-/// depth + row count; called from `apply_key` (outside any cache factory).
-fn scroll_view(key: &str) {
+/// Adjust pane `pane`'s scrollback offset for a `Shift+PageUp` / `Shift+PageDown`,
+/// clamped to that pane's retained scrollback depth. A page is the viewport
+/// height less one row (one row of overlap for continuity). Reads the live pane
+/// for the depth + row count; called from `apply_key` (outside any cache factory).
+fn scroll_view(pane: usize, key: &str) {
     let terminal = use_terminal();
-    let offset = use_scroll_offset();
+    let offset = use_scroll_offset(pane);
     let (scrollback_len, rows) = terminal
-        .boot_pane()
+        .pane(pane)
         .session()
         .with_screen(|screen| (screen.scrollback_len(), screen.rows()));
     let page = usize::from(rows).saturating_sub(1).max(1);
     offset.set(next_scroll_offset(key, offset.get(), page, scrollback_len));
 }
 
-/// Route a focused keystroke to the boot pane's PTY. The roving-tabindex gate
-/// (`focused == Some(ROOT_TAG)`) keeps keys scoped to the terminal, and the
-/// key + W3C modifiers go to the root [`SpragPaneExternal`](sprag_host::SpragPaneExternal)'s
-/// `invoke("key", {key, ctrl, alt, shift, super})` — the same `scene/invoke`
-/// wire the RPC client uses (§2 #2), where the sprag-owned encoder turns the key
-/// into PTY bytes (R2.6). An unencodable key (a bare modifier press, an
-/// `Fn`-style key the encoder does not map) returns `Err` -> `false`, so it
-/// falls through to the shell default rather than injecting nothing silently.
-/// The terminal keys that matter all encode: returning `true` for them swallows
-/// the key from the shell's Escape-quits / Tab-traverses defaults, so Escape and
-/// Tab reach a full-screen TUI (vim) instead of the window.
-pub(crate) fn route_key(scene: &mut Scene, focused: Option<&str>, key: &str, modifiers: Modifiers) -> bool {
-    if focused != Some(ROOT_TAG) {
-        return false;
+/// The pane to focus after a `Ctrl+PageUp` (previous) / `Ctrl+PageDown` (next)
+/// from `active`, wrapping over `count` panes. `None` when there is nothing to
+/// switch to (`count <= 1`) or the key is neither. Pure, so it is unit-testable;
+/// the up=previous / down=next sense mirrors the scrollback chord.
+fn next_focus(active: usize, key: &str, count: usize) -> Option<usize> {
+    if count <= 1 {
+        return None;
     }
-    // Scrollback: Shift+PageUp / Shift+PageDown scroll the history view and do
-    // NOT reach the PTY (a terminal app sees an unmodified PageUp). Every
-    // other key is a live interaction, so it first snaps the view back to the
-    // bottom — you type at the prompt, which is at the live bottom.
-    if modifiers.shift && matches!(key, "PageUp" | "PageDown") {
-        scroll_view(key);
+    match key {
+        "PageDown" => Some((active + 1) % count),
+        "PageUp" => Some((active + count - 1) % count),
+        _ => None,
+    }
+}
+
+/// Move focus to the next / previous tiled pane (wrapping) via a pinion
+/// [`focus_request`](pinion_core::focus_request) — the framework focus ring and
+/// the `apply_key` routing both follow the focus manager, so requesting the new
+/// pane's tag is the whole switch. A single-pane window is a no-op.
+fn cycle_focus(active: usize, key: &str) {
+    if let Some(next) = next_focus(active, key, use_terminal().pane_count()) {
+        pinion_core::focus_request::request(pane_tag(next));
+    }
+}
+
+/// Route a focused keystroke to the **focused pane's** PTY. The roving-tabindex
+/// gate maps `focused` to a pane tile ([`pane_index_of`]); a non-pane / absent
+/// focus is a no-op (falls through to the shell default). The key + W3C modifiers
+/// go to that pane's [`SpragPaneExternal`](sprag_host::SpragPaneExternal) — found
+/// in the model scene by its tag ([`Scene::find_external_with_tag_mut`]) — via
+/// `invoke("key", {key, ctrl, alt, shift, super})`, the same `scene/invoke` wire
+/// the RPC client uses (§2 #2; key->PTY-byte encoding is sprag's, R2.6). An
+/// unencodable key returns `Err` -> `false`, so it falls through rather than
+/// injecting nothing. Returning `true` for the encodable keys swallows Escape/Tab
+/// from the shell's quit/traverse defaults so a full-screen TUI receives them.
+///
+/// Two reserved chords act on the window, not the PTY (sibling modifiers on
+/// `PageUp` / `PageDown`): `Ctrl+` cycles focus between tiles ([`cycle_focus`]),
+/// `Shift+` scrolls the focused pane's history ([`scroll_view`]). Every other key
+/// first snaps that pane's view to the live bottom — you type at the prompt.
+pub(crate) fn route_key(
+    scene: &mut Scene,
+    focused: Option<&str>,
+    key: &str,
+    modifiers: Modifiers,
+) -> bool {
+    let Some(tag) = focused else {
+        return false;
+    };
+    let Some(active) = pane_index_of(tag) else {
+        return false;
+    };
+    // Ctrl+PageUp/Down switch focus between tiled panes (NOT to the PTY) — the
+    // sibling chord of Shift+PageUp/Down scrollback.
+    if modifiers.ctrl && matches!(key, "PageUp" | "PageDown") {
+        cycle_focus(active, key);
         return true;
     }
-    use_scroll_offset().set(0);
-    let Scene::External(node) = scene else {
+    // Shift+PageUp/Down scroll the focused pane's history view (NOT to the PTY).
+    if modifiers.shift && matches!(key, "PageUp" | "PageDown") {
+        scroll_view(active, key);
+        return true;
+    }
+    // Any other key is a live interaction with the focused pane: snap its view to
+    // the bottom, then inject through that pane's input External.
+    use_scroll_offset(active).set(0);
+    let Some(node) = scene.find_external_with_tag_mut(tag) else {
         return false;
     };
     let Some(intro) = node.handle.introspect_mut() else {
@@ -106,57 +160,58 @@ pub(crate) fn route_key(scene: &mut Scene, focused: Option<&str>, key: &str, mod
     intro.invoke("key", IntrospectValue::Json(args)).is_ok()
 }
 
-/// Route an IME composition (Hangul / CJK / any composed input): mirror the
-/// in-progress preedit into the [`use_preedit`] overlay Signal and write only the
-/// committed text to the PTY. See `sprag_grid::overlay_preedit` for why a terminal
-/// must render the preedit itself (winit + XIM) and the display-only contract.
+/// Route an IME composition (Hangul / CJK / any composed input) to the **focused
+/// pane**: mirror the in-progress preedit into that pane's [`use_preedit`] overlay
+/// Signal and write only the committed text to its PTY. See
+/// `sprag_grid::overlay_preedit` for why a terminal must render the preedit itself
+/// (winit + XIM) and the display-only contract.
 ///
 /// - [`Start`](CompositionEvent::Start) / [`Cancel`](CompositionEvent::Cancel):
-///   clear the overlay (begin / abort).
-/// - [`Update`](CompositionEvent::Update): mirror the preedit text into the
-///   overlay — NOT written to the PTY.
+///   clear the focused pane's overlay (begin / abort).
+/// - [`Update`](CompositionEvent::Update): mirror the preedit text into that
+///   pane's overlay — NOT written to the PTY.
 /// - [`Commit`](CompositionEvent::Commit): clear the overlay and write the text
-///   **literally** via the root [`SpragPaneExternal`](sprag_host::SpragPaneExternal)'s
-///   `invoke("text", …)` — composed text is not a keystroke, so it bypasses the
-///   key encoder (the same `scene/invoke` wire the AI peer drives, §2 #2). For a
-///   cooked-mode program the committed glyphs then arrive echoed through the PTY;
-///   a non-echoing program (a password prompt, a TUI) shows them only when it next
-///   redraws. An empty Commit is the cancel-shaped end (clearing is the whole job).
+///   **literally** via the focused pane's
+///   [`SpragPaneExternal`](sprag_host::SpragPaneExternal) `invoke("text", …)` — the
+///   same `scene/invoke` wire the AI peer drives, bypassing the key encoder. An
+///   empty Commit is the cancel-shaped end (clearing is the whole job).
 ///
-/// Focus-gated on [`ROOT_TAG`] like [`route_key`]. Returning `true` does double
-/// duty: it reports the event handled AND — because `view` subscribes to
-/// [`use_preedit`] — arms a repaint via pinion's R705.1 reactive-dirty bridge, so
-/// the composition repaints live. (`WidgetView::ime_caret_rect`, Hanja-candidate
-/// positioning, is still unwired — polish, not shown during plain Hangul.)
+/// Focus-gated to a pane tile like [`route_key`]. Returning `true` reports the
+/// event handled AND — because `view` subscribes to [`use_preedit`] — arms a
+/// repaint via pinion's R705.1 reactive-dirty bridge, so the composition repaints
+/// live. (`WidgetView::ime_caret_rect`, Hanja-candidate positioning, is still
+/// unwired — polish, not shown during plain Hangul.)
 pub(crate) fn route_composition(
     scene: &mut Scene,
     focused: Option<&str>,
     event: &CompositionEvent,
 ) -> bool {
-    if focused != Some(ROOT_TAG) {
+    let Some(tag) = focused else {
         return false;
-    }
-    // Composition happens at the live prompt, so snap the scrollback view to the
-    // bottom once for any composition activity — one site (was duplicated across
-    // Start and Commit), and it now also covers a Commit that arrives without a
-    // preceding Start (some IMEs do that).
-    use_scroll_offset().set(0);
+    };
+    let Some(active) = pane_index_of(tag) else {
+        return false;
+    };
+    // Composition happens at the live prompt, so snap the focused pane's
+    // scrollback view to the bottom once for any composition activity — one site,
+    // and it also covers a Commit that arrives without a preceding Start.
+    use_scroll_offset(active).set(0);
     match event {
         // Begin / abort: clear any (stale) overlay. Update carries the live text.
         CompositionEvent::Start | CompositionEvent::Cancel => {
-            use_preedit().set(String::new());
+            use_preedit(active).set(String::new());
             true
         }
-        // Preedit progresses (ㅎ -> 하 -> 한): mirror it into the overlay.
+        // Preedit progresses (ㅎ -> 하 -> 한): mirror it into the pane's overlay.
         CompositionEvent::Update(text) => {
-            use_preedit().set(text.clone());
+            use_preedit(active).set(text.clone());
             true
         }
         // Finished: clear the overlay, then write the literal committed text.
         CompositionEvent::Commit(text) => {
-            use_preedit().set(String::new());
+            use_preedit(active).set(String::new());
             if !text.is_empty()
-                && let Scene::External(node) = scene
+                && let Some(node) = scene.find_external_with_tag_mut(tag)
                 && let Some(intro) = node.handle.introspect_mut()
             {
                 let _ = intro.invoke("text", IntrospectValue::Text(text.clone()));
@@ -173,134 +228,188 @@ pub(crate) fn route_composition(
 mod tests {
     use super::*;
     use crate::TerminalViewer;
-    use pinion_core::scene::ExternalNode;
     use pinion_core::WidgetCore;
+    use pinion_core::scene::{ContainerNode, ExternalNode};
     use sprag_host::SpragPaneExternal;
-    use sprag_terminal::{CommandBuilder, Workspace};
+    use sprag_terminal::{CommandBuilder, SessionHandle, Workspace};
     use std::thread::sleep;
     use std::time::{Duration, Instant};
 
-    /// End-to-end keyboard input: build the model scene the shell assembles
-    /// (`Scene::External(SpragPaneExternal, ROOT_TAG)`) over a live `cat` pane
-    /// and drive `apply_key`. The focus gate is deterministic; the typed text
-    /// echoes back through the cooked-mode PTY (bounded poll, the sprag-terminal
-    /// test idiom).
-    #[test]
-    fn apply_key_routes_focused_keystrokes_to_the_pane() {
-        let mut ws = Workspace::new((40, 6));
-        let mut command = CommandBuilder::new("/bin/sh");
-        command.arg("-c");
-        command.arg("cat"); // echoes stdin; keeps the PTY open across the keys
-        command.env("TERM", "dumb");
-        let id = ws.spawn(command, "cat".to_owned(), 40, 6).unwrap();
-        let handle = ws.pane(id).unwrap().handle();
-        let mut scene = Scene::External(
-            ExternalNode::new(Box::new(SpragPaneExternal::new(handle.clone()))).with_tag(ROOT_TAG),
-        );
+    /// A long-lived `cat` pane (echoes stdin, keeps the PTY open across keys).
+    fn cat() -> CommandBuilder {
+        let mut c = CommandBuilder::new("/bin/sh");
+        c.arg("-c");
+        c.arg("cat");
+        c.env("TERM", "dumb");
+        c
+    }
 
-        // apply_key runs inside the shell's root Owner scope (it reads the
-        // scrollback-offset Signal); mirror that here.
-        let owner = Owner::new();
-        owner.run(|| {
-            // Focus gate: an unfocused / wrong-tag keystroke is a no-op.
-            assert!(!TerminalViewer::apply_key(&mut scene, None, "a", Modifiers::default()));
-            assert!(!TerminalViewer::apply_key(&mut scene, Some("other"), "a", Modifiers::default()));
-            // Focused: each key is injected and the cooked-mode PTY echoes it back.
-            for ch in ["h", "i"] {
-                assert!(TerminalViewer::apply_key(&mut scene, Some(ROOT_TAG), ch, Modifiers::default()));
-            }
-        });
+    /// Poll a handle's row 0 until it contains `needle` or the deadline passes.
+    fn wait_for_row0(handle: &SessionHandle, needle: &str) -> String {
         let start = Instant::now();
         let mut row0 = String::new();
         while start.elapsed() < Duration::from_secs(5) {
             row0 = handle.with_screen(|screen| screen.row_text(0));
-            if row0.contains("hi") {
+            if row0.contains(needle) {
                 break;
             }
             sleep(Duration::from_millis(20));
         }
-        assert!(row0.contains("hi"), "typed keys echo to the pane screen; row0 = {row0:?}");
+        row0
     }
 
-    /// Verify the composition lifecycle: `Update` (preedit) mirrors into the
-    /// [`use_preedit`] overlay Signal WITHOUT touching the PTY, and `Commit`
+    /// End-to-end multi-pane routing: the model scene is the `Scene::Container`
+    /// the shell builds from `[primary, ...extras]`, each pane's input External
+    /// tagged `pane_tag(i)`. A focused keystroke reaches ONLY the focused pane
+    /// (`find_external_with_tag_mut`), and a non-pane / absent focus is a no-op.
+    #[test]
+    fn apply_key_routes_to_the_focused_pane_only() {
+        let mut ws = Workspace::new((40, 6));
+        let id0 = ws.spawn(cat(), "cat".to_owned(), 40, 6).unwrap();
+        let id1 = ws.spawn(cat(), "cat".to_owned(), 40, 6).unwrap();
+        let h0 = ws.pane(id0).unwrap().handle();
+        let h1 = ws.pane(id1).unwrap().handle();
+        let mut scene = Scene::Container(ContainerNode::new(vec![
+            Scene::External(
+                ExternalNode::new(Box::new(SpragPaneExternal::new(h0.clone())))
+                    .with_tag(pane_tag(0)),
+            ),
+            Scene::External(
+                ExternalNode::new(Box::new(SpragPaneExternal::new(h1.clone())))
+                    .with_tag(pane_tag(1)),
+            ),
+        ]));
+
+        // apply_key reads the scrollback-offset Signal, so run it inside a root
+        // Owner scope (mirrors the shell's root_owner.run wrap).
+        let owner = Owner::new();
+        owner.run(|| {
+            // A non-pane focus (the cosmetic root tag) and no focus are no-ops.
+            assert!(!TerminalViewer::apply_key(
+                &mut scene,
+                Some("sprag_gui"),
+                "x",
+                Modifiers::default()
+            ));
+            assert!(!TerminalViewer::apply_key(
+                &mut scene,
+                None,
+                "x",
+                Modifiers::default()
+            ));
+            // Focus pane 1: each key is injected into pane 1's PTY only.
+            for ch in ["h", "i"] {
+                assert!(TerminalViewer::apply_key(
+                    &mut scene,
+                    Some(pane_tag(1)),
+                    ch,
+                    Modifiers::default()
+                ));
+            }
+        });
+
+        assert!(
+            wait_for_row0(&h1, "hi").contains("hi"),
+            "the focused pane echoes the keys"
+        );
+        assert!(
+            !h0.with_screen(|s| s.row_text(0)).contains("hi"),
+            "the unfocused pane received nothing",
+        );
+    }
+
+    /// The composition lifecycle on the focused pane: `Update` mirrors into that
+    /// pane's [`use_preedit`] overlay WITHOUT touching the PTY, and `Commit`
     /// clears the overlay and WRITES the literal UTF-8 (the R31 `Commit` ->
-    /// `invoke("text")` -> `session.write` seam), confirmed by the text echoing
-    /// back through the cooked-mode `cat` PTY.
+    /// `invoke("text")` seam), confirmed by the text echoing through the
+    /// cooked-mode `cat` PTY.
     ///
-    /// Scope (honest): this drives synthetic `CompositionEvent`s, so it exercises
-    /// sprag's preedit-overlay + commit-write seams, NOT the live platform IME's
-    /// `Start`/`Update`/`Commit` sequencing (the IME's own, reproducible only in
-    /// a live window — verified separately against ibus-hangul). The focus gate
-    /// is a deterministic no-op.
+    /// Scope (honest): synthetic `CompositionEvent`s exercise sprag's
+    /// preedit-overlay + commit-write seams, NOT the live platform IME's
+    /// `Start`/`Update`/`Commit` sequencing (verified separately against
+    /// ibus-hangul in a live window). The focus gate is a deterministic no-op.
     #[test]
     fn apply_composition_overlays_preedit_and_writes_commit() {
         let mut ws = Workspace::new((40, 6));
-        let mut command = CommandBuilder::new("/bin/sh");
-        command.arg("-c");
-        command.arg("cat"); // echoes stdin; keeps the PTY open
-        command.env("TERM", "dumb");
-        let id = ws.spawn(command, "cat".to_owned(), 40, 6).unwrap();
+        let id = ws.spawn(cat(), "cat".to_owned(), 40, 6).unwrap();
         let handle = ws.pane(id).unwrap().handle();
         let mut scene = Scene::External(
-            ExternalNode::new(Box::new(SpragPaneExternal::new(handle.clone()))).with_tag(ROOT_TAG),
+            ExternalNode::new(Box::new(SpragPaneExternal::new(handle.clone())))
+                .with_tag(pane_tag(0)),
         );
 
-        // apply_composition reads the scrollback-offset + preedit Signals, so run
-        // it inside a root Owner scope (mirrors the shell).
         let owner = Owner::new();
         owner.run(|| {
             let commit = |t: &str| CompositionEvent::Commit(t.to_owned());
-            // Focus gate: a wrong-tag composition is a no-op.
-            assert!(!TerminalViewer::apply_composition(&mut scene, None, &commit("한")));
-            // Preedit (Update) is handled (mirrored into the overlay) but is NOT
-            // written to the PTY — only a Commit writes.
+            // Focus gate: a non-pane composition is a no-op.
+            assert!(!TerminalViewer::apply_composition(
+                &mut scene,
+                None,
+                &commit("한")
+            ));
+            // Preedit (Update) is mirrored into pane 0's overlay, NOT written.
             let preedit = CompositionEvent::Update("ㅎ".to_owned());
-            assert!(TerminalViewer::apply_composition(&mut scene, Some(ROOT_TAG), &preedit));
-            assert_eq!(use_preedit().get(), "ㅎ", "the overlay mirrors the in-progress composition");
-            // An empty commit is the cancel-shaped end: it clears the overlay and
-            // writes nothing.
-            assert!(TerminalViewer::apply_composition(&mut scene, Some(ROOT_TAG), &commit("")));
-            assert_eq!(use_preedit().get(), "", "an empty commit clears the overlay");
+            assert!(TerminalViewer::apply_composition(
+                &mut scene,
+                Some(pane_tag(0)),
+                &preedit
+            ));
+            assert_eq!(
+                use_preedit(0).get(),
+                "ㅎ",
+                "the overlay mirrors the in-progress composition"
+            );
+            // An empty commit clears the overlay and writes nothing.
+            assert!(TerminalViewer::apply_composition(
+                &mut scene,
+                Some(pane_tag(0)),
+                &commit("")
+            ));
+            assert_eq!(
+                use_preedit(0).get(),
+                "",
+                "an empty commit clears the overlay"
+            );
             // A real commit clears the overlay and writes the literal Hangul.
             let update_han = CompositionEvent::Update("한".to_owned());
-            assert!(TerminalViewer::apply_composition(&mut scene, Some(ROOT_TAG), &update_han));
-            assert!(TerminalViewer::apply_composition(&mut scene, Some(ROOT_TAG), &commit("한글")));
-            assert_eq!(use_preedit().get(), "", "the commit clears the overlay");
+            assert!(TerminalViewer::apply_composition(
+                &mut scene,
+                Some(pane_tag(0)),
+                &update_han
+            ));
+            assert!(TerminalViewer::apply_composition(
+                &mut scene,
+                Some(pane_tag(0)),
+                &commit("한글")
+            ));
+            assert_eq!(use_preedit(0).get(), "", "the commit clears the overlay");
         });
-        let start = Instant::now();
-        let mut row0 = String::new();
-        while start.elapsed() < Duration::from_secs(5) {
-            row0 = handle.with_screen(|screen| screen.row_text(0));
-            if row0.contains("한글") {
-                break;
-            }
-            sleep(Duration::from_millis(20));
-        }
         assert!(
-            row0.contains("한글"),
-            "committed IME text echoes to the pane screen; row0 = {row0:?}"
+            wait_for_row0(&handle, "한글").contains("한글"),
+            "committed IME text echoes to the pane screen",
         );
     }
 
     /// The R705.1 contract sprag relies on for live preedit: a composing `set` of
-    /// the preedit Signal — which `view` subscribes to by reading it every frame —
-    /// flips the root owner dirty, which is what the shell's reactive-dirty bridge
+    /// a pane's preedit Signal — which `view` subscribes to by reading it every
+    /// frame — flips the root owner dirty, which the shell's reactive-dirty bridge
     /// turns into a repaint. Pins the coupling so a pinion bridge regression fails
-    /// HERE rather than silently degrading live IME (only otherwise visible in a
-    /// real window).
+    /// HERE rather than silently degrading live IME.
     #[test]
     fn preedit_set_flips_owner_dirty_for_repaint() {
         let owner = Owner::new();
         // Mirror `view`: subscribe the owner by reading the preedit Signal.
         owner.run(|| {
-            let _ = use_preedit().get();
+            let _ = use_preedit(0).get();
         });
         owner.clear_dirty();
         assert!(!owner.is_dirty(), "clean after a subscribing read");
         // A composing Update sets the subscribed Signal.
-        owner.run(|| use_preedit().set("ㅎ".to_owned()));
-        assert!(owner.is_dirty(), "a preedit set flips the owner dirty (R705.1 repaint arm)");
+        owner.run(|| use_preedit(0).set("ㅎ".to_owned()));
+        assert!(
+            owner.is_dirty(),
+            "a preedit set flips the owner dirty (R705.1 repaint arm)"
+        );
     }
 
     #[test]
@@ -316,32 +425,124 @@ mod tests {
     }
 
     #[test]
-    fn scroll_offset_signal_defaults_live_and_round_trips() {
+    fn next_focus_wraps_between_panes() {
+        // Down = next, Up = previous; both wrap over the pane count.
+        assert_eq!(next_focus(0, "PageDown", 3), Some(1));
+        assert_eq!(next_focus(2, "PageDown", 3), Some(0)); // wrap forward
+        assert_eq!(next_focus(0, "PageUp", 3), Some(2)); // wrap backward
+        assert_eq!(next_focus(1, "PageUp", 3), Some(0));
+        // A single pane has nowhere to switch to; a non-cycle key is None.
+        assert_eq!(next_focus(0, "PageDown", 1), None);
+        assert_eq!(next_focus(0, "Enter", 3), None);
+    }
+
+    /// The `Ctrl+PageUp/Down` focus-cycle chord is handled (`true`), reaches no
+    /// PTY, and fires a pinion [`focus_request`](pinion_core::focus_request) for
+    /// the correct neighbour pane — the end-to-end focus-switch wiring
+    /// (`route_key` -> `cycle_focus` -> `focus_request`), short of the winit event
+    /// loop draining it (pinion's own, proven). The Ctrl branch returns before
+    /// touching the scene's External, so a minimal model scene suffices;
+    /// `cycle_focus` reads `use_terminal()`'s pane count (the 2 boot panes).
+    #[test]
+    fn ctrl_page_chord_cycles_focus_without_touching_the_pty() {
         let owner = Owner::new();
-        assert_eq!(owner.run(|| use_scroll_offset().get()), 0, "boots at the live bottom");
-        owner.run(|| use_scroll_offset().set(7));
-        assert_eq!(owner.run(|| use_scroll_offset().get()), 7);
+        owner.run(|| {
+            let handle = use_terminal().pane_handle(0);
+            let mut scene = Scene::External(
+                ExternalNode::new(Box::new(SpragPaneExternal::new(handle))).with_tag(pane_tag(0)),
+            );
+            let ctrl = Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            };
+            let _ = pinion_core::focus_request::drain(); // clear any stale request
+            // Ctrl+PageDown from pane 0 requests focus on the next pane.
+            assert!(TerminalViewer::apply_key(
+                &mut scene,
+                Some(pane_tag(0)),
+                "PageDown",
+                ctrl
+            ));
+            assert_eq!(
+                pinion_core::focus_request::drain().as_deref(),
+                Some(pane_tag(1)),
+                "Ctrl+PageDown cycles focus to the next pane",
+            );
+            // Ctrl+PageUp from pane 0 wraps backward to the last pane (pane 1 of 2).
+            assert!(TerminalViewer::apply_key(
+                &mut scene,
+                Some(pane_tag(0)),
+                "PageUp",
+                ctrl
+            ));
+            assert_eq!(
+                pinion_core::focus_request::drain().as_deref(),
+                Some(pane_tag(1)),
+                "Ctrl+PageUp wraps focus backward",
+            );
+        });
+    }
+
+    #[test]
+    fn scroll_offset_is_per_pane_and_defaults_live() {
+        let owner = Owner::new();
+        // Each pane boots at the live bottom and scrolls independently.
+        assert_eq!(
+            owner.run(|| use_scroll_offset(0).get()),
+            0,
+            "pane 0 boots live"
+        );
+        assert_eq!(
+            owner.run(|| use_scroll_offset(1).get()),
+            0,
+            "pane 1 boots live"
+        );
+        owner.run(|| use_scroll_offset(1).set(7));
+        assert_eq!(owner.run(|| use_scroll_offset(1).get()), 7);
+        assert_eq!(
+            owner.run(|| use_scroll_offset(0).get()),
+            0,
+            "pane 0 is unaffected (per-pane slots)"
+        );
     }
 
     /// `apply_key` treats Shift+PageUp as a scroll (handled, not sent to the PTY)
-    /// and snaps the view back to the live bottom on any other (typed) key.
+    /// of the focused pane and snaps that pane's view back to the live bottom on
+    /// any other (typed) key.
     #[test]
     fn apply_key_scrolls_and_snaps_to_bottom() {
         let owner = Owner::new();
         owner.run(|| {
-            // The model scene over the live boot pane (same pane use_terminal
-            // caches), so the PTY routing reaches the pane scroll_view reads.
-            let handle = use_terminal().pane_handle();
+            // The model scene over the live boot pane 0 (same pane use_terminal
+            // caches), so scroll_view reads the pane the routing addresses.
+            let handle = use_terminal().pane_handle(0);
             let mut scene = Scene::External(
-                ExternalNode::new(Box::new(SpragPaneExternal::new(handle))).with_tag(ROOT_TAG),
+                ExternalNode::new(Box::new(SpragPaneExternal::new(handle))).with_tag(pane_tag(0)),
             );
             // Shift+PageUp is consumed as a scroll (true = handled, not the PTY).
-            let shift = Modifiers { shift: true, ..Modifiers::default() };
-            assert!(TerminalViewer::apply_key(&mut scene, Some(ROOT_TAG), "PageUp", shift));
+            let shift = Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            };
+            assert!(TerminalViewer::apply_key(
+                &mut scene,
+                Some(pane_tag(0)),
+                "PageUp",
+                shift
+            ));
             // A scrolled-up view snaps to the live bottom when the user types.
-            use_scroll_offset().set(5);
-            assert!(TerminalViewer::apply_key(&mut scene, Some(ROOT_TAG), "a", Modifiers::default()));
-            assert_eq!(use_scroll_offset().get(), 0, "typing snaps to the live bottom");
+            use_scroll_offset(0).set(5);
+            assert!(TerminalViewer::apply_key(
+                &mut scene,
+                Some(pane_tag(0)),
+                "a",
+                Modifiers::default()
+            ));
+            assert_eq!(
+                use_scroll_offset(0).get(),
+                0,
+                "typing snaps to the live bottom"
+            );
         });
     }
 }

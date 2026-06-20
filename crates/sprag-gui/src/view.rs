@@ -3,56 +3,66 @@
 //! paint root. The PTY producer thread lives in `create_extra_externals`, not
 //! here. See the crate-root module docs.
 
-use crate::input::{use_preedit, use_scroll_offset};
-use crate::terminal::use_terminal;
 use crate::ROOT_TAG;
+use crate::input::{use_preedit, use_scroll_offset};
+use crate::terminal::{pane_tag, use_terminal};
 use pinion_core::scene::ContainerNode;
 use pinion_core::style::{BoxStyle, LayoutStyle, Size, SizeValue};
-use pinion_core::theme::{use_theme, ColorRole, Theme};
+use pinion_core::theme::{ColorRole, Theme, use_theme};
 use pinion_core::{Frame, Scene};
+use sprag_host::PaneViewSpec;
 
 /// Shared [`ThemeProvider`](pinion_core::ThemeProvider) cache key (the surface fill behind the grid).
 const THEME_TAG: &str = "app";
 
-/// view-fn (§6.3): pure sync `() -> Scene`. Reads the producer-authoritative
-/// screen of the (single) pane each frame and paints it (live, or a scrollback
-/// window when [`use_scroll_offset`] is non-zero) via the host's projection
-/// seam; the producer thread (the PTY reader) lives in `create_extra_externals`,
-/// not here.
+/// view-fn (§6.3): pure sync `() -> Scene`. Builds each tiled pane's scene from
+/// its own producer-authoritative screen (live, or a scrollback window when that
+/// pane's [`use_scroll_offset`] is non-zero, with its [`use_preedit`] overlay) via
+/// the host's per-pane projection seam, then tiles them ([`workspace_view_scene`])
+/// into the surface-filled paint root. The producer threads (the PTY readers)
+/// live in `create_extra_externals`, not here.
 #[allow(clippy::trivially_copy_pass_by_ref)]
 pub(crate) fn view(_state: (), _frame: &Frame) -> Scene {
     let theme = use_theme(THEME_TAG).theme_animated();
     let tv = use_terminal();
-    let offset = use_scroll_offset().get();
-    // Read the IME preedit every frame so a `set` (a composing keystroke) flips
-    // the owner dirty and arms a redraw (the R705.1 reactive bridge) — the
-    // half-composed syllable repaints live. Empty when not composing (no overlay).
-    let preedit = use_preedit().get();
-    // On child EOF the pane stays and `view` paints its frozen final screen
-    // (the program exited; its last output shows) — not a loss of interactivity,
-    // just no more PTY output to read.
-    let pane = tv.boot_pane();
-    // `offset == 0` is the live screen; a positive offset windows into history
-    // (text-only, the R16 scrollback model) — one projection seam for both. The
-    // preedit overlays only the live view (the host seam gates on `offset`).
-    let grid = pane.session().with_screen(|screen| {
-        sprag_host::pane_view_scene_scrolled_with_preedit(
-            screen,
-            tv.metric,
-            tv.font_size_px,
-            offset,
-            &preedit,
-        )
-    });
-    compose(grid, &theme)
+    // Build each pane from its live screen + per-pane scroll offset + IME
+    // preedit. Reading every pane's offset/preedit Signal each frame subscribes
+    // `view` to them (the R705.1 reactive bridge), so a per-pane scroll or
+    // composition `set` flips the owner dirty and repaints live. On child EOF a
+    // pane stays and paints its frozen final screen (no more PTY output to read).
+    let panes: Vec<Scene> = (0..tv.pane_count())
+        .map(|i| {
+            let offset = use_scroll_offset(i).get();
+            let preedit = use_preedit(i).get();
+            // `offset == 0` is the live screen; a positive offset windows into
+            // history (text-only, the R16 model). The preedit overlays only the
+            // live view (the host seam self-gates on the cursor). The String +
+            // screen borrows are confined to this `with_screen` closure.
+            tv.pane(i).session().with_screen(|screen| {
+                sprag_host::pane_view_scene(
+                    pane_tag(i),
+                    PaneViewSpec {
+                        screen,
+                        metric: tv.metric,
+                        font_size_px: tv.font_size_px,
+                        offset_lines: offset,
+                        preedit: &preedit,
+                    },
+                )
+            })
+        })
+        .collect();
+    compose(sprag_host::workspace_view_scene(panes), &theme)
 }
 
-/// Wrap the pane grid in the surface-filled paint root (tagged [`ROOT_TAG`])
-/// that fills the window, so the single pane grid fills it and its rect = the
-/// viewport (§3). Pure composition; the unit test exercises it without a PTY.
-fn compose(grid: Scene, theme: &Theme) -> Scene {
+/// Wrap the tiled workspace in the surface-filled paint root (tagged [`ROOT_TAG`])
+/// that fills the window, so the flex-Row tiling fills it and each pane's rect
+/// derives from its split share (§3, per-pane via R1012). The surface shows
+/// through the inter-pane divider gap. Pure composition; the unit test exercises
+/// it without a PTY.
+fn compose(content: Scene, theme: &Theme) -> Scene {
     Scene::Container(
-        ContainerNode::new(vec![grid])
+        ContainerNode::new(vec![content])
             .with_tag(ROOT_TAG)
             .with_style(BoxStyle::filled(theme.resolve(ColorRole::Surface)))
             .with_layout(LayoutStyle::new().with_size(fill())),

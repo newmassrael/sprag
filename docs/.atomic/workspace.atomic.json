@@ -1554,6 +1554,60 @@
         "CJK glyph under-fill = CJK font asset (PR-8 remaining), a product decision, not a bug"
       ]
     },
+    "Round 36": {
+      "decision_summary": "Round 36: multi-pane GUI — sprag-gui tiles N terminal panes (default 2, SPRAG_GUI_PANES), routes keystroke/IME input to the focused pane, cycles focus with Ctrl+PageUp/Down, and reflows each pane independently via pinion R1012 use_pane_viewport_size. No upstream gap (pinion already shipped the per-pane viewport seam for exactly this) and no window-side split math (the sub-rect is pinion's post-layout measure). D1 resolved with a PaneViewSpec struct; D2 with per-pane Owner::cache state; the host owns the tiling layout (the R25 lesson).",
+      "changes_bullets": [
+        "sprag-host: PaneViewSpec struct + pane_view_scene(tag, spec) (a tagged flex-share pane Container) + workspace_view_scene(panes) (flex-Row tiling, AlignItems::Stretch, a divider gap) — the host owns scene assembly + layout (the R25 lesson), the GUI reuses it; resolves D1 (the positional offset/preedit tail became a named per-pane spec now that N consumers exist).",
+        "sprag-gui/terminal: pane_tag(i) / MAX_PANES=8 / PANE_TAGS static table + pane_count() (SPRAG_GUI_PANES, clamped [1,MAX_PANES]) = the single per-pane identity SSOT (model-scene input External tag, focus tag, paint-scene Container tag, reflow tag); use_terminal spawns N panes; pane(i) replaces boot_pane() as the one \"which pane?\" site.",
+        "sprag-gui/input: per-pane use_preedit(i) / use_scroll_offset(i) (Owner::cache keyed by tile index — resolves D2); route_key/route_composition route to the focused pane via find_external_with_tag_mut(focused); Ctrl+PageUp/Down focus-cycle chord (next_focus + pinion focus_request), the sibling of the Shift+PageUp/Down scrollback chord.",
+        "sprag-gui/main: the model scene is Container([pane0 primary, ...panesN extras]) each tagged pane_tag(i); focusable_tags() enumerates the live pane tags; pane 0 is focused at boot; the framework focus ring (auto-drawn around the focused tag, pinion R705/R1010) marks the active pane — no bespoke indicator.",
+        "sprag-gui/reflow: per-pane reflow Effects reading pinion R1012 use_pane_viewport_size(pane_tag(i)) — each pane reflows to its own measured sub-rect via grid_dims; reflow_target skips the (0,0) \"unmeasured\" sentinel; NO window-side split math (the authoritative sub-rect is pinion's post-layout measure, not a consumer-replicated flex calc — the SSOT trap).",
+        "sprag-gui/view + a11y: view tiles N panes (each built from its own live screen + scroll offset + IME preedit) through the host seam; access_node returns one AriaRole::Group region per pane, the focused one reporting focused."
+      ],
+      "verification_bullets": [
+        "149 workspace tests pass (sprag-gui 19, +2: the end-to-end multi-pane reflow test + the focus-cycle chord test) and cargo clippy --workspace --all-targets is clean.",
+        "End-to-end DATA proof (the project's debug-as-data method): ShellCore::<TerminalViewer>::compute_paint_scene drives the REAL viewer through the live paint path; both panes tile and each reflows to its own measured half-rect same-frame, asserted against the painted scene and the booted terminal's actual measured cell (not CellMetric::DEFAULT — the shell seeds the monospace provider).",
+        "Focus switching proven as data: route_key(Ctrl+PageDown) fires a pinion focus_request(pane_tag(next)) (read back via focus_request::drain) and reaches no PTY; next_focus wrap math is unit-tested.",
+        "Stop-and-report cleared — no upstream gap: pinion R1012 use_pane_viewport_size was already shipped for exactly this (its forcing test pane_viewport_seam.rs IS the two-pane sprag model); tiling = pinion flex (FlexDirection::Row + flex_grow); the focus ring is framework-drawn. No pinion/SCE edit.",
+        "Plan-agent design pressure-test before the build; every load-bearing pinion API was source-verified (the apply_key model-scene shape, find_external_with_tag_mut, ExtraExternal, focus_request, BoxStyle, and the R1012 publish/skip contract)."
+      ],
+      "impact_refs": [
+        "2",
+        "3"
+      ],
+      "carry_forward_bullets": [
+        "Dynamic split/close keybindings deferred: needs a VERIFIED pinion per-render focusable-tags refresh (pinion seeds focusable_tags once at boot, so a runtime/unbounded pane set needs a pinion seam — stop-and-report before building, do NOT reach into the focus manager GUI-side). The prefix-key command mode is then the idiomatic SCE input-mode statechart (sprag's 3rd dogfood); premature for a stateless focus-cycle now.",
+        "Draggable splitter deferred: pinion-widget-paint::view_splitter + SplitterExternal + a Signal<f32> ratio already exist; layer drag-to-resize onto the even flex tiling when wanted (the even split is the honest MVP).",
+        "Documented honest bounds: MAX_PANES=8 cap; each pane boots at full-window dims then reflows to its tile on the first layout (a one-frame transient, chosen over duplicating pinion's split math). Revisit if a real workflow needs more panes or a tighter first frame.",
+        "A live-window visual/interaction smoke (typing per pane, the focus ring, click-to-focus) reuses the R34 XTEST harness; the deterministic ShellCore data proof + pinion's seam test already cover the mechanism, so it is confirmation, not a gap. The natural next round is the established adversarial session-review remediation (the R25/R30/R35 rhythm)."
+      ],
+      "publishable_decision_summary": "Round 36: multi-pane GUI — sprag-gui tiles N terminal panes (default 2, SPRAG_GUI_PANES), routes keystroke/IME input to the focused pane, cycles focus with Ctrl+PageUp/Down, and reflows each pane independently via pinion R1012 use_pane_viewport_size. No upstream gap (pinion already shipped the per-pane viewport seam for exactly this) and no window-side split math (the sub-rect is pinion's post-layout measure). D1 resolved with a PaneViewSpec struct; D2 with per-pane Owner::cache state; the host owns the tiling layout (the R25 lesson).",
+      "publishable_changes_bullets": [
+        "sprag-host: PaneViewSpec struct + pane_view_scene(tag, spec) (a tagged flex-share pane Container) + workspace_view_scene(panes) (flex-Row tiling, AlignItems::Stretch, a divider gap) — the host owns scene assembly + layout (the R25 lesson), the GUI reuses it; resolves D1 (the positional offset/preedit tail became a named per-pane spec now that N consumers exist).",
+        "sprag-gui/terminal: pane_tag(i) / MAX_PANES=8 / PANE_TAGS static table + pane_count() (SPRAG_GUI_PANES, clamped [1,MAX_PANES]) = the single per-pane identity SSOT (model-scene input External tag, focus tag, paint-scene Container tag, reflow tag); use_terminal spawns N panes; pane(i) replaces boot_pane() as the one \"which pane?\" site.",
+        "sprag-gui/input: per-pane use_preedit(i) / use_scroll_offset(i) (Owner::cache keyed by tile index — resolves D2); route_key/route_composition route to the focused pane via find_external_with_tag_mut(focused); Ctrl+PageUp/Down focus-cycle chord (next_focus + pinion focus_request), the sibling of the Shift+PageUp/Down scrollback chord.",
+        "sprag-gui/main: the model scene is Container([pane0 primary, ...panesN extras]) each tagged pane_tag(i); focusable_tags() enumerates the live pane tags; pane 0 is focused at boot; the framework focus ring (auto-drawn around the focused tag, pinion R705/R1010) marks the active pane — no bespoke indicator.",
+        "sprag-gui/reflow: per-pane reflow Effects reading pinion R1012 use_pane_viewport_size(pane_tag(i)) — each pane reflows to its own measured sub-rect via grid_dims; reflow_target skips the (0,0) \"unmeasured\" sentinel; NO window-side split math (the authoritative sub-rect is pinion's post-layout measure, not a consumer-replicated flex calc — the SSOT trap).",
+        "sprag-gui/view + a11y: view tiles N panes (each built from its own live screen + scroll offset + IME preedit) through the host seam; access_node returns one AriaRole::Group region per pane, the focused one reporting focused."
+      ],
+      "publishable_verification_bullets": [
+        "149 workspace tests pass (sprag-gui 19, +2: the end-to-end multi-pane reflow test + the focus-cycle chord test) and cargo clippy --workspace --all-targets is clean.",
+        "End-to-end DATA proof (the project's debug-as-data method): ShellCore::<TerminalViewer>::compute_paint_scene drives the REAL viewer through the live paint path; both panes tile and each reflows to its own measured half-rect same-frame, asserted against the painted scene and the booted terminal's actual measured cell (not CellMetric::DEFAULT — the shell seeds the monospace provider).",
+        "Focus switching proven as data: route_key(Ctrl+PageDown) fires a pinion focus_request(pane_tag(next)) (read back via focus_request::drain) and reaches no PTY; next_focus wrap math is unit-tested.",
+        "Stop-and-report cleared — no upstream gap: pinion R1012 use_pane_viewport_size was already shipped for exactly this (its forcing test pane_viewport_seam.rs IS the two-pane sprag model); tiling = pinion flex (FlexDirection::Row + flex_grow); the focus ring is framework-drawn. No pinion/SCE edit.",
+        "Plan-agent design pressure-test before the build; every load-bearing pinion API was source-verified (the apply_key model-scene shape, find_external_with_tag_mut, ExtraExternal, focus_request, BoxStyle, and the R1012 publish/skip contract)."
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "3"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Dynamic split/close keybindings deferred: needs a VERIFIED pinion per-render focusable-tags refresh (pinion seeds focusable_tags once at boot, so a runtime/unbounded pane set needs a pinion seam — stop-and-report before building, do NOT reach into the focus manager GUI-side). The prefix-key command mode is then the idiomatic SCE input-mode statechart (sprag's 3rd dogfood); premature for a stateless focus-cycle now.",
+        "Draggable splitter deferred: pinion-widget-paint::view_splitter + SplitterExternal + a Signal<f32> ratio already exist; layer drag-to-resize onto the even flex tiling when wanted (the even split is the honest MVP).",
+        "Documented honest bounds: MAX_PANES=8 cap; each pane boots at full-window dims then reflows to its tile on the first layout (a one-frame transient, chosen over duplicating pinion's split math). Revisit if a real workflow needs more panes or a tighter first frame.",
+        "A live-window visual/interaction smoke (typing per pane, the focus ring, click-to-focus) reuses the R34 XTEST harness; the deterministic ShellCore data proof + pinion's seam test already cover the mechanism, so it is confirmation, not a gap. The natural next round is the established adversarial session-review remediation (the R25/R30/R35 rhythm)."
+      ]
+    },
     "Round 4": {
       "decision_summary": "Add sprag-term: a headless JSON-RPC server exposing a live PTY session as scene-as-data over stdin/stdout.",
       "changes_bullets": [

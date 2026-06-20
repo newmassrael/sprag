@@ -53,14 +53,15 @@ pub mod workspace;
 
 pub use pane::SpragPaneExternal;
 pub use plugins::PluginsExternal;
-pub use rpc::{handle_request, serve, HostState, SUPPORTED_METHODS};
+pub use rpc::{HostState, SUPPORTED_METHODS, handle_request, serve};
 pub use runs::{RunId, RunRegistry, RunState};
 pub use workspace::WorkspaceExternal;
 
+use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 
 use pinion_core::scene::{ContainerNode, ExternalNode, TextGridNode};
-use pinion_core::style::{LayoutStyle, Size, SizeValue};
+use pinion_core::style::{AlignItems, FlexDirection, LayoutStyle, Size, SizeValue};
 use pinion_core::{CellMetric, GridBuffer, Scene};
 use sprag_terminal::{PaneId, TerminalSession, Workspace};
 use sprag_vt::Screen;
@@ -89,13 +90,24 @@ pub const GRID_TAG: &str = "sprag_grid";
 /// path addresses pane `<id>` as `/pane_<id>/sprag_input/external/key` (R2.6).
 pub const INPUT_TAG: &str = "sprag_input";
 
+/// The intent tag on the windowed-host workspace-view root (the flex-Row tiling
+/// `Scene::Container` [`workspace_view_scene`] returns).
+pub const WORKSPACE_VIEW_TAG: &str = "sprag_workspace_view";
+
+/// The divider gap (logical px) between tiled panes in [`workspace_view_scene`] —
+/// the window surface shows through it, so adjacent panes read as separate
+/// terminals (the framework focus ring marks which one is active).
+pub const PANE_GAP_PX: u32 = 2;
+
 /// The tagged `TextGrid` node carrying a pre-projected cell buffer — the
 /// node-shape SSOT (tag + metric + cells), shared by the headless data path
 /// ([`text_grid_node`]) and the GUI view path ([`view_text_grid`]). The
 /// projection itself is [`sprag_grid::project`] / [`sprag_grid::project_scrolled`];
 /// this assembles the node around whatever cells the caller projected.
 fn grid_node(metric: CellMetric, cells: GridBuffer) -> TextGridNode {
-    TextGridNode::new(metric).with_tag(GRID_TAG).with_cells(cells)
+    TextGridNode::new(metric)
+        .with_tag(GRID_TAG)
+        .with_cells(cells)
 }
 
 /// Project a [`Screen`] into the bare `TextGrid` node carrying the cell data
@@ -109,79 +121,114 @@ pub(crate) fn text_grid_node(screen: &Screen, metric: CellMetric) -> TextGridNod
     grid_node(metric, sprag_grid::project(screen))
 }
 
-/// Assemble a [`Screen`] into the **windowed-host** `Scene::TextGrid`: the same
-/// single projection (`text_grid_node`) plus the GUI presentation a windowed
-/// host needs — the glyph `font_size_px` the cells were measured at (pinion
-/// R1002 `with_font_size_px`, so the painted advance equals `cell_w`) and a
-/// **fill** layout (both axes `Percent(100)`) so the shell's layout pass sizes
-/// the grid to its slot and `pinion_runtime::compute_layout` derives the cell
-/// `(cols, rows)` from the resolved rect (the §3 GUI winsize SSOT). Scene
-/// assembly + layout for the GUI live here, in the host, not in the GUI binding
-/// — the GUI reuses this seam rather than re-deriving the projection.
+/// A per-pane view request: everything the windowed-host projection needs to
+/// render ONE pane — its live `screen`, the measured cell `metric` and the glyph
+/// `font_size_px` it was measured at (pinion R1002), the scrollback
+/// `offset_lines` window, and the IME `preedit` overlay.
 ///
-/// This is the single-pane seam (N=1); a future multi-pane host tiles N of
-/// these. It deliberately omits the RPC-control externals ([`WorkspaceExternal`]
-/// / [`PluginsExternal`]) that [`workspace_scene`] carries — those drive the
-/// headless `scene/invoke` wire, not the pixel view.
-#[must_use]
-pub fn pane_view_scene(screen: &Screen, metric: CellMetric, font_size_px: u32) -> Scene {
-    pane_view_scene_scrolled(screen, metric, font_size_px, 0)
+/// This is the **D1 resolution**: the single-pane seam grew a positional
+/// `(offset, preedit)` tail; multi-pane gives every pane its own `(offset,
+/// preedit)`, so the tail crosses the threshold from "premature struct" to "N
+/// real consumers" and becomes a named spec rather than a 5th/6th positional arg.
+/// `'a` borrows the live screen (held only inside the producer's
+/// `with_screen` lock) and the preedit string for the call.
+pub struct PaneViewSpec<'a> {
+    /// The pane's live producer screen (read under `TerminalSession::with_screen`).
+    pub screen: &'a Screen,
+    /// The once-measured monospace cell (pinion R1003).
+    pub metric: CellMetric,
+    /// The glyph size the cell was measured at (pinion R1002 `with_font_size_px`).
+    pub font_size_px: u32,
+    /// Scrollback window: `0` is the live screen, `n` scrolls up `n` rows.
+    pub offset_lines: usize,
+    /// In-progress IME composition overlaid at the cursor (empty = none).
+    pub preedit: &'a str,
 }
 
-/// [`pane_view_scene`] scrolled up by `offset_lines` rows of history (the GUI
-/// scrollback view; `offset_lines == 0` is the live view, byte-identical to
-/// [`pane_view_scene`]). The single projection seam is reused at its scrolled
-/// entry ([`sprag_grid::project_scrolled`]); only the windowing differs, so the
-/// pixel view of history shares one authority with the live view. Scrolled
-/// history is text-only (the R16 scrollback model) — see `project_scrolled`.
-#[must_use]
-pub fn pane_view_scene_scrolled(
-    screen: &Screen,
-    metric: CellMetric,
-    font_size_px: u32,
-    offset_lines: usize,
-) -> Scene {
-    pane_view_scene_scrolled_with_preedit(screen, metric, font_size_px, offset_lines, "")
-}
-
-/// [`pane_view_scene_scrolled`] with an IME `preedit` (in-progress composition)
-/// overlaid at the cursor — the windowed host's live composition feedback. The
-/// overlay (drawn underlined at the cursor by [`sprag_grid::overlay_preedit`])
-/// renders the half-composed syllable the platform IME does not paint itself; see
-/// that function for the full winit + XIM rationale and the display-only
-/// (never-to-PTY) contract.
+/// Project ONE pane (`spec`) into a tagged `Scene::Container` — the multi-pane
+/// building block. The same single projection
+/// ([`sprag_grid::project_scrolled`] + [`sprag_grid::overlay_preedit`]) wrapped in
+/// the [`view_text_grid`] presentation (R1002 font-size pin + fill), inside a
+/// Container that takes an **even flex share** of its row
+/// (`flex_basis 0 + flex_grow 1`, the CSS proportional-split idiom).
 ///
-/// The overlay self-gates to the live view: [`sprag_grid::project_scrolled`]
-/// drops the cursor while scrolled, and `overlay_preedit` no-ops without a
-/// visible cursor (the compose anchor) — so no `offset_lines` check is needed
-/// here, and an empty `preedit` is byte-identical to [`pane_view_scene_scrolled`].
+/// The Container `tag` is the per-pane identity the windowed host keys three
+/// things on, so the GUI passes the SAME tag it registers as that pane's
+/// focusable input External:
+/// * pinion R1012 [`use_pane_viewport_size`](pinion_core::use_pane_viewport_size)
+///   — the post-layout pane rect that sizes this pane's PTY (`TIOCSWINSZ`);
+/// * the framework focus ring (drawn around the focused tag's rect); and
+/// * click-to-focus (the rect a pointer press hit-tests).
+///
+/// [`workspace_view_scene`] tiles N of these. The overlay self-gates to the live
+/// view (a scrolled `project_scrolled` drops the cursor, and `overlay_preedit`
+/// no-ops without one), so an empty `preedit` is identical to the bare scrolled
+/// projection and no `offset_lines` check is needed here.
 #[must_use]
-pub fn pane_view_scene_scrolled_with_preedit(
-    screen: &Screen,
-    metric: CellMetric,
-    font_size_px: u32,
-    offset_lines: usize,
-    preedit: &str,
-) -> Scene {
+pub fn pane_view_scene(tag: impl Into<Cow<'static, str>>, spec: PaneViewSpec<'_>) -> Scene {
     let cells = sprag_grid::overlay_preedit(
-        sprag_grid::project_scrolled(screen, offset_lines),
-        preedit,
+        sprag_grid::project_scrolled(spec.screen, spec.offset_lines),
+        spec.preedit,
     );
-    view_text_grid(cells, metric, font_size_px)
+    Scene::Container(
+        ContainerNode::new(vec![view_text_grid(cells, spec.metric, spec.font_size_px)])
+            .with_tag(tag)
+            .with_layout(
+                LayoutStyle::new()
+                    .with_flex_basis(SizeValue::Px(0))
+                    .with_flex_grow(1.0),
+            ),
+    )
+}
+
+/// Tile N pre-built pane scenes ([`pane_view_scene`]) left-to-right as the
+/// windowed workspace: a `flex(Row)` Container, `align_items: Stretch` (each pane
+/// fills the row height), with a [`PANE_GAP_PX`] divider gap and a **fill** size
+/// (both axes `Percent(100)`) so the shell's layout pass sizes the row to the
+/// window and `pinion_runtime::compute_layout` resolves each pane's sub-rect (the
+/// §3 GUI winsize SSOT, now per-pane via R1012). The single-pane case (N=1) is
+/// one full-width pane.
+///
+/// This is the host's **tiling-layout authority** (R25: the host owns scene
+/// assembly + layout, the GUI reuses it rather than hand-rolling the flex split).
+/// It omits the RPC-control externals ([`WorkspaceExternal`] / [`PluginsExternal`])
+/// that [`workspace_scene`] carries — those drive the headless `scene/invoke`
+/// wire, not the pixel view.
+#[must_use]
+pub fn workspace_view_scene(panes: Vec<Scene>) -> Scene {
+    Scene::Container(
+        ContainerNode::new(panes)
+            .with_tag(WORKSPACE_VIEW_TAG)
+            .with_layout(
+                LayoutStyle::new()
+                    .flex(FlexDirection::Row)
+                    .with_align_items(AlignItems::Stretch)
+                    .with_gap(PANE_GAP_PX)
+                    .with_size(
+                        Size::auto()
+                            .with_width(SizeValue::Percent(100))
+                            .with_height(SizeValue::Percent(100)),
+                    ),
+            ),
+    )
 }
 
 /// Assemble the windowed-host `Scene::TextGrid` from a pre-projected cell buffer
 /// — the GUI presentation (tag + R1002 font-size pin + fill layout) shared by
-/// the live and scrolled seams, so the node shape lives in one place.
+/// every pane, so the node shape lives in one place. It fills its pane Container
+/// (both axes `Percent(100)`), so the grid spans whatever sub-rect the flex split
+/// resolved for that pane.
 fn view_text_grid(cells: GridBuffer, metric: CellMetric, font_size_px: u32) -> Scene {
     Scene::TextGrid(
         grid_node(metric, cells)
             .with_font_size_px(font_size_px)
-            .with_layout(LayoutStyle::new().with_size(
-                Size::auto()
-                    .with_width(SizeValue::Percent(100))
-                    .with_height(SizeValue::Percent(100)),
-            )),
+            .with_layout(
+                LayoutStyle::new().with_size(
+                    Size::auto()
+                        .with_width(SizeValue::Percent(100))
+                        .with_height(SizeValue::Percent(100)),
+                ),
+            ),
     )
 }
 
@@ -190,7 +237,8 @@ fn view_text_grid(cells: GridBuffer, metric: CellMetric, font_size_px: u32) -> S
 ///
 /// This is the pure data projection — a function of the screen alone, with
 /// no live session — used by [`snapshot`] and data-only consumers. The RPC
-/// server assembles the full pane via [`pane_view_scene`].
+/// server assembles the full pane tree via [`workspace_scene`]; the windowed
+/// host tiles panes via [`workspace_view_scene`].
 #[must_use]
 pub fn scene(screen: &Screen) -> Scene {
     scene_with_metric(screen, CellMetric::DEFAULT)
@@ -231,10 +279,7 @@ fn pane_container(id: PaneId, session: &TerminalSession) -> Scene {
 /// dispatched `scene/invoke` (spawn/close/resize) can re-acquire it without
 /// deadlock.
 #[must_use]
-pub fn workspace_scene(
-    workspace: &Arc<Mutex<Workspace>>,
-    runs: &Arc<Mutex<RunRegistry>>,
-) -> Scene {
+pub fn workspace_scene(workspace: &Arc<Mutex<Workspace>>, runs: &Arc<Mutex<RunRegistry>>) -> Scene {
     let mut children: Vec<Scene> = {
         let guard = lock(workspace);
         guard
@@ -244,8 +289,10 @@ pub fn workspace_scene(
             .collect()
     };
     children.push(Scene::External(
-        ExternalNode::new(Box::new(workspace::WorkspaceExternal::new(Arc::clone(workspace))))
-            .with_tag(MUX_TAG),
+        ExternalNode::new(Box::new(workspace::WorkspaceExternal::new(Arc::clone(
+            workspace,
+        ))))
+        .with_tag(MUX_TAG),
     ));
     children.push(Scene::External(
         ExternalNode::new(Box::new(plugins::PluginsExternal::new(
@@ -325,27 +372,98 @@ mod tests {
         assert_eq!(snap.grid_rows[1].generation, 0);
     }
 
+    /// Extract the lone projected `TextGrid` from a [`pane_view_scene`] pane
+    /// Container (the pane wraps the grid in a tagged flex-share Container).
+    fn pane_grid(scene: &Scene) -> &TextGridNode {
+        match scene {
+            Scene::Container(c) => match c.children.first() {
+                Some(Scene::TextGrid(node)) => node,
+                other => unreachable!("a pane Container holds one TextGrid, got {other:?}"),
+            },
+            other => unreachable!("pane_view_scene returns a Container, got {other:?}"),
+        }
+    }
+
     #[test]
-    fn pane_view_scene_carries_projection_font_size_and_fill_layout() {
+    fn pane_view_scene_wraps_projection_in_a_tagged_flex_share_container() {
         let mut em = Emulator::new(8, 2);
         em.advance(b"hi");
-        match super::pane_view_scene(em.screen(), CellMetric::DEFAULT, 18) {
-            Scene::TextGrid(node) => {
-                // The single projection, reused (tagged, cells present).
-                assert_eq!(node.tag.as_deref(), Some(GRID_TAG));
-                assert!(!node.cells().is_empty());
-                // R1002 font-size pin so the painted advance equals cell_w.
-                assert_eq!(node.font_size_px(), Some(18));
-                // Fill layout so the shell derives (cols, rows) from the rect
-                // (the §3 GUI winsize SSOT) rather than a hardcoded size.
-                assert_eq!(
-                    node.layout.size.width,
-                    SizeValue::Percent(100),
-                    "grid fills its slot (responsive winsize derivation)",
-                );
-                assert_eq!(node.layout.size.height, SizeValue::Percent(100));
+        let scene = super::pane_view_scene(
+            "pane.test",
+            PaneViewSpec {
+                screen: em.screen(),
+                metric: CellMetric::DEFAULT,
+                font_size_px: 18,
+                offset_lines: 0,
+                preedit: "",
+            },
+        );
+        match &scene {
+            Scene::Container(c) => {
+                // The per-pane identity tag (the use_pane_viewport_size rect
+                // target / focus-ring / click-focus anchor).
+                assert_eq!(c.tag.as_deref(), Some("pane.test"));
+                // An even flex share of its row (the proportional-split idiom).
+                assert_eq!(c.layout.flex_basis, Some(SizeValue::Px(0)));
+                assert!((c.layout.flex_grow - 1.0).abs() < f32::EPSILON);
             }
-            other => unreachable!("pane_view_scene is a TextGrid, got {other:?}"),
+            other => unreachable!("pane_view_scene returns a Container, got {other:?}"),
+        }
+        // The inner grid: the single projection (tagged + cells present), the
+        // R1002 font-size pin, and a fill layout so it spans the pane sub-rect.
+        let node = pane_grid(&scene);
+        assert_eq!(node.tag.as_deref(), Some(GRID_TAG));
+        assert!(!node.cells().is_empty());
+        assert_eq!(node.font_size_px(), Some(18));
+        assert_eq!(node.layout.size.width, SizeValue::Percent(100));
+        assert_eq!(node.layout.size.height, SizeValue::Percent(100));
+    }
+
+    #[test]
+    fn workspace_view_scene_tiles_panes_in_a_flex_row() {
+        let mut a = Emulator::new(8, 2);
+        a.advance(b"A");
+        let mut b = Emulator::new(8, 2);
+        b.advance(b"B");
+        let pane = |screen, tag| {
+            super::pane_view_scene(
+                tag,
+                PaneViewSpec {
+                    screen,
+                    metric: CellMetric::DEFAULT,
+                    font_size_px: 18,
+                    offset_lines: 0,
+                    preedit: "",
+                },
+            )
+        };
+        let scene = super::workspace_view_scene(vec![
+            pane(a.screen(), "pane.0"),
+            pane(b.screen(), "pane.1"),
+        ]);
+        match scene {
+            Scene::Container(c) => {
+                assert_eq!(c.tag.as_deref(), Some(WORKSPACE_VIEW_TAG));
+                // The tiling layout: a flex Row, stretched cross-axis, with the
+                // divider gap, filling the window so the split resolves sub-rects.
+                assert_eq!(c.layout.flex_direction, FlexDirection::Row);
+                assert_eq!(c.layout.align_items, AlignItems::Stretch);
+                assert_eq!(c.layout.gap, PANE_GAP_PX);
+                assert_eq!(c.layout.size.width, SizeValue::Percent(100));
+                assert_eq!(c.layout.size.height, SizeValue::Percent(100));
+                // Both pane identity tags present (the per-pane rect targets).
+                assert_eq!(c.children.len(), 2);
+                let tags: Vec<_> = c
+                    .children
+                    .iter()
+                    .filter_map(|ch| match ch {
+                        Scene::Container(p) => p.tag.as_deref(),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(tags, vec!["pane.0", "pane.1"]);
+            }
+            other => unreachable!("workspace_view_scene returns a Container, got {other:?}"),
         }
     }
 
@@ -354,30 +472,64 @@ mod tests {
     /// anchor — lives only in the live view, so `overlay_preedit` self-gates off).
     #[test]
     fn pane_view_scene_overlays_preedit_only_on_the_live_view() {
-        let cell_cluster = |scene: &Scene, col: u16, row: u16| match scene {
-            Scene::TextGrid(node) => node.cells().cell(col, row).map(|c| c.cluster.to_string()),
-            other => unreachable!("expected TextGrid, got {other:?}"),
+        let cell_cluster = |scene: &Scene, col: u16, row: u16| {
+            pane_grid(scene)
+                .cells()
+                .cell(col, row)
+                .map(|c| c.cluster.to_string())
         };
-        let contains_han = |scene: &Scene| match scene {
-            Scene::TextGrid(node) => {
-                let g = node.cells();
-                (0..g.cols()).any(|c| (0..g.rows()).any(|r| g.cell(c, r).is_some_and(|x| x.cluster == "한")))
-            }
-            other => unreachable!("expected TextGrid, got {other:?}"),
+        let contains_han = |scene: &Scene| {
+            let g = pane_grid(scene).cells();
+            (0..g.cols())
+                .any(|c| (0..g.rows()).any(|r| g.cell(c, r).is_some_and(|x| x.cluster == "한")))
         };
         // Live view: the preedit shows at the cursor; an empty preedit does not.
         let mut em = Emulator::new(8, 2);
         em.advance(b"hi");
-        let live = super::pane_view_scene_scrolled_with_preedit(em.screen(), CellMetric::DEFAULT, 18, 0, "한");
-        assert_eq!(cell_cluster(&live, 2, 0).as_deref(), Some("한"), "preedit at the cursor on the live view");
-        let bare = super::pane_view_scene_scrolled_with_preedit(em.screen(), CellMetric::DEFAULT, 18, 0, "");
+        let live = super::pane_view_scene(
+            "pane.test",
+            PaneViewSpec {
+                screen: em.screen(),
+                metric: CellMetric::DEFAULT,
+                font_size_px: 18,
+                offset_lines: 0,
+                preedit: "한",
+            },
+        );
+        assert_eq!(
+            cell_cluster(&live, 2, 0).as_deref(),
+            Some("한"),
+            "preedit at the cursor on the live view"
+        );
+        let bare = super::pane_view_scene(
+            "pane.test",
+            PaneViewSpec {
+                screen: em.screen(),
+                metric: CellMetric::DEFAULT,
+                font_size_px: 18,
+                offset_lines: 0,
+                preedit: "",
+            },
+        );
         assert!(!contains_han(&bare), "no composition -> no overlay");
         // Scrolled view: the preedit must appear NOWHERE (the half the test name
         // promises). Fails if the overlay's cursor-visible self-gate regresses.
         let mut sc = Emulator::new(4, 2);
         sc.advance(b"a\r\nb\r\nc\r\nd\r\ne"); // 3 rows scroll into history
         assert_eq!(sc.screen().scrollback_len(), 3);
-        let scrolled = super::pane_view_scene_scrolled_with_preedit(sc.screen(), CellMetric::DEFAULT, 18, 1, "한");
-        assert!(!contains_han(&scrolled), "a scrolled history window shows no preedit");
+        let scrolled = super::pane_view_scene(
+            "pane.test",
+            PaneViewSpec {
+                screen: sc.screen(),
+                metric: CellMetric::DEFAULT,
+                font_size_px: 18,
+                offset_lines: 1,
+                preedit: "한",
+            },
+        );
+        assert!(
+            !contains_han(&scrolled),
+            "a scrolled history window shows no preedit"
+        );
     }
 }

@@ -3,9 +3,9 @@
 //! at boot off the pure `view`. See the crate-root module docs for the seams.
 
 use crate::{WINDOW_H, WINDOW_W};
+use pinion_core::CellMetric;
 use pinion_core::reactive::Owner;
 use pinion_core::use_repaint_sink;
-use pinion_core::CellMetric;
 use sprag_terminal::{CommandBuilder, Pane, SessionHandle, Workspace};
 use std::rc::Rc;
 
@@ -15,6 +15,74 @@ const FONT_SIZE_PX: u32 = 20;
 
 /// `Owner::cache` key for the live terminal (created once at boot).
 const SESSION_KEY: &str = "sprag_gui.terminal";
+
+/// The maximum number of tiled panes. The per-pane focus tags must be
+/// `&'static str` (the [`WidgetCore::focusable_tags`](pinion_core::WidgetCore::focusable_tags)
+/// / [`WidgetCore::tag`](pinion_core::WidgetCore::tag) contract), so they come
+/// from this fixed table rather than being minted at runtime. A windowed
+/// terminal tiling more than a handful of panes is not useful (each pane shrinks
+/// toward unreadable), so a small cap is the honest bound, not a limitation to
+/// design around. Dynamic pane creation (a deferred round) keeps this cap; an
+/// unbounded count would need a pinion runtime-focusable-refresh seam.
+pub(crate) const MAX_PANES: usize = 8;
+
+/// The per-pane identity tags (`sprag_gui.pane.<i>`), one per tile up to
+/// [`MAX_PANES`]. The SINGLE source of pane tags, shared by the model-scene input
+/// Externals ([`create_external`](crate::TerminalViewer) /
+/// [`create_extra_externals`](crate::TerminalViewer)), the
+/// [`focusable_tags`](pinion_core::WidgetCore::focusable_tags) enumeration +
+/// focus, the paint-scene pane Containers ([`sprag_host::pane_view_scene`] — the
+/// R1012 [`use_pane_viewport_size`](pinion_core::use_pane_viewport_size) rect
+/// target + focus ring + click anchor), and the per-pane reflow Effects. One
+/// string per pane across all of those, so input / focus / measure / paint can
+/// never address different panes.
+pub(crate) const PANE_TAGS: [&str; MAX_PANES] = [
+    "sprag_gui.pane.0",
+    "sprag_gui.pane.1",
+    "sprag_gui.pane.2",
+    "sprag_gui.pane.3",
+    "sprag_gui.pane.4",
+    "sprag_gui.pane.5",
+    "sprag_gui.pane.6",
+    "sprag_gui.pane.7",
+];
+
+/// The identity tag of the pane at tile `index` (`index < `[`MAX_PANES`]).
+pub(crate) fn pane_tag(index: usize) -> &'static str {
+    PANE_TAGS[index]
+}
+
+/// The tile index of the pane whose identity tag is `tag`, or `None` if `tag` is
+/// not a pane tag (a non-pane / absent focus). The inverse of [`pane_tag`], so
+/// input routing maps the focused tag back to its pane.
+pub(crate) fn pane_index_of(tag: &str) -> Option<usize> {
+    PANE_TAGS.iter().position(|&t| t == tag)
+}
+
+/// The default tiled pane count when `SPRAG_GUI_PANES` is unset.
+const PANE_COUNT_DEFAULT: usize = 2;
+
+/// Parse a `SPRAG_GUI_PANES` spec into a pane count, clamped to
+/// `[1, `[`MAX_PANES`]`]`. Absent / malformed / zero falls back to `default`.
+/// Pure (no env) so it is unit-testable.
+fn parse_pane_count(spec: Option<&str>, default: usize) -> usize {
+    spec.and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|&n| n >= 1)
+        .unwrap_or(default)
+        .min(MAX_PANES)
+}
+
+/// The tiled pane count: `SPRAG_GUI_PANES=<n>` (clamped to `[1, `[`MAX_PANES`]`]`)
+/// overrides the default of [`PANE_COUNT_DEFAULT`]. Env-read (no `Owner` scope),
+/// so it is the count both the boot spawn ([`use_terminal`]) and the static
+/// [`focusable_tags`](pinion_core::WidgetCore::focusable_tags) enumeration share —
+/// they agree because they read the one source.
+pub(crate) fn pane_count() -> usize {
+    parse_pane_count(
+        std::env::var("SPRAG_GUI_PANES").ok().as_deref(),
+        PANE_COUNT_DEFAULT,
+    )
+}
 
 /// Parse a `SPRAG_GUI_FONT` spec into a glyph px size. Absent / malformed /
 /// zero falls back to `default`. Pure (no env) so it is unit-testable.
@@ -71,22 +139,29 @@ pub(crate) struct TerminalView {
 }
 
 impl TerminalView {
-    /// The boot pane — the single pane this viewer drives. Spawned at boot and
-    /// never closed (the GUI has no close wire), so it is a hard invariant, not
-    /// an `Option`. This is the **one** place the "which pane?" question is
-    /// answered: `view` / `access_node` / `scroll_view` / the reflow Effect all
-    /// route through here, so the multi-pane round generalizes pane selection in
-    /// one site rather than five (and the absence policy is decided once).
-    pub(crate) fn boot_pane(&self) -> &Pane {
-        self.workspace
-            .panes()
-            .first()
-            .expect("the boot pane is always present (spawned at boot, never closed)")
+    /// The number of tiled panes (== [`pane_count`] at boot; the panes are
+    /// spawned once in [`pane_tag`] order and not closed this round).
+    pub(crate) fn pane_count(&self) -> usize {
+        self.workspace.panes().len()
     }
 
-    /// The boot pane's cloneable I/O handle (the input engine + reflow seam).
-    pub(crate) fn pane_handle(&self) -> SessionHandle {
-        self.boot_pane().handle()
+    /// The pane at tile `index` (`index < `[`Self::pane_count`]). This is the
+    /// **one** place the "which pane?" question is answered: `view` /
+    /// `access_node` / `scroll_view` / input routing / the reflow Effect all
+    /// resolve a pane through here (replacing the single-pane `boot_pane`), so
+    /// pane selection lives in one site. The boot panes are spawned in
+    /// [`pane_tag`] order and never closed this round, so `index` (sourced from a
+    /// [`pane_tag`] / focus tag) is a hard in-range invariant, not an `Option`.
+    pub(crate) fn pane(&self, index: usize) -> &Pane {
+        self.workspace
+            .panes()
+            .get(index)
+            .expect("pane index in range (boot panes spawned 0..pane_count, never closed)")
+    }
+
+    /// Pane `index`'s cloneable I/O handle (its input engine + reflow seam).
+    pub(crate) fn pane_handle(&self, index: usize) -> SessionHandle {
+        self.pane(index).handle()
     }
 }
 
@@ -103,14 +178,18 @@ impl TerminalView {
 /// the resize Effect, so the two can never compute `(cols, rows)` differently.
 pub(crate) fn grid_dims(viewport: (u32, u32), metric: CellMetric) -> (u16, u16) {
     let (width, height) = viewport;
-    (metric.cols_for(width).max(1), metric.rows_for(height).max(1))
+    (
+        metric.cols_for(width).max(1),
+        metric.rows_for(height).max(1),
+    )
 }
 
 /// Self-create (once) the live terminal: measure the resolved monospace cell
 /// via the R1003 seam, derive `(cols, rows)` from the window + cell (§3), and
-/// spawn the initial pane wired to the shell's [`RepaintSink`](pinion_core::RepaintSink) (the R23
-/// `on_dirty` -> R999 seam). Spawns the PTY on first call — therefore invoked
-/// from `create_extra_externals` (boot), never the pure `view`.
+/// spawn the [`pane_count`] tiled panes, each wired to the shell's
+/// [`RepaintSink`](pinion_core::RepaintSink) (the R23 `on_dirty` -> R999 seam) so
+/// any pane's output wakes the window. Spawns the PTYs on first call — therefore
+/// invoked from `create_extra_externals` (boot), never the pure `view`.
 ///
 /// [`use_repaint_sink`] is resolved *before* the `Owner::cache` factory so the
 /// factory never re-enters `Owner::cache` (the nested-factory guard).
@@ -126,21 +205,28 @@ pub(crate) fn use_terminal() -> Rc<TerminalView> {
     // before the factories run, so this is the font the shell will paint.
     let metric = pinion_core::measured_monospace_cell(font_size_px).unwrap_or(CellMetric::DEFAULT);
     owner.cache(SESSION_KEY, move || {
-        // §3: the window viewport drives the winsize; derive the boot (cols,
-        // rows) through the same SSOT the resize Effect uses (grid_dims), so the
-        // spawn size and a later reflow can never diverge.
+        // §3: the window viewport drives the boot winsize; derive the boot (cols,
+        // rows) through the same SSOT a reflow uses (grid_dims). Each pane boots
+        // at the FULL window size — the honest pre-layout value, since a pane's
+        // sub-rect is only known post-layout — and its per-pane R1012 reflow
+        // Effect shrinks it to its tile on the first paint. No split math here:
+        // computing each pane's share window-side would duplicate pinion's flex
+        // resolution (the SSOT trap the per-pane `use_pane_viewport_size` avoids).
         let (cols, rows) = grid_dims((WINDOW_W, WINDOW_H), metric);
-        let (command, label) = pane_command();
         let mut workspace = Workspace::new((cols, rows));
-        workspace
-            .spawn_with_dirty(
-                command,
-                label,
-                cols,
-                rows,
-                Some(Box::new(move || sink.request_repaint())),
-            )
-            .expect("spawn the initial sprag-gui pane");
+        for _ in 0..pane_count() {
+            let sink = sink.clone();
+            let (command, label) = pane_command();
+            workspace
+                .spawn_with_dirty(
+                    command,
+                    label,
+                    cols,
+                    rows,
+                    Some(Box::new(move || sink.request_repaint())),
+                )
+                .expect("spawn a sprag-gui pane");
+        }
         TerminalView {
             workspace,
             metric,
@@ -170,8 +256,52 @@ mod tests {
         assert_eq!(split_command("vim"), Some(("vim".to_owned(), Vec::new())));
         assert_eq!(
             split_command("ls -la /usr/bin"),
-            Some(("ls".to_owned(), vec!["-la".to_owned(), "/usr/bin".to_owned()])),
+            Some((
+                "ls".to_owned(),
+                vec!["-la".to_owned(), "/usr/bin".to_owned()]
+            )),
         );
+    }
+
+    #[test]
+    fn parse_pane_count_clamps_and_falls_back() {
+        assert_eq!(
+            parse_pane_count(None, PANE_COUNT_DEFAULT),
+            PANE_COUNT_DEFAULT
+        );
+        assert_eq!(parse_pane_count(Some("3"), PANE_COUNT_DEFAULT), 3);
+        assert_eq!(parse_pane_count(Some(" 1 "), PANE_COUNT_DEFAULT), 1); // trims
+        assert_eq!(
+            parse_pane_count(Some("0"), PANE_COUNT_DEFAULT),
+            PANE_COUNT_DEFAULT
+        ); // zero rejected
+        assert_eq!(
+            parse_pane_count(Some("huge"), PANE_COUNT_DEFAULT),
+            PANE_COUNT_DEFAULT
+        ); // malformed
+        assert_eq!(
+            parse_pane_count(Some(""), PANE_COUNT_DEFAULT),
+            PANE_COUNT_DEFAULT
+        );
+        // Clamped to MAX_PANES (no out-of-table pane tag can be requested).
+        assert_eq!(parse_pane_count(Some("999"), PANE_COUNT_DEFAULT), MAX_PANES);
+    }
+
+    #[test]
+    fn pane_tag_round_trips_through_pane_index_of() {
+        for i in 0..MAX_PANES {
+            assert_eq!(
+                pane_index_of(pane_tag(i)),
+                Some(i),
+                "pane_tag/pane_index_of are inverses"
+            );
+        }
+        assert_eq!(
+            pane_index_of("sprag_gui"),
+            None,
+            "the root tag is not a pane"
+        );
+        assert_eq!(pane_index_of("nope"), None);
     }
 
     #[test]
