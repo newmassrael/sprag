@@ -29,7 +29,7 @@ pub(crate) fn view_for_window(window_id: &str, _state: (), _frame: &Frame) -> Sc
     match pane_window_index(window_id) {
         // An undock window paints its one pane (if still present); a stale window
         // id (pane closed) falls back to the main layout, never a stranded paint.
-        Some(i) if i < tv.pane_count() => compose(build_pane_scene(&tv, i), &theme),
+        Some(i) if i < tv.pane_count() => compose(build_pane_scene(&tv, i, &theme), &theme),
         _ => view_main(&tv, &theme),
     }
 }
@@ -55,7 +55,7 @@ fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
         crate::split::LayoutMode::Row => {
             let panes: Vec<Scene> = (0..tv.pane_count())
                 .filter(|&i| !is_pane_floating(&windows, i))
-                .map(|i| build_pane_scene(tv, i))
+                .map(|i| build_pane_scene(tv, i, theme))
                 .collect();
             crate::split::view_split_row(panes, theme)
         }
@@ -65,7 +65,7 @@ fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
                     if is_pane_floating(&windows, i) {
                         empty_cell(theme)
                     } else {
-                        build_pane_scene(tv, i)
+                        build_pane_scene(tv, i, theme)
                     }
                 })
                 .collect();
@@ -97,11 +97,16 @@ fn empty_cell(theme: &Theme) -> Scene {
 /// the preedit overlays only the live view (the host seam self-gates on the
 /// cursor). The String + screen borrows are confined to the `with_screen` closure.
 /// On child EOF the pane paints its frozen final screen.
-fn build_pane_scene(tv: &TerminalView, i: usize) -> Scene {
+fn build_pane_scene(tv: &TerminalView, i: usize, theme: &Theme) -> Scene {
     let offset = use_scroll_offset(i).get();
     let preedit = use_preedit(i).get();
-    tv.pane(i).session().with_screen(|screen| {
-        sprag_host::pane_view_scene(
+    // R1012 measured pane height — the winsize SSOT the reflow Effect reads; the
+    // bar's track derives from the SAME rect (§3, vertical axis), never a
+    // window-side recompute. Tracked read: the view re-runs (repaints the thumb)
+    // when this pane's measured rect changes (resize / splitter drag).
+    let track_h = pinion_core::use_pane_viewport_size(pane_tag(i)).1;
+    let (grid, scrollback_len, visible_rows) = tv.pane(i).session().with_screen(|screen| {
+        let grid = sprag_host::pane_view_scene(
             pane_tag(i),
             PaneViewSpec {
                 screen,
@@ -110,8 +115,20 @@ fn build_pane_scene(tv: &TerminalView, i: usize) -> Scene {
                 offset_lines: offset,
                 preedit: &preedit,
             },
-        )
-    })
+        );
+        (grid, screen.scrollback_len(), screen.rows())
+    });
+    // PAINT-ONLY scrollbar: a pure projection of `offset` (the row authority).
+    // The drag waits for pinion PR-16; see [`crate::scrollbar`].
+    let bar = crate::scrollbar::view_pane_scrollbar(
+        i,
+        offset,
+        scrollback_len,
+        visible_rows,
+        track_h,
+        theme,
+    );
+    crate::scrollbar::wrap_pane_with_bar(grid, bar)
 }
 
 /// Wrap the tiled workspace in the surface-filled paint root (tagged [`ROOT_TAG`])

@@ -183,6 +183,7 @@ mod a11y;
 mod dock;
 mod input;
 mod reflow;
+mod scrollbar;
 mod split;
 mod terminal;
 mod view;
