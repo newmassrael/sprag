@@ -91,14 +91,19 @@ pub const GRID_TAG: &str = "sprag_grid";
 pub const INPUT_TAG: &str = "sprag_input";
 
 /// The tagged `TextGrid` node carrying a pre-projected cell buffer — the
-/// node-shape SSOT (tag + metric + cells), shared by the headless data path
-/// ([`text_grid_node`]) and the GUI view path ([`view_text_grid`]). The
-/// projection itself is [`sprag_grid::project`] / [`sprag_grid::project_scrolled`];
-/// this assembles the node around whatever cells the caller projected.
-fn grid_node(metric: CellMetric, cells: GridBuffer) -> TextGridNode {
-    TextGridNode::new(metric)
-        .with_tag(GRID_TAG)
-        .with_cells(cells)
+/// node-shape SSOT (metric + cells), shared by the headless data path
+/// ([`text_grid_node`], tagged [`GRID_TAG`]) and the GUI view path
+/// ([`view_text_grid`], tagged a per-pane `{pane}#grid` composite so a click
+/// resolves to the focusable pane). The `tag` is the caller's because it differs by
+/// path; the projection itself is [`sprag_grid::project`] /
+/// [`sprag_grid::project_scrolled`]; this assembles the node around whatever cells
+/// the caller projected.
+fn grid_node(
+    tag: impl Into<Cow<'static, str>>,
+    metric: CellMetric,
+    cells: GridBuffer,
+) -> TextGridNode {
+    TextGridNode::new(metric).with_tag(tag).with_cells(cells)
 }
 
 /// Project a [`Screen`] into the bare `TextGrid` node carrying the cell data
@@ -109,7 +114,7 @@ fn grid_node(metric: CellMetric, cells: GridBuffer) -> TextGridNode {
 /// read via [`TextGridSnapshot::buffer_cols`] / `buffer_rows`); the GUI seam
 /// adds layout + font size via [`view_text_grid`].
 pub(crate) fn text_grid_node(screen: &Screen, metric: CellMetric) -> TextGridNode {
-    grid_node(metric, sprag_grid::project(screen))
+    grid_node(GRID_TAG, metric, sprag_grid::project(screen))
 }
 
 /// A per-pane view request: everything the windowed-host projection needs to
@@ -140,18 +145,27 @@ pub struct PaneViewSpec<'a> {
 /// building block. The same single projection
 /// ([`sprag_grid::project_scrolled`] + [`sprag_grid::overlay_preedit`]) wrapped in
 /// the [`view_text_grid`] presentation (R1002 font-size pin + fill), inside a
-/// **bare tagged** Container. The Container carries NO layout of its own: the
-/// GUI's arrangement supplies it — `sprag-gui`'s `view_splitter` overwrites
-/// `flex_basis`/`flex_grow` with the drag ratio for a tiled pane, and the
-/// lone-pane / undock-window paths size it `Percent(100)`. (R38 removed the host's
-/// even-tiling, so the old `flex_basis 0 + flex_grow 1` here was dead in every
-/// path — who sizes a pane is now solely the GUI arrangement.)
+/// tagged, **focus-stop** Container. The Container's ONLY layout of its own is the
+/// pinion R1020 `focusable` flag ([`LayoutStyle::with_focusable`](pinion_core::style::LayoutStyle::with_focusable)),
+/// which declares this pane a keyboard Tab stop where it is painted (§5.39
+/// scene-derived focus — see below). Its SIZE/FLEX still come from the GUI's
+/// arrangement — `sprag-gui`'s `view_splitter` overwrites `flex_basis`/`flex_grow`
+/// with the drag ratio for a tiled pane, the lone-pane / undock-window paths size
+/// it `Percent(100)` — and those layout mutators (the splitter's `apply_flex_main`,
+/// the fill's `map_layout`) edit the size/flex FIELDS in place, so they preserve
+/// the `focusable` flag set here. (R38 removed the host's even-tiling, so the old
+/// `flex_basis 0 + flex_grow 1` here was dead; R1020 brings the layout back, but
+/// now carrying exactly the live `focusable` flag, not a dead flex share.)
 ///
-/// The Container `tag` is the per-pane identity the windowed host keys three
-/// things on, so the GUI passes the SAME tag it registers as that pane's
-/// focusable input External:
+/// The Container `tag` is the per-pane identity the windowed host keys these
+/// things on, so the GUI passes the SAME tag it registers as that pane's input
+/// External:
 /// * pinion R1012 [`use_pane_viewport_size`](pinion_core::use_pane_viewport_size)
 ///   — the post-layout pane rect that sizes this pane's PTY (`TIOCSWINSZ`);
+/// * keyboard focus: under pinion R1020 §5.39 the shell derives the Tab order each
+///   frame from [`Scene::collect_focusable_tags`](pinion_core::Scene::collect_focusable_tags)
+///   (the `focusable`-marked, tagged nodes), so marking THIS node focusable makes
+///   the pane a Tab stop — there is no binding-side `focusable_tags()` list anymore;
 /// * the framework focus ring (drawn around the focused tag's rect); and
 /// * click-to-focus (the rect a pointer press hit-tests).
 ///
@@ -163,24 +177,52 @@ pub struct PaneViewSpec<'a> {
 /// identical to the bare scrolled projection and no `offset_lines` check is needed.
 #[must_use]
 pub fn pane_view_scene(tag: impl Into<Cow<'static, str>>, spec: PaneViewSpec<'_>) -> Scene {
+    let tag = tag.into();
     let cells = sprag_grid::overlay_preedit(
         sprag_grid::project_scrolled(spec.screen, spec.offset_lines),
         spec.preedit,
     );
+    // The grid is a COMPOSITE sub-tag of the pane (`{pane}#grid`). A pointer press
+    // lands on the grid (the deepest tagged node under the cursor), and pinion's
+    // click-to-focus resolves a `primary#sub` tag back to `primary` (via
+    // `resolve_focusable` / `composite_tag::split_subindex`) — the focusable pane.
+    // A plain shared tag (e.g. the headless `GRID_TAG`) resolves to nothing, so the
+    // click would NOT move focus (the live bug: clicking a pane kept typing in the
+    // previously-focused one) and is ambiguous across panes. The grid itself stays
+    // NON-focusable, so each pane is exactly one Tab stop (the pane); the composite
+    // tag matters only for the click->pane resolution.
+    let grid_tag = format!("{tag}#grid");
     Scene::Container(
-        ContainerNode::new(vec![view_text_grid(cells, spec.metric, spec.font_size_px)])
-            .with_tag(tag),
+        ContainerNode::new(vec![view_text_grid(
+            cells,
+            grid_tag,
+            spec.metric,
+            spec.font_size_px,
+        )])
+        .with_tag(tag)
+        // R1020 §5.39: declare the pane a scene-derived keyboard Tab stop where
+        // it is painted. The GUI arrangement overwrites size/flex but preserves
+        // this flag (in-place field edits), so a docked, lone, or undocked pane
+        // is always focusable. The inner grid stays non-focusable, so each pane
+        // is exactly one Tab stop.
+        .with_layout(LayoutStyle::new().with_focusable(true)),
     )
 }
 
 /// Assemble the windowed-host `Scene::TextGrid` from a pre-projected cell buffer
-/// — the GUI presentation (tag + R1002 font-size pin + fill layout) shared by
-/// every pane, so the node shape lives in one place. It fills its pane Container
-/// (both axes `Percent(100)`), so the grid spans whatever sub-rect the flex split
-/// resolved for that pane.
-fn view_text_grid(cells: GridBuffer, metric: CellMetric, font_size_px: u32) -> Scene {
+/// — the GUI presentation (R1002 font-size pin + fill layout) shared by every pane,
+/// so the node shape lives in one place. `tag` is the per-pane `{pane}#grid`
+/// composite ([`pane_view_scene`]). It fills its pane Container (both axes
+/// `Percent(100)`), so the grid spans whatever sub-rect the flex split resolved for
+/// that pane.
+fn view_text_grid(
+    cells: GridBuffer,
+    tag: impl Into<Cow<'static, str>>,
+    metric: CellMetric,
+    font_size_px: u32,
+) -> Scene {
     Scene::TextGrid(
-        grid_node(metric, cells)
+        grid_node(tag, metric, cells)
             .with_font_size_px(font_size_px)
             .with_layout(
                 LayoutStyle::new().with_size(
@@ -345,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn pane_view_scene_is_a_bare_tagged_container_around_the_grid() {
+    fn pane_view_scene_is_a_focusable_tagged_container_around_the_grid() {
         let mut em = Emulator::new(8, 2);
         em.advance(b"hi");
         let scene = super::pane_view_scene(
@@ -363,16 +405,33 @@ mod tests {
                 // The per-pane identity tag (the use_pane_viewport_size rect
                 // target / focus-ring / click-focus anchor).
                 assert_eq!(c.tag.as_deref(), Some("pane.test"));
-                // No layout of its own — the GUI arrangement (splitter / fill)
-                // supplies it; pinning a flex share here would pin dead values.
-                assert_eq!(c.layout, LayoutStyle::default());
+                // Its only own layout is the R1020 focus-stop flag — size/flex
+                // come from the GUI arrangement (splitter / fill).
+                assert_eq!(c.layout, LayoutStyle::new().with_focusable(true));
             }
             other => unreachable!("pane_view_scene returns a Container, got {other:?}"),
         }
-        // The inner grid: the single projection (tagged + cells present), the
-        // R1002 font-size pin, and a fill layout so it spans the pane sub-rect.
+        // R1020 §5.39 contract: the pane is exactly one scene-derived Tab stop
+        // (its tag), and the inner grid is NOT a focus stop — so a future pinion
+        // focus-enumeration regression fails HERE, not silently in the GUI.
+        assert_eq!(
+            scene.collect_focusable_tags(),
+            vec!["pane.test".to_owned()],
+            "the pane Container is the one focusable node; its grid child is not",
+        );
+        // The inner grid: the per-pane `{pane}#grid` composite tag, the single
+        // projection (cells present), the R1002 font-size pin, and a fill layout so
+        // it spans the pane sub-rect.
         let node = pane_grid(&scene);
-        assert_eq!(node.tag.as_deref(), Some(GRID_TAG));
+        assert_eq!(node.tag.as_deref(), Some("pane.test#grid"));
+        // The composite splits back to the focusable pane tag — the exact
+        // resolution pinion's click-to-focus (`resolve_focusable`) performs, so a
+        // pointer press on the grid focuses the pane (not nothing).
+        assert_eq!(
+            pinion_core::composite_tag::split_subindex("pane.test#grid").0,
+            "pane.test",
+            "the grid tag resolves to the focusable pane (click-to-focus)",
+        );
         assert!(!node.cells().is_empty());
         assert_eq!(node.font_size_px(), Some(18));
         assert_eq!(node.layout.size.width, SizeValue::Percent(100));

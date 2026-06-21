@@ -16,26 +16,30 @@ const FONT_SIZE_PX: u32 = 20;
 /// `Owner::cache` key for the live terminal (created once at boot).
 const SESSION_KEY: &str = "sprag_gui.terminal";
 
-/// The maximum number of tiled panes. The per-pane focus tags must be
-/// `&'static str` (the [`WidgetCore::focusable_tags`](pinion_core::WidgetCore::focusable_tags)
-/// / [`WidgetCore::tag`](pinion_core::WidgetCore::tag) contract), so they come
-/// from this fixed table rather than being minted at runtime. A windowed
-/// terminal tiling more than a handful of panes is not useful (each pane shrinks
-/// toward unreadable), so a small cap is the honest bound, not a limitation to
-/// design around. Dynamic pane creation (a deferred round) keeps this cap; an
-/// unbounded count would need a pinion runtime-focusable-refresh seam.
+/// The maximum number of tiled panes. The per-pane tags must be `&'static str`
+/// (the [`WidgetCore::tag`](pinion_core::WidgetCore::tag) + input-External tag
+/// contract), so they come from this fixed table rather than being minted at
+/// runtime. A windowed terminal tiling more than a handful of panes is not useful
+/// (each pane shrinks toward unreadable), so a small cap is the honest bound, not
+/// a limitation to design around. Dynamic pane creation (a deferred round) keeps
+/// this cap. (The Tab-order refresh that dynamic panes need is no longer a gap:
+/// pinion R1020 §5.39 derives the focusable set per frame from the paint scene
+/// — [`Scene::collect_focusable_tags`](pinion_core::Scene::collect_focusable_tags)
+/// — so a pane appearing / disappearing joins / leaves the Tab order on its own.)
 pub(crate) const MAX_PANES: usize = 8;
 
 /// The per-pane identity tags (`sprag_gui.pane.<i>`), one per tile up to
 /// [`MAX_PANES`]. The SINGLE source of pane tags, shared by the model-scene input
 /// Externals ([`create_external`](crate::TerminalViewer) /
-/// [`create_extra_externals`](crate::TerminalViewer)), the
-/// [`focusable_tags`](pinion_core::WidgetCore::focusable_tags) enumeration +
-/// focus, the paint-scene pane Containers ([`sprag_host::pane_view_scene`] — the
-/// R1012 [`use_pane_viewport_size`](pinion_core::use_pane_viewport_size) rect
-/// target + focus ring + click anchor), and the per-pane reflow Effects. One
-/// string per pane across all of those, so input / focus / measure / paint can
-/// never address different panes.
+/// [`create_extra_externals`](crate::TerminalViewer)), the scene-derived focus
+/// enumeration (the pane Container is marked focusable, so the shell's per-frame
+/// [`Scene::collect_focusable_tags`](pinion_core::Scene::collect_focusable_tags)
+/// walk picks up this tag — pinion R1020 §5.39), the paint-scene pane Containers
+/// ([`sprag_host::pane_view_scene`] — the R1012
+/// [`use_pane_viewport_size`](pinion_core::use_pane_viewport_size) rect target +
+/// focus ring + click anchor), and the per-pane reflow Effects. One string per
+/// pane across all of those, so input / focus / measure / paint can never address
+/// different panes.
 pub(crate) const PANE_TAGS: [&str; MAX_PANES] = [
     "sprag_gui.pane.0",
     "sprag_gui.pane.1",
@@ -73,10 +77,12 @@ fn parse_pane_count(spec: Option<&str>, default: usize) -> usize {
 }
 
 /// The tiled pane count: `SPRAG_GUI_PANES=<n>` (clamped to `[1, `[`MAX_PANES`]`]`)
-/// overrides the default of [`PANE_COUNT_DEFAULT`]. Env-read (no `Owner` scope),
-/// so it is the count both the boot spawn ([`use_terminal`]) and the static
-/// [`focusable_tags`](pinion_core::WidgetCore::focusable_tags) enumeration share —
-/// they agree because they read the one source.
+/// overrides the default of [`PANE_COUNT_DEFAULT`]. Env-read (no `Owner` scope), so
+/// the boot spawn ([`use_terminal`]) and the boot divider-orientation registration
+/// ([`create_extra_externals`](crate::TerminalViewer)) read the one source and
+/// agree on the count. (Keyboard focus is no longer counted from here: pinion R1020
+/// derives the Tab order per frame from the painted panes, not a binding-side
+/// list — see [`PANE_TAGS`].)
 pub(crate) fn pane_count() -> usize {
     parse_pane_count(
         std::env::var("SPRAG_GUI_PANES").ok().as_deref(),

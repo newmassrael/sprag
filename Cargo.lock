@@ -3418,6 +3418,7 @@ dependencies = [
  "pinion-a11y",
  "pinion-core",
  "pinion-forge",
+ "pinion-runtime",
  "pinion-shell",
  "pinion-widget-paint",
  "serde_json",

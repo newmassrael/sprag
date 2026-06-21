@@ -34,19 +34,58 @@ pub(crate) fn view_for_window(window_id: &str, _state: (), _frame: &Frame) -> Sc
     }
 }
 
-/// The main window: arrange the DOCKED panes with draggable dividers (a floated
-/// pane is painted in its own undock window, not here — [`is_pane_floating`] is
-/// the partition SSOT). The docked panes go through [`crate::split::view_split_row`]
-/// (R38): even at boot, draggable to resize, nested `view_splitter`s for N>2. An
-/// all-floated workspace yields zero panes -> an empty surface-filled root (dock
-/// any pane back to recover).
+/// The main window: arrange the panes with draggable dividers ([`is_pane_floating`]
+/// is the docked/floated partition SSOT — a floated pane is painted in its own
+/// undock window). The arrangement follows [`crate::split::layout_mode`]
+/// (`SPRAG_GUI_LAYOUT`), and the two modes differ ONLY in how a floated pane is
+/// handled — the one place the row<->grid asymmetry lives (see [`crate::split`]):
+///
+/// * **Row** (default, R38) — COMPACT: tile only the docked panes left-to-right
+///   ([`crate::split::view_split_row`]); a floated pane leaves the row and the rest
+///   slide over (safe — every row divider is Horizontal regardless of count, so the
+///   boot Externals still match). An all-floated workspace -> an empty root.
+/// * **Grid** (R40) — HOLD-SLOT: arrange ALL panes by the fixed boot shape
+///   ([`crate::split::view_grid`]); a floated pane's slot is an [`empty_cell`]
+///   (UNTAGGED) so the grid scaffold — divider tags + orientations — never changes
+///   and the boot Externals always match the painted dividers (they cannot be
+///   re-registered; boot-only, PR-9). Dock-back refills the slot in place.
 fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
     let windows = use_windows_topology().get();
-    let panes: Vec<Scene> = (0..tv.pane_count())
-        .filter(|&i| !is_pane_floating(&windows, i))
-        .map(|i| build_pane_scene(tv, i))
-        .collect();
-    compose(crate::split::view_split_row(panes, theme), theme)
+    let content = match crate::split::layout_mode() {
+        crate::split::LayoutMode::Row => {
+            let panes: Vec<Scene> = (0..tv.pane_count())
+                .filter(|&i| !is_pane_floating(&windows, i))
+                .map(|i| build_pane_scene(tv, i))
+                .collect();
+            crate::split::view_split_row(panes, theme)
+        }
+        crate::split::LayoutMode::Grid => {
+            let cells: Vec<Scene> = (0..tv.pane_count())
+                .map(|i| {
+                    if is_pane_floating(&windows, i) {
+                        empty_cell(theme)
+                    } else {
+                        build_pane_scene(tv, i)
+                    }
+                })
+                .collect();
+            crate::split::view_grid(cells, theme)
+        }
+    };
+    compose(content, theme)
+}
+
+/// A held grid slot for a floated pane (grid mode): a surface-filled cell that
+/// takes the slot's flex share but carries NO tag. Untagged is LOAD-BEARING — a
+/// [`pane_tag`] here would make the slot publish an R1012 rect for the floated
+/// pane, reflowing it to the empty slot (it must keep its undock-window size). The
+/// floated pane is painted in its own window; this just reserves its place until
+/// dock-back.
+fn empty_cell(theme: &Theme) -> Scene {
+    Scene::Container(
+        ContainerNode::new(Vec::new())
+            .with_style(BoxStyle::filled(theme.resolve(ColorRole::Surface))),
+    )
 }
 
 /// Build ONE pane's scene from its live screen + per-pane scroll offset + IME

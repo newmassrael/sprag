@@ -16,13 +16,16 @@
 //! [`pane_count`](terminal::pane_count) panes (default 2, `SPRAG_GUI_PANES=<n>`,
 //! capped at [`MAX_PANES`](terminal::MAX_PANES)) are spawned at boot and tiled
 //! left-to-right. Each pane has a single identity [`pane_tag`](terminal::pane_tag)
-//! that is its model-scene input External tag (input routing), its
-//! [`focusable_tags`](WidgetCore::focusable_tags) / focus tag, its paint-scene
-//! Container tag (the pinion R1012
+//! that is its model-scene input External tag (input routing), its focus tag, its
+//! paint-scene Container tag (the pinion R1012
 //! [`use_pane_viewport_size`](pinion_core::use_pane_viewport_size) rect target +
 //! framework focus ring + click-focus anchor), and its per-pane reflow Effect tag
 //! — one string so input / focus / measure / paint can never address different
-//! panes. The model scene is `Container([pane0, ...panesN])`
+//! panes. Keyboard focusability is **scene-derived** (pinion R1020 §5.39): the
+//! pane's paint Container is marked `with_focusable(true)` in
+//! [`sprag_host::pane_view_scene`] and the shell collects the Tab order each frame
+//! via [`Scene::collect_focusable_tags`](pinion_core::Scene::collect_focusable_tags)
+//! — there is no binding-side `focusable_tags()` list. The model scene is `Container([pane0, ...panesN])`
 //! ([`WidgetCore::create_external`] is pane 0; [`WidgetCore::create_extra_externals`]
 //! the rest), so [`WidgetCore::apply_key`] reaches the focused pane by
 //! `find_external_with_tag_mut(focused)`. `Ctrl+PageUp/Down` cycles focus; the
@@ -60,6 +63,21 @@
 //! `reflow` seam was built for it). The interactive layout lives GUI-side (not in
 //! the host) because it needs reactive ratios + a registered External.
 //!
+//! ## Layout: row or grid (R40)
+//!
+//! `SPRAG_GUI_LAYOUT=grid` arranges the panes in a balanced 2D grid (rows of
+//! columns) instead of the default 1D row ([`split::layout_mode`]). The grid reuses
+//! the SAME `view_splitter` primitive — an outer Vertical splitter stack of rows,
+//! each row an inner Horizontal stack of panes ([`split::view_grid`] over
+//! [`split::grid_plan`]) — and the SAME per-pane R1012 reflow (layout-agnostic, so
+//! no reflow change). A divider's drag-axis (Horizontal vs Vertical) is welded at
+//! boot when its `SplitterExternal` is registered, and a balanced grid's
+//! orientations depend on the pane count, so grid mode does NOT reshape on undock
+//! (which would change a count): a floated pane HOLDS its grid slot (an untagged
+//! empty cell) rather than compacting like row mode. Both modes draw their N-1
+//! dividers from the one `SPLITTER_TAGS` table; no pinion change (`SplitterOrientation::Vertical`
+//! already ships). See [`split`] for the row<->grid asymmetry rationale.
+//!
 //! ## Module map (R32, R36, R37, R38)
 //!
 //! The binding is split by concern so each axis grows in one place:
@@ -76,8 +94,9 @@
 //! - [`dock`] — which OS window paints each pane: the topology
 //!   [`Signal`](pinion_core::reactive::Signal) (floating SSOT) +
 //!   [`toggle_pane_floating`](dock::toggle_pane_floating).
-//! - [`split`] — the draggable-divider layout: the per-divider ratio Signals +
-//!   the [`view_split_row`](split::view_split_row) splitter fold.
+//! - [`split`] — the draggable-divider layout: the per-divider ratio Signals, the
+//!   shared [`view_split_row`](split::view_split_row) / [`view_grid`](split::view_grid)
+//!   splitter fold, and the `SPRAG_GUI_LAYOUT` row/grid mode ([`layout_mode`](split::layout_mode)).
 //! - [`a11y`] — the per-pane (per-window) accessible-node projection (human-AT).
 //! - [`view`] — the per-window paint ([`view::view_for_window`]: main tiling /
 //!   single undocked pane) + the surface-filled paint root.
@@ -125,7 +144,8 @@
 //! The model scene is `Container([pane0, ...panesN])`, each pane an
 //! [`SpragPaneExternal`] tagged its [`pane_tag`](terminal::pane_tag) (built in
 //! [`WidgetCore::create_external`] / [`WidgetCore::create_extra_externals`] over each
-//! pane's `SessionHandle`). Each pane is a focusable tab stop, so
+//! pane's `SessionHandle`). Each pane is a focusable tab stop (its paint Container
+//! is `with_focusable(true)`, R1020 scene-derived focus — above), so
 //! [`WidgetCore::apply_key`] routes a focused keystroke + W3C modifiers to the
 //! **focused** pane's External (`find_external_with_tag_mut(focused)`) via
 //! `invoke("key", {key, ctrl, alt, shift, super})` — the *same* `scene/invoke`
@@ -173,13 +193,13 @@ use pinion_core::reactive::Signal;
 use pinion_core::widget_core::ExtraExternal;
 use pinion_core::{CompositionEvent, Frame, Modifiers, Scene, WidgetCore};
 use pinion_shell::{SizeStrategy, WidgetView, WindowSpec, vello_renderer_impl};
-use pinion_widget_paint::splitter::{SplitterExternal, SplitterOrientation};
+use pinion_widget_paint::splitter::SplitterExternal;
 use sprag_host::SpragPaneExternal;
 use std::rc::Rc;
 
 use crate::input::{route_composition, route_key};
 use crate::reflow::install_reflow;
-use crate::terminal::{PANE_TAGS, pane_count, pane_tag, use_terminal};
+use crate::terminal::{pane_tag, use_terminal};
 
 include!(concat!(env!("OUT_DIR"), "/app.rs"));
 vello_renderer_impl!(SpragGuiRenderer, SpragGuiRendererError);
@@ -239,22 +259,34 @@ impl WidgetCore for TerminalViewer {
                 )
             })
             .collect();
-        // The draggable dividers: one `SplitterExternal` per divider, bounded by
-        // the SAME `pane_count()` SSOT as the pane Externals (`pane_count - 1` is
-        // the max dividers `view_split_row` ever paints — all panes docked). Each
-        // shares the ratio `Signal` [`view_split_row`](view::view_for_window)
-        // reads; the shell's pointer router drives them (no `WidgetCore` pointer
-        // method). NOT focusable tab stops (pointer-only — absent from
-        // `focusable_tags`).
-        externals.extend((0..terminal.pane_count().saturating_sub(1)).map(|j| {
-            ExtraExternal::new(
-                split::splitter_tag(j),
-                Box::new(
-                    SplitterExternal::new(SplitterOrientation::Horizontal)
-                        .attach_ratio(split::use_splitter_ratio(j)),
-                ),
-            )
-        }));
+        // The draggable dividers: one `SplitterExternal` per divider, its
+        // orientation chosen by [`split::divider_orientations`] for the current
+        // `SPRAG_GUI_LAYOUT` + `pane_count` (row mode: all Horizontal; grid mode:
+        // the `grid_plan` column/row mix — same SSOT the view fold reads, so a
+        // divider's drag-axis matches the painted divider). The count is
+        // `pane_count - 1` in both modes (a binary split-tree of N leaves has N-1
+        // dividers — the max the view ever paints, all panes docked). Each shares
+        // the ratio `Signal` the view reads; the shell's pointer router drives them
+        // (no `WidgetCore` pointer method). NOT focusable tab stops (pointer-only —
+        // their handle nodes carry no `with_focusable`, so R1020's per-frame
+        // `collect_focusable_tags` never enumerates them). Boot-only: a grid's
+        // divider orientations
+        // are welded here, so grid mode holds floated slots rather than reshaping
+        // (see [`split`] / [`view::view_main`]).
+        externals.extend(
+            split::divider_orientations(terminal.pane_count())
+                .into_iter()
+                .enumerate()
+                .map(|(j, orientation)| {
+                    ExtraExternal::new(
+                        split::splitter_tag(j),
+                        Box::new(
+                            SplitterExternal::new(orientation)
+                                .attach_ratio(split::use_splitter_ratio(j)),
+                        ),
+                    )
+                }),
+        );
         externals
     }
 
@@ -303,15 +335,17 @@ impl WidgetCore for TerminalViewer {
         "__internal__"
     }
 
-    /// Each tiled pane is a tab stop ([`pane_tag`], one per pane up to
-    /// `pane_count()`) — focusing one gates [`Self::apply_key`] to that pane (and
-    /// a click on its rect re-focuses it; the framework draws its focus ring).
-    /// `Ctrl+PageUp/Down` cycles between them ([`route_key`]).
-    /// [`Self::create_extra_externals`] focuses pane 0 at boot so typing works
-    /// without a click.
-    fn focusable_tags() -> Vec<&'static str> {
-        PANE_TAGS[..pane_count()].to_vec()
-    }
+    // Keyboard focus enumeration is no longer a binding-side method: pinion R1020
+    // §5.39 removed `WidgetCore::focusable_tags()` and DERIVES the Tab order each
+    // frame from the paint scene via `Scene::collect_focusable_tags` — the
+    // `focusable`-marked, tagged nodes. Each pane declares itself a Tab stop where
+    // it is painted: `sprag_host::pane_view_scene` marks the pane Container
+    // `with_focusable(true)` (one Tab stop per pane; its inner grid is not focused).
+    // Focusing a pane gates [`Self::apply_key`] to it, the framework draws its focus
+    // ring, and a click on its rect re-focuses it; `Ctrl+PageUp/Down` cycles between
+    // them ([`route_key`]). [`Self::create_extra_externals`] requests focus on pane 0
+    // at boot so typing works without a click — the shell re-derives that request
+    // against the first paint scene's collected tags (pane 0 is among them).
 
     fn title() -> &'static str {
         "sprag terminal (interactive)"
@@ -420,6 +454,111 @@ mod tests {
         assert!(
             dims[0].0.abs_diff(dims[1].0) <= 1,
             "the two panes split the window evenly, got {dims:?}",
+        );
+    }
+
+    /// R1020 §5.39 scene-derived focus: the REAL viewer's paint scene marks every
+    /// tiled pane Container `with_focusable(true)`, so the shell's per-frame
+    /// [`Scene::collect_focusable_tags`](pinion_core::Scene::collect_focusable_tags)
+    /// walk enumerates both pane tags as Tab stops — and ONLY those (the surface
+    /// root and the splitter handle are not focus stops). This is the contract that
+    /// replaced the removed binding-side `focusable_tags()`; a regression here would
+    /// drop focus to `None` every frame (no focus ring, dead keyboard input), so it
+    /// is pinned end-to-end through the live paint path.
+    #[test]
+    fn panes_are_scene_derived_focus_stops() {
+        let mut core = ShellCore::<TerminalViewer>::new();
+        let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+        let focusable = scene.collect_focusable_tags();
+        assert!(
+            focusable.iter().any(|t| t == pane_tag(0)),
+            "pane 0 is a scene-derived Tab stop, got {focusable:?}",
+        );
+        assert!(
+            focusable.iter().any(|t| t == pane_tag(1)),
+            "pane 1 is a scene-derived Tab stop, got {focusable:?}",
+        );
+        // Exactly the two panes — the surface root and the divider handle are not
+        // focus stops (no `with_focusable`), so they never enter the Tab order.
+        assert_eq!(
+            focusable.len(),
+            2,
+            "only the two panes are focusable, got {focusable:?}",
+        );
+        assert!(
+            !focusable.iter().any(|t| t == ROOT_TAG),
+            "the surface root is not a Tab stop",
+        );
+    }
+
+    /// R1020 §5.39 boot focus: [`create_extra_externals`](TerminalViewer::create_extra_externals)
+    /// requests focus on pane 0 at boot; once the dispatch tail drains
+    /// ([`ShellCore::finalize_frame`]), that request lands on `pane_tag(0)` — the
+    /// drain re-derives the focusable set from the painted scene (where the pane is
+    /// `with_focusable`), so the request resolves and the framework frames pane 0
+    /// with its focus ring. Pre-migration (the removed `focusable_tags()` list) this
+    /// was a binding-side seed; this proves the scene-derived path keeps typing
+    /// working without a click.
+    #[test]
+    fn boot_focus_lands_on_pane_zero() {
+        let mut core = ShellCore::<TerminalViewer>::new();
+        // First paint seeds the scene-derived enumeration (both panes focusable).
+        let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+        // Drive the dispatch tail so the boot focus_request drains and resolves.
+        core.finalize_frame(scene);
+        assert_eq!(
+            core.focus().focused(),
+            Some(pane_tag(0)),
+            "boot focus lands on pane 0 -> the framework frames it with the focus ring",
+        );
+    }
+
+    /// Click-to-focus: a mouse press inside a pane focuses THAT pane, so typing
+    /// then reaches it. The pane's grid is tagged `{pane_tag}#grid` (a pinion
+    /// composite sub-tag), so a press on the grid — the deepest tagged node under
+    /// the pointer — resolves through `resolve_focusable` (split on `#`) to the
+    /// focusable pane tag. With a plain, non-composite grid tag the press resolved
+    /// to nothing and focus never moved — the live bug where clicking the right
+    /// pane kept typing in the left. Driven through the REAL shell pointer path
+    /// (`cursor_moved` -> `mouse_pressed` -> `click_to_focus`).
+    #[test]
+    fn clicking_a_pane_focuses_it() {
+        use pinion_runtime::PointerId;
+        let mut core = ShellCore::<TerminalViewer>::new();
+        // Boot-focus pane 0 (the dispatch tail drains the boot focus_request).
+        let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+        core.finalize_frame(scene);
+        assert_eq!(core.focus().focused(), Some(pane_tag(0)), "boots on pane 0");
+
+        // The router hit-tests against the last painted scene; take pane centers.
+        let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+        let center = |tag: &str| {
+            let r = scene
+                .rect_for_tag_absolute(tag)
+                .unwrap_or_else(|| panic!("{tag} painted"));
+            (
+                f64::from(r.x) + f64::from(r.w) / 2.0,
+                f64::from(r.y) + f64::from(r.h) / 2.0,
+            )
+        };
+        let click = |core: &mut ShellCore<TerminalViewer>, (x, y): (f64, f64)| {
+            core.cursor_moved_for_window(dock::MAIN_WINDOW_ID, PointerId::MOUSE, x, y);
+            core.mouse_pressed_for_window(dock::MAIN_WINDOW_ID, PointerId::MOUSE);
+        };
+
+        // Click pane 1 -> focus moves to pane 1 (the bug: it stayed on pane 0).
+        click(&mut core, center(pane_tag(1)));
+        assert_eq!(
+            core.focus().focused(),
+            Some(pane_tag(1)),
+            "clicking inside pane 1 focuses pane 1",
+        );
+        // Click back into pane 0 -> focus returns.
+        click(&mut core, center(pane_tag(0)));
+        assert_eq!(
+            core.focus().focused(),
+            Some(pane_tag(0)),
+            "clicking inside pane 0 focuses pane 0",
         );
     }
 

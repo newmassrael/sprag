@@ -34,3 +34,8 @@ serde_json = { workspace = true }
 [build-dependencies]
 # Compiles app.pinion.xml -> OUT_DIR/app.rs (the Vello renderer scaffold).
 pinion-forge = { workspace = true }
+
+[dev-dependencies]
+# `PointerId` for the end-to-end click-to-focus test (the shell's pointer methods
+# take it). Test-only — no sprag crate depends on pinion-runtime at runtime.
+pinion-runtime = { workspace = true }
