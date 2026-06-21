@@ -2056,6 +2056,44 @@
         "Unrelated, observed this session (NOT touched per the stop-and-report ground rule): pinion-text-unicode had uncommitted WIP briefly breaking the workspace build (duplicate FINAL_PUNCTUATION/INITIAL_PUNCTUATION); it had settled by commit time. Still open upstream: pinion PR-16 (scrollbar drag). Deferred: resizable undock, ime_caret_rect."
       ]
     },
+    "Round 46": {
+      "decision_summary": "Round 46: follow-up to R45 — the cursor-column half of the resize-stale fix. R45 anchored the reflow cursor's ROW to its logical line's top but kept the natural COLUMN (offset-mod-width), so during a live splitter drag the painted caret skated left/right across the prompt's first row (user-reported, RPC-confirmed). Fix: pin the column to 0 when the cursor is pulled above its natural physical row; keep the natural (col,row) when it already sits on the top row. Committed 400f57e on main.",
+      "changes_bullets": [
+        "sprag-vt/src/port.rs Screen::reflowed Pass 3: when the cursor's natural physical row (cphys) differs from its logical line's first row (cursor_line_top) it has been pulled up, so pin the column to 0; otherwise keep the natural (col, row). The row anchor (the R45 accumulation fix) is unchanged.",
+        "Root cause: offset-mod-width is the cursor's column on the BOTTOM row (where it marks the prompt end); placing that column on the TOP row makes it slide as a multi-row line re-breaks at different widths. Column 0 is width-independent, so a still caret reads as stable, not jumping; the line editor's CR resets the column on its next redraw anyway.",
+        "Updated reflow_rebreaks_a_line_when_narrowed (cursor 2,0 to 0,0) and added reflow_keeps_natural_column_on_a_single_row_line (a 1-row line keeps the caret after the text, column intact)."
+      ],
+      "verification_bullets": [
+        "cargo test -p sprag-vt --lib: 28 pass (incl. the new single-row-column test). The R44 real-bash accumulation guard still passes (the row anchor is untouched). clippy and rustfmt clean.",
+        "Confirmed AND re-verified on the LIVE GUI via JSON-RPC: drove scene/drag on the splitter to narrow the left pane (cols 19/15/12/10) and read sprag_gui.pane.0#grid.cursor from scene/snapshot from:paint. BEFORE: the reflow-transient cursor column jumped 13/2/8/2 on row 0. AFTER: a constant column 0 on row 0; the settled (bash-redrawn) cursor lands at the correct end position."
+      ],
+      "impact_refs": [
+        "4",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "The resize-stale fix is now complete in two parts: R45 (row anchor = no prompt accumulation) + R46 (column pin = no caret skating). Residual (acceptable, not a bug): during an active drag, before bash repaints, the caret sits at the prompt start (col 0, top row) and snaps to the prompt end when the drag settles — stable, far better than either stacked prompts or a jumping caret.",
+        "Live-RPC method (reusable): launch sprag-gui via a python subprocess with piped stdin/stdout (it runs pinion-shell spawn_stdin_rpc_reader); scene/snapshot {from:paint,path:\"\"} returns the painted scene; each pane is a TextGrid tagged sprag_gui.pane.{i}#grid carrying cols/cell_w/cursor{col,row}; scene/drag {from:{x,y},to:{x,y},button:left} injects a splitter drag; the 4px handle is split.0.children[1].rect. Transient vs settled = snapshot immediately vs after ~300ms (bash redraw lags the 40ms R42 debounce)."
+      ],
+      "publishable_decision_summary": "Round 46: follow-up to R45 — the cursor-column half of the resize-stale fix. R45 anchored the reflow cursor's ROW to its logical line's top but kept the natural COLUMN (offset-mod-width), so during a live splitter drag the painted caret skated left/right across the prompt's first row (user-reported, RPC-confirmed). Fix: pin the column to 0 when the cursor is pulled above its natural physical row; keep the natural (col,row) when it already sits on the top row. Committed 400f57e on main.",
+      "publishable_changes_bullets": [
+        "sprag-vt/src/port.rs Screen::reflowed Pass 3: when the cursor's natural physical row (cphys) differs from its logical line's first row (cursor_line_top) it has been pulled up, so pin the column to 0; otherwise keep the natural (col, row). The row anchor (the R45 accumulation fix) is unchanged.",
+        "Root cause: offset-mod-width is the cursor's column on the BOTTOM row (where it marks the prompt end); placing that column on the TOP row makes it slide as a multi-row line re-breaks at different widths. Column 0 is width-independent, so a still caret reads as stable, not jumping; the line editor's CR resets the column on its next redraw anyway.",
+        "Updated reflow_rebreaks_a_line_when_narrowed (cursor 2,0 to 0,0) and added reflow_keeps_natural_column_on_a_single_row_line (a 1-row line keeps the caret after the text, column intact)."
+      ],
+      "publishable_verification_bullets": [
+        "cargo test -p sprag-vt --lib: 28 pass (incl. the new single-row-column test). The R44 real-bash accumulation guard still passes (the row anchor is untouched). clippy and rustfmt clean.",
+        "Confirmed AND re-verified on the LIVE GUI via JSON-RPC: drove scene/drag on the splitter to narrow the left pane (cols 19/15/12/10) and read sprag_gui.pane.0#grid.cursor from scene/snapshot from:paint. BEFORE: the reflow-transient cursor column jumped 13/2/8/2 on row 0. AFTER: a constant column 0 on row 0; the settled (bash-redrawn) cursor lands at the correct end position."
+      ],
+      "publishable_impact_refs": [
+        "4",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "The resize-stale fix is now complete in two parts: R45 (row anchor = no prompt accumulation) + R46 (column pin = no caret skating). Residual (acceptable, not a bug): during an active drag, before bash repaints, the caret sits at the prompt start (col 0, top row) and snaps to the prompt end when the drag settles — stable, far better than either stacked prompts or a jumping caret.",
+        "Live-RPC method (reusable): launch sprag-gui via a python subprocess with piped stdin/stdout (it runs pinion-shell spawn_stdin_rpc_reader); scene/snapshot {from:paint,path:\"\"} returns the painted scene; each pane is a TextGrid tagged sprag_gui.pane.{i}#grid carrying cols/cell_w/cursor{col,row}; scene/drag {from:{x,y},to:{x,y},button:left} injects a splitter drag; the 4px handle is split.0.children[1].rect. Transient vs settled = snapshot immediately vs after ~300ms (bash redraw lags the 40ms R42 debounce)."
+      ]
+    },
     "Round 5": {
       "decision_summary": "Restructure into producer/projection/host layers and harden the headless host: honest winsize, bounded state, enforced read-only.",
       "changes_bullets": [
