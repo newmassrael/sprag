@@ -92,6 +92,8 @@ impl Emulator {
     fn control(&mut self, code: ControlCode) {
         match code {
             ControlCode::LineFeed | ControlCode::VerticalTab | ControlCode::FormFeed => {
+                // A hard line feed ends this row's logical line (not a soft wrap).
+                self.screen.set_wrapped(self.row, false);
                 self.line_feed();
             }
             ControlCode::CarriageReturn => self.col = 0,
@@ -190,6 +192,11 @@ impl Emulator {
                 for c in start..end.min(self.cols) {
                     self.screen.set_cell(c, row, Cell::blank(), g);
                 }
+                // Erasing to the right margin truncates the line, so it no
+                // longer soft-wraps onto the next row.
+                if end >= self.cols {
+                    self.screen.set_wrapped(row, false);
+                }
             }
             Edit::EraseInDisplay(mode) => {
                 let g = self.next_gen();
@@ -285,6 +292,8 @@ impl Emulator {
             }
             let cell_w = w as u16;
             if self.col + cell_w > self.cols {
+                // Autowrap: this row's logical line continues onto the next.
+                self.screen.set_wrapped(self.row, true);
                 self.col = 0;
                 self.line_feed();
             }
@@ -357,14 +366,21 @@ impl VtPort for Emulator {
     fn resize(&mut self, cols: u16, rows: u16) {
         let cols = cols.max(1);
         let rows = rows.max(1);
-        self.screen = self.screen.resized(cols, rows);
+        // Reflow rewraps the visible MAIN screen's logical lines to the new width
+        // (the alt screen / degenerate sizes fall back to a verbatim copy inside
+        // `reflowed`). A fresh damage stamp marks every re-laid-out row.
+        let g = self.next_gen();
+        let reflowed = self.screen.reflowed(cols, rows, g);
+        // Adopt the cursor re-derived from the reflow (clamped for the verbatim
+        // alt-screen path, a no-op for the in-bounds reflow path).
+        self.col = reflowed.cursor().col.min(cols - 1);
+        self.row = reflowed.cursor().row.min(rows - 1);
+        self.screen = reflowed;
         if let Some(main) = &self.saved_main {
-            self.saved_main = Some(main.resized(cols, rows));
+            self.saved_main = Some(main.reflowed(cols, rows, g));
         }
         self.cols = cols;
         self.rows = rows;
-        self.col = self.col.min(cols - 1);
-        self.row = self.row.min(rows - 1);
         self.sync_cursor();
     }
 
@@ -523,5 +539,104 @@ mod tests {
         // DECRST 1 (ESC [ ? 1 l) restores normal cursor keys.
         em.advance(b"\x1b[?1l");
         assert!(!em.input_modes().application_cursor_keys);
+    }
+
+    // ----- B1: soft-wrap continuation metadata (`Screen::wrapped`) -----
+
+    #[test]
+    fn autowrap_marks_the_row_wrapped() {
+        let mut em = Emulator::new(4, 3);
+        em.advance(b"abcdef"); // 6 chars in 4 cols -> row0 "abcd" wraps to row1 "ef"
+        assert!(em.screen().wrapped(0), "row 0 soft-wrapped onto row 1");
+        assert!(!em.screen().wrapped(1), "row 1 did not wrap");
+    }
+
+    #[test]
+    fn hard_linefeed_clears_the_wrapped_flag() {
+        let mut em = Emulator::new(4, 3);
+        em.advance(b"abcde"); // wraps -> wrapped[0] = true
+        assert!(em.screen().wrapped(0));
+        em.advance(b"\x1b[H\n"); // home to row 0, then a hard line feed
+        assert!(
+            !em.screen().wrapped(0),
+            "a hard line feed ends the logical line"
+        );
+    }
+
+    #[test]
+    fn erase_line_clears_the_wrapped_flag() {
+        let mut em = Emulator::new(4, 3);
+        em.advance(b"abcde"); // wraps -> wrapped[0] = true
+        assert!(em.screen().wrapped(0));
+        em.advance(b"\x1b[H\x1b[2K"); // home, then erase the whole line
+        assert!(
+            !em.screen().wrapped(0),
+            "erasing the line drops the soft wrap"
+        );
+    }
+
+    // ----- B2: reflow on resize -----
+
+    fn row(em: &Emulator, r: u16) -> String {
+        em.screen().row_text(r)
+    }
+
+    #[test]
+    fn reflow_rejoins_a_wrapped_line_when_widened() {
+        let mut em = Emulator::new(4, 3);
+        em.advance(b"abcdef"); // wraps: row0 "abcd" -> row1 "ef"
+        assert!(em.screen().wrapped(0));
+        em.resize(8, 3);
+        // The logical line now fits in one row, cleanly rejoined.
+        assert_eq!(row(&em, 0), "abcdef");
+        assert!(
+            !em.screen().wrapped(0),
+            "no longer wrapped at the wider width"
+        );
+        assert_eq!(row(&em, 1), "", "the continuation row is gone");
+        // Cursor preserved by logical position: after 'f'.
+        assert_eq!((em.screen().cursor().col, em.screen().cursor().row), (6, 0));
+    }
+
+    #[test]
+    fn reflow_rebreaks_a_line_when_narrowed() {
+        let mut em = Emulator::new(8, 3);
+        em.advance(b"abcdef"); // fits in one row at width 8
+        assert!(!em.screen().wrapped(0));
+        em.resize(4, 3);
+        // The logical line re-breaks at the new margin.
+        assert_eq!(row(&em, 0), "abcd");
+        assert!(
+            em.screen().wrapped(0),
+            "row 0 soft-wraps at the narrow width"
+        );
+        assert_eq!(row(&em, 1), "ef");
+        // Cursor after 'f' -> row 1, col 2.
+        assert_eq!((em.screen().cursor().col, em.screen().cursor().row), (2, 1));
+    }
+
+    #[test]
+    fn reflow_round_trips_stably() {
+        let mut em = Emulator::new(8, 3);
+        em.advance(b"abcdef");
+        let text = em.screen().full_text();
+        em.resize(4, 4); // narrow (rewraps)
+        em.resize(8, 3); // back to the original width
+        assert_eq!(
+            em.screen().full_text(),
+            text,
+            "widen∘narrow restores the text"
+        );
+    }
+
+    #[test]
+    fn reflow_skips_the_alternate_screen() {
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b[?1049h"); // enter the alternate screen
+        em.advance(b"abcdef"); // fits at width 8 on the alt screen
+        em.resize(4, 2);
+        // The alt screen is NOT reflowed (verbatim) — a fullscreen app owns its
+        // layout. The verbatim copy truncates to the new width, no rejoin.
+        assert_eq!(row(&em, 0), "abcd", "alt screen truncated, not rewrapped");
     }
 }

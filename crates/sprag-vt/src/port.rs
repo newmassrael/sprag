@@ -202,6 +202,16 @@ pub struct Screen {
     /// cells) — the consumer is data capture, not rendering; lines are NOT
     /// reflowed on resize. The visible scene projection ignores this.
     scrollback: VecDeque<String>,
+    /// Per-row soft-wrap continuation flag (the DEC `LINE_WRAPPED` attribute):
+    /// `wrapped[r] == true` means row `r`'s logical line CONTINUES onto row
+    /// `r + 1` (the emulator autowrapped at the right margin), so a reflow
+    /// ([`Self::reflowed`]) joins them into one logical line before re-breaking
+    /// to a new width. Set at the autowrap site, cleared when a row is erased or
+    /// ends with an explicit line feed. Without it a resize cannot tell a soft
+    /// wrap from a hard newline, so it cannot rewrap (the verbatim
+    /// [`Self::resized`] fallback leaves a live shell's per-width prompt redraws
+    /// stacked up).
+    wrapped: Vec<bool>,
 }
 
 impl Screen {
@@ -217,6 +227,7 @@ impl Screen {
             kind: ScreenKind::Main,
             generations: vec![0; rows as usize],
             scrollback: VecDeque::new(),
+            wrapped: vec![false; rows as usize],
         }
     }
 
@@ -258,6 +269,13 @@ impl Screen {
     #[must_use]
     pub fn row_generation(&self, row: u16) -> Option<u64> {
         self.generations.get(row as usize).copied()
+    }
+
+    /// Whether row `row` soft-wraps onto the next row (its logical line
+    /// continues). `false` out of bounds. See [`Self::reflowed`].
+    #[must_use]
+    pub fn wrapped(&self, row: u16) -> bool {
+        self.wrapped.get(row as usize).copied().unwrap_or(false)
     }
 
     /// A row's text: its cells' clusters concatenated, trailing blanks trimmed.
@@ -311,6 +329,15 @@ impl Screen {
         self.cursor = cursor;
     }
 
+    /// Mark (or clear) row `row`'s soft-wrap continuation flag. The VT backend
+    /// sets it at the autowrap site and clears it when a row is erased or a hard
+    /// line feed ends the line. Out-of-bounds rows are ignored.
+    pub(crate) fn set_wrapped(&mut self, row: u16, wrapped: bool) {
+        if let Some(slot) = self.wrapped.get_mut(row as usize) {
+            *slot = wrapped;
+        }
+    }
+
     pub(crate) fn set_kind(&mut self, kind: ScreenKind) {
         self.kind = kind;
     }
@@ -332,6 +359,8 @@ impl Screen {
                 *c = Cell::blank();
             }
             self.generations[row as usize] = generation;
+            // An erased row no longer continues a logical line.
+            self.wrapped[row as usize] = false;
         }
     }
 
@@ -348,12 +377,142 @@ impl Screen {
                 }
             }
             next.generations[r as usize] = self.generations[r as usize];
+            next.wrapped[r as usize] = self.wrapped[r as usize];
         }
         next.cursor = self.cursor;
         next.kind = self.kind;
         // Scrollback is text history, independent of the grid dimensions; carry
         // it across verbatim (lines are not reflowed to the new width).
         next.scrollback = self.scrollback.clone();
+        next
+    }
+
+    /// A copy reflowed to `cols x rows`: the visible MAIN screen's LOGICAL lines
+    /// (physical rows joined by the soft-wrap flag, [`Self::wrapped`]) are
+    /// re-broken at the new width, so a resize rewraps cleanly instead of leaving
+    /// a live shell's per-width prompt redraws stacked up (the verbatim
+    /// [`Self::resized`] bug). The alternate screen and degenerate sizes fall back
+    /// to [`Self::resized`] (a fullscreen app owns its own layout). The cursor is
+    /// preserved by LOGICAL position (re-derived in the new grid); wide clusters
+    /// never split across the margin; an overflow on a narrower reflow scrolls the
+    /// top off into scrollback (text-only), keeping the cursor visible. `gen` is a
+    /// fresh damage stamp for every (re-laid-out) row.
+    pub(crate) fn reflowed(&self, cols: u16, rows: u16, generation: u64) -> Screen {
+        if self.kind != ScreenKind::Main || cols == 0 || rows == 0 {
+            return self.resized(cols, rows);
+        }
+        // Pass 1 — reconstruct logical lines from glyph cells (trailers dropped),
+        // joining soft-wrapped rows; trim trailing blanks at a hard line end.
+        // Track the cursor's (logical line, glyph offset).
+        let mut lines: Vec<Vec<Cell>> = Vec::new();
+        let mut cur: Vec<Cell> = Vec::new();
+        let (cur_col, cur_row) = (self.cursor.col, self.cursor.row);
+        let (mut cursor_line, mut cursor_off, mut cursor_found) = (0usize, 0usize, false);
+        for r in 0..self.rows {
+            let mut glyphs: Vec<Cell> = Vec::new();
+            for c in 0..self.cols {
+                if !cursor_found && r == cur_row && c == cur_col {
+                    cursor_found = true;
+                    cursor_line = lines.len();
+                    cursor_off = cur.len() + glyphs.len();
+                }
+                let cell = self.cell(c, r).cloned().unwrap_or_else(Cell::blank);
+                if cell.width == Width::Trailer {
+                    continue; // regenerated when the wide head is re-placed
+                }
+                glyphs.push(cell);
+            }
+            let wrapped = self.wrapped(r);
+            if !wrapped {
+                while glyphs
+                    .last()
+                    .is_some_and(|c| c.width == Width::Narrow && c.cluster == " ")
+                {
+                    glyphs.pop();
+                }
+            }
+            cur.extend(glyphs);
+            if !wrapped {
+                if cursor_found && cursor_line == lines.len() {
+                    cursor_off = cursor_off.min(cur.len());
+                }
+                lines.push(std::mem::take(&mut cur));
+            }
+        }
+        if !cur.is_empty() {
+            lines.push(cur);
+        }
+        // Drop trailing EMPTY logical lines (blank padding below the content), so
+        // they neither consume rows nor push the content off the top via the
+        // bottom-anchor — but never drop the cursor's line or above.
+        while lines.len() > cursor_line + 1 && lines.last().is_some_and(Vec::is_empty) {
+            lines.pop();
+        }
+        if lines.is_empty() {
+            lines.push(Vec::new());
+        }
+        if !cursor_found {
+            cursor_line = lines.len() - 1;
+            cursor_off = lines[cursor_line].len();
+        }
+        // Pass 2 — re-flow each logical line into the new width (a wide cluster
+        // moves whole), recording per-row soft-wrap flags and the cursor's new
+        // (col, physical-row).
+        let mut phys: Vec<(Vec<Cell>, bool)> = Vec::new();
+        let mut cursor_phys: Option<(u16, usize)> = None;
+        for (li, line) in lines.iter().enumerate() {
+            let mut buf: Vec<Cell> = Vec::new();
+            let mut col: u16 = 0;
+            for (i, cell) in line.iter().enumerate() {
+                if cursor_phys.is_none() && cursor_line == li && cursor_off == i {
+                    cursor_phys = Some((col, phys.len()));
+                }
+                let w: u16 = if cell.width == Width::Wide { 2 } else { 1 };
+                if col + w > cols {
+                    phys.push((std::mem::take(&mut buf), true)); // soft-wrap break
+                    col = 0;
+                }
+                buf.push(cell.clone());
+                if cell.width == Width::Wide {
+                    buf.push(Cell::trailer_for(cell));
+                }
+                col += w;
+            }
+            if cursor_phys.is_none() && cursor_line == li && cursor_off >= line.len() {
+                cursor_phys = Some((col, phys.len()));
+            }
+            phys.push((buf, false)); // hard end of this logical line
+        }
+        // Pass 3 — materialize, bottom-anchored: the bottom `rows` physical rows
+        // are visible; any overflow scrolls off the top into scrollback.
+        let ncols = cols as usize;
+        let keep = rows as usize;
+        let total = phys.len();
+        let start = total.saturating_sub(keep);
+        let mut next = Screen::new(cols, rows);
+        next.scrollback = self.scrollback.clone();
+        for (cells, _) in phys.iter().take(start) {
+            let text: String = cells.iter().map(|c| c.cluster.as_str()).collect();
+            next.scrollback.push_back(text.trim_end().to_string());
+        }
+        while next.scrollback.len() > SCROLLBACK_CAP {
+            next.scrollback.pop_front();
+        }
+        for (out_r, (cells, wrapped)) in phys[start..].iter().enumerate() {
+            for (c, cell) in cells.iter().take(ncols).enumerate() {
+                next.cells[out_r * ncols + c] = cell.clone();
+            }
+            next.wrapped[out_r] = *wrapped;
+            next.generations[out_r] = generation;
+        }
+        let (ccol, cphys) = cursor_phys.unwrap_or((0, total.saturating_sub(1)));
+        next.cursor = Cursor {
+            col: ccol.min(cols.saturating_sub(1)),
+            row: (cphys.saturating_sub(start)).min(keep.saturating_sub(1)) as u16,
+            shape: self.cursor.shape,
+            visible: self.cursor.visible,
+        };
+        next.kind = self.kind;
         next
     }
 
@@ -380,6 +539,10 @@ impl Screen {
         self.cells.drain(0..cols);
         self.cells
             .extend(std::iter::repeat_with(Cell::blank).take(cols));
+        // Shift the wrap flags up in lockstep with the rows; the new bottom row
+        // is blank (not a continuation). (`rows > 0` is guaranteed above.)
+        self.wrapped.remove(0);
+        self.wrapped.push(false);
         for g in &mut self.generations {
             *g = generation;
         }
