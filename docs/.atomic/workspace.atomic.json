@@ -1976,6 +1976,46 @@
         "Still reported, not delivered: pinion PR-15 (TextGrid should fill its node rect with Palette.default_bg so cols*cell_w slack does not bleed the parent = the white slack bar) and PR-16 (ScrollBarExternal caller-owned drag authority for the scrollbar drag). Splitter drag itself works (the earlier HiDPI diagnosis was retracted)."
       ]
     },
+    "Round 44": {
+      "decision_summary": "Round 44: a headless regression guard for the resize-stale accumulation bug — a real-bash-PTY harness in sprag-terminal that reproduces the OPEN bug (a rapid resize of a wrapping prompt makes the emulator stack bash's readline redisplay; full_text accumulates ~44 prompts). Corrects this session's earlier over-claims that R42/R43 fixed it — they are PARTIAL, the bug is open. RED extreme guard is #[ignore]d (un-ignore when the emulator handles the narrow-width redisplay); a GREEN no-wrap guard runs in CI. Committed 937d7c6 on main.",
+      "changes_bullets": [
+        "New crates/sprag-terminal/tests/resize_accumulation.rs — a reusable headless harness (bash_session spawns /bin/bash --norc -i with a 40-col PS1; settle polls the screen's max row-generation until quiet, since bash's redraw is async; drag_sweep/drag_widths drive a rapid resize sweep; prompt_count reads Screen::full_text) plus two guards that drive a real PTY (the headless equivalent of a splitter drag).",
+        "rapid_extreme_resize_does_not_accumulate_prompts (RED, #[ignore]d): a rapid sweep to ~4 cols and back asserts <= 3 prompts but gets 44 — reproduces the open bug. Three load-bearing conditions, each of which alone hides it: a prompt that WRAPS to many rows, a step gap ABOVE R42's ~40ms debounce (so each step delivers its own SIGWINCH — below it the coalescer merges to one resize), and an extreme-narrow width.",
+        "rapid_resize_without_wrapping_stays_clean (GREEN, runs in CI): the same storm above the wrap width stays clean — isolating the multi-row redisplay (not the storm count, not PTY/emulator desync) as the trigger."
+      ],
+      "verification_bullets": [
+        "cargo test -p sprag-terminal: 9 pass + 1 ignored; the GREEN guard passes, the RED guard (cargo test -p sprag-terminal -- --ignored) fails with \"a RAPID extreme resize accumulated 44 prompts\". cargo clippy --workspace --all-targets is clean; rustfmt clean.",
+        "The harness is pure TerminalSession (no GUI / no renderer) and still reproduces the accumulation, confirming it is REAL emulator producer state (full_text), not GPU paint — pinning the layer the fix targets."
+      ],
+      "impact_refs": [
+        "4",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "THE RESIZE-STALE BUG IS OPEN — this round corrects this session's earlier over-claims that R42/R43 \"fixed it\" (they are PARTIAL). Root cause: the emulator (a walking-skeleton VT subset, no scroll-region / IL-DL) does not overwrite bash/readline's multi-row prompt redisplay at narrow widths during a SIGWINCH storm. NOT desync (at >40ms/step the PTY flushes per step so bash and the emulator agree on width, yet it still accumulates), NOT only GPU paint. R43 reflow reduces a SETTLED extreme resize to ~6; the storm leaves ~44.",
+        "NEXT-SESSION FIX (methodical, not blind constant-tweaking): capture bash's narrow-width SIGWINCH redraw bytes (a standalone python pty running bash, resize narrow, read its output — no sprag temp files), identify the mishandled cursor/erase/scroll sequence, implement it in sprag-vt/src/emulator.rs, then UN-IGNORE the RED guard when it goes green.",
+        "Separately delivered/open: pinion R1028 (PR-15, TextGrid pass-0 default-bg gutter fill) fixed the WHITE SLACK BAR (a distinct real issue); pinion PR-16 (ScrollBarExternal caller-owned drag authority for the scrollbar drag) is open. Capture lesson: GPU-window PIXEL truth needs root.get_image / ffmpeg x11grab, not win.get_image (which hid the accumulation all session); raising the window triggers a repaint that clears it."
+      ],
+      "publishable_decision_summary": "Round 44: a headless regression guard for the resize-stale accumulation bug — a real-bash-PTY harness in sprag-terminal that reproduces the OPEN bug (a rapid resize of a wrapping prompt makes the emulator stack bash's readline redisplay; full_text accumulates ~44 prompts). Corrects this session's earlier over-claims that R42/R43 fixed it — they are PARTIAL, the bug is open. RED extreme guard is #[ignore]d (un-ignore when the emulator handles the narrow-width redisplay); a GREEN no-wrap guard runs in CI. Committed 937d7c6 on main.",
+      "publishable_changes_bullets": [
+        "New crates/sprag-terminal/tests/resize_accumulation.rs — a reusable headless harness (bash_session spawns /bin/bash --norc -i with a 40-col PS1; settle polls the screen's max row-generation until quiet, since bash's redraw is async; drag_sweep/drag_widths drive a rapid resize sweep; prompt_count reads Screen::full_text) plus two guards that drive a real PTY (the headless equivalent of a splitter drag).",
+        "rapid_extreme_resize_does_not_accumulate_prompts (RED, #[ignore]d): a rapid sweep to ~4 cols and back asserts <= 3 prompts but gets 44 — reproduces the open bug. Three load-bearing conditions, each of which alone hides it: a prompt that WRAPS to many rows, a step gap ABOVE R42's ~40ms debounce (so each step delivers its own SIGWINCH — below it the coalescer merges to one resize), and an extreme-narrow width.",
+        "rapid_resize_without_wrapping_stays_clean (GREEN, runs in CI): the same storm above the wrap width stays clean — isolating the multi-row redisplay (not the storm count, not PTY/emulator desync) as the trigger."
+      ],
+      "publishable_verification_bullets": [
+        "cargo test -p sprag-terminal: 9 pass + 1 ignored; the GREEN guard passes, the RED guard (cargo test -p sprag-terminal -- --ignored) fails with \"a RAPID extreme resize accumulated 44 prompts\". cargo clippy --workspace --all-targets is clean; rustfmt clean.",
+        "The harness is pure TerminalSession (no GUI / no renderer) and still reproduces the accumulation, confirming it is REAL emulator producer state (full_text), not GPU paint — pinning the layer the fix targets."
+      ],
+      "publishable_impact_refs": [
+        "4",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "THE RESIZE-STALE BUG IS OPEN — this round corrects this session's earlier over-claims that R42/R43 \"fixed it\" (they are PARTIAL). Root cause: the emulator (a walking-skeleton VT subset, no scroll-region / IL-DL) does not overwrite bash/readline's multi-row prompt redisplay at narrow widths during a SIGWINCH storm. NOT desync (at >40ms/step the PTY flushes per step so bash and the emulator agree on width, yet it still accumulates), NOT only GPU paint. R43 reflow reduces a SETTLED extreme resize to ~6; the storm leaves ~44.",
+        "NEXT-SESSION FIX (methodical, not blind constant-tweaking): capture bash's narrow-width SIGWINCH redraw bytes (a standalone python pty running bash, resize narrow, read its output — no sprag temp files), identify the mishandled cursor/erase/scroll sequence, implement it in sprag-vt/src/emulator.rs, then UN-IGNORE the RED guard when it goes green.",
+        "Separately delivered/open: pinion R1028 (PR-15, TextGrid pass-0 default-bg gutter fill) fixed the WHITE SLACK BAR (a distinct real issue); pinion PR-16 (ScrollBarExternal caller-owned drag authority for the scrollbar drag) is open. Capture lesson: GPU-window PIXEL truth needs root.get_image / ffmpeg x11grab, not win.get_image (which hid the accumulation all session); raising the window triggers a repaint that clears it."
+      ]
+    },
     "Round 5": {
       "decision_summary": "Restructure into producer/projection/host layers and harden the headless host: honest winsize, bounded state, enforced read-only.",
       "changes_bullets": [
