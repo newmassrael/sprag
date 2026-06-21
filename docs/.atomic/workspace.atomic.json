@@ -1868,6 +1868,114 @@
         "Ground rule cemented in memory: the instant pinion/SCE needs support -> immediately STOP + write a claudedocs PINION-PRn doc (+ index in PINION-REQUIREMENTS) + report; never edit pinion source from a sprag session (read-to-diagnose only). pinion builds: cargo build -j 4 -p <crate>, never --all/full (it reaches pinion path-deps)."
       ]
     },
+    "Round 41": {
+      "decision_summary": "Round 41: paint-only per-pane vertical scrollbar (gnome-terminal style) on sprag-gui — a pure projection of use_scroll_offset (the row authority) via pinion's unit-agnostic scrollbar_thumb_rect driven in ROWS; no ScrollState/mirror/drag (one authority). Track height from R1012 use_pane_viewport_size (the winsize SSOT). The bar is a sibling of the focusable pane grid; the grid loses the gutter. Drag deferred to pinion PR-16 (ScrollBarExternal lacks a caller-owned drag authority like SplitterExternal::attach_ratio). Committed 7649224 on main.",
+      "changes_bullets": [
+        "New crates/sprag-gui/src/scrollbar.rs: view_pane_scrollbar builds a track Container (tag scrollbar_tag(i), SurfaceContainerHighest) + a thumb Box (Outline, corner radius) absolutely positioned from pinion's unit-agnostic scrollbar_thumb_rect driven in ROWS (viewport=visible_rows, content=visible_rows+scrollback_len, scroll_offset=scrollback_len-rows = the inversion: rows=0 live -> thumb at the bottom). No ScrollState, no mirror, no cell_h.",
+        "wrap_pane_with_bar pairs the pane grid with its bar in an untagged horizontal flex Row [grid (flex-grow 1, flex-basis 0), bar (fixed GUTTER_W=8)]; the grid keeps pane_tag(i) as the sole R1012-measured + focusable node, so cols shrink by the gutter (the gnome-terminal width) and the bar is a sibling, never a wrapper that steals the tag.",
+        "view::build_pane_scene reads the track height from use_pane_viewport_size(pane_tag(i)).1 (the winsize SSOT) and (grid, scrollback_len, visible_rows) from with_screen, then wraps. SCROLLBAR_TAGS[MAX_PANES], pointer-only (never with_focusable), so the bar stays out of R1020's scene-derived Tab order."
+      ],
+      "verification_bullets": [
+        "sprag-gui tests pass (7 new scrollbar tests: thumb at the bottom when live, at the top at oldest, full track with no history, wrap preserves pane_tag) and cargo clippy --workspace --all-targets is clean.",
+        "Live-verified in the real GPU window: the bar renders to the right of each pane and the thumb tracks keyboard scroll (Shift+PageUp/Down) for free, because it is a function of the same use_scroll_offset the chord writes."
+      ],
+      "impact_refs": [
+        "3"
+      ],
+      "carry_forward_bullets": [
+        "DRAG deferred to pinion PR-16 (claudedocs/PINION-PR16-SCROLLBAR-DRAG-AUTHORITY.md): ScrollBarExternal hard-wires writing a px ScrollState (reads state.offset for the press snapshot AND writes on drag), so wiring it to the row authority would force a bidirectional mirror+echo, the codebase's first dual-source-of-truth. SplitterExternal::attach_ratio has no such problem; the asymmetry is the reported gap.",
+        "Thumb contrast (Outline 192 vs track 230 = moderate, partly because an empty scrollback fills the track) is optional polish, deferred."
+      ],
+      "publishable_decision_summary": "Round 41: paint-only per-pane vertical scrollbar (gnome-terminal style) on sprag-gui — a pure projection of use_scroll_offset (the row authority) via pinion's unit-agnostic scrollbar_thumb_rect driven in ROWS; no ScrollState/mirror/drag (one authority). Track height from R1012 use_pane_viewport_size (the winsize SSOT). The bar is a sibling of the focusable pane grid; the grid loses the gutter. Drag deferred to pinion PR-16 (ScrollBarExternal lacks a caller-owned drag authority like SplitterExternal::attach_ratio). Committed 7649224 on main.",
+      "publishable_changes_bullets": [
+        "New crates/sprag-gui/src/scrollbar.rs: view_pane_scrollbar builds a track Container (tag scrollbar_tag(i), SurfaceContainerHighest) + a thumb Box (Outline, corner radius) absolutely positioned from pinion's unit-agnostic scrollbar_thumb_rect driven in ROWS (viewport=visible_rows, content=visible_rows+scrollback_len, scroll_offset=scrollback_len-rows = the inversion: rows=0 live -> thumb at the bottom). No ScrollState, no mirror, no cell_h.",
+        "wrap_pane_with_bar pairs the pane grid with its bar in an untagged horizontal flex Row [grid (flex-grow 1, flex-basis 0), bar (fixed GUTTER_W=8)]; the grid keeps pane_tag(i) as the sole R1012-measured + focusable node, so cols shrink by the gutter (the gnome-terminal width) and the bar is a sibling, never a wrapper that steals the tag.",
+        "view::build_pane_scene reads the track height from use_pane_viewport_size(pane_tag(i)).1 (the winsize SSOT) and (grid, scrollback_len, visible_rows) from with_screen, then wraps. SCROLLBAR_TAGS[MAX_PANES], pointer-only (never with_focusable), so the bar stays out of R1020's scene-derived Tab order."
+      ],
+      "publishable_verification_bullets": [
+        "sprag-gui tests pass (7 new scrollbar tests: thumb at the bottom when live, at the top at oldest, full track with no history, wrap preserves pane_tag) and cargo clippy --workspace --all-targets is clean.",
+        "Live-verified in the real GPU window: the bar renders to the right of each pane and the thumb tracks keyboard scroll (Shift+PageUp/Down) for free, because it is a function of the same use_scroll_offset the chord writes."
+      ],
+      "publishable_impact_refs": [
+        "3"
+      ],
+      "publishable_carry_forward_bullets": [
+        "DRAG deferred to pinion PR-16 (claudedocs/PINION-PR16-SCROLLBAR-DRAG-AUTHORITY.md): ScrollBarExternal hard-wires writing a px ScrollState (reads state.offset for the press snapshot AND writes on drag), so wiring it to the row authority would force a bidirectional mirror+echo, the codebase's first dual-source-of-truth. SplitterExternal::attach_ratio has no such problem; the asymmetry is the reported gap.",
+        "Thumb contrast (Outline 192 vs track 230 = moderate, partly because an empty scrollback fills the track) is optional polish, deferred."
+      ]
+    },
+    "Round 42": {
+      "decision_summary": "Round 42: debounce the TIOCSWINSZ resize storm in sprag-terminal — a continuous splitter/window drag fired one TIOCSWINSZ (and thus one SIGWINCH -> shell prompt redraw) per cell-width boundary. A per-session coalescer thread now owns the PTY master and debounces the ioctl to the FINAL size (40ms quiet window, last-write-wins, flush on Drop). The emulator resize stays SYNCHRONOUS so the GUI's same-frame reflow is preserved. This is the A half of the resize-stale fix (B = Round 43 emulator rewrap). Committed 964789c on main.",
+      "changes_bullets": [
+        "crates/sprag-terminal/src/session.rs: TerminalSession drops the stored master; spawn_with_dirty moves the master into a sprag-pty-resize thread running run_resize_coalescer (mpsc recv_timeout: store the latest pending on Ok, apply pending on Timeout, flush+break on Disconnected). resize(&self) calls emulator.resize synchronously (same-frame reflow) then sends (cols,rows) to the channel; Drop drops the sender and joins the thread.",
+        "run_resize_coalescer is generic over the apply closure (master.resize(PtySize)) for testability. The debounce is TIOCSWINSZ-only — moving the emulator resize off-thread broke the GUI's same-frame reflow tests, so it stays synchronous.",
+        "workspace.rs resize_updates_dimensions test reverted to a synchronous assert (the emulator resize is synchronous; only the ioctl is debounced)."
+      ],
+      "verification_bullets": [
+        "sprag-terminal tests pass (new resize_coalescer_debounces_to_the_final_size_and_flushes_on_drop: a burst applies once with the final size; disconnect flushes the pending) and cargo clippy is clean.",
+        "Live-verified (FIFO-RPC, window fixed, scene/drag moving only the splitter): a FAST splitter drag leaves ONE prompt per pane (the storm coalesces). A SLOW/jerky drag (steps past the 40ms window) still accumulates one redraw per surviving SIGWINCH — the residual that Round 43's rewrap clears."
+      ],
+      "impact_refs": [
+        "3"
+      ],
+      "carry_forward_bullets": [
+        "A1 alone is a partial fix: it cuts the SIGWINCH count but each surviving SIGWINCH still redraws the prompt, and without rewrap the emulator stacks each redraw. Round 43 (Screen::reflowed) is the complete fix — verified together, a slow splitter drag now leaves one clean prompt per pane."
+      ],
+      "publishable_decision_summary": "Round 42: debounce the TIOCSWINSZ resize storm in sprag-terminal — a continuous splitter/window drag fired one TIOCSWINSZ (and thus one SIGWINCH -> shell prompt redraw) per cell-width boundary. A per-session coalescer thread now owns the PTY master and debounces the ioctl to the FINAL size (40ms quiet window, last-write-wins, flush on Drop). The emulator resize stays SYNCHRONOUS so the GUI's same-frame reflow is preserved. This is the A half of the resize-stale fix (B = Round 43 emulator rewrap). Committed 964789c on main.",
+      "publishable_changes_bullets": [
+        "crates/sprag-terminal/src/session.rs: TerminalSession drops the stored master; spawn_with_dirty moves the master into a sprag-pty-resize thread running run_resize_coalescer (mpsc recv_timeout: store the latest pending on Ok, apply pending on Timeout, flush+break on Disconnected). resize(&self) calls emulator.resize synchronously (same-frame reflow) then sends (cols,rows) to the channel; Drop drops the sender and joins the thread.",
+        "run_resize_coalescer is generic over the apply closure (master.resize(PtySize)) for testability. The debounce is TIOCSWINSZ-only — moving the emulator resize off-thread broke the GUI's same-frame reflow tests, so it stays synchronous.",
+        "workspace.rs resize_updates_dimensions test reverted to a synchronous assert (the emulator resize is synchronous; only the ioctl is debounced)."
+      ],
+      "publishable_verification_bullets": [
+        "sprag-terminal tests pass (new resize_coalescer_debounces_to_the_final_size_and_flushes_on_drop: a burst applies once with the final size; disconnect flushes the pending) and cargo clippy is clean.",
+        "Live-verified (FIFO-RPC, window fixed, scene/drag moving only the splitter): a FAST splitter drag leaves ONE prompt per pane (the storm coalesces). A SLOW/jerky drag (steps past the 40ms window) still accumulates one redraw per surviving SIGWINCH — the residual that Round 43's rewrap clears."
+      ],
+      "publishable_impact_refs": [
+        "3"
+      ],
+      "publishable_carry_forward_bullets": [
+        "A1 alone is a partial fix: it cuts the SIGWINCH count but each surviving SIGWINCH still redraws the prompt, and without rewrap the emulator stacks each redraw. Round 43 (Screen::reflowed) is the complete fix — verified together, a slow splitter drag now leaves one clean prompt per pane."
+      ]
+    },
+    "Round 43": {
+      "decision_summary": "Round 43: reflow the screen on resize (the COMPLETE resize-stale fix). A per-row wrapped flag (DEC LINE_WRAPPED), set at the autowrap site and cleared on a hard LF / erase-to-margin, lets Screen::reflowed reconstruct logical lines (rows joined by the flag), re-break them at the new width (cursor preserved by logical position, wide-cluster-safe, alt screen verbatim), and bottom-anchor with overflow scrolling into scrollback. Emulator::resize calls reflowed for the Main screen. Committed fc22d64 on main.",
+      "changes_bullets": [
+        "crates/sprag-vt/src/port.rs: Screen gains wrapped: Vec<bool> (threaded through new/clear_row/resized/scroll_up), set_wrapped/wrapped accessors, and Screen::reflowed(cols, rows, generation): pass 1 reconstructs logical lines from glyph cells (trailers dropped, trailing blanks trimmed at hard ends, trailing empty lines dropped), pass 2 re-breaks each at the new width (a wide cluster moves whole), pass 3 materializes bottom-anchored with overflow scrolling into scrollback. Alt/degenerate falls back to the verbatim resized().",
+        "crates/sprag-vt/src/emulator.rs: print_str sets the wrapped flag at the autowrap (col+cell_w > cols); control LineFeed and erase-to-margin clear it. Emulator::resize calls reflowed (a fresh generation stamps every re-laid-out row) for both the active and saved-main screens, adopting the cursor reflowed re-derives."
+      ],
+      "verification_bullets": [
+        "sprag-vt tests pass (26 total; 3 metadata: autowrap marks wrapped, hard LF / erase clears it; 4 reflow: rejoin on widen, re-break on narrow with cursor, round-trip stability, alt-screen verbatim) and cargo clippy is clean; the full workspace test suite is green.",
+        "Live-verified (the FIFO-RPC splitter-only repro, window fixed): a SLOW back-and-forth splitter drag over live bash — the case A1's debounce cannot coalesce — now leaves exactly ONE clean prompt in each pane (screenshot-confirmed), where before it stacked the prompt redrawn at every intermediate width. gnome-terminal behavior."
+      ],
+      "impact_refs": [
+        "4",
+        "3"
+      ],
+      "carry_forward_bullets": [
+        "Scrollback rewrap is deferred (scrollback stays text-only, verbatim across resize — only the visible screen reflows). Wide-cluster handling at the wrap margin is a known minor edge (a wide-deferral trailing blank can leave a spurious space); the common narrow case (the bash prompt) is exact.",
+        "The resize-stale bug is fully closed by A (Round 42) + B (Round 43): a window-fixed splitter drag over a live shell now shows no prompt accumulation, fast or slow.",
+        "Still reported, not delivered: pinion PR-15 (TextGrid should fill its node rect with Palette.default_bg so cols*cell_w slack does not bleed the parent = the white slack bar) and PR-16 (ScrollBarExternal caller-owned drag authority for the scrollbar drag). Splitter drag itself works (the earlier HiDPI diagnosis was retracted)."
+      ],
+      "publishable_decision_summary": "Round 43: reflow the screen on resize (the COMPLETE resize-stale fix). A per-row wrapped flag (DEC LINE_WRAPPED), set at the autowrap site and cleared on a hard LF / erase-to-margin, lets Screen::reflowed reconstruct logical lines (rows joined by the flag), re-break them at the new width (cursor preserved by logical position, wide-cluster-safe, alt screen verbatim), and bottom-anchor with overflow scrolling into scrollback. Emulator::resize calls reflowed for the Main screen. Committed fc22d64 on main.",
+      "publishable_changes_bullets": [
+        "crates/sprag-vt/src/port.rs: Screen gains wrapped: Vec<bool> (threaded through new/clear_row/resized/scroll_up), set_wrapped/wrapped accessors, and Screen::reflowed(cols, rows, generation): pass 1 reconstructs logical lines from glyph cells (trailers dropped, trailing blanks trimmed at hard ends, trailing empty lines dropped), pass 2 re-breaks each at the new width (a wide cluster moves whole), pass 3 materializes bottom-anchored with overflow scrolling into scrollback. Alt/degenerate falls back to the verbatim resized().",
+        "crates/sprag-vt/src/emulator.rs: print_str sets the wrapped flag at the autowrap (col+cell_w > cols); control LineFeed and erase-to-margin clear it. Emulator::resize calls reflowed (a fresh generation stamps every re-laid-out row) for both the active and saved-main screens, adopting the cursor reflowed re-derives."
+      ],
+      "publishable_verification_bullets": [
+        "sprag-vt tests pass (26 total; 3 metadata: autowrap marks wrapped, hard LF / erase clears it; 4 reflow: rejoin on widen, re-break on narrow with cursor, round-trip stability, alt-screen verbatim) and cargo clippy is clean; the full workspace test suite is green.",
+        "Live-verified (the FIFO-RPC splitter-only repro, window fixed): a SLOW back-and-forth splitter drag over live bash — the case A1's debounce cannot coalesce — now leaves exactly ONE clean prompt in each pane (screenshot-confirmed), where before it stacked the prompt redrawn at every intermediate width. gnome-terminal behavior."
+      ],
+      "publishable_impact_refs": [
+        "4",
+        "3"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Scrollback rewrap is deferred (scrollback stays text-only, verbatim across resize — only the visible screen reflows). Wide-cluster handling at the wrap margin is a known minor edge (a wide-deferral trailing blank can leave a spurious space); the common narrow case (the bash prompt) is exact.",
+        "The resize-stale bug is fully closed by A (Round 42) + B (Round 43): a window-fixed splitter drag over a live shell now shows no prompt accumulation, fast or slow.",
+        "Still reported, not delivered: pinion PR-15 (TextGrid should fill its node rect with Palette.default_bg so cols*cell_w slack does not bleed the parent = the white slack bar) and PR-16 (ScrollBarExternal caller-owned drag authority for the scrollbar drag). Splitter drag itself works (the earlier HiDPI diagnosis was retracted)."
+      ]
+    },
     "Round 5": {
       "decision_summary": "Restructure into producer/projection/host layers and harden the headless host: honest winsize, bounded state, enforced read-only.",
       "changes_bullets": [
