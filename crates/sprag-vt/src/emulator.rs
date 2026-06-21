@@ -611,12 +611,29 @@ mod tests {
             "row 0 soft-wraps at the narrow width"
         );
         assert_eq!(row(&em, 1), "ef");
-        // The cursor keeps its column (offset 6 -> col 2) but anchors to the FIRST
-        // physical row of its logical line (row 0), not the continuation row it
-        // wrapped onto. This keeps a line editor's resize redraw (CR + erase +
-        // reprint, which assumes the cursor is at the line's top) overwriting in
-        // place instead of stacking; see `Screen::reflowed`'s cursor-anchor note.
-        assert_eq!((em.screen().cursor().col, em.screen().cursor().row), (2, 0));
+        // The cursor anchors to the FIRST physical row of its logical line (row 0),
+        // not the continuation row it wrapped onto — keeping a line editor's resize
+        // redraw (CR + erase + reprint, which assumes the cursor is at the line's
+        // top) overwriting in place instead of stacking. Pulled up from a lower row,
+        // its column pins to 0 (the line start) rather than the natural `offset %
+        // width`, which would slide as the line re-breaks at different widths; see
+        // `Screen::reflowed`'s cursor-anchor note.
+        assert_eq!((em.screen().cursor().col, em.screen().cursor().row), (0, 0));
+    }
+
+    #[test]
+    fn reflow_keeps_natural_column_on_a_single_row_line() {
+        // When the cursor's logical line still fits on ONE physical row after the
+        // reflow, the anchor row IS the cursor's own row, so its natural column is
+        // preserved (no pin-to-0) — the caret stays after the text, not at the start.
+        let mut em = Emulator::new(4, 3);
+        em.advance(b"abcdef"); // wraps at width 4: row0 "abcd" -> row1 "ef", cursor after 'f'
+        em.resize(8, 3); // widen: the line rejoins onto a single row
+        assert_eq!(
+            (em.screen().cursor().col, em.screen().cursor().row),
+            (6, 0),
+            "single-row line keeps the cursor after the text, column intact"
+        );
     }
 
     #[test]

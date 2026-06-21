@@ -522,13 +522,25 @@ impl Screen {
         // BOTTOM row, that CR lands mid-line and the reprint stacks BELOW the old
         // text, so per-width prompt redraws pile up (the exact accumulation this
         // reflow exists to prevent). Keeping the editor in sync means the cursor must
-        // sit on the line's first physical row after a reflow. The column is
-        // preserved (the editor's CR resets it anyway; for a single-row line top ==
-        // the cursor's own row, so its position is unchanged).
-        let (ccol, _cphys) = cursor_phys.unwrap_or((0, total.saturating_sub(1)));
+        // sit on the line's first physical row after a reflow.
+        //
+        // Column: keep the natural column ONLY when the cursor already sits on that
+        // first row (a single-row line, where top == the cursor's own row — so its
+        // position is unchanged). When the cursor is pulled UP from a lower wrapped
+        // row, its natural column is `offset % width`, which slides as a multi-row
+        // line re-breaks at different widths — a live splitter drag would paint the
+        // cursor skating left/right across the prompt's first row. Pin it to column 0
+        // (the line's start) instead: the editor's CR resets the column on its next
+        // redraw anyway, and a still column reads as a stable caret, not a jumping one.
+        let (ccol, cphys) = cursor_phys.unwrap_or((0, total.saturating_sub(1)));
+        let (cur_col, cur_phys) = if cphys == cursor_line_top {
+            (ccol, cphys)
+        } else {
+            (0, cursor_line_top)
+        };
         next.cursor = Cursor {
-            col: ccol.min(cols.saturating_sub(1)),
-            row: (cursor_line_top.saturating_sub(start)).min(keep.saturating_sub(1)) as u16,
+            col: cur_col.min(cols.saturating_sub(1)),
+            row: (cur_phys.saturating_sub(start)).min(keep.saturating_sub(1)) as u16,
             shape: self.cursor.shape,
             visible: self.cursor.visible,
         };
