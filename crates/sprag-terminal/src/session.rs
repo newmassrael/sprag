@@ -14,10 +14,12 @@
 
 use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
-use portable_pty::{Child, MasterPty, PtySize, native_pty_system};
+use portable_pty::{Child, PtySize, native_pty_system};
 use sprag_vt::{Emulator, InputModes, Screen, VtPort};
 
 // Re-exported so callers build commands without depending on portable-pty
@@ -138,13 +140,18 @@ impl std::error::Error for SessionError {}
 /// A live terminal: a child process on a PTY, its output parsed into a
 /// queryable [`Screen`] that the reader thread keeps current.
 pub struct TerminalSession {
-    master: Box<dyn MasterPty + Send>,
+    // The PTY master is OWNED BY the resize coalescer thread (`resize` is its
+    // sole user), so resizes apply off the caller's thread and are debounced —
+    // see [`run_resize_coalescer`]. The session hands target sizes to it via
+    // `resize_tx`.
     child: Box<dyn Child + Send + Sync>,
     writer: SharedWriter,
     emulator: Arc<Mutex<Emulator>>,
     raw_output: SharedRawCapture,
     eof: Arc<AtomicBool>,
     reader_thread: Option<JoinHandle<()>>,
+    resize_tx: Option<Sender<(u16, u16)>>,
+    resize_thread: Option<JoinHandle<()>>,
 }
 
 impl TerminalSession {
@@ -242,14 +249,36 @@ impl TerminalSession {
             })
             .map_err(|e| SessionError::new("spawn reader thread", &e))?;
 
+        // `TIOCSWINSZ` coalescer: own thread, owns the PTY master (its only
+        // user). The caller's reflow (a continuous drag) resizes the emulator
+        // synchronously and sends every intermediate size here; the coalescer
+        // debounces the PTY ioctl to the final one — so the live shell gets one
+        // `SIGWINCH` per settle, not one per cell-width boundary.
+        let (resize_tx, resize_rx) = mpsc::channel::<(u16, u16)>();
+        let master = pair.master;
+        let resize_thread = std::thread::Builder::new()
+            .name("sprag-pty-resize".to_string())
+            .spawn(move || {
+                run_resize_coalescer(RESIZE_DEBOUNCE, &resize_rx, |(cols, rows)| {
+                    let _ = master.resize(PtySize {
+                        rows,
+                        cols,
+                        pixel_width: 0,
+                        pixel_height: 0,
+                    });
+                });
+            })
+            .map_err(|e| SessionError::new("spawn resize thread", &e))?;
+
         Ok(Self {
-            master: pair.master,
             child,
             writer,
             emulator,
             raw_output,
             eof,
             reader_thread: Some(reader_thread),
+            resize_tx: Some(resize_tx),
+            resize_thread: Some(resize_thread),
         })
     }
 
@@ -327,15 +356,19 @@ impl TerminalSession {
     pub fn resize(&self, cols: u16, rows: u16) -> Result<(), SessionError> {
         let cols = cols.max(1);
         let rows = rows.max(1);
-        self.master
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| SessionError::new("resize pty", &e))?;
+        // Resize the emulator screen SYNCHRONOUSLY so the grid reflows the SAME
+        // frame the GUI lays it out (the same-frame reflow contract the host's
+        // dirty re-pass relies on). Only the PTY ioctl (`TIOCSWINSZ` →
+        // `SIGWINCH`) is debounced: a continuous drag would otherwise flood the
+        // live shell with `SIGWINCH`es and it redraws its prompt for every one,
+        // which the emulator accumulates (the reported bug). The coalescer
+        // applies one ioctl per settle.
         lock(&self.emulator).resize(cols, rows);
+        if let Some(tx) = &self.resize_tx {
+            // A send only fails once the session is dropping (coalescer gone),
+            // where a stale PTY size is moot.
+            let _ = tx.send((cols, rows));
+        }
         Ok(())
     }
 
@@ -412,8 +445,61 @@ fn write_shared(writer: &SharedWriter, bytes: &[u8]) -> io::Result<()> {
     writer.flush()
 }
 
+/// The quiet window the resize coalescer waits for before applying a size. A
+/// continuous splitter/window drag emits a distinct `(cols, rows)` at every
+/// cell-width boundary; without coalescing each one issues a `TIOCSWINSZ` →
+/// `SIGWINCH`, and a live shell redraws its prompt for every one (the emulator,
+/// which does not yet rewrap, then accumulates them as fragmented copies).
+/// Debouncing to the LATEST size after a brief quiet collapses the storm.
+const RESIZE_DEBOUNCE: Duration = Duration::from_millis(40);
+
+/// The resize coalescer loop (runs on its own thread, which OWNS the PTY
+/// master — `resize` is the master's only user, so no sharing is needed).
+/// Trailing debounce: every request resets the quiet timer and overwrites the
+/// pending size (last-write-wins), so only the FINAL size of a burst is applied,
+/// once, after `quiet` of silence. On channel disconnect (the session dropping)
+/// it flushes the final pending size synchronously so a resize-then-quit never
+/// strands the PTY at a stale size. Generic over `apply` so the debounce policy
+/// is unit-tested without a real PTY.
+fn run_resize_coalescer(
+    quiet: Duration,
+    rx: &Receiver<(u16, u16)>,
+    mut apply: impl FnMut((u16, u16)),
+) {
+    let mut pending: Option<(u16, u16)> = None;
+    loop {
+        let recv = if pending.is_some() {
+            rx.recv_timeout(quiet)
+        } else {
+            // Nothing pending — block until the next request (or disconnect).
+            rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
+        };
+        match recv {
+            Ok(size) => pending = Some(size), // reset the timer, keep the latest
+            Err(RecvTimeoutError::Timeout) => {
+                if let Some(size) = pending.take() {
+                    apply(size);
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                if let Some(size) = pending.take() {
+                    apply(size); // flush the final size before exiting
+                }
+                break;
+            }
+        }
+    }
+}
+
 impl Drop for TerminalSession {
     fn drop(&mut self) {
+        // Disconnect the resize channel so the coalescer flushes its final
+        // pending size and exits (it owns the PTY master, which then closes);
+        // join it before reaping the child.
+        drop(self.resize_tx.take());
+        if let Some(handle) = self.resize_thread.take() {
+            let _ = handle.join();
+        }
         // Stop the child so its slave fd closes, which unblocks the reader
         // thread's `read()` with EOF; then reap it and join the thread.
         let _ = self.child.kill();
@@ -469,6 +555,8 @@ mod tests {
         // Through a SHARED borrow — proves the resize needs no `&mut`.
         let shared: &TerminalSession = &session;
         shared.resize(100, 30).expect("resize the shared session");
+        // The emulator resizes synchronously (only the PTY ioctl is debounced),
+        // so `dimensions()` is current immediately.
         assert_eq!(
             session.dimensions(),
             (100, 30),
@@ -540,5 +628,42 @@ mod tests {
             "capture is bounded at the cap"
         );
         assert!(bytes.iter().all(|&b| b == b'a'), "the head bytes are kept");
+    }
+
+    /// A1 resize debounce: a rapid burst of distinct sizes (a continuous drag)
+    /// collapses to ONE applied size — the FINAL one — and a disconnect (the
+    /// session dropping) flushes the final pending size so it is never stranded.
+    /// Pure policy test (no real PTY) via the `apply`-generic coalescer.
+    #[test]
+    fn resize_coalescer_debounces_to_the_final_size_and_flushes_on_drop() {
+        let (tx, rx) = mpsc::channel::<(u16, u16)>();
+        let applied = Arc::new(Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&applied);
+        let handle = std::thread::spawn(move || {
+            run_resize_coalescer(Duration::from_millis(20), &rx, move |size| {
+                recorder.lock().unwrap().push(size);
+            });
+        });
+
+        // A burst with no quiet between sends -> only the final size applies.
+        tx.send((10, 5)).unwrap();
+        tx.send((20, 5)).unwrap();
+        tx.send((30, 5)).unwrap();
+        sleep(Duration::from_millis(80)); // > quiet -> the trailing flush fires
+        assert_eq!(
+            *applied.lock().unwrap(),
+            vec![(30, 5)],
+            "a drag's burst collapses to a single applied size (the final one)",
+        );
+
+        // A further size then disconnect -> flushed synchronously on shutdown.
+        tx.send((40, 6)).unwrap();
+        drop(tx);
+        handle.join().unwrap();
+        assert_eq!(
+            *applied.lock().unwrap(),
+            vec![(30, 5), (40, 6)],
+            "disconnect (Drop) flushes the final pending size, never stranding it",
+        );
     }
 }

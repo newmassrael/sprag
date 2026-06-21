@@ -258,6 +258,8 @@ mod tests {
     fn resize_updates_dimensions() {
         let mut ws = Workspace::new((80, 24));
         let a = ws.spawn(cmd(), "sh".to_string(), 80, 24).unwrap();
+        // The emulator resizes synchronously (only the PTY ioctl is debounced),
+        // so `dimensions()` is current immediately after `resize`.
         assert!(ws.resize(a, 100, 30).unwrap());
         assert_eq!(ws.pane(a).unwrap().session().dimensions(), (100, 30));
         assert!(!ws.resize(PaneId(999), 10, 10).unwrap());
