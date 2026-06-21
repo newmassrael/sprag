@@ -392,11 +392,13 @@ impl Screen {
     /// re-broken at the new width, so a resize rewraps cleanly instead of leaving
     /// a live shell's per-width prompt redraws stacked up (the verbatim
     /// [`Self::resized`] bug). The alternate screen and degenerate sizes fall back
-    /// to [`Self::resized`] (a fullscreen app owns its own layout). The cursor is
-    /// preserved by LOGICAL position (re-derived in the new grid); wide clusters
-    /// never split across the margin; an overflow on a narrower reflow scrolls the
-    /// top off into scrollback (text-only), keeping the cursor visible. `gen` is a
-    /// fresh damage stamp for every (re-laid-out) row.
+    /// to [`Self::resized`] (a fullscreen app owns its own layout). The cursor
+    /// tracks its LOGICAL line across the rewrap but anchors to that line's FIRST
+    /// physical row (its column preserved), so a live line editor's resize redraw
+    /// overwrites in place rather than stacking — see the cursor-anchor note in
+    /// Pass 3. Wide clusters never split across the margin; an overflow on a
+    /// narrower reflow scrolls the top off into scrollback (text-only), keeping the
+    /// cursor visible. `gen` is a fresh damage stamp for every (re-laid-out) row.
     pub(crate) fn reflowed(&self, cols: u16, rows: u16, generation: u64) -> Screen {
         if self.kind != ScreenKind::Main || cols == 0 || rows == 0 {
             return self.resized(cols, rows);
@@ -460,7 +462,13 @@ impl Screen {
         // (col, physical-row).
         let mut phys: Vec<(Vec<Cell>, bool)> = Vec::new();
         let mut cursor_phys: Option<(u16, usize)> = None;
+        // The first physical row of the cursor's logical line — the row a line
+        // editor's resize redraw rewrites from (see the cursor-anchor note below).
+        let mut cursor_line_top: usize = 0;
         for (li, line) in lines.iter().enumerate() {
+            if li == cursor_line {
+                cursor_line_top = phys.len();
+            }
             let mut buf: Vec<Cell> = Vec::new();
             let mut col: u16 = 0;
             for (i, cell) in line.iter().enumerate() {
@@ -505,10 +513,22 @@ impl Screen {
             next.wrapped[out_r] = *wrapped;
             next.generations[out_r] = generation;
         }
-        let (ccol, cphys) = cursor_phys.unwrap_or((0, total.saturating_sub(1)));
+        // Anchor the cursor to the FIRST physical row of its logical line, not the
+        // physical row its glyph offset lands on. A line editor (bash/readline, zsh)
+        // redraws its line on `SIGWINCH` by issuing CR + erase-in-line + reprint and
+        // navigating relative to where it believes the cursor is — and after an
+        // autowrapping reprint it believes the cursor is back at the line's TOP (it
+        // emits no cursor-up). If a reflow leaves the cursor at the rewrapped line's
+        // BOTTOM row, that CR lands mid-line and the reprint stacks BELOW the old
+        // text, so per-width prompt redraws pile up (the exact accumulation this
+        // reflow exists to prevent). Keeping the editor in sync means the cursor must
+        // sit on the line's first physical row after a reflow. The column is
+        // preserved (the editor's CR resets it anyway; for a single-row line top ==
+        // the cursor's own row, so its position is unchanged).
+        let (ccol, _cphys) = cursor_phys.unwrap_or((0, total.saturating_sub(1)));
         next.cursor = Cursor {
             col: ccol.min(cols.saturating_sub(1)),
-            row: (cphys.saturating_sub(start)).min(keep.saturating_sub(1)) as u16,
+            row: (cursor_line_top.saturating_sub(start)).min(keep.saturating_sub(1)) as u16,
             shape: self.cursor.shape,
             visible: self.cursor.visible,
         };

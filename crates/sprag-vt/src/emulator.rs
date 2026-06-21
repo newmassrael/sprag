@@ -611,8 +611,30 @@ mod tests {
             "row 0 soft-wraps at the narrow width"
         );
         assert_eq!(row(&em, 1), "ef");
-        // Cursor after 'f' -> row 1, col 2.
-        assert_eq!((em.screen().cursor().col, em.screen().cursor().row), (2, 1));
+        // The cursor keeps its column (offset 6 -> col 2) but anchors to the FIRST
+        // physical row of its logical line (row 0), not the continuation row it
+        // wrapped onto. This keeps a line editor's resize redraw (CR + erase +
+        // reprint, which assumes the cursor is at the line's top) overwriting in
+        // place instead of stacking; see `Screen::reflowed`'s cursor-anchor note.
+        assert_eq!((em.screen().cursor().col, em.screen().cursor().row), (2, 0));
+    }
+
+    #[test]
+    fn reflow_anchors_cursor_to_logical_line_top() {
+        // A line that wraps to several physical rows: after a reflow the cursor must
+        // sit on the line's FIRST physical row so a live shell's `SIGWINCH` redraw
+        // (CR + erase-in-line + reprint, no cursor-up) overwrites the old prompt
+        // rather than stacking a fresh copy below it (the resize-stale bug).
+        let mut em = Emulator::new(12, 4);
+        em.advance(b"abcdefghijkl"); // exactly fills row 0 at width 12
+        em.advance(b"mnop"); // wraps onto row 1; cursor after 'p'
+        assert!(em.screen().wrapped(0), "the logical line spans rows 0..1");
+        em.resize(4, 6); // re-break the 16-glyph line to width 4 -> 4 physical rows
+        assert_eq!(
+            em.screen().cursor().row,
+            0,
+            "cursor anchors to the logical line's top row, not its wrapped bottom"
+        );
     }
 
     #[test]

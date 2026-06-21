@@ -27,13 +27,13 @@
 //!   above the wrap width (single-row redraws). A GREEN guard: must stay passing
 //!   (the storm alone does not accumulate; this catches a gross regression).
 //! * [`rapid_extreme_resize_does_not_accumulate_prompts`] — storm to ~4 columns
-//!   (heavy multi-row wrap), the splitter-to-the-edge case. Currently RED (the
-//!   open bug — it accumulated ~40+ prompts), so it is `#[ignore]`d; UN-IGNORE it
-//!   the moment the emulator overwrites the racing narrow-width redisplay cleanly,
-//!   and it becomes the permanent regression guard. (NB: even a SETTLED extreme
-//!   resize still leaves ~6 — R43 reflow reduces but does not yet eliminate it.)
+//!   (heavy multi-row wrap), the splitter-to-the-edge case. This reproduced the
+//!   bug (it accumulated ~40+ prompts). Fixed by anchoring the reflow cursor to
+//!   its logical line's first physical row (`Screen::reflowed`): bash's resize
+//!   redraw (CR + erase-in-line + reprint, no cursor-up) assumes the cursor is at
+//!   the prompt's top, so a reflow that left it at the rewrapped bottom made every
+//!   redraw stack below the last. Now the permanent regression guard.
 //!
-//! Run the ignored guard explicitly: `cargo test -p sprag-terminal -- --ignored`.
 //! These need a real `/bin/bash`; they are integration tests, not unit tests.
 
 use std::time::{Duration, Instant};
@@ -145,15 +145,14 @@ fn rapid_resize_without_wrapping_stays_clean() {
     );
 }
 
-/// RED guard (the open bug): the SAME rapid storm taken to an extreme-narrow
-/// width, where the prompt wraps to many rows.
+/// Regression guard: the SAME rapid storm taken to an extreme-narrow width, where
+/// the prompt wraps to many rows. This reproduced the resize-stale bug — a RAPID
+/// drag to an extreme-narrow width (each step its own SIGWINCH) made the emulator
+/// stack bash's multi-row prompt redisplay instead of overwriting it, so prompts
+/// accumulated (~40+). Fixed by anchoring the reflow cursor to its logical line's
+/// first physical row (`Screen::reflowed`), so bash's CR + erase + reprint redraw
+/// overwrites the old prompt in place. Kept as a guard against regression.
 #[test]
-#[ignore = "RED: reproduces the open resize-stale bug — a RAPID drag to an \
-            extreme-narrow width (each step its own SIGWINCH) makes the emulator \
-            stack bash's multi-row prompt redisplay instead of overwriting it, so \
-            prompts accumulate (~40+). UN-IGNORE when the emulator handles the \
-            racing narrow-width redisplay; it then guards regression. \
-            Run: cargo test -p sprag-terminal -- --ignored"]
 fn rapid_extreme_resize_does_not_accumulate_prompts() {
     let session = bash_session(80, 24);
     let n = drag_sweep(&session, &drag_widths(80, 4), 24, Duration::from_millis(55));
