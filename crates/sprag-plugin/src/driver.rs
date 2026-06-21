@@ -123,7 +123,10 @@ impl Driver {
         self.cost = Some(match self.cost {
             None => cost,
             Some(acc) => acc.try_add(cost).unwrap_or_else(|| {
-                debug_assert!(false, "a plugin changed cost unit mid-run: {acc:?} + {cost:?}");
+                debug_assert!(
+                    false,
+                    "a plugin changed cost unit mid-run: {acc:?} + {cost:?}"
+                );
                 acc
             }),
         });
@@ -161,9 +164,9 @@ mod tests {
     use super::*;
     use crate::access::{KeyStroke, PaneRow};
     use crate::plugin::Step;
-    use std::sync::atomic::AtomicBool;
-    use std::sync::Arc;
     use sprag_terminal::PaneId;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     /// A plugin whose step always fails — to pin the Driver's Err -> Failed
     /// mapping deterministically, no threads or PTY.

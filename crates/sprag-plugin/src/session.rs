@@ -119,7 +119,11 @@ mod tests {
     fn a_session_id_opens_a_resumable_session() {
         let mut session = Session::new();
         session.record(Some("sess-1".to_string()));
-        assert_eq!(session.resuming(), Some("sess-1"), "an id must open a resume");
+        assert_eq!(
+            session.resuming(),
+            Some("sess-1"),
+            "an id must open a resume"
+        );
     }
 
     #[test]
@@ -129,7 +133,11 @@ mod tests {
         // transcript (no spurious resume).
         let mut session = Session::new();
         session.record(None);
-        assert_eq!(session.resuming(), None, "an id-less fresh turn must stay fresh");
+        assert_eq!(
+            session.resuming(),
+            None,
+            "an id-less fresh turn must stay fresh"
+        );
     }
 
     #[test]
@@ -139,7 +147,11 @@ mod tests {
         let mut session = Session::new();
         session.record(Some("a".to_string()));
         session.record(Some("a".to_string()));
-        assert_eq!(session.resuming(), Some("a"), "a kept session stays resumable");
+        assert_eq!(
+            session.resuming(),
+            Some("a"),
+            "a kept session stays resumable"
+        );
         session.record(Some("b".to_string()));
         assert_eq!(session.resuming(), Some("b"), "the latest id wins");
     }
@@ -153,9 +165,17 @@ mod tests {
         session.record(Some("sess-1".to_string()));
         assert_eq!(session.resuming(), Some("sess-1"));
         session.record(None);
-        assert_eq!(session.resuming(), None, "a lost resume must reset to fresh");
+        assert_eq!(
+            session.resuming(),
+            None,
+            "a lost resume must reset to fresh"
+        );
         // And it can open a brand-new session afterwards (fully healed).
         session.record(Some("sess-2".to_string()));
-        assert_eq!(session.resuming(), Some("sess-2"), "a healed side resumes again");
+        assert_eq!(
+            session.resuming(),
+            Some("sess-2"),
+            "a healed side resumes again"
+        );
     }
 }

@@ -23,12 +23,13 @@ use std::thread;
 use std::time::Duration;
 
 use pinion_core::external::{
-    ExternalIntrospect, IntrospectSchema, IntrospectValue, InterveneError, InvokeError,
+    ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError,
 };
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use sprag_plugin::{
     Agent, AgentSpec, Cost, Dialogue, DialogueSpec, Driver, Guardrails, OrchestrationSpec,
-    Orchestrator, Outcome, OutcomeState, Pipe, Plugin, ReplyFormat, RunContext, WorkspacePaneAccess,
+    Orchestrator, Outcome, OutcomeState, Pipe, Plugin, ReplyFormat, RunContext,
+    WorkspacePaneAccess,
 };
 use sprag_terminal::{PaneId, Workspace};
 
@@ -84,7 +85,9 @@ impl PluginsExternal {
         let (plugin, label) = self.build_plugin(map)?;
         let guardrails = parse_guardrails(map, plugin.default_cost())?;
         let id = self.spawn_run(label, plugin, guardrails);
-        Ok(IntrospectValue::Int(i64::try_from(id.0).unwrap_or(i64::MAX)))
+        Ok(IntrospectValue::Int(
+            i64::try_from(id.0).unwrap_or(i64::MAX),
+        ))
     }
 
     /// `cancel` action: raise the cancel flag for run `id`. A synchronous
@@ -114,14 +117,20 @@ impl PluginsExternal {
                 let sentinel = opt_str(map, "sentinel")?.map(str::to_string);
                 let label = format!("orchestrator pane={}", pane.0);
                 let spec = OrchestrationSpec { stimulus, sentinel };
-                Ok((PluginKind::Orchestrator(Orchestrator::new(pane, spec)), label))
+                Ok((
+                    PluginKind::Orchestrator(Orchestrator::new(pane, spec)),
+                    label,
+                ))
             }
             "pipe" => {
                 let src = require_pane_id(map, "src")?;
                 let dst = require_pane_id(map, "dst")?;
                 self.require_pane(src)?;
                 self.require_pane(dst)?;
-                Ok((PluginKind::Pipe(Pipe::new(src, dst)), format!("pipe {}->{}", src.0, dst.0)))
+                Ok((
+                    PluginKind::Pipe(Pipe::new(src, dst)),
+                    format!("pipe {}->{}", src.0, dst.0),
+                ))
             }
             "agent" => {
                 let pane = require_pane_id(map, "pane")?;
@@ -132,7 +141,8 @@ impl PluginsExternal {
                     spec.eof = v.as_bool().ok_or(InvokeError::TypeMismatch)?;
                 }
                 if let Some(v) = map.get("timeout_ms") {
-                    spec.timeout = Duration::from_millis(v.as_u64().ok_or(InvokeError::TypeMismatch)?);
+                    spec.timeout =
+                        Duration::from_millis(v.as_u64().ok_or(InvokeError::TypeMismatch)?);
                 }
                 let label = format!("agent pane={}", pane.0);
                 Ok((PluginKind::Agent(Agent::new(pane, spec)), label))
@@ -242,7 +252,11 @@ impl ExternalIntrospect for PluginsExternal {
         Err(InterveneError::UnknownPath)
     }
 
-    fn invoke(&mut self, path: &str, args: IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+    fn invoke(
+        &mut self,
+        path: &str,
+        args: IntrospectValue,
+    ) -> Result<IntrospectValue, InvokeError> {
         match path {
             RUN_ACTION => self.run(&args),
             CANCEL_ACTION => self.cancel(&args),

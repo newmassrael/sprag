@@ -132,7 +132,12 @@ pub fn overlay_preedit(buffer: GridBuffer, preedit: &str) -> GridBuffer {
     // always `Some` — a `None` would be an internal `GridBuffer` invariant break.
     let cols_usize = usize::from(cols);
     let mut cells: Vec<TermCell> = (0..cols)
-        .map(|col| buffer.cell(col, row).cloned().expect("col < cols and row < rows hold above"))
+        .map(|col| {
+            buffer
+                .cell(col, row)
+                .cloned()
+                .expect("col < cols and row < rows hold above")
+        })
         .collect();
     let mut col = usize::from(cursor.col);
     for ch in preedit.chars() {
@@ -229,8 +234,12 @@ fn project_row(screen: &Screen, row: u16, cols: u16) -> Vec<TermCell> {
 }
 
 fn term_cell(cell: &Cell) -> TermCell {
-    TermCell::new(cell.cluster.clone(), term_color(cell.fg), term_color(cell.bg))
-        .with_attrs(cell_attrs(cell.attrs))
+    TermCell::new(
+        cell.cluster.clone(),
+        term_color(cell.fg),
+        term_color(cell.bg),
+    )
+    .with_attrs(cell_attrs(cell.attrs))
 }
 
 fn term_color(color: Color) -> TermColor {
@@ -302,8 +311,14 @@ mod tests {
     fn projects_wide_head_and_trailer() {
         let screen = screen_from("世".as_bytes(), 6, 1);
         let buffer = project(&screen);
-        assert_eq!(buffer.cell(0, 0).unwrap().width, pinion_core::CellWidth::Wide);
-        assert_eq!(buffer.cell(1, 0).unwrap().width, pinion_core::CellWidth::Trailer);
+        assert_eq!(
+            buffer.cell(0, 0).unwrap().width,
+            pinion_core::CellWidth::Wide
+        );
+        assert_eq!(
+            buffer.cell(1, 0).unwrap().width,
+            pinion_core::CellWidth::Trailer
+        );
     }
 
     #[test]
@@ -359,7 +374,10 @@ mod tests {
         let scrolled = project_scrolled(&screen, 7); // stale offset, no history
         let live = project(&screen);
         assert_eq!(scrolled.cursor().col, live.cursor().col);
-        assert!(scrolled.cursor().visible, "the live cursor is present after the clamp");
+        assert!(
+            scrolled.cursor().visible,
+            "the live cursor is present after the clamp"
+        );
     }
 
     /// A narrow preedit is spliced in at the cursor (col 2 after "ab"),
@@ -368,11 +386,18 @@ mod tests {
     fn overlay_preedit_underlines_narrow_text_at_the_cursor() {
         let screen = screen_from(b"ab", 10, 1);
         let buffer = overlay_preedit(project(&screen), "x");
-        assert_eq!(buffer.cell(0, 0).unwrap().cluster, "a", "committed text is preserved");
+        assert_eq!(
+            buffer.cell(0, 0).unwrap().cluster,
+            "a",
+            "committed text is preserved"
+        );
         assert_eq!(buffer.cell(1, 0).unwrap().cluster, "b");
         let composed = buffer.cell(2, 0).unwrap(); // cursor sat at col 2
         assert_eq!(composed.cluster, "x");
-        assert!(composed.attrs.underline, "the preedit is underlined (composing marker)");
+        assert!(
+            composed.attrs.underline,
+            "the preedit is underlined (composing marker)"
+        );
     }
 
     /// A wide (Hangul) preedit syllable expands to pinion's head + trailer pair,
@@ -385,7 +410,10 @@ mod tests {
         assert_eq!(head.cluster, "한");
         assert_eq!(head.width, pinion_core::CellWidth::Wide);
         assert!(head.attrs.underline);
-        assert_eq!(buffer.cell(3, 0).unwrap().width, pinion_core::CellWidth::Trailer);
+        assert_eq!(
+            buffer.cell(3, 0).unwrap().width,
+            pinion_core::CellWidth::Trailer
+        );
     }
 
     /// An empty preedit (no active composition) is a no-op — the live view is
@@ -396,7 +424,10 @@ mod tests {
         let plain = project(&screen);
         let overlaid = overlay_preedit(project(&screen), "");
         for col in 0..plain.cols() {
-            assert_eq!(plain.cell(col, 0).unwrap().cluster, overlaid.cell(col, 0).unwrap().cluster);
+            assert_eq!(
+                plain.cell(col, 0).unwrap().cluster,
+                overlaid.cell(col, 0).unwrap().cluster
+            );
         }
     }
 
@@ -408,8 +439,15 @@ mod tests {
         assert_eq!(project(&screen).cursor().col, 3);
         let buffer = overlay_preedit(project(&screen), "한");
         let last = buffer.cell(3, 0).unwrap();
-        assert_ne!(last.cluster, "한", "the wide head is clipped at the edge, not written");
-        assert_ne!(last.width, pinion_core::CellWidth::Wide, "no lone Narrow-tagged wide head");
+        assert_ne!(
+            last.cluster, "한",
+            "the wide head is clipped at the edge, not written"
+        );
+        assert_ne!(
+            last.width,
+            pinion_core::CellWidth::Wide,
+            "no lone Narrow-tagged wide head"
+        );
     }
 
     /// No visible cursor (a scrolled history window, or a DECTCEM-hidden cursor)
@@ -417,9 +455,13 @@ mod tests {
     #[test]
     fn overlay_preedit_no_op_without_a_visible_cursor() {
         let screen = screen_from(b"ab", 10, 1);
-        let hidden = project(&screen)
-            .with_cursor(GridCursor::new(2, 0, PinCursorShape::Block, false));
+        let hidden =
+            project(&screen).with_cursor(GridCursor::new(2, 0, PinCursorShape::Block, false));
         let out = overlay_preedit(hidden, "x");
-        assert_ne!(out.cell(2, 0).unwrap().cluster, "x", "no overlay without a visible cursor");
+        assert_ne!(
+            out.cell(2, 0).unwrap().cluster,
+            "x",
+            "no overlay without a visible cursor"
+        );
     }
 }

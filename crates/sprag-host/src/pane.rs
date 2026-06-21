@@ -25,7 +25,7 @@
 use std::fmt;
 
 use pinion_core::external::{
-    ExternalIntrospect, IntrospectSchema, IntrospectValue, InterveneError, InvokeError,
+    ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError,
 };
 use serde_json::Value;
 use sprag_input::Modifiers;
@@ -73,7 +73,9 @@ impl SpragPaneExternal {
         };
         let bytes = sprag_input::encode(&key, mods, self.session.input_modes())
             .ok_or(InvokeError::Rejected)?;
-        self.session.write(&bytes).map_err(|_| InvokeError::Rejected)?;
+        self.session
+            .write(&bytes)
+            .map_err(|_| InvokeError::Rejected)?;
         Ok(IntrospectValue::Null)
     }
 
@@ -116,10 +118,12 @@ impl ExternalIntrospect for SpragPaneExternal {
 
     fn query(&self, path: &str) -> Option<IntrospectValue> {
         match path {
-            CURSOR_KEYS_SLOT => {
-                Some(IntrospectValue::Bool(self.session.input_modes().application_cursor_keys))
-            }
-            FULL_TEXT_SLOT => Some(IntrospectValue::Text(self.session.with_screen(Screen::full_text))),
+            CURSOR_KEYS_SLOT => Some(IntrospectValue::Bool(
+                self.session.input_modes().application_cursor_keys,
+            )),
+            FULL_TEXT_SLOT => Some(IntrospectValue::Text(
+                self.session.with_screen(Screen::full_text),
+            )),
             _ => None,
         }
     }
@@ -130,7 +134,11 @@ impl ExternalIntrospect for SpragPaneExternal {
         Err(InterveneError::UnknownPath)
     }
 
-    fn invoke(&mut self, path: &str, args: IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+    fn invoke(
+        &mut self,
+        path: &str,
+        args: IntrospectValue,
+    ) -> Result<IntrospectValue, InvokeError> {
         match path {
             KEY_ACTION => self.inject_key(&args),
             TEXT_ACTION => self.inject_text(&args),
@@ -209,13 +217,28 @@ mod tests {
     #[test]
     fn parses_object_with_modifiers() {
         let parsed = parse_key_args(&json_args(json!({"key": "c", "ctrl": true}))).unwrap();
-        assert_eq!(parsed, Some(("c".to_string(), Modifiers { ctrl: true, ..Modifiers::default() })));
+        assert_eq!(
+            parsed,
+            Some((
+                "c".to_string(),
+                Modifiers {
+                    ctrl: true,
+                    ..Modifiers::default()
+                }
+            ))
+        );
     }
 
     #[test]
     fn super_field_maps_to_sup() {
         let parsed = parse_key_args(&json_args(json!({"key": "x", "super": true}))).unwrap();
-        assert_eq!(parsed.unwrap().1, Modifiers { sup: true, ..Modifiers::default() });
+        assert_eq!(
+            parsed.unwrap().1,
+            Modifiers {
+                sup: true,
+                ..Modifiers::default()
+            }
+        );
     }
 
     #[test]
@@ -226,9 +249,18 @@ mod tests {
 
     #[test]
     fn missing_or_empty_key_is_type_mismatch() {
-        assert_eq!(parse_key_args(&json_args(json!({}))), Err(InvokeError::TypeMismatch));
-        assert_eq!(parse_key_args(&json_args(json!({"key": ""}))), Err(InvokeError::TypeMismatch));
-        assert_eq!(parse_key_args(&IntrospectValue::Int(1)), Err(InvokeError::TypeMismatch));
+        assert_eq!(
+            parse_key_args(&json_args(json!({}))),
+            Err(InvokeError::TypeMismatch)
+        );
+        assert_eq!(
+            parse_key_args(&json_args(json!({"key": ""}))),
+            Err(InvokeError::TypeMismatch)
+        );
+        assert_eq!(
+            parse_key_args(&IntrospectValue::Int(1)),
+            Err(InvokeError::TypeMismatch)
+        );
     }
 
     #[test]
@@ -241,20 +273,38 @@ mod tests {
 
     #[test]
     fn parses_bare_string_text() {
-        assert_eq!(parse_text_args(&IntrospectValue::Text("한".to_string())), Ok("한".to_string()));
+        assert_eq!(
+            parse_text_args(&IntrospectValue::Text("한".to_string())),
+            Ok("한".to_string())
+        );
         // Empty is allowed (the caller no-ops it — IME cancel-via-empty-commit).
-        assert_eq!(parse_text_args(&IntrospectValue::Text(String::new())), Ok(String::new()));
+        assert_eq!(
+            parse_text_args(&IntrospectValue::Text(String::new())),
+            Ok(String::new())
+        );
     }
 
     #[test]
     fn parses_object_text() {
-        assert_eq!(parse_text_args(&json_args(json!({"text": "안녕"}))), Ok("안녕".to_string()));
+        assert_eq!(
+            parse_text_args(&json_args(json!({"text": "안녕"}))),
+            Ok("안녕".to_string())
+        );
     }
 
     #[test]
     fn non_string_text_is_type_mismatch() {
-        assert_eq!(parse_text_args(&json_args(json!({}))), Err(InvokeError::TypeMismatch));
-        assert_eq!(parse_text_args(&json_args(json!({"text": 1}))), Err(InvokeError::TypeMismatch));
-        assert_eq!(parse_text_args(&IntrospectValue::Int(1)), Err(InvokeError::TypeMismatch));
+        assert_eq!(
+            parse_text_args(&json_args(json!({}))),
+            Err(InvokeError::TypeMismatch)
+        );
+        assert_eq!(
+            parse_text_args(&json_args(json!({"text": 1}))),
+            Err(InvokeError::TypeMismatch)
+        );
+        assert_eq!(
+            parse_text_args(&IntrospectValue::Int(1)),
+            Err(InvokeError::TypeMismatch)
+        );
     }
 }

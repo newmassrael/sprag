@@ -30,7 +30,7 @@ use sprag_terminal::PaneId;
 
 use crate::access::{KeyStroke, PaneAccess, PaneError};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
-use crate::run::{poll_until, RunContext, Waited, DEFAULT_REPLY_TIMEOUT};
+use crate::run::{DEFAULT_REPLY_TIMEOUT, RunContext, Waited, poll_until};
 
 /// What the agent asks and how long it waits for the answer.
 #[derive(Clone, Debug)]
@@ -155,8 +155,8 @@ mod tests {
     use super::*;
     use crate::access::WorkspacePaneAccess;
     use crate::driver::{Driver, Guardrails, Outcome, OutcomeState};
-    use std::sync::{Arc, Mutex};
     use sprag_terminal::{CommandBuilder, Workspace};
+    use std::sync::{Arc, Mutex};
 
     /// A workspace with one pane running `script`, wrapped as pane-access.
     fn sh_access(script: &str, cols: u16, rows: u16) -> (WorkspacePaneAccess, PaneId) {

@@ -23,7 +23,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use pinion_core::external::{
-    ExternalIntrospect, IntrospectSchema, IntrospectValue, InterveneError, InvokeError,
+    ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError,
 };
 use serde_json::{Map, Value};
 use sprag_terminal::{CommandBuilder, Workspace};
@@ -72,7 +72,9 @@ impl WorkspaceExternal {
         let id = workspace
             .spawn(command, label, cols, rows)
             .map_err(|_| InvokeError::Rejected)?;
-        Ok(IntrospectValue::Int(i64::try_from(id.0).unwrap_or(i64::MAX)))
+        Ok(IntrospectValue::Int(
+            i64::try_from(id.0).unwrap_or(i64::MAX),
+        ))
     }
 
     /// `close` action: reap the pane with `id`. The removed `Pane` is bound
@@ -146,7 +148,11 @@ impl ExternalIntrospect for WorkspaceExternal {
         Err(InterveneError::UnknownPath)
     }
 
-    fn invoke(&mut self, path: &str, args: IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+    fn invoke(
+        &mut self,
+        path: &str,
+        args: IntrospectValue,
+    ) -> Result<IntrospectValue, InvokeError> {
         match path {
             SPAWN_ACTION => self.spawn(&args),
             CLOSE_ACTION => self.close(&args),
@@ -232,22 +238,34 @@ mod tests {
         ext.invoke(SPAWN_ACTION, IntrospectValue::Null).unwrap();
         // Missing rows -> type mismatch.
         assert_eq!(
-            ext.invoke(RESIZE_ACTION, IntrospectValue::Json(json!({"id": 0, "cols": 100}))),
+            ext.invoke(
+                RESIZE_ACTION,
+                IntrospectValue::Json(json!({"id": 0, "cols": 100}))
+            ),
             Err(InvokeError::TypeMismatch)
         );
         assert_eq!(
-            ext.invoke(RESIZE_ACTION, IntrospectValue::Json(json!({"id": 0, "cols": 100, "rows": 30}))),
+            ext.invoke(
+                RESIZE_ACTION,
+                IntrospectValue::Json(json!({"id": 0, "cols": 100, "rows": 30}))
+            ),
             Ok(IntrospectValue::Null)
         );
-        assert_eq!(lock(&ws).pane(PaneId(0)).unwrap().session().dimensions(), (100, 30));
+        assert_eq!(
+            lock(&ws).pane(PaneId(0)).unwrap().session().dimensions(),
+            (100, 30)
+        );
     }
 
     #[test]
     fn query_panes_lists_metadata() {
         let ws = workspace();
         let mut ext = WorkspaceExternal::new(Arc::clone(&ws));
-        ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"], "cols": 40, "rows": 12})))
-            .unwrap();
+        ext.invoke(
+            SPAWN_ACTION,
+            IntrospectValue::Json(json!({"cmd": ["cat"], "cols": 40, "rows": 12})),
+        )
+        .unwrap();
         let panes = ext.query(PANES_SLOT).unwrap();
         assert_eq!(
             panes,
@@ -258,6 +276,9 @@ mod tests {
     #[test]
     fn unknown_action_is_unknown_path() {
         let mut ext = WorkspaceExternal::new(workspace());
-        assert_eq!(ext.invoke("teleport", IntrospectValue::Null), Err(InvokeError::UnknownPath));
+        assert_eq!(
+            ext.invoke("teleport", IntrospectValue::Null),
+            Err(InvokeError::UnknownPath)
+        );
     }
 }

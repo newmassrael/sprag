@@ -12,7 +12,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use sprag_input::{encode, Modifiers};
+use sprag_input::{Modifiers, encode};
 use sprag_terminal::{CommandBuilder, Pane, PaneId, RawOutput, SessionHandle, Workspace};
 use sprag_vt::Screen;
 
@@ -317,7 +317,9 @@ mod tests {
         let start = Instant::now();
         let mut echoed = false;
         while !echoed && start.elapsed() < Duration::from_secs(5) {
-            echoed = access.pane_collapsed(pane).is_some_and(|t| t.contains("hi"));
+            echoed = access
+                .pane_collapsed(pane)
+                .is_some_and(|t| t.contains("hi"));
             if !echoed {
                 sleep(Duration::from_millis(20));
             }
@@ -327,13 +329,18 @@ mod tests {
         // pane_rows snapshots generation+text together.
         let rows = access.pane_rows(pane).expect("rows");
         assert_eq!(rows.len(), 4);
-        assert!(rows.iter().any(|r| r.text.contains("hi") && r.generation > 0));
+        assert!(
+            rows.iter()
+                .any(|r| r.text.contains("hi") && r.generation > 0)
+        );
     }
 
     #[test]
     fn inject_into_unknown_pane_is_typed() {
         let access = WorkspacePaneAccess::new(cat_workspace(20, 4));
-        let err = access.inject(PaneId(999), &KeyStroke::text("x")).unwrap_err();
+        let err = access
+            .inject(PaneId(999), &KeyStroke::text("x"))
+            .unwrap_err();
         assert_eq!(err, PaneError::UnknownPane(PaneId(999)));
     }
 
@@ -341,7 +348,9 @@ mod tests {
     fn lifecycle_spawn_and_close_roundtrip() {
         let workspace = Arc::new(Mutex::new(Workspace::new((20, 4))));
         let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
-        let life = access.lifecycle().expect("workspace access exposes lifecycle");
+        let life = access
+            .lifecycle()
+            .expect("workspace access exposes lifecycle");
 
         let id = life
             .spawn(
@@ -386,12 +395,21 @@ mod tests {
 
         let full = access.pane_full_text(id).expect("full text");
         // "\n5\n": line 5 as a standalone line — deep in the scrolled-off region.
-        assert!(full.contains("\n5\n"), "scrolled-off line 5 missing: {full:?}");
-        assert!(full.contains("30"), "last line missing from full text: {full:?}");
+        assert!(
+            full.contains("\n5\n"),
+            "scrolled-off line 5 missing: {full:?}"
+        );
+        assert!(
+            full.contains("30"),
+            "last line missing from full text: {full:?}"
+        );
         // The visible-only read lost it — proving scrollback was needed (the
         // last visible rows are ~27..30, none containing '5').
         let visible = access.pane_collapsed(id).expect("visible");
-        assert!(!visible.contains('5'), "line 5 should have scrolled off: {visible:?}");
+        assert!(
+            !visible.contains('5'),
+            "line 5 should have scrolled off: {visible:?}"
+        );
     }
 
     #[test]
@@ -415,12 +433,21 @@ mod tests {
             sleep(Duration::from_millis(20));
         }
 
-        let raw = access.raw_capture().expect("workspace access exposes raw capture");
+        let raw = access
+            .raw_capture()
+            .expect("workspace access exposes raw capture");
         let RawOutput { bytes, truncated } = raw.pane_raw_output(id).expect("raw output");
         assert!(!truncated);
-        assert_eq!(String::from_utf8_lossy(&bytes), payload, "raw bytes must be verbatim");
+        assert_eq!(
+            String::from_utf8_lossy(&bytes),
+            payload,
+            "raw bytes must be verbatim"
+        );
         // The grid lost interior spaces to trailing-trim at wrap boundaries, so
         // it cannot reconstruct the source — exactly why raw capture exists.
-        assert!(raw.pane_raw_output(PaneId(999)).is_none(), "unknown pane is None");
+        assert!(
+            raw.pane_raw_output(PaneId(999)).is_none(),
+            "unknown pane is None"
+        );
     }
 }

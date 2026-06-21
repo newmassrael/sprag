@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 
-use portable_pty::{native_pty_system, Child, MasterPty, PtySize};
+use portable_pty::{Child, MasterPty, PtySize, native_pty_system};
 use sprag_vt::{Emulator, InputModes, Screen, VtPort};
 
 // Re-exported so callers build commands without depending on portable-pty
@@ -125,7 +125,11 @@ impl SessionError {
 
 impl std::fmt::Display for SessionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "terminal session: {} failed: {}", self.context, self.source)
+        write!(
+            f,
+            "terminal session: {} failed: {}",
+            self.context, self.source
+        )
     }
 }
 
@@ -465,7 +469,11 @@ mod tests {
         // Through a SHARED borrow — proves the resize needs no `&mut`.
         let shared: &TerminalSession = &session;
         shared.resize(100, 30).expect("resize the shared session");
-        assert_eq!(session.dimensions(), (100, 30), "dimensions track the emulator");
+        assert_eq!(
+            session.dimensions(),
+            (100, 30),
+            "dimensions track the emulator"
+        );
         // The floor at 1x1 holds (a zero dimension cannot reach the PTY).
         shared.resize(0, 0).expect("resize floors at 1x1");
         assert_eq!(session.dimensions(), (1, 1));
@@ -522,8 +530,15 @@ mod tests {
         wait_eof(&session);
 
         let RawOutput { bytes, truncated } = session.raw_output();
-        assert!(truncated, "an over-cap child must mark the capture truncated");
-        assert_eq!(bytes.len(), RAW_CAPTURE_CAP, "capture is bounded at the cap");
+        assert!(
+            truncated,
+            "an over-cap child must mark the capture truncated"
+        );
+        assert_eq!(
+            bytes.len(),
+            RAW_CAPTURE_CAP,
+            "capture is bounded at the cap"
+        );
         assert!(bytes.iter().all(|&b| b == b'a'), "the head bytes are kept");
     }
 }

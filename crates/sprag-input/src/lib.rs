@@ -94,8 +94,8 @@ fn control_byte(c: char) -> Option<u8> {
         'a'..='z' => Some(c as u8 - b'a' + 1), // ^A..^Z → 0x01..0x1A
         // ^@ ^A..^Z ^[ ^\ ^] ^^ ^_ → 0x00..0x1F (uppercase + the symbols).
         '@'..='_' => Some(c as u8 & 0x1f),
-        ' ' => Some(0x00),  // Ctrl+Space → NUL
-        '?' => Some(0x7f),  // Ctrl+? → DEL
+        ' ' => Some(0x00), // Ctrl+Space → NUL
+        '?' => Some(0x7f), // Ctrl+? → DEL
         _ => None,
     }
 }
@@ -219,16 +219,33 @@ mod tests {
     use super::*;
 
     fn modes(app_cursor: bool) -> InputModes {
-        InputModes { application_cursor_keys: app_cursor }
+        InputModes {
+            application_cursor_keys: app_cursor,
+        }
     }
 
     fn enc(key: &str, mods: Modifiers) -> Vec<u8> {
         encode(key, mods, modes(false)).expect("encodable")
     }
 
-    const CTRL: Modifiers = Modifiers { ctrl: true, alt: false, shift: false, sup: false };
-    const ALT: Modifiers = Modifiers { ctrl: false, alt: true, shift: false, sup: false };
-    const SHIFT: Modifiers = Modifiers { ctrl: false, alt: false, shift: true, sup: false };
+    const CTRL: Modifiers = Modifiers {
+        ctrl: true,
+        alt: false,
+        shift: false,
+        sup: false,
+    };
+    const ALT: Modifiers = Modifiers {
+        ctrl: false,
+        alt: true,
+        shift: false,
+        sup: false,
+    };
+    const SHIFT: Modifiers = Modifiers {
+        ctrl: false,
+        alt: false,
+        shift: true,
+        sup: false,
+    };
 
     #[test]
     fn plain_character_is_its_utf8() {
@@ -255,7 +272,12 @@ mod tests {
     fn alt_prefixes_escape() {
         assert_eq!(enc("a", ALT), vec![ESC, b'a']);
         // Alt+Ctrl composes: ESC then the control byte.
-        let alt_ctrl = Modifiers { ctrl: true, alt: true, shift: false, sup: false };
+        let alt_ctrl = Modifiers {
+            ctrl: true,
+            alt: true,
+            shift: false,
+            sup: false,
+        };
         assert_eq!(enc("a", alt_ctrl), vec![ESC, 0x01]);
     }
 
@@ -289,19 +311,37 @@ mod tests {
     #[test]
     fn arrows_follow_decckm() {
         // Normal (DECCKM off): CSI.
-        assert_eq!(encode("ArrowUp", Modifiers::default(), modes(false)).unwrap(), vec![ESC, b'[', b'A']);
-        assert_eq!(encode("ArrowLeft", Modifiers::default(), modes(false)).unwrap(), vec![ESC, b'[', b'D']);
+        assert_eq!(
+            encode("ArrowUp", Modifiers::default(), modes(false)).unwrap(),
+            vec![ESC, b'[', b'A']
+        );
+        assert_eq!(
+            encode("ArrowLeft", Modifiers::default(), modes(false)).unwrap(),
+            vec![ESC, b'[', b'D']
+        );
         // Application cursor keys (DECCKM on): SS3.
-        assert_eq!(encode("ArrowUp", Modifiers::default(), modes(true)).unwrap(), vec![ESC, b'O', b'A']);
-        assert_eq!(encode("ArrowRight", Modifiers::default(), modes(true)).unwrap(), vec![ESC, b'O', b'C']);
+        assert_eq!(
+            encode("ArrowUp", Modifiers::default(), modes(true)).unwrap(),
+            vec![ESC, b'O', b'A']
+        );
+        assert_eq!(
+            encode("ArrowRight", Modifiers::default(), modes(true)).unwrap(),
+            vec![ESC, b'O', b'C']
+        );
     }
 
     #[test]
     fn modified_cursor_keys_use_csi_param() {
         // Ctrl+Right → CSI 1 ; 5 C (modifier param 5 = 1 + ctrl*4).
-        assert_eq!(enc("ArrowRight", CTRL), vec![ESC, b'[', b'1', b';', b'5', b'C']);
+        assert_eq!(
+            enc("ArrowRight", CTRL),
+            vec![ESC, b'[', b'1', b';', b'5', b'C']
+        );
         // A modifier forces CSI even under DECCKM.
-        assert_eq!(encode("ArrowUp", CTRL, modes(true)).unwrap(), vec![ESC, b'[', b'1', b';', b'5', b'A']);
+        assert_eq!(
+            encode("ArrowUp", CTRL, modes(true)).unwrap(),
+            vec![ESC, b'[', b'1', b';', b'5', b'A']
+        );
         // Home / End are in the same group.
         assert_eq!(enc("End", CTRL), vec![ESC, b'[', b'1', b';', b'5', b'F']);
         assert_eq!(enc("Home", Modifiers::default()), vec![ESC, b'[', b'H']);
@@ -309,12 +349,27 @@ mod tests {
 
     #[test]
     fn tilde_keys() {
-        assert_eq!(enc("Insert", Modifiers::default()), vec![ESC, b'[', b'2', b'~']);
-        assert_eq!(enc("Delete", Modifiers::default()), vec![ESC, b'[', b'3', b'~']);
-        assert_eq!(enc("PageUp", Modifiers::default()), vec![ESC, b'[', b'5', b'~']);
-        assert_eq!(enc("PageDown", Modifiers::default()), vec![ESC, b'[', b'6', b'~']);
+        assert_eq!(
+            enc("Insert", Modifiers::default()),
+            vec![ESC, b'[', b'2', b'~']
+        );
+        assert_eq!(
+            enc("Delete", Modifiers::default()),
+            vec![ESC, b'[', b'3', b'~']
+        );
+        assert_eq!(
+            enc("PageUp", Modifiers::default()),
+            vec![ESC, b'[', b'5', b'~']
+        );
+        assert_eq!(
+            enc("PageDown", Modifiers::default()),
+            vec![ESC, b'[', b'6', b'~']
+        );
         // Shift+Delete → CSI 3 ; 2 ~.
-        assert_eq!(enc("Delete", SHIFT), vec![ESC, b'[', b'3', b';', b'2', b'~']);
+        assert_eq!(
+            enc("Delete", SHIFT),
+            vec![ESC, b'[', b'3', b';', b'2', b'~']
+        );
     }
 
     #[test]
@@ -325,8 +380,14 @@ mod tests {
         // Modified F1 switches to CSI form.
         assert_eq!(enc("F1", SHIFT), vec![ESC, b'[', b'1', b';', b'2', b'P']);
         // F5–F12 are CSI ~ with the historical numbering gaps.
-        assert_eq!(enc("F5", Modifiers::default()), vec![ESC, b'[', b'1', b'5', b'~']);
-        assert_eq!(enc("F12", Modifiers::default()), vec![ESC, b'[', b'2', b'4', b'~']);
+        assert_eq!(
+            enc("F5", Modifiers::default()),
+            vec![ESC, b'[', b'1', b'5', b'~']
+        );
+        assert_eq!(
+            enc("F12", Modifiers::default()),
+            vec![ESC, b'[', b'2', b'4', b'~']
+        );
     }
 
     #[test]
@@ -334,6 +395,9 @@ mod tests {
         assert_eq!(encode("", Modifiers::default(), modes(false)), None);
         assert_eq!(encode("Nonsense", Modifiers::default(), modes(false)), None);
         // Multi-codepoint (IME composition) is not a single key.
-        assert_eq!(encode("\u{c548}\u{b155}", Modifiers::default(), modes(false)), None);
+        assert_eq!(
+            encode("\u{c548}\u{b155}", Modifiers::default(), modes(false)),
+            None
+        );
     }
 }

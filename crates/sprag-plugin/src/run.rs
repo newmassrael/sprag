@@ -15,8 +15,8 @@
 //! [`Driver`]: crate::driver::Driver
 //! [`PaneAccess`]: crate::access::PaneAccess
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -79,7 +79,11 @@ pub enum Waited {
 /// promptly), [`Waited::Ready`] when the predicate holds, or
 /// [`Waited::TimedOut`] when the bound elapses. The one bounded-wait the
 /// adapters share — they differ only in their predicate.
-pub fn poll_until(run: &RunContext, timeout: Duration, mut predicate: impl FnMut() -> bool) -> Waited {
+pub fn poll_until(
+    run: &RunContext,
+    timeout: Duration,
+    mut predicate: impl FnMut() -> bool,
+) -> Waited {
     let start = Instant::now();
     loop {
         if run.cancelled() {

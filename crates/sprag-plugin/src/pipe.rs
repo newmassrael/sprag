@@ -72,10 +72,10 @@ mod tests {
     use super::*;
     use crate::access::WorkspacePaneAccess;
     use crate::driver::{Driver, Guardrails, OutcomeState};
+    use sprag_terminal::{CommandBuilder, Workspace};
     use std::sync::{Arc, Mutex};
     use std::thread::sleep;
     use std::time::{Duration, Instant};
-    use sprag_terminal::{CommandBuilder, Workspace};
 
     /// A workspace with two live `cat` panes, wrapped as pane-access.
     fn two_cat_panes() -> (WorkspacePaneAccess, PaneId, PaneId) {
@@ -85,7 +85,10 @@ mod tests {
             command.arg("-c");
             command.arg("cat");
             command.env("TERM", "dumb");
-            ws.lock().unwrap().spawn(command, "cat".to_string(), 20, 4).expect("spawn")
+            ws.lock()
+                .unwrap()
+                .spawn(command, "cat".to_string(), 20, 4)
+                .expect("spawn")
         };
         let src = spawn(&workspace);
         let dst = spawn(&workspace);
@@ -95,7 +98,10 @@ mod tests {
     fn wait_until(access: &WorkspacePaneAccess, pane: PaneId, needle: &str) -> bool {
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(5) {
-            if access.pane_collapsed(pane).is_some_and(|t| t.contains(needle)) {
+            if access
+                .pane_collapsed(pane)
+                .is_some_and(|t| t.contains(needle))
+            {
                 return true;
             }
             sleep(Duration::from_millis(20));
@@ -112,7 +118,10 @@ mod tests {
         let mut seed = KeyStroke::text("relayme");
         seed.push(KeyStroke::named("Enter"));
         access.inject(src, &seed).expect("seed src");
-        assert!(wait_until(&access, src, "relayme"), "source never echoed the seed");
+        assert!(
+            wait_until(&access, src, "relayme"),
+            "source never echoed the seed"
+        );
 
         // The pipe never converges; the iteration budget binds it.
         let mut pipe = Pipe::new(src, dst);
@@ -124,6 +133,9 @@ mod tests {
         assert_eq!(outcome.state, OutcomeState::Exhausted);
 
         // The destination received the relayed text (its echo is async).
-        assert!(wait_until(&access, dst, "relayme"), "destination never received the relay");
+        assert!(
+            wait_until(&access, dst, "relayme"),
+            "destination never received the relay"
+        );
     }
 }

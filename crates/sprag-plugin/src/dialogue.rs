@@ -63,7 +63,7 @@ use sprag_terminal::{PaneId, RawOutput};
 use crate::access::{PaneAccess, PaneError, PaneLifecycle};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::reply::parse_claude_json;
-use crate::run::{poll_until, RunContext, Waited, DEFAULT_REPLY_TIMEOUT};
+use crate::run::{DEFAULT_REPLY_TIMEOUT, RunContext, Waited, poll_until};
 use crate::session::Session;
 
 /// How a turn's reply text and cost are decoded. Dialogue is token-denominated,
@@ -205,7 +205,11 @@ impl Plugin for Dialogue {
         let idx = self.turn % 2;
         let (argv_template, label, format) = {
             let endpoint = &self.spec.endpoints[idx];
-            (endpoint.argv.clone(), endpoint.label.clone(), endpoint.format)
+            (
+                endpoint.argv.clone(),
+                endpoint.label.clone(),
+                endpoint.format,
+            )
         };
 
         // Resume when this side holds a live session: the server keeps its
@@ -234,7 +238,9 @@ impl Plugin for Dialogue {
         // Ok, on the cancel early-return, on a later `?`, and on a panic unwind.
         let guard = PaneGuard { life, id };
 
-        let waited = poll_until(run, self.spec.timeout, || panes.pane_eof(id).unwrap_or(true));
+        let waited = poll_until(run, self.spec.timeout, || {
+            panes.pane_eof(id).unwrap_or(true)
+        });
 
         // If cancelled mid-turn, record nothing (no junk partial turn) and
         // return Continue with the spend committed so far; the Driver's loop-top
@@ -268,7 +274,10 @@ impl Plugin for Dialogue {
         // The reply is kept verbatim so the conversation payload — code blocks,
         // lists, multi-line answers — survives; turns stay delimited by
         // render_turn's blank-line blocks.
-        self.history.push(Turn { label, text: decoded.text });
+        self.history.push(Turn {
+            label,
+            text: decoded.text,
+        });
         self.turn += 1;
 
         // Never self-converges; the Driver's iteration/cost budget is the cap.
@@ -364,7 +373,11 @@ fn decode_reply(format: ReplyFormat, panes: &dyn PaneAccess, id: PaneId) -> Deco
 /// visible), trimmed. Nothing was injected, so the screen holds only the
 /// endpoint's output; a reply longer than the pane is captured whole (R16).
 fn capture_text(panes: &dyn PaneAccess, id: PaneId) -> String {
-    panes.pane_full_text(id).unwrap_or_default().trim().to_string()
+    panes
+        .pane_full_text(id)
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 /// Decode a `claude -p --output-format json` reply from the pane's RAW output —
@@ -377,13 +390,20 @@ fn capture_text(panes: &dyn PaneAccess, id: PaneId) -> String {
 fn decode_claude_json(panes: &dyn PaneAccess, id: PaneId) -> DecodedTurn {
     // Raw source bytes via the raw-capture capability (absent on a pane access
     // that does not provide one → degrade like an unparsable reply).
-    let RawOutput { bytes: raw, truncated } = panes
+    let RawOutput {
+        bytes: raw,
+        truncated,
+    } = panes
         .raw_capture()
         .and_then(|rc| rc.pane_raw_output(id))
         .unwrap_or_default();
     let raw_text = || String::from_utf8_lossy(&raw).trim().to_string();
     // A truncated capture is never trusted — its envelope is incomplete.
-    let parsed = if truncated { None } else { parse_claude_json(&raw) };
+    let parsed = if truncated {
+        None
+    } else {
+        parse_claude_json(&raw)
+    };
     match parsed {
         // A cleanly parsed envelope: record its `result`. An empty or missing
         // `result` becomes an EMPTY turn (not the raw envelope) — the raw-text
@@ -410,8 +430,8 @@ mod tests {
     use super::*;
     use crate::access::{KeyStroke, PaneRow, WorkspacePaneAccess};
     use crate::driver::{Driver, Guardrails, Outcome, OutcomeState};
-    use std::sync::{Arc, Mutex};
     use sprag_terminal::Workspace;
+    use std::sync::{Arc, Mutex};
 
     /// A one-shot fake endpoint that replies with the newline-count of its
     /// prompt (`$1`): as the transcript accumulates, the prompt gains a line per
@@ -509,7 +529,13 @@ mod tests {
 
     /// The common case: bound only by `max_turns` iterations (cost unbounded).
     fn run(spec: DialogueSpec, max_turns: u32) -> (Arc<Mutex<Workspace>>, Outcome, Option<String>) {
-        run_with(spec, Guardrails { max_iterations: max_turns, max_cost: None })
+        run_with(
+            spec,
+            Guardrails {
+                max_iterations: max_turns,
+                max_cost: None,
+            },
+        )
     }
 
     #[test]
@@ -526,7 +552,10 @@ mod tests {
         // (each turn's prompt carries one more transcript block) — proof the
         // whole history is passed each turn. The assertion is format-robust: it
         // checks the trend, not exact counts.
-        assert!(t.contains("A: saw") && t.contains("B: saw"), "labels alternate: {t:?}");
+        assert!(
+            t.contains("A: saw") && t.contains("B: saw"),
+            "labels alternate: {t:?}"
+        );
         let counts: Vec<u32> = t
             .match_indices("saw")
             .map(|(i, _)| {
@@ -577,11 +606,8 @@ mod tests {
         // reading the raw source captures it verbatim, and the cost is the real
         // billed token count.
         let result = "the quick brown fox ".repeat(8); // 160 chars, many spaces
-        let mut spec = DialogueSpec::new(
-            json_fake(&result, 30, 20),
-            json_fake(&result, 30, 20),
-            "go",
-        );
+        let mut spec =
+            DialogueSpec::new(json_fake(&result, 30, 20), json_fake(&result, 30, 20), "go");
         spec.endpoints[0].format = ReplyFormat::ClaudeJson;
         spec.endpoints[1].format = ReplyFormat::ClaudeJson;
         let (_ws, outcome, transcript) = run(spec, 2);
@@ -589,7 +615,11 @@ mod tests {
         assert_eq!(outcome.state, OutcomeState::Exhausted);
         // Two turns × (30 + 20) tokens — proof the Driver accumulates real
         // tokens (a byte count would differ from the render_prompt length).
-        assert_eq!(outcome.cost, Some(Cost::Tokens(100)), "cost must be the summed real tokens");
+        assert_eq!(
+            outcome.cost,
+            Some(Cost::Tokens(100)),
+            "cost must be the summed real tokens"
+        );
         let t = transcript.expect("a transcript");
         // The full wide result survives verbatim; a grid read would have dropped
         // interior spaces at wrap boundaries (e.g. "fox the" -> "foxthe").
@@ -606,11 +636,17 @@ mod tests {
         spec.endpoints[1].format = ReplyFormat::ClaudeJson;
         let (_ws, outcome, _t) = run_with(
             spec,
-            Guardrails { max_iterations: 100, max_cost: Some(Cost::Tokens(50)) },
+            Guardrails {
+                max_iterations: 100,
+                max_cost: Some(Cost::Tokens(50)),
+            },
         );
 
         assert_eq!(outcome.state, OutcomeState::Exhausted);
-        assert_eq!(outcome.iterations, 1, "one turn must exhaust the 50-token budget");
+        assert_eq!(
+            outcome.iterations, 1,
+            "one turn must exhaust the 50-token budget"
+        );
         assert_eq!(outcome.cost, Some(Cost::Tokens(50)));
     }
 
@@ -629,13 +665,24 @@ mod tests {
         spec.endpoints[0].format = ReplyFormat::ClaudeJson;
         let (_ws, outcome, transcript) = run(spec, 1);
 
-        assert_eq!(outcome.state, OutcomeState::Exhausted, "must not Fail on bad JSON");
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Exhausted,
+            "must not Fail on bad JSON"
+        );
         let t = transcript.expect("a transcript");
-        assert!(t.contains("just plain text"), "raw fallback text missing: {t:?}");
+        assert!(
+            t.contains("just plain text"),
+            "raw fallback text missing: {t:?}"
+        );
         // A degraded ClaudeJson turn has no measured tokens (Tokens(0)); the
         // iteration budget — not cost — is the liveness guarantee, so the run
         // still Exhausts. (The retired byte proxy used to bill bytes here.)
-        assert_eq!(outcome.cost, Some(Cost::Tokens(0)), "a degraded turn bills no tokens");
+        assert_eq!(
+            outcome.cost,
+            Some(Cost::Tokens(0)),
+            "a degraded turn bills no tokens"
+        );
     }
 
     #[test]
@@ -651,12 +698,26 @@ mod tests {
 
         assert_eq!(outcome.state, OutcomeState::Exhausted);
         // Real usage tokens (7 + 3) still bill the cost, even with no result text.
-        assert_eq!(outcome.cost, Some(Cost::Tokens(10)), "real usage tokens must still bind the cost");
+        assert_eq!(
+            outcome.cost,
+            Some(Cost::Tokens(10)),
+            "real usage tokens must still bind the cost"
+        );
         let t = transcript.expect("a transcript");
-        assert!(!t.contains("usage"), "envelope leaked into transcript: {t:?}");
-        assert!(!t.contains("input_tokens"), "envelope leaked into transcript: {t:?}");
+        assert!(
+            !t.contains("usage"),
+            "envelope leaked into transcript: {t:?}"
+        );
+        assert!(
+            !t.contains("input_tokens"),
+            "envelope leaked into transcript: {t:?}"
+        );
         // The recorded turn is empty — just the speaker label.
-        assert_eq!(t.trim(), "A:", "empty result should record an empty turn: {t:?}");
+        assert_eq!(
+            t.trim(),
+            "A:",
+            "empty result should record an empty turn: {t:?}"
+        );
     }
 
     #[test]
@@ -676,8 +737,14 @@ mod tests {
         let a_resumed = t.find("A: resumed").expect("A's later turn must resume");
         let b_fresh = t.find("B: fresh").expect("B's first turn must be fresh");
         let b_resumed = t.find("B: resumed").expect("B's later turn must resume");
-        assert!(a_fresh < a_resumed, "A resumed before its fresh turn: {t:?}");
-        assert!(b_fresh < b_resumed, "B resumed before its fresh turn: {t:?}");
+        assert!(
+            a_fresh < a_resumed,
+            "A resumed before its fresh turn: {t:?}"
+        );
+        assert!(
+            b_fresh < b_resumed,
+            "B resumed before its fresh turn: {t:?}"
+        );
     }
 
     #[test]
@@ -700,7 +767,10 @@ mod tests {
             2,
             "A must parse cleanly on turn 0 AND again on turn 4 (self-healed): {t:?}"
         );
-        assert!(t.contains("A: GARBAGE"), "turn 2's bad resume must be recorded raw: {t:?}");
+        assert!(
+            t.contains("A: GARBAGE"),
+            "turn 2's bad resume must be recorded raw: {t:?}"
+        );
     }
 
     #[test]
@@ -867,7 +937,10 @@ mod tests {
 
         assert_eq!(outcome.state, OutcomeState::Exhausted);
         // Real token cost accumulated over the turns (the round's whole point).
-        eprintln!("two_real_claudes_converse: real token cost = {:?}", outcome.cost);
+        eprintln!(
+            "two_real_claudes_converse: real token cost = {:?}",
+            outcome.cost
+        );
         assert!(
             matches!(outcome.cost, Some(Cost::Tokens(n)) if n > 0),
             "expected real token cost, got {:?}",
@@ -877,10 +950,16 @@ mod tests {
         assert!(!t.trim().is_empty(), "transcript: {t:?}");
         // JSON parse succeeded (not degraded to raw): the transcript holds the
         // clean `result` text, so it must not carry the raw envelope's fields.
-        assert!(!t.contains("input_tokens"), "transcript leaked the raw envelope: {t:?}");
+        assert!(
+            !t.contains("input_tokens"),
+            "transcript leaked the raw envelope: {t:?}"
+        );
         // Stateful coherence: a counting dialogue surfaces several distinct
         // numbers (a stateless telephone game could not count past the seed).
-        let distinct = ["1", "2", "3", "4"].iter().filter(|n| t.contains(**n)).count();
+        let distinct = ["1", "2", "3", "4"]
+            .iter()
+            .filter(|n| t.contains(**n))
+            .count();
         assert!(distinct >= 2, "expected a coherent count, got: {t:?}");
     }
 }

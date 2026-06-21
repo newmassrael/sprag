@@ -90,7 +90,10 @@ impl Cost {
             // debug (like `accumulate`'s `try_add` guard); in release report
             // "not reached" so the iteration budget still bounds the run.
             _ => {
-                debug_assert!(false, "cost guardrail unit mismatch: {self:?} reaches {bound:?}");
+                debug_assert!(
+                    false,
+                    "cost guardrail unit mismatch: {self:?} reaches {bound:?}"
+                );
                 false
             }
         }

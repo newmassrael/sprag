@@ -18,7 +18,7 @@
 use std::io;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use sprag_host::{serve, HostState};
+use sprag_host::{HostState, serve};
 use sprag_terminal::{CommandBuilder, Workspace};
 
 fn main() -> io::Result<()> {

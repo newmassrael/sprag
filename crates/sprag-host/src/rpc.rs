@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 
 use pinion_core::SceneRevision;
 use pinion_rpc::preview::PreviewLedger;
-use pinion_rpc::{dispatch, dispatch_parsed, parse_request, DispatchContext, Request};
+use pinion_rpc::{DispatchContext, Request, dispatch, dispatch_parsed, parse_request};
 use sprag_terminal::Workspace;
 
 use crate::external::lock;
@@ -252,7 +252,10 @@ mod tests {
         let state = host_with("cat", 20, 4);
         invoke_key(&state, 0, "h");
         invoke_key(&state, 0, "i");
-        assert!(wait_for_snapshot(&state, "hi"), "injected 'hi' never appeared");
+        assert!(
+            wait_for_snapshot(&state, "hi"),
+            "injected 'hi' never appeared"
+        );
     }
 
     #[test]
@@ -264,7 +267,11 @@ mod tests {
             &state,
             r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_mux/external/spawn","args":{"cmd":["cat"],"cols":20,"rows":4}}}"#,
         );
-        assert_eq!(spawned["result"].as_i64(), Some(1), "new pane id: {spawned}");
+        assert_eq!(
+            spawned["result"].as_i64(),
+            Some(1),
+            "new pane id: {spawned}"
+        );
 
         invoke_key(&state, 1, "Z");
         assert!(wait_for_snapshot(&state, "Z"), "pane 1 never echoed 'Z'");
@@ -294,7 +301,9 @@ mod tests {
             );
             let run = &runs["result"][0];
             if run["state"]["status"] == "done" {
-                return run["state"]["outcome"]["state"].as_str().map(str::to_string);
+                return run["state"]["outcome"]["state"]
+                    .as_str()
+                    .map(str::to_string);
             }
             sleep(Duration::from_millis(20));
         }
@@ -398,7 +407,11 @@ mod tests {
             "history must accumulate (strictly increasing): {counts:?}"
         );
         // Only the initial pane remains — every per-turn pane was reaped.
-        assert_eq!(lock(state.workspace()).panes().len(), 1, "dialogue leaked a pane");
+        assert_eq!(
+            lock(state.workspace()).panes().len(),
+            1,
+            "dialogue leaked a pane"
+        );
     }
 
     #[test]
@@ -437,13 +450,30 @@ mod tests {
         let run_state = wait_for_run0_state(&state).expect("dialogue run reached done");
         assert_eq!(run_state["outcome"]["state"], "exhausted");
         // Two turns × (30 + 20) tokens — the real billed cost over RPC.
-        assert_eq!(run_state["outcome"]["cost"].as_u64(), Some(100), "{run_state}");
-        assert_eq!(run_state["outcome"]["unit"], "tokens", "cost unit must be tokens: {run_state}");
+        assert_eq!(
+            run_state["outcome"]["cost"].as_u64(),
+            Some(100),
+            "{run_state}"
+        );
+        assert_eq!(
+            run_state["outcome"]["unit"], "tokens",
+            "cost unit must be tokens: {run_state}"
+        );
         let output = run_state["output"].as_str().unwrap_or_default();
         // The clean `result` is the transcript, not the raw envelope.
-        assert!(output.contains("hi there"), "clean reply missing: {output:?}");
-        assert!(!output.contains("input_tokens"), "raw envelope leaked: {output:?}");
-        assert_eq!(lock(state.workspace()).panes().len(), 1, "dialogue leaked a pane");
+        assert!(
+            output.contains("hi there"),
+            "clean reply missing: {output:?}"
+        );
+        assert!(
+            !output.contains("input_tokens"),
+            "raw envelope leaked: {output:?}"
+        );
+        assert_eq!(
+            lock(state.workspace()).panes().len(),
+            1,
+            "dialogue leaked a pane"
+        );
     }
 
     #[test]
@@ -454,7 +484,10 @@ mod tests {
             &state,
             r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"dialogue","endpoint_a":["true"],"endpoint_b":["true"],"seed":"x","format_a":"yaml"}}}"#,
         );
-        assert!(rejected.get("error").is_some(), "expected a rejection: {rejected}");
+        assert!(
+            rejected.get("error").is_some(),
+            "expected a rejection: {rejected}"
+        );
     }
 
     #[test]
@@ -467,7 +500,10 @@ mod tests {
             &state,
             r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"dialogue","endpoint_a":["true"],"endpoint_b":["true"],"seed":"x","guardrails":{"max_bytes":4096}}}}"#,
         );
-        assert!(rejected.get("error").is_some(), "wrong-unit guardrail must reject: {rejected}");
+        assert!(
+            rejected.get("error").is_some(),
+            "wrong-unit guardrail must reject: {rejected}"
+        );
     }
 
     #[test]
@@ -482,8 +518,14 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":1,"method":"scene/query","params":{"path":"/pane_0/sprag_input/external/full_text"}}"#,
         );
         let text = resp["result"].as_str().unwrap_or_default();
-        assert!(text.contains("\n5\n"), "scrolled-off line 5 missing over RPC: {text:?}");
-        assert!(text.contains("\n30"), "last line missing over RPC: {text:?}");
+        assert!(
+            text.contains("\n5\n"),
+            "scrolled-off line 5 missing over RPC: {text:?}"
+        );
+        assert!(
+            text.contains("\n30"),
+            "last line missing over RPC: {text:?}"
+        );
     }
 
     #[test]
@@ -527,7 +569,10 @@ mod tests {
             &state,
             r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/run","args":{"plugin":"orchestrator","pane":99,"stimulus":"x"}}}"#,
         );
-        assert!(rejected.get("error").is_some(), "expected a rejection: {rejected}");
+        assert!(
+            rejected.get("error").is_some(),
+            "expected a rejection: {rejected}"
+        );
     }
 
     #[test]
@@ -568,14 +613,20 @@ mod tests {
             &state,
             r#"{"jsonrpc":"2.0","id":2,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/cancel","args":{"id":999}}}"#,
         );
-        assert!(bad.get("error").is_some(), "unknown id should reject: {bad}");
+        assert!(
+            bad.get("error").is_some(),
+            "unknown id should reject: {bad}"
+        );
 
         // Cancel the live run; it then reaches done = cancelled.
         let cancelled = serve_one(
             &state,
             r#"{"jsonrpc":"2.0","id":3,"method":"scene/invoke","params":{"path":"/sprag_plugins/external/cancel","args":{"id":0}}}"#,
         );
-        assert!(cancelled.get("error").is_none(), "cancel error: {cancelled}");
+        assert!(
+            cancelled.get("error").is_none(),
+            "cancel error: {cancelled}"
+        );
         assert_eq!(wait_for_run_done(&state).as_deref(), Some("cancelled"));
     }
 

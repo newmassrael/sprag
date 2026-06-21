@@ -14,15 +14,15 @@
 use termwiz::cell::{Blink, Intensity, Underline};
 use termwiz::color::ColorSpec;
 use termwiz::escape::csi::{
-    Cursor as CsiCursor, DecPrivateMode, DecPrivateModeCode, Edit, EraseInDisplay, EraseInLine,
-    Mode, Sgr, CSI,
+    CSI, Cursor as CsiCursor, DecPrivateMode, DecPrivateModeCode, Edit, EraseInDisplay,
+    EraseInLine, Mode, Sgr,
 };
 use termwiz::escape::parser::Parser;
 use termwiz::escape::{Action, ControlCode};
 
 use crate::port::{
-    char_columns, Attrs, Cell, Color, Cursor, CursorShape, InputModes, Rgb, Screen, ScreenKind,
-    VtPort, Width,
+    Attrs, Cell, Color, Cursor, CursorShape, InputModes, Rgb, Screen, ScreenKind, VtPort, Width,
+    char_columns,
 };
 
 /// A terminal emulator: feed PTY bytes via [`VtPort::advance`], read the
@@ -294,11 +294,16 @@ impl Emulator {
                 fg: self.fg,
                 bg: self.bg,
                 attrs: self.attrs,
-                width: if cell_w == 2 { Width::Wide } else { Width::Narrow },
+                width: if cell_w == 2 {
+                    Width::Wide
+                } else {
+                    Width::Narrow
+                },
             };
             let (col, row) = (self.col, self.row);
             if cell_w == 2 && col + 1 < self.cols {
-                self.screen.set_cell(col + 1, row, Cell::trailer_for(&head), g);
+                self.screen
+                    .set_cell(col + 1, row, Cell::trailer_for(&head), g);
             }
             self.screen.set_cell(col, row, head, g);
             self.col += cell_w;
@@ -399,7 +404,9 @@ mod tests {
     use super::*;
 
     fn cluster(em: &Emulator, col: u16, row: u16) -> &str {
-        em.screen().cell(col, row).map_or("", |c| c.cluster.as_str())
+        em.screen()
+            .cell(col, row)
+            .map_or("", |c| c.cluster.as_str())
     }
 
     #[test]
@@ -425,7 +432,10 @@ mod tests {
     fn truecolor_foreground() {
         let mut em = Emulator::new(10, 1);
         em.advance(b"\x1b[38;2;10;20;30mX");
-        assert_eq!(em.screen().cell(0, 0).unwrap().fg, Color::Rgb(Rgb::new(10, 20, 30)));
+        assert_eq!(
+            em.screen().cell(0, 0).unwrap().fg,
+            Color::Rgb(Rgb::new(10, 20, 30))
+        );
     }
 
     #[test]

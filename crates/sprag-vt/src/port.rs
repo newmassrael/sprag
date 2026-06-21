@@ -378,7 +378,8 @@ impl Screen {
         }
         let cols = self.cols as usize;
         self.cells.drain(0..cols);
-        self.cells.extend(std::iter::repeat_with(Cell::blank).take(cols));
+        self.cells
+            .extend(std::iter::repeat_with(Cell::blank).take(cols));
         for g in &mut self.generations {
             *g = generation;
         }
@@ -445,7 +446,11 @@ mod tests {
         // Enter alt and scroll it a lot — must not touch main's scrollback.
         e.advance(b"\x1b[?1049h");
         e.advance(b"p\r\nq\r\nr\r\ns\r\nt");
-        assert_eq!(e.screen().scrollback_len(), 0, "alt screen has no scrollback");
+        assert_eq!(
+            e.screen().scrollback_len(),
+            0,
+            "alt screen has no scrollback"
+        );
         // Exit alt: the parked main screen (and its scrollback) is restored.
         e.advance(b"\x1b[?1049l");
         assert_eq!(e.screen().scrollback_rows().collect::<Vec<_>>(), ["a"]);
@@ -478,6 +483,10 @@ mod tests {
         let mut e = em(8, 2, "1\r\n2\r\n3");
         assert!(e.screen().scrollback_len() > 0);
         e.advance(b"\x1b[3J");
-        assert_eq!(e.screen().scrollback_len(), 0, "ED-3 should clear scrollback");
+        assert_eq!(
+            e.screen().scrollback_len(),
+            0,
+            "ED-3 should clear scrollback"
+        );
     }
 }

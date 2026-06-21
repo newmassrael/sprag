@@ -13,7 +13,7 @@ use sprag_terminal::PaneId;
 
 use crate::access::{KeyStroke, PaneAccess, PaneError};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
-use crate::run::{poll_until, RunContext, Waited};
+use crate::run::{RunContext, Waited, poll_until};
 
 /// How long a step waits for the pane to react before judging on the current
 /// screen.
@@ -177,7 +177,11 @@ mod tests {
             },
         );
         assert_eq!(outcome.state, OutcomeState::Converged);
-        assert!(outcome.iterations >= 1, "iterations: {}", outcome.iterations);
+        assert!(
+            outcome.iterations >= 1,
+            "iterations: {}",
+            outcome.iterations
+        );
     }
 
     #[test]

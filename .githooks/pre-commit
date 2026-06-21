@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
-# Mnemosyne SSOT gate (+ clippy once Rust lands) — runs on every `git commit`.
+# Mnemosyne SSOT gate + rustfmt + clippy — runs on every `git commit`.
 #
-# Blocks the commit if either gate trips:
+# Blocks the commit if any gate trips:
 #
 #   1. `mnemosyne-cli validate-workspace`
 #      - new T1 cross-ref orphans (not registered in [[orphan_ledger]])
 #      - resolved ledger entries (entry stale, drift catch)
 #      - atomic-store consistency (entries / sections; store-direct)
 #
-#   2. `cargo clippy --workspace --all-targets`
+#   2. `rustfmt --check` on the STAGED *.rs files (edition 2024)
+#      - sprag-scoped BY CONSTRUCTION: a pinion path-dep source file cannot
+#        be staged from this repo, so this never reaches (or reformats)
+#        pinion — UNLIKE `cargo fmt --all`, which walks path-deps INTO pinion
+#        (never use `--all` here; the never-touch-pinion rule).
+#
+#   3. `cargo clippy --workspace --all-targets`
 #      - only runs when a Cargo workspace exists (Cargo.toml present) AND
-#        staged files include `*.rs`. sprag has no Rust yet, so this stays
-#        dormant; docs/atomic-only commits stay cheap regardless.
+#        staged files include `*.rs`. docs/atomic-only commits stay cheap.
 #
 # Install via:
 #   git config core.hooksPath .githooks
@@ -29,6 +34,16 @@ repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
 mnemosyne-cli validate-workspace
+
+# rustfmt gate — only the STAGED *.rs files, so it is sprag-scoped: a pinion
+# path-dep file cannot be staged from here, while `cargo fmt --all` WOULD walk
+# into pinion. Blocks on any unformatted staged file.
+staged_rs="$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.rs$' || true)"
+if [ -n "$staged_rs" ]; then
+    echo "pre-commit: rustfmt --check (staged *.rs) ..." >&2
+    # shellcheck disable=SC2086  # intentional word-split of the file list
+    rustfmt --edition 2024 --check $staged_rs
+fi
 
 if [ -f Cargo.toml ] && git diff --cached --name-only --diff-filter=ACMR | grep -qE '\.rs$'; then
     echo "pre-commit: cargo clippy --workspace --all-targets ..." >&2

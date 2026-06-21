@@ -55,5 +55,5 @@ pub use driver::{Driver, Guardrails, Outcome, OutcomeState};
 pub use orchestrator::{OrchestrationSpec, Orchestrator};
 pub use pipe::Pipe;
 pub use plugin::{Cost, Plugin, Step, Verdict};
-pub use reply::{parse_claude_json, AgentReply};
-pub use run::{poll_until, RunContext, Waited};
+pub use reply::{AgentReply, parse_claude_json};
+pub use run::{RunContext, Waited, poll_until};
