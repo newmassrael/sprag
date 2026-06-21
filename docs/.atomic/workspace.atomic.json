@@ -2016,6 +2016,46 @@
         "Separately delivered/open: pinion R1028 (PR-15, TextGrid pass-0 default-bg gutter fill) fixed the WHITE SLACK BAR (a distinct real issue); pinion PR-16 (ScrollBarExternal caller-owned drag authority for the scrollbar drag) is open. Capture lesson: GPU-window PIXEL truth needs root.get_image / ffmpeg x11grab, not win.get_image (which hid the accumulation all session); raising the window triggers a repaint that clears it."
       ]
     },
+    "Round 45": {
+      "decision_summary": "Round 45: FIX the resize-stale accumulation bug (open since R42-R44). Root cause: the R43 reflow anchored the cursor at the rewrapped line's BOTTOM row, but a live shell's SIGWINCH redraw (CR + erase-in-line + reprint, no cursor-up) rewrites from the prompt's TOP row, so each per-width redraw stacked below the last (full_text grew to 44 prompts). Fix: Screen::reflowed anchors the cursor to its logical line's FIRST physical row (column preserved). The R44 RED guard now passes against real bash and is un-ignored as the permanent regression guard. Committed 1ed02ac on main.",
+      "changes_bullets": [
+        "sprag-vt/src/port.rs Screen::reflowed: Pass 2 now tracks cursor_line_top (the first physical row of the cursor's logical line); Pass 3 sets the cursor row to it instead of the row the glyph offset lands on. The column is preserved — a line editor's CR resets it, and for a single-row line the top IS the cursor's own row (so reflow_rejoins is unchanged). Doc comment updated; only the cursor's row contract changed.",
+        "Root cause, captured as DATA from real bash (standalone python pty, no sprag temp files): bash's SIGWINCH redraw is CR + erase-in-line + reprint with NO cursor-up in the gradual case; readline believes the cursor is at the prompt top but an autowrapping reprint physically left it at the bottom. A reflow that anchors the cursor at the logical END desyncs this, so CR lands mid-line and the reprint stacks BELOW the old text.",
+        "Updated reflow_rebreaks_a_line_when_narrowed (cursor row 1 -> 0, column kept) and added reflow_anchors_cursor_to_logical_line_top; un-ignored rapid_extreme_resize_does_not_accumulate_prompts (the R44 RED guard) so it is now the permanent regression guard."
+      ],
+      "verification_bullets": [
+        "cargo test -p sprag-vt --lib: 27 pass (incl. the updated and new reflow cursor tests). cargo test -p sprag-terminal: 9 + 2 resize_accumulation pass; the previously-RED rapid_extreme_resize_does_not_accumulate_prompts now passes against real bash (44 -> 1 prompt), stable across 5 consecutive runs. clippy clean; rustfmt clean; the commit's workspace pre-commit clippy passed.",
+        "Fix direction validated first on a DETERMINISTIC replay: a captured real-bash resize sweep (the exact CR+EL+reprint protocol) replayed straight through Emulator accumulated 44 prompts before the fix and exactly 1 after — no PTY/timing. Mechanism cross-checked against a faithful non-reflow reference model and pyte (both also accumulate, proving the bytes accumulate in any naive emulator and the cursor anchor is the fix)."
+      ],
+      "impact_refs": [
+        "4",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "RESIZE-STALE BUG IS NOW FIXED AND GUARDED (R44 guard un-ignored, green). Supersedes the R44 carry-forward \"bug is open / next-session fix\". The fix is a cursor-anchor in Screen::reflowed, not a new VT sequence — bash uses only CR/EL/CUU/print, all already handled; the emulator's reflow cursor placement was the gap.",
+        "Known minor cosmetic (not a bug): after a resize and before bash's redraw lands, the cursor sits at the prompt's top row for one frame (snaps back when bash repaints). Far better than stacked prompts and unavoidable without reintroducing the bug (the same cursor serves both rendering and the redraw target).",
+        "Unrelated, observed this session (NOT touched per the stop-and-report ground rule): pinion-text-unicode had uncommitted WIP briefly breaking the workspace build (duplicate FINAL_PUNCTUATION/INITIAL_PUNCTUATION); it had settled by commit time. Still open upstream: pinion PR-16 (scrollbar drag). Deferred: resizable undock, ime_caret_rect."
+      ],
+      "publishable_decision_summary": "Round 45: FIX the resize-stale accumulation bug (open since R42-R44). Root cause: the R43 reflow anchored the cursor at the rewrapped line's BOTTOM row, but a live shell's SIGWINCH redraw (CR + erase-in-line + reprint, no cursor-up) rewrites from the prompt's TOP row, so each per-width redraw stacked below the last (full_text grew to 44 prompts). Fix: Screen::reflowed anchors the cursor to its logical line's FIRST physical row (column preserved). The R44 RED guard now passes against real bash and is un-ignored as the permanent regression guard. Committed 1ed02ac on main.",
+      "publishable_changes_bullets": [
+        "sprag-vt/src/port.rs Screen::reflowed: Pass 2 now tracks cursor_line_top (the first physical row of the cursor's logical line); Pass 3 sets the cursor row to it instead of the row the glyph offset lands on. The column is preserved — a line editor's CR resets it, and for a single-row line the top IS the cursor's own row (so reflow_rejoins is unchanged). Doc comment updated; only the cursor's row contract changed.",
+        "Root cause, captured as DATA from real bash (standalone python pty, no sprag temp files): bash's SIGWINCH redraw is CR + erase-in-line + reprint with NO cursor-up in the gradual case; readline believes the cursor is at the prompt top but an autowrapping reprint physically left it at the bottom. A reflow that anchors the cursor at the logical END desyncs this, so CR lands mid-line and the reprint stacks BELOW the old text.",
+        "Updated reflow_rebreaks_a_line_when_narrowed (cursor row 1 -> 0, column kept) and added reflow_anchors_cursor_to_logical_line_top; un-ignored rapid_extreme_resize_does_not_accumulate_prompts (the R44 RED guard) so it is now the permanent regression guard."
+      ],
+      "publishable_verification_bullets": [
+        "cargo test -p sprag-vt --lib: 27 pass (incl. the updated and new reflow cursor tests). cargo test -p sprag-terminal: 9 + 2 resize_accumulation pass; the previously-RED rapid_extreme_resize_does_not_accumulate_prompts now passes against real bash (44 -> 1 prompt), stable across 5 consecutive runs. clippy clean; rustfmt clean; the commit's workspace pre-commit clippy passed.",
+        "Fix direction validated first on a DETERMINISTIC replay: a captured real-bash resize sweep (the exact CR+EL+reprint protocol) replayed straight through Emulator accumulated 44 prompts before the fix and exactly 1 after — no PTY/timing. Mechanism cross-checked against a faithful non-reflow reference model and pyte (both also accumulate, proving the bytes accumulate in any naive emulator and the cursor anchor is the fix)."
+      ],
+      "publishable_impact_refs": [
+        "4",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "RESIZE-STALE BUG IS NOW FIXED AND GUARDED (R44 guard un-ignored, green). Supersedes the R44 carry-forward \"bug is open / next-session fix\". The fix is a cursor-anchor in Screen::reflowed, not a new VT sequence — bash uses only CR/EL/CUU/print, all already handled; the emulator's reflow cursor placement was the gap.",
+        "Known minor cosmetic (not a bug): after a resize and before bash's redraw lands, the cursor sits at the prompt's top row for one frame (snaps back when bash repaints). Far better than stacked prompts and unavoidable without reintroducing the bug (the same cursor serves both rendering and the redraw target).",
+        "Unrelated, observed this session (NOT touched per the stop-and-report ground rule): pinion-text-unicode had uncommitted WIP briefly breaking the workspace build (duplicate FINAL_PUNCTUATION/INITIAL_PUNCTUATION); it had settled by commit time. Still open upstream: pinion PR-16 (scrollbar drag). Deferred: resizable undock, ime_caret_rect."
+      ]
+    },
     "Round 5": {
       "decision_summary": "Restructure into producer/projection/host layers and harden the headless host: honest winsize, bounded state, enforced read-only.",
       "changes_bullets": [
