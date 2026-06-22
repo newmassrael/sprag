@@ -2386,6 +2386,46 @@
         "Scroll arc fully closed: R49 (contrast/drag) + R50 (wheel/thumb/reconcile, pinion R1045-1048) + R1049 render surface-recovery + R51 (PaneSlot consolidation) + R52 (review remediation). All on one per-pane ScrollState SSOT."
       ]
     },
+    "Round 53": {
+      "decision_summary": "Round 53: mirrored pinion's PR-22 (delivered as pinion R1053 5fecc792) on the sprag side — converted sprag's SCE workspace deps (sce-build, sce-rust-runtime) from path (../pinion/vendor/sce/...) to the IDENTICAL git+rev source pinion now uses (git scxml-core-engine.git @ 3078f8bf..., runtime default-features=false). This was NOT optional: pinion-core moved its own SCE deps to git+rev, and since pinion-core's widget facade is generic over sce_rust_runtime::{Engine, StatePolicy} and sprag builds on it, a path-source SCE in sprag would split into a SECOND package instance and type-clash. Cargo unifies on source_id and path != git, so the only single-instance outcome is byte-identical git+rev on both sides. Committed 0b2bab2 on main. Did NOT git-pin pinion itself (sprag still path-deps ../pinion) — that larger step (the actual WIP-immunity goal of PR-22) is deferred; this round only keeps the shared SCE instance intact across pinion's source change.",
+      "changes_bullets": [
+        "sprag/Cargo.toml [workspace.dependencies]: sce-build + sce-rust-runtime path -> git = scxml-core-engine.git, rev = 3078f8bf72d7aab1910838b6855ca3c13456912a (runtime default-features=false), mirroring pinion's R1053 [workspace.dependencies] EXACTLY (package= unneeded: dep name == crate name, SCE crates are workspace members of the SCE repo).",
+        "Rewrote the now-stale SCE rationale comment: the constraint is no longer 'two path sources collide' but 'must mirror pinion's git source_id or the Engine<StatePolicy> facade splits into two instances'; documented the bump procedure (change rev HERE and in pinion's workspace deps to the same value).",
+        "Committed Cargo.lock alongside (records the SCE git source pin: source = git+...rev=3078f8bf...) — this round's lock diff is meaningful (the pin itself), unlike prior rounds where Cargo.lock was unrelated pinion path-dep churn left unstaged."
+      ],
+      "verification_bullets": [
+        "cargo tree --workspace -i sce-rust-runtime: ONE git instance, pinion-core + sprag-plugin both under it; grep for path-source SCE (vendor/sce / /home/coin/pinion) returns none.",
+        "Full workspace build green; sprag-plugin (the direct SCE consumer, session.rs/driver.rs) 42 tests pass; sprag-gui 56 tests pass; clippy --workspace --all-targets clean; rustfmt --all clean; pre-commit gates passed."
+      ],
+      "impact_refs": [
+        "4",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "SCE bump procedure CHANGED: it is no longer a submodule-pin-only SSOT. To move SCE, change the rev in BOTH sprag/Cargo.toml [workspace.dependencies] AND pinion's [workspace.dependencies] to the SAME value (a deliberate two-pin per PR-22's accepted tradeoff). pinion's vendor/sce submodule is now vestigial for the Rust build (C++ side / canonical sync only).",
+        "sprag still PATH-deps pinion (../pinion), so live dogfood is preserved BUT pinion working-tree WIP still blocks sprag's build/commit (see [[pinion-wip-blocks-sprag-build]]). PR-22's full payoff (git-pin pinion at a rev for WIP-immunity) is a SEPARATE deferred step, not done this round; if pursued it would convert the 9 pinion-* path deps to git+rev too and weaken the dogfood loop.",
+        "PR-22 (claudedocs/PINION-PR22-SCE-GIT-SOURCE.md) is now DELIVERED both sides: pinion R1053 + sprag R53. The REQUIREMENTS index row should be read as delivered. Scroll arc (R49-R52) remains closed and unaffected (build-topology change only, no behavior change)."
+      ],
+      "publishable_decision_summary": "Round 53: mirrored pinion's PR-22 (delivered as pinion R1053 5fecc792) on the sprag side — converted sprag's SCE workspace deps (sce-build, sce-rust-runtime) from path (../pinion/vendor/sce/...) to the IDENTICAL git+rev source pinion now uses (git scxml-core-engine.git @ 3078f8bf..., runtime default-features=false). This was NOT optional: pinion-core moved its own SCE deps to git+rev, and since pinion-core's widget facade is generic over sce_rust_runtime::{Engine, StatePolicy} and sprag builds on it, a path-source SCE in sprag would split into a SECOND package instance and type-clash. Cargo unifies on source_id and path != git, so the only single-instance outcome is byte-identical git+rev on both sides. Committed 0b2bab2 on main. Did NOT git-pin pinion itself (sprag still path-deps ../pinion) — that larger step (the actual WIP-immunity goal of PR-22) is deferred; this round only keeps the shared SCE instance intact across pinion's source change.",
+      "publishable_changes_bullets": [
+        "sprag/Cargo.toml [workspace.dependencies]: sce-build + sce-rust-runtime path -> git = scxml-core-engine.git, rev = 3078f8bf72d7aab1910838b6855ca3c13456912a (runtime default-features=false), mirroring pinion's R1053 [workspace.dependencies] EXACTLY (package= unneeded: dep name == crate name, SCE crates are workspace members of the SCE repo).",
+        "Rewrote the now-stale SCE rationale comment: the constraint is no longer 'two path sources collide' but 'must mirror pinion's git source_id or the Engine<StatePolicy> facade splits into two instances'; documented the bump procedure (change rev HERE and in pinion's workspace deps to the same value).",
+        "Committed Cargo.lock alongside (records the SCE git source pin: source = git+...rev=3078f8bf...) — this round's lock diff is meaningful (the pin itself), unlike prior rounds where Cargo.lock was unrelated pinion path-dep churn left unstaged."
+      ],
+      "publishable_verification_bullets": [
+        "cargo tree --workspace -i sce-rust-runtime: ONE git instance, pinion-core + sprag-plugin both under it; grep for path-source SCE (vendor/sce / /home/coin/pinion) returns none.",
+        "Full workspace build green; sprag-plugin (the direct SCE consumer, session.rs/driver.rs) 42 tests pass; sprag-gui 56 tests pass; clippy --workspace --all-targets clean; rustfmt --all clean; pre-commit gates passed."
+      ],
+      "publishable_impact_refs": [
+        "4",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "SCE bump procedure CHANGED: it is no longer a submodule-pin-only SSOT. To move SCE, change the rev in BOTH sprag/Cargo.toml [workspace.dependencies] AND pinion's [workspace.dependencies] to the SAME value (a deliberate two-pin per PR-22's accepted tradeoff). pinion's vendor/sce submodule is now vestigial for the Rust build (C++ side / canonical sync only).",
+        "sprag still PATH-deps pinion (../pinion), so live dogfood is preserved BUT pinion working-tree WIP still blocks sprag's build/commit (see [[pinion-wip-blocks-sprag-build]]). PR-22's full payoff (git-pin pinion at a rev for WIP-immunity) is a SEPARATE deferred step, not done this round; if pursued it would convert the 9 pinion-* path deps to git+rev too and weaken the dogfood loop.",
+        "PR-22 (claudedocs/PINION-PR22-SCE-GIT-SOURCE.md) is now DELIVERED both sides: pinion R1053 + sprag R53. The REQUIREMENTS index row should be read as delivered. Scroll arc (R49-R52) remains closed and unaffected (build-topology change only, no behavior change)."
+      ]
+    },
     "Round 6": {
       "decision_summary": "Inject input via the External + scene/invoke carrier: a sprag-owned key encoder writes PTY bytes behind the pane's engine External, lifting the read-only boundary (R2.6 encoding / R1.7 data-engine split).",
       "changes_bullets": [
