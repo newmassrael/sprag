@@ -2262,6 +2262,46 @@
         "Durable design-state changes may warrant a section-rationale update path; append-only caveats accrete status corrections (process note)"
       ]
     },
+    "Round 50": {
+      "decision_summary": "Round 50: wired the three pinion seams the R49 session review reported — delivered as R1045 (WidgetCore::apply_wheel / PR-18), R1046 (VerticalScrollbarStyle::with_thumb_role / PR-19), R1047 (WidgetCore::reconcile_frame / PR-20), plus the R1048 PR-18.1 follow-up that passes apply_wheel the laid-out paint scene — into the textbook end state: GUI-side wheel/touchpad scroll via apply_wheel (no R1.7 host coupling), the scrollbar thumb collapsed onto pinion view_vertical_scrollbar with .with_thumb_role(OnSurfaceMuted) (no hand-paint), and reconcile_scroll moved out of the pure view-fn into reconcile_frame. Committed 7721055 on main.",
+      "changes_bullets": [
+        "apply_wheel (main.rs; pinion R1045/PR-18 + R1048/PR-18.1): hit-tests the cursor against the laid-out paint scene's pane_tag/scrollbar_tag rects, converts WheelDelta to LINES (Lines.dy, or Pixels.dy / LINE_HEIGHT_PX), and scrolls the GUI's OWN per-pane ScrollState via scrollbar::wheel_scroll_pane (a per-pane Owner::cache sub-row remainder so a fine touchpad pan accumulates to whole rows) — never the AI-facing SpragPaneExternal, so the R1.7 boundary holds.",
+        "scrollbar.rs view_pane_scrollbar collapsed onto pinion view_vertical_scrollbar(.with_viewport_extent(rows).with_thumb_role(OnSurfaceMuted)) (R1046/PR-19): the hand-painted thumb + thumb_fill + scrollbar_thumb_rect/MIN_THUMB/THUMB_RADIUS are gone — the always-visible idle thumb is now a one-line role override on the substrate widget.",
+        "reconcile_scroll moved from build_pane_scene (view.rs) into TerminalViewer::reconcile_frame (R1047/PR-20), the pre-view binding-reconcile hook: build_pane_scene is now a pure read (the §6.3 dry_run purity guarantee restored) and reconcile delegates to pinion follow_tail."
+      ],
+      "verification_bullets": [
+        "55 sprag-gui + 38 sprag-host tests pass (incl. the new wheel_scroll_pane sign + sub-row-accumulation unit test); clippy and rustfmt clean; pre-commit workspace-clippy + validate-workspace gates passed.",
+        "Live (hidden-window, in-process JSON-RPC): scene/wheel over pane 0's grid scrolled pane 0 (thumb 563<->540) and over pane 1's grid scrolled pane 1 ONLY (pane 0 unchanged — the cursor->pane hit-test discriminates); the semantic thumb-center drag still moves the thumb (563->375); the idle thumb fill stays OnSurfaceMuted RGB(96,96,96) on the SurfaceContainerHighest track."
+      ],
+      "impact_refs": [
+        "4",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "The R49 review's three reported gaps are fully closed by pinion R1045/1046/1047 + the R1048 PR-18.1 follow-up. PR-18.1 surfaced because apply_wheel was first delivered the MODEL scene (no laid-out rects) — caught empirically with a debug log (cursor correct, rect_for_tag_absolute None for every tag) — and fixed to pass router.last_paint_scene; a single-pane terminal would not have hit this. All three wirings are textbook: no host coupling (wheel), no hand-paint (thumb), pure view-fn (reconcile).",
+        "Scroll is now complete on the ONE per-pane ScrollState SSOT: keyboard (Shift+PageUp/Down), drag, AND wheel/touchpad. Wheel feel is 3 rows per line (gnome-terminal); px->line via the exported pinion LINE_HEIGHT_PX, not a re-hardcoded 16.",
+        "Residual (low priority, from the R49 review, not blocking): the four parallel per-pane &'static str tables (PANE_TAGS / SPLITTER_TAGS / SCROLLBAR_TAGS / SCROLL_STATE_KEYS) keyed by pane index — a future consolidation into one per-pane identity struct now that ExtraExternal.tag is Cow (runtime tags are possible)."
+      ],
+      "publishable_decision_summary": "Round 50: wired the three pinion seams the R49 session review reported — delivered as R1045 (WidgetCore::apply_wheel / PR-18), R1046 (VerticalScrollbarStyle::with_thumb_role / PR-19), R1047 (WidgetCore::reconcile_frame / PR-20), plus the R1048 PR-18.1 follow-up that passes apply_wheel the laid-out paint scene — into the textbook end state: GUI-side wheel/touchpad scroll via apply_wheel (no R1.7 host coupling), the scrollbar thumb collapsed onto pinion view_vertical_scrollbar with .with_thumb_role(OnSurfaceMuted) (no hand-paint), and reconcile_scroll moved out of the pure view-fn into reconcile_frame. Committed 7721055 on main.",
+      "publishable_changes_bullets": [
+        "apply_wheel (main.rs; pinion R1045/PR-18 + R1048/PR-18.1): hit-tests the cursor against the laid-out paint scene's pane_tag/scrollbar_tag rects, converts WheelDelta to LINES (Lines.dy, or Pixels.dy / LINE_HEIGHT_PX), and scrolls the GUI's OWN per-pane ScrollState via scrollbar::wheel_scroll_pane (a per-pane Owner::cache sub-row remainder so a fine touchpad pan accumulates to whole rows) — never the AI-facing SpragPaneExternal, so the R1.7 boundary holds.",
+        "scrollbar.rs view_pane_scrollbar collapsed onto pinion view_vertical_scrollbar(.with_viewport_extent(rows).with_thumb_role(OnSurfaceMuted)) (R1046/PR-19): the hand-painted thumb + thumb_fill + scrollbar_thumb_rect/MIN_THUMB/THUMB_RADIUS are gone — the always-visible idle thumb is now a one-line role override on the substrate widget.",
+        "reconcile_scroll moved from build_pane_scene (view.rs) into TerminalViewer::reconcile_frame (R1047/PR-20), the pre-view binding-reconcile hook: build_pane_scene is now a pure read (the §6.3 dry_run purity guarantee restored) and reconcile delegates to pinion follow_tail."
+      ],
+      "publishable_verification_bullets": [
+        "55 sprag-gui + 38 sprag-host tests pass (incl. the new wheel_scroll_pane sign + sub-row-accumulation unit test); clippy and rustfmt clean; pre-commit workspace-clippy + validate-workspace gates passed.",
+        "Live (hidden-window, in-process JSON-RPC): scene/wheel over pane 0's grid scrolled pane 0 (thumb 563<->540) and over pane 1's grid scrolled pane 1 ONLY (pane 0 unchanged — the cursor->pane hit-test discriminates); the semantic thumb-center drag still moves the thumb (563->375); the idle thumb fill stays OnSurfaceMuted RGB(96,96,96) on the SurfaceContainerHighest track."
+      ],
+      "publishable_impact_refs": [
+        "4",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "The R49 review's three reported gaps are fully closed by pinion R1045/1046/1047 + the R1048 PR-18.1 follow-up. PR-18.1 surfaced because apply_wheel was first delivered the MODEL scene (no laid-out rects) — caught empirically with a debug log (cursor correct, rect_for_tag_absolute None for every tag) — and fixed to pass router.last_paint_scene; a single-pane terminal would not have hit this. All three wirings are textbook: no host coupling (wheel), no hand-paint (thumb), pure view-fn (reconcile).",
+        "Scroll is now complete on the ONE per-pane ScrollState SSOT: keyboard (Shift+PageUp/Down), drag, AND wheel/touchpad. Wheel feel is 3 rows per line (gnome-terminal); px->line via the exported pinion LINE_HEIGHT_PX, not a re-hardcoded 16.",
+        "Residual (low priority, from the R49 review, not blocking): the four parallel per-pane &'static str tables (PANE_TAGS / SPLITTER_TAGS / SCROLLBAR_TAGS / SCROLL_STATE_KEYS) keyed by pane index — a future consolidation into one per-pane identity struct now that ExtraExternal.tag is Cow (runtime tags are possible)."
+      ]
+    },
     "Round 6": {
       "decision_summary": "Inject input via the External + scene/invoke carrier: a sprag-owned key encoder writes PTY bytes behind the pane's engine External, lifting the read-only boundary (R2.6 encoding / R1.7 data-engine split).",
       "changes_bullets": [
