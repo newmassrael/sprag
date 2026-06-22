@@ -54,7 +54,8 @@
 //! A grid CANNOT compact: a balanced grid's divider ORIENTATIONS depend on the
 //! pane COUNT (`grid_plan(4)` = a 2x2 with a Vertical row-divider; `grid_plan(3)` =
 //! a 2-then-1 with a Vertical row-divider at a DIFFERENT id). Externals are
-//! registered ONCE at boot ([`create_extra_externals`], a pinion constraint —
+//! registered ONCE at boot ([`create_extra_externals`](crate::TerminalViewer),
+//! a pinion constraint —
 //! runtime focusable/External refresh is gated on PR-9, no workaround), so a
 //! divider's drag-axis is welded at boot by tag. If grid mode reshaped on undock,
 //! a divider that was Vertical at boot could be painted Horizontal after a pane

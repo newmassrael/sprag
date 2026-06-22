@@ -10,7 +10,7 @@
 //!
 //! `offset_y` is the row offset **from the oldest retained line (the top)**, so
 //! `offset_y == 0` is the top of history and `offset_y == max_y` is the live
-//! bottom (newest) — the gnome-terminal sense the [`ScrollBarExternal`] drag
+//! bottom (newest) — the gnome-terminal sense the `ScrollBarExternal` drag
 //! expects (top edge -> smallest offset, bottom edge -> `scroll_max`). `max_y` is
 //! the retained scrollback depth in rows, reconciled to the live screen each frame
 //! by [`reconcile_scroll`]. The projection wants "rows up from the live bottom",
@@ -40,7 +40,7 @@
 //! driving [`wheel_scroll_pane`] on the SAME `ScrollState` — never the AI-facing
 //! pane engine (the R1.7 boundary the session review enforced).
 
-use crate::terminal::{pane_scroll_key, pane_scrollbar_tag};
+use crate::terminal::{pane_cache_key, pane_scroll_key, pane_scrollbar_tag};
 use pinion_core::reactive::Owner;
 use pinion_core::scene::{ContainerNode, Scene};
 use pinion_core::style::{AlignItems, FlexDirection, LayoutStyle, SizeValue};
@@ -61,14 +61,14 @@ const WHEEL_ROWS_PER_LINE: f32 = 3.0;
 /// keyboard chords ([`crate::input`]), the projection + reconcile
 /// ([`crate::view`]), the paint ([`view_pane_scrollbar`]), and the drag External
 /// ([`pane_scrollbar_external`]). `Owner::cache`-backed (keyed by
-/// [`pane_scroll_key`](crate::terminal::pane_scroll_key), the per-pane identity
+/// [`pane_scroll_key`], the per-pane identity
 /// SSOT) so every site resolves the one slot. `offset_y` = rows from the oldest
 /// line (`0` = top, `max_y` = live).
 pub(crate) fn use_pane_scroll(i: usize) -> Rc<ScrollState> {
     use_scroll_state(pane_scroll_key(i))
 }
 
-/// Register pane `i`'s draggable scrollbar peer — a [`ScrollBarExternal`] over the
+/// Register pane `i`'s draggable scrollbar peer — a `ScrollBarExternal` over the
 /// pane's [`ScrollState`], tagged [`pane_scrollbar_tag`]`(i)` so the painted track
 /// routes pointer drags to it. Wired in
 /// [`create_extra_externals`](crate::TerminalViewer); the shell's pointer router
@@ -116,27 +116,39 @@ pub(crate) fn offset_lines_from_top(offset_y: i32, scrollback_len: usize) -> usi
 
 /// Scroll pane `i` by a wheel/touchpad delta expressed in LINES — the GUI-side
 /// wheel handler ([`TerminalViewer::apply_wheel`](crate::TerminalViewer), pinion
-/// R1047/PR-18) drives this on the **GUI's own** [`ScrollState`] (no coupling into
+/// R1045/PR-18) drives this on the **GUI's own** [`ScrollState`] (no coupling into
 /// the AI-facing pane engine — the R1.7 boundary the session review enforced).
 ///
 /// Converts lines -> rows at [`WHEEL_ROWS_PER_LINE`], carrying the sub-row
-/// remainder in a per-pane `Owner::cache` `Cell` so a fine touchpad pan accumulates
-/// to whole rows instead of rounding to zero each event. `+lines` (W3C scroll-down)
-/// maps to `+offset_y` (toward the live bottom) — no inversion. Must run inside the
-/// binding root `Owner` scope (the shell wraps `apply_wheel` in it).
+/// remainder in a per-pane `Owner::cache` `Cell` (keyed via [`pane_cache_key`]) so a
+/// fine touchpad pan accumulates to whole rows instead of rounding to zero each
+/// event. `+lines` (W3C scroll-down) maps to `+offset_y` (toward the live bottom) —
+/// no inversion. The remainder is DISCARDED when [`ScrollState::scroll_by`] clamps
+/// at a `[0, max]` boundary (offset unchanged), so a reversal never starts with a
+/// stale wrong-side fraction — the accumulator never outruns the authority. Must run
+/// inside the binding root `Owner` scope (the shell wraps `apply_wheel` in it).
 pub(crate) fn wheel_scroll_pane(i: usize, lines: f32) {
     let owner = Owner::current().expect("wheel_scroll_pane() requires an active Owner scope");
-    let accum = owner.cache(format!("sprag_gui.wheel_accum.{i}"), || Cell::new(0.0_f32));
+    let accum = owner.cache(pane_cache_key("wheel_accum", i), || Cell::new(0.0_f32));
     let total = accum.get() + lines * WHEEL_ROWS_PER_LINE;
     let rows = total.trunc();
-    accum.set(total - rows);
-    if rows != 0.0 {
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "trunc()'d row count is small and bounded by the wheel delta"
-        )]
-        use_pane_scroll(i).scroll_by(0, rows as i32);
+    if rows == 0.0 {
+        accum.set(total); // sub-row pan: carry the fraction for the next event
+        return;
     }
+    let scroll = use_pane_scroll(i);
+    let before = scroll.offset_y();
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "trunc()'d row count is small and bounded by the wheel delta"
+    )]
+    scroll.scroll_by(0, rows as i32);
+    // Carry the remainder only if we actually moved; a clamped boundary discards it.
+    accum.set(if scroll.offset_y() == before {
+        0.0
+    } else {
+        total - rows
+    });
 }
 
 /// Build pane `i`'s vertical scrollbar from its [`ScrollState`] — pinion's
@@ -148,7 +160,8 @@ pub(crate) fn wheel_scroll_pane(i: usize, lines: f32) {
 /// * `visible_rows` = the pane's live screen rows, the thumb's `viewport_extent`
 ///   (row unit — the px track height cancels against it in `scrollbar_thumb_rect`,
 ///   R1032).
-/// * `track_h_px` = R1012 [`use_pane_viewport_size`](pinion_core::use_pane_viewport_size)`(pane_tag(i)).1`.
+/// * `track_h_px` = the measured track height in px (the caller passes the pane's
+///   R1012 [`use_pane_viewport_size`](pinion_core::use_pane_viewport_size) height).
 ///
 /// [`with_thumb_role`](VerticalScrollbarStyle::with_thumb_role)`(OnSurfaceMuted)`
 /// (pinion R1046) gives the always-visible gnome-terminal thumb (idle
@@ -156,7 +169,7 @@ pub(crate) fn wheel_scroll_pane(i: usize, lines: f32) {
 /// default `Outline` — the R48 contrast complaint, now a one-line style override.
 /// No history fills the thumb; `track_h_px == 0` (boot) yields a zero-extent track
 /// the backend elides; the interaction state comes from [`use_scrollbar_interaction`]
-/// (the signal the [`ScrollBarExternal`](pinion_core::widgets::scrollbar) drag writes).
+/// (the signal the `ScrollBarExternal`(pinion_core::widgets::scrollbar) drag writes).
 pub(crate) fn view_pane_scrollbar(
     i: usize,
     scroll: &Rc<ScrollState>,

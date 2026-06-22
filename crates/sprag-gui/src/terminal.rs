@@ -50,13 +50,19 @@ struct PaneSlot {
     scroll_key: &'static str,
 }
 
-/// The per-pane identity SSOT — one [`PaneSlot`] per tile up to [`MAX_PANES`],
-/// replacing the former parallel `PANE_TAGS` / `SCROLLBAR_TAGS` / `SCROLL_STATE_KEYS`
-/// arrays (which could index-drift independently). `&'static str` literals (the
-/// pinion External-tag / [`use_scroll_state`](pinion_core::widgets::scroll::use_scroll_state)
-/// contract), not minted at runtime. (Per-DIVIDER identity is a SEPARATE axis —
-/// [`SPLITTER_TAGS`](crate::split) keyed by divider id `j`, not pane index — so it
-/// is not in this table; see [`crate::split`].)
+/// The per-pane **`&'static str` External-tag identity** SSOT — one [`PaneSlot`]
+/// per tile up to [`MAX_PANES`], replacing the former parallel `pane` / `scrollbar`
+/// / `scroll_key` arrays (three separately hand-typed tables that could index-drift;
+/// grouped into one row each here, they cannot). `&'static str` literals because
+/// the pinion External-tag / [`use_scroll_state`](pinion_core::widgets::scroll::use_scroll_state)
+/// contract demands it.
+///
+/// SCOPE: this table is the `&'static` tags that flow into pinion APIs. Per-pane
+/// `Owner::cache` keys that need NOT be `&'static` (preedit, reflow, wheel-accum)
+/// are minted by [`pane_cache_key`] from the same pane index — a derived, single-
+/// format axis that cannot drift the way the old parallel literal tables could
+/// (the index is the call argument, not a hand-typed column). Per-DIVIDER identity
+/// is yet another axis ([`SPLITTER_TAGS`](crate::split), keyed by divider id `j`).
 #[rustfmt::skip]
 const PANE_SLOTS: [PaneSlot; MAX_PANES] = [
     PaneSlot { pane: "sprag_gui.pane.0", scrollbar: "sprag_gui.scrollbar.0", scroll_key: "sprag_gui.scroll.0" },
@@ -91,6 +97,16 @@ pub(crate) fn pane_index_of(tag: &str) -> Option<usize> {
     PANE_SLOTS.iter().position(|s| s.pane == tag)
 }
 
+/// Pane `index`'s `Owner::cache` key in `namespace` — `sprag_gui.<namespace>.<index>`
+/// — for the per-pane view-state slots that need NOT be `&'static` (preedit, reflow,
+/// wheel-accum). The ONE site that mints a per-pane cache key, so the index suffix
+/// is derived in one place: the index is the argument (not a hand-typed column), so
+/// these cannot index-drift the way the former parallel `&'static` tag arrays could.
+/// The `&'static` External tags live in [`PaneSlot`] instead (pinion API contract).
+pub(crate) fn pane_cache_key(namespace: &str, index: usize) -> String {
+    format!("sprag_gui.{namespace}.{index}")
+}
+
 /// The default tiled pane count when `SPRAG_GUI_PANES` is unset.
 const PANE_COUNT_DEFAULT: usize = 2;
 
@@ -110,7 +126,7 @@ fn parse_pane_count(spec: Option<&str>, default: usize) -> usize {
 /// ([`create_extra_externals`](crate::TerminalViewer)) read the one source and
 /// agree on the count. (Keyboard focus is no longer counted from here: pinion R1020
 /// derives the Tab order per frame from the painted panes, not a binding-side
-/// list — see [`PANE_TAGS`].)
+/// list — see [`pane_tag`].)
 pub(crate) fn pane_count() -> usize {
     parse_pane_count(
         std::env::var("SPRAG_GUI_PANES").ok().as_deref(),
@@ -350,24 +366,26 @@ mod tests {
     }
 
     #[test]
-    fn pane_slot_tags_are_index_aligned() {
-        // Each slot's three tags must encode the SAME index `i` — the structural
-        // guard that replaced the old parallel arrays (which could drift). A
-        // mis-typed digit in any column fails here, not silently at runtime.
+    fn pane_slot_tags_match_their_namespace_and_index() {
+        // The structural guard that replaced the old parallel hand-typed arrays:
+        // each slot's tags must be EXACTLY `sprag_gui.<ns>.<i>`. Asserting the full
+        // string (not just the `.<i>` suffix) also catches a prefix typo
+        // (`scrollbor`) and a duplicated/misordered row, which a suffix-only check
+        // would miss. The runtime cache-key axis (pane_cache_key) is checked too.
         for i in 0..MAX_PANES {
-            let suffix = format!(".{i}");
-            assert!(
-                pane_tag(i).ends_with(&suffix)
-                    && pane_scrollbar_tag(i).ends_with(&suffix)
-                    && pane_scroll_key(i).ends_with(&suffix),
-                "slot {i}: pane={} scrollbar={} scroll_key={} must all end with {suffix}",
-                pane_tag(i),
+            assert_eq!(pane_tag(i), format!("sprag_gui.pane.{i}").as_str());
+            assert_eq!(
                 pane_scrollbar_tag(i),
-                pane_scroll_key(i),
+                format!("sprag_gui.scrollbar.{i}").as_str()
+            );
+            assert_eq!(pane_scroll_key(i), format!("sprag_gui.scroll.{i}").as_str());
+            assert_eq!(
+                pane_cache_key("preedit", i),
+                format!("sprag_gui.preedit.{i}")
             );
         }
-        // The three columns are distinct namespaces (no Owner::cache collision
-        // between the scrollbar interaction signal and the ScrollState).
+        // The three &'static columns are distinct namespaces (no Owner::cache
+        // collision between the scrollbar interaction signal and the ScrollState).
         assert_ne!(pane_tag(0), pane_scrollbar_tag(0));
         assert_ne!(pane_scrollbar_tag(0), pane_scroll_key(0));
     }

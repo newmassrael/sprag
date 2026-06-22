@@ -4,15 +4,16 @@
 //! ([`use_pane_viewport_size`](pinion_core::use_pane_viewport_size)). See the
 //! crate-root "Winsize" module docs.
 
-use crate::terminal::{TerminalView, grid_dims, pane_tag, use_terminal};
+use crate::terminal::{TerminalView, grid_dims, pane_cache_key, pane_tag, use_terminal};
 use pinion_core::CellMetric;
 use pinion_core::reactive::{Effect, Owner};
 use std::rc::Rc;
 
 /// `Owner::cache` key for pane `index`'s reflow [`Effect`] (kept alive across
-/// frames by the cache — a dropped [`Effect`] handle stops firing).
+/// frames by the cache — a dropped [`Effect`] handle stops firing). Minted via the
+/// one per-pane key site [`pane_cache_key`] so the index suffix cannot drift.
 fn reflow_key(index: usize) -> String {
-    format!("sprag_gui.reflow.{index}")
+    pane_cache_key("reflow", index)
 }
 
 /// Holds one pane's resize -> PTY reflow [`Effect`] so the `Owner::cache` keeps it
@@ -51,7 +52,8 @@ fn reflow_target(measured: (u32, u32), metric: CellMetric) -> Option<(u16, u16)>
 /// ioctl).
 ///
 /// Unlike the single-pane R1006 window seam, the per-pane rect is only known
-/// **after** layout, so each Effect reads the [`use_pane_viewport_size`] hook
+/// **after** layout, so each Effect reads the
+/// [`use_pane_viewport_size`](pinion_core::use_pane_viewport_size) hook
 /// (which resolves [`Owner::current`] on every re-run) rather than a captured
 /// signal handle; the shell's R1012 publish `set`s inside its `root_owner` scope
 /// (the load-bearing contract), so the synchronous re-run resolves the owner. The

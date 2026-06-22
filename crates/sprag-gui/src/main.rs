@@ -15,7 +15,7 @@
 //!
 //! [`pane_count`](terminal::pane_count) panes (default 2, `SPRAG_GUI_PANES=<n>`,
 //! capped at [`MAX_PANES`](terminal::MAX_PANES)) are spawned at boot and tiled
-//! left-to-right. Each pane has a single identity [`pane_tag`](terminal::pane_tag)
+//! left-to-right. Each pane has a single identity [`pane_tag`]
 //! that is its model-scene input External tag (input routing), its focus tag, its
 //! paint-scene Container tag (the pinion R1012
 //! [`use_pane_viewport_size`](pinion_core::use_pane_viewport_size) rect target +
@@ -55,7 +55,7 @@
 //! The docked panes are arranged by [`split::view_split_row`] with pinion
 //! `view_splitter` dividers you can DRAG to resize (even at boot; N>2 nests N-1
 //! splitters). Each divider's ratio is an `Owner::cache`-shared `Signal<f32>`: the
-//! view reads it, and a [`SplitterExternal`](pinion_widget_paint::splitter::SplitterExternal)
+//! view reads it, and a [`SplitterExternal`]
 //! registered at the handle tag ([`create_extra_externals`](TerminalViewer))
 //! writes it on a pointer drag (the shell's pointer router delivers the drag — no
 //! `WidgetCore` pointer method). A drag re-weights the flex layout -> the pane
@@ -68,8 +68,8 @@
 //! `SPRAG_GUI_LAYOUT=grid` arranges the panes in a balanced 2D grid (rows of
 //! columns) instead of the default 1D row ([`split::layout_mode`]). The grid reuses
 //! the SAME `view_splitter` primitive — an outer Vertical splitter stack of rows,
-//! each row an inner Horizontal stack of panes ([`split::view_grid`] over
-//! [`split::grid_plan`]) — and the SAME per-pane R1012 reflow (layout-agnostic, so
+//! each row an inner Horizontal stack of panes ([`split::view_grid`] over its
+//! private `grid_plan`) — and the SAME per-pane R1012 reflow (layout-agnostic, so
 //! no reflow change). A divider's drag-axis (Horizontal vs Vertical) is welded at
 //! boot when its `SplitterExternal` is registered, and a balanced grid's
 //! orientations depend on the pane count, so grid mode does NOT reshape on undock
@@ -83,7 +83,7 @@
 //! The binding is split by concern so each axis grows in one place:
 //!
 //! - [`terminal`] — the booted [`TerminalView`](terminal::TerminalView) model
-//!   (N panes), the [`pane_tag`](terminal::pane_tag) / [`pane_count`](terminal::pane_count)
+//!   (N panes), the [`pane_tag`] / [`pane_count`](terminal::pane_count)
 //!   identity SSOT, font/command config, and the [`grid_dims`](terminal::grid_dims)
 //!   winsize SSOT; [`use_terminal`] self-creates it.
 //! - [`reflow`] — the per-pane resize -> PTY reflow [`Effect`](pinion_core::reactive::Effect)s
@@ -92,7 +92,7 @@
 //!   ([`route_key`] / [`route_composition`]), the focus-cycle + dock-toggle
 //!   chords, and the per-pane scrollback-view offset / preedit.
 //! - [`dock`] — which OS window paints each pane: the topology
-//!   [`Signal`](pinion_core::reactive::Signal) (floating SSOT) +
+//!   [`Signal`] (floating SSOT) +
 //!   [`toggle_pane_floating`](dock::toggle_pane_floating).
 //! - [`split`] — the draggable-divider layout: the per-divider ratio Signals, the
 //!   shared [`view_split_row`](split::view_split_row) / [`view_grid`](split::view_grid)
@@ -130,7 +130,7 @@
 //! SSOT). Each pane's PTY boots at the full-window dims (the honest pre-layout
 //! value) and a **per-pane** reflow Effect ([`install_reflow`]) keeps it live: it
 //! subscribes to pinion's R1012 per-pane viewport-size
-//! [`Signal`](pinion_core::reactive::Signal) (`use_pane_viewport_size(pane_tag)`)
+//! [`Signal`] (`use_pane_viewport_size(pane_tag)`)
 //! and, whenever that pane's measured rect changes (an OS resize re-divides the
 //! tiles), re-derives `(cols, rows)` and reflows that pane (`TIOCSWINSZ`). The
 //! reflow is a real side-effect (an ioctl on a live fd), so it lives in an
@@ -142,7 +142,7 @@
 //! ## Input (R27, R36): keystroke -> the focused pane's PTY
 //!
 //! The model scene is `Container([pane0, ...panesN])`, each pane an
-//! [`SpragPaneExternal`] tagged its [`pane_tag`](terminal::pane_tag) (built in
+//! [`SpragPaneExternal`] tagged its [`pane_tag`] (built in
 //! [`WidgetCore::create_external`] / [`WidgetCore::create_extra_externals`] over each
 //! pane's `SessionHandle`). Each pane is a focusable tab stop (its paint Container
 //! is `with_focusable(true)`, R1020 scene-derived focus — above), so
@@ -168,7 +168,7 @@
 //! ## Scrollback (R29, R36): scroll a pane's history view
 //!
 //! `Shift+PageUp` / `Shift+PageDown` scroll a view over the **focused pane's**
-//! history (a per-pane [`Signal`](pinion_core::reactive::Signal)-backed offset in
+//! history (a per-pane [`Signal`]-backed offset in
 //! lines from the live bottom; [`route_key`] writes it, `view` reads it, so a
 //! scroll re-renders that pane). The view reuses the host's per-pane projection
 //! seam at its scrolled entry, so history and the live screen share one
@@ -216,8 +216,8 @@ const WINDOW_W: u32 = 960;
 const WINDOW_H: u32 = 600;
 
 /// The paint-root / window-background `Scene::Container` tag (the surface fill
-/// behind the tiled panes; see [`view::view`]). NOT a pane or a focus stop — the
-/// per-pane identity + focus tags are [`pane_tag`] (`PANE_TAGS`), and the primary
+/// behind the tiled panes; see the [`view`] module). NOT a pane or a focus stop — the
+/// per-pane identity + focus tags are [`pane_tag`] (`PaneSlot`), and the primary
 /// input External is tagged `pane_tag(0)` via [`TerminalViewer::tag`].
 const ROOT_TAG: &str = "sprag_gui";
 
@@ -329,6 +329,10 @@ impl WidgetCore for TerminalViewer {
     /// the layout reducer) and `scrollback_len` lives in an off-thread PTY producer
     /// (no `Signal` for an `Effect`), so neither runtime path can reconcile it. Runs
     /// in the binding root `Owner`, so [`use_terminal`] / `use_pane_scroll` resolve.
+    /// Caveat: pinion gates this to the primary window's paint, so a FLOATED pane
+    /// whose undock window alone repaints can lag one bound-grow until the primary
+    /// repaints — harmless in practice (live PTY output flips the root dirty bit, so
+    /// the primary repaints too).
     fn reconcile_frame() {
         let terminal = use_terminal();
         for i in 0..terminal.pane_count() {
@@ -361,6 +365,10 @@ impl WidgetCore for TerminalViewer {
                     && cy < f64::from(r.y) + f64::from(r.h)
             })
         };
+        // A pane's grid and its scrollbar gutter are disjoint sibling rects
+        // (wrap_pane_with_bar), so first-hit is unambiguous; and a pane tag is
+        // painted in at most one window per frame (its dock window), so on an undock
+        // window's single-pane scene the absent panes simply miss (rect -> None).
         let Some(i) = (0..use_terminal().pane_count())
             .find(|&i| hit(pane_tag(i)) || hit(pane_scrollbar_tag(i)))
         else {

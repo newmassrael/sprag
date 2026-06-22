@@ -4,14 +4,15 @@
 //! The [`TerminalViewer`](crate::TerminalViewer) `apply_key` / `apply_composition`
 //! trait methods delegate here. See the crate-root "Input" / "Scrollback" docs.
 
-use crate::terminal::{pane_index_of, pane_tag, use_terminal};
+use crate::terminal::{pane_cache_key, pane_index_of, pane_tag, use_terminal};
 use pinion_core::external::IntrospectValue;
 use pinion_core::reactive::{Owner, Signal};
 use pinion_core::{CompositionEvent, Modifiers, Scene};
 
-/// `Owner::cache` key for pane `pane`'s IME preedit overlay.
+/// `Owner::cache` key for pane `pane`'s IME preedit overlay. Minted via the one
+/// per-pane key site [`pane_cache_key`] so the index suffix cannot drift.
 fn preedit_key(pane: usize) -> String {
-    format!("sprag_gui.preedit.{pane}")
+    pane_cache_key("preedit", pane)
 }
 
 /// Pane `pane`'s IME preedit (in-progress composition) string, an

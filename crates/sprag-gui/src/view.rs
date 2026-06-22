@@ -88,7 +88,7 @@ fn empty_cell(theme: &Theme) -> Scene {
     )
 }
 
-/// Build ONE pane's scene from its live screen + per-pane [`ScrollState`] + IME
+/// Build ONE pane's scene from its live screen + per-pane `ScrollState` + IME
 /// preedit — the single per-pane builder shared by the docked tiling
 /// ([`view_main`]) and an undock window ([`view_for_window`]). Reading the pane's
 /// scroll offset / preedit subscribes the paint to them (the R705.1 reactive
