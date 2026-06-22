@@ -5,7 +5,7 @@
 
 use crate::ROOT_TAG;
 use crate::dock::{is_pane_floating, pane_window_index, use_windows_topology};
-use crate::input::{use_preedit, use_scroll_offset};
+use crate::input::use_preedit;
 use crate::terminal::{TerminalView, pane_tag, use_terminal};
 use pinion_core::scene::ContainerNode;
 use pinion_core::style::{BoxStyle, LayoutStyle, Size, SizeValue};
@@ -88,46 +88,52 @@ fn empty_cell(theme: &Theme) -> Scene {
     )
 }
 
-/// Build ONE pane's scene from its live screen + per-pane scroll offset + IME
+/// Build ONE pane's scene from its live screen + per-pane [`ScrollState`] + IME
 /// preedit — the single per-pane builder shared by the docked tiling
 /// ([`view_main`]) and an undock window ([`view_for_window`]). Reading the pane's
-/// offset/preedit Signal subscribes the paint to them (the R705.1 reactive
-/// bridge), so a per-pane scroll or composition `set` repaints live. `offset == 0`
-/// is the live screen; a positive offset windows into history (text-only, R16);
-/// the preedit overlays only the live view (the host seam self-gates on the
-/// cursor). The String + screen borrows are confined to the `with_screen` closure.
-/// On child EOF the pane paints its frozen final screen.
+/// scroll offset / preedit subscribes the paint to them (the R705.1 reactive
+/// bridge), so a per-pane scroll (keyboard OR drag) or composition `set` repaints
+/// live. The scroll authority is the row-unit `ScrollState`
+/// ([`crate::scrollbar::use_pane_scroll`]); `offset_y == max` is the live screen and
+/// a smaller `offset_y` windows into history (text-only, R16). The preedit overlays
+/// only the live view (the host seam self-gates on the cursor). On child EOF the
+/// pane paints its frozen final screen.
+///
+/// This is the one main-thread hook per PTY batch, so it also
+/// [`reconcile_scroll`](crate::scrollbar::reconcile_scroll)s the scroll bound to
+/// the live scrollback depth and follows the tail BEFORE reading `offset_y` (a
+/// follow may pin it to the new bottom). The bound is needed current here so the
+/// next drag press snapshots the right `scroll_max` (the bar has no other
+/// per-frame hook); equality-skip keeps the reconcile loop-safe.
 fn build_pane_scene(tv: &TerminalView, i: usize, theme: &Theme) -> Scene {
-    let offset = use_scroll_offset(i).get();
+    let scroll = crate::scrollbar::use_pane_scroll(i);
     let preedit = use_preedit(i).get();
     // R1012 measured pane height — the winsize SSOT the reflow Effect reads; the
     // bar's track derives from the SAME rect (§3, vertical axis), never a
     // window-side recompute. Tracked read: the view re-runs (repaints the thumb)
     // when this pane's measured rect changes (resize / splitter drag).
     let track_h = pinion_core::use_pane_viewport_size(pane_tag(i)).1;
-    let (grid, scrollback_len, visible_rows) = tv.pane(i).session().with_screen(|screen| {
-        let grid = sprag_host::pane_view_scene(
+    // Reconcile the scroll bound + follow-tail, then convert the top-anchored
+    // offset to the projection's "rows up from the live bottom".
+    let (scrollback_len, visible_rows) = tv
+        .pane(i)
+        .session()
+        .with_screen(|screen| (screen.scrollback_len(), screen.rows()));
+    crate::scrollbar::reconcile_scroll(&scroll, scrollback_len);
+    let offset_lines = crate::scrollbar::offset_lines_from_top(scroll.offset_y(), scrollback_len);
+    let grid = tv.pane(i).session().with_screen(|screen| {
+        sprag_host::pane_view_scene(
             pane_tag(i),
             PaneViewSpec {
                 screen,
                 metric: tv.metric,
                 font_size_px: tv.font_size_px,
-                offset_lines: offset,
+                offset_lines,
                 preedit: &preedit,
             },
-        );
-        (grid, screen.scrollback_len(), screen.rows())
+        )
     });
-    // PAINT-ONLY scrollbar: a pure projection of `offset` (the row authority).
-    // The drag waits for pinion PR-16; see [`crate::scrollbar`].
-    let bar = crate::scrollbar::view_pane_scrollbar(
-        i,
-        offset,
-        scrollback_len,
-        visible_rows,
-        track_h,
-        theme,
-    );
+    let bar = crate::scrollbar::view_pane_scrollbar(i, &scroll, visible_rows, track_h, theme);
     crate::scrollbar::wrap_pane_with_bar(grid, bar)
 }
 

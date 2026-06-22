@@ -288,6 +288,12 @@ impl WidgetCore for TerminalViewer {
                     )
                 }),
         );
+        // One draggable scrollbar peer per pane (R49): a `ScrollBarExternal` over
+        // the pane's row-unit `ScrollState`, tagged its `scrollbar.{i}` so the
+        // shell's pointer router routes a press on the painted track to it. Like
+        // the splitters, pointer-only (never focusable) and boot-registered; the
+        // caller-owned `ScrollState` authority (pinion R1032) needs no mirror.
+        externals.extend((0..terminal.pane_count()).map(scrollbar::pane_scrollbar_external));
         externals
     }
 
@@ -640,6 +646,29 @@ mod tests {
         assert!(
             (left_frac - 0.7).abs() < 0.06,
             "the split tracks ~0.7 (got {left_frac:.2}, {weighted:?})",
+        );
+    }
+
+    /// End-to-end drag wiring (R49): the real viewer paints a scrollbar track
+    /// tagged its `scrollbar.{i}` for each pane — the hit target the shell's pointer
+    /// router routes a press to, for the `ScrollBarExternal` registered at the same
+    /// tag ([`create_extra_externals`] -> [`scrollbar::pane_scrollbar_external`]).
+    /// This is the integration claim sprag owns (paint a tagged track + register a
+    /// peer at that tag); the pointer->`scroll_to` write is pinion's
+    /// `ScrollBarExternal` (its own tests), and the `offset_y`->thumb read is the
+    /// [`scrollbar`] unit tests. Mirrors how the splitter trusts pinion for its
+    /// write side.
+    #[test]
+    fn each_pane_paints_a_tagged_scrollbar_track() {
+        let mut core = ShellCore::<TerminalViewer>::new();
+        let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+        assert!(
+            scene.contains_tag(scrollbar::scrollbar_tag(0)),
+            "pane 0 paints a tagged scrollbar track (the drag hit target)",
+        );
+        assert!(
+            scene.contains_tag(scrollbar::scrollbar_tag(1)),
+            "pane 1 paints a tagged scrollbar track",
         );
     }
 

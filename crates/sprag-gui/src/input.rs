@@ -9,25 +9,6 @@ use pinion_core::external::IntrospectValue;
 use pinion_core::reactive::{Owner, Signal};
 use pinion_core::{CompositionEvent, Modifiers, Scene};
 
-/// `Owner::cache` key for pane `pane`'s scrollback view offset.
-fn scroll_key(pane: usize) -> String {
-    format!("sprag_gui.scroll.{pane}")
-}
-
-/// Pane `pane`'s scrollback view offset (lines scrolled up from the live
-/// bottom), an `Owner::cache`-backed [`Signal`] so `apply_key` writes it and
-/// `view` reads it reactively (a `set` re-renders that pane). `0` = live (follow
-/// the bottom). **Per-pane**: each tile scrolls its own history independently, so
-/// the slot is keyed by the tile index (mirroring pinion's tag-keyed
-/// `PaneViewportRegistry`) rather than the former single global slot.
-pub(crate) fn use_scroll_offset(pane: usize) -> Signal<usize> {
-    let owner = Owner::current().expect("use_scroll_offset() requires an active Owner scope");
-    owner
-        .cache(scroll_key(pane), || Signal::new(0_usize))
-        .as_ref()
-        .clone()
-}
-
 /// `Owner::cache` key for pane `pane`'s IME preedit overlay.
 fn preedit_key(pane: usize) -> String {
     format!("sprag_gui.preedit.{pane}")
@@ -50,31 +31,32 @@ pub(crate) fn use_preedit(pane: usize) -> Signal<String> {
         .clone()
 }
 
-/// The scrollback offset after a `PageUp` / `PageDown` of `page` rows from
-/// `current`, clamped to `[0, scrollback_len]`. Pure, so it is unit-testable;
-/// `PageUp` walks into history (clamped at the depth), `PageDown` back toward
-/// the live bottom (saturating at `0`).
-fn next_scroll_offset(key: &str, current: usize, page: usize, scrollback_len: usize) -> usize {
+/// The signed row delta a `Shift+PageUp` / `Shift+PageDown` applies to the
+/// top-anchored `offset_y` ([`crate::scrollbar`]: `0` = oldest top, `max` = live
+/// bottom). `PageUp` walks toward older history (DECREASE `offset_y`), `PageDown`
+/// back toward the live bottom (INCREASE) — `ScrollState::scroll_by` clamps to
+/// `[0, max]`, so this only carries the direction. Pure / unit-testable.
+fn page_delta(key: &str, page: i32) -> i32 {
     match key {
-        "PageUp" => (current + page).min(scrollback_len),
-        "PageDown" => current.saturating_sub(page),
-        _ => current,
+        "PageUp" => -page,
+        "PageDown" => page,
+        _ => 0,
     }
 }
 
-/// Adjust pane `pane`'s scrollback offset for a `Shift+PageUp` / `Shift+PageDown`,
-/// clamped to that pane's retained scrollback depth. A page is the viewport
-/// height less one row (one row of overlap for continuity). Reads the live pane
-/// for the depth + row count; called from `apply_key` (outside any cache factory).
+/// Scroll pane `pane`'s history for a `Shift+PageUp` / `Shift+PageDown` by one
+/// page on its row-unit [`ScrollState`](crate::scrollbar::use_pane_scroll). A page
+/// is the viewport height less one row (one row of overlap for continuity);
+/// `scroll_by` clamps to the reconciled `[0, max]` depth. Reads the live pane for
+/// the row count; called from `apply_key` (outside any cache factory).
 fn scroll_view(pane: usize, key: &str) {
-    let terminal = use_terminal();
-    let offset = use_scroll_offset(pane);
-    let (scrollback_len, rows) = terminal
+    let scroll = crate::scrollbar::use_pane_scroll(pane);
+    let rows = use_terminal()
         .pane(pane)
         .session()
-        .with_screen(|screen| (screen.scrollback_len(), screen.rows()));
-    let page = usize::from(rows).saturating_sub(1).max(1);
-    offset.set(next_scroll_offset(key, offset.get(), page, scrollback_len));
+        .with_screen(|screen| screen.rows());
+    let page = i32::from(rows).saturating_sub(1).max(1);
+    scroll.scroll_by(0, page_delta(key, page));
 }
 
 /// The pane to focus after a `Ctrl+PageUp` (previous) / `Ctrl+PageDown` (next)
@@ -176,8 +158,10 @@ pub(crate) fn route_key(
         return true;
     }
     // Any other key is a live interaction with the focused pane: snap its view to
-    // the bottom, then inject through that pane's input External.
-    use_scroll_offset(active).set(0);
+    // the live bottom (offset_y == max), then inject through that pane's input
+    // External.
+    let scroll = crate::scrollbar::use_pane_scroll(active);
+    scroll.scroll_to(0, scroll.max().1);
     let Some(node) = scene.find_external_with_tag_mut(tag) else {
         return false;
     };
@@ -228,9 +212,10 @@ pub(crate) fn route_composition(
         return false;
     };
     // Composition happens at the live prompt, so snap the focused pane's
-    // scrollback view to the bottom once for any composition activity — one site,
-    // and it also covers a Commit that arrives without a preceding Start.
-    use_scroll_offset(active).set(0);
+    // scrollback view to the live bottom once for any composition activity — one
+    // site, and it also covers a Commit that arrives without a preceding Start.
+    let scroll = crate::scrollbar::use_pane_scroll(active);
+    scroll.scroll_to(0, scroll.max().1);
     match event {
         // Begin / abort: clear any (stale) overlay. Update carries the live text.
         CompositionEvent::Start | CompositionEvent::Cancel => {
@@ -448,15 +433,13 @@ mod tests {
     }
 
     #[test]
-    fn next_scroll_offset_clamps_and_saturates() {
-        // PageUp accumulates up to the scrollback depth (clamped).
-        assert_eq!(next_scroll_offset("PageUp", 0, 10, 25), 10);
-        assert_eq!(next_scroll_offset("PageUp", 20, 10, 25), 25); // clamp at depth
-        // PageDown walks back toward the live bottom (saturating at 0).
-        assert_eq!(next_scroll_offset("PageDown", 25, 10, 25), 15);
-        assert_eq!(next_scroll_offset("PageDown", 5, 10, 25), 0); // saturate
-        // No scrollback -> stays live regardless of the key.
-        assert_eq!(next_scroll_offset("PageUp", 0, 10, 0), 0);
+    fn page_delta_signs_match_scroll_direction() {
+        // PageUp walks toward older history -> DECREASE offset_y (top-anchored).
+        assert_eq!(page_delta("PageUp", 13), -13);
+        // PageDown walks back toward the live bottom -> INCREASE offset_y.
+        assert_eq!(page_delta("PageDown", 13), 13);
+        // A non-page key does not scroll.
+        assert_eq!(page_delta("a", 13), 0);
     }
 
     #[test]
@@ -597,33 +580,40 @@ mod tests {
     }
 
     #[test]
-    fn scroll_offset_is_per_pane_and_defaults_live() {
+    fn scroll_state_is_per_pane_and_defaults_live() {
+        use crate::scrollbar::use_pane_scroll;
         let owner = Owner::new();
-        // Each pane boots at the live bottom and scrolls independently.
+        // Each pane boots at the live bottom (offset_y 0 == max 0) and scrolls
+        // independently.
         assert_eq!(
-            owner.run(|| use_scroll_offset(0).get()),
+            owner.run(|| use_pane_scroll(0).offset_y()),
             0,
             "pane 0 boots live"
         );
         assert_eq!(
-            owner.run(|| use_scroll_offset(1).get()),
+            owner.run(|| use_pane_scroll(1).offset_y()),
             0,
             "pane 1 boots live"
         );
-        owner.run(|| use_scroll_offset(1).set(7));
-        assert_eq!(owner.run(|| use_scroll_offset(1).get()), 7);
+        owner.run(|| {
+            let s = use_pane_scroll(1);
+            s.set_max(0, 20);
+            s.scroll_to(0, 7);
+        });
+        assert_eq!(owner.run(|| use_pane_scroll(1).offset_y()), 7);
         assert_eq!(
-            owner.run(|| use_scroll_offset(0).get()),
+            owner.run(|| use_pane_scroll(0).offset_y()),
             0,
             "pane 0 is unaffected (per-pane slots)"
         );
     }
 
     /// `apply_key` treats Shift+PageUp as a scroll (handled, not sent to the PTY)
-    /// of the focused pane and snaps that pane's view back to the live bottom on
-    /// any other (typed) key.
+    /// of the focused pane and snaps that pane's view back to the live bottom
+    /// (offset_y == max) on any other (typed) key.
     #[test]
     fn apply_key_scrolls_and_snaps_to_bottom() {
+        use crate::scrollbar::use_pane_scroll;
         let owner = Owner::new();
         owner.run(|| {
             // The model scene over the live boot pane 0 (same pane use_terminal
@@ -643,8 +633,11 @@ mod tests {
                 "PageUp",
                 shift
             ));
-            // A scrolled-up view snaps to the live bottom when the user types.
-            use_scroll_offset(0).set(5);
+            // Pause partway up history (offset_y 3 of a 10-row depth), then a typed
+            // key snaps to the live bottom (offset_y == max).
+            let scroll = use_pane_scroll(0);
+            scroll.set_max(0, 10);
+            scroll.scroll_to(0, 3);
             assert!(TerminalViewer::apply_key(
                 &mut scene,
                 Some(pane_tag(0)),
@@ -652,9 +645,14 @@ mod tests {
                 Modifiers::default()
             ));
             assert_eq!(
-                use_scroll_offset(0).get(),
-                0,
+                scroll.offset_y(),
+                scroll.max().1,
                 "typing snaps to the live bottom"
+            );
+            assert_eq!(
+                scroll.offset_y(),
+                10,
+                "the live bottom is the reconciled max"
             );
         });
     }
