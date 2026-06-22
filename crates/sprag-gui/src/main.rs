@@ -201,7 +201,7 @@ use std::rc::Rc;
 
 use crate::input::{route_composition, route_key};
 use crate::reflow::install_reflow;
-use crate::terminal::{pane_tag, use_terminal};
+use crate::terminal::{pane_scrollbar_tag, pane_tag, use_terminal};
 
 include!(concat!(env!("OUT_DIR"), "/app.rs"));
 vello_renderer_impl!(SpragGuiRenderer, SpragGuiRendererError);
@@ -362,7 +362,7 @@ impl WidgetCore for TerminalViewer {
             })
         };
         let Some(i) = (0..use_terminal().pane_count())
-            .find(|&i| hit(pane_tag(i)) || hit(scrollbar::scrollbar_tag(i)))
+            .find(|&i| hit(pane_tag(i)) || hit(pane_scrollbar_tag(i)))
         else {
             return false;
         };
@@ -721,11 +721,11 @@ mod tests {
         let mut core = ShellCore::<TerminalViewer>::new();
         let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
         assert!(
-            scene.contains_tag(scrollbar::scrollbar_tag(0)),
+            scene.contains_tag(pane_scrollbar_tag(0)),
             "pane 0 paints a tagged scrollbar track (the drag hit target)",
         );
         assert!(
-            scene.contains_tag(scrollbar::scrollbar_tag(1)),
+            scene.contains_tag(pane_scrollbar_tag(1)),
             "pane 1 paints a tagged scrollbar track",
         );
     }

@@ -28,39 +28,67 @@ const SESSION_KEY: &str = "sprag_gui.terminal";
 /// — so a pane appearing / disappearing joins / leaves the Tab order on its own.)
 pub(crate) const MAX_PANES: usize = 8;
 
-/// The per-pane identity tags (`sprag_gui.pane.<i>`), one per tile up to
-/// [`MAX_PANES`]. The SINGLE source of pane tags, shared by the model-scene input
-/// Externals ([`create_external`](crate::TerminalViewer) /
-/// [`create_extra_externals`](crate::TerminalViewer)), the scene-derived focus
-/// enumeration (the pane Container is marked focusable, so the shell's per-frame
-/// [`Scene::collect_focusable_tags`](pinion_core::Scene::collect_focusable_tags)
-/// walk picks up this tag — pinion R1020 §5.39), the paint-scene pane Containers
-/// ([`sprag_host::pane_view_scene`] — the R1012
-/// [`use_pane_viewport_size`](pinion_core::use_pane_viewport_size) rect target +
-/// focus ring + click anchor), and the per-pane reflow Effects. One string per
-/// pane across all of those, so input / focus / measure / paint can never address
-/// different panes.
-pub(crate) const PANE_TAGS: [&str; MAX_PANES] = [
-    "sprag_gui.pane.0",
-    "sprag_gui.pane.1",
-    "sprag_gui.pane.2",
-    "sprag_gui.pane.3",
-    "sprag_gui.pane.4",
-    "sprag_gui.pane.5",
-    "sprag_gui.pane.6",
-    "sprag_gui.pane.7",
+/// The complete `&'static str` identity of one tiled pane, grouped so its three
+/// per-pane tags CANNOT drift apart — each row is one pane:
+///
+/// * [`pane`](Self::pane) (`sprag_gui.pane.<i>`) — the model-scene input External
+///   tag ([`create_external`](crate::TerminalViewer) /
+///   [`create_extra_externals`](crate::TerminalViewer)), the scene-derived focus
+///   tag (the pane Container is `with_focusable`, so the shell's per-frame
+///   [`Scene::collect_focusable_tags`](pinion_core::Scene::collect_focusable_tags)
+///   picks it up — pinion R1020 §5.39), the paint-scene pane Container
+///   ([`sprag_host::pane_view_scene`] — the R1012
+///   [`use_pane_viewport_size`](pinion_core::use_pane_viewport_size) rect target +
+///   focus ring + click anchor), and the per-pane reflow Effect tag.
+/// * `scrollbar` (`sprag_gui.scrollbar.<i>`) — the scrollbar track paint tag + its
+///   drag `ScrollBarExternal` registration tag ([`crate::scrollbar`]).
+/// * `scroll_key` (`sprag_gui.scroll.<i>`) — the `Owner::cache` key of the pane's
+///   row-unit `ScrollState` ([`use_pane_scroll`](crate::scrollbar::use_pane_scroll)).
+struct PaneSlot {
+    pane: &'static str,
+    scrollbar: &'static str,
+    scroll_key: &'static str,
+}
+
+/// The per-pane identity SSOT — one [`PaneSlot`] per tile up to [`MAX_PANES`],
+/// replacing the former parallel `PANE_TAGS` / `SCROLLBAR_TAGS` / `SCROLL_STATE_KEYS`
+/// arrays (which could index-drift independently). `&'static str` literals (the
+/// pinion External-tag / [`use_scroll_state`](pinion_core::widgets::scroll::use_scroll_state)
+/// contract), not minted at runtime. (Per-DIVIDER identity is a SEPARATE axis —
+/// [`SPLITTER_TAGS`](crate::split) keyed by divider id `j`, not pane index — so it
+/// is not in this table; see [`crate::split`].)
+#[rustfmt::skip]
+const PANE_SLOTS: [PaneSlot; MAX_PANES] = [
+    PaneSlot { pane: "sprag_gui.pane.0", scrollbar: "sprag_gui.scrollbar.0", scroll_key: "sprag_gui.scroll.0" },
+    PaneSlot { pane: "sprag_gui.pane.1", scrollbar: "sprag_gui.scrollbar.1", scroll_key: "sprag_gui.scroll.1" },
+    PaneSlot { pane: "sprag_gui.pane.2", scrollbar: "sprag_gui.scrollbar.2", scroll_key: "sprag_gui.scroll.2" },
+    PaneSlot { pane: "sprag_gui.pane.3", scrollbar: "sprag_gui.scrollbar.3", scroll_key: "sprag_gui.scroll.3" },
+    PaneSlot { pane: "sprag_gui.pane.4", scrollbar: "sprag_gui.scrollbar.4", scroll_key: "sprag_gui.scroll.4" },
+    PaneSlot { pane: "sprag_gui.pane.5", scrollbar: "sprag_gui.scrollbar.5", scroll_key: "sprag_gui.scroll.5" },
+    PaneSlot { pane: "sprag_gui.pane.6", scrollbar: "sprag_gui.scrollbar.6", scroll_key: "sprag_gui.scroll.6" },
+    PaneSlot { pane: "sprag_gui.pane.7", scrollbar: "sprag_gui.scrollbar.7", scroll_key: "sprag_gui.scroll.7" },
 ];
 
 /// The identity tag of the pane at tile `index` (`index < `[`MAX_PANES`]).
 pub(crate) fn pane_tag(index: usize) -> &'static str {
-    PANE_TAGS[index]
+    PANE_SLOTS[index].pane
+}
+
+/// Pane `index`'s scrollbar track + drag-External tag (`index < `[`MAX_PANES`]).
+pub(crate) fn pane_scrollbar_tag(index: usize) -> &'static str {
+    PANE_SLOTS[index].scrollbar
+}
+
+/// Pane `index`'s row-unit `ScrollState` `Owner::cache` key (`index < `[`MAX_PANES`]).
+pub(crate) fn pane_scroll_key(index: usize) -> &'static str {
+    PANE_SLOTS[index].scroll_key
 }
 
 /// The tile index of the pane whose identity tag is `tag`, or `None` if `tag` is
 /// not a pane tag (a non-pane / absent focus). The inverse of [`pane_tag`], so
 /// input routing maps the focused tag back to its pane.
 pub(crate) fn pane_index_of(tag: &str) -> Option<usize> {
-    PANE_TAGS.iter().position(|&t| t == tag)
+    PANE_SLOTS.iter().position(|s| s.pane == tag)
 }
 
 /// The default tiled pane count when `SPRAG_GUI_PANES` is unset.
@@ -319,6 +347,29 @@ mod tests {
             "the root tag is not a pane"
         );
         assert_eq!(pane_index_of("nope"), None);
+    }
+
+    #[test]
+    fn pane_slot_tags_are_index_aligned() {
+        // Each slot's three tags must encode the SAME index `i` — the structural
+        // guard that replaced the old parallel arrays (which could drift). A
+        // mis-typed digit in any column fails here, not silently at runtime.
+        for i in 0..MAX_PANES {
+            let suffix = format!(".{i}");
+            assert!(
+                pane_tag(i).ends_with(&suffix)
+                    && pane_scrollbar_tag(i).ends_with(&suffix)
+                    && pane_scroll_key(i).ends_with(&suffix),
+                "slot {i}: pane={} scrollbar={} scroll_key={} must all end with {suffix}",
+                pane_tag(i),
+                pane_scrollbar_tag(i),
+                pane_scroll_key(i),
+            );
+        }
+        // The three columns are distinct namespaces (no Owner::cache collision
+        // between the scrollbar interaction signal and the ScrollState).
+        assert_ne!(pane_tag(0), pane_scrollbar_tag(0));
+        assert_ne!(pane_scrollbar_tag(0), pane_scroll_key(0));
     }
 
     #[test]

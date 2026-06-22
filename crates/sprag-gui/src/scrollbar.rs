@@ -40,7 +40,7 @@
 //! driving [`wheel_scroll_pane`] on the SAME `ScrollState` — never the AI-facing
 //! pane engine (the R1.7 boundary the session review enforced).
 
-use crate::terminal::MAX_PANES;
+use crate::terminal::{pane_scroll_key, pane_scrollbar_tag};
 use pinion_core::reactive::Owner;
 use pinion_core::scene::{ContainerNode, Scene};
 use pinion_core::style::{AlignItems, FlexDirection, LayoutStyle, SizeValue};
@@ -57,68 +57,25 @@ use std::rc::Rc;
 /// `Pixels.dy / LINE_HEIGHT_PX`) — the gnome-terminal ~3-lines-per-notch feel.
 const WHEEL_ROWS_PER_LINE: f32 = 3.0;
 
-/// The per-pane scrollbar track + drag-External tags (`sprag_gui.scrollbar.<i>`),
-/// one per possible pane — the identity SSOT this module owns, mirroring
-/// [`PANE_TAGS`](crate::terminal). Static `&'static str`: the paint tag (here) and
-/// the [`ScrollBarExternal`] registration tag ([`pane_scrollbar_external`]) MUST be
-/// the same literal so the shell's pointer router hit-tests the painted track and
-/// routes the drag to the matching External. Pointer-only, never `with_focusable`
-/// — so they stay out of R1020's scene-derived Tab order (the splitter-handle
-/// discipline).
-const SCROLLBAR_TAGS: [&str; MAX_PANES] = [
-    "sprag_gui.scrollbar.0",
-    "sprag_gui.scrollbar.1",
-    "sprag_gui.scrollbar.2",
-    "sprag_gui.scrollbar.3",
-    "sprag_gui.scrollbar.4",
-    "sprag_gui.scrollbar.5",
-    "sprag_gui.scrollbar.6",
-    "sprag_gui.scrollbar.7",
-];
-
-/// The per-pane [`ScrollState`] cache keys (`sprag_gui.scroll.<i>`), DISTINCT from
-/// [`SCROLLBAR_TAGS`]: [`use_scroll_state`] caches the `ScrollState` under this key
-/// while [`use_scrollbar_interaction`] caches the interaction signal under the tag,
-/// so the two `Owner::cache` slots must not collide. Static for the same
-/// `&'static str` reason as the tags.
-const SCROLL_STATE_KEYS: [&str; MAX_PANES] = [
-    "sprag_gui.scroll.0",
-    "sprag_gui.scroll.1",
-    "sprag_gui.scroll.2",
-    "sprag_gui.scroll.3",
-    "sprag_gui.scroll.4",
-    "sprag_gui.scroll.5",
-    "sprag_gui.scroll.6",
-    "sprag_gui.scroll.7",
-];
-
-/// Pane `i`'s scrollbar track / drag-External tag (`i < `[`MAX_PANES`]).
-pub(crate) fn scrollbar_tag(i: usize) -> &'static str {
-    SCROLLBAR_TAGS[i]
-}
-
-/// Pane `i`'s [`ScrollState`] cache key (`i < `[`MAX_PANES`]).
-fn scroll_state_key(i: usize) -> &'static str {
-    SCROLL_STATE_KEYS[i]
-}
-
 /// Pane `i`'s scroll authority — the row-unit [`ScrollState`] shared by the
 /// keyboard chords ([`crate::input`]), the projection + reconcile
 /// ([`crate::view`]), the paint ([`view_pane_scrollbar`]), and the drag External
-/// ([`pane_scrollbar_external`]). `Owner::cache`-backed so every site resolves the
-/// one slot. `offset_y` = rows from the oldest line (`0` = top, `max_y` = live).
+/// ([`pane_scrollbar_external`]). `Owner::cache`-backed (keyed by
+/// [`pane_scroll_key`](crate::terminal::pane_scroll_key), the per-pane identity
+/// SSOT) so every site resolves the one slot. `offset_y` = rows from the oldest
+/// line (`0` = top, `max_y` = live).
 pub(crate) fn use_pane_scroll(i: usize) -> Rc<ScrollState> {
-    use_scroll_state(scroll_state_key(i))
+    use_scroll_state(pane_scroll_key(i))
 }
 
 /// Register pane `i`'s draggable scrollbar peer — a [`ScrollBarExternal`] over the
-/// pane's [`ScrollState`], tagged [`scrollbar_tag`]`(i)` so the painted track
+/// pane's [`ScrollState`], tagged [`pane_scrollbar_tag`]`(i)` so the painted track
 /// routes pointer drags to it. Wired in
 /// [`create_extra_externals`](crate::TerminalViewer); the shell's pointer router
 /// (capture-locked drag) translates the cursor to [`ScrollState::scroll_to`] in
 /// rows — no `WidgetCore` pointer method, mirroring the splitter.
 pub(crate) fn pane_scrollbar_external(i: usize) -> ExtraExternal {
-    scrollbar_extra_external(use_pane_scroll(i), scrollbar_tag(i))
+    scrollbar_extra_external(use_pane_scroll(i), pane_scrollbar_tag(i))
 }
 
 /// Reconcile pane `i`'s scroll bound to the live scrollback depth and follow the
@@ -207,14 +164,14 @@ pub(crate) fn view_pane_scrollbar(
     track_h_px: u32,
     theme: &Theme,
 ) -> Scene {
-    let style = VerticalScrollbarStyle::material(track_h_px, scrollbar_tag(i))
+    let style = VerticalScrollbarStyle::material(track_h_px, pane_scrollbar_tag(i))
         .with_viewport_extent(u32::from(visible_rows))
         .with_thumb_role(ColorRole::OnSurfaceMuted);
     view_vertical_scrollbar(
         scroll,
         theme,
         &style,
-        use_scrollbar_interaction(scrollbar_tag(i)).get(),
+        use_scrollbar_interaction(pane_scrollbar_tag(i)).get(),
     )
 }
 
@@ -399,7 +356,7 @@ mod tests {
     #[test]
     fn bar_carries_its_tag_and_one_thumb() {
         let bar = build(0, 100, 24, 600);
-        assert!(bar.contains_tag(scrollbar_tag(0)), "track tagged");
+        assert!(bar.contains_tag(pane_scrollbar_tag(0)), "track tagged");
         let Scene::Container(track) = &bar else {
             panic!()
         };
@@ -412,7 +369,7 @@ mod tests {
         // router can route a press on the painted track to it.
         Owner::new().run(|| {
             let ext = pane_scrollbar_external(1);
-            assert_eq!(ext.tag.as_ref(), scrollbar_tag(1));
+            assert_eq!(ext.tag.as_ref(), pane_scrollbar_tag(1));
         });
     }
 
@@ -450,7 +407,7 @@ mod tests {
         );
         assert_eq!(
             bar.tag.as_deref(),
-            Some(scrollbar_tag(0)),
+            Some(pane_scrollbar_tag(0)),
             "bar carries its track tag"
         );
     }

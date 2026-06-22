@@ -78,14 +78,20 @@ use std::rc::Rc;
 const SPLITTER_COUNT: usize = MAX_PANES - 1;
 
 /// The splitter-handle tags (`sprag_gui.split.<j>`), one per possible divider
-/// (global divider id `j`). Static — the `&'static str` discipline of `PANE_TAGS`
-/// (a pinion External-tag constraint; the handles are pointer-only, never marked
-/// focusable, so they stay out of R1020's scene-derived Tab order). Reached only via
-/// [`splitter_tag`]; the `SplitterExternal` registered at each
+/// (global divider id `j`). Static — the `&'static str` pinion External-tag
+/// constraint (the handles are pointer-only, never marked focusable, so they stay
+/// out of R1020's scene-derived Tab order). Reached only via [`splitter_tag`]; the
+/// `SplitterExternal` registered at each
 /// ([`create_extra_externals`](crate::TerminalViewer)) shares the ratio Signal
 /// [`use_splitter_ratio`]`(j)` the fold reads. Both row mode (ids 0..N-1, all
 /// Horizontal) and grid mode ([`grid_plan`]: column ids then row ids) draw their
 /// dividers from this one table.
+///
+/// This is the per-DIVIDER identity table, a SEPARATE axis from the per-PANE
+/// identity SSOT ([`PaneSlot`](crate::terminal) / `pane_tag` etc.): there are `N-1`
+/// dividers for `N` panes and a divider is position-keyed (it separates whatever
+/// panes sit on either side), so it deliberately does not fold into the per-pane
+/// struct (see the "Divider identity is POSITION-keyed" section above).
 const SPLITTER_TAGS: [&str; SPLITTER_COUNT] = [
     "sprag_gui.split.0",
     "sprag_gui.split.1",
