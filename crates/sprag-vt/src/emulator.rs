@@ -48,6 +48,23 @@ pub struct Emulator {
     input_modes: InputModes,
     /// Monotonic damage stamp, bumped on every row-mutating action.
     generation: u64,
+    /// `true` between a resize and the next batch of bytes — the window in which a
+    /// line editor (bash/readline) redraws its wrapped prompt on `SIGWINCH`. Two
+    /// behaviours change in that window so the redraw stays one clean logical line
+    /// that collapses on a later widen — the way a reflowing terminal (vte/
+    /// `gnome-terminal`) handles the same bytes:
+    ///
+    /// * an explicit `CR LF` (which readline emits at a width the line exactly
+    ///   fills, instead of relying on autowrap) is treated as a SOFT wrap by
+    ///   [`Self::control`], not a hard line end — otherwise it splits the prompt
+    ///   into separate logical lines that cannot rejoin, leaving per-width copies
+    ///   stacked as ghosts (the resize-stale accumulation);
+    /// * the redraw's leading erase-in-line ([`Self::edit`]) clears the whole
+    ///   wrapped active line, not just the cursor's row, so the stale tail left by
+    ///   the prior width does not survive as a growing leftover in the input.
+    ///
+    /// Cleared once the redraw batch is applied (see [`VtPort::advance`]).
+    in_resize_redraw: bool,
 }
 
 impl Emulator {
@@ -69,6 +86,7 @@ impl Emulator {
             attrs: Attrs::default(),
             input_modes: InputModes::default(),
             generation: 0,
+            in_resize_redraw: false,
         }
     }
 
@@ -92,8 +110,13 @@ impl Emulator {
     fn control(&mut self, code: ControlCode) {
         match code {
             ControlCode::LineFeed | ControlCode::VerticalTab | ControlCode::FormFeed => {
-                // A hard line feed ends this row's logical line (not a soft wrap).
-                self.screen.set_wrapped(self.row, false);
+                // A line feed normally ends this row's logical line (a hard break).
+                // During a line editor's resize redraw (`in_resize_redraw`), an
+                // explicit `CR LF` is instead how readline continues a wrapped prompt
+                // at a width the line exactly fills — semantically a soft wrap, so the
+                // redraw stays one logical line whose per-width copies collapse on a
+                // later widen instead of stacking as ghosts.
+                self.screen.set_wrapped(self.row, self.in_resize_redraw);
                 self.line_feed();
             }
             ControlCode::CarriageReturn => self.col = 0,
@@ -191,6 +214,25 @@ impl Emulator {
                 let row = self.row;
                 for c in start..end.min(self.cols) {
                     self.screen.set_cell(c, row, Cell::blank(), g);
+                }
+                // During a resize redraw, the editor's leading erase-in-line clears
+                // its current row before reprinting the whole wrapped line. Extend it
+                // to the line's soft-wrapped continuation rows too (read BEFORE the
+                // wrap flag below is cleared), so the stale tail left by the prior
+                // width — which the reprint may only partly cover — does not survive
+                // as a growing leftover. Bounded to the active line's continuation,
+                // and only while a redraw is in flight.
+                if self.in_resize_redraw && end >= self.cols {
+                    // Walk the wrap chain to the line's last continuation row FIRST
+                    // (clearing a row drops its wrap flag, which would otherwise cut
+                    // the walk short), then clear those rows.
+                    let mut last = row;
+                    while last + 1 < self.rows && self.screen.wrapped(last) {
+                        last += 1;
+                    }
+                    for r in (row + 1)..=last {
+                        self.screen.clear_row(r, g);
+                    }
                 }
                 // Erasing to the right margin truncates the line, so it no
                 // longer soft-wraps onto the next row.
@@ -360,6 +402,9 @@ impl VtPort for Emulator {
         for action in actions {
             self.apply(action);
         }
+        // The line editor's resize redraw arrives as the first batch after a resize;
+        // its soft-wrap / erase reinterpretations (see `in_resize_redraw`) end here.
+        self.in_resize_redraw = false;
         self.sync_cursor();
     }
 
@@ -381,6 +426,10 @@ impl VtPort for Emulator {
         }
         self.cols = cols;
         self.rows = rows;
+        // The next batch of bytes is the line editor's `SIGWINCH` redraw; apply the
+        // soft-wrap / erase reinterpretations to it (see `in_resize_redraw`). Only
+        // the MAIN screen runs a line editor; a fullscreen app owns the alt screen.
+        self.in_resize_redraw = self.screen.screen_kind() == ScreenKind::Main;
         self.sync_cursor();
     }
 
@@ -572,6 +621,65 @@ mod tests {
         assert!(
             !em.screen().wrapped(0),
             "erasing the line drops the soft wrap"
+        );
+    }
+
+    // ----- resize-redraw reinterpretation (`in_resize_redraw`) -----
+
+    #[test]
+    fn resize_redraw_crlf_is_a_soft_wrap() {
+        // After a resize, the line editor's redraw uses an explicit CR LF to
+        // continue a wrapped line at an exact-fill width; treat it as a soft wrap
+        // so the redraw stays one logical line (collapses on a later widen).
+        let mut em = Emulator::new(10, 4);
+        em.advance(b"x");
+        em.resize(10, 4); // arms the redraw window
+        em.advance(b"\rAAAA\r\nBBBB"); // CR, content, CR LF (the wrap idiom), content
+        assert!(
+            em.screen().wrapped(0),
+            "a CR LF inside the resize redraw is a soft wrap"
+        );
+    }
+
+    #[test]
+    fn normal_crlf_outside_a_redraw_is_a_hard_break() {
+        // Without a preceding resize, the same CR LF ends the logical line — so
+        // ordinary command output keeps its real line breaks.
+        let mut em = Emulator::new(10, 4);
+        em.advance(b"AAAA\r\nBBBB");
+        assert!(
+            !em.screen().wrapped(0),
+            "a CR LF in normal output is a hard line break"
+        );
+    }
+
+    #[test]
+    fn redraw_window_ends_after_the_first_batch() {
+        // The soft-wrap reinterpretation lasts only for the redraw batch; a CR LF in
+        // a later batch is hard again.
+        let mut em = Emulator::new(10, 4);
+        em.resize(10, 4);
+        em.advance(b"\rAAAA"); // first batch (the redraw) — window closes after it
+        em.advance(b"BBBB\r\nCCCC"); // a later batch
+        assert!(
+            !em.screen().wrapped(0),
+            "the redraw window closed; this CR LF is hard"
+        );
+    }
+
+    #[test]
+    fn resize_redraw_erase_clears_the_wrapped_continuation() {
+        // The redraw's leading erase-in-line clears the whole wrapped active line,
+        // not just the cursor's row, so the stale tail of the prior width is gone.
+        let mut em = Emulator::new(4, 4);
+        em.advance(b"abcdefgh"); // row0 "abcd" (wrapped) -> row1 "efgh"
+        assert_eq!(em.screen().row_text(1), "efgh");
+        em.resize(4, 4); // arms the window; cursor anchored to the line top (row 0)
+        em.advance(b"\r\x1b[K"); // CR + erase-to-end-of-line at the line top
+        assert_eq!(
+            em.screen().row_text(1),
+            "",
+            "the wrapped continuation row was cleared too"
         );
     }
 

@@ -126,6 +126,73 @@ fn drag_widths(wide: u16, narrow: u16) -> Vec<u16> {
     down.into_iter().chain(up).collect()
 }
 
+/// Like [`drag_sweep`], but first types `input` onto the command line (no
+/// newline — it stays in readline's edit buffer), so the resize storm reflows a
+/// prompt that has live INPUT after it. With input present, bash's `SIGWINCH`
+/// redraw moves the cursor up (CR + erase + cursor-up + reprint) and — at a
+/// width the line exactly fills — breaks it with an explicit `CR LF`; mishandling
+/// that split stacked per-width copies as ghosts. The fix
+/// (`Emulator::in_resize_redraw`) keeps the redraw one logical line that collapses
+/// on widen. Returns the prompt count after the sweep settles wide.
+fn drag_sweep_with_input(
+    session: &TerminalSession,
+    input: &[u8],
+    widths: &[u16],
+    rows: u16,
+    step_gap: Duration,
+) -> usize {
+    settle(session, Duration::from_millis(250), Duration::from_secs(3));
+    assert!(prompt_count(session) >= 1, "the bash prompt never appeared");
+    session.write(input).expect("type input into the session");
+    settle(session, Duration::from_millis(250), Duration::from_secs(3));
+    for &w in widths {
+        session.resize(w, rows).expect("resize the session");
+        std::thread::sleep(step_gap);
+    }
+    settle(session, Duration::from_millis(300), Duration::from_secs(3));
+    prompt_count(session)
+}
+
+/// Regression guard: the rapid extreme storm with SHORT ASCII input on the line.
+/// bash's input redraw splits the line with `CR LF` at exact-fill widths; without
+/// the resize-redraw soft-wrap fix the per-width copies stacked (≈16-44 prompts).
+#[test]
+fn rapid_extreme_resize_with_typed_input_does_not_accumulate() {
+    let session = bash_session(80, 24);
+    let n = drag_sweep_with_input(
+        &session,
+        b"echo hi",
+        &drag_widths(80, 4),
+        24,
+        Duration::from_millis(55),
+    );
+    assert!(
+        n <= 3,
+        "a RAPID extreme resize with typed input accumulated {n} prompts \
+         (expected <= 3) — the resize-stale bug (typed-input case)"
+    );
+}
+
+/// Regression guard: the same storm with KOREAN wide-char input (`안녕하세요`).
+/// Wide clusters made bash's redraw splits land differently; the fix must keep the
+/// count bounded for them too (the user's real input is Korean).
+#[test]
+fn rapid_extreme_resize_with_wide_char_input_does_not_accumulate() {
+    let session = bash_session(80, 24);
+    let n = drag_sweep_with_input(
+        &session,
+        "\u{c548}\u{b155}\u{d558}\u{c138}\u{c694}".as_bytes(), // 안녕하세요
+        &drag_widths(80, 4),
+        24,
+        Duration::from_millis(55),
+    );
+    assert!(
+        n <= 3,
+        "a RAPID extreme resize with Korean input accumulated {n} prompts \
+         (expected <= 3) — the resize-stale bug (wide-char input case)"
+    );
+}
+
 /// GREEN guard: the SAME rapid storm, but the sweep stays ABOVE the wrap width
 /// (narrow bound 50 cols > the ~40-col prompt), so every redraw is single-row and
 /// the emulator overwrites it cleanly. This isolates the trigger: the storm ALONE
