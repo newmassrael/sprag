@@ -34,24 +34,32 @@ authors = ["newmassrael <newmassrael@gmail.com>"]
 repository = "https://github.com/newmassrael/sprag"
 
 [workspace.dependencies]
-# pinion (path deps — pinion is unpublished; DESIGN.md §5).
-pinion-core = { path = "../pinion/crates/pinion-core", version = "0.0.1" }
-pinion-a11y = { path = "../pinion/crates/pinion-a11y", version = "0.0.1" }
-pinion-shell = { path = "../pinion/crates/pinion-shell", version = "0.0.1" }
+# pinion — GIT + REV PINNED (PR-22 endgame, R54). sprag NO LONGER reads the sibling
+# ../pinion working tree: an in-progress / non-compiling pinion edit can never block
+# sprag's build or commit. Flip side: a pinion change reaches sprag ONLY when it is
+# pushed AND this rev is bumped (no live-dogfood auto-pickup). TO TAKE A NEW PINION:
+# push pinion, then set `rev` on every pinion-* line below to the new commit AND set
+# the SCE rev (the [workspace.dependencies] SCE block) to pinion@<rev>'s own SCE rev,
+# so the single shared SCE instance is preserved (see the SCE block). `package=` is
+# omitted (dep key == crate name; pinion crates are workspace members of the repo).
+# (DESIGN.md §5's "path deps — unpublished" rationale is superseded here by PR-22.)
+pinion-core = { git = "https://github.com/newmassrael/pinion.git", rev = "0cc79f78151d68932fd1415bdda8e21a32f92a79" }
+pinion-a11y = { git = "https://github.com/newmassrael/pinion.git", rev = "0cc79f78151d68932fd1415bdda8e21a32f92a79" }
+pinion-shell = { git = "https://github.com/newmassrael/pinion.git", rev = "0cc79f78151d68932fd1415bdda8e21a32f92a79" }
 # pinion-runtime: the shell's input/focus runtime. sprag-gui uses it only as a
 # DEV-dependency, for `PointerId` in the end-to-end click-to-focus test (the
 # shell's pointer methods take it); not a runtime dependency of any sprag crate.
-pinion-runtime = { path = "../pinion/crates/pinion-runtime", version = "0.0.1" }
+pinion-runtime = { git = "https://github.com/newmassrael/pinion.git", rev = "0cc79f78151d68932fd1415bdda8e21a32f92a79" }
 # Backend-agnostic widget paint helpers (GPU-free; deps core/text/a11y, already
 # under pinion-shell). sprag-gui uses `view_splitter` + `SplitterExternal` for
 # the draggable pane dividers (R38).
-pinion-widget-paint = { path = "../pinion/crates/pinion-widget-paint", version = "0.0.1" }
-pinion-forge = { path = "../pinion/crates/pinion-forge", version = "0.0.1" }
+pinion-widget-paint = { git = "https://github.com/newmassrael/pinion.git", rev = "0cc79f78151d68932fd1415bdda8e21a32f92a79" }
+pinion-forge = { git = "https://github.com/newmassrael/pinion.git", rev = "0cc79f78151d68932fd1415bdda8e21a32f92a79" }
 # pinion-rpc: the scene-as-data introspection wire (snapshot.rs) + dispatch.
 # Confined to sprag-host (the RPC server layer) so the producer/projection
 # crates stay free of its heavy transitive deps (DESIGN.md §3/§5: the data
 # path needs no display).
-pinion-rpc = { path = "../pinion/crates/pinion-rpc", version = "0.0.1" }
+pinion-rpc = { git = "https://github.com/newmassrael/pinion.git", rev = "0cc79f78151d68932fd1415bdda8e21a32f92a79" }
 
 # VT toolkit (DESIGN.md §4): termwiz is the embedded verified escape
 # parser + cell/color/input primitives. The emulator state machine is
