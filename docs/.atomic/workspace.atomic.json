@@ -2094,6 +2094,46 @@
         "Live-RPC method (reusable): launch sprag-gui via a python subprocess with piped stdin/stdout (it runs pinion-shell spawn_stdin_rpc_reader); scene/snapshot {from:paint,path:\"\"} returns the painted scene; each pane is a TextGrid tagged sprag_gui.pane.{i}#grid carrying cols/cell_w/cursor{col,row}; scene/drag {from:{x,y},to:{x,y},button:left} injects a splitter drag; the 4px handle is split.0.children[1].rect. Transient vs settled = snapshot immediately vs after ~300ms (bash redraw lags the 40ms R42 debounce)."
       ]
     },
+    "Round 47": {
+      "decision_summary": "Round 47: the typed-input half of the resize-stale fix. R45/R46 fixed the EMPTY-prompt accumulation, but with typed input on the command line a rapid resize still stacked dozens of ghost prompts. Root cause (captured from real bash AND gnome-terminal via a PTY proxy): at a width the wrapped prompt+input exactly fills, readline redraws it with an explicit CR LF instead of relying on autowrap, and sprag treated that as a hard line break, so each per-width copy became a separate logical line that could not rejoin on a later widen. vte/gnome-terminal keep it soft and collapse it. Fix: within the resize-redraw window, treat the editor's CR LF as a soft wrap and extend its erase-in-line over the whole wrapped active line. Committed e5c0d9a on main.",
+      "changes_bullets": [
+        "sprag-vt/src/emulator.rs: new in_resize_redraw flag, set on resize() for the MAIN screen and cleared after the next advance() batch (the line editor's SIGWINCH redraw). Reinterprets two actions only within that window.",
+        "control() LineFeed: set_wrapped(row, in_resize_redraw). A CR LF inside the editor's resize redraw is a soft wrap (keeps the redraw one logical line that collapses on a later widen); a hard break otherwise, so ordinary command output keeps its real newlines.",
+        "edit() EraseInLine-to-end-of-line during the redraw also clears the active line's soft-wrapped continuation rows (walk the wrap chain to its last row FIRST, since clear_row drops the flag), so the prior width's stale input tail does not survive as a leftover."
+      ],
+      "verification_bullets": [
+        "cargo test -p sprag-vt: 32 pass (4 new: redraw CR LF is soft, normal CR LF is hard, the window ends after one batch, the redraw erase clears the wrapped continuation). 4 real-bash integration guards pass (empty long prompt, ASCII echo-hi, Korean wide-char input, non-wrapping). clippy + rustfmt clean.",
+        "Root cause and target confirmed by capturing bash's bytes through gnome-terminal with a PTY proxy (forks bash, propagates SIGWINCH, tees output): bash sends an explicit CR LF at exact-fill widths; gnome-terminal/vte stay clean by collapsing it, sprag R46 stacked 16-44 ghost prompts. Headless sweep with the user's long prompt + input dropped from 16 to 1.",
+        "Live GUI via JSON-RPC: scene/drag the splitter (handle = sprag_gui.split.0 children[1].rect, re-fetched each drag since it moves) to narrow then widen pane.1; the prompt count stayed 1 per pane with no stacking."
+      ],
+      "impact_refs": [
+        "4",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Remaining debt: a wide-char (Korean) line at certain narrow widths still shows bash's own CR LF break (one input syllable on the prompt row, the rest on the next). Confirmed identical in R46 AND in gnome-terminal via the PTY proxy, so it is bash behavior, not a sprag regression; left as-is rather than risk re-introducing the reflow-vs-editor desync by collapsing the active line.",
+        "Splitter testing rule (cemented): grab the divider SEMANTICALLY by querying sprag_gui.split.0 children[1].rect from scene/snapshot and dragging its center, re-fetching after each drag (the handle moves with the ratio). Never guess pixel coordinates: the handle gap sits past scrollbar.0, not at the naive pane-midpoint (x=480 not x=476 at boot)."
+      ],
+      "publishable_decision_summary": "Round 47: the typed-input half of the resize-stale fix. R45/R46 fixed the EMPTY-prompt accumulation, but with typed input on the command line a rapid resize still stacked dozens of ghost prompts. Root cause (captured from real bash AND gnome-terminal via a PTY proxy): at a width the wrapped prompt+input exactly fills, readline redraws it with an explicit CR LF instead of relying on autowrap, and sprag treated that as a hard line break, so each per-width copy became a separate logical line that could not rejoin on a later widen. vte/gnome-terminal keep it soft and collapse it. Fix: within the resize-redraw window, treat the editor's CR LF as a soft wrap and extend its erase-in-line over the whole wrapped active line. Committed e5c0d9a on main.",
+      "publishable_changes_bullets": [
+        "sprag-vt/src/emulator.rs: new in_resize_redraw flag, set on resize() for the MAIN screen and cleared after the next advance() batch (the line editor's SIGWINCH redraw). Reinterprets two actions only within that window.",
+        "control() LineFeed: set_wrapped(row, in_resize_redraw). A CR LF inside the editor's resize redraw is a soft wrap (keeps the redraw one logical line that collapses on a later widen); a hard break otherwise, so ordinary command output keeps its real newlines.",
+        "edit() EraseInLine-to-end-of-line during the redraw also clears the active line's soft-wrapped continuation rows (walk the wrap chain to its last row FIRST, since clear_row drops the flag), so the prior width's stale input tail does not survive as a leftover."
+      ],
+      "publishable_verification_bullets": [
+        "cargo test -p sprag-vt: 32 pass (4 new: redraw CR LF is soft, normal CR LF is hard, the window ends after one batch, the redraw erase clears the wrapped continuation). 4 real-bash integration guards pass (empty long prompt, ASCII echo-hi, Korean wide-char input, non-wrapping). clippy + rustfmt clean.",
+        "Root cause and target confirmed by capturing bash's bytes through gnome-terminal with a PTY proxy (forks bash, propagates SIGWINCH, tees output): bash sends an explicit CR LF at exact-fill widths; gnome-terminal/vte stay clean by collapsing it, sprag R46 stacked 16-44 ghost prompts. Headless sweep with the user's long prompt + input dropped from 16 to 1.",
+        "Live GUI via JSON-RPC: scene/drag the splitter (handle = sprag_gui.split.0 children[1].rect, re-fetched each drag since it moves) to narrow then widen pane.1; the prompt count stayed 1 per pane with no stacking."
+      ],
+      "publishable_impact_refs": [
+        "4",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Remaining debt: a wide-char (Korean) line at certain narrow widths still shows bash's own CR LF break (one input syllable on the prompt row, the rest on the next). Confirmed identical in R46 AND in gnome-terminal via the PTY proxy, so it is bash behavior, not a sprag regression; left as-is rather than risk re-introducing the reflow-vs-editor desync by collapsing the active line.",
+        "Splitter testing rule (cemented): grab the divider SEMANTICALLY by querying sprag_gui.split.0 children[1].rect from scene/snapshot and dragging its center, re-fetching after each drag (the handle moves with the ratio). Never guess pixel coordinates: the handle gap sits past scrollbar.0, not at the naive pane-midpoint (x=480 not x=476 at boot)."
+      ]
+    },
     "Round 5": {
       "decision_summary": "Restructure into producer/projection/host layers and harden the headless host: honest winsize, bounded state, enforced read-only.",
       "changes_bullets": [
