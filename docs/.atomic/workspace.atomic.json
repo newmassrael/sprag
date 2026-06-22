@@ -2468,6 +2468,46 @@
         "PR-22 is now FULLY delivered end to end: pinion R1053 (SCE path->git) + sprag R53 (mirror SCE) + sprag R54 (git-pin all pinion). No behavior change to any feature; pure build-topology. Scroll arc (R49-R52) remains closed. Stop-and-report ground rule unaffected (still never edit pinion from a sprag session; now sprag also won't even read its tree)."
       ]
     },
+    "Round 55": {
+      "decision_summary": "Round 55: wired resizable undock — the undock window now reflows its pane to its own size in both axes (consuming pinion R1021's per-window pane-viewport publish, PINION-PR10 delivered), fixed by giving the lone-pane scene a definite extent via fill_definite; reported the remaining shrink-floor as PINION-PR23.",
+      "changes_bullets": [
+        "sprag-gui view::view_for_window undock branch now wraps the lone pane in split::fill_definite (made pub(crate)) — the same definite Percent(100) extent the docked arrangements (view_split_row / view_grid) apply as their final step. Without it the undock pane filled the window width (cross-axis stretch) but its height collapsed to the grid's content rows (the sizeless flex main axis), so the window reflowed only horizontally; with it the pane reflows to its window in BOTH axes.",
+        "No new wiring was needed for the reflow itself: the existing per-pane reflow Effect (subscribing use_pane_viewport_size(pane_tag(i))) already fires for an undock window because pinion R1021 publishes per-pane viewport rects for EVERY painted window, not just DEFAULT_WINDOW — PINION-PR10 delivered. The R1006 window-size seam (use_viewport_size) stays primary-gated, but undock needs only the per-pane publish.",
+        "Updated the stale docs that predated R1021: crate-root main.rs and dock.rs module docs claimed the undock window opens fixed-size and does NOT reflow on OS resize (a pinion gap) — now they describe both-axis reflow via R1021, plus the remaining shrink-floor bound. Refined the toggle_pane_floating / cell_px comments (fits 1:1 at tear-off, then reflows).",
+        "Reported the remaining bound as a new pinion requirement PINION-PR23-RESIZABLE-WINDOW-MIN-FLOOR: SizeStrategy::Fixed floors winit min_inner_size at the open size, so the undock window can grow (and reflow) but cannot shrink below its intrinsic size, and no SizeStrategy decouples open-size from min-floor (Fixed couples them; IntrinsicAfterFirstPaint opens at min and the fill content has no intrinsic bbox). Shipped Fixed as the named bound (no workaround). Updated PINION-REQUIREMENTS index (+PR-23 row) and the PINION-PR10 doc status to delivered+consumed with a consumption note."
+      ],
+      "verification_bullets": [
+        "57 sprag-gui tests pass (new undock_window_reflows_its_pane_to_its_own_size guard + the existing docked tiles_two_panes / focus / dock tests); cargo clippy -p sprag-gui --all-targets clean; rustfmt clean; cargo doc -p sprag-gui with RUSTDOCFLAGS=-D warnings --document-private-items 0 warnings.",
+        "Root cause isolated by a headless probe: the docked main window already reflows vertically (960x360 -> 12 rows, 960x900 -> 30 rows) but the undock window's pane rect kept h=600/900 (the grid content height) while honoring width — pinpointing a missing definite extent (fill_definite), a sprag-side layout bug, NOT a pinion gap. The reflow mechanism is direction-agnostic (the guard drives two sizes and asserts both grow and shrink in the paint path); only the live winit min-floor (PR-23) blocks user shrink.",
+        "Built sprag-gui against the git-pinned pinion (rev 0cc79f78, R1053) and read the two load-bearing facts directly: publish_pane_viewports is per-window (R1021, not DEFAULT_WINDOW-gated) and SizeStrategy::Fixed sets with_min_inner_size = the open size (pinion-shell app.rs)."
+      ],
+      "impact_refs": [
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "PINION-PR23 (resizable-window min-floor): deliver a SizeStrategy that opens at a chosen size with a lower min floor, then make the undock window (and the main window, also Fixed) freely shrinkable; until then Fixed is the named bound (grow-reflows, no shrink).",
+        "Live GUI confirmation of undock resize-reflow is optional — the deterministic headless guard is the cemented faithful gate, and the winit min-floor means live shrink cannot be exercised until PR-23 lands anyway."
+      ],
+      "publishable_decision_summary": "Round 55: wired resizable undock — the undock window now reflows its pane to its own size in both axes (consuming pinion R1021's per-window pane-viewport publish, PINION-PR10 delivered), fixed by giving the lone-pane scene a definite extent via fill_definite; reported the remaining shrink-floor as PINION-PR23.",
+      "publishable_changes_bullets": [
+        "sprag-gui view::view_for_window undock branch now wraps the lone pane in split::fill_definite (made pub(crate)) — the same definite Percent(100) extent the docked arrangements (view_split_row / view_grid) apply as their final step. Without it the undock pane filled the window width (cross-axis stretch) but its height collapsed to the grid's content rows (the sizeless flex main axis), so the window reflowed only horizontally; with it the pane reflows to its window in BOTH axes.",
+        "No new wiring was needed for the reflow itself: the existing per-pane reflow Effect (subscribing use_pane_viewport_size(pane_tag(i))) already fires for an undock window because pinion R1021 publishes per-pane viewport rects for EVERY painted window, not just DEFAULT_WINDOW — PINION-PR10 delivered. The R1006 window-size seam (use_viewport_size) stays primary-gated, but undock needs only the per-pane publish.",
+        "Updated the stale docs that predated R1021: crate-root main.rs and dock.rs module docs claimed the undock window opens fixed-size and does NOT reflow on OS resize (a pinion gap) — now they describe both-axis reflow via R1021, plus the remaining shrink-floor bound. Refined the toggle_pane_floating / cell_px comments (fits 1:1 at tear-off, then reflows).",
+        "Reported the remaining bound as a new pinion requirement PINION-PR23-RESIZABLE-WINDOW-MIN-FLOOR: SizeStrategy::Fixed floors winit min_inner_size at the open size, so the undock window can grow (and reflow) but cannot shrink below its intrinsic size, and no SizeStrategy decouples open-size from min-floor (Fixed couples them; IntrinsicAfterFirstPaint opens at min and the fill content has no intrinsic bbox). Shipped Fixed as the named bound (no workaround). Updated PINION-REQUIREMENTS index (+PR-23 row) and the PINION-PR10 doc status to delivered+consumed with a consumption note."
+      ],
+      "publishable_verification_bullets": [
+        "57 sprag-gui tests pass (new undock_window_reflows_its_pane_to_its_own_size guard + the existing docked tiles_two_panes / focus / dock tests); cargo clippy -p sprag-gui --all-targets clean; rustfmt clean; cargo doc -p sprag-gui with RUSTDOCFLAGS=-D warnings --document-private-items 0 warnings.",
+        "Root cause isolated by a headless probe: the docked main window already reflows vertically (960x360 -> 12 rows, 960x900 -> 30 rows) but the undock window's pane rect kept h=600/900 (the grid content height) while honoring width — pinpointing a missing definite extent (fill_definite), a sprag-side layout bug, NOT a pinion gap. The reflow mechanism is direction-agnostic (the guard drives two sizes and asserts both grow and shrink in the paint path); only the live winit min-floor (PR-23) blocks user shrink.",
+        "Built sprag-gui against the git-pinned pinion (rev 0cc79f78, R1053) and read the two load-bearing facts directly: publish_pane_viewports is per-window (R1021, not DEFAULT_WINDOW-gated) and SizeStrategy::Fixed sets with_min_inner_size = the open size (pinion-shell app.rs)."
+      ],
+      "publishable_impact_refs": [
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "PINION-PR23 (resizable-window min-floor): deliver a SizeStrategy that opens at a chosen size with a lower min floor, then make the undock window (and the main window, also Fixed) freely shrinkable; until then Fixed is the named bound (grow-reflows, no shrink).",
+        "Live GUI confirmation of undock resize-reflow is optional — the deterministic headless guard is the cemented faithful gate, and the winit min-floor means live shrink cannot be exercised until PR-23 lands anyway."
+      ]
+    },
     "Round 6": {
       "decision_summary": "Inject input via the External + scene/invoke carrier: a sprag-owned key encoder writes PTY bytes behind the pane's engine External, lifting the read-only boundary (R2.6 encoding / R1.7 data-engine split).",
       "changes_bullets": [
