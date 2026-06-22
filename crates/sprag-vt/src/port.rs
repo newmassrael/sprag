@@ -204,13 +204,20 @@ pub struct Screen {
     scrollback: VecDeque<String>,
     /// Per-row soft-wrap continuation flag (the DEC `LINE_WRAPPED` attribute):
     /// `wrapped[r] == true` means row `r`'s logical line CONTINUES onto row
-    /// `r + 1` (the emulator autowrapped at the right margin), so a reflow
-    /// ([`Self::reflowed`]) joins them into one logical line before re-breaking
-    /// to a new width. Set at the autowrap site, cleared when a row is erased or
-    /// ends with an explicit line feed. Without it a resize cannot tell a soft
+    /// `r + 1`, so a reflow ([`Self::reflowed`]) joins them into one logical line
+    /// before re-breaking to a new width. Without it a resize cannot tell a soft
     /// wrap from a hard newline, so it cannot rewrap (the verbatim
     /// [`Self::resized`] fallback leaves a live shell's per-width prompt redraws
     /// stacked up).
+    ///
+    /// Set TRUE by two producers: (1) the autowrap site (the emulator hit the right
+    /// margin); (2) the line editor's resize-redraw `CR LF` continuation
+    /// (`Emulator::in_resize_redraw` — a premature break that is semantically a soft
+    /// wrap). Cleared when a row is erased or a line feed ends the line OUTSIDE that
+    /// redraw. The second producer is deliberate, not a stray writer: a reflowing
+    /// terminal must treat the editor's redraw continuation as soft for it to
+    /// collapse on widen, and that `CR LF` is context-only-distinguishable from a
+    /// hard newline (it lands mid-row), so the emulator owns that one decision.
     wrapped: Vec<bool>,
 }
 
@@ -361,6 +368,28 @@ impl Screen {
             self.generations[row as usize] = generation;
             // An erased row no longer continues a logical line.
             self.wrapped[row as usize] = false;
+        }
+    }
+
+    /// Clear the soft-wrapped CONTINUATION rows of the logical line whose head is
+    /// `row` (the rows `row+1..` reached by following the [`Self::wrapped`] chain),
+    /// leaving `row` itself untouched. One atomic operation that keeps the
+    /// soft-wrap invariant on the `Screen` (the SSOT owner): the chain is measured
+    /// to its last row BEFORE any clearing, because [`Self::clear_row`] drops a
+    /// row's own wrap flag (clearing as we walk would cut the walk short).
+    ///
+    /// Used by a line editor's resize redraw ([`crate::emulator`]): when the editor
+    /// reprints a wrapped line from its head, the stale tail the prior width left
+    /// below — which the reprint may only partly overwrite — must go, or it lingers
+    /// as a growing leftover. Caller-bounded to that redraw; a plain erase does not
+    /// touch continuation rows.
+    pub(crate) fn clear_soft_wrap_continuation(&mut self, row: u16, generation: u64) {
+        let mut last = row;
+        while last + 1 < self.rows && self.wrapped(last) {
+            last += 1;
+        }
+        for r in (row + 1)..=last {
+            self.clear_row(r, generation);
         }
     }
 

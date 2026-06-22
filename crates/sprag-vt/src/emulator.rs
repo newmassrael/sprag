@@ -64,6 +64,19 @@ pub struct Emulator {
     ///   the prior width does not survive as a growing leftover in the input.
     ///
     /// Cleared once the redraw batch is applied (see [`VtPort::advance`]).
+    ///
+    /// WHY a window and not a purely structural signal: the editor's `CR LF` lands
+    /// MID-row (a premature break, columns short of the margin), so it is
+    /// byte-for-byte indistinguishable from a genuine newline — only the resize
+    /// CONTEXT marks it as a soft wrap. (vte/`gnome-terminal` likewise rely on
+    /// context, not a pending-wrap latch, and likewise show the break until widen.)
+    ///
+    /// Scope LIMITS (held in practice, honestly bounded): it assumes the editor's
+    /// redraw is the first `advance` batch after the resize and fits in one batch.
+    /// A redraw split across PTY reads, or unrelated output arriving first, would
+    /// fall outside the window. Editor prompt redraws are small (< one read) and
+    /// foreground at the prompt, so this holds for the real cases; widening the
+    /// scope is deferred until a case is observed to need it.
     in_resize_redraw: bool,
 }
 
@@ -110,13 +123,11 @@ impl Emulator {
     fn control(&mut self, code: ControlCode) {
         match code {
             ControlCode::LineFeed | ControlCode::VerticalTab | ControlCode::FormFeed => {
-                // A line feed normally ends this row's logical line (a hard break).
-                // During a line editor's resize redraw (`in_resize_redraw`), an
-                // explicit `CR LF` is instead how readline continues a wrapped prompt
-                // at a width the line exactly fills — semantically a soft wrap, so the
-                // redraw stays one logical line whose per-width copies collapse on a
-                // later widen instead of stacking as ghosts.
-                self.screen.set_wrapped(self.row, self.in_resize_redraw);
+                // A line feed ends this row's logical line (a hard break) — UNLESS it
+                // is the editor's resize-redraw wrap idiom, where it CONTINUES the
+                // line (a soft wrap). See `in_resize_redraw` for why.
+                let soft_wrap = self.in_resize_redraw;
+                self.screen.set_wrapped(self.row, soft_wrap);
                 self.line_feed();
             }
             ControlCode::CarriageReturn => self.col = 0,
@@ -215,24 +226,15 @@ impl Emulator {
                 for c in start..end.min(self.cols) {
                     self.screen.set_cell(c, row, Cell::blank(), g);
                 }
-                // During a resize redraw, the editor's leading erase-in-line clears
-                // its current row before reprinting the whole wrapped line. Extend it
-                // to the line's soft-wrapped continuation rows too (read BEFORE the
-                // wrap flag below is cleared), so the stale tail left by the prior
-                // width — which the reprint may only partly cover — does not survive
-                // as a growing leftover. Bounded to the active line's continuation,
-                // and only while a redraw is in flight.
-                if self.in_resize_redraw && end >= self.cols {
-                    // Walk the wrap chain to the line's last continuation row FIRST
-                    // (clearing a row drops its wrap flag, which would otherwise cut
-                    // the walk short), then clear those rows.
-                    let mut last = row;
-                    while last + 1 < self.rows && self.screen.wrapped(last) {
-                        last += 1;
-                    }
-                    for r in (row + 1)..=last {
-                        self.screen.clear_row(r, g);
-                    }
+                // A line editor's resize redraw opens with erase-to-end-of-line
+                // (`ESC [ K`) at the active line's head, then reprints the whole
+                // wrapped line. Clear that line's stale continuation rows too (one
+                // atomic, invariant-safe op on the `Screen`), so the prior width's
+                // tail — which the reprint may only partly cover — does not linger.
+                // Scoped to that exact idiom: only `EraseToEndOfLine`, only during a
+                // redraw (`in_resize_redraw`); a plain erase touches one row.
+                if self.in_resize_redraw && matches!(mode, EraseInLine::EraseToEndOfLine) {
+                    self.screen.clear_soft_wrap_continuation(row, g);
                 }
                 // Erasing to the right margin truncates the line, so it no
                 // longer soft-wraps onto the next row.
