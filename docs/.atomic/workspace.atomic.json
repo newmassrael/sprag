@@ -2302,6 +2302,46 @@
         "Residual (low priority, from the R49 review, not blocking): the four parallel per-pane &'static str tables (PANE_TAGS / SPLITTER_TAGS / SCROLLBAR_TAGS / SCROLL_STATE_KEYS) keyed by pane index — a future consolidation into one per-pane identity struct now that ExtraExternal.tag is Cow (runtime tags are possible)."
       ]
     },
+    "Round 51": {
+      "decision_summary": "Round 51: consolidated the three parallel per-pane &'static str identity arrays (PANE_TAGS / SCROLLBAR_TAGS / SCROLL_STATE_KEYS — the R49 session review's last residual) into one PaneSlot[MAX_PANES] struct array in terminal.rs (the per-pane identity SSOT), so a pane's three index-aligned tags can no longer drift; SPLITTER_TAGS is left as the separate per-divider axis. A behavior-preserving refactor (byte-identical tag literals). Committed 83e5296 on main.",
+      "changes_bullets": [
+        "terminal.rs: new struct PaneSlot { pane, scrollbar, scroll_key } + const PANE_SLOTS[MAX_PANES] (one row per pane, the three tags grouped so they cannot index-drift); accessors pane_tag / pane_scrollbar_tag / pane_scroll_key / pane_index_of read it. Replaces the former separate PANE_TAGS and scrollbar.rs's SCROLLBAR_TAGS / SCROLL_STATE_KEYS arrays.",
+        "scrollbar.rs drops its SCROLLBAR_TAGS / SCROLL_STATE_KEYS + scrollbar_tag / scroll_state_key and calls terminal::pane_scrollbar_tag / pane_scroll_key; main.rs's apply_wheel hit-test + painted-track test use terminal::pane_scrollbar_tag.",
+        "split.rs SPLITTER_TAGS unchanged — documented as the SEPARATE per-divider identity axis (N-1 dividers, position-keyed), deliberately NOT folded into the per-pane PaneSlot (folding would be an off-by-one pane/divider conflation)."
+      ],
+      "verification_bullets": [
+        "Behavior-preserving: the tag literals are byte-identical (sprag_gui.{pane,scrollbar,scroll}.<i>); 56 sprag-gui tests pass incl. a new pane_slot_tags_are_index_aligned guard (each slot's three tags end with .<i> and are distinct namespaces); clippy + rustfmt clean; pre-commit gates passed.",
+        "Live (hidden-window JSON-RPC snapshot): sprag_gui.pane.0/1 and sprag_gui.scrollbar.0/1 still PRESENT in the painted scene — input / scroll routing unaffected by the reorg."
+      ],
+      "impact_refs": [
+        "4",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "The R49 adversarial session review is now FULLY discharged: wheel/thumb/reconcile gaps (R50, via pinion R1045/1046/1047 + R1048/PR-18.1), the render surface-recovery crash (pinion R1049/PR-21), and this parallel-tag-table consolidation (R51). No open residuals from that review.",
+        "PaneSlot is the per-pane identity SSOT (the input/focus/paint/reflow tag + scrollbar tag + ScrollState cache key, index-aligned by construction). Adding a pane = one PANE_SLOTS row + bump MAX_PANES. Per-DIVIDER identity stays a separate table (split::SPLITTER_TAGS, position-keyed) by design.",
+        "Scroll feature set is complete on the one per-pane ScrollState SSOT: keyboard (Shift+PageUp/Down) + scrollbar drag + mouse-wheel/touchpad, with an always-visible thumb (with_thumb_role) and a pure view-fn (reconcile_frame). Six pinion gaps reported this arc (PR-16/18/18.1/19/20/21) all delivered + wired."
+      ],
+      "publishable_decision_summary": "Round 51: consolidated the three parallel per-pane &'static str identity arrays (PANE_TAGS / SCROLLBAR_TAGS / SCROLL_STATE_KEYS — the R49 session review's last residual) into one PaneSlot[MAX_PANES] struct array in terminal.rs (the per-pane identity SSOT), so a pane's three index-aligned tags can no longer drift; SPLITTER_TAGS is left as the separate per-divider axis. A behavior-preserving refactor (byte-identical tag literals). Committed 83e5296 on main.",
+      "publishable_changes_bullets": [
+        "terminal.rs: new struct PaneSlot { pane, scrollbar, scroll_key } + const PANE_SLOTS[MAX_PANES] (one row per pane, the three tags grouped so they cannot index-drift); accessors pane_tag / pane_scrollbar_tag / pane_scroll_key / pane_index_of read it. Replaces the former separate PANE_TAGS and scrollbar.rs's SCROLLBAR_TAGS / SCROLL_STATE_KEYS arrays.",
+        "scrollbar.rs drops its SCROLLBAR_TAGS / SCROLL_STATE_KEYS + scrollbar_tag / scroll_state_key and calls terminal::pane_scrollbar_tag / pane_scroll_key; main.rs's apply_wheel hit-test + painted-track test use terminal::pane_scrollbar_tag.",
+        "split.rs SPLITTER_TAGS unchanged — documented as the SEPARATE per-divider identity axis (N-1 dividers, position-keyed), deliberately NOT folded into the per-pane PaneSlot (folding would be an off-by-one pane/divider conflation)."
+      ],
+      "publishable_verification_bullets": [
+        "Behavior-preserving: the tag literals are byte-identical (sprag_gui.{pane,scrollbar,scroll}.<i>); 56 sprag-gui tests pass incl. a new pane_slot_tags_are_index_aligned guard (each slot's three tags end with .<i> and are distinct namespaces); clippy + rustfmt clean; pre-commit gates passed.",
+        "Live (hidden-window JSON-RPC snapshot): sprag_gui.pane.0/1 and sprag_gui.scrollbar.0/1 still PRESENT in the painted scene — input / scroll routing unaffected by the reorg."
+      ],
+      "publishable_impact_refs": [
+        "4",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "The R49 adversarial session review is now FULLY discharged: wheel/thumb/reconcile gaps (R50, via pinion R1045/1046/1047 + R1048/PR-18.1), the render surface-recovery crash (pinion R1049/PR-21), and this parallel-tag-table consolidation (R51). No open residuals from that review.",
+        "PaneSlot is the per-pane identity SSOT (the input/focus/paint/reflow tag + scrollbar tag + ScrollState cache key, index-aligned by construction). Adding a pane = one PANE_SLOTS row + bump MAX_PANES. Per-DIVIDER identity stays a separate table (split::SPLITTER_TAGS, position-keyed) by design.",
+        "Scroll feature set is complete on the one per-pane ScrollState SSOT: keyboard (Shift+PageUp/Down) + scrollbar drag + mouse-wheel/touchpad, with an always-visible thumb (with_thumb_role) and a pure view-fn (reconcile_frame). Six pinion gaps reported this arc (PR-16/18/18.1/19/20/21) all delivered + wired."
+      ]
+    },
     "Round 6": {
       "decision_summary": "Inject input via the External + scene/invoke carrier: a sprag-owned key encoder writes PTY bytes behind the pane's engine External, lifting the read-only boundary (R2.6 encoding / R1.7 data-engine split).",
       "changes_bullets": [
