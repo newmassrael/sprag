@@ -2342,6 +2342,50 @@
         "Scroll feature set is complete on the one per-pane ScrollState SSOT: keyboard (Shift+PageUp/Down) + scrollbar drag + mouse-wheel/touchpad, with an always-visible thumb (with_thumb_role) and a pure view-fn (reconcile_frame). Six pinion gaps reported this arc (PR-16/18/18.1/19/20/21) all delivered + wired."
       ]
     },
+    "Round 52": {
+      "decision_summary": "Round 52: remediated the R50/R51 adversarial session review (two independent lenses: refactoring + architecture). Both flagged that R51's PaneSlot was advertised as \"the per-pane identity SSOT\" while three more per-pane keys (preedit/reflow/wheel_accum) were minted by separate format! calls outside it. Fixed by (a) narrowing PaneSlot's doc to its true scope (the &'static External-tag identity) and (b) a single pane_cache_key(ns,i) mint site that preedit/reflow/wheel_accum now share. Also: the wheel accumulator discards its sub-row remainder when ScrollState::scroll_by clamps at a boundary (no stale wrong-side fraction on reversal); the alignment test asserts full strings + covers pane_cache_key; multi-window caveats documented on reconcile_frame + apply_wheel; the broken PANE_TAGS link + the rest of sprag-gui's intra-doc links cleaned (cargo doc 0 warnings). The architecture lens OVERTURNED the refactoring lens's \"terminal.rs owning scrollbar/scroll naming is a layer smell\" — terminal.rs is the correct home (per-pane identity is the terminal model's concern; clean dependency direction). Committed 7fac232 on main.",
+      "changes_bullets": [
+        "terminal.rs: PANE_SLOTS doc narrowed to the &'static External-tag identity SSOT (was over-claimed as the whole per-pane identity); new pane_cache_key(namespace, index) is the ONE site that mints per-pane Owner::cache keys.",
+        "input.rs preedit_key / reflow.rs reflow_key / scrollbar.rs wheel_accum now call pane_cache_key (was three separate format! sites) so the index suffix is derived in one place.",
+        "scrollbar.rs wheel_scroll_pane reads ScrollState::offset_y before/after scroll_by and discards the accumulator remainder when the offset is unchanged (clamped boundary), so a reversal never starts with a stale wrong-side fraction.",
+        "terminal.rs test pane_slot_tags_match_their_namespace_and_index asserts each tag is EXACTLY sprag_gui.<ns>.<i> (catches a prefix typo / duplicated row that a suffix-only check missed) and checks pane_cache_key.",
+        "Docs: reconcile_frame notes its primary-window paint gate (a floated pane's tail-follow can lag a frame); apply_wheel notes disjoint pane/gutter rects + the one-tag-one-window precondition; fixed the broken PANE_TAGS link + remaining intra-doc links (cargo doc --document-private-items now 0 warnings)."
+      ],
+      "verification_bullets": [
+        "Build + 56 sprag-gui tests pass; clippy clean; rustfmt clean; cargo doc --no-deps --document-private-items 0 warnings — verified against pinion R1050 (the text-font WIP that briefly broke the workspace build was resolved upstream by the user's R1050 commit 81d34b00).",
+        "Two independent adversarial reviewers (refactoring + architecture lenses) found NO MUST-FIX in R50; R50 (wheel GUI-side / thumb collapse / reconcile pure view) confirmed R1.7-clean, substrate-pure, dual-write closed by the was_following guard. The substantive finding was R51's PaneSlot SSOT over-claim, the focus of this round."
+      ],
+      "impact_refs": [
+        "4",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Per-pane identity is now honestly split: &'static External tags in PANE_SLOTS (index-aligned by construction, full-string tested) + runtime Owner::cache keys via pane_cache_key (index-derived, single mint site). No escaped per-pane key. Per-DIVIDER identity stays separate (split::SPLITTER_TAGS).",
+        "Dependency constraint (learned this round): sprag must SHARE pinion's vendored-SCE submodule as ONE Cargo package, which FORCES path deps to the ../pinion sibling checkout — a git/server dep would split SCE into two sources (pinion's git-internal submodule path vs sprag's) and type-collide. So when pinion's working tree has a non-compiling WIP, sprag's build + commit are blocked (pre-commit clippy --workspace); the clean unblock is the user committing/stashing the pinion WIP (done via R1050), NOT rewiring sprag to git deps. quickjs's test262 submodule is update=none + shallow, so it is never fetched — a non-issue.",
+        "Scroll arc fully closed: R49 (contrast/drag) + R50 (wheel/thumb/reconcile, pinion R1045-1048) + R1049 render surface-recovery + R51 (PaneSlot consolidation) + R52 (review remediation). All on one per-pane ScrollState SSOT."
+      ],
+      "publishable_decision_summary": "Round 52: remediated the R50/R51 adversarial session review (two independent lenses: refactoring + architecture). Both flagged that R51's PaneSlot was advertised as \"the per-pane identity SSOT\" while three more per-pane keys (preedit/reflow/wheel_accum) were minted by separate format! calls outside it. Fixed by (a) narrowing PaneSlot's doc to its true scope (the &'static External-tag identity) and (b) a single pane_cache_key(ns,i) mint site that preedit/reflow/wheel_accum now share. Also: the wheel accumulator discards its sub-row remainder when ScrollState::scroll_by clamps at a boundary (no stale wrong-side fraction on reversal); the alignment test asserts full strings + covers pane_cache_key; multi-window caveats documented on reconcile_frame + apply_wheel; the broken PANE_TAGS link + the rest of sprag-gui's intra-doc links cleaned (cargo doc 0 warnings). The architecture lens OVERTURNED the refactoring lens's \"terminal.rs owning scrollbar/scroll naming is a layer smell\" — terminal.rs is the correct home (per-pane identity is the terminal model's concern; clean dependency direction). Committed 7fac232 on main.",
+      "publishable_changes_bullets": [
+        "terminal.rs: PANE_SLOTS doc narrowed to the &'static External-tag identity SSOT (was over-claimed as the whole per-pane identity); new pane_cache_key(namespace, index) is the ONE site that mints per-pane Owner::cache keys.",
+        "input.rs preedit_key / reflow.rs reflow_key / scrollbar.rs wheel_accum now call pane_cache_key (was three separate format! sites) so the index suffix is derived in one place.",
+        "scrollbar.rs wheel_scroll_pane reads ScrollState::offset_y before/after scroll_by and discards the accumulator remainder when the offset is unchanged (clamped boundary), so a reversal never starts with a stale wrong-side fraction.",
+        "terminal.rs test pane_slot_tags_match_their_namespace_and_index asserts each tag is EXACTLY sprag_gui.<ns>.<i> (catches a prefix typo / duplicated row that a suffix-only check missed) and checks pane_cache_key.",
+        "Docs: reconcile_frame notes its primary-window paint gate (a floated pane's tail-follow can lag a frame); apply_wheel notes disjoint pane/gutter rects + the one-tag-one-window precondition; fixed the broken PANE_TAGS link + remaining intra-doc links (cargo doc --document-private-items now 0 warnings)."
+      ],
+      "publishable_verification_bullets": [
+        "Build + 56 sprag-gui tests pass; clippy clean; rustfmt clean; cargo doc --no-deps --document-private-items 0 warnings — verified against pinion R1050 (the text-font WIP that briefly broke the workspace build was resolved upstream by the user's R1050 commit 81d34b00).",
+        "Two independent adversarial reviewers (refactoring + architecture lenses) found NO MUST-FIX in R50; R50 (wheel GUI-side / thumb collapse / reconcile pure view) confirmed R1.7-clean, substrate-pure, dual-write closed by the was_following guard. The substantive finding was R51's PaneSlot SSOT over-claim, the focus of this round."
+      ],
+      "publishable_impact_refs": [
+        "4",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Per-pane identity is now honestly split: &'static External tags in PANE_SLOTS (index-aligned by construction, full-string tested) + runtime Owner::cache keys via pane_cache_key (index-derived, single mint site). No escaped per-pane key. Per-DIVIDER identity stays separate (split::SPLITTER_TAGS).",
+        "Dependency constraint (learned this round): sprag must SHARE pinion's vendored-SCE submodule as ONE Cargo package, which FORCES path deps to the ../pinion sibling checkout — a git/server dep would split SCE into two sources (pinion's git-internal submodule path vs sprag's) and type-collide. So when pinion's working tree has a non-compiling WIP, sprag's build + commit are blocked (pre-commit clippy --workspace); the clean unblock is the user committing/stashing the pinion WIP (done via R1050), NOT rewiring sprag to git deps. quickjs's test262 submodule is update=none + shallow, so it is never fetched — a non-issue.",
+        "Scroll arc fully closed: R49 (contrast/drag) + R50 (wheel/thumb/reconcile, pinion R1045-1048) + R1049 render surface-recovery + R51 (PaneSlot consolidation) + R52 (review remediation). All on one per-pane ScrollState SSOT."
+      ]
+    },
     "Round 6": {
       "decision_summary": "Inject input via the External + scene/invoke carrier: a sprag-owned key encoder writes PTY bytes behind the pane's engine External, lifting the read-only boundary (R2.6 encoding / R1.7 data-engine split).",
       "changes_bullets": [
