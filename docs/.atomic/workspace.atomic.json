@@ -2508,6 +2508,48 @@
         "Live GUI confirmation of undock resize-reflow is optional — the deterministic headless guard is the cemented faithful gate, and the winit min-floor means live shrink cannot be exercised until PR-23 lands anyway."
       ]
     },
+    "Round 56": {
+      "decision_summary": "Round 56: bumped pinion pin to R1062 (latest) and consumed the two seams it delivered — PINION-PR23 SizeStrategy::OpenResizable (undock window now freely grows AND shrinks) and PINION-PR24 scene/screenshot live-surface readback (used to verify the reported undock white-window is resolved: grow 600x900 + shrink 300x360 reflow + render with no white).",
+      "changes_bullets": [
+        "Bumped all 7 pinion-* git revs from 0cc79f78 (R1053) to 04d0ea9d (R1062, latest pinion main); SCE rev unchanged (3078f8bf, still matches pinion's workspace pin so the single Engine<StatePolicy> instance holds). cargo build / 57 tests / clippy clean against the new pinion.",
+        "dock.rs toggle_pane_floating: the undock window's SizeStrategy::Fixed -> OpenResizable { size: intrinsic (cols,rows)x cell, min: None } — consuming pinion R1059 / PINION-PR23 (delivered). Fixed pinned the OS-resize floor at the open size (shrink blocked); OpenResizable with min: None leaves the floor at the OS minimum, so the undock window now freely GROWS and SHRINKS, the pane reflowing both axes.",
+        "Verified the reported \"undock window is white/blank\" is RESOLVED, using pinion R1060-R1062 / PINION-PR24 (scene/screenshot live-surface readback via capture_rgba8, {out_path} PNG). Per-window occlusion/mapping-immune capture shows the undock window rendering the terminal correctly; a real OS resize (XResizeWindow) to 600x900 (grow) and 300x360 (shrink-below-open) both reflow + render with no white slack (bottom60_white=0.000). The earlier \"white/dark\" captures were all Claude Code occlusion artifacts (ffmpeg x11grab / xwd of GPU windows) — the workarounds were dropped.",
+        "Updated stale docs to delivered+consumed: dock.rs + main.rs \"Fixed / cannot-shrink remaining-bound\" sections now describe OpenResizable (freely resizable); PINION-PR23 / PINION-PR24 doc status banners + REQUIREMENTS rows flipped to delivered."
+      ],
+      "verification_bullets": [
+        "57 sprag-gui tests pass; cargo clippy -p sprag-gui --all-targets clean; cargo doc (-D warnings, --document-private-items) 0 warnings; build clean against git-pinned pinion 04d0ea9d (R1062).",
+        "Reliable capture method (replaces the dropped X11 workarounds): per-window scene/screenshot {window, path:\"\", out_path} reads back the presented swapchain offscreen — immune to occlusion/mapping. Grown 600x900 and shrunk 300x360 captures viewed: green prompt + black terminal filling the window, no white; shrink wraps the prompt at the narrower width (reflow confirmed).",
+        "Noted: scene/resize returns requested:true but does NOT actually resize a secondary window (request-only / primary-only); a real user drag (or XResizeWindow in the test) does. Not user-blocking (users drag the window edge)."
+      ],
+      "impact_refs": [
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Push consent pending for R55 + R56 (local commits; origin/main still at R54 7d01141).",
+        "User report \"drag does not re-dock\" is a UX expectation, not a bug: re-dock is Ctrl+Shift+Enter on the focused floated pane, not dragging the window onto the main. Consider a drag-to-dock affordance only if the user wants it.",
+        "scene/resize is a no-op for secondary windows (request-only). Minor; revisit only if programmatic secondary-window resize is ever needed."
+      ],
+      "publishable_decision_summary": "Round 56: bumped pinion pin to R1062 (latest) and consumed the two seams it delivered — PINION-PR23 SizeStrategy::OpenResizable (undock window now freely grows AND shrinks) and PINION-PR24 scene/screenshot live-surface readback (used to verify the reported undock white-window is resolved: grow 600x900 + shrink 300x360 reflow + render with no white).",
+      "publishable_changes_bullets": [
+        "Bumped all 7 pinion-* git revs from 0cc79f78 (R1053) to 04d0ea9d (R1062, latest pinion main); SCE rev unchanged (3078f8bf, still matches pinion's workspace pin so the single Engine<StatePolicy> instance holds). cargo build / 57 tests / clippy clean against the new pinion.",
+        "dock.rs toggle_pane_floating: the undock window's SizeStrategy::Fixed -> OpenResizable { size: intrinsic (cols,rows)x cell, min: None } — consuming pinion R1059 / PINION-PR23 (delivered). Fixed pinned the OS-resize floor at the open size (shrink blocked); OpenResizable with min: None leaves the floor at the OS minimum, so the undock window now freely GROWS and SHRINKS, the pane reflowing both axes.",
+        "Verified the reported \"undock window is white/blank\" is RESOLVED, using pinion R1060-R1062 / PINION-PR24 (scene/screenshot live-surface readback via capture_rgba8, {out_path} PNG). Per-window occlusion/mapping-immune capture shows the undock window rendering the terminal correctly; a real OS resize (XResizeWindow) to 600x900 (grow) and 300x360 (shrink-below-open) both reflow + render with no white slack (bottom60_white=0.000). The earlier \"white/dark\" captures were all Claude Code occlusion artifacts (ffmpeg x11grab / xwd of GPU windows) — the workarounds were dropped.",
+        "Updated stale docs to delivered+consumed: dock.rs + main.rs \"Fixed / cannot-shrink remaining-bound\" sections now describe OpenResizable (freely resizable); PINION-PR23 / PINION-PR24 doc status banners + REQUIREMENTS rows flipped to delivered."
+      ],
+      "publishable_verification_bullets": [
+        "57 sprag-gui tests pass; cargo clippy -p sprag-gui --all-targets clean; cargo doc (-D warnings, --document-private-items) 0 warnings; build clean against git-pinned pinion 04d0ea9d (R1062).",
+        "Reliable capture method (replaces the dropped X11 workarounds): per-window scene/screenshot {window, path:\"\", out_path} reads back the presented swapchain offscreen — immune to occlusion/mapping. Grown 600x900 and shrunk 300x360 captures viewed: green prompt + black terminal filling the window, no white; shrink wraps the prompt at the narrower width (reflow confirmed).",
+        "Noted: scene/resize returns requested:true but does NOT actually resize a secondary window (request-only / primary-only); a real user drag (or XResizeWindow in the test) does. Not user-blocking (users drag the window edge)."
+      ],
+      "publishable_impact_refs": [
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Push consent pending for R55 + R56 (local commits; origin/main still at R54 7d01141).",
+        "User report \"drag does not re-dock\" is a UX expectation, not a bug: re-dock is Ctrl+Shift+Enter on the focused floated pane, not dragging the window onto the main. Consider a drag-to-dock affordance only if the user wants it.",
+        "scene/resize is a no-op for secondary windows (request-only). Minor; revisit only if programmatic secondary-window resize is ever needed."
+      ]
+    },
     "Round 6": {
       "decision_summary": "Inject input via the External + scene/invoke carrier: a sprag-owned key encoder writes PTY bytes behind the pane's engine External, lifting the read-only boundary (R2.6 encoding / R1.7 data-engine split).",
       "changes_bullets": [
