@@ -45,15 +45,14 @@
 //! — dock/undock changes only *where* a pane is painted, never its tag /
 //! External / focusability (so it does NOT need runtime-focusable changes).
 //! The undock window opens sized to the pane's intrinsic `(cols, rows) × cell` and
-//! **reflows the pane to its own window size in both axes on OS resize** — pinion
-//! R1021 publishes the per-pane viewport rect for EVERY painted window (not just the
-//! default), so the floated pane's existing reflow Effect fires on the secondary
-//! window's rect (see `dock` docs). Remaining bound: the window opens via
-//! `SizeStrategy::Fixed`, which floors winit's `min_inner_size` at the open size, so
-//! the user can grow it (the pane reflows larger) but not shrink it below its
-//! intrinsic size — a freely-shrinkable undock window needs a `SizeStrategy` that
-//! decouples the open size from the min floor (reported, `dock` docs). Per-window
-//! a11y partitions nodes ([`a11y::access_nodes_for_window`]).
+//! is **freely resizable — grow AND shrink — with the pane reflowing to its own
+//! window size in both axes on OS resize**. Two pinion seams: R1021 publishes the
+//! per-pane viewport rect for EVERY painted window (so the floated pane's existing
+//! reflow Effect fires on the secondary window's rect), and R1059
+//! `SizeStrategy::OpenResizable { min: None }` decouples the open size from the
+//! OS-resize floor (so the window shrinks below its open size — `Fixed` blocked
+//! that). See `dock` docs. Per-window a11y partitions nodes
+//! ([`a11y::access_nodes_for_window`]).
 //!
 //! ## Draggable dividers (R38): drag to resize panes
 //!

@@ -36,18 +36,18 @@
 //! [`crate::split::fill_definite`] (the same fill the docked arrangements apply) so
 //! it reflows in BOTH axes, not only width — see that fn's docs.
 //!
-//! ## Remaining bound: the undock window cannot shrink below its open size
+//! ## Freely resizable: grow AND shrink (pinion R1059 / PINION-PR23)
 //!
-//! [`SizeStrategy::Fixed`] floors winit's `min_inner_size` at the open size
-//! (`pinion-shell` `app.rs`), so the user can GROW the undock window (the pane
-//! reflows larger) but cannot SHRINK it below the size it opened at. The reflow
-//! MECHANISM is direction-agnostic (proven headlessly) — only the window chrome's
-//! drag floor blocks it. A freely-shrinkable undock window needs a `SizeStrategy`
-//! that opens at a chosen size yet permits a smaller min floor; neither `Fixed`
-//! (min == open) nor `IntrinsicAfterFirstPaint` (opens at `min`, and the pane
-//! content fills with no intrinsic bbox) expresses that. Reported as a pinion
-//! requirement (`claudedocs/PINION-PR23-RESIZABLE-WINDOW-MIN-FLOOR.md`); until it
-//! lands, `Fixed` is the honest bound (grow-reflow, no shrink), not a workaround.
+//! The undock window uses [`SizeStrategy::OpenResizable`]`{ size, min: None }`: it
+//! opens at the pane's intrinsic `size` (1:1 tear-off) but the OS-resize floor is
+//! the OS-native minimum (NOT the open size), so the user can GROW it (the pane
+//! reflows larger) AND SHRINK it below the open size (reflows smaller) — both axes.
+//! `Fixed` would pin the floor at the open size (shrink blocked); `OpenResizable`
+//! decouples the open size from the floor, which is what a plain resizable window
+//! wants. This consumes `claudedocs/PINION-PR23-RESIZABLE-WINDOW-MIN-FLOOR.md`
+//! (DELIVERED as pinion R1059). Verified end-to-end with the live-surface capture
+//! `scene/screenshot` (PINION-PR24, R1060–R1062): an undock window grown to 600×900
+//! and shrunk to 300×360 reflows + renders with no white slack.
 
 use crate::terminal::{MAX_PANES, use_terminal};
 use crate::{WINDOW_H, WINDOW_W};
@@ -137,15 +137,19 @@ pub(crate) fn toggle_pane_floating(i: usize) {
         let tv = use_terminal();
         let (cols, rows) = tv.pane(i).session().dimensions();
         // Open at the pane's intrinsic (cols, rows) x cell — the grid_dims
-        // inverse ([`cell_px`]) — so it fits 1:1 at tear-off (an OS resize then
-        // reflows it to the new window size, both axes, via the R1021 publish).
+        // inverse ([`cell_px`]) — so it fits 1:1 at tear-off. `OpenResizable`
+        // (pinion R1059 / PINION-PR23) decouples the open size from the OS-resize
+        // floor: `min: None` leaves the floor at the OS-native minimum, so the
+        // user can freely GROW (the pane reflows larger) AND SHRINK below the open
+        // size (reflows smaller) — both axes via the R1021 per-window publish.
+        // `Fixed` would pin the floor at the open size (shrink blocked).
         let (width, height) = crate::terminal::cell_px(tv.metric, cols, rows);
         windows.push(WindowSpec::new(
             Cow::Owned(target),
             format!("sprag terminal — pane {i}"),
-            SizeStrategy::Fixed {
-                width: width.max(1),
-                height: height.max(1),
+            SizeStrategy::OpenResizable {
+                size: (width.max(1), height.max(1)),
+                min: None,
             },
         ));
     }
