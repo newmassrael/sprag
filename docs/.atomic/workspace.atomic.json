@@ -2426,6 +2426,48 @@
         "PR-22 (claudedocs/PINION-PR22-SCE-GIT-SOURCE.md) is now DELIVERED both sides: pinion R1053 + sprag R53. The REQUIREMENTS index row should be read as delivered. Scroll arc (R49-R52) remains closed and unaffected (build-topology change only, no behavior change)."
       ]
     },
+    "Round 54": {
+      "decision_summary": "Round 54: completed the PR-22 endgame — git-pinned ALL of sprag's pinion deps so sprag no longer reads the sibling ../pinion working tree at all. The 7 pinion-* path deps (core/a11y/shell/runtime/widget-paint/forge/rpc) in sprag's [workspace.dependencies] now point at git = pinion.git, rev = 0cc79f78151d68932fd1415bdda8e21a32f92a79 (pinion origin/main == HEAD == R1053, pushed; its own SCE rev is 3078f8bf, matching sprag's SCE git pin from R53, so the single shared SCE instance is preserved). Result: an in-progress / non-compiling pinion working-tree edit can NEVER block sprag's build or commit again. The accepted cost: a pinion change reaches sprag only when pushed AND the rev is bumped here (live-dogfood auto-pickup is gone). Committed c4dfee8 on main. User explicitly chose this (\"stash 쓰지말고, ../pinion 보지마, 최종단계까지 진행해\").",
+      "changes_bullets": [
+        "sprag/Cargo.toml [workspace.dependencies]: all 7 pinion-* deps path (../pinion/crates/*) -> { git = https://github.com/newmassrael/pinion.git, rev = 0cc79f78... }; package= omitted (dep key == crate name; pinion crates are workspace members). Rewrote the block comment: the git+rev pin, the WIP-immunity, and the bump procedure (push pinion, set rev on every pinion-* line AND the SCE rev to pinion@<rev>'s SCE).",
+        "Rev chosen = pinion origin/main 0cc79f78 (R1053): verified reachable on the remote, 0 unpushed, and its [workspace.dependencies] SCE rev == 3078f8bf == sprag's SCE rev (so SCE stays ONE instance across the git boundary).",
+        "Committed Cargo.lock alongside (records the 13 pinion git source pins). DESIGN.md §5's 'path deps because pinion is unpublished' rationale is now superseded by PR-22; noted inline as a follow-up to reconcile in DESIGN.md."
+      ],
+      "verification_bullets": [
+        "cargo tree --workspace: ZERO path refs to ../pinion or /home/coin/pinion (sprag reads only the ~/.cargo/git checkout); pinion-core resolves to one git instance; sce-rust-runtime one git instance @ 3078f8bf.",
+        "WIP-IMMUNITY PROVEN: pinion's working tree currently has uncommitted text-font WIP, yet sprag built clean from the pinned git checkout (the exact failure mode that blocked R52 cannot recur).",
+        "Full workspace build (1m15s first fetch+compile of pinion from git) + all workspace tests pass (sprag-plugin 42, sprag-vt 32, sprag-terminal 11, sprag-host 9, real-bash 4, sprag-gui 56, etc.); clippy --workspace --all-targets clean; rustfmt --all clean; pre-commit gates passed."
+      ],
+      "impact_refs": [
+        "4",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "DOGFOOD WORKFLOW CHANGED (the big one): sprag NO LONGER auto-picks up local pinion edits. To land a pinion change in sprag now: (1) commit + PUSH pinion, (2) bump `rev` on ALL 7 pinion-* lines in sprag/Cargo.toml to the new commit, (3) if pinion@<rev> bumped its SCE, bump sprag's SCE rev to match (keep the single SCE instance), (4) cargo update -p / rebuild. A helper to bump all revs at once would be worth adding if this churns.",
+        "UPSHOT: pinion working-tree WIP can no longer block sprag (R52's blocker is structurally gone). The [[pinion-wip-blocks-sprag-build]] memory is now largely obsolete for the build-blocking claim — sprag is decoupled; only an explicit rev bump couples them. Update that memory.",
+        "PR-22 is now FULLY delivered end to end: pinion R1053 (SCE path->git) + sprag R53 (mirror SCE) + sprag R54 (git-pin all pinion). No behavior change to any feature; pure build-topology. Scroll arc (R49-R52) remains closed. Stop-and-report ground rule unaffected (still never edit pinion from a sprag session; now sprag also won't even read its tree)."
+      ],
+      "publishable_decision_summary": "Round 54: completed the PR-22 endgame — git-pinned ALL of sprag's pinion deps so sprag no longer reads the sibling ../pinion working tree at all. The 7 pinion-* path deps (core/a11y/shell/runtime/widget-paint/forge/rpc) in sprag's [workspace.dependencies] now point at git = pinion.git, rev = 0cc79f78151d68932fd1415bdda8e21a32f92a79 (pinion origin/main == HEAD == R1053, pushed; its own SCE rev is 3078f8bf, matching sprag's SCE git pin from R53, so the single shared SCE instance is preserved). Result: an in-progress / non-compiling pinion working-tree edit can NEVER block sprag's build or commit again. The accepted cost: a pinion change reaches sprag only when pushed AND the rev is bumped here (live-dogfood auto-pickup is gone). Committed c4dfee8 on main. User explicitly chose this (\"stash 쓰지말고, ../pinion 보지마, 최종단계까지 진행해\").",
+      "publishable_changes_bullets": [
+        "sprag/Cargo.toml [workspace.dependencies]: all 7 pinion-* deps path (../pinion/crates/*) -> { git = https://github.com/newmassrael/pinion.git, rev = 0cc79f78... }; package= omitted (dep key == crate name; pinion crates are workspace members). Rewrote the block comment: the git+rev pin, the WIP-immunity, and the bump procedure (push pinion, set rev on every pinion-* line AND the SCE rev to pinion@<rev>'s SCE).",
+        "Rev chosen = pinion origin/main 0cc79f78 (R1053): verified reachable on the remote, 0 unpushed, and its [workspace.dependencies] SCE rev == 3078f8bf == sprag's SCE rev (so SCE stays ONE instance across the git boundary).",
+        "Committed Cargo.lock alongside (records the 13 pinion git source pins). DESIGN.md §5's 'path deps because pinion is unpublished' rationale is now superseded by PR-22; noted inline as a follow-up to reconcile in DESIGN.md."
+      ],
+      "publishable_verification_bullets": [
+        "cargo tree --workspace: ZERO path refs to ../pinion or /home/coin/pinion (sprag reads only the ~/.cargo/git checkout); pinion-core resolves to one git instance; sce-rust-runtime one git instance @ 3078f8bf.",
+        "WIP-IMMUNITY PROVEN: pinion's working tree currently has uncommitted text-font WIP, yet sprag built clean from the pinned git checkout (the exact failure mode that blocked R52 cannot recur).",
+        "Full workspace build (1m15s first fetch+compile of pinion from git) + all workspace tests pass (sprag-plugin 42, sprag-vt 32, sprag-terminal 11, sprag-host 9, real-bash 4, sprag-gui 56, etc.); clippy --workspace --all-targets clean; rustfmt --all clean; pre-commit gates passed."
+      ],
+      "publishable_impact_refs": [
+        "4",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "DOGFOOD WORKFLOW CHANGED (the big one): sprag NO LONGER auto-picks up local pinion edits. To land a pinion change in sprag now: (1) commit + PUSH pinion, (2) bump `rev` on ALL 7 pinion-* lines in sprag/Cargo.toml to the new commit, (3) if pinion@<rev> bumped its SCE, bump sprag's SCE rev to match (keep the single SCE instance), (4) cargo update -p / rebuild. A helper to bump all revs at once would be worth adding if this churns.",
+        "UPSHOT: pinion working-tree WIP can no longer block sprag (R52's blocker is structurally gone). The [[pinion-wip-blocks-sprag-build]] memory is now largely obsolete for the build-blocking claim — sprag is decoupled; only an explicit rev bump couples them. Update that memory.",
+        "PR-22 is now FULLY delivered end to end: pinion R1053 (SCE path->git) + sprag R53 (mirror SCE) + sprag R54 (git-pin all pinion). No behavior change to any feature; pure build-topology. Scroll arc (R49-R52) remains closed. Stop-and-report ground rule unaffected (still never edit pinion from a sprag session; now sprag also won't even read its tree)."
+      ]
+    },
     "Round 6": {
       "decision_summary": "Inject input via the External + scene/invoke carrier: a sprag-owned key encoder writes PTY bytes behind the pane's engine External, lifting the read-only boundary (R2.6 encoding / R1.7 data-engine split).",
       "changes_bullets": [
