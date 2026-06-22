@@ -52,7 +52,7 @@ use pinion_core::widgets::scrollbar::{
     ScrollBarOrientation, ScrollBarState, scrollbar_extra_external, scrollbar_thumb_rect,
     use_scrollbar_interaction,
 };
-use pinion_core::widgets::virtual_list::at_bottom;
+use pinion_core::widgets::virtual_list::{at_bottom, follow_tail};
 use std::rc::Rc;
 
 /// Gutter (track) width, px — M3 desktop canonical (matches
@@ -129,24 +129,29 @@ pub(crate) fn pane_scrollbar_external(i: usize) -> ExtraExternal {
 }
 
 /// Reconcile pane `i`'s scroll bound to the live scrollback depth and follow the
-/// tail — the row-unit shape of [`follow_tail`](pinion_core::widgets::virtual_list::follow_tail),
-/// run once per frame from [`build_pane_scene`](crate::view) (the one main-thread
-/// hook per PTY batch — the producer's `on_dirty` runs off-thread and only
-/// `request_repaint`s, so no reactive dep flips an `Effect`).
+/// tail by delegating to pinion's [`follow_tail`] reducer in the terminal's ROW
+/// unit (`row_pitch = 1`, `viewport_h = 0`, so the content extent IS the row count
+/// and the bound becomes `scrollback_len`). Run once per frame from
+/// [`build_pane_scene`](crate::view) — the one main-thread hook per PTY batch (the
+/// producer's `on_dirty` runs off-thread and only `request_repaint`s, so no
+/// reactive dep flips an `Effect`).
 ///
-/// `max_y` becomes `scrollback_len` (rows); if the view WAS at the live bottom it
-/// is pinned to the new bottom (so live output keeps following), otherwise the
+/// `follow_tail` grows the bound to `scrollback_len`; if the view WAS at the live
+/// bottom it pins to the new bottom (live output keeps following), otherwise the
 /// offset holds (a paused history view stays on its content as the extent grows
 /// beneath it). Loop-safe: [`ScrollState::set_max`] / [`ScrollState::scroll_to`]
 /// equality-skip, so once the scrollback stops growing this is a no-op (no repaint
 /// cascade); a growing scrollback already requested a repaint via R999.
+///
+/// NOTE (reported gap): a reactive Signal write from the view-fn is a seam smell —
+/// pinion's canonical post-layout reducer `update_scroll_state_bounds` only walks
+/// `Scene::Scroll` nodes, but the terminal grid is a `Scene::TextGrid` that windows
+/// history via `offset_lines` (no clip node), so the runtime never reconciles this
+/// `ScrollState`. A binding-side scroll reducer for offset-projecting consumers is
+/// `claudedocs/PINION-PR20`; until then this stays here, loop-safe and documented.
 pub(crate) fn reconcile_scroll(scroll: &ScrollState, scrollback_len: usize) {
-    let max_y = i32::try_from(scrollback_len).unwrap_or(i32::MAX);
     let was_following = at_bottom(scroll.offset_y(), scroll.max().1);
-    scroll.set_max(0, max_y);
-    if was_following {
-        scroll.scroll_to(0, max_y);
-    }
+    follow_tail(scroll, scrollback_len, 1, 0, was_following);
 }
 
 /// Convert the authority's top-anchored `offset_y` (rows from the oldest line)
