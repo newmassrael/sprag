@@ -378,7 +378,16 @@ pub(crate) fn view_grid(cells: Vec<Scene>, theme: &Theme) -> Scene {
 /// splitter's own R685 fix documents). Applied to the OUTERMOST node only — every
 /// nested splitter gets a definite extent from its parent's flex distribution, so
 /// interior nodes keep `Auto` cross-axes for `AlignItems::Stretch` to fill.
-fn fill_definite(scene: Scene) -> Scene {
+///
+/// The contract this enforces: **every content node handed to `compose` must carry
+/// a definite extent**, or the sizeless flex child collapses to its content's
+/// intrinsic size on the main axis (the cross axis still stretches). The docked
+/// arrangements apply it as their final step; the undock window
+/// ([`view_for_window`](crate::view::view_for_window)) applies it to its lone pane
+/// for the SAME reason — without it an undock window reflows only its width
+/// (cross-axis stretch) and its height stays pinned to the grid's content rows (a
+/// sizeless main axis), so the pane never reflows vertically to its window.
+pub(crate) fn fill_definite(scene: Scene) -> Scene {
     match scene {
         Scene::Container(c) => {
             Scene::Container(c.map_layout(|l| l.with_size(crate::view::fill_size())))

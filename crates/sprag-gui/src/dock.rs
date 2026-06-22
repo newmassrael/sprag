@@ -20,19 +20,34 @@
 //! of truth, read by the main-window tiling, the per-window paint dispatch, and
 //! a11y (the hello-dock-panels model).
 //!
-//! ## Why the undock window is FIXED-size (an honest v1 bound — pinion gap)
+//! ## Why the undock window opens at the pane's intrinsic size (and now reflows)
 //!
-//! The undock window opens sized to the pane's intrinsic `(cols, rows) × cell`,
-//! so the pane fits 1:1 with **no reflow** needed. This is deliberate: pinion's
-//! R1006 / R1012 viewport publishes are gated to `DEFAULT_WINDOW`
-//! (`pinion-shell` `compute_paint_scene_internal`, "per-window signal deferred"),
-//! so a secondary window publishes neither its viewport size nor its pane rects —
-//! an undocked pane therefore **cannot reflow to its own window**. `Fixed` stays
-//! OS-resizable, but dragging the undock border does NOT reflow the pane (slack
-//! shows the surface fill). Sizing the window to the pane's own dims is the
-//! correct intrinsic size, NOT window-side split math (the SSOT trap). Resizable
-//! undock windows need the per-window viewport publish — reported as a pinion
-//! requirement (`claudedocs/PINION-PR10-PER-WINDOW-VIEWPORT.md`).
+//! The undock window opens sized to the pane's intrinsic `(cols, rows) × cell`, so
+//! the pane fits 1:1 at the moment it tears off — the correct intrinsic size, NOT
+//! window-side split math (the SSOT trap). It then **reflows the pane to its own
+//! window size, both axes, as the window resizes**: pinion R1021 publishes the
+//! per-pane viewport rect for every painted window (the R1012 publish is no longer
+//! `DEFAULT_WINDOW`-gated — see `pinion-shell` `compute_paint_scene_internal`,
+//! "R1021 … published for EVERY painted window"), so the floated pane's existing
+//! [`crate::reflow`] Effect (it subscribes to `use_pane_viewport_size(pane_tag(i))`)
+//! fires on the secondary window's rect and `TIOCSWINSZ`-reflows the PTY. This is
+//! the consumer of `claudedocs/PINION-PR10-PER-WINDOW-VIEWPORT.md` (DELIVERED). The
+//! lone-pane scene is given a definite extent via
+//! [`crate::split::fill_definite`] (the same fill the docked arrangements apply) so
+//! it reflows in BOTH axes, not only width — see that fn's docs.
+//!
+//! ## Remaining bound: the undock window cannot shrink below its open size
+//!
+//! [`SizeStrategy::Fixed`] floors winit's `min_inner_size` at the open size
+//! (`pinion-shell` `app.rs`), so the user can GROW the undock window (the pane
+//! reflows larger) but cannot SHRINK it below the size it opened at. The reflow
+//! MECHANISM is direction-agnostic (proven headlessly) — only the window chrome's
+//! drag floor blocks it. A freely-shrinkable undock window needs a `SizeStrategy`
+//! that opens at a chosen size yet permits a smaller min floor; neither `Fixed`
+//! (min == open) nor `IntrinsicAfterFirstPaint` (opens at `min`, and the pane
+//! content fills with no intrinsic bbox) expresses that. Reported as a pinion
+//! requirement (`claudedocs/PINION-PR23-RESIZABLE-WINDOW-MIN-FLOOR.md`); until it
+//! lands, `Fixed` is the honest bound (grow-reflow, no shrink), not a workaround.
 
 use crate::terminal::{MAX_PANES, use_terminal};
 use crate::{WINDOW_H, WINDOW_W};
@@ -102,8 +117,8 @@ pub(crate) fn is_pane_floating(windows: &[WindowSpec], i: usize) -> bool {
 /// own OS window). Idempotent on the alternation:
 ///
 /// * docked (no `pane-{i}` window) -> push an undock `WindowSpec` sized to the
-///   pane's intrinsic `(cols, rows) × cell` (so it fits 1:1; see the module docs
-///   on why it is fixed-size);
+///   pane's intrinsic `(cols, rows) × cell` (so it fits 1:1 at tear-off; resizing
+///   the window then reflows the pane in both axes — see the module docs);
 /// * floating (window exists) -> remove it (dock back). The shell drops the winit
 ///   window; the main layout repaints with pane `i` re-tiled (and it reflows to
 ///   its new tile via the main-window R1012 publish).
@@ -121,8 +136,9 @@ pub(crate) fn toggle_pane_floating(i: usize) {
     } else {
         let tv = use_terminal();
         let (cols, rows) = tv.pane(i).session().dimensions();
-        // Open fixed to the pane's intrinsic (cols, rows) x cell — the grid_dims
-        // inverse ([`cell_px`]) — so it fits 1:1 with no reflow needed.
+        // Open at the pane's intrinsic (cols, rows) x cell — the grid_dims
+        // inverse ([`cell_px`]) — so it fits 1:1 at tear-off (an OS resize then
+        // reflows it to the new window size, both axes, via the R1021 publish).
         let (width, height) = crate::terminal::cell_px(tv.metric, cols, rows);
         windows.push(WindowSpec::new(
             Cow::Owned(target),

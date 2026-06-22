@@ -44,11 +44,16 @@
 //! keystroke reaches the focused pane's PTY regardless of which window paints it
 //! — dock/undock changes only *where* a pane is painted, never its tag /
 //! External / focusability (so it does NOT need runtime-focusable changes).
-//! **Honest v1 bound**: the undock window opens fixed to the pane's intrinsic
-//! `(cols, rows) × cell` and does NOT reflow on OS resize — pinion's R1006/R1012
-//! viewport publishes are gated to the default window (the per-window publish is
-//! a reported gap; see `dock` docs). Per-window a11y partitions nodes
-//! ([`a11y::access_nodes_for_window`]).
+//! The undock window opens sized to the pane's intrinsic `(cols, rows) × cell` and
+//! **reflows the pane to its own window size in both axes on OS resize** — pinion
+//! R1021 publishes the per-pane viewport rect for EVERY painted window (not just the
+//! default), so the floated pane's existing reflow Effect fires on the secondary
+//! window's rect (see `dock` docs). Remaining bound: the window opens via
+//! `SizeStrategy::Fixed`, which floors winit's `min_inner_size` at the open size, so
+//! the user can grow it (the pane reflows larger) but not shrink it below its
+//! intrinsic size — a freely-shrinkable undock window needs a `SizeStrategy` that
+//! decouples the open size from the min floor (reported, `dock` docs). Per-window
+//! a11y partitions nodes ([`a11y::access_nodes_for_window`]).
 //!
 //! ## Draggable dividers (R38): drag to resize panes
 //!
@@ -527,6 +532,78 @@ mod tests {
         assert!(
             dims[0].0.abs_diff(dims[1].0) <= 1,
             "the two panes split the window evenly, got {dims:?}",
+        );
+    }
+
+    /// An UNDOCK window reflows its one pane to ITS OWN window size — the headless
+    /// proof of resizable undock (pinion R1021 / PINION-PR10 per-window pane-viewport
+    /// publish, consumed). Drive the `pane-0` undock window's real paint at two
+    /// different sizes and assert pane 0's grid reflows to each: a larger window
+    /// yields strictly more cells. The undock paint path carries NO winit
+    /// `min_inner_size` floor (that limit only bounds the live user *drag*, see the
+    /// [`dock`] SizeStrategy note), so the reflow MECHANISM is direction-agnostic —
+    /// A and B exercise both grow and shrink. pinion's `pane_viewport_seam.rs` proves
+    /// the per-window publish with a mock widget; this proves sprag's undock window
+    /// tags / publishes / derives so the floated pane follows its own window. Reads
+    /// the real measured cell metric from the booted terminal (the shell seeds the
+    /// monospace provider), not `CellMetric::DEFAULT`.
+    #[test]
+    fn undock_window_reflows_its_pane_to_its_own_size() {
+        let mut core = ShellCore::<TerminalViewer>::new();
+        let metric = core.root_owner().run(|| use_terminal().metric);
+        let win = dock::pane_window_id(0);
+
+        // Boot through the main window once (as the app does) so the shell installs
+        // the per-pane reflow Effects via `create_extra_externals` before the user
+        // undocks a pane.
+        let _ = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+
+        // A smaller and a clearly larger undock-window size (both axes differ).
+        let (wa, ha) = (600u32, 400u32);
+        let (wb, hb) = (900u32, 720u32);
+
+        let dims_a = painted_grid_dims(&core.compute_paint_scene_for_window(&win, wa, ha));
+        let dims_b = painted_grid_dims(&core.compute_paint_scene_for_window(&win, wb, hb));
+
+        // The undock window paints exactly its one pane (no tiling, no siblings).
+        assert_eq!(
+            dims_a.len(),
+            1,
+            "undock window paints one pane, got {dims_a:?}"
+        );
+        assert_eq!(
+            dims_b.len(),
+            1,
+            "undock window paints one pane, got {dims_b:?}"
+        );
+
+        // Rows fill the window height (the vertical scrollbar is a side gutter, so it
+        // takes width, not height) — exact against the window-derived rows.
+        let full_a = crate::terminal::grid_dims((wa, ha), metric);
+        let full_b = crate::terminal::grid_dims((wb, hb), metric);
+        assert_eq!(
+            dims_a[0].1, full_a.1,
+            "pane A fills the undock window height"
+        );
+        assert_eq!(
+            dims_b[0].1, full_b.1,
+            "pane B fills the undock window height"
+        );
+
+        // Cols track the window width minus the scrollbar gutter: strictly fewer than
+        // the full-width derivation, never zero, and the larger window B reflows to
+        // strictly MORE cols than A — the resize genuinely reflowed the pane.
+        assert!(
+            dims_a[0].0 > 0 && dims_a[0].0 < full_a.0,
+            "A cols sane: {dims_a:?}"
+        );
+        assert!(
+            dims_b[0].0 > 0 && dims_b[0].0 < full_b.0,
+            "B cols sane: {dims_b:?}"
+        );
+        assert!(
+            dims_b[0].0 > dims_a[0].0 && dims_b[0].1 > dims_a[0].1,
+            "a larger undock window reflows the pane to more cells: A={dims_a:?} B={dims_b:?}",
         );
     }
 

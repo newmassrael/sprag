@@ -235,9 +235,9 @@ pub(crate) fn grid_dims(viewport: (u32, u32), metric: CellMetric) -> (u16, u16) 
 }
 
 /// The inverse of [`grid_dims`]: the pixel size that exactly fits `(cols, rows)`
-/// cells at `metric`. The one `cols -> px` site (a fixed-size undock window's
-/// intrinsic size, [`dock`](crate::dock)), kept beside the `px -> cols`
-/// derivation so the cell<->pixel round-trip lives in one module.
+/// cells at `metric`. The one `cols -> px` site (an undock window's intrinsic
+/// open size, [`dock`](crate::dock)), kept beside the `px -> cols` derivation so
+/// the cell<->pixel round-trip lives in one module.
 pub(crate) fn cell_px(metric: CellMetric, cols: u16, rows: u16) -> (u32, u32) {
     (
         u32::from(cols) * metric.cell_w(),

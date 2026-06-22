@@ -29,7 +29,16 @@ pub(crate) fn view_for_window(window_id: &str, _state: (), _frame: &Frame) -> Sc
     match pane_window_index(window_id) {
         // An undock window paints its one pane (if still present); a stale window
         // id (pane closed) falls back to the main layout, never a stranded paint.
-        Some(i) if i < tv.pane_count() => compose(build_pane_scene(&tv, i, &theme), &theme),
+        // `fill_definite` gives the lone pane the same definite extent the docked
+        // arrangements get from their final fill — without it the pane fills the
+        // window width (cross-axis stretch) but NOT its height (the sizeless main
+        // axis collapses to the grid's content rows), so the undock window would
+        // reflow only horizontally. With it, the pane reflows to its window in BOTH
+        // axes (the R1021 per-window pane-viewport publish does the rest).
+        Some(i) if i < tv.pane_count() => compose(
+            crate::split::fill_definite(build_pane_scene(&tv, i, &theme)),
+            &theme,
+        ),
         _ => view_main(&tv, &theme),
     }
 }
