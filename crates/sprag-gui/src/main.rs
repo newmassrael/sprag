@@ -189,6 +189,7 @@ mod terminal;
 mod view;
 
 use pinion_a11y::AccessNode;
+use pinion_core::event::{LINE_HEIGHT_PX, WheelDelta};
 use pinion_core::external::External;
 use pinion_core::reactive::Signal;
 use pinion_core::widget_core::ExtraExternal;
@@ -318,6 +319,63 @@ impl WidgetCore for TerminalViewer {
         event: &CompositionEvent,
     ) -> bool {
         route_composition(scene, focused, event)
+    }
+
+    /// Pre-view reconcile (pinion R1047 / PR-20): grow each pane's row-unit
+    /// `ScrollState` bound to its live scrollback depth and tail-follow, BEFORE the
+    /// pure `view` fn runs. This is the sanctioned non-view-fn place for the
+    /// reactive `Signal` write the bar/projection need current — the terminal grid
+    /// is an `offset_lines`-projecting `Scene::TextGrid` (no `Scene::Scroll` clip for
+    /// the layout reducer) and `scrollback_len` lives in an off-thread PTY producer
+    /// (no `Signal` for an `Effect`), so neither runtime path can reconcile it. Runs
+    /// in the binding root `Owner`, so [`use_terminal`] / `use_pane_scroll` resolve.
+    fn reconcile_frame() {
+        let terminal = use_terminal();
+        for i in 0..terminal.pane_count() {
+            let scrollback_len = terminal
+                .pane(i)
+                .session()
+                .with_screen(|screen| screen.scrollback_len());
+            scrollbar::reconcile_scroll(&scrollbar::use_pane_scroll(i), scrollback_len);
+        }
+    }
+
+    /// Mouse-wheel / touchpad two-finger scroll over a pane scrolls its scrollback
+    /// (pinion R1045 / PR-18 — the GUI-side wheel seam). Hit-tests the cursor to the
+    /// pane under it (grid OR scrollbar gutter), converts the `WheelDelta` to LINES
+    /// (notched `Lines.dy`, or touchpad `Pixels.dy / LINE_HEIGHT_PX`), and scrolls
+    /// the **GUI's own** `ScrollState` via [`scrollbar::wheel_scroll_pane`] — NOT the
+    /// AI-facing pane engine (the R1.7 boundary). Runs in the binding root `Owner`.
+    fn apply_wheel(
+        scene: &Scene,
+        cursor: (f64, f64),
+        delta: WheelDelta,
+        _modifiers: Modifiers,
+    ) -> bool {
+        let (cx, cy) = cursor;
+        let hit = |tag: &str| {
+            scene.rect_for_tag_absolute(tag).is_some_and(|r| {
+                cx >= f64::from(r.x)
+                    && cx < f64::from(r.x) + f64::from(r.w)
+                    && cy >= f64::from(r.y)
+                    && cy < f64::from(r.y) + f64::from(r.h)
+            })
+        };
+        let Some(i) = (0..use_terminal().pane_count())
+            .find(|&i| hit(pane_tag(i)) || hit(scrollbar::scrollbar_tag(i)))
+        else {
+            return false;
+        };
+        let lines = match delta {
+            WheelDelta::Lines { dy, .. } => dy,
+            WheelDelta::Pixels { dy, .. } => dy / LINE_HEIGHT_PX,
+            _ => return false,
+        };
+        if lines == 0.0 {
+            return false;
+        }
+        scrollbar::wheel_scroll_pane(i, lines);
+        true
     }
 
     /// Pane 0's identity tag — the primary input External

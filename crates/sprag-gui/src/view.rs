@@ -99,12 +99,10 @@ fn empty_cell(theme: &Theme) -> Scene {
 /// only the live view (the host seam self-gates on the cursor). On child EOF the
 /// pane paints its frozen final screen.
 ///
-/// This is the one main-thread hook per PTY batch, so it also
-/// [`reconcile_scroll`](crate::scrollbar::reconcile_scroll)s the scroll bound to
-/// the live scrollback depth and follows the tail BEFORE reading `offset_y` (a
-/// follow may pin it to the new bottom). The bound is needed current here so the
-/// next drag press snapshots the right `scroll_max` (the bar has no other
-/// per-frame hook); equality-skip keeps the reconcile loop-safe.
+/// PURE read: the scroll bound + tail-follow are reconciled OUT of this view by
+/// [`TerminalViewer::reconcile_frame`](crate::TerminalViewer) (pinion R1047's
+/// pre-view hook), which runs first, so `offset_y` is already current here — the
+/// view fn never writes a `Signal` (the §6.3 `dry_run` purity guarantee).
 fn build_pane_scene(tv: &TerminalView, i: usize, theme: &Theme) -> Scene {
     let scroll = crate::scrollbar::use_pane_scroll(i);
     let preedit = use_preedit(i).get();
@@ -113,13 +111,12 @@ fn build_pane_scene(tv: &TerminalView, i: usize, theme: &Theme) -> Scene {
     // window-side recompute. Tracked read: the view re-runs (repaints the thumb)
     // when this pane's measured rect changes (resize / splitter drag).
     let track_h = pinion_core::use_pane_viewport_size(pane_tag(i)).1;
-    // Reconcile the scroll bound + follow-tail, then convert the top-anchored
-    // offset to the projection's "rows up from the live bottom".
+    // Convert the (already-reconciled) top-anchored offset to the projection's
+    // "rows up from the live bottom".
     let (scrollback_len, visible_rows) = tv
         .pane(i)
         .session()
         .with_screen(|screen| (screen.scrollback_len(), screen.rows()));
-    crate::scrollbar::reconcile_scroll(&scroll, scrollback_len);
     let offset_lines = crate::scrollbar::offset_lines_from_top(scroll.offset_y(), scrollback_len);
     let grid = tv.pane(i).session().with_screen(|screen| {
         sprag_host::pane_view_scene(

@@ -1,4 +1,4 @@
-//! Per-pane vertical scrollbar (gnome-terminal style) — DRAGGABLE (R49).
+//! Per-pane vertical scrollbar (gnome-terminal style) — DRAGGABLE + wheel (R49/R50).
 //!
 //! The scroll authority is a per-pane pinion [`ScrollState`] (row-unit): a single
 //! source of truth that the keyboard chords ([`crate::input`]), the projection
@@ -17,52 +17,45 @@
 //! so the boundary conversion [`offset_lines_from_top`] (`scrollback_len -
 //! offset_y`) is computed fresh per frame — never a second stored value.
 //!
-//! ## Why row units, not pixels (R1032 §5.45 seam)
+//! ## Row-unit scrollbar (R1032 §5.45 seam)
 //!
 //! pinion's [`ScrollState`] is unit-neutral (an `i32` offset/max holder), so the
-//! row IS the scroll quantum end-to-end: keyboard scroll, the drag's
-//! `scroll_to`, and the thumb geometry all stay in rows. The one pixel input is
-//! the track height — the R1012 measured pane rect
+//! row IS the scroll quantum end-to-end: keyboard scroll, drag, and wheel all move
+//! `offset_y` in rows. [`view_pane_scrollbar`] paints via pinion
+//! [`view_vertical_scrollbar`] with `.with_viewport_extent(visible_rows)` (the
+//! R1032 row-unit override — the px track height cancels against the row extent in
+//! `scrollbar_thumb_rect`), so the track's px height — the R1012 measured pane rect
 //! ([`use_pane_viewport_size`](pinion_core::use_pane_viewport_size)`(pane_tag(i)).1`),
-//! the SAME winsize SSOT the reflow Effect reads (§3, vertical axis). pinion's
-//! [`view_vertical_scrollbar`](pinion_widget_paint::scrollbar::view_vertical_scrollbar)
-//! is the px-unit consumer; this is the row-unit consumer of the same
-//! [`scrollbar_thumb_rect`] geometry primitive.
+//! the SAME winsize SSOT the reflow Effect reads (§3, vertical axis) — and its row
+//! content stay consistent.
 //!
-//! ## Why sprag paints the thumb (not `view_vertical_scrollbar`)
+//! ## Thumb contrast + wheel (R1046 / R1045 seams)
 //!
-//! The drag substrate is fully pinion ([`ScrollState`], [`scrollbar_extra_external`],
-//! [`use_scrollbar_interaction`]); only the thumb/track FILL is sprag's, because a
-//! terminal wants an always-visible bar (gnome-terminal) whereas
-//! `view_vertical_scrollbar` hard-wires an `Outline` idle thumb with no color
-//! override — the low-contrast fill the R48 bar showed. So the bar reads the SAME
-//! pinion interaction signal the drag external writes (idle/hover/dragging) and
-//! resolves a higher-contrast role per state ([`thumb_fill`]). If pinion later adds
-//! a thumb-style override, this collapses to `view_vertical_scrollbar`.
+//! The thumb is pinion's [`view_vertical_scrollbar`] with
+//! `.with_thumb_role(OnSurfaceMuted)` (R1046) for the always-visible gnome-terminal
+//! idle thumb (the faint-`Outline` R48 complaint, now a one-line override) — sprag
+//! no longer hand-paints it. Drag / geometry / interaction are fully pinion
+//! ([`scrollbar_extra_external`], [`use_scrollbar_interaction`]). Wheel / touchpad
+//! scroll lives GUI-side in [`apply_wheel`](crate::TerminalViewer) (pinion R1045)
+//! driving [`wheel_scroll_pane`] on the SAME `ScrollState` — never the AI-facing
+//! pane engine (the R1.7 boundary the session review enforced).
 
 use crate::terminal::MAX_PANES;
-use pinion_core::scene::{ContainerNode, Rect, Scene};
-use pinion_core::style::{
-    AlignItems, BoxStyle, Color, FlexDirection, LayoutStyle, Size, SizeValue,
-};
+use pinion_core::reactive::Owner;
+use pinion_core::scene::{ContainerNode, Scene};
+use pinion_core::style::{AlignItems, FlexDirection, LayoutStyle, SizeValue};
 use pinion_core::theme::{ColorRole, Theme};
 use pinion_core::widget_core::ExtraExternal;
 use pinion_core::widgets::scroll::{ScrollState, use_scroll_state};
-use pinion_core::widgets::scrollbar::{
-    ScrollBarOrientation, ScrollBarState, scrollbar_extra_external, scrollbar_thumb_rect,
-    use_scrollbar_interaction,
-};
+use pinion_core::widgets::scrollbar::{scrollbar_extra_external, use_scrollbar_interaction};
 use pinion_core::widgets::virtual_list::{at_bottom, follow_tail};
+use pinion_widget_paint::scrollbar::{VerticalScrollbarStyle, view_vertical_scrollbar};
+use std::cell::Cell;
 use std::rc::Rc;
 
-/// Gutter (track) width, px — M3 desktop canonical (matches
-/// `VerticalScrollbarStyle::material`'s default).
-const GUTTER_W: u32 = 8;
-/// Thumb extent floor, px — M3 / UIKit convention so the thumb stays grabbable
-/// on very long history.
-const MIN_THUMB_PX: u32 = 24;
-/// Thumb corner radius, px — matches `view_vertical_scrollbar`.
-const THUMB_RADIUS: u32 = 2;
+/// Rows scrolled per wheel LINE (a notched-wheel `Lines.dy`, or a touchpad
+/// `Pixels.dy / LINE_HEIGHT_PX`) — the gnome-terminal ~3-lines-per-notch feel.
+const WHEEL_ROWS_PER_LINE: f32 = 3.0;
 
 /// The per-pane scrollbar track + drag-External tags (`sprag_gui.scrollbar.<i>`),
 /// one per possible pane — the identity SSOT this module owns, mirroring
@@ -131,24 +124,22 @@ pub(crate) fn pane_scrollbar_external(i: usize) -> ExtraExternal {
 /// Reconcile pane `i`'s scroll bound to the live scrollback depth and follow the
 /// tail by delegating to pinion's [`follow_tail`] reducer in the terminal's ROW
 /// unit (`row_pitch = 1`, `viewport_h = 0`, so the content extent IS the row count
-/// and the bound becomes `scrollback_len`). Run once per frame from
-/// [`build_pane_scene`](crate::view) — the one main-thread hook per PTY batch (the
-/// producer's `on_dirty` runs off-thread and only `request_repaint`s, so no
-/// reactive dep flips an `Effect`).
+/// and the bound becomes `scrollback_len`). Run from
+/// [`TerminalViewer::reconcile_frame`](crate::TerminalViewer) — pinion R1047's
+/// pre-view binding-reconcile hook, the **sanctioned non-view-fn place** for this
+/// reactive `Signal` write (the view fn stays pure). Why here and not the runtime's
+/// own reducer / an `Effect`: the canonical post-layout reducer
+/// `update_scroll_state_bounds` only walks `Scene::Scroll` clip nodes, but the
+/// terminal grid is a `Scene::TextGrid` that windows history via `offset_lines` (no
+/// clip node), and `scrollback_len` lives in an off-thread PTY producer with no
+/// reactive `Signal` for an `Effect` to subscribe — a substrate-integration gap
+/// pinion closed with `reconcile_frame` (R1047 / PR-20).
 ///
 /// `follow_tail` grows the bound to `scrollback_len`; if the view WAS at the live
 /// bottom it pins to the new bottom (live output keeps following), otherwise the
 /// offset holds (a paused history view stays on its content as the extent grows
 /// beneath it). Loop-safe: [`ScrollState::set_max`] / [`ScrollState::scroll_to`]
-/// equality-skip, so once the scrollback stops growing this is a no-op (no repaint
-/// cascade); a growing scrollback already requested a repaint via R999.
-///
-/// NOTE (reported gap): a reactive Signal write from the view-fn is a seam smell —
-/// pinion's canonical post-layout reducer `update_scroll_state_bounds` only walks
-/// `Scene::Scroll` nodes, but the terminal grid is a `Scene::TextGrid` that windows
-/// history via `offset_lines` (no clip node), so the runtime never reconciles this
-/// `ScrollState`. A binding-side scroll reducer for offset-projecting consumers is
-/// `claudedocs/PINION-PR20`; until then this stays here, loop-safe and documented.
+/// equality-skip, so once the scrollback stops growing this is a no-op.
 pub(crate) fn reconcile_scroll(scroll: &ScrollState, scrollback_len: usize) {
     let was_following = at_bottom(scroll.offset_y(), scroll.max().1);
     follow_tail(scroll, scrollback_len, 1, 0, was_following);
@@ -166,72 +157,64 @@ pub(crate) fn offset_lines_from_top(offset_y: i32, scrollback_len: usize) -> usi
     scrollback_len.saturating_sub(from_top)
 }
 
-/// The thumb fill for the drag interaction `state` — a terminal-visible
-/// (gnome-terminal) palette: a readable [`OnSurfaceMuted`](ColorRole::OnSurfaceMuted)
-/// at idle (NOT pinion's faint `Outline`, the R48 low-contrast complaint) that
-/// brightens to [`OnSurface`](ColorRole::OnSurface) on hover / drag so the grabbed
-/// thumb is unmistakable against the [`SurfaceContainerHighest`](ColorRole::SurfaceContainerHighest)
-/// track.
-fn thumb_fill(theme: &Theme, state: ScrollBarState) -> Color {
-    match state {
-        ScrollBarState::Hover | ScrollBarState::Dragging => theme.resolve(ColorRole::OnSurface),
-        ScrollBarState::Idle | ScrollBarState::Disabled => theme.resolve(ColorRole::OnSurfaceMuted),
+/// Scroll pane `i` by a wheel/touchpad delta expressed in LINES — the GUI-side
+/// wheel handler ([`TerminalViewer::apply_wheel`](crate::TerminalViewer), pinion
+/// R1047/PR-18) drives this on the **GUI's own** [`ScrollState`] (no coupling into
+/// the AI-facing pane engine — the R1.7 boundary the session review enforced).
+///
+/// Converts lines -> rows at [`WHEEL_ROWS_PER_LINE`], carrying the sub-row
+/// remainder in a per-pane `Owner::cache` `Cell` so a fine touchpad pan accumulates
+/// to whole rows instead of rounding to zero each event. `+lines` (W3C scroll-down)
+/// maps to `+offset_y` (toward the live bottom) — no inversion. Must run inside the
+/// binding root `Owner` scope (the shell wraps `apply_wheel` in it).
+pub(crate) fn wheel_scroll_pane(i: usize, lines: f32) {
+    let owner = Owner::current().expect("wheel_scroll_pane() requires an active Owner scope");
+    let accum = owner.cache(format!("sprag_gui.wheel_accum.{i}"), || Cell::new(0.0_f32));
+    let total = accum.get() + lines * WHEEL_ROWS_PER_LINE;
+    let rows = total.trunc();
+    accum.set(total - rows);
+    if rows != 0.0 {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "trunc()'d row count is small and bounded by the wheel delta"
+        )]
+        use_pane_scroll(i).scroll_by(0, rows as i32);
     }
 }
 
-/// Build pane `i`'s vertical scrollbar from its [`ScrollState`] — a draggable bar
-/// painted in the terminal's row unit.
+/// Build pane `i`'s vertical scrollbar from its [`ScrollState`] — pinion's
+/// [`view_vertical_scrollbar`] in the terminal's ROW unit (R1046 collapse: sprag no
+/// longer hand-paints the thumb).
 ///
 /// * `scroll` = [`use_pane_scroll`]`(i)` — `offset_y` (rows from top) is the thumb
-///   position directly; `max().1` (== `scrollback_len`, reconciled) gives the
-///   content extent.
-/// * `visible_rows` = the pane's live screen rows (the thumb's `viewport_extent`).
+///   position; `max().1` (== `scrollback_len`, reconciled) is the extent.
+/// * `visible_rows` = the pane's live screen rows, the thumb's `viewport_extent`
+///   (row unit — the px track height cancels against it in `scrollbar_thumb_rect`,
+///   R1032).
 /// * `track_h_px` = R1012 [`use_pane_viewport_size`](pinion_core::use_pane_viewport_size)`(pane_tag(i)).1`.
 ///
-/// Row-driven [`scrollbar_thumb_rect`]: `viewport = visible_rows`, `content =
-/// visible_rows + max_y`, `scroll_offset = offset_y`. No history (`content <=
-/// viewport`) fills the thumb to the whole track ("nothing to scroll"). `track_h_px
-/// == 0` (boot, pre-layout) yields a zero-extent track the backend elides — the bar
-/// appears on the first measured frame. The fill tracks the drag interaction
-/// ([`use_scrollbar_interaction`], the signal the [`ScrollBarExternal`] writes).
+/// [`with_thumb_role`](VerticalScrollbarStyle::with_thumb_role)`(OnSurfaceMuted)`
+/// (pinion R1046) gives the always-visible gnome-terminal thumb (idle
+/// `OnSurfaceMuted`, brightening to `OnSurface` on hover/drag) instead of the faint
+/// default `Outline` — the R48 contrast complaint, now a one-line style override.
+/// No history fills the thumb; `track_h_px == 0` (boot) yields a zero-extent track
+/// the backend elides; the interaction state comes from [`use_scrollbar_interaction`]
+/// (the signal the [`ScrollBarExternal`](pinion_core::widgets::scrollbar) drag writes).
 pub(crate) fn view_pane_scrollbar(
     i: usize,
-    scroll: &ScrollState,
+    scroll: &Rc<ScrollState>,
     visible_rows: u16,
     track_h_px: u32,
     theme: &Theme,
 ) -> Scene {
-    let track = Rect::new(0, 0, GUTTER_W, track_h_px);
-    let viewport = u32::from(visible_rows);
-    let max_y = u32::try_from(scroll.max().1.max(0)).unwrap_or(0);
-    let content = viewport.saturating_add(max_y);
-    let scroll_offset = u32::try_from(scroll.offset_y().max(0)).unwrap_or(0);
-    let geom = scrollbar_thumb_rect(
-        ScrollBarOrientation::Vertical,
-        track,
-        viewport,
-        content,
-        scroll_offset,
-        MIN_THUMB_PX,
-    );
-    let thumb_y = geom.thumb.y.saturating_sub(geom.track.y);
-    let state = use_scrollbar_interaction(scrollbar_tag(i)).get();
-    let thumb = Scene::Container(
-        ContainerNode::new(vec![])
-            .with_style(BoxStyle::filled(thumb_fill(theme, state)).with_corner_radius(THUMB_RADIUS))
-            .with_layout(
-                LayoutStyle::new()
-                    .with_size(Size::px(GUTTER_W, geom.thumb.h))
-                    .with_absolute_position(0, thumb_y),
-            ),
-    );
-    Scene::Container(
-        ContainerNode::new(vec![thumb])
-            .with_tag(scrollbar_tag(i))
-            .with_style(BoxStyle::filled(
-                theme.resolve(ColorRole::SurfaceContainerHighest),
-            ))
-            .with_layout(LayoutStyle::new().with_size(Size::px(GUTTER_W, track_h_px))),
+    let style = VerticalScrollbarStyle::material(track_h_px, scrollbar_tag(i))
+        .with_viewport_extent(u32::from(visible_rows))
+        .with_thumb_role(ColorRole::OnSurfaceMuted);
+    view_vertical_scrollbar(
+        scroll,
+        theme,
+        &style,
+        use_scrollbar_interaction(scrollbar_tag(i)).get(),
     )
 }
 
@@ -292,29 +275,6 @@ mod tests {
     }
 
     #[test]
-    fn thumb_contrasts_with_the_track_and_brightens_on_interaction() {
-        // The R48 complaint was a faint `Outline` thumb on the `SurfaceContainerHighest`
-        // track. The thumb fill must now be distinct from the track at rest AND
-        // brighten on hover/drag (so the grabbed thumb is unmistakable).
-        Owner::new().run(|| {
-            let theme = use_theme("app").theme_animated();
-            let track = theme.resolve(ColorRole::SurfaceContainerHighest);
-            let idle = thumb_fill(&theme, ScrollBarState::Idle);
-            let active = thumb_fill(&theme, ScrollBarState::Dragging);
-            assert_ne!(
-                idle, track,
-                "the idle thumb is distinct from the track (visible at rest)"
-            );
-            assert_ne!(active, idle, "the thumb brightens on hover / drag");
-            assert_eq!(
-                thumb_fill(&theme, ScrollBarState::Hover),
-                active,
-                "hover and drag share the bright fill",
-            );
-        });
-    }
-
-    #[test]
     fn offset_lines_from_top_converts_to_rows_up_from_bottom() {
         // Live (offset_y == max == len) -> 0 rows up (the live bottom).
         assert_eq!(offset_lines_from_top(100, 100), 0);
@@ -351,6 +311,33 @@ mod tests {
             reconcile_scroll(&scroll, 150);
             assert_eq!(scroll.max().1, 150, "the extent grew underneath");
             assert_eq!(scroll.offset_y(), 0, "the paused view stays put");
+        });
+    }
+
+    #[test]
+    fn wheel_scroll_pane_moves_rows_with_sign_and_accumulates_subrows() {
+        Owner::new().run(|| {
+            let scroll = use_pane_scroll(0);
+            scroll.set_max(0, 100);
+            scroll.scroll_to(0, 100); // live bottom
+            // Wheel UP 1 line -> 3 rows toward history (offset_y decreases). W3C
+            // -dy = up; no inversion.
+            wheel_scroll_pane(0, -1.0);
+            assert_eq!(scroll.offset_y(), 97, "1 line up = 3 rows toward history");
+            // Wheel DOWN 1 line -> back toward the live bottom.
+            wheel_scroll_pane(0, 1.0);
+            assert_eq!(scroll.offset_y(), 100, "1 line down = 3 rows back to live");
+            // Sub-line touchpad pan accumulates: 0.1 line (<1 row) scrolls nothing
+            // yet, but the remainder carries so 0.1 + 0.3 line = 1.2 rows -> 1 row.
+            scroll.scroll_to(0, 50);
+            wheel_scroll_pane(0, -0.1);
+            assert_eq!(scroll.offset_y(), 50, "sub-row pan scrolls nothing yet");
+            wheel_scroll_pane(0, -0.3);
+            assert_eq!(
+                scroll.offset_y(),
+                49,
+                "accumulated remainder crosses one row"
+            );
         });
     }
 
@@ -458,8 +445,8 @@ mod tests {
         };
         assert_eq!(
             bar.layout.size.width,
-            SizeValue::Px(GUTTER_W),
-            "bar is the fixed gutter"
+            SizeValue::Px(8),
+            "bar is the fixed gutter (VerticalScrollbarStyle::material default 8px)"
         );
         assert_eq!(
             bar.tag.as_deref(),
