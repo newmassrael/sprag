@@ -2134,6 +2134,46 @@
         "Splitter testing rule (cemented): grab the divider SEMANTICALLY by querying sprag_gui.split.0 children[1].rect from scene/snapshot and dragging its center, re-fetching after each drag (the handle moves with the ratio). Never guess pixel coordinates: the handle gap sits past scrollbar.0, not at the naive pane-midpoint (x=480 not x=476 at boot)."
       ]
     },
+    "Round 48": {
+      "decision_summary": "Round 48: adversarial session-review remediation of R47 (the R30/R35/R39 rhythm — a refactoring lens + an architecture lens + my SSOT/source cross-check). Verdict: R47's mechanism is sound and correctly placed (producer-side per §3, no pinion contamination) but not-yet-textbook. Cleared 1 must-fix + majors + minors: the redraw continuation-clear is now one atomic invariant-safe Screen method (was a mutate-while-iterating reconstruction across the Emulator/Screen boundary), gated to EraseToEndOfLine, with the soft-wrap decision named and the wrapped-flag SSOT doc corrected to name both writers. KEY: my cross-check OVERTURNED the architecture lens's proposed pure-structural alternative — bash's CR LF lands mid-row (premature, byte-indistinguishable from a hard newline), so the redraw CONTEXT is necessary, not a workaround. Committed 6ff63fe on main.",
+      "changes_bullets": [
+        "sprag-vt/src/port.rs: new Screen::clear_soft_wrap_continuation(row, gen) — one atomic, invariant-safe op that walks the wrap chain to its last row BEFORE clearing (clear_row drops the flag). Replaces the two-if reconstruction the emulator did across the Emulator/Screen boundary (the session review's must-fix: a mutate-while-iterating ordering hazard that left the soft-wrap SSOT internally inconsistent for a mid-chain erase).",
+        "sprag-vt/src/emulator.rs edit(): the redraw continuation-clear is now gated to matches!(mode, EraseToEndOfLine) (the readline idiom) instead of the end>=cols proxy that also caught EraseLine (\\x1b[2K); it calls the new Screen method. control() LineFeed reads a named `soft_wrap` local instead of passing in_resize_redraw positionally into set_wrapped.",
+        "sprag-vt/src/port.rs wrapped-field doc now names BOTH writers (autowrap site + the resize-redraw LineFeed) and states the second is a deliberate, context-only decision; emulator in_resize_redraw doc adds WHY-a-window (the editor CR LF lands mid-row, byte-indistinguishable from a hard newline) and honest scope LIMITS (first/single advance batch). Per-call comments deduped to point at the field doc.",
+        "crates/sprag-terminal/tests/resize_accumulation.rs: drag_sweep and drag_sweep_with_input unified into one drag_sweep(input) (empty input = bare-prompt path); header updated to four guards; the Korean guard's docstring made honest (a wide-char real-bash smoke complementing the char-agnostic unit tests)."
+      ],
+      "verification_bullets": [
+        "No behavior change (a remediation): 32 sprag-vt unit tests, the 4 real-bash integration guards (bare prompt, ASCII echo-hi, Korean wide-char, non-wrapping), sprag-host 38 tests all pass; sprag-gui builds; clippy and rustfmt clean.",
+        "My SSOT/source cross-check OVERTURNED the architecture lens's proposed alternative: it argued for a pure structural pending-wrap latch (no mode, no editor knowledge). Verified from the captured bytes that bash's CR LF lands at col 13 of a 20-wide row — a PREMATURE mid-row break, byte-for-byte identical to a genuine newline; no margin/pending-wrap rule can distinguish it. Only the redraw CONTEXT marks it soft (vte/gnome-terminal likewise rely on context and also show the break until widen). So the redraw-window mechanism is NECESSARY, not a workaround; the smell was the implementation, now cleared."
+      ],
+      "impact_refs": [
+        "4",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "The in_resize_redraw window's scope limits are now documented honestly rather than hardened: it assumes the editor's redraw is the first advance batch after the resize and fits in one PTY read. This holds for real editor prompt redraws (small, foreground); widening the scope (e.g. arming on the CR + erase-in-line signature) is deferred until a case is observed to need it.",
+        "The wide-char (Korean) IMMEDIATE break at narrow widths remains: bash's own premature CR LF puts the continuation on a new row; gnome-terminal/vte show it identically (confirmed via a PTY-proxy byte capture). Collapsing it immediately would require reflowing the active line, which reintroduces the editor/reflow cursor desync R45/R46 fixed — so it is left as faithful rendering (it collapses on widen via the R47 soft wrap)."
+      ],
+      "publishable_decision_summary": "Round 48: adversarial session-review remediation of R47 (the R30/R35/R39 rhythm — a refactoring lens + an architecture lens + my SSOT/source cross-check). Verdict: R47's mechanism is sound and correctly placed (producer-side per §3, no pinion contamination) but not-yet-textbook. Cleared 1 must-fix + majors + minors: the redraw continuation-clear is now one atomic invariant-safe Screen method (was a mutate-while-iterating reconstruction across the Emulator/Screen boundary), gated to EraseToEndOfLine, with the soft-wrap decision named and the wrapped-flag SSOT doc corrected to name both writers. KEY: my cross-check OVERTURNED the architecture lens's proposed pure-structural alternative — bash's CR LF lands mid-row (premature, byte-indistinguishable from a hard newline), so the redraw CONTEXT is necessary, not a workaround. Committed 6ff63fe on main.",
+      "publishable_changes_bullets": [
+        "sprag-vt/src/port.rs: new Screen::clear_soft_wrap_continuation(row, gen) — one atomic, invariant-safe op that walks the wrap chain to its last row BEFORE clearing (clear_row drops the flag). Replaces the two-if reconstruction the emulator did across the Emulator/Screen boundary (the session review's must-fix: a mutate-while-iterating ordering hazard that left the soft-wrap SSOT internally inconsistent for a mid-chain erase).",
+        "sprag-vt/src/emulator.rs edit(): the redraw continuation-clear is now gated to matches!(mode, EraseToEndOfLine) (the readline idiom) instead of the end>=cols proxy that also caught EraseLine (\\x1b[2K); it calls the new Screen method. control() LineFeed reads a named `soft_wrap` local instead of passing in_resize_redraw positionally into set_wrapped.",
+        "sprag-vt/src/port.rs wrapped-field doc now names BOTH writers (autowrap site + the resize-redraw LineFeed) and states the second is a deliberate, context-only decision; emulator in_resize_redraw doc adds WHY-a-window (the editor CR LF lands mid-row, byte-indistinguishable from a hard newline) and honest scope LIMITS (first/single advance batch). Per-call comments deduped to point at the field doc.",
+        "crates/sprag-terminal/tests/resize_accumulation.rs: drag_sweep and drag_sweep_with_input unified into one drag_sweep(input) (empty input = bare-prompt path); header updated to four guards; the Korean guard's docstring made honest (a wide-char real-bash smoke complementing the char-agnostic unit tests)."
+      ],
+      "publishable_verification_bullets": [
+        "No behavior change (a remediation): 32 sprag-vt unit tests, the 4 real-bash integration guards (bare prompt, ASCII echo-hi, Korean wide-char, non-wrapping), sprag-host 38 tests all pass; sprag-gui builds; clippy and rustfmt clean.",
+        "My SSOT/source cross-check OVERTURNED the architecture lens's proposed alternative: it argued for a pure structural pending-wrap latch (no mode, no editor knowledge). Verified from the captured bytes that bash's CR LF lands at col 13 of a 20-wide row — a PREMATURE mid-row break, byte-for-byte identical to a genuine newline; no margin/pending-wrap rule can distinguish it. Only the redraw CONTEXT marks it soft (vte/gnome-terminal likewise rely on context and also show the break until widen). So the redraw-window mechanism is NECESSARY, not a workaround; the smell was the implementation, now cleared."
+      ],
+      "publishable_impact_refs": [
+        "4",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "The in_resize_redraw window's scope limits are now documented honestly rather than hardened: it assumes the editor's redraw is the first advance batch after the resize and fits in one PTY read. This holds for real editor prompt redraws (small, foreground); widening the scope (e.g. arming on the CR + erase-in-line signature) is deferred until a case is observed to need it.",
+        "The wide-char (Korean) IMMEDIATE break at narrow widths remains: bash's own premature CR LF puts the continuation on a new row; gnome-terminal/vte show it identically (confirmed via a PTY-proxy byte capture). Collapsing it immediately would require reflowing the active line, which reintroduces the editor/reflow cursor desync R45/R46 fixed — so it is left as faithful rendering (it collapses on widen via the R47 soft wrap)."
+      ]
+    },
     "Round 5": {
       "decision_summary": "Restructure into producer/projection/host layers and harden the headless host: honest winsize, bounded state, enforced read-only.",
       "changes_bullets": [
