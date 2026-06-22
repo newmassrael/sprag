@@ -2679,6 +2679,9 @@ dependencies = [
 [[package]]
 name = "pinion-text-font"
 version = "0.0.1"
+dependencies = [
+ "pinion-text-unicode",
+]
 
 [[package]]
 name = "pinion-text-unicode"
@@ -3103,6 +3106,7 @@ dependencies = [
 [[package]]
 name = "sce-build"
 version = "0.1.0"
+source = "git+https://github.com/newmassrael/scxml-core-engine.git?rev=3078f8bf72d7aab1910838b6855ca3c13456912a#3078f8bf72d7aab1910838b6855ca3c13456912a"
 dependencies = [
  "libxml",
  "minijinja",
@@ -3119,6 +3123,7 @@ dependencies = [
 [[package]]
 name = "sce-portable-bytes"
 version = "0.1.0"
+source = "git+https://github.com/newmassrael/scxml-core-engine.git?rev=3078f8bf72d7aab1910838b6855ca3c13456912a#3078f8bf72d7aab1910838b6855ca3c13456912a"
 dependencies = [
  "heapless",
 ]
@@ -3126,6 +3131,7 @@ dependencies = [
 [[package]]
 name = "sce-rust-runtime"
 version = "0.1.0"
+source = "git+https://github.com/newmassrael/scxml-core-engine.git?rev=3078f8bf72d7aab1910838b6855ca3c13456912a#3078f8bf72d7aab1910838b6855ca3c13456912a"
 dependencies = [
  "log",
  "portable-atomic",

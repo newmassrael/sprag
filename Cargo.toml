@@ -74,15 +74,19 @@ vello = "0.9"
 # SCE (SCXML Core Engine) — the user's W3C SCXML 1.0 engine with multi-language
 # AOT codegen. sprag's orchestration control logic is authored as SCXML and
 # codegen'd via SCE (memory: use-sce-for-statecharts), mirroring pinion-forge's
-# usage. We depend on *pinion's vendored* SCE (kept synced to the canonical
-# /home/coin/scxml-core-engine) rather than the canonical path directly: pinion
-# already path-deps vendor/sce, so a second same-version path source would
-# collide in the Cargo lockfile. Sharing pinion's path yields one SCE package,
-# and the vendored copy is content-identical to canonical (the SSOT in substance).
+# usage. These MUST resolve to the SAME Cargo package as pinion's SCE, because
+# pinion-core's widget facade is generic over `sce_rust_runtime::{Engine,
+# StatePolicy}` and sprag builds on that facade — two instances would type-clash.
+# Cargo unifies on source_id, and `path` and `git` are never the same source, so
+# this MIRRORS pinion's `[workspace.dependencies]` SCE EXACTLY (same git url + rev
+# + default-features) — pinion moved path → git+rev in its R1053 (PR-22), so sprag
+# follows or the shared instance splits. `package=` is unneeded (dep name == crate
+# name; SCE crates are workspace members of scxml-core-engine.git). To bump SCE:
+# change the rev HERE and in pinion's workspace deps to the SAME value.
 # sce-build is a build-dependency (build.rs codegen); the runtime carries the
 # generated state machine. default-features off keeps http-send out.
-sce-build = { path = "../pinion/vendor/sce/sce-build" }
-sce-rust-runtime = { path = "../pinion/vendor/sce/sce-rust-runtime", default-features = false }
+sce-build = { git = "https://github.com/newmassrael/scxml-core-engine.git", rev = "3078f8bf72d7aab1910838b6855ca3c13456912a" }
+sce-rust-runtime = { git = "https://github.com/newmassrael/scxml-core-engine.git", rev = "3078f8bf72d7aab1910838b6855ca3c13456912a", default-features = false }
 
 # Internal crates.
 sprag-vt = { path = "crates/sprag-vt", version = "0.0.1" }
