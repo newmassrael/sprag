@@ -929,6 +929,69 @@ mod tests {
         );
     }
 
+    /// REPRODUCES the live "docks-then-undocks from the 2nd action" bounce that
+    /// R1071's OS-focus gate does NOT catch — and that my first multi-window guard
+    /// (above) missed by hand-pinning the focus. The live `[DIAG]` trace proved one
+    /// physical press in the 2-window state produces TWO chord dispatches (dock then
+    /// undock, 32ms apart, REPEAT=false): winit double-delivers the press to both
+    /// windows, the FIRST dispatch docks the pane and CLOSES its window, OS focus
+    /// moves to main, so the SECOND delivery (to main, now focused) PASSES the gate
+    /// and undocks. The step the other guard omitted is the `note_os_focus("main")`
+    /// AFTER the dock — i.e. modelling that closing the focused window moves focus,
+    /// which is exactly what defeats the gate.
+    ///
+    /// Ignored: it asserts the FIXED behaviour (one toggle, no bounce) and therefore
+    /// FAILS on pinion R1071 — un-ignore it (flip green) when pinion lands the gate
+    /// fix (snapshot OS-focus per physical press / dedupe the double-delivery).
+    #[test]
+    #[ignore = "reproduces pinion R1071 OS-focus-gate gap (close-during-dispatch); un-ignore when fixed"]
+    fn multiwindow_dock_does_not_bounce_when_close_moves_focus() {
+        let mut core = ShellCore::<TerminalViewer>::new();
+        let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+        core.finalize_frame(scene);
+        let win = dock::pane_window_id(0);
+        let count = |core: &mut ShellCore<TerminalViewer>| {
+            core.root_owner()
+                .run(|| dock::use_windows_topology().get().len())
+        };
+        core.set_modifiers(Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Modifiers::default()
+        });
+
+        // 1st action: main focused, the chord undocks pane 0 -> the pane-0 window opens.
+        core.note_os_focus(dock::MAIN_WINDOW_ID, true);
+        core.key_press_for_window(dock::MAIN_WINDOW_ID, "Enter", false);
+        assert_eq!(
+            count(&mut core),
+            2,
+            "1st action undocked (clean — matches live)"
+        );
+
+        // The undock window grabs OS focus (winit Focused(pane-0, true)).
+        core.note_os_focus(&win, true);
+
+        // 2nd action — ONE physical press double-delivered to both windows:
+        // delivery A -> pane-0 (OS-focused): docks pane 0 -> CLOSES the pane-0 window.
+        core.key_press_for_window(&win, "Enter", false);
+        // *** The step the other guard omitted: closing the focused window moves OS
+        //     focus to main (winit fires Focused(pane-0,false) + Focused(main,true)). ***
+        core.note_os_focus(&win, false);
+        core.note_os_focus(dock::MAIN_WINDOW_ID, true);
+        // delivery B -> main (NOW OS-focused): the gate passes -> UNDOCKS = the bounce.
+        core.key_press_for_window(dock::MAIN_WINDOW_ID, "Enter", false);
+
+        // The fix: one physical press = one net toggle -> pane 0 stays DOCKED (count 1).
+        // On R1071 today this is 2 (docked then undocked = the live bounce), so this
+        // FAILS until pinion closes the gap.
+        assert_eq!(
+            count(&mut core),
+            1,
+            "one press must net one toggle (docked); R1071 bounces to 2 (undocked)"
+        );
+    }
+
     /// End-to-end divider drag through the REAL viewer: setting the boot split's ratio
     /// Signal (the exact write a pointer drag performs via `SplitterExternal`)
     /// re-weights the two panes — the left pane reflows wider, tracking ~0.7. Proves
