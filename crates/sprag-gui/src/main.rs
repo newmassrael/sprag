@@ -329,14 +329,35 @@ impl WidgetCore for TerminalViewer {
 
     /// Route a focused keystroke to the focused pane's PTY — delegates to
     /// [`route_key`] (the roving-tabindex focus gate + the focused pane's
-    /// `invoke("key", ...)` wire + the focus-cycle / scrollback chords).
+    /// `invoke("key", ...)` wire + the focus-cycle / scrollback / dock-toggle chords).
+    ///
+    /// This is the `repeat == false` entry — the RPC `scene/key` injection and any
+    /// single-activation caller (a synthesised key is never an OS auto-repeat). The
+    /// live shell drives the repeat-aware sibling [`Self::apply_key_repeat`] instead.
     fn apply_key(
         scene: &mut Scene,
         focused: Option<&str>,
         key: &str,
         modifiers: Modifiers,
     ) -> bool {
-        route_key(scene, focused, key, modifiers)
+        route_key(scene, focused, key, modifiers, false)
+    }
+
+    /// Repeat-aware key dispatch (pinion R1071 / PINION-PR27) — the variant the live
+    /// shell drives, carrying the platform `KeyEvent.repeat` flag. Both this and
+    /// [`Self::apply_key`] are thin delegates to [`route_key`], which OWNS the repeat
+    /// policy: a held DISCRETE window chord (dock-toggle / focus-cycle) acts once per
+    /// press, not on every OS auto-repeat — without this a held `Ctrl+Shift+Enter`
+    /// dock-then-undocked in the multi-window state. Scrollback chords and PTY keys
+    /// still repeat (continuous).
+    fn apply_key_repeat(
+        scene: &mut Scene,
+        focused: Option<&str>,
+        key: &str,
+        modifiers: Modifiers,
+        repeat: bool,
+    ) -> bool {
+        route_key(scene, focused, key, modifiers, repeat)
     }
 
     /// Route committed IME text to the focused pane's PTY — delegates to
@@ -833,6 +854,78 @@ mod tests {
             core.focus().focused(),
             Some(pane_tag(0)),
             "focus follows the undocked pane (PR-26); not dropped during the window race",
+        );
+    }
+
+    /// Multi-window key dispatch does NOT double-toggle (consumes pinion R1071 /
+    /// PINION-PR27 end-to-end through the real shell). This is the scenario the user
+    /// hit — `Ctrl+Shift+Enter` "docks-then-undocks" once a 2nd window exists — and
+    /// the regression guard PR-27's `key_press_for_window` / `note_os_focus` seam (R27.2)
+    /// exists to make reproducible HEADLESSLY (no GUI / no external injector). Two
+    /// mechanisms, both gated:
+    ///   1. OS-focus gate (R27.1): a key delivered to a NON-OS-focused window is
+    ///      dropped, so a multi-window double-DELIVERY of one press toggles only once.
+    ///   2. Auto-repeat drop (R27.1 + sprag `apply_key_repeat`): a held chord's
+    ///      `repeat == true` re-send is a no-op.
+    #[test]
+    fn multiwindow_dock_chord_toggles_once_per_press() {
+        let mut core = ShellCore::<TerminalViewer>::new();
+        let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+        core.finalize_frame(scene);
+        let win = || dock::pane_window_id(0);
+        let count = |core: &mut ShellCore<TerminalViewer>| {
+            core.root_owner()
+                .run(|| dock::use_windows_topology().get().len())
+        };
+
+        // Hold Ctrl+Shift so each "Enter" is the dock chord.
+        core.set_modifiers(Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Modifiers::default()
+        });
+
+        // Main has OS focus; the chord undocks the focused pane 0 -> 2 windows.
+        core.note_os_focus(dock::MAIN_WINDOW_ID, true);
+        assert!(core.key_press_for_window(dock::MAIN_WINDOW_ID, "Enter", false));
+        assert_eq!(count(&mut core), 2, "the chord undocked pane 0");
+
+        // The undock window grabs OS focus. Now a SINGLE physical press double-DELIVERED
+        // to both windows must toggle ONCE: pane-0 (OS-focused) dispatches, main is gated.
+        core.note_os_focus(&win(), true);
+        let to_pane0 = core.key_press_for_window(&win(), "Enter", false);
+        let to_main = core.key_press_for_window(dock::MAIN_WINDOW_ID, "Enter", false);
+        assert!(
+            to_pane0,
+            "the OS-focused window dispatches the chord (docks pane 0 back)"
+        );
+        assert!(
+            !to_main,
+            "the non-OS-focused window is GATED — no second toggle (pre-R1071 it bounced)"
+        );
+        assert_eq!(
+            count(&mut core),
+            1,
+            "exactly one toggle: docked back, no undock bounce"
+        );
+
+        // An OS auto-repeat of the chord (repeat == true) is dispatched to the eligible
+        // window but DROPPED inside apply_key_repeat — no toggle (count unchanged). The
+        // return is `true` (the window was eligible); the drop shows up in the count.
+        core.note_os_focus(dock::MAIN_WINDOW_ID, true);
+        assert!(core.key_press_for_window(dock::MAIN_WINDOW_ID, "Enter", true));
+        assert_eq!(
+            count(&mut core),
+            1,
+            "the auto-repeat was dropped — no toggle"
+        );
+        // The leading (non-repeat) press of the SAME chord DOES toggle, proving the
+        // chord is live and only the repeat was dropped.
+        assert!(core.key_press_for_window(dock::MAIN_WINDOW_ID, "Enter", false));
+        assert_eq!(
+            count(&mut core),
+            2,
+            "a non-repeat press of the same chord toggles"
         );
     }
 

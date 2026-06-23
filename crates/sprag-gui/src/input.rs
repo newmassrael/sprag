@@ -122,7 +122,10 @@ fn window_chord(key: &str, modifiers: Modifiers) -> Option<WindowChord> {
 /// gate maps `focused` to a pane tile ([`pane_index_of`]); a non-pane / absent
 /// focus is a no-op (falls through to the shell default). A reserved
 /// [`WindowChord`] ([`window_chord`]) acts on the window/layout and never reaches
-/// the PTY (focus-cycle / scrollback / dock-toggle). Otherwise the key + W3C
+/// the PTY (focus-cycle / scrollback / dock-toggle); a DISCRETE chord (dock-toggle /
+/// focus-cycle) is dropped on an OS auto-repeat (`repeat`) so it acts once per press
+/// (pinion R1071 / PINION-PR27 — a held `Ctrl+Shift+Enter` no longer dock-then-undocks),
+/// while scrollback + PTY keys repeat normally. Otherwise the key + W3C
 /// modifiers go to that pane's
 /// [`SpragPaneExternal`](sprag_host::SpragPaneExternal) — found in the model scene
 /// by its tag ([`Scene::find_external_with_tag_mut`]) — via
@@ -136,6 +139,7 @@ pub(crate) fn route_key(
     focused: Option<&str>,
     key: &str,
     modifiers: Modifiers,
+    repeat: bool,
 ) -> bool {
     let Some(tag) = focused else {
         return false;
@@ -145,6 +149,13 @@ pub(crate) fn route_key(
     };
     // Reserved window chords act on the layout, not the PTY.
     if let Some(chord) = window_chord(key, modifiers) {
+        // Discrete chords (dock-toggle, focus-cycle) act once per press: drop an OS
+        // auto-repeat re-send (pinion R1071 / PINION-PR27 toggle-class contract), or a
+        // held `Ctrl+Shift+Enter` dock-then-undocks in the multi-window state. Scrollback
+        // is continuous, so a held `Shift+PageUp` keeps scrolling.
+        if repeat && !matches!(chord, WindowChord::Scroll) {
+            return false;
+        }
         match chord {
             WindowChord::CycleFocus => cycle_focus(active, key),
             WindowChord::Scroll => scroll_view(active, key),
@@ -577,6 +588,71 @@ mod tests {
                 ctrl_shift
             ));
             assert_eq!(windows.get().len(), 1, "docked back");
+        });
+    }
+
+    /// Auto-repeat of the DISCRETE dock chord is dropped (consumes pinion R1071 /
+    /// PINION-PR27): the live shell drives `apply_key_repeat` with the platform
+    /// `KeyEvent.repeat` flag, and a held `Ctrl+Shift+Enter` must toggle ONCE per
+    /// press, not on every OS auto-repeat — that re-send is what made it
+    /// "dock-then-undock" in the multi-window state. The leading press
+    /// (`repeat == false`) toggles; an auto-repeat (`repeat == true`) is a no-op. A
+    /// scrollback chord is CONTINUOUS, so it is NOT dropped (a held `Shift+PageUp`
+    /// keeps scrolling) — `route_key` drops only the discrete chords.
+    #[test]
+    fn dock_chord_auto_repeat_is_dropped_scroll_repeats() {
+        let owner = Owner::new();
+        owner.run(|| {
+            let handle = use_terminal().pane_handle(0);
+            let mut scene = Scene::External(
+                ExternalNode::new(Box::new(SpragPaneExternal::new(handle))).with_tag(pane_tag(0)),
+            );
+            let windows = crate::dock::use_windows_topology();
+            let ctrl_shift = Modifiers {
+                ctrl: true,
+                shift: true,
+                ..Modifiers::default()
+            };
+            let shift = Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            };
+
+            // An OS auto-repeat re-send of the dock chord is dropped: no-op, no window.
+            assert!(
+                !TerminalViewer::apply_key_repeat(
+                    &mut scene,
+                    Some(pane_tag(0)),
+                    "Enter",
+                    ctrl_shift,
+                    true
+                ),
+                "a held dock chord's auto-repeat is a no-op",
+            );
+            assert_eq!(windows.get().len(), 1, "auto-repeat did not undock");
+
+            // The leading press (repeat = false) toggles once.
+            assert!(TerminalViewer::apply_key_repeat(
+                &mut scene,
+                Some(pane_tag(0)),
+                "Enter",
+                ctrl_shift,
+                false
+            ));
+            assert_eq!(windows.get().len(), 2, "the leading press undocked once");
+
+            // A scrollback chord is continuous — a held Shift+PageUp keeps scrolling
+            // (NOT dropped), so only the discrete chords are repeat-gated.
+            assert!(
+                TerminalViewer::apply_key_repeat(
+                    &mut scene,
+                    Some(pane_tag(0)),
+                    "PageUp",
+                    shift,
+                    true
+                ),
+                "scrollback repeats on a held key",
+            );
         });
     }
 
