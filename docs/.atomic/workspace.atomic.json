@@ -2606,6 +2606,34 @@
         "4"
       ]
     },
+    "Round 59": {
+      "decision_summary": "Round 59: session-review remediation (adversarial agent + self-review) — centralized the fill-definite invariant into compose (was scattered across 3 callers; the R55 bug was a forgotten fill), fixed 4 stale/inverted scrollback docs the review caught, and DRY'd the wide-cell emit. No behavior change; the agent corrected my false dual-format finding (both push paths store with trailers).",
+      "changes_bullets": [
+        "Centralized the \"content handed to compose must carry a definite extent\" invariant INTO compose (view.rs): compose now applies split::fill_definite to its content, and the 3 scattered call sites are removed (view_split_row, view_grid, and the R55 undock branch). The invariant now lives in one place that every paint path funnels through, so a caller cannot forget it — the R55 undock bug was exactly a forgotten fill. fill_definite only sets size and is idempotent, so docked behavior is unchanged.",
+        "Fixed 4 stale/inverted docs (the adversarial review's must-fix doc-SSOT issues): the 3 \"scrollback is text-only / R16\" comments (main.rs module doc, view.rs build_pane_scene, port.rs reflowed) now state scrollback retains styled cells (R58); project_glyph_row's doc rationale was inverted — BOTH push paths store head+trailer pairs (scroll_up copies the grid row; reflowed Pass 2 regenerates the trailer via Cell::trailer_for), so a stored trailer is redundant-and-skipped; the only trailerless input is the cols==1 lone wide head.",
+        "DRY: extracted push_wide_pair (sprag-grid) shared by project_row + project_glyph_row (byte-identical head+trailer emit). API: Screen::row_cells pub -> pub(crate) (no cross-crate consumer). No behavior change."
+      ],
+      "verification_bullets": [
+        "Adversarial agent review (general-purpose) + self-review cross-checked; reconciled against the code. The agent CORRECTED my own false finding (I claimed scrollback stored two cell formats) — verified against reflow Pass 2 (buf.push(cell); if Wide { buf.push(Cell::trailer_for(cell)) }) that both push paths store WITH trailers, so the storage is canonical and only the doc was wrong (the R48 lesson: cross-check a finding against data).",
+        "57 sprag-gui + 32 sprag-vt + 12 sprag-grid tests pass; cargo clippy clean; cargo doc adds no new warnings (2 pre-existing sprag-vt broken-links untouched). Live on the rebuilt R59 binary (hidden RPC): main window still tiles 2 panes (47x20 — compose centralization preserved docked layout) and scrolled-back prompts still render green (scrollback color intact). Remaining nits judged preference (project_row/project_glyph_row stay separate — different input contracts: fixed-grid vs trimmed-logical)."
+      ],
+      "impact_refs": [
+        "4"
+      ],
+      "publishable_decision_summary": "Round 59: session-review remediation (adversarial agent + self-review) — centralized the fill-definite invariant into compose (was scattered across 3 callers; the R55 bug was a forgotten fill), fixed 4 stale/inverted scrollback docs the review caught, and DRY'd the wide-cell emit. No behavior change; the agent corrected my false dual-format finding (both push paths store with trailers).",
+      "publishable_changes_bullets": [
+        "Centralized the \"content handed to compose must carry a definite extent\" invariant INTO compose (view.rs): compose now applies split::fill_definite to its content, and the 3 scattered call sites are removed (view_split_row, view_grid, and the R55 undock branch). The invariant now lives in one place that every paint path funnels through, so a caller cannot forget it — the R55 undock bug was exactly a forgotten fill. fill_definite only sets size and is idempotent, so docked behavior is unchanged.",
+        "Fixed 4 stale/inverted docs (the adversarial review's must-fix doc-SSOT issues): the 3 \"scrollback is text-only / R16\" comments (main.rs module doc, view.rs build_pane_scene, port.rs reflowed) now state scrollback retains styled cells (R58); project_glyph_row's doc rationale was inverted — BOTH push paths store head+trailer pairs (scroll_up copies the grid row; reflowed Pass 2 regenerates the trailer via Cell::trailer_for), so a stored trailer is redundant-and-skipped; the only trailerless input is the cols==1 lone wide head.",
+        "DRY: extracted push_wide_pair (sprag-grid) shared by project_row + project_glyph_row (byte-identical head+trailer emit). API: Screen::row_cells pub -> pub(crate) (no cross-crate consumer). No behavior change."
+      ],
+      "publishable_verification_bullets": [
+        "Adversarial agent review (general-purpose) + self-review cross-checked; reconciled against the code. The agent CORRECTED my own false finding (I claimed scrollback stored two cell formats) — verified against reflow Pass 2 (buf.push(cell); if Wide { buf.push(Cell::trailer_for(cell)) }) that both push paths store WITH trailers, so the storage is canonical and only the doc was wrong (the R48 lesson: cross-check a finding against data).",
+        "57 sprag-gui + 32 sprag-vt + 12 sprag-grid tests pass; cargo clippy clean; cargo doc adds no new warnings (2 pre-existing sprag-vt broken-links untouched). Live on the rebuilt R59 binary (hidden RPC): main window still tiles 2 panes (47x20 — compose centralization preserved docked layout) and scrolled-back prompts still render green (scrollback color intact). Remaining nits judged preference (project_row/project_glyph_row stay separate — different input contracts: fixed-grid vs trimmed-logical)."
+      ],
+      "publishable_impact_refs": [
+        "4"
+      ]
+    },
     "Round 6": {
       "decision_summary": "Inject input via the External + scene/invoke carrier: a sprag-owned key encoder writes PTY bytes behind the pane's engine External, lifting the read-only boundary (R2.6 encoding / R1.7 data-engine split).",
       "changes_bullets": [
