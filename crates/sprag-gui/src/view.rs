@@ -29,16 +29,10 @@ pub(crate) fn view_for_window(window_id: &str, _state: (), _frame: &Frame) -> Sc
     match pane_window_index(window_id) {
         // An undock window paints its one pane (if still present); a stale window
         // id (pane closed) falls back to the main layout, never a stranded paint.
-        // `fill_definite` gives the lone pane the same definite extent the docked
-        // arrangements get from their final fill — without it the pane fills the
-        // window width (cross-axis stretch) but NOT its height (the sizeless main
-        // axis collapses to the grid's content rows), so the undock window would
-        // reflow only horizontally. With it, the pane reflows to its window in BOTH
-        // axes (the R1021 per-window pane-viewport publish does the rest).
-        Some(i) if i < tv.pane_count() => compose(
-            crate::split::fill_definite(build_pane_scene(&tv, i, &theme)),
-            &theme,
-        ),
+        // The lone pane needs no special fill here — `compose` gives every content
+        // node a definite extent so it reflows in BOTH axes (the R1021 per-window
+        // pane-viewport publish does the rest); see `compose`.
+        Some(i) if i < tv.pane_count() => compose(build_pane_scene(&tv, i, &theme), &theme),
         _ => view_main(&tv, &theme),
     }
 }
@@ -104,7 +98,7 @@ fn empty_cell(theme: &Theme) -> Scene {
 /// bridge), so a per-pane scroll (keyboard OR drag) or composition `set` repaints
 /// live. The scroll authority is the row-unit `ScrollState`
 /// ([`crate::scrollbar::use_pane_scroll`]); `offset_y == max` is the live screen and
-/// a smaller `offset_y` windows into history (text-only, R16). The preedit overlays
+/// a smaller `offset_y` windows into history (styled cells, R58). The preedit overlays
 /// only the live view (the host seam self-gates on the cursor). On child EOF the
 /// pane paints its frozen final screen.
 ///
@@ -143,14 +137,22 @@ fn build_pane_scene(tv: &TerminalView, i: usize, theme: &Theme) -> Scene {
     crate::scrollbar::wrap_pane_with_bar(grid, bar)
 }
 
-/// Wrap the tiled workspace in the surface-filled paint root (tagged [`ROOT_TAG`])
-/// that fills the window, so the flex-Row tiling fills it and each pane's rect
-/// derives from its split share (§3, per-pane via R1012). The surface shows
-/// through the inter-pane divider gap. Pure composition; the unit test exercises
-/// it without a PTY.
+/// Wrap the workspace `content` in the surface-filled paint root (tagged
+/// [`ROOT_TAG`]) that fills the window, so the tiling fills it and each pane's rect
+/// derives from its split share (§3, per-pane via R1012). The surface shows through
+/// the inter-pane divider gap.
+///
+/// `compose` owns the "content must carry a definite extent" invariant: it applies
+/// [`crate::split::fill_definite`] to `content` so a sizeless flex child can't
+/// collapse its main axis to intrinsic (the cross axis still stretches). This is
+/// the SINGLE enforcement point — every paint path funnels through `compose`, so a
+/// caller cannot forget it (the R55 undock bug was exactly a forgotten fill). The
+/// fill only sets `size` and is idempotent, so the docked arrangements (which used
+/// to apply it themselves) need not. Pure composition; the unit test exercises it
+/// without a PTY.
 fn compose(content: Scene, theme: &Theme) -> Scene {
     Scene::Container(
-        ContainerNode::new(vec![content])
+        ContainerNode::new(vec![crate::split::fill_definite(content)])
             .with_tag(ROOT_TAG)
             .with_style(BoxStyle::filled(theme.resolve(ColorRole::Surface)))
             .with_layout(LayoutStyle::new().with_size(fill_size())),

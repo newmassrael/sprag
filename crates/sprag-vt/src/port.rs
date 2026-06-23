@@ -304,8 +304,10 @@ impl Screen {
 
     /// A row's cells (`0..cols`, oldest-left), cloned. The row-to-cells mapping
     /// the scrollback push captures so scrolled-off history keeps its styling.
+    /// Internal (`pub(crate)`): the cross-crate grid reads `scrollback_cells`, not
+    /// live rows; only `row_text` + `scroll_up` use this.
     #[must_use]
-    pub fn row_cells(&self, row: u16) -> Vec<Cell> {
+    pub(crate) fn row_cells(&self, row: u16) -> Vec<Cell> {
         (0..self.cols)
             .filter_map(|col| self.cell(col, row).cloned())
             .collect()
@@ -454,8 +456,8 @@ impl Screen {
     /// physical row (its column preserved), so a live line editor's resize redraw
     /// overwrites in place rather than stacking — see the cursor-anchor note in
     /// Pass 3. Wide clusters never split across the margin; an overflow on a
-    /// narrower reflow scrolls the top off into scrollback (text-only), keeping the
-    /// cursor visible. `gen` is a fresh damage stamp for every (re-laid-out) row.
+    /// narrower reflow scrolls the top off into scrollback (as styled cells), keeping
+    /// the cursor visible. `gen` is a fresh damage stamp for every (re-laid-out) row.
     pub(crate) fn reflowed(&self, cols: u16, rows: u16, generation: u64) -> Screen {
         if self.kind != ScreenKind::Main || cols == 0 || rows == 0 {
             return self.resized(cols, rows);

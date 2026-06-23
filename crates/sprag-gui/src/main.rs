@@ -177,11 +177,12 @@
 //! scroll re-renders that pane). The view reuses the host's per-pane projection
 //! seam at its scrolled entry, so history and the live screen share one
 //! authority. The scroll keys do NOT reach the PTY; any other key snaps that pane
-//! back to the live bottom (you type at the prompt). Scrolled history is
-//! **text-only** (the R16 scrollback model keeps text, not cells) — it renders in
-//! default colors; the live screen is exact. `offset == 0` follows the bottom
-//! with no drift; scrolling *during* active output may shift (the offset is
-//! relative to the live bottom) — a v1 limit.
+//! back to the live bottom (you type at the prompt). Scrolled history retains its
+//! **styled cells** (fg/bg/attrs preserved; R58 — scrollback stores cells, not
+//! text), so it renders in its original colors, identical to the live screen.
+//! `offset == 0` follows the bottom with no drift;
+//! scrolling *during* active output may shift (the offset is relative to the live
+//! bottom) — a v1 limit.
 
 mod a11y;
 mod dock;

@@ -179,14 +179,17 @@ fn preedit_cell(ch: char) -> TermCell {
         .with_attrs(CellAttrs::empty().with_underline(true))
 }
 
-/// Build a scrolled-back (history) row's `TermCell`s from its STORED glyph cells,
+/// Build a scrolled-back (history) row's `TermCell`s from its STORED cells,
 /// preserving fg/bg/attrs — so scrollback paints in its original colors, not flat
 /// plain text. Wide heads expand into pinion's head + trailer pair (the same shape
-/// [`project_row`] gives the live grid). A stored wide trailer is skipped here (the
-/// head re-synthesizes it), so a row stored WITH trailers (the scroll-off path) and
-/// one stored WITHOUT (the reflow path) render identically. A wide head clipped at
-/// the right edge renders narrow (matching `project_row`'s edge handling). Padded
-/// with blanks / truncated to `cols`.
+/// [`project_row`] gives the live grid). Both scrollback push paths store a row as
+/// head+trailer pairs (`scroll_up` copies the live grid row; `reflowed` Pass 2
+/// regenerates the trailer via `Cell::trailer_for`), so a stored `Width::Trailer`
+/// is REDUNDANT — its head already emitted the pair — and is skipped here. The one
+/// trailerless input is the degenerate `cols == 1` lone wide head (the emulator
+/// stores a head with no room for a trailer); it lands in the `Width::Wide`
+/// no-room arm below and renders narrow (matching `project_row`'s edge clip).
+/// Padded with blanks / truncated to `cols`.
 fn project_glyph_row(glyphs: &[Cell], cols: u16) -> Vec<TermCell> {
     let ncols = cols as usize;
     let mut out = Vec::with_capacity(ncols);
@@ -196,12 +199,7 @@ fn project_glyph_row(glyphs: &[Cell], cols: u16) -> Vec<TermCell> {
             break;
         }
         match cell.width {
-            Width::Wide if col + 1 < ncols => {
-                let head = term_cell(cell).wide();
-                let trailer = head.trailer();
-                out.push(head);
-                out.push(trailer);
-            }
+            Width::Wide if col + 1 < ncols => push_wide_pair(&mut out, cell),
             Width::Trailer => {}
             _ => out.push(term_cell(cell)),
         }
@@ -223,10 +221,7 @@ fn project_row(screen: &Screen, row: u16, cols: u16) -> Vec<TermCell> {
         };
         match cell.width {
             Width::Wide if col + 1 < cols => {
-                let head = term_cell(cell).wide();
-                let trailer = head.trailer();
-                out.push(head);
-                out.push(trailer);
+                push_wide_pair(&mut out, cell);
                 col += 2;
             }
             // An orphan trailer means the head was clipped at the edge;
@@ -251,6 +246,16 @@ fn term_cell(cell: &Cell) -> TermCell {
         term_color(cell.bg),
     )
     .with_attrs(cell_attrs(cell.attrs))
+}
+
+/// Push a wide cluster as pinion's head + trailer pair (DESIGN.md §3: producer
+/// determines width). Shared by the live-grid [`project_row`] and the history
+/// [`project_glyph_row`], which differ in iteration but emit wide cells the same way.
+fn push_wide_pair(out: &mut Vec<TermCell>, cell: &Cell) {
+    let head = term_cell(cell).wide();
+    let trailer = head.trailer();
+    out.push(head);
+    out.push(trailer);
 }
 
 fn term_color(color: Color) -> TermColor {

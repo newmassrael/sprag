@@ -316,28 +316,29 @@ fn fold(
     acc
 }
 
-/// Arrange the `panes` left-to-right (row mode) with draggable dividers, filling
-/// the window. `0` panes -> an empty root; otherwise a single Horizontal [`fold`]
-/// over ids `0..panes.len()-1`. The result is sized `Percent(100)` so compose's
-/// surface root fills it to the viewport ([`fill_definite`]).
+/// Arrange the `panes` left-to-right (row mode) with draggable dividers. `0` panes
+/// -> an empty root; otherwise a single Horizontal [`fold`] over ids
+/// `0..panes.len()-1`. The result carries no explicit size — `compose`
+/// applies the definite [`fill_definite`] extent the flex layout needs (the single
+/// enforcement point), so this returns the bare arrangement.
 pub(crate) fn view_split_row(panes: Vec<Scene>, theme: &Theme) -> Scene {
-    let content = if panes.is_empty() {
+    if panes.is_empty() {
         Scene::Container(ContainerNode::new(Vec::new()))
     } else {
         let ids: Vec<usize> = (0..panes.len().saturating_sub(1)).collect();
         fold(panes, &ids, SplitterOrientation::Horizontal, theme)
-    };
-    fill_definite(content)
+    }
 }
 
-/// Arrange `cells` in a balanced 2D grid (grid mode) with draggable dividers,
-/// filling the window. `cells[i]` is cell `i` of the FIXED boot shape
-/// `grid_plan(cells.len())` (a docked pane's projection, or an UNTAGGED held slot
-/// for a floated pane — [`crate::view`]). Each row is an inner Horizontal [`fold`]
-/// over its `column_divider_ids`; the rows are an outer Vertical [`fold`] over
-/// `row_divider_ids`, so the scene is a Column of Rows. Empty -> an empty root.
+/// Arrange `cells` in a balanced 2D grid (grid mode) with draggable dividers.
+/// `cells[i]` is cell `i` of the FIXED boot shape `grid_plan(cells.len())` (a docked
+/// pane's projection, or an UNTAGGED held slot for a floated pane — [`crate::view`]).
+/// Each row is an inner Horizontal [`fold`] over its `column_divider_ids`; the rows
+/// are an outer Vertical [`fold`] over `row_divider_ids`, so the scene is a Column of
+/// Rows. Empty -> an empty root. Carries no explicit size — `compose`
+/// applies the [`fill_definite`] extent (the single enforcement point).
 pub(crate) fn view_grid(cells: Vec<Scene>, theme: &Theme) -> Scene {
-    let content = if cells.is_empty() {
+    if cells.is_empty() {
         Scene::Container(ContainerNode::new(Vec::new()))
     } else {
         let plan = grid_plan(cells.len());
@@ -367,8 +368,7 @@ pub(crate) fn view_grid(cells: Vec<Scene>, theme: &Theme) -> Scene {
             SplitterOrientation::Vertical,
             theme,
         )
-    };
-    fill_definite(content)
+    }
 }
 
 /// Give a Container a definite `Percent(100)` size (via the one
@@ -381,12 +381,11 @@ pub(crate) fn view_grid(cells: Vec<Scene>, theme: &Theme) -> Scene {
 ///
 /// The contract this enforces: **every content node handed to `compose` must carry
 /// a definite extent**, or the sizeless flex child collapses to its content's
-/// intrinsic size on the main axis (the cross axis still stretches). The docked
-/// arrangements apply it as their final step; the undock window
-/// ([`view_for_window`](crate::view::view_for_window)) applies it to its lone pane
-/// for the SAME reason — without it an undock window reflows only its width
-/// (cross-axis stretch) and its height stays pinned to the grid's content rows (a
-/// sizeless main axis), so the pane never reflows vertically to its window.
+/// intrinsic size on the main axis (the cross axis still stretches).
+/// `compose` is the SOLE caller — it applies this to whatever
+/// content it wraps (docked tiling OR a lone undock pane), so the invariant lives
+/// in one place and no caller can forget it. (Forgetting it was the R55 undock bug:
+/// the pane reflowed only its width, its height pinned to the grid's content rows.)
 pub(crate) fn fill_definite(scene: Scene) -> Scene {
     match scene {
         Scene::Container(c) => {
