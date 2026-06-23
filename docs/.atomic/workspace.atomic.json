@@ -2802,6 +2802,42 @@
         "P2 (drag-to-dock + preview) and P3 (tear-off) of the dock migration not started."
       ]
     },
+    "Round 63": {
+      "decision_summary": "Round 63: bumped all 7 pinion-* from 2617e9f3 (R1069.1) to 21ca4953 (R1071) to consume PINION-PR27 (multi-window key-dispatch double-toggle + per-window key test seam). PR-27 landed as R1071: apply_key_repeat exposes KeyEvent.repeat (a binding drops it for toggle-class chords), a note_os_focus gate makes a press act only on the OS-focused window, and key_press_for_window is the per-window key-injection test seam. sprag overrides apply_key_repeat (threads repeat into route_key, which drops discrete-chord auto-repeats), gets the OS-focus gate free, and — using R27.2's key_press_for_window — now reproduces the exact multi-window double-toggle HEADLESSLY (no GUI / no external tool), the durable regression guard the user asked pinion to make possible. SCE 3078f8bf / vello 0.9 unchanged. This fixes the user-reported \"Ctrl+Shift+Enter docks-then-undocks from the 2nd action\" end-to-end.",
+      "changes_bullets": [
+        "Cargo.toml: bumped the 7 pinion-* git revs 2617e9f3 (R1069.1) -> 21ca4953 (R1071). SCE (3078f8bf) + vello (\"0.9\") unchanged (pinion's own pins match). Cargo.lock re-resolved.",
+        "crates/sprag-gui/src/main.rs: replaced the single apply_key override with BOTH apply_key (the repeat==false entry that RPC scene/key + direct callers use) AND apply_key_repeat (pinion R1071, the variant the live shell drives, carrying KeyEvent.repeat) — both thin delegates to route_key, which owns the repeat policy.",
+        "crates/sprag-gui/src/input.rs: route_key gained a `repeat` param; a DISCRETE window chord (dock-toggle / focus-cycle) is dropped on an OS auto-repeat (returns false) so it acts once per press — a held Ctrl+Shift+Enter no longer dock-then-undocks; scrollback chords (Scroll) and PTY keys still repeat (continuous)."
+      ],
+      "verification_bullets": [
+        "Build clean against pinion 21ca4953 (R1071); 53 sprag-gui tests pass; cargo clippy -p sprag-gui --all-targets clean; rustfmt clean; cargo doc -D warnings --document-private-items clean; the pre-commit hook (validate-workspace + rustfmt + clippy --workspace) passed on commit c666ce1.",
+        "Two new guards. (1) input.rs dock_chord_auto_repeat_is_dropped_scroll_repeats: apply_key_repeat with repeat=true on the dock chord is a no-op (no undock), repeat=false toggles once, and a held Shift+PageUp still repeats (only discrete chords are gated). (2) main.rs multiwindow_dock_chord_toggles_once_per_press: the EXACT user scenario reproduced HEADLESSLY through the real ShellCore via R27.2's note_os_focus + key_press_for_window — after undock, a single press double-DELIVERED to both windows toggles ONCE (pane-0, the OS-focused window, dispatches and docks back; main is GATED: key_press_for_window returns false, no second toggle, no bounce), and a repeat=true re-send on the eligible window is dropped (no toggle) while a repeat=false press of the same chord toggles. This is the regression guard PINION-PR27 R27.2 existed to make possible — no GUI, no xdotool."
+      ],
+      "impact_refs": [
+        "4"
+      ],
+      "carry_forward_bullets": [
+        "PINION-PR26 (undock focus-follow) + PR-27 (multi-window key dispatch + test seam) both DELIVERED (pinion R1069 + R1071) and CONSUMED. No open pinion blockers for the dock work.",
+        "P2 (drag-to-dock + drop preview + nested splits, via DockReorganizeExternal / resolve_dock_drop / DockDropZone) and P3 (handle-drag tear-off via DockPanelExternal) of the dock migration: NOT started. P2 must also move split::dock_pane from index-relative to identity-relative (drop-zone-driven) re-insertion (the documented v1 bound)."
+      ],
+      "publishable_decision_summary": "Round 63: bumped all 7 pinion-* from 2617e9f3 (R1069.1) to 21ca4953 (R1071) to consume PINION-PR27 (multi-window key-dispatch double-toggle + per-window key test seam). PR-27 landed as R1071: apply_key_repeat exposes KeyEvent.repeat (a binding drops it for toggle-class chords), a note_os_focus gate makes a press act only on the OS-focused window, and key_press_for_window is the per-window key-injection test seam. sprag overrides apply_key_repeat (threads repeat into route_key, which drops discrete-chord auto-repeats), gets the OS-focus gate free, and — using R27.2's key_press_for_window — now reproduces the exact multi-window double-toggle HEADLESSLY (no GUI / no external tool), the durable regression guard the user asked pinion to make possible. SCE 3078f8bf / vello 0.9 unchanged. This fixes the user-reported \"Ctrl+Shift+Enter docks-then-undocks from the 2nd action\" end-to-end.",
+      "publishable_changes_bullets": [
+        "Cargo.toml: bumped the 7 pinion-* git revs 2617e9f3 (R1069.1) -> 21ca4953 (R1071). SCE (3078f8bf) + vello (\"0.9\") unchanged (pinion's own pins match). Cargo.lock re-resolved.",
+        "crates/sprag-gui/src/main.rs: replaced the single apply_key override with BOTH apply_key (the repeat==false entry that RPC scene/key + direct callers use) AND apply_key_repeat (pinion R1071, the variant the live shell drives, carrying KeyEvent.repeat) — both thin delegates to route_key, which owns the repeat policy.",
+        "crates/sprag-gui/src/input.rs: route_key gained a `repeat` param; a DISCRETE window chord (dock-toggle / focus-cycle) is dropped on an OS auto-repeat (returns false) so it acts once per press — a held Ctrl+Shift+Enter no longer dock-then-undocks; scrollback chords (Scroll) and PTY keys still repeat (continuous)."
+      ],
+      "publishable_verification_bullets": [
+        "Build clean against pinion 21ca4953 (R1071); 53 sprag-gui tests pass; cargo clippy -p sprag-gui --all-targets clean; rustfmt clean; cargo doc -D warnings --document-private-items clean; the pre-commit hook (validate-workspace + rustfmt + clippy --workspace) passed on commit c666ce1.",
+        "Two new guards. (1) input.rs dock_chord_auto_repeat_is_dropped_scroll_repeats: apply_key_repeat with repeat=true on the dock chord is a no-op (no undock), repeat=false toggles once, and a held Shift+PageUp still repeats (only discrete chords are gated). (2) main.rs multiwindow_dock_chord_toggles_once_per_press: the EXACT user scenario reproduced HEADLESSLY through the real ShellCore via R27.2's note_os_focus + key_press_for_window — after undock, a single press double-DELIVERED to both windows toggles ONCE (pane-0, the OS-focused window, dispatches and docks back; main is GATED: key_press_for_window returns false, no second toggle, no bounce), and a repeat=true re-send on the eligible window is dropped (no toggle) while a repeat=false press of the same chord toggles. This is the regression guard PINION-PR27 R27.2 existed to make possible — no GUI, no xdotool."
+      ],
+      "publishable_impact_refs": [
+        "4"
+      ],
+      "publishable_carry_forward_bullets": [
+        "PINION-PR26 (undock focus-follow) + PR-27 (multi-window key dispatch + test seam) both DELIVERED (pinion R1069 + R1071) and CONSUMED. No open pinion blockers for the dock work.",
+        "P2 (drag-to-dock + drop preview + nested splits, via DockReorganizeExternal / resolve_dock_drop / DockDropZone) and P3 (handle-drag tear-off via DockPanelExternal) of the dock migration: NOT started. P2 must also move split::dock_pane from index-relative to identity-relative (drop-zone-driven) re-insertion (the documented v1 bound)."
+      ]
+    },
     "Round 7": {
       "decision_summary": "Headless multiplexing: a pane registry + lifecycle (spawn/close/resize) + per-pane I/O addressing exposed through a workspace-control External; geometric tiling deferred to the GUI round as a rendering concern.",
       "changes_bullets": [
