@@ -1,666 +1,358 @@
-//! Pane arrangement (R38 dividers, R40 grid): fold the docked panes into a
-//! draggable-divider layout that fills the window. Two modes, selected by
-//! `SPRAG_GUI_LAYOUT` ([`layout_mode`]):
+//! The dock split-tree layout (R60): the docked panes are arranged by a pinion
+//! [`DockTopology`] — an identity-keyed recursive binary split-tree — replacing
+//! the former flat row/grid model (R38 row + R40 grid + position-keyed dividers).
+//! This module owns the topology MODEL (the tree + its mutation on dock/undock and
+//! the per-split ratio Signals); the view layer ([`crate::view`]) lowers it to
+//! pixels via [`view_dock_surface`](pinion_widget_paint::dock::view_dock_surface),
+//! and [`create_extra_externals`](crate::TerminalViewer) registers one drag
+//! `SplitterExternal` per Split.
 //!
-//! * **`row`** (default) — the R38 1D layout: panes left-to-right, `N-1` nested
-//!   [`view_splitter`]s, all [`SplitterOrientation::Horizontal`]. [`view_split_row`].
-//! * **`grid`** (R40) — a balanced 2D layout: an outer Vertical splitter stack of
-//!   rows, each row an inner Horizontal splitter stack of panes ([`view_grid`],
-//!   driven by [`grid_plan`]).
+//! ## Why a split-TREE (the v1 bound this retires)
 //!
-//! Orthogonal to `dock` (which window) and `terminal` (which panes) — this owns
-//! the divider RATIOS and the splitter-handle tags + orientations.
+//! The old `split.rs` keyed dividers by docked POSITION (and held grid slots on
+//! undock) because pinion's External registration was boot-only — a divider's
+//! drag-axis was welded at boot, so the layout could not reshape at runtime
+//! without the boot Externals driving the wrong divider. pinion R689
+//! [`external_set_is_dynamic`](pinion_core::WidgetCore::external_set_is_dynamic)
+//! lifts that constraint: the binding walks the LIVE topology each reconcile and a
+//! runtime-minted Split auto-registers its `SplitterExternal`. So the canonical
+//! shape the old docs deferred to — a real split-tree whose Split ids are STABLE
+//! across mutations (a ratio follows its boundary, never reshuffles) — is now
+//! reachable, and is the foundation drag-to-dock (P2) and tear-off (P3) build on.
 //!
-//! ## The seam (pinion-widget-paint)
+//! ## The topology tracks the DOCKED panes (collapse on undock)
 //!
-//! `view_splitter(left, right, &ratio, theme, style, dragging)` emits a flex
-//! Container (Row for [`SplitterOrientation::Horizontal`], Column for `Vertical`)
-//! with `left` (flex_grow = ratio), a tagged handle, `right` (flex_grow =
-//! 1 - ratio). A [`SplitterExternal`](pinion_widget_paint::splitter::SplitterExternal)
-//! registered at the handle tag (in [`create_extra_externals`](crate::TerminalViewer))
-//! mutates the SAME ratio `Signal` on a pointer drag — the shell's pointer router
-//! delivers press/move/release to it automatically (no `WidgetCore` pointer
-//! method). The ratio is `Owner::cache`-shared between the read side ([`fold`]) and
-//! the write side (the External), so a drag re-weights the painted panes.
+//! [`use_dock_topology`] holds `Signal<Option<DockTopology>>` — the tree of panes
+//! currently DOCKED in the main window. Undocking a pane removes its leaf
+//! ([`float_pane`]): its sibling sub-tree promotes into the parent Split's place,
+//! so the remaining panes reclaim the freed space (the natural dock behaviour).
+//! Docking back re-inserts the leaf ([`dock_pane`]), preserving left-to-right pane
+//! INDEX order. `None` = no panes docked (every pane floated) — the main window
+//! paints empty. The floating SSOT is still [`crate::dock`]'s window topology; the
+//! one site that toggles a pane ([`toggle_pane_floating`](crate::dock::toggle_pane_floating))
+//! mutates BOTH signals together so they never disagree.
 //!
-//! ## N panes -> N-1 dividers; one [`fold`] for both axes
+//! ## Identity-keyed ids
 //!
-//! `view_splitter` is binary, so N parts nest N-1 splitters ([`fold`], right-
-//! nested: divider `k` separates part `k` from everything to its right). A binary
-//! split-tree of N leaves always has exactly N-1 internal dividers, so both row
-//! mode (one row of N) and grid mode (rows + row-dividers) fit the
-//! [`SPLITTER_COUNT`] = [`MAX_PANES`]`-1` handle table. [`fold`] handles a single
-//! part (returns it un-wrapped, no divider), so a 1-pane row never panics.
-//!
-//! ## Divider identity is POSITION-keyed (a v1 bound — shared by both modes)
-//!
-//! Ratios + handle tags are keyed by docked POSITION / grid divider-id, not by
-//! pane identity, so undock/dock (which re-compacts the docked set, R37) reshuffles
-//! which panes a remembered divider separates — a visible layout jump. This is a
-//! deliberate v1 bound, NOT the terminal model: the correct long-term shape is a
-//! real split-tree with ratios keyed to the boundary between two pane IDENTITIES
-//! (so a divider follows its panes across dock/undock and across row<->grid). It is
-//! deferred on purpose — premature at [`MAX_PANES`] = 8 with no dynamic panes yet,
-//! and its natural consumer is dynamic split/close (gated on pinion PR-9). The
-//! asymmetry that panes get identity keys ([`pane_tag`](crate::terminal::pane_tag))
-//! while dividers get position keys is the marker for that work.
-//!
-//! ## Grid mode holds slots on undock (the row<->grid asymmetry, by necessity)
-//!
-//! Row mode COMPACTS on undock (a floated pane leaves the row; the panes to its
-//! right slide over) — safe because every row divider is Horizontal regardless of
-//! count, so the boot-registered Externals still match the painted dividers.
-//!
-//! A grid CANNOT compact: a balanced grid's divider ORIENTATIONS depend on the
-//! pane COUNT (`grid_plan(4)` = a 2x2 with a Vertical row-divider; `grid_plan(3)` =
-//! a 2-then-1 with a Vertical row-divider at a DIFFERENT id). Externals are
-//! registered ONCE at boot ([`create_extra_externals`](crate::TerminalViewer),
-//! a pinion constraint —
-//! runtime focusable/External refresh is gated on PR-9, no workaround), so a
-//! divider's drag-axis is welded at boot by tag. If grid mode reshaped on undock,
-//! a divider that was Vertical at boot could be painted Horizontal after a pane
-//! floats, and its boot External would drive the wrong axis. So grid mode arranges
-//! by the FIXED boot shape `grid_plan(pane_count)` and renders a floated pane's
-//! slot as an UNTAGGED empty cell (held, see [`crate::view`]); the scaffold (tags +
-//! orientations) never changes, so externals always match, and dock-back refills
-//! the slot in place. This is the better-behaved option — grid happens to avoid the
-//! row-mode position-keyed "jump" above — forced by the boot-only-External rule.
+//! Each leaf carries a stable [`panel_id`] (`terminal-{i}`, mapping 1:1 to the tile
+//! index via [`pane_index_of_panel`]); each Split a stable id ([`boot_split_id`]
+//! for the boot tree, a fresh `sprag_gui.split.dock.{seq}` for a dock-back insert).
+//! The per-split ratio Signal ([`use_split_ratio`]) is `Owner::cache`-keyed by that
+//! id and SHARED between the view (`view_dock_surface`) and the drag
+//! `SplitterExternal`, so a drag re-weights the painted panes. A Split id is the
+//! panel-id-distinct tag the [`view_dock_panel`](pinion_widget_paint::dock::view_dock_panel)
+//! header / `SplitterStyle` carry, so the scene tags never collide with the
+//! per-pane [`pane_tag`](crate::terminal::pane_tag) (`sprag_gui.pane.{i}`) the grid
+//! inside each leaf carries.
 
-use crate::terminal::MAX_PANES;
-use pinion_core::Scene;
+use crate::terminal::{MAX_PANES, pane_count};
 use pinion_core::reactive::{Owner, Signal};
-use pinion_core::scene::ContainerNode;
-use pinion_core::theme::Theme;
-use pinion_widget_paint::splitter::{SplitterOrientation, SplitterStyle, view_splitter};
+use pinion_widget_paint::dock::{DockNode, DockSplitPosition, DockTopology, TopologyError};
+use pinion_widget_paint::splitter::SplitterOrientation;
+use std::borrow::Cow;
 use std::rc::Rc;
 
-/// The number of dividers for N panes is N-1, so the handle table is one shorter
-/// than the pane table.
-const SPLITTER_COUNT: usize = MAX_PANES - 1;
+/// The `panel_id` prefix — a leaf's stable id is `terminal-{i}` for tile index `i`.
+/// A readable token (it is the [`view_dock_panel`](pinion_widget_paint::dock::view_dock_panel)
+/// header title) that doubles as the panel's scene tag, kept DISTINCT from the
+/// per-pane [`pane_tag`](crate::terminal::pane_tag) (`sprag_gui.pane.{i}`) the inner
+/// grid carries (the dock panel wraps the grid, so the two tags must not collide)
+/// and from the [`pane_window_id`](crate::dock::pane_window_id) (`pane-{i}`) window
+/// namespace.
+const PANEL_ID_PREFIX: &str = "terminal-";
 
-/// The splitter-handle tags (`sprag_gui.split.<j>`), one per possible divider
-/// (global divider id `j`). Static — the `&'static str` pinion External-tag
-/// constraint (the handles are pointer-only, never marked focusable, so they stay
-/// out of R1020's scene-derived Tab order). Reached only via [`splitter_tag`]; the
-/// `SplitterExternal` registered at each
-/// ([`create_extra_externals`](crate::TerminalViewer)) shares the ratio Signal
-/// [`use_splitter_ratio`]`(j)` the fold reads. Both row mode (ids 0..N-1, all
-/// Horizontal) and grid mode ([`grid_plan`]: column ids then row ids) draw their
-/// dividers from this one table.
-///
-/// This is the per-DIVIDER identity table, a SEPARATE axis from the per-PANE
-/// identity SSOT ([`PaneSlot`](crate::terminal) / `pane_tag` etc.): there are `N-1`
-/// dividers for `N` panes and a divider is position-keyed (it separates whatever
-/// panes sit on either side), so it deliberately does not fold into the per-pane
-/// struct (see the "Divider identity is POSITION-keyed" section above).
-const SPLITTER_TAGS: [&str; SPLITTER_COUNT] = [
-    "sprag_gui.split.0",
-    "sprag_gui.split.1",
-    "sprag_gui.split.2",
-    "sprag_gui.split.3",
-    "sprag_gui.split.4",
-    "sprag_gui.split.5",
-    "sprag_gui.split.6",
-];
+/// The stable `panel_id` of the pane at tile `index` — the dock-tree leaf identity
+/// + the panel's header title + scene tag. Inverse of [`pane_index_of_panel`].
+pub(crate) fn panel_id(index: usize) -> String {
+    format!("{PANEL_ID_PREFIX}{index}")
+}
 
-/// The handle tag of divider `j` (`j < `[`SPLITTER_COUNT`]).
-pub(crate) fn splitter_tag(j: usize) -> &'static str {
-    SPLITTER_TAGS[j]
+/// The tile index a `panel_id` addresses, or `None` if it is not a pane panel id
+/// (validates `< `[`MAX_PANES`] so a malformed id can never index out of range) —
+/// the inverse of [`panel_id`], so the view's `panel_content` callback maps a leaf
+/// back to its pane.
+pub(crate) fn pane_index_of_panel(panel_id: &str) -> Option<usize> {
+    panel_id
+        .strip_prefix(PANEL_ID_PREFIX)?
+        .parse::<usize>()
+        .ok()
+        .filter(|&i| i < MAX_PANES)
+}
+
+/// The stable Split id of the boot tree's divider whose LEFT child is the leaf at
+/// tile `k` (the right-nested row: divider `k` separates pane `k` from everything to
+/// its right). Stable for the life of the boot tree; a dock-back insert mints a
+/// fresh `sprag_gui.split.dock.{seq}` id instead ([`next_dock_split_id`]) so the two
+/// id spaces never collide.
+pub(crate) fn boot_split_id(k: usize) -> String {
+    format!("sprag_gui.split.{k}")
 }
 
 /// The default divider ratio — even (left/top share `0.5`), matching the former
 /// even tiling so the boot layout is unchanged.
 const SPLIT_RATIO_DEFAULT: f32 = 0.5;
 
-/// `Owner::cache` key for divider `j`'s ratio.
-fn ratio_key(j: usize) -> String {
-    format!("sprag_gui.split.ratio.{j}")
-}
-
-/// Divider `j`'s ratio `Signal` (left/top share, `[0, 1]`), an `Owner::cache`-backed
-/// `Rc<Signal<f32>>` SHARED between the read side ([`fold`] -> `view_splitter`) and
-/// the write side (`SplitterExternal::attach_ratio`) — both resolve the same
-/// root-owner slot, so a drag (`set`) re-weights the painted panes. Per-divider
-/// (keyed by global divider id).
-pub(crate) fn use_splitter_ratio(j: usize) -> Rc<Signal<f32>> {
+/// Split `id`'s ratio `Signal` (left/top share, `[0, 1]`), an `Owner::cache`-backed
+/// `Rc<Signal<f32>>` SHARED between the read side (the view's `view_dock_surface`
+/// `split_state` callback) and the write side (the `SplitterExternal` registered at
+/// the same id) — both resolve the same root-owner slot keyed on the Split id, so a
+/// drag (`set`) re-weights the painted panes. `initial` seeds the slot on first
+/// resolution (the topology's declared ratio, threaded through by the walker), so
+/// the topology stays the single source of the initial value.
+pub(crate) fn use_split_ratio(id: impl Into<Cow<'static, str>>, initial: f32) -> Rc<Signal<f32>> {
     Owner::current()
-        .expect("use_splitter_ratio() requires an active Owner scope")
-        .cache(ratio_key(j), || Signal::new(SPLIT_RATIO_DEFAULT))
+        .expect("use_split_ratio() requires an active Owner scope")
+        .cache(id, move || Signal::new(initial))
 }
 
-/// The pane-arrangement mode (`SPRAG_GUI_LAYOUT`).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum LayoutMode {
-    /// The R38 1D row: panes left-to-right, all-Horizontal dividers.
-    Row,
-    /// The R40 balanced 2D grid: rows of panes, Vertical row-dividers.
-    Grid,
+/// `Owner::cache` key for the held dock-tree topology Signal.
+const TOPOLOGY_KEY: &str = "sprag_gui.dock_topology";
+
+/// The dock-tree topology Signal — the layout of the DOCKED panes (`None` = none
+/// docked). Cached in the root owner (the view fn, the splitter-External
+/// registration, and the dock/undock toggle resolve the same shared slot), seeded
+/// once with the boot tree ([`build_boot_topology`] over all [`pane_count`] panes,
+/// all docked at boot). [`float_pane`] / [`dock_pane`] mutate it; the shell's
+/// `view` subscribes it (a `set` repaints) and `reconcile_externals` re-walks it to
+/// register a dock-back-minted Split's drag External (pinion R689).
+pub(crate) fn use_dock_topology() -> Rc<Signal<Option<DockTopology>>> {
+    Owner::current()
+        .expect("use_dock_topology() requires an active Owner scope")
+        .cache(TOPOLOGY_KEY, || {
+            Signal::new(build_boot_topology(pane_count()))
+        })
 }
 
-/// The default layout when `SPRAG_GUI_LAYOUT` is unset — `Row`, so the boot layout
-/// is byte-identical to R38/R39 (zero regression; grid is opt-in).
-const LAYOUT_DEFAULT: LayoutMode = LayoutMode::Row;
+/// `Owner::cache` key for the dock-back Split-id sequence counter.
+const SPLIT_SEQ_KEY: &str = "sprag_gui.dock_split_seq";
 
-/// Parse a `SPRAG_GUI_LAYOUT` spec into a [`LayoutMode`]. Case-insensitive;
-/// absent / malformed falls back to `default`. Pure (no env) so it is testable.
-fn parse_layout(spec: Option<&str>, default: LayoutMode) -> LayoutMode {
-    match spec.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
-        Some("grid") => LayoutMode::Grid,
-        Some("row") => LayoutMode::Row,
-        _ => default,
-    }
+/// Mint a fresh, never-reused Split id for a dock-back insert
+/// (`sprag_gui.split.dock.{seq}`). A monotonic `Owner::cache`-backed counter, so a
+/// re-inserted divider gets a unique id (its ratio starts at the default — a
+/// dock/undock cycle does not remember the old boundary's ratio, a deliberate v1
+/// bound; P2 drag-to-dock gives precise control). Distinct from the boot ids
+/// ([`boot_split_id`]) so the two spaces never collide.
+fn next_dock_split_id() -> String {
+    let seq = Owner::current()
+        .expect("next_dock_split_id() requires an active Owner scope")
+        .cache(SPLIT_SEQ_KEY, || Signal::new(0_u64));
+    let n = seq.get();
+    seq.set(n + 1);
+    format!("sprag_gui.split.dock.{n}")
 }
 
-/// The layout mode: `SPRAG_GUI_LAYOUT=grid` selects the 2D grid; anything else
-/// (incl. unset) is the 1D row. Env-read (no `Owner` scope), so the view side
-/// ([`crate::view`]) and the External-registration side
-/// ([`create_extra_externals`](crate::TerminalViewer)) read the ONE source and
-/// agree on the divider count + orientations — mirrors
-/// [`pane_count`](crate::terminal::pane_count).
-pub(crate) fn layout_mode() -> LayoutMode {
-    parse_layout(
-        std::env::var("SPRAG_GUI_LAYOUT").ok().as_deref(),
-        LAYOUT_DEFAULT,
-    )
+/// Build the boot dock tree over tiles `0..n`: a right-nested all-Horizontal split
+/// (divider `k` separates pane `k` from everything to its right), so the boot layout
+/// is byte-identical to the former even row tiling at any pane count. `n == 0` →
+/// `None` (no docked panes); `n == 1` → a single leaf, no split. Pure.
+fn build_boot_topology(n: usize) -> Option<DockTopology> {
+    (n >= 1).then(|| DockTopology::new(build_row_node(0, n)))
 }
 
-/// One row of a [`GridPlan`]: the absolute cell (pane) indices it holds (left-to-
-/// right) and the global divider ids for its internal column gaps
-/// (`len == cells.len() - 1`).
-struct RowPlan {
-    cells: std::ops::Range<usize>,
-    column_divider_ids: Vec<usize>,
-}
-
-/// The balanced 2D arrangement of `n` cells: rows of cell-index ranges, with every
-/// divider's global id pre-assigned. The ONE place divider ids are allocated, so
-/// the view fold ([`view_grid`]) and the External registration
-/// ([`divider_orientations`]) iterate the SAME structure and a divider's tag,
-/// ratio, and orientation can never disagree — orientation is a CONSEQUENCE of
-/// which list an id lives in (a `column_divider_ids` id is Horizontal, a
-/// [`Self::row_divider_ids`] id is Vertical), not a parallel array kept in sync.
-struct GridPlan {
-    rows: Vec<RowPlan>,
-    /// The Vertical divider ids between consecutive rows (`len == rows.len() - 1`).
-    row_divider_ids: Vec<usize>,
-}
-
-/// Build the balanced grid plan for `n` cells (`n >= 1`). The most-square grid:
-/// `cols = ceil(sqrt(n))` (via an INTEGER search — `(n as f64).sqrt().ceil()` mis-
-/// rounds at perfect squares), `rows = ceil(n / cols)`, then `n` cells spread as
-/// evenly as possible across the rows (the first `n % rows` rows get one extra).
-/// Divider ids: every column gap first (row by row, ids `0..n-rows`), then the
-/// row gaps (`n-rows..n-1`), so the ids are gapless over `0..n-1` (asserted) and
-/// total `n-1`. Pure.
-fn grid_plan(n: usize) -> GridPlan {
-    debug_assert!(n >= 1, "grid_plan needs >= 1 cell");
-    let n = n.max(1);
-    // cols = smallest c with c*c >= n. Integer search (NOT f64 sqrt — its rounding
-    // can place a perfect square one column off, silently mis-shaping the grid).
-    let cols = (1usize..)
-        .find(|&c| c * c >= n)
-        .expect("c*c grows without bound");
-    let rows = n.div_ceil(cols);
-    let base = n / rows;
-    let extra = n % rows;
-
-    let mut next_cell = 0usize;
-    let mut next_div = 0usize; // column dividers take ids 0..(n-rows)
-    let mut row_plans = Vec::with_capacity(rows);
-    for r in 0..rows {
-        // Spread the remainder over the first `extra` rows so the grid stays
-        // balanced (e.g. 7 -> [3, 2, 2], not [3, 3, 1]).
-        let count = base + usize::from(r < extra);
-        let cells = next_cell..next_cell + count;
-        next_cell += count;
-        let column_divider_ids = (0..count.saturating_sub(1))
-            .map(|_| {
-                let id = next_div;
-                next_div += 1;
-                id
-            })
-            .collect();
-        row_plans.push(RowPlan {
-            cells,
-            column_divider_ids,
-        });
-    }
-    // The row gaps take the remaining ids; together with the column ids they cover
-    // 0..n-1 with no gap or overlap.
-    let row_divider_ids: Vec<usize> = (next_div..n.saturating_sub(1)).collect();
-    debug_assert_eq!(next_cell, n, "every cell placed");
-    debug_assert_eq!(
-        row_divider_ids.len(),
-        rows.saturating_sub(1),
-        "row dividers = rows - 1"
-    );
-    GridPlan {
-        rows: row_plans,
-        row_divider_ids,
-    }
-}
-
-impl GridPlan {
-    /// The orientation of each divider id `0..n-1`, derived from list membership
-    /// (a `column_divider_ids` id -> Horizontal, a [`Self::row_divider_ids`] id ->
-    /// Vertical). The registration side ([`divider_orientations`]) reads this; the
-    /// view side ([`view_grid`]) reads the same plan's per-list ids — same struct,
-    /// so orientation and placement cannot drift.
-    fn orientations(&self) -> Vec<SplitterOrientation> {
-        let count = self
-            .rows
-            .iter()
-            .map(|r| r.column_divider_ids.len())
-            .sum::<usize>()
-            + self.row_divider_ids.len();
-        let mut out: Vec<Option<SplitterOrientation>> = vec![None; count];
-        for row in &self.rows {
-            for &j in &row.column_divider_ids {
-                out[j] = Some(SplitterOrientation::Horizontal);
-            }
-        }
-        for &j in &self.row_divider_ids {
-            out[j] = Some(SplitterOrientation::Vertical);
-        }
-        out.into_iter()
-            .map(|o| o.expect("every divider id 0..n-1 assigned an orientation"))
-            .collect()
-    }
-}
-
-/// The orientation of each divider (`splitter_tag(j)`, `j` in index order) the boot
-/// Externals must match the painted dividers with, for the current
-/// [`layout_mode`] + `pane_count`. Row mode -> all Horizontal (the 1D row). Grid
-/// mode -> the [`grid_plan`] mix. The registration side
-/// ([`create_extra_externals`](crate::TerminalViewer)) and the view side
-/// ([`view_split_row`] / [`view_grid`]) derive their dividers from the SAME source
-/// (this mode + plan), so they agree on count and orientation. The returned length
-/// is `pane_count - 1` in both modes.
-pub(crate) fn divider_orientations(pane_count: usize) -> Vec<SplitterOrientation> {
-    match layout_mode() {
-        LayoutMode::Row => vec![SplitterOrientation::Horizontal; pane_count.saturating_sub(1)],
-        LayoutMode::Grid => grid_plan(pane_count.max(1)).orientations(),
-    }
-}
-
-/// Right-nested fold of `parts` into `view_splitter`s along one axis: the rightmost
-/// part seeds the accumulator; each step to its left wraps
-/// `view_splitter(left, acc, ratio[id], orientation, ..)`, so `divider_ids[k]`
-/// governs part `k` vs everything to its right. `divider_ids.len()` must be
-/// `parts.len() - 1`. A single part (no divider) returns un-wrapped — so a 1-pane
-/// row never panics; `parts` must be non-empty.
-fn fold(
-    parts: Vec<Scene>,
-    divider_ids: &[usize],
-    orientation: SplitterOrientation,
-    theme: &Theme,
-) -> Scene {
-    debug_assert_eq!(
-        divider_ids.len(),
-        parts.len().saturating_sub(1),
-        "one divider per gap"
-    );
-    let mut iter = parts.into_iter().enumerate().rev();
-    let (_, mut acc) = iter.next().expect("fold needs >= 1 part");
-    for (k, left) in iter {
-        let j = divider_ids[k];
-        acc = view_splitter(
-            left,
-            acc,
-            &use_splitter_ratio(j),
-            theme,
-            &SplitterStyle::m3_default(orientation, splitter_tag(j)),
-            false, // dragging: no visual handle-highlight (cosmetic; drag still works)
-        );
-    }
-    acc
-}
-
-/// Arrange the `panes` left-to-right (row mode) with draggable dividers. `0` panes
-/// -> an empty root; otherwise a single Horizontal [`fold`] over ids
-/// `0..panes.len()-1`. The result carries no explicit size — `compose`
-/// applies the definite [`fill_definite`] extent the flex layout needs (the single
-/// enforcement point), so this returns the bare arrangement.
-pub(crate) fn view_split_row(panes: Vec<Scene>, theme: &Theme) -> Scene {
-    if panes.is_empty() {
-        Scene::Container(ContainerNode::new(Vec::new()))
+/// Right-nested Horizontal sub-tree over tiles `start..end` (`end > start`): the leaf
+/// at `start` beside the recursively-built remainder, divided by [`boot_split_id`]`(start)`.
+fn build_row_node(start: usize, end: usize) -> DockNode {
+    debug_assert!(end > start, "build_row_node needs a non-empty range");
+    if end - start == 1 {
+        DockNode::leaf(panel_id(start))
     } else {
-        let ids: Vec<usize> = (0..panes.len().saturating_sub(1)).collect();
-        fold(panes, &ids, SplitterOrientation::Horizontal, theme)
-    }
-}
-
-/// Arrange `cells` in a balanced 2D grid (grid mode) with draggable dividers.
-/// `cells[i]` is cell `i` of the FIXED boot shape `grid_plan(cells.len())` (a docked
-/// pane's projection, or an UNTAGGED held slot for a floated pane — [`crate::view`]).
-/// Each row is an inner Horizontal [`fold`] over its `column_divider_ids`; the rows
-/// are an outer Vertical [`fold`] over `row_divider_ids`, so the scene is a Column of
-/// Rows. Empty -> an empty root. Carries no explicit size — `compose`
-/// applies the [`fill_definite`] extent (the single enforcement point).
-pub(crate) fn view_grid(cells: Vec<Scene>, theme: &Theme) -> Scene {
-    if cells.is_empty() {
-        Scene::Container(ContainerNode::new(Vec::new()))
-    } else {
-        let plan = grid_plan(cells.len());
-        // Take each cell by absolute index into its row (each is taken exactly
-        // once — the plan's row ranges partition 0..cells.len()).
-        let mut slots: Vec<Option<Scene>> = cells.into_iter().map(Some).collect();
-        let rows: Vec<Scene> = plan
-            .rows
-            .iter()
-            .map(|row| {
-                let row_cells: Vec<Scene> = row
-                    .cells
-                    .clone()
-                    .map(|i| slots[i].take().expect("each cell taken once"))
-                    .collect();
-                fold(
-                    row_cells,
-                    &row.column_divider_ids,
-                    SplitterOrientation::Horizontal,
-                    theme,
-                )
-            })
-            .collect();
-        fold(
-            rows,
-            &plan.row_divider_ids,
-            SplitterOrientation::Vertical,
-            theme,
+        DockNode::split_horizontal(
+            boot_split_id(start),
+            SPLIT_RATIO_DEFAULT,
+            DockNode::leaf(panel_id(start)),
+            build_row_node(start + 1, end),
         )
     }
 }
 
-/// Give a Container a definite `Percent(100)` size (via the one
-/// [`crate::view::fill_size`] authority) so it fills compose's surface root. The
-/// `view_splitter` / lone-pane root sets no size of its own; this supplies the
-/// definite extent its flex layout needs (avoiding the intrinsic-collapse the
-/// splitter's own R685 fix documents). Applied to the OUTERMOST node only — every
-/// nested splitter gets a definite extent from its parent's flex distribution, so
-/// interior nodes keep `Auto` cross-axes for `AlignItems::Stretch` to fill.
-///
-/// The contract this enforces: **every content node handed to `compose` must carry
-/// a definite extent**, or the sizeless flex child collapses to its content's
-/// intrinsic size on the main axis (the cross axis still stretches).
-/// `compose` is the SOLE caller — it applies this to whatever
-/// content it wraps (docked tiling OR a lone undock pane), so the invariant lives
-/// in one place and no caller can forget it. (Forgetting it was the R55 undock bug:
-/// the pane reflowed only its width, its height pinned to the grid's content rows.)
-pub(crate) fn fill_definite(scene: Scene) -> Scene {
-    match scene {
-        Scene::Container(c) => {
-            Scene::Container(c.map_layout(|l| l.with_size(crate::view::fill_size())))
-        }
-        other => other,
+/// Undock pane `index`: remove its leaf from the dock tree so the remaining panes
+/// reclaim the space (the sibling sub-tree promotes into the parent Split's place,
+/// and that Split's ratio drops). Floating the LAST docked pane empties the tree
+/// (`None`); floating a pane already absent is a no-op (defensive — the
+/// [`toggle_pane_floating`](crate::dock::toggle_pane_floating) alternation never
+/// asks for it). Runs in the root owner scope (the toggle is called there).
+pub(crate) fn float_pane(index: usize) {
+    let topo = use_dock_topology();
+    let Some(current) = topo.get() else {
+        return; // nothing docked
+    };
+    match current.remove_leaf(&panel_id(index)) {
+        Ok(next) => topo.set(Some(next)),
+        // RootRemoval = pane `index` was the sole docked leaf -> the main window
+        // now has no docked panes.
+        Err(TopologyError::RootRemoval) => topo.set(None),
+        // PanelNotFound (already floated) — leave the tree unchanged.
+        Err(_) => {}
     }
+}
+
+/// Dock pane `index` back: re-insert its leaf, preserving left-to-right pane INDEX
+/// order — split the first docked pane whose index exceeds `index` (the new leaf
+/// takes the `First`/left slot), or append after the last docked pane (the `Second`/
+/// right slot) when `index` is the largest. An empty tree (`None`) becomes the single
+/// leaf. The new divider gets a fresh id ([`next_dock_split_id`]) at the default
+/// ratio. A topology error (the pane already present — defensive, the toggle never
+/// asks for it) leaves the tree unchanged. Runs in the root owner scope.
+pub(crate) fn dock_pane(index: usize) {
+    let topo = use_dock_topology();
+    let next = match topo.get() {
+        None => DockTopology::single(panel_id(index)),
+        Some(current) => {
+            let docked: Vec<usize> = current
+                .panel_ids()
+                .iter()
+                .filter_map(|p| pane_index_of_panel(p))
+                .collect();
+            let split_id = next_dock_split_id();
+            let inserted = match docked.iter().find(|&&j| j > index) {
+                // Insert before the first higher-indexed docked pane (keeps order).
+                Some(&j) => current.split_leaf_into(
+                    &panel_id(j),
+                    panel_id(index),
+                    split_id,
+                    SplitterOrientation::Horizontal,
+                    SPLIT_RATIO_DEFAULT,
+                    DockSplitPosition::First,
+                ),
+                // `index` is the largest docked index -> append on the right. A
+                // `Some` topology always has >= 1 docked leaf, so `last` resolves.
+                None => current.split_leaf_into(
+                    &panel_id(*docked.last().expect("a Some topology has >= 1 docked pane")),
+                    panel_id(index),
+                    split_id,
+                    SplitterOrientation::Horizontal,
+                    SPLIT_RATIO_DEFAULT,
+                    DockSplitPosition::Second,
+                ),
+            };
+            match inserted {
+                Ok(t) => t,
+                Err(_) => return, // defensive: leave the tree unchanged
+            }
+        }
+    };
+    topo.set(Some(next));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use pinion_core::reactive::Owner;
-    use pinion_core::style::FlexDirection;
-    use pinion_core::theme::use_theme;
-
-    fn stub_pane(tag: &'static str) -> Scene {
-        Scene::Container(ContainerNode::new(Vec::new()).with_tag(tag))
-    }
-
-    fn stub_panes(n: usize) -> Vec<Scene> {
-        const TAGS: [&str; 8] = ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7"];
-        (0..n).map(|i| stub_pane(TAGS[i])).collect()
-    }
-
-    // ----- row mode (R38, unchanged behavior) -----
 
     #[test]
-    fn two_panes_get_one_draggable_divider() {
-        let owner = Owner::new();
-        let scene = owner.run(|| {
-            let theme = use_theme("app").theme_animated();
-            view_split_row(vec![stub_pane("p0"), stub_pane("p1")], &theme)
-        });
-        assert!(
-            scene.contains_tag("p0") && scene.contains_tag("p1"),
-            "both panes present"
-        );
-        assert!(
-            scene.contains_tag(splitter_tag(0)),
-            "divider 0 handle present"
-        );
-        assert!(
-            !scene.contains_tag(splitter_tag(1)),
-            "only N-1 = 1 divider for 2 panes"
-        );
-    }
-
-    #[test]
-    fn three_panes_nest_two_dividers() {
-        let owner = Owner::new();
-        let scene = owner.run(|| {
-            let theme = use_theme("app").theme_animated();
-            view_split_row(
-                vec![stub_pane("p0"), stub_pane("p1"), stub_pane("p2")],
-                &theme,
-            )
-        });
-        assert!(
-            scene.contains_tag(splitter_tag(0)) && scene.contains_tag(splitter_tag(1)),
-            "two dividers"
-        );
-        assert!(
-            scene.contains_tag("p0") && scene.contains_tag("p1") && scene.contains_tag("p2"),
-            "all three panes present",
-        );
-    }
-
-    #[test]
-    fn one_pane_has_no_divider() {
-        let owner = Owner::new();
-        let scene = owner.run(|| {
-            let theme = use_theme("app").theme_animated();
-            view_split_row(vec![stub_pane("solo")], &theme)
-        });
-        assert!(scene.contains_tag("solo"));
-        assert!(
-            !scene.contains_tag(splitter_tag(0)),
-            "a lone pane has no divider"
-        );
-    }
-
-    #[test]
-    fn splitter_tag_encodes_its_index() {
-        // Pin the hand-typed table against index drift (the digits are not
-        // compiler-checked the way the array length is).
-        for j in 0..SPLITTER_COUNT {
-            assert!(
-                splitter_tag(j).ends_with(&format!(".{j}")),
-                "tag {j} = {}",
-                splitter_tag(j)
-            );
+    fn panel_id_round_trips_through_pane_index_of_panel() {
+        for i in 0..MAX_PANES {
+            assert_eq!(pane_index_of_panel(&panel_id(i)), Some(i));
+            assert_eq!(panel_id(i), format!("terminal-{i}"));
         }
+        // Non-panel ids (the splitter tag, a window id, garbage) are not panes.
+        assert_eq!(pane_index_of_panel(&boot_split_id(0)), None);
+        assert_eq!(pane_index_of_panel("pane-0"), None); // window-id namespace
+        assert_eq!(pane_index_of_panel("terminal-"), None); // no index
+        assert_eq!(pane_index_of_panel("terminal-x"), None); // non-numeric
+        assert_eq!(pane_index_of_panel(&panel_id(MAX_PANES)), None); // out of range
     }
 
     #[test]
-    fn ratio_signal_is_per_divider_and_defaults_even() {
+    fn boot_topology_is_a_right_nested_horizontal_row() {
+        // 0 panes -> no topology.
+        assert!(build_boot_topology(0).is_none());
+
+        // 1 pane -> a single leaf, no split.
+        let one = build_boot_topology(1).expect("one pane docks");
+        assert_eq!(one.leaf_count(), 1);
+        assert_eq!(one.split_count(), 0);
+        assert_eq!(one.panel_ids(), vec![panel_id(0)]);
+
+        // 2 panes -> one Horizontal split (== the old row default at 2 panes).
+        let two = build_boot_topology(2).expect("two panes dock");
+        assert_eq!(two.leaf_count(), 2);
+        assert_eq!(two.split_count(), 1);
+        assert_eq!(two.split_ids(), vec![boot_split_id(0)]);
+        assert_eq!(two.panel_ids(), vec![panel_id(0), panel_id(1)]);
+        let DockNode::Split { orientation, .. } = two.root() else {
+            panic!("two-pane root is a Split");
+        };
+        assert_eq!(*orientation, SplitterOrientation::Horizontal);
+
+        // 4 panes -> three Horizontal dividers, panes in tile order, ids gapless.
+        let four = build_boot_topology(4).expect("four panes dock");
+        assert_eq!(four.leaf_count(), 4);
+        assert_eq!(four.split_count(), 3);
+        assert_eq!(
+            four.panel_ids(),
+            (0..4).map(panel_id).collect::<Vec<_>>(),
+            "panes stay in left-to-right tile order"
+        );
+        assert_eq!(
+            four.split_ids(),
+            (0..3).map(boot_split_id).collect::<Vec<_>>(),
+            "boot dividers are ids 0..n-1 in pre-order"
+        );
+    }
+
+    #[test]
+    fn use_split_ratio_is_per_id_memoised_and_seeds_default() {
         let owner = Owner::new();
         owner.run(|| {
-            assert!((use_splitter_ratio(0).get() - SPLIT_RATIO_DEFAULT).abs() < f32::EPSILON);
-            use_splitter_ratio(0).set(0.7);
+            let a = use_split_ratio(boot_split_id(0), SPLIT_RATIO_DEFAULT);
+            let b = use_split_ratio(boot_split_id(0), SPLIT_RATIO_DEFAULT);
+            assert!(Rc::ptr_eq(&a, &b), "memoised by Split id");
+            assert!((a.get() - SPLIT_RATIO_DEFAULT).abs() < f32::EPSILON);
+            a.set(0.7);
             assert!(
-                (use_splitter_ratio(0).get() - 0.7).abs() < f32::EPSILON,
-                "drag re-weights"
+                (use_split_ratio(boot_split_id(0), SPLIT_RATIO_DEFAULT).get() - 0.7).abs()
+                    < f32::EPSILON,
+                "drag re-weights; the seed does not reset an existing slot"
             );
             assert!(
-                (use_splitter_ratio(1).get() - SPLIT_RATIO_DEFAULT).abs() < f32::EPSILON,
-                "divider 1 is independent",
+                (use_split_ratio(boot_split_id(1), SPLIT_RATIO_DEFAULT).get()
+                    - SPLIT_RATIO_DEFAULT)
+                    .abs()
+                    < f32::EPSILON,
+                "a different divider is independent"
             );
         });
     }
 
-    // ----- layout mode parsing -----
-
     #[test]
-    fn parse_layout_selects_grid_else_row() {
-        assert_eq!(parse_layout(None, LAYOUT_DEFAULT), LayoutMode::Row);
-        assert_eq!(parse_layout(Some("grid"), LAYOUT_DEFAULT), LayoutMode::Grid);
-        assert_eq!(
-            parse_layout(Some(" GRID "), LAYOUT_DEFAULT),
-            LayoutMode::Grid
-        ); // trim + case
-        assert_eq!(parse_layout(Some("row"), LAYOUT_DEFAULT), LayoutMode::Row);
-        assert_eq!(parse_layout(Some("tiled"), LAYOUT_DEFAULT), LayoutMode::Row); // malformed
-        assert_eq!(parse_layout(Some(""), LAYOUT_DEFAULT), LayoutMode::Row);
-    }
-
-    // ----- grid_plan: the divider-id SSOT -----
-
-    /// Every count `1..=MAX_PANES` allocates a gapless, total set of divider ids
-    /// `0..n-1` (so `splitter_tag(j)` / `use_splitter_ratio(j)` never collide or
-    /// gap), and the cells partition `0..n`.
-    #[test]
-    fn grid_plan_allocates_gapless_dividers_and_partitions_cells() {
-        for n in 1..=MAX_PANES {
-            let plan = grid_plan(n);
-            // Cells partition 0..n.
-            let mut cells: Vec<usize> = plan.rows.iter().flat_map(|r| r.cells.clone()).collect();
-            cells.sort_unstable();
-            assert_eq!(
-                cells,
-                (0..n).collect::<Vec<_>>(),
-                "n={n}: cells partition 0..n"
-            );
-            // Divider ids (column + row) are exactly 0..n-1.
-            let mut ids: Vec<usize> = plan
-                .rows
-                .iter()
-                .flat_map(|r| r.column_divider_ids.clone())
-                .chain(plan.row_divider_ids.clone())
-                .collect();
-            ids.sort_unstable();
-            assert_eq!(
-                ids,
-                (0..n.saturating_sub(1)).collect::<Vec<_>>(),
-                "n={n}: divider ids gapless 0..n-1"
-            );
-            // Orientations cover every id with no panic.
-            assert_eq!(
-                plan.orientations().len(),
-                n - 1,
-                "n={n}: one orientation per divider"
-            );
-        }
-    }
-
-    /// The balanced shape: most-square, remainder on the first rows.
-    #[test]
-    fn grid_plan_shapes_are_balanced() {
-        let shape = |n: usize| {
-            grid_plan(n)
-                .rows
-                .iter()
-                .map(|r| r.cells.len())
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(shape(1), vec![1]);
-        assert_eq!(shape(2), vec![2]); // == row mode at the default pane count
-        assert_eq!(shape(3), vec![2, 1]);
-        assert_eq!(shape(4), vec![2, 2]);
-        assert_eq!(shape(5), vec![3, 2]);
-        assert_eq!(shape(6), vec![3, 3]);
-        assert_eq!(shape(7), vec![3, 2, 2]);
-        assert_eq!(shape(8), vec![3, 3, 2]);
-    }
-
-    /// A 2x2 grid's three dividers: two Horizontal (column) then one Vertical (row).
-    #[test]
-    fn grid_plan_orientations_mix_column_then_row() {
-        assert_eq!(
-            grid_plan(4).orientations(),
-            vec![
-                SplitterOrientation::Horizontal,
-                SplitterOrientation::Horizontal,
-                SplitterOrientation::Vertical,
-            ]
-        );
-    }
-
-    // ----- view_grid: the 2D fold -----
-
-    /// `view_grid` of 4 cells builds a Column of Rows: the outer splitter is
-    /// Vertical (the row divider), and it nests Horizontal row splitters. All four
-    /// pane tags + three divider tags are present; the fourth divider tag is not.
-    #[test]
-    fn view_grid_builds_a_column_of_rows() {
-        let owner = Owner::new();
-        let scene = owner.run(|| {
-            let theme = use_theme("app").theme_animated();
-            view_grid(stub_panes(4), &theme)
-        });
-        for i in 0..4 {
-            assert!(
-                scene.contains_tag(["p0", "p1", "p2", "p3"][i]),
-                "pane {i} present"
-            );
-        }
-        assert!(
-            scene.contains_tag(splitter_tag(0))
-                && scene.contains_tag(splitter_tag(1))
-                && scene.contains_tag(splitter_tag(2)),
-            "three dividers present"
-        );
-        assert!(
-            !scene.contains_tag(splitter_tag(3)),
-            "only N-1 = 3 dividers for 4 panes"
-        );
-
-        // The outermost arrangement node (inside the Percent(100) fill wrapper is
-        // the same node — fill_definite maps the outer splitter's own layout) is a
-        // Vertical splitter => flex_direction Column.
-        let dir = match &scene {
-            Scene::Container(c) => c.layout.flex_direction,
-            other => unreachable!("view_grid returns a Container, got {other:?}"),
-        };
-        assert_eq!(
-            dir,
-            FlexDirection::Column,
-            "the grid stacks rows vertically"
-        );
-    }
-
-    /// At the default pane count (2) grid mode == row mode: one Horizontal divider,
-    /// same panes, same single splitter. So defaulting users see no change.
-    #[test]
-    fn grid_equals_row_at_two_panes() {
+    fn float_collapses_and_dock_back_restores_index_order() {
         let owner = Owner::new();
         owner.run(|| {
-            let theme = use_theme("app").theme_animated();
-            let grid = view_grid(vec![stub_pane("p0"), stub_pane("p1")], &theme);
-            assert!(grid.contains_tag("p0") && grid.contains_tag("p1"));
-            assert!(grid.contains_tag(splitter_tag(0)), "one divider");
-            assert!(!grid.contains_tag(splitter_tag(1)));
-            let dir = match &grid {
-                Scene::Container(c) => c.layout.flex_direction,
-                other => unreachable!("got {other:?}"),
-            };
+            // Boots with the default 2 docked panes (no SPRAG_GUI_PANES in test env).
+            let topo = use_dock_topology();
             assert_eq!(
-                dir,
-                FlexDirection::Row,
-                "2 panes => a single horizontal row"
+                topo.get().expect("boots docked").panel_ids(),
+                vec![panel_id(0), panel_id(1)]
             );
-        });
-    }
 
-    /// Row mode is the default, so `divider_orientations` (which reads the env) is
-    /// all-Horizontal with no `SPRAG_GUI_LAYOUT` set — the grid branch is covered
-    /// purely by `grid_plan(..).orientations()` above (no env mutation).
-    #[test]
-    fn divider_orientations_default_is_all_horizontal() {
-        // No SPRAG_GUI_LAYOUT in the test env => row mode.
-        assert_eq!(
-            divider_orientations(4),
-            vec![SplitterOrientation::Horizontal; 3]
-        );
-        assert_eq!(divider_orientations(1), Vec::new(), "one pane, no divider");
+            // Float pane 0 -> the sibling (pane 1) promotes; pane 0 leaves the tree.
+            float_pane(0);
+            let after = topo.get().expect("one pane still docked");
+            assert_eq!(after.panel_ids(), vec![panel_id(1)]);
+            assert_eq!(after.split_count(), 0, "the split collapsed with the leaf");
+
+            // Dock pane 0 back -> index order restored (pane 0 before pane 1).
+            dock_pane(0);
+            assert_eq!(
+                topo.get().expect("docked").panel_ids(),
+                vec![panel_id(0), panel_id(1)],
+                "dock-back keeps left-to-right index order"
+            );
+
+            // Float every pane -> the tree empties to None (no docked panes).
+            float_pane(0);
+            float_pane(1);
+            assert!(
+                topo.get().is_none(),
+                "floating the last docked pane empties the tree"
+            );
+
+            // Dock one back from empty -> a single leaf, no split.
+            dock_pane(1);
+            let single = topo.get().expect("one pane docked again");
+            assert_eq!(single.panel_ids(), vec![panel_id(1)]);
+            assert_eq!(single.split_count(), 0);
+        });
     }
 }

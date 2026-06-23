@@ -54,33 +54,30 @@
 //! that). See `dock` docs. Per-window a11y partitions nodes
 //! ([`a11y::access_nodes_for_window`]).
 //!
-//! ## Draggable dividers (R38): drag to resize panes
+//! ## Dock split-tree layout (R60): drag to resize, collapse on undock
 //!
-//! The docked panes are arranged by [`split::view_split_row`] with pinion
-//! `view_splitter` dividers you can DRAG to resize (even at boot; N>2 nests N-1
-//! splitters). Each divider's ratio is an `Owner::cache`-shared `Signal<f32>`: the
-//! view reads it, and a [`SplitterExternal`]
-//! registered at the handle tag ([`create_extra_externals`](TerminalViewer))
-//! writes it on a pointer drag (the shell's pointer router delivers the drag — no
-//! `WidgetCore` pointer method). A drag re-weights the flex layout -> the pane
-//! rects change -> the R1012 reflow Effects resize the PTYs (automatic; the
-//! `reflow` seam was built for it). The interactive layout lives GUI-side (not in
-//! the host) because it needs reactive ratios + a registered External.
+//! The docked panes are arranged by a pinion [`DockTopology`](pinion_widget_paint::dock::DockTopology)
+//! — an identity-keyed binary split-tree ([`split`]) — lowered to pixels by
+//! [`view_dock_surface`](pinion_widget_paint::dock::view_dock_surface), which wraps
+//! each pane in a [`view_dock_panel`](pinion_widget_paint::dock::view_dock_panel)
+//! (a 28px header strip — the drag / tear-off handle — above the pane) and nests a
+//! `view_splitter` per Split. Each Split's ratio is an `Owner::cache`-shared
+//! `Signal<f32>` keyed on the Split's STABLE id ([`split::use_split_ratio`]): the
+//! view reads it, and a [`SplitterExternal`] registered at that id
+//! ([`create_extra_externals`](TerminalViewer)) writes it on a pointer drag (the
+//! shell's pointer router delivers the drag — no `WidgetCore` pointer method). A
+//! drag re-weights the flex layout -> the pane rects change -> the R1012 reflow
+//! Effects resize the PTYs (automatic; the `reflow` seam was built for it).
 //!
-//! ## Layout: row or grid (R40)
-//!
-//! `SPRAG_GUI_LAYOUT=grid` arranges the panes in a balanced 2D grid (rows of
-//! columns) instead of the default 1D row ([`split::layout_mode`]). The grid reuses
-//! the SAME `view_splitter` primitive — an outer Vertical splitter stack of rows,
-//! each row an inner Horizontal stack of panes ([`split::view_grid`] over its
-//! private `grid_plan`) — and the SAME per-pane R1012 reflow (layout-agnostic, so
-//! no reflow change). A divider's drag-axis (Horizontal vs Vertical) is welded at
-//! boot when its `SplitterExternal` is registered, and a balanced grid's
-//! orientations depend on the pane count, so grid mode does NOT reshape on undock
-//! (which would change a count): a floated pane HOLDS its grid slot (an untagged
-//! empty cell) rather than compacting like row mode. Both modes draw their N-1
-//! dividers from the one `SPLITTER_TAGS` table; no pinion change (`SplitterOrientation::Vertical`
-//! already ships). See [`split`] for the row<->grid asymmetry rationale.
+//! This retires the former flat row/grid model (and the `SPRAG_GUI_LAYOUT` env): the
+//! topology holds only the DOCKED panes, so undocking a pane removes its leaf and the
+//! rest reclaim its space ([`split::float_pane`]; docking back re-inserts it,
+//! [`split::dock_pane`]). A dock-back mints a fresh Split id, so the splitter set is a
+//! runtime-mutable projection of the topology — [`create_extra_externals`](TerminalViewer)
+//! walks the LIVE topology and [`external_set_is_dynamic`](TerminalViewer::external_set_is_dynamic)
+//! opts into pinion R689's per-frame reconcile so the new divider registers a routable
+//! `SplitterExternal` and becomes drag-resizable. The interactive layout lives
+//! GUI-side (not in the host) because it needs reactive ratios + registered Externals.
 //!
 //! ## Module map (R32, R36, R37, R38)
 //!
@@ -98,9 +95,10 @@
 //! - [`dock`] — which OS window paints each pane: the topology
 //!   [`Signal`] (floating SSOT) +
 //!   [`toggle_pane_floating`](dock::toggle_pane_floating).
-//! - [`split`] — the draggable-divider layout: the per-divider ratio Signals, the
-//!   shared [`view_split_row`](split::view_split_row) / [`view_grid`](split::view_grid)
-//!   splitter fold, and the `SPRAG_GUI_LAYOUT` row/grid mode ([`layout_mode`](split::layout_mode)).
+//! - [`split`] — the dock split-tree model: the held [`DockTopology`](pinion_widget_paint::dock::DockTopology)
+//!   Signal ([`use_dock_topology`](split::use_dock_topology)), its collapse-on-undock
+//!   mutation ([`float_pane`](split::float_pane) / [`dock_pane`](split::dock_pane)),
+//!   and the per-Split ratio Signals ([`use_split_ratio`](split::use_split_ratio)).
 //! - [`a11y`] — the per-pane (per-window) accessible-node projection (human-AT).
 //! - [`view`] — the per-window paint ([`view::view_for_window`]: main tiling /
 //!   single undocked pane) + the surface-filled paint root.
@@ -196,7 +194,7 @@ mod view;
 use pinion_a11y::AccessNode;
 use pinion_core::event::{LINE_HEIGHT_PX, WheelDelta};
 use pinion_core::external::External;
-use pinion_core::reactive::Signal;
+use pinion_core::reactive::{Owner, Signal};
 use pinion_core::widget_core::ExtraExternal;
 use pinion_core::{CompositionEvent, Frame, Modifiers, Scene, WidgetCore};
 use pinion_shell::{SizeStrategy, WidgetView, WindowSpec, vello_renderer_impl};
@@ -225,6 +223,16 @@ const WINDOW_H: u32 = 600;
 /// per-pane identity + focus tags are [`pane_tag`] (`PaneSlot`), and the primary
 /// input External is tagged `pane_tag(0)` via [`TerminalViewer::tag`].
 const ROOT_TAG: &str = "sprag_gui";
+
+/// `Owner::cache` key for the boot-focus seed marker ([`BootFocusSeed`]).
+const BOOT_FOCUS_KEY: &str = "sprag_gui.boot_focus_seed";
+
+/// Zero-size marker cached once to run the boot focus request a single time. The
+/// dynamic external set ([`TerminalViewer::external_set_is_dynamic`]) makes the shell
+/// re-run [`create_extra_externals`](TerminalViewer::create_extra_externals) every
+/// reconcile, so the one-shot focus seed lives behind an `Owner::cache` factory that
+/// fires exactly once (the R689 "boot-time seeding side effect must not re-fire" rule).
+struct BootFocusSeed;
 
 struct TerminalViewer;
 
@@ -256,7 +264,17 @@ impl WidgetCore for TerminalViewer {
     fn create_extra_externals() -> Vec<ExtraExternal> {
         let terminal = use_terminal();
         install_reflow();
-        pinion_core::focus_request::request(pane_tag(0));
+        // Boot-once focus seed. `external_set_is_dynamic` makes the shell re-run this
+        // factory every reconcile (to register a dock-back-minted splitter), so
+        // requesting focus unconditionally would re-pin it to pane 0 each frame and
+        // defeat click / Ctrl+PageUp focus moves. The `Owner::cache` factory fires the
+        // seed exactly once (the R689 "boot-time seeding must not re-fire" rule).
+        Owner::current()
+            .expect("create_extra_externals runs in the root Owner scope")
+            .cache(BOOT_FOCUS_KEY, || {
+                pinion_core::focus_request::request(pane_tag(0));
+                BootFocusSeed
+            });
         // Panes 1.. are the extra input Externals (pane 0 is the primary).
         let mut externals: Vec<ExtraExternal> = (1..terminal.pane_count())
             .map(|i| {
@@ -266,41 +284,47 @@ impl WidgetCore for TerminalViewer {
                 )
             })
             .collect();
-        // The draggable dividers: one `SplitterExternal` per divider, its
-        // orientation chosen by [`split::divider_orientations`] for the current
-        // `SPRAG_GUI_LAYOUT` + `pane_count` (row mode: all Horizontal; grid mode:
-        // the `grid_plan` column/row mix — same SSOT the view fold reads, so a
-        // divider's drag-axis matches the painted divider). The count is
-        // `pane_count - 1` in both modes (a binary split-tree of N leaves has N-1
-        // dividers — the max the view ever paints, all panes docked). Each shares
-        // the ratio `Signal` the view reads; the shell's pointer router drives them
-        // (no `WidgetCore` pointer method). NOT focusable tab stops (pointer-only —
-        // their handle nodes carry no `with_focusable`, so R1020's per-frame
-        // `collect_focusable_tags` never enumerates them). Boot-only: a grid's
-        // divider orientations
-        // are welded here, so grid mode holds floated slots rather than reshaping
-        // (see [`split`] / [`view::view_main`]).
-        externals.extend(
-            split::divider_orientations(terminal.pane_count())
-                .into_iter()
-                .enumerate()
-                .map(|(j, orientation)| {
-                    ExtraExternal::new(
-                        split::splitter_tag(j),
-                        Box::new(
-                            SplitterExternal::new(orientation)
-                                .attach_ratio(split::use_splitter_ratio(j)),
-                        ),
-                    )
-                }),
-        );
+        // The draggable dividers: one `SplitterExternal` per Split in the LIVE dock
+        // topology ([`split::use_dock_topology`]), keyed on the Split's stable id —
+        // which IS the painted `SplitterStyle` tag the view's `view_dock_surface`
+        // walker emits (one SSOT), with the topology's orientation + initial ratio.
+        // Walking the LIVE topology (not a fixed boot list) is what lets a dock-back-
+        // minted split register its External and become drag-resizable:
+        // [`Self::external_set_is_dynamic`] opts this factory into the per-frame
+        // `reconcile_externals`, which re-runs it on a topology change and registers
+        // the new tag while preserving surviving splitters' drag state (pinion R689).
+        // Pointer-only (never focusable — their handles carry no `with_focusable`, so
+        // R1020's per-frame `collect_focusable_tags` never enumerates them). The ratio
+        // `Signal` is shared with the view via `split::use_split_ratio`.
+        if let Some(topology) = split::use_dock_topology().get() {
+            topology.for_each_split(|id, orientation, ratio| {
+                externals.push(ExtraExternal::new(
+                    id.to_string(),
+                    Box::new(
+                        SplitterExternal::new(orientation)
+                            .attach_ratio(split::use_split_ratio(id.to_string(), ratio)),
+                    ),
+                ));
+            });
+        }
         // One draggable scrollbar peer per pane (R49): a `ScrollBarExternal` over
         // the pane's row-unit `ScrollState`, tagged its `scrollbar.{i}` so the
         // shell's pointer router routes a press on the painted track to it. Like
-        // the splitters, pointer-only (never focusable) and boot-registered; the
-        // caller-owned `ScrollState` authority (pinion R1032) needs no mirror.
+        // the splitters, pointer-only (never focusable); the caller-owned
+        // `ScrollState` authority (pinion R1032) needs no mirror.
         externals.extend((0..terminal.pane_count()).map(scrollbar::pane_scrollbar_external));
         externals
+    }
+
+    /// The splitter external set is a projection of the live dock topology
+    /// ([`split::use_dock_topology`]): a dock-back gesture mints a fresh Split id whose
+    /// `SplitterExternal` must register to make the new divider draggable. Opt into the
+    /// per-frame `CoreShell::reconcile_externals`
+    /// (pinion R689) so the new surface gets a routable target; a static binding leaves
+    /// this at the `false` default. See [`Self::create_extra_externals`] (the boot-once
+    /// focus seed is guarded for exactly this re-run).
+    fn external_set_is_dynamic() -> bool {
+        true
     }
 
     /// Route a focused keystroke to the focused pane's PTY — delegates to
@@ -511,6 +535,15 @@ mod tests {
         // full-window dims at that cell to compare against.
         let metric = core.root_owner().run(|| use_terminal().metric);
         let (full_cols, full_rows) = crate::terminal::grid_dims((WINDOW_W, WINDOW_H), metric);
+        // Each docked pane now sits below a 28px dock-panel header (R60), so its
+        // content height is the window minus that strip — derive the expected rows
+        // through the same winsize SSOT against the reduced height.
+        let header_px = pinion_widget_paint::dock::DockPanelStyle::m3_default("x").header_height_px;
+        let content_rows = crate::terminal::grid_dims((WINDOW_W, WINDOW_H - header_px), metric).1;
+        assert!(
+            content_rows < full_rows,
+            "the dock header subtracts at least one row"
+        );
 
         assert_eq!(
             dims.len(),
@@ -518,8 +551,12 @@ mod tests {
             "two tiled pane grids are painted, got {dims:?}"
         );
         for (cols, rows) in &dims {
-            // Horizontal split: each pane keeps the full height...
-            assert_eq!(*rows, full_rows, "a horizontal split preserves pane height");
+            // Horizontal split: each pane fills the window height BELOW its 28px dock
+            // header (the header is the only vertical chrome a horizontal split adds)...
+            assert_eq!(
+                *rows, content_rows,
+                "pane fills the window height below the dock header"
+            );
             // ...but is reflowed to roughly half the width — strictly narrower
             // than a full-window pane (the per-pane R1012 reflow shrank it from
             // its full-window boot size), same-frame.
@@ -758,10 +795,10 @@ mod tests {
         assert!(main2.contains_tag(pane_tag(1)), "dock-back re-tiles pane 1");
     }
 
-    /// End-to-end divider drag through the REAL viewer: setting divider 0's ratio
+    /// End-to-end divider drag through the REAL viewer: setting the boot split's ratio
     /// Signal (the exact write a pointer drag performs via `SplitterExternal`)
     /// re-weights the two panes — the left pane reflows wider, tracking ~0.7. Proves
-    /// the read side (`view_split_row` -> `view_splitter` -> layout -> R1012 reflow)
+    /// the read side (`view_dock_surface` -> `view_splitter` -> layout -> R1012 reflow)
     /// sprag wires; the pointer->Signal write side is pinion's `SplitterExternal`
     /// (its own tests) + the live drag smoke.
     #[test]
@@ -776,8 +813,9 @@ mod tests {
         );
 
         // Drag divider 0 to a 0.7 left-share (the same Signal a pointer drag sets).
+        // The boot split between pane 0 and pane 1 carries `boot_split_id(0)`.
         core.root_owner()
-            .run(|| split::use_splitter_ratio(0).set(0.7));
+            .run(|| split::use_split_ratio(split::boot_split_id(0), 0.5).set(0.7));
         let weighted = painted_grid_dims(&core.compute_paint_scene(WINDOW_W, WINDOW_H));
         assert_eq!(weighted.len(), 2);
         let (left, right) = (weighted[0].0, weighted[1].0);
@@ -815,8 +853,9 @@ mod tests {
         );
     }
 
-    /// Undocking every pane leaves the main window empty — it must not panic
-    /// (`view_split_row(vec![])` is a childless Container) and paints no pane.
+    /// Undocking every pane leaves the main window empty — the dock topology collapses
+    /// to `None` and `view_main` paints a childless surface Container (no panic, no
+    /// pane painted).
     #[test]
     fn undock_all_panes_yields_an_empty_main_without_panic() {
         let mut core = ShellCore::<TerminalViewer>::new();

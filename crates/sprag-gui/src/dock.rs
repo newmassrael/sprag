@@ -33,7 +33,7 @@
 //! fires on the secondary window's rect and `TIOCSWINSZ`-reflows the PTY. This is
 //! the consumer of `claudedocs/PINION-PR10-PER-WINDOW-VIEWPORT.md` (DELIVERED). The
 //! lone-pane scene is given a definite extent via
-//! [`crate::split::fill_definite`] (the same fill the docked arrangements apply) so
+//! [`crate::view::fill_definite`] (the same fill the docked split-tree uses) so
 //! it reflows in BOTH axes, not only width — see that fn's docs.
 //!
 //! ## Freely resizable: grow AND shrink (pinion R1059 / PINION-PR23)
@@ -118,21 +118,29 @@ pub(crate) fn is_pane_floating(windows: &[WindowSpec], i: usize) -> bool {
 ///
 /// * docked (no `pane-{i}` window) -> push an undock `WindowSpec` sized to the
 ///   pane's intrinsic `(cols, rows) × cell` (so it fits 1:1 at tear-off; resizing
-///   the window then reflows the pane in both axes — see the module docs);
-/// * floating (window exists) -> remove it (dock back). The shell drops the winit
-///   window; the main layout repaints with pane `i` re-tiled (and it reflows to
-///   its new tile via the main-window R1012 publish).
+///   the window then reflows the pane in both axes — see the module docs), and
+///   remove its leaf from the dock split-tree ([`crate::split::float_pane`]) so the
+///   remaining docked panes reclaim its space;
+/// * floating (window exists) -> remove it (dock back) and re-insert its leaf into
+///   the split-tree ([`crate::split::dock_pane`]). The shell drops the winit window;
+///   the main layout repaints with pane `i` re-tiled (and it reflows to its new tile
+///   via the main-window R1012 publish).
+///
+/// The window topology (the floating SSOT) and the dock split-tree are TWO signals;
+/// this one toggle site mutates BOTH together so they never disagree (a pane floats
+/// iff its `pane-{i}` window exists AND its leaf is absent from the tree).
 ///
 /// Runs inside the shell root owner scope (called from `route_key`, itself
-/// wrapped in `root_owner.run`), so [`use_terminal`] / [`use_windows_topology`]
-/// resolve. The pane's `(cols, rows)` is read from its live session — its own
-/// authoritative dims, NOT a window-side split calc.
+/// wrapped in `root_owner.run`), so [`use_terminal`] / [`use_windows_topology`] /
+/// the split-tree hooks resolve. The pane's `(cols, rows)` is read from its live
+/// session — its own authoritative dims, NOT a window-side split calc.
 pub(crate) fn toggle_pane_floating(i: usize) {
     let signal = use_windows_topology();
     let mut windows = signal.get();
     let target = pane_window_id(i);
     if let Some(idx) = windows.iter().position(|w| w.id == target) {
         windows.remove(idx); // dock back
+        crate::split::dock_pane(i); // re-insert the leaf into the split-tree
     } else {
         let tv = use_terminal();
         let (cols, rows) = tv.pane(i).session().dimensions();
@@ -152,6 +160,7 @@ pub(crate) fn toggle_pane_floating(i: usize) {
                 min: None,
             },
         ));
+        crate::split::float_pane(i); // remove the leaf so the rest reclaim its space
     }
     signal.set(windows);
 }

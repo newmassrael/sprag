@@ -62,7 +62,8 @@ struct PaneSlot {
 /// are minted by [`pane_cache_key`] from the same pane index — a derived, single-
 /// format axis that cannot drift the way the old parallel literal tables could
 /// (the index is the call argument, not a hand-typed column). Per-DIVIDER identity
-/// is yet another axis ([`SPLITTER_TAGS`](crate::split), keyed by divider id `j`).
+/// is yet another axis (the dock-tree Split ids, [`crate::split`], keyed by each
+/// Split's stable id rather than the tile index).
 #[rustfmt::skip]
 const PANE_SLOTS: [PaneSlot; MAX_PANES] = [
     PaneSlot { pane: "sprag_gui.pane.0", scrollbar: "sprag_gui.scrollbar.0", scroll_key: "sprag_gui.scroll.0" },

@@ -4,13 +4,15 @@
 //! here. See the crate-root module docs.
 
 use crate::ROOT_TAG;
-use crate::dock::{is_pane_floating, pane_window_index, use_windows_topology};
+use crate::dock::pane_window_index;
 use crate::input::use_preedit;
+use crate::split::{pane_index_of_panel, use_dock_topology, use_split_ratio};
 use crate::terminal::{TerminalView, pane_tag, use_terminal};
 use pinion_core::scene::ContainerNode;
 use pinion_core::style::{BoxStyle, LayoutStyle, Size, SizeValue};
 use pinion_core::theme::{ColorRole, Theme, use_theme};
 use pinion_core::{Frame, Scene};
+use pinion_widget_paint::dock::{DockSplitState, view_dock_surface};
 use sprag_host::PaneViewSpec;
 
 /// Shared [`ThemeProvider`](pinion_core::ThemeProvider) cache key (the surface fill behind the grid).
@@ -37,58 +39,45 @@ pub(crate) fn view_for_window(window_id: &str, _state: (), _frame: &Frame) -> Sc
     }
 }
 
-/// The main window: arrange the panes with draggable dividers ([`is_pane_floating`]
-/// is the docked/floated partition SSOT — a floated pane is painted in its own
-/// undock window). The arrangement follows [`crate::split::layout_mode`]
-/// (`SPRAG_GUI_LAYOUT`), and the two modes differ ONLY in how a floated pane is
-/// handled — the one place the row<->grid asymmetry lives (see [`crate::split`]):
+/// The main window: arrange the DOCKED panes with draggable dividers via pinion's
+/// [`view_dock_surface`] over the [`use_dock_topology`] split-tree. Each leaf's
+/// `panel_id` maps back to its tile ([`pane_index_of_panel`]) and the
+/// `panel_content` callback projects that pane ([`build_pane_scene`]); each Split's
+/// ratio is the shared [`use_split_ratio`] Signal a drag re-weights (the SSOT both
+/// the painted splitter and its `SplitterExternal` read). The walker wraps every
+/// leaf in a [`view_dock_panel`](pinion_widget_paint::dock::view_dock_panel) — a
+/// header strip (the drag / tear-off handle) above the pane.
 ///
-/// * **Row** (default, R38) — COMPACT: tile only the docked panes left-to-right
-///   ([`crate::split::view_split_row`]); a floated pane leaves the row and the rest
-///   slide over (safe — every row divider is Horizontal regardless of count, so the
-///   boot Externals still match). An all-floated workspace -> an empty root.
-/// * **Grid** (R40) — HOLD-SLOT: arrange ALL panes by the fixed boot shape
-///   ([`crate::split::view_grid`]); a floated pane's slot is an [`empty_cell`]
-///   (UNTAGGED) so the grid scaffold — divider tags + orientations — never changes
-///   and the boot Externals always match the painted dividers (they cannot be
-///   re-registered; boot-only, PR-9). Dock-back refills the slot in place.
+/// The topology holds only the DOCKED panes ([`crate::split`]): undocking a pane
+/// removes its leaf ([`crate::split::float_pane`]) so the rest reclaim its space,
+/// and `None` (every pane floated) paints an empty surface. A floated pane is
+/// painted alone in its own undock window ([`view_for_window`]), never here.
 fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
-    let windows = use_windows_topology().get();
-    let content = match crate::split::layout_mode() {
-        crate::split::LayoutMode::Row => {
-            let panes: Vec<Scene> = (0..tv.pane_count())
-                .filter(|&i| !is_pane_floating(&windows, i))
-                .map(|i| build_pane_scene(tv, i, theme))
-                .collect();
-            crate::split::view_split_row(panes, theme)
-        }
-        crate::split::LayoutMode::Grid => {
-            let cells: Vec<Scene> = (0..tv.pane_count())
-                .map(|i| {
-                    if is_pane_floating(&windows, i) {
-                        empty_cell(theme)
-                    } else {
-                        build_pane_scene(tv, i, theme)
-                    }
-                })
-                .collect();
-            crate::split::view_grid(cells, theme)
-        }
+    let content = match use_dock_topology().get() {
+        None => Scene::Container(ContainerNode::new(Vec::new())),
+        Some(topo) => view_dock_surface(
+            &topo,
+            |panel_id| match pane_index_of_panel(panel_id) {
+                // Fill the dock panel's content area: the pane grid is no longer the
+                // direct splitter child (view_dock_panel wraps it under a header), so
+                // it needs its own definite extent or its full-window intrinsic size
+                // overflows the panel — the grid then never gets a measured rect, the
+                // R1012 reflow never fires, and the pane stays at its boot dims.
+                Some(i) if i < tv.pane_count() => fill_definite(build_pane_scene(tv, i, theme)),
+                // A leaf with no live pane (out of range / stale) — defensive; the
+                // topology only ever holds real docked tiles.
+                _ => Scene::Container(ContainerNode::new(Vec::new())),
+            },
+            |id, ratio| DockSplitState {
+                ratio_signal: use_split_ratio(id.to_string(), ratio),
+                // P1: no mid-drag tint (the splitter still drags fine). P2 reads
+                // SplitterExternal::is_dragging() here for the M3 dragged overlay.
+                dragging: false,
+            },
+            theme,
+        ),
     };
     compose(content, theme)
-}
-
-/// A held grid slot for a floated pane (grid mode): a surface-filled cell that
-/// takes the slot's flex share but carries NO tag. Untagged is LOAD-BEARING — a
-/// [`pane_tag`] here would make the slot publish an R1012 rect for the floated
-/// pane, reflowing it to the empty slot (it must keep its undock-window size). The
-/// floated pane is painted in its own window; this just reserves its place until
-/// dock-back.
-fn empty_cell(theme: &Theme) -> Scene {
-    Scene::Container(
-        ContainerNode::new(Vec::new())
-            .with_style(BoxStyle::filled(theme.resolve(ColorRole::Surface))),
-    )
 }
 
 /// Build ONE pane's scene from its live screen + per-pane `ScrollState` + IME
@@ -143,25 +132,46 @@ fn build_pane_scene(tv: &TerminalView, i: usize, theme: &Theme) -> Scene {
 /// the inter-pane divider gap.
 ///
 /// `compose` owns the "content must carry a definite extent" invariant: it applies
-/// [`crate::split::fill_definite`] to `content` so a sizeless flex child can't
-/// collapse its main axis to intrinsic (the cross axis still stretches). This is
-/// the SINGLE enforcement point — every paint path funnels through `compose`, so a
-/// caller cannot forget it (the R55 undock bug was exactly a forgotten fill). The
-/// fill only sets `size` and is idempotent, so the docked arrangements (which used
-/// to apply it themselves) need not. Pure composition; the unit test exercises it
+/// [`fill_definite`] to `content` so a sizeless flex child can't collapse its main
+/// axis to intrinsic (the cross axis still stretches). This is the SINGLE
+/// enforcement point — every paint path funnels through `compose`, so a caller
+/// cannot forget it (the R55 undock bug was exactly a forgotten fill). The fill only
+/// sets `size` and is idempotent. Pure composition; the unit test exercises it
 /// without a PTY.
 fn compose(content: Scene, theme: &Theme) -> Scene {
     Scene::Container(
-        ContainerNode::new(vec![crate::split::fill_definite(content)])
+        ContainerNode::new(vec![fill_definite(content)])
             .with_tag(ROOT_TAG)
             .with_style(BoxStyle::filled(theme.resolve(ColorRole::Surface)))
             .with_layout(LayoutStyle::new().with_size(fill_size())),
     )
 }
 
+/// Give a Container a definite `Percent(100)` size (via [`fill_size`]) so it fills
+/// [`compose`]'s surface root. The dock surface ([`view_dock_surface`]) and a lone
+/// undock pane set no size of their own; this supplies the definite extent their
+/// flex layout needs (avoiding the intrinsic-collapse the splitter's own R685 fix
+/// documents). Applied to the OUTERMOST node only — every nested splitter / panel
+/// gets a definite extent from its parent's flex distribution, so interior nodes
+/// keep `Auto` cross-axes for `AlignItems::Stretch` to fill.
+///
+/// The contract this enforces: **every content node handed to [`compose`] must carry
+/// a definite extent**, or the sizeless flex child collapses to its content's
+/// intrinsic size on the main axis (the cross axis still stretches). [`compose`] is
+/// the SOLE caller — it applies this to whatever content it wraps (the docked
+/// split-tree OR a lone undock pane), so the invariant lives in one place and no
+/// caller can forget it. (Forgetting it was the R55 undock bug: the pane reflowed
+/// only its width, its height pinned to the grid's content rows.)
+pub(crate) fn fill_definite(scene: Scene) -> Scene {
+    match scene {
+        Scene::Container(c) => Scene::Container(c.map_layout(|l| l.with_size(fill_size()))),
+        other => other,
+    }
+}
+
 /// A both-axes `Percent(100)` size — fill the parent slot. The ONE definition,
-/// shared by [`compose`] and [`crate::split::view_split_row`]'s fill (so the
-/// "fill the window" literal lives in one place).
+/// shared by [`compose`] and [`fill_definite`] (so the "fill the window" literal
+/// lives in one place).
 pub(crate) fn fill_size() -> Size {
     Size::auto()
         .with_width(SizeValue::Percent(100))
