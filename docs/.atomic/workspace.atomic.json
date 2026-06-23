@@ -2764,6 +2764,44 @@
         "P2 (drag-to-dock + drop preview + nested splits) and P3 (handle-drag tear-off) of the dock migration — not started. The dock_pane index-relative re-insertion must move to identity-relative (drop-zone-driven) when P2 lands."
       ]
     },
+    "Round 62": {
+      "decision_summary": "Round 62: bumped all 7 pinion-* deps from d05659d9 (R1064) to 2617e9f3 (R1069.1) to consume PINION-PR26 (undock new-window focus-follow), landed in pinion R1069 as a declared-topology focus-enumeration union. SCE (3078f8bf) and vello (0.9) unchanged — pinion's own pins still match, preserving the single SCE instance. NO sprag code change: R1069 is shell-internal (focus enumeration now derives from the declared windows_signal topology, so a torn pane is enumerable before its window paints), exactly the PR-25 zero-change pattern; sprag already declares the undock window + requests focus. Added a headless guard. A SEPARATE, pre-existing multi-window key-dispatch double-toggle (NOT PR-26) surfaced live and was filed as PINION-PR27 (no sprag workaround, no external tool installed).",
+      "changes_bullets": [
+        "Cargo.toml: bumped the 7 pinion-* git revs (pinion-core/-a11y/-shell/-runtime/-widget-paint/-forge/-rpc) from d05659d9 (R1064) to 2617e9f3 (R1069.1 = PR-26/R1069 + the R1069.1 audit-clearance). SCE (sce-build + sce-rust-runtime @ 3078f8bf) and vello (\"0.9\") left unchanged because pinion's own workspace pins still match (the single shared SCE instance + the forge-renderer vello type-check). Cargo.lock re-resolved.",
+        "crates/sprag-gui/src/main.rs: new test undock_keeps_focus_on_the_torn_pane — undocking the focused pane keeps focus ON it through the main-window repaint that drops it a frame before the undock window paints. Consumes PR-26: R1069 derives the focusable union from the DECLARED windows_signal topology, so the requested focus survives the window-creation race. 0 production code change — route_key's ToggleDock already focus_requests the undocked pane (the PR-25 pattern)."
+      ],
+      "verification_bullets": [
+        "Build clean against pinion 2617e9f3 (R1069.1); 51 sprag-gui tests pass (50 + the new guard); cargo clippy -p sprag-gui --all-targets clean; rustfmt clean; cargo doc -D warnings --document-private-items clean; the pre-commit hook (validate-workspace + rustfmt + clippy --workspace) passed on commit 657c326.",
+        "A/B proof the guard genuinely tests R1069 (not a tautology): reverting the pin to the old d05659d9 (pre-PR26) makes undock_keeps_focus_on_the_torn_pane FAIL (left: None, right: Some(\"sprag_gui.pane.0\") — focus dropped to None, exactly the earlier live [DIAG] focused=None symptom); restoring to 2617e9f3 makes it PASS. So R1069 is what fixes the undock focus-drop.",
+        "The undock focus-FOLLOW is fixed. A DISTINCT, pre-existing multi-window key-dispatch double-toggle (\"Ctrl+Shift+Enter docks-then-undocks from the 2nd action, in the 2-window state\") surfaced live — NOT PR-26. Diagnosed: sprag apply_key->toggle is 1:1 (route_key is the sole toggle_pane_floating caller), so the shell double-calls apply_key per physical press; pinion app.rs dispatches auto-repeat (no event.repeat gate) and globally (window_id discarded). NOT reproducible through the substrate (ShellCore::apply_key / RPC scene/key are global single-shot, bypassing winit per-window delivery) — that testability gap + the fix filed as PINION-PR27 (no sprag workaround; declined to install an external injector)."
+      ],
+      "impact_refs": [
+        "4"
+      ],
+      "carry_forward_bullets": [
+        "PINION-PR27 (multi-window key-dispatch double-toggle + per-window key-injection test seam) filed, not delivered. R27.2 (ShellCore::key_press_for_window, analogous to mouse_pressed_for_window) is the prerequisite to reproduce/regression-test the double-toggle headlessly without an external tool; R27.1 (expose event.repeat to apply_key and/or a focused-window dispatch gate) is the fix. The exact mechanism (auto-repeat vs multi-window/focus-handoff) is unconfirmed pending R27.2 — the user symptom (quick tap, 2-window-only, 100%) fits the multi-window path more than auto-repeat.",
+        "PINION-PR26 (undock new-window focus-follow) now delivered (pinion R1069) + consumed (R62), 0 sprag code change.",
+        "P2 (drag-to-dock + preview) and P3 (tear-off) of the dock migration not started."
+      ],
+      "publishable_decision_summary": "Round 62: bumped all 7 pinion-* deps from d05659d9 (R1064) to 2617e9f3 (R1069.1) to consume PINION-PR26 (undock new-window focus-follow), landed in pinion R1069 as a declared-topology focus-enumeration union. SCE (3078f8bf) and vello (0.9) unchanged — pinion's own pins still match, preserving the single SCE instance. NO sprag code change: R1069 is shell-internal (focus enumeration now derives from the declared windows_signal topology, so a torn pane is enumerable before its window paints), exactly the PR-25 zero-change pattern; sprag already declares the undock window + requests focus. Added a headless guard. A SEPARATE, pre-existing multi-window key-dispatch double-toggle (NOT PR-26) surfaced live and was filed as PINION-PR27 (no sprag workaround, no external tool installed).",
+      "publishable_changes_bullets": [
+        "Cargo.toml: bumped the 7 pinion-* git revs (pinion-core/-a11y/-shell/-runtime/-widget-paint/-forge/-rpc) from d05659d9 (R1064) to 2617e9f3 (R1069.1 = PR-26/R1069 + the R1069.1 audit-clearance). SCE (sce-build + sce-rust-runtime @ 3078f8bf) and vello (\"0.9\") left unchanged because pinion's own workspace pins still match (the single shared SCE instance + the forge-renderer vello type-check). Cargo.lock re-resolved.",
+        "crates/sprag-gui/src/main.rs: new test undock_keeps_focus_on_the_torn_pane — undocking the focused pane keeps focus ON it through the main-window repaint that drops it a frame before the undock window paints. Consumes PR-26: R1069 derives the focusable union from the DECLARED windows_signal topology, so the requested focus survives the window-creation race. 0 production code change — route_key's ToggleDock already focus_requests the undocked pane (the PR-25 pattern)."
+      ],
+      "publishable_verification_bullets": [
+        "Build clean against pinion 2617e9f3 (R1069.1); 51 sprag-gui tests pass (50 + the new guard); cargo clippy -p sprag-gui --all-targets clean; rustfmt clean; cargo doc -D warnings --document-private-items clean; the pre-commit hook (validate-workspace + rustfmt + clippy --workspace) passed on commit 657c326.",
+        "A/B proof the guard genuinely tests R1069 (not a tautology): reverting the pin to the old d05659d9 (pre-PR26) makes undock_keeps_focus_on_the_torn_pane FAIL (left: None, right: Some(\"sprag_gui.pane.0\") — focus dropped to None, exactly the earlier live [DIAG] focused=None symptom); restoring to 2617e9f3 makes it PASS. So R1069 is what fixes the undock focus-drop.",
+        "The undock focus-FOLLOW is fixed. A DISTINCT, pre-existing multi-window key-dispatch double-toggle (\"Ctrl+Shift+Enter docks-then-undocks from the 2nd action, in the 2-window state\") surfaced live — NOT PR-26. Diagnosed: sprag apply_key->toggle is 1:1 (route_key is the sole toggle_pane_floating caller), so the shell double-calls apply_key per physical press; pinion app.rs dispatches auto-repeat (no event.repeat gate) and globally (window_id discarded). NOT reproducible through the substrate (ShellCore::apply_key / RPC scene/key are global single-shot, bypassing winit per-window delivery) — that testability gap + the fix filed as PINION-PR27 (no sprag workaround; declined to install an external injector)."
+      ],
+      "publishable_impact_refs": [
+        "4"
+      ],
+      "publishable_carry_forward_bullets": [
+        "PINION-PR27 (multi-window key-dispatch double-toggle + per-window key-injection test seam) filed, not delivered. R27.2 (ShellCore::key_press_for_window, analogous to mouse_pressed_for_window) is the prerequisite to reproduce/regression-test the double-toggle headlessly without an external tool; R27.1 (expose event.repeat to apply_key and/or a focused-window dispatch gate) is the fix. The exact mechanism (auto-repeat vs multi-window/focus-handoff) is unconfirmed pending R27.2 — the user symptom (quick tap, 2-window-only, 100%) fits the multi-window path more than auto-repeat.",
+        "PINION-PR26 (undock new-window focus-follow) now delivered (pinion R1069) + consumed (R62), 0 sprag code change.",
+        "P2 (drag-to-dock + preview) and P3 (tear-off) of the dock migration not started."
+      ]
+    },
     "Round 7": {
       "decision_summary": "Headless multiplexing: a pane registry + lifecycle (spawn/close/resize) + per-pane I/O addressing exposed through a workspace-control External; geometric tiling deferred to the GUI round as a rendering concern.",
       "changes_bullets": [
