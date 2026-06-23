@@ -2550,6 +2550,34 @@
         "scene/resize is a no-op for secondary windows (request-only). Minor; revisit only if programmatic secondary-window resize is ever needed."
       ]
     },
+    "Round 57": {
+      "decision_summary": "Round 57: bumped pinion pin to R1064 (latest) to consume PINION-PR25 (per-window focus enumeration union) — fixes the reported 'can't type into the undocked terminal'; a floated pane is now focusable + receives keyboard input, verified end-to-end via RPC. Pin bump only, no sprag code change.",
+      "changes_bullets": [
+        "Bumped all 7 pinion-* git revs from 04d0ea9d (R1062) to d05659d9 (R1064, latest pinion main); SCE rev unchanged (3078f8bf, still matches pinion's workspace pin). No sprag code change — PINION-PR25 needed none.",
+        "Consumed pinion R1064 743e575f (per-window focus enumeration union, PINION-PR25): update_focusable_tags is no longer DEFAULT_WINDOW-gated, so focusable tags from every painted window union into the binding-wide FocusManager. This fixes the user-reported \"can't type into the undocked terminal\": a floated pane painted only in its undock window is now focusable, so clicking it focuses it and keystrokes route to its PTY. No sprag change was needed because the pane is already painted with_focusable(true) (sprag_host::pane_view_scene).",
+        "Flipped PINION-PR25 doc status + REQUIREMENTS row to delivered+consumed."
+      ],
+      "verification_bullets": [
+        "RPC end-to-end on pinion R1064: undock pane 0, scene/click {window:\"pane-0\"}, then type \"zzxq\" -> the floated pane's full_text became \"coin@...:~$ zzxq\" (input reached its PTY) while the docked pane stayed unchanged. The same test on R1062 left BOTH panes unchanged (input reached nothing) — so R1064 is the fix.",
+        "57 sprag-gui tests pass; cargo clippy -p sprag-gui --all-targets clean; build clean against git-pinned pinion d05659d9 (R1064)."
+      ],
+      "impact_refs": [
+        "5"
+      ],
+      "publishable_decision_summary": "Round 57: bumped pinion pin to R1064 (latest) to consume PINION-PR25 (per-window focus enumeration union) — fixes the reported 'can't type into the undocked terminal'; a floated pane is now focusable + receives keyboard input, verified end-to-end via RPC. Pin bump only, no sprag code change.",
+      "publishable_changes_bullets": [
+        "Bumped all 7 pinion-* git revs from 04d0ea9d (R1062) to d05659d9 (R1064, latest pinion main); SCE rev unchanged (3078f8bf, still matches pinion's workspace pin). No sprag code change — PINION-PR25 needed none.",
+        "Consumed pinion R1064 743e575f (per-window focus enumeration union, PINION-PR25): update_focusable_tags is no longer DEFAULT_WINDOW-gated, so focusable tags from every painted window union into the binding-wide FocusManager. This fixes the user-reported \"can't type into the undocked terminal\": a floated pane painted only in its undock window is now focusable, so clicking it focuses it and keystrokes route to its PTY. No sprag change was needed because the pane is already painted with_focusable(true) (sprag_host::pane_view_scene).",
+        "Flipped PINION-PR25 doc status + REQUIREMENTS row to delivered+consumed."
+      ],
+      "publishable_verification_bullets": [
+        "RPC end-to-end on pinion R1064: undock pane 0, scene/click {window:\"pane-0\"}, then type \"zzxq\" -> the floated pane's full_text became \"coin@...:~$ zzxq\" (input reached its PTY) while the docked pane stayed unchanged. The same test on R1062 left BOTH panes unchanged (input reached nothing) — so R1064 is the fix.",
+        "57 sprag-gui tests pass; cargo clippy -p sprag-gui --all-targets clean; build clean against git-pinned pinion d05659d9 (R1064)."
+      ],
+      "publishable_impact_refs": [
+        "5"
+      ]
+    },
     "Round 6": {
       "decision_summary": "Inject input via the External + scene/invoke carrier: a sprag-owned key encoder writes PTY bytes behind the pane's engine External, lifting the read-only boundary (R2.6 encoding / R1.7 data-engine split).",
       "changes_bullets": [
