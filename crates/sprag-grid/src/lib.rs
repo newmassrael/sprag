@@ -46,13 +46,13 @@ pub fn project(screen: &Screen) -> GridBuffer {
 ///
 /// A positive offset shows the pane's scrollback: the displayed window of
 /// `screen.rows()` logical rows ends `offset_lines` rows above the live bottom.
-/// Rows that fall in the scrollback region are **text-only** — the R16
-/// scrollback model retains trailing-trimmed text, not full cells — so scrolled
-/// history renders in the default fg/bg with no attributes (and wide clusters as
-/// a single cell: the head/trailer split is not recoverable from text); rows
-/// still in the visible region keep their exact cells. The cursor is omitted
-/// while scrolled (it lives in the live region below the view). `offset_lines`
-/// is clamped to the retained scrollback depth.
+/// Rows in the scrollback region are projected from their **stored styled cells**
+/// ([`Screen::scrollback_cells`]) via `project_glyph_row`, so scrolled history
+/// keeps its original fg/bg/attrs (and wide clusters their head/trailer split) —
+/// identical styling to the live region. Rows still in the visible region keep
+/// their exact cells. The cursor is omitted while scrolled (it lives in the live
+/// region below the view). `offset_lines` is clamped to the retained scrollback
+/// depth.
 #[must_use]
 pub fn project_scrolled(screen: &Screen, offset_lines: usize) -> GridBuffer {
     if offset_lines == 0 {
@@ -60,7 +60,7 @@ pub fn project_scrolled(screen: &Screen, offset_lines: usize) -> GridBuffer {
     }
     let cols = screen.cols();
     let rows = screen.rows();
-    let scrollback: Vec<&str> = screen.scrollback_rows().collect();
+    let scrollback: Vec<&[Cell]> = screen.scrollback_cells().collect();
     let scrollback_len = scrollback.len();
     let offset = offset_lines.min(scrollback_len);
     if offset == 0 {
@@ -78,7 +78,7 @@ pub fn project_scrolled(screen: &Screen, offset_lines: usize) -> GridBuffer {
     for display in 0..rows {
         let logical = top + display as usize;
         let cells = if logical < scrollback_len {
-            history_row(scrollback[logical], cols)
+            project_glyph_row(scrollback[logical], cols)
         } else {
             project_row(screen, (logical - scrollback_len) as u16, cols)
         };
@@ -179,23 +179,34 @@ fn preedit_cell(ch: char) -> TermCell {
         .with_attrs(CellAttrs::empty().with_underline(true))
 }
 
-/// Build a scrollback (text-only) row's `TermCell`s: each `char` as a
-/// default-color narrow cell, padded with blanks / truncated to `cols`. The
-/// text model has lost the cell structure, so this is an approximation of the
-/// original row (the live grid is exact); the common ASCII case is faithful.
-fn history_row(text: &str, cols: u16) -> Vec<TermCell> {
-    let mut out = Vec::with_capacity(cols as usize);
-    for ch in text.chars() {
-        if out.len() >= cols as usize {
+/// Build a scrolled-back (history) row's `TermCell`s from its STORED glyph cells,
+/// preserving fg/bg/attrs — so scrollback paints in its original colors, not flat
+/// plain text. Wide heads expand into pinion's head + trailer pair (the same shape
+/// [`project_row`] gives the live grid). A stored wide trailer is skipped here (the
+/// head re-synthesizes it), so a row stored WITH trailers (the scroll-off path) and
+/// one stored WITHOUT (the reflow path) render identically. A wide head clipped at
+/// the right edge renders narrow (matching `project_row`'s edge handling). Padded
+/// with blanks / truncated to `cols`.
+fn project_glyph_row(glyphs: &[Cell], cols: u16) -> Vec<TermCell> {
+    let ncols = cols as usize;
+    let mut out = Vec::with_capacity(ncols);
+    for cell in glyphs {
+        let col = out.len();
+        if col >= ncols {
             break;
         }
-        out.push(TermCell::new(
-            ch.to_string(),
-            TermColor::Default,
-            TermColor::Default,
-        ));
+        match cell.width {
+            Width::Wide if col + 1 < ncols => {
+                let head = term_cell(cell).wide();
+                let trailer = head.trailer();
+                out.push(head);
+                out.push(trailer);
+            }
+            Width::Trailer => {}
+            _ => out.push(term_cell(cell)),
+        }
     }
-    while out.len() < cols as usize {
+    while out.len() < ncols {
         out.push(TermCell::blank());
     }
     out
@@ -305,6 +316,21 @@ mod tests {
         let cell = buffer.cell(0, 0).unwrap();
         assert_eq!(cell.fg, TermColor::Indexed(1));
         assert!(cell.attrs.bold);
+    }
+
+    /// A colored row scrolled off the top keeps its fg/attrs in the scrollback
+    /// projection — the cell-based scrollback (was flattened to plain text, so
+    /// history rendered colorless while the live prompt stayed colored).
+    #[test]
+    fn scrolled_off_row_keeps_color_and_attrs() {
+        // 1-row screen: bold-red "A", then a newline scrolls it into scrollback.
+        let screen = screen_from(b"\x1b[1;31mA\r\n", 4, 1);
+        assert_eq!(screen.scrollback_len(), 1, "the A row scrolled off");
+        let buf = project_scrolled(&screen, 1);
+        let cell = buf.cell(0, 0).unwrap();
+        assert_eq!(cell.cluster, "A");
+        assert_eq!(cell.fg, TermColor::Indexed(1), "scrollback keeps fg color");
+        assert!(cell.attrs.bold, "scrollback keeps bold");
     }
 
     #[test]

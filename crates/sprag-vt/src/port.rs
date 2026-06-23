@@ -127,6 +127,19 @@ impl Cell {
     }
 }
 
+/// A cell row's text: clusters concatenated, trailing blanks trimmed. The ONE
+/// row-to-text mapping shared by [`Screen::row_text`] (visible rows) and
+/// [`Screen::scrollback_rows`] (scrolled-off rows), so the capture path and the
+/// scrollback never drift. Wide trailers contribute `""`, blank cells `" "`.
+#[must_use]
+fn cells_text(cells: &[Cell]) -> String {
+    let mut line = String::new();
+    for cell in cells {
+        line.push_str(&cell.cluster);
+    }
+    line.trim_end().to_string()
+}
+
 /// Cursor shape (DECSCUSR), mirroring pinion's `CursorShape`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum CursorShape {
@@ -197,11 +210,15 @@ pub struct Screen {
     kind: ScreenKind,
     /// One monotonic damage stamp per row.
     generations: Vec<u64>,
-    /// Trailing-trimmed TEXT of rows scrolled off the top of the MAIN screen,
-    /// oldest first, bounded by [`SCROLLBACK_CAP`] (FIFO). Text-only (not full
-    /// cells) — the consumer is data capture, not rendering; lines are NOT
-    /// reflowed on resize. The visible scene projection ignores this.
-    scrollback: VecDeque<String>,
+    /// Rows scrolled off the top of the MAIN screen, oldest first, bounded by
+    /// [`SCROLLBACK_CAP`] (FIFO). Each is the row's STYLED cells (fg/bg/attrs/
+    /// width preserved), trailing blanks trimmed — so scrolled-back history paints
+    /// with its original colors, not flattened to plain text. The text capture
+    /// path derives strings from these cells ([`Screen::scrollback_rows`] /
+    /// [`Screen::full_text`]), so there is one source; the grid projection reads
+    /// the cells ([`Screen::scrollback_cells`]). Lines are reflowed on resize
+    /// (the reflow rejoins/rewraps these cells).
+    scrollback: VecDeque<Vec<Cell>>,
     /// Per-row soft-wrap continuation flag (the DEC `LINE_WRAPPED` attribute):
     /// `wrapped[r] == true` means row `r`'s logical line CONTINUES onto row
     /// `r + 1`, so a reflow ([`Self::reflowed`]) joins them into one logical line
@@ -285,24 +302,35 @@ impl Screen {
         self.wrapped.get(row as usize).copied().unwrap_or(false)
     }
 
-    /// A row's text: its cells' clusters concatenated, trailing blanks trimmed.
-    /// The canonical row-to-text mapping (the capture path and scrollback both
-    /// use it, so they never drift). Wide trailers contribute `""`, blanks `" "`.
+    /// A row's cells (`0..cols`, oldest-left), cloned. The row-to-cells mapping
+    /// the scrollback push captures so scrolled-off history keeps its styling.
     #[must_use]
-    pub fn row_text(&self, row: u16) -> String {
-        let mut line = String::new();
-        for col in 0..self.cols {
-            if let Some(cell) = self.cell(col, row) {
-                line.push_str(&cell.cluster);
-            }
-        }
-        line.trim_end().to_string()
+    pub fn row_cells(&self, row: u16) -> Vec<Cell> {
+        (0..self.cols)
+            .filter_map(|col| self.cell(col, row).cloned())
+            .collect()
     }
 
-    /// The scrolled-off lines (oldest first) — the MAIN screen's history beyond
-    /// the visible grid, for full-output capture.
-    pub fn scrollback_rows(&self) -> impl Iterator<Item = &str> {
-        self.scrollback.iter().map(String::as_str)
+    /// A row's text: its cells' clusters concatenated, trailing blanks trimmed.
+    /// Delegates to `cells_text` — the ONE row-to-text mapping the visible
+    /// capture path and the scrollback (cell-derived) both use, so they never
+    /// drift. Wide trailers contribute `""`, blanks `" "`.
+    #[must_use]
+    pub fn row_text(&self, row: u16) -> String {
+        cells_text(&self.row_cells(row))
+    }
+
+    /// The scrolled-off lines as TEXT (oldest first) — the MAIN screen's history
+    /// beyond the visible grid, for full-output capture. Derived from the stored
+    /// styled cells via `cells_text` (the capture path keeps one notion of text).
+    pub fn scrollback_rows(&self) -> impl Iterator<Item = String> + '_ {
+        self.scrollback.iter().map(|cells| cells_text(cells))
+    }
+
+    /// The scrolled-off lines as STYLED CELLS (oldest first) — the rendering view
+    /// the grid projection reads so scrollback paints with its original fg/bg/attrs.
+    pub fn scrollback_cells(&self) -> impl Iterator<Item = &[Cell]> + '_ {
+        self.scrollback.iter().map(Vec::as_slice)
     }
 
     /// How many scrolled-off lines are retained.
@@ -320,7 +348,7 @@ impl Screen {
     /// source; this and the visible-grid projection are two views of it).
     #[must_use]
     pub fn full_text(&self) -> String {
-        let mut lines: Vec<String> = self.scrollback.iter().cloned().collect();
+        let mut lines: Vec<String> = self.scrollback_rows().collect();
         for row in 0..self.rows {
             lines.push(self.row_text(row));
         }
@@ -529,8 +557,8 @@ impl Screen {
         let mut next = Screen::new(cols, rows);
         next.scrollback = self.scrollback.clone();
         for (cells, _) in phys.iter().take(start) {
-            let text: String = cells.iter().map(|c| c.cluster.as_str()).collect();
-            next.scrollback.push_back(text.trim_end().to_string());
+            // Keep the styled cells (fg/bg/attrs) — scrollback paints in color.
+            next.scrollback.push_back(cells.clone());
         }
         while next.scrollback.len() > SCROLLBACK_CAP {
             next.scrollback.pop_front();
@@ -591,7 +619,9 @@ impl Screen {
         // Retain the evicted top row's text (MAIN screen only — the alternate
         // screen has no scrollback). Captured before the drain, bounded FIFO.
         if self.kind == ScreenKind::Main && self.cols > 0 {
-            self.scrollback.push_back(self.row_text(0));
+            // Retain the evicted row's STYLED cells (not flattened text) so
+            // scrolled-back history keeps its colors.
+            self.scrollback.push_back(self.row_cells(0));
             while self.scrollback.len() > SCROLLBACK_CAP {
                 self.scrollback.pop_front();
             }
@@ -645,7 +675,7 @@ mod tests {
     fn scrollback_captures_evicted_lines_in_order() {
         // A 2-row screen; four lines push the first two into scrollback.
         let e = em(8, 2, "1\r\n2\r\n3\r\n4");
-        let sb: Vec<&str> = e.screen().scrollback_rows().collect();
+        let sb: Vec<String> = e.screen().scrollback_rows().collect();
         assert_eq!(sb, ["1", "2"], "scrolled-off lines, oldest first");
         // The visible grid holds the last two.
         assert_eq!(e.screen().row_text(0), "3");
@@ -660,7 +690,7 @@ mod tests {
         let e = em(12, 1, &input);
         assert_eq!(e.screen().scrollback_len(), SCROLLBACK_CAP, "bounded");
         // The oldest 100 lines (0..100) were dropped; 100 is now the oldest.
-        assert_eq!(e.screen().scrollback_rows().next(), Some("100"));
+        assert_eq!(e.screen().scrollback_rows().next().as_deref(), Some("100"));
     }
 
     #[test]
@@ -691,7 +721,10 @@ mod tests {
     fn wide_cluster_scrolled_off_keeps_full_text() {
         // A wide head + empty trailer must reconstruct to the single cluster.
         let e = em(8, 2, "\u{4e16}\r\n\r\n");
-        assert_eq!(e.screen().scrollback_rows().next(), Some("\u{4e16}"));
+        assert_eq!(
+            e.screen().scrollback_rows().next().as_deref(),
+            Some("\u{4e16}")
+        );
     }
 
     #[test]
