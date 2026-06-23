@@ -795,6 +795,47 @@ mod tests {
         assert!(main2.contains_tag(pane_tag(1)), "dock-back re-tiles pane 1");
     }
 
+    /// Undock focus-FOLLOW (consumes pinion R1069 / PINION-PR26): undocking the focused
+    /// pane keeps focus ON that pane, even though the main window repaints WITHOUT it a
+    /// frame before its undock window paints. Pre-R1069 the main-window paint's
+    /// `update_focusable_tags` dropped the floated `pane_tag` (absent from the primary's
+    /// `collect_focusable_tags`) and the one-shot `focus_request` was already spent →
+    /// focus fell to `None` (the user's "have to press it twice" report). R1069 derives
+    /// the focusable union from the DECLARED `windows_signal` topology — the `pane-{i}`
+    /// window is enumerable via its pure `view_for_window` the moment it is declared,
+    /// before it paints — so the requested focus survives. sprag consumes it with NO
+    /// code change: `route_key`'s ToggleDock already `focus_request`s the undocked pane;
+    /// this pins that the seam now holds end-to-end through the real shell.
+    #[test]
+    fn undock_keeps_focus_on_the_torn_pane() {
+        let mut core = ShellCore::<TerminalViewer>::new();
+        let boot = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+        core.finalize_frame(boot);
+        assert_eq!(
+            core.focus().focused(),
+            Some(pane_tag(0)),
+            "boots focused on pane 0"
+        );
+
+        // Undock pane 0 exactly as the Ctrl+Shift+Enter chord does (route_key's
+        // ToggleDock): float the pane + request focus on that same pane.
+        core.root_owner().run(|| {
+            dock::toggle_pane_floating(0);
+            pinion_core::focus_request::request(pane_tag(0));
+        });
+
+        // Repaint the MAIN window (now without pane 0) + drain the dispatch tail. The
+        // declared pane-0 window keeps pane 0 in the focusable union (R1069), so focus
+        // follows the torn pane instead of dropping to None.
+        let main = core.compute_paint_scene_for_window(dock::MAIN_WINDOW_ID, WINDOW_W, WINDOW_H);
+        core.finalize_frame(main);
+        assert_eq!(
+            core.focus().focused(),
+            Some(pane_tag(0)),
+            "focus follows the undocked pane (PR-26); not dropped during the window race",
+        );
+    }
+
     /// End-to-end divider drag through the REAL viewer: setting the boot split's ratio
     /// Signal (the exact write a pointer drag performs via `SplitterExternal`)
     /// re-weights the two panes — the left pane reflows wider, tracking ~0.7. Proves
