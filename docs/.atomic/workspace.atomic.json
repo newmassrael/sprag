@@ -2578,6 +2578,34 @@
         "5"
       ]
     },
+    "Round 58": {
+      "decision_summary": "Round 58: scrollback now preserves cell colors/attributes — stores styled cells (VecDeque<Vec<Cell>>) instead of plain text, so scrolled-back history paints in its original colors (the user saw scrolled-back prompts as plain while the live prompt was green); the AI-facing text path is unchanged (derived from the cells).",
+      "changes_bullets": [
+        "sprag-vt port.rs: scrollback storage changed from VecDeque<String> (plain text) to VecDeque<Vec<Cell>> (styled cells — fg/bg/attrs/width preserved). The scroll_up (line-feed) and reflow push sites now store the row's styled cells instead of flattening to text; a new cells_text() free fn is the single row-to-text SSOT that row_text/scrollback_rows/full_text all derive through, so the AI-facing text path (full_text, scrollback_len) is byte-unchanged. New scrollback_cells() accessor feeds the grid; scrollback_rows() now yields owned text derived from the cells; row_cells() captures a row for scroll-off.",
+        "sprag-grid lib.rs: history_row(&str) -> project_glyph_row(&[Cell]) — renders scrolled-back rows through the same term_cell mapping as the live grid (color/attrs), synthesizing the head+trailer pair for wide heads and SKIPPING any stored trailer, so a row stored with trailers (scroll-off path) and one without (reflow path) render identically. project_scrolled reads scrollback_cells().",
+        "Root cause of the user report (scrolled-back prompt plain while live prompt green): scrollback was text-only, so history rows projected with default fg/bg. Now they keep their colors."
+      ],
+      "verification_bullets": [
+        "New guard sprag-grid scrolled_off_row_keeps_color_and_attrs: a bold-red row scrolled into scrollback projects via project_scrolled with fg=Indexed(1) + bold (was plain). 32 sprag-vt + all sprag-grid + 57 sprag-gui + full workspace tests pass; cargo clippy --workspace --all-targets clean; rustfmt clean; cargo doc adds no new warnings (2 pre-existing sprag-vt broken-links untouched).",
+        "Live (RPC + scene/screenshot live-surface readback): typed 40 prompts into scrollback, Shift+PageUp, captured the pane — scrolled-back prompts now render GREEN (coin@host) + blue (:~), identical to the live prompt; before the fix the same capture showed plain white history. Caught a stale-binary slip first (cargo test does NOT refresh target/debug/sprag-gui after a dep change — needed explicit cargo build -p sprag-gui), then re-verified on the rebuilt binary."
+      ],
+      "impact_refs": [
+        "4"
+      ],
+      "publishable_decision_summary": "Round 58: scrollback now preserves cell colors/attributes — stores styled cells (VecDeque<Vec<Cell>>) instead of plain text, so scrolled-back history paints in its original colors (the user saw scrolled-back prompts as plain while the live prompt was green); the AI-facing text path is unchanged (derived from the cells).",
+      "publishable_changes_bullets": [
+        "sprag-vt port.rs: scrollback storage changed from VecDeque<String> (plain text) to VecDeque<Vec<Cell>> (styled cells — fg/bg/attrs/width preserved). The scroll_up (line-feed) and reflow push sites now store the row's styled cells instead of flattening to text; a new cells_text() free fn is the single row-to-text SSOT that row_text/scrollback_rows/full_text all derive through, so the AI-facing text path (full_text, scrollback_len) is byte-unchanged. New scrollback_cells() accessor feeds the grid; scrollback_rows() now yields owned text derived from the cells; row_cells() captures a row for scroll-off.",
+        "sprag-grid lib.rs: history_row(&str) -> project_glyph_row(&[Cell]) — renders scrolled-back rows through the same term_cell mapping as the live grid (color/attrs), synthesizing the head+trailer pair for wide heads and SKIPPING any stored trailer, so a row stored with trailers (scroll-off path) and one without (reflow path) render identically. project_scrolled reads scrollback_cells().",
+        "Root cause of the user report (scrolled-back prompt plain while live prompt green): scrollback was text-only, so history rows projected with default fg/bg. Now they keep their colors."
+      ],
+      "publishable_verification_bullets": [
+        "New guard sprag-grid scrolled_off_row_keeps_color_and_attrs: a bold-red row scrolled into scrollback projects via project_scrolled with fg=Indexed(1) + bold (was plain). 32 sprag-vt + all sprag-grid + 57 sprag-gui + full workspace tests pass; cargo clippy --workspace --all-targets clean; rustfmt clean; cargo doc adds no new warnings (2 pre-existing sprag-vt broken-links untouched).",
+        "Live (RPC + scene/screenshot live-surface readback): typed 40 prompts into scrollback, Shift+PageUp, captured the pane — scrolled-back prompts now render GREEN (coin@host) + blue (:~), identical to the live prompt; before the fix the same capture showed plain white history. Caught a stale-binary slip first (cargo test does NOT refresh target/debug/sprag-gui after a dep change — needed explicit cargo build -p sprag-gui), then re-verified on the rebuilt binary."
+      ],
+      "publishable_impact_refs": [
+        "4"
+      ]
+    },
     "Round 6": {
       "decision_summary": "Inject input via the External + scene/invoke carrier: a sprag-owned key encoder writes PTY bytes behind the pane's engine External, lifting the read-only boundary (R2.6 encoding / R1.7 data-engine split).",
       "changes_bullets": [
