@@ -79,7 +79,7 @@
 //! `SplitterExternal` and becomes drag-resizable. The interactive layout lives
 //! GUI-side (not in the host) because it needs reactive ratios + registered Externals.
 //!
-//! ## Module map (R32, R36, R37, R38)
+//! ## Module map (R32, R36, R37, R60)
 //!
 //! The binding is split by concern so each axis grows in one place:
 //!

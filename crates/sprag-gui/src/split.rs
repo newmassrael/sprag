@@ -123,6 +123,28 @@ pub(crate) fn use_dock_topology() -> Rc<Signal<Option<DockTopology>>> {
         })
 }
 
+/// The tile indices of the panes currently DOCKED (the dock-tree's leaves, in
+/// left-to-right paint order), or empty when none are docked. The SINGLE authority
+/// for "which panes does the main window show" — read by BOTH the paint
+/// ([`crate::view::view_for_window`]) and the per-window a11y projection
+/// ([`crate::a11y::access_nodes_for_window`]), so they can never disagree. (Pre-R61
+/// a11y read the windows-signal's float state while the paint had moved to the tree
+/// — two sources for one fact; this unifies them on the tree.) The windows-signal
+/// ([`crate::dock::use_windows_topology`]) remains the SEPARATE authority for which
+/// OS windows exist — a distinct fact kept consistent with this one at the single
+/// [`toggle_pane_floating`](crate::dock::toggle_pane_floating) site.
+pub(crate) fn docked_pane_indices() -> Vec<usize> {
+    use_dock_topology()
+        .get()
+        .map(|t| {
+            t.panel_ids()
+                .iter()
+                .filter_map(|p| pane_index_of_panel(p))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// `Owner::cache` key for the dock-back Split-id sequence counter.
 const SPLIT_SEQ_KEY: &str = "sprag_gui.dock_split_seq";
 
@@ -187,22 +209,33 @@ pub(crate) fn float_pane(index: usize) {
 }
 
 /// Dock pane `index` back: re-insert its leaf, preserving left-to-right pane INDEX
-/// order — split the first docked pane whose index exceeds `index` (the new leaf
-/// takes the `First`/left slot), or append after the last docked pane (the `Second`/
-/// right slot) when `index` is the largest. An empty tree (`None`) becomes the single
-/// leaf. The new divider gets a fresh id ([`next_dock_split_id`]) at the default
-/// ratio. A topology error (the pane already present — defensive, the toggle never
-/// asks for it) leaves the tree unchanged. Runs in the root owner scope.
+/// order — split the smallest-indexed docked pane whose index exceeds `index` (the
+/// new leaf takes the `First`/left slot), or append after the last docked pane (the
+/// `Second`/right slot) when `index` is the largest. An empty tree (`None`) becomes
+/// the single leaf. The new divider gets a fresh id ([`next_dock_split_id`]) at the
+/// default ratio. A topology error (the pane already present — defensive, the toggle
+/// never asks for it) leaves the tree unchanged. Runs in the root owner scope.
+///
+/// **v1 bound:** this index-relative policy assumes the docked panes are in tile-
+/// index order — true while float/dock are the ONLY mutations (boot is sorted and
+/// neither reorders; the `sort_unstable` below makes the "smallest index > `index`"
+/// choice robust to `panel_ids()` traversal order regardless). P2 drag-to-dock will
+/// reorder panes (visual order != index order), at which point dock-back must become
+/// identity-relative (drop-zone driven), not index-relative — this fn is the site to
+/// revisit then.
 pub(crate) fn dock_pane(index: usize) {
     let topo = use_dock_topology();
     let next = match topo.get() {
         None => DockTopology::single(panel_id(index)),
         Some(current) => {
-            let docked: Vec<usize> = current
+            let mut docked: Vec<usize> = current
                 .panel_ids()
                 .iter()
                 .filter_map(|p| pane_index_of_panel(p))
                 .collect();
+            // Index order is an emergent (not enforced) invariant — sort so the
+            // "first index > `index`" insertion point is unconditionally correct.
+            docked.sort_unstable();
             let split_id = next_dock_split_id();
             let inserted = match docked.iter().find(|&&j| j > index) {
                 // Insert before the first higher-indexed docked pane (keeps order).
@@ -353,6 +386,40 @@ mod tests {
             let single = topo.get().expect("one pane docked again");
             assert_eq!(single.panel_ids(), vec![panel_id(1)]);
             assert_eq!(single.split_count(), 0);
+        });
+    }
+
+    #[test]
+    fn dock_back_inserts_in_index_order_for_3_plus_panes() {
+        let owner = Owner::new();
+        owner.run(|| {
+            // Seed a 4-pane docked tree directly (independent of SPRAG_GUI_PANES) so
+            // the interleaved insert branch the 2-pane test cannot reach is covered.
+            use_dock_topology().set(build_boot_topology(4));
+            assert_eq!(docked_pane_indices(), vec![0, 1, 2, 3]);
+
+            // Float a MIDDLE pane (1) -> collapses out, order [0, 2, 3].
+            float_pane(1);
+            assert_eq!(docked_pane_indices(), vec![0, 2, 3]);
+
+            // Dock pane 1 back -> the Some(j > index) insert-before-pane-2 branch,
+            // restoring index order [0, 1, 2, 3].
+            dock_pane(1);
+            assert_eq!(
+                docked_pane_indices(),
+                vec![0, 1, 2, 3],
+                "a middle pane docks back into its index slot"
+            );
+
+            // Float the LAST pane (3) then dock it back -> the None append-right branch.
+            float_pane(3);
+            assert_eq!(docked_pane_indices(), vec![0, 1, 2]);
+            dock_pane(3);
+            assert_eq!(
+                docked_pane_indices(),
+                vec![0, 1, 2, 3],
+                "the largest-indexed pane appends on the right"
+            );
         });
     }
 }

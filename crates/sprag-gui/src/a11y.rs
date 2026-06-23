@@ -35,14 +35,16 @@ pub(crate) fn access_nodes_for_window(window_id: &str, focused: Option<&str>) ->
     match crate::dock::pane_window_index(window_id) {
         // An undock window: just its one pane (if still present).
         Some(i) if i < terminal.pane_count() => vec![pane_node(&terminal, i, focused)],
-        // The main window (or any non-pane id): the docked panes only.
-        _ => {
-            let windows = crate::dock::use_windows_topology().get();
-            (0..terminal.pane_count())
-                .filter(|&i| !crate::dock::is_pane_floating(&windows, i))
-                .map(|i| pane_node(&terminal, i, focused))
-                .collect()
-        }
+        // The main window (or any non-pane id): the docked panes only. Read the
+        // docked set from the dock split-tree ([`crate::split::docked_pane_indices`])
+        // — the SAME authority `view_main` paints from — so a11y and the paint can
+        // never announce/show a different set (pre-R61 this read the windows signal's
+        // float state, a second source for the same fact).
+        _ => crate::split::docked_pane_indices()
+            .into_iter()
+            .filter(|&i| i < terminal.pane_count())
+            .map(|i| pane_node(&terminal, i, focused))
+            .collect(),
     }
 }
 

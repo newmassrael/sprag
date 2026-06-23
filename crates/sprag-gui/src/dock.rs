@@ -13,12 +13,18 @@
 //! window by id. This module owns that topology Signal ([`use_windows_topology`])
 //! and the dock/undock toggle ([`toggle_pane_floating`]).
 //!
-//! ## Floating SSOT — the topology Signal itself
+//! ## Two distinct authorities: OS windows vs the docked-pane set
 //!
-//! There is no separate "which panes float" set: a pane floats **iff** its undock
-//! window (`pane-{i}`) exists in the topology ([`is_pane_floating`]). One source
-//! of truth, read by the main-window tiling, the per-window paint dispatch, and
-//! a11y (the hello-dock-panels model).
+//! This module's `Signal<Vec<WindowSpec>>` is the authority for **which OS windows
+//! exist** — a `pane-{i}` window exists iff pane `i` is floating. That is a SEPARATE
+//! fact from **which panes are docked in the main window**, which is the dock split-
+//! tree's leaf set ([`crate::split::docked_pane_indices`]) — the one source both the
+//! paint ([`crate::view::view_for_window`]) and a11y read, so they never disagree. The two
+//! authorities are kept consistent at the single [`toggle_pane_floating`] site (a
+//! pane floats iff its window exists AND its leaf is absent from the tree); a future
+//! second mutation path (P2 drag-to-dock) must preserve that invariant — at which
+//! point making the docked set a reactive projection of one authority (rather than
+//! co-mutated here) is the cleanup.
 //!
 //! ## Why the undock window opens at the pane's intrinsic size (and now reflows)
 //!
@@ -105,14 +111,6 @@ pub(crate) fn use_windows_topology() -> Rc<Signal<Vec<WindowSpec>>> {
         })
 }
 
-/// `true` iff pane `i`'s undock window currently exists in `windows` (i.e. pane
-/// `i` is floating). The single docked/floating predicate, consulted by the
-/// main-window tiling, the paint dispatch, and a11y.
-pub(crate) fn is_pane_floating(windows: &[WindowSpec], i: usize) -> bool {
-    let target = pane_window_id(i);
-    windows.iter().any(|w| w.id == target)
-}
-
 /// Toggle pane `i` between docked (tiled in the main window) and undocked (its
 /// own OS window). Idempotent on the alternation:
 ///
@@ -189,25 +187,21 @@ mod tests {
         let owner = Owner::new();
         owner.run(|| {
             let windows = use_windows_topology();
+            // "pane i has an OS window" = its `pane-{i}` window exists.
+            let floating = |i: usize| windows.get().iter().any(|w| w.id == pane_window_id(i));
             assert_eq!(windows.get().len(), 1, "boots with the main window only");
-            assert!(!is_pane_floating(&windows.get(), 0), "pane 0 starts docked");
+            assert!(!floating(0), "pane 0 starts docked");
 
             // Undock pane 0: a second window appears and pane 0 reads as floating.
             toggle_pane_floating(0);
             assert_eq!(windows.get().len(), 2, "undock adds a window");
-            assert!(
-                is_pane_floating(&windows.get(), 0),
-                "pane 0 is now floating"
-            );
-            assert!(!is_pane_floating(&windows.get(), 1), "pane 1 stays docked");
+            assert!(floating(0), "pane 0 is now floating");
+            assert!(!floating(1), "pane 1 stays docked");
 
             // Dock back: the window is removed, pane 0 docked again.
             toggle_pane_floating(0);
             assert_eq!(windows.get().len(), 1, "dock-back removes the window");
-            assert!(
-                !is_pane_floating(&windows.get(), 0),
-                "pane 0 is docked again"
-            );
+            assert!(!floating(0), "pane 0 is docked again");
         });
     }
 }

@@ -147,21 +147,25 @@ fn compose(content: Scene, theme: &Theme) -> Scene {
     )
 }
 
-/// Give a Container a definite `Percent(100)` size (via [`fill_size`]) so it fills
-/// [`compose`]'s surface root. The dock surface ([`view_dock_surface`]) and a lone
-/// undock pane set no size of their own; this supplies the definite extent their
-/// flex layout needs (avoiding the intrinsic-collapse the splitter's own R685 fix
-/// documents). Applied to the OUTERMOST node only — every nested splitter / panel
-/// gets a definite extent from its parent's flex distribution, so interior nodes
-/// keep `Auto` cross-axes for `AlignItems::Stretch` to fill.
+/// Give a Container a definite `Percent(100)` size (via [`fill_size`]) so a sizeless
+/// flex child can't collapse to its content's intrinsic size on the main axis (the
+/// cross axis still stretches) — the intrinsic-collapse the splitter's own R685 fix
+/// documents. Applied at TWO enforcement points, each a DIFFERENT flex layer (so it
+/// is not a single-point invariant — interior nodes still get their extent from
+/// their parent's flex distribution and keep `Auto` cross-axes for `AlignItems::Stretch`):
 ///
-/// The contract this enforces: **every content node handed to [`compose`] must carry
-/// a definite extent**, or the sizeless flex child collapses to its content's
-/// intrinsic size on the main axis (the cross axis still stretches). [`compose`] is
-/// the SOLE caller — it applies this to whatever content it wraps (the docked
-/// split-tree OR a lone undock pane), so the invariant lives in one place and no
-/// caller can forget it. (Forgetting it was the R55 undock bug: the pane reflowed
-/// only its width, its height pinned to the grid's content rows.)
+/// 1. [`compose`] wraps the workspace `content` (the docked split-tree OR a lone
+///    undock pane) so it fills the window-sized surface root. Forgetting this was the
+///    R55 undock bug (the pane reflowed only its width).
+/// 2. [`view_main`]'s `panel_content` callback wraps EACH docked pane's content,
+///    because [`view_dock_surface`] interposes a sizeless `flex_grow(1.0)` content
+///    wrapper ([`view_dock_panel`](pinion_widget_paint::dock::view_dock_panel))
+///    between the splitter and the pane grid — without a definite extent there the
+///    grid keeps its full-window intrinsic width, never gets a measured rect, and the
+///    R1012 reflow never fires (R60).
+///
+/// Each call site is the single fill for ITS layer (the surface root; each leaf's
+/// content slot), so neither layer can forget it.
 pub(crate) fn fill_definite(scene: Scene) -> Scene {
     match scene {
         Scene::Container(c) => Scene::Container(c.map_layout(|l| l.with_size(fill_size()))),
