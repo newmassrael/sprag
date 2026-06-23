@@ -857,27 +857,25 @@ mod tests {
         );
     }
 
-    /// Multi-window key dispatch does NOT double-toggle (consumes pinion R1071 /
-    /// PINION-PR27 end-to-end through the real shell). This is the scenario the user
-    /// hit — `Ctrl+Shift+Enter` "docks-then-undocks" once a 2nd window exists — and
-    /// the regression guard PR-27's `key_press_for_window` / `note_os_focus` seam (R27.2)
-    /// exists to make reproducible HEADLESSLY (no GUI / no external injector). Two
-    /// mechanisms, both gated:
-    ///   1. OS-focus gate (R27.1): a key delivered to a NON-OS-focused window is
-    ///      dropped, so a multi-window double-DELIVERY of one press toggles only once.
-    ///   2. Auto-repeat drop (R27.1 + sprag `apply_key_repeat`): a held chord's
-    ///      `repeat == true` re-send is a no-op.
+    /// In the 2-window state, ONE physical press double-delivered to both windows
+    /// toggles ONCE — pinion R1073's press-owner snapshot (PINION-PR27 / R27.4) gates
+    /// the re-delivery to the window the press did NOT begin on (here OS focus stays
+    /// on the press owner; the harder close-moves-focus case is the next test). The
+    /// keyup (`note_key_state(key, false)`) ends the physical press and clears the
+    /// owner — the lifecycle pinion keys the gate on. End-to-end through the real
+    /// shell via the `key_press_for_window` / `note_os_focus` seam (R27.2), no GUI.
+    /// (The discrete-chord auto-repeat drop is covered by
+    /// `input::tests::dock_chord_auto_repeat_is_dropped_scroll_repeats`.)
     #[test]
     fn multiwindow_dock_chord_toggles_once_per_press() {
         let mut core = ShellCore::<TerminalViewer>::new();
         let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
         core.finalize_frame(scene);
-        let win = || dock::pane_window_id(0);
+        let win = dock::pane_window_id(0);
         let count = |core: &mut ShellCore<TerminalViewer>| {
             core.root_owner()
                 .run(|| dock::use_windows_topology().get().len())
         };
-
         // Hold Ctrl+Shift so each "Enter" is the dock chord.
         core.set_modifiers(Modifiers {
             ctrl: true,
@@ -885,66 +883,45 @@ mod tests {
             ..Modifiers::default()
         });
 
-        // Main has OS focus; the chord undocks the focused pane 0 -> 2 windows.
-        core.note_os_focus(dock::MAIN_WINDOW_ID, true);
-        assert!(core.key_press_for_window(dock::MAIN_WINDOW_ID, "Enter", false));
-        assert_eq!(count(&mut core), 2, "the chord undocked pane 0");
+        // Float pane 0 (setup — done DIRECTLY, not via a key press, so no press owner
+        // is pinned; the 2nd-action presses below start from a clean rising edge).
+        core.root_owner().run(|| dock::toggle_pane_floating(0));
+        assert_eq!(count(&mut core), 2, "pane 0 floated");
 
-        // The undock window grabs OS focus. Now a SINGLE physical press double-DELIVERED
-        // to both windows must toggle ONCE: pane-0 (OS-focused) dispatches, main is gated.
-        core.note_os_focus(&win(), true);
-        let to_pane0 = core.key_press_for_window(&win(), "Enter", false);
-        let to_main = core.key_press_for_window(dock::MAIN_WINDOW_ID, "Enter", false);
+        // The undock window holds OS focus. ONE physical press double-delivered to both
+        // windows (NO keyup between): the press begins on pane-0, so the re-delivery to
+        // main is gated by the owner snapshot -> exactly one toggle (dock), no bounce.
+        core.note_os_focus(&win, true);
+        let to_owner = core.key_press_for_window(&win, "Enter", false);
+        let to_other = core.key_press_for_window(dock::MAIN_WINDOW_ID, "Enter", false);
         assert!(
-            to_pane0,
-            "the OS-focused window dispatches the chord (docks pane 0 back)"
+            to_owner,
+            "the press's owner window (pane-0) dispatches -> docks pane 0"
         );
         assert!(
-            !to_main,
-            "the non-OS-focused window is GATED — no second toggle (pre-R1071 it bounced)"
+            !to_other,
+            "the re-delivery to main (not the press owner) is gated"
         );
-        assert_eq!(
-            count(&mut core),
-            1,
-            "exactly one toggle: docked back, no undock bounce"
-        );
-
-        // An OS auto-repeat of the chord (repeat == true) is dispatched to the eligible
-        // window but DROPPED inside apply_key_repeat — no toggle (count unchanged). The
-        // return is `true` (the window was eligible); the drop shows up in the count.
-        core.note_os_focus(dock::MAIN_WINDOW_ID, true);
-        assert!(core.key_press_for_window(dock::MAIN_WINDOW_ID, "Enter", true));
-        assert_eq!(
-            count(&mut core),
-            1,
-            "the auto-repeat was dropped — no toggle"
-        );
-        // The leading (non-repeat) press of the SAME chord DOES toggle, proving the
-        // chord is live and only the repeat was dropped.
-        assert!(core.key_press_for_window(dock::MAIN_WINDOW_ID, "Enter", false));
-        assert_eq!(
-            count(&mut core),
-            2,
-            "a non-repeat press of the same chord toggles"
-        );
+        assert_eq!(count(&mut core), 1, "exactly one toggle: docked, no bounce");
+        core.note_key_state("Enter", false); // keyup ends the physical press
     }
 
-    /// REPRODUCES the live "docks-then-undocks from the 2nd action" bounce that
-    /// R1071's OS-focus gate does NOT catch — and that my first multi-window guard
-    /// (above) missed by hand-pinning the focus. The live `[DIAG]` trace proved one
-    /// physical press in the 2-window state produces TWO chord dispatches (dock then
-    /// undock, 32ms apart, REPEAT=false): winit double-delivers the press to both
-    /// windows, the FIRST dispatch docks the pane and CLOSES its window, OS focus
-    /// moves to main, so the SECOND delivery (to main, now focused) PASSES the gate
-    /// and undocks. The step the other guard omitted is the `note_os_focus("main")`
-    /// AFTER the dock — i.e. modelling that closing the focused window moves focus,
-    /// which is exactly what defeats the gate.
+    /// The close-during-dispatch bounce — the live "docks-then-undocks from the 2nd
+    /// action" the user hit — FIXED by pinion R1073 (PINION-PR27 / R27.4)'s press-owner
+    /// snapshot. The live `[DIAG]` trace proved ONE physical press in the 2-window state
+    /// produced TWO chord dispatches (dock then undock, 32ms apart, REPEAT=false): the
+    /// press began on the floated pane's window, the FIRST dispatch docked it and CLOSED
+    /// that window, OS focus moved to main, and R1071's live-focus gate then ADMITTED the
+    /// re-delivery to main (now focused) -> undock = bounce. R1073 pins the owner at the
+    /// press's rising edge, so every later delivery is gated against the window the press
+    /// BEGAN on (pane-0), not the focus its own dock side-effect moved -> no bounce.
     ///
-    /// Ignored: it asserts the FIXED behaviour (one toggle, no bounce) and therefore
-    /// FAILS on pinion R1071 — un-ignore it (flip green) when pinion lands the gate
-    /// fix (snapshot OS-focus per physical press / dedupe the double-delivery).
+    /// This is the test my R63 guard SHOULD have been: the difference is driving the
+    /// focus move as a CONSEQUENCE of the dock closing the window (the `note_os_focus`
+    /// pair below), not hand-pinning it. The keyups (`note_key_state(key, false)`) bound
+    /// each physical press — the two deliveries of the 2nd press carry NO keyup between
+    /// them (same press), which is exactly what makes them share one owner snapshot.
     #[test]
-    #[ignore = "reproduces pinion R1071 OS-focus-gate gap (close-during-dispatch); un-ignore when fixed"]
     fn multiwindow_dock_does_not_bounce_when_close_moves_focus() {
         let mut core = ShellCore::<TerminalViewer>::new();
         let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
@@ -960,35 +937,34 @@ mod tests {
             ..Modifiers::default()
         });
 
-        // 1st action: main focused, the chord undocks pane 0 -> the pane-0 window opens.
-        core.note_os_focus(dock::MAIN_WINDOW_ID, true);
-        core.key_press_for_window(dock::MAIN_WINDOW_ID, "Enter", false);
-        assert_eq!(
-            count(&mut core),
-            2,
-            "1st action undocked (clean — matches live)"
-        );
+        // Float pane 0 (setup — directly, so no press owner is pinned before the press
+        // under test).
+        core.root_owner().run(|| dock::toggle_pane_floating(0));
+        assert_eq!(count(&mut core), 2, "pane 0 floated");
 
-        // The undock window grabs OS focus (winit Focused(pane-0, true)).
+        // The undock window grabs OS focus.
         core.note_os_focus(&win, true);
 
-        // 2nd action — ONE physical press double-delivered to both windows:
-        // delivery A -> pane-0 (OS-focused): docks pane 0 -> CLOSES the pane-0 window.
+        // 2nd action — ONE physical press double-delivered (NO keyup between -> one owner):
+        // delivery A -> pane-0 (the press owner, OS-focused): docks pane 0 -> CLOSES it.
         core.key_press_for_window(&win, "Enter", false);
-        // *** The step the other guard omitted: closing the focused window moves OS
-        //     focus to main (winit fires Focused(pane-0,false) + Focused(main,true)). ***
+        // Closing pane-0 moves OS focus to main (winit Focused(pane-0,false)+Focused(main,true)).
         core.note_os_focus(&win, false);
         core.note_os_focus(dock::MAIN_WINDOW_ID, true);
-        // delivery B -> main (NOW OS-focused): the gate passes -> UNDOCKS = the bounce.
-        core.key_press_for_window(dock::MAIN_WINDOW_ID, "Enter", false);
+        // delivery B -> main (NOW OS-focused, but NOT the press owner): R1073 gates it on
+        // the owner snapshot (pane-0), so it does NOT dispatch. (Pre-R1073 it passed
+        // R1071's live-focus gate and undocked = the bounce.)
+        let to_other = core.key_press_for_window(dock::MAIN_WINDOW_ID, "Enter", false);
+        core.note_key_state("Enter", false);
 
-        // The fix: one physical press = one net toggle -> pane 0 stays DOCKED (count 1).
-        // On R1071 today this is 2 (docked then undocked = the live bounce), so this
-        // FAILS until pinion closes the gap.
+        assert!(
+            !to_other,
+            "the re-delivery to main is gated by the press-owner snapshot (R1073 R27.4)"
+        );
         assert_eq!(
             count(&mut core),
             1,
-            "one press must net one toggle (docked); R1071 bounces to 2 (undocked)"
+            "one physical press = one net toggle (docked); no bounce"
         );
     }
 
