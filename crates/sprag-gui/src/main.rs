@@ -193,12 +193,15 @@ mod terminal;
 mod view;
 
 use pinion_a11y::AccessNode;
+use pinion_core::command::Command;
 use pinion_core::event::{LINE_HEIGHT_PX, WheelDelta};
-use pinion_core::external::External;
+use pinion_core::external::{External, IntrospectValue};
+use pinion_core::intent::Intent;
 use pinion_core::reactive::{Owner, Signal};
 use pinion_core::widget_core::ExtraExternal;
 use pinion_core::{CompositionEvent, Frame, Modifiers, Scene, WidgetCore};
 use pinion_shell::{SizeStrategy, WidgetView, WindowSpec, vello_renderer_impl};
+use pinion_widget_paint::dock::{DockPanelExternal, TEAR_OFF_EVENT};
 use pinion_widget_paint::splitter::SplitterExternal;
 use sprag_host::SpragPaneExternal;
 use std::rc::Rc;
@@ -314,6 +317,32 @@ impl WidgetCore for TerminalViewer {
         // the splitters, pointer-only (never focusable); the caller-owned
         // `ScrollState` authority (pinion R1032) needs no mirror.
         externals.extend((0..terminal.pane_count()).map(scrollbar::pane_scrollbar_external));
+        // Drag-to-dock / tear-off (pinion R1081/R1084 §5.51, P2): one R742
+        // `DockPanelExternal` per DOCKED pane, registered at the panel ROOT tag
+        // (`split::panel_id(i)` = the `view_dock_panel` root the `view_dock_surface`
+        // walker emits — NOT the `#header` composite; the R51.42 dispatch splits at `#`
+        // and routes the header press to the root-tagged external). Each shares the ONE
+        // reorganizer (`split::use_dock_reorganizer`, total over the `Option` topology
+        // per PR-29.1) so a pointer drop reorganizes `split::use_dock_topology`, and the
+        // ONE drop-preview (`split::use_drop_preview`) the dragged panel writes for the
+        // target panel's zone highlight (read in `view::view_main`). A drop onto another
+        // panel's zone docks (split / swap); an escape-drop (cursor left every panel)
+        // fires the `tear_off` intent → [`Self::update`] floats the pane via the same
+        // `dock::toggle_pane_floating` the Ctrl+Shift+Enter key path uses (P3 unified).
+        // `external_set_is_dynamic` re-runs this factory on dock/undock so the registered
+        // set tracks the live docked leaves (a floated pane has no leaf → no drag source).
+        let reorganizer = split::use_dock_reorganizer();
+        let drop_preview = split::use_drop_preview();
+        externals.extend(split::docked_pane_indices().into_iter().map(|i| {
+            ExtraExternal::new(
+                split::panel_id(i),
+                Box::new(
+                    DockPanelExternal::new(split::panel_id(i))
+                        .with_reorganizer(Rc::clone(&reorganizer))
+                        .with_drop_preview(Rc::clone(&drop_preview)),
+                ),
+            )
+        }));
         externals
     }
 
@@ -462,6 +491,33 @@ impl WidgetCore for TerminalViewer {
     }
 
     fn read_state(_scene: &Scene) {}
+
+    /// Reducer — pinion routes external-drained intents through `WidgetCore::update`
+    /// (R51.168 §5.23). The one intent sprag consumes is the dock-panel **tear-off**
+    /// ([`TEAR_OFF_EVENT`]): dragging a docked pane's header out past every drop target
+    /// ([`DockPanelExternal::drag_release`] escape-drop) emits it carrying the panel id.
+    /// Map the id back to its tile ([`split::pane_index_of_panel`]) and float the pane
+    /// via the SAME [`dock::toggle_pane_floating`] the `Ctrl+Shift+Enter` key path drives
+    /// — so the P2 drag tear-off and the P3 key undock share ONE window/topology SSOT.
+    /// (Drag-to-DOCK — a drop onto a panel zone — needs no reducer: the shared
+    /// [`DockReorganizer`](pinion_widget_paint::dock::DockReorganizer) mutates the
+    /// topology directly.) Runs in the root Owner scope; emits no [`Command`]s.
+    ///
+    /// The intent arrives **scoped** as `{external_tag}.{event}` — pinion prefixes an
+    /// external's emitted intent with that external's tag before routing to the reducer
+    /// (the editor's `viewport_btn.click` carries the same scoping). The
+    /// [`DockPanelExternal`] is registered at tag `terminal-{i}`, so its bare
+    /// [`TEAR_OFF_EVENT`] arrives as `terminal-{i}.tear_off`; matching the bare event
+    /// would never fire (the live bug this corrects). The payload carries the panel id.
+    fn update(_state: (), intent: &Intent) -> Vec<Command> {
+        if let IntrospectValue::Text(panel_id) = &intent.payload
+            && intent.tag_str() == format!("{panel_id}.{TEAR_OFF_EVENT}")
+            && let Some(i) = split::pane_index_of_panel(panel_id)
+        {
+            dock::toggle_pane_floating(i);
+        }
+        Vec::new()
+    }
 
     /// The windowless / RPC-snapshot fallback paints the **main** window (the
     /// docked panes). The live multi-window paint goes through
@@ -1062,5 +1118,130 @@ mod tests {
                 "pane {i} is floated, not in main"
             );
         }
+    }
+
+    /// Drag tear-off (P2 / pinion R1081 §5.51): the `tear_off` intent a
+    /// [`DockPanelExternal`] emits on an escape-drop (header dragged out past every
+    /// drop target), routed by the REAL shell through `WidgetCore::update`, floats the
+    /// named pane — the SAME `dock::toggle_pane_floating` window/topology mutation the
+    /// Ctrl+Shift+Enter key path drives (P2 drag tear-off + P3 key undock = one SSOT).
+    /// Driven via `ShellCore::dispatch_intent` (the reducer arc), so it pins the WIRING
+    /// (shell routes the external's intent to sprag's reducer), not just the reducer body.
+    #[test]
+    fn tear_off_intent_floats_the_named_pane() {
+        use std::borrow::Cow;
+        let mut core = ShellCore::<TerminalViewer>::new();
+        let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+        core.finalize_frame(scene);
+        assert_eq!(
+            core.root_owner()
+                .run(|| dock::use_windows_topology().get().len()),
+            1,
+            "boots main-only (both panes docked)"
+        );
+
+        // The escape-drop intent as the REDUCER actually receives it: pinion scopes the
+        // external's emitted TEAR_OFF_EVENT with the external's tag, so it arrives as
+        // `terminal-1.tear_off` (NOT the bare event). Constructing the bare tag here is
+        // exactly what let the first version of this guard pass while the live drag
+        // failed (R67 lesson: a synthetic input that doesn't match the live wire masks
+        // the bug). Build the scoped tag the shell delivers.
+        let intent = Intent {
+            tag: Cow::Owned(format!("{}.{}", split::panel_id(1), TEAR_OFF_EVENT)),
+            payload: IntrospectValue::Text(split::panel_id(1)),
+        };
+        core.dispatch_intent(&intent);
+
+        assert_eq!(
+            core.root_owner()
+                .run(|| dock::use_windows_topology().get().len()),
+            2,
+            "tear_off floated pane 1 into its own window"
+        );
+        assert_eq!(
+            core.root_owner().run(split::docked_pane_indices),
+            vec![0],
+            "the dock-tree collapsed pane 1's leaf (only pane 0 left docked)"
+        );
+    }
+
+    /// Drag-to-dock reorganize (P2 / pinion R1081 + PR-29.1): the shared
+    /// [`DockReorganizer`](pinion_widget_paint::dock::DockReorganizer) — wired to sprag's
+    /// `Signal<Option<DockTopology>>` SSOT (PR-29.1 made it total over `Option`) — applies
+    /// a reorganize gesture and mutates the dock-tree. A Center-zone drop (the Swap the
+    /// panel external builds) reorders the two boot panes; the topology stays `Some`
+    /// (reorganize preserves leaf count, never empties). Pins that sprag's collapse-to-
+    /// `None` topology drives the coordinator DIRECTLY — no second signal, no mirror.
+    #[test]
+    fn reorganizer_swaps_docked_panes_on_sprags_option_topology() {
+        use pinion_widget_paint::dock::DockReorganizeIntent;
+        let core = ShellCore::<TerminalViewer>::new();
+        core.root_owner().run(|| {
+            assert_eq!(
+                split::docked_pane_indices(),
+                vec![0, 1],
+                "boots [0, 1] docked"
+            );
+            split::use_dock_reorganizer()
+                .apply_intent(&DockReorganizeIntent::Swap {
+                    source: split::panel_id(0),
+                    target: split::panel_id(1),
+                })
+                .expect("swap applies on the Some topology");
+            assert_eq!(
+                split::docked_pane_indices(),
+                vec![1, 0],
+                "the reorganizer reordered sprag's Option-topology dock-tree",
+            );
+        });
+    }
+
+    /// Verifies **PINION-PR30 is consumed** (delivered pinion R1086, which added
+    /// `LayoutStyle.min_size` and set the `view_splitter` flex child's main-axis `min` to
+    /// `0`; this was an `#[ignore]` reproduce-the-gap guard pre-bump, the R64 pattern): a
+    /// drag-to-dock reorganize that produces a **vertical** (stacked) split keeps BOTH
+    /// panels within the window. sprag's terminal grid carries a large intrinsic main-axis
+    /// size (rows × cell); before R1086 pinion's `view_splitter` distributed children by
+    /// `flex_basis:0` with `flex_grow:ratio` but could not zero the flex child's main-axis
+    /// `min`, so taffy's `min:auto` (the content height) clamped the panel to its content
+    /// size and the second panel overflowed below the window (the user's "second panel
+    /// disappeared"). R1086's main-axis `min:0` lets the panel shrink to its ratio share.
+    /// Boot is always horizontal, so this only exercises via a Top/Bottom drop. (Headless-
+    /// faithful: drives the SAME shared reorganizer the live `DockPanelExternal::drag_release`
+    /// does, then paints through the real shell.)
+    #[test]
+    fn vertical_reorganize_keeps_both_panels_onscreen() {
+        use pinion_widget_paint::dock::{DockReorganizeIntent, DockSplitPosition};
+        use pinion_widget_paint::splitter::SplitterOrientation;
+        let mut core = ShellCore::<TerminalViewer>::new();
+        let boot = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+        core.finalize_frame(boot);
+        // Drag-dock pane 0 onto pane 1's BOTTOM edge → a vertical (stacked) split.
+        core.root_owner().run(|| {
+            split::use_dock_reorganizer()
+                .apply_intent(&DockReorganizeIntent::SplitInsert {
+                    source: split::panel_id(0),
+                    target: split::panel_id(1),
+                    orientation: SplitterOrientation::Vertical,
+                    position: DockSplitPosition::Second,
+                })
+                .expect("vertical split-insert applies on the Some topology");
+        });
+        let scene = core.compute_paint_scene_for_window(dock::MAIN_WINDOW_ID, WINDOW_W, WINDOW_H);
+        let r0 = scene
+            .rect_for_tag_absolute(&split::panel_id(0))
+            .expect("pane 0 panel painted");
+        let r1 = scene
+            .rect_for_tag_absolute(&split::panel_id(1))
+            .expect("pane 1 panel painted");
+        assert!(
+            r0.y + r0.h <= WINDOW_H && r1.y + r1.h <= WINDOW_H,
+            "both panels must fit the {WINDOW_H}px window after a vertical reorganize; \
+             got terminal-0=(y={},h={}) terminal-1=(y={},h={}) — PR-30 (no min:0)",
+            r0.y,
+            r0.h,
+            r1.y,
+            r1.h,
+        );
     }
 }

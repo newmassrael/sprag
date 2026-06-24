@@ -47,7 +47,9 @@
 
 use crate::terminal::{MAX_PANES, pane_count};
 use pinion_core::reactive::{Owner, Signal};
-use pinion_widget_paint::dock::{DockNode, DockSplitPosition, DockTopology, TopologyError};
+use pinion_widget_paint::dock::{
+    DockDropPreview, DockNode, DockReorganizer, DockSplitPosition, DockTopology, TopologyError,
+};
 use pinion_widget_paint::splitter::SplitterOrientation;
 use std::borrow::Cow;
 use std::rc::Rc;
@@ -121,6 +123,43 @@ pub(crate) fn use_dock_topology() -> Rc<Signal<Option<DockTopology>>> {
         .cache(TOPOLOGY_KEY, || {
             Signal::new(build_boot_topology(pane_count()))
         })
+}
+
+/// `Owner::cache` key for the shared drag-to-dock reorganize coordinator.
+const REORGANIZER_KEY: &str = "sprag_gui.dock_reorganizer";
+
+/// The ONE shared drag-to-dock reorganize coordinator (pinion R1081/PR-29, P2). Holds
+/// the dock-tree topology Signal — PR-29.1 (pinion R1084) made [`DockReorganizer`] total
+/// over `Option<DockTopology>`, so sprag's collapse-to-`None` topology
+/// ([`use_dock_topology`]) is accepted DIRECTLY (no second signal): a reorganize on an
+/// empty (`None`) or single-leaf dock is a no-op, which is the only correct result (no
+/// source/target to move). Cached (`Owner::cache`) so every per-panel
+/// [`DockPanelExternal`](pinion_widget_paint::dock::DockPanelExternal) drag source shares
+/// ONE coordinator → a pointer drop mints split ids from one `split_seq` counter. The
+/// topology dep is resolved BEFORE the cache factory (an `Owner::cache` factory must not
+/// nest another `cache` resolution).
+pub(crate) fn use_dock_reorganizer() -> Rc<DockReorganizer> {
+    let topology = use_dock_topology();
+    Owner::current()
+        .expect("use_dock_reorganizer() requires an active Owner scope")
+        .cache(REORGANIZER_KEY, move || DockReorganizer::new(topology))
+}
+
+/// `Owner::cache` key for the shared live drag-to-dock drop-preview.
+const DROP_PREVIEW_KEY: &str = "sprag_gui.dock_drop_preview";
+
+/// The ONE shared live drop-preview (pinion R1082/PR-29, P2): the dragged panel's
+/// [`DockPanelExternal::drag_to`](pinion_widget_paint::dock::DockPanelExternal) writes
+/// it on every cursor move (the target panel + its
+/// [`DockDropZone`](pinion_widget_paint::dock::DockDropZone) under the cursor),
+/// and [`view_main`](crate::view)'s `drop_zone` callback reads it to paint the target
+/// panel's zone affordance. `None` between drags. Cached (`Owner::cache`) so every panel
+/// external + the view fn reach the SAME Signal — a `drag_to` `set` repaints the
+/// highlight reactively.
+pub(crate) fn use_drop_preview() -> Rc<Signal<Option<DockDropPreview>>> {
+    Owner::current()
+        .expect("use_drop_preview() requires an active Owner scope")
+        .cache(DROP_PREVIEW_KEY, || Signal::new(None))
 }
 
 /// The tile indices of the panes currently DOCKED (the dock-tree's leaves, in

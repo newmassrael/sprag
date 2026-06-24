@@ -6,7 +6,7 @@
 use crate::ROOT_TAG;
 use crate::dock::pane_window_index;
 use crate::input::use_preedit;
-use crate::split::{pane_index_of_panel, use_dock_topology, use_split_ratio};
+use crate::split::{pane_index_of_panel, use_dock_topology, use_drop_preview, use_split_ratio};
 use crate::terminal::{TerminalView, pane_tag, use_terminal};
 use pinion_core::scene::ContainerNode;
 use pinion_core::style::{BoxStyle, LayoutStyle, Size, SizeValue};
@@ -53,6 +53,11 @@ pub(crate) fn view_for_window(window_id: &str, _state: (), _frame: &Frame) -> Sc
 /// and `None` (every pane floated) paints an empty surface. A floated pane is
 /// painted alone in its own undock window ([`view_for_window`]), never here.
 fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
+    // The live drag-to-dock drop-preview (P2): read once here so the closure below
+    // captures one snapshot (not a per-leaf re-read), and so the view subscribes to it —
+    // a dragged panel's `DockPanelExternal::drag_to` `set` repaints the target's zone.
+    // `None` between drags (no panel highlights).
+    let drop_preview = use_drop_preview().get();
     let content = match use_dock_topology().get() {
         None => Scene::Container(ContainerNode::new(Vec::new())),
         Some(topo) => view_dock_surface(
@@ -73,6 +78,16 @@ fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
                 // P1: no mid-drag tint (the splitter still drags fine). P2 reads
                 // SplitterExternal::is_dragging() here for the M3 dragged overlay.
                 dragging: false,
+            },
+            // drop-zone affordance per panel (pinion R1080/R1082 `view_dock_surface`
+            // arg): the panel currently under a drag (the live `DockDropPreview` target)
+            // paints its zone highlight; every other panel returns None. The dragged
+            // panel's `DockPanelExternal::drag_to` writes `drop_preview` each cursor move.
+            |panel_id| {
+                drop_preview
+                    .as_ref()
+                    .filter(|p| p.target == panel_id)
+                    .map(|p| p.zone)
             },
             theme,
         ),
