@@ -2932,6 +2932,38 @@
         "R67 (next) bumps pinion to consume PINION-PR28 (the dock-flap fix) and is verified through this same log."
       ]
     },
+    "Round 67": {
+      "decision_summary": "Round 67: bumped pinion d9b9a5a4 -> e2cb06f2 (R1078.1) to consume PINION-PR28, fixing the live dock-flap (one held Ctrl+Shift+Enter flapped the pane dock/undock up to 24 times). Root cause (corrected from a wrong first hypothesis): the dock toggle moves OS focus, winit emits synthetic focus-transition key events AND resets its own repeat detector on the focus change, so real auto-repeat presses after the bounce came through as is_synthetic=false repeat=false and re-fired the toggle. Fixed in pinion in two steps (R1076 exclude synthetic from dispatch; R1078 derive the repeat flag from the press-owner, not winit's event.repeat). sprag code unchanged; verified via the R66 SPRAG_GUI_LOG trace: a 2-3s hold now logs exactly one toggle (was four).",
+      "changes_bullets": [
+        "Cargo.toml: bumped the 7 pinion-* revs d9b9a5a4 (R65) -> e2cb06f2 (pinion R1078.1); SCE 3078f8bf / vello 0.9 unchanged; Cargo.lock regenerated. Consumes PINION-PR28 (the live dock-flap: one held Ctrl+Shift+Enter flapped the focused pane dock/undock 24 times). The fix landed in two pinion steps: R1076 made KeyboardInput consult winit's is_synthetic and exclude synthetic focus-transition key events from dispatch + the press-owner lifecycle (necessary -- removed the synthetic-press re-trigger -- but INSUFFICIENT on its own); R1078/R1078.1 then derived the dispatch repeat flag from pinion's own press-owner state instead of winit's event.repeat, because winit resets its repeat detector on every focus change, so a real auto-repeat press arriving after the toggle's own focus bounce was mis-flagged repeat=false and slipped past the toggle-class repeat-drop.",
+        "No sprag code change: sprag's focus-follow + dock toggle were correct; the bug was entirely in how the held-key dispatch was gated upstream."
+      ],
+      "verification_bullets": [
+        "cargo build -p sprag-gui clean on R1078.1; 54 sprag-gui tests + full cargo test --workspace green; clippy -p sprag-gui --all-targets clean; rustfmt clean; cargo doc -D warnings clean. Live verified through the R66 SPRAG_GUI_LOG trace on a real winit X11 hold: BEFORE (R1076) a 2-3s hold logged 4 dock toggles (still flapping); AFTER (R1078.1) the same hold logs exactly ONE toggle (undock pane 1: windows 1 -> 2) and nothing further -- the auto-repeat presses are now gated upstream and never reach sprag. The flap is gone."
+      ],
+      "impact_refs": [
+        "4"
+      ],
+      "carry_forward_bullets": [
+        "PINION-PR28 (focus-change synthetic key events + focus-reset repeat flag flapping the dock chord) DELIVERED (pinion R1076 is_synthetic gate + R1078 repeat-from-press-owner) and CONSUMED (sprag R67). No open pinion blockers. The PINION-PR28 doc + REQUIREMENTS 18 record the full root cause incl. the corrected diagnosis (the first hypothesis -- X11 non-detectable autorepeat -- was wrong; winit enables detectable autorepeat, the real cause was synthetic focus events + the focus-reset repeat flag).",
+        "P2 (drag-to-dock + preview) / P3 (handle tear-off) of the dock migration not started. Lesson: a held shortcut whose dispatch moves OS focus needs its repeat signal derived from state that survives focus transitions, not the platform per-event repeat flag."
+      ],
+      "publishable_decision_summary": "Round 67: bumped pinion d9b9a5a4 -> e2cb06f2 (R1078.1) to consume PINION-PR28, fixing the live dock-flap (one held Ctrl+Shift+Enter flapped the pane dock/undock up to 24 times). Root cause (corrected from a wrong first hypothesis): the dock toggle moves OS focus, winit emits synthetic focus-transition key events AND resets its own repeat detector on the focus change, so real auto-repeat presses after the bounce came through as is_synthetic=false repeat=false and re-fired the toggle. Fixed in pinion in two steps (R1076 exclude synthetic from dispatch; R1078 derive the repeat flag from the press-owner, not winit's event.repeat). sprag code unchanged; verified via the R66 SPRAG_GUI_LOG trace: a 2-3s hold now logs exactly one toggle (was four).",
+      "publishable_changes_bullets": [
+        "Cargo.toml: bumped the 7 pinion-* revs d9b9a5a4 (R65) -> e2cb06f2 (pinion R1078.1); SCE 3078f8bf / vello 0.9 unchanged; Cargo.lock regenerated. Consumes PINION-PR28 (the live dock-flap: one held Ctrl+Shift+Enter flapped the focused pane dock/undock 24 times). The fix landed in two pinion steps: R1076 made KeyboardInput consult winit's is_synthetic and exclude synthetic focus-transition key events from dispatch + the press-owner lifecycle (necessary -- removed the synthetic-press re-trigger -- but INSUFFICIENT on its own); R1078/R1078.1 then derived the dispatch repeat flag from pinion's own press-owner state instead of winit's event.repeat, because winit resets its repeat detector on every focus change, so a real auto-repeat press arriving after the toggle's own focus bounce was mis-flagged repeat=false and slipped past the toggle-class repeat-drop.",
+        "No sprag code change: sprag's focus-follow + dock toggle were correct; the bug was entirely in how the held-key dispatch was gated upstream."
+      ],
+      "publishable_verification_bullets": [
+        "cargo build -p sprag-gui clean on R1078.1; 54 sprag-gui tests + full cargo test --workspace green; clippy -p sprag-gui --all-targets clean; rustfmt clean; cargo doc -D warnings clean. Live verified through the R66 SPRAG_GUI_LOG trace on a real winit X11 hold: BEFORE (R1076) a 2-3s hold logged 4 dock toggles (still flapping); AFTER (R1078.1) the same hold logs exactly ONE toggle (undock pane 1: windows 1 -> 2) and nothing further -- the auto-repeat presses are now gated upstream and never reach sprag. The flap is gone."
+      ],
+      "publishable_impact_refs": [
+        "4"
+      ],
+      "publishable_carry_forward_bullets": [
+        "PINION-PR28 (focus-change synthetic key events + focus-reset repeat flag flapping the dock chord) DELIVERED (pinion R1076 is_synthetic gate + R1078 repeat-from-press-owner) and CONSUMED (sprag R67). No open pinion blockers. The PINION-PR28 doc + REQUIREMENTS 18 record the full root cause incl. the corrected diagnosis (the first hypothesis -- X11 non-detectable autorepeat -- was wrong; winit enables detectable autorepeat, the real cause was synthetic focus events + the focus-reset repeat flag).",
+        "P2 (drag-to-dock + preview) / P3 (handle tear-off) of the dock migration not started. Lesson: a held shortcut whose dispatch moves OS focus needs its repeat signal derived from state that survives focus transitions, not the platform per-event repeat flag."
+      ]
+    },
     "Round 7": {
       "decision_summary": "Headless multiplexing: a pane registry + lifecycle (spawn/close/resize) + per-pane I/O addressing exposed through a workspace-control External; geometric tiling deferred to the GUI round as a rendering concern.",
       "changes_bullets": [
