@@ -2900,6 +2900,38 @@
         "P2 (drag-to-dock + preview) and P3 (handle tear-off) of the dock-and-drop migration are NOT started. P2 MUST move split::dock_pane's index-relative re-insertion to identity-relative (drop-zone driven) once panes can reorder; also consider making the docked set a reactive projection of the windows-signal instead of co-mutating both at the toggle site."
       ]
     },
+    "Round 66": {
+      "decision_summary": "Round 66: added a standing SPRAG_GUI_LOG-gated dispatch trace (sprag-gui/src/diag.rs) for the input + dock path, after the user pointed out that re-instrumenting with temporary DIAG every debugging session is an anti-pattern -- observability for the layout dispatch should be always-available. Three typed events (key_in / chord / dock_toggle) make the per-dispatch fan-out of one physical key press self-describing; off by default, no new deps. This is the facility that captured the live dock-flap as data and then verified its fix.",
+      "changes_bullets": [
+        "crates/sprag-gui/src/diag.rs (new): a SPRAG_GUI_LOG-gated structured trace for the input + dock dispatch path, the standing observability the layout path lacked. Three typed events: key_in (a key dispatch entered the binding, one line per apply_key* call), chord (route_key's decision for a recognised window chord: act vs drop-repeat), dock_toggle (the topology mutated, with window count before/after). Off by default (one cached atomic load per event when disabled), no new deps, process-relative ms stamps so one physical press fanning out to N dispatches reads at a glance.",
+        "crates/sprag-gui/src/main.rs: mod diag + diag::key_in at apply_key and apply_key_repeat. crates/sprag-gui/src/input.rs: WindowChord::label() + diag::chord at route_key's act / drop-repeat sites. crates/sprag-gui/src/dock.rs: diag::dock_toggle in toggle_pane_floating with the before/after window counts."
+      ],
+      "verification_bullets": [
+        "54 sprag-gui tests pass; cargo clippy -p sprag-gui --all-targets clean; rustfmt clean; cargo doc -D warnings clean; pre-commit hook (validate-workspace + rustfmt + clippy --workspace) passed on commit a376809. Proven in use: SPRAG_GUI_LOG=1 captured the live \"one held Ctrl+Shift+Enter -> 24 dock toggles\" flap as data (24 ToggleDock act, 0 repeat=true, repeat=false on all) which pinned the root cause to winit synthetic focus-change key events + a focus-reset repeat flag (PINION-PR28), and then confirmed the fix (hold -> exactly 1 toggle) on the same log."
+      ],
+      "impact_refs": [
+        "4"
+      ],
+      "carry_forward_bullets": [
+        "This observability replaces ad-hoc temporary DIAG instrumentation: input/dock misbehaviour is now read straight from SPRAG_GUI_LOG=1, no source edits per session. Standing facility, kept permanently.",
+        "R67 (next) bumps pinion to consume PINION-PR28 (the dock-flap fix) and is verified through this same log."
+      ],
+      "publishable_decision_summary": "Round 66: added a standing SPRAG_GUI_LOG-gated dispatch trace (sprag-gui/src/diag.rs) for the input + dock path, after the user pointed out that re-instrumenting with temporary DIAG every debugging session is an anti-pattern -- observability for the layout dispatch should be always-available. Three typed events (key_in / chord / dock_toggle) make the per-dispatch fan-out of one physical key press self-describing; off by default, no new deps. This is the facility that captured the live dock-flap as data and then verified its fix.",
+      "publishable_changes_bullets": [
+        "crates/sprag-gui/src/diag.rs (new): a SPRAG_GUI_LOG-gated structured trace for the input + dock dispatch path, the standing observability the layout path lacked. Three typed events: key_in (a key dispatch entered the binding, one line per apply_key* call), chord (route_key's decision for a recognised window chord: act vs drop-repeat), dock_toggle (the topology mutated, with window count before/after). Off by default (one cached atomic load per event when disabled), no new deps, process-relative ms stamps so one physical press fanning out to N dispatches reads at a glance.",
+        "crates/sprag-gui/src/main.rs: mod diag + diag::key_in at apply_key and apply_key_repeat. crates/sprag-gui/src/input.rs: WindowChord::label() + diag::chord at route_key's act / drop-repeat sites. crates/sprag-gui/src/dock.rs: diag::dock_toggle in toggle_pane_floating with the before/after window counts."
+      ],
+      "publishable_verification_bullets": [
+        "54 sprag-gui tests pass; cargo clippy -p sprag-gui --all-targets clean; rustfmt clean; cargo doc -D warnings clean; pre-commit hook (validate-workspace + rustfmt + clippy --workspace) passed on commit a376809. Proven in use: SPRAG_GUI_LOG=1 captured the live \"one held Ctrl+Shift+Enter -> 24 dock toggles\" flap as data (24 ToggleDock act, 0 repeat=true, repeat=false on all) which pinned the root cause to winit synthetic focus-change key events + a focus-reset repeat flag (PINION-PR28), and then confirmed the fix (hold -> exactly 1 toggle) on the same log."
+      ],
+      "publishable_impact_refs": [
+        "4"
+      ],
+      "publishable_carry_forward_bullets": [
+        "This observability replaces ad-hoc temporary DIAG instrumentation: input/dock misbehaviour is now read straight from SPRAG_GUI_LOG=1, no source edits per session. Standing facility, kept permanently.",
+        "R67 (next) bumps pinion to consume PINION-PR28 (the dock-flap fix) and is verified through this same log."
+      ]
+    },
     "Round 7": {
       "decision_summary": "Headless multiplexing: a pane registry + lifecycle (spawn/close/resize) + per-pane I/O addressing exposed through a workspace-control External; geometric tiling deferred to the GUI round as a rendering concern.",
       "changes_bullets": [
