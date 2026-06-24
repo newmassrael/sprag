@@ -183,6 +183,7 @@
 //! bottom) — a v1 limit.
 
 mod a11y;
+mod diag;
 mod dock;
 mod input;
 mod reflow;
@@ -340,6 +341,14 @@ impl WidgetCore for TerminalViewer {
         key: &str,
         modifiers: Modifiers,
     ) -> bool {
+        diag::key_in(
+            "apply_key",
+            key,
+            modifiers.ctrl,
+            modifiers.shift,
+            false,
+            focused,
+        );
         route_key(scene, focused, key, modifiers, false)
     }
 
@@ -357,6 +366,14 @@ impl WidgetCore for TerminalViewer {
         modifiers: Modifiers,
         repeat: bool,
     ) -> bool {
+        diag::key_in(
+            "apply_key_repeat",
+            key,
+            modifiers.ctrl,
+            modifiers.shift,
+            repeat,
+            focused,
+        );
         route_key(scene, focused, key, modifiers, repeat)
     }
 

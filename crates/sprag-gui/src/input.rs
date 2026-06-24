@@ -99,6 +99,17 @@ enum WindowChord {
     ToggleDock,
 }
 
+impl WindowChord {
+    /// A stable, allocation-free name for the diagnostic trace ([`crate::diag`]).
+    fn label(&self) -> &'static str {
+        match self {
+            Self::CycleFocus => "CycleFocus",
+            Self::Scroll => "Scroll",
+            Self::ToggleDock => "ToggleDock",
+        }
+    }
+}
+
 /// Recognize a reserved window chord from `key` + `modifiers`, or `None` for a
 /// normal keystroke (which injects). Pure — the chord-decision is separated from
 /// the side-effecting inject path and unit-tested directly. Precedence matches the
@@ -154,8 +165,10 @@ pub(crate) fn route_key(
         // held `Ctrl+Shift+Enter` dock-then-undocks in the multi-window state. Scrollback
         // is continuous, so a held `Shift+PageUp` keeps scrolling.
         if repeat && !matches!(chord, WindowChord::Scroll) {
+            crate::diag::chord(chord.label(), "drop-repeat", active);
             return false;
         }
+        crate::diag::chord(chord.label(), "act", active);
         match chord {
             WindowChord::CycleFocus => cycle_focus(active, key),
             WindowChord::Scroll => scroll_view(active, key),

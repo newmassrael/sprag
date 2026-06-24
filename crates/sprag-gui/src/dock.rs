@@ -135,10 +135,13 @@ pub(crate) fn use_windows_topology() -> Rc<Signal<Vec<WindowSpec>>> {
 pub(crate) fn toggle_pane_floating(i: usize) {
     let signal = use_windows_topology();
     let mut windows = signal.get();
+    let before = windows.len();
     let target = pane_window_id(i);
+    let undock;
     if let Some(idx) = windows.iter().position(|w| w.id == target) {
         windows.remove(idx); // dock back
         crate::split::dock_pane(i); // re-insert the leaf into the split-tree
+        undock = false;
     } else {
         let tv = use_terminal();
         let (cols, rows) = tv.pane(i).session().dimensions();
@@ -159,8 +162,11 @@ pub(crate) fn toggle_pane_floating(i: usize) {
             },
         ));
         crate::split::float_pane(i); // remove the leaf so the rest reclaim its space
+        undock = true;
     }
+    let after = windows.len();
     signal.set(windows);
+    crate::diag::dock_toggle(i, undock, before, after);
 }
 
 #[cfg(test)]
