@@ -319,8 +319,8 @@ impl WidgetCore for TerminalViewer {
         // the splitters, pointer-only (never focusable); the caller-owned
         // `ScrollState` authority (pinion R1032) needs no mirror.
         externals.extend((0..terminal.pane_count()).map(scrollbar::pane_scrollbar_external));
-        // Drag-to-dock / tear-off (pinion R1081/R1084 §5.51, P2): one R742
-        // `DockPanelExternal` per DOCKED pane, registered at the panel ROOT tag
+        // Drag-to-dock / tear-off (pinion R1081/R1084/R1094 §5.51, P2/PR-31): one R742
+        // `DockPanelExternal` per pane, registered at the panel ROOT tag
         // (`split::panel_id(i)` = the `view_dock_panel` root the `view_dock_surface`
         // walker emits — NOT the `#header` composite; the R51.42 dispatch splits at `#`
         // and routes the header press to the root-tagged external). Each shares the ONE
@@ -329,13 +329,30 @@ impl WidgetCore for TerminalViewer {
         // ONE drop-preview (`split::use_drop_preview`) the dragged panel writes for the
         // target panel's zone highlight (read in `view::view_main`). A drop onto another
         // panel's zone docks (split / swap); an escape-drop (cursor left every panel)
-        // fires the `tear_off` intent → [`Self::update`] floats the pane via the same
-        // `dock::toggle_pane_floating` the Ctrl+Shift+Enter key path uses (P3 unified).
-        // `external_set_is_dynamic` re-runs this factory on dock/undock so the registered
-        // set tracks the live docked leaves (a floated pane has no leaf → no drag source).
+        // emits the live `tear_off_follow` per move (→ `dock::float_pane_at`) and, when
+        // the cursor returns over a dock zone before release, `tear_off_redock`
+        // (→ `dock::redock_pane`); the no-cursor fallback fires the legacy `tear_off`
+        // toggle (→ `dock::toggle_pane_floating`, the same the Ctrl+Shift+Enter key path
+        // drives, P3 unified).
+        //
+        // Registered for ALL panes, NOT just the docked ones — the symmetric model
+        // pinion's reference consumer (hello-dock-panels: "one DockPanelExternal per
+        // panel ... docked-→floating and floating-→docked share the same external") uses,
+        // and the fix for the R69 live gap. `external_set_is_dynamic` re-runs this factory
+        // on every dock/undock; a tear-off is ONE continuous press captured by the source
+        // pane's external, and the very first escaped move floats that pane (a topology
+        // change → reconcile → this factory re-runs MID-DRAG). Filtering to the docked set
+        // would DROP the in-progress drag's external on that reconcile, killing the gesture
+        // after one frame (follow stops; redock never reached). Registering every pane
+        // keeps the source external alive across the float (R689 preserve-by-tag preserves
+        // its drag state), so the continuous gesture survives: escape → follow, return over
+        // a dock zone → redock, all resolved by the captured main-window router. A pane that
+        // is settled-floating simply has no painted header in its own window today, so its
+        // external is dormant until that pane re-docks (re-grabbing a settled floating
+        // window + cross-window drag-back is the per-window-router-bound P4 follow-up).
         let reorganizer = split::use_dock_reorganizer();
         let drop_preview = split::use_drop_preview();
-        externals.extend(split::docked_pane_indices().into_iter().map(|i| {
+        externals.extend((0..terminal.pane_count()).map(|i| {
             ExtraExternal::new(
                 split::panel_id(i),
                 Box::new(
@@ -1327,6 +1344,50 @@ mod tests {
             vec![0, 1],
             "the docked set is unchanged"
         );
+    }
+
+    /// R70 regression guard for the R69 live gap. A tear-off is ONE continuous press
+    /// captured by the source pane's [`DockPanelExternal`]; the first escaped move floats
+    /// that pane, a topology change that makes `external_set_is_dynamic` re-run
+    /// [`create_extra_externals`](TerminalViewer::create_extra_externals) MID-DRAG.
+    /// Registering only the docked panes (the R69 bug) would DROP the floated pane's
+    /// external — the one owning the in-progress drag — so the follow stopped after one
+    /// frame and redock was never reached. Registering every pane keeps it, so the
+    /// captured gesture survives the float reconcile (escape → follow, return-over-zone →
+    /// redock). This guards the registration invariant directly: the continuous
+    /// gesture-with-reconcile itself can't be synthesized headlessly (an RPC batch
+    /// delivers every move before any reconcile — exactly what masked this in R69).
+    #[test]
+    fn dock_panel_external_survives_the_float_reconcile() {
+        let core = ShellCore::<TerminalViewer>::new();
+        core.root_owner().run(|| {
+            let panel_tags = || {
+                <TerminalViewer as WidgetCore>::create_extra_externals()
+                    .into_iter()
+                    .map(|e| e.tag.into_owned())
+                    .collect::<Vec<String>>()
+            };
+            let n = use_terminal().pane_count();
+            // Boot (all docked): a DockPanelExternal at every pane's panel_id.
+            let booted = panel_tags();
+            for i in 0..n {
+                assert!(
+                    booted.contains(&split::panel_id(i)),
+                    "pane {i} has a dock-panel external while docked"
+                );
+            }
+            // Float pane 1, then re-run the factory exactly as the reconcile does.
+            dock::toggle_pane_floating(1);
+            let after = panel_tags();
+            assert!(
+                after.contains(&split::panel_id(1)),
+                "the floated pane KEEPS its external (the in-progress drag survives the reconcile)"
+            );
+            assert!(
+                after.contains(&split::panel_id(0)),
+                "the still-docked pane keeps its external too"
+            );
+        });
     }
 
     /// Drag-to-dock reorganize (P2 / pinion R1081 + PR-29.1): the shared
