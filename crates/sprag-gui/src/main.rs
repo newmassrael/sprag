@@ -201,7 +201,9 @@ use pinion_core::reactive::{Owner, Signal};
 use pinion_core::widget_core::ExtraExternal;
 use pinion_core::{CompositionEvent, Frame, Modifiers, Scene, WidgetCore};
 use pinion_shell::{SizeStrategy, WidgetView, WindowSpec, vello_renderer_impl};
-use pinion_widget_paint::dock::{DockPanelExternal, TEAR_OFF_EVENT};
+use pinion_widget_paint::dock::{
+    DockPanelExternal, TEAR_OFF_EVENT, TEAR_OFF_FOLLOW_EVENT, TEAR_OFF_REDOCK_EVENT,
+};
 use pinion_widget_paint::splitter::SplitterExternal;
 use sprag_host::SpragPaneExternal;
 use std::rc::Rc;
@@ -493,28 +495,61 @@ impl WidgetCore for TerminalViewer {
     fn read_state(_scene: &Scene) {}
 
     /// Reducer — pinion routes external-drained intents through `WidgetCore::update`
-    /// (R51.168 §5.23). The one intent sprag consumes is the dock-panel **tear-off**
-    /// ([`TEAR_OFF_EVENT`]): dragging a docked pane's header out past every drop target
-    /// ([`DockPanelExternal::drag_release`] escape-drop) emits it carrying the panel id.
-    /// Map the id back to its tile ([`split::pane_index_of_panel`]) and float the pane
-    /// via the SAME [`dock::toggle_pane_floating`] the `Ctrl+Shift+Enter` key path drives
-    /// — so the P2 drag tear-off and the P3 key undock share ONE window/topology SSOT.
+    /// (R51.168 §5.23). sprag consumes the dock-panel **tear-off** family a
+    /// [`DockPanelExternal`] emits while a header is dragged, mapping the panel id
+    /// back to its tile ([`split::pane_index_of_panel`]) and driving the [`dock`]
+    /// window/topology SSOT — so the drag tear-off and the `Ctrl+Shift+Enter` key
+    /// undock share one authority. Three intents (pinion R1094 / PINION-PR31):
+    ///
+    /// * [`TEAR_OFF_FOLLOW_EVENT`] (`Json{panel,x,y}`, the main-window-logical
+    ///   cursor) — fired on every escaped drag move + the escape-release: ensure the
+    ///   pane floats and track the cursor via [`dock::float_pane_at`] (non-toggling,
+    ///   so the per-move re-emit only repositions). This is the live cursor-following
+    ///   tear-off (browser-tab style).
+    /// * [`TEAR_OFF_REDOCK_EVENT`] (`Text(panel_id)`) — fired on a redock-over-zone
+    ///   and on a snap-back restore: dock the pane back via [`dock::redock_pane`]
+    ///   (idempotent no-op if it never floated).
+    /// * [`TEAR_OFF_EVENT`] (`Text(panel_id)`) — the legacy release toggle pinion
+    ///   fires ONLY when no drag cursor was forwarded (pre-R1093 / unit paths): the
+    ///   discrete [`dock::toggle_pane_floating`], the same the key path drives.
+    ///
     /// (Drag-to-DOCK — a drop onto a panel zone — needs no reducer: the shared
     /// [`DockReorganizer`](pinion_widget_paint::dock::DockReorganizer) mutates the
     /// topology directly.) Runs in the root Owner scope; emits no [`Command`]s.
     ///
-    /// The intent arrives **scoped** as `{external_tag}.{event}` — pinion prefixes an
+    /// Each intent arrives **scoped** as `{external_tag}.{event}` — pinion prefixes an
     /// external's emitted intent with that external's tag before routing to the reducer
     /// (the editor's `viewport_btn.click` carries the same scoping). The
-    /// [`DockPanelExternal`] is registered at tag `terminal-{i}`, so its bare
+    /// [`DockPanelExternal`] is registered at tag `terminal-{i}`, so e.g. its bare
     /// [`TEAR_OFF_EVENT`] arrives as `terminal-{i}.tear_off`; matching the bare event
-    /// would never fire (the live bug this corrects). The payload carries the panel id.
+    /// would never fire (the live bug R68 corrected) — every arm matches the scoped tag.
     fn update(_state: (), intent: &Intent) -> Vec<Command> {
-        if let IntrospectValue::Text(panel_id) = &intent.payload
-            && intent.tag_str() == format!("{panel_id}.{TEAR_OFF_EVENT}")
-            && let Some(i) = split::pane_index_of_panel(panel_id)
-        {
-            dock::toggle_pane_floating(i);
+        let tag = intent.tag_str();
+        match &intent.payload {
+            // Live cursor-following tear-off (R1094): the JSON carries the panel id
+            // and the main-window-logical cursor. Non-toggling ensure+reposition.
+            IntrospectValue::Json(v) => {
+                if let (Some(panel), Some(x), Some(y)) = (
+                    v.get("panel").and_then(serde_json::Value::as_str),
+                    v.get("x").and_then(serde_json::Value::as_f64),
+                    v.get("y").and_then(serde_json::Value::as_f64),
+                ) && tag == format!("{panel}.{TEAR_OFF_FOLLOW_EVENT}")
+                    && let Some(i) = split::pane_index_of_panel(panel)
+                {
+                    dock::float_pane_at(i, (x, y));
+                }
+            }
+            // The Text-payload tear-off intents (legacy toggle + redock/restore).
+            IntrospectValue::Text(panel_id) => {
+                if let Some(i) = split::pane_index_of_panel(panel_id) {
+                    if tag == format!("{panel_id}.{TEAR_OFF_EVENT}") {
+                        dock::toggle_pane_floating(i);
+                    } else if tag == format!("{panel_id}.{TEAR_OFF_REDOCK_EVENT}") {
+                        dock::redock_pane(i);
+                    }
+                }
+            }
+            _ => {}
         }
         Vec::new()
     }
@@ -1162,6 +1197,135 @@ mod tests {
             core.root_owner().run(split::docked_pane_indices),
             vec![0],
             "the dock-tree collapsed pane 1's leaf (only pane 0 left docked)"
+        );
+    }
+
+    /// Live cursor-following tear-off (R1094 / PINION-PR31): the `tear_off_follow`
+    /// intent a [`DockPanelExternal`] emits on every escaped drag move, routed by the
+    /// REAL shell through `WidgetCore::update`, floats the named pane AND positions
+    /// its window under the cursor — then a second move REPOSITIONS the same window
+    /// rather than flipping it back (non-toggling, the R1071-R1078 lesson on the sprag
+    /// side). Built with the LIVE scoped tag + `Json{panel,x,y}` payload the shell
+    /// actually delivers (the R67/R68 lesson: a synthetic input that doesn't match the
+    /// live wire masks the bug), and asserts the rendered topology AND the declared
+    /// window position, not just that an intent was consumed.
+    #[test]
+    fn tear_off_follow_intent_floats_then_repositions_the_pane() {
+        use std::borrow::Cow;
+        let mut core = ShellCore::<TerminalViewer>::new();
+        let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+        core.finalize_frame(scene);
+
+        // The position read back from the topology for pane 1's floating window.
+        let pane1_pos = |core: &ShellCore<TerminalViewer>| {
+            core.root_owner().run(|| {
+                dock::use_windows_topology()
+                    .get()
+                    .iter()
+                    .find(|w| w.id == dock::pane_window_id(1))
+                    .and_then(|w| w.position)
+            })
+        };
+        let follow = |x: f64, y: f64| Intent {
+            tag: Cow::Owned(format!("{}.{}", split::panel_id(1), TEAR_OFF_FOLLOW_EVENT)),
+            payload: IntrospectValue::Json(serde_json::json!({
+                "panel": split::panel_id(1), "x": x, "y": y,
+            })),
+        };
+
+        // First escaped move: pane 1 floats and its window opens under the cursor.
+        // The boot main window is WM-placed (position None), so the desktop
+        // conversion falls back to the (0, 0) origin → the cursor IS the position.
+        core.dispatch_intent(&follow(300.0, 200.0));
+        assert_eq!(
+            core.root_owner()
+                .run(|| dock::use_windows_topology().get().len()),
+            2,
+            "the first escaped follow floated pane 1 into its own window"
+        );
+        assert_eq!(
+            core.root_owner().run(split::docked_pane_indices),
+            vec![0],
+            "the dock-tree collapsed pane 1's leaf"
+        );
+        assert_eq!(
+            pane1_pos(&core),
+            Some((300, 200)),
+            "the floating window opened at the desktop-converted cursor"
+        );
+
+        // A second move repositions the SAME window — non-toggling: it does not
+        // dock the pane back and does not spawn a second window.
+        core.dispatch_intent(&follow(350.0, 260.0));
+        assert_eq!(
+            core.root_owner()
+                .run(|| dock::use_windows_topology().get().len()),
+            2,
+            "the follow re-emit repositions, never duplicates or flips back"
+        );
+        assert_eq!(
+            pane1_pos(&core),
+            Some((350, 260)),
+            "the window tracked the cursor to its new position"
+        );
+    }
+
+    /// Live redock / restore (R1094 / PINION-PR31): after a live-follow floated pane
+    /// 1, the `tear_off_redock` intent (emitted on a redock-over-zone or a snap-back)
+    /// docks it back through `WidgetCore::update` — the window is dropped and the leaf
+    /// re-installed. Then a SECOND redock (the pane already docked) is a harmless
+    /// no-op (R1094 emits a restore for a snap-back too). Live scoped tag + `Text`
+    /// payload, asserting the topology both authorities expose.
+    #[test]
+    fn tear_off_redock_intent_docks_the_floated_pane() {
+        use std::borrow::Cow;
+        let mut core = ShellCore::<TerminalViewer>::new();
+        let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+        core.finalize_frame(scene);
+
+        // Float pane 1 via a live-follow move (the gesture redock undoes).
+        core.dispatch_intent(&Intent {
+            tag: Cow::Owned(format!("{}.{}", split::panel_id(1), TEAR_OFF_FOLLOW_EVENT)),
+            payload: IntrospectValue::Json(serde_json::json!({
+                "panel": split::panel_id(1), "x": 120.0, "y": 90.0,
+            })),
+        });
+        assert_eq!(
+            core.root_owner()
+                .run(|| dock::use_windows_topology().get().len()),
+            2,
+            "pane 1 floated (precondition)"
+        );
+
+        let redock = Intent {
+            tag: Cow::Owned(format!("{}.{}", split::panel_id(1), TEAR_OFF_REDOCK_EVENT)),
+            payload: IntrospectValue::Text(split::panel_id(1)),
+        };
+        core.dispatch_intent(&redock);
+        assert_eq!(
+            core.root_owner()
+                .run(|| dock::use_windows_topology().get().len()),
+            1,
+            "redock dropped pane 1's window"
+        );
+        assert_eq!(
+            core.root_owner().run(split::docked_pane_indices),
+            vec![0, 1],
+            "redock re-installed pane 1's leaf in index order"
+        );
+
+        // Idempotent: a redock of an already-docked pane changes nothing.
+        core.dispatch_intent(&redock);
+        assert_eq!(
+            core.root_owner()
+                .run(|| dock::use_windows_topology().get().len()),
+            1,
+            "a redock of a docked pane is a no-op"
+        );
+        assert_eq!(
+            core.root_owner().run(split::docked_pane_indices),
+            vec![0, 1],
+            "the docked set is unchanged"
         );
     }
 
