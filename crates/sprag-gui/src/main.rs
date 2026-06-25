@@ -350,6 +350,12 @@ impl WidgetCore for TerminalViewer {
         // is settled-floating simply has no painted header in its own window today, so its
         // external is dormant until that pane re-docks (re-grabbing a settled floating
         // window + cross-window drag-back is the per-window-router-bound P4 follow-up).
+        // WHY dormant is safe (not a phantom hit-target): pinion builds the external set
+        // from this factory into the MODEL scene (`reconcile_externals`), but DISPATCH
+        // hit-tests each window's PAINTED scene — registration is allowed to be a superset
+        // of painted tags. A floating pane paints no `panel_id(i)` header in any window
+        // (`view_for_window` paints a bare pane), so the router can never route a press to
+        // the dormant external; it is inert by construction, not stranded.
         let reorganizer = split::use_dock_reorganizer();
         let drop_preview = split::use_drop_preview();
         externals.extend((0..terminal.pane_count()).map(|i| {
@@ -539,33 +545,41 @@ impl WidgetCore for TerminalViewer {
     /// (the editor's `viewport_btn.click` carries the same scoping). The
     /// [`DockPanelExternal`] is registered at tag `terminal-{i}`, so e.g. its bare
     /// [`TEAR_OFF_EVENT`] arrives as `terminal-{i}.tear_off`; matching the bare event
-    /// would never fire (the live bug R68 corrected) — every arm matches the scoped tag.
+    /// would never fire (the live bug R68 corrected).
+    ///
+    /// The scoped tag is split ONCE on the last `.`: the prefix is the **trusted**
+    /// routing key (pinion guarantees it is the emitting external's registered tag),
+    /// and `{event}` selects the arm. Routing by the tag (not the payload's `panel`
+    /// field) is the correct SSOT — and splitting once avoids the per-call `format!`
+    /// allocation a candidate-rebuild-per-arm would cost on the `follow` hot path
+    /// (the follow fires per drag-move, hundreds of times in one gesture).
     fn update(_state: (), intent: &Intent) -> Vec<Command> {
-        let tag = intent.tag_str();
-        match &intent.payload {
-            // Live cursor-following tear-off (R1094): the JSON carries the panel id
-            // and the main-window-logical cursor. Non-toggling ensure+reposition.
-            IntrospectValue::Json(v) => {
-                if let (Some(panel), Some(x), Some(y)) = (
-                    v.get("panel").and_then(serde_json::Value::as_str),
+        let Some((panel, event)) = intent.tag_str().rsplit_once('.') else {
+            return Vec::new();
+        };
+        let Some(i) = split::pane_index_of_panel(panel) else {
+            return Vec::new();
+        };
+        match (event, &intent.payload) {
+            // Live cursor-following tear-off (R1094, browser-tab style): the JSON
+            // carries the main-window-logical cursor; the panel is the trusted tag.
+            // Non-toggling float-or-reposition. Fires per escaped drag-move + release.
+            (TEAR_OFF_FOLLOW_EVENT, IntrospectValue::Json(v)) => {
+                if let (Some(x), Some(y)) = (
                     v.get("x").and_then(serde_json::Value::as_f64),
                     v.get("y").and_then(serde_json::Value::as_f64),
-                ) && tag == format!("{panel}.{TEAR_OFF_FOLLOW_EVENT}")
-                    && let Some(i) = split::pane_index_of_panel(panel)
-                {
+                ) {
                     dock::float_pane_at(i, (x, y));
                 }
             }
-            // The Text-payload tear-off intents (legacy toggle + redock/restore).
-            IntrospectValue::Text(panel_id) => {
-                if let Some(i) = split::pane_index_of_panel(panel_id) {
-                    if tag == format!("{panel_id}.{TEAR_OFF_EVENT}") {
-                        dock::toggle_pane_floating(i);
-                    } else if tag == format!("{panel_id}.{TEAR_OFF_REDOCK_EVENT}") {
-                        dock::redock_pane(i);
-                    }
-                }
-            }
+            // Redock / restore (R1094): a redock-over-zone or a snap-back. Idempotent.
+            // NB redock-over-zone lands index-relative in v1 (the zone isn't in this
+            // payload, and pinion's synchronous reorganize already rejected on the absent
+            // source) — see [`dock::redock_pane`]'s v1 bound + PINION-PR34.
+            (TEAR_OFF_REDOCK_EVENT, IntrospectValue::Text(_)) => dock::redock_pane(i),
+            // Legacy release toggle (cursor-less escape / unit paths) — the same
+            // discrete dock/undock the `Ctrl+Shift+Enter` key path drives.
+            (TEAR_OFF_EVENT, IntrospectValue::Text(_)) => dock::toggle_pane_floating(i),
             _ => {}
         }
         Vec::new()
@@ -1346,46 +1360,44 @@ mod tests {
         );
     }
 
-    /// R70 regression guard for the R69 live gap. A tear-off is ONE continuous press
-    /// captured by the source pane's [`DockPanelExternal`]; the first escaped move floats
-    /// that pane, a topology change that makes `external_set_is_dynamic` re-run
-    /// [`create_extra_externals`](TerminalViewer::create_extra_externals) MID-DRAG.
-    /// Registering only the docked panes (the R69 bug) would DROP the floated pane's
-    /// external — the one owning the in-progress drag — so the follow stopped after one
-    /// frame and redock was never reached. Registering every pane keeps it, so the
-    /// captured gesture survives the float reconcile (escape → follow, return-over-zone →
-    /// redock). This guards the registration invariant directly: the continuous
-    /// gesture-with-reconcile itself can't be synthesized headlessly (an RPC batch
-    /// delivers every move before any reconcile — exactly what masked this in R69).
+    /// R70: `create_extra_externals` registers a `DockPanelExternal` for EVERY pane,
+    /// docked or floating — NOT just the docked set. This is the sprag-side condition for
+    /// the R69 live gap's fix: a tear-off is one continuous captured press, and the first
+    /// escaped move floats the source pane (a topology change that re-runs this factory
+    /// mid-drag via `external_set_is_dynamic`); had the factory filtered to the docked
+    /// set, the reconcile would DROP the in-flight drag's external (follow dies after one
+    /// frame, redock unreachable). pinion's R689 preserve-by-tag then keeps the surviving
+    /// tag's handle (with its drag state) — that half lives in pinion and can't be
+    /// synthesized headlessly (an RPC batch delivers every move before any reconcile —
+    /// exactly what masked this in R69), so this guards the part sprag owns: the panel
+    /// external SET equals all panes in BOTH the all-docked and one-floated states (a set
+    /// equality, so a regression that drops ANY pane — not just pane 1 — is caught).
     #[test]
-    fn dock_panel_external_survives_the_float_reconcile() {
+    fn dock_panel_external_registered_for_every_pane_across_a_float() {
+        use std::collections::BTreeSet;
         let core = ShellCore::<TerminalViewer>::new();
         core.root_owner().run(|| {
-            let panel_tags = || {
+            // The panel-id externals only (filter out the pane/scrollbar/splitter tags).
+            let panel_externals = || {
                 <TerminalViewer as WidgetCore>::create_extra_externals()
                     .into_iter()
                     .map(|e| e.tag.into_owned())
-                    .collect::<Vec<String>>()
+                    .filter(|t| split::pane_index_of_panel(t).is_some())
+                    .collect::<BTreeSet<String>>()
             };
             let n = use_terminal().pane_count();
-            // Boot (all docked): a DockPanelExternal at every pane's panel_id.
-            let booted = panel_tags();
-            for i in 0..n {
-                assert!(
-                    booted.contains(&split::panel_id(i)),
-                    "pane {i} has a dock-panel external while docked"
-                );
-            }
+            let expected: BTreeSet<String> = (0..n).map(split::panel_id).collect();
+            assert_eq!(
+                panel_externals(),
+                expected,
+                "boot: one dock-panel external per pane"
+            );
             // Float pane 1, then re-run the factory exactly as the reconcile does.
             dock::toggle_pane_floating(1);
-            let after = panel_tags();
-            assert!(
-                after.contains(&split::panel_id(1)),
-                "the floated pane KEEPS its external (the in-progress drag survives the reconcile)"
-            );
-            assert!(
-                after.contains(&split::panel_id(0)),
-                "the still-docked pane keeps its external too"
+            assert_eq!(
+                panel_externals(),
+                expected,
+                "every pane KEEPS its dock-panel external across a float (none dropped)"
             );
         });
     }

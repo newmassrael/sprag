@@ -24,15 +24,18 @@
 //! fact from **which panes are docked in the main window**, which is the dock split-
 //! tree's leaf set ([`crate::split::docked_pane_indices`]) — the one source both the
 //! paint ([`crate::view::view_for_window`]) and a11y read, so they never disagree. The two
-//! authorities are kept consistent at the two co-mutation sites in this module —
-//! [`ensure_pane_floating`] (float: push window + remove leaf) and [`redock_pane`]
-//! (dock: drop window + re-insert leaf) — so a pane floats iff its window exists AND
-//! its leaf is absent from the tree. All three entry points route through them
-//! ([`toggle_pane_floating`] picks one by the current state; [`float_pane_at`] is
-//! `ensure_pane_floating` with a position). PR-31's live drag-follow (R1094) is the
-//! "second mutation path" the prior note anticipated; it preserves the invariant by
-//! reusing these same two sites. Making the docked set a reactive projection of one
-//! authority (rather than co-mutated) is still the eventual cleanup.
+//! authorities are kept consistent at the two co-mutation primitives in this module —
+//! [`push_float`] (float: push window + remove leaf) and [`redock_pane`] (dock: drop
+//! window + re-insert leaf) — so a pane floats iff its window exists AND its leaf is
+//! absent from the tree. All three entry points route through them: [`open_floating`]
+//! (key path) and [`float_pane_at`]'s create branch call [`push_float`]; both
+//! [`toggle_pane_floating`] and the live redock call [`redock_pane`]. PR-31's live
+//! drag-follow (R1094) is the "second mutation path" the prior note anticipated; it
+//! preserves the invariant by reusing these same two primitives. Making the docked set
+//! a reactive projection of one authority (rather than co-mutated) is still the
+//! eventual cleanup — though only the docked *membership* is derivable; the split-tree
+//! also holds shape/ratios that no projection from the window list can reconstruct,
+//! which is why it stays held state and the cleanup is non-trivial (R71 review).
 //!
 //! ## Why the undock window opens at the pane's intrinsic size (and now reflows)
 //!
@@ -142,9 +145,10 @@ fn undock_window_spec(i: usize, position: Option<(i32, i32)>) -> WindowSpec {
             min: None,
         },
     );
-    match position {
-        Some((x, y)) => spec.with_position(x, y),
-        None => spec,
+    if let Some((x, y)) = position {
+        spec.with_position(x, y)
+    } else {
+        spec
     }
 }
 
@@ -158,52 +162,60 @@ fn is_pane_floating(i: usize) -> bool {
         .any(|w| w.id == pane_window_id(i))
 }
 
-/// Ensure pane `i` floats, optionally (re)positioning its window at desktop
-/// `position`. Non-toggling and idempotent:
+/// Float pane `i`: push its undock [`WindowSpec`] ([`undock_window_spec`], at
+/// `position` if given) onto `windows` AND remove its leaf from the dock split-tree
+/// ([`crate::split::float_pane`]). The caller owns the `signal.set` + the `dock` diag.
 ///
-/// * docked (no `pane-{i}` window) -> push an undock [`WindowSpec`]
-///   ([`undock_window_spec`], at `position` if given) and remove its leaf from the
-///   dock split-tree ([`crate::split::float_pane`]) so the remaining docked panes
-///   reclaim its space;
-/// * already floating -> if `position` is `Some`, move the window there (the live-
-///   follow reposition — no tree change, no `dock` diag); a `None` reposition (the
-///   toggle never repositions) is a no-op.
-///
-/// The shared worker behind [`toggle_pane_floating`]'s float branch (`None`) and
-/// [`float_pane_at`] (the live cursor). The two authorities — the window topology
-/// (the floating SSOT) and the dock split-tree — are mutated together at this one
-/// create site so they never disagree (a pane floats iff its window exists AND its
-/// leaf is absent from the tree).
-fn ensure_pane_floating(i: usize, position: Option<(i32, i32)>) {
-    let signal = use_windows_topology();
-    let mut windows = signal.get();
-    let target = pane_window_id(i);
-    if let Some(spec) = windows.iter_mut().find(|w| w.id == target) {
-        // Already floating: a live-follow reposition only (no tree change).
-        let Some(pos) = position else { return };
-        if spec.position == Some(pos) {
-            return; // stationary cursor -> skip the redundant set + repaint
-        }
-        spec.position = Some(pos);
-        signal.set(windows);
-        return;
-    }
-    let before = windows.len();
+/// This is THE window↔tree co-mutation for floating — the two authorities (the window
+/// topology and the dock split-tree) are mutated together here so they never disagree
+/// (a pane floats iff its window exists AND its leaf is absent). Shared by the
+/// key-path [`open_floating`] and the live-follow create branch of [`float_pane_at`],
+/// so the float co-mutation lives in exactly one place.
+fn push_float(windows: &mut Vec<WindowSpec>, i: usize, position: Option<(i32, i32)>) {
     windows.push(undock_window_spec(i, position));
     crate::split::float_pane(i); // remove the leaf so the rest reclaim its space
+}
+
+/// Open pane `i` as a floating window at `position` (`None` → WM-placed; the key path
+/// has no cursor). The discrete, cursor-less float: one topology `get`/`set` + the
+/// `dock` diag, over [`push_float`]. Precondition: pane `i` is docked
+/// ([`toggle_pane_floating`] gates on [`is_pane_floating`]), so a fresh open always
+/// grows the window list by one. Single-responsibility — create only; the live-follow
+/// reposition is [`float_pane_at`]'s, never here.
+fn open_floating(i: usize, position: Option<(i32, i32)>) {
+    let signal = use_windows_topology();
+    let mut windows = signal.get();
+    let before = windows.len();
+    push_float(&mut windows, i, position);
     let after = windows.len();
     signal.set(windows);
     crate::diag::dock_toggle(i, true, before, after);
 }
 
-/// Ensure pane `i` is docked: drop its floating window and re-insert its leaf into
-/// the dock split-tree ([`crate::split::dock_pane`]). Idempotent no-op when pane `i`
-/// is already docked — R1094 emits a redock/restore for a snap-back too, so a pane
-/// this gesture never floated must be harmless. Non-toggling; the second authority-
-/// co-mutation site (with [`ensure_pane_floating`]). The shell drops the winit
-/// window; the main layout repaints with pane `i` re-tiled (it reflows to its new
-/// tile via the main-window R1012 publish). Shared by [`toggle_pane_floating`]'s
-/// dock-back branch and the live redock/restore (pinion R1094 / PINION-PR31).
+/// Dock pane `i` back: drop its floating window AND re-insert its leaf into the dock
+/// split-tree ([`crate::split::dock_pane`]) — the window↔tree dock co-mutation, the
+/// mirror of [`push_float`]. Idempotent no-op when pane `i` is already docked (R1094
+/// emits a redock/restore for a snap-back too, so a pane this gesture never floated is
+/// harmless). The shell drops the winit window; the main layout repaints with pane `i`
+/// re-tiled (it reflows to its new tile via the main-window R1012 publish). Shared by
+/// [`toggle_pane_floating`]'s dock-back branch and the live redock/restore (pinion
+/// R1094 / PINION-PR31).
+///
+/// Non-toggling, and — UNLIKE the float side ([`float_pane_at`]) — there is NO position
+/// mode: dock-back is a pure topology drop (the window's outer position is meaningless
+/// once it's gone), so the float/dock pair is intentionally asymmetric.
+///
+/// **v1 placement bound (→ PINION-PR34):** `split::dock_pane` re-inserts INDEX-relative,
+/// not at the drag's drop zone. On a redock-OVER-A-ZONE, pinion's `drag_release` runs
+/// `reorganizer.apply_intent` SYNCHRONOUSLY *before* this enqueued `tear_off_redock`
+/// drains — but the detached pane's leaf is already absent (removed by [`push_float`]
+/// during the follow), so `SplitInsert`'s `topology.remove_leaf(source)?` rejects and
+/// leaves the topology unchanged; THIS redock's index-relative `dock_pane` is then the
+/// SURVIVING placement. So a redock-over-zone lands index-relative in v1 (invisible
+/// with 2 panes — only one slot; latent at 3+ panes). Drop-zone fidelity is owed to the
+/// identity-relative `dock_pane` upgrade `split.rs:dock_pane` already names, plus a
+/// pinion ordering fix (PINION-PR34) — sprag cannot recover the zone here (the
+/// `tear_off_redock` payload carries only the panel id, never the zone).
 pub(crate) fn redock_pane(i: usize) {
     let signal = use_windows_topology();
     let mut windows = signal.get();
@@ -241,28 +253,51 @@ fn cursor_to_desktop(windows: &[WindowSpec], cursor: (f64, f64)) -> (i32, i32) {
     (ox + cursor.0.round() as i32, oy + cursor.1.round() as i32)
 }
 
-/// Live-follow tear-off (pinion R1094 / PINION-PR31): ensure pane `i` floats and
-/// track the drag. `cursor` is the MAIN-window-logical pointer the
-/// [`DockPanelExternal`](pinion_widget_paint::dock::DockPanelExternal) forwards on
-/// each escaped drag move (and the escape-release); it is desktop-converted
-/// ([`cursor_to_desktop`]) and written as the floating window's outer position.
-/// Non-toggling — the first escaped move creates the window, every later move only
-/// repositions it (the equality-skip in [`ensure_pane_floating`] collapses a
-/// stationary cursor to no repaint). The key/AI dock-back stays on
-/// [`toggle_pane_floating`] / [`redock_pane`], so a per-move re-emit can never flip
-/// the window away (the R1071-R1078 double-toggle lesson, on the sprag side).
+/// Live-follow tear-off (pinion R1094 / PINION-PR31): float pane `i` on the first
+/// escaped drag move and track the cursor on every move after. `cursor` is the
+/// MAIN-window-logical pointer the [`DockPanelExternal`](pinion_widget_paint::dock::DockPanelExternal)
+/// forwards; it is desktop-converted ([`cursor_to_desktop`]) and written as the
+/// floating window's outer position.
+///
+/// ONE topology borrow: the main-window origin (read by [`cursor_to_desktop`]) and the
+/// window being repositioned come from the SAME snapshot, so a concurrent
+/// `WindowEvent::Moved` write-back can't make the computed position stale against the
+/// list it is written into. Two phases over that snapshot:
+/// * docked (no `pane-{i}` window) → [`push_float`] at the cursor (the co-mutation +
+///   `dock` diag);
+/// * floating → move the window (position only — no tree change, no `dock` diag); a
+///   stationary cursor equality-skips the `set` (no repaint).
+///
+/// Non-toggling: a per-move re-emit only repositions, it can never flip the window
+/// away (the R1071–R1078 double-toggle lesson, sprag side). Key/AI dock-back is
+/// [`redock_pane`].
 pub(crate) fn float_pane_at(i: usize, cursor: (f64, f64)) {
-    let pos = cursor_to_desktop(&use_windows_topology().get(), cursor);
-    ensure_pane_floating(i, Some(pos));
+    let signal = use_windows_topology();
+    let mut windows = signal.get();
+    let pos = cursor_to_desktop(&windows, cursor);
+    let target = pane_window_id(i);
+    if let Some(spec) = windows.iter_mut().find(|w| w.id == target) {
+        // Floating: reposition only.
+        if spec.position == Some(pos) {
+            return; // stationary cursor -> no set, no repaint
+        }
+        spec.position = Some(pos);
+    } else {
+        // First escaped move: float at the cursor.
+        let before = windows.len();
+        push_float(&mut windows, i, Some(pos));
+        crate::diag::dock_toggle(i, true, before, windows.len());
+    }
+    signal.set(windows);
 }
 
-/// Toggle pane `i` between docked (tiled in the main window) and undocked (its own
-/// OS window) — the discrete `Ctrl+Shift+Enter` key path and the release-driven
+/// Toggle pane `i` between docked (tiled in the main window) and undocked (its own OS
+/// window) — the discrete `Ctrl+Shift+Enter` key path and the release-driven
 /// `tear_off` fallback (pinion fires the legacy `tear_off` only when no drag cursor
-/// was forwarded). Delegates to the non-toggling [`redock_pane`] / [`ensure_pane_floating`]
-/// primitives (a `None` position → WM-placed, as the key path has no cursor), so all
-/// three entry points (toggle, [`float_pane_at`], [`redock_pane`]) share the one
-/// authority-co-mutation seam.
+/// was forwarded). Dispatches on [`is_pane_floating`] to the non-toggling primitives:
+/// [`redock_pane`] (dock-back) or [`open_floating`]`(None)` (WM-placed float, the key
+/// path has no cursor). So all three entry points — toggle, [`float_pane_at`],
+/// [`redock_pane`] — share the window↔tree co-mutation ([`push_float`] / [`redock_pane`]).
 ///
 /// Runs inside the shell root owner scope (called from `route_key`, itself wrapped
 /// in `root_owner.run`), so [`use_terminal`] / [`use_windows_topology`] / the
@@ -271,7 +306,7 @@ pub(crate) fn toggle_pane_floating(i: usize) {
     if is_pane_floating(i) {
         redock_pane(i);
     } else {
-        ensure_pane_floating(i, None);
+        open_floating(i, None);
     }
 }
 
