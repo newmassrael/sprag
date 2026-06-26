@@ -3172,6 +3172,40 @@
         "Still owed: Fix B (floating-window view_dock_panel header) is blocked by a view_dock_panel standalone-reflow limitation (reflows only inside a splitter's size distribution) -- not yet filed as a pinion PR (mechanism not fully understood, not verified live). PINION-PR32 (threshold detach) + PR33 (cross-window redock) also await the pinion author."
       ]
     },
+    "Round 72": {
+      "decision_summary": "Round 72: bumped the 7 pinion-* git revs 9d13cb8c (R1095) -> e340d97b (R1107.1), consuming the two PR docs sprag filed in R71. PINION-PR32 (R1097, threshold-based tear-off detach: a header tears into a floating follower past DRAG_CLICK_THRESHOLD_PX, even over a dock zone -- the browser-tab \"float on grab\" the user asked for; the intent contract + RPC path are unchanged, so this lands automatically with no sprag wiring). PINION-PR33 (R1098-R1107, cross-window redock: the new tear_off_redock_at intent + a DockReorganizer::apply_zone_redock method + automatic cross-window drop resolution in pinion-shell -- the seam sprag needs to consume so a settled floating window can be dragged back onto the main dock and land at the dropped zone). This bump is the base for the staged collapse-to-placeholder dock migration that consumes PR-33. SCE 3078f8bf / vello 0.9 are unchanged (pinion's own pins match at this rev), so only the 7 pinion-* revs move.",
+      "changes_bullets": [
+        "Cargo.toml: bumped all 7 pinion-* git revs from 9d13cb8c (R1095) to e340d97b (R1107.1) via a single replace-all of the rev string; SCE (3078f8bf) and vello (0.9) are different strings and untouched, verified 7 lines on the new rev and 0 stale. Cargo.lock re-resolved by the build.",
+        "This consumes PINION-PR32 (threshold detach, automatic -- intent contract unchanged) and exposes the PINION-PR33 cross-window redock seam (tear_off_redock_at intent, apply_zone_redock, shell-side cross-window drop resolution) for the staged placeholder migration to wire."
+      ],
+      "verification_bullets": [
+        "cargo build -p sprag-gui clean against e340d97b; sprag-gui 60/0; full cargo test --workspace green; clippy -p sprag-gui --all-targets clean. The existing dock-seam guards (tear_off_follow / tear_off_redock / float-reconcile) pass unchanged, confirming the bump introduced no regression in the consumed surface."
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Next (approved plan, /home/coin/.claude/plans): migrate sprag's dock from collapse-on-undock to pinion's placeholder model (the leaf stays in the topology while the pane floats; windows-signal becomes the sole floating authority -- R61's deferred SSOT cleanup), in three stages: A the SSOT flip (split/dock/view), B Fix B (floating window header -- a confirmed pinion content_wrapper min:0 gap may force PINION-PR35), C the tear_off_redock_at reducer arm calling apply_zone_redock. This enables zone-honoring cross-window redock (user chose placement option B).",
+        "PINION-PR34 (redock-over-zone index-relative placement) is mooted for sprag by the placeholder model: the source leaf survives, so apply_zone_redock no longer rejects. The PR doc stays filed for the flat-consumer case."
+      ],
+      "publishable_decision_summary": "Round 72: bumped the 7 pinion-* git revs 9d13cb8c (R1095) -> e340d97b (R1107.1), consuming the two PR docs sprag filed in R71. PINION-PR32 (R1097, threshold-based tear-off detach: a header tears into a floating follower past DRAG_CLICK_THRESHOLD_PX, even over a dock zone -- the browser-tab \"float on grab\" the user asked for; the intent contract + RPC path are unchanged, so this lands automatically with no sprag wiring). PINION-PR33 (R1098-R1107, cross-window redock: the new tear_off_redock_at intent + a DockReorganizer::apply_zone_redock method + automatic cross-window drop resolution in pinion-shell -- the seam sprag needs to consume so a settled floating window can be dragged back onto the main dock and land at the dropped zone). This bump is the base for the staged collapse-to-placeholder dock migration that consumes PR-33. SCE 3078f8bf / vello 0.9 are unchanged (pinion's own pins match at this rev), so only the 7 pinion-* revs move.",
+      "publishable_changes_bullets": [
+        "Cargo.toml: bumped all 7 pinion-* git revs from 9d13cb8c (R1095) to e340d97b (R1107.1) via a single replace-all of the rev string; SCE (3078f8bf) and vello (0.9) are different strings and untouched, verified 7 lines on the new rev and 0 stale. Cargo.lock re-resolved by the build.",
+        "This consumes PINION-PR32 (threshold detach, automatic -- intent contract unchanged) and exposes the PINION-PR33 cross-window redock seam (tear_off_redock_at intent, apply_zone_redock, shell-side cross-window drop resolution) for the staged placeholder migration to wire."
+      ],
+      "publishable_verification_bullets": [
+        "cargo build -p sprag-gui clean against e340d97b; sprag-gui 60/0; full cargo test --workspace green; clippy -p sprag-gui --all-targets clean. The existing dock-seam guards (tear_off_follow / tear_off_redock / float-reconcile) pass unchanged, confirming the bump introduced no regression in the consumed surface."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Next (approved plan, /home/coin/.claude/plans): migrate sprag's dock from collapse-on-undock to pinion's placeholder model (the leaf stays in the topology while the pane floats; windows-signal becomes the sole floating authority -- R61's deferred SSOT cleanup), in three stages: A the SSOT flip (split/dock/view), B Fix B (floating window header -- a confirmed pinion content_wrapper min:0 gap may force PINION-PR35), C the tear_off_redock_at reducer arm calling apply_zone_redock. This enables zone-honoring cross-window redock (user chose placement option B).",
+        "PINION-PR34 (redock-over-zone index-relative placement) is mooted for sprag by the placeholder model: the source leaf survives, so apply_zone_redock no longer rejects. The PR doc stays filed for the flat-consumer case."
+      ]
+    },
     "Round 8": {
       "decision_summary": "Orchestration control substrate: a guardrailed perceive-act-judge loop over a pane, modeled as an SCE/SCXML statechart (sprag's first direct SCE dogfood); built in-process, with the plugin host/API to be extracted later.",
       "changes_bullets": [
