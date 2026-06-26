@@ -3562,6 +3562,40 @@
         "On every bump, audit new pinion seam/payload fields for consumption (the R79 source_window lesson). R1113's drag_image_style is a new WidgetView method sprag could override later (custom ghost) but the default is correct for now."
       ]
     },
+    "Round 81": {
+      "decision_summary": "Round 81: bump the 7 pinion-* git revs 63789fe4 (R1113) -> c4481da4 (R1114), consuming PINION-PR38's drag-image visibility fix. R1114 gives DragImageStyle::default() an accent border so the drag-image follower (the \"follows on grab\" ghost delivered in R1113) is actually VISIBLE against a dark terminal background -- the producer test was added too. This is purely a pinion default-style change inside pinion-overlay/pinion-shell; no consumer-facing seam changed (changed files = drag_image.rs + substrate.rs only, commit body confirms), so sprag consumes it with ZERO code change -- the now-visible ghost draws during any DockPanelExternal header drag via the focus_ring_style opt-out pattern. PR-38 is still partial: R1115 next = confirm live visibility, else rasterization / Phase-B; the floater re-drag (#2) and OS-titlebar (#2') slices remain owed. SCE 3078f8bf / vello 0.9 unchanged.",
+      "changes_bullets": [
+        "Cargo.toml: bumped 7 pinion-* 63789fe4 -> c4481da4 (single replace-all; SCE/vello untouched, verified 7 lines + 0 stale + pinion's own SCE/vello match). Cargo.lock re-resolved. No sprag code change: R1114 only changes DragImageStyle::default() (accent border for dark-bg visibility) + adds a pinion producer test; sprag gets the visible ghost free (drag_image_style defaults to Some, focus_ring_style pattern). Audited per the R79 lesson -- no new consumer-facing payload/seam field, so nothing to wire."
+      ],
+      "verification_bullets": [
+        "sprag-gui 63/0/0 + full cargo test --workspace green; clippy -p sprag-gui --all-targets clean; rustfmt clean; cargo doc -D warnings (private items) clean. Checkpoint-built against c4481da4 with no sprag code (self-contained bump).",
+        "The drag-image is a mid-gesture shell-overlay (transient, not in a post-release RPC snapshot, not pixel-checkable via batch RPC); R1114's visible-default is verified by pinion's own producer test. The user-observable \"follows on grab, now visible\" (#1) needs a live human drag to confirm visually -- pinion's R1115 next is exactly \"confirm live visibility\"."
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "PINION-PR38 (unified dock drag UX) delivered so far: R1113 drag-image ghost (immediate follow on grab, #1) + R1114 visible accent border. Still owed (R1115 next / Phase-B): live-visibility confirmation, then (#2) live floater re-drag of a SETTLED window by its header (parked HW path), (#2') OS-titlebar = dock gesture (note_window_moved only records position; PR-38 recommends decorations-off + app-header unify), and the drop-time detach decision (zone->split / outside->float). sprag has all consumption wiring (R70 all-pane externals, R74 floating header, R69/R75 reducer intents, R79 source_window, R80/R81 ghost free) -> each next slice = sprag 0~minimal.",
+        "Bump discipline (R79 meta-lesson, user-flagged): every bump now audits new pinion seam/payload fields for consumption. R80/R81 had none (ghost is shell-auto + default style)."
+      ],
+      "publishable_decision_summary": "Round 81: bump the 7 pinion-* git revs 63789fe4 (R1113) -> c4481da4 (R1114), consuming PINION-PR38's drag-image visibility fix. R1114 gives DragImageStyle::default() an accent border so the drag-image follower (the \"follows on grab\" ghost delivered in R1113) is actually VISIBLE against a dark terminal background -- the producer test was added too. This is purely a pinion default-style change inside pinion-overlay/pinion-shell; no consumer-facing seam changed (changed files = drag_image.rs + substrate.rs only, commit body confirms), so sprag consumes it with ZERO code change -- the now-visible ghost draws during any DockPanelExternal header drag via the focus_ring_style opt-out pattern. PR-38 is still partial: R1115 next = confirm live visibility, else rasterization / Phase-B; the floater re-drag (#2) and OS-titlebar (#2') slices remain owed. SCE 3078f8bf / vello 0.9 unchanged.",
+      "publishable_changes_bullets": [
+        "Cargo.toml: bumped 7 pinion-* 63789fe4 -> c4481da4 (single replace-all; SCE/vello untouched, verified 7 lines + 0 stale + pinion's own SCE/vello match). Cargo.lock re-resolved. No sprag code change: R1114 only changes DragImageStyle::default() (accent border for dark-bg visibility) + adds a pinion producer test; sprag gets the visible ghost free (drag_image_style defaults to Some, focus_ring_style pattern). Audited per the R79 lesson -- no new consumer-facing payload/seam field, so nothing to wire."
+      ],
+      "publishable_verification_bullets": [
+        "sprag-gui 63/0/0 + full cargo test --workspace green; clippy -p sprag-gui --all-targets clean; rustfmt clean; cargo doc -D warnings (private items) clean. Checkpoint-built against c4481da4 with no sprag code (self-contained bump).",
+        "The drag-image is a mid-gesture shell-overlay (transient, not in a post-release RPC snapshot, not pixel-checkable via batch RPC); R1114's visible-default is verified by pinion's own producer test. The user-observable \"follows on grab, now visible\" (#1) needs a live human drag to confirm visually -- pinion's R1115 next is exactly \"confirm live visibility\"."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "PINION-PR38 (unified dock drag UX) delivered so far: R1113 drag-image ghost (immediate follow on grab, #1) + R1114 visible accent border. Still owed (R1115 next / Phase-B): live-visibility confirmation, then (#2) live floater re-drag of a SETTLED window by its header (parked HW path), (#2') OS-titlebar = dock gesture (note_window_moved only records position; PR-38 recommends decorations-off + app-header unify), and the drop-time detach decision (zone->split / outside->float). sprag has all consumption wiring (R70 all-pane externals, R74 floating header, R69/R75 reducer intents, R79 source_window, R80/R81 ghost free) -> each next slice = sprag 0~minimal.",
+        "Bump discipline (R79 meta-lesson, user-flagged): every bump now audits new pinion seam/payload fields for consumption. R80/R81 had none (ghost is shell-auto + default style)."
+      ]
+    },
     "Round 9": {
       "decision_summary": "Cleanup round from the session review: harden the orchestrator substrate — reuse the producer's damage generations for observation, type the drive errors, and fix wrapped-sentinel convergence matching.",
       "changes_bullets": [
