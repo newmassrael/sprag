@@ -1248,12 +1248,15 @@ mod tests {
         );
     }
 
-    /// Undocking every pane: in the R72 placeholder model the topology is UNCHANGED
-    /// (every leaf survives), so `view_main` paints a placeholder per leaf — no pane grid,
-    /// no panic. (The old collapse model emptied the tree to `None` and painted nothing.)
+    /// Undocking every pane in PLACEHOLDER mode: the topology is UNCHANGED (every leaf
+    /// survives), so `view_main` paints a placeholder per leaf — no pane grid, no panic.
+    /// (Collapse mode empties the tree to `None` and paints nothing — see
+    /// `collapse_float_removes_the_leaf_and_dock_restores_index_order` in split.rs.)
     #[test]
     fn undock_all_panes_paints_placeholders_not_grids() {
         let mut core = ShellCore::<TerminalViewer>::new();
+        core.root_owner()
+            .run(|| dock::set_dock_mode(dock::DockMode::Placeholder));
         let n = core.root_owner().run(|| use_terminal().pane_count());
         core.root_owner().run(|| {
             for i in 0..n {
@@ -1322,15 +1325,16 @@ mod tests {
         assert_eq!(
             core.root_owner().run(split::docked_pane_indices),
             vec![0],
-            "pane 1 is filtered from the docked set (it floats)"
+            "pane 1 floats — only pane 0 docked"
         );
-        // Placeholder model: the leaf SURVIVES (membership filtered, not collapsed).
+        // Default (collapse) mode: floating pane 1 REMOVED its leaf, so the tree shrank
+        // and pane 0 reclaimed the space.
         assert_eq!(
             core.root_owner().run(|| split::use_dock_topology()
                 .get()
                 .map(|t| t.panel_ids().len())),
-            Some(2),
-            "both leaves stay in the topology (pane 1 painting a placeholder)"
+            Some(1),
+            "collapse mode: pane 1's leaf is removed (the sibling reclaims the slot)"
         );
     }
 
@@ -1477,6 +1481,10 @@ mod tests {
     fn tear_off_redock_at_relocates_the_leaf_to_the_dropped_zone() {
         use std::borrow::Cow;
         let mut core = ShellCore::<TerminalViewer>::new();
+        // Zone-honoring redock is PLACEHOLDER-mode only (the surviving leaf is what
+        // apply_zone_redock relocates; collapse removes it and lands index-relative).
+        core.root_owner()
+            .run(|| dock::set_dock_mode(dock::DockMode::Placeholder));
         let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
         core.finalize_frame(scene);
 
