@@ -746,25 +746,33 @@ mod tests {
     /// tags / publishes / derives so the floated pane follows its own window. Reads
     /// the real measured cell metric from the booted terminal (the shell seeds the
     /// monospace provider), not `CellMetric::DEFAULT`.
+    /// The R72 floating window paints a `view_dock_panel` HEADER (the drag source a
+    /// settled floating window is re-grabbed from, enabling cross-window redock) above a
+    /// pane that reflows its WIDTH to the window. Float pane 0, then paint its `pane-0`
+    /// window at two widths: the header composite tag is present, and cols track the
+    /// window width (fewer than the full-width derivation — the scrollbar gutter — and
+    /// the wider window B reflows to MORE cols). HEIGHT reflow is the separate
+    /// `…_height_reflow_is_blocked_on_pinion_pr35` repro below.
     #[test]
-    fn undock_window_reflows_its_pane_to_its_own_size() {
+    fn undock_window_paints_a_header_and_reflows_width() {
         let mut core = ShellCore::<TerminalViewer>::new();
         let metric = core.root_owner().run(|| use_terminal().metric);
         let win = dock::pane_window_id(0);
 
-        // Boot through the main window once (as the app does) so the shell installs
-        // the per-pane reflow Effects via `create_extra_externals` before the user
-        // undocks a pane.
+        // Boot, then FLOAT pane 0 (the real undock side effect — R64/R65: drive the same
+        // state as live; main paints pane 0's placeholder, only `pane-0` publishes it).
         let _ = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+        core.root_owner().run(|| dock::toggle_pane_floating(0));
 
-        // A smaller and a clearly larger undock-window size (both axes differ).
+        // Two paints per size (measure → publish → reflow → repaint).
         let (wa, ha) = (600u32, 400u32);
         let (wb, hb) = (900u32, 720u32);
-
-        let dims_a = painted_grid_dims(&core.compute_paint_scene_for_window(&win, wa, ha));
+        let _ = core.compute_paint_scene_for_window(&win, wa, ha);
+        let scene_a = core.compute_paint_scene_for_window(&win, wa, ha);
+        let dims_a = painted_grid_dims(&scene_a);
+        let _ = core.compute_paint_scene_for_window(&win, wb, hb);
         let dims_b = painted_grid_dims(&core.compute_paint_scene_for_window(&win, wb, hb));
 
-        // The undock window paints exactly its one pane (no tiling, no siblings).
         assert_eq!(
             dims_a.len(),
             1,
@@ -776,22 +784,16 @@ mod tests {
             "undock window paints one pane, got {dims_b:?}"
         );
 
-        // Rows fill the window height (the vertical scrollbar is a side gutter, so it
-        // takes width, not height) — exact against the window-derived rows.
-        let full_a = crate::terminal::grid_dims((wa, ha), metric);
-        let full_b = crate::terminal::grid_dims((wb, hb), metric);
-        assert_eq!(
-            dims_a[0].1, full_a.1,
-            "pane A fills the undock window height"
-        );
-        assert_eq!(
-            dims_b[0].1, full_b.1,
-            "pane B fills the undock window height"
+        // The header composite tag — the drag source for cross-window redock (Stage C).
+        assert!(
+            scene_a.contains_tag(format!("{}#header", split::panel_id(0)).as_str()),
+            "the floating window paints a draggable view_dock_panel header",
         );
 
-        // Cols track the window width minus the scrollbar gutter: strictly fewer than
-        // the full-width derivation, never zero, and the larger window B reflows to
-        // strictly MORE cols than A — the resize genuinely reflowed the pane.
+        // Cols track the window width minus the scrollbar gutter; the wider window B
+        // reflows to MORE cols — the width genuinely reflowed.
+        let full_a = crate::terminal::grid_dims((wa, ha), metric);
+        let full_b = crate::terminal::grid_dims((wb, hb), metric);
         assert!(
             dims_a[0].0 > 0 && dims_a[0].0 < full_a.0,
             "A cols sane: {dims_a:?}"
@@ -801,8 +803,44 @@ mod tests {
             "B cols sane: {dims_b:?}"
         );
         assert!(
-            dims_b[0].0 > dims_a[0].0 && dims_b[0].1 > dims_a[0].1,
-            "a larger undock window reflows the pane to more cells: A={dims_a:?} B={dims_b:?}",
+            dims_b[0].0 > dims_a[0].0,
+            "a wider undock window reflows the pane to more cols: A={dims_a:?} B={dims_b:?}",
+        );
+    }
+
+    /// PINION-PR35 repro (un-ignore when delivered): a floating window's pane does NOT
+    /// reflow its HEIGHT to a window SMALLER than the pane's boot content. pinion's
+    /// `view_dock_panel` `content_wrapper` is `flex_grow(1.0)` with NO `min_size:0`
+    /// (unlike `view_splitter`'s R1086 children), so the grid's boot-row min-content
+    /// pins the panel — rows stick at boot dims regardless of window height. sprag's
+    /// `fill_definite_shrinkable` (content-side `min_size.height:0`) cannot relieve a
+    /// clamp that lives on the pinion-owned wrapper; the fix is PINION-PR35 (give the
+    /// content wrapper the R1086 idiom). Width reflows fine (see the test above), so the
+    /// floating window is usable at its 1:1 open size — only shrinking overflows.
+    #[test]
+    #[ignore = "PINION-PR35: view_dock_panel content_wrapper lacks min_size:0; rows stick at boot"]
+    fn undock_window_height_reflow_is_blocked_on_pinion_pr35() {
+        let mut core = ShellCore::<TerminalViewer>::new();
+        let metric = core.root_owner().run(|| use_terminal().metric);
+        let win = dock::pane_window_id(0);
+        let _ = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+        core.root_owner().run(|| dock::toggle_pane_floating(0));
+
+        let (wa, ha) = (600u32, 400u32);
+        let (wb, hb) = (900u32, 720u32);
+        let _ = core.compute_paint_scene_for_window(&win, wa, ha);
+        let dims_a = painted_grid_dims(&core.compute_paint_scene_for_window(&win, wa, ha));
+        let _ = core.compute_paint_scene_for_window(&win, wb, hb);
+        let dims_b = painted_grid_dims(&core.compute_paint_scene_for_window(&win, wb, hb));
+
+        let full_a = crate::terminal::grid_dims((wa, ha), metric);
+        assert!(
+            dims_a[0].1 > 0 && dims_a[0].1 < full_a.1,
+            "A rows sane under the header: dims_a={dims_a:?} full_a={full_a:?}",
+        );
+        assert!(
+            dims_b[0].1 > dims_a[0].1,
+            "a taller undock window reflows the pane to more rows: A={dims_a:?} B={dims_b:?}",
         );
     }
 

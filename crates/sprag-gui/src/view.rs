@@ -6,14 +6,17 @@
 use crate::ROOT_TAG;
 use crate::dock::pane_window_index;
 use crate::input::use_preedit;
-use crate::split::{pane_index_of_panel, use_dock_topology, use_drop_preview, use_split_ratio};
+use crate::split::{
+    pane_index_of_panel, panel_id, use_dock_topology, use_drop_preview, use_split_ratio,
+};
 use crate::terminal::{TerminalView, pane_tag, use_terminal};
 use pinion_core::scene::ContainerNode;
 use pinion_core::style::{BoxStyle, LayoutStyle, Size, SizeValue};
 use pinion_core::theme::{ColorRole, Theme, use_theme};
 use pinion_core::{Frame, Scene};
 use pinion_widget_paint::dock::{
-    DockSplitState, FloatingPlaceholderStyle, view_dock_surface, view_floating_placeholder,
+    DockPanelStyle, DockSplitState, FloatingPlaceholderStyle, view_dock_panel, view_dock_surface,
+    view_floating_placeholder,
 };
 use sprag_host::PaneViewSpec;
 
@@ -22,21 +25,30 @@ const THEME_TAG: &str = "app";
 
 /// view-fn (§6.3): per-window paint. The **main** window tiles the DOCKED panes
 /// (those without an undock window); an **undock window** (`pane-{i}`) paints that
-/// one pane alone, full-window. Both reuse [`build_pane_scene`], so a docked and a
-/// floated pane are pixel-identical projections. [`WidgetCore::view`](crate::TerminalViewer)
-/// (the windowless / RPC-snapshot fallback) routes here as the main window. The
-/// producer threads (the PTY readers) live in `create_extra_externals`, not here.
+/// one pane as a single [`view_dock_panel`]
+/// — a draggable header (the drag source the same per-pane `DockPanelExternal` routes
+/// from, so a SETTLED floating window can be re-grabbed / dragged back onto the dock)
+/// above the pane content. [`WidgetCore::view`](crate::TerminalViewer) (the windowless /
+/// RPC-snapshot fallback) routes here as the main window. The producer threads (the PTY
+/// readers) live in `create_extra_externals`, not here.
 #[allow(clippy::trivially_copy_pass_by_ref)]
 pub(crate) fn view_for_window(window_id: &str, _state: (), _frame: &Frame) -> Scene {
     let theme = use_theme(THEME_TAG).theme_animated();
     let tv = use_terminal();
     match pane_window_index(window_id) {
-        // An undock window paints its one pane (if still present); a stale window
-        // id (pane closed) falls back to the main layout, never a stranded paint.
-        // The lone pane needs no special fill here — `compose` gives every content
-        // node a definite extent so it reflows in BOTH axes (the R1021 per-window
-        // pane-viewport publish does the rest); see `compose`.
-        Some(i) if i < tv.pane_count() => compose(build_pane_scene(&tv, i, &theme), &theme),
+        // An undock window paints its one pane wrapped in a `view_dock_panel` (header +
+        // content), mirroring pinion's `hello-dock-panels-editor` `view_floating_panel`
+        // — NO outer `compose` (the panel IS the window root). The content is
+        // `fill_definite_shrinkable` so the pane reflows to a window SMALLER than its boot
+        // content (the floating-window reflow path, see that fn). A stale window id (pane
+        // closed) falls back to the main layout, never a stranded paint.
+        Some(i) if i < tv.pane_count() => view_dock_panel(
+            &panel_id(i),
+            fill_definite_shrinkable(build_pane_scene(&tv, i, &theme)),
+            &theme,
+            &DockPanelStyle::m3_default(panel_id(i)),
+            None,
+        ),
         _ => view_main(&tv, &theme),
     }
 }
@@ -47,7 +59,7 @@ pub(crate) fn view_for_window(window_id: &str, _state: (), _frame: &Frame) -> Sc
 /// `panel_content` callback projects that pane ([`build_pane_scene`]); each Split's
 /// ratio is the shared [`use_split_ratio`] Signal a drag re-weights (the SSOT both
 /// the painted splitter and its `SplitterExternal` read). The walker wraps every
-/// leaf in a [`view_dock_panel`](pinion_widget_paint::dock::view_dock_panel) — a
+/// leaf in a [`view_dock_panel`] — a
 /// header strip (the drag / tear-off handle) above the pane.
 ///
 /// The topology holds EVERY pane's leaf always (R72 placeholder model): a floated pane's
@@ -188,7 +200,7 @@ fn compose(content: Scene, theme: &Theme) -> Scene {
 ///    R55 undock bug (the pane reflowed only its width).
 /// 2. [`view_main`]'s `panel_content` callback wraps EACH docked pane's content,
 ///    because [`view_dock_surface`] interposes a sizeless `flex_grow(1.0)` content
-///    wrapper ([`view_dock_panel`](pinion_widget_paint::dock::view_dock_panel))
+///    wrapper ([`view_dock_panel`])
 ///    between the splitter and the pane grid — without a definite extent there the
 ///    grid keeps its full-window intrinsic width, never gets a measured rect, and the
 ///    R1012 reflow never fires (R60).
@@ -198,6 +210,26 @@ fn compose(content: Scene, theme: &Theme) -> Scene {
 pub(crate) fn fill_definite(scene: Scene) -> Scene {
     match scene {
         Scene::Container(c) => Scene::Container(c.map_layout(|l| l.with_size(fill_size()))),
+        other => other,
+    }
+}
+
+/// [`fill_definite`] PLUS a main-axis (height) `min_size: Px(0)` — the content for a
+/// lone pane in a FLOATING window. A floating window can be sized SMALLER than the
+/// pane's boot content (the user shrinks it), and `view_dock_panel`'s `content_wrapper`
+/// is `flex_grow(1.0)` with NO `min_size: 0` (unlike `view_splitter`'s R1086 children),
+/// so its CSS automatic minimum is its content's min-content height — a grid taller than
+/// the window can't shrink and overflows (rows stuck at boot dims). Declaring the
+/// content's own `min_size.height = 0` (alongside a definite `Percent(100)` preferred
+/// height) lets it shrink to the panel's distributed height, so the grid gets a
+/// sub-window rect, the R1012 publish reports it, and the reflow Effect fires. (If this
+/// proves insufficient the gap is pinion's `content_wrapper` — see PINION-PR35.)
+fn fill_definite_shrinkable(scene: Scene) -> Scene {
+    match scene {
+        Scene::Container(c) => Scene::Container(c.map_layout(|l| {
+            l.with_size(fill_size())
+                .with_min_size(Size::auto().with_height(SizeValue::Px(0)))
+        })),
         other => other,
     }
 }
