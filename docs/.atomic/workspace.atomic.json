@@ -3398,6 +3398,46 @@
         "PINION-PR35 (floating-window height reflow) still open; un-ignore the repro + sprag change 0 when delivered."
       ]
     },
+    "Round 78": {
+      "decision_summary": "Round 78: bump the 7 pinion-* git revs e340d97b (R1107.1) -> d1d1549d (R1112), consuming the three dock-UX PR docs sprag filed in R77 (all delivered by pinion R1109-R1112) + PR-34 declined. These fix the three live dock issues the user reported. PINION-PR35 (R1109): view_dock_panel content_wrapper got the R1086 idiom (flex_basis:0 + flex_grow:1 + min-height:0), so a floating window's pane now reflows its HEIGHT below boot content -- sprag change 0, the #[ignore]d height repro is un-ignored and passes. PINION-PR36 (R1110): tear-off detaches on ESCAPE (cursor leaves every drop target), NOT on the drag threshold -- so an in-dock drag stays docked and shows a reorganize preview instead of instantly floating a follower (kills the flicker AND restores drag-to-dock split, which threshold-detach had broken entirely); sprag change 0. PINION-PR37 (R1111/R1112): DockReorganizer::with_tabbing(false) makes a centre drop route to the nearest edge (split) instead of a tab well, on every path (R1112 lifted the flag to the one surface SSOT); sprag wires .with_tabbing(false) since a terminal multiplexer docks by split only, no tabs. PR-34 declined by pinion (R1108: sprag's placeholder mooted it). SCE 3078f8bf / vello 0.9 unchanged.",
+      "changes_bullets": [
+        "Cargo.toml: bumped 7 pinion-* e340d97b -> d1d1549d (single replace-all; SCE/vello untouched, verified 7 lines + 0 stale). Cargo.lock re-resolved.",
+        "split.rs use_dock_reorganizer: DockReorganizer::new(topology).with_tabbing(false) (PR-37) -- a terminal docks by split only; tabbing-off routes the centre zone to the nearest edge on drag/RPC/cross-window-redock (R1112 surface SSOT), so no Center/tab drop zone appears. Doc added.",
+        "main.rs: un-ignored + renamed the PR-35 repro undock_window_height_reflow_is_blocked_on_pinion_pr35 -> undock_window_reflows_its_height_below_boot_content (now a delivered-capability guard; passes -- pinion R1109 + sprag's existing fill_definite_shrinkable compose). No sprag code change for PR-35/36 themselves (both are pinion-internal); the bump consumes them."
+      ],
+      "verification_bullets": [
+        "sprag-gui 62 passed / 0 failed / 0 ignored (the PR35 height repro un-ignored + green; the ignore count dropped to 0) + full cargo test --workspace green; clippy -p sprag-gui --all-targets clean; rustfmt clean; cargo doc -D warnings (private items) clean. Checkpoint-built against d1d1549d with no sprag code first (so a break = the bump, not the wiring).",
+        "LIVE-VERIFIED the user's three reports fixed (hidden-window + RPC scene/drag + scene/snapshot from:paint + SPRAG_GUI_LOG): #3 drag-to-dock split RESTORED -- dragging terminal-0's header onto terminal-1's bottom edge produced a reorg-minted split (reorg-split-0 in the topology) with ZERO float/dock-undock events (PR-36: in-zone drag stays docked, reorganizes; previously threshold-detach floated it -> 0 reorganize, no split). #2 flicker GONE (the in-zone drag no longer floats a follower). #1 centre/tab zone suppressed by with_tabbing(false) (source-confirmed: centre routes to nearest edge). PR-35 height reflow confirmed by the un-ignored headless guard."
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "All three R77 user-reported dock issues are now resolved via the bump (PR-35/36/37 delivered) + one sprag line (with_tabbing(false)). drag-to-dock split works again (PR-36 detach-on-escape), no flicker, no inappropriate centre/tab zone, floating windows reflow height (PR-35). PR-34 declined by pinion (placeholder mooted it).",
+        "The earlier \"black floating window\" symptom (wgpu surface acquisition failed: validation, repeated) was tied to the rapid float/redock oscillation of the threshold-detach bug; with PR-36 (no float on in-zone drag) the oscillation is gone, so the surface churn should be gone too -- re-confirm live if it recurs (was never reproducible via RPC batch, only live drag).",
+        "No open pinion items from the dock-DnD line remain (PR-31..37 all delivered/declined/consumed). Next: push R78 (awaiting consent); optional adversarial session-review of R77+R78 (mode toggle + PR consumption)."
+      ],
+      "publishable_decision_summary": "Round 78: bump the 7 pinion-* git revs e340d97b (R1107.1) -> d1d1549d (R1112), consuming the three dock-UX PR docs sprag filed in R77 (all delivered by pinion R1109-R1112) + PR-34 declined. These fix the three live dock issues the user reported. PINION-PR35 (R1109): view_dock_panel content_wrapper got the R1086 idiom (flex_basis:0 + flex_grow:1 + min-height:0), so a floating window's pane now reflows its HEIGHT below boot content -- sprag change 0, the #[ignore]d height repro is un-ignored and passes. PINION-PR36 (R1110): tear-off detaches on ESCAPE (cursor leaves every drop target), NOT on the drag threshold -- so an in-dock drag stays docked and shows a reorganize preview instead of instantly floating a follower (kills the flicker AND restores drag-to-dock split, which threshold-detach had broken entirely); sprag change 0. PINION-PR37 (R1111/R1112): DockReorganizer::with_tabbing(false) makes a centre drop route to the nearest edge (split) instead of a tab well, on every path (R1112 lifted the flag to the one surface SSOT); sprag wires .with_tabbing(false) since a terminal multiplexer docks by split only, no tabs. PR-34 declined by pinion (R1108: sprag's placeholder mooted it). SCE 3078f8bf / vello 0.9 unchanged.",
+      "publishable_changes_bullets": [
+        "Cargo.toml: bumped 7 pinion-* e340d97b -> d1d1549d (single replace-all; SCE/vello untouched, verified 7 lines + 0 stale). Cargo.lock re-resolved.",
+        "split.rs use_dock_reorganizer: DockReorganizer::new(topology).with_tabbing(false) (PR-37) -- a terminal docks by split only; tabbing-off routes the centre zone to the nearest edge on drag/RPC/cross-window-redock (R1112 surface SSOT), so no Center/tab drop zone appears. Doc added.",
+        "main.rs: un-ignored + renamed the PR-35 repro undock_window_height_reflow_is_blocked_on_pinion_pr35 -> undock_window_reflows_its_height_below_boot_content (now a delivered-capability guard; passes -- pinion R1109 + sprag's existing fill_definite_shrinkable compose). No sprag code change for PR-35/36 themselves (both are pinion-internal); the bump consumes them."
+      ],
+      "publishable_verification_bullets": [
+        "sprag-gui 62 passed / 0 failed / 0 ignored (the PR35 height repro un-ignored + green; the ignore count dropped to 0) + full cargo test --workspace green; clippy -p sprag-gui --all-targets clean; rustfmt clean; cargo doc -D warnings (private items) clean. Checkpoint-built against d1d1549d with no sprag code first (so a break = the bump, not the wiring).",
+        "LIVE-VERIFIED the user's three reports fixed (hidden-window + RPC scene/drag + scene/snapshot from:paint + SPRAG_GUI_LOG): #3 drag-to-dock split RESTORED -- dragging terminal-0's header onto terminal-1's bottom edge produced a reorg-minted split (reorg-split-0 in the topology) with ZERO float/dock-undock events (PR-36: in-zone drag stays docked, reorganizes; previously threshold-detach floated it -> 0 reorganize, no split). #2 flicker GONE (the in-zone drag no longer floats a follower). #1 centre/tab zone suppressed by with_tabbing(false) (source-confirmed: centre routes to nearest edge). PR-35 height reflow confirmed by the un-ignored headless guard."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "All three R77 user-reported dock issues are now resolved via the bump (PR-35/36/37 delivered) + one sprag line (with_tabbing(false)). drag-to-dock split works again (PR-36 detach-on-escape), no flicker, no inappropriate centre/tab zone, floating windows reflow height (PR-35). PR-34 declined by pinion (placeholder mooted it).",
+        "The earlier \"black floating window\" symptom (wgpu surface acquisition failed: validation, repeated) was tied to the rapid float/redock oscillation of the threshold-detach bug; with PR-36 (no float on in-zone drag) the oscillation is gone, so the surface churn should be gone too -- re-confirm live if it recurs (was never reproducible via RPC batch, only live drag).",
+        "No open pinion items from the dock-DnD line remain (PR-31..37 all delivered/declined/consumed). Next: push R78 (awaiting consent); optional adversarial session-review of R77+R78 (mode toggle + PR consumption)."
+      ]
+    },
     "Round 8": {
       "decision_summary": "Orchestration control substrate: a guardrailed perceive-act-judge loop over a pane, modeled as an SCE/SCXML statechart (sprag's first direct SCE dogfood); built in-process, with the plugin host/API to be extracted later.",
       "changes_bullets": [
