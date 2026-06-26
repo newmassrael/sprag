@@ -43,23 +43,23 @@ repository = "https://github.com/newmassrael/sprag"
 # so the single shared SCE instance is preserved (see the SCE block). `package=` is
 # omitted (dep key == crate name; pinion crates are workspace members of the repo).
 # (DESIGN.md §5's "path deps — unpublished" rationale is superseded here by PR-22.)
-pinion-core = { git = "https://github.com/newmassrael/pinion.git", rev = "e340d97bca5c0c659452cfc954f5f16a173c0aaa" }
-pinion-a11y = { git = "https://github.com/newmassrael/pinion.git", rev = "e340d97bca5c0c659452cfc954f5f16a173c0aaa" }
-pinion-shell = { git = "https://github.com/newmassrael/pinion.git", rev = "e340d97bca5c0c659452cfc954f5f16a173c0aaa" }
+pinion-core = { git = "https://github.com/newmassrael/pinion.git", rev = "d1d1549d09d85116e54327f0522a2c09acda6a8f" }
+pinion-a11y = { git = "https://github.com/newmassrael/pinion.git", rev = "d1d1549d09d85116e54327f0522a2c09acda6a8f" }
+pinion-shell = { git = "https://github.com/newmassrael/pinion.git", rev = "d1d1549d09d85116e54327f0522a2c09acda6a8f" }
 # pinion-runtime: the shell's input/focus runtime. sprag-gui uses it only as a
 # DEV-dependency, for `PointerId` in the end-to-end click-to-focus test (the
 # shell's pointer methods take it); not a runtime dependency of any sprag crate.
-pinion-runtime = { git = "https://github.com/newmassrael/pinion.git", rev = "e340d97bca5c0c659452cfc954f5f16a173c0aaa" }
+pinion-runtime = { git = "https://github.com/newmassrael/pinion.git", rev = "d1d1549d09d85116e54327f0522a2c09acda6a8f" }
 # Backend-agnostic widget paint helpers (GPU-free; deps core/text/a11y, already
 # under pinion-shell). sprag-gui uses `view_splitter` + `SplitterExternal` for
 # the draggable pane dividers (R38).
-pinion-widget-paint = { git = "https://github.com/newmassrael/pinion.git", rev = "e340d97bca5c0c659452cfc954f5f16a173c0aaa" }
-pinion-forge = { git = "https://github.com/newmassrael/pinion.git", rev = "e340d97bca5c0c659452cfc954f5f16a173c0aaa" }
+pinion-widget-paint = { git = "https://github.com/newmassrael/pinion.git", rev = "d1d1549d09d85116e54327f0522a2c09acda6a8f" }
+pinion-forge = { git = "https://github.com/newmassrael/pinion.git", rev = "d1d1549d09d85116e54327f0522a2c09acda6a8f" }
 # pinion-rpc: the scene-as-data introspection wire (snapshot.rs) + dispatch.
 # Confined to sprag-host (the RPC server layer) so the producer/projection
 # crates stay free of its heavy transitive deps (DESIGN.md §3/§5: the data
 # path needs no display).
-pinion-rpc = { git = "https://github.com/newmassrael/pinion.git", rev = "e340d97bca5c0c659452cfc954f5f16a173c0aaa" }
+pinion-rpc = { git = "https://github.com/newmassrael/pinion.git", rev = "d1d1549d09d85116e54327f0522a2c09acda6a8f" }
 
 # VT toolkit (DESIGN.md §4): termwiz is the embedded verified escape
 # parser + cell/color/input primitives. The emulator state machine is

@@ -851,18 +851,16 @@ mod tests {
         );
     }
 
-    /// PINION-PR35 repro (un-ignore when delivered): a floating window's pane does NOT
-    /// reflow its HEIGHT to a window SMALLER than the pane's boot content. pinion's
-    /// `view_dock_panel` `content_wrapper` is `flex_grow(1.0)` with NO `min_size:0`
-    /// (unlike `view_splitter`'s R1086 children), so the grid's boot-row min-content
-    /// pins the panel — rows stick at boot dims regardless of window height. sprag's
-    /// `fill_definite_shrinkable` (content-side `min_size.height:0`) cannot relieve a
-    /// clamp that lives on the pinion-owned wrapper; the fix is PINION-PR35 (give the
-    /// content wrapper the R1086 idiom). Width reflows fine (see the test above), so the
-    /// floating window is usable at its 1:1 open size — only shrinking overflows.
+    /// A floating window's pane reflows its HEIGHT to a window SMALLER than the pane's
+    /// boot content. This was blocked on PINION-PR35 (pinion's `view_dock_panel`
+    /// `content_wrapper` was `flex_grow(1.0)` with no `min_size:0`, so the grid's boot-row
+    /// min-content pinned the panel — rows stuck at boot dims); pinion R1109 gave the
+    /// content wrapper the R1086 idiom (`flex_basis:0 + flex_grow:1 + min-height:0`), so
+    /// sprag's `fill_definite_shrinkable` (content-side `min_size.height:0`) now composes
+    /// with it and the pane shrinks to the panel's distributed height. (Un-ignored at the
+    /// R78 bump; was the `..._is_blocked_on_pinion_pr35` repro.)
     #[test]
-    #[ignore = "PINION-PR35: view_dock_panel content_wrapper lacks min_size:0; rows stick at boot"]
-    fn undock_window_height_reflow_is_blocked_on_pinion_pr35() {
+    fn undock_window_reflows_its_height_below_boot_content() {
         let mut core = ShellCore::<TerminalViewer>::new();
         let metric = core.root_owner().run(|| use_terminal().metric);
         let win = dock::pane_window_id(0);

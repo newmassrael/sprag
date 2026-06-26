@@ -163,11 +163,20 @@ const REORGANIZER_KEY: &str = "sprag_gui.dock_reorganizer";
 /// ONE coordinator → a pointer drop mints split ids from one `split_seq` counter. The
 /// topology dep is resolved BEFORE the cache factory (an `Owner::cache` factory must not
 /// nest another `cache` resolution).
+///
+/// `with_tabbing(false)` (pinion R1111/R1112 / PINION-PR37): a terminal multiplexer docks
+/// by SPLIT only — "stack two terminals as tabs in one slot" (the centre-zone `Tabify`) is
+/// not a terminal idiom. Tabbing-off makes pinion's drop classification route a centre drop
+/// to the nearest edge (split) instead of a tab well, on EVERY path (drag, RPC, cross-window
+/// redock — R1112 lifted the flag to this one surface SSOT). So no `Center`/tab drop zone
+/// appears for the user.
 pub(crate) fn use_dock_reorganizer() -> Rc<DockReorganizer> {
     let topology = use_dock_topology();
     Owner::current()
         .expect("use_dock_reorganizer() requires an active Owner scope")
-        .cache(REORGANIZER_KEY, move || DockReorganizer::new(topology))
+        .cache(REORGANIZER_KEY, move || {
+            DockReorganizer::new(topology).with_tabbing(false)
+        })
 }
 
 /// `Owner::cache` key for the shared live drag-to-dock drop-preview.
