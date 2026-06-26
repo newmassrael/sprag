@@ -70,10 +70,12 @@
 //! Effects resize the PTYs (automatic; the `reflow` seam was built for it).
 //!
 //! This retires the former flat row/grid model (and the `SPRAG_GUI_LAYOUT` env): the
-//! topology holds only the DOCKED panes, so undocking a pane removes its leaf and the
-//! rest reclaim its space ([`split::float_pane`]; docking back re-inserts it,
-//! [`split::dock_pane`]). A dock-back mints a fresh Split id, so the splitter set is a
-//! runtime-mutable projection of the topology — [`create_extra_externals`](TerminalViewer)
+//! topology holds EVERY pane's leaf always (R72 placeholder model), and floating a pane
+//! only adds a `pane-{i}` OS window — its leaf stays, painting a placeholder
+//! ([`split`] / [`dock`] own the orthogonal authorities). The tree is restructured only
+//! by a reorganize gesture (drag-to-dock + zone-redock), which mints a fresh Split id,
+//! so the splitter set is a runtime-mutable projection of the topology —
+//! [`create_extra_externals`](TerminalViewer)
 //! walks the LIVE topology and [`external_set_is_dynamic`](TerminalViewer::external_set_is_dynamic)
 //! opts into pinion R689's per-frame reconcile so the new divider registers a routable
 //! `SplitterExternal` and becomes drag-resizable. The interactive layout lives
@@ -96,8 +98,8 @@
 //!   [`Signal`] (floating SSOT) +
 //!   [`toggle_pane_floating`](dock::toggle_pane_floating).
 //! - [`split`] — the dock split-tree model: the held [`DockTopology`](pinion_widget_paint::dock::DockTopology)
-//!   Signal ([`use_dock_topology`](split::use_dock_topology)), its collapse-on-undock
-//!   mutation ([`float_pane`](split::float_pane) / [`dock_pane`](split::dock_pane)),
+//!   Signal ([`use_dock_topology`](split::use_dock_topology)) of ALL panes' leaves (static
+//!   under float/dock; the docked set is DERIVED via [`docked_pane_indices`](split::docked_pane_indices)),
 //!   and the per-Split ratio Signals ([`use_split_ratio`](split::use_split_ratio)).
 //! - [`a11y`] — the per-pane (per-window) accessible-node projection (human-AT).
 //! - [`view`] — the per-window paint ([`view::view_for_window`]: main tiling /
@@ -1165,11 +1167,11 @@ mod tests {
         );
     }
 
-    /// Undocking every pane leaves the main window empty — the dock topology collapses
-    /// to `None` and `view_main` paints a childless surface Container (no panic, no
-    /// pane painted).
+    /// Undocking every pane: in the R72 placeholder model the topology is UNCHANGED
+    /// (every leaf survives), so `view_main` paints a placeholder per leaf — no pane grid,
+    /// no panic. (The old collapse model emptied the tree to `None` and painted nothing.)
     #[test]
-    fn undock_all_panes_yields_an_empty_main_without_panic() {
+    fn undock_all_panes_paints_placeholders_not_grids() {
         let mut core = ShellCore::<TerminalViewer>::new();
         let n = core.root_owner().run(|| use_terminal().pane_count());
         core.root_owner().run(|| {
@@ -1177,11 +1179,23 @@ mod tests {
                 dock::toggle_pane_floating(i);
             }
         });
+        // The topology still holds every leaf (no collapse).
+        assert_eq!(
+            core.root_owner().run(|| split::use_dock_topology()
+                .get()
+                .map(|t| t.panel_ids().len())),
+            Some(n),
+            "every leaf survives the float (placeholder model)"
+        );
         let main = core.compute_paint_scene_for_window(dock::MAIN_WINDOW_ID, WINDOW_W, WINDOW_H);
         for i in 0..n {
             assert!(
                 !main.contains_tag(pane_tag(i)),
-                "pane {i} is floated, not in main"
+                "pane {i}'s grid is floated, not in main"
+            );
+            assert!(
+                main.contains_tag(format!("{}_placeholder", split::panel_id(i)).as_str()),
+                "pane {i}'s leaf paints a placeholder holding its slot"
             );
         }
     }
@@ -1227,7 +1241,15 @@ mod tests {
         assert_eq!(
             core.root_owner().run(split::docked_pane_indices),
             vec![0],
-            "the dock-tree collapsed pane 1's leaf (only pane 0 left docked)"
+            "pane 1 is filtered from the docked set (it floats)"
+        );
+        // Placeholder model: the leaf SURVIVES (membership filtered, not collapsed).
+        assert_eq!(
+            core.root_owner().run(|| split::use_dock_topology()
+                .get()
+                .map(|t| t.panel_ids().len())),
+            Some(2),
+            "both leaves stay in the topology (pane 1 painting a placeholder)"
         );
     }
 
@@ -1277,7 +1299,7 @@ mod tests {
         assert_eq!(
             core.root_owner().run(split::docked_pane_indices),
             vec![0],
-            "the dock-tree collapsed pane 1's leaf"
+            "pane 1 is filtered from the docked set (its leaf stays, painting a placeholder)"
         );
         assert_eq!(
             pane1_pos(&core),
@@ -1302,11 +1324,11 @@ mod tests {
     }
 
     /// Live redock / restore (R1094 / PINION-PR31): after a live-follow floated pane
-    /// 1, the `tear_off_redock` intent (emitted on a redock-over-zone or a snap-back)
-    /// docks it back through `WidgetCore::update` — the window is dropped and the leaf
-    /// re-installed. Then a SECOND redock (the pane already docked) is a harmless
-    /// no-op (R1094 emits a restore for a snap-back too). Live scoped tag + `Text`
-    /// payload, asserting the topology both authorities expose.
+    /// 1, the `tear_off_redock` intent (emitted on a same-window escape-return or a
+    /// snap-back) docks it back through `WidgetCore::update` — the window is dropped and
+    /// the pane's membership restores (its leaf never left, R72 placeholder model). Then
+    /// a SECOND redock (the pane already docked) is a harmless no-op. Live scoped tag +
+    /// `Text` payload, asserting the membership both authorities expose.
     #[test]
     fn tear_off_redock_intent_docks_the_floated_pane() {
         use std::borrow::Cow;
@@ -1342,7 +1364,7 @@ mod tests {
         assert_eq!(
             core.root_owner().run(split::docked_pane_indices),
             vec![0, 1],
-            "redock re-installed pane 1's leaf in index order"
+            "redock restored pane 1's membership (its leaf never left the tree)"
         );
 
         // Idempotent: a redock of an already-docked pane changes nothing.

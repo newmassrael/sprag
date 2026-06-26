@@ -12,7 +12,9 @@ use pinion_core::scene::ContainerNode;
 use pinion_core::style::{BoxStyle, LayoutStyle, Size, SizeValue};
 use pinion_core::theme::{ColorRole, Theme, use_theme};
 use pinion_core::{Frame, Scene};
-use pinion_widget_paint::dock::{DockSplitState, view_dock_surface};
+use pinion_widget_paint::dock::{
+    DockSplitState, FloatingPlaceholderStyle, view_dock_surface, view_floating_placeholder,
+};
 use sprag_host::PaneViewSpec;
 
 /// Shared [`ThemeProvider`](pinion_core::ThemeProvider) cache key (the surface fill behind the grid).
@@ -48,10 +50,12 @@ pub(crate) fn view_for_window(window_id: &str, _state: (), _frame: &Frame) -> Sc
 /// leaf in a [`view_dock_panel`](pinion_widget_paint::dock::view_dock_panel) — a
 /// header strip (the drag / tear-off handle) above the pane.
 ///
-/// The topology holds only the DOCKED panes ([`crate::split`]): undocking a pane
-/// removes its leaf ([`crate::split::float_pane`]) so the rest reclaim its space,
-/// and `None` (every pane floated) paints an empty surface. A floated pane is
-/// painted alone in its own undock window ([`view_for_window`]), never here.
+/// The topology holds EVERY pane's leaf always (R72 placeholder model): a floated pane's
+/// leaf stays, and the `panel_content` callback paints a [`view_floating_placeholder`]
+/// for it (holding its slot) while its real content is painted alone in its own undock
+/// window ([`view_for_window`]). Whether a leaf is floating is read from the windows-signal
+/// ([`crate::dock::is_pane_floating`], the sole floating authority). `None` is the
+/// zero-pane edge only (paints an empty surface).
 fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
     // The live drag-to-dock drop-preview (P2): read once here so the closure below
     // captures one snapshot (not a per-leaf re-read), and so the view subscribes to it —
@@ -63,14 +67,24 @@ fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
         Some(topo) => view_dock_surface(
             &topo,
             |panel_id| match pane_index_of_panel(panel_id) {
-                // Fill the dock panel's content area: the pane grid is no longer the
-                // direct splitter child (view_dock_panel wraps it under a header), so
-                // it needs its own definite extent or its full-window intrinsic size
-                // overflows the panel — the grid then never gets a measured rect, the
-                // R1012 reflow never fires, and the pane stays at its boot dims.
+                // A floating pane's leaf paints a placeholder holding its slot (R72): its
+                // real content lives in the pane's own undock window. Small-intrinsic, so
+                // it needs no `fill_definite` — the `view_dock_panel` content wrapper's
+                // flex_grow + cross-axis stretch fills the slot (matches pinion's editor).
+                Some(i) if i < tv.pane_count() && crate::dock::is_pane_floating(i) => {
+                    view_floating_placeholder(
+                        panel_id,
+                        theme,
+                        &FloatingPlaceholderStyle::m3_default(),
+                    )
+                }
+                // A docked pane: fill the dock panel's content area — the pane grid is no
+                // longer the direct splitter child (view_dock_panel wraps it under a
+                // header), so it needs its own definite extent or its full-window intrinsic
+                // size overflows the panel (the grid never gets a measured rect, the R1012
+                // reflow never fires, and the pane stays at its boot dims).
                 Some(i) if i < tv.pane_count() => fill_definite(build_pane_scene(tv, i, theme)),
-                // A leaf with no live pane (out of range / stale) — defensive; the
-                // topology only ever holds real docked tiles.
+                // A leaf with no live pane (out of range / stale) — defensive.
                 _ => Scene::Container(ContainerNode::new(Vec::new())),
             },
             |id, ratio| DockSplitState {

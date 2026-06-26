@@ -17,25 +17,27 @@
 //! `tear_off_follow` / `tear_off_redock` seam — non-toggling, so a per-move re-emit
 //! only repositions or restores, never flips).
 //!
-//! ## Two distinct authorities: OS windows vs the docked-pane set
+//! ## Two ORTHOGONAL authorities: OS windows vs dock-tree shape (R72 placeholder model)
 //!
-//! This module's `Signal<Vec<WindowSpec>>` is the authority for **which OS windows
-//! exist** — a `pane-{i}` window exists iff pane `i` is floating. That is a SEPARATE
-//! fact from **which panes are docked in the main window**, which is the dock split-
-//! tree's leaf set ([`crate::split::docked_pane_indices`]) — the one source both the
-//! paint ([`crate::view::view_for_window`]) and a11y read, so they never disagree. The two
-//! authorities are kept consistent at the two co-mutation primitives in this module —
-//! [`push_float`] (float: push window + remove leaf) and [`redock_pane`] (dock: drop
-//! window + re-insert leaf) — so a pane floats iff its window exists AND its leaf is
-//! absent from the tree. All three entry points route through them: [`open_floating`]
-//! (key path) and [`float_pane_at`]'s create branch call [`push_float`]; both
-//! [`toggle_pane_floating`] and the live redock call [`redock_pane`]. PR-31's live
-//! drag-follow (R1094) is the "second mutation path" the prior note anticipated; it
-//! preserves the invariant by reusing these same two primitives. Making the docked set
-//! a reactive projection of one authority (rather than co-mutated) is still the
-//! eventual cleanup — though only the docked *membership* is derivable; the split-tree
-//! also holds shape/ratios that no projection from the window list can reconstruct,
-//! which is why it stays held state and the cleanup is non-trivial (R71 review).
+//! This module's `Signal<Vec<WindowSpec>>` is the **sole floating authority** — a
+//! `pane-{i}` window exists IFF pane `i` floats. The dock split-tree
+//! ([`crate::split::use_dock_topology`]) is the **sole shape/ratio authority** and ALWAYS
+//! holds every pane's leaf (floating or not). The two are ORTHOGONAL and **never
+//! co-mutated**: floating a pane only pushes/removes a `WindowSpec` ([`push_float`] /
+//! [`redock_pane`] are window-only); the leaf stays put, and the view paints a
+//! [`view_floating_placeholder`](pinion_widget_paint::dock::view_floating_placeholder)
+//! for a floating leaf (holding its slot). All entry points route through the two
+//! window-only primitives: [`open_floating`] (key path) and [`float_pane_at`]'s create
+//! branch call [`push_float`]; both [`toggle_pane_floating`] and the live redock call
+//! [`redock_pane`].
+//!
+//! The docked set ([`crate::split::docked_pane_indices`], read by both paint and a11y) is
+//! now DERIVED — the tree's leaves filtered by [`is_pane_floating`] — so it can never
+//! disagree with the windows-signal. This lands R61's deferred "membership is a
+//! projection of one authority" cleanup: the tree is no longer co-mutated to track float
+//! state, it is filtered. The tree is restructured ONLY by a reorganize gesture
+//! (drag-to-dock + the cross-window zone-redock `apply_zone_redock`), never by a plain
+//! float/dock. Mirrors pinion's `hello-dock-panels-editor` reference consumer.
 //!
 //! ## Why the undock window opens at the pane's intrinsic size (and now reflows)
 //!
@@ -153,9 +155,11 @@ fn undock_window_spec(i: usize, position: Option<(i32, i32)>) -> WindowSpec {
 }
 
 /// `true` iff pane `i` currently floats — its `pane-{i}` OS window exists in the
-/// topology. The window-existence half of the float fact (the split-tree leaf's
-/// absence is the other half, kept consistent at the co-mutation sites below).
-fn is_pane_floating(i: usize) -> bool {
+/// windows-signal. In the placeholder model (R72) this is the SOLE floating authority:
+/// the dock split-tree always holds the pane's leaf (floating or not), so window
+/// existence alone decides float state. Read by [`crate::split::docked_pane_indices`]
+/// to derive the docked set, and by [`toggle_pane_floating`] to pick its branch.
+pub(crate) fn is_pane_floating(i: usize) -> bool {
     use_windows_topology()
         .get()
         .iter()
@@ -163,17 +167,16 @@ fn is_pane_floating(i: usize) -> bool {
 }
 
 /// Float pane `i`: push its undock [`WindowSpec`] ([`undock_window_spec`], at
-/// `position` if given) onto `windows` AND remove its leaf from the dock split-tree
-/// ([`crate::split::float_pane`]). The caller owns the `signal.set` + the `dock` diag.
+/// `position` if given) onto `windows`. The caller owns the `signal.set` + the `dock`
+/// diag.
 ///
-/// This is THE window↔tree co-mutation for floating — the two authorities (the window
-/// topology and the dock split-tree) are mutated together here so they never disagree
-/// (a pane floats iff its window exists AND its leaf is absent). Shared by the
-/// key-path [`open_floating`] and the live-follow create branch of [`float_pane_at`],
-/// so the float co-mutation lives in exactly one place.
+/// Window-only (R72 placeholder model): the dock split-tree is NOT touched — the pane's
+/// leaf stays in the topology and the view paints a placeholder for it while it floats.
+/// The windows-signal is the SOLE floating authority; pushing the window IS the float.
+/// Shared by the key-path [`open_floating`] and the live-follow create branch of
+/// [`float_pane_at`].
 fn push_float(windows: &mut Vec<WindowSpec>, i: usize, position: Option<(i32, i32)>) {
     windows.push(undock_window_spec(i, position));
-    crate::split::float_pane(i); // remove the leaf so the rest reclaim its space
 }
 
 /// Open pane `i` as a floating window at `position` (`None` → WM-placed; the key path
@@ -192,30 +195,19 @@ fn open_floating(i: usize, position: Option<(i32, i32)>) {
     crate::diag::dock_toggle(i, true, before, after);
 }
 
-/// Dock pane `i` back: drop its floating window AND re-insert its leaf into the dock
-/// split-tree ([`crate::split::dock_pane`]) — the window↔tree dock co-mutation, the
-/// mirror of [`push_float`]. Idempotent no-op when pane `i` is already docked (R1094
-/// emits a redock/restore for a snap-back too, so a pane this gesture never floated is
-/// harmless). The shell drops the winit window; the main layout repaints with pane `i`
-/// re-tiled (it reflows to its new tile via the main-window R1012 publish). Shared by
-/// [`toggle_pane_floating`]'s dock-back branch and the live redock/restore (pinion
-/// R1094 / PINION-PR31).
+/// Dock pane `i` back: drop its floating window. Idempotent no-op when pane `i` is
+/// already docked (R1094 emits a redock/restore for a snap-back too, so a pane this
+/// gesture never floated is harmless). Shared by [`toggle_pane_floating`]'s dock-back
+/// branch and the live redock/restore (pinion R1094 / PINION-PR31).
 ///
-/// Non-toggling, and — UNLIKE the float side ([`float_pane_at`]) — there is NO position
-/// mode: dock-back is a pure topology drop (the window's outer position is meaningless
-/// once it's gone), so the float/dock pair is intentionally asymmetric.
-///
-/// **v1 placement bound (→ PINION-PR34):** `split::dock_pane` re-inserts INDEX-relative,
-/// not at the drag's drop zone. On a redock-OVER-A-ZONE, pinion's `drag_release` runs
-/// `reorganizer.apply_intent` SYNCHRONOUSLY *before* this enqueued `tear_off_redock`
-/// drains — but the detached pane's leaf is already absent (removed by [`push_float`]
-/// during the follow), so `SplitInsert`'s `topology.remove_leaf(source)?` rejects and
-/// leaves the topology unchanged; THIS redock's index-relative `dock_pane` is then the
-/// SURVIVING placement. So a redock-over-zone lands index-relative in v1 (invisible
-/// with 2 panes — only one slot; latent at 3+ panes). Drop-zone fidelity is owed to the
-/// identity-relative `dock_pane` upgrade `split.rs:dock_pane` already names, plus a
-/// pinion ordering fix (PINION-PR34) — sprag cannot recover the zone here (the
-/// `tear_off_redock` payload carries only the panel id, never the zone).
+/// Window-only (R72 placeholder model): the leaf never left the topology, so de-floating
+/// is just removing the window — the view stops painting the placeholder for that leaf
+/// and paints its content instead, re-tiled in place (it reflows via the main-window
+/// R1012 publish). For a redock-over-a-ZONE the reducer ([`crate::TerminalViewer`]'s
+/// `WidgetCore::update`) relocates the leaf to the drop zone via the reorganizer's
+/// `apply_zone_redock` BEFORE calling this; here we only drop the window. (This is why
+/// the placeholder model moots PINION-PR34: the source leaf survives, so the zone
+/// relocate can't reject on an absent leaf.)
 pub(crate) fn redock_pane(i: usize) {
     let signal = use_windows_topology();
     let mut windows = signal.get();
@@ -225,7 +217,6 @@ pub(crate) fn redock_pane(i: usize) {
     };
     let before = windows.len();
     windows.remove(idx);
-    crate::split::dock_pane(i); // re-insert the leaf into the split-tree
     let after = windows.len();
     signal.set(windows);
     crate::diag::dock_toggle(i, false, before, after);
