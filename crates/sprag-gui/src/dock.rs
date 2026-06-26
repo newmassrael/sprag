@@ -43,17 +43,21 @@
 //!
 //! The undock window opens sized to the pane's intrinsic `(cols, rows) × cell`, so
 //! the pane fits 1:1 at the moment it tears off — the correct intrinsic size, NOT
-//! window-side split math (the SSOT trap). It then **reflows the pane to its own
-//! window size, both axes, as the window resizes**: pinion R1021 publishes the
-//! per-pane viewport rect for every painted window (the R1012 publish is no longer
-//! `DEFAULT_WINDOW`-gated — see `pinion-shell` `compute_paint_scene_internal`,
-//! "R1021 … published for EVERY painted window"), so the floated pane's existing
-//! [`crate::reflow`] Effect (it subscribes to `use_pane_viewport_size(pane_tag(i))`)
-//! fires on the secondary window's rect and `TIOCSWINSZ`-reflows the PTY. This is
-//! the consumer of `claudedocs/PINION-PR10-PER-WINDOW-VIEWPORT.md` (DELIVERED). The
-//! lone-pane scene is given a definite extent via
-//! [`crate::view::fill_definite`] (the same fill the docked split-tree uses) so
-//! it reflows in BOTH axes, not only width — see that fn's docs.
+//! window-side split math (the SSOT trap). It then reflows toward its own window size
+//! as the window resizes: pinion R1021 publishes the per-pane viewport rect for every
+//! painted window (the R1012 publish is no longer `DEFAULT_WINDOW`-gated — see
+//! `pinion-shell` `compute_paint_scene_internal`, "R1021 … published for EVERY painted
+//! window"), so the floated pane's existing [`crate::reflow`] Effect (it subscribes to
+//! `use_pane_viewport_size(pane_tag(i))`) fires on the secondary window's rect and
+//! `TIOCSWINSZ`-reflows the PTY. This is the consumer of
+//! `claudedocs/PINION-PR10-PER-WINDOW-VIEWPORT.md` (DELIVERED). R74 wraps the lone pane
+//! in a [`view_dock_panel`](pinion_widget_paint::dock::view_dock_panel) header (the
+//! drag-back source) with its content given a definite extent via `view`'s
+//! `fill_definite_shrinkable`. **WIDTH reflows; HEIGHT does not reflow
+//! below the pane's boot content** — pinion's `view_dock_panel` content wrapper lacks
+//! the main-axis `min_size:0` that `view_splitter` carries (PINION-PR35), so a
+//! shrunk-below-open floating window overflows vertically (fits 1:1 at the open size).
+//! See `fill_definite_shrinkable`'s docs.
 //!
 //! ## Freely resizable: grow AND shrink (pinion R1059 / PINION-PR23)
 //!
@@ -254,10 +258,10 @@ fn cursor_to_desktop(windows: &[WindowSpec], cursor: (f64, f64)) -> (i32, i32) {
 /// window being repositioned come from the SAME snapshot, so a concurrent
 /// `WindowEvent::Moved` write-back can't make the computed position stale against the
 /// list it is written into. Two phases over that snapshot:
-/// * docked (no `pane-{i}` window) → [`push_float`] at the cursor (the co-mutation +
-///   `dock` diag);
-/// * floating → move the window (position only — no tree change, no `dock` diag); a
-///   stationary cursor equality-skips the `set` (no repaint).
+/// * docked (no `pane-{i}` window) → [`push_float`] at the cursor (a window push + the
+///   `dock` diag; the leaf stays, R72);
+/// * floating → move the window (position only, no `dock` diag); a stationary cursor
+///   equality-skips the `set` (no repaint).
 ///
 /// Non-toggling: a per-move re-emit only repositions, it can never flip the window
 /// away (the R1071–R1078 double-toggle lesson, sprag side). Key/AI dock-back is
@@ -288,7 +292,8 @@ pub(crate) fn float_pane_at(i: usize, cursor: (f64, f64)) {
 /// was forwarded). Dispatches on [`is_pane_floating`] to the non-toggling primitives:
 /// [`redock_pane`] (dock-back) or [`open_floating`]`(None)` (WM-placed float, the key
 /// path has no cursor). So all three entry points — toggle, [`float_pane_at`],
-/// [`redock_pane`] — share the window↔tree co-mutation ([`push_float`] / [`redock_pane`]).
+/// [`redock_pane`] — drive the windows-signal only ([`push_float`] window push /
+/// [`redock_pane`] window drop); the split-tree is untouched (R72).
 ///
 /// Runs inside the shell root owner scope (called from `route_key`, itself wrapped
 /// in `root_owner.run`), so [`use_terminal`] / [`use_windows_topology`] / the

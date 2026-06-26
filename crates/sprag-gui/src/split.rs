@@ -32,17 +32,34 @@
 //!
 //! So the two authorities are ORTHOGONAL: the windows-signal owns "which panes float";
 //! this topology owns "the dock layout shape + ratios". They are never co-mutated.
-//! [`docked_pane_indices`] DERIVES the docked set from the windows-signal (filtering the
-//! tree's leaves by [`crate::dock::is_pane_floating`]) — this lands R61's deferred cleanup
-//! (membership from one authority; the tree is held shape state). The tree is restructured
-//! ONLY by reorganize gestures (drag-to-dock + zone-redock, via [`use_dock_reorganizer`]'s
-//! [`DockReorganizer`]), never by a plain float/dock. `None` = the zero-pane edge only.
+//! [`docked_pane_indices`] DERIVES the docked set — the tree's leaves filtered by
+//! [`crate::dock::is_pane_floating`] (so it is the *intersection* of the two orthogonal
+//! authorities: a docked pane is a leaf that exists AND is not floating). It is never a
+//! third stored copy — this lands R61's deferred "membership is derived, not co-mutated"
+//! cleanup. The tree is restructured ONLY by reorganize gestures (drag-to-dock +
+//! zone-redock, via [`use_dock_reorganizer`]'s [`DockReorganizer`]), never by a plain
+//! float/dock. `None` = the zero-pane edge only.
 //!
+//! ## Why placeholder, not collapse (R72 reversed R60 — keep the rejected rationale)
+//!
+//! R60 chose **collapse-on-undock**: floating a pane REMOVED its leaf so the siblings
+//! reclaimed the space — the natural *terminal-multiplexer* fill (tmux/zellij: pop a pane
+//! out, the rest grow). R72 deliberately reversed this to the **placeholder** model (the
+//! floated pane HOLDS an empty slot; siblings do NOT reclaim it). The reversal was a
+//! considered trade, not a drift:
+//!  - **For:** zone-honoring cross-window redock is trivially correct — the leaf survives,
+//!    so `DockReorganizer::apply_zone_redock` can relocate it to the drop zone and never
+//!    rejects on an absent source (this also moots PINION-PR34). And it matches pinion's
+//!    `hello-dock-panels-editor` reference (the desktop-IDE-dock model, like VS Code
+//!    dragging a panel out — the slot persists), the north-star "mirror pinion's pixels".
+//!  - **Cost (the rejected collapse's merit):** a terminal-multiplexer user may EXPECT the
+//!    remaining terminals to fill the screen when one tears off; here they don't (the slot
+//!    is held). Two reasonable models; sprag follows pinion's dock reference (placeholder).
 //! ## Identity-keyed ids
 //!
 //! Each leaf carries a stable [`panel_id`] (`terminal-{i}`, mapping 1:1 to the tile
 //! index via [`pane_index_of_panel`]); each Split a stable id ([`boot_split_id`]
-//! for the boot tree, a fresh `sprag_gui.split.dock.{seq}` for a dock-back insert).
+//! for the boot tree, a fresh `reorg`-prefixed id for a reorganize-minted divider).
 //! The per-split ratio Signal ([`use_split_ratio`]) is `Owner::cache`-keyed by that
 //! id and SHARED between the view (`view_dock_surface`) and the drag
 //! `SplitterExternal`, so a drag re-weights the painted panes. A Split id is the
@@ -134,10 +151,10 @@ const REORGANIZER_KEY: &str = "sprag_gui.dock_reorganizer";
 
 /// The ONE shared drag-to-dock reorganize coordinator (pinion R1081/PR-29, P2). Holds
 /// the dock-tree topology Signal — PR-29.1 (pinion R1084) made [`DockReorganizer`] total
-/// over `Option<DockTopology>`, so sprag's collapse-to-`None` topology
+/// over `Option<DockTopology>`, so sprag's `Option<DockTopology>`
 /// ([`use_dock_topology`]) is accepted DIRECTLY (no second signal): a reorganize on an
-/// empty (`None`) or single-leaf dock is a no-op, which is the only correct result (no
-/// source/target to move). Cached (`Owner::cache`) so every per-panel
+/// empty (`None`, the zero-pane edge) or single-leaf dock is a no-op, which is the only
+/// correct result (no source/target to move). Cached (`Owner::cache`) so every per-panel
 /// [`DockPanelExternal`](pinion_widget_paint::dock::DockPanelExternal) drag source shares
 /// ONE coordinator → a pointer drop mints split ids from one `split_seq` counter. The
 /// topology dep is resolved BEFORE the cache factory (an `Owner::cache` factory must not

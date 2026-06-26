@@ -225,11 +225,12 @@ pub(crate) fn fill_definite(scene: Scene) -> Scene {
 /// sub-window rect, the R1012 publish reports it, and the reflow Effect fires. (If this
 /// proves insufficient the gap is pinion's `content_wrapper` — see PINION-PR35.)
 fn fill_definite_shrinkable(scene: Scene) -> Scene {
-    match scene {
-        Scene::Container(c) => Scene::Container(c.map_layout(|l| {
-            l.with_size(fill_size())
-                .with_min_size(Size::auto().with_height(SizeValue::Px(0)))
-        })),
+    // Literally [`fill_definite`] PLUS the main-axis `min_size: 0` — compose it so the two
+    // never drift (the "fill the window" extent lives in exactly one place).
+    match fill_definite(scene) {
+        Scene::Container(c) => Scene::Container(
+            c.map_layout(|l| l.with_min_size(Size::auto().with_height(SizeValue::Px(0)))),
+        ),
         other => other,
     }
 }

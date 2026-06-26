@@ -54,7 +54,7 @@
 //! that). See `dock` docs. Per-window a11y partitions nodes
 //! ([`a11y::access_nodes_for_window`]).
 //!
-//! ## Dock split-tree layout (R60): drag to resize, collapse on undock
+//! ## Dock split-tree layout (R60, R72): drag to resize; float keeps the leaf (placeholder)
 //!
 //! The docked panes are arranged by a pinion [`DockTopology`](pinion_widget_paint::dock::DockTopology)
 //! — an identity-keyed binary split-tree ([`split`]) — lowered to pixels by
@@ -592,6 +592,12 @@ impl WidgetCore for TerminalViewer {
             // leaf survived — R72 placeholder model), then drop the float window. Only the
             // main window bears the dock topology; a non-main target has no slot, so we
             // skip the relocate (the window-drop alone returns the pane home).
+            // Order matters: relocate-leaf-while-still-floating THEN drop-window, so the
+            // redock paints ONCE at the final slot (reversing it would flash the pane at its
+            // old slot first). The two `signal.set`s (topology, then windows) are distinct
+            // reactive txns but paint-atomic here — they run inside one `update` tick with no
+            // reconcile between; a future refactor splitting them across ticks would expose
+            // the transient (leaf relocated, still floating).
             (TEAR_OFF_REDOCK_AT_EVENT, IntrospectValue::Json(v)) => {
                 if v.get("window").and_then(serde_json::Value::as_str) == Some(dock::MAIN_WINDOW_ID)
                     && let (Some(target), Some(x_rel), Some(y_rel)) = (
@@ -1587,8 +1593,9 @@ mod tests {
     /// `Signal<Option<DockTopology>>` SSOT (PR-29.1 made it total over `Option`) — applies
     /// a reorganize gesture and mutates the dock-tree. A Center-zone drop (the Swap the
     /// panel external builds) reorders the two boot panes; the topology stays `Some`
-    /// (reorganize preserves leaf count, never empties). Pins that sprag's collapse-to-
-    /// `None` topology drives the coordinator DIRECTLY — no second signal, no mirror.
+    /// (reorganize preserves leaf count, never empties). Pins that sprag's
+    /// `Option<DockTopology>` SSOT drives the coordinator DIRECTLY — no second signal, no
+    /// mirror.
     #[test]
     fn reorganizer_swaps_docked_panes_on_sprags_option_topology() {
         use pinion_widget_paint::dock::DockReorganizeIntent;
