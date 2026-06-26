@@ -577,7 +577,14 @@ impl WidgetCore for TerminalViewer {
                     v.get("x").and_then(serde_json::Value::as_f64),
                     v.get("y").and_then(serde_json::Value::as_f64),
                 ) {
-                    dock::float_pane_at(i, (x, y));
+                    // `source_window` (pinion R1107): the window the cursor was measured
+                    // in — so the desktop conversion uses the RIGHT origin. Dragging a
+                    // SETTLED floating window's header reports its own `pane-{i}` frame,
+                    // not main; without threading this the reposition added the main
+                    // origin and the window jumped/froze (the "undocked window won't drag"
+                    // bug). `None` → main, as before.
+                    let source_window = v.get("source_window").and_then(serde_json::Value::as_str);
+                    dock::float_pane_at(i, source_window, (x, y));
                 }
             }
             // Same-window redock / restore (R1094): a same-window escape-then-return or
@@ -1403,6 +1410,66 @@ mod tests {
             pane1_pos(&core),
             Some((350, 260)),
             "the window tracked the cursor to its new position"
+        );
+    }
+
+    /// R78 fix: dragging a SETTLED floating window's header repositions it by ITS OWN
+    /// window origin (the `source_window` pinion R1107 threads), not main's. The bug
+    /// ("undocked window won't drag") hardcoded main's origin, so a floater's local cursor
+    /// added to the main origin gave a bogus desktop point and the window jumped/froze.
+    /// Driven through the REAL reducer with the scoped tag plus the exact `source_window`
+    /// Json the live wire carries (R67/R68: the synthetic input must match the live wire).
+    #[test]
+    fn dragging_a_settled_floating_window_uses_its_own_origin() {
+        use std::borrow::Cow;
+        let mut core = ShellCore::<TerminalViewer>::new();
+        let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+        core.finalize_frame(scene);
+
+        // Give main a KNOWN origin (not WM-placed None) so the source-window choice is
+        // observable in the resulting position.
+        core.root_owner().run(|| {
+            let sig = dock::use_windows_topology();
+            let mut w = sig.get();
+            if let Some(m) = w.iter_mut().find(|s| s.id.as_ref() == dock::MAIN_WINDOW_ID) {
+                m.position = Some((1000, 500));
+            }
+            sig.set(w);
+        });
+
+        let pane1_win = dock::pane_window_id(1);
+        let pane1_pos = |core: &ShellCore<TerminalViewer>| {
+            core.root_owner().run(|| {
+                dock::use_windows_topology()
+                    .get()
+                    .iter()
+                    .find(|w| w.id == dock::pane_window_id(1))
+                    .and_then(|w| w.position)
+            })
+        };
+        let follow = |sw: &str, x: f64, y: f64| Intent {
+            tag: Cow::Owned(format!("{}.{}", split::panel_id(1), TEAR_OFF_FOLLOW_EVENT)),
+            payload: IntrospectValue::Json(serde_json::json!({
+                "panel": split::panel_id(1), "source_window": sw, "x": x, "y": y,
+            })),
+        };
+
+        // Float pane 1 with the cursor in MAIN's frame → main origin (1000,500) + (300,200).
+        core.dispatch_intent(&follow(dock::MAIN_WINDOW_ID, 300.0, 200.0));
+        assert_eq!(
+            pane1_pos(&core),
+            Some((1300, 700)),
+            "floated at main-origin + main-frame cursor"
+        );
+
+        // Now drag the SETTLED floating window by its OWN header (source_window = pane-1).
+        // Its origin is (1300,700); a local cursor (10,5) → (1310,705). The bug would add
+        // main's origin (1000,500)+(10,5)=(1010,505), jumping the window back near main.
+        core.dispatch_intent(&follow(&pane1_win, 10.0, 5.0));
+        assert_eq!(
+            pane1_pos(&core),
+            Some((1310, 705)),
+            "a settled floating window repositions by ITS OWN origin, not main's (R78)"
         );
     }
 

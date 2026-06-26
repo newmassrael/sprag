@@ -294,50 +294,36 @@ pub(crate) fn redock_pane(i: usize) {
     crate::diag::dock_toggle(i, false, before, after);
 }
 
-/// Desktop outer position for pane `i`'s floating window from a MAIN-window-logical
-/// `cursor` (the frame the [`DockPanelExternal`](pinion_widget_paint::dock::DockPanelExternal)
-/// reports — the widget layer must not know about OS windows): the main window's
-/// declared outer origin + the cursor, so the floating window opens at the desktop
-/// point under the pointer. A WM-placed main window pinion never learned a position
-/// for falls back to the desktop origin `(0, 0)` — the window still *tracks* the
-/// cursor, just offset from the origin rather than the real frame. Mirrors the
-/// R1094 reference consumer's `follow_desktop_position`; the main origin is read
-/// from the topology (the R1088 `WindowEvent::Moved` write-back keeps it current).
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "logical-pixel cursor -> i32 outer position; sub-pixel is irrelevant to window placement"
-)]
-fn cursor_to_desktop(windows: &[WindowSpec], cursor: (f64, f64)) -> (i32, i32) {
-    let (ox, oy) = windows
-        .iter()
-        .find(|w| w.id.as_ref() == MAIN_WINDOW_ID)
-        .and_then(|w| w.position)
-        .unwrap_or((0, 0));
-    (ox + cursor.0.round() as i32, oy + cursor.1.round() as i32)
-}
-
 /// Live-follow tear-off (pinion R1094 / PINION-PR31): float pane `i` on the first
-/// escaped drag move and track the cursor on every move after. `cursor` is the
-/// MAIN-window-logical pointer the [`DockPanelExternal`](pinion_widget_paint::dock::DockPanelExternal)
-/// forwards; it is desktop-converted ([`cursor_to_desktop`]) and written as the
-/// floating window's outer position.
+/// escaped drag move and track the cursor on every move after. `cursor` is the pointer
+/// the [`DockPanelExternal`](pinion_widget_paint::dock::DockPanelExternal) forwards,
+/// measured in `source_window`'s frame (pinion R1107); it is desktop-converted by
+/// pinion's [`desktop_position_from`](pinion_shell::desktop_position_from) — the SSOT
+/// pinion R1107.1 lifted to the shell so the consumer needn't re-derive it — and written
+/// as the floating window's outer position.
 ///
-/// ONE topology borrow: the main-window origin (read by [`cursor_to_desktop`]) and the
-/// window being repositioned come from the SAME snapshot, so a concurrent
-/// `WindowEvent::Moved` write-back can't make the computed position stale against the
-/// list it is written into. Two phases over that snapshot:
+/// **`source_window` is load-bearing for dragging a SETTLED floating window:** its header
+/// reports its OWN `pane-{i}` frame (not main), so the conversion must add THAT window's
+/// origin. `None` → main (the docked-pane tear-off case). Hardcoding main here was the
+/// "undocked window won't drag" bug (R78): a settled floater's local cursor + main origin
+/// = a bogus desktop point, so the window jumped/froze.
+///
+/// ONE topology borrow: the source-window origin (`desktop_position_from`) and the window
+/// being repositioned come from the SAME snapshot, so a concurrent `WindowEvent::Moved`
+/// write-back can't make the position stale against the list it is written into. Two
+/// phases over that snapshot:
 /// * docked (no `pane-{i}` window) → [`push_float`] at the cursor (a window push + the
-///   `dock` diag; the leaf stays, R72);
+///   `dock` diag; the leaf stays in placeholder mode, R72);
 /// * floating → move the window (position only, no `dock` diag); a stationary cursor
 ///   equality-skips the `set` (no repaint).
 ///
 /// Non-toggling: a per-move re-emit only repositions, it can never flip the window
 /// away (the R1071–R1078 double-toggle lesson, sprag side). Key/AI dock-back is
 /// [`redock_pane`].
-pub(crate) fn float_pane_at(i: usize, cursor: (f64, f64)) {
+pub(crate) fn float_pane_at(i: usize, source_window: Option<&str>, cursor: (f64, f64)) {
     let signal = use_windows_topology();
     let mut windows = signal.get();
-    let pos = cursor_to_desktop(&windows, cursor);
+    let pos = pinion_shell::desktop_position_from(&windows, source_window, cursor);
     let target = pane_window_id(i);
     if let Some(spec) = windows.iter_mut().find(|w| w.id == target) {
         // Floating: reposition only.
