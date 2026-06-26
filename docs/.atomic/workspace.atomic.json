@@ -3528,6 +3528,40 @@
         "SCE dep tracks pinion's vendored copy; if pinion un-vendors or the copies diverge again, revisit (stop-and-report)."
       ]
     },
+    "Round 80": {
+      "decision_summary": "Round 80: bump the 7 pinion-* git revs d1d1549d (R1112) -> 63789fe4 (R1113) to start consuming PINION-PR38 (the unified dock drag UX sprag filed R79). R1113 = the shell-layer drag-image follower: the immediate visual \"ghost\" that follows the cursor the moment a header drag passes the threshold -- the (A) \"split the drag-ghost from detach\" design PR-38 proposed, which gives the user \"follows on grab\" (issue #1) WITHOUT the instant OS-window detach that broke in-dock split (issue #3). It is injected automatically by the shell from the router's live drag session (no new signal), and a binding gets it free via WidgetView::drag_image_style defaulting to Some(DragImageStyle::default()) -- the same opt-out pattern as focus_ring_style. So sprag consumes it with ZERO code change: the neutral follower draws during any DockPanelExternal header drag. PR-38 is partially delivered; R1114 next = floater re-drag (issue #2) / OS-titlebar (#2'), or a Phase-B pivot. SCE 3078f8bf / vello 0.9 unchanged.",
+      "changes_bullets": [
+        "Cargo.toml: bumped 7 pinion-* d1d1549d -> 63789fe4 (single replace-all; SCE/vello untouched, verified 7 lines + 0 stale + pinion's own SCE/vello match). Cargo.lock re-resolved. No sprag code change: the R1113 drag-image is shell-automatic and WidgetView::drag_image_style defaults to Some(DragImageStyle::default()), so the immediate-follow ghost appears during a header drag for free (focus_ring_style opt-out pattern)."
+      ],
+      "verification_bullets": [
+        "sprag-gui 63/0/0 + full cargo test --workspace green; clippy -p sprag-gui --all-targets clean; rustfmt clean; cargo doc -D warnings (private items) clean. Checkpoint-built against 63789fe4 with no sprag code (the bump is self-contained).",
+        "LIVE: an in-zone header drag (terminal-0 dragged a short distance within the main dock) produced ZERO float events (PR-36 detach-on-escape intact -- in-dock drag stays docked). The R1113 drag-image is a mid-gesture shell-overlay (focus_ring sibling), transient, so it is not in a post-release RPC snapshot and not pixel-checkable via batch RPC; its consumption path is source-confirmed (shell-auto inject + default drag_image_style = sprag change 0) and pinion validated it with 8 dock demos. The user-observable immediacy (#1) needs a live human drag to confirm visually."
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "PINION-PR38 (unified dock drag UX) is being delivered incrementally: R1113 = the immediate drag-image ghost (this bump, sprag change 0). Still owed by pinion (R1114 next or Phase-B pivot): (2) live floater re-drag -- dragging a SETTLED floating window by its own header to reposition/redock (currently parked HW path); (2') OS-titlebar drag = dock gesture (note_window_moved only records position) -- PR-38 recommends decorations-off + unify on the app header; and the drop-time detach decision (zone->split / outside->float) if the ghost model fully replaces the detach-latch. sprag already has the consumption wiring (R70 all-pane externals, R74 floating header, R69/R75 reducer intents, R79 source_window) so each next slice should be sprag change 0~minimal.",
+        "On every bump, audit new pinion seam/payload fields for consumption (the R79 source_window lesson). R1113's drag_image_style is a new WidgetView method sprag could override later (custom ghost) but the default is correct for now."
+      ],
+      "publishable_decision_summary": "Round 80: bump the 7 pinion-* git revs d1d1549d (R1112) -> 63789fe4 (R1113) to start consuming PINION-PR38 (the unified dock drag UX sprag filed R79). R1113 = the shell-layer drag-image follower: the immediate visual \"ghost\" that follows the cursor the moment a header drag passes the threshold -- the (A) \"split the drag-ghost from detach\" design PR-38 proposed, which gives the user \"follows on grab\" (issue #1) WITHOUT the instant OS-window detach that broke in-dock split (issue #3). It is injected automatically by the shell from the router's live drag session (no new signal), and a binding gets it free via WidgetView::drag_image_style defaulting to Some(DragImageStyle::default()) -- the same opt-out pattern as focus_ring_style. So sprag consumes it with ZERO code change: the neutral follower draws during any DockPanelExternal header drag. PR-38 is partially delivered; R1114 next = floater re-drag (issue #2) / OS-titlebar (#2'), or a Phase-B pivot. SCE 3078f8bf / vello 0.9 unchanged.",
+      "publishable_changes_bullets": [
+        "Cargo.toml: bumped 7 pinion-* d1d1549d -> 63789fe4 (single replace-all; SCE/vello untouched, verified 7 lines + 0 stale + pinion's own SCE/vello match). Cargo.lock re-resolved. No sprag code change: the R1113 drag-image is shell-automatic and WidgetView::drag_image_style defaults to Some(DragImageStyle::default()), so the immediate-follow ghost appears during a header drag for free (focus_ring_style opt-out pattern)."
+      ],
+      "publishable_verification_bullets": [
+        "sprag-gui 63/0/0 + full cargo test --workspace green; clippy -p sprag-gui --all-targets clean; rustfmt clean; cargo doc -D warnings (private items) clean. Checkpoint-built against 63789fe4 with no sprag code (the bump is self-contained).",
+        "LIVE: an in-zone header drag (terminal-0 dragged a short distance within the main dock) produced ZERO float events (PR-36 detach-on-escape intact -- in-dock drag stays docked). The R1113 drag-image is a mid-gesture shell-overlay (focus_ring sibling), transient, so it is not in a post-release RPC snapshot and not pixel-checkable via batch RPC; its consumption path is source-confirmed (shell-auto inject + default drag_image_style = sprag change 0) and pinion validated it with 8 dock demos. The user-observable immediacy (#1) needs a live human drag to confirm visually."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "PINION-PR38 (unified dock drag UX) is being delivered incrementally: R1113 = the immediate drag-image ghost (this bump, sprag change 0). Still owed by pinion (R1114 next or Phase-B pivot): (2) live floater re-drag -- dragging a SETTLED floating window by its own header to reposition/redock (currently parked HW path); (2') OS-titlebar drag = dock gesture (note_window_moved only records position) -- PR-38 recommends decorations-off + unify on the app header; and the drop-time detach decision (zone->split / outside->float) if the ghost model fully replaces the detach-latch. sprag already has the consumption wiring (R70 all-pane externals, R74 floating header, R69/R75 reducer intents, R79 source_window) so each next slice should be sprag change 0~minimal.",
+        "On every bump, audit new pinion seam/payload fields for consumption (the R79 source_window lesson). R1113's drag_image_style is a new WidgetView method sprag could override later (custom ghost) but the default is correct for now."
+      ]
+    },
     "Round 9": {
       "decision_summary": "Cleanup round from the session review: harden the orchestrator substrate — reuse the producer's damage generations for observation, type the drive errors, and fix wrapped-sentinel convergence matching.",
       "changes_bullets": [
