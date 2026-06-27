@@ -212,6 +212,13 @@ fn undock_window_spec(i: usize, position: Option<(i32, i32)>) -> WindowSpec {
             min: None,
         },
     );
+    // Borderless (pinion R1115 / PINION-PR38 ②′): the floating window paints its OWN
+    // `view_dock_panel` header (R74) as the drag surface, so the OS draws no redundant
+    // title bar over it — and "drag the title bar" unifies on that app header (the VS Code
+    // / Blender way). With the OS decoration gone, dragging the app header IS the window
+    // move (R1116 `with_floating_window` in `create_extra_externals` → the `WINDOW_MOVE`
+    // reducer arm). The main window keeps the default `decorations: true`.
+    let spec = spec.with_decorations(false);
     if let Some((x, y)) = position {
         spec.with_position(x, y)
     } else {
@@ -338,6 +345,32 @@ pub(crate) fn float_pane_at(i: usize, source_window: Option<&str>, cursor: (f64,
         crate::diag::dock_toggle(i, true, before, windows.len());
     }
     signal.set(windows);
+}
+
+/// Borderless title-bar window move (pinion R1116/R1118 / PINION-PR38 ②): relocate pane
+/// `i`'s floating window by a grab-relative `delta` (the window's header was dragged, so
+/// `new_pos = current_pos + delta` keeps the grabbed point under the cursor). Distinct
+/// from [`float_pane_at`], which PLACES a torn-off pane AT an absolute cursor; this moves
+/// an already-floating window by a displacement. Idempotent no-op if pane `i` isn't
+/// floating (a stray move with no window). Mirrors the editor reference's
+/// `move_floating_window`.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "logical-pixel displacement f64 -> i32 outer position; sub-pixel is irrelevant to window placement"
+)]
+pub(crate) fn move_floating_window(i: usize, delta: (f64, f64)) {
+    let signal = use_windows_topology();
+    let mut windows = signal.get();
+    let target = pane_window_id(i);
+    if let Some(spec) = windows.iter_mut().find(|w| w.id == target) {
+        let (x, y) = spec.position.unwrap_or((0, 0));
+        let next = (x + delta.0.round() as i32, y + delta.1.round() as i32);
+        if spec.position == Some(next) {
+            return; // zero delta -> no set, no repaint
+        }
+        spec.position = Some(next);
+        signal.set(windows);
+    }
 }
 
 /// Toggle pane `i` between docked (tiled in the main window) and undocked (its own OS

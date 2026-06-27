@@ -205,7 +205,7 @@ use pinion_core::{CompositionEvent, Frame, Modifiers, Scene, WidgetCore};
 use pinion_shell::{SizeStrategy, WidgetView, WindowSpec, vello_renderer_impl};
 use pinion_widget_paint::dock::{
     DockPanelExternal, TEAR_OFF_EVENT, TEAR_OFF_FOLLOW_EVENT, TEAR_OFF_REDOCK_AT_EVENT,
-    TEAR_OFF_REDOCK_EVENT,
+    TEAR_OFF_REDOCK_EVENT, WINDOW_MOVE_EVENT,
 };
 use pinion_widget_paint::splitter::SplitterExternal;
 use sprag_host::SpragPaneExternal;
@@ -367,7 +367,14 @@ impl WidgetCore for TerminalViewer {
                 Box::new(
                     DockPanelExternal::new(split::panel_id(i))
                         .with_reorganizer(Rc::clone(&reorganizer))
-                        .with_drop_preview(Rc::clone(&drop_preview)),
+                        .with_drop_preview(Rc::clone(&drop_preview))
+                        // (pinion R1116 / PINION-PR38 ②) Declare this pane's own floating
+                        // window id, so a header drag INSIDE that window is a borderless
+                        // title-bar WINDOW MOVE (grab-offset delta → the `WINDOW_MOVE`
+                        // reducer arm), not a dock tear-off. The id is the same
+                        // `pane_window_id` SSOT the float/redock paths use, so a settled
+                        // floating window can finally be re-dragged by its header (②).
+                        .with_floating_window(dock::pane_window_id(i)),
                 ),
             )
         }));
@@ -627,6 +634,18 @@ impl WidgetCore for TerminalViewer {
                         y_rel,
                     );
                     dock::redock_pane(i);
+                }
+            }
+            // Borderless title-bar WINDOW MOVE (R1116/R1118 / PINION-PR38 ②): dragging a
+            // SETTLED floating window by its own header. pinion sends a grab-relative
+            // delta (distinct from `tear_off_follow`'s absolute cursor — an honest wire:
+            // a move carries a displacement). Relocate the window by the delta.
+            (WINDOW_MOVE_EVENT, IntrospectValue::Json(v)) => {
+                if let (Some(dx), Some(dy)) = (
+                    v.get("dx").and_then(serde_json::Value::as_f64),
+                    v.get("dy").and_then(serde_json::Value::as_f64),
+                ) {
+                    dock::move_floating_window(i, (dx, dy));
                 }
             }
             // Legacy release toggle (cursor-less escape / unit paths) — the same
@@ -1470,6 +1489,60 @@ mod tests {
             pane1_pos(&core),
             Some((1310, 705)),
             "a settled floating window repositions by ITS OWN origin, not main's (R78)"
+        );
+    }
+
+    /// R82 (PINION-PR38 ②): a borderless floating window's title-bar drag is a grab-
+    /// relative WINDOW_MOVE — pinion sends a `{panel,dx,dy}` delta (distinct from
+    /// tear_off_follow's absolute cursor) and the reducer moves the window by it. This is
+    /// the seam that makes "drag a SETTLED floating window by its header" finally work.
+    /// Driven through the real reducer with the scoped tag + exact delta Json.
+    #[test]
+    fn window_move_intent_relocates_the_floating_window_by_delta() {
+        use std::borrow::Cow;
+        let mut core = ShellCore::<TerminalViewer>::new();
+        let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+        core.finalize_frame(scene);
+
+        let pane1_pos = |core: &ShellCore<TerminalViewer>| {
+            core.root_owner().run(|| {
+                dock::use_windows_topology()
+                    .get()
+                    .iter()
+                    .find(|w| w.id == dock::pane_window_id(1))
+                    .and_then(|w| w.position)
+            })
+        };
+
+        // Float pane 1 at a known position via a follow (source_window=main, origin None→0).
+        core.dispatch_intent(&Intent {
+            tag: Cow::Owned(format!("{}.{}", split::panel_id(1), TEAR_OFF_FOLLOW_EVENT)),
+            payload: IntrospectValue::Json(serde_json::json!({
+                "panel": split::panel_id(1), "source_window": dock::MAIN_WINDOW_ID,
+                "x": 400.0, "y": 300.0,
+            })),
+        });
+        assert_eq!(pane1_pos(&core), Some((400, 300)), "floated at the cursor");
+
+        // Title-bar drag: a WINDOW_MOVE delta (+50, -20) shifts the window by the delta.
+        let window_move = |dx: f64, dy: f64| Intent {
+            tag: Cow::Owned(format!("{}.{}", split::panel_id(1), WINDOW_MOVE_EVENT)),
+            payload: IntrospectValue::Json(serde_json::json!({
+                "panel": split::panel_id(1), "dx": dx, "dy": dy,
+            })),
+        };
+        core.dispatch_intent(&window_move(50.0, -20.0));
+        assert_eq!(
+            pane1_pos(&core),
+            Some((450, 280)),
+            "the title-bar drag moved the window by its grab-relative delta"
+        );
+        // A second delta accumulates (grab-offset follow).
+        core.dispatch_intent(&window_move(-100.0, 5.0));
+        assert_eq!(
+            pane1_pos(&core),
+            Some((350, 285)),
+            "a second delta accumulates on the window position"
         );
     }
 
