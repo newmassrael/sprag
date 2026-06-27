@@ -3596,6 +3596,46 @@
         "Bump discipline (R79 meta-lesson, user-flagged): every bump now audits new pinion seam/payload fields for consumption. R80/R81 had none (ghost is shell-auto + default style)."
       ]
     },
+    "Round 82": {
+      "decision_summary": "Round 82: bump the 7 pinion-* git revs c4481da4 (R1114) -> 6f0c1281 (R1118) and wire the three new seams that make \"drag a SETTLED floating window by its title bar\" finally work -- the user's #2 (\"undocked window won't drag\") + #2' (OS titlebar should dock/undock). pinion delivered the PR-38 floater slices: R1115 borderless tear-off windows (WindowSpec.decorations), R1116 borderless floater title-bar move (DockPanelExternal.with_floating_window), R1117 press-precise grab, R1118 a dedicated WINDOW_MOVE intent (a grab-relative delta, split from tear_off_follow's absolute cursor -- an honest wire). The R79 source_window omission lesson applied: audited the bump for new consumer seams and wired all three (not just bumped). sprag now mirrors the hello-dock-panels-editor reference: float windows open borderless (the app view_dock_panel header IS the title bar, VS Code/Blender way), a header drag in a settled floating window emits WINDOW_MOVE, and the reducer relocates the window by the delta. SCE 3078f8bf / vello 0.9 unchanged. Live-verified end to end.",
+      "changes_bullets": [
+        "Cargo.toml: bumped 7 pinion-* c4481da4 -> 6f0c1281 (SCE/vello untouched, 7+0 verified). dock.rs undock_window_spec: .with_decorations(false) (R1115 ②') so the floating window is borderless and its own view_dock_panel header is the drag surface; main keeps decorations:true.",
+        "main.rs create_extra_externals: each DockPanelExternal gets .with_floating_window(dock::pane_window_id(i)) (R1116 ②) so a header drag inside that pane's own floating window is a borderless title-bar WINDOW MOVE, not a dock tear-off.",
+        "main.rs reducer: new (WINDOW_MOVE_EVENT, Json{panel,dx,dy}) arm -> dock::move_floating_window(i, (dx,dy)). dock.rs move_floating_window: relocate pane i's floating window by a grab-relative delta (new_pos = current + delta, idempotent on zero delta / not-floating), mirroring the editor's move_floating_window. Imported WINDOW_MOVE_EVENT.",
+        "Guard window_move_intent_relocates_the_floating_window_by_delta: float pane 1 at (400,300), a WINDOW_MOVE (+50,-20) -> (450,280), a second (-100,+5) -> (350,285); driven through the real reducer with the exact scoped tag + {panel,dx,dy} Json."
+      ],
+      "verification_bullets": [
+        "sprag-gui 64/0/0 (+1 guard) + full cargo test --workspace green; clippy -p sprag-gui --all-targets clean; rustfmt clean; cargo doc -D warnings (private items) clean. Checkpoint-built against 6f0c1281 with no sprag code first.",
+        "LIVE-VERIFIED #2/#2' end to end (hidden-window + RPC scene/drag + scene/windows + SPRAG_GUI_LOG): float pane 1 -> scene/windows shows pane-1 with decorations:false (borderless, #2'); then a scene/drag ON the pane-1 window from terminal-1#header fired terminal-1.window_move {dx,dy} TEN times (the new #2 wire) and the window actually MOVED from [1300,250] to [665,613] (delta-accumulated). Before R82 the same gesture emitted tear_off_redock_at {window:\"pane-1\"} which the reducer skipped (window!=main) -> no movement; now WINDOW_MOVE relocates it."
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "PINION-PR38 dock-DnD is now essentially complete + consumed: #1 immediate visible drag-ghost (R1113/R1114), #3 in-dock split via detach-on-escape (R1110), no centre/tab + result preview (R1111/12), #2 settled-floater re-drag by its borderless app-header title bar (R1115-R1118, this round), #2' OS-decoration removed so the app header IS the title bar. pinion R1119 next = Phase-B pivot (DCC / Model-View), NOT dock -- so the dock-drag UX line is done.",
+        "The floating window is now borderless: it has NO OS close/minimize buttons. If the user wants those, add buttons to the view_dock_panel header (a later round). Re-confirm the drag-ghost live visibility (#1) and the full gesture (grab->ghost->zone split / outside float / re-drag floater) on a real human drag."
+      ],
+      "publishable_decision_summary": "Round 82: bump the 7 pinion-* git revs c4481da4 (R1114) -> 6f0c1281 (R1118) and wire the three new seams that make \"drag a SETTLED floating window by its title bar\" finally work -- the user's #2 (\"undocked window won't drag\") + #2' (OS titlebar should dock/undock). pinion delivered the PR-38 floater slices: R1115 borderless tear-off windows (WindowSpec.decorations), R1116 borderless floater title-bar move (DockPanelExternal.with_floating_window), R1117 press-precise grab, R1118 a dedicated WINDOW_MOVE intent (a grab-relative delta, split from tear_off_follow's absolute cursor -- an honest wire). The R79 source_window omission lesson applied: audited the bump for new consumer seams and wired all three (not just bumped). sprag now mirrors the hello-dock-panels-editor reference: float windows open borderless (the app view_dock_panel header IS the title bar, VS Code/Blender way), a header drag in a settled floating window emits WINDOW_MOVE, and the reducer relocates the window by the delta. SCE 3078f8bf / vello 0.9 unchanged. Live-verified end to end.",
+      "publishable_changes_bullets": [
+        "Cargo.toml: bumped 7 pinion-* c4481da4 -> 6f0c1281 (SCE/vello untouched, 7+0 verified). dock.rs undock_window_spec: .with_decorations(false) (R1115 ②') so the floating window is borderless and its own view_dock_panel header is the drag surface; main keeps decorations:true.",
+        "main.rs create_extra_externals: each DockPanelExternal gets .with_floating_window(dock::pane_window_id(i)) (R1116 ②) so a header drag inside that pane's own floating window is a borderless title-bar WINDOW MOVE, not a dock tear-off.",
+        "main.rs reducer: new (WINDOW_MOVE_EVENT, Json{panel,dx,dy}) arm -> dock::move_floating_window(i, (dx,dy)). dock.rs move_floating_window: relocate pane i's floating window by a grab-relative delta (new_pos = current + delta, idempotent on zero delta / not-floating), mirroring the editor's move_floating_window. Imported WINDOW_MOVE_EVENT.",
+        "Guard window_move_intent_relocates_the_floating_window_by_delta: float pane 1 at (400,300), a WINDOW_MOVE (+50,-20) -> (450,280), a second (-100,+5) -> (350,285); driven through the real reducer with the exact scoped tag + {panel,dx,dy} Json."
+      ],
+      "publishable_verification_bullets": [
+        "sprag-gui 64/0/0 (+1 guard) + full cargo test --workspace green; clippy -p sprag-gui --all-targets clean; rustfmt clean; cargo doc -D warnings (private items) clean. Checkpoint-built against 6f0c1281 with no sprag code first.",
+        "LIVE-VERIFIED #2/#2' end to end (hidden-window + RPC scene/drag + scene/windows + SPRAG_GUI_LOG): float pane 1 -> scene/windows shows pane-1 with decorations:false (borderless, #2'); then a scene/drag ON the pane-1 window from terminal-1#header fired terminal-1.window_move {dx,dy} TEN times (the new #2 wire) and the window actually MOVED from [1300,250] to [665,613] (delta-accumulated). Before R82 the same gesture emitted tear_off_redock_at {window:\"pane-1\"} which the reducer skipped (window!=main) -> no movement; now WINDOW_MOVE relocates it."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "PINION-PR38 dock-DnD is now essentially complete + consumed: #1 immediate visible drag-ghost (R1113/R1114), #3 in-dock split via detach-on-escape (R1110), no centre/tab + result preview (R1111/12), #2 settled-floater re-drag by its borderless app-header title bar (R1115-R1118, this round), #2' OS-decoration removed so the app header IS the title bar. pinion R1119 next = Phase-B pivot (DCC / Model-View), NOT dock -- so the dock-drag UX line is done.",
+        "The floating window is now borderless: it has NO OS close/minimize buttons. If the user wants those, add buttons to the view_dock_panel header (a later round). Re-confirm the drag-ghost live visibility (#1) and the full gesture (grab->ghost->zone split / outside float / re-drag floater) on a real human drag."
+      ]
+    },
     "Round 9": {
       "decision_summary": "Cleanup round from the session review: harden the orchestrator substrate — reuse the producer's damage generations for observation, type the drive errors, and fix wrapped-sentinel convergence matching.",
       "changes_bullets": [
