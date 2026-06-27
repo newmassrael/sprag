@@ -3636,6 +3636,42 @@
         "The floating window is now borderless: it has NO OS close/minimize buttons. If the user wants those, add buttons to the view_dock_panel header (a later round). Re-confirm the drag-ghost live visibility (#1) and the full gesture (grab->ghost->zone split / outside float / re-drag floater) on a real human drag."
       ]
     },
+    "Round 83": {
+      "decision_summary": "Round 83: bump the 7 pinion-* git revs 6f0c1281 (R1118) -> a6e33b68 (R1120), consuming PINION-PR39 (the floater title-bar move jitter fix sprag filed R82). R1119 added a jitter harness; R1120 = desktop-frame window-move: the shell now stamps DragUpdate.source_window_origin (the floater's actual outer position) on every move, and DockPanelExternal computes the WINDOW_MOVE delta as a DESKTOP-frame increment instead of cursor - press_cursor in the moving window's own local frame. That removes the feedback loop (the reducer moving the window no longer perturbs the next delta) and the apply-lag growing-then-jump. This is exactly the (A) desktop-frame proposal in PR-39. The wire is unchanged (WINDOW_MOVE {panel,dx,dy}, a delta the reducer adds to the window's current position) and source_window_origin is a shell-internal DragUpdate field DockPanelExternal reads -- so sprag consumes it with ZERO code change; dock::move_floating_window (pos += delta) was already correct for an increment. SCE 3078f8bf / vello 0.9 unchanged.",
+      "changes_bullets": [
+        "Cargo.toml: bumped 7 pinion-* 6f0c1281 -> a6e33b68 (single replace-all; SCE/vello untouched, 7+0 verified + pinion's own pins match). Cargo.lock re-resolved. No sprag code change: R1120 fixes the delta frame inside pinion (DragUpdate.source_window_origin stamped by the shell + DockPanelExternal desktop-frame delta); the WINDOW_MOVE {dx,dy} wire is unchanged and dock::move_floating_window's pos += delta is already the correct consumption of a desktop-frame increment. Audited per the R79 lesson -- source_window_origin is a shell->external DragUpdate field, not a consumer-facing payload, so nothing to wire."
+      ],
+      "verification_bullets": [
+        "sprag-gui 64/0/0 + full cargo test --workspace green; clippy -p sprag-gui --all-targets clean; rustfmt clean; cargo doc -D warnings (private items) clean. Checkpoint-built against a6e33b68 with no sprag code first.",
+        "LIVE-VERIFIED the jitter is GONE (hidden-window + RPC scene/drag + SPRAG_GUI_LOG): float pane 1, then drag its borderless title bar -- the WINDOW_MOVE dy deltas are now a uniform 8.83 across all 12 steps (a steady desktop-frame increment), vs the R82 pre-fix oscillation (-3.77, -7.51, -12.61, +42.01, ... -395.97, +320.99). The window moved smoothly [1300,250] -> [1216,358]. The feedback loop (delta measured in the moving window's local frame) is eliminated by the desktop-frame delta."
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "PINION-PR38/PR-39 dock drag UX is now COMPLETE + live-verified end to end: #1 immediate visible drag-ghost, #3 in-dock split (detach-on-escape), no centre/tab + result preview, #2 settled-floater title-bar move, #2' borderless app-header, and now the #2 move is SMOOTH (PR-39 desktop-frame delta, no jitter). pinion R1121 next = PR-39 decorated-floater OS-move or Phase-B resume -- NOT a sprag-facing dock item.",
+        "The floating window is borderless (no OS close/min buttons); add header buttons later if wanted. Nothing in the dock-DnD line is owed to pinion now.",
+        "12->14 commits ahead of origin (R77->R83), NOT pushed. Next: push, or a session-review of the R77-R83 dock arc."
+      ],
+      "publishable_decision_summary": "Round 83: bump the 7 pinion-* git revs 6f0c1281 (R1118) -> a6e33b68 (R1120), consuming PINION-PR39 (the floater title-bar move jitter fix sprag filed R82). R1119 added a jitter harness; R1120 = desktop-frame window-move: the shell now stamps DragUpdate.source_window_origin (the floater's actual outer position) on every move, and DockPanelExternal computes the WINDOW_MOVE delta as a DESKTOP-frame increment instead of cursor - press_cursor in the moving window's own local frame. That removes the feedback loop (the reducer moving the window no longer perturbs the next delta) and the apply-lag growing-then-jump. This is exactly the (A) desktop-frame proposal in PR-39. The wire is unchanged (WINDOW_MOVE {panel,dx,dy}, a delta the reducer adds to the window's current position) and source_window_origin is a shell-internal DragUpdate field DockPanelExternal reads -- so sprag consumes it with ZERO code change; dock::move_floating_window (pos += delta) was already correct for an increment. SCE 3078f8bf / vello 0.9 unchanged.",
+      "publishable_changes_bullets": [
+        "Cargo.toml: bumped 7 pinion-* 6f0c1281 -> a6e33b68 (single replace-all; SCE/vello untouched, 7+0 verified + pinion's own pins match). Cargo.lock re-resolved. No sprag code change: R1120 fixes the delta frame inside pinion (DragUpdate.source_window_origin stamped by the shell + DockPanelExternal desktop-frame delta); the WINDOW_MOVE {dx,dy} wire is unchanged and dock::move_floating_window's pos += delta is already the correct consumption of a desktop-frame increment. Audited per the R79 lesson -- source_window_origin is a shell->external DragUpdate field, not a consumer-facing payload, so nothing to wire."
+      ],
+      "publishable_verification_bullets": [
+        "sprag-gui 64/0/0 + full cargo test --workspace green; clippy -p sprag-gui --all-targets clean; rustfmt clean; cargo doc -D warnings (private items) clean. Checkpoint-built against a6e33b68 with no sprag code first.",
+        "LIVE-VERIFIED the jitter is GONE (hidden-window + RPC scene/drag + SPRAG_GUI_LOG): float pane 1, then drag its borderless title bar -- the WINDOW_MOVE dy deltas are now a uniform 8.83 across all 12 steps (a steady desktop-frame increment), vs the R82 pre-fix oscillation (-3.77, -7.51, -12.61, +42.01, ... -395.97, +320.99). The window moved smoothly [1300,250] -> [1216,358]. The feedback loop (delta measured in the moving window's local frame) is eliminated by the desktop-frame delta."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "PINION-PR38/PR-39 dock drag UX is now COMPLETE + live-verified end to end: #1 immediate visible drag-ghost, #3 in-dock split (detach-on-escape), no centre/tab + result preview, #2 settled-floater title-bar move, #2' borderless app-header, and now the #2 move is SMOOTH (PR-39 desktop-frame delta, no jitter). pinion R1121 next = PR-39 decorated-floater OS-move or Phase-B resume -- NOT a sprag-facing dock item.",
+        "The floating window is borderless (no OS close/min buttons); add header buttons later if wanted. Nothing in the dock-DnD line is owed to pinion now.",
+        "12->14 commits ahead of origin (R77->R83), NOT pushed. Next: push, or a session-review of the R77-R83 dock arc."
+      ]
+    },
     "Round 9": {
       "decision_summary": "Cleanup round from the session review: harden the orchestrator substrate — reuse the producer's damage generations for observation, type the drive errors, and fix wrapped-sentinel convergence matching.",
       "changes_bullets": [
