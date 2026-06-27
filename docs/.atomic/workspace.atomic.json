@@ -3672,6 +3672,42 @@
         "12->14 commits ahead of origin (R77->R83), NOT pushed. Next: push, or a session-review of the R77-R83 dock arc."
       ]
     },
+    "Round 84": {
+      "decision_summary": "Round 84: bump the 7 pinion-* git revs a6e33b68 (R1120) -> e4b76342 (R1123) and consume the new client-side window-chrome hook (R1121-R1123) to give the borderless floating pane windows their own min/max buttons + resize border -- the chrome R82 noted was missing when it made the floaters borderless (with_decorations(false)). NOTE up front: this bump does NOT fix the user's \"끌어서 dock 안돼\" (drag a settled floating window onto main to redock) -- that floater->main cross-window redock is still owed by pinion (PR-38 #2-redock / PR-33 live tail). R1121-R1123 are window chrome only. The new WidgetView::window_chrome hook defaults to None (naked borderless), so without consuming it sprag's floaters would stay button-less; R84 implements it (the R79/R82 bump discipline: audit + wire the new seam, not just bump). sprag returns chrome for a pane-{i} floating window (min + max + resize) and None for main (which keeps OS decorations). The floating chrome OMITS close: pinion's ChromeAction::Close routes to event_loop.exit() (whole-app quit; per-window close is an un-delivered pinion follow-up) and a floater IS a live pane, so an X must not kill the terminal -- dock the pane back (Ctrl+Shift+Enter) to close the window. SCE 3078f8bf / vello 0.9 unchanged.",
+      "changes_bullets": [
+        "Cargo.toml: bumped 7 pinion-* a6e33b68 -> e4b76342 (SCE/vello untouched, 7+0 verified). main.rs: implemented WidgetView::window_chrome(window_id) -> for a pane-{i} floating window, Some(WindowChromeStyle::default() with show_close=false) (min/max glyphs + 8 resize-border regions, routed to winit actions by the shell); for main (and any non-pane id), None (keeps OS decorations). Imported WindowChromeStyle from pinion_shell (re-exported there so no pinion-overlay dep needed). WindowChromeStyle is #[non_exhaustive] so the close flag is cleared on a default()-derived value, not a struct literal.",
+        "Guard window_chrome_floats_get_min_max_not_close_main_gets_none: main -> None, pane-0 floater -> chrome with show_minimize && show_maximize && !show_close, unknown id -> None."
+      ],
+      "verification_bullets": [
+        "sprag-gui 65/0/0 (+1 guard) + full cargo test --workspace green; clippy -p sprag-gui --all-targets clean; rustfmt clean; cargo doc -D warnings (private items) clean. Checkpoint-built against e4b76342 with no sprag code first (the bump alone is clean -- the chrome hook defaults to None).",
+        "LIVE-VERIFIED (hidden-window + RPC scene/drag + scene/snapshot from:paint): float pane 1, then snapshot the pane-1 window paint -- it carries ai-overlay/window-chrome#minimize + #maximize (the buttons) and ai-overlay/window-resize#{north,south,east,west,+4 corners} (the resize border), and NO window-chrome#close tag (show_close:false applied correctly). The main window is unaffected (OS-decorated)."
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Borderless floating pane windows now have client-side chrome: minimize, maximize/restore, and an 8-direction resize border (the buttons R82 omitted). Close is intentionally absent -- pinion ChromeAction::Close = event_loop.exit() (app-quit), and per-window close is an un-delivered pinion follow-up; to \"close\" a floater, dock it back (Ctrl+Shift+Enter). When pinion delivers a per-window close seam, sprag can set show_close:true and route close -> redock_pane.",
+        "STILL the user's open #issue: \"drag a settled floating window onto main to REDOCK\" (끌어서 dock) does NOT work -- the floater drag emits window_move only, never detects the cross-window main dock zone during the drag, and release's over_window can't hit-test another window's dock (per-window resolve_drop_point). Owed by pinion (PR-38 #2-redock / PR-33 live tail, filed in PINION-PR38 R83 update). pinion R1121-R1123 went to chrome, not this."
+      ],
+      "publishable_decision_summary": "Round 84: bump the 7 pinion-* git revs a6e33b68 (R1120) -> e4b76342 (R1123) and consume the new client-side window-chrome hook (R1121-R1123) to give the borderless floating pane windows their own min/max buttons + resize border -- the chrome R82 noted was missing when it made the floaters borderless (with_decorations(false)). NOTE up front: this bump does NOT fix the user's \"끌어서 dock 안돼\" (drag a settled floating window onto main to redock) -- that floater->main cross-window redock is still owed by pinion (PR-38 #2-redock / PR-33 live tail). R1121-R1123 are window chrome only. The new WidgetView::window_chrome hook defaults to None (naked borderless), so without consuming it sprag's floaters would stay button-less; R84 implements it (the R79/R82 bump discipline: audit + wire the new seam, not just bump). sprag returns chrome for a pane-{i} floating window (min + max + resize) and None for main (which keeps OS decorations). The floating chrome OMITS close: pinion's ChromeAction::Close routes to event_loop.exit() (whole-app quit; per-window close is an un-delivered pinion follow-up) and a floater IS a live pane, so an X must not kill the terminal -- dock the pane back (Ctrl+Shift+Enter) to close the window. SCE 3078f8bf / vello 0.9 unchanged.",
+      "publishable_changes_bullets": [
+        "Cargo.toml: bumped 7 pinion-* a6e33b68 -> e4b76342 (SCE/vello untouched, 7+0 verified). main.rs: implemented WidgetView::window_chrome(window_id) -> for a pane-{i} floating window, Some(WindowChromeStyle::default() with show_close=false) (min/max glyphs + 8 resize-border regions, routed to winit actions by the shell); for main (and any non-pane id), None (keeps OS decorations). Imported WindowChromeStyle from pinion_shell (re-exported there so no pinion-overlay dep needed). WindowChromeStyle is #[non_exhaustive] so the close flag is cleared on a default()-derived value, not a struct literal.",
+        "Guard window_chrome_floats_get_min_max_not_close_main_gets_none: main -> None, pane-0 floater -> chrome with show_minimize && show_maximize && !show_close, unknown id -> None."
+      ],
+      "publishable_verification_bullets": [
+        "sprag-gui 65/0/0 (+1 guard) + full cargo test --workspace green; clippy -p sprag-gui --all-targets clean; rustfmt clean; cargo doc -D warnings (private items) clean. Checkpoint-built against e4b76342 with no sprag code first (the bump alone is clean -- the chrome hook defaults to None).",
+        "LIVE-VERIFIED (hidden-window + RPC scene/drag + scene/snapshot from:paint): float pane 1, then snapshot the pane-1 window paint -- it carries ai-overlay/window-chrome#minimize + #maximize (the buttons) and ai-overlay/window-resize#{north,south,east,west,+4 corners} (the resize border), and NO window-chrome#close tag (show_close:false applied correctly). The main window is unaffected (OS-decorated)."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Borderless floating pane windows now have client-side chrome: minimize, maximize/restore, and an 8-direction resize border (the buttons R82 omitted). Close is intentionally absent -- pinion ChromeAction::Close = event_loop.exit() (app-quit), and per-window close is an un-delivered pinion follow-up; to \"close\" a floater, dock it back (Ctrl+Shift+Enter). When pinion delivers a per-window close seam, sprag can set show_close:true and route close -> redock_pane.",
+        "STILL the user's open #issue: \"drag a settled floating window onto main to REDOCK\" (끌어서 dock) does NOT work -- the floater drag emits window_move only, never detects the cross-window main dock zone during the drag, and release's over_window can't hit-test another window's dock (per-window resolve_drop_point). Owed by pinion (PR-38 #2-redock / PR-33 live tail, filed in PINION-PR38 R83 update). pinion R1121-R1123 went to chrome, not this."
+      ]
+    },
     "Round 9": {
       "decision_summary": "Cleanup round from the session review: harden the orchestrator substrate — reuse the producer's damage generations for observation, type the drive errors, and fix wrapped-sentinel convergence matching.",
       "changes_bullets": [
