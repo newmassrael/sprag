@@ -178,14 +178,23 @@ pub(crate) fn use_windows_topology() -> Rc<Signal<Vec<WindowSpec>>> {
     Owner::current()
         .expect("use_windows_topology() requires an active Owner scope")
         .cache(WINDOWS_KEY, || {
-            Signal::new(vec![WindowSpec::new(
-                Cow::Borrowed(MAIN_WINDOW_ID),
-                "sprag terminal (interactive)",
-                SizeStrategy::Fixed {
-                    width: WINDOW_W,
-                    height: WINDOW_H,
-                },
-            )])
+            // Borderless main too (R85): both the main window and every floating pane
+            // window are `decorations: false`, so the app's own client chrome
+            // ([`crate::TerminalViewer::window_chrome`]) is the SOLE title bar — the two
+            // windows look identical (no OS frame on one and an app strip on the other).
+            // `decorations` is create-time-only (pinion app.rs warns on a runtime flip),
+            // so it must be declared here at the seed, not toggled later.
+            Signal::new(vec![
+                WindowSpec::new(
+                    Cow::Borrowed(MAIN_WINDOW_ID),
+                    "sprag terminal (interactive)",
+                    SizeStrategy::Fixed {
+                        width: WINDOW_W,
+                        height: WINDOW_H,
+                    },
+                )
+                .with_decorations(false),
+            ])
         })
 }
 

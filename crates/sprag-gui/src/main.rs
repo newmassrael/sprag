@@ -710,25 +710,30 @@ impl WidgetView for TerminalViewer {
         view::view_for_window(window_id, state, frame)
     }
 
-    /// Client-side window chrome (pinion R1121 / PINION-PR38-followup): a floating pane
-    /// window (`pane-{i}`) is borderless (R82 `with_decorations(false)`), so the OS draws
-    /// no title bar and no min/max/resize affordances. This hook injects pinion's chrome
+    /// Client-side window chrome (pinion R1121): EVERY window is borderless
+    /// (`with_decorations(false)` — the main window in [`dock::use_windows_topology`], the
+    /// floating pane windows in `dock::undock_window_spec`), so the OS draws no title bar
+    /// and this hook is the SOLE chrome. Both the main and the floaters get pinion's chrome
     /// strip (minimize + maximize/restore glyphs, routed to winit actions by the shell)
-    /// plus the resize-border regions, so a torn-off terminal window can be minimized,
-    /// maximized, and resized like any window — the buttons R82 noted were missing.
+    /// plus the 8-direction resize border — so the two window classes look IDENTICAL (R85,
+    /// VS Code / Blender all-custom-chrome), not "OS frame on main, app strip on floaters".
     ///
-    /// The main window returns `None` (it keeps its OS decorations, so OS chrome already
-    /// draws). The floating chrome OMITS the close button (`show_close: false`): pinion's
-    /// `ChromeAction::Close` routes to `event_loop.exit()` (whole-app quit — per-window
-    /// close is an un-delivered pinion follow-up), and a floating window IS a live pane,
-    /// so an X must not kill the whole terminal. Dock the pane back instead
-    /// (`Ctrl+Shift+Enter` on the focused floater) to "close" the window.
+    /// CLOSE differs by window class. The MAIN window shows close: pinion's
+    /// `ChromeAction::Close` routes to `event_loop.exit()` (whole-app quit), which is
+    /// exactly what closing the primary window should do. A FLOATING pane window OMITS
+    /// close (`show_close: false`): it IS a live pane, so an X must not quit the whole
+    /// terminal (per-window close is an un-delivered pinion follow-up); dock the pane back
+    /// (`Ctrl+Shift+Enter` on the focused floater) to "close" it.
     fn window_chrome(window_id: &str) -> Option<WindowChromeStyle> {
-        dock::pane_window_index(window_id).map(|_| {
-            let mut style = WindowChromeStyle::default();
-            style.show_close = false;
-            style
-        })
+        let mut style = WindowChromeStyle::default();
+        if window_id == dock::MAIN_WINDOW_ID {
+            Some(style) // main keeps close (= app-quit, the right primary-close)
+        } else if dock::pane_window_index(window_id).is_some() {
+            style.show_close = false; // a floater is a live pane — never app-quit on X
+            Some(style)
+        } else {
+            None
+        }
     }
 
     /// Per-window a11y: each window advertises only the panes IT paints (the main
@@ -787,14 +792,18 @@ mod tests {
         // full-window dims at that cell to compare against.
         let metric = core.root_owner().run(|| use_terminal().metric);
         let (full_cols, full_rows) = crate::terminal::grid_dims((WINDOW_W, WINDOW_H), metric);
-        // Each docked pane now sits below a 28px dock-panel header (R60), so its
-        // content height is the window minus that strip — derive the expected rows
-        // through the same winsize SSOT against the reduced height.
+        // The main window is now borderless with the app's client chrome (R85), so the
+        // shell insets the painted content below a `height_px` chrome strip; below that, a
+        // docked pane sits under a 28px dock-panel header (R60). The pane content height is
+        // the window minus BOTH strips — derive the expected rows through the same winsize
+        // SSOT against the twice-reduced height.
+        let chrome_px = WindowChromeStyle::default().height_px;
         let header_px = pinion_widget_paint::dock::DockPanelStyle::m3_default("x").header_height_px;
-        let content_rows = crate::terminal::grid_dims((WINDOW_W, WINDOW_H - header_px), metric).1;
+        let content_rows =
+            crate::terminal::grid_dims((WINDOW_W, WINDOW_H - chrome_px - header_px), metric).1;
         assert!(
             content_rows < full_rows,
-            "the dock header subtracts at least one row"
+            "the chrome strip + dock header subtract rows"
         );
 
         assert_eq!(
@@ -1755,24 +1764,33 @@ mod tests {
         });
     }
 
-    /// R84 (pinion R1121 chrome hook): a floating pane window gets client-side chrome
-    /// (min/max + resize) but NO close button (close = whole-app quit, and a floater is a
-    /// live pane); the main window returns `None` (keeps its OS decorations).
+    /// R85 (pinion R1121 chrome hook): EVERY window is borderless and gets the app's
+    /// client chrome (min/max + resize) — so main and floaters look identical. Main shows
+    /// CLOSE (= app-quit, the right primary-close); a floater OMITS close (it is a live
+    /// pane, X must not quit the terminal). An unknown id gets no chrome.
     #[test]
-    fn window_chrome_floats_get_min_max_not_close_main_gets_none() {
-        // Main window: no client chrome (OS-decorated).
+    fn window_chrome_main_has_close_floaters_omit_it() {
+        // Main window: client chrome WITH close (close = app-quit is correct for primary).
+        let main = <TerminalViewer as WidgetView>::window_chrome(dock::MAIN_WINDOW_ID)
+            .expect("the main window gets client chrome (it is borderless too)");
         assert!(
-            <TerminalViewer as WidgetView>::window_chrome(dock::MAIN_WINDOW_ID).is_none(),
-            "the main window keeps OS decorations (no client chrome)"
+            main.show_minimize && main.show_maximize,
+            "main has min + max"
+        );
+        assert!(
+            main.show_close,
+            "main shows close (= app-quit, the right primary-close)"
         );
         // A floating pane window: chrome with min + max, NO close.
         let chrome = <TerminalViewer as WidgetView>::window_chrome(&dock::pane_window_id(0))
             .expect("a floating pane window gets client chrome");
-        assert!(chrome.show_minimize, "floater chrome has a minimize button");
-        assert!(chrome.show_maximize, "floater chrome has a maximize button");
+        assert!(
+            chrome.show_minimize && chrome.show_maximize,
+            "floater has min + max"
+        );
         assert!(
             !chrome.show_close,
-            "floater chrome OMITS close (ChromeAction::Close = app-quit; a floater is a live pane)"
+            "a floater OMITS close (ChromeAction::Close = app-quit; a floater is a live pane)"
         );
         // A non-pane / unknown window id: no chrome.
         assert!(
