@@ -197,15 +197,15 @@ mod view;
 use pinion_a11y::AccessNode;
 use pinion_core::command::Command;
 use pinion_core::event::{LINE_HEIGHT_PX, WheelDelta};
-use pinion_core::external::{External, IntrospectValue};
+use pinion_core::external::{DropPoint, External, IntrospectValue};
 use pinion_core::intent::Intent;
 use pinion_core::reactive::{Owner, Signal};
 use pinion_core::widget_core::ExtraExternal;
 use pinion_core::{CompositionEvent, Frame, Modifiers, Scene, WidgetCore};
 use pinion_shell::{SizeStrategy, WidgetView, WindowChromeStyle, WindowSpec, vello_renderer_impl};
 use pinion_widget_paint::dock::{
-    DockPanelExternal, TEAR_OFF_EVENT, TEAR_OFF_FOLLOW_EVENT, TEAR_OFF_REDOCK_AT_EVENT,
-    TEAR_OFF_REDOCK_EVENT, WINDOW_MOVE_EVENT,
+    DockPanelExternal, DropResolution, TEAR_OFF_EVENT, TEAR_OFF_FOLLOW_EVENT,
+    TEAR_OFF_REDOCK_AT_EVENT, TEAR_OFF_REDOCK_EVENT, WINDOW_MOVE_EVENT, resolve_drop,
 };
 use pinion_widget_paint::splitter::SplitterExternal;
 use sprag_host::SpragPaneExternal;
@@ -544,9 +544,11 @@ impl WidgetCore for TerminalViewer {
     ///   [`dock::redock_pane`] (idempotent; it re-tiles at its home leaf, which never left).
     /// * [`TEAR_OFF_REDOCK_AT_EVENT`] (`Json{panel,window,target,x_rel,y_rel}`) —
     ///   CROSS-window: a settled floating window dragged back over the MAIN window's dock
-    ///   zone. Relocate the source leaf to that zone via the reorganizer's
-    ///   `apply_zone_redock` (the placeholder model keeps the leaf, so the relocate can't
-    ///   reject), then de-float. This is the zone-honoring drag-back redock.
+    ///   zone (pinion R1163b composes `over_window` across windows so the drop resolves on
+    ///   main). Classify the drop with `resolve_drop` (the SSOT that retired
+    ///   `apply_zone_redock`, R1128) and apply the outcome — `Dock`/`OuterDock` relocate
+    ///   the source leaf to the zone then de-float; `Float` (a dead-zone) leaves it
+    ///   floating. This is the zone-honoring drag-back redock ("끌어서 dock").
     /// * [`TEAR_OFF_EVENT`] (`Text(panel_id)`) — the legacy release toggle pinion
     ///   fires ONLY when no drag cursor was forwarded (pre-R1093 / unit paths): the
     ///   discrete [`dock::toggle_pane_floating`], the same the key path drives.
@@ -598,14 +600,16 @@ impl WidgetCore for TerminalViewer {
             // a snap-back. Window-only de-float; the leaf never left, so the pane re-tiles
             // at its home slot. Idempotent.
             (TEAR_OFF_REDOCK_EVENT, IntrospectValue::Text(_)) => dock::redock_pane(i),
-            // CROSS-WINDOW redock (R1100/PR-33): a SETTLED floating window dragged back
-            // over the MAIN window's dock zone. pinion auto-resolves the cross-window drop
-            // and fires this with the target window + the drop zone (`target` = the zone's
-            // paint tag, `x_rel`/`y_rel` normalised over it). We RELOCATE the source leaf
-            // to that zone via the reorganizer's `apply_zone_redock` (works because the
-            // leaf survived — R72 placeholder model), then drop the float window. Only the
-            // main window bears the dock topology; a non-main target has no slot, so we
-            // skip the relocate (the window-drop alone returns the pane home).
+            // CROSS-WINDOW redock (R1100/R1163b/PR-33): a SETTLED floating window dragged
+            // back over the MAIN window's dock zone — the user's "끌어서 dock". pinion now
+            // composes `over_window` across windows (R1148→R1163b), auto-resolves the
+            // cross-window drop, and fires this with the target window + drop zone (`target`
+            // = the zone's paint tag, `x_rel`/`y_rel` normalised over it). We CLASSIFY the
+            // drop through `resolve_drop` (the SSOT that retired `apply_zone_redock`) and
+            // relocate the source leaf to the resolved zone (`Dock`/`OuterDock`) then drop
+            // the float window; a dead-zone `Float` leaves the pane floating (R1163b
+            // preview==result). Only the main window bears the dock topology; a non-main
+            // window gate above keeps a non-slot target out.
             // Order matters: relocate-leaf-while-still-floating THEN drop-window, so the
             // redock paints ONCE at the final slot (reversing it would flash the pane at its
             // old slot first). The two `signal.set`s (topology, then windows) are distinct
@@ -620,20 +624,42 @@ impl WidgetCore for TerminalViewer {
                         v.get("y_rel").and_then(serde_json::Value::as_f64),
                     )
                 {
-                    // The zone tag may be a leaf's placeholder (`{panel}_placeholder`) when
-                    // the cursor is over a floating pane's slot; strip it to the leaf id so
-                    // a drop on the source's own slot resolves to `source==target` (pinion's
-                    // home no-op) rather than a `PanelNotFound`.
-                    let target = target
-                        .strip_suffix(pinion_widget_paint::dock::PLACEHOLDER_TAG_SUFFIX)
-                        .unwrap_or(target);
-                    let _ = split::use_dock_reorganizer().apply_zone_redock(
+                    // R86 (pinion R1128/R1163b): redock through the `resolve_drop` SSOT
+                    // (the retired `apply_zone_redock` is gone). `resolve_drop` classifies
+                    // the drop point — folding the `{panel}_placeholder` strip internally
+                    // (no manual strip needed) — into a `DropResolution`, then we apply the
+                    // matching reorganizer primitive and de-float. `tabbing()` is false
+                    // (split.rs `with_tabbing(false)`) so a centre drop never tabifies. A
+                    // dead-zone `Float` leaves the pane FLOATING (R1163b "preview==result":
+                    // a blank preview means it won't dock), so `redock_pane` is no longer
+                    // unconditional. Mirrors the editor's `redock_cross_window`.
+                    let reorganizer = split::use_dock_reorganizer();
+                    let point = DropPoint {
+                        tag: target.to_string(),
+                        x_rel: x_rel as f32,
+                        y_rel: y_rel as f32,
+                    };
+                    match resolve_drop(
+                        Some(&point),
                         &split::panel_id(i),
-                        target,
-                        x_rel,
-                        y_rel,
-                    );
-                    dock::redock_pane(i);
+                        |t| reorganizer.is_panel(t),
+                        reorganizer.tabbing(),
+                    ) {
+                        DropResolution::Dock { target, zone } => {
+                            let _ = reorganizer.dock_panel_at_resolved_zone(
+                                &split::panel_id(i),
+                                &target,
+                                zone,
+                            );
+                            dock::redock_pane(i);
+                        }
+                        DropResolution::OuterDock { edge } => {
+                            let _ = reorganizer.dock_panel_outer(&split::panel_id(i), edge);
+                            dock::redock_pane(i);
+                        }
+                        DropResolution::SnapBack { .. } => dock::redock_pane(i),
+                        DropResolution::Float => {}
+                    }
                 }
             }
             // Borderless title-bar WINDOW MOVE (R1116/R1118 / PINION-PR38 ②): dragging a
@@ -718,21 +744,34 @@ impl WidgetView for TerminalViewer {
     /// plus the 8-direction resize border — so the two window classes look IDENTICAL (R85,
     /// VS Code / Blender all-custom-chrome), not "OS frame on main, app strip on floaters".
     ///
-    /// CLOSE differs by window class. The MAIN window shows close: pinion's
-    /// `ChromeAction::Close` routes to `event_loop.exit()` (whole-app quit), which is
-    /// exactly what closing the primary window should do. A FLOATING pane window OMITS
-    /// close (`show_close: false`): it IS a live pane, so an X must not quit the whole
-    /// terminal (per-window close is an un-delivered pinion follow-up); dock the pane back
-    /// (`Ctrl+Shift+Enter` on the focused floater) to "close" it.
+    /// CLOSE is now shown on BOTH classes (R86, pinion R1170). A close press routes
+    /// through [`window_close_requested`](Self::window_close_requested), the binding seam
+    /// R1121 deferred: the MAIN window returns `false` there (close = app-quit, the right
+    /// primary-close), a FLOATING pane window returns `true` (it docks the pane back
+    /// instead of quitting — a floater is a live pane). So the floater's X is now a safe
+    /// "dock back", not the whole-app exit it used to be (which is why R84/R85 had to omit
+    /// it). `WindowChromeStyle::default()` (min + max + close) is correct for both.
     fn window_chrome(window_id: &str) -> Option<WindowChromeStyle> {
-        let mut style = WindowChromeStyle::default();
-        if window_id == dock::MAIN_WINDOW_ID {
-            Some(style) // main keeps close (= app-quit, the right primary-close)
-        } else if dock::pane_window_index(window_id).is_some() {
-            style.show_close = false; // a floater is a live pane — never app-quit on X
-            Some(style)
+        if window_id == dock::MAIN_WINDOW_ID || dock::pane_window_index(window_id).is_some() {
+            Some(WindowChromeStyle::default())
         } else {
             None
+        }
+    }
+
+    /// Window-close seam (pinion R1170): the shell calls this on a close request (the
+    /// chrome close button or the OS close path). A FLOATING pane window's close docks the
+    /// pane back into the main window and returns `true` (handled — the shell does NOT
+    /// exit), so closing a torn-off terminal returns it home instead of killing the app.
+    /// The MAIN window returns `false` → the default app-exit (closing the primary window
+    /// quits sprag). This is the proper resolution of the R84/R85 "a floater's X must not
+    /// quit the terminal" constraint, now that pinion delivers the seam.
+    fn window_close_requested(window_id: &str) -> bool {
+        if let Some(i) = dock::pane_window_index(window_id) {
+            dock::redock_pane(i);
+            true
+        } else {
+            false
         }
     }
 
@@ -1641,7 +1680,7 @@ mod tests {
     /// R72 placeholder model — which is exactly what lets the reorganizer relocate it),
     /// then dispatch the live `terminal-0.tear_off_redock_at` the shell fires on a
     /// cross-window drop over terminal-1's RIGHT edge. The reducer relocates terminal-0 to
-    /// the right of terminal-1 (`apply_zone_redock`) and drops the float window — so the
+    /// the right of terminal-1 (via the `resolve_drop` SSOT) and drops the float window — so the
     /// pane re-tiles AT the drop zone (`[terminal-1, terminal-0]`), the reverse of its boot
     /// home `[terminal-0, terminal-1]`. Live scoped tag + the exact Json payload
     /// (R67/R68: the synthetic input must match the live wire).
@@ -1650,7 +1689,7 @@ mod tests {
         use std::borrow::Cow;
         let mut core = ShellCore::<TerminalViewer>::new();
         // Zone-honoring redock is PLACEHOLDER-mode only (the surviving leaf is what
-        // apply_zone_redock relocates; collapse removes it and lands index-relative).
+        // resolve_drop relocates; collapse removes it and lands index-relative).
         core.root_owner()
             .run(|| dock::set_dock_mode(dock::DockMode::Placeholder));
         let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
@@ -1703,7 +1742,7 @@ mod tests {
         );
         // ... and pane 0 re-tiled AT THE ZONE — to the RIGHT of pane 1, the reverse of its
         // boot home order. This is the zone-honoring relocation the placeholder model
-        // unlocks (the leaf survived, so apply_zone_redock could move it).
+        // unlocks (the leaf survived, so resolve_drop could move it).
         assert_eq!(
             core.root_owner().run(|| split::use_dock_topology()
                 .get()
@@ -1764,39 +1803,58 @@ mod tests {
         });
     }
 
-    /// R85 (pinion R1121 chrome hook): EVERY window is borderless and gets the app's
-    /// client chrome (min/max + resize) — so main and floaters look identical. Main shows
-    /// CLOSE (= app-quit, the right primary-close); a floater OMITS close (it is a live
-    /// pane, X must not quit the terminal). An unknown id gets no chrome.
+    /// R86 (pinion R1170 close seam): EVERY window is borderless with the app's client
+    /// chrome (min/max/close) — main and floaters look identical, BOTH now showing close.
+    /// The close ACTION differs via `window_close_requested`: main → `false` (app-quit, the
+    /// right primary-close); a floater → docks its pane back + `true` (handled, no exit).
     #[test]
-    fn window_chrome_main_has_close_floaters_omit_it() {
-        // Main window: client chrome WITH close (close = app-quit is correct for primary).
-        let main = <TerminalViewer as WidgetView>::window_chrome(dock::MAIN_WINDOW_ID)
-            .expect("the main window gets client chrome (it is borderless too)");
-        assert!(
-            main.show_minimize && main.show_maximize,
-            "main has min + max"
-        );
-        assert!(
-            main.show_close,
-            "main shows close (= app-quit, the right primary-close)"
-        );
-        // A floating pane window: chrome with min + max, NO close.
-        let chrome = <TerminalViewer as WidgetView>::window_chrome(&dock::pane_window_id(0))
-            .expect("a floating pane window gets client chrome");
-        assert!(
-            chrome.show_minimize && chrome.show_maximize,
-            "floater has min + max"
-        );
-        assert!(
-            !chrome.show_close,
-            "a floater OMITS close (ChromeAction::Close = app-quit; a floater is a live pane)"
-        );
+    fn window_chrome_both_show_close_floater_close_docks_back_main_quits() {
+        // Both classes: client chrome with min + max + close.
+        for id in [dock::MAIN_WINDOW_ID, &dock::pane_window_id(0)] {
+            let c = <TerminalViewer as WidgetView>::window_chrome(id)
+                .unwrap_or_else(|| panic!("window {id} gets client chrome (borderless)"));
+            assert!(
+                c.show_minimize && c.show_maximize && c.show_close,
+                "window {id} chrome has min + max + close"
+            );
+        }
         // A non-pane / unknown window id: no chrome.
         assert!(
             <TerminalViewer as WidgetView>::window_chrome("nope").is_none(),
             "an unknown window id gets no client chrome"
         );
+
+        // The close ACTION: main quits (false), a floater docks its pane back (true).
+        let mut core = ShellCore::<TerminalViewer>::new();
+        let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+        core.finalize_frame(scene);
+        core.root_owner().run(|| {
+            assert!(
+                !<TerminalViewer as WidgetView>::window_close_requested(dock::MAIN_WINDOW_ID),
+                "main close is unhandled here → the shell's app-exit default"
+            );
+            // Float pane 1, then its window's close should dock it back (handled = true).
+            dock::toggle_pane_floating(1);
+            assert!(
+                dock::pane_window_index(&dock::pane_window_id(1)).is_some()
+                    && super::dock::use_windows_topology()
+                        .get()
+                        .iter()
+                        .any(|w| w.id == dock::pane_window_id(1)),
+                "pane 1 is floating (its window exists)"
+            );
+            assert!(
+                <TerminalViewer as WidgetView>::window_close_requested(&dock::pane_window_id(1)),
+                "a floater's close is HANDLED (docks back, no app-exit)"
+            );
+            assert!(
+                !super::dock::use_windows_topology()
+                    .get()
+                    .iter()
+                    .any(|w| w.id == dock::pane_window_id(1)),
+                "the close docked pane 1 back — its floating window is gone"
+            );
+        });
     }
 
     /// Drag-to-dock reorganize (P2 / pinion R1081 + PR-29.1): the shared

@@ -48,8 +48,8 @@
 //!
 //! R60 chose **collapse** for the TWM fill (siblings reclaim a torn-off pane's space).
 //! R72 reversed to **placeholder** (the slot is held) because it makes zone-honoring
-//! cross-window redock trivially correct — the surviving leaf is what
-//! `DockReorganizer::apply_zone_redock` relocates to the drop zone (mooting PINION-PR34) —
+//! cross-window redock trivially correct — the surviving leaf is what the reducer's
+//! `resolve_drop` SSOT relocates to the drop zone (mooting PINION-PR34) —
 //! and mirrors pinion's IDE-dock reference (VS Code dragging a panel out). Live-testing,
 //! the held slot felt un-terminal-like (the user expected the fill), so **R77 made both
 //! selectable and restored collapse as the DEFAULT.** The trade is inherent: collapse =
@@ -295,8 +295,8 @@ pub(crate) fn float_pane(index: usize) {
 ///
 /// **v1 bound:** index-relative, not drop-zone-relative — a collapse-mode cross-window
 /// redock lands at the pane's index home, not where it was dropped (zone-honoring redock
-/// needs `DockMode::Placeholder`, where the surviving leaf is relocated by
-/// `apply_zone_redock`). See the module docs + PINION-PR34.
+/// needs `DockMode::Placeholder`, where the surviving leaf is relocated by the reducer's
+/// `resolve_drop` SSOT). See the module docs + PINION-PR34.
 pub(crate) fn dock_pane(index: usize) {
     let topo = use_dock_topology();
     let next = match topo.get() {

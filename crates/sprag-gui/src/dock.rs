@@ -40,7 +40,7 @@
 //! ([`crate::split::docked_pane_indices`], read by both paint and a11y) is DERIVED in both
 //! modes (the tree's leaves filtered by [`is_pane_floating`]), so it can never disagree
 //! with the windows-signal. The tree is also restructured by reorganize gestures
-//! (drag-to-dock + the cross-window zone-redock `apply_zone_redock`) in both modes.
+//! (drag-to-dock + the cross-window zone-redock via `resolve_drop`) in both modes.
 //!
 //! ## Why the undock window opens at the pane's intrinsic size (and now reflows)
 //!
@@ -103,7 +103,7 @@ pub(crate) enum DockMode {
     /// the tree; the view paints a placeholder holding its slot ([`crate::view`]). The
     /// windows-signal is the SOLE float authority, ORTHOGONAL to the tree (R76). This is
     /// the only mode where zone-honoring cross-window redock works (the surviving leaf is
-    /// what `DockReorganizer::apply_zone_redock` relocates to the drop zone), at the cost
+    /// what the reducer's `resolve_drop` SSOT relocates to the drop zone), at the cost
     /// that siblings do NOT reclaim a floated pane's slot.
     Placeholder,
 }
@@ -286,13 +286,13 @@ fn open_floating(i: usize, position: Option<(i32, i32)>) {
 ///
 /// In [`DockMode::Collapse`] (default) it ALSO re-inserts the pane's leaf into the
 /// split-tree index-relative ([`crate::split::dock_pane`]) — the leaf was removed on
-/// float. For a redock-over-a-ZONE the reducer's `apply_zone_redock` ran first but
+/// float. For a redock-over-a-ZONE the reducer's `resolve_drop` relocate ran first but
 /// REJECTED (the leaf is absent), so the pane lands at its INDEX home, not the drop zone
 /// (the PINION-PR34 v1 bound — zone-honoring redock needs [`DockMode::Placeholder`]).
 /// In [`DockMode::Placeholder`] it is window-only: the leaf never left, so de-floating
 /// just drops the window (the view stops painting the placeholder and paints content,
-/// re-tiled in place); a redock-over-a-zone was already relocated by `apply_zone_redock`
-/// (the surviving leaf is what it moves — this is why placeholder moots PINION-PR34).
+/// re-tiled in place); a redock-over-a-zone was already relocated by the `resolve_drop`
+/// SSOT (the surviving leaf is what it moves — this is why placeholder moots PINION-PR34).
 pub(crate) fn redock_pane(i: usize) {
     let signal = use_windows_topology();
     let mut windows = signal.get();
