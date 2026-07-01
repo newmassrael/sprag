@@ -3792,6 +3792,50 @@
         "18 commits ahead pre-R86 (R77->R85) + R86 = the dock-DnD arc; user has not pushed. Live-verify \"끌어서 dock\" before declaring the dock line truly done (avoid the R83/R85 overclaim)."
       ]
     },
+    "Round 87": {
+      "decision_summary": "Round 87: two dock-UX fixes surfaced by live-testing R86's \"끌어서 dock\", both sprag-side. (1) The user found that once ALL panes are floated the main dock is EMPTY and a floater can no longer be dragged back — an empty dock has no interior drop target (pinion synthesizes an outer-dock band from the window rect, but only at the 32px rim; the interior is dead, and the editor \"seeds Some and never empties\" so pinion never hit this). The user chose tmux/zellij semantics: the main window always keeps at least one docked pane. So in COLLAPSE mode a float that would empty the dock (the last docked pane) is REFUSED (float_would_empty_the_dock gate at open_floating + float_pane_at's create branch); PLACEHOLDER mode keeps the leaf so it's unaffected. (2) The user noticed pinion's editor shows a drop-preview while dragging but sprag did not — sprag had left WidgetView::dock_drop_preview at its None default and had no same-window outer-preview overlay. Implemented dock_drop_preview (classify through the SAME resolve_drop SSOT the redock arm applies, so preview == result: Dock -> dock_drop_preview_overlay, OuterDock -> dock_outer_preview_overlay, Float/SnapBack -> None) + the view_main OUTER_DOCK_ZONE_TAG overlay (dock_outer_zone_highlight). Both mirror the editor. Also added a standing redock_resolution diag (the diag.rs typed-event idiom) to read a \"drag that does nothing\" off the log. No pin bump (consumes the already-pinned c8550c11).",
+      "changes_bullets": [
+        "dock.rs: float_would_empty_the_dock(i) — collapse + pane i is the ONLY docked pane (docked_pane_indices()==[i]); gated at open_floating (early return) + float_pane_at's create branch (early return). Doc: tmux semantics, why an empty dock has no interior drop target. Guard collapse_refuses_to_float_the_last_docked_pane_placeholder_allows_it.",
+        "main.rs: WidgetView::dock_drop_preview(source_panel, target_tag, panel_rect, x_rel, y_rel) -> resolve_drop match: OuterDock->dock_outer_preview_overlay, Dock->dock_drop_preview_overlay, Float/SnapBack->None (tint = dock_redock_preview_tint(Theme::default())). Imports dock_drop_preview_overlay/dock_outer_preview_overlay/dock_redock_preview_tint.",
+        "view.rs: view_main appends dock_outer_zone_highlight(zone) to the surface root when drop_preview.target == OUTER_DOCK_ZONE_TAG (same-window outer preview). Imports OUTER_DOCK_ZONE_TAG + dock_outer_zone_highlight.",
+        "diag.rs: redock_resolution(pane, target, x_rel, resolution) typed diag (reads a no-op drag off SPRAG_GUI_LOG); called in the redock_at arm."
+      ],
+      "verification_bullets": [
+        "sprag-gui 66/0/0 (+1 guard) + clippy -p sprag-gui --all-targets clean; rustfmt clean; cargo doc -D warnings (private items) clean.",
+        "The last-pane gate is guard-proven (collapse refuses the last float; placeholder allows both). The preview hooks mirror pinion's editor dock_drop_preview + view_main_dock outer overlay exactly, through the same resolve_drop SSOT the redock arm uses (preview == result by construction).",
+        "HONEST scope: the preview overlays are RENDER paths (pinion injects dock_drop_preview as a pointer-transparent overlay; the outer highlight is a view append) — they need a LIVE human drag to confirm visually (the user reported \"preview 안보여\" before this; they got pulled to a separate glyph issue before re-checking). The last-pane gate's live effect (can't tear off the last pane; drag-back then always works) also wants a live confirm. Both are headless-green; the live check is pending."
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "R87 = two sprag-side dock fixes: (1) collapse keeps >=1 docked pane (tmux semantics, the user's choice) so the dock never empties to a no-drop-target state; (2) dock_drop_preview hook + outer overlay so a drag shows WHERE it will land (the affordance the editor had and sprag lacked). Both live-pending.",
+        "Separately filed PINION-PR40 (block/box glyph synthesis): `claude`'s logo block-art (U+2588 etc.) renders as broken bars because pinion rasterizes block-element/box-drawing chars from font glyphs that don't tile; sprag's grid is correct (right codepoints + narrow width). pinion R1178-R1180 (delivered, next bump) is exactly the (A) block + (B) box geometric synthesis PR-40 proposed.",
+        "NEXT: bump c8550c11 -> 018ccdd0 (R1181) to consume PR-40 (sprag change 0, glyph fix); live-verify R87 preview + last-pane gate; the \"끌어서 dock\" end-to-end."
+      ],
+      "publishable_decision_summary": "Round 87: two dock-UX fixes surfaced by live-testing R86's \"끌어서 dock\", both sprag-side. (1) The user found that once ALL panes are floated the main dock is EMPTY and a floater can no longer be dragged back — an empty dock has no interior drop target (pinion synthesizes an outer-dock band from the window rect, but only at the 32px rim; the interior is dead, and the editor \"seeds Some and never empties\" so pinion never hit this). The user chose tmux/zellij semantics: the main window always keeps at least one docked pane. So in COLLAPSE mode a float that would empty the dock (the last docked pane) is REFUSED (float_would_empty_the_dock gate at open_floating + float_pane_at's create branch); PLACEHOLDER mode keeps the leaf so it's unaffected. (2) The user noticed pinion's editor shows a drop-preview while dragging but sprag did not — sprag had left WidgetView::dock_drop_preview at its None default and had no same-window outer-preview overlay. Implemented dock_drop_preview (classify through the SAME resolve_drop SSOT the redock arm applies, so preview == result: Dock -> dock_drop_preview_overlay, OuterDock -> dock_outer_preview_overlay, Float/SnapBack -> None) + the view_main OUTER_DOCK_ZONE_TAG overlay (dock_outer_zone_highlight). Both mirror the editor. Also added a standing redock_resolution diag (the diag.rs typed-event idiom) to read a \"drag that does nothing\" off the log. No pin bump (consumes the already-pinned c8550c11).",
+      "publishable_changes_bullets": [
+        "dock.rs: float_would_empty_the_dock(i) — collapse + pane i is the ONLY docked pane (docked_pane_indices()==[i]); gated at open_floating (early return) + float_pane_at's create branch (early return). Doc: tmux semantics, why an empty dock has no interior drop target. Guard collapse_refuses_to_float_the_last_docked_pane_placeholder_allows_it.",
+        "main.rs: WidgetView::dock_drop_preview(source_panel, target_tag, panel_rect, x_rel, y_rel) -> resolve_drop match: OuterDock->dock_outer_preview_overlay, Dock->dock_drop_preview_overlay, Float/SnapBack->None (tint = dock_redock_preview_tint(Theme::default())). Imports dock_drop_preview_overlay/dock_outer_preview_overlay/dock_redock_preview_tint.",
+        "view.rs: view_main appends dock_outer_zone_highlight(zone) to the surface root when drop_preview.target == OUTER_DOCK_ZONE_TAG (same-window outer preview). Imports OUTER_DOCK_ZONE_TAG + dock_outer_zone_highlight.",
+        "diag.rs: redock_resolution(pane, target, x_rel, resolution) typed diag (reads a no-op drag off SPRAG_GUI_LOG); called in the redock_at arm."
+      ],
+      "publishable_verification_bullets": [
+        "sprag-gui 66/0/0 (+1 guard) + clippy -p sprag-gui --all-targets clean; rustfmt clean; cargo doc -D warnings (private items) clean.",
+        "The last-pane gate is guard-proven (collapse refuses the last float; placeholder allows both). The preview hooks mirror pinion's editor dock_drop_preview + view_main_dock outer overlay exactly, through the same resolve_drop SSOT the redock arm uses (preview == result by construction).",
+        "HONEST scope: the preview overlays are RENDER paths (pinion injects dock_drop_preview as a pointer-transparent overlay; the outer highlight is a view append) — they need a LIVE human drag to confirm visually (the user reported \"preview 안보여\" before this; they got pulled to a separate glyph issue before re-checking). The last-pane gate's live effect (can't tear off the last pane; drag-back then always works) also wants a live confirm. Both are headless-green; the live check is pending."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "R87 = two sprag-side dock fixes: (1) collapse keeps >=1 docked pane (tmux semantics, the user's choice) so the dock never empties to a no-drop-target state; (2) dock_drop_preview hook + outer overlay so a drag shows WHERE it will land (the affordance the editor had and sprag lacked). Both live-pending.",
+        "Separately filed PINION-PR40 (block/box glyph synthesis): `claude`'s logo block-art (U+2588 etc.) renders as broken bars because pinion rasterizes block-element/box-drawing chars from font glyphs that don't tile; sprag's grid is correct (right codepoints + narrow width). pinion R1178-R1180 (delivered, next bump) is exactly the (A) block + (B) box geometric synthesis PR-40 proposed.",
+        "NEXT: bump c8550c11 -> 018ccdd0 (R1181) to consume PR-40 (sprag change 0, glyph fix); live-verify R87 preview + last-pane gate; the \"끌어서 dock\" end-to-end."
+      ]
+    },
     "Round 9": {
       "decision_summary": "Cleanup round from the session review: harden the orchestrator substrate — reuse the producer's damage generations for observation, type the drive errors, and fix wrapped-sentinel convergence matching.",
       "changes_bullets": [
