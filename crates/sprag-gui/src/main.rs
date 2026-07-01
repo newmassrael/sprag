@@ -1897,6 +1897,94 @@ mod tests {
         });
     }
 
+    /// Total node count of a `Scene` (recursively). The faithful way to assert a preview
+    /// actually PAINTED (R68 lesson: guard the rendered layout, not the data path) when the
+    /// overlay carries no distinguishing tag — an appended overlay grows the count.
+    fn scene_node_count(scene: &Scene) -> usize {
+        1 + match scene {
+            Scene::Container(c) => c.children.iter().map(scene_node_count).sum(),
+            _ => 0,
+        }
+    }
+
+    /// R87 same-window OUTER drop-preview, HEADLESS (refuting "preview is only live-
+    /// verifiable" — the render is a pure function of the preview state, testable without a
+    /// drag gesture). Setting `use_drop_preview` to an `OUTER_DOCK_ZONE_TAG` target makes
+    /// `view_main` append the full-span outer overlay (R87's view addition). pinion's
+    /// same-window `dock_outer_zone_highlight` carries no distinguishing tag (unlike the
+    /// cross-window hook overlay), so the append is asserted by the node-count GROWING —
+    /// the overlay is a real appended node. (The per-panel zone highlight is the pre-
+    /// existing R1080/R1082 mechanism; R87's cross-window hook is covered by the sibling
+    /// `dock_drop_preview_hook_*` guard.) The mid-gesture DRAG that SETS this state is the
+    /// RPC-vs-live part; the preview RENDER — what the user sees — is proven here.
+    #[test]
+    fn outer_drop_preview_state_appends_the_overlay_headlessly() {
+        use pinion_widget_paint::dock::{DockDropPreview, DockDropZone};
+        // Render view_for_window("main") in the SAME owner the preview signal is set in
+        // (ShellCore::new booted the topology there — see reorganizer_swaps). The `Frame`
+        // is unused by view_main, so a default is fine.
+        let core = ShellCore::<TerminalViewer>::new();
+        core.root_owner().run(|| {
+            let frame = Frame::new();
+            let render = || view::view_for_window(dock::MAIN_WINDOW_ID, (), &frame);
+
+            // Baseline: no preview.
+            split::use_drop_preview().set(None);
+            let base = scene_node_count(&render());
+
+            // Outer preview: a drag into the window's outer band (OUTER_DOCK_ZONE_TAG) →
+            // view_main appends the full-span outer overlay, so the paint grows.
+            split::use_drop_preview().set(Some(DockDropPreview {
+                source: split::panel_id(1),
+                target: pinion_core::external::OUTER_DOCK_ZONE_TAG.to_string(),
+                zone: DockDropZone::Right,
+            }));
+            assert!(
+                scene_node_count(&render()) > base,
+                "an OUTER_DOCK_ZONE_TAG preview appends the full-span outer overlay to the paint \
+                 (view_main R1167) — it grows the scene vs the no-preview baseline"
+            );
+        });
+    }
+
+    /// R87 cross-window preview hook, HEADLESS: `dock_drop_preview` is a pure function of
+    /// the same `resolve_drop` SSOT the redock arm applies (preview == result). An edge drop
+    /// over another panel returns an overlay `Some`; a drop on the source's OWN slot
+    /// (`source == target` → `SnapBack`) returns `None`. So the cross-window affordance is
+    /// verified without a live cross-window drag.
+    #[test]
+    fn dock_drop_preview_hook_shows_for_a_dock_zone_none_for_own_slot() {
+        // The hook resolves through `use_dock_reorganizer` (needs a booted topology owner).
+        let core = ShellCore::<TerminalViewer>::new();
+        core.root_owner().run(|| {
+            let rect = pinion_core::scene::Rect::new(0, 0, 800, 600);
+            // Drag terminal-1 over terminal-0's RIGHT edge (x_rel high) → Dock → an overlay.
+            let over_edge = <TerminalViewer as WidgetView>::dock_drop_preview(
+                &split::panel_id(1),
+                &split::panel_id(0),
+                rect,
+                0.9,
+                0.5,
+            );
+            assert!(
+                over_edge.is_some(),
+                "an edge drop over another panel previews an overlay (Dock)"
+            );
+            // Drag over the source's OWN slot (source == target → SnapBack) → no overlay.
+            let own_slot = <TerminalViewer as WidgetView>::dock_drop_preview(
+                &split::panel_id(1),
+                &split::panel_id(1),
+                rect,
+                0.5,
+                0.5,
+            );
+            assert!(
+                own_slot.is_none(),
+                "a drop on the panel's own slot (SnapBack) previews nothing"
+            );
+        });
+    }
+
     /// Drag-to-dock reorganize (P2 / pinion R1081 + PR-29.1): the shared
     /// [`DockReorganizer`](pinion_widget_paint::dock::DockReorganizer) — wired to sprag's
     /// `Signal<Option<DockTopology>>` SSOT (PR-29.1 made it total over `Option`) — applies
