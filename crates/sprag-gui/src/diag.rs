@@ -93,3 +93,15 @@ pub(crate) fn redock_resolution(pane: usize, target: &str, x_rel: f64, resolutio
         );
     }
 }
+
+/// The external factory re-ran (R90 diag): the per-pane `movable` flags it computed, so a
+/// "the locked pane still drags" bug can be read off the log — proves whether the factory
+/// re-ran on float AND what movability it set.
+pub(crate) fn externals_rebuilt(movable: &[bool]) {
+    if enabled() {
+        eprintln!(
+            "sprag t={t:>7}ms externals rebuilt: movable={movable:?}",
+            t = stamp(),
+        );
+    }
+}

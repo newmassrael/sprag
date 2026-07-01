@@ -362,6 +362,11 @@ impl WidgetCore for TerminalViewer {
         // in-flight drag without collision.
         let reorganizer = split::use_dock_reorganizer();
         let drop_preview = split::use_drop_preview();
+        crate::diag::externals_rebuilt(
+            &(0..terminal.pane_count())
+                .map(dock::pane_is_movable)
+                .collect::<Vec<_>>(),
+        );
         externals.extend((0..terminal.pane_count()).map(|i| {
             ExtraExternal::new(
                 split::panel_id(i),
@@ -369,6 +374,19 @@ impl WidgetCore for TerminalViewer {
                     DockPanelExternal::new(split::panel_id(i))
                         .with_reorganizer(Rc::clone(&reorganizer))
                         .with_drop_preview(Rc::clone(&drop_preview))
+                        // (pinion R1172 / R91) LOCK the sole docked pane's tear-off at the
+                        // SOURCE: `movable=false` makes `begin_drag` return `None`, so a pane
+                        // that cannot float (the last docked one, tmux semantics) would start
+                        // NO drag — no misleading chip/preview. The factory re-runs per
+                        // float/dock (R70) and computes the live flag (diag `externals_rebuilt`
+                        // shows [false,true] once a pane floats). BLOCKED LIVE on PINION-PR42:
+                        // `reconcile_externals` early-returns on an unchanged tag set (sprag's
+                        // tags are constant), DISCARDING the rebuilt external, so this dynamic
+                        // `movable` is create-time-only and not applied after boot. Kept as the
+                        // correct forward seam (sprag change 0 when pinion re-applies per-panel
+                        // flags); until then the reducer/float gate keeps behavior correct while
+                        // the chip/preview still (wrongly) shows.
+                        .with_movable(dock::pane_is_movable(i))
                         // (pinion R1116 / PINION-PR38 ②) Declare this pane's own floating
                         // window id, so a header drag INSIDE that window is a borderless
                         // title-bar WINDOW MOVE (grab-offset delta → the `WINDOW_MOVE`

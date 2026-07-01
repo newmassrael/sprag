@@ -263,6 +263,21 @@ fn float_would_empty_the_dock(i: usize) -> bool {
     docked.len() == 1 && docked.first() == Some(&i)
 }
 
+/// Whether pane `i`'s dock-panel header may START a drag (tear-off / reorder). FALSE only
+/// for the sole docked pane in collapse mode — the one [`float_would_empty_the_dock`]
+/// refuses to float. Wired to pinion's `DockPanelExternal::with_movable` in
+/// `create_extra_externals` so the drag is blocked AT THE SOURCE (`begin_drag` returns
+/// `None`): no drag session, so NO drag-image chip and NO drop-preview appear for a pane
+/// that cannot move. This replaces the earlier reducer-level refuse, which let pinion's
+/// generic drag machinery paint a misleading chip/preview before the reducer silently
+/// swallowed the float — the "why does a pane that can't move show a preview?" inconsistency.
+/// The factory re-runs on every float/dock reconcile (R70 dynamic external set), so the
+/// flag tracks the live docked set: with 2+ docked panes every pane is movable; float one
+/// and the remaining sole pane locks.
+pub(crate) fn pane_is_movable(i: usize) -> bool {
+    !float_would_empty_the_dock(i)
+}
+
 /// Float pane `i`: push its undock [`WindowSpec`] ([`undock_window_spec`], at
 /// `position` if given) onto `windows`. The caller owns the `signal.set` + the `dock`
 /// diag.
@@ -504,6 +519,53 @@ mod tests {
             assert!(
                 floating(0) && floating(1),
                 "placeholder mode lets every pane float (the held leaf is the drop target)"
+            );
+        });
+    }
+
+    /// R90/R91: `pane_is_movable` computes the source-level tear-off lock — FALSE for the
+    /// sole docked pane (its drag would empty the dock), TRUE otherwise. It is wired to
+    /// `DockPanelExternal::with_movable` so pinion's `begin_drag` returns `None` for a
+    /// locked pane (no drag → no chip/preview). This guard pins the PREDICATE (both docked
+    /// → both movable; float one → the sole pane computes non-movable; re-dock → restored;
+    /// placeholder never locks). NOTE: the LIVE source-level block is blocked on
+    /// PINION-PR42 — `reconcile_externals` early-returns on an unchanged tag set (sprag's
+    /// tags never change), discarding the rebuilt external, so the dynamic `movable=false`
+    /// is not applied after boot (create-time-only). Behavior stays correct via the
+    /// reducer/float gate; the misleading chip/preview needs the pinion fix.
+    #[test]
+    fn the_sole_docked_pane_computes_non_movable() {
+        let owner = Owner::new();
+        owner.run(|| {
+            set_dock_mode(DockMode::Collapse);
+            // Both docked → both movable (either may float, leaving the other).
+            assert!(
+                pane_is_movable(0) && pane_is_movable(1),
+                "with 2 docked panes, both dock headers can start a drag"
+            );
+            // Float pane 0 → pane 1 is now the SOLE docked pane → NOT movable.
+            toggle_pane_floating(0);
+            assert!(
+                !pane_is_movable(1),
+                "the sole docked pane is not movable (begin_drag returns None → no chip/preview)"
+            );
+            assert!(
+                pane_is_movable(0),
+                "a floating pane stays movable (its window drag, not the dock header)"
+            );
+            // Re-dock → both movable again (dynamic with the live docked set).
+            toggle_pane_floating(0);
+            assert!(
+                pane_is_movable(0) && pane_is_movable(1),
+                "re-docking restores movability for both"
+            );
+
+            // Placeholder: the leaf survives, so no pane ever locks.
+            set_dock_mode(DockMode::Placeholder);
+            toggle_pane_floating(0);
+            assert!(
+                pane_is_movable(1),
+                "placeholder mode never locks a pane (the dock cannot empty)"
             );
         });
     }
