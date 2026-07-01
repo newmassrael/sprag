@@ -3836,6 +3836,42 @@
         "NEXT: bump c8550c11 -> 018ccdd0 (R1181) to consume PR-40 (sprag change 0, glyph fix); live-verify R87 preview + last-pane gate; the \"끌어서 dock\" end-to-end."
       ]
     },
+    "Round 88": {
+      "decision_summary": "Round 88: bump the 7 pinion-* git revs c8550c11 (R1173) -> 018ccdd0 (R1181), consuming PINION-PR40 (block-element + box-drawing geometric synthesis) that sprag filed R87. The user ran `claude` in a sprag terminal and its logo block-art (U+2588 FULL BLOCK + quadrants) rendered as broken bars; diagnosis (grid snapshot + GPU screenshot + pinion source) confirmed sprag's grid was correct (right codepoints + narrow width) and the fault was pinion rasterizing block/box chars from font glyphs that don't tile. pinion delivered exactly the proposed fix: R1178 solid block-element geometric synthesis (U+2580-2590/2594-259F to cell-exact fg rects), R1179 shade-block alpha (U+2591-2593), R1180 box-drawing arm synthesis (U+2500-257F), R1181 cleanup. All Vello-arm-local inside the TextGrid renderer; the TextGrid data contract is unchanged, so sprag consumes it with ZERO code change. SCE 3078f8bf / vello 0.9 unchanged.",
+      "changes_bullets": [
+        "Cargo.toml: bumped 7 pinion-* c8550c11 -> 018ccdd0 (SCE/vello untouched, 7+0 verified). Cargo.lock re-resolved. No sprag code change: R1178-R1181 are internal to pinion's TextGrid glyph raster (block/box geometric synthesis); the TextGrid projection sprag emits (codepoints + narrow/wide width + SGR) is unchanged. Audited per the R79 discipline -- no new consumer seam/payload."
+      ],
+      "verification_bullets": [
+        "sprag-gui 66/0/0 + full cargo test --workspace green; clippy -p sprag-gui --all-targets clean; cargo doc -D warnings (private items) clean. Checkpoint-built against 018ccdd0 with no sprag code.",
+        "LIVE-VERIFIED end to end (the block-art fix, GPU pixels): drove `claude` into terminal-0 via the pane key wire (/sprag_gui.pane.0/external/key), advanced past its permission prompt, and captured scene/screenshot of the Claude Code welcome logo. BEFORE (R87 pin c8550c11): the logo was broken orange bars with inter-cell gaps. AFTER (R88 pin 018ccdd0): the logo renders as SOLID connected block-art (the Claude face with eyes/mouth crisp), the box-drawing input-border draws as connected lines. So PR-40's block+shade+box synthesis renders correctly. sprag's grid was already correct; only pinion's raster changed."
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "PINION-PR40 (block/box glyph synthesis) delivered (R1178-R1181) + consumed + LIVE-verified: `claude`'s logo renders solid. sprag change 0 (grid contract unchanged). This closes the terminal glyph-rendering gap for block elements + box-drawing.",
+        "Still live-pending from R87 (not glyph-related): the drop-preview overlay (dock_drop_preview hook) and the last-pane-stays-docked gate want a live human drag to confirm. The \"끌어서 dock\" cross-window redock consumption path is headless-verified (R86) but the true live floater-onto-empty-main is moot now (R87 keeps >=1 docked).",
+        "On the next bump, re-audit for new pinion seams (R79 discipline)."
+      ],
+      "publishable_decision_summary": "Round 88: bump the 7 pinion-* git revs c8550c11 (R1173) -> 018ccdd0 (R1181), consuming PINION-PR40 (block-element + box-drawing geometric synthesis) that sprag filed R87. The user ran `claude` in a sprag terminal and its logo block-art (U+2588 FULL BLOCK + quadrants) rendered as broken bars; diagnosis (grid snapshot + GPU screenshot + pinion source) confirmed sprag's grid was correct (right codepoints + narrow width) and the fault was pinion rasterizing block/box chars from font glyphs that don't tile. pinion delivered exactly the proposed fix: R1178 solid block-element geometric synthesis (U+2580-2590/2594-259F to cell-exact fg rects), R1179 shade-block alpha (U+2591-2593), R1180 box-drawing arm synthesis (U+2500-257F), R1181 cleanup. All Vello-arm-local inside the TextGrid renderer; the TextGrid data contract is unchanged, so sprag consumes it with ZERO code change. SCE 3078f8bf / vello 0.9 unchanged.",
+      "publishable_changes_bullets": [
+        "Cargo.toml: bumped 7 pinion-* c8550c11 -> 018ccdd0 (SCE/vello untouched, 7+0 verified). Cargo.lock re-resolved. No sprag code change: R1178-R1181 are internal to pinion's TextGrid glyph raster (block/box geometric synthesis); the TextGrid projection sprag emits (codepoints + narrow/wide width + SGR) is unchanged. Audited per the R79 discipline -- no new consumer seam/payload."
+      ],
+      "publishable_verification_bullets": [
+        "sprag-gui 66/0/0 + full cargo test --workspace green; clippy -p sprag-gui --all-targets clean; cargo doc -D warnings (private items) clean. Checkpoint-built against 018ccdd0 with no sprag code.",
+        "LIVE-VERIFIED end to end (the block-art fix, GPU pixels): drove `claude` into terminal-0 via the pane key wire (/sprag_gui.pane.0/external/key), advanced past its permission prompt, and captured scene/screenshot of the Claude Code welcome logo. BEFORE (R87 pin c8550c11): the logo was broken orange bars with inter-cell gaps. AFTER (R88 pin 018ccdd0): the logo renders as SOLID connected block-art (the Claude face with eyes/mouth crisp), the box-drawing input-border draws as connected lines. So PR-40's block+shade+box synthesis renders correctly. sprag's grid was already correct; only pinion's raster changed."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "PINION-PR40 (block/box glyph synthesis) delivered (R1178-R1181) + consumed + LIVE-verified: `claude`'s logo renders solid. sprag change 0 (grid contract unchanged). This closes the terminal glyph-rendering gap for block elements + box-drawing.",
+        "Still live-pending from R87 (not glyph-related): the drop-preview overlay (dock_drop_preview hook) and the last-pane-stays-docked gate want a live human drag to confirm. The \"끌어서 dock\" cross-window redock consumption path is headless-verified (R86) but the true live floater-onto-empty-main is moot now (R87 keeps >=1 docked).",
+        "On the next bump, re-audit for new pinion seams (R79 discipline)."
+      ]
+    },
     "Round 9": {
       "decision_summary": "Cleanup round from the session review: harden the orchestrator substrate — reuse the producer's damage generations for observation, type the drive errors, and fix wrapped-sentinel convergence matching.",
       "changes_bullets": [
