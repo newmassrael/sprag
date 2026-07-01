@@ -247,6 +247,22 @@ pub(crate) fn is_pane_floating(i: usize) -> bool {
         .any(|w| w.id == pane_window_id(i))
 }
 
+/// In [`DockMode::Collapse`], floating pane `i` would EMPTY the main dock if it is the
+/// ONLY docked pane: collapse removes its leaf, the tree empties to `None`, and an empty
+/// dock has no interior drop target (only its 32px rim — pinion synthesizes an outer-dock
+/// band from the window rect, but the interior is dead), so a floated pane could never be
+/// dragged back. The user chose tmux/zellij semantics — the main window always keeps at
+/// least ONE docked pane — so such a float is REFUSED (the last pane stays put). In
+/// [`DockMode::Placeholder`] the leaf survives (the slot is held), so the dock never truly
+/// empties and every pane may float.
+fn float_would_empty_the_dock(i: usize) -> bool {
+    if dock_mode() != DockMode::Collapse {
+        return false;
+    }
+    let docked = crate::split::docked_pane_indices();
+    docked.len() == 1 && docked.first() == Some(&i)
+}
+
 /// Float pane `i`: push its undock [`WindowSpec`] ([`undock_window_spec`], at
 /// `position` if given) onto `windows`. The caller owns the `signal.set` + the `dock`
 /// diag.
@@ -270,6 +286,9 @@ fn push_float(windows: &mut Vec<WindowSpec>, i: usize, position: Option<(i32, i3
 /// grows the window list by one. Single-responsibility — create only; the live-follow
 /// reposition is [`float_pane_at`]'s, never here.
 fn open_floating(i: usize, position: Option<(i32, i32)>) {
+    if float_would_empty_the_dock(i) {
+        return; // tmux semantics: the main window keeps its last docked pane (see helper)
+    }
     let signal = use_windows_topology();
     let mut windows = signal.get();
     let before = windows.len();
@@ -348,7 +367,12 @@ pub(crate) fn float_pane_at(i: usize, source_window: Option<&str>, cursor: (f64,
         }
         spec.position = Some(pos);
     } else {
-        // First escaped move: float at the cursor.
+        // First escaped move: float at the cursor — UNLESS this is the last docked pane
+        // in collapse mode (keep >=1 docked, the tmux semantics the user chose). Then the
+        // tear-off does nothing and the pane stays put.
+        if float_would_empty_the_dock(i) {
+            return;
+        }
         let before = windows.len();
         push_float(&mut windows, i, Some(pos));
         crate::diag::dock_toggle(i, true, before, windows.len());
@@ -441,6 +465,46 @@ mod tests {
             toggle_pane_floating(0);
             assert_eq!(windows.get().len(), 1, "dock-back removes the window");
             assert!(!floating(0), "pane 0 is docked again");
+        });
+    }
+
+    /// R87 (tmux semantics, user's choice): in COLLAPSE mode the main window keeps at
+    /// least one docked pane — floating the LAST docked pane is refused, so the dock never
+    /// empties to a state with no drop target (an empty dock can't be dragged back into).
+    /// PLACEHOLDER mode keeps the leaf (held slot), so the dock never truly empties and
+    /// every pane may float.
+    #[test]
+    fn collapse_refuses_to_float_the_last_docked_pane_placeholder_allows_it() {
+        let owner = Owner::new();
+        owner.run(|| {
+            let windows = use_windows_topology();
+            let floating = |i: usize| windows.get().iter().any(|w| w.id == pane_window_id(i));
+
+            // COLLAPSE (default): float pane 0 (pane 1 still docked — allowed) ...
+            set_dock_mode(DockMode::Collapse);
+            toggle_pane_floating(0);
+            assert!(
+                floating(0),
+                "pane 0 floats (pane 1 keeps the dock non-empty)"
+            );
+            // ... then floating pane 1, the LAST docked pane, is REFUSED.
+            toggle_pane_floating(1);
+            assert!(
+                !floating(1),
+                "the last docked pane stays put (tmux semantics: dock keeps >=1 pane)"
+            );
+            // Restore: dock pane 0 back for a clean placeholder run.
+            toggle_pane_floating(0);
+            assert!(!floating(0) && !floating(1), "both docked again");
+
+            // PLACEHOLDER: the leaf survives, so even the last pane may float.
+            set_dock_mode(DockMode::Placeholder);
+            toggle_pane_floating(0);
+            toggle_pane_floating(1);
+            assert!(
+                floating(0) && floating(1),
+                "placeholder mode lets every pane float (the held leaf is the drop target)"
+            );
         });
     }
 }

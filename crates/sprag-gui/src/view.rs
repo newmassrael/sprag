@@ -10,13 +10,14 @@ use crate::split::{
     pane_index_of_panel, panel_id, use_dock_topology, use_drop_preview, use_split_ratio,
 };
 use crate::terminal::{TerminalView, pane_tag, use_terminal};
+use pinion_core::external::OUTER_DOCK_ZONE_TAG;
 use pinion_core::scene::ContainerNode;
 use pinion_core::style::{BoxStyle, LayoutStyle, Size, SizeValue};
 use pinion_core::theme::{ColorRole, Theme, use_theme};
 use pinion_core::{Frame, Scene};
 use pinion_widget_paint::dock::{
-    DockPanelStyle, DockSplitState, FloatingPlaceholderStyle, view_dock_panel, view_dock_surface,
-    view_floating_placeholder,
+    DockPanelStyle, DockSplitState, FloatingPlaceholderStyle, dock_outer_zone_highlight,
+    view_dock_panel, view_dock_surface, view_floating_placeholder,
 };
 use sprag_host::PaneViewSpec;
 
@@ -117,6 +118,26 @@ fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
             },
             theme,
         ),
+    };
+    // Same-window OUTER full-span preview (pinion R1167): a docked-panel drag whose cursor
+    // entered the window's outer band resolves to `OUTER_DOCK_ZONE_TAG` (no panel matches
+    // the per-panel callback above, so the inner panels stay un-highlighted). Overlay a
+    // full-span band at the previewed edge — preview == result, the same affordance the
+    // cross-window floater preview ([`TerminalViewer::dock_drop_preview`]) shows. Appended
+    // as an absolute (out-of-flow) child of the surface root, so the dock layout is
+    // undisturbed. Mirrors the editor's `view_main_dock`.
+    let content = match drop_preview
+        .as_ref()
+        .filter(|p| p.target == OUTER_DOCK_ZONE_TAG)
+    {
+        Some(p) => match content {
+            Scene::Container(mut root) => {
+                root.children.push(dock_outer_zone_highlight(p.zone, theme));
+                Scene::Container(root)
+            }
+            other => other,
+        },
+        None => content,
     };
     compose(content, theme)
 }

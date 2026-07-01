@@ -81,3 +81,15 @@ pub(crate) fn dock_toggle(pane: usize, undock: bool, before: usize, after: usize
         );
     }
 }
+
+/// Cross-window redock resolution (R86): the `DropResolution` a `tear_off_redock_at`
+/// classified to, so a "끌어서 dock" that does nothing can be read off the log
+/// (`Float` = dead-zone, won't dock; `Dock`/`OuterDock` = relocates).
+pub(crate) fn redock_resolution(pane: usize, target: &str, x_rel: f64, resolution: &str) {
+    if enabled() {
+        eprintln!(
+            "sprag t={t:>7}ms redock pane {pane} over {target} x={x_rel:.3} -> {resolution}",
+            t = stamp(),
+        );
+    }
+}

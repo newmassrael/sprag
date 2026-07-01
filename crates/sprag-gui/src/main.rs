@@ -205,7 +205,8 @@ use pinion_core::{CompositionEvent, Frame, Modifiers, Scene, WidgetCore};
 use pinion_shell::{SizeStrategy, WidgetView, WindowChromeStyle, WindowSpec, vello_renderer_impl};
 use pinion_widget_paint::dock::{
     DockPanelExternal, DropResolution, TEAR_OFF_EVENT, TEAR_OFF_FOLLOW_EVENT,
-    TEAR_OFF_REDOCK_AT_EVENT, TEAR_OFF_REDOCK_EVENT, WINDOW_MOVE_EVENT, resolve_drop,
+    TEAR_OFF_REDOCK_AT_EVENT, TEAR_OFF_REDOCK_EVENT, WINDOW_MOVE_EVENT, dock_drop_preview_overlay,
+    dock_outer_preview_overlay, dock_redock_preview_tint, resolve_drop,
 };
 use pinion_widget_paint::splitter::SplitterExternal;
 use sprag_host::SpragPaneExternal;
@@ -639,12 +640,14 @@ impl WidgetCore for TerminalViewer {
                         x_rel: x_rel as f32,
                         y_rel: y_rel as f32,
                     };
-                    match resolve_drop(
+                    let resolution = resolve_drop(
                         Some(&point),
                         &split::panel_id(i),
                         |t| reorganizer.is_panel(t),
                         reorganizer.tabbing(),
-                    ) {
+                    );
+                    crate::diag::redock_resolution(i, target, x_rel, &format!("{resolution:?}"));
+                    match resolution {
                         DropResolution::Dock { target, zone } => {
                             let _ = reorganizer.dock_panel_at_resolved_zone(
                                 &split::panel_id(i),
@@ -772,6 +775,43 @@ impl WidgetView for TerminalViewer {
             true
         } else {
             false
+        }
+    }
+
+    /// Cross-window dock drop-preview (pinion R1163b): while a floating pane is dragged
+    /// over the main window's dock, the shell calls this so the binding paints a preview
+    /// overlay showing WHERE the panel will land. We classify the drop through the SAME
+    /// `resolve_drop` SSOT the release applies (the `TEAR_OFF_REDOCK_AT_EVENT` arm), so the
+    /// preview == the result by construction: an inner `Dock` zone previews the half-split
+    /// band, an `OuterDock` previews the full-span perimeter band, a `Float`/`SnapBack`
+    /// (dead zone) previews nothing. This is the affordance the user saw in pinion's editor
+    /// but not here — sprag had left the hook at its `None` default. Mirrors the editor's
+    /// `dock_drop_preview`.
+    fn dock_drop_preview(
+        source_panel: &str,
+        target_tag: &str,
+        panel_rect: pinion_core::scene::Rect,
+        x_rel: f32,
+        y_rel: f32,
+    ) -> Option<Scene> {
+        let reorganizer = split::use_dock_reorganizer();
+        let point = DropPoint {
+            tag: target_tag.to_string(),
+            x_rel,
+            y_rel,
+        };
+        let tint = dock_redock_preview_tint(&pinion_core::theme::Theme::default());
+        match resolve_drop(
+            Some(&point),
+            source_panel,
+            |t| reorganizer.is_panel(t),
+            reorganizer.tabbing(),
+        ) {
+            DropResolution::OuterDock { edge } => {
+                dock_outer_preview_overlay(panel_rect, edge, tint)
+            }
+            DropResolution::Dock { zone, .. } => dock_drop_preview_overlay(panel_rect, zone, tint),
+            DropResolution::Float | DropResolution::SnapBack { .. } => None,
         }
     }
 
