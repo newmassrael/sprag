@@ -3872,6 +3872,42 @@
         "On the next bump, re-audit for new pinion seams (R79 discipline)."
       ]
     },
+    "Round 89": {
+      "decision_summary": "Round 89: bump the 7 pinion-* git revs 018ccdd0 (R1181) -> f4a2f771 (R1184), consuming PINION-PR41 (scene/type batch text injection) that sprag filed R88. R1184 adds scene/type {text, at|path} to pinion-rpc: it fans each Unicode scalar of text into one CharacterKey (KeyWireState::Press) on the DeferredInput inbox -- the same key path scene/key uses -- so a string is typed in ONE RPC instead of one-per-codepoint. This is exactly the scene/drag-sibling batch primitive PR-41 proposed. pinion chose pure-text semantics (a literal \\n is a scalar, NOT mapped to Enter -- PR-41's optional \\n->Enter (A.1) was declined), so a command needs a following scene/key {key:\"Enter\"}. It is a new RPC primitive on the introspection wire, so the consumer wire is unchanged -- sprag change 0; the live-test harness just gains one-shot text entry. SCE 3078f8bf / vello 0.9 unchanged.",
+      "changes_bullets": [
+        "Cargo.toml: bumped 7 pinion-* 018ccdd0 -> f4a2f771 (SCE/vello untouched, 7+0 verified). Cargo.lock re-resolved. No sprag code change: scene/type is a pinion-rpc dispatch primitive (handle_scene_type fans text.chars() into CharacterKey DeferredInput entries via resolve_at_or_path targeting, mirroring scene/key). Audited per the R79 discipline -- no new consumer seam; the change is entirely inside the introspection wire."
+      ],
+      "verification_bullets": [
+        "sprag-gui 66/0/0 + full cargo test --workspace green; clippy -p sprag-gui --all-targets clean; cargo doc -D warnings (private items) clean. Checkpoint-built against f4a2f771 with no sprag code.",
+        "LIVE-VERIFIED the primitive works end to end: launched sprag-gui, sent ONE scene/type {path:\"sprag_gui.pane.0\", text:\"echo scene-type-works\"} + ONE scene/key {key:\"Enter\"} -> terminal-0's grid showed the echo OUTPUT \"scene-type-works\", proving the whole string was typed (one call) and executed. Previously this needed ~22 per-codepoint scene/key RPCs. NOTE: `path` is a BARE paint tag (no leading slash / no /external suffix) -- resolve_at_or_path looks up the tag in the paint scene, unlike scene/invoke's /tag/external/action path (the \"query the wire for the exact tag\" lesson)."
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "scene/type (PINION-PR41) delivered (R1184) + consumed + live-verified: a string types in 1 RPC (+ 1 scene/key Enter to run). pinion kept pure-text (\\n is a literal scalar, not Enter). The live-test harness can now drive `claude` etc. in one shot -- the structural fix for the \"character-at-a-time / investigate every time\" friction the user flagged.",
+        "Harness note: scene/type/scene/key `path` = a bare paint tag (sprag_gui.pane.{i} for a pane's key input), NOT the scene/invoke /tag/external/action form. Get the tag from scene/snapshot, don't grep source ([[query-the-wire-not-source]]).",
+        "Still live-pending from R87 (unrelated): drop-preview overlay + last-pane-stays-docked gate want a live human drag. On the next bump, re-audit for new seams (R79)."
+      ],
+      "publishable_decision_summary": "Round 89: bump the 7 pinion-* git revs 018ccdd0 (R1181) -> f4a2f771 (R1184), consuming PINION-PR41 (scene/type batch text injection) that sprag filed R88. R1184 adds scene/type {text, at|path} to pinion-rpc: it fans each Unicode scalar of text into one CharacterKey (KeyWireState::Press) on the DeferredInput inbox -- the same key path scene/key uses -- so a string is typed in ONE RPC instead of one-per-codepoint. This is exactly the scene/drag-sibling batch primitive PR-41 proposed. pinion chose pure-text semantics (a literal \\n is a scalar, NOT mapped to Enter -- PR-41's optional \\n->Enter (A.1) was declined), so a command needs a following scene/key {key:\"Enter\"}. It is a new RPC primitive on the introspection wire, so the consumer wire is unchanged -- sprag change 0; the live-test harness just gains one-shot text entry. SCE 3078f8bf / vello 0.9 unchanged.",
+      "publishable_changes_bullets": [
+        "Cargo.toml: bumped 7 pinion-* 018ccdd0 -> f4a2f771 (SCE/vello untouched, 7+0 verified). Cargo.lock re-resolved. No sprag code change: scene/type is a pinion-rpc dispatch primitive (handle_scene_type fans text.chars() into CharacterKey DeferredInput entries via resolve_at_or_path targeting, mirroring scene/key). Audited per the R79 discipline -- no new consumer seam; the change is entirely inside the introspection wire."
+      ],
+      "publishable_verification_bullets": [
+        "sprag-gui 66/0/0 + full cargo test --workspace green; clippy -p sprag-gui --all-targets clean; cargo doc -D warnings (private items) clean. Checkpoint-built against f4a2f771 with no sprag code.",
+        "LIVE-VERIFIED the primitive works end to end: launched sprag-gui, sent ONE scene/type {path:\"sprag_gui.pane.0\", text:\"echo scene-type-works\"} + ONE scene/key {key:\"Enter\"} -> terminal-0's grid showed the echo OUTPUT \"scene-type-works\", proving the whole string was typed (one call) and executed. Previously this needed ~22 per-codepoint scene/key RPCs. NOTE: `path` is a BARE paint tag (no leading slash / no /external suffix) -- resolve_at_or_path looks up the tag in the paint scene, unlike scene/invoke's /tag/external/action path (the \"query the wire for the exact tag\" lesson)."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "scene/type (PINION-PR41) delivered (R1184) + consumed + live-verified: a string types in 1 RPC (+ 1 scene/key Enter to run). pinion kept pure-text (\\n is a literal scalar, not Enter). The live-test harness can now drive `claude` etc. in one shot -- the structural fix for the \"character-at-a-time / investigate every time\" friction the user flagged.",
+        "Harness note: scene/type/scene/key `path` = a bare paint tag (sprag_gui.pane.{i} for a pane's key input), NOT the scene/invoke /tag/external/action form. Get the tag from scene/snapshot, don't grep source ([[query-the-wire-not-source]]).",
+        "Still live-pending from R87 (unrelated): drop-preview overlay + last-pane-stays-docked gate want a live human drag. On the next bump, re-audit for new seams (R79)."
+      ]
+    },
     "Round 9": {
       "decision_summary": "Cleanup round from the session review: harden the orchestrator substrate — reuse the producer's damage generations for observation, type the drive errors, and fix wrapped-sentinel convergence matching.",
       "changes_bullets": [
