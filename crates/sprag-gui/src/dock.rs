@@ -56,10 +56,12 @@
 //! `claudedocs/PINION-PR10-PER-WINDOW-VIEWPORT.md` (DELIVERED). R74 wraps the lone pane
 //! in a [`view_dock_panel`](pinion_widget_paint::dock::view_dock_panel) header (the
 //! drag-back source) with its content given a definite extent via `view`'s
-//! `fill_definite_shrinkable`. **WIDTH reflows; HEIGHT does not reflow
-//! below the pane's boot content** — pinion's `view_dock_panel` content wrapper lacks
-//! the main-axis `min_size:0` that `view_splitter` carries (PINION-PR35), so a
-//! shrunk-below-open floating window overflows vertically (fits 1:1 at the open size).
+//! `fill_definite_shrinkable`. **WIDTH and HEIGHT both reflow, including BELOW the pane's
+//! boot content** — PINION-PR35 was DELIVERED at the R78 bump (pinion R1109 gave
+//! `view_dock_panel`'s content wrapper the `view_splitter` idiom: `flex_basis:0 +
+//! flex_grow:1 + min-height:0`), so `fill_definite_shrinkable` supplies the content-side
+//! `min_size.height:0` that composes with it and a shrunk-below-open floating window
+//! reflows instead of overflowing. Guarded by `undock_window_reflows_its_height_below_boot_content`.
 //! See `fill_definite_shrinkable`'s docs.
 //!
 //! ## Freely resizable: grow AND shrink (pinion R1059 / PINION-PR23)
@@ -226,7 +228,8 @@ fn undock_window_spec(i: usize, position: Option<(i32, i32)>) -> WindowSpec {
     // title bar over it — and "drag the title bar" unifies on that app header (the VS Code
     // / Blender way). With the OS decoration gone, dragging the app header IS the window
     // move (R1116 `with_floating_window` in `create_extra_externals` → the `WINDOW_MOVE`
-    // reducer arm). The main window keeps the default `decorations: true`.
+    // reducer arm). The main window is ALSO borderless with app chrome since R85 (unified,
+    // VS Code way — see `use_windows_topology`'s main seed), so both classes match.
     let spec = spec.with_decorations(false);
     if let Some((x, y)) = position {
         spec.with_position(x, y)
@@ -248,13 +251,15 @@ pub(crate) fn is_pane_floating(i: usize) -> bool {
 }
 
 /// In [`DockMode::Collapse`], floating pane `i` would EMPTY the main dock if it is the
-/// ONLY docked pane: collapse removes its leaf, the tree empties to `None`, and an empty
-/// dock has no interior drop target (only its 32px rim — pinion synthesizes an outer-dock
-/// band from the window rect, but the interior is dead), so a floated pane could never be
-/// dragged back. The user chose tmux/zellij semantics — the main window always keeps at
-/// least ONE docked pane — so such a float is REFUSED (the last pane stays put). In
-/// [`DockMode::Placeholder`] the leaf survives (the slot is held), so the dock never truly
-/// empties and every pane may float.
+/// ONLY docked pane: collapse removes its leaf and the tree empties to `None`. The PRIMARY
+/// reason to refuse this is a product decision the user chose — tmux/zellij semantics: a
+/// terminal window always shows at least one terminal, so the main window keeps at least
+/// ONE docked pane and such a float is REFUSED (the last pane stays put). A secondary
+/// motivation is that an empty dock is a poor drop surface — pinion synthesizes an
+/// outer-dock band from the window rect (its 32px rim) but the interior is dead, so
+/// dragging a floater back onto an empty main is rim-only, not the whole window. (Both are
+/// collapse-mode concerns.) In [`DockMode::Placeholder`] the leaf survives (the slot is
+/// held), so the dock never truly empties and every pane may float.
 fn float_would_empty_the_dock(i: usize) -> bool {
     if dock_mode() != DockMode::Collapse {
         return false;
@@ -266,32 +271,49 @@ fn float_would_empty_the_dock(i: usize) -> bool {
 /// Whether pane `i`'s dock-panel header may START a drag (tear-off / reorder). FALSE only
 /// for the sole docked pane in collapse mode — the one [`float_would_empty_the_dock`]
 /// refuses to float. Wired to pinion's `DockPanelExternal::with_movable` in
-/// `create_extra_externals` so the drag is blocked AT THE SOURCE (`begin_drag` returns
-/// `None`): no drag session, so NO drag-image chip and NO drop-preview appear for a pane
-/// that cannot move. This replaces the earlier reducer-level refuse, which let pinion's
-/// generic drag machinery paint a misleading chip/preview before the reducer silently
-/// swallowed the float — the "why does a pane that can't move show a preview?" inconsistency.
-/// The factory re-runs on every float/dock reconcile (R70 dynamic external set), so the
-/// flag tracks the live docked set: with 2+ docked panes every pane is movable; float one
-/// and the remaining sole pane locks.
+/// `create_extra_externals`: the INTENT is to block the drag AT THE SOURCE (`begin_drag`
+/// returns `None` → no drag session → no drag-image chip and no drop-preview for a pane
+/// that cannot move), fixing the "why does a pane that can't move show a preview?"
+/// inconsistency the reducer-level refuse left.
+///
+/// **NOT LIVE YET — blocked on PINION-PR42.** `reconcile_externals` early-returns on an
+/// unchanged tag set (sprag's tags are constant, R70), so the rebuilt external carrying
+/// `movable=false` is DISCARDED and the boot value (both panes movable) sticks — the flag
+/// is create-time-only. So today the chip/preview STILL (wrongly) shows; behavior stays
+/// correct only via the `float_would_empty_the_dock` gate in the float primitives. This
+/// predicate + wiring are the correct forward seam (sprag change 0 when PR-42 lands). The
+/// factory re-runs per float/dock (R70) and computes the right flag — with 2+ docked panes
+/// every pane is movable; float one and the sole pane computes non-movable — pinion just
+/// does not yet APPLY it after boot.
 pub(crate) fn pane_is_movable(i: usize) -> bool {
     !float_would_empty_the_dock(i)
 }
 
-/// Float pane `i`: push its undock [`WindowSpec`] ([`undock_window_spec`], at
-/// `position` if given) onto `windows`. The caller owns the `signal.set` + the `dock`
-/// diag.
+/// Float pane `i`: push its undock [`WindowSpec`] ([`undock_window_spec`], at `position`
+/// if given) onto `windows`. Returns `true` if it floated, `false` if REFUSED because the
+/// float would empty the dock ([`float_would_empty_the_dock`], the tmux-semantics
+/// invariant). The caller owns the `signal.set` + the `dock` diag, and must skip both when
+/// this returns `false` (nothing changed).
 ///
-/// In [`DockMode::Collapse`] (default) it ALSO removes the pane's leaf from the split-
-/// tree ([`crate::split::float_pane`]) so the siblings reclaim the space (the two
-/// authorities co-mutate). In [`DockMode::Placeholder`] it is window-only — the leaf
-/// stays and the view paints a placeholder. Shared by the key-path [`open_floating`] and
-/// the live-follow create branch of [`float_pane_at`].
-fn push_float(windows: &mut Vec<WindowSpec>, i: usize, position: Option<(i32, i32)>) {
+/// The last-pane invariant lives HERE, in the one primitive that actually empties the dock
+/// — so every float entry-point ([`open_floating`], [`float_pane_at`]) funnels through it
+/// and a future third caller cannot forget the gate (the same single-enforcement-point
+/// rule `view::compose` / `fill_definite` follow; the R55 undock bug was a forgotten fill).
+///
+/// In [`DockMode::Collapse`] (default) it ALSO removes the pane's leaf from the split-tree
+/// ([`crate::split::float_pane`]) so the siblings reclaim the space (the two authorities
+/// co-mutate). In [`DockMode::Placeholder`] it is window-only — the leaf stays and the view
+/// paints a placeholder.
+#[must_use]
+fn push_float(windows: &mut Vec<WindowSpec>, i: usize, position: Option<(i32, i32)>) -> bool {
+    if float_would_empty_the_dock(i) {
+        return false; // tmux semantics: the main window keeps its last docked pane
+    }
     windows.push(undock_window_spec(i, position));
     if dock_mode() == DockMode::Collapse {
         crate::split::float_pane(i); // collapse: remove the leaf so the rest reclaim space
     }
+    true
 }
 
 /// Open pane `i` as a floating window at `position` (`None` → WM-placed; the key path
@@ -301,13 +323,12 @@ fn push_float(windows: &mut Vec<WindowSpec>, i: usize, position: Option<(i32, i3
 /// grows the window list by one. Single-responsibility — create only; the live-follow
 /// reposition is [`float_pane_at`]'s, never here.
 fn open_floating(i: usize, position: Option<(i32, i32)>) {
-    if float_would_empty_the_dock(i) {
-        return; // tmux semantics: the main window keeps its last docked pane (see helper)
-    }
     let signal = use_windows_topology();
     let mut windows = signal.get();
     let before = windows.len();
-    push_float(&mut windows, i, position);
+    if !push_float(&mut windows, i, position) {
+        return; // refused (last docked pane) — nothing changed, no set/diag
+    }
     let after = windows.len();
     signal.set(windows);
     crate::diag::dock_toggle(i, true, before, after);
@@ -320,13 +341,17 @@ fn open_floating(i: usize, position: Option<(i32, i32)>) {
 ///
 /// In [`DockMode::Collapse`] (default) it ALSO re-inserts the pane's leaf into the
 /// split-tree index-relative ([`crate::split::dock_pane`]) — the leaf was removed on
-/// float. For a redock-over-a-ZONE the reducer's `resolve_drop` relocate ran first but
-/// REJECTED (the leaf is absent), so the pane lands at its INDEX home, not the drop zone
-/// (the PINION-PR34 v1 bound — zone-honoring redock needs [`DockMode::Placeholder`]).
-/// In [`DockMode::Placeholder`] it is window-only: the leaf never left, so de-floating
-/// just drops the window (the view stops painting the placeholder and paints content,
-/// re-tiled in place); a redock-over-a-zone was already relocated by the `resolve_drop`
-/// SSOT (the surviving leaf is what it moves — this is why placeholder moots PINION-PR34).
+/// float. That index-relative re-insert is the DISCRETE dock-back (the `Ctrl+Shift+Enter` /
+/// `tear_off_redock` path, which carries no zone). A cross-window ZONE redock
+/// (`tear_off_redock_at`) is different now: the reducer arm calls
+/// `dock_panel_at_resolved_zone` FIRST, and pinion R1173 made that TOTAL over an absent
+/// source leaf (it materializes the collapse-removed leaf at the dropped zone), so collapse
+/// ALSO zone-honors — the pane lands AT the drop zone, not its index home (the earlier
+/// "PINION-PR34 v1 bound / needs Placeholder" limitation is retired; guarded by
+/// `tear_off_redock_at_in_collapse_honors_the_zone_cleanly`). In [`DockMode::Placeholder`]
+/// it is window-only: the leaf never left, so de-floating just drops the window (the view
+/// stops painting the placeholder and paints content, re-tiled in place); a zone redock was
+/// already relocated by the surviving leaf. Both modes now zone-honor a cross-window drop.
 pub(crate) fn redock_pane(i: usize) {
     let signal = use_windows_topology();
     let mut windows = signal.get();
@@ -382,14 +407,13 @@ pub(crate) fn float_pane_at(i: usize, source_window: Option<&str>, cursor: (f64,
         }
         spec.position = Some(pos);
     } else {
-        // First escaped move: float at the cursor — UNLESS this is the last docked pane
-        // in collapse mode (keep >=1 docked, the tmux semantics the user chose). Then the
-        // tear-off does nothing and the pane stays put.
-        if float_would_empty_the_dock(i) {
+        // First escaped move: float at the cursor. [`push_float`] carries the last-pane
+        // invariant — if it refuses (this is the sole docked pane, tmux semantics), the
+        // tear-off does nothing and the pane stays put, so skip the `set` (nothing changed).
+        let before = windows.len();
+        if !push_float(&mut windows, i, Some(pos)) {
             return;
         }
-        let before = windows.len();
-        push_float(&mut windows, i, Some(pos));
         crate::diag::dock_toggle(i, true, before, windows.len());
     }
     signal.set(windows);
@@ -547,7 +571,8 @@ mod tests {
             toggle_pane_floating(0);
             assert!(
                 !pane_is_movable(1),
-                "the sole docked pane is not movable (begin_drag returns None → no chip/preview)"
+                "the sole docked pane COMPUTES non-movable (the intended source-block; live \
+                 no chip/preview is PR-42-gated, see the fn doc)"
             );
             assert!(
                 pane_is_movable(0),

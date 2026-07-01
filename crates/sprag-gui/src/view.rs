@@ -237,14 +237,14 @@ pub(crate) fn fill_definite(scene: Scene) -> Scene {
 
 /// [`fill_definite`] PLUS a main-axis (height) `min_size: Px(0)` — the content for a
 /// lone pane in a FLOATING window. A floating window can be sized SMALLER than the
-/// pane's boot content (the user shrinks it), and `view_dock_panel`'s `content_wrapper`
-/// is `flex_grow(1.0)` with NO `min_size: 0` (unlike `view_splitter`'s R1086 children),
-/// so its CSS automatic minimum is its content's min-content height — a grid taller than
-/// the window can't shrink and overflows (rows stuck at boot dims). Declaring the
-/// content's own `min_size.height = 0` (alongside a definite `Percent(100)` preferred
-/// height) lets it shrink to the panel's distributed height, so the grid gets a
-/// sub-window rect, the R1012 publish reports it, and the reflow Effect fires. (If this
-/// proves insufficient the gap is pinion's `content_wrapper` — see PINION-PR35.)
+/// pane's boot content (the user shrinks it). Since R78, pinion's `view_dock_panel`
+/// `content_wrapper` carries the `view_splitter` R1086 idiom (`flex_basis:0 + flex_grow:1 +
+/// min-height:0`, delivered as pinion R1109 for PINION-PR35), so the WRAPPER no longer
+/// pins an automatic minimum; declaring the CONTENT's own `min_size.height = 0` (alongside a
+/// definite `Percent(100)` preferred height) composes with it so the grid can shrink to the
+/// panel's distributed height, gets a sub-window rect, the R1012 publish reports it, and the
+/// reflow Effect fires. Both sides carry `min-height:0` and compose — verified by
+/// `undock_window_reflows_its_height_below_boot_content`.
 fn fill_definite_shrinkable(scene: Scene) -> Scene {
     // Literally [`fill_definite`] PLUS the main-axis `min_size: 0` — compose it so the two
     // never drift (the "fill the window" extent lives in exactly one place).

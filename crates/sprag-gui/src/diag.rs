@@ -18,8 +18,11 @@
 //! Events are TYPED (named functions, not free-form `eprintln!`) so the wire
 //! stays greppable and stable: `key_in` (a dispatch entered the binding),
 //! `chord` (`route_key`'s decision for a recognised window chord), `dock_toggle`
-//! (the topology actually mutated). The enabled-check gates every write, so a
-//! disabled run pays only a cached atomic load per event.
+//! (the topology actually mutated), `redock_resolution` (the `resolve_drop` verdict a
+//! cross-window `tear_off_redock_at` classified to — so a "끌어서 dock" that does nothing
+//! can be read off the log). The enabled-check gates every write, and callers pass
+//! primitives / cheap `&'static str`s so a disabled run pays only a cached atomic load per
+//! event (no eager formatting).
 
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -82,25 +85,23 @@ pub(crate) fn dock_toggle(pane: usize, undock: bool, before: usize, after: usize
     }
 }
 
-/// Cross-window redock resolution (R86): the `DropResolution` a `tear_off_redock_at`
+/// Cross-window redock resolution (R86): the `resolve_drop` verdict a `tear_off_redock_at`
 /// classified to, so a "끌어서 dock" that does nothing can be read off the log
-/// (`Float` = dead-zone, won't dock; `Dock`/`OuterDock` = relocates).
-pub(crate) fn redock_resolution(pane: usize, target: &str, x_rel: f64, resolution: &str) {
+/// (`Float` = dead-zone, won't dock; `Dock`/`OuterDock` = relocates; `SnapBack` = own slot).
+/// `resolution` is a cheap `&'static str` (the variant name), so a disabled run allocates
+/// nothing. Logs both `x_rel`/`y_rel` (the full normalised drop point). The verdict is what
+/// `resolve_drop` decided; both dock modes now honor it at the zone (pinion R1173's
+/// `dock_panel_at_resolved_zone` is total over an absent collapse leaf).
+pub(crate) fn redock_resolution(
+    pane: usize,
+    target: &str,
+    x_rel: f64,
+    y_rel: f64,
+    resolution: &str,
+) {
     if enabled() {
         eprintln!(
-            "sprag t={t:>7}ms redock pane {pane} over {target} x={x_rel:.3} -> {resolution}",
-            t = stamp(),
-        );
-    }
-}
-
-/// The external factory re-ran (R90 diag): the per-pane `movable` flags it computed, so a
-/// "the locked pane still drags" bug can be read off the log — proves whether the factory
-/// re-ran on float AND what movability it set.
-pub(crate) fn externals_rebuilt(movable: &[bool]) {
-    if enabled() {
-        eprintln!(
-            "sprag t={t:>7}ms externals rebuilt: movable={movable:?}",
+            "sprag t={t:>7}ms redock pane {pane} over {target} at ({x_rel:.3},{y_rel:.3}) -> {resolution}",
             t = stamp(),
         );
     }
