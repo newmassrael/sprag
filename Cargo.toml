@@ -72,6 +72,12 @@ portable-pty = "0.9"
 # JSON parsing for tests that assert on the scene/snapshot RPC wire.
 serde_json = "1"
 
+# Production logging: first-party diagnostics are leveled `tracing` events
+# (targets like `sprag_gui::dock`), env-filtered by log level — NOT ad-hoc
+# eprintln. Versions match pinion's so the one global subscriber is shared.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
 # Cell display width (UAX#11) for the emulator's wide-cluster handling.
 unicode-width = "0.2"
 

@@ -30,6 +30,11 @@ vello = { workspace = true }
 # Build the {key, ctrl, ...} args for the pane External's invoke("key", ...)
 # wire (the same scene/invoke channel the RPC path drives, R2.6).
 serde_json = { workspace = true }
+# Production logging (memory: production-logging-tracing): leveled `tracing`
+# events for first-party diagnostics + a stderr subscriber installed in main()
+# (env-filtered by SPRAG_LOG) before pinion's run() fallback.
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [build-dependencies]
 # Compiles app.pinion.xml -> OUT_DIR/app.rs (the Vello renderer scaffold).

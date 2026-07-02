@@ -3480,6 +3480,8 @@ dependencies = [
  "serde_json",
  "sprag-host",
  "sprag-terminal",
+ "tracing",
+ "tracing-subscriber",
  "vello",
 ]
 

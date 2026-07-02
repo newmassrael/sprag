@@ -872,6 +872,14 @@ impl WidgetView for TerminalViewer {
 }
 
 fn main() {
+    // Production logging (memory: production-logging-tracing): install sprag's
+    // leveled `tracing` subscriber FIRST — env-filtered by `SPRAG_LOG` (default
+    // `warn`) — so it is authoritative over pinion's `run()` fallback
+    // (`init_tracing`, idempotent first-wins `try_init`). All first-party
+    // diagnostics (`diag.rs`) flow through it; dial verbosity per subsystem, e.g.
+    // `SPRAG_LOG=sprag_gui::dock=trace`.
+    diag::install();
+    tracing::info!(target: "sprag_gui", panes = terminal::pane_count(), "sprag-gui starting");
     pinion_shell::run::<TerminalViewer>();
 }
 
