@@ -4117,6 +4117,48 @@
         "Wire knowledge banked (memory): dynamic windows address via the `window` scope PARAM (not the /window[id] path prefix, which is statechart-declared-only); scene/screenshot out_path writes are deferred to the window's next presented frame.",
         "Design question left open deliberately: the MAIN window still stacks chrome strip + tab row (same duplication class) -- merging main into controls-in-header (VS Code way) is a separate product decision, not taken this round."
       ]
+    },
+    "Round 99": {
+      "decision_summary": "Round 99: replace sprag-gui's ad-hoc SPRAG_GUI_LOG=1 boolean eprintln diagnostics with production-grade leveled `tracing` logging, adjustable by log level (user directive, now a standing project rule). diag.rs's typed events become `tracing` events with per-subsystem targets (sprag_gui::input / sprag_gui::dock) at audience-appropriate levels (per-key fan-out = trace, topology mutation / drop-zone verdict = debug, startup = info); main() installs a SPRAG_LOG EnvFilter subscriber (default warn, stderr, uptime timer) BEFORE pinion_shell::run() so it wins the idempotent try_init and sprag owns the env-var name + defaults (pinion's PINION_LOG init_tracing becomes the no-op fallback — same tracing substrate, one global subscriber). This uses the substrate pinion already blessed (\"the permanent home for first-party diagnostics — no eprintln add/remove churn\") instead of the hand-rolled boolean gate. Operators now dial verbosity per subsystem, e.g. SPRAG_LOG=sprag_gui::dock=trace.",
+      "changes_bullets": [
+        "diag.rs: rewrote the SPRAG_GUI_LOG=1 boolean eprintln diag into leveled `tracing` events. Each typed fn (key_in/chord/dock_toggle/redock_resolution) now emits a `tracing` event with a per-subsystem target (`sprag_gui::input`, `sprag_gui::dock`) and structured fields instead of a formatted eprintln string; call sites (main.rs/input.rs/dock.rs) are unchanged.",
+        "Levels by audience: key_in + chord = trace! (per-key-event fan-out); dock_toggle + redock_resolution = debug! (topology mutation / drop-zone verdict). main() adds an info! startup line (pane count).",
+        "New diag::install(): a `tracing_subscriber::fmt` global subscriber env-filtered by SPRAG_LOG (default \"warn\"), stderr writer, uptime timer (process-relative stamp preserving the old ms-gap readability). Called FIRST in main() before pinion_shell::run() so it wins the idempotent try_init (pinion's PINION_LOG init_tracing becomes the no-op fallback) — sprag owns the env-var name + defaults.",
+        "Cargo: tracing + tracing-subscriber(env-filter) added as workspace deps (versions match pinion's, so the one global subscriber is shared) + wired into sprag-gui."
+      ],
+      "verification_bullets": [
+        "cargo build -p sprag-gui clean; workspace tests 219/0; clippy -p sprag-gui --all-targets clean (fixed one doc-list-item lint); rustfmt clean; RUSTDOCFLAGS=-D warnings cargo doc clean.",
+        "LIVE (SPRAG_LOG=sprag_gui=debug): startup logged `INFO sprag_gui: sprag-gui starting panes=2` + a Ctrl+Shift+Enter undock logged `DEBUG sprag_gui::dock: dock_toggle pane=0 dir=\"undock\" before=1 after=2`, both uptime-stamped; the trace-level key_in/chord were correctly filtered OUT at debug. DEFAULT level (no SPRAG_LOG) = 0 sprag_gui lines (quiet, warn floor). Level filtering confirmed both directions."
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "PROJECT RULE established (user directive): sprag logging is production-grade `tracing` with env-filter LEVEL control, NOT ad-hoc eprintln/boolean gates. Saved to memory (production-logging-tracing). Supersedes the R66 SPRAG_GUI_LOG=1 boolean diag.",
+        "Follows pinion's own principle (init_tracing doc: \"the permanent home for first-party diagnostics — no eprintln add/remove churn\"); sprag installs its subscriber first so it owns SPRAG_LOG + defaults while pinion's PINION_LOG init stays the fallback (both feed the same tracing substrate).",
+        "Future first-party diagnostics use tracing macros with a `sprag_gui::<subsystem>` target at the right level (lifecycle/state=info, per-event fan-out=trace/debug), never eprintln."
+      ],
+      "publishable_decision_summary": "Round 99: replace sprag-gui's ad-hoc SPRAG_GUI_LOG=1 boolean eprintln diagnostics with production-grade leveled `tracing` logging, adjustable by log level (user directive, now a standing project rule). diag.rs's typed events become `tracing` events with per-subsystem targets (sprag_gui::input / sprag_gui::dock) at audience-appropriate levels (per-key fan-out = trace, topology mutation / drop-zone verdict = debug, startup = info); main() installs a SPRAG_LOG EnvFilter subscriber (default warn, stderr, uptime timer) BEFORE pinion_shell::run() so it wins the idempotent try_init and sprag owns the env-var name + defaults (pinion's PINION_LOG init_tracing becomes the no-op fallback — same tracing substrate, one global subscriber). This uses the substrate pinion already blessed (\"the permanent home for first-party diagnostics — no eprintln add/remove churn\") instead of the hand-rolled boolean gate. Operators now dial verbosity per subsystem, e.g. SPRAG_LOG=sprag_gui::dock=trace.",
+      "publishable_changes_bullets": [
+        "diag.rs: rewrote the SPRAG_GUI_LOG=1 boolean eprintln diag into leveled `tracing` events. Each typed fn (key_in/chord/dock_toggle/redock_resolution) now emits a `tracing` event with a per-subsystem target (`sprag_gui::input`, `sprag_gui::dock`) and structured fields instead of a formatted eprintln string; call sites (main.rs/input.rs/dock.rs) are unchanged.",
+        "Levels by audience: key_in + chord = trace! (per-key-event fan-out); dock_toggle + redock_resolution = debug! (topology mutation / drop-zone verdict). main() adds an info! startup line (pane count).",
+        "New diag::install(): a `tracing_subscriber::fmt` global subscriber env-filtered by SPRAG_LOG (default \"warn\"), stderr writer, uptime timer (process-relative stamp preserving the old ms-gap readability). Called FIRST in main() before pinion_shell::run() so it wins the idempotent try_init (pinion's PINION_LOG init_tracing becomes the no-op fallback) — sprag owns the env-var name + defaults.",
+        "Cargo: tracing + tracing-subscriber(env-filter) added as workspace deps (versions match pinion's, so the one global subscriber is shared) + wired into sprag-gui."
+      ],
+      "publishable_verification_bullets": [
+        "cargo build -p sprag-gui clean; workspace tests 219/0; clippy -p sprag-gui --all-targets clean (fixed one doc-list-item lint); rustfmt clean; RUSTDOCFLAGS=-D warnings cargo doc clean.",
+        "LIVE (SPRAG_LOG=sprag_gui=debug): startup logged `INFO sprag_gui: sprag-gui starting panes=2` + a Ctrl+Shift+Enter undock logged `DEBUG sprag_gui::dock: dock_toggle pane=0 dir=\"undock\" before=1 after=2`, both uptime-stamped; the trace-level key_in/chord were correctly filtered OUT at debug. DEFAULT level (no SPRAG_LOG) = 0 sprag_gui lines (quiet, warn floor). Level filtering confirmed both directions."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "PROJECT RULE established (user directive): sprag logging is production-grade `tracing` with env-filter LEVEL control, NOT ad-hoc eprintln/boolean gates. Saved to memory (production-logging-tracing). Supersedes the R66 SPRAG_GUI_LOG=1 boolean diag.",
+        "Follows pinion's own principle (init_tracing doc: \"the permanent home for first-party diagnostics — no eprintln add/remove churn\"); sprag installs its subscriber first so it owns SPRAG_LOG + defaults while pinion's PINION_LOG init stays the fallback (both feed the same tracing substrate).",
+        "Future first-party diagnostics use tracing macros with a `sprag_gui::<subsystem>` target at the right level (lifecycle/state=info, per-event fan-out=trace/debug), never eprintln."
+      ]
     }
   },
   "inventory_entries": {},
