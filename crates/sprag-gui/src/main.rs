@@ -768,25 +768,43 @@ impl WidgetView for TerminalViewer {
 
     /// Client-side window chrome (pinion R1121): EVERY window is borderless
     /// (`with_decorations(false)` — the main window in [`dock::use_windows_topology`], the
-    /// floating pane windows in `dock::undock_window_spec`), so the OS draws no title bar
-    /// and this hook is the SOLE chrome. Both the main and the floaters get pinion's chrome
-    /// strip (minimize + maximize/restore glyphs, routed to winit actions by the shell)
-    /// plus the 8-direction resize border — so the two window classes look IDENTICAL (R85,
-    /// VS Code / Blender all-custom-chrome), not "OS frame on main, app strip on floaters".
+    /// floating pane windows in `dock::undock_window_spec`), so the OS draws no title bar.
+    /// The MAIN window gets pinion's chrome strip (min + max/restore + close glyphs,
+    /// routed to winit actions by the shell) plus the 8-direction resize border.
     ///
-    /// CLOSE is now shown on BOTH classes (R86, pinion R1170). A close press routes
-    /// through [`window_close_requested`](Self::window_close_requested), the binding seam
-    /// R1121 deferred: the MAIN window returns `false` there (close = app-quit, the right
+    /// A FLOATING pane window returns `None` (R95, pinion R1171/R1186 — PR-43,
+    /// controls-in-header): its dock-panel HEADER is its title bar — pane identity is the
+    /// tab label and the header is already the window-drag surface (R1116), so a chrome
+    /// strip stacked over it duplicated both. The header hosts the window controls
+    /// instead ([`view::view_for_window`] passes the shell's `WINDOW_CHROME_*_TAG`s to
+    /// `view_window_controls`), so `try_chrome_press` routes them exactly as chrome
+    /// buttons; the floater draws ONE strip. Resize no longer rides this hook —
+    /// [`window_resizable`](Self::window_resizable) keeps the chrome-less floater
+    /// resizable (R1186 decoupling).
+    ///
+    /// A close press routes through
+    /// [`window_close_requested`](Self::window_close_requested), the binding seam R1121
+    /// deferred: the MAIN window returns `false` there (close = app-quit, the right
     /// primary-close), a FLOATING pane window returns `true` (it docks the pane back
-    /// instead of quitting — a floater is a live pane). So the floater's X is now a safe
-    /// "dock back", not the whole-app exit it used to be (which is why R84/R85 had to omit
-    /// it). `WindowChromeStyle::default()` (min + max + close) is correct for both.
+    /// instead of quitting — a floater is a live pane, R86).
     fn window_chrome(window_id: &str) -> Option<WindowChromeStyle> {
-        if window_id == dock::MAIN_WINDOW_ID || dock::pane_window_index(window_id).is_some() {
+        if window_id == dock::MAIN_WINDOW_ID {
             Some(WindowChromeStyle::default())
         } else {
             None
         }
+    }
+
+    /// Resize-border gate, DECOUPLED from chrome (pinion R1186 — PR-43): a floating
+    /// pane window is chrome-less ([`window_chrome`](Self::window_chrome) `None`, its
+    /// title bar is the dock HEADER) yet must stay resizable — pre-R1186 the border rode
+    /// the chrome gate, which could not express that. `Some(true)` for a floater keeps
+    /// the client-side border; with no chrome the shell injects the BELOW-TITLEBAR
+    /// variant (sides + bottom — the header owns the top edge, so no north region can
+    /// shadow its close button). The MAIN window returns `None` = derive from chrome
+    /// presence (it has chrome, so it keeps the full 8-direction border — unchanged).
+    fn window_resizable(window_id: &str) -> Option<bool> {
+        dock::pane_window_index(window_id).map(|_| true)
     }
 
     /// Window-close seam (pinion R1170): the shell calls this on a close request (the
@@ -1938,21 +1956,38 @@ mod tests {
         });
     }
 
-    /// R86 (pinion R1170 close seam): EVERY window is borderless with the app's client
-    /// chrome (min/max/close) — main and floaters look identical, BOTH now showing close.
-    /// The close ACTION differs via `window_close_requested`: main → `false` (app-quit, the
-    /// right primary-close); a floater → docks its pane back + `true` (handled, no exit).
+    /// R95 chrome split (pinion R1171/R1186 — PR-43): the MAIN window keeps the app's
+    /// client chrome (min/max/close strip); a FLOATER is chrome-less — its dock HEADER is
+    /// its title bar (controls-in-header, `view_window_controls` in the header-trailing
+    /// slot) — yet stays resizable via the decoupled `window_resizable` hook.
+    /// The close ACTION differs via `window_close_requested` (R86): main → `false`
+    /// (app-quit, the right primary-close); a floater → docks its pane back + `true`
+    /// (handled, no exit).
     #[test]
-    fn window_chrome_both_show_close_floater_close_docks_back_main_quits() {
-        // Both classes: client chrome with min + max + close.
-        for id in [dock::MAIN_WINDOW_ID, &dock::pane_window_id(0)] {
-            let c = <TerminalViewer as WidgetView>::window_chrome(id)
-                .unwrap_or_else(|| panic!("window {id} gets client chrome (borderless)"));
-            assert!(
-                c.show_minimize && c.show_maximize && c.show_close,
-                "window {id} chrome has min + max + close"
-            );
-        }
+    fn window_chrome_main_only_floater_header_owns_controls_close_docks_back() {
+        // Main: client chrome with min + max + close.
+        let c = <TerminalViewer as WidgetView>::window_chrome(dock::MAIN_WINDOW_ID)
+            .expect("the main window gets client chrome (borderless)");
+        assert!(
+            c.show_minimize && c.show_maximize && c.show_close,
+            "main chrome has min + max + close"
+        );
+        // A floater: NO chrome strip (its dock header is the title bar), but the
+        // resize border survives chrome removal via the R1186 decoupled gate.
+        assert!(
+            <TerminalViewer as WidgetView>::window_chrome(&dock::pane_window_id(0)).is_none(),
+            "a floating pane window is chrome-less (controls-in-header)"
+        );
+        assert_eq!(
+            <TerminalViewer as WidgetView>::window_resizable(&dock::pane_window_id(0)),
+            Some(true),
+            "the chrome-less floater stays resizable (decoupled from chrome)"
+        );
+        assert_eq!(
+            <TerminalViewer as WidgetView>::window_resizable(dock::MAIN_WINDOW_ID),
+            None,
+            "main derives resizability from its chrome (pre-R1186 behaviour)"
+        );
         // A non-pane / unknown window id: no chrome.
         assert!(
             <TerminalViewer as WidgetView>::window_chrome("nope").is_none(),
@@ -1990,6 +2025,40 @@ mod tests {
                 "the close docked pane 1 back — its floating window is gone"
             );
         });
+    }
+
+    /// R95 controls-in-header, PAINT-level (guard the rendered layout, not the data
+    /// path — R68 lesson): a floater's window paints its window CONTROLS inside its
+    /// dock-panel header — the three shell routing tags (`WINDOW_CHROME_*_TAG`) are
+    /// present in its VIEW scene (they come from `view_window_controls` in the
+    /// header-trailing slot, not from a shell-injected chrome strip; the floater's
+    /// `window_chrome` is `None`, asserted above). `try_chrome_press` routes a press
+    /// on these tags exactly as it would a chrome button's, so min / max / close work
+    /// with the strip gone.
+    #[test]
+    fn floater_view_hosts_window_controls_in_its_dock_header() {
+        use pinion_shell::{
+            WINDOW_CHROME_CLOSE_TAG, WINDOW_CHROME_MAXIMIZE_TAG, WINDOW_CHROME_MINIMIZE_TAG,
+        };
+        let mut core = ShellCore::<TerminalViewer>::new();
+        let boot = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+        core.finalize_frame(boot);
+        core.root_owner().run(|| dock::toggle_pane_floating(1));
+        let floater = core.compute_paint_scene_for_window(&dock::pane_window_id(1), 480, 360);
+        assert!(
+            floater.contains_tag(&format!("{}#header", split::panel_id(1))),
+            "the floater paints its dock-panel header (its sole title bar)"
+        );
+        for tag in [
+            WINDOW_CHROME_MINIMIZE_TAG,
+            WINDOW_CHROME_MAXIMIZE_TAG,
+            WINDOW_CHROME_CLOSE_TAG,
+        ] {
+            assert!(
+                floater.contains_tag(tag),
+                "the floater view carries the {tag} window control in its header"
+            );
+        }
     }
 
     /// Total node count of a `Scene` (recursively). The faithful way to assert a preview

@@ -181,9 +181,10 @@ pub(crate) fn use_windows_topology() -> Rc<Signal<Vec<WindowSpec>>> {
         .expect("use_windows_topology() requires an active Owner scope")
         .cache(WINDOWS_KEY, || {
             // Borderless main too (R85): both the main window and every floating pane
-            // window are `decorations: false`, so the app's own client chrome
-            // ([`crate::TerminalViewer::window_chrome`]) is the SOLE title bar — the two
-            // windows look identical (no OS frame on one and an app strip on the other).
+            // window are `decorations: false`, so the OS draws no title bar on either.
+            // The MAIN window's title bar is the app's client chrome
+            // ([`crate::TerminalViewer::window_chrome`]); a FLOATER's is its dock-panel
+            // HEADER (R95 controls-in-header — `window_chrome` returns `None` for it).
             // `decorations` is create-time-only (pinion app.rs warns on a runtime flip),
             // so it must be declared here at the seed, not toggled later.
             Signal::new(vec![
@@ -224,12 +225,13 @@ fn undock_window_spec(i: usize, position: Option<(i32, i32)>) -> WindowSpec {
         },
     );
     // Borderless (pinion R1115 / PINION-PR38 ②′): the floating window paints its OWN
-    // `view_dock_panel` header (R74) as the drag surface, so the OS draws no redundant
+    // dock-panel header (R74) as the drag surface, so the OS draws no redundant
     // title bar over it — and "drag the title bar" unifies on that app header (the VS Code
     // / Blender way). With the OS decoration gone, dragging the app header IS the window
     // move (R1116 `with_floating_window` in `create_extra_externals` → the `WINDOW_MOVE`
-    // reducer arm). The main window is ALSO borderless with app chrome since R85 (unified,
-    // VS Code way — see `use_windows_topology`'s main seed), so both classes match.
+    // reducer arm). Since R95 that header is the floater's SOLE strip — it hosts the
+    // window controls too (controls-in-header, `window_chrome == None`); the main window
+    // stays borderless-with-app-chrome (R85, see `use_windows_topology`'s main seed).
     let spec = spec.with_decorations(false);
     if let Some((x, y)) = position {
         spec.with_position(x, y)

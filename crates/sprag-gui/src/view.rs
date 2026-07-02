@@ -15,9 +15,13 @@ use pinion_core::scene::ContainerNode;
 use pinion_core::style::{BoxStyle, LayoutStyle, Size, SizeValue};
 use pinion_core::theme::{ColorRole, Theme, use_theme};
 use pinion_core::{Frame, Scene};
+use pinion_shell::{
+    WINDOW_CHROME_CLOSE_TAG, WINDOW_CHROME_MAXIMIZE_TAG, WINDOW_CHROME_MINIMIZE_TAG,
+};
 use pinion_widget_paint::dock::{
-    DockPanelStyle, DockSplitState, FloatingPlaceholderStyle, dock_outer_zone_highlight,
-    view_dock_panel, view_dock_surface, view_floating_placeholder,
+    DockPanelStyle, DockSplitState, FloatingPlaceholderStyle, WindowControlTags,
+    dock_outer_zone_highlight, view_dock_panel_with_actions, view_dock_surface,
+    view_floating_placeholder, view_window_controls,
 };
 use sprag_host::PaneViewSpec;
 
@@ -26,10 +30,11 @@ const THEME_TAG: &str = "app";
 
 /// view-fn (§6.3): per-window paint. The **main** window tiles the DOCKED panes
 /// (those without an undock window); an **undock window** (`pane-{i}`) paints that
-/// one pane as a single [`view_dock_panel`]
+/// one pane as a single [`view_dock_panel_with_actions`]
 /// — a draggable header (the drag source the same per-pane `DockPanelExternal` routes
-/// from, so a SETTLED floating window can be re-grabbed / dragged back onto the dock)
-/// above the pane content. [`WidgetCore::view`](crate::TerminalViewer) (the windowless /
+/// from, so a SETTLED floating window can be re-grabbed / dragged back onto the dock;
+/// since R95 also the floater's TITLE BAR, hosting its window controls) above the
+/// pane content. [`WidgetCore::view`](crate::TerminalViewer) (the windowless /
 /// RPC-snapshot fallback) routes here as the main window. The producer threads (the PTY
 /// readers) live in `create_extra_externals`, not here.
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -37,19 +42,40 @@ pub(crate) fn view_for_window(window_id: &str, _state: (), _frame: &Frame) -> Sc
     let theme = use_theme(THEME_TAG).theme_animated();
     let tv = use_terminal();
     match pane_window_index(window_id) {
-        // An undock window paints its one pane wrapped in a `view_dock_panel` (header +
+        // An undock window paints its one pane wrapped in a dock panel (header +
         // content), mirroring pinion's `hello-dock-panels-editor` `view_floating_panel`
         // — NO outer `compose` (the panel IS the window root). The content is
         // `fill_definite_shrinkable` so the pane reflows to a window SMALLER than its boot
         // content (the floating-window reflow path, see that fn). A stale window id (pane
         // closed) falls back to the main layout, never a stranded paint.
-        Some(i) if i < tv.pane_count() => view_dock_panel(
-            &panel_id(i),
-            fill_definite_shrinkable(build_pane_scene(&tv, i, &theme)),
-            &theme,
-            &DockPanelStyle::m3_default(panel_id(i)),
-            None,
-        ),
+        //
+        // Controls-in-header (R95, pinion R1171/R1186/R1187 — PR-43): the floater is
+        // chrome-less (`window_chrome == None`), so this dock header IS its title bar —
+        // ONE strip, not a chrome bar stacked over a tab header. The header hosts the
+        // window controls (min / max / close) via the lifted `view_window_controls`;
+        // the shell's routing tags are supplied HERE (the binding owns the window
+        // lifecycle) so `try_chrome_press` routes close → `window_close_requested`
+        // (dock-back, R86), min / max → per-window `set_minimized` / `set_maximized`.
+        Some(i) if i < tv.pane_count() => {
+            let style = DockPanelStyle::m3_default(panel_id(i));
+            let controls = view_window_controls(
+                &theme,
+                style.header_font_size_px,
+                WindowControlTags {
+                    minimize: WINDOW_CHROME_MINIMIZE_TAG,
+                    maximize: WINDOW_CHROME_MAXIMIZE_TAG,
+                    close: WINDOW_CHROME_CLOSE_TAG,
+                },
+            );
+            view_dock_panel_with_actions(
+                &panel_id(i),
+                fill_definite_shrinkable(build_pane_scene(&tv, i, &theme)),
+                &theme,
+                &style,
+                None,
+                Some(controls),
+            )
+        }
         _ => view_main(&tv, &theme),
     }
 }
@@ -60,7 +86,7 @@ pub(crate) fn view_for_window(window_id: &str, _state: (), _frame: &Frame) -> Sc
 /// `panel_content` callback projects that pane ([`build_pane_scene`]); each Split's
 /// ratio is the shared [`use_split_ratio`] Signal a drag re-weights (the SSOT both
 /// the painted splitter and its `SplitterExternal` read). The walker wraps every
-/// leaf in a [`view_dock_panel`] — a
+/// leaf in a [`view_dock_panel`](pinion_widget_paint::dock::view_dock_panel) — a
 /// header strip (the drag / tear-off handle) above the pane.
 ///
 /// The topology holds EVERY pane's leaf always (R72 placeholder model): a floated pane's
@@ -221,7 +247,7 @@ fn compose(content: Scene, theme: &Theme) -> Scene {
 ///    R55 undock bug (the pane reflowed only its width).
 /// 2. [`view_main`]'s `panel_content` callback wraps EACH docked pane's content,
 ///    because [`view_dock_surface`] interposes a sizeless `flex_grow(1.0)` content
-///    wrapper ([`view_dock_panel`])
+///    wrapper ([`view_dock_panel`](pinion_widget_paint::dock::view_dock_panel))
 ///    between the splitter and the pane grid — without a definite extent there the
 ///    grid keeps its full-window intrinsic width, never gets a measured rect, and the
 ///    R1012 reflow never fires (R60).
