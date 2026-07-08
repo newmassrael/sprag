@@ -191,6 +191,7 @@ mod diag;
 mod dock;
 mod input;
 mod reflow;
+mod rpc;
 mod scrollbar;
 mod split;
 mod terminal;
@@ -205,7 +206,8 @@ use pinion_core::reactive::{Owner, Signal};
 use pinion_core::widget_core::ExtraExternal;
 use pinion_core::{CompositionEvent, Frame, Modifiers, Scene, WidgetCore};
 use pinion_shell::{
-    SizeStrategy, WidgetView, WindowChromeStyle, WindowPolicy, WindowSpec, vello_renderer_impl,
+    ShellConfig, SizeStrategy, WidgetView, WindowChromeStyle, WindowPolicy, WindowSpec,
+    vello_renderer_impl,
 };
 use pinion_widget_paint::dock::{
     DockPanelExternal, DropResolution, TEAR_OFF_EVENT, TEAR_OFF_FOLLOW_EVENT,
@@ -880,7 +882,14 @@ fn main() {
     // `SPRAG_LOG=sprag_gui::dock=trace`.
     diag::install();
     tracing::info!(target: "sprag_gui", panes = terminal::pane_count(), "sprag-gui starting");
-    pinion_shell::run::<TerminalViewer>();
+    // PR-47: mount the always-on RPC socket through pinion's winit-free
+    // `on_rpc_ingress` seam (rpc::mount). The socket and pinion's built-in
+    // stdin reader share one ingress -> one dispatch core, so this is purely
+    // additive: stdin/FIFO RPC still works, plus a fixed-path socket that is
+    // always there regardless of how the process was launched. Transport
+    // policy (path, boot state, SIGUSR1 runtime on/off) is sprag's; see
+    // [`rpc`].
+    pinion_shell::run_with_config::<TerminalViewer>(ShellConfig::new().on_rpc_ingress(rpc::mount));
 }
 
 #[cfg(test)]

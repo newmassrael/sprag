@@ -25,6 +25,12 @@ pinion-a11y = { workspace = true }
 pinion-shell = { workspace = true }
 # view_splitter + SplitterExternal — the draggable pane dividers (R38).
 pinion-widget-paint = { workspace = true }
+# PR-47: the reusable Unix-socket RPC transport mounted through the shell's
+# `on_rpc_ingress` seam (rpc.rs) — a fixed-path, always-on endpoint.
+pinion-rpc-transport = { workspace = true }
+# SIGUSR1 runtime on/off toggle for the RPC socket (rpc.rs) — consumer-owned
+# transport policy per PR-47.
+signal-hook = { workspace = true }
 # Pinned to pinion-shell's vello so the forge renderer macro output type-checks.
 vello = { workspace = true }
 # Build the {key, ctrl, ...} args for the pane External's invoke("key", ...)
