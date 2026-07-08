@@ -179,6 +179,52 @@
     }
   },
   "changelog_entries": {
+    "R100": {
+      "decision_summary": "Round 100: consume PINION-PR47 (winit-free RPC transport-injection seam, delivered pinion R1263). Pin-bump 7 pinion-* 03e0c5a7 (R1200) to 24409c46 (R1263); SCE 3078f8bf unchanged (pinion's own SCE pin matches, one Engine instance). sprag-gui mounts an always-on fixed-path Unix-domain RPC socket (XDG_RUNTIME_DIR/sprag-gui.sock) through the shell's on_rpc_ingress hook, replacing the per-session stdin=FIFO wiring: the endpoint is execution-independent and the socket plus pinion's still-present stdin reader share one RpcIngress into one dispatch core (purely additive). Transport policy is sprag's (PR-47 third layer): rpc.rs owns path resolution, boot state (SPRAG_RPC), and runtime on/off via SIGUSR1 flipping TransportControl::set_enabled; the reusable UnixSocketTransport adapter is pinion-provided (pinion-rpc-transport, seam-only dep). This delivers the user ask (always-open RPC without per-session setup, plus runtime on/off) and matches the PR-47 three-layer design (dispatch=pinion, transport mechanism=reusable adapter, transport policy=consumer). Live-verified end to end.",
+      "changes_bullets": [
+        "Bump 7 pinion-* revs 03e0c5a7 (R1200) to 24409c46 (R1263) in Cargo.toml; SCE 3078f8bf and vello unchanged (pinion's own SCE pin matches).",
+        "Add pinion-rpc-transport (seam-only Unix-socket adapter) and signal-hook as workspace deps; wire both into sprag-gui.",
+        "New crates/sprag-gui/src/rpc.rs: mount() is the on_rpc_ingress hook that binds a fixed-path Unix-domain RPC socket and feeds frames into the shared RpcIngress (same dispatch core as pinion's stdin reader; purely additive).",
+        "rpc.rs owns the transport policy (PR-47 third layer): path (SPRAG_RPC_SOCK, else XDG_RUNTIME_DIR/sprag-gui.sock, else TMPDIR), boot state (SPRAG_RPC falsey token withdraws), runtime on/off via SIGUSR1 flipping TransportControl::set_enabled; the control is held in a process-lifetime OnceLock so the socket stays bound and reachable for the toggle.",
+        "main.rs: pinion_shell::run() becomes run_with_config(ShellConfig::new().on_rpc_ingress(rpc::mount))."
+      ],
+      "verification_bullets": [
+        "cargo build -p sprag-gui clean; workspace tests 0 failed; sprag-gui 76 passed incl 5 new rpc:: policy tests; clippy --workspace --all-targets clean; rustfmt --check clean; RUSTDOCFLAGS=-D warnings cargo doc clean.",
+        "LIVE (stdin=/dev/null, nohup): socket /run/user/1000/sprag-gui.sock served scene/snapshot returning both panes' full_text, proving the endpoint is execution-independent (no stdin/FIFO wiring).",
+        "LIVE runtime on/off: SIGUSR1 disabled the endpoint (nc -U got an empty response) then a second SIGUSR1 re-enabled it (JSON again); both toggles logged at sprag_gui::rpc info level."
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "PINION-PR47 consumed (delivered pinion R1263); no open pinion blockers. pinion pin 24409c46 (R1263), SCE 3078f8bf.",
+        "RPC endpoint is now always-on at a fixed path regardless of launch method; the per-session stdin=FIFO wiring is no longer needed (stdin RPC still works, additive).",
+        "Runtime on/off trigger is SIGUSR1 (sprag transport policy); a keyboard chord or RPC-method trigger is a possible follow-up if a non-signal UX is wanted."
+      ],
+      "publishable_decision_summary": "Round 100: consume PINION-PR47 (winit-free RPC transport-injection seam, delivered pinion R1263). Pin-bump 7 pinion-* 03e0c5a7 (R1200) to 24409c46 (R1263); SCE 3078f8bf unchanged (pinion's own SCE pin matches, one Engine instance). sprag-gui mounts an always-on fixed-path Unix-domain RPC socket (XDG_RUNTIME_DIR/sprag-gui.sock) through the shell's on_rpc_ingress hook, replacing the per-session stdin=FIFO wiring: the endpoint is execution-independent and the socket plus pinion's still-present stdin reader share one RpcIngress into one dispatch core (purely additive). Transport policy is sprag's (PR-47 third layer): rpc.rs owns path resolution, boot state (SPRAG_RPC), and runtime on/off via SIGUSR1 flipping TransportControl::set_enabled; the reusable UnixSocketTransport adapter is pinion-provided (pinion-rpc-transport, seam-only dep). This delivers the user ask (always-open RPC without per-session setup, plus runtime on/off) and matches the PR-47 three-layer design (dispatch=pinion, transport mechanism=reusable adapter, transport policy=consumer). Live-verified end to end.",
+      "publishable_changes_bullets": [
+        "Bump 7 pinion-* revs 03e0c5a7 (R1200) to 24409c46 (R1263) in Cargo.toml; SCE 3078f8bf and vello unchanged (pinion's own SCE pin matches).",
+        "Add pinion-rpc-transport (seam-only Unix-socket adapter) and signal-hook as workspace deps; wire both into sprag-gui.",
+        "New crates/sprag-gui/src/rpc.rs: mount() is the on_rpc_ingress hook that binds a fixed-path Unix-domain RPC socket and feeds frames into the shared RpcIngress (same dispatch core as pinion's stdin reader; purely additive).",
+        "rpc.rs owns the transport policy (PR-47 third layer): path (SPRAG_RPC_SOCK, else XDG_RUNTIME_DIR/sprag-gui.sock, else TMPDIR), boot state (SPRAG_RPC falsey token withdraws), runtime on/off via SIGUSR1 flipping TransportControl::set_enabled; the control is held in a process-lifetime OnceLock so the socket stays bound and reachable for the toggle.",
+        "main.rs: pinion_shell::run() becomes run_with_config(ShellConfig::new().on_rpc_ingress(rpc::mount))."
+      ],
+      "publishable_verification_bullets": [
+        "cargo build -p sprag-gui clean; workspace tests 0 failed; sprag-gui 76 passed incl 5 new rpc:: policy tests; clippy --workspace --all-targets clean; rustfmt --check clean; RUSTDOCFLAGS=-D warnings cargo doc clean.",
+        "LIVE (stdin=/dev/null, nohup): socket /run/user/1000/sprag-gui.sock served scene/snapshot returning both panes' full_text, proving the endpoint is execution-independent (no stdin/FIFO wiring).",
+        "LIVE runtime on/off: SIGUSR1 disabled the endpoint (nc -U got an empty response) then a second SIGUSR1 re-enabled it (JSON again); both toggles logged at sprag_gui::rpc info level."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "PINION-PR47 consumed (delivered pinion R1263); no open pinion blockers. pinion pin 24409c46 (R1263), SCE 3078f8bf.",
+        "RPC endpoint is now always-on at a fixed path regardless of launch method; the per-session stdin=FIFO wiring is no longer needed (stdin RPC still works, additive).",
+        "Runtime on/off trigger is SIGUSR1 (sprag transport policy); a keyboard chord or RPC-method trigger is a possible follow-up if a non-signal UX is wanted."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
