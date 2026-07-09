@@ -297,6 +297,44 @@
         "Remaining session-review items: give the headless host (sprag-term) the always-on socket (sequencing fix -- the north-star server deserves the good transport -- plus a single-dispatch funnel and the transport-policy SSOT shared with the GUI); a PINION-PR note requesting an atomic disabled-at-bind constructor (serve_with_enabled) so SPRAG_RPC=off has no serving window."
       ]
     },
+    "R103": {
+      "decision_summary": "Round 103: extract sprag's RPC transport policy into a new frontend-agnostic crate sprag-rpc, resolving the anticipatory duplication the session review flagged (Agent 1 #4) BEFORE the headless host gains its own socket. sprag-rpc owns the always-on Unix-socket mechanism over pinion's PR-47 RpcIngress seam: path resolution, boot state, the SIGUSR1(enable)/SIGUSR2(disable) level control, and the process-lifetime TransportControl ownership. It is GPU-free (deps: pinion-rpc + pinion-rpc-transport + signal-hook only), so both the windowed GUI and the headless host reuse it without pulling in a shell/GPU. Callers pass an Arc<dyn RpcIngress> and a SocketOpts (their socket name + env vars): the GUI's ingress comes from pinion-shell's on_rpc_ingress hook; the host's (next round) will be a channel funnel into its single dispatch owner. sprag-gui/src/rpc.rs is now a thin wrapper naming the GUI policy and delegating to sprag_rpc::mount, and sprag-gui drops its direct pinion-rpc-transport + signal-hook deps. Behavior-preserving, live-verified.",
+      "changes_bullets": [
+        "New GPU-free crate sprag-rpc: the frontend-agnostic RPC transport policy -- always-on Unix socket + SIGUSR1/2 level control + process-lifetime TransportControl owner, over pinion's PR-47 RpcIngress seam. mount(ingress, SocketOpts). 5 policy unit tests.",
+        "sprag-gui/src/rpc.rs reduced to a thin wrapper: names the GUI SocketOpts (sprag-gui.sock / SPRAG_RPC_SOCK / SPRAG_RPC) and delegates to sprag_rpc::mount; sprag-gui drops its direct pinion-rpc-transport + signal-hook deps (now transitive through sprag-rpc).",
+        "Cargo: sprag-rpc added as a workspace member + dependency. Leveled RPC logs moved from target sprag_gui::rpc to sprag_rpc (shared crate), with the socket name as a field."
+      ],
+      "verification_bullets": [
+        "cargo build clean; clippy --all-targets clean; rustfmt clean; 5 sprag-rpc tests pass; workspace 0 failed.",
+        "LIVE behavior-preserving (real signals to the running GUI): socket serves 2 panes; SIGUSR2 disables and STAYS disabled on repeat (idempotent); SIGUSR1 re-enables. Logs via target sprag_rpc with socket=sprag-gui.sock."
+      ],
+      "impact_refs": [
+        "2"
+      ],
+      "carry_forward_bullets": [
+        "Next (R104): the headless host (sprag-term) mounts sprag_rpc::mount with a channel-funnel RpcIngress into a single dispatch owner, so stdin + socket share one HostState view -- giving the north-star server the always-on transport (fixes the sequencing inversion the review flagged) with zero new policy code.",
+        "Leveled RPC logs are now under target sprag_rpc (was sprag_gui::rpc); filter with SPRAG_LOG=sprag_rpc=debug.",
+        "Resolves the anticipatory-duplication finding (Agent 1 #4): the socket policy is now one SSOT shared by every frontend, extracted BEFORE the host gained a socket rather than after."
+      ],
+      "publishable_decision_summary": "Round 103: extract sprag's RPC transport policy into a new frontend-agnostic crate sprag-rpc, resolving the anticipatory duplication the session review flagged (Agent 1 #4) BEFORE the headless host gains its own socket. sprag-rpc owns the always-on Unix-socket mechanism over pinion's PR-47 RpcIngress seam: path resolution, boot state, the SIGUSR1(enable)/SIGUSR2(disable) level control, and the process-lifetime TransportControl ownership. It is GPU-free (deps: pinion-rpc + pinion-rpc-transport + signal-hook only), so both the windowed GUI and the headless host reuse it without pulling in a shell/GPU. Callers pass an Arc<dyn RpcIngress> and a SocketOpts (their socket name + env vars): the GUI's ingress comes from pinion-shell's on_rpc_ingress hook; the host's (next round) will be a channel funnel into its single dispatch owner. sprag-gui/src/rpc.rs is now a thin wrapper naming the GUI policy and delegating to sprag_rpc::mount, and sprag-gui drops its direct pinion-rpc-transport + signal-hook deps. Behavior-preserving, live-verified.",
+      "publishable_changes_bullets": [
+        "New GPU-free crate sprag-rpc: the frontend-agnostic RPC transport policy -- always-on Unix socket + SIGUSR1/2 level control + process-lifetime TransportControl owner, over pinion's PR-47 RpcIngress seam. mount(ingress, SocketOpts). 5 policy unit tests.",
+        "sprag-gui/src/rpc.rs reduced to a thin wrapper: names the GUI SocketOpts (sprag-gui.sock / SPRAG_RPC_SOCK / SPRAG_RPC) and delegates to sprag_rpc::mount; sprag-gui drops its direct pinion-rpc-transport + signal-hook deps (now transitive through sprag-rpc).",
+        "Cargo: sprag-rpc added as a workspace member + dependency. Leveled RPC logs moved from target sprag_gui::rpc to sprag_rpc (shared crate), with the socket name as a field."
+      ],
+      "publishable_verification_bullets": [
+        "cargo build clean; clippy --all-targets clean; rustfmt clean; 5 sprag-rpc tests pass; workspace 0 failed.",
+        "LIVE behavior-preserving (real signals to the running GUI): socket serves 2 panes; SIGUSR2 disables and STAYS disabled on repeat (idempotent); SIGUSR1 re-enables. Logs via target sprag_rpc with socket=sprag-gui.sock."
+      ],
+      "publishable_impact_refs": [
+        "2"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Next (R104): the headless host (sprag-term) mounts sprag_rpc::mount with a channel-funnel RpcIngress into a single dispatch owner, so stdin + socket share one HostState view -- giving the north-star server the always-on transport (fixes the sequencing inversion the review flagged) with zero new policy code.",
+        "Leveled RPC logs are now under target sprag_rpc (was sprag_gui::rpc); filter with SPRAG_LOG=sprag_rpc=debug.",
+        "Resolves the anticipatory-duplication finding (Agent 1 #4): the socket policy is now one SSOT shared by every frontend, extracted BEFORE the host gained a socket rather than after."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
