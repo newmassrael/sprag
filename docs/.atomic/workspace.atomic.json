@@ -263,6 +263,40 @@
         "Remaining review items: fix rpc.rs SIGUSR1 to level semantics (SIGUSR1=enable / SIGUSR2=disable) + correct the ENDPOINT doc comment; give the headless host the always-on socket (sequencing fix, the north-star server deserves the good transport); PINION-PR note for an atomic disabled-at-bind constructor."
       ]
     },
+    "R102": {
+      "decision_summary": "Round 102: fix the two smells the session review found in R100's rpc.rs. (1) The runtime on/off control was a SIGUSR1 blind toggle (set_enabled(!is_enabled())) -- not idempotent or assertable, since a lost or duplicated signal inverts the intent. Replaced with LEVEL semantics: SIGUSR1 enables, SIGUSR2 disables, so the outcome is deterministic regardless of current state (kill -USR2 always withdraws). (2) The ENDPOINT process-global was OnceLock<Arc<TransportControl>> whose doc claimed the signal thread reached the control through it -- false, the thread used its own captured Arc. Made ENDPOINT the sole owner (OnceLock<TransportControl>, no Arc): it is both the liveness anchor and where the control thread reads the control to switch exposure, so the doc is now accurate and endpoint liveness no longer depends on the control thread having spawned. Live-verified idempotency with real signals.",
+      "changes_bullets": [
+        "rpc.rs: replaced the SIGUSR1 blind toggle (set_enabled(!is_enabled())) with LEVEL control -- SIGUSR1 enables, SIGUSR2 disables; spawn_toggle renamed install_control_signals, reads ENDPOINT each signal.",
+        "rpc.rs: ENDPOINT is now OnceLock<TransportControl> (sole owner, no Arc) -- both the liveness anchor and where the control thread reads the control, so its doc is now true and liveness no longer depends on the control thread spawning.",
+        "Module doc corrected: Runtime control is USR1=enable / USR2=disable (level, not a flip; deterministic regardless of current state)."
+      ],
+      "verification_bullets": [
+        "cargo build -p sprag-gui clean; clippy -p sprag-gui --all-targets clean; rustfmt clean; 5 rpc:: tests pass; workspace unaffected.",
+        "LIVE (real signals to the running GUI): boot=served; SIGUSR2=refused; SIGUSR2 again=STILL refused (idempotent; a flip would have re-served); SIGUSR1=served; SIGUSR1 again=STILL served. Control log: enabled=false,false,true,true."
+      ],
+      "impact_refs": [
+        "2"
+      ],
+      "carry_forward_bullets": [
+        "Remaining session-review items: give the headless host (sprag-term) the always-on socket (sequencing fix -- the north-star server deserves the good transport -- plus a single-dispatch funnel and the transport-policy SSOT shared with the GUI); a PINION-PR note requesting an atomic disabled-at-bind constructor (serve_with_enabled) so SPRAG_RPC=off has no serving window."
+      ],
+      "publishable_decision_summary": "Round 102: fix the two smells the session review found in R100's rpc.rs. (1) The runtime on/off control was a SIGUSR1 blind toggle (set_enabled(!is_enabled())) -- not idempotent or assertable, since a lost or duplicated signal inverts the intent. Replaced with LEVEL semantics: SIGUSR1 enables, SIGUSR2 disables, so the outcome is deterministic regardless of current state (kill -USR2 always withdraws). (2) The ENDPOINT process-global was OnceLock<Arc<TransportControl>> whose doc claimed the signal thread reached the control through it -- false, the thread used its own captured Arc. Made ENDPOINT the sole owner (OnceLock<TransportControl>, no Arc): it is both the liveness anchor and where the control thread reads the control to switch exposure, so the doc is now accurate and endpoint liveness no longer depends on the control thread having spawned. Live-verified idempotency with real signals.",
+      "publishable_changes_bullets": [
+        "rpc.rs: replaced the SIGUSR1 blind toggle (set_enabled(!is_enabled())) with LEVEL control -- SIGUSR1 enables, SIGUSR2 disables; spawn_toggle renamed install_control_signals, reads ENDPOINT each signal.",
+        "rpc.rs: ENDPOINT is now OnceLock<TransportControl> (sole owner, no Arc) -- both the liveness anchor and where the control thread reads the control, so its doc is now true and liveness no longer depends on the control thread spawning.",
+        "Module doc corrected: Runtime control is USR1=enable / USR2=disable (level, not a flip; deterministic regardless of current state)."
+      ],
+      "publishable_verification_bullets": [
+        "cargo build -p sprag-gui clean; clippy -p sprag-gui --all-targets clean; rustfmt clean; 5 rpc:: tests pass; workspace unaffected.",
+        "LIVE (real signals to the running GUI): boot=served; SIGUSR2=refused; SIGUSR2 again=STILL refused (idempotent; a flip would have re-served); SIGUSR1=served; SIGUSR1 again=STILL served. Control log: enabled=false,false,true,true."
+      ],
+      "publishable_impact_refs": [
+        "2"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Remaining session-review items: give the headless host (sprag-term) the always-on socket (sequencing fix -- the north-star server deserves the good transport -- plus a single-dispatch funnel and the transport-policy SSOT shared with the GUI); a PINION-PR note requesting an atomic disabled-at-bind constructor (serve_with_enabled) so SPRAG_RPC=off has no serving window."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
