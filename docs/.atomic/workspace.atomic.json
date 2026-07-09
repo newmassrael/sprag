@@ -335,6 +335,50 @@
         "Resolves the anticipatory-duplication finding (Agent 1 #4): the socket policy is now one SSOT shared by every frontend, extracted BEFORE the host gained a socket rather than after."
       ]
     },
+    "R104": {
+      "decision_summary": "Round 104: give the headless host (sprag-term) the always-on Unix socket, fixing the sequencing inversion the review flagged (Finding 6 -- the north-star server had only stdin while the GUI got the good transport). sprag-host now provides a single-dispatch funnel: FrameIngress (an RpcIngress that pushes frames into an mpsc channel) + dispatch_frames (the one owner thread that pulls frames and dispatches each through the existing handle_request core) + stdin_frames (the stdin producer). sprag-term mounts the socket via the shared sprag_rpc::mount with a FrameIngress, spawns the stdin producer, and runs dispatch_frames, so the socket and stdin funnel into one dispatch owner and share a consistent HostState view -- no concurrent-dispatch races, the same single-owner discipline pinion's UI thread gives the GUI. The old serve() (stdin-only, ended on EOF) is removed; the host is now a server that runs until SIGINT/SIGTERM (which cancels + joins in-flight plugin runs so a slow AI turn reaps). GPU-free throughout. Live-verified with stdin=/dev/null: the socket serves the full platform (panes+mux+plugins), SIGUSR1/2 toggle it idempotently, SIGTERM exits cleanly.",
+      "changes_bullets": [
+        "sprag-host rpc.rs: new single-dispatch funnel -- FrameIngress (an RpcIngress that pushes frames into an mpsc channel), dispatch_frames (the one owner thread that pulls frames and dispatches each via the existing handle_request core), stdin_frames (the stdin producer). Removed serve() (only sprag-term used it).",
+        "sprag-term.rs: server model -- mounts the always-on socket via sprag_rpc::mount with a FrameIngress (sprag-host.sock / SPRAG_HOST_RPC[_SOCK]) + spawns the stdin producer; both funnel into dispatch_frames sharing one HostState view. SIGINT/SIGTERM graceful shutdown cancels+joins in-flight plugin runs. Runs until signal, not stdin EOF.",
+        "sprag-host Cargo: + sprag-rpc (the bin mounts the shared socket policy) + signal-hook (shutdown)."
+      ],
+      "verification_bullets": [
+        "cargo build --bins clean (no warnings); clippy --all-targets clean; rustfmt clean; workspace 0 failed.",
+        "LIVE (stdin=/dev/null, no display): host socket /run/user/1000/sprag-host.sock served the plugin list [\"orchestrator\",\"pipe\",\"agent\",\"dialogue\"] and snapshot tags pane_0 + sprag_mux + sprag_plugins -- the full platform, reachable without wiring fd 0/1.",
+        "LIVE control: SIGUSR2 disabled (idempotent on repeat), SIGUSR1 re-enabled; SIGTERM exited cleanly."
+      ],
+      "impact_refs": [
+        "2",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "The north-star server is now always-on reachable without a display or stdin wiring -- the property PR-47 gave the GUI, now on the GPU-free platform (fixes the review's sequencing-inversion finding). Socket policy is the shared sprag-rpc SSOT; the host differs from the GUI only in name/env.",
+        "Minor (self-healing, same class as the GUI): the socket file lingers after SIGTERM because the shutdown handler process::exit()s past TransportControl::Drop; the next bind removes the stale path.",
+        "Observability follow-up: sprag-term installs no tracing subscriber, so sprag_rpc mount logs/warnings are dropped; a minimal fmt subscriber would restore host diagnostics.",
+        "Remaining review item (large, not a quick fix): unify the per-pane container/tag assembly (host workspace_scene vs the GUI's model scene) -- the GUI-as-client-of-the-host increment."
+      ],
+      "publishable_decision_summary": "Round 104: give the headless host (sprag-term) the always-on Unix socket, fixing the sequencing inversion the review flagged (Finding 6 -- the north-star server had only stdin while the GUI got the good transport). sprag-host now provides a single-dispatch funnel: FrameIngress (an RpcIngress that pushes frames into an mpsc channel) + dispatch_frames (the one owner thread that pulls frames and dispatches each through the existing handle_request core) + stdin_frames (the stdin producer). sprag-term mounts the socket via the shared sprag_rpc::mount with a FrameIngress, spawns the stdin producer, and runs dispatch_frames, so the socket and stdin funnel into one dispatch owner and share a consistent HostState view -- no concurrent-dispatch races, the same single-owner discipline pinion's UI thread gives the GUI. The old serve() (stdin-only, ended on EOF) is removed; the host is now a server that runs until SIGINT/SIGTERM (which cancels + joins in-flight plugin runs so a slow AI turn reaps). GPU-free throughout. Live-verified with stdin=/dev/null: the socket serves the full platform (panes+mux+plugins), SIGUSR1/2 toggle it idempotently, SIGTERM exits cleanly.",
+      "publishable_changes_bullets": [
+        "sprag-host rpc.rs: new single-dispatch funnel -- FrameIngress (an RpcIngress that pushes frames into an mpsc channel), dispatch_frames (the one owner thread that pulls frames and dispatches each via the existing handle_request core), stdin_frames (the stdin producer). Removed serve() (only sprag-term used it).",
+        "sprag-term.rs: server model -- mounts the always-on socket via sprag_rpc::mount with a FrameIngress (sprag-host.sock / SPRAG_HOST_RPC[_SOCK]) + spawns the stdin producer; both funnel into dispatch_frames sharing one HostState view. SIGINT/SIGTERM graceful shutdown cancels+joins in-flight plugin runs. Runs until signal, not stdin EOF.",
+        "sprag-host Cargo: + sprag-rpc (the bin mounts the shared socket policy) + signal-hook (shutdown)."
+      ],
+      "publishable_verification_bullets": [
+        "cargo build --bins clean (no warnings); clippy --all-targets clean; rustfmt clean; workspace 0 failed.",
+        "LIVE (stdin=/dev/null, no display): host socket /run/user/1000/sprag-host.sock served the plugin list [\"orchestrator\",\"pipe\",\"agent\",\"dialogue\"] and snapshot tags pane_0 + sprag_mux + sprag_plugins -- the full platform, reachable without wiring fd 0/1.",
+        "LIVE control: SIGUSR2 disabled (idempotent on repeat), SIGUSR1 re-enabled; SIGTERM exited cleanly."
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "The north-star server is now always-on reachable without a display or stdin wiring -- the property PR-47 gave the GUI, now on the GPU-free platform (fixes the review's sequencing-inversion finding). Socket policy is the shared sprag-rpc SSOT; the host differs from the GUI only in name/env.",
+        "Minor (self-healing, same class as the GUI): the socket file lingers after SIGTERM because the shutdown handler process::exit()s past TransportControl::Drop; the next bind removes the stale path.",
+        "Observability follow-up: sprag-term installs no tracing subscriber, so sprag_rpc mount logs/warnings are dropped; a minimal fmt subscriber would restore host diagnostics.",
+        "Remaining review item (large, not a quick fix): unify the per-pane container/tag assembly (host workspace_scene vs the GUI's model scene) -- the GUI-as-client-of-the-host increment."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
