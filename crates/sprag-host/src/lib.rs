@@ -143,8 +143,9 @@ pub struct PaneViewSpec<'a> {
     pub preedit: &'a str,
 }
 
-/// Project ONE pane (`spec`) into a tagged `Scene::Container` — the multi-pane
-/// building block. The same single projection
+/// Project ONE pane (`spec`) into a tagged `Scene::Container` — the live-`Screen`
+/// convenience over [`pane_view_scene_from_cells`] (which holds the node shape).
+/// The same single projection
 /// ([`sprag_grid::project_scrolled`] + [`sprag_grid::overlay_preedit`]) wrapped in
 /// the [`view_text_grid`] presentation (R1002 font-size pin + fill), inside a
 /// tagged, **focus-stop** Container. The Container's ONLY layout of its own is the
@@ -179,35 +180,57 @@ pub struct PaneViewSpec<'a> {
 /// identical to the bare scrolled projection and no `offset_lines` check is needed.
 #[must_use]
 pub fn pane_view_scene(tag: impl Into<Cow<'static, str>>, spec: PaneViewSpec<'_>) -> Scene {
-    let tag = tag.into();
+    // The live-screen projection + IME overlay — the two things the node needs
+    // MORE than the cells for. Both stay on the projecting side of the topology-B
+    // seam: the host owns the scrollback screen (`project_scrolled`), and the
+    // preedit is a client-local overlay on received cells. The resulting cells
+    // feed the shared Screen-free assembly, which holds the node shape.
     let cells = sprag_grid::overlay_preedit(
         sprag_grid::project_scrolled(spec.screen, spec.offset_lines),
         spec.preedit,
     );
-    // The grid is a COMPOSITE sub-tag of the pane (`{pane}#grid`). A pointer press
-    // lands on the grid (the deepest tagged node under the cursor), and pinion's
-    // click-to-focus resolves a `primary#sub` tag back to `primary` (via
-    // `resolve_focusable` / `composite_tag::split_subindex`) — the focusable pane.
-    // A plain shared tag (e.g. the headless `GRID_TAG`) resolves to nothing, so the
-    // click would NOT move focus (the live bug: clicking a pane kept typing in the
-    // previously-focused one) and is ambiguous across panes. The grid itself stays
-    // NON-focusable, so each pane is exactly one Tab stop (the pane); the composite
-    // tag matters only for the click->pane resolution.
+    pane_view_scene_from_cells(tag, cells, spec.metric, spec.font_size_px)
+}
+
+/// Assemble ONE pane's `Scene::Container` from an already-projected cell buffer
+/// — the **Screen-free** pane-node SSOT the two frontends share.
+///
+/// The node is a tagged, **focus-stop** Container wrapping the pane's grid. The
+/// Container's only own layout is the pinion R1020 `focusable` flag
+/// ([`LayoutStyle::with_focusable`](pinion_core::style::LayoutStyle::with_focusable)),
+/// declaring the pane a scene-derived keyboard Tab stop (§5.39). Its SIZE/FLEX
+/// come from the GUI's arrangement (`view_splitter` drag ratio for a tiled pane;
+/// `Percent(100)` for a lone / undocked pane); those mutators edit the size/flex
+/// fields in place, preserving the `focusable` flag set here. The inner grid
+/// stays NON-focusable, so each pane is exactly one Tab stop.
+///
+/// The grid child carries the COMPOSITE `{tag}#grid` sub-tag: a pointer press
+/// lands on the grid (the deepest tagged node under the cursor) and pinion's
+/// click-to-focus resolves a `primary#sub` tag back to `primary` (via
+/// `resolve_focusable` / `composite_tag::split_subindex`) — the focusable pane.
+/// A plain shared tag (e.g. the headless [`GRID_TAG`]) resolves to nothing, so
+/// the click would NOT move focus (the live bug: clicking a pane kept typing in
+/// the previously-focused one) and is ambiguous across panes.
+///
+/// **This is the seam the topology-B display client shares.** The in-process GUI
+/// reaches it via [`pane_view_scene`] (projecting a live [`Screen`] first); the
+/// end-state wire client feeds cells it reconstructed off the host's served data
+/// model, building the byte-identical pane node without ever touching a live
+/// `Screen`. (The host's own RPC data path uses a different container —
+/// [`pane_container`], input `External` embedded — see [`workspace_scene`].)
+#[must_use]
+pub fn pane_view_scene_from_cells(
+    tag: impl Into<Cow<'static, str>>,
+    cells: GridBuffer,
+    metric: CellMetric,
+    font_size_px: u32,
+) -> Scene {
+    let tag = tag.into();
     let grid_tag = format!("{tag}#grid");
     Scene::Container(
-        ContainerNode::new(vec![view_text_grid(
-            cells,
-            grid_tag,
-            spec.metric,
-            spec.font_size_px,
-        )])
-        .with_tag(tag)
-        // R1020 §5.39: declare the pane a scene-derived keyboard Tab stop where
-        // it is painted. The GUI arrangement overwrites size/flex but preserves
-        // this flag (in-place field edits), so a docked, lone, or undocked pane
-        // is always focusable. The inner grid stays non-focusable, so each pane
-        // is exactly one Tab stop.
-        .with_layout(LayoutStyle::new().with_focusable(true)),
+        ContainerNode::new(vec![view_text_grid(cells, grid_tag, metric, font_size_px)])
+            .with_tag(tag)
+            .with_layout(LayoutStyle::new().with_focusable(true)),
     )
 }
 
@@ -435,6 +458,40 @@ mod tests {
             "the grid tag resolves to the focusable pane (click-to-focus)",
         );
         assert!(!node.cells().is_empty());
+        assert_eq!(node.font_size_px(), Some(18));
+        assert_eq!(node.layout.size.width, SizeValue::Percent(100));
+        assert_eq!(node.layout.size.height, SizeValue::Percent(100));
+    }
+
+    /// The topology-B seam: `pane_view_scene_from_cells` assembles the identical
+    /// focusable pane node from a hand-built cell buffer — no live `Screen`. This
+    /// is the exact call a wire display client makes with cells it reconstructed
+    /// off the host's data model, so a regression in the shared node shape (the
+    /// focus-stop Container / composite `{tag}#grid` click anchor / R1002 font pin)
+    /// fails HERE, in the crate that owns the shape, not silently in the GUI.
+    #[test]
+    fn pane_view_scene_from_cells_assembles_the_pane_node_without_a_screen() {
+        let cells = GridBuffer::new(4, 1);
+        let scene = super::pane_view_scene_from_cells("pane.wire", cells, CellMetric::DEFAULT, 18);
+        match &scene {
+            Scene::Container(c) => {
+                assert_eq!(c.tag.as_deref(), Some("pane.wire"));
+                assert_eq!(c.layout, LayoutStyle::new().with_focusable(true));
+            }
+            other => unreachable!("pane_view_scene_from_cells returns a Container, got {other:?}"),
+        }
+        // The one scene-derived Tab stop is the pane; its grid child is not.
+        assert_eq!(scene.collect_focusable_tags(), vec!["pane.wire".to_owned()]);
+        let node = pane_grid(&scene);
+        assert_eq!(node.tag.as_deref(), Some("pane.wire#grid"));
+        // The composite splits back to the focusable pane tag — the exact
+        // resolution pinion's click-to-focus performs on a pointer press.
+        assert_eq!(
+            pinion_core::composite_tag::split_subindex("pane.wire#grid").0,
+            "pane.wire",
+            "the grid tag resolves to the focusable pane (click-to-focus)",
+        );
+        assert_eq!(node.cells().cols(), 4);
         assert_eq!(node.font_size_px(), Some(18));
         assert_eq!(node.layout.size.width, SizeValue::Percent(100));
         assert_eq!(node.layout.size.height, SizeValue::Percent(100));
