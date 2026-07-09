@@ -25,11 +25,13 @@
 //! - **Boot state** — enabled unless `SPRAG_RPC` is a falsey token
 //!   (`0` / `off` / `false` / `no`). The default is "always open" — the
 //!   whole point of the endpoint.
-//! - **Runtime toggle** — `kill -USR1 <pid>` flips serving on/off without a
-//!   restart (a dedicated [`signal_hook`] thread drives
-//!   [`TransportControl::set_enabled`]). While off the socket stays bound
-//!   but refuses new connections, so an agent path can be withdrawn or
-//!   re-exposed live.
+//! - **Runtime control** — `kill -USR1 <pid>` enables the endpoint,
+//!   `kill -USR2 <pid>` disables it (a dedicated [`signal_hook`] thread sets
+//!   [`TransportControl::set_enabled`] to the level). Level, not a blind
+//!   flip: the outcome is deterministic regardless of the current state, and
+//!   a duplicated or lost signal cannot invert the intent. While off the
+//!   socket stays bound but refuses new connections, so an agent path can be
+//!   withdrawn or re-exposed live.
 //!
 //! Mounting is wired in `main` through [`pinion_shell::ShellConfig::on_rpc_ingress`];
 //! [`mount`] is the hook. A bind failure is logged and left non-fatal — the
@@ -45,14 +47,15 @@ use pinion_shell::RpcIngress;
 /// The socket filename under the resolved directory.
 const SOCKET_NAME: &str = "sprag-gui.sock";
 
-/// Process-lifetime hold on the live endpoint. Two jobs: (1) keep the
-/// [`TransportControl`] alive for the whole process — dropping it at the end
-/// of the [`mount`] hook would unbind the socket immediately — and (2) keep
-/// it reachable so the SIGUSR1 thread can toggle it. Never dropped (the
-/// process outlives it); a stale socket file is reclaimed by the next
-/// `serve` (it removes the path before binding) and by the accept loop's own
-/// cleanup on shutdown.
-static ENDPOINT: OnceLock<Arc<TransportControl>> = OnceLock::new();
+/// Process-lifetime **sole owner** of the live endpoint's [`TransportControl`].
+/// It keeps the socket bound for the whole process (dropping the control at
+/// the end of the [`mount`] hook would unbind it immediately) AND it is where
+/// the signal thread reads the control to switch exposure — one owner serves
+/// both, so no `Arc` is needed and endpoint liveness does not depend on the
+/// control thread having spawned. Never dropped, so pinion's graceful
+/// `shutdown`/`remove_file` never runs on a clean exit; the stale socket file
+/// is reclaimed by the next `serve` (it removes the path before binding).
+static ENDPOINT: OnceLock<TransportControl> = OnceLock::new();
 
 /// Mount the always-on RPC socket. The `on_rpc_ingress` hook: binds the
 /// fixed-path Unix socket, feeds accepted frames into the shared `ingress`
@@ -79,51 +82,60 @@ pub fn mount(ingress: Arc<dyn RpcIngress>) {
     };
     control.set_enabled(boot_enabled());
     let enabled = control.is_enabled();
-    let control = Arc::new(control);
-    // Keep it alive for the process AND reachable for the toggle. `set`
-    // only fails if the hook somehow ran twice (it does not) — ignore.
-    let _ = ENDPOINT.set(Arc::clone(&control));
-    spawn_toggle(control);
+    // Hand the control to its process-lifetime owner BEFORE installing the
+    // signal thread, so the socket is bound-and-owned even if the thread
+    // never spawns. `set` only fails if the once-only hook ran twice (it does
+    // not); on that impossible path the fresh control drops and unbinds while
+    // the first stays owned.
+    let _ = ENDPOINT.set(control);
+    install_control_signals();
     tracing::info!(
         target: "sprag_gui::rpc",
         path = %path.display(),
         enabled,
-        "RPC socket mounted (SIGUSR1 toggles exposure)"
+        "RPC socket mounted (SIGUSR1 enables, SIGUSR2 disables)"
     );
 }
 
-/// Install the SIGUSR1 runtime on/off toggle: a dedicated thread parks on
-/// the signal and flips [`TransportControl::set_enabled`] on each delivery.
-/// A dedicated `Signals::forever` thread (not an async-signal handler) does
-/// the toggling on a normal stack, so there is no async-signal-safety
-/// constraint and no `unsafe`. Non-fatal on failure: the endpoint stays at
-/// its boot state, just not runtime-toggleable.
-fn spawn_toggle(control: Arc<TransportControl>) {
-    let mut signals = match signal_hook::iterator::Signals::new([signal_hook::consts::SIGUSR1]) {
+/// Install the runtime on/off control: a dedicated thread parks on SIGUSR1
+/// (enable) and SIGUSR2 (disable) and sets [`TransportControl::set_enabled`]
+/// to the corresponding LEVEL, read from the process-lifetime [`ENDPOINT`].
+/// Level rather than a blind flip is idempotent and assertable — `kill -USR2`
+/// always withdraws the endpoint no matter its current state, and a duplicated
+/// or lost signal cannot invert the intent. A dedicated `Signals::forever`
+/// thread (not an async-signal handler) does the work on a normal stack, so
+/// there is no async-signal-safety constraint and no `unsafe`. Non-fatal on
+/// failure: the endpoint stays at its boot state, just not runtime-controllable.
+fn install_control_signals() {
+    use signal_hook::consts::{SIGUSR1, SIGUSR2};
+    let mut signals = match signal_hook::iterator::Signals::new([SIGUSR1, SIGUSR2]) {
         Ok(signals) => signals,
         Err(error) => {
             tracing::warn!(
                 target: "sprag_gui::rpc",
                 %error,
-                "SIGUSR1 handler unavailable; RPC endpoint fixed at its boot state"
+                "SIGUSR1/2 handler unavailable; RPC endpoint fixed at its boot state"
             );
             return;
         }
     };
     let spawned = std::thread::Builder::new()
-        .name("sprag-rpc-toggle".to_owned())
+        .name("sprag-rpc-control".to_owned())
         .spawn(move || {
-            for _ in signals.forever() {
-                let on = !control.is_enabled();
-                control.set_enabled(on);
-                tracing::info!(target: "sprag_gui::rpc", enabled = on, "RPC socket toggled (SIGUSR1)");
+            for signal in signals.forever() {
+                let Some(control) = ENDPOINT.get() else {
+                    continue;
+                };
+                let enable = signal == SIGUSR1;
+                control.set_enabled(enable);
+                tracing::info!(target: "sprag_gui::rpc", enabled = enable, "RPC socket set by signal");
             }
         });
     if let Err(error) = spawned {
         tracing::warn!(
             target: "sprag_gui::rpc",
             %error,
-            "SIGUSR1 toggle thread not spawned; RPC endpoint fixed at its boot state"
+            "RPC control thread not spawned; endpoint fixed at its boot state"
         );
     }
 }
