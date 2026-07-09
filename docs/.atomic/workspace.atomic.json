@@ -225,6 +225,44 @@
         "Runtime on/off trigger is SIGUSR1 (sprag transport policy); a keyboard chord or RPC-method trigger is a possible follow-up if a non-signal UX is wanted."
       ]
     },
+    "R101": {
+      "decision_summary": "Round 101: extract the pane-command assembly to a single SSOT. A 3-lens adversarial session review found the CommandBuilder + TERM=xterm-256color + $SHELL-fallback + program-label logic re-encoded across every frontend (gui pane_command, host workspace.rs build_command/default_shell_command, sprag-term build_command/default_shell). New sprag_terminal::command_from_parts + default_shell_command are the one home for that assembly (sprag-terminal owns CommandBuilder and is a dep of every frontend); each frontend now keeps only its spec-parsing POLICY (which env var / JSON argv / CLI flag the spec comes from) and delegates the build. Behavior-preserving, unit-tested. This restores the SSOT the review flagged as violated; it is the first remediation round after reverting a redundant host-server binary the same review caught (reverted before push, no net history).",
+      "changes_bullets": [
+        "New sprag-terminal SSOT crates/sprag-terminal/src/command.rs: command_from_parts (CommandBuilder + TERM=xterm-256color + program label) and default_shell_command ($SHELL else /bin/sh); 4 unit tests.",
+        "Refactored the 3 frontends to keep only their spec-parsing policy and delegate assembly: gui terminal.rs pane_command (SPRAG_GUI_CMD via split_command), host workspace.rs build_command (JSON argv), sprag-term.rs parse_args (CLI --/argv).",
+        "Removed the duplicated inline CommandBuilder+TERM building and the repeated $SHELL->/bin/sh fallback from all three sites (was 3+ copies of one assembly)."
+      ],
+      "verification_bullets": [
+        "cargo build all bins clean; workspace tests 0 failed; 4 new command:: tests pass; clippy --workspace --all-targets clean; rustfmt clean.",
+        "Behavior-preserving: each frontend's spec source is unchanged (SPRAG_GUI_CMD / JSON argv / CLI --); only the TERM/args/label/fallback assembly moved to the shared home."
+      ],
+      "impact_refs": [
+        "2"
+      ],
+      "carry_forward_bullets": [
+        "Driven by a 3-lens adversarial session review. It also found a redundant would-be headless-server binary (a sprag-host bin duplicating the pre-existing sprag-term); that was reverted before push, so sprag-term stays the single headless server.",
+        "Correction to an earlier claim: the plugin platform was NOT library-only -- sprag-term already serves panes+mux+PluginsExternal headlessly over stdin (verified live: /sprag_plugins/external/plugins returns the four plugins). The prior \"not runnable / sole binary is sprag-gui\" statement was a discovery error (find -name main.rs missed src/bin/*.rs).",
+        "Remaining review items: fix rpc.rs SIGUSR1 to level semantics (SIGUSR1=enable / SIGUSR2=disable) + correct the ENDPOINT doc comment; give the headless host the always-on socket (sequencing fix, the north-star server deserves the good transport); PINION-PR note for an atomic disabled-at-bind constructor."
+      ],
+      "publishable_decision_summary": "Round 101: extract the pane-command assembly to a single SSOT. A 3-lens adversarial session review found the CommandBuilder + TERM=xterm-256color + $SHELL-fallback + program-label logic re-encoded across every frontend (gui pane_command, host workspace.rs build_command/default_shell_command, sprag-term build_command/default_shell). New sprag_terminal::command_from_parts + default_shell_command are the one home for that assembly (sprag-terminal owns CommandBuilder and is a dep of every frontend); each frontend now keeps only its spec-parsing POLICY (which env var / JSON argv / CLI flag the spec comes from) and delegates the build. Behavior-preserving, unit-tested. This restores the SSOT the review flagged as violated; it is the first remediation round after reverting a redundant host-server binary the same review caught (reverted before push, no net history).",
+      "publishable_changes_bullets": [
+        "New sprag-terminal SSOT crates/sprag-terminal/src/command.rs: command_from_parts (CommandBuilder + TERM=xterm-256color + program label) and default_shell_command ($SHELL else /bin/sh); 4 unit tests.",
+        "Refactored the 3 frontends to keep only their spec-parsing policy and delegate assembly: gui terminal.rs pane_command (SPRAG_GUI_CMD via split_command), host workspace.rs build_command (JSON argv), sprag-term.rs parse_args (CLI --/argv).",
+        "Removed the duplicated inline CommandBuilder+TERM building and the repeated $SHELL->/bin/sh fallback from all three sites (was 3+ copies of one assembly)."
+      ],
+      "publishable_verification_bullets": [
+        "cargo build all bins clean; workspace tests 0 failed; 4 new command:: tests pass; clippy --workspace --all-targets clean; rustfmt clean.",
+        "Behavior-preserving: each frontend's spec source is unchanged (SPRAG_GUI_CMD / JSON argv / CLI --); only the TERM/args/label/fallback assembly moved to the shared home."
+      ],
+      "publishable_impact_refs": [
+        "2"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Driven by a 3-lens adversarial session review. It also found a redundant would-be headless-server binary (a sprag-host bin duplicating the pre-existing sprag-term); that was reverted before push, so sprag-term stays the single headless server.",
+        "Correction to an earlier claim: the plugin platform was NOT library-only -- sprag-term already serves panes+mux+PluginsExternal headlessly over stdin (verified live: /sprag_plugins/external/plugins returns the four plugins). The prior \"not runnable / sole binary is sprag-gui\" statement was a discovery error (find -name main.rs missed src/bin/*.rs).",
+        "Remaining review items: fix rpc.rs SIGUSR1 to level semantics (SIGUSR1=enable / SIGUSR2=disable) + correct the ENDPOINT doc comment; give the headless host the always-on socket (sequencing fix, the north-star server deserves the good transport); PINION-PR note for an atomic disabled-at-bind constructor."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
