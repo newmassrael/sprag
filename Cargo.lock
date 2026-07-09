@@ -3482,13 +3482,12 @@ dependencies = [
  "pinion-a11y",
  "pinion-core",
  "pinion-forge",
- "pinion-rpc-transport",
  "pinion-runtime",
  "pinion-shell",
  "pinion-widget-paint",
  "serde_json",
- "signal-hook",
  "sprag-host",
+ "sprag-rpc",
  "sprag-terminal",
  "tracing",
  "tracing-subscriber",
@@ -3526,6 +3525,16 @@ dependencies = [
  "sprag-input",
  "sprag-terminal",
  "sprag-vt",
+]
+
+[[package]]
+name = "sprag-rpc"
+version = "0.0.1"
+dependencies = [
+ "pinion-rpc",
+ "pinion-rpc-transport",
+ "signal-hook",
+ "tracing",
 ]
 
 [[package]]

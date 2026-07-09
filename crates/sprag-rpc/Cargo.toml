@@ -1,0 +1,20 @@
+[package]
+name = "sprag-rpc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "sprag's RPC transport policy: a fixed-path, always-on Unix-socket endpoint over pinion's PR-47 RpcIngress seam, with SIGUSR1/2 runtime control. Frontend-agnostic (GUI + headless host share it); GPU-free (seam-only deps)."
+publish = false
+
+[dependencies]
+# The winit-free transport seam (RpcIngress) + the reusable Unix-socket
+# adapter (UnixSocketTransport / TransportControl). Both depend only on the
+# seam, so this policy crate stays GPU-free and both frontends reuse it.
+pinion-rpc = { workspace = true }
+pinion-rpc-transport = { workspace = true }
+# SIGUSR1(enable)/SIGUSR2(disable) runtime control thread.
+signal-hook = { workspace = true }
+# Leveled endpoint diagnostics (target "sprag_rpc").
+tracing = { workspace = true }
