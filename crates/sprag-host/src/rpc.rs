@@ -23,14 +23,17 @@
 //! does not persist.
 
 use std::io::{self, BufRead, Write};
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
 use pinion_core::SceneRevision;
 use pinion_rpc::preview::PreviewLedger;
-use pinion_rpc::{DispatchContext, Request, dispatch, dispatch_parsed, parse_request};
+use pinion_rpc::{
+    DispatchContext, Request, RpcFrame, RpcIngress, RpcReply, dispatch, dispatch_parsed,
+    parse_request,
+};
 use sprag_terminal::Workspace;
 
-use crate::external::lock;
 use crate::runs::RunRegistry;
 
 /// The long-lived host state threaded through the serve loop: the shared pane
@@ -114,35 +117,74 @@ fn method_not_supported(request: &Request) -> String {
     .to_string()
 }
 
-/// Run the request/response loop: read newline-delimited JSON-RPC requests
-/// from `input` and write each response (newline-terminated) to `output`,
-/// until `input` reaches EOF. Blank lines are skipped.
+/// An [`RpcIngress`] that funnels frames from any transport into the host's
+/// single dispatch owner via a channel.
 ///
-/// # Errors
-///
-/// Returns an IO error if reading a request line or writing a response
-/// fails.
-pub fn serve(state: &HostState, input: impl BufRead, mut output: impl Write) -> io::Result<()> {
+/// The GUI dispatches on pinion-shell's winit event loop; the headless host
+/// has no event loop, so it owns one dispatch thread ([`dispatch_frames`]) and
+/// every transport -- stdin and the always-on socket -- submits through this
+/// into that one owner. Serialising dispatch this way means a concurrent
+/// socket connection and a stdin line share one consistent [`HostState`] view,
+/// the same single-owner discipline pinion's UI thread gives the GUI.
+pub struct FrameIngress {
+    tx: Sender<RpcFrame>,
+}
+
+impl FrameIngress {
+    /// Wrap the sending half of the dispatch owner's channel.
+    #[must_use]
+    pub fn new(tx: Sender<RpcFrame>) -> Self {
+        Self { tx }
+    }
+}
+
+impl RpcIngress for FrameIngress {
+    fn submit(&self, frame: RpcFrame) {
+        // A closed channel means the dispatch owner has exited; drop the frame
+        // (its reply never fires, so the client's connection simply closes).
+        let _ = self.tx.send(frame);
+    }
+}
+
+/// The single dispatch owner: pull [`RpcFrame`]s and dispatch each against
+/// `state` through the same [`handle_request`] core, routing the response back
+/// to the frame's originating transport via its reply sink. One thread, so all
+/// dispatch is serialised over the shared [`HostState`]. Runs until every
+/// sender has dropped (the channel closes) -- for a server with an always-on
+/// socket that is process lifetime.
+pub fn dispatch_frames(state: &HostState, rx: Receiver<RpcFrame>) {
+    for frame in rx {
+        let RpcFrame { request, reply } = frame;
+        if let Some(response) = handle_request(state, &request) {
+            reply.send(response);
+        }
+    }
+}
+
+/// Read newline-delimited JSON-RPC requests from `input` and submit each as an
+/// [`RpcFrame`] whose reply writes the response (newline-terminated) to stdout,
+/// through `tx` into the dispatch owner. Returns when `input` reaches EOF -- the
+/// stdin transport ends, but any other transport (the socket) keeps the server
+/// alive. Blank lines are skipped.
+pub fn stdin_frames(input: impl BufRead, tx: &Sender<RpcFrame>) {
     for line in input.lines() {
-        let line = line?;
-        let request = line.trim();
+        let Ok(text) = line else {
+            break;
+        };
+        let request = text.trim();
         if request.is_empty() {
             continue;
         }
-        if let Some(response) = handle_request(state, request) {
-            writeln!(output, "{response}")?;
-            output.flush()?;
+        let reply = RpcReply::new(|response| {
+            let mut out = io::stdout().lock();
+            if writeln!(out, "{response}").is_ok() {
+                let _ = out.flush();
+            }
+        });
+        if tx.send(RpcFrame::new(request.to_owned(), reply)).is_err() {
+            break;
         }
     }
-    // Shutdown: cancel in-flight plugin runs first so they abort promptly
-    // (a slow AI turn would otherwise block join), then join so their worker
-    // threads and child panes reap before serve returns.
-    {
-        let mut runs = lock(&state.runs);
-        runs.cancel_all();
-        runs.join_all();
-    }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -3501,9 +3501,11 @@ dependencies = [
  "pinion-core",
  "pinion-rpc",
  "serde_json",
+ "signal-hook",
  "sprag-grid",
  "sprag-input",
  "sprag-plugin",
+ "sprag-rpc",
  "sprag-terminal",
  "sprag-vt",
 ]

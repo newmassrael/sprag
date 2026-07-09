@@ -24,5 +24,10 @@ pinion-core = { workspace = true }
 # The RPC dispatch + scene/snapshot wire. Its heavy transitive deps are
 # confined to this host crate, never the producer/projection (DESIGN.md §5).
 pinion-rpc = { workspace = true }
+# The always-on Unix-socket transport policy (shared with the GUI): the
+# headless server binary mounts it with a channel-funnel RpcIngress. GPU-free.
+sprag-rpc = { workspace = true }
+# SIGINT/SIGTERM graceful shutdown in the server binary (cancel+join runs).
+signal-hook = { workspace = true }
 # Building the read-only method-gate error response.
 serde_json = { workspace = true }
