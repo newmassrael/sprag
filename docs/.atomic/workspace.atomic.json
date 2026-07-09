@@ -379,6 +379,48 @@
         "Remaining review item (large, not a quick fix): unify the per-pane container/tag assembly (host workspace_scene vs the GUI's model scene) -- the GUI-as-client-of-the-host increment."
       ]
     },
+    "R105": {
+      "decision_summary": "Round 105: begin the GUI-as-client-of-host increment. Topology DECIDED (user, cost-no-object \"most long-term-correct\"): B -- the GUI is a PURE transport-abstracted WIRE CLIENT of the host (tmux/mosh pattern; the read-data-not-pixels invariant becomes STRUCTURAL, not a shared-Arc convention; enables multi/remote/alt-frontend clients + fault isolation). This round is the topology-neutral first step of the prescribed sequence (unify scene-assembly SSOT -> host owns Workspace -> GUI attaches): decouple the pane-node ASSEMBLY from live-Screen PROJECTION. New pub pane_view_scene_from_cells(tag, cells, metric, font_size_px) is the Screen-free pane-node SSOT (focus-stop Container + composite {tag}#grid click anchor + R1002 font pin) that assembles the node from an already-projected GridBuffer alone; pane_view_scene(tag, spec) is now a thin live-Screen convenience over it (project_scrolled + overlay_preedit, then delegate), signature unchanged so the in-process GUI caller (build_pane_scene) is untouched. This is the exact seam the future wire client shares -- it will feed cells reconstructed off the host's served data model to build the byte-identical pane node without ever touching a live Screen. Behavior-preserving.",
+      "changes_bullets": [
+        "sprag-host/src/lib.rs: new pub pane_view_scene_from_cells(tag, cells, metric, font_size_px) -- the Screen-free pane-node SSOT (focus-stop Container + composite {tag}#grid click anchor + R1002 font pin) assembled from an already-projected GridBuffer.",
+        "pane_view_scene(tag, spec) reduced to a thin live-Screen convenience: project_scrolled + overlay_preedit, then delegate to pane_view_scene_from_cells; signature unchanged so the GUI caller build_pane_scene is untouched.",
+        "New test pane_view_scene_from_cells_assembles_the_pane_node_without_a_screen: builds the node from a hand-built GridBuffer (the exact call a wire client makes) and asserts the shared shape -- focusable pane tag, #grid composite resolving back to the pane, font pin, 100% fill."
+      ],
+      "verification_bullets": [
+        "cargo test -p sprag-host: 39 passed / 0 failed (incl. the new Screen-free node test); rustfmt --check clean; clippy -p sprag-host --all-targets clean.",
+        "cargo check -p sprag-gui clean: the pane_view_scene signature is unchanged, so the in-process GUI caller compiles behavior-preserving.",
+        "Fidelity finding gating R106: GridBuffer + its subtypes derive no serde, so the paint-authoritative buffer cannot cross the wire as-is."
+      ],
+      "impact_refs": [
+        "2",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Topology B recorded in memory headless-host-and-two-frontends. Sequence: (1 DONE) pane-node seam; (2) wire data contract; (3) client attach + Workspace-ownership flip (GUI stops spawning PTYs, input/resize over the wire); (4) transport abstraction (in-process channel vs socket, identical client code).",
+        "R106 = wire data contract, path (a): add Serialize/Deserialize to pinion GridBuffer + TermCell + GridCursor + ScreenKind + CellWidth + CursorShape + TermColor + CellAttrs so the client round-trips the exact paint buffer. GridBuffer has NO serde today -> this needs a PINION PR; file the PR doc FIRST per the stop-and-report rule, never edit pinion from sprag.",
+        "The host RPC data path (pane_container, input External embedded) stays DISTINCT from the client's painted node (pane_view_scene_from_cells) -- correct under B (server-served vs client-painted roles); both share the grid_node leaf + the sprag_grid projection."
+      ],
+      "publishable_decision_summary": "Round 105: begin the GUI-as-client-of-host increment. Topology DECIDED (user, cost-no-object \"most long-term-correct\"): B -- the GUI is a PURE transport-abstracted WIRE CLIENT of the host (tmux/mosh pattern; the read-data-not-pixels invariant becomes STRUCTURAL, not a shared-Arc convention; enables multi/remote/alt-frontend clients + fault isolation). This round is the topology-neutral first step of the prescribed sequence (unify scene-assembly SSOT -> host owns Workspace -> GUI attaches): decouple the pane-node ASSEMBLY from live-Screen PROJECTION. New pub pane_view_scene_from_cells(tag, cells, metric, font_size_px) is the Screen-free pane-node SSOT (focus-stop Container + composite {tag}#grid click anchor + R1002 font pin) that assembles the node from an already-projected GridBuffer alone; pane_view_scene(tag, spec) is now a thin live-Screen convenience over it (project_scrolled + overlay_preedit, then delegate), signature unchanged so the in-process GUI caller (build_pane_scene) is untouched. This is the exact seam the future wire client shares -- it will feed cells reconstructed off the host's served data model to build the byte-identical pane node without ever touching a live Screen. Behavior-preserving.",
+      "publishable_changes_bullets": [
+        "sprag-host/src/lib.rs: new pub pane_view_scene_from_cells(tag, cells, metric, font_size_px) -- the Screen-free pane-node SSOT (focus-stop Container + composite {tag}#grid click anchor + R1002 font pin) assembled from an already-projected GridBuffer.",
+        "pane_view_scene(tag, spec) reduced to a thin live-Screen convenience: project_scrolled + overlay_preedit, then delegate to pane_view_scene_from_cells; signature unchanged so the GUI caller build_pane_scene is untouched.",
+        "New test pane_view_scene_from_cells_assembles_the_pane_node_without_a_screen: builds the node from a hand-built GridBuffer (the exact call a wire client makes) and asserts the shared shape -- focusable pane tag, #grid composite resolving back to the pane, font pin, 100% fill."
+      ],
+      "publishable_verification_bullets": [
+        "cargo test -p sprag-host: 39 passed / 0 failed (incl. the new Screen-free node test); rustfmt --check clean; clippy -p sprag-host --all-targets clean.",
+        "cargo check -p sprag-gui clean: the pane_view_scene signature is unchanged, so the in-process GUI caller compiles behavior-preserving.",
+        "Fidelity finding gating R106: GridBuffer + its subtypes derive no serde, so the paint-authoritative buffer cannot cross the wire as-is."
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Topology B recorded in memory headless-host-and-two-frontends. Sequence: (1 DONE) pane-node seam; (2) wire data contract; (3) client attach + Workspace-ownership flip (GUI stops spawning PTYs, input/resize over the wire); (4) transport abstraction (in-process channel vs socket, identical client code).",
+        "R106 = wire data contract, path (a): add Serialize/Deserialize to pinion GridBuffer + TermCell + GridCursor + ScreenKind + CellWidth + CursorShape + TermColor + CellAttrs so the client round-trips the exact paint buffer. GridBuffer has NO serde today -> this needs a PINION PR; file the PR doc FIRST per the stop-and-report rule, never edit pinion from sprag.",
+        "The host RPC data path (pane_container, input External embedded) stays DISTINCT from the client's painted node (pane_view_scene_from_cells) -- correct under B (server-served vs client-painted roles); both share the grid_node leaf + the sprag_grid projection."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
