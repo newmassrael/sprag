@@ -61,7 +61,7 @@ impl WorkspaceExternal {
             _ => return Err(InvokeError::TypeMismatch),
         };
         let (command, label) = match map.get("cmd") {
-            None => default_shell_command(),
+            None => sprag_terminal::default_shell_command(),
             Some(Value::Array(argv)) => build_command(argv)?,
             Some(_) => return Err(InvokeError::TypeMismatch),
         };
@@ -166,26 +166,18 @@ impl ExternalIntrospect for WorkspaceExternal {
 /// returning it plus the program label. Empty or non-string argv is a
 /// [`InvokeError::TypeMismatch`].
 fn build_command(argv: &[Value]) -> Result<(CommandBuilder, String), InvokeError> {
+    // Policy: the mux spec is a JSON `[program, args...]` string array (validated
+    // here). The assembly (TERM, args, label) is the shared SSOT.
     let parts: Vec<&str> = argv
         .iter()
         .map(Value::as_str)
         .collect::<Option<_>>()
         .ok_or(InvokeError::TypeMismatch)?;
     let (program, rest) = parts.split_first().ok_or(InvokeError::TypeMismatch)?;
-    let mut command = CommandBuilder::new(*program);
-    for arg in rest {
-        command.arg(*arg);
-    }
-    command.env("TERM", "xterm-256color");
-    Ok((command, (*program).to_string()))
-}
-
-/// The default pane command: `$SHELL` (or `/bin/sh`), labelled by program.
-fn default_shell_command() -> (CommandBuilder, String) {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-    let mut command = CommandBuilder::new(&shell);
-    command.env("TERM", "xterm-256color");
-    (command, shell)
+    Ok(sprag_terminal::command_from_parts(
+        *program,
+        rest.iter().copied(),
+    ))
 }
 
 #[cfg(test)]

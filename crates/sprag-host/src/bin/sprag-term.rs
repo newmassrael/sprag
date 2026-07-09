@@ -53,18 +53,18 @@ fn parse_args() -> (u16, u16, CommandBuilder, String) {
             }
             "--" => {
                 if let Some(program) = args.next() {
-                    command = Some(build_command(program, &mut args));
+                    command = Some(sprag_terminal::command_from_parts(program, &mut args));
                 }
                 break;
             }
             _ => {
-                command = Some(build_command(arg, &mut args));
+                command = Some(sprag_terminal::command_from_parts(arg, &mut args));
                 break;
             }
         }
     }
 
-    let (command, label) = command.unwrap_or_else(default_shell);
+    let (command, label) = command.unwrap_or_else(sprag_terminal::default_shell_command);
     (cols, rows, command, label)
 }
 
@@ -72,28 +72,4 @@ fn parse_args() -> (u16, u16, CommandBuilder, String) {
 fn parse_size(spec: &str) -> Option<(u16, u16)> {
     let (w, h) = spec.split_once('x')?;
     Some((w.parse().ok()?, h.parse().ok()?))
-}
-
-/// Build a command from a program plus the remaining argv (setting a sane
-/// `TERM`; the rest of the environment is inherited), plus the program label
-/// the workspace records for the pane.
-fn build_command(
-    program: String,
-    rest: &mut impl Iterator<Item = String>,
-) -> (CommandBuilder, String) {
-    let label = program.clone();
-    let mut command = CommandBuilder::new(program);
-    for arg in rest {
-        command.arg(arg);
-    }
-    command.env("TERM", "xterm-256color");
-    (command, label)
-}
-
-/// The default child: `$SHELL`, or `/bin/sh` when it is unset, plus its label.
-fn default_shell() -> (CommandBuilder, String) {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-    let mut command = CommandBuilder::new(&shell);
-    command.env("TERM", "xterm-256color");
-    (command, shell)
 }

@@ -166,18 +166,13 @@ fn split_command(spec: &str) -> Option<(String, Vec<String>)> {
 /// `$SHELL` (then `/bin/sh`). Read from the environment, not threaded through
 /// `main`, matching pinion's `Owner::cache` config-from-env pattern.
 fn pane_command() -> (CommandBuilder, String) {
+    // Policy: the GUI's command spec is `SPRAG_GUI_CMD`. The assembly (TERM,
+    // args, label) and the `$SHELL` fallback are the shared SSOT.
     let spec = std::env::var("SPRAG_GUI_CMD").unwrap_or_default();
-    let (program, args) = split_command(&spec).unwrap_or_else(|| {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
-        (shell, Vec::new())
-    });
-    let label = program.clone();
-    let mut command = CommandBuilder::new(&program);
-    for arg in &args {
-        command.arg(arg);
+    match split_command(&spec) {
+        Some((program, args)) => sprag_terminal::command_from_parts(program, args),
+        None => sprag_terminal::default_shell_command(),
     }
-    command.env("TERM", "xterm-256color");
-    (command, label)
 }
 
 /// The booted terminal: the live [`Workspace`] plus the once-measured cell
