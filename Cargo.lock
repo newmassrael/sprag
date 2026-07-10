@@ -3486,6 +3486,7 @@ dependencies = [
  "pinion-shell",
  "pinion-widget-paint",
  "serde_json",
+ "sprag-grid",
  "sprag-host",
  "sprag-rpc",
  "sprag-terminal",

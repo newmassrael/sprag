@@ -481,6 +481,31 @@ mod tests {
         );
     }
 
+    /// The `project_scrolled` + `overlay_preedit` COMPOSITION a display client runs:
+    /// a scrolled history window drops the cursor, so the overlay self-gates off and
+    /// the preedit appears NOWHERE — while the live window (offset 0) shows it. This
+    /// is the end-to-end fact the GUI's `build_pane_scene` relies on (topology B: the
+    /// host projects, the client overlays); it used to live in a sprag-host test over
+    /// the removed all-in-one pane builder, and belongs here with the two primitives.
+    #[test]
+    fn overlay_preedit_no_op_on_a_scrolled_history_window() {
+        let screen = screen_from(b"a\r\nb\r\nc\r\nd\r\ne", 4, 2); // 3 rows into history
+        assert_eq!(screen.scrollback_len(), 3);
+        let contains_han = |buf: &GridBuffer| {
+            (0..buf.cols())
+                .any(|c| (0..buf.rows()).any(|r| buf.cell(c, r).is_some_and(|x| x.cluster == "한")))
+        };
+        // Live (offset 0): the composition overlays the preedit at the cursor.
+        let live = overlay_preedit(project_scrolled(&screen, 0), "한");
+        assert!(contains_han(&live), "the live window shows the preedit");
+        // Scrolled (offset 1): the cursor is dropped, so the overlay self-gates off.
+        let scrolled = overlay_preedit(project_scrolled(&screen, 1), "한");
+        assert!(
+            !contains_han(&scrolled),
+            "a scrolled history window shows no preedit"
+        );
+    }
+
     /// No visible cursor (a scrolled history window, or a DECTCEM-hidden cursor)
     /// is no compose anchor — the overlay is a no-op (the single S1 gate).
     #[test]

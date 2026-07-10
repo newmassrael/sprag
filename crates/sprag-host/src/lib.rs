@@ -20,8 +20,8 @@
 //! Pipeline (DESIGN.md §5): the producer's [`Workspace`] holds the panes;
 //! [`workspace_scene`] assembles the tree (refreshing each grid from its live
 //! screen, handing engines their `SessionHandle`); [`snapshot`] reads one
-//! grid back as the [`TextGridSnapshot`] an AI consumer sees; [`serve`] runs
-//! the JSON-RPC loop.
+//! grid back as the [`TextGridSnapshot`] an AI consumer sees; [`dispatch_frames`]
+//! runs the single-owner JSON-RPC dispatch loop (R104).
 //!
 //! ## Why this is GPU-free (DESIGN.md §5 host-viability risk)
 //!
@@ -119,77 +119,30 @@ pub(crate) fn text_grid_node(screen: &Screen, metric: CellMetric) -> TextGridNod
     grid_node(GRID_TAG, metric, sprag_grid::project(screen))
 }
 
-/// A per-pane view request: everything the windowed-host projection needs to
-/// render ONE pane — its live `screen`, the measured cell `metric` and the glyph
-/// `font_size_px` it was measured at (pinion R1002), the scrollback
-/// `offset_lines` window, and the IME `preedit` overlay.
+/// The per-pane cell DATA a display client reads to paint a pane — the host side
+/// of the topology-B wire contract. Projects the pane's live `screen` scrolled by
+/// `offset_lines` rows of history into the paint-authoritative [`GridBuffer`],
+/// which is serde-able since PINION-PR49 (R106), so it crosses the wire
+/// byte-for-byte — proven by `wire_round_trip_preserves_the_pane_cell_buffer`.
 ///
-/// This is the **D1 resolution**: the single-pane seam grew a positional
-/// `(offset, preedit)` tail; multi-pane gives every pane its own `(offset,
-/// preedit)`, so the tail crosses the threshold from "premature struct" to "N
-/// real consumers" and becomes a named spec rather than a 5th/6th positional arg.
-/// `'a` borrows the live screen (held only inside the producer's
-/// `with_screen` lock) and the preedit string for the call.
-pub struct PaneViewSpec<'a> {
-    /// The pane's live producer screen (read under `TerminalSession::with_screen`).
-    pub screen: &'a Screen,
-    /// The once-measured monospace cell (pinion R1003).
-    pub metric: CellMetric,
-    /// The glyph size the cell was measured at (pinion R1002 `with_font_size_px`).
-    pub font_size_px: u32,
-    /// Scrollback window: `0` is the live screen, `n` scrolls up `n` rows.
-    pub offset_lines: usize,
-    /// In-progress IME composition overlaid at the cursor (empty = none).
-    pub preedit: &'a str,
-}
-
-/// Project ONE pane (`spec`) into a tagged `Scene::Container` — the live-`Screen`
-/// convenience over [`pane_view_scene_from_cells`] (which holds the node shape).
-/// The same single projection
-/// ([`sprag_grid::project_scrolled`] + [`sprag_grid::overlay_preedit`]) wrapped in
-/// the [`view_text_grid`] presentation (R1002 font-size pin + fill), inside a
-/// tagged, **focus-stop** Container. The Container's ONLY layout of its own is the
-/// pinion R1020 `focusable` flag ([`LayoutStyle::with_focusable`](pinion_core::style::LayoutStyle::with_focusable)),
-/// which declares this pane a keyboard Tab stop where it is painted (§5.39
-/// scene-derived focus — see below). Its SIZE/FLEX still come from the GUI's
-/// arrangement — `sprag-gui`'s `view_splitter` overwrites `flex_basis`/`flex_grow`
-/// with the drag ratio for a tiled pane, the lone-pane / undock-window paths size
-/// it `Percent(100)` — and those layout mutators (the splitter's `apply_flex_main`,
-/// the fill's `map_layout`) edit the size/flex FIELDS in place, so they preserve
-/// the `focusable` flag set here. (R38 removed the host's even-tiling, so the old
-/// `flex_basis 0 + flex_grow 1` here was dead; R1020 brings the layout back, but
-/// now carrying exactly the live `focusable` flag, not a dead flex share.)
+/// This is the PROJECTION half of what used to be an all-in-one pane builder. The
+/// ASSEMBLY half is [`pane_view_scene_from_cells`], and the IME `preedit` overlay
+/// ([`sprag_grid::overlay_preedit`]) is a CLIENT-local step (an uncommitted
+/// composition that never reaches the PTY). Topology B splits the three along the
+/// wire boundary: the host PROJECTS (here), the client OVERLAYS its preedit and
+/// ASSEMBLES the node. The in-process GUI calls this directly on its own session;
+/// the end-state wire client reads the serialized `GridBuffer` off the host over
+/// RPC and skips this. The `with_screen` lock is released when this returns (the
+/// owned buffer needs none), so the client's overlay + assembly run lock-free —
+/// unlike the old builder, which held the lock across the whole assembly.
 ///
-/// The Container `tag` is the per-pane identity the windowed host keys these
-/// things on, so the GUI passes the SAME tag it registers as that pane's input
-/// External:
-/// * pinion R1012 [`use_pane_viewport_size`](pinion_core::use_pane_viewport_size)
-///   — the post-layout pane rect that sizes this pane's PTY (`TIOCSWINSZ`);
-/// * keyboard focus: under pinion R1020 §5.39 the shell derives the Tab order each
-///   frame from [`Scene::collect_focusable_tags`](pinion_core::Scene::collect_focusable_tags)
-///   (the `focusable`-marked, tagged nodes), so marking THIS node focusable makes
-///   the pane a Tab stop — there is no binding-side `focusable_tags()` list anymore;
-/// * the framework focus ring (drawn around the focused tag's rect); and
-/// * click-to-focus (the rect a pointer press hit-tests).
-///
-/// The GUI arranges N of these into the window (an even split, or draggable
-/// `view_splitter` dividers — R38; `sprag-gui` owns that interactive layout since
-/// it needs reactive ratio `Signal`s the headless host has no use for). The
-/// overlay self-gates to the live view (a scrolled `project_scrolled` drops the
-/// cursor, and `overlay_preedit` no-ops without one), so an empty `preedit` is
-/// identical to the bare scrolled projection and no `offset_lines` check is needed.
+/// `offset_lines == 0` is the live view; `n` windows `n` rows up into scrollback
+/// ([`sprag_grid::project_scrolled`], which self-clamps to the retained depth and
+/// drops the cursor while scrolled — so a client `overlay_preedit` self-gates off
+/// a history view with no extra check).
 #[must_use]
-pub fn pane_view_scene(tag: impl Into<Cow<'static, str>>, spec: PaneViewSpec<'_>) -> Scene {
-    // The live-screen projection + IME overlay — the two things the node needs
-    // MORE than the cells for. Both stay on the projecting side of the topology-B
-    // seam: the host owns the scrollback screen (`project_scrolled`), and the
-    // preedit is a client-local overlay on received cells. The resulting cells
-    // feed the shared Screen-free assembly, which holds the node shape.
-    let cells = sprag_grid::overlay_preedit(
-        sprag_grid::project_scrolled(spec.screen, spec.offset_lines),
-        spec.preedit,
-    );
-    pane_view_scene_from_cells(tag, cells, spec.metric, spec.font_size_px)
+pub fn pane_cells(session: &TerminalSession, offset_lines: usize) -> GridBuffer {
+    session.with_screen(|screen| sprag_grid::project_scrolled(screen, offset_lines))
 }
 
 /// Assemble ONE pane's `Scene::Container` from an already-projected cell buffer
@@ -213,11 +166,12 @@ pub fn pane_view_scene(tag: impl Into<Cow<'static, str>>, spec: PaneViewSpec<'_>
 /// the previously-focused one) and is ambiguous across panes.
 ///
 /// **This is the seam the topology-B display client shares.** The in-process GUI
-/// reaches it via [`pane_view_scene`] (projecting a live [`Screen`] first); the
-/// end-state wire client feeds cells it reconstructed off the host's served data
-/// model, building the byte-identical pane node without ever touching a live
+/// reaches it by projecting its session's screen via [`pane_cells`] and overlaying
+/// its IME preedit ([`sprag_grid::overlay_preedit`]) first; the end-state wire
+/// client feeds cells it reconstructed off the host's served data model — both
+/// build the byte-identical pane node without this assembly ever touching a live
 /// `Screen`. (The host's own RPC data path uses a different container —
-/// [`pane_container`], input `External` embedded — see [`workspace_scene`].)
+/// `pane_container`, input `External` embedded — see [`workspace_scene`].)
 #[must_use]
 pub fn pane_view_scene_from_cells(
     tag: impl Into<Cow<'static, str>>,
@@ -237,7 +191,7 @@ pub fn pane_view_scene_from_cells(
 /// Assemble the windowed-host `Scene::TextGrid` from a pre-projected cell buffer
 /// — the GUI presentation (R1002 font-size pin + fill layout) shared by every pane,
 /// so the node shape lives in one place. `tag` is the per-pane `{pane}#grid`
-/// composite ([`pane_view_scene`]). It fills its pane Container (both axes
+/// composite ([`pane_view_scene_from_cells`]). It fills its pane Container (both axes
 /// `Percent(100)`), so the grid spans whatever sub-rect the flex split resolved for
 /// that pane.
 fn view_text_grid(
@@ -265,7 +219,8 @@ fn view_text_grid(
 /// This is the pure data projection — a function of the screen alone, with
 /// no live session — used by [`snapshot`] and data-only consumers. The RPC
 /// server assembles the full pane tree via [`workspace_scene`]; the windowed
-/// host builds per-pane scenes via [`pane_view_scene`] and arranges them GUI-side.
+/// host builds per-pane scenes via [`pane_view_scene_from_cells`] (from cells it
+/// reads through [`pane_cells`]) and arranges them GUI-side.
 #[must_use]
 pub fn scene(screen: &Screen) -> Scene {
     scene_with_metric(screen, CellMetric::DEFAULT)
@@ -411,58 +366,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn pane_view_scene_is_a_focusable_tagged_container_around_the_grid() {
-        let mut em = Emulator::new(8, 2);
-        em.advance(b"hi");
-        let scene = super::pane_view_scene(
-            "pane.test",
-            PaneViewSpec {
-                screen: em.screen(),
-                metric: CellMetric::DEFAULT,
-                font_size_px: 18,
-                offset_lines: 0,
-                preedit: "",
-            },
-        );
-        match &scene {
-            Scene::Container(c) => {
-                // The per-pane identity tag (the use_pane_viewport_size rect
-                // target / focus-ring / click-focus anchor).
-                assert_eq!(c.tag.as_deref(), Some("pane.test"));
-                // Its only own layout is the R1020 focus-stop flag — size/flex
-                // come from the GUI arrangement (splitter / fill).
-                assert_eq!(c.layout, LayoutStyle::new().with_focusable(true));
-            }
-            other => unreachable!("pane_view_scene returns a Container, got {other:?}"),
-        }
-        // R1020 §5.39 contract: the pane is exactly one scene-derived Tab stop
-        // (its tag), and the inner grid is NOT a focus stop — so a future pinion
-        // focus-enumeration regression fails HERE, not silently in the GUI.
-        assert_eq!(
-            scene.collect_focusable_tags(),
-            vec!["pane.test".to_owned()],
-            "the pane Container is the one focusable node; its grid child is not",
-        );
-        // The inner grid: the per-pane `{pane}#grid` composite tag, the single
-        // projection (cells present), the R1002 font-size pin, and a fill layout so
-        // it spans the pane sub-rect.
-        let node = pane_grid(&scene);
-        assert_eq!(node.tag.as_deref(), Some("pane.test#grid"));
-        // The composite splits back to the focusable pane tag — the exact
-        // resolution pinion's click-to-focus (`resolve_focusable`) performs, so a
-        // pointer press on the grid focuses the pane (not nothing).
-        assert_eq!(
-            pinion_core::composite_tag::split_subindex("pane.test#grid").0,
-            "pane.test",
-            "the grid tag resolves to the focusable pane (click-to-focus)",
-        );
-        assert!(!node.cells().is_empty());
-        assert_eq!(node.font_size_px(), Some(18));
-        assert_eq!(node.layout.size.width, SizeValue::Percent(100));
-        assert_eq!(node.layout.size.height, SizeValue::Percent(100));
-    }
-
     /// The topology-B seam: `pane_view_scene_from_cells` assembles the identical
     /// focusable pane node from a hand-built cell buffer — no live `Screen`. This
     /// is the exact call a wire display client makes with cells it reconstructed
@@ -604,72 +507,6 @@ mod tests {
             altback.screen(),
             pinion_core::ScreenKind::Alternate,
             "the Alternate screen kind survived the wire",
-        );
-    }
-
-    /// The live view (`offset 0`) overlays the IME preedit at the cursor (after
-    /// "hi", col 2); a scrolled history window drops it (the cursor — the compose
-    /// anchor — lives only in the live view, so `overlay_preedit` self-gates off).
-    #[test]
-    fn pane_view_scene_overlays_preedit_only_on_the_live_view() {
-        let cell_cluster = |scene: &Scene, col: u16, row: u16| {
-            pane_grid(scene)
-                .cells()
-                .cell(col, row)
-                .map(|c| c.cluster.to_string())
-        };
-        let contains_han = |scene: &Scene| {
-            let g = pane_grid(scene).cells();
-            (0..g.cols())
-                .any(|c| (0..g.rows()).any(|r| g.cell(c, r).is_some_and(|x| x.cluster == "한")))
-        };
-        // Live view: the preedit shows at the cursor; an empty preedit does not.
-        let mut em = Emulator::new(8, 2);
-        em.advance(b"hi");
-        let live = super::pane_view_scene(
-            "pane.test",
-            PaneViewSpec {
-                screen: em.screen(),
-                metric: CellMetric::DEFAULT,
-                font_size_px: 18,
-                offset_lines: 0,
-                preedit: "한",
-            },
-        );
-        assert_eq!(
-            cell_cluster(&live, 2, 0).as_deref(),
-            Some("한"),
-            "preedit at the cursor on the live view"
-        );
-        let bare = super::pane_view_scene(
-            "pane.test",
-            PaneViewSpec {
-                screen: em.screen(),
-                metric: CellMetric::DEFAULT,
-                font_size_px: 18,
-                offset_lines: 0,
-                preedit: "",
-            },
-        );
-        assert!(!contains_han(&bare), "no composition -> no overlay");
-        // Scrolled view: the preedit must appear NOWHERE (the half the test name
-        // promises). Fails if the overlay's cursor-visible self-gate regresses.
-        let mut sc = Emulator::new(4, 2);
-        sc.advance(b"a\r\nb\r\nc\r\nd\r\ne"); // 3 rows scroll into history
-        assert_eq!(sc.screen().scrollback_len(), 3);
-        let scrolled = super::pane_view_scene(
-            "pane.test",
-            PaneViewSpec {
-                screen: sc.screen(),
-                metric: CellMetric::DEFAULT,
-                font_size_px: 18,
-                offset_lines: 1,
-                preedit: "한",
-            },
-        );
-        assert!(
-            !contains_han(&scrolled),
-            "a scrolled history window shows no preedit"
         );
     }
 }

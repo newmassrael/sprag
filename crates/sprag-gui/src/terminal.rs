@@ -37,7 +37,7 @@ pub(crate) const MAX_PANES: usize = 8;
 ///   tag (the pane Container is `with_focusable`, so the shell's per-frame
 ///   [`Scene::collect_focusable_tags`](pinion_core::Scene::collect_focusable_tags)
 ///   picks it up — pinion R1020 §5.39), the paint-scene pane Container
-///   ([`sprag_host::pane_view_scene`] — the R1012
+///   ([`sprag_host::pane_view_scene_from_cells`] — the R1012
 ///   [`use_pane_viewport_size`](pinion_core::use_pane_viewport_size) rect target +
 ///   focus ring + click anchor), and the per-pane reflow Effect tag.
 /// * `scrollbar` (`sprag_gui.scrollbar.<i>`) — the scrollbar track paint tag + its

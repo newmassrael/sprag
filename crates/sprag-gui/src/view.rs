@@ -23,7 +23,6 @@ use pinion_widget_paint::dock::{
     dock_outer_zone_highlight, view_dock_panel_with_actions, view_dock_surface,
     view_floating_placeholder, view_window_controls,
 };
-use sprag_host::PaneViewSpec;
 
 /// Shared [`ThemeProvider`](pinion_core::ThemeProvider) cache key (the surface fill behind the grid).
 const THEME_TAG: &str = "app";
@@ -198,18 +197,17 @@ fn build_pane_scene(tv: &TerminalView, i: usize, theme: &Theme) -> Scene {
         .session()
         .with_screen(|screen| (screen.scrollback_len(), screen.rows()));
     let offset_lines = crate::scrollbar::offset_lines_from_top(scroll.offset_y(), scrollback_len);
-    let grid = tv.pane(i).session().with_screen(|screen| {
-        sprag_host::pane_view_scene(
-            pane_tag(i),
-            PaneViewSpec {
-                screen,
-                metric: tv.metric,
-                font_size_px: tv.font_size_px,
-                offset_lines,
-                preedit: &preedit,
-            },
-        )
-    });
+    // Topology B: the GUI is a CLIENT of the host's per-pane cell DATA query. The
+    // host owns the screen + scrollback projection (`pane_cells`); the IME preedit
+    // is a CLIENT-local overlay (an uncommitted composition never in the PTY); the
+    // node is assembled CLIENT-side (`pane_view_scene_from_cells`, the Screen-free
+    // seam). In-process now — the same three steps split along the wire boundary
+    // when the Workspace moves to the host process (increment 3). Behaviour is
+    // identical to the old all-in-one `pane_view_scene` (same pieces, same order).
+    let cells = sprag_host::pane_cells(tv.pane(i).session(), offset_lines);
+    let cells = sprag_grid::overlay_preedit(cells, &preedit);
+    let grid =
+        sprag_host::pane_view_scene_from_cells(pane_tag(i), cells, tv.metric, tv.font_size_px);
     let bar = crate::scrollbar::view_pane_scrollbar(i, &scroll, visible_rows, track_h, theme);
     crate::scrollbar::wrap_pane_with_bar(grid, bar)
 }
@@ -301,8 +299,9 @@ mod tests {
         let owner = Owner::new();
         let scene = owner.run(|| {
             let theme = use_theme(THEME_TAG).theme_animated();
-            // A stand-in grid (the real one is the host's pane_view_scene,
-            // tested in sprag-host) — compose only owns the root wrapping.
+            // A stand-in grid (the real one is the host's
+            // pane_view_scene_from_cells, tested in sprag-host) — compose only
+            // owns the root wrapping.
             let grid = Scene::Container(ContainerNode::new(Vec::new()).with_tag("grid_stub"));
             compose(grid, &theme)
         });

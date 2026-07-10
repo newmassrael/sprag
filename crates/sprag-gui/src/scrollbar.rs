@@ -103,8 +103,8 @@ pub(crate) fn reconcile_scroll(scroll: &ScrollState, scrollback_len: usize) {
 }
 
 /// Convert the authority's top-anchored `offset_y` (rows from the oldest line)
-/// into the projection's "rows up from the live bottom"
-/// ([`PaneViewSpec::offset_lines`](sprag_host::PaneViewSpec)): `scrollback_len -
+/// into the projection's "rows up from the live bottom" (the `offset_lines`
+/// argument to [`sprag_host::pane_cells`]): `scrollback_len -
 /// offset_y`. `offset_y == max_y == scrollback_len` (live) -> `0` (live bottom);
 /// `offset_y == 0` (oldest) -> `scrollback_len` (top of history). A boundary
 /// conversion computed fresh per frame, NOT a second stored offset. Pure /

@@ -5,10 +5,12 @@
 //! observation/interaction path; the north star (an AI reading/driving the
 //! terminal as *data*) is the headless `sprag-host` RPC path, which needs none of
 //! this. This binding is a faithful pixel projection of the *same* cell data the
-//! AI reads — it reuses the host's per-pane projection seam
-//! ([`sprag_host::pane_view_scene`]) and arranges the panes itself (the
-//! interactive [`split`] layout — reactive ratios the headless host has no use
-//! for) — and routes keystrokes through the *same* [`SpragPaneExternal`]
+//! AI reads — it consumes the host's per-pane cell DATA query
+//! ([`sprag_host::pane_cells`]) and assembles the node itself
+//! ([`sprag_host::pane_view_scene_from_cells`], the topology-B wire seam), then
+//! arranges the panes (the interactive [`split`] layout — reactive ratios the
+//! headless host has no use for) — and routes keystrokes through the *same*
+//! [`SpragPaneExternal`]
 //! `invoke("key", ...)` wire the AI drives (§2 #2).
 //!
 //! ## Multi-pane (R36): N tiled panes, one focused
@@ -23,7 +25,7 @@
 //! — one string so input / focus / measure / paint can never address different
 //! panes. Keyboard focusability is **scene-derived** (pinion R1020 §5.39): the
 //! pane's paint Container is marked `with_focusable(true)` in
-//! [`sprag_host::pane_view_scene`] and the shell collects the Tab order each frame
+//! [`sprag_host::pane_view_scene_from_cells`] and the shell collects the Tab order each frame
 //! via [`Scene::collect_focusable_tags`](pinion_core::Scene::collect_focusable_tags)
 //! — there is no binding-side `focusable_tags()` list. The model scene is `Container([pane0, ...panesN])`
 //! ([`WidgetCore::create_external`] is pane 0; [`WidgetCore::create_extra_externals`]
@@ -125,8 +127,8 @@
 //! - The cell is **measured once** at boot from the resolved monospace via
 //!   pinion R1003 [`measured_monospace_cell`](pinion_core::measured_monospace_cell)
 //!   (the shell seeds the provider before factories) — no private `FontContext`,
-//!   no double measurement. `pane_view_scene` pins that size on each node so the
-//!   painted advance equals `cell_w` (R1002).
+//!   no double measurement. `pane_view_scene_from_cells` pins that size on each
+//!   node so the painted advance equals `cell_w` (R1002).
 //!
 //! ## Winsize (§3): the window drives the size, resize reflows each PTY (R26, R36)
 //!
@@ -732,7 +734,7 @@ impl WidgetCore for TerminalViewer {
     // §5.39 removed `WidgetCore::focusable_tags()` and DERIVES the Tab order each
     // frame from the paint scene via `Scene::collect_focusable_tags` — the
     // `focusable`-marked, tagged nodes. Each pane declares itself a Tab stop where
-    // it is painted: `sprag_host::pane_view_scene` marks the pane Container
+    // it is painted: `sprag_host::pane_view_scene_from_cells` marks the pane Container
     // `with_focusable(true)` (one Tab stop per pane; its inner grid is not focused).
     // Focusing a pane gates [`Self::apply_key`] to it, the framework draws its focus
     // ring, and a click on its rect re-focuses it; `Ctrl+PageUp/Down` cycles between

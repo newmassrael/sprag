@@ -13,8 +13,14 @@ name = "sprag-gui"
 path = "src/main.rs"
 
 [dependencies]
-# The Screen -> Scene::TextGrid projection SSOT (text_grid_node) + scene tags.
+# The host's per-pane cell DATA query (pane_cells) + the Screen-free node
+# assembly (pane_view_scene_from_cells) + scene tags — the topology-B wire seam
+# the GUI consumes as a client (in-process for now).
 sprag-host = { workspace = true }
+# overlay_preedit: the CLIENT-local IME composition overlay on the host's cells
+# (an uncommitted preedit never in the PTY). The cell projection SSOT itself lives
+# host-side (pane_cells -> project_scrolled); this is the client's own half.
+sprag-grid = { workspace = true }
 # The PTY producer: Workspace::spawn_with_dirty wires the R23 on_dirty hook to
 # the RepaintSink, and the emulator screen is read each frame via with_screen.
 sprag-terminal = { workspace = true }

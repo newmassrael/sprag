@@ -18,8 +18,8 @@ fn preedit_key(pane: usize) -> String {
 /// Pane `pane`'s IME preedit (in-progress composition) string, an
 /// `Owner::cache`-backed [`Signal`] that [`route_composition`] writes on each
 /// composition event and `view` reads every frame to overlay at that pane's
-/// cursor (see [`sprag_host::pane_view_scene`] / `sprag_grid::overlay_preedit` for
-/// why a terminal renders the preedit itself). Empty = not composing;
+/// cursor (see [`sprag_grid::overlay_preedit`] for why a terminal renders the
+/// preedit itself — the CLIENT-side step over the host's cells). Empty = not composing;
 /// display-only (the preedit never reaches the PTY — only a `Commit` writes).
 /// Because `view` reads it every frame, a `set` flips the root owner dirty so the
 /// shell's R705.1 reactive bridge arms a redraw — the composition repaints live
