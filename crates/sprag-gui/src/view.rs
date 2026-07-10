@@ -196,7 +196,7 @@ fn build_pane_scene(tv: &TerminalView, i: usize, theme: &Theme) -> Scene {
     // offset math + scrollbar extent; visible rows for the bar). Convert the
     // (already-reconciled) top-anchored offset to the projection's "rows up from
     // the live bottom".
-    let dims = tv.host.pane_dims(i);
+    let dims = tv.host.pane_scroll_facts(i);
     let offset_lines =
         crate::scrollbar::offset_lines_from_top(scroll.offset_y(), dims.scrollback_len);
     // Topology B: the GUI is a CLIENT of the host's per-pane cell DATA query

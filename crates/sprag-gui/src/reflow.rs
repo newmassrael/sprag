@@ -95,7 +95,7 @@ fn install_pane_reflow(owner: &Owner, terminal: &Rc<TerminalView>, index: usize)
         };
         // Reflow only on a real change, so an unchanged frame issues no ioctl.
         // Both the PTY-size read and the resize go through the host client.
-        if terminal.host.pane_pty_size(index) != target {
+        if terminal.host.pane_grid_size(index) != target {
             terminal.host.resize(index, target.0, target.1);
         }
     });
@@ -142,7 +142,7 @@ mod tests {
         let terminal = owner.run(use_terminal);
         for i in 0..terminal.host.pane_count() {
             assert_eq!(
-                terminal.host.pane_pty_size(i),
+                terminal.host.pane_grid_size(i),
                 grid_dims((WINDOW_W, WINDOW_H), metric),
                 "pane {i} keeps its boot dims (the (0,0) eager run skipped)",
             );

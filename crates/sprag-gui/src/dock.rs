@@ -214,7 +214,7 @@ pub(crate) fn use_windows_topology() -> Rc<Signal<Vec<WindowSpec>>> {
 /// authoritative dims, NOT a window-side split calc.
 fn undock_window_spec(i: usize, position: Option<(i32, i32)>) -> WindowSpec {
     let tv = use_terminal();
-    let (cols, rows) = tv.host.pane_pty_size(i);
+    let (cols, rows) = tv.host.pane_grid_size(i);
     let (width, height) = crate::terminal::cell_px(tv.metric, cols, rows);
     let spec = WindowSpec::new(
         Cow::Owned(pane_window_id(i)),

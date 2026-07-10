@@ -268,6 +268,23 @@ pub(crate) fn use_terminal() -> Rc<TerminalView> {
     })
 }
 
+/// Seed the terminal cache (test-only) with a caller-controlled `workspace`, so
+/// [`use_terminal`] returns panes the test OWNS (e.g. deterministic `cat` panes)
+/// instead of spawning `$SHELL`. Must be called inside an [`Owner`] scope BEFORE the
+/// first `use_terminal()` — the [`Owner::cache`] slot at `SESSION_KEY` is then
+/// populated, so `use_terminal` returns this instead of running its spawn factory.
+/// This is the headless seam input-routing tests use to drive `apply_key` /
+/// `apply_composition` end-to-end and assert the bytes reach the intended pane's PTY.
+#[cfg(test)]
+pub(crate) fn seed_terminal(workspace: Workspace) {
+    let owner = Owner::current().expect("seed_terminal() requires an active Owner scope");
+    owner.cache(SESSION_KEY, || TerminalView {
+        host: LocalHost::new(workspace),
+        metric: CellMetric::DEFAULT,
+        font_size_px: FONT_SIZE_PX,
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

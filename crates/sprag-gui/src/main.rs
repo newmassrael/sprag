@@ -492,7 +492,7 @@ impl WidgetCore for TerminalViewer {
     fn reconcile_frame() {
         let terminal = use_terminal();
         for i in 0..terminal.host.pane_count() {
-            let scrollback_len = terminal.host.pane_dims(i).scrollback_len;
+            let scrollback_len = terminal.host.pane_scroll_facts(i).scrollback_len;
             scrollbar::reconcile_scroll(&scrollbar::use_pane_scroll(i), scrollback_len);
         }
     }

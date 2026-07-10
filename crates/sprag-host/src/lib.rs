@@ -146,7 +146,8 @@ pub fn pane_cells(session: &TerminalSession, offset_lines: usize) -> GridBuffer 
 }
 
 /// Assemble ONE pane's `Scene::Container` from an already-projected cell buffer
-/// — the **Screen-free** pane-node SSOT the two frontends share.
+/// — the **Screen-free** pane-node SSOT the display client assembles a pane node
+/// from (the in-process GUI today; the wire client at the transport step).
 ///
 /// The node is a tagged, **focus-stop** Container wrapping the pane's grid. The
 /// Container's only own layout is the pinion R1020 `focusable` flag
@@ -165,7 +166,8 @@ pub fn pane_cells(session: &TerminalSession, offset_lines: usize) -> GridBuffer 
 /// the click would NOT move focus (the live bug: clicking a pane kept typing in
 /// the previously-focused one) and is ambiguous across panes.
 ///
-/// **This is the seam the topology-B display client shares.** The in-process GUI
+/// **This is the seam the topology-B display client assembles the pane node from.**
+/// The in-process GUI
 /// reaches it by projecting its session's screen via [`pane_cells`] and overlaying
 /// its IME preedit ([`sprag_grid::overlay_preedit`]) first; the end-state wire
 /// client feeds cells it reconstructed off the host's served data model — both
@@ -354,15 +356,15 @@ mod tests {
         assert_eq!(snap.grid_rows[1].generation, 0);
     }
 
-    /// Extract the lone projected `TextGrid` from a [`pane_view_scene`] pane
-    /// Container (the pane wraps the grid in a tagged flex-share Container).
+    /// Extract the lone projected `TextGrid` from a [`pane_view_scene_from_cells`]
+    /// pane Container (the pane wraps the grid in a tagged flex-share Container).
     fn pane_grid(scene: &Scene) -> &TextGridNode {
         match scene {
             Scene::Container(c) => match c.children.first() {
                 Some(Scene::TextGrid(node)) => node,
                 other => unreachable!("a pane Container holds one TextGrid, got {other:?}"),
             },
-            other => unreachable!("pane_view_scene returns a Container, got {other:?}"),
+            other => unreachable!("pane_view_scene_from_cells returns a Container, got {other:?}"),
         }
     }
 

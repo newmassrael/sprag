@@ -52,7 +52,7 @@ fn page_delta(key: &str, page: i32) -> i32 {
 /// the row count; called from `apply_key` (outside any cache factory).
 fn scroll_view(pane: usize, key: &str) {
     let scroll = crate::scrollbar::use_pane_scroll(pane);
-    let rows = use_terminal().host.pane_dims(pane).visible_rows;
+    let rows = use_terminal().host.pane_scroll_facts(pane).visible_rows;
     let page = i32::from(rows).saturating_sub(1).max(1);
     scroll.scroll_by(0, page_delta(key, page));
 }
@@ -253,7 +253,11 @@ pub(crate) fn route_composition(focused: Option<&str>, event: &CompositionEvent)
         CompositionEvent::Commit(text) => {
             use_preedit(active).set(String::new());
             if !text.is_empty() {
-                use_terminal().host.send_text(active, text);
+                // The committed-text write. A PTY-write failure has nothing for an
+                // IME commit to fall through to (unlike a keystroke, which returns
+                // false to the shell), so the result is intentionally discarded —
+                // made explicit now that `send_text` is `#[must_use]`.
+                let _ = use_terminal().host.send_text(active, text);
             }
             true
         }
@@ -267,11 +271,10 @@ pub(crate) fn route_composition(focused: Option<&str>, event: &CompositionEvent)
 mod tests {
     use super::*;
     use crate::TerminalViewer;
-    use crate::host::LocalHost;
+    use crate::terminal::seed_terminal;
     use pinion_core::Scene;
     use pinion_core::WidgetCore;
-    use pinion_core::scene::{ContainerNode, ExternalNode};
-    use sprag_host::SpragPaneExternal;
+    use pinion_core::scene::ContainerNode;
     use sprag_terminal::{CommandBuilder, SessionHandle, Workspace};
     use std::thread::sleep;
     use std::time::{Duration, Instant};
@@ -299,35 +302,40 @@ mod tests {
         row0
     }
 
-    /// The CLIENT input path routes a key to ONLY the named pane: `LocalHost::send_key`
-    /// encodes it (the shared host SSOT) and writes it to that pane's PTY, and a
-    /// sibling pane receives nothing. Topology B: input is a client SEND, not a
-    /// mutation of the GUI's paint scene. (The former end-to-end scene-routing test;
-    /// `apply_key`'s focus gate is [`apply_key_gates_on_a_pane_focus`], the whole
-    /// keyboard->pane path is live-verified on :0.)
+    /// End-to-end multi-pane routing THROUGH `apply_key`: a focused keystroke reaches
+    /// ONLY the focused pane's PTY (route_key resolves the focus tag -> pane index ->
+    /// `host.send_key(active)`), and a sibling pane receives nothing. A seeded 2-pane
+    /// `cat` terminal makes the echo deterministic. This is the full public path
+    /// (apply_key -> route_key -> client send), restoring the pre-R110 net that R110's
+    /// direct `host.send_key` + negative-only gate tests had dropped (session review).
     #[test]
-    fn send_key_routes_to_the_named_pane_only() {
+    fn apply_key_routes_to_the_focused_pane_only() {
         let mut ws = Workspace::new((40, 6));
         let id0 = ws.spawn(cat(), "cat".to_owned(), 40, 6).unwrap();
         let id1 = ws.spawn(cat(), "cat".to_owned(), 40, 6).unwrap();
         let h0 = ws.pane(id0).unwrap().handle();
         let h1 = ws.pane(id1).unwrap().handle();
-        let host = LocalHost::new(ws);
-
-        // Send "hi" to pane 1 only, through the client input path.
-        for ch in ["h", "i"] {
-            assert!(
-                host.send_key(1, ch, sprag_input::Modifiers::default()),
-                "the key encoded and reached the PTY"
-            );
-        }
+        let owner = Owner::new();
+        owner.run(|| {
+            seed_terminal(ws); // use_terminal() now returns these two cat panes
+            let mut scene = Scene::Container(ContainerNode::new(Vec::new()));
+            // Focus pane 1: each key routes to pane 1's PTY only.
+            for ch in ["h", "i"] {
+                assert!(TerminalViewer::apply_key(
+                    &mut scene,
+                    Some(pane_tag(1)),
+                    ch,
+                    Modifiers::default()
+                ));
+            }
+        });
         assert!(
             wait_for_row0(&h1, "hi").contains("hi"),
-            "the named pane echoes the keys"
+            "the focused pane echoes the keys"
         );
         assert!(
             !h0.with_screen(|s| s.row_text(0)).contains("hi"),
-            "the sibling pane received nothing",
+            "the unfocused pane received nothing",
         );
     }
 
@@ -402,23 +410,32 @@ mod tests {
         });
     }
 
-    /// The IME-commit CLIENT path: `LocalHost::send_text` writes the literal committed
-    /// UTF-8 to the named pane's PTY (no key-encoding — the R31 commit seam), echoed
-    /// through the cooked-mode `cat`. `route_composition`'s Commit arm calls this for
-    /// a non-empty commit (after clearing the overlay).
+    /// End-to-end IME commit THROUGH `apply_composition`: a non-empty Commit on the
+    /// focused pane clears the overlay AND writes the literal UTF-8 to that pane's PTY
+    /// (route_composition's Commit arm -> `host.send_text`), echoed through the
+    /// cooked-mode `cat`. Uses a seeded `cat` terminal for a deterministic echo. This
+    /// restores the pre-R110 commit-write net that R110's direct `host.send_text`
+    /// (which bypassed route_composition's Commit arm) had dropped (session review).
     #[test]
-    fn send_text_writes_committed_text_to_the_named_pane() {
+    fn apply_composition_commit_writes_to_the_focused_pane() {
         let mut ws = Workspace::new((40, 6));
         let id = ws.spawn(cat(), "cat".to_owned(), 40, 6).unwrap();
         let handle = ws.pane(id).unwrap().handle();
-        let host = LocalHost::new(ws);
-        assert!(host.send_text(0, "한글"), "the commit text reached the PTY");
+        let owner = Owner::new();
+        owner.run(|| {
+            seed_terminal(ws); // use_terminal() now returns this cat pane
+            let mut scene = Scene::Container(ContainerNode::new(Vec::new()));
+            assert!(TerminalViewer::apply_composition(
+                &mut scene,
+                Some(pane_tag(0)),
+                &CompositionEvent::Commit("한글".to_owned())
+            ));
+            assert_eq!(use_preedit(0).get(), "", "the commit clears the overlay");
+        });
         assert!(
             wait_for_row0(&handle, "한글").contains("한글"),
-            "committed IME text echoes to the pane screen",
+            "the committed text reached the focused pane's PTY",
         );
-        // Empty text is a no-op success.
-        assert!(host.send_text(0, ""), "empty commit is a no-op success");
     }
 
     /// The R705.1 contract sprag relies on for live preedit: a composing `set` of
@@ -512,10 +529,9 @@ mod tests {
     fn ctrl_page_chord_cycles_focus_without_touching_the_pty() {
         let owner = Owner::new();
         owner.run(|| {
-            let handle = use_terminal().host.pane_handle(0);
-            let mut scene = Scene::External(
-                ExternalNode::new(Box::new(SpragPaneExternal::new(handle))).with_tag(pane_tag(0)),
-            );
+            // apply_key ignores the scene now (input is a client send), so a
+            // trivial scene suffices — these tests exercise chords, not the PTY.
+            let mut scene = Scene::Container(ContainerNode::new(Vec::new()));
             let ctrl = Modifiers {
                 ctrl: true,
                 ..Modifiers::default()
@@ -556,10 +572,9 @@ mod tests {
     fn ctrl_shift_enter_toggles_dock_without_touching_the_pty() {
         let owner = Owner::new();
         owner.run(|| {
-            let handle = use_terminal().host.pane_handle(0);
-            let mut scene = Scene::External(
-                ExternalNode::new(Box::new(SpragPaneExternal::new(handle))).with_tag(pane_tag(0)),
-            );
+            // apply_key ignores the scene now (input is a client send), so a
+            // trivial scene suffices — these tests exercise chords, not the PTY.
+            let mut scene = Scene::Container(ContainerNode::new(Vec::new()));
             let windows = crate::dock::use_windows_topology();
             assert_eq!(windows.get().len(), 1, "starts with the main window only");
             let ctrl_shift = Modifiers {
@@ -602,10 +617,9 @@ mod tests {
     fn dock_chord_auto_repeat_is_dropped_scroll_repeats() {
         let owner = Owner::new();
         owner.run(|| {
-            let handle = use_terminal().host.pane_handle(0);
-            let mut scene = Scene::External(
-                ExternalNode::new(Box::new(SpragPaneExternal::new(handle))).with_tag(pane_tag(0)),
-            );
+            // apply_key ignores the scene now (input is a client send), so a
+            // trivial scene suffices — these tests exercise chords, not the PTY.
+            let mut scene = Scene::Container(ContainerNode::new(Vec::new()));
             let windows = crate::dock::use_windows_topology();
             let ctrl_shift = Modifiers {
                 ctrl: true,
@@ -694,10 +708,9 @@ mod tests {
         owner.run(|| {
             // The model scene over the live boot pane 0 (same pane use_terminal
             // caches), so scroll_view reads the pane the routing addresses.
-            let handle = use_terminal().host.pane_handle(0);
-            let mut scene = Scene::External(
-                ExternalNode::new(Box::new(SpragPaneExternal::new(handle))).with_tag(pane_tag(0)),
-            );
+            // apply_key ignores the scene now (input is a client send), so a
+            // trivial scene suffices — these tests exercise chords, not the PTY.
+            let mut scene = Scene::Container(ContainerNode::new(Vec::new()));
             // Shift+PageUp is consumed as a scroll (true = handled, not the PTY).
             let shift = Modifiers {
                 shift: true,
