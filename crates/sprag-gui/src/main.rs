@@ -191,7 +191,6 @@
 mod a11y;
 mod diag;
 mod dock;
-mod host;
 mod input;
 mod reflow;
 mod rpc;
@@ -437,7 +436,7 @@ impl WidgetCore for TerminalViewer {
             focused,
         );
         // The paint scene is not read: input is a client SEND to the host (route_key
-        // -> LocalHost::send_key), not a mutation of the GUI's own scene (topology B).
+        // -> Host::send_key), not a mutation of the GUI's own scene (topology B).
         route_key(focused, key, modifiers, false)
     }
 

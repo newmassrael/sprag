@@ -3510,6 +3510,7 @@ dependencies = [
  "sprag-rpc",
  "sprag-terminal",
  "sprag-vt",
+ "tracing",
 ]
 
 [[package]]

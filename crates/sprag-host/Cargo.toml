@@ -29,5 +29,8 @@ pinion-rpc = { workspace = true }
 sprag-rpc = { workspace = true }
 # SIGINT/SIGTERM graceful shutdown in the server binary (cancel+join runs).
 signal-hook = { workspace = true }
+# Production logging facade (level/target control). The library emits events; the
+# frontend (GUI, or a future sprag-term subscriber) installs the subscriber.
+tracing = { workspace = true }
 # Building the read-only method-gate error response.
 serde_json = { workspace = true }

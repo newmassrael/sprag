@@ -25,9 +25,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 
 use signal_hook::consts::{SIGINT, SIGTERM};
-use sprag_host::{FrameIngress, HostState, RunRegistry, dispatch_frames, stdin_frames};
+use sprag_host::{FrameIngress, Host, HostState, RunRegistry, dispatch_frames, stdin_frames};
 use sprag_rpc::SocketOpts;
-use sprag_terminal::{CommandBuilder, Workspace};
+use sprag_terminal::CommandBuilder;
 
 /// The headless host endpoint policy: `$XDG_RUNTIME_DIR/sprag-host.sock`
 /// (override `SPRAG_HOST_RPC_SOCK`), enabled unless `SPRAG_HOST_RPC` is falsey.
@@ -39,13 +39,12 @@ const HOST_SOCKET: SocketOpts = SocketOpts {
 
 fn main() -> io::Result<()> {
     let (cols, rows, command, label) = parse_args();
-    let workspace = Arc::new(Mutex::new(Workspace::new((cols, rows))));
-    workspace
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .spawn(command, label, cols, rows)
+    // The one Workspace owner (shared with the GUI as a code component): boot the
+    // initial pane through it, then wrap it in HostState to serve the RPC surface.
+    let host = Host::new((cols, rows));
+    host.spawn(command, label, cols, rows, None)
         .map_err(io::Error::other)?;
-    let state = HostState::new(workspace);
+    let state = HostState::new(host);
 
     // One dispatch owner (this thread) serialises all dispatch; the always-on
     // socket and stdin are producers of RpcFrames into it, so a socket client

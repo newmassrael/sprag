@@ -59,7 +59,7 @@ fn pane_node(terminal: &TerminalView, i: usize, focused: Option<&str>) -> Access
     let text = terminal.host.pane_full_text(i);
     terminal_a11y_node(
         pane_tag(i),
-        terminal.host.pane_command_label(i),
+        &terminal.host.pane_command_label(i),
         text,
         focused == Some(pane_tag(i)),
     )

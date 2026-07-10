@@ -200,7 +200,7 @@ fn build_pane_scene(tv: &TerminalView, i: usize, theme: &Theme) -> Scene {
     let offset_lines =
         crate::scrollbar::offset_lines_from_top(scroll.offset_y(), dims.scrollback_len);
     // Topology B: the GUI is a CLIENT of the host's per-pane cell DATA query
-    // (`LocalHost::pane_cells`). The host owns the screen + scrollback projection;
+    // (`Host::pane_cells`). The host owns the screen + scrollback projection;
     // the IME preedit is a CLIENT-local overlay (an uncommitted composition never in
     // the PTY); the node is assembled CLIENT-side (`pane_view_scene_from_cells`, the
     // Screen-free seam). In-process now — the same steps ride the wire when the

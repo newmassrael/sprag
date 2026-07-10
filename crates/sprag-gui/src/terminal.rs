@@ -2,12 +2,12 @@
 //! derivation — everything about *creating and holding* the live pane, spawned
 //! at boot off the pure `view`. See the crate-root module docs for the seams.
 
-use crate::host::LocalHost;
 use crate::{WINDOW_H, WINDOW_W};
 use pinion_core::CellMetric;
 use pinion_core::reactive::Owner;
 use pinion_core::use_repaint_sink;
-use sprag_terminal::{CommandBuilder, Workspace};
+use sprag_host::Host;
+use sprag_terminal::CommandBuilder;
 use std::rc::Rc;
 
 /// Default glyph size (logical px) — the font-size SSOT the cell is measured
@@ -176,13 +176,14 @@ fn pane_command() -> (CommandBuilder, String) {
     }
 }
 
-/// The booted terminal MODEL the GUI holds each frame: the [`LocalHost`] it is a
-/// client of (the single [`Workspace`] owner — the GUI reaches panes ONLY through
-/// its typed protocol, topology B) plus the client's own rendering config — the
-/// once-measured cell metric and the glyph size it was measured at (read each
-/// frame by `view`, never re-measured; deliberately client-side, not host state).
+/// The booted terminal MODEL the GUI holds each frame: the [`Host`] it is a client
+/// of (the single `Workspace` owner, now in `sprag-host` and shared with the
+/// headless server — the GUI reaches panes ONLY through its typed protocol,
+/// topology B) plus the client's own rendering config — the once-measured cell
+/// metric and the glyph size it was measured at (read each frame by `view`, never
+/// re-measured; deliberately client-side, not host state).
 pub(crate) struct TerminalView {
-    pub(crate) host: LocalHost,
+    pub(crate) host: Host,
     pub(crate) metric: CellMetric,
     pub(crate) font_size_px: u32,
 }
@@ -246,29 +247,28 @@ pub(crate) fn use_terminal() -> Rc<TerminalView> {
         // computing each pane's share window-side would duplicate pinion's flex
         // resolution (the SSOT trap the per-pane `use_pane_viewport_size` avoids).
         let (cols, rows) = grid_dims((WINDOW_W, WINDOW_H), metric);
-        let mut workspace = Workspace::new((cols, rows));
+        let host = Host::new((cols, rows));
         for _ in 0..pane_count() {
             let sink = sink.clone();
             let (command, label) = pane_command();
-            workspace
-                .spawn_with_dirty(
-                    command,
-                    label,
-                    cols,
-                    rows,
-                    Some(Box::new(move || sink.request_repaint())),
-                )
-                .expect("spawn a sprag-gui pane");
+            host.spawn(
+                command,
+                label,
+                cols,
+                rows,
+                Some(Box::new(move || sink.request_repaint())),
+            )
+            .expect("spawn a sprag-gui pane");
         }
         TerminalView {
-            host: LocalHost::new(workspace),
+            host,
             metric,
             font_size_px,
         }
     })
 }
 
-/// Seed the terminal cache (test-only) with a caller-controlled `workspace`, so
+/// Seed the terminal cache (test-only) with a caller-controlled [`Host`], so
 /// [`use_terminal`] returns panes the test OWNS (e.g. deterministic `cat` panes)
 /// instead of spawning `$SHELL`. Must be called inside an [`Owner`] scope BEFORE the
 /// first `use_terminal()` — the [`Owner::cache`] slot at `SESSION_KEY` is then
@@ -276,10 +276,10 @@ pub(crate) fn use_terminal() -> Rc<TerminalView> {
 /// This is the headless seam input-routing tests use to drive `apply_key` /
 /// `apply_composition` end-to-end and assert the bytes reach the intended pane's PTY.
 #[cfg(test)]
-pub(crate) fn seed_terminal(workspace: Workspace) {
+pub(crate) fn seed_terminal(host: Host) {
     let owner = Owner::current().expect("seed_terminal() requires an active Owner scope");
     owner.cache(SESSION_KEY, || TerminalView {
-        host: LocalHost::new(workspace),
+        host,
         metric: CellMetric::DEFAULT,
         font_size_px: FONT_SIZE_PX,
     });

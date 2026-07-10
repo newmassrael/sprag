@@ -1,5 +1,5 @@
 //! Input routing: a focused keystroke / IME commit -> the FOCUSED pane's PTY
-//! through the host client (`LocalHost::send_key` / `send_text`), the focus-cycle
+//! through the host client (`Host::send_key` / `send_text`), the focus-cycle
 //! chord that moves between tiled panes, and the per-pane scrollback-view offset
 //! those keys snap.
 //! The [`TerminalViewer`](crate::TerminalViewer) `apply_key` / `apply_composition`
@@ -135,7 +135,7 @@ fn window_chord(key: &str, modifiers: Modifiers) -> Option<WindowChord> {
 /// (pinion R1071 / PINION-PR27 — a held `Ctrl+Shift+Enter` no longer dock-then-undocks),
 /// while scrollback + PTY keys repeat normally. Otherwise the key + W3C modifiers
 /// are SENT to the focused pane through the host client
-/// ([`LocalHost::send_key`](crate::host::LocalHost::send_key)), which encodes them
+/// ([`Host::send_key`](sprag_host::Host::send_key)), which encodes them
 /// to PTY bytes via the shared host SSOT ([`sprag_host::send_key`]) — the same
 /// key->PTY encoder the AI `scene/invoke` path uses (§2 #2; encoding is sprag's,
 /// R2.6). Topology B: the GUI's keyboard is a client SEND, not a mutation of its
@@ -214,7 +214,7 @@ fn to_input_mods(m: Modifiers) -> sprag_input::Modifiers {
 ///   pane's overlay — NOT written to the PTY.
 /// - [`Commit`](CompositionEvent::Commit): clear the overlay and write the text
 ///   **literally** to the focused pane through the host client
-///   ([`LocalHost::send_text`](crate::host::LocalHost::send_text)) — the same
+///   ([`Host::send_text`](sprag_host::Host::send_text)) — the same
 ///   text->PTY seam the AI peer drives, bypassing the key encoder. An empty Commit
 ///   is the cancel-shaped end (clearing is the whole job; no write).
 ///
@@ -275,7 +275,8 @@ mod tests {
     use pinion_core::Scene;
     use pinion_core::WidgetCore;
     use pinion_core::scene::ContainerNode;
-    use sprag_terminal::{CommandBuilder, SessionHandle, Workspace};
+    use sprag_host::Host;
+    use sprag_terminal::{CommandBuilder, SessionHandle};
     use std::thread::sleep;
     use std::time::{Duration, Instant};
 
@@ -310,14 +311,14 @@ mod tests {
     /// direct `host.send_key` + negative-only gate tests had dropped (session review).
     #[test]
     fn apply_key_routes_to_the_focused_pane_only() {
-        let mut ws = Workspace::new((40, 6));
-        let id0 = ws.spawn(cat(), "cat".to_owned(), 40, 6).unwrap();
-        let id1 = ws.spawn(cat(), "cat".to_owned(), 40, 6).unwrap();
-        let h0 = ws.pane(id0).unwrap().handle();
-        let h1 = ws.pane(id1).unwrap().handle();
+        let host = Host::new((40, 6));
+        host.spawn(cat(), "cat".to_owned(), 40, 6, None).unwrap();
+        host.spawn(cat(), "cat".to_owned(), 40, 6, None).unwrap();
+        let h0 = host.pane_handle(0);
+        let h1 = host.pane_handle(1);
         let owner = Owner::new();
         owner.run(|| {
-            seed_terminal(ws); // use_terminal() now returns these two cat panes
+            seed_terminal(host); // use_terminal() now returns these two cat panes
             let mut scene = Scene::Container(ContainerNode::new(Vec::new()));
             // Focus pane 1: each key routes to pane 1's PTY only.
             for ch in ["h", "i"] {
@@ -418,12 +419,12 @@ mod tests {
     /// (which bypassed route_composition's Commit arm) had dropped (session review).
     #[test]
     fn apply_composition_commit_writes_to_the_focused_pane() {
-        let mut ws = Workspace::new((40, 6));
-        let id = ws.spawn(cat(), "cat".to_owned(), 40, 6).unwrap();
-        let handle = ws.pane(id).unwrap().handle();
+        let host = Host::new((40, 6));
+        host.spawn(cat(), "cat".to_owned(), 40, 6, None).unwrap();
+        let handle = host.pane_handle(0);
         let owner = Owner::new();
         owner.run(|| {
-            seed_terminal(ws); // use_terminal() now returns this cat pane
+            seed_terminal(host); // use_terminal() now returns this cat pane
             let mut scene = Scene::Container(ContainerNode::new(Vec::new()));
             assert!(TerminalViewer::apply_composition(
                 &mut scene,

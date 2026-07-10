@@ -45,12 +45,14 @@
 //! rect via `pinion_runtime::compute_layout`.
 
 mod external;
+pub mod host;
 pub mod pane;
 pub mod plugins;
 pub mod rpc;
 pub mod runs;
 pub mod workspace;
 
+pub use host::{Host, PaneScrollFacts};
 pub use pane::{SpragPaneExternal, send_key, send_text};
 pub use plugins::PluginsExternal;
 pub use rpc::{

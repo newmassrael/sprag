@@ -34,35 +34,37 @@ use pinion_rpc::{
 };
 use sprag_terminal::Workspace;
 
+use crate::host::Host;
 use crate::runs::RunRegistry;
 
-/// The long-lived host state threaded through the serve loop: the shared pane
-/// workspace, the background plugin-run registry, and pinion's per-session
-/// dispatch ledgers. Bundled so the per-request handler signature stays stable
-/// as future control surfaces are added.
+/// The long-lived host state threaded through the serve loop: the booted [`Host`]
+/// (the single [`Workspace`] owner), the background plugin-run registry, and
+/// pinion's per-session dispatch ledgers. Bundled so the per-request handler
+/// signature stays stable as future control surfaces are added.
 pub struct HostState {
-    workspace: Arc<Mutex<Workspace>>,
+    host: Host,
     runs: Arc<Mutex<RunRegistry>>,
     previews: PreviewLedger,
     revision: SceneRevision,
 }
 
 impl HostState {
-    /// Build host state over a shared workspace, with a fresh run registry.
+    /// Build host state over a booted [`Host`], with a fresh run registry.
     #[must_use]
-    pub fn new(workspace: Arc<Mutex<Workspace>>) -> Self {
+    pub fn new(host: Host) -> Self {
         Self {
-            workspace,
+            host,
             runs: Arc::new(Mutex::new(RunRegistry::default())),
             previews: PreviewLedger::default(),
             revision: SceneRevision::default(),
         }
     }
 
-    /// The shared pane workspace.
+    /// The shared pane workspace (the [`Host`]'s pool), for the scene-as-data
+    /// assembly and the control / plugin externals.
     #[must_use]
     pub fn workspace(&self) -> &Arc<Mutex<Workspace>> {
-        &self.workspace
+        self.host.workspace()
     }
 
     /// The shared background plugin-run registry.
@@ -88,7 +90,7 @@ pub const SUPPORTED_METHODS: &[&str] = &["scene/snapshot", "scene/query", "scene
 /// malformed input.
 #[must_use]
 pub fn handle_request(state: &HostState, request_json: &str) -> Option<String> {
-    let mut scene = crate::workspace_scene(&state.workspace, &state.runs);
+    let mut scene = crate::workspace_scene(state.workspace(), &state.runs);
     let mut ctx = DispatchContext::new(&mut scene, &state.previews, &state.revision);
     match parse_request(request_json) {
         Ok(request) if SUPPORTED_METHODS.contains(&request.method.as_str()) => {
@@ -205,11 +207,10 @@ mod tests {
 
     /// Host state with one initial pane running `script`.
     fn host_with(script: &str, cols: u16, rows: u16) -> HostState {
-        let workspace = Arc::new(Mutex::new(Workspace::new((cols, rows))));
-        lock(&workspace)
-            .spawn(sh(script), "sh".to_string(), cols, rows)
+        let host = Host::new((cols, rows));
+        host.spawn(sh(script), "sh".to_string(), cols, rows, None)
             .expect("spawn pane");
-        HostState::new(workspace)
+        HostState::new(host)
     }
 
     /// One request through the dispatch path (no serve loop / shutdown join), so
