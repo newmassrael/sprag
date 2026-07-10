@@ -497,6 +497,116 @@ mod tests {
         assert_eq!(node.layout.size.height, SizeValue::Percent(100));
     }
 
+    /// The topology-B wire fidelity guarantee (PINION-PR49 / R106): the
+    /// paint-authoritative [`GridBuffer`] survives a JSON round-trip byte-for-byte,
+    /// so a wire display client reconstructs the EXACT buffer the host projected —
+    /// every colour (indexed / truecolor / default), attribute, wide-cluster
+    /// head+trailer split, cursor, screen kind, and per-row damage generation. This
+    /// is the load-bearing assumption of the whole GUI-as-client-of-host arc: if
+    /// serde dropped a field, the human (GUI) path would render differently from the
+    /// host's served data and the "read-data-not-pixels" invariant would break
+    /// SILENTLY in the GUI. It fails HERE — in the crate that owns the wire seam —
+    /// instead. Proven on REAL projected production data (not a synthetic buffer),
+    /// so it also guards `sprag_grid::project` against emitting a non-round-trippable
+    /// cell.
+    #[test]
+    fn wire_round_trip_preserves_the_pane_cell_buffer() {
+        use sprag_vt::{Emulator, VtPort};
+        // A rich MAIN screen written at the top-left: bold indexed-red, truecolor,
+        // reverse, a wide (CJK) cluster (head+trailer). Writing row 0 also stamps it
+        // with a nonzero damage generation. Everything a real terminal frame carries.
+        let mut em = Emulator::new(12, 2);
+        em.advance(b"\x1b[1;31mred\x1b[0m "); // bold indexed-red "red"
+        em.advance(b"\x1b[38;2;10;20;30mR\x1b[0m "); // truecolor "R"
+        em.advance(b"\x1b[7mV\x1b[0m"); // reverse "V"
+        em.advance("世".as_bytes()); // a wide cluster (head + trailer)
+        let buf = sprag_grid::project_scrolled(em.screen(), 0);
+
+        // The wire: serialize -> deserialize the paint-authoritative buffer.
+        let json = serde_json::to_string(&buf).expect("GridBuffer serializes (PR-49)");
+        let back: GridBuffer = serde_json::from_str(&json).expect("GridBuffer round-trips (PR-49)");
+
+        // The whole buffer is byte-identical — the strongest fidelity claim
+        // (GridBuffer: Eq covers cells + cursor + screen + row generations).
+        assert_eq!(
+            buf, back,
+            "serde round-trip is lossless for the paint buffer"
+        );
+
+        // Position-independent spot-checks so a dropped field type names itself (not
+        // just "Eq failed"): search the round-tripped buffer for a cell of each kind.
+        let find = |pred: &dyn Fn(&pinion_core::TermCell) -> bool| {
+            (0..back.cols())
+                .flat_map(|c| (0..back.rows()).map(move |r| (c, r)))
+                .find_map(|(c, r)| back.cell(c, r).filter(|x| pred(x)))
+        };
+        // bold + indexed fg (the "red").
+        let red = find(&|x| x.fg == pinion_core::TermColor::Indexed(1))
+            .expect("an indexed-fg cell survived");
+        assert!(
+            red.attrs.bold,
+            "bold attr survived alongside the indexed fg"
+        );
+        // truecolor fg (the "R").
+        assert!(
+            find(&|x| matches!(x.fg, pinion_core::TermColor::Rgb(_))).is_some(),
+            "a truecolor (rgb) fg survived",
+        );
+        // reverse attr (the "V").
+        assert!(
+            find(&|x| x.attrs.reverse).is_some(),
+            "the reverse attr survived",
+        );
+        // the wide cluster: head carries the cluster + Wide, its trailer is Trailer.
+        let (wide_col, wide_row) = (0..back.cols())
+            .flat_map(|c| (0..back.rows()).map(move |r| (c, r)))
+            .find(|&(c, r)| {
+                back.cell(c, r)
+                    .is_some_and(|x| x.width == pinion_core::CellWidth::Wide)
+            })
+            .expect("the wide cluster survived the round-trip");
+        assert_eq!(back.cell(wide_col, wide_row).unwrap().cluster, "世");
+        assert_eq!(
+            back.cell(wide_col + 1, wide_row).unwrap().width,
+            pinion_core::CellWidth::Trailer,
+        );
+        // cursor (position / shape / visibility) and a nonzero damage generation.
+        assert_eq!(back.cursor(), buf.cursor(), "cursor survived");
+        assert!(back.cursor().visible, "the live cursor is visible");
+        assert!(
+            back.row_generation(0).is_some_and(|g| g > 0),
+            "per-row damage generation survived",
+        );
+
+        // And the CLIENT node assembled from the round-tripped buffer carries the
+        // round-tripped cells — a wire client paints byte-identically to the host's
+        // projection (the buffers are Eq, so the deterministic assembly matches).
+        let node_wire =
+            super::pane_view_scene_from_cells("sprag_gui.pane.0", back, CellMetric::DEFAULT, 18);
+        let node_direct =
+            super::pane_view_scene_from_cells("sprag_gui.pane.0", buf, CellMetric::DEFAULT, 18);
+        assert_eq!(
+            pane_grid(&node_wire).cells(),
+            pane_grid(&node_direct).cells(),
+            "the client node built off the wire matches the direct projection",
+        );
+
+        // The screen-kind field round-trips as Alternate too (not just the Main
+        // default above): a fullscreen app's alt screen must reach the client.
+        let mut alt = Emulator::new(4, 2);
+        alt.advance(b"\x1b[?1049hA");
+        let altbuf = sprag_grid::project(alt.screen());
+        assert_eq!(altbuf.screen(), pinion_core::ScreenKind::Alternate);
+        let altback: GridBuffer =
+            serde_json::from_str(&serde_json::to_string(&altbuf).unwrap()).unwrap();
+        assert_eq!(altback, altbuf, "alt-screen buffer round-trips");
+        assert_eq!(
+            altback.screen(),
+            pinion_core::ScreenKind::Alternate,
+            "the Alternate screen kind survived the wire",
+        );
+    }
+
     /// The live view (`offset 0`) overlays the IME preedit at the cursor (after
     /// "hi", col 2); a scrolled history window drops it (the cursor — the compose
     /// anchor — lives only in the live view, so `overlay_preedit` self-gates off).
