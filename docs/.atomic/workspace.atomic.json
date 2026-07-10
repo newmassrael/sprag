@@ -719,6 +719,40 @@
         "sprag-host gained a tracing dep (library emits events; the GUI installs the subscriber, sprag-term still installs none -- the known observability follow-up). Host::with_pane is the single lock+lookup; when a close path lands it becomes Option-returning (flagged in-code)."
       ]
     },
+    "R113": {
+      "decision_summary": "Round 113: doc-lint cleanup -- full-workspace cargo doc -D warnings is now clean, closing the pre-existing debt R112 flagged. rustdoc under -D warnings aborts at the FIRST failing crate in dependency order, so the R108/R111 doc-clean claims had only ever exercised the top crates (sprag-gui/sprag-host, reached first); fixing each crate revealed the next. Fixed 5 pre-existing doc-lint errors across 4 untouched crates, all pure doc-comment edits (no code, no API, no signatures): sprag-plugin dialogue.rs private PaneGuard link + driver.rs redundant Cost target; sprag-rpc lib.rs redundant UnixSocketTransport target; sprag-terminal session.rs private RAW_CAPTURE_CAP link; sprag-vt port.rs a hyphenated sprag-grid crate name written as a link + a private Self::reflowed link. Private-item and hyphenated-crate references were demoted to plain code spans; redundant explicit link targets were removed (rustdoc's own suggested fix). No behaviour change.",
+      "changes_bullets": [
+        "sprag-plugin: dialogue.rs [`PaneGuard`] -> `PaneGuard` (public module doc linked a private item); driver.rs [`Cost`](crate::plugin::Cost) -> [`Cost`] (redundant explicit target -- the label already resolves).",
+        "sprag-rpc: lib.rs [`UnixSocketTransport`](pinion_rpc_transport::UnixSocketTransport) -> [`UnixSocketTransport`] (redundant explicit target).",
+        "sprag-terminal: session.rs [`RAW_CAPTURE_CAP`] -> `RAW_CAPTURE_CAP` (pub field doc linked a private const). sprag-vt: port.rs [`sprag-grid`] -> `sprag-grid` (a hyphenated crate name is not a resolvable item) and [`Self::reflowed`] -> `Self::reflowed` (pub method doc linked a private method)."
+      ],
+      "verification_bullets": [
+        "RUSTDOCFLAGS=\"-D warnings\" cargo doc --workspace --no-deps now exits 0 (fully clean); was failing on sprag-plugin, then sprag-rpc, then sprag-terminal, then sprag-vt -- each error masked behind the prior crate's abort, revealed one at a time as each was fixed.",
+        "Pure doc-comment edits: no code, no public API, no signature change. clippy --workspace --all-targets clean; rustfmt clean; the pre-commit hook (validate-workspace + rustfmt + clippy) passed.",
+        "The R108/R111 handoffs' cargo doc -D warnings clean claims were only ever true for the crates reached first (sprag-gui/sprag-host); this round makes the whole-workspace invocation actually clean, so the claim is now honest end-to-end."
+      ],
+      "carry_forward_bullets": [
+        "Doc debt CLOSED: RUSTDOCFLAGS=\"-D warnings\" cargo doc --workspace --no-deps is clean (R113). Use the full --workspace --no-deps form in the validation gate so a per-crate pass never again masks a downstream crate's doc errors.",
+        "Lesson: rustdoc -D warnings ABORTS at the first failing crate in dependency order, so a doc-clean claim from a run that stopped early is NOT whole-workspace clean -- always verify with the full --workspace --no-deps run.",
+        "Increment 3 next = round 4 (WIRE transport); unchanged by R113 (doc-only). Confirm before starting. R112 + R113 are both COMMITTED LOCAL, NOT PUSHED."
+      ],
+      "publishable_decision_summary": "Round 113: doc-lint cleanup -- full-workspace cargo doc -D warnings is now clean, closing the pre-existing debt R112 flagged. rustdoc under -D warnings aborts at the FIRST failing crate in dependency order, so the R108/R111 doc-clean claims had only ever exercised the top crates (sprag-gui/sprag-host, reached first); fixing each crate revealed the next. Fixed 5 pre-existing doc-lint errors across 4 untouched crates, all pure doc-comment edits (no code, no API, no signatures): sprag-plugin dialogue.rs private PaneGuard link + driver.rs redundant Cost target; sprag-rpc lib.rs redundant UnixSocketTransport target; sprag-terminal session.rs private RAW_CAPTURE_CAP link; sprag-vt port.rs a hyphenated sprag-grid crate name written as a link + a private Self::reflowed link. Private-item and hyphenated-crate references were demoted to plain code spans; redundant explicit link targets were removed (rustdoc's own suggested fix). No behaviour change.",
+      "publishable_changes_bullets": [
+        "sprag-plugin: dialogue.rs [`PaneGuard`] -> `PaneGuard` (public module doc linked a private item); driver.rs [`Cost`](crate::plugin::Cost) -> [`Cost`] (redundant explicit target -- the label already resolves).",
+        "sprag-rpc: lib.rs [`UnixSocketTransport`](pinion_rpc_transport::UnixSocketTransport) -> [`UnixSocketTransport`] (redundant explicit target).",
+        "sprag-terminal: session.rs [`RAW_CAPTURE_CAP`] -> `RAW_CAPTURE_CAP` (pub field doc linked a private const). sprag-vt: port.rs [`sprag-grid`] -> `sprag-grid` (a hyphenated crate name is not a resolvable item) and [`Self::reflowed`] -> `Self::reflowed` (pub method doc linked a private method)."
+      ],
+      "publishable_verification_bullets": [
+        "RUSTDOCFLAGS=\"-D warnings\" cargo doc --workspace --no-deps now exits 0 (fully clean); was failing on sprag-plugin, then sprag-rpc, then sprag-terminal, then sprag-vt -- each error masked behind the prior crate's abort, revealed one at a time as each was fixed.",
+        "Pure doc-comment edits: no code, no public API, no signature change. clippy --workspace --all-targets clean; rustfmt clean; the pre-commit hook (validate-workspace + rustfmt + clippy) passed.",
+        "The R108/R111 handoffs' cargo doc -D warnings clean claims were only ever true for the crates reached first (sprag-gui/sprag-host); this round makes the whole-workspace invocation actually clean, so the claim is now honest end-to-end."
+      ],
+      "publishable_carry_forward_bullets": [
+        "Doc debt CLOSED: RUSTDOCFLAGS=\"-D warnings\" cargo doc --workspace --no-deps is clean (R113). Use the full --workspace --no-deps form in the validation gate so a per-crate pass never again masks a downstream crate's doc errors.",
+        "Lesson: rustdoc -D warnings ABORTS at the first failing crate in dependency order, so a doc-clean claim from a run that stopped early is NOT whole-workspace clean -- always verify with the full --workspace --no-deps run.",
+        "Increment 3 next = round 4 (WIRE transport); unchanged by R113 (doc-only). Confirm before starting. R112 + R113 are both COMMITTED LOCAL, NOT PUSHED."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
