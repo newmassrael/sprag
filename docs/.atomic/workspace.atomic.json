@@ -421,6 +421,48 @@
         "The host RPC data path (pane_container, input External embedded) stays DISTINCT from the client's painted node (pane_view_scene_from_cells) -- correct under B (server-served vs client-painted roles); both share the grid_node leaf + the sprag_grid projection."
       ]
     },
+    "R106": {
+      "decision_summary": "Round 106: pin-bump all 8 pinion-* crates 24409c46 (R1263) -> 950f73ef (R1266) to consume PINION-PR49 (GridBuffer serde), unblocking increment 2 (the wire data contract) of the GUI-as-client-of-host arc. pinion R1266 derived Serialize/Deserialize on GridBuffer + its 7 cell/cursor types (TermCell, TermColor, CellAttrs, CellWidth, GridCursor, CursorShape, ScreenKind; style::Color already had it), with a length-validating GridBuffer deserialize (try_from rejects inconsistent cells/gens dims) + 2 pinion round-trip tests -- exactly proposal (a) from the PR doc. pinion's own SCE pin at 950f73ef is unchanged 3078f8bf, matching sprag's, so the single Engine<StatePolicy> instance is preserved and NO SCE/vello bump is needed (8 pinion-* revs only). This is an ENABLING round: the serde APIs the client needs are now available, but there is NO sprag consumer yet -- serving per-pane GridBuffer over a workspace-level query and deserializing it client-side into pane_view_scene_from_cells (the R105 Screen-free seam) is increment 2's actual coding work, in the next round(s). sprag code change 0; behavior-preserving.",
+      "changes_bullets": [
+        "Cargo.toml: bumped all 8 pinion-* crates (core, a11y, shell, runtime, widget-paint, forge, rpc, rpc-transport) 24409c46 -> 950f73ef to consume PINION-PR49 (GridBuffer + 7 cell/cursor types now derive serde). Cargo.lock re-resolved.",
+        "SCE pin unchanged (3078f8bf): pinion@950f73ef's own SCE pin matches sprag's, so the single shared Engine<StatePolicy> is preserved -- no SCE/vello bump (pinion-* revs only, per the bump-dogfood workflow).",
+        "No sprag source change: R106 is the enabling pin bump; the GridBuffer wire-serving query + client-side deserialize into pane_view_scene_from_cells (R105 seam) is increment 2, next round(s)."
+      ],
+      "verification_bullets": [
+        "Verified PR-49 landed at 950f73ef (R1266) by source read: all 8 types carry serde::Serialize/Deserialize in pinion-core/src/term_grid.rs; commit adds a length-validating GridBuffer deserialize + 2 round-trip tests.",
+        "cargo build -j4 -p sprag-gui -p sprag-host clean at the new pin (pinion refetched + lock re-resolved); cargo test 71 (sprag-gui) + 39 (sprag-host) pass / 0 failed; clippy --workspace --all-targets clean.",
+        "SCE-match check: pinion@950f73ef Cargo.toml SCE rev == sprag Cargo.toml SCE rev == 3078f8bf -> one Engine instance preserved."
+      ],
+      "impact_refs": [
+        "2",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "PINION-PR49 DELIVERED (R1266/950f73ef) + pin-bumped (R106); increment 2 UNBLOCKED. GridBuffer + TermCell/TermColor/CellAttrs/CellWidth/GridCursor/CursorShape/ScreenKind now round-trip via serde_json.",
+        "Increment 2 (next): sprag-host serves per-pane GridBuffer via a workspace-level data query (JSON); sprag-gui deserializes + feeds sprag_host::pane_view_scene_from_cells (R105 seam) to rebuild the byte-identical node. Do it IN-PROCESS first to A/B-verify paint fidelity vs today's direct pane_view_scene, then increment 3 (Workspace-ownership flip, GUI stops spawning PTYs).",
+        "Pin now 950f73ef (R1266); was 24409c46 (R1263). SCE 3078f8bf unchanged. 8 pinion-* crates (pinion-rpc-transport was the 8th, added R100/PR-47 -- memory that says '7 pinion-*' predates it)."
+      ],
+      "publishable_decision_summary": "Round 106: pin-bump all 8 pinion-* crates 24409c46 (R1263) -> 950f73ef (R1266) to consume PINION-PR49 (GridBuffer serde), unblocking increment 2 (the wire data contract) of the GUI-as-client-of-host arc. pinion R1266 derived Serialize/Deserialize on GridBuffer + its 7 cell/cursor types (TermCell, TermColor, CellAttrs, CellWidth, GridCursor, CursorShape, ScreenKind; style::Color already had it), with a length-validating GridBuffer deserialize (try_from rejects inconsistent cells/gens dims) + 2 pinion round-trip tests -- exactly proposal (a) from the PR doc. pinion's own SCE pin at 950f73ef is unchanged 3078f8bf, matching sprag's, so the single Engine<StatePolicy> instance is preserved and NO SCE/vello bump is needed (8 pinion-* revs only). This is an ENABLING round: the serde APIs the client needs are now available, but there is NO sprag consumer yet -- serving per-pane GridBuffer over a workspace-level query and deserializing it client-side into pane_view_scene_from_cells (the R105 Screen-free seam) is increment 2's actual coding work, in the next round(s). sprag code change 0; behavior-preserving.",
+      "publishable_changes_bullets": [
+        "Cargo.toml: bumped all 8 pinion-* crates (core, a11y, shell, runtime, widget-paint, forge, rpc, rpc-transport) 24409c46 -> 950f73ef to consume PINION-PR49 (GridBuffer + 7 cell/cursor types now derive serde). Cargo.lock re-resolved.",
+        "SCE pin unchanged (3078f8bf): pinion@950f73ef's own SCE pin matches sprag's, so the single shared Engine<StatePolicy> is preserved -- no SCE/vello bump (pinion-* revs only, per the bump-dogfood workflow).",
+        "No sprag source change: R106 is the enabling pin bump; the GridBuffer wire-serving query + client-side deserialize into pane_view_scene_from_cells (R105 seam) is increment 2, next round(s)."
+      ],
+      "publishable_verification_bullets": [
+        "Verified PR-49 landed at 950f73ef (R1266) by source read: all 8 types carry serde::Serialize/Deserialize in pinion-core/src/term_grid.rs; commit adds a length-validating GridBuffer deserialize + 2 round-trip tests.",
+        "cargo build -j4 -p sprag-gui -p sprag-host clean at the new pin (pinion refetched + lock re-resolved); cargo test 71 (sprag-gui) + 39 (sprag-host) pass / 0 failed; clippy --workspace --all-targets clean.",
+        "SCE-match check: pinion@950f73ef Cargo.toml SCE rev == sprag Cargo.toml SCE rev == 3078f8bf -> one Engine instance preserved."
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "PINION-PR49 DELIVERED (R1266/950f73ef) + pin-bumped (R106); increment 2 UNBLOCKED. GridBuffer + TermCell/TermColor/CellAttrs/CellWidth/GridCursor/CursorShape/ScreenKind now round-trip via serde_json.",
+        "Increment 2 (next): sprag-host serves per-pane GridBuffer via a workspace-level data query (JSON); sprag-gui deserializes + feeds sprag_host::pane_view_scene_from_cells (R105 seam) to rebuild the byte-identical node. Do it IN-PROCESS first to A/B-verify paint fidelity vs today's direct pane_view_scene, then increment 3 (Workspace-ownership flip, GUI stops spawning PTYs).",
+        "Pin now 950f73ef (R1266); was 24409c46 (R1263). SCE 3078f8bf unchanged. 8 pinion-* crates (pinion-rpc-transport was the 8th, added R100/PR-47 -- memory that says '7 pinion-*' predates it)."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
