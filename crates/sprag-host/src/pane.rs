@@ -47,6 +47,35 @@ const CURSOR_KEYS_SLOT: &str = "application_cursor_keys";
 /// reads, so an external peer and a plugin see one notion of the screen.
 const FULL_TEXT_SLOT: &str = "full_text";
 
+/// Encode a W3C `key` + `mods` to PTY bytes (the sprag-owned R2.6 encoder,
+/// [`sprag_input::encode`]) and write them to `session`. `true` on success;
+/// `false` if the key is unencodable or the write failed.
+///
+/// This is the key->PTY SSOT shared by the RPC input surface
+/// ([`SpragPaneExternal`]'s `key` action, which parses the JSON/scene wire) and an
+/// in-process display client (`sprag-gui`'s `LocalHost`, which calls this directly
+/// with typed args) — so the human keyboard path and the AI `scene/invoke` path
+/// encode IDENTICALLY.
+#[must_use]
+pub fn send_key(session: &SessionHandle, key: &str, mods: Modifiers) -> bool {
+    match sprag_input::encode(key, mods, session.input_modes()) {
+        Some(bytes) => session.write(&bytes).is_ok(),
+        None => false,
+    }
+}
+
+/// Write literal UTF-8 `text` to `session` (no key-encoding) — the IME-commit /
+/// paste seam. Empty text is a no-op success. `true` on success; `false` on a
+/// write failure. The text->PTY SSOT shared by [`SpragPaneExternal`]'s `text`
+/// action and the in-process client.
+#[must_use]
+pub fn send_text(session: &SessionHandle, text: &str) -> bool {
+    if text.is_empty() {
+        return true;
+    }
+    session.write(text.as_bytes()).is_ok()
+}
+
 /// The pane engine `External`: a thin, scene-stateless forwarder onto the
 /// live [`SessionHandle`]. Input arrives via `scene/invoke` and is encoded
 /// to PTY bytes by the sprag-owned encoder (R2.6); the producer's reader
@@ -71,12 +100,11 @@ impl SpragPaneExternal {
         let Some((key, mods)) = parse_key_args(args)? else {
             return Ok(IntrospectValue::Null); // suppressed key-up edge
         };
-        let bytes = sprag_input::encode(&key, mods, self.session.input_modes())
-            .ok_or(InvokeError::Rejected)?;
-        self.session
-            .write(&bytes)
-            .map_err(|_| InvokeError::Rejected)?;
-        Ok(IntrospectValue::Null)
+        if send_key(&self.session, &key, mods) {
+            Ok(IntrospectValue::Null)
+        } else {
+            Err(InvokeError::Rejected)
+        }
     }
 
     /// Write a `text` action's literal UTF-8 to the PTY — **not** key-encoded.
@@ -87,12 +115,11 @@ impl SpragPaneExternal {
     /// [`InvokeError::Rejected`].
     fn inject_text(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let text = parse_text_args(args)?;
-        if !text.is_empty() {
-            self.session
-                .write(text.as_bytes())
-                .map_err(|_| InvokeError::Rejected)?;
+        if send_text(&self.session, &text) {
+            Ok(IntrospectValue::Null)
+        } else {
+            Err(InvokeError::Rejected)
         }
-        Ok(IntrospectValue::Null)
     }
 }
 

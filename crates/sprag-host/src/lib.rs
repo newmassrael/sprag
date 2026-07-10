@@ -51,7 +51,7 @@ pub mod rpc;
 pub mod runs;
 pub mod workspace;
 
-pub use pane::SpragPaneExternal;
+pub use pane::{SpragPaneExternal, send_key, send_text};
 pub use plugins::PluginsExternal;
 pub use rpc::{
     FrameIngress, HostState, SUPPORTED_METHODS, dispatch_frames, handle_request, stdin_frames,

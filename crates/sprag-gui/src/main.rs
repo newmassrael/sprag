@@ -423,7 +423,7 @@ impl WidgetCore for TerminalViewer {
     /// single-activation caller (a synthesised key is never an OS auto-repeat). The
     /// live shell drives the repeat-aware sibling [`Self::apply_key_repeat`] instead.
     fn apply_key(
-        scene: &mut Scene,
+        _scene: &mut Scene,
         focused: Option<&str>,
         key: &str,
         modifiers: Modifiers,
@@ -436,7 +436,9 @@ impl WidgetCore for TerminalViewer {
             false,
             focused,
         );
-        route_key(scene, focused, key, modifiers, false)
+        // The paint scene is not read: input is a client SEND to the host (route_key
+        // -> LocalHost::send_key), not a mutation of the GUI's own scene (topology B).
+        route_key(focused, key, modifiers, false)
     }
 
     /// Repeat-aware key dispatch (pinion R1071 / PINION-PR27) — the variant the live
@@ -447,7 +449,7 @@ impl WidgetCore for TerminalViewer {
     /// dock-then-undocked in the multi-window state. Scrollback chords and PTY keys
     /// still repeat (continuous).
     fn apply_key_repeat(
-        scene: &mut Scene,
+        _scene: &mut Scene,
         focused: Option<&str>,
         key: &str,
         modifiers: Modifiers,
@@ -461,18 +463,18 @@ impl WidgetCore for TerminalViewer {
             repeat,
             focused,
         );
-        route_key(scene, focused, key, modifiers, repeat)
+        route_key(focused, key, modifiers, repeat)
     }
 
     /// Route committed IME text to the focused pane's PTY — delegates to
     /// [`route_composition`] (the focus gate + the focused pane's literal
     /// `invoke("text", ...)` wire + its preedit overlay).
     fn apply_composition(
-        scene: &mut Scene,
+        _scene: &mut Scene,
         focused: Option<&str>,
         event: &CompositionEvent,
     ) -> bool {
-        route_composition(scene, focused, event)
+        route_composition(focused, event)
     }
 
     /// Pre-view reconcile (pinion R1047 / PR-20): grow each pane's row-unit

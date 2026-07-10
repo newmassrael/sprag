@@ -1,13 +1,13 @@
 //! Input routing: a focused keystroke / IME commit -> the FOCUSED pane's PTY
-//! through that pane's `invoke(...)` wire, the focus-cycle chord that moves
-//! between tiled panes, and the per-pane scrollback-view offset those keys snap.
+//! through the host client (`LocalHost::send_key` / `send_text`), the focus-cycle
+//! chord that moves between tiled panes, and the per-pane scrollback-view offset
+//! those keys snap.
 //! The [`TerminalViewer`](crate::TerminalViewer) `apply_key` / `apply_composition`
 //! trait methods delegate here. See the crate-root "Input" / "Scrollback" docs.
 
 use crate::terminal::{pane_cache_key, pane_index_of, pane_tag, use_terminal};
-use pinion_core::external::IntrospectValue;
 use pinion_core::reactive::{Owner, Signal};
-use pinion_core::{CompositionEvent, Modifiers, Scene};
+use pinion_core::{CompositionEvent, Modifiers};
 
 /// `Owner::cache` key for pane `pane`'s IME preedit overlay. Minted via the one
 /// per-pane key site [`pane_cache_key`] so the index suffix cannot drift.
@@ -133,17 +133,16 @@ fn window_chord(key: &str, modifiers: Modifiers) -> Option<WindowChord> {
 /// the PTY (focus-cycle / scrollback / dock-toggle); a DISCRETE chord (dock-toggle /
 /// focus-cycle) is dropped on an OS auto-repeat (`repeat`) so it acts once per press
 /// (pinion R1071 / PINION-PR27 — a held `Ctrl+Shift+Enter` no longer dock-then-undocks),
-/// while scrollback + PTY keys repeat normally. Otherwise the key + W3C
-/// modifiers go to that pane's
-/// [`SpragPaneExternal`](sprag_host::SpragPaneExternal) — found in the model scene
-/// by its tag ([`Scene::find_external_with_tag_mut`]) — via
-/// `invoke("key", {key, ctrl, alt, shift, super})`, the same `scene/invoke` wire
-/// the RPC client uses (§2 #2; key->PTY-byte encoding is sprag's, R2.6). An
-/// unencodable key returns `Err` -> `false`, so it falls through rather than
-/// injecting nothing. Returning `true` for the encodable keys swallows Escape/Tab
-/// from the shell's quit/traverse defaults so a full-screen TUI receives them.
+/// while scrollback + PTY keys repeat normally. Otherwise the key + W3C modifiers
+/// are SENT to the focused pane through the host client
+/// ([`LocalHost::send_key`](crate::host::LocalHost::send_key)), which encodes them
+/// to PTY bytes via the shared host SSOT ([`sprag_host::send_key`]) — the same
+/// key->PTY encoder the AI `scene/invoke` path uses (§2 #2; encoding is sprag's,
+/// R2.6). Topology B: the GUI's keyboard is a client SEND, not a mutation of its
+/// own paint scene. An unencodable key returns `false`, so it falls through rather
+/// than injecting nothing. Returning `true` for the encodable keys swallows
+/// Escape/Tab from the shell's quit/traverse defaults so a full-screen TUI receives them.
 pub(crate) fn route_key(
-    scene: &mut Scene,
     focused: Option<&str>,
     key: &str,
     modifiers: Modifiers,
@@ -180,25 +179,27 @@ pub(crate) fn route_key(
         return true;
     }
     // Any other key is a live interaction with the focused pane: snap its view to
-    // the live bottom (offset_y == max), then inject through that pane's input
-    // External.
+    // the live bottom (offset_y == max), then SEND it to that pane through the host
+    // client (topology B: the GUI's keyboard is a client SEND, not a mutation of its
+    // own paint scene — the same key->PTY encoder the AI `scene/invoke` path uses,
+    // and over the wire this becomes an RPC send to the host). An unencodable key
+    // returns `false`, so it falls through to the shell default rather than swallowing.
     let scroll = crate::scrollbar::use_pane_scroll(active);
     scroll.scroll_to(0, scroll.max().1);
-    let Some(node) = scene.find_external_with_tag_mut(tag) else {
-        return false;
-    };
-    let Some(intro) = node.handle.introspect_mut() else {
-        return false;
-    };
-    let args = serde_json::json!({
-        "key": key,
-        "ctrl": modifiers.ctrl,
-        "alt": modifiers.alt,
-        "shift": modifiers.shift,
-        // pinion's `meta` (Cmd/Super/Win) maps to the encoder's "super".
-        "super": modifiers.meta,
-    });
-    intro.invoke("key", IntrospectValue::Json(args)).is_ok()
+    use_terminal()
+        .host
+        .send_key(active, key, to_input_mods(modifiers))
+}
+
+/// Map pinion's key [`Modifiers`] to the encoder's [`sprag_input::Modifiers`]:
+/// pinion's `meta` (Cmd / Super / Win) is the encoder's `sup` (the only rename).
+fn to_input_mods(m: Modifiers) -> sprag_input::Modifiers {
+    sprag_input::Modifiers {
+        ctrl: m.ctrl,
+        alt: m.alt,
+        shift: m.shift,
+        sup: m.meta,
+    }
 }
 
 /// Route an IME composition (Hangul / CJK / any composed input) to the **focused
@@ -212,21 +213,17 @@ pub(crate) fn route_key(
 /// - [`Update`](CompositionEvent::Update): mirror the preedit text into that
 ///   pane's overlay — NOT written to the PTY.
 /// - [`Commit`](CompositionEvent::Commit): clear the overlay and write the text
-///   **literally** via the focused pane's
-///   [`SpragPaneExternal`](sprag_host::SpragPaneExternal) `invoke("text", …)` — the
-///   same `scene/invoke` wire the AI peer drives, bypassing the key encoder. An
-///   empty Commit is the cancel-shaped end (clearing is the whole job).
+///   **literally** to the focused pane through the host client
+///   ([`LocalHost::send_text`](crate::host::LocalHost::send_text)) — the same
+///   text->PTY seam the AI peer drives, bypassing the key encoder. An empty Commit
+///   is the cancel-shaped end (clearing is the whole job; no write).
 ///
 /// Focus-gated to a pane tile like [`route_key`]. Returning `true` reports the
 /// event handled AND — because `view` subscribes to [`use_preedit`] — arms a
 /// repaint via pinion's R705.1 reactive-dirty bridge, so the composition repaints
 /// live. (`WidgetView::ime_caret_rect`, Hanja-candidate positioning, is still
 /// unwired — polish, not shown during plain Hangul.)
-pub(crate) fn route_composition(
-    scene: &mut Scene,
-    focused: Option<&str>,
-    event: &CompositionEvent,
-) -> bool {
+pub(crate) fn route_composition(focused: Option<&str>, event: &CompositionEvent) -> bool {
     let Some(tag) = focused else {
         return false;
     };
@@ -249,14 +246,14 @@ pub(crate) fn route_composition(
             use_preedit(active).set(text.clone());
             true
         }
-        // Finished: clear the overlay, then write the literal committed text.
+        // Finished: clear the overlay, then write the literal committed text to the
+        // focused pane through the host client (the same text->PTY seam the AI
+        // `scene/invoke` path uses, bypassing the key encoder). An empty commit is a
+        // no-op (send_text no-ops it).
         CompositionEvent::Commit(text) => {
             use_preedit(active).set(String::new());
-            if !text.is_empty()
-                && let Some(node) = scene.find_external_with_tag_mut(tag)
-                && let Some(intro) = node.handle.introspect_mut()
-            {
-                let _ = intro.invoke("text", IntrospectValue::Text(text.clone()));
+            if !text.is_empty() {
+                use_terminal().host.send_text(active, text);
             }
             true
         }
@@ -270,6 +267,8 @@ pub(crate) fn route_composition(
 mod tests {
     use super::*;
     use crate::TerminalViewer;
+    use crate::host::LocalHost;
+    use pinion_core::Scene;
     use pinion_core::WidgetCore;
     use pinion_core::scene::{ContainerNode, ExternalNode};
     use sprag_host::SpragPaneExternal;
@@ -300,33 +299,47 @@ mod tests {
         row0
     }
 
-    /// End-to-end multi-pane routing: the model scene is the `Scene::Container`
-    /// the shell builds from `[primary, ...extras]`, each pane's input External
-    /// tagged `pane_tag(i)`. A focused keystroke reaches ONLY the focused pane
-    /// (`find_external_with_tag_mut`), and a non-pane / absent focus is a no-op.
+    /// The CLIENT input path routes a key to ONLY the named pane: `LocalHost::send_key`
+    /// encodes it (the shared host SSOT) and writes it to that pane's PTY, and a
+    /// sibling pane receives nothing. Topology B: input is a client SEND, not a
+    /// mutation of the GUI's paint scene. (The former end-to-end scene-routing test;
+    /// `apply_key`'s focus gate is [`apply_key_gates_on_a_pane_focus`], the whole
+    /// keyboard->pane path is live-verified on :0.)
     #[test]
-    fn apply_key_routes_to_the_focused_pane_only() {
+    fn send_key_routes_to_the_named_pane_only() {
         let mut ws = Workspace::new((40, 6));
         let id0 = ws.spawn(cat(), "cat".to_owned(), 40, 6).unwrap();
         let id1 = ws.spawn(cat(), "cat".to_owned(), 40, 6).unwrap();
         let h0 = ws.pane(id0).unwrap().handle();
         let h1 = ws.pane(id1).unwrap().handle();
-        let mut scene = Scene::Container(ContainerNode::new(vec![
-            Scene::External(
-                ExternalNode::new(Box::new(SpragPaneExternal::new(h0.clone())))
-                    .with_tag(pane_tag(0)),
-            ),
-            Scene::External(
-                ExternalNode::new(Box::new(SpragPaneExternal::new(h1.clone())))
-                    .with_tag(pane_tag(1)),
-            ),
-        ]));
+        let host = LocalHost::new(ws);
 
-        // apply_key reads the scrollback-offset Signal, so run it inside a root
-        // Owner scope (mirrors the shell's root_owner.run wrap).
+        // Send "hi" to pane 1 only, through the client input path.
+        for ch in ["h", "i"] {
+            assert!(
+                host.send_key(1, ch, sprag_input::Modifiers::default()),
+                "the key encoded and reached the PTY"
+            );
+        }
+        assert!(
+            wait_for_row0(&h1, "hi").contains("hi"),
+            "the named pane echoes the keys"
+        );
+        assert!(
+            !h0.with_screen(|s| s.row_text(0)).contains("hi"),
+            "the sibling pane received nothing",
+        );
+    }
+
+    /// `route_key`'s focus gate (via `apply_key`): a non-pane focus (the cosmetic
+    /// root tag) and no focus are no-ops that fall through to the shell default —
+    /// without resolving a pane or touching a PTY. The inject leg is
+    /// [`send_key_routes_to_the_named_pane_only`].
+    #[test]
+    fn apply_key_gates_on_a_pane_focus() {
         let owner = Owner::new();
         owner.run(|| {
-            // A non-pane focus (the cosmetic root tag) and no focus are no-ops.
+            let mut scene = Scene::Container(ContainerNode::new(Vec::new()));
             assert!(!TerminalViewer::apply_key(
                 &mut scene,
                 Some("sprag_gui"),
@@ -339,49 +352,24 @@ mod tests {
                 "x",
                 Modifiers::default()
             ));
-            // Focus pane 1: each key is injected into pane 1's PTY only.
-            for ch in ["h", "i"] {
-                assert!(TerminalViewer::apply_key(
-                    &mut scene,
-                    Some(pane_tag(1)),
-                    ch,
-                    Modifiers::default()
-                ));
-            }
         });
-
-        assert!(
-            wait_for_row0(&h1, "hi").contains("hi"),
-            "the focused pane echoes the keys"
-        );
-        assert!(
-            !h0.with_screen(|s| s.row_text(0)).contains("hi"),
-            "the unfocused pane received nothing",
-        );
     }
 
-    /// The composition lifecycle on the focused pane: `Update` mirrors into that
-    /// pane's [`use_preedit`] overlay WITHOUT touching the PTY, and `Commit`
-    /// clears the overlay and WRITES the literal UTF-8 (the R31 `Commit` ->
-    /// `invoke("text")` seam), confirmed by the text echoing through the
-    /// cooked-mode `cat` PTY.
+    /// The composition overlay + focus gate (PTY-free): `Update` mirrors into the
+    /// focused pane's [`use_preedit`] overlay WITHOUT touching any PTY, a non-pane
+    /// composition is a no-op, and an empty commit clears the overlay (the empty
+    /// guard skips `send_text`, so this spawns no session). The committed-text WRITE
+    /// is [`send_text_writes_committed_text_to_the_named_pane`]. `apply_composition`
+    /// ignores its scene arg now (input is a client send), so a trivial scene suffices.
     ///
-    /// Scope (honest): synthetic `CompositionEvent`s exercise sprag's
-    /// preedit-overlay + commit-write seams, NOT the live platform IME's
-    /// `Start`/`Update`/`Commit` sequencing (verified separately against
-    /// ibus-hangul in a live window). The focus gate is a deterministic no-op.
+    /// Scope (honest): synthetic `CompositionEvent`s exercise sprag's preedit-overlay
+    /// seam, NOT the live platform IME's `Start`/`Update`/`Commit` sequencing
+    /// (verified separately against ibus-hangul in a live window).
     #[test]
-    fn apply_composition_overlays_preedit_and_writes_commit() {
-        let mut ws = Workspace::new((40, 6));
-        let id = ws.spawn(cat(), "cat".to_owned(), 40, 6).unwrap();
-        let handle = ws.pane(id).unwrap().handle();
-        let mut scene = Scene::External(
-            ExternalNode::new(Box::new(SpragPaneExternal::new(handle.clone())))
-                .with_tag(pane_tag(0)),
-        );
-
+    fn apply_composition_overlays_preedit_without_touching_the_pty() {
         let owner = Owner::new();
         owner.run(|| {
+            let mut scene = Scene::Container(ContainerNode::new(Vec::new()));
             let commit = |t: &str| CompositionEvent::Commit(t.to_owned());
             // Focus gate: a non-pane composition is a no-op.
             assert!(!TerminalViewer::apply_composition(
@@ -389,12 +377,11 @@ mod tests {
                 None,
                 &commit("한")
             ));
-            // Preedit (Update) is mirrored into pane 0's overlay, NOT written.
-            let preedit = CompositionEvent::Update("ㅎ".to_owned());
+            // Update mirrors into pane 0's overlay (NOT written to any PTY).
             assert!(TerminalViewer::apply_composition(
                 &mut scene,
                 Some(pane_tag(0)),
-                &preedit
+                &CompositionEvent::Update("ㅎ".to_owned())
             ));
             assert_eq!(
                 use_preedit(0).get(),
@@ -412,24 +399,26 @@ mod tests {
                 "",
                 "an empty commit clears the overlay"
             );
-            // A real commit clears the overlay and writes the literal Hangul.
-            let update_han = CompositionEvent::Update("한".to_owned());
-            assert!(TerminalViewer::apply_composition(
-                &mut scene,
-                Some(pane_tag(0)),
-                &update_han
-            ));
-            assert!(TerminalViewer::apply_composition(
-                &mut scene,
-                Some(pane_tag(0)),
-                &commit("한글")
-            ));
-            assert_eq!(use_preedit(0).get(), "", "the commit clears the overlay");
         });
+    }
+
+    /// The IME-commit CLIENT path: `LocalHost::send_text` writes the literal committed
+    /// UTF-8 to the named pane's PTY (no key-encoding — the R31 commit seam), echoed
+    /// through the cooked-mode `cat`. `route_composition`'s Commit arm calls this for
+    /// a non-empty commit (after clearing the overlay).
+    #[test]
+    fn send_text_writes_committed_text_to_the_named_pane() {
+        let mut ws = Workspace::new((40, 6));
+        let id = ws.spawn(cat(), "cat".to_owned(), 40, 6).unwrap();
+        let handle = ws.pane(id).unwrap().handle();
+        let host = LocalHost::new(ws);
+        assert!(host.send_text(0, "한글"), "the commit text reached the PTY");
         assert!(
             wait_for_row0(&handle, "한글").contains("한글"),
             "committed IME text echoes to the pane screen",
         );
+        // Empty text is a no-op success.
+        assert!(host.send_text(0, ""), "empty commit is a no-op success");
     }
 
     /// The R705.1 contract sprag relies on for live preedit: a composing `set` of

@@ -15,6 +15,7 @@
 //! [`TerminalView`](crate::terminal::TerminalView).
 
 use pinion_core::GridBuffer;
+use sprag_input::Modifiers;
 use sprag_terminal::{Pane, PaneId, SessionHandle, Workspace};
 
 /// Per-pane facts the client reads each frame that are NOT carried in the cell
@@ -84,8 +85,25 @@ impl LocalHost {
         let _ = self.workspace.resize(id, cols, rows);
     }
 
-    /// Pane `index`'s cloneable I/O handle — the input `SpragPaneExternal`'s seam
-    /// (in-process). Over the wire, input becomes a client send (a later step).
+    /// Send a W3C `key` + `mods` to pane `index` — the CLIENT input path. Encodes
+    /// to PTY bytes and writes via the shared host SSOT ([`sprag_host::send_key`],
+    /// the same encoder the RPC `scene/invoke` path uses). `true` if it reached the
+    /// PTY; `false` if the key is unencodable or the write failed. In-process now;
+    /// over the wire this becomes an RPC send to the host's pane input surface.
+    pub(crate) fn send_key(&self, index: usize, key: &str, mods: Modifiers) -> bool {
+        sprag_host::send_key(&self.pane(index).handle(), key, mods)
+    }
+
+    /// Write literal committed `text` to pane `index` — the IME-commit / paste
+    /// client path ([`sprag_host::send_text`]). Empty is a no-op success.
+    pub(crate) fn send_text(&self, index: usize, text: &str) -> bool {
+        sprag_host::send_text(&self.pane(index).handle(), text)
+    }
+
+    /// Pane `index`'s cloneable I/O handle — still the input `SpragPaneExternal`'s
+    /// seam in the model scene (the GUI's RPC input surface). The GUI's OWN
+    /// keyboard / IME now goes through [`send_key`](Self::send_key) /
+    /// [`send_text`](Self::send_text), not this handle.
     pub(crate) fn pane_handle(&self, index: usize) -> SessionHandle {
         self.pane(index).handle()
     }
