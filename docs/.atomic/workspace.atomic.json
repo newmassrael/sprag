@@ -463,6 +463,46 @@
         "Pin now 950f73ef (R1266); was 24409c46 (R1263). SCE 3078f8bf unchanged. 8 pinion-* crates (pinion-rpc-transport was the 8th, added R100/PR-47 -- memory that says '7 pinion-*' predates it)."
       ]
     },
+    "R107": {
+      "decision_summary": "Round 107: increment 2, step 1 of the GUI-as-client-of-host arc = PROVE the wire-fidelity assumption before any wiring (test-the-risky-assumption-first). New sprag-host test wire_round_trip_preserves_the_pane_cell_buffer establishes topology B's load-bearing guarantee: the paint-authoritative pinion GridBuffer (serde-able since PR-49/R106) survives a serde_json round-trip byte-for-byte on REAL projected production data -- indexed + truecolor + default colours, bold + reverse attrs, a wide (CJK) head+trailer cluster, the cursor (position/shape/visibility), the Alternate screen kind, and per-row damage generations. It asserts the whole buffer is Eq after round-trip (the strongest claim), plus position-independent per-field spot-checks so a dropped field names itself, plus that the CLIENT node assembled from the round-tripped buffer (pane_view_scene_from_cells, the R105 seam) carries the same cells as the direct projection -- i.e. a wire display client paints identically to the host. If serde ever drops a field the human/GUI path would render differently from the host's served data and the read-data-not-pixels invariant would break silently in the GUI; this fails HERE, in the crate that owns the wire seam, instead. Pure test addition: zero production change, zero render risk. Next (R108): the actual wiring -- host pane_cells data query + GUI reroute through pane_cells + client-side overlay_preedit + pane_view_scene_from_cells + removal of the now-superseded pane_view_scene/PaneViewSpec, live A/B-verified.",
+      "changes_bullets": [
+        "sprag-host/src/lib.rs: new test wire_round_trip_preserves_the_pane_cell_buffer -- a rich real screen (Emulator: bold indexed-red, truecolor, reverse, wide CJK cluster) projected via sprag_grid, serde_json round-tripped, asserted GridBuffer-Eq + per-field spot-checks (indexed/rgb fg, bold/reverse attrs, wide head+trailer, cursor, nonzero damage generation) + Alternate-screen-kind round-trip + client-node cell equality via pane_view_scene_from_cells.",
+        "No production code change: R107 is the de-risking proof that the paint-authoritative GridBuffer crosses the wire losslessly, before increment 2's wiring touches the GUI paint path."
+      ],
+      "verification_bullets": [
+        "cargo test -p sprag-host: 40 passed / 0 failed (was 39; +1 the fidelity test). Caught + fixed a test-assumption bug first (a leading write shifted the styled cells off (0,0)); the core assert_eq!(buf, back) passed throughout -- serde is lossless, only the spot-check positions were wrong, now position-independent searches.",
+        "rustfmt --check clean (after cargo fmt -p sprag-host); clippy -p sprag-host --all-targets clean.",
+        "Fidelity confirmed on real projected data across every wire field: colours (indexed/rgb/default), attrs (bold/reverse), wide head+trailer, cursor, Alternate screen kind, per-row damage generation -- all byte-identical after JSON round-trip."
+      ],
+      "impact_refs": [
+        "2",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Topology B core assumption PROVEN: pinion GridBuffer round-trips through serde_json losslessly on real production data -> the wire display client reconstructs the exact paint buffer. Path (a) (GridBuffer serde) is validated end-to-end.",
+        "R108 = increment 2 wiring: add pub sprag_host::pane_cells(session, offset_lines)->GridBuffer (the named host data-query surface); reroute sprag-gui build_pane_scene to pane_cells + sprag_grid::overlay_preedit (client IME) + pane_view_scene_from_cells (client assembly); REMOVE the now-superseded pane_view_scene + PaneViewSpec (5 intra-doc links in sprag-gui main.rs/terminal.rs/input.rs/scrollbar.rs must be updated or cargo doc -D warnings breaks); LIVE A/B-verify panes render identically (behaviour-preserving by construction).",
+        "Deferred to increment 3 (Workspace-ownership flip): the client still reads scrollback_len/visible_rows from the session locally + reconcile_frame reads the screen -- those become wire calls when the Workspace moves to the host process. RPC exposure of pane_cells (a workspace-level batch query) is the natural wire surface then; not built now (YAGNI until the boundary is real)."
+      ],
+      "publishable_decision_summary": "Round 107: increment 2, step 1 of the GUI-as-client-of-host arc = PROVE the wire-fidelity assumption before any wiring (test-the-risky-assumption-first). New sprag-host test wire_round_trip_preserves_the_pane_cell_buffer establishes topology B's load-bearing guarantee: the paint-authoritative pinion GridBuffer (serde-able since PR-49/R106) survives a serde_json round-trip byte-for-byte on REAL projected production data -- indexed + truecolor + default colours, bold + reverse attrs, a wide (CJK) head+trailer cluster, the cursor (position/shape/visibility), the Alternate screen kind, and per-row damage generations. It asserts the whole buffer is Eq after round-trip (the strongest claim), plus position-independent per-field spot-checks so a dropped field names itself, plus that the CLIENT node assembled from the round-tripped buffer (pane_view_scene_from_cells, the R105 seam) carries the same cells as the direct projection -- i.e. a wire display client paints identically to the host. If serde ever drops a field the human/GUI path would render differently from the host's served data and the read-data-not-pixels invariant would break silently in the GUI; this fails HERE, in the crate that owns the wire seam, instead. Pure test addition: zero production change, zero render risk. Next (R108): the actual wiring -- host pane_cells data query + GUI reroute through pane_cells + client-side overlay_preedit + pane_view_scene_from_cells + removal of the now-superseded pane_view_scene/PaneViewSpec, live A/B-verified.",
+      "publishable_changes_bullets": [
+        "sprag-host/src/lib.rs: new test wire_round_trip_preserves_the_pane_cell_buffer -- a rich real screen (Emulator: bold indexed-red, truecolor, reverse, wide CJK cluster) projected via sprag_grid, serde_json round-tripped, asserted GridBuffer-Eq + per-field spot-checks (indexed/rgb fg, bold/reverse attrs, wide head+trailer, cursor, nonzero damage generation) + Alternate-screen-kind round-trip + client-node cell equality via pane_view_scene_from_cells.",
+        "No production code change: R107 is the de-risking proof that the paint-authoritative GridBuffer crosses the wire losslessly, before increment 2's wiring touches the GUI paint path."
+      ],
+      "publishable_verification_bullets": [
+        "cargo test -p sprag-host: 40 passed / 0 failed (was 39; +1 the fidelity test). Caught + fixed a test-assumption bug first (a leading write shifted the styled cells off (0,0)); the core assert_eq!(buf, back) passed throughout -- serde is lossless, only the spot-check positions were wrong, now position-independent searches.",
+        "rustfmt --check clean (after cargo fmt -p sprag-host); clippy -p sprag-host --all-targets clean.",
+        "Fidelity confirmed on real projected data across every wire field: colours (indexed/rgb/default), attrs (bold/reverse), wide head+trailer, cursor, Alternate screen kind, per-row damage generation -- all byte-identical after JSON round-trip."
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Topology B core assumption PROVEN: pinion GridBuffer round-trips through serde_json losslessly on real production data -> the wire display client reconstructs the exact paint buffer. Path (a) (GridBuffer serde) is validated end-to-end.",
+        "R108 = increment 2 wiring: add pub sprag_host::pane_cells(session, offset_lines)->GridBuffer (the named host data-query surface); reroute sprag-gui build_pane_scene to pane_cells + sprag_grid::overlay_preedit (client IME) + pane_view_scene_from_cells (client assembly); REMOVE the now-superseded pane_view_scene + PaneViewSpec (5 intra-doc links in sprag-gui main.rs/terminal.rs/input.rs/scrollbar.rs must be updated or cargo doc -D warnings breaks); LIVE A/B-verify panes render identically (behaviour-preserving by construction).",
+        "Deferred to increment 3 (Workspace-ownership flip): the client still reads scrollback_len/visible_rows from the session locally + reconcile_frame reads the screen -- those become wire calls when the Workspace moves to the host process. RPC exposure of pane_cells (a workspace-level batch query) is the natural wire surface then; not built now (YAGNI until the boundary is real)."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
