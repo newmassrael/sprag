@@ -545,6 +545,48 @@
         "Live-drive note for next session: the GUI scene/snapshot returns the MODEL scene (input externals + full_text), NOT the per-window paint grid_rows -- to see painted cells use scene/screenshot (pixels). Xvfb cannot run the Vello GUI (no GPU, wgpu OOM); live GUI checks need the real :0."
       ]
     },
+    "R109": {
+      "decision_summary": "Round 109: increment 3 round 1 of the GUI-as-client-of-host arc = the in-process CLIENT SEAM. Introduced sprag-gui/src/host.rs LocalHost: the GUI now reaches its panes ONLY through a typed client protocol (pane_count, pane_cells, pane_dims, pane_pty_size, pane_id, resize, pane_handle, pane_full_text, pane_command_label), encapsulating the single Workspace it owns. TerminalView changed from a public workspace: Workspace field (reached into directly across the GUI) to host: LocalHost (Workspace private) + the client's own rendering config (metric, font_size_px -- deliberately NOT host state). Rerouted all ~8 production coupling sites across 6 files (view build_pane_scene -> pane_cells + pane_dims; reflow -> pane_pty_size + resize; a11y pane_node -> pane_full_text + pane_command_label; dock undock size -> pane_pty_size; main create_external(s) -> pane_handle + reconcile_frame -> pane_dims; input scroll_view -> pane_dims, cycle_focus -> pane_count) plus the test call sites. The Workspace still lives in the GUI process (behind LocalHost) so this is behaviour-preserving and reversible; it is the exact method surface a wire transport backs in the later transport step, WITHOUT the call sites changing. Per the user's cost-no-object decision, this validates the client protocol against a real in-process consumer FIRST; the HostClient trait is extracted when the wire adds the second consumer (an interface designed against two impls is more correct than one). Input still flows through pane_handle/SpragPaneExternal (round 2 moves it over the client); the single-owner unification + wire transport land in later rounds.",
+      "changes_bullets": [
+        "New sprag-gui/src/host.rs: LocalHost owns the single Workspace and serves the typed client protocol (pane_count/pane_cells/pane_dims/pane_pty_size/pane_id/resize/pane_handle/pane_full_text/pane_command_label) + PaneDims{scrollback_len, visible_rows}. The GUI touches the Workspace ONLY through it.",
+        "TerminalView: workspace: Workspace (public, reached into) -> host: LocalHost (Workspace private) + client rendering config (metric, font_size_px). Removed TerminalView::{pane, pane_handle, pane_count} (moved onto LocalHost).",
+        "Rerouted ~8 production sites across view/reflow/a11y/dock/main/input + the test call sites through host methods -- no direct .session()/.workspace pane access remains. Behaviour-preserving."
+      ],
+      "verification_bullets": [
+        "cargo test --workspace 229 passed / 0 failed (count unchanged); rustfmt clean; clippy --workspace --all-targets clean; cargo doc -D warnings clean. grep confirms no direct .workspace/.session() pane access remains in the GUI.",
+        "Live (DISPLAY=:0, RPC scene/snapshot): after the flip the GUI still spawns both panes (sprag_gui.pane.0/1) and they render the live shell prompt (full_text coin@...:~$) -- the LocalHost seam (spawn/data/handles) works end-to-end. Xvfb has no GPU (wgpu OOM) so the check ran on the real :0.",
+        "Reversible + behaviour-preserving: the Workspace still lives in the GUI process behind LocalHost; only the ACCESS is encapsulated behind the client protocol -- the seam the wire transport later backs."
+      ],
+      "impact_refs": [
+        "2",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Increment 3 round 1 DONE: the GUI accesses panes ONLY via LocalHost's typed protocol (sprag-gui/src/host.rs; TerminalView.host is the seam). The method surface = the future wire protocol. The HostClient trait is extracted at the wire step, when a 2nd impl validates the interface (cost-no-object decision: design the interface against two real consumers).",
+        "Increment 3 remaining rounds: (r2) move input over the client (send_key/send_text) instead of the in-scene SpragPaneExternal/SessionHandle; (r3) move PTY spawn/ownership into one host component shared with sprag-term; (r4) wire transport (GUI connects to a host process; pane_cells becomes an RPC query; repaint-over-wire) = the actual topology-B value. CONFIRM before the irreversible wire / PTY-across-process rounds.",
+        "The Workspace is private inside LocalHost; the GUI's rendering config (metric/font) stayed on TerminalView (client-side, not host state). Input still uses pane_handle -> SpragPaneExternal (round 2 target)."
+      ],
+      "publishable_decision_summary": "Round 109: increment 3 round 1 of the GUI-as-client-of-host arc = the in-process CLIENT SEAM. Introduced sprag-gui/src/host.rs LocalHost: the GUI now reaches its panes ONLY through a typed client protocol (pane_count, pane_cells, pane_dims, pane_pty_size, pane_id, resize, pane_handle, pane_full_text, pane_command_label), encapsulating the single Workspace it owns. TerminalView changed from a public workspace: Workspace field (reached into directly across the GUI) to host: LocalHost (Workspace private) + the client's own rendering config (metric, font_size_px -- deliberately NOT host state). Rerouted all ~8 production coupling sites across 6 files (view build_pane_scene -> pane_cells + pane_dims; reflow -> pane_pty_size + resize; a11y pane_node -> pane_full_text + pane_command_label; dock undock size -> pane_pty_size; main create_external(s) -> pane_handle + reconcile_frame -> pane_dims; input scroll_view -> pane_dims, cycle_focus -> pane_count) plus the test call sites. The Workspace still lives in the GUI process (behind LocalHost) so this is behaviour-preserving and reversible; it is the exact method surface a wire transport backs in the later transport step, WITHOUT the call sites changing. Per the user's cost-no-object decision, this validates the client protocol against a real in-process consumer FIRST; the HostClient trait is extracted when the wire adds the second consumer (an interface designed against two impls is more correct than one). Input still flows through pane_handle/SpragPaneExternal (round 2 moves it over the client); the single-owner unification + wire transport land in later rounds.",
+      "publishable_changes_bullets": [
+        "New sprag-gui/src/host.rs: LocalHost owns the single Workspace and serves the typed client protocol (pane_count/pane_cells/pane_dims/pane_pty_size/pane_id/resize/pane_handle/pane_full_text/pane_command_label) + PaneDims{scrollback_len, visible_rows}. The GUI touches the Workspace ONLY through it.",
+        "TerminalView: workspace: Workspace (public, reached into) -> host: LocalHost (Workspace private) + client rendering config (metric, font_size_px). Removed TerminalView::{pane, pane_handle, pane_count} (moved onto LocalHost).",
+        "Rerouted ~8 production sites across view/reflow/a11y/dock/main/input + the test call sites through host methods -- no direct .session()/.workspace pane access remains. Behaviour-preserving."
+      ],
+      "publishable_verification_bullets": [
+        "cargo test --workspace 229 passed / 0 failed (count unchanged); rustfmt clean; clippy --workspace --all-targets clean; cargo doc -D warnings clean. grep confirms no direct .workspace/.session() pane access remains in the GUI.",
+        "Live (DISPLAY=:0, RPC scene/snapshot): after the flip the GUI still spawns both panes (sprag_gui.pane.0/1) and they render the live shell prompt (full_text coin@...:~$) -- the LocalHost seam (spawn/data/handles) works end-to-end. Xvfb has no GPU (wgpu OOM) so the check ran on the real :0.",
+        "Reversible + behaviour-preserving: the Workspace still lives in the GUI process behind LocalHost; only the ACCESS is encapsulated behind the client protocol -- the seam the wire transport later backs."
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Increment 3 round 1 DONE: the GUI accesses panes ONLY via LocalHost's typed protocol (sprag-gui/src/host.rs; TerminalView.host is the seam). The method surface = the future wire protocol. The HostClient trait is extracted at the wire step, when a 2nd impl validates the interface (cost-no-object decision: design the interface against two real consumers).",
+        "Increment 3 remaining rounds: (r2) move input over the client (send_key/send_text) instead of the in-scene SpragPaneExternal/SessionHandle; (r3) move PTY spawn/ownership into one host component shared with sprag-term; (r4) wire transport (GUI connects to a host process; pane_cells becomes an RPC query; repaint-over-wire) = the actual topology-B value. CONFIRM before the irreversible wire / PTY-across-process rounds.",
+        "The Workspace is private inside LocalHost; the GUI's rendering config (metric/font) stayed on TerminalView (client-side, not host state). Input still uses pane_handle -> SpragPaneExternal (round 2 target)."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
