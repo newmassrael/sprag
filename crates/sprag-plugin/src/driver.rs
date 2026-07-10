@@ -22,7 +22,7 @@ pub struct Guardrails {
     /// Stop once the accumulated step cost reaches this bound. `None` leaves cost
     /// unbounded (only [`max_iterations`](Self::max_iterations) applies). The
     /// bound's unit is the run's cost currency — every step the plugin reports
-    /// shares it (see [`Cost`](crate::plugin::Cost)) — so the Driver compares
+    /// shares it (see [`Cost`]) — so the Driver compares
     /// like with like and never sums bytes against tokens.
     pub max_cost: Option<Cost>,
 }

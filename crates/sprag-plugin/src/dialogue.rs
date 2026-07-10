@@ -17,7 +17,7 @@
 //! plugin own the labelling.
 //!
 //! Each turn is a fresh process, so this needs pane *lifecycle*
-//! ([`PaneLifecycle`]); a [`PaneGuard`] closes the per-turn pane on every exit
+//! ([`PaneLifecycle`]); a `PaneGuard` closes the per-turn pane on every exit
 //! path (no leaked PTY/child even if a step fails mid-way). It never
 //! self-converges — the [`Driver`]'s `max_iterations` is the turn budget, so a
 //! run ends `Exhausted` with the transcript as its payload (the [`Pipe`]

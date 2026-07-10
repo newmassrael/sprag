@@ -2,7 +2,7 @@
 //!
 //! These types are the stable seam between the VT backend (currently a
 //! termwiz-based emulator in [`crate::emulator`]) and the consumer
-//! ([`sprag-grid`]'s pinion projection). Nothing here depends on termwiz,
+//! (`sprag-grid`'s pinion projection). Nothing here depends on termwiz,
 //! so the VT library choice stays reversible (DESIGN.md §4: VtPort
 //! isolates the max-risk VT dependency).
 //!
@@ -296,7 +296,7 @@ impl Screen {
     }
 
     /// Whether row `row` soft-wraps onto the next row (its logical line
-    /// continues). `false` out of bounds. See [`Self::reflowed`].
+    /// continues). `false` out of bounds. See `Self::reflowed`.
     #[must_use]
     pub fn wrapped(&self, row: u16) -> bool {
         self.wrapped.get(row as usize).copied().unwrap_or(false)

@@ -4,7 +4,7 @@
 //!
 //! PR-47's three layers are: the dispatch core (pinion, transport-agnostic),
 //! the transport *mechanism* (pinion's reusable
-//! [`UnixSocketTransport`](pinion_rpc_transport::UnixSocketTransport)), and
+//! [`UnixSocketTransport`]), and
 //! the transport *policy* -- when/where/whether the endpoint is exposed. This
 //! crate is that third layer, and it is **frontend-agnostic**: the windowed
 //! GUI and the headless host both mount their socket through [`mount`],

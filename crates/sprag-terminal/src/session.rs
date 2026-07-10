@@ -47,7 +47,7 @@ const RAW_CAPTURE_CAP: usize = 256 * 1024;
 /// bytes are the child's **source** stream, before the emulator renders them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RawOutput {
-    /// The captured source bytes (head-anchored, bounded by [`RAW_CAPTURE_CAP`]).
+    /// The captured source bytes (head-anchored, bounded by `RAW_CAPTURE_CAP`).
     pub bytes: Vec<u8>,
     /// Whether the capture hit the cap and stopped: `bytes` is a prefix of the
     /// child's output, not the whole, so a structured read should degrade.
