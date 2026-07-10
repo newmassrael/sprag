@@ -2,11 +2,12 @@
 //! derivation — everything about *creating and holding* the live pane, spawned
 //! at boot off the pure `view`. See the crate-root module docs for the seams.
 
+use crate::host::LocalHost;
 use crate::{WINDOW_H, WINDOW_W};
 use pinion_core::CellMetric;
 use pinion_core::reactive::Owner;
 use pinion_core::use_repaint_sink;
-use sprag_terminal::{CommandBuilder, Pane, SessionHandle, Workspace};
+use sprag_terminal::{CommandBuilder, Workspace};
 use std::rc::Rc;
 
 /// Default glyph size (logical px) — the font-size SSOT the cell is measured
@@ -175,40 +176,15 @@ fn pane_command() -> (CommandBuilder, String) {
     }
 }
 
-/// The booted terminal: the live [`Workspace`] plus the once-measured cell
-/// metric and the glyph size it was measured at (read each frame by `view`,
-/// never re-measured).
+/// The booted terminal MODEL the GUI holds each frame: the [`LocalHost`] it is a
+/// client of (the single [`Workspace`] owner — the GUI reaches panes ONLY through
+/// its typed protocol, topology B) plus the client's own rendering config — the
+/// once-measured cell metric and the glyph size it was measured at (read each
+/// frame by `view`, never re-measured; deliberately client-side, not host state).
 pub(crate) struct TerminalView {
-    pub(crate) workspace: Workspace,
+    pub(crate) host: LocalHost,
     pub(crate) metric: CellMetric,
     pub(crate) font_size_px: u32,
-}
-
-impl TerminalView {
-    /// The number of tiled panes (== [`pane_count`] at boot; the panes are
-    /// spawned once in [`pane_tag`] order and not closed this round).
-    pub(crate) fn pane_count(&self) -> usize {
-        self.workspace.panes().len()
-    }
-
-    /// The pane at tile `index` (`index < `[`Self::pane_count`]). This is the
-    /// **one** place the "which pane?" question is answered: `view` /
-    /// `access_node` / `scroll_view` / input routing / the reflow Effect all
-    /// resolve a pane through here (replacing the single-pane `boot_pane`), so
-    /// pane selection lives in one site. The boot panes are spawned in
-    /// [`pane_tag`] order and never closed this round, so `index` (sourced from a
-    /// [`pane_tag`] / focus tag) is a hard in-range invariant, not an `Option`.
-    pub(crate) fn pane(&self, index: usize) -> &Pane {
-        self.workspace
-            .panes()
-            .get(index)
-            .expect("pane index in range (boot panes spawned 0..pane_count, never closed)")
-    }
-
-    /// Pane `index`'s cloneable I/O handle (its input engine + reflow seam).
-    pub(crate) fn pane_handle(&self, index: usize) -> SessionHandle {
-        self.pane(index).handle()
-    }
 }
 
 /// Derive the terminal `(cols, rows)` that fill `viewport` (logical px) at
@@ -285,7 +261,7 @@ pub(crate) fn use_terminal() -> Rc<TerminalView> {
                 .expect("spawn a sprag-gui pane");
         }
         TerminalView {
-            workspace,
+            host: LocalHost::new(workspace),
             metric,
             font_size_px,
         }

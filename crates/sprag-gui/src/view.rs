@@ -55,7 +55,7 @@ pub(crate) fn view_for_window(window_id: &str, _state: (), _frame: &Frame) -> Sc
         // the shell's routing tags are supplied HERE (the binding owns the window
         // lifecycle) so `try_chrome_press` routes close → `window_close_requested`
         // (dock-back, R86), min / max → per-window `set_minimized` / `set_maximized`.
-        Some(i) if i < tv.pane_count() => {
+        Some(i) if i < tv.host.pane_count() => {
             let style = DockPanelStyle::m3_default(panel_id(i));
             let controls = view_window_controls(
                 &theme,
@@ -109,7 +109,7 @@ fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
                 // real content lives in the pane's own undock window. Small-intrinsic, so
                 // it needs no `fill_definite` — the `view_dock_panel` content wrapper's
                 // flex_grow + cross-axis stretch fills the slot (matches pinion's editor).
-                Some(i) if i < tv.pane_count() && crate::dock::is_pane_floating(i) => {
+                Some(i) if i < tv.host.pane_count() && crate::dock::is_pane_floating(i) => {
                     view_floating_placeholder(
                         panel_id,
                         theme,
@@ -121,7 +121,9 @@ fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
                 // header), so it needs its own definite extent or its full-window intrinsic
                 // size overflows the panel (the grid never gets a measured rect, the R1012
                 // reflow never fires, and the pane stays at its boot dims).
-                Some(i) if i < tv.pane_count() => fill_definite(build_pane_scene(tv, i, theme)),
+                Some(i) if i < tv.host.pane_count() => {
+                    fill_definite(build_pane_scene(tv, i, theme))
+                }
                 // A leaf with no live pane (out of range / stale) — defensive.
                 _ => Scene::Container(ContainerNode::new(Vec::new())),
             },
@@ -190,25 +192,24 @@ fn build_pane_scene(tv: &TerminalView, i: usize, theme: &Theme) -> Scene {
     // window-side recompute. Tracked read: the view re-runs (repaints the thumb)
     // when this pane's measured rect changes (resize / splitter drag).
     let track_h = pinion_core::use_pane_viewport_size(pane_tag(i)).1;
-    // Convert the (already-reconciled) top-anchored offset to the projection's
-    // "rows up from the live bottom".
-    let (scrollback_len, visible_rows) = tv
-        .pane(i)
-        .session()
-        .with_screen(|screen| (screen.scrollback_len(), screen.rows()));
-    let offset_lines = crate::scrollbar::offset_lines_from_top(scroll.offset_y(), scrollback_len);
-    // Topology B: the GUI is a CLIENT of the host's per-pane cell DATA query. The
-    // host owns the screen + scrollback projection (`pane_cells`); the IME preedit
-    // is a CLIENT-local overlay (an uncommitted composition never in the PTY); the
-    // node is assembled CLIENT-side (`pane_view_scene_from_cells`, the Screen-free
-    // seam). In-process now — the same three steps split along the wire boundary
-    // when the Workspace moves to the host process (increment 3). Behaviour is
-    // identical to the old all-in-one `pane_view_scene` (same pieces, same order).
-    let cells = sprag_host::pane_cells(tv.pane(i).session(), offset_lines);
+    // The non-cell per-frame facts, read from the host (scrollback depth for the
+    // offset math + scrollbar extent; visible rows for the bar). Convert the
+    // (already-reconciled) top-anchored offset to the projection's "rows up from
+    // the live bottom".
+    let dims = tv.host.pane_dims(i);
+    let offset_lines =
+        crate::scrollbar::offset_lines_from_top(scroll.offset_y(), dims.scrollback_len);
+    // Topology B: the GUI is a CLIENT of the host's per-pane cell DATA query
+    // (`LocalHost::pane_cells`). The host owns the screen + scrollback projection;
+    // the IME preedit is a CLIENT-local overlay (an uncommitted composition never in
+    // the PTY); the node is assembled CLIENT-side (`pane_view_scene_from_cells`, the
+    // Screen-free seam). In-process now — the same steps ride the wire when the
+    // Workspace moves to the host process (the transport step).
+    let cells = tv.host.pane_cells(i, offset_lines);
     let cells = sprag_grid::overlay_preedit(cells, &preedit);
     let grid =
         sprag_host::pane_view_scene_from_cells(pane_tag(i), cells, tv.metric, tv.font_size_px);
-    let bar = crate::scrollbar::view_pane_scrollbar(i, &scroll, visible_rows, track_h, theme);
+    let bar = crate::scrollbar::view_pane_scrollbar(i, &scroll, dims.visible_rows, track_h, theme);
     crate::scrollbar::wrap_pane_with_bar(grid, bar)
 }
 

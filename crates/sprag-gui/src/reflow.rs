@@ -71,7 +71,7 @@ pub(crate) fn install_reflow() {
     // (the registry, another cache slot), but only at RUN time — the factory
     // itself stays cache-free.
     let terminal = use_terminal();
-    for index in 0..terminal.pane_count() {
+    for index in 0..terminal.host.pane_count() {
         install_pane_reflow(&owner, &terminal, index);
     }
 }
@@ -85,7 +85,6 @@ fn install_pane_reflow(owner: &Owner, terminal: &Rc<TerminalView>, index: usize)
         return;
     }
     let terminal = Rc::clone(terminal);
-    let pane_id = terminal.pane(index).id();
     let tag = pane_tag(index);
     let effect = Effect::new(owner, move || {
         // R1012 tracked read: re-fires on every change to THIS pane's measured
@@ -95,8 +94,9 @@ fn install_pane_reflow(owner: &Owner, terminal: &Rc<TerminalView>, index: usize)
             return; // pane unmeasured (boot, before layout) — no reflow
         };
         // Reflow only on a real change, so an unchanged frame issues no ioctl.
-        if terminal.pane(index).session().dimensions() != target {
-            let _ = terminal.workspace.resize(pane_id, target.0, target.1);
+        // Both the PTY-size read and the resize go through the host client.
+        if terminal.host.pane_pty_size(index) != target {
+            terminal.host.resize(index, target.0, target.1);
         }
     });
     owner.cache(key, move || ReflowMarker { _effect: effect });
@@ -140,9 +140,9 @@ mod tests {
         // at end of test reaps them.
         owner.run(install_reflow);
         let terminal = owner.run(use_terminal);
-        for i in 0..terminal.pane_count() {
+        for i in 0..terminal.host.pane_count() {
             assert_eq!(
-                terminal.pane(i).session().dimensions(),
+                terminal.host.pane_pty_size(i),
                 grid_dims((WINDOW_W, WINDOW_H), metric),
                 "pane {i} keeps its boot dims (the (0,0) eager run skipped)",
             );

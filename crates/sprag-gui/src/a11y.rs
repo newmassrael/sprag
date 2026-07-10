@@ -18,7 +18,7 @@ impl WidgetA11y for TerminalViewer {
     /// ([`route_key`](crate::input::route_key)) share one identity per pane.
     fn access_node(_state: &(), focused: Option<&str>) -> Vec<AccessNode> {
         let terminal = use_terminal();
-        (0..terminal.pane_count())
+        (0..terminal.host.pane_count())
             .map(|i| pane_node(&terminal, i, focused))
             .collect()
     }
@@ -34,7 +34,7 @@ pub(crate) fn access_nodes_for_window(window_id: &str, focused: Option<&str>) ->
     let terminal = use_terminal();
     match crate::dock::pane_window_index(window_id) {
         // An undock window: just its one pane (if still present).
-        Some(i) if i < terminal.pane_count() => vec![pane_node(&terminal, i, focused)],
+        Some(i) if i < terminal.host.pane_count() => vec![pane_node(&terminal, i, focused)],
         // The main window (or any non-pane id): the docked panes only. Read the
         // docked set from the dock split-tree ([`crate::split::docked_pane_indices`])
         // — the SAME authority `view_main` paints from — so a11y and the paint can
@@ -42,7 +42,7 @@ pub(crate) fn access_nodes_for_window(window_id: &str, focused: Option<&str>) ->
         // float state, a second source for the same fact).
         _ => crate::split::docked_pane_indices()
             .into_iter()
-            .filter(|&i| i < terminal.pane_count())
+            .filter(|&i| i < terminal.host.pane_count())
             .map(|i| pane_node(&terminal, i, focused))
             .collect(),
     }
@@ -52,14 +52,14 @@ pub(crate) fn access_nodes_for_window(window_id: &str, focused: Option<&str>) ->
 /// shared by the windowless [`WidgetA11y::access_node`] and the per-window
 /// [`access_nodes_for_window`], so both announce a pane identically.
 fn pane_node(terminal: &TerminalView, i: usize, focused: Option<&str>) -> AccessNode {
-    let pane = terminal.pane(i);
     // `full_text` is the pane's text SSOT — the same string the RPC `full_text`
     // query and the plugin capture read, so the AT and the AI see one notion of
-    // each screen (scrollback + visible).
-    let text = pane.session().with_screen(|screen| screen.full_text());
+    // each screen (scrollback + visible). Read through the host client (no direct
+    // session touch), like every other pane access.
+    let text = terminal.host.pane_full_text(i);
     terminal_a11y_node(
         pane_tag(i),
-        pane.command_label(),
+        terminal.host.pane_command_label(i),
         text,
         focused == Some(pane_tag(i)),
     )
@@ -128,7 +128,7 @@ mod tests {
     fn access_node_reads_each_live_pane() {
         let owner = Owner::new();
         let nodes = owner.run(|| TerminalViewer::access_node(&(), Some(pane_tag(0))));
-        let count = owner.run(|| use_terminal().pane_count());
+        let count = owner.run(|| use_terminal().host.pane_count());
         assert_eq!(nodes.len(), count, "one terminal node per pane");
         for (i, node) in nodes.iter().enumerate() {
             assert_eq!(node.tag, pane_tag(i), "node {i} carries pane {i}'s tag");
@@ -155,7 +155,7 @@ mod tests {
     fn access_nodes_partition_by_window() {
         let owner = Owner::new();
         owner.run(|| {
-            let n = use_terminal().pane_count();
+            let n = use_terminal().host.pane_count();
             // Boot: all docked -> main advertises every pane.
             assert_eq!(
                 access_nodes_for_window(crate::dock::MAIN_WINDOW_ID, None).len(),

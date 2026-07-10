@@ -52,10 +52,7 @@ fn page_delta(key: &str, page: i32) -> i32 {
 /// the row count; called from `apply_key` (outside any cache factory).
 fn scroll_view(pane: usize, key: &str) {
     let scroll = crate::scrollbar::use_pane_scroll(pane);
-    let rows = use_terminal()
-        .pane(pane)
-        .session()
-        .with_screen(|screen| screen.rows());
+    let rows = use_terminal().host.pane_dims(pane).visible_rows;
     let page = i32::from(rows).saturating_sub(1).max(1);
     scroll.scroll_by(0, page_delta(key, page));
 }
@@ -80,7 +77,7 @@ fn next_focus(active: usize, key: &str, count: usize) -> Option<usize> {
 /// the `apply_key` routing both follow the focus manager, so requesting the new
 /// pane's tag is the whole switch. A single-pane window is a no-op.
 fn cycle_focus(active: usize, key: &str) {
-    if let Some(next) = next_focus(active, key, use_terminal().pane_count()) {
+    if let Some(next) = next_focus(active, key, use_terminal().host.pane_count()) {
         pinion_core::focus_request::request(pane_tag(next));
     }
 }
@@ -526,7 +523,7 @@ mod tests {
     fn ctrl_page_chord_cycles_focus_without_touching_the_pty() {
         let owner = Owner::new();
         owner.run(|| {
-            let handle = use_terminal().pane_handle(0);
+            let handle = use_terminal().host.pane_handle(0);
             let mut scene = Scene::External(
                 ExternalNode::new(Box::new(SpragPaneExternal::new(handle))).with_tag(pane_tag(0)),
             );
@@ -570,7 +567,7 @@ mod tests {
     fn ctrl_shift_enter_toggles_dock_without_touching_the_pty() {
         let owner = Owner::new();
         owner.run(|| {
-            let handle = use_terminal().pane_handle(0);
+            let handle = use_terminal().host.pane_handle(0);
             let mut scene = Scene::External(
                 ExternalNode::new(Box::new(SpragPaneExternal::new(handle))).with_tag(pane_tag(0)),
             );
@@ -616,7 +613,7 @@ mod tests {
     fn dock_chord_auto_repeat_is_dropped_scroll_repeats() {
         let owner = Owner::new();
         owner.run(|| {
-            let handle = use_terminal().pane_handle(0);
+            let handle = use_terminal().host.pane_handle(0);
             let mut scene = Scene::External(
                 ExternalNode::new(Box::new(SpragPaneExternal::new(handle))).with_tag(pane_tag(0)),
             );
@@ -708,7 +705,7 @@ mod tests {
         owner.run(|| {
             // The model scene over the live boot pane 0 (same pane use_terminal
             // caches), so scroll_view reads the pane the routing addresses.
-            let handle = use_terminal().pane_handle(0);
+            let handle = use_terminal().host.pane_handle(0);
             let mut scene = Scene::External(
                 ExternalNode::new(Box::new(SpragPaneExternal::new(handle))).with_tag(pane_tag(0)),
             );
