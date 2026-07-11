@@ -1011,6 +1011,50 @@
         "R112..R117 are LOCAL commits, NOT pushed (push consent owed). NEXT: push the stack, or continue. No open pinion blockers; no pinion change this round."
       ]
     },
+    "R118": {
+      "decision_summary": "Round 118: attach-mode tmux-mirror, Round 1 of a user-confirmed cost-no-object decomposition (Round 1 -> 2a -> 2b). END STATE: the GUI is a live mirror of the host's pane set in BOTH spawn and attach modes, built on ONE host-PaneId <-> tile-slot abstraction; attach mode stops forcing the GUI's fixed pane count onto the host (the R117 deferral). Round 1 lays the host-side notification rail the live mirror needs, and closes a latent bug on today's default wire path.\n\nThe gap: only the BOOT pane's on_dirty was wired to bump the shared SceneRevision. A mux-spawned pane -- the path the GUI already uses to reach pane_count > 1 -- got the plain Workspace::spawn (on_dirty = None), so its own output never bumped the revision, and neither did a pane-set change (spawn / close). A wire client long-polling scene/waitFor thus could not learn the host gained or lost a pane, and a 2nd pane's independent output under-notified the repaint poll (it repainted only when the boot pane also produced output).\n\nThe fix (host-side only, additive, reversible): WorkspaceExternal now holds the shared Arc<SceneRevision>, threaded through workspace_scene from the ONE token HostState observes. spawn creates the pane via spawn_with_dirty(..., bump_on_dirty(&revision)) so the new pane's output bumps the SAME revision the boot pane's does, then bumps once more for the set-change (a mirror learns the pane exists before its first output). close bumps for the set-shrink. The in-process Host path is untouched (Round 1 is wire / dispatch only). No pinion change.",
+      "changes_bullets": [
+        "Notification rail (sprag-host): WorkspaceExternal now holds the shared Arc<SceneRevision> (threaded through workspace_scene, cloned per scene-assembly from the one token HostState observes); its spawn / close are the only new writers of that token beyond the boot pane.",
+        "spawn wires the new pane with bump_on_dirty (spawn_with_dirty, not the plain spawn) so a mux-spawned pane's OWN output bumps the shared revision exactly as the boot pane's does, then bumps once for the set-grow; close bumps for the set-shrink.",
+        "Latent-bug closure on the default wire path: a 2nd (mux-spawned) pane's independent output now advances change-notification, so it repaints without waiting for the boot pane to also produce output."
+      ],
+      "verification_bullets": [
+        "cargo test --workspace green; clippy --workspace --all-targets clean; RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps clean; rustfmt clean. +4 host tests (54 in the host crate; the workspace suite is otherwise unchanged).",
+        "New unit + dispatch coverage: workspace tests assert spawn / close bump the revision deterministically and a mux-spawned pane's own printf output bumps it (race-free +2 over the pre-spawn baseline); an rpc test drives a mux spawn through the REAL dispatch and confirms it wakes a parked scene/waitFor.",
+        "Real-socket integration (tests/wire_client.rs, against a spawned sprag-term binary): a mux spawn over the OS socket + real /sprag_mux dispatch grows the set and advances the notification, AND the mux-spawned pane's own echoed output advances it (the latent-bug closure) -- both read via the non-blocking scene/revision, no parked-read hang risk."
+      ],
+      "impact_refs": [
+        "2",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "R118 = attach-mode tmux-mirror Round 1 of 3 (host notification rail). SceneRevision now bumps on ALL pane lifecycle (boot + mux spawn / close + every pane's output), not just the boot pane -- the live-mirror rail plus a latent 2nd-pane under-notification fix on the default wire path.",
+        "NEXT: Round 2a = the unified host-PaneId <-> tile-slot mirror abstraction (HostClient gains occupied-slot enumeration; WireHost gains the slot allocator + reconcile-from-panes-list; the boot count routed through the host so attach ADOPTS the host's set). Designed for the live-delta consumer from the start (no boot-only shortcut); then Round 2b feeds it live deltas.",
+        "Design invariant for 2b: the poll thread never touches reactive Signals -- it mutates a plain Arc<Mutex<MirrorState>> + requests repaint; a UI-thread Effect reconciles the dock topology Signal + focus to the mirror slot set. pinion change: none (the 8 static slots are reused + R1020 refreshes focus per frame). MAX_PANES = 8 is the honest attach bound.",
+        "R118 is a LOCAL commit, NOT pushed (push consent owed). Everything through R117 is already on origin/main; no open pinion blockers, no pinion change this round."
+      ],
+      "publishable_decision_summary": "Round 118: attach-mode tmux-mirror, Round 1 of a user-confirmed cost-no-object decomposition (Round 1 -> 2a -> 2b). END STATE: the GUI is a live mirror of the host's pane set in BOTH spawn and attach modes, built on ONE host-PaneId <-> tile-slot abstraction; attach mode stops forcing the GUI's fixed pane count onto the host (the R117 deferral). Round 1 lays the host-side notification rail the live mirror needs, and closes a latent bug on today's default wire path.\n\nThe gap: only the BOOT pane's on_dirty was wired to bump the shared SceneRevision. A mux-spawned pane -- the path the GUI already uses to reach pane_count > 1 -- got the plain Workspace::spawn (on_dirty = None), so its own output never bumped the revision, and neither did a pane-set change (spawn / close). A wire client long-polling scene/waitFor thus could not learn the host gained or lost a pane, and a 2nd pane's independent output under-notified the repaint poll (it repainted only when the boot pane also produced output).\n\nThe fix (host-side only, additive, reversible): WorkspaceExternal now holds the shared Arc<SceneRevision>, threaded through workspace_scene from the ONE token HostState observes. spawn creates the pane via spawn_with_dirty(..., bump_on_dirty(&revision)) so the new pane's output bumps the SAME revision the boot pane's does, then bumps once more for the set-change (a mirror learns the pane exists before its first output). close bumps for the set-shrink. The in-process Host path is untouched (Round 1 is wire / dispatch only). No pinion change.",
+      "publishable_changes_bullets": [
+        "Notification rail (sprag-host): WorkspaceExternal now holds the shared Arc<SceneRevision> (threaded through workspace_scene, cloned per scene-assembly from the one token HostState observes); its spawn / close are the only new writers of that token beyond the boot pane.",
+        "spawn wires the new pane with bump_on_dirty (spawn_with_dirty, not the plain spawn) so a mux-spawned pane's OWN output bumps the shared revision exactly as the boot pane's does, then bumps once for the set-grow; close bumps for the set-shrink.",
+        "Latent-bug closure on the default wire path: a 2nd (mux-spawned) pane's independent output now advances change-notification, so it repaints without waiting for the boot pane to also produce output."
+      ],
+      "publishable_verification_bullets": [
+        "cargo test --workspace green; clippy --workspace --all-targets clean; RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps clean; rustfmt clean. +4 host tests (54 in the host crate; the workspace suite is otherwise unchanged).",
+        "New unit + dispatch coverage: workspace tests assert spawn / close bump the revision deterministically and a mux-spawned pane's own printf output bumps it (race-free +2 over the pre-spawn baseline); an rpc test drives a mux spawn through the REAL dispatch and confirms it wakes a parked scene/waitFor.",
+        "Real-socket integration (tests/wire_client.rs, against a spawned sprag-term binary): a mux spawn over the OS socket + real /sprag_mux dispatch grows the set and advances the notification, AND the mux-spawned pane's own echoed output advances it (the latent-bug closure) -- both read via the non-blocking scene/revision, no parked-read hang risk."
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "R118 = attach-mode tmux-mirror Round 1 of 3 (host notification rail). SceneRevision now bumps on ALL pane lifecycle (boot + mux spawn / close + every pane's output), not just the boot pane -- the live-mirror rail plus a latent 2nd-pane under-notification fix on the default wire path.",
+        "NEXT: Round 2a = the unified host-PaneId <-> tile-slot mirror abstraction (HostClient gains occupied-slot enumeration; WireHost gains the slot allocator + reconcile-from-panes-list; the boot count routed through the host so attach ADOPTS the host's set). Designed for the live-delta consumer from the start (no boot-only shortcut); then Round 2b feeds it live deltas.",
+        "Design invariant for 2b: the poll thread never touches reactive Signals -- it mutates a plain Arc<Mutex<MirrorState>> + requests repaint; a UI-thread Effect reconciles the dock topology Signal + focus to the mirror slot set. pinion change: none (the 8 static slots are reused + R1020 refreshes focus per frame). MAX_PANES = 8 is the honest attach bound.",
+        "R118 is a LOCAL commit, NOT pushed (push consent owed). Everything through R117 is already on origin/main; no open pinion blockers, no pinion change this round."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
