@@ -5,20 +5,23 @@
 //! observation/interaction path; the north star (an AI reading/driving the
 //! terminal as *data*) is the headless `sprag-host` RPC path, which needs none of
 //! this. This binding is a faithful pixel projection of the *same* cell data the
-//! AI reads — it consumes the host's per-pane cell DATA query
-//! ([`sprag_host::pane_cells`]) and assembles the node itself
-//! ([`sprag_host::pane_view_scene_from_cells`], the topology-B wire seam), then
-//! arranges the panes (the interactive [`split`] layout — reactive ratios the
-//! headless host has no use for) — and routes keystrokes through the *same*
-//! [`SpragPaneExternal`]
-//! `invoke("key", ...)` wire the AI drives (§2 #2).
+//! AI reads — it is a CLIENT of the host ([`HostClient`](sprag_host::HostClient)):
+//! by default a wire client of a `sprag-term` host PROCESS ([`wire::WireHost`], the
+//! topology-B default), or an in-process [`Host`](sprag_host::Host) under
+//! `SPRAG_GUI_HOST=inprocess`. It reads each pane's cell DATA through that client,
+//! assembles the node itself ([`sprag_host::pane_view_scene_from_cells`], the
+//! Screen-free wire seam), arranges the panes (the interactive [`split`] layout —
+//! reactive ratios the headless host has no use for), and routes keystrokes as
+//! client SENDs to the host
+//! ([`HostClient::send_key`](sprag_host::HostClient::send_key) — the same key->PTY
+//! encoder the AI's `scene/invoke` drives, §2 #2).
 //!
 //! ## Multi-pane (R36): N tiled panes, one focused
 //!
 //! [`pane_count`](terminal::pane_count) panes (default 2, `SPRAG_GUI_PANES=<n>`,
 //! capped at [`MAX_PANES`](terminal::MAX_PANES)) are spawned at boot and tiled
 //! left-to-right. Each pane has a single identity [`pane_tag`]
-//! that is its model-scene input External tag (input routing), its focus tag, its
+//! that is its focus tag, its
 //! paint-scene Container tag (the pinion R1012
 //! [`use_pane_viewport_size`](pinion_core::use_pane_viewport_size) rect target +
 //! framework focus ring + click-focus anchor), and its per-pane reflow Effect tag
@@ -27,10 +30,13 @@
 //! pane's paint Container is marked `with_focusable(true)` in
 //! [`sprag_host::pane_view_scene_from_cells`] and the shell collects the Tab order each frame
 //! via [`Scene::collect_focusable_tags`](pinion_core::Scene::collect_focusable_tags)
-//! — there is no binding-side `focusable_tags()` list. The model scene is `Container([pane0, ...panesN])`
-//! ([`WidgetCore::create_external`] is pane 0; [`WidgetCore::create_extra_externals`]
-//! the rest), so [`WidgetCore::apply_key`] reaches the focused pane by
-//! `find_external_with_tag_mut(focused)`. `Ctrl+PageUp/Down` cycles focus; the
+//! — there is no binding-side `focusable_tags()` list. Topology B (R115c): the GUI
+//! serves NO per-pane INPUT external — [`WidgetCore::apply_key`] maps the focused
+//! `pane_tag` to its tile index and SENDS to the host
+//! ([`HostClient::send_key`](sprag_host::HostClient::send_key)); the model scene
+//! holds only the GUI's own interaction externals (scroll / split / dock), the
+//! primary ([`WidgetCore::create_external`]) being pane 0's scrollbar.
+//! `Ctrl+PageUp/Down` cycles focus; the
 //! framework draws the focus ring around the active pane. Per-pane GUI state
 //! (scroll offset, IME preedit) is keyed by tile index ([`input`]).
 //!
@@ -149,19 +155,18 @@
 //!
 //! ## Input (R27, R36): keystroke -> the focused pane's PTY
 //!
-//! The model scene is `Container([pane0, ...panesN])`, each pane an
-//! [`SpragPaneExternal`] tagged its [`pane_tag`] (built in
-//! [`WidgetCore::create_external`] / [`WidgetCore::create_extra_externals`] over each
-//! pane's `SessionHandle`). Each pane is a focusable tab stop (its paint Container
-//! is `with_focusable(true)`, R1020 scene-derived focus — above), so
-//! [`WidgetCore::apply_key`] routes a focused keystroke + W3C modifiers to the
-//! **focused** pane's External (`find_external_with_tag_mut(focused)`) via
-//! `invoke("key", {key, ctrl, alt, shift, super})` — the *same* `scene/invoke`
-//! channel the RPC client uses, where the sprag-owned encoder
-//! ([`sprag_input`](https://docs.rs/sprag-input)) turns the key into PTY bytes
-//! (R2.6). Returning `true` swallows Escape/Tab from the shell's quit/traverse
-//! defaults so a full-screen TUI (vim) receives them. `Ctrl+PageUp/Down` is
-//! reserved to cycle focus between tiles (a pinion `focus_request`, not the PTY).
+//! Topology B (R115c): keystrokes do NOT flow through a GUI-owned pane External —
+//! they are client SENDs to the host. Each pane is a focusable tab stop (its paint
+//! Container is `with_focusable(true)`, R1020 scene-derived focus — above), so
+//! [`WidgetCore::apply_key`] takes the **focused** `pane_tag`, maps it to its tile
+//! index, and calls [`HostClient::send_key`](sprag_host::HostClient::send_key)`(i,
+//! key, mods)`. The host encodes the W3C key + modifiers to PTY bytes with the
+//! sprag-owned encoder ([`sprag_input`](https://docs.rs/sprag-input)) (R2.6) — the
+//! *same* SSOT the RPC `scene/invoke` path uses, so the human keyboard and an AI
+//! peer encode identically. Returning `true` swallows Escape/Tab from the shell's
+//! quit/traverse defaults so a full-screen TUI (vim) receives them.
+//! `Ctrl+PageUp/Down` is reserved to cycle focus between tiles (a pinion
+//! `focus_request`, not the PTY).
 //!
 //! IME-composed input (R31, R34) — Hangul, CJK — arrives not as keystrokes but
 //! as [`WidgetCore::apply_composition`] events targeting the focused pane. The
@@ -198,6 +203,7 @@ mod scrollbar;
 mod split;
 mod terminal;
 mod view;
+mod wire;
 
 use pinion_a11y::AccessNode;
 use pinion_core::command::Command;
@@ -217,7 +223,6 @@ use pinion_widget_paint::dock::{
     dock_outer_preview_overlay, dock_redock_preview_tint, resolve_drop,
 };
 use pinion_widget_paint::splitter::SplitterExternal;
-use sprag_host::SpragPaneExternal;
 use std::rc::Rc;
 
 use crate::input::{route_composition, route_key};
@@ -258,17 +263,19 @@ impl WidgetCore for TerminalViewer {
     type State = ();
     type Event = ();
 
-    /// The primary input External is **pane 0**'s [`SpragPaneExternal`] (tagged
-    /// [`Self::tag`] == `pane_tag(0)`) over its live `SessionHandle`; panes 1.. are
-    /// the [`Self::create_extra_externals`] extras, so the shell's model scene is
-    /// `Container([pane0, ...panesN])`. The shell runs this inside the root Owner
-    /// scope, so [`use_terminal`] resolves the (already-booted) panes here.
-    /// [`Self::apply_key`] routes a keystroke to the FOCUSED pane's External
-    /// (`find_external_with_tag_mut(pane_tag)` -> `invoke("key", ...)`) — the
-    /// **same** wire the headless RPC path drives (one input substrate, §2 #2;
-    /// key->PTY-byte encoding is sprag's, R2.6).
+    /// The primary External is **pane 0**'s draggable scrollbar (tagged
+    /// [`Self::tag`] == [`pane_scrollbar_tag`]`(0)`); panes 1.. scrollbars + the
+    /// splitters + dock-panel handles are the [`Self::create_extra_externals`]
+    /// extras.
+    ///
+    /// Topology B (R115c): the GUI serves NO pane-INPUT external on its own socket —
+    /// keyboard / IME are client SENDs to the host ([`Self::apply_key`] ->
+    /// `HostClient::send_key` / `send_text`), and an AI peer drives the HOST's own
+    /// pane input surface directly. So the model scene holds only the GUI's own
+    /// interaction externals (scroll / split / dock); the retired `SpragPaneExternal`
+    /// + `pane_handle` (a live `SessionHandle` cannot cross the wire) are gone.
     fn create_external() -> Box<dyn External> {
-        Box::new(SpragPaneExternal::new(use_terminal().host.pane_handle(0)))
+        crate::scrollbar::pane_scrollbar_external(0).handle
     }
 
     /// Boot the live terminal (spawn the N pane PTYs + wire each `on_dirty` ->
@@ -293,15 +300,11 @@ impl WidgetCore for TerminalViewer {
                 pinion_core::focus_request::request(pane_tag(0));
                 BootFocusSeed
             });
-        // Panes 1.. are the extra input Externals (pane 0 is the primary).
-        let mut externals: Vec<ExtraExternal> = (1..terminal.host.pane_count())
-            .map(|i| {
-                ExtraExternal::new(
-                    pane_tag(i),
-                    Box::new(SpragPaneExternal::new(terminal.host.pane_handle(i))),
-                )
-            })
-            .collect();
+        // Topology B (R115c): NO per-pane INPUT externals in the GUI model scene —
+        // input is a client SEND to the host (keyboard via `HostClient::send_key`,
+        // an AI peer via the host's own pane surface). The externals assembled below
+        // are the GUI's OWN interactions: splitters, scrollbars, dock-panel handles.
+        let mut externals: Vec<ExtraExternal> = Vec::new();
         // The draggable dividers: one `SplitterExternal` per Split in the LIVE dock
         // topology ([`split::use_dock_topology`]), keyed on the Split's stable id —
         // which IS the painted `SplitterStyle` tag the view's `view_dock_surface`
@@ -330,7 +333,10 @@ impl WidgetCore for TerminalViewer {
         // shell's pointer router routes a press on the painted track to it. Like
         // the splitters, pointer-only (never focusable); the caller-owned
         // `ScrollState` authority (pinion R1032) needs no mirror.
-        externals.extend((0..terminal.host.pane_count()).map(scrollbar::pane_scrollbar_external));
+        // Pane 0's scrollbar is the PRIMARY external ([`Self::create_external`]); the
+        // rest (1..) are extras, so the drag-scrollbar set stays complete without a
+        // duplicate registration at `pane_scrollbar_tag(0)`.
+        externals.extend((1..terminal.host.pane_count()).map(scrollbar::pane_scrollbar_external));
         // Drag-to-dock / tear-off (pinion R1081/R1084/R1094 §5.51, P2/PR-31): one R742
         // `DockPanelExternal` per pane, registered at the panel ROOT tag
         // (`split::panel_id(i)` = the `view_dock_panel` root the `view_dock_surface`
@@ -538,12 +544,13 @@ impl WidgetCore for TerminalViewer {
         true
     }
 
-    /// Pane 0's identity tag — the primary input External
-    /// ([`Self::create_external`]) is tagged with it (the model-scene primary's
-    /// tag is `V::tag()`), so it joins panes 1.. (the extras) under one uniform
-    /// [`pane_tag`] addressing.
+    /// The primary External's tag ([`Self::create_external`] is pane 0's scrollbar):
+    /// the model-scene primary is registered at `V::tag()`, so the shell routes a
+    /// press on pane 0's painted scrollbar track to it. Pane focus is paint-derived
+    /// (R1020 `collect_focusable_tags` over the `with_focusable` pane Containers), so
+    /// it does NOT depend on this tag.
     fn tag() -> &'static str {
-        pane_tag(0)
+        pane_scrollbar_tag(0)
     }
 
     fn read_state(_scene: &Scene) {}

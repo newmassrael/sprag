@@ -65,7 +65,7 @@ const FULL_TEXT_SLOT: &str = "full_text";
 ///
 /// This is the key->PTY SSOT shared by the RPC input surface
 /// ([`SpragPaneExternal`]'s `key` action, which parses the JSON/scene wire) and the
-/// in-process display client ([`Host::send_key`](crate::Host::send_key), which calls
+/// in-process display client ([`HostClient::send_key`](crate::HostClient::send_key), which calls
 /// this directly with typed args) — so the human keyboard path and the AI
 /// `scene/invoke` path encode IDENTICALLY.
 #[must_use]
@@ -151,7 +151,7 @@ impl SpragPaneExternal {
     /// serialization never holds the producer's screen. The facts flatten into the
     /// frame from the ONE [`PaneScrollFacts`] type (its field names ARE the wire
     /// keys), and are read through [`PaneScrollFacts::from_screen`] — the same
-    /// population the in-process [`Host::pane_scroll_facts`](crate::Host::pane_scroll_facts)
+    /// population the in-process [`HostClient::pane_scroll_facts`](crate::HostClient::pane_scroll_facts)
     /// uses, so the two clients cannot disagree on the frame's non-cell shape.
     ///
     /// `offset == 0` is the live view; a larger offset windows into history

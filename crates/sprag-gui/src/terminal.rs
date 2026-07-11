@@ -2,11 +2,12 @@
 //! derivation — everything about *creating and holding* the live pane, spawned
 //! at boot off the pure `view`. See the crate-root module docs for the seams.
 
+use crate::wire::WireHost;
 use crate::{WINDOW_H, WINDOW_W};
 use pinion_core::CellMetric;
 use pinion_core::reactive::Owner;
 use pinion_core::use_repaint_sink;
-use sprag_host::Host;
+use sprag_host::{Host, HostClient};
 use sprag_terminal::CommandBuilder;
 use std::rc::Rc;
 
@@ -176,14 +177,19 @@ fn pane_command() -> (CommandBuilder, String) {
     }
 }
 
-/// The booted terminal MODEL the GUI holds each frame: the [`Host`] it is a client
-/// of (the single `Workspace` owner, now in `sprag-host` and shared with the
-/// headless server — the GUI reaches panes ONLY through its typed protocol,
-/// topology B) plus the client's own rendering config — the once-measured cell
-/// metric and the glyph size it was measured at (read each frame by `view`, never
-/// re-measured; deliberately client-side, not host state).
+/// The booted terminal MODEL the GUI holds each frame: the [`HostClient`] it reaches
+/// the panes through, plus the client's own rendering config.
+///
+/// The client is a `Box<dyn HostClient>` chosen at boot (topology B): by default a
+/// [`WireHost`] — a pure wire client of a `sprag-term` host PROCESS (the GUI owns no
+/// `Workspace` / PTYs) — or, under `SPRAG_GUI_HOST=inprocess`, an in-process
+/// [`Host`] (the debug / test escape hatch). Every pane call site reaches the panes
+/// ONLY through this trait object, so the frontend code is identical across the two.
+/// The rendering config — the once-measured cell metric and the glyph size it was
+/// measured at — is read each frame by `view`, never re-measured; deliberately
+/// client-side, not host state.
 pub(crate) struct TerminalView {
-    pub(crate) host: Host,
+    pub(crate) host: Box<dyn HostClient>,
     pub(crate) metric: CellMetric,
     pub(crate) font_size_px: u32,
 }
@@ -219,11 +225,16 @@ pub(crate) fn cell_px(metric: CellMetric, cols: u16, rows: u16) -> (u32, u32) {
 }
 
 /// Self-create (once) the live terminal: measure the resolved monospace cell
-/// via the R1003 seam, derive `(cols, rows)` from the window + cell (§3), and
-/// spawn the [`pane_count`] tiled panes, each wired to the shell's
-/// [`RepaintSink`](pinion_core::RepaintSink) (the R23 `on_dirty` -> R999 seam) so
-/// any pane's output wakes the window. Spawns the PTYs on first call — therefore
-/// invoked from `create_extra_externals` (boot), never the pure `view`.
+/// via the R1003 seam, derive `(cols, rows)` from the window + cell (§3), and boot
+/// the [`HostClient`] the GUI reaches its [`pane_count`] panes through.
+///
+/// By default (topology B) that is a [`WireHost`] — a wire client of a `sprag-term`
+/// host PROCESS the GUI spawns (or attaches to via `SPRAG_GUI_HOST_SOCK`); its poll
+/// thread wakes the window on host output. Under `SPRAG_GUI_HOST=inprocess` it is an
+/// in-process [`Host`] whose panes wire their `on_dirty` straight to the shell's
+/// [`RepaintSink`](pinion_core::RepaintSink) (the R23 -> R999 seam). Either way this
+/// boots on first call — therefore invoked from `create_extra_externals` (boot),
+/// never the pure `view`.
 ///
 /// [`use_repaint_sink`] is resolved *before* the `Owner::cache` factory so the
 /// factory never re-enters `Owner::cache` (the nested-factory guard).
@@ -247,24 +258,75 @@ pub(crate) fn use_terminal() -> Rc<TerminalView> {
         // computing each pane's share window-side would duplicate pinion's flex
         // resolution (the SSOT trap the per-pane `use_pane_viewport_size` avoids).
         let (cols, rows) = grid_dims((WINDOW_W, WINDOW_H), metric);
-        let host = Host::new((cols, rows));
-        for _ in 0..pane_count() {
+        let host: Box<dyn HostClient> = if use_inprocess_host() {
+            // Escape hatch (`SPRAG_GUI_HOST=inprocess`): the Workspace lives IN the
+            // GUI process. Kept for tests / debugging; NOT the default. Each pane's
+            // `on_dirty` repaints the window directly (the R23 -> R999 seam).
+            let host = Host::new((cols, rows));
+            for _ in 0..pane_count() {
+                let sink = sink.clone();
+                let (command, label) = pane_command();
+                host.spawn(
+                    command,
+                    label,
+                    cols,
+                    rows,
+                    Some(Box::new(move || sink.request_repaint())),
+                )
+                .expect("spawn a sprag-gui pane");
+            }
+            Box::new(host)
+        } else {
+            // Default (topology B): a pure wire client of a `sprag-term` host process
+            // (spawned as a child, or attached via `SPRAG_GUI_HOST_SOCK`). Its panes'
+            // output repaints the window through the poll thread's `on_change`.
             let sink = sink.clone();
-            let (command, label) = pane_command();
-            host.spawn(
-                command,
-                label,
-                cols,
-                rows,
-                Some(Box::new(move || sink.request_repaint())),
+            Box::new(
+                WireHost::spawn_or_attach(
+                    pane_argv(),
+                    cols,
+                    rows,
+                    pane_count(),
+                    Box::new(move || sink.request_repaint()),
+                )
+                .expect("boot the sprag-term wire host"),
             )
-            .expect("spawn a sprag-gui pane");
-        }
+        };
         TerminalView {
             host,
             metric,
             font_size_px,
         }
+    })
+}
+
+/// Whether to boot the in-process [`Host`] instead of the default wire client.
+///
+/// `SPRAG_GUI_HOST=inprocess` (case-insensitive) forces it; any other explicit value
+/// forces the wire client. When UNSET the default splits by build: production boots
+/// the [`WireHost`] (topology B), but a **unit test** boots the in-process [`Host`]
+/// — a test process cannot spawn a real `sprag-term` child, and the wire path is
+/// covered by the live end-to-end drive, not the unit suite. The env override wins
+/// in both builds, so a test can still opt into either explicitly.
+fn use_inprocess_host() -> bool {
+    match std::env::var("SPRAG_GUI_HOST") {
+        Ok(value) => value.trim().eq_ignore_ascii_case("inprocess"),
+        Err(_) => cfg!(test),
+    }
+}
+
+/// The initial pane command as a wire argv (`[program, args…]`), or `None` for the
+/// host's default `$SHELL`. `SPRAG_GUI_CMD` (whitespace-split; no shell quoting) is
+/// the GUI's spec — parity with `pane_command`'s policy — passed to the host's
+/// `--`/mux spawn; `None` lets `sprag-term` apply the shared `default_shell_command`
+/// SSOT, so the shell fallback is never re-encoded here.
+fn pane_argv() -> Option<Vec<String>> {
+    let spec = std::env::var("SPRAG_GUI_CMD").unwrap_or_default();
+    split_command(&spec).map(|(program, args)| {
+        let mut argv = Vec::with_capacity(args.len() + 1);
+        argv.push(program);
+        argv.extend(args);
+        argv
     })
 }
 
@@ -279,7 +341,7 @@ pub(crate) fn use_terminal() -> Rc<TerminalView> {
 pub(crate) fn seed_terminal(host: Host) {
     let owner = Owner::current().expect("seed_terminal() requires an active Owner scope");
     owner.cache(SESSION_KEY, || TerminalView {
-        host,
+        host: Box::new(host),
         metric: CellMetric::DEFAULT,
         font_size_px: FONT_SIZE_PX,
     });

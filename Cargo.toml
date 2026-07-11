@@ -80,6 +80,10 @@ portable-pty = "0.9"
 # policy): a dedicated `Signals::forever` thread flips TransportControl
 # on/off. Already in the tree transitively; used directly here, no unsafe.
 signal-hook = "0.3"
+# PR_SET_PDEATHSIG: reap a GUI-spawned sprag-term child if the GUI dies
+# ungracefully (kill-on-Drop covers the graceful path). Version tracks the
+# already-resolved transitive (via signal-hook).
+libc = "0.2"
 
 # JSON parsing for tests that assert on the scene/snapshot RPC wire.
 serde_json = "1"

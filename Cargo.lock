@@ -3479,12 +3479,14 @@ dependencies = [
 name = "sprag-gui"
 version = "0.0.1"
 dependencies = [
+ "libc",
  "pinion-a11y",
  "pinion-core",
  "pinion-forge",
  "pinion-runtime",
  "pinion-shell",
  "pinion-widget-paint",
+ "serde",
  "serde_json",
  "sprag-grid",
  "sprag-host",
@@ -3539,6 +3541,7 @@ version = "0.0.1"
 dependencies = [
  "pinion-rpc",
  "pinion-rpc-transport",
+ "serde_json",
  "signal-hook",
  "tracing",
 ]

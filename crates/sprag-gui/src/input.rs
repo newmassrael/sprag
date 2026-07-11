@@ -135,7 +135,7 @@ fn window_chord(key: &str, modifiers: Modifiers) -> Option<WindowChord> {
 /// (pinion R1071 / PINION-PR27 — a held `Ctrl+Shift+Enter` no longer dock-then-undocks),
 /// while scrollback + PTY keys repeat normally. Otherwise the key + W3C modifiers
 /// are SENT to the focused pane through the host client
-/// ([`Host::send_key`](sprag_host::Host::send_key)), which encodes them
+/// ([`HostClient::send_key`](sprag_host::HostClient::send_key)), which encodes them
 /// to PTY bytes via the shared host SSOT ([`sprag_host::send_key`]) — the same
 /// key->PTY encoder the AI `scene/invoke` path uses (§2 #2; encoding is sprag's,
 /// R2.6). Topology B: the GUI's keyboard is a client SEND, not a mutation of its
@@ -214,7 +214,7 @@ fn to_input_mods(m: Modifiers) -> sprag_input::Modifiers {
 ///   pane's overlay — NOT written to the PTY.
 /// - [`Commit`](CompositionEvent::Commit): clear the overlay and write the text
 ///   **literally** to the focused pane through the host client
-///   ([`Host::send_text`](sprag_host::Host::send_text)) — the same
+///   ([`HostClient::send_text`](sprag_host::HostClient::send_text)) — the same
 ///   text->PTY seam the AI peer drives, bypassing the key encoder. An empty Commit
 ///   is the cancel-shaped end (clearing is the whole job; no write).
 ///

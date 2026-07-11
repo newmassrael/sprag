@@ -1,48 +1,48 @@
 //! The host — the single [`Workspace`] owner, used two ways.
 //!
-//! [`Host`] owns the one live [`Workspace`] (and thus the PTYs) and serves a
-//! typed client protocol over it: cell DATA, per-frame scroll facts, resize
-//! control, INPUT (`send_key` / `send_text`), input handles, and pane text.
-//! This is the single home for "who owns the panes", shared by both frontends
-//! (the north-star's two-frontend platform, [DESIGN.md §5]):
+//! [`Host`] owns the one live [`Workspace`] (and thus the PTYs) and serves the
+//! typed [`HostClient`] protocol over it: cell DATA, per-frame scroll facts,
+//! resize control, INPUT (`send_key` / `send_text`), input handles, and pane
+//! text. This is the single home for "who owns the panes", shared by both
+//! frontends (the north-star's two-frontend platform, [DESIGN.md §5]):
 //!
-//! * the **GUI** (`sprag-gui`) holds a `Host` in-process — it boots its tiled
-//!   panes through [`Host::spawn`] and reaches every pane ONLY through the
-//!   methods below (no direct `Workspace` access), so the display client is
-//!   structurally a client of this host;
-//! * the **headless server** (`sprag-term`) boots its pane through the same
-//!   `Host` and wraps it in [`HostState`](crate::HostState) to serve the
-//!   scene-as-data RPC surface an AI peer drives.
+//! * the **GUI** (`sprag-gui`) reaches every pane through a `Box<dyn HostClient>`
+//!   — a wire client (`WireHost`) attached to a `sprag-term` host PROCESS — so the
+//!   display client is a structurally-separate client of this host (topology B);
+//! * the **headless server** (`sprag-term`) boots its pane through a `Host`
+//!   in-process and wraps it in [`HostState`](crate::HostState) to serve the
+//!   scene-as-data RPC surface an AI peer (and the GUI) drives.
 //!
-//! ## The protocol (shaped like the eventual wire)
+//! ## The protocol (shaped like the wire)
 //!
-//! * cell DATA ([`pane_cells`](Host::pane_cells)) + the non-cell per-frame facts
-//!   that ride alongside it ([`pane_scroll_facts`](Host::pane_scroll_facts));
-//! * resize control ([`resize`](Host::resize)) + grid geometry
-//!   ([`pane_grid_size`](Host::pane_grid_size));
+//! [`HostClient`] is that protocol as a Rust trait, with two impls: the
+//! in-process [`Host`] (below) and the GUI's `WireHost` (the same surface over an
+//! RPC socket). Its methods are:
+//!
+//! * cell DATA ([`pane_cells`](HostClient::pane_cells)) + the non-cell per-frame
+//!   facts that ride alongside it ([`pane_scroll_facts`](HostClient::pane_scroll_facts));
+//! * resize control ([`resize`](HostClient::resize)) + grid geometry
+//!   ([`pane_grid_size`](HostClient::pane_grid_size));
 //! * INPUT — the display client's keyboard / IME are client SENDs
-//!   ([`send_key`](Host::send_key) / [`send_text`](Host::send_text)), encoded by
-//!   the shared [`crate::send_key`] / [`crate::send_text`] SSOT (the same encoder
-//!   the RPC `scene/invoke` path uses); only the TRANSPORT (an in-process handle
-//!   write today, an RPC send tomorrow) is a later step;
-//! * pane text ([`pane_full_text`](Host::pane_full_text) /
-//!   [`pane_command_label`](Host::pane_command_label)) for the a11y tree.
+//!   ([`send_key`](HostClient::send_key) / [`send_text`](HostClient::send_text)),
+//!   encoded by the shared [`crate::send_key`] / [`crate::send_text`] SSOT (the
+//!   same encoder the RPC `scene/invoke` path uses); the wire client's
+//!   implementation sends them as an RPC `scene/invoke` to the host's pane input
+//!   surface, the in-process `Host` writes the PTY directly;
+//! * pane text ([`pane_full_text`](HostClient::pane_full_text) /
+//!   [`pane_command_label`](HostClient::pane_command_label)) for the a11y tree.
 //!
-//! These are wire-shaped: their call sites stay stable across the transport step
-//! (topology B — the GUI becomes a pure wire client of this host). The ONE
-//! exception is [`pane_handle`](Host::pane_handle) — it hands out a live
-//! [`SessionHandle`] that cannot cross a wire; it exists only to build the GUI's
-//! own RPC input `SpragPaneExternal`s (see the GUI `main.rs`), and it retires when
-//! input clients attach to the host instead of the GUI.
+//! The ONE method NOT on the trait is [`pane_handle`](Host::pane_handle) — it
+//! hands out a live [`SessionHandle`] that cannot cross a wire; it stays an
+//! inherent [`Host`] method used only by in-process input surfaces, and retires as
+//! input clients attach to the host.
 //!
 //! ## Ownership
 //!
 //! The `Workspace` lives behind `Arc<Mutex<_>>` — the shape [`HostState`](crate::HostState) and the
 //! plugin/control externals already share (a background plugin run reads a pane
-//! from a worker thread, so the pool is genuinely shared). The in-process GUI is
-//! single-threaded, so its per-frame reads take an uncontended lock; the same
-//! `Arc` clone reaches [`workspace_scene`](crate::workspace_scene). Presentation
-//! (cell metric, font size) is NOT here — that is the display client's own state.
+//! from a worker thread, so the pool is genuinely shared). Presentation (cell
+//! metric, font size) is NOT here — that is the display client's own state.
 
 use std::sync::{Arc, Mutex};
 
@@ -57,17 +57,17 @@ use crate::external::lock;
 /// buffer but ride ALONGSIDE it in one pane-frame: the scrollback depth (the
 /// scrollbar extent + the top-anchored offset math) and the visible row count
 /// (one scrollback page). Host-owned; over the wire these travel WITH the
-/// [`pane_cells`](Host::pane_cells) buffer as one message (not a separate
+/// [`pane_cells`](HostClient::pane_cells) buffer as one message (not a separate
 /// round-trip). Named "facts", not "dims", so it is never confused with the grid
-/// geometry ([`pane_grid_size`](Host::pane_grid_size)) — `scrollback_len` is a
-/// history depth, not a dimension.
+/// geometry ([`pane_grid_size`](HostClient::pane_grid_size)) — `scrollback_len` is
+/// a history depth, not a dimension.
 ///
 /// This is the ONE definition of the frame's non-cell field set: the in-process
-/// client reads it via [`Host::pane_scroll_facts`], and the wire `cells` action
-/// ([`SpragPaneExternal::read_cells`](crate::pane)) flattens the SAME type into
-/// its JSON frame (serde-derived), so the field names + wire keys cannot drift
-/// between the two clients. `Serialize`/`Deserialize` for the wire; `Eq` so a test
-/// can compare two reads.
+/// client reads it via [`Host::pane_scroll_facts`](HostClient::pane_scroll_facts),
+/// and the wire `cells` action ([`SpragPaneExternal::read_cells`](crate::pane))
+/// flattens the SAME type into its JSON frame (serde-derived), so the field
+/// names + wire keys cannot drift between the two clients. `Serialize` /
+/// `Deserialize` for the wire; `Eq` so a test can compare two reads.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PaneScrollFacts {
     pub scrollback_len: usize,
@@ -76,9 +76,9 @@ pub struct PaneScrollFacts {
 
 impl PaneScrollFacts {
     /// Read the non-cell facts from a live `screen` — the SINGLE population site,
-    /// shared by [`Host::pane_scroll_facts`] and the wire `cells` action, so the
-    /// two never disagree on how a fact is derived (adding a fact edits only here +
-    /// the struct).
+    /// shared by [`Host::pane_scroll_facts`](HostClient::pane_scroll_facts) and the
+    /// wire `cells` action, so the two never disagree on how a fact is derived
+    /// (adding a fact edits only here + the struct).
     pub(crate) fn from_screen(screen: &Screen) -> Self {
         Self {
             scrollback_len: screen.scrollback_len(),
@@ -87,10 +87,66 @@ impl PaneScrollFacts {
     }
 }
 
-/// The single [`Workspace`] owner + typed client protocol (topology B). See the
-/// module docs for the wire-shape + ownership notes. Constructed empty
-/// ([`new`](Host::new)) and populated with [`spawn`](Host::spawn); both frontends
-/// boot their panes this way and reach them only through the methods below.
+/// The typed client protocol a display client reaches the host's panes through —
+/// the topology-B wire contract expressed as a trait, with two impls:
+///
+/// * the in-process [`Host`] (this crate) — direct `Arc<Mutex<Workspace>>` access;
+/// * the GUI's wire client (`sprag-gui`'s `WireHost`) — the SAME method surface
+///   over an RPC socket to a `sprag-term` host process.
+///
+/// The GUI holds a `Box<dyn HostClient>` and reaches every pane ONLY through these
+/// methods, so the frontend code is identical whether the `Workspace` lives in its
+/// own process (in-process) or another (wire) — that structural equivalence is the
+/// point of topology B. Each method takes a tile `index`
+/// (`0..`[`pane_count`](HostClient::pane_count)); a wire impl maps it to the host's
+/// [`PaneId`] internally.
+///
+/// [`Host::pane_handle`] is deliberately NOT on this trait: a live [`SessionHandle`]
+/// cannot cross a wire, so it stays an inherent `Host` method used only to build
+/// in-process input surfaces (retired as input clients attach to the host).
+pub trait HostClient {
+    /// The number of live panes.
+    fn pane_count(&self) -> usize;
+
+    /// Pane `index`'s cell DATA scrolled `offset_lines` rows up — the paint buffer
+    /// a client renders. `offset_lines == 0` is the live view; a larger offset
+    /// windows into scrollback (self-clamped to the retained depth).
+    fn pane_cells(&self, index: usize, offset_lines: usize) -> GridBuffer;
+
+    /// Pane `index`'s non-cell per-frame facts ([`PaneScrollFacts`]): scrollback
+    /// depth + visible rows.
+    fn pane_scroll_facts(&self, index: usize) -> PaneScrollFacts;
+
+    /// Pane `index`'s current grid `(cols, rows)` — the emulator screen size, which
+    /// tracks the last reflow target (the reflow no-op guard + an undock window's
+    /// intrinsic open size read it).
+    fn pane_grid_size(&self, index: usize) -> (u16, u16);
+
+    /// Resize pane `index`'s PTY (`TIOCSWINSZ`) + emulator — the reflow control path.
+    fn resize(&self, index: usize, cols: u16, rows: u16);
+
+    /// Send a W3C `key` + `mods` to pane `index` — the CLIENT input path. `true` if
+    /// it reached the PTY; `false` if the key is unencodable or the send failed.
+    #[must_use]
+    fn send_key(&self, index: usize, key: &str, mods: Modifiers) -> bool;
+
+    /// Write literal committed `text` to pane `index` — the IME-commit / paste
+    /// client path. Empty is a no-op success. `true` if it reached the PTY.
+    #[must_use]
+    fn send_text(&self, index: usize, text: &str) -> bool;
+
+    /// Pane `index`'s full text (scrollback + visible) — the a11y text SSOT.
+    fn pane_full_text(&self, index: usize) -> String;
+
+    /// Pane `index`'s command label (the a11y node name).
+    fn pane_command_label(&self, index: usize) -> String;
+}
+
+/// The single [`Workspace`] owner (topology B), and the **in-process** arm of the
+/// [`HostClient`] protocol. See the module docs for the wire-shape + ownership
+/// notes. Constructed empty ([`new`](Host::new)) and populated with
+/// [`spawn`](Host::spawn); the headless server boots its panes this way and serves
+/// them, while the GUI reaches an out-of-process `Host` through a wire client.
 pub struct Host {
     workspace: Arc<Mutex<Workspace>>,
 }
@@ -129,53 +185,63 @@ impl Host {
 
     /// The shared pane pool, for the scene-as-data assembly ([`workspace_scene`](crate::workspace_scene))
     /// and the control / plugin externals that hold their own `Arc` clone. The one
-    /// place the raw `Workspace` handle escapes; the typed methods are how a client
-    /// reaches panes.
+    /// place the raw `Workspace` handle escapes; the [`HostClient`] methods are how a
+    /// client reaches panes.
     #[must_use]
     pub fn workspace(&self) -> &Arc<Mutex<Workspace>> {
         &self.workspace
     }
 
-    /// The number of live panes.
+    /// Pane `index`'s cloneable I/O handle — the ONE non-wire-shaped method (module
+    /// docs), so it is NOT on [`HostClient`]. It hands out a live [`SessionHandle`]
+    /// to build the headless host's own RPC input `SpragPaneExternal`s; a display
+    /// client's OWN keyboard / IME go through [`HostClient::send_key`] /
+    /// [`HostClient::send_text`], NOT this handle.
     #[must_use]
-    pub fn pane_count(&self) -> usize {
+    pub fn pane_handle(&self, index: usize) -> SessionHandle {
+        self.with_pane(index, Pane::handle)
+    }
+
+    /// Run `f` over the pane at tile `index` under the workspace lock — the ONE place
+    /// "which pane?" resolves. The boot panes are spawned in order and never closed
+    /// this increment, so `index` (sourced from a pane / focus tag) is a hard in-range
+    /// invariant, not an `Option`. When a `close` path lands this becomes an
+    /// `Option`-returning lookup (flagged so it is not forgotten).
+    fn with_pane<R>(&self, index: usize, f: impl FnOnce(&Pane) -> R) -> R {
+        let workspace = lock(&self.workspace);
+        let pane = workspace
+            .panes()
+            .get(index)
+            .expect("pane index in range (boot panes spawned 0..pane_count, never closed)");
+        f(pane)
+    }
+}
+
+impl HostClient for Host {
+    fn pane_count(&self) -> usize {
         lock(&self.workspace).panes().len()
     }
 
-    /// Pane `index`'s cell DATA scrolled `offset_lines` rows up — the wire-contract
-    /// cell query ([`crate::pane_cells`]). The client never touches the session or
-    /// screen directly; it asks the host for cells.
-    #[must_use]
-    pub fn pane_cells(&self, index: usize, offset_lines: usize) -> GridBuffer {
+    fn pane_cells(&self, index: usize, offset_lines: usize) -> GridBuffer {
         self.with_pane(index, |pane| {
             crate::pane_cells(pane.session(), offset_lines)
         })
     }
 
-    /// Pane `index`'s non-cell per-frame facts ([`PaneScrollFacts`]): scrollback
-    /// depth + visible rows, read in one screen lock.
-    #[must_use]
-    pub fn pane_scroll_facts(&self, index: usize) -> PaneScrollFacts {
+    fn pane_scroll_facts(&self, index: usize) -> PaneScrollFacts {
         self.with_pane(index, |pane| {
             pane.session().with_screen(PaneScrollFacts::from_screen)
         })
     }
 
-    /// Pane `index`'s current grid `(cols, rows)` — the emulator screen size, which
-    /// tracks the last reflow target. The reflow no-op guard and an undock window's
-    /// intrinsic open size read it. (It reads the emulator, not the PTY winsize
-    /// directly; the two agree at steady state since [`resize`](Self::resize) keeps
-    /// them synced.)
-    #[must_use]
-    pub fn pane_grid_size(&self, index: usize) -> (u16, u16) {
+    fn pane_grid_size(&self, index: usize) -> (u16, u16) {
         self.with_pane(index, |pane| pane.session().dimensions())
     }
 
-    /// Resize pane `index`'s PTY (`TIOCSWINSZ`) + emulator — the reflow control
-    /// path. A closed / absent pane is TRACED and ignored (it cannot happen this
-    /// increment — boot panes never close — but the swallow is honest, not silent);
-    /// so is a winsize-ioctl failure.
-    pub fn resize(&self, index: usize, cols: u16, rows: u16) {
+    /// A closed / absent pane is TRACED and ignored (it cannot happen this increment
+    /// — boot panes never close — but the swallow is honest, not silent); so is a
+    /// winsize-ioctl failure.
+    fn resize(&self, index: usize, cols: u16, rows: u16) {
         let workspace = lock(&self.workspace);
         let Some(id) = workspace.panes().get(index).map(Pane::id) else {
             tracing::trace!(
@@ -195,62 +261,26 @@ impl Host {
         }
     }
 
-    /// Send a W3C `key` + `mods` to pane `index` — the CLIENT input path. Encodes to
-    /// PTY bytes and writes via the shared [`crate::send_key`] SSOT (the same encoder
-    /// the RPC `scene/invoke` path uses). `true` if it reached the PTY; `false` if
-    /// the key is unencodable or the write failed. In-process now; over the wire this
-    /// becomes an RPC send to the host's pane input surface.
-    #[must_use]
-    pub fn send_key(&self, index: usize, key: &str, mods: Modifiers) -> bool {
+    /// Encodes to PTY bytes and writes via the shared [`crate::send_key`] SSOT (the
+    /// same encoder the RPC `scene/invoke` path uses).
+    fn send_key(&self, index: usize, key: &str, mods: Modifiers) -> bool {
         let handle = self.with_pane(index, Pane::handle);
         crate::send_key(&handle, key, mods)
     }
 
-    /// Write literal committed `text` to pane `index` — the IME-commit / paste client
-    /// path ([`crate::send_text`]). Empty is a no-op success. `true` if it reached the
-    /// PTY; `false` on a write failure.
-    #[must_use]
-    pub fn send_text(&self, index: usize, text: &str) -> bool {
+    fn send_text(&self, index: usize, text: &str) -> bool {
         let handle = self.with_pane(index, Pane::handle);
         crate::send_text(&handle, text)
     }
 
-    /// Pane `index`'s cloneable I/O handle — the ONE non-wire-shaped method (module
-    /// docs). It hands out a live [`SessionHandle`] to build the GUI's own RPC input
-    /// `SpragPaneExternal`s; it retires when input clients attach to the host. A
-    /// client's OWN keyboard / IME go through [`send_key`](Self::send_key) /
-    /// [`send_text`](Self::send_text), NOT this handle.
-    #[must_use]
-    pub fn pane_handle(&self, index: usize) -> SessionHandle {
-        self.with_pane(index, Pane::handle)
-    }
-
-    /// Pane `index`'s full text (scrollback + visible) — the a11y text SSOT, the same
-    /// string the RPC `full_text` query and the plugin capture read.
-    #[must_use]
-    pub fn pane_full_text(&self, index: usize) -> String {
+    fn pane_full_text(&self, index: usize) -> String {
         self.with_pane(index, |pane| pane.session().with_screen(Screen::full_text))
     }
 
-    /// Pane `index`'s command label (the a11y node name). Owned (`String`, not `&str`)
-    /// because the workspace lock is released before it returns.
-    #[must_use]
-    pub fn pane_command_label(&self, index: usize) -> String {
+    /// Owned (`String`, not `&str`) because the workspace lock is released before it
+    /// returns.
+    fn pane_command_label(&self, index: usize) -> String {
         self.with_pane(index, |pane| pane.command_label().to_owned())
-    }
-
-    /// Run `f` over the pane at tile `index` under the workspace lock — the ONE place
-    /// "which pane?" resolves. The boot panes are spawned in order and never closed
-    /// this increment, so `index` (sourced from a pane / focus tag) is a hard in-range
-    /// invariant, not an `Option`. When a `close` path lands this becomes an
-    /// `Option`-returning lookup (flagged so it is not forgotten).
-    fn with_pane<R>(&self, index: usize, f: impl FnOnce(&Pane) -> R) -> R {
-        let workspace = lock(&self.workspace);
-        let pane = workspace
-            .panes()
-            .get(index)
-            .expect("pane index in range (boot panes spawned 0..pane_count, never closed)");
-        f(pane)
     }
 }
 

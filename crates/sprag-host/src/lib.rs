@@ -52,7 +52,7 @@ pub mod rpc;
 pub mod runs;
 pub mod workspace;
 
-pub use host::{Host, PaneScrollFacts};
+pub use host::{Host, HostClient, PaneScrollFacts};
 pub use pane::{SpragPaneExternal, send_key, send_text};
 pub use plugins::PluginsExternal;
 pub use rpc::{
