@@ -170,7 +170,7 @@ pub fn handle_request(state: &HostState, request_json: &str) -> Option<String> {
         Ok(request) => handle_parsed(state, request),
         Err(_) => {
             // Malformed: assemble a ctx only for the canonical parse-error reply.
-            let mut scene = crate::workspace_scene(state.workspace(), &state.runs);
+            let mut scene = crate::workspace_scene(state.workspace(), &state.runs, &state.revision);
             let mut ctx = DispatchContext::new(&mut scene, &state.previews, state.revision());
             dispatch(&mut ctx, request_json)
         }
@@ -188,7 +188,7 @@ pub fn handle_request(state: &HostState, request_json: &str) -> Option<String> {
 /// synchronous handler.
 #[must_use]
 pub fn handle_parsed(state: &HostState, request: Request) -> Option<String> {
-    let mut scene = crate::workspace_scene(state.workspace(), &state.runs);
+    let mut scene = crate::workspace_scene(state.workspace(), &state.runs, &state.revision);
     let mut ctx = DispatchContext::new(&mut scene, &state.previews, state.revision());
     if SUPPORTED_METHODS.contains(&request.method.as_str()) {
         dispatch_parsed(&mut ctx, request)
@@ -977,6 +977,50 @@ mod tests {
             1,
             "the pane's own output woke the parked waiter"
         );
+        let v: serde_json::Value = serde_json::from_str(&responses[0]).unwrap();
+        assert_eq!(v["result"]["changed"], true);
+        assert!(
+            v["result"]["revision"].as_u64().unwrap() > since,
+            "woke at a revision past the client's baseline",
+        );
+    }
+
+    #[test]
+    fn a_mux_spawn_wakes_a_parked_async_wait_for() {
+        // Round 1 rail, through the REAL dispatch: a pane-SET change (a mux `spawn`,
+        // not pane output) wakes a parked waiter — the pane-lifecycle
+        // change-notification a mirror long-polls to learn the host gained a pane.
+        // Deterministic: the spawn's set-change bump fires the parked reply
+        // synchronously on this thread, so no pane-timing / wall-clock is involved.
+        let state = host_with("cat", 20, 4);
+        let since = state.revision().current();
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        dispatch_recording(
+            &state,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":8,"method":"scene/waitFor","params":{{"since":{since}}}}}"#
+            ),
+            &sink,
+        );
+        assert_eq!(
+            state.waiters().parked_count(),
+            1,
+            "parked at the current revision"
+        );
+        // Spawn a second pane over the real `/sprag_mux` control surface. `cat`
+        // produces no output on its own, so the ONLY bump is the spawn's set-change.
+        let spawned = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":9,"method":"scene/invoke","params":{"path":"/sprag_mux/external/spawn","args":{"cmd":["cat"]}}}"#,
+        );
+        assert!(spawned.get("error").is_none(), "spawn error: {spawned}");
+        assert_eq!(
+            state.waiters().parked_count(),
+            0,
+            "the spawn's set-change bump drained the parked waiter"
+        );
+        let responses = sink.lock().unwrap();
+        assert_eq!(responses.len(), 1, "the parked reply fired on the spawn");
         let v: serde_json::Value = serde_json::from_str(&responses[0]).unwrap();
         assert_eq!(v["result"]["changed"], true);
         assert!(

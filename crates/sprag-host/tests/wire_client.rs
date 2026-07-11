@@ -15,7 +15,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use sprag_host::wire::{CELLS_ACTION, FULL_TEXT_SLOT, PANES_SLOT, TEXT_ACTION};
+use sprag_host::wire::{CELLS_ACTION, FULL_TEXT_SLOT, PANES_SLOT, SPAWN_ACTION, TEXT_ACTION};
 use sprag_host::{mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
 
@@ -124,6 +124,82 @@ fn wire_client_drives_a_real_sprag_term_host() {
 }
 
 #[test]
+fn a_mux_spawn_and_the_new_panes_output_both_advance_the_wire_notification() {
+    // Round 1's rail over the REAL socket, end to end. Two new behaviors:
+    //
+    //   (a) a mux `spawn` (a pane-SET change, not output) grows the set AND advances
+    //       the scene revision, so a client long-polling change-notification learns
+    //       the host gained a pane;
+    //   (b) that mux-spawned pane's OWN output advances the notification too — the
+    //       latent-bug closure: before Round 1 only the boot pane was wired to bump,
+    //       so a 2nd pane's independent output never woke a waiter.
+    //
+    // Single connection, no parked blocking read (the park->wake mechanism is covered
+    // deterministically by the rpc-level unit tests); here we cross the OS socket +
+    // the real `/sprag_mux` dispatch and read the non-blocking `scene/revision`.
+    let sock = std::env::temp_dir().join(format!("sprag-wire-spawn-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&sock);
+    let _host = spawn_host(&sock);
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned host socket");
+
+    // One boot pane to start.
+    assert_eq!(pane_count(&mut conn), 1, "one boot pane");
+
+    // (a) Spawn a 2nd pane over the wire; the set grows and the revision advances.
+    let before_spawn = read_revision(&mut conn);
+    let spawned = conn
+        .call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(SPAWN_ACTION), "args": { "cmd": ["cat"] } }),
+        )
+        .expect("spawn a 2nd pane over the wire");
+    let new_id = spawned.as_u64().expect("spawn returns the new pane id");
+    assert_eq!(pane_count(&mut conn), 2, "the mux spawn grew the set");
+    // The revision already advanced (spawn bumped), so waitFor{baseline} takes the
+    // catch-up path and returns at once — no blocking park.
+    let after_spawn = conn
+        .call("scene/waitFor", json!({ "since": before_spawn }))
+        .expect("waitFor reports the spawn advance");
+    assert_eq!(after_spawn["changed"], true, "the spawn advanced the scene");
+    assert!(
+        after_spawn["revision"].as_u64().unwrap_or(0) > before_spawn,
+        "woke past the pre-spawn baseline: {after_spawn}"
+    );
+
+    // (b) The NEW pane's own output advances the notification. Send text to pane
+    // `new_id` (NOT pane 0); `cat` echoes it → the mux-spawned pane's on_dirty bumps
+    // the shared revision. Poll the non-blocking `scene/revision` (no parked waitFor).
+    let before_output = read_revision(&mut conn);
+    conn.call(
+        "scene/invoke",
+        json!({ "path": pane_input_path(new_id, TEXT_ACTION), "args": { "text": "pane1_marker_42\n" } }),
+    )
+    .expect("send text to the mux-spawned pane");
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            read_revision(&mut conn) > before_output
+        }),
+        "the mux-spawned pane's own output never advanced the revision (latent bug)",
+    );
+    // And the bytes reached that pane specifically (not pane 0).
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            conn.call(
+                "scene/query",
+                json!({ "path": pane_input_path(new_id, FULL_TEXT_SLOT) }),
+            )
+            .ok()
+            .and_then(|v| v.as_str().map(|s| s.contains("pane1_marker_42")))
+            .unwrap_or(false)
+        }),
+        "the text never echoed back through the mux-spawned pane",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+#[test]
 fn connect_fails_cleanly_when_no_host_is_listening() {
     // A short timeout against a path nothing bound: connect must error (not hang past
     // the timeout, not panic) — the boot-failure path WireHost turns into a reaped
@@ -152,6 +228,17 @@ fn read_revision(conn: &mut HostConn) -> u64 {
         .ok()
         .and_then(|v: Value| v["revision"].as_u64())
         .unwrap_or(0)
+}
+
+/// The host's live pane count over the `/sprag_mux` control surface.
+fn pane_count(conn: &mut HostConn) -> usize {
+    conn.call(
+        "scene/query",
+        json!({ "path": mux_action_path(PANES_SLOT) }),
+    )
+    .ok()
+    .and_then(|v| v.as_array().map(Vec::len))
+    .unwrap_or(0)
 }
 
 /// Poll `predicate` until true or `timeout` elapses.

@@ -69,7 +69,7 @@ use std::sync::{Arc, Mutex};
 
 use pinion_core::scene::{ContainerNode, ExternalNode, TextGridNode};
 use pinion_core::style::{LayoutStyle, Size, SizeValue};
-use pinion_core::{CellMetric, GridBuffer, Scene};
+use pinion_core::{CellMetric, GridBuffer, Scene, SceneRevision};
 use sprag_terminal::{PaneId, TerminalSession, Workspace};
 use sprag_vt::Screen;
 
@@ -267,8 +267,19 @@ fn pane_container(id: PaneId, session: &TerminalSession) -> Scene {
 /// reach live state. The workspace lock is released before returning so a
 /// dispatched `scene/invoke` (spawn/close/resize) can re-acquire it without
 /// deadlock.
+///
+/// `revision` is the shared scene-version token ([`HostState`]'s): the control
+/// surface wires each pane it SPAWNS with a `bump_on_dirty(&revision)` hook (so a
+/// mux-spawned pane's output wakes parked `scene/waitFor`, exactly as the boot
+/// pane's does) and bumps it directly on a spawn / close (so a pane-set change
+/// wakes a waiter before the new pane's first output). Without it a client that
+/// long-polls change-notification would never learn about mux-spawned panes.
 #[must_use]
-pub fn workspace_scene(workspace: &Arc<Mutex<Workspace>>, runs: &Arc<Mutex<RunRegistry>>) -> Scene {
+pub fn workspace_scene(
+    workspace: &Arc<Mutex<Workspace>>,
+    runs: &Arc<Mutex<RunRegistry>>,
+    revision: &Arc<SceneRevision>,
+) -> Scene {
     let mut children: Vec<Scene> = {
         let guard = lock(workspace);
         guard
@@ -278,9 +289,10 @@ pub fn workspace_scene(workspace: &Arc<Mutex<Workspace>>, runs: &Arc<Mutex<RunRe
             .collect()
     };
     children.push(Scene::External(
-        ExternalNode::new(Box::new(workspace::WorkspaceExternal::new(Arc::clone(
-            workspace,
-        ))))
+        ExternalNode::new(Box::new(workspace::WorkspaceExternal::new(
+            Arc::clone(workspace),
+            Arc::clone(revision),
+        )))
         .with_tag(MUX_TAG),
     ));
     children.push(Scene::External(

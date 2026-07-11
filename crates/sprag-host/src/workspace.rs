@@ -22,12 +22,14 @@
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
+use pinion_core::SceneRevision;
 use pinion_core::external::{
     ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError,
 };
 use serde_json::{Map, Value};
 use sprag_terminal::{CommandBuilder, Workspace};
 
+use crate::bump_on_dirty;
 use crate::external::{as_object, lock, opt_dim, require_pane_id, rpc_external_impl};
 
 // The mux control action names + query slot are the shared wire ABI vocabulary
@@ -37,16 +39,29 @@ use crate::wire::{CLOSE_ACTION, PANES_SLOT, RESIZE_ACTION, SPAWN_ACTION};
 /// The pane-management engine `External`: a control surface over the shared
 /// [`Workspace`]. Holds `Arc<Mutex<Workspace>>` so its `scene/invoke`
 /// handlers mutate the live pane pool (which the serve loop also reads to
-/// assemble the scene).
+/// assemble the scene), plus the shared [`SceneRevision`] so a pane-lifecycle
+/// mutation wakes any parked `scene/waitFor`.
 pub struct WorkspaceExternal {
     workspace: Arc<Mutex<Workspace>>,
+    /// The shared scene-version token ([`crate::HostState`]'s). Two roles:
+    /// each pane this surface SPAWNS is wired with a `bump_on_dirty(&revision)`
+    /// hook (so its output wakes waiters, like the boot pane), and a spawn /
+    /// close bumps it directly (so a pane-set change wakes a waiter before the
+    /// new pane's first output). Cloned per scene-assembly from the ONE token
+    /// [`crate::HostState`] observes, so a mux-spawned pane can never be wired
+    /// to a revision no waiter watches.
+    revision: Arc<SceneRevision>,
 }
 
 impl WorkspaceExternal {
-    /// Build the control surface over a shared workspace.
+    /// Build the control surface over a shared workspace + the shared
+    /// scene-version token (see the struct docs for `revision`'s two roles).
     #[must_use]
-    pub fn new(workspace: Arc<Mutex<Workspace>>) -> Self {
-        Self { workspace }
+    pub fn new(workspace: Arc<Mutex<Workspace>>, revision: Arc<SceneRevision>) -> Self {
+        Self {
+            workspace,
+            revision,
+        }
     }
 
     /// `spawn` action: create a pane and return its id. `cmd` (an argv
@@ -64,13 +79,29 @@ impl WorkspaceExternal {
             Some(Value::Array(argv)) => build_command(argv)?,
             Some(_) => return Err(InvokeError::TypeMismatch),
         };
-        let mut workspace = lock(&self.workspace);
-        let (default_cols, default_rows) = workspace.default_size();
-        let cols = opt_dim(map, "cols")?.unwrap_or(default_cols);
-        let rows = opt_dim(map, "rows")?.unwrap_or(default_rows);
-        let id = workspace
-            .spawn(command, label, cols, rows)
-            .map_err(|_| InvokeError::Rejected)?;
+        // Spawn WITH the change-notification hook (not the plain `spawn`), so this
+        // pane's output bumps the SAME revision the boot pane's does — a client's
+        // `scene/waitFor` then wakes on a mux-spawned pane exactly as it does on the
+        // boot pane. The lock is scoped so the set-change bump below fires without it.
+        let id = {
+            let mut workspace = lock(&self.workspace);
+            let (default_cols, default_rows) = workspace.default_size();
+            let cols = opt_dim(map, "cols")?.unwrap_or(default_cols);
+            let rows = opt_dim(map, "rows")?.unwrap_or(default_rows);
+            workspace
+                .spawn_with_dirty(
+                    command,
+                    label,
+                    cols,
+                    rows,
+                    Some(bump_on_dirty(&self.revision)),
+                )
+                .map_err(|_| InvokeError::Rejected)?
+        };
+        // A NEW pane changed the set: wake parked waiters now, before its first
+        // output, so a mirror learns the pane exists immediately (the pane-set
+        // change-notification, distinct from the per-pane output bump above).
+        self.revision.bump();
         Ok(IntrospectValue::Int(
             i64::try_from(id.0).unwrap_or(i64::MAX),
         ))
@@ -83,6 +114,11 @@ impl WorkspaceExternal {
         let id = require_pane_id(as_object(args)?, "id")?;
         let removed = lock(&self.workspace).close(id);
         if removed.is_some() {
+            // The set shrank: wake parked waiters so a mirror drops the pane's
+            // tile promptly. `removed` (the reaped `Pane`) is still bound, so its
+            // blocking `Drop` (kill/wait/join) runs after this returns, outside the
+            // lock — the bump only signals the already-completed removal.
+            self.revision.bump();
             Ok(IntrospectValue::Null)
         } else {
             Err(InvokeError::Rejected) // no such pane
@@ -189,10 +225,22 @@ mod tests {
         Arc::new(Mutex::new(Workspace::new((80, 24))))
     }
 
+    /// A control surface over `ws` sharing a fresh revision (returned so a test can
+    /// assert the pane-lifecycle bumps). No `HostState` / observer is installed —
+    /// [`SceneRevision::bump`] advances [`current`](SceneRevision::current) either
+    /// way, which is all these tests read.
+    fn control(ws: &Arc<Mutex<Workspace>>) -> (WorkspaceExternal, Arc<SceneRevision>) {
+        let revision = Arc::new(SceneRevision::new());
+        (
+            WorkspaceExternal::new(Arc::clone(ws), Arc::clone(&revision)),
+            revision,
+        )
+    }
+
     #[test]
     fn spawn_default_returns_first_id_and_adds_a_pane() {
         let ws = workspace();
-        let mut ext = WorkspaceExternal::new(Arc::clone(&ws));
+        let (mut ext, _rev) = control(&ws);
         let id = ext.invoke(SPAWN_ACTION, IntrospectValue::Null).unwrap();
         assert_eq!(id, IntrospectValue::Int(0));
         assert_eq!(lock(&ws).panes().len(), 1);
@@ -201,7 +249,7 @@ mod tests {
     #[test]
     fn spawn_with_cmd_array_sets_label() {
         let ws = workspace();
-        let mut ext = WorkspaceExternal::new(Arc::clone(&ws));
+        let (mut ext, _rev) = control(&ws);
         ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
             .unwrap();
         assert_eq!(lock(&ws).list()[0].command_label, "cat");
@@ -210,7 +258,7 @@ mod tests {
     #[test]
     fn close_existing_then_missing() {
         let ws = workspace();
-        let mut ext = WorkspaceExternal::new(Arc::clone(&ws));
+        let (mut ext, _rev) = control(&ws);
         ext.invoke(SPAWN_ACTION, IntrospectValue::Null).unwrap();
         assert_eq!(
             ext.invoke(CLOSE_ACTION, IntrospectValue::Json(json!({"id": 0}))),
@@ -223,9 +271,61 @@ mod tests {
     }
 
     #[test]
+    fn spawn_and_close_bump_the_revision() {
+        // The pane-set change-notification: a spawn (set grew) and a close (set
+        // shrank) each bump the revision synchronously, so a client long-polling
+        // `scene/waitFor` learns the set changed WITHOUT waiting for pane output.
+        // `cat` produces no output on its own, so the ONLY bumps here are the two
+        // set-change bumps under test (no output on_dirty to confound the counts).
+        let ws = workspace();
+        let (mut ext, rev) = control(&ws);
+        let before = rev.current();
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+            .unwrap();
+        assert!(
+            rev.current() > before,
+            "spawn bumps the revision (set grew)"
+        );
+        let after_spawn = rev.current();
+        ext.invoke(CLOSE_ACTION, IntrospectValue::Json(json!({"id": 0})))
+            .unwrap();
+        assert!(
+            rev.current() > after_spawn,
+            "close bumps the revision (set shrank)"
+        );
+    }
+
+    #[test]
+    fn mux_spawned_pane_output_bumps_the_revision() {
+        use std::time::{Duration, Instant};
+        // The subtle half: a mux-`spawn`ed pane is wired with `bump_on_dirty`, so
+        // its OWN output bumps the revision with no client input — exactly as the
+        // boot pane's does. `spawn` first bumps once (set change), then the pane's
+        // "hi" stdout drives its on_dirty into a further bump. Waiting for `+2` over
+        // the pre-spawn baseline is race-free regardless of how the synchronous
+        // set-change bump and the async output bump interleave.
+        let ws = workspace();
+        let (mut ext, rev) = control(&ws);
+        let before = rev.current();
+        ext.invoke(
+            SPAWN_ACTION,
+            IntrospectValue::Json(json!({"cmd": ["sh", "-c", "printf hi"]})),
+        )
+        .unwrap();
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            if rev.current() >= before + 2 {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("a mux-spawned pane's output never bumped the shared revision");
+    }
+
+    #[test]
     fn resize_requires_dims_and_targets_a_pane() {
         let ws = workspace();
-        let mut ext = WorkspaceExternal::new(Arc::clone(&ws));
+        let (mut ext, _rev) = control(&ws);
         ext.invoke(SPAWN_ACTION, IntrospectValue::Null).unwrap();
         // Missing rows -> type mismatch.
         assert_eq!(
@@ -251,7 +351,7 @@ mod tests {
     #[test]
     fn query_panes_lists_metadata() {
         let ws = workspace();
-        let mut ext = WorkspaceExternal::new(Arc::clone(&ws));
+        let (mut ext, _rev) = control(&ws);
         ext.invoke(
             SPAWN_ACTION,
             IntrospectValue::Json(json!({"cmd": ["cat"], "cols": 40, "rows": 12})),
@@ -266,7 +366,7 @@ mod tests {
 
     #[test]
     fn unknown_action_is_unknown_path() {
-        let mut ext = WorkspaceExternal::new(workspace());
+        let (mut ext, _rev) = control(&workspace());
         assert_eq!(
             ext.invoke("teleport", IntrospectValue::Null),
             Err(InvokeError::UnknownPath)
