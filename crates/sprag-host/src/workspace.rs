@@ -30,10 +30,9 @@ use sprag_terminal::{CommandBuilder, Workspace};
 
 use crate::external::{as_object, lock, opt_dim, require_pane_id, rpc_external_impl};
 
-const SPAWN_ACTION: &str = "spawn";
-const CLOSE_ACTION: &str = "close";
-const RESIZE_ACTION: &str = "resize";
-const PANES_SLOT: &str = "panes";
+// The mux control action names + query slot are the shared wire ABI vocabulary
+// ([`crate::wire`]) — the SAME consts a client addresses for pane lifecycle.
+use crate::wire::{CLOSE_ACTION, PANES_SLOT, RESIZE_ACTION, SPAWN_ACTION};
 
 /// The pane-management engine `External`: a control surface over the shared
 /// [`Workspace`]. Holds `Arc<Mutex<Workspace>>` so its `scene/invoke`

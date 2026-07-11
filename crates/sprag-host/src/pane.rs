@@ -43,21 +43,10 @@ use sprag_vt::Screen;
 use crate::external::rpc_external_impl;
 use crate::host::PaneScrollFacts;
 
-/// The invoke action that injects a key into the focused pane.
-const KEY_ACTION: &str = "key";
-/// The invoke action that writes literal UTF-8 text into the pane (no
-/// key-encoding) — IME commit / paste. See [`SpragPaneExternal::inject_text`].
-const TEXT_ACTION: &str = "text";
-/// The invoke action returning one pane's cell FRAME — the wire display client's
-/// per-frame read. See [`SpragPaneExternal::read_cells`].
-const CELLS_ACTION: &str = "cells";
-/// The query slot reporting the producer's DECCKM (application cursor
-/// keys) state.
-const CURSOR_KEYS_SLOT: &str = "application_cursor_keys";
-/// The query slot reporting the pane's full output text (scrollback +
-/// visible) — the same [`Screen::full_text`] the in-process capture path
-/// reads, so an external peer and a plugin see one notion of the screen.
-const FULL_TEXT_SLOT: &str = "full_text";
+// The action names + query slots this external answers are the shared wire ABI
+// vocabulary ([`crate::wire`]) — the SAME consts the wire client addresses, so the
+// two cannot drift.
+use crate::wire::{CELLS_ACTION, CURSOR_KEYS_SLOT, FULL_TEXT_SLOT, KEY_ACTION, TEXT_ACTION};
 
 /// Encode a W3C `key` + `mods` to PTY bytes (the sprag-owned R2.6 encoder,
 /// [`sprag_input::encode`]) and write them to `session`. `true` on success;
@@ -177,13 +166,22 @@ impl SpragPaneExternal {
 /// [`PaneScrollFacts`] that ride with it, serialized as one flat JSON object
 /// (`{cells, scrollback_len, visible_rows}`). `#[serde(flatten)]` pulls the facts'
 /// field names up as the wire keys, so the frame's non-cell keys are defined ONCE
-/// (on [`PaneScrollFacts`]) rather than re-listed here — the SSOT the wire client
-/// and the in-process client share.
-#[derive(serde::Serialize)]
-struct CellFrame {
-    cells: GridBuffer,
+/// (on [`PaneScrollFacts`]) rather than re-listed here.
+///
+/// This is the ONE definition of the whole pane frame's wire shape — the envelope
+/// (the `cells` key + its [`GridBuffer`] type) AND the flattened facts — with BOTH
+/// `Serialize` (the host `read_cells` end) and `Deserialize` (the wire client end,
+/// `sprag-gui`'s `WireHost`). A single type owned by this crate, so a field rename
+/// on either end is a compile error, not a silent runtime divergence (the exact
+/// SSOT the R116 review established for the facts, here extended to the envelope).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CellFrame {
+    /// The projected paint-authoritative cell buffer (serde-able since PINION-PR49).
+    pub cells: GridBuffer,
+    /// The non-cell per-frame facts, flattened so `scrollback_len` / `visible_rows`
+    /// are top-level wire keys (their names come from [`PaneScrollFacts`], the SSOT).
     #[serde(flatten)]
-    facts: PaneScrollFacts,
+    pub facts: PaneScrollFacts,
 }
 
 impl fmt::Debug for SpragPaneExternal {

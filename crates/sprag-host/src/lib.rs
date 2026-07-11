@@ -50,16 +50,18 @@ pub mod pane;
 pub mod plugins;
 pub mod rpc;
 pub mod runs;
+pub mod wire;
 pub mod workspace;
 
 pub use host::{Host, HostClient, PaneScrollFacts};
-pub use pane::{SpragPaneExternal, send_key, send_text};
+pub use pane::{CellFrame, SpragPaneExternal, send_key, send_text};
 pub use plugins::PluginsExternal;
 pub use rpc::{
     FrameIngress, HostState, SUPPORTED_METHODS, bump_on_dirty, dispatch_frames, handle_parsed,
     handle_request, stdin_frames,
 };
 pub use runs::{RunId, RunRegistry, RunState};
+pub use wire::{mux_action_path, pane_container_tag, pane_input_path};
 pub use workspace::WorkspaceExternal;
 
 use std::borrow::Cow;
@@ -252,7 +254,7 @@ fn pane_container(id: PaneId, session: &TerminalSession) -> Scene {
             ),
         ]
     });
-    Scene::Container(ContainerNode::new(children).with_tag(format!("pane_{id}")))
+    Scene::Container(ContainerNode::new(children).with_tag(wire::pane_container_tag(id.0)))
 }
 
 /// Assemble the live workspace as a `Scene::Container` of its panes plus the
