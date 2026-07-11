@@ -23,14 +23,15 @@
 //! does not persist.
 
 use std::io::{self, BufRead, Write};
+use std::ops::ControlFlow;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
 use pinion_core::SceneRevision;
 use pinion_rpc::preview::PreviewLedger;
 use pinion_rpc::{
-    DispatchContext, Request, RpcFrame, RpcIngress, RpcReply, dispatch, dispatch_parsed,
-    parse_request,
+    DispatchContext, Request, RpcFrame, RpcIngress, RpcReply, WaiterRegistry, dispatch,
+    dispatch_parsed, parse_request, try_async_wait_for,
 };
 use sprag_terminal::Workspace;
 
@@ -38,25 +39,53 @@ use crate::host::Host;
 use crate::runs::RunRegistry;
 
 /// The long-lived host state threaded through the serve loop: the booted [`Host`]
-/// (the single [`Workspace`] owner), the background plugin-run registry, and
-/// pinion's per-session dispatch ledgers. Bundled so the per-request handler
-/// signature stays stable as future control surfaces are added.
+/// (the single [`Workspace`] owner), the background plugin-run registry, pinion's
+/// per-session dispatch ledgers, and the async `scene/waitFor` waiter registry.
+/// Bundled so the per-request handler signature stays stable as future control
+/// surfaces are added.
+///
+/// ## Change-notification (PR-50 §6.3, R115a)
+///
+/// The [`SceneRevision`] is the ONE scene-version token, shared (`Arc`) with the
+/// pane `on_dirty` hooks: a pane's output [`bump`](SceneRevision::bump)s it, which
+/// (a) advances the OCC token and (b) fires the wake observer installed in
+/// [`new`](Self::new) — `move |n| waiters.wake(n)` — so any parked async
+/// `scene/waitFor` reply fires. A wire client thus blocks on `scene/waitFor`
+/// until a pane produces output *it did not cause*, instead of busy-polling
+/// `scene/snapshot`. The registry parks no version counter of its own; the
+/// revision is the single source of truth (pinion's [`WaiterRegistry`] contract).
 pub struct HostState {
     host: Host,
     runs: Arc<Mutex<RunRegistry>>,
     previews: PreviewLedger,
-    revision: SceneRevision,
+    /// The one scene-version token, shared with the pane `on_dirty` bumpers.
+    revision: Arc<SceneRevision>,
+    /// Parked async `scene/waitFor` replies, woken off `revision`'s observer.
+    waiters: Arc<WaiterRegistry>,
 }
 
 impl HostState {
-    /// Build host state over a booted [`Host`], with a fresh run registry.
+    /// Build host state over a booted [`Host`], sharing `revision` — the ONE
+    /// scene-version token the pane `on_dirty` hooks bump. Installs the async
+    /// `scene/waitFor` wake observer on it (`move |n| waiters.wake(n)`), so a
+    /// revision bump (a pane's output) wakes every parked waiter. A fresh run
+    /// registry and waiter registry are created here.
     #[must_use]
-    pub fn new(host: Host) -> Self {
+    pub fn new(host: Host, revision: Arc<SceneRevision>) -> Self {
+        let waiters = Arc::new(WaiterRegistry::new());
+        // The wake half of the no-lost-wakeup discipline: a revision bump (an OCC
+        // mutation OR a pane's external output via on_dirty) fires this, draining
+        // and replying to every waiter the new revision surpassed.
+        let wake = Arc::clone(&waiters);
+        revision.set_observer(move |n| {
+            wake.wake(n);
+        });
         Self {
             host,
             runs: Arc::new(Mutex::new(RunRegistry::default())),
             previews: PreviewLedger::default(),
-            revision: SceneRevision::default(),
+            revision,
+            waiters,
         }
     }
 
@@ -72,12 +101,33 @@ impl HostState {
     pub fn runs(&self) -> &Arc<Mutex<RunRegistry>> {
         &self.runs
     }
+
+    /// The one scene-version token (the async `scene/waitFor` / OCC baseline).
+    #[must_use]
+    pub fn revision(&self) -> &SceneRevision {
+        &self.revision
+    }
+
+    /// The async `scene/waitFor` waiter registry.
+    #[must_use]
+    pub fn waiters(&self) -> &WaiterRegistry {
+        &self.waiters
+    }
 }
 
 /// The methods the headless host answers: pure reads over the pane scene
-/// (`scene/snapshot`, `scene/query`) plus the `scene/invoke` input + plugin
-/// channels. Anything else gets a JSON-RPC method-not-found error.
-pub const SUPPORTED_METHODS: &[&str] = &["scene/snapshot", "scene/query", "scene/invoke"];
+/// (`scene/snapshot`, `scene/query`), the `scene/invoke` input + plugin channels,
+/// and the async change-notification pair (`scene/revision` reads the current
+/// scene-version token; `scene/waitFor {since}` blocks until it advances — the
+/// async form is intercepted before dispatch, in the per-frame `dispatch_one`).
+/// Anything else gets a JSON-RPC method-not-found error.
+pub const SUPPORTED_METHODS: &[&str] = &[
+    "scene/snapshot",
+    "scene/query",
+    "scene/invoke",
+    "scene/revision",
+    "scene/waitFor",
+];
 
 /// Answer one JSON-RPC `request_json` against the workspace's current panes,
 /// returning the response JSON (`None` for a notification with no reply).
@@ -91,7 +141,7 @@ pub const SUPPORTED_METHODS: &[&str] = &["scene/snapshot", "scene/query", "scene
 #[must_use]
 pub fn handle_request(state: &HostState, request_json: &str) -> Option<String> {
     let mut scene = crate::workspace_scene(state.workspace(), &state.runs);
-    let mut ctx = DispatchContext::new(&mut scene, &state.previews, &state.revision);
+    let mut ctx = DispatchContext::new(&mut scene, &state.previews, state.revision());
     match parse_request(request_json) {
         Ok(request) if SUPPORTED_METHODS.contains(&request.method.as_str()) => {
             dispatch_parsed(&mut ctx, request)
@@ -111,7 +161,7 @@ fn method_not_supported(request: &Request) -> String {
         "error": {
             "code": -32601,
             "message": format!(
-                "sprag-term host: '{}' is unsupported; use scene/snapshot, scene/query, or scene/invoke",
+                "sprag-term host: '{}' is unsupported; use scene/snapshot, scene/query, scene/invoke, scene/revision, or scene/waitFor",
                 request.method
             ),
         }
@@ -156,10 +206,36 @@ impl RpcIngress for FrameIngress {
 /// socket that is process lifetime.
 pub fn dispatch_frames(state: &HostState, rx: Receiver<RpcFrame>) {
     for frame in rx {
-        let RpcFrame { request, reply } = frame;
-        if let Some(response) = handle_request(state, &request) {
-            reply.send(response);
-        }
+        dispatch_one(state, frame);
+    }
+}
+
+/// Dispatch one frame against `state` — the per-frame body of [`dispatch_frames`],
+/// split out so the async `scene/waitFor` park/wake path is unit-testable without
+/// standing up the channel loop.
+///
+/// An async `scene/waitFor {since}` is intercepted BEFORE the synchronous
+/// [`handle_request`] core: [`try_async_wait_for`] either answers it immediately
+/// (the scene already advanced past `since`) or PARKS its reply in the waiter
+/// registry — in which case the reply fires LATER, off this dispatch thread, on
+/// the scene bump that wakes it ([`HostState`] installed the wake observer). A
+/// non-`waitFor` frame (or a since-less v0 `waitFor`) hands the reply back and
+/// runs the normal synchronous dispatch. Parking does not build the workspace
+/// scene, so a blocked wait costs nothing until a pane actually produces output.
+fn dispatch_one(state: &HostState, frame: RpcFrame) {
+    let RpcFrame { request, reply } = frame;
+    let reply = match parse_request(&request) {
+        Ok(parsed) => match try_async_wait_for(&parsed, state.revision(), state.waiters(), reply) {
+            // Parked (or answered immediately) by the registry — nothing more to do.
+            ControlFlow::Break(()) => return,
+            // Not an async waitFor: the reply is handed back for normal dispatch.
+            ControlFlow::Continue(reply) => reply,
+        },
+        // Malformed: let handle_request emit the canonical JSON-RPC parse error.
+        Err(_) => reply,
+    };
+    if let Some(response) = handle_request(state, &request) {
+        reply.send(response);
     }
 }
 
@@ -205,12 +281,25 @@ mod tests {
         command
     }
 
-    /// Host state with one initial pane running `script`.
+    /// Host state with one initial pane running `script`, wired the way a wire
+    /// server boots: the pane's `on_dirty` bumps the shared [`SceneRevision`], so
+    /// its output wakes any parked async `scene/waitFor` (the change-notification
+    /// path R115a serves).
     fn host_with(script: &str, cols: u16, rows: u16) -> HostState {
+        let revision = Arc::new(SceneRevision::new());
         let host = Host::new((cols, rows));
-        host.spawn(sh(script), "sh".to_string(), cols, rows, None)
-            .expect("spawn pane");
-        HostState::new(host)
+        let rev = Arc::clone(&revision);
+        host.spawn(
+            sh(script),
+            "sh".to_string(),
+            cols,
+            rows,
+            Some(Box::new(move || {
+                rev.bump();
+            })),
+        )
+        .expect("spawn pane");
+        HostState::new(host, revision)
     }
 
     /// One request through the dispatch path (no serve loop / shutdown join), so
@@ -701,5 +790,144 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":2,"method":"scene/query","params":{"path":"/sprag_plugins/external/runs"}}"#,
         );
         assert_eq!(runs["result"][0]["state"]["outcome"]["state"], "cancelled");
+    }
+
+    // ─── R115a: async change-notification (scene/revision + scene/waitFor) ───
+
+    /// A recording reply sink: collects whatever the reply is sent, so a test can
+    /// assert what (if anything) a parked / immediate `scene/waitFor` fired.
+    fn recording_reply(sink: &Arc<Mutex<Vec<String>>>) -> RpcReply {
+        let sink = Arc::clone(sink);
+        RpcReply::new(move |response| sink.lock().unwrap().push(response))
+    }
+
+    /// One frame through the real per-frame dispatch body ([`dispatch_one`]) with a
+    /// recording reply, so the async park/immediate paths are exercised exactly as
+    /// the serve loop runs them.
+    fn dispatch_recording(state: &HostState, request: &str, sink: &Arc<Mutex<Vec<String>>>) {
+        dispatch_one(
+            state,
+            RpcFrame::new(request.to_owned(), recording_reply(sink)),
+        );
+    }
+
+    #[test]
+    fn scene_revision_reports_the_current_token() {
+        // The non-blocking read a wire client bootstraps its waitFor `since` from.
+        let state = host_with("cat", 20, 4);
+        let resp = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/revision","params":{}}"#,
+        );
+        assert!(
+            resp.get("error").is_none(),
+            "scene/revision never errors: {resp}"
+        );
+        let reported = resp["result"]["revision"]
+            .as_u64()
+            .expect("a numeric revision");
+        assert_eq!(
+            reported,
+            state.revision().current(),
+            "reads the one shared token"
+        );
+    }
+
+    #[test]
+    fn async_wait_for_parks_then_a_scene_bump_wakes_it() {
+        // The park/wake integration: dispatch_one routes a `scene/waitFor {since}`
+        // into the registry (park at the current revision), and the wake observer
+        // HostState installed fires the parked reply on the next bump. Deterministic
+        // (a direct bump stands in for a pane's on_dirty), no pane-timing.
+        let state = host_with("cat", 20, 4);
+        let since = state.revision().current();
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        dispatch_recording(
+            &state,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":5,"method":"scene/waitFor","params":{{"since":{since}}}}}"#
+            ),
+            &sink,
+        );
+        assert_eq!(
+            state.waiters().parked_count(),
+            1,
+            "parked at the current revision"
+        );
+        assert!(sink.lock().unwrap().is_empty(), "not answered while parked");
+
+        let new = state.revision().bump();
+        assert_eq!(
+            state.waiters().parked_count(),
+            0,
+            "the bump drained the parked waiter"
+        );
+        let responses = sink.lock().unwrap();
+        assert_eq!(responses.len(), 1, "the parked reply fired on the bump");
+        let v: serde_json::Value = serde_json::from_str(&responses[0]).unwrap();
+        assert_eq!(v["id"], 5);
+        assert_eq!(v["result"]["changed"], true);
+        assert_eq!(v["result"]["revision"], new);
+    }
+
+    #[test]
+    fn async_wait_for_answers_immediately_when_the_scene_already_advanced() {
+        // A stale baseline (`since` < current) is answered at dispatch, not parked —
+        // so a client that fell behind catches up without blocking.
+        let state = host_with("cat", 20, 4);
+        state.revision().bump();
+        let current = state.revision().current();
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        dispatch_recording(
+            &state,
+            r#"{"jsonrpc":"2.0","id":6,"method":"scene/waitFor","params":{"since":0}}"#,
+            &sink,
+        );
+        assert_eq!(
+            state.waiters().parked_count(),
+            0,
+            "a stale baseline does not park"
+        );
+        let responses = sink.lock().unwrap();
+        assert_eq!(responses.len(), 1, "answered immediately");
+        let v: serde_json::Value = serde_json::from_str(&responses[0]).unwrap();
+        assert_eq!(v["result"]["revision"], current);
+    }
+
+    #[test]
+    fn a_panes_output_wakes_a_parked_async_wait_for() {
+        // The end-to-end wire-client path, headless: block on scene/waitFor, then
+        // the pane produces output with NO client input, its on_dirty bumps the
+        // shared revision, and the parked reply fires — the change-driven repaint
+        // signal a wire GUI long-polls. Bounded poll (no wall-clock assertion).
+        let state = host_with("sleep 0.2; printf X", 20, 4);
+        let since = state.revision().current();
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        dispatch_recording(
+            &state,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":7,"method":"scene/waitFor","params":{{"since":{since}}}}}"#
+            ),
+            &sink,
+        );
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            if !sink.lock().unwrap().is_empty() {
+                break;
+            }
+            sleep(Duration::from_millis(20));
+        }
+        let responses = sink.lock().unwrap();
+        assert_eq!(
+            responses.len(),
+            1,
+            "the pane's own output woke the parked waiter"
+        );
+        let v: serde_json::Value = serde_json::from_str(&responses[0]).unwrap();
+        assert_eq!(v["result"]["changed"], true);
+        assert!(
+            v["result"]["revision"].as_u64().unwrap() > since,
+            "woke at a revision past the client's baseline",
+        );
     }
 }

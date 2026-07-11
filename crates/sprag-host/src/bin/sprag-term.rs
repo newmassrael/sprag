@@ -24,6 +24,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 
+use pinion_core::SceneRevision;
 use signal_hook::consts::{SIGINT, SIGTERM};
 use sprag_host::{FrameIngress, Host, HostState, RunRegistry, dispatch_frames, stdin_frames};
 use sprag_rpc::SocketOpts;
@@ -41,10 +42,25 @@ fn main() -> io::Result<()> {
     let (cols, rows, command, label) = parse_args();
     // The one Workspace owner (shared with the GUI as a code component): boot the
     // initial pane through it, then wrap it in HostState to serve the RPC surface.
+    //
+    // The initial pane's `on_dirty` bumps the shared scene-version token, so its
+    // output wakes any parked async `scene/waitFor` (the change-notification a wire
+    // client long-polls instead of busy-polling snapshots). The revision is created
+    // BEFORE the spawn so the bumper and HostState share the one token.
+    let revision = Arc::new(SceneRevision::new());
     let host = Host::new((cols, rows));
-    host.spawn(command, label, cols, rows, None)
-        .map_err(io::Error::other)?;
-    let state = HostState::new(host);
+    let dirty = Arc::clone(&revision);
+    host.spawn(
+        command,
+        label,
+        cols,
+        rows,
+        Some(Box::new(move || {
+            dirty.bump();
+        })),
+    )
+    .map_err(io::Error::other)?;
+    let state = HostState::new(host, revision);
 
     // One dispatch owner (this thread) serialises all dispatch; the always-on
     // socket and stdin are producers of RpcFrames into it, so a socket client
