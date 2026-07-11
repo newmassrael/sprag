@@ -55,7 +55,7 @@ pub(crate) fn view_for_window(window_id: &str, _state: (), _frame: &Frame) -> Sc
         // the shell's routing tags are supplied HERE (the binding owns the window
         // lifecycle) so `try_chrome_press` routes close → `window_close_requested`
         // (dock-back, R86), min / max → per-window `set_minimized` / `set_maximized`.
-        Some(i) if i < tv.host.pane_count() => {
+        Some(i) if tv.host.is_pane_occupied(i) => {
             let style = DockPanelStyle::m3_default(panel_id(i));
             let controls = view_window_controls(
                 &theme,
@@ -109,7 +109,7 @@ fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
                 // real content lives in the pane's own undock window. Small-intrinsic, so
                 // it needs no `fill_definite` — the `view_dock_panel` content wrapper's
                 // flex_grow + cross-axis stretch fills the slot (matches pinion's editor).
-                Some(i) if i < tv.host.pane_count() && crate::dock::is_pane_floating(i) => {
+                Some(i) if tv.host.is_pane_occupied(i) && crate::dock::is_pane_floating(i) => {
                     view_floating_placeholder(
                         panel_id,
                         theme,
@@ -121,7 +121,7 @@ fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
                 // header), so it needs its own definite extent or its full-window intrinsic
                 // size overflows the panel (the grid never gets a measured rect, the R1012
                 // reflow never fires, and the pane stays at its boot dims).
-                Some(i) if i < tv.host.pane_count() => {
+                Some(i) if tv.host.is_pane_occupied(i) => {
                     fill_definite(build_pane_scene(tv, i, theme))
                 }
                 // A leaf with no live pane (out of range / stale) — defensive.

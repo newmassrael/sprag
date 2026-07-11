@@ -333,10 +333,18 @@ impl WidgetCore for TerminalViewer {
         // shell's pointer router routes a press on the painted track to it. Like
         // the splitters, pointer-only (never focusable); the caller-owned
         // `ScrollState` authority (pinion R1032) needs no mirror.
-        // Pane 0's scrollbar is the PRIMARY external ([`Self::create_external`]); the
-        // rest (1..) are extras, so the drag-scrollbar set stays complete without a
-        // duplicate registration at `pane_scrollbar_tag(0)`.
-        externals.extend((1..terminal.host.pane_count()).map(scrollbar::pane_scrollbar_external));
+        // Slot 0's scrollbar is the PRIMARY external ([`Self::create_external`]); the
+        // OTHER occupied slots are extras, so the drag-scrollbar set stays complete
+        // without a duplicate registration at `pane_scrollbar_tag(0)`. (Slot 0 is always
+        // occupied at boot; a Round 2b close of slot 0 would need the primary re-homed.)
+        externals.extend(
+            terminal
+                .host
+                .occupied_slots()
+                .into_iter()
+                .filter(|&i| i != 0)
+                .map(scrollbar::pane_scrollbar_external),
+        );
         // Drag-to-dock / tear-off (pinion R1081/R1084/R1094 §5.51, P2/PR-31): one R742
         // `DockPanelExternal` per pane, registered at the panel ROOT tag
         // (`split::panel_id(i)` = the `view_dock_panel` root the `view_dock_surface`
@@ -376,7 +384,7 @@ impl WidgetCore for TerminalViewer {
         // in-flight drag without collision.
         let reorganizer = split::use_dock_reorganizer();
         let drop_preview = split::use_drop_preview();
-        externals.extend((0..terminal.host.pane_count()).map(|i| {
+        externals.extend(terminal.host.occupied_slots().into_iter().map(|i| {
             ExtraExternal::new(
                 split::panel_id(i),
                 Box::new(
@@ -496,7 +504,7 @@ impl WidgetCore for TerminalViewer {
     /// the primary repaints too).
     fn reconcile_frame() {
         let terminal = use_terminal();
-        for i in 0..terminal.host.pane_count() {
+        for i in terminal.host.occupied_slots() {
             let scrollback_len = terminal.host.pane_scroll_facts(i).scrollback_len;
             scrollbar::reconcile_scroll(&scrollbar::use_pane_scroll(i), scrollback_len);
         }
@@ -527,7 +535,10 @@ impl WidgetCore for TerminalViewer {
         // (wrap_pane_with_bar), so first-hit is unambiguous; and a pane tag is
         // painted in at most one window per frame (its dock window), so on an undock
         // window's single-pane scene the absent panes simply miss (rect -> None).
-        let Some(i) = (0..use_terminal().host.pane_count())
+        let Some(i) = use_terminal()
+            .host
+            .occupied_slots()
+            .into_iter()
             .find(|&i| hit(pane_tag(i)) || hit(pane_scrollbar_tag(i)))
         else {
             return false;
@@ -1962,8 +1973,12 @@ mod tests {
                     .filter(|t| split::pane_index_of_panel(t).is_some())
                     .collect::<BTreeSet<String>>()
             };
-            let n = use_terminal().host.pane_count();
-            let expected: BTreeSet<String> = (0..n).map(split::panel_id).collect();
+            let expected: BTreeSet<String> = use_terminal()
+                .host
+                .occupied_slots()
+                .into_iter()
+                .map(split::panel_id)
+                .collect();
             assert_eq!(
                 panel_externals(),
                 expected,

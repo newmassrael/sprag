@@ -18,7 +18,10 @@ impl WidgetA11y for TerminalViewer {
     /// ([`route_key`](crate::input::route_key)) share one identity per pane.
     fn access_node(_state: &(), focused: Option<&str>) -> Vec<AccessNode> {
         let terminal = use_terminal();
-        (0..terminal.host.pane_count())
+        terminal
+            .host
+            .occupied_slots()
+            .into_iter()
             .map(|i| pane_node(&terminal, i, focused))
             .collect()
     }
@@ -34,7 +37,7 @@ pub(crate) fn access_nodes_for_window(window_id: &str, focused: Option<&str>) ->
     let terminal = use_terminal();
     match crate::dock::pane_window_index(window_id) {
         // An undock window: just its one pane (if still present).
-        Some(i) if i < terminal.host.pane_count() => vec![pane_node(&terminal, i, focused)],
+        Some(i) if terminal.host.is_pane_occupied(i) => vec![pane_node(&terminal, i, focused)],
         // The main window (or any non-pane id): the docked panes only. Read the
         // docked set from the dock split-tree ([`crate::split::docked_pane_indices`])
         // — the SAME authority `view_main` paints from — so a11y and the paint can
@@ -42,7 +45,7 @@ pub(crate) fn access_nodes_for_window(window_id: &str, focused: Option<&str>) ->
         // float state, a second source for the same fact).
         _ => crate::split::docked_pane_indices()
             .into_iter()
-            .filter(|&i| i < terminal.host.pane_count())
+            .filter(|&i| terminal.host.is_pane_occupied(i))
             .map(|i| pane_node(&terminal, i, focused))
             .collect(),
     }

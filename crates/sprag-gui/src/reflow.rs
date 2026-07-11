@@ -71,7 +71,7 @@ pub(crate) fn install_reflow() {
     // (the registry, another cache slot), but only at RUN time — the factory
     // itself stays cache-free.
     let terminal = use_terminal();
-    for index in 0..terminal.host.pane_count() {
+    for index in terminal.host.occupied_slots() {
         install_pane_reflow(&owner, &terminal, index);
     }
 }
@@ -140,7 +140,7 @@ mod tests {
         // at end of test reaps them.
         owner.run(install_reflow);
         let terminal = owner.run(use_terminal);
-        for i in 0..terminal.host.pane_count() {
+        for i in terminal.host.occupied_slots() {
             assert_eq!(
                 terminal.host.pane_grid_size(i),
                 grid_dims((WINDOW_W, WINDOW_H), metric),

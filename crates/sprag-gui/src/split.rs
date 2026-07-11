@@ -69,7 +69,7 @@
 //! per-pane [`pane_tag`](crate::terminal::pane_tag) (`sprag_gui.pane.{i}`) the grid
 //! inside each leaf carries.
 
-use crate::terminal::{MAX_PANES, pane_count};
+use crate::terminal::{MAX_PANES, use_terminal};
 use pinion_core::reactive::{Owner, Signal};
 use pinion_widget_paint::dock::{
     DockDropPreview, DockNode, DockReorganizer, DockSplitPosition, DockTopology, TopologyError,
@@ -137,17 +137,24 @@ const TOPOLOGY_KEY: &str = "sprag_gui.dock_topology";
 /// The dock-tree topology Signal — the layout of ALL panes' leaves (`None` = the
 /// zero-pane edge only). Cached in the root owner (the view fn, the splitter-External
 /// registration, and the reorganizer resolve the same shared slot), seeded once with
-/// the boot tree ([`build_boot_topology`] over all [`pane_count`] panes). Float/dock
+/// the boot tree ([`build_boot_topology`] over the host's live pane count — its truth,
+/// which in attach mode is the adopted set, not the env request). Float/dock
 /// do NOT mutate it (placeholder model — see the module docs); only a reorganize
 /// gesture ([`use_dock_reorganizer`]) restructures it. The shell's `view` subscribes
 /// it (a `set` repaints) and `reconcile_externals` re-walks it to register a
 /// reorganize-minted Split's drag External (pinion R689).
 pub(crate) fn use_dock_topology() -> Rc<Signal<Option<DockTopology>>> {
-    Owner::current()
-        .expect("use_dock_topology() requires an active Owner scope")
-        .cache(TOPOLOGY_KEY, || {
-            Signal::new(build_boot_topology(pane_count()))
-        })
+    let owner = Owner::current().expect("use_dock_topology() requires an active Owner scope");
+    // The boot tree spans the HOST's pane count (its truth): in attach mode the GUI
+    // ADOPTS the host's live set, so the tree must match that count, not the env
+    // `SPRAG_GUI_PANES` request (they coincide in spawn mode). Resolve `use_terminal`
+    // (idempotent; `create_extra_externals` boots it first) BEFORE the cache factory —
+    // an `Owner::cache` factory must not nest another cache resolution, and
+    // `use_terminal` resolves the SESSION_KEY slot.
+    let count = use_terminal().host.pane_count();
+    owner.cache(TOPOLOGY_KEY, move || {
+        Signal::new(build_boot_topology(count))
+    })
 }
 
 /// `Owner::cache` key for the shared drag-to-dock reorganize coordinator.

@@ -57,19 +57,25 @@ fn scroll_view(pane: usize, key: &str) {
     scroll.scroll_by(0, page_delta(key, page));
 }
 
-/// The pane to focus after a `Ctrl+PageUp` (previous) / `Ctrl+PageDown` (next)
-/// from `active`, wrapping over `count` panes. `None` when there is nothing to
-/// switch to (`count <= 1`) or the key is neither. Pure, so it is unit-testable;
-/// the up=previous / down=next sense mirrors the scrollback chord.
-fn next_focus(active: usize, key: &str, count: usize) -> Option<usize> {
-    if count <= 1 {
+/// The slot to focus after a `Ctrl+PageUp` (previous) / `Ctrl+PageDown` (next) from
+/// `active`, wrapping over the `occupied` display slots. Cycles over the OCCUPIED set
+/// (skipping any hole a closed pane left — Round 2b), not a contiguous `0..count`; at
+/// boot the set is contiguous so this is the former modular wrap. `None` when there is
+/// nowhere to switch (`occupied.len() <= 1`, `active` not in the set, or a non-cycle
+/// key). Pure, so it is unit-testable; up=previous / down=next mirrors the scrollback
+/// chord.
+fn next_focus(active: usize, key: &str, occupied: &[usize]) -> Option<usize> {
+    if occupied.len() <= 1 {
         return None;
     }
-    match key {
-        "PageDown" => Some((active + 1) % count),
-        "PageUp" => Some((active + count - 1) % count),
-        _ => None,
-    }
+    let pos = occupied.iter().position(|&slot| slot == active)?;
+    let n = occupied.len();
+    let next = match key {
+        "PageDown" => (pos + 1) % n,
+        "PageUp" => (pos + n - 1) % n,
+        _ => return None,
+    };
+    Some(occupied[next])
 }
 
 /// Move focus to the next / previous tiled pane (wrapping) via a pinion
@@ -77,7 +83,7 @@ fn next_focus(active: usize, key: &str, count: usize) -> Option<usize> {
 /// the `apply_key` routing both follow the focus manager, so requesting the new
 /// pane's tag is the whole switch. A single-pane window is a no-op.
 fn cycle_focus(active: usize, key: &str) {
-    if let Some(next) = next_focus(active, key, use_terminal().host.pane_count()) {
+    if let Some(next) = next_focus(active, key, &use_terminal().host.occupied_slots()) {
         pinion_core::focus_request::request(pane_tag(next));
     }
 }
@@ -509,14 +515,24 @@ mod tests {
 
     #[test]
     fn next_focus_wraps_between_panes() {
-        // Down = next, Up = previous; both wrap over the pane count.
-        assert_eq!(next_focus(0, "PageDown", 3), Some(1));
-        assert_eq!(next_focus(2, "PageDown", 3), Some(0)); // wrap forward
-        assert_eq!(next_focus(0, "PageUp", 3), Some(2)); // wrap backward
-        assert_eq!(next_focus(1, "PageUp", 3), Some(0));
+        // Down = next, Up = previous; both wrap over the occupied slots. Contiguous
+        // (the boot set) behaves as the former modular wrap.
+        let all = [0, 1, 2];
+        assert_eq!(next_focus(0, "PageDown", &all), Some(1));
+        assert_eq!(next_focus(2, "PageDown", &all), Some(0)); // wrap forward
+        assert_eq!(next_focus(0, "PageUp", &all), Some(2)); // wrap backward
+        assert_eq!(next_focus(1, "PageUp", &all), Some(0));
         // A single pane has nowhere to switch to; a non-cycle key is None.
-        assert_eq!(next_focus(0, "PageDown", 1), None);
-        assert_eq!(next_focus(0, "Enter", 3), None);
+        assert_eq!(next_focus(0, "PageDown", &[0]), None);
+        assert_eq!(next_focus(0, "Enter", &all), None);
+        // Non-contiguous slots (a closed pane left a hole at slot 1): cycling STEPS
+        // OVER the hole rather than landing on it (the Round 2b live-correct path).
+        let holed = [0, 2, 3];
+        assert_eq!(next_focus(0, "PageDown", &holed), Some(2));
+        assert_eq!(next_focus(3, "PageDown", &holed), Some(0)); // wrap forward
+        assert_eq!(next_focus(0, "PageUp", &holed), Some(3)); // wrap backward
+        // `active` not among the occupied slots (a just-closed slot) -> nowhere.
+        assert_eq!(next_focus(1, "PageDown", &holed), None);
     }
 
     /// The `Ctrl+PageUp/Down` focus-cycle chord is handled (`true`), reaches no
