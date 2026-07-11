@@ -77,9 +77,20 @@ impl HostState {
         // mutation OR a pane's external output via on_dirty) fires this, draining
         // and replying to every waiter the new revision surpassed.
         let wake = Arc::clone(&waiters);
-        revision.set_observer(move |n| {
-            wake.wake(n);
-        });
+        // `set_observer` is install-once (pinion): the FIRST caller wins, later ones
+        // no-op and return false. This wake seam is the ONLY thing that fires parked
+        // `scene/waitFor` replies, so a silent install-failure would hang every wait
+        // forever with no error. Assert we won the install — a fresh revision per
+        // HostState makes this always true today; the assert catches a future refactor
+        // that reuses an already-observed revision (exactly the silent-failure class
+        // the textbook bar wants caught at the wiring point).
+        assert!(
+            revision.set_observer(move |n| {
+                wake.wake(n);
+            }),
+            "HostState requires a fresh SceneRevision: its wake observer must install \
+             (an already-observed revision would leave scene/waitFor parked forever)",
+        );
         Self {
             host,
             runs: Arc::new(Mutex::new(RunRegistry::default())),
@@ -115,6 +126,22 @@ impl HostState {
     }
 }
 
+/// The pane `on_dirty` hook that bumps `revision` on every batch of PTY output —
+/// the change-notification recipe a wire server boots each pane with. Passed as the
+/// `on_dirty` of [`Host::spawn`](crate::Host::spawn); the bump advances the OCC
+/// token AND wakes any parked async `scene/waitFor` (the observer [`HostState::new`]
+/// installs). The single home for this closure so the "a pane's output bumps THIS
+/// revision" invariant is not hand-rewritten per boot site (the server binary and
+/// the tests share it); a client that spawns a pane against a different revision than
+/// the one `HostState` observes would silently never wake, so it lives in one place.
+#[must_use]
+pub fn bump_on_dirty(revision: &Arc<SceneRevision>) -> Box<dyn Fn() + Send> {
+    let revision = Arc::clone(revision);
+    Box::new(move || {
+        revision.bump();
+    })
+}
+
 /// The methods the headless host answers: pure reads over the pane scene
 /// (`scene/snapshot`, `scene/query`), the `scene/invoke` input + plugin channels,
 /// and the async change-notification pair (`scene/revision` reads the current
@@ -129,31 +156,50 @@ pub const SUPPORTED_METHODS: &[&str] = &[
     "scene/waitFor",
 ];
 
-/// Answer one JSON-RPC `request_json` against the workspace's current panes,
-/// returning the response JSON (`None` for a notification with no reply).
+/// Answer one JSON-RPC `request_json` string against the workspace's current
+/// panes, returning the response JSON (`None` for a notification with no reply).
 ///
-/// Assembles a fresh workspace scene (`Container[panes… + control External]`)
-/// from the live workspace, then either dispatches an allowlisted method
-/// ([`SUPPORTED_METHODS`]: the reads plus `scene/invoke` input + pane
-/// lifecycle), rejects a non-allowlisted method with a method-not-found
-/// error, or lets `dispatch` produce the canonical parse-error reply for
-/// malformed input.
+/// Parses, then delegates a well-formed request to [`handle_parsed`]; a malformed
+/// request lets pinion's `dispatch` emit the canonical JSON-RPC parse error. This
+/// is the string entry point (the tests + the malformed path use it); the live
+/// dispatch owner (`dispatch_one`) has already parsed the frame and calls
+/// [`handle_parsed`] directly, so a valid request is parsed exactly once.
 #[must_use]
 pub fn handle_request(state: &HostState, request_json: &str) -> Option<String> {
+    match parse_request(request_json) {
+        Ok(request) => handle_parsed(state, request),
+        Err(_) => {
+            // Malformed: assemble a ctx only for the canonical parse-error reply.
+            let mut scene = crate::workspace_scene(state.workspace(), &state.runs);
+            let mut ctx = DispatchContext::new(&mut scene, &state.previews, state.revision());
+            dispatch(&mut ctx, request_json)
+        }
+    }
+}
+
+/// Answer one already-parsed JSON-RPC `request` against the workspace's current
+/// panes — the dispatch core shared by the string entry ([`handle_request`]) and
+/// the live dispatch owner (`dispatch_one`, which parses once to intercept async
+/// `scene/waitFor` and hands the parsed request straight here). Assembles a fresh
+/// workspace scene (`Container[panes… + control External]`), then dispatches an
+/// allowlisted method ([`SUPPORTED_METHODS`]) or rejects a non-allowlisted one with
+/// a method-not-found error. Only the async `scene/waitFor` form is handled earlier
+/// (in `dispatch_one`); the v0 since-less form falls through here to pinion's
+/// synchronous handler.
+#[must_use]
+pub fn handle_parsed(state: &HostState, request: Request) -> Option<String> {
     let mut scene = crate::workspace_scene(state.workspace(), &state.runs);
     let mut ctx = DispatchContext::new(&mut scene, &state.previews, state.revision());
-    match parse_request(request_json) {
-        Ok(request) if SUPPORTED_METHODS.contains(&request.method.as_str()) => {
-            dispatch_parsed(&mut ctx, request)
-        }
-        Ok(request) => Some(method_not_supported(&request)),
-        // Malformed: let dispatch emit the canonical JSON-RPC parse error.
-        Err(_) => dispatch(&mut ctx, request_json),
+    if SUPPORTED_METHODS.contains(&request.method.as_str()) {
+        dispatch_parsed(&mut ctx, request)
+    } else {
+        Some(method_not_supported(&request))
     }
 }
 
 /// Build the JSON-RPC method-not-found (-32601) reply for a well-formed but
-/// non-allowlisted request, naming the supported set.
+/// non-allowlisted request, naming the supported set. The list is derived from
+/// [`SUPPORTED_METHODS`] (not re-typed), so the const stays the single source.
 fn method_not_supported(request: &Request) -> String {
     serde_json::json!({
         "jsonrpc": "2.0",
@@ -161,8 +207,9 @@ fn method_not_supported(request: &Request) -> String {
         "error": {
             "code": -32601,
             "message": format!(
-                "sprag-term host: '{}' is unsupported; use scene/snapshot, scene/query, scene/invoke, scene/revision, or scene/waitFor",
-                request.method
+                "sprag-term host: '{}' is unsupported; use one of: {}",
+                request.method,
+                SUPPORTED_METHODS.join(", "),
             ),
         }
     })
@@ -214,28 +261,36 @@ pub fn dispatch_frames(state: &HostState, rx: Receiver<RpcFrame>) {
 /// split out so the async `scene/waitFor` park/wake path is unit-testable without
 /// standing up the channel loop.
 ///
-/// An async `scene/waitFor {since}` is intercepted BEFORE the synchronous
-/// [`handle_request`] core: [`try_async_wait_for`] either answers it immediately
-/// (the scene already advanced past `since`) or PARKS its reply in the waiter
-/// registry — in which case the reply fires LATER, off this dispatch thread, on
-/// the scene bump that wakes it ([`HostState`] installed the wake observer). A
-/// non-`waitFor` frame (or a since-less v0 `waitFor`) hands the reply back and
-/// runs the normal synchronous dispatch. Parking does not build the workspace
-/// scene, so a blocked wait costs nothing until a pane actually produces output.
+/// Parses the frame ONCE. An async `scene/waitFor {since}` is intercepted BEFORE
+/// the synchronous core: [`try_async_wait_for`] either answers it immediately (the
+/// scene already advanced past `since`) or PARKS its reply in the waiter registry —
+/// in which case the reply fires LATER, off this dispatch thread, on the scene bump
+/// that wakes it ([`HostState`] installed the wake observer). A non-`waitFor` frame
+/// (or a since-less v0 `waitFor`) is handed straight to [`handle_parsed`] with the
+/// already-parsed request — no re-parse. A malformed frame goes to [`handle_request`]
+/// for the canonical parse-error reply. Parking does not build the workspace scene,
+/// so a blocked wait costs nothing until a pane actually produces output.
 fn dispatch_one(state: &HostState, frame: RpcFrame) {
     let RpcFrame { request, reply } = frame;
-    let reply = match parse_request(&request) {
-        Ok(parsed) => match try_async_wait_for(&parsed, state.revision(), state.waiters(), reply) {
-            // Parked (or answered immediately) by the registry — nothing more to do.
-            ControlFlow::Break(()) => return,
-            // Not an async waitFor: the reply is handed back for normal dispatch.
-            ControlFlow::Continue(reply) => reply,
-        },
-        // Malformed: let handle_request emit the canonical JSON-RPC parse error.
-        Err(_) => reply,
-    };
-    if let Some(response) = handle_request(state, &request) {
-        reply.send(response);
+    match parse_request(&request) {
+        Ok(parsed) => {
+            match try_async_wait_for(&parsed, state.revision(), state.waiters(), reply) {
+                // Parked (or answered immediately) by the registry — nothing more to do.
+                ControlFlow::Break(()) => {}
+                // Not an async waitFor: dispatch the ALREADY-parsed request (no re-parse).
+                ControlFlow::Continue(reply) => {
+                    if let Some(response) = handle_parsed(state, parsed) {
+                        reply.send(response);
+                    }
+                }
+            }
+        }
+        // Malformed: the string entry emits the canonical JSON-RPC parse error.
+        Err(_) => {
+            if let Some(response) = handle_request(state, &request) {
+                reply.send(response);
+            }
+        }
     }
 }
 
@@ -288,15 +343,14 @@ mod tests {
     fn host_with(script: &str, cols: u16, rows: u16) -> HostState {
         let revision = Arc::new(SceneRevision::new());
         let host = Host::new((cols, rows));
-        let rev = Arc::clone(&revision);
+        // The SAME boot recipe prod uses (sprag-term.rs) — the shared `bump_on_dirty`
+        // helper, so the test exercises the real "pane output bumps THIS revision" wire.
         host.spawn(
             sh(script),
             "sh".to_string(),
             cols,
             rows,
-            Some(Box::new(move || {
-                rev.bump();
-            })),
+            Some(bump_on_dirty(&revision)),
         )
         .expect("spawn pane");
         HostState::new(host, revision)
@@ -801,7 +855,7 @@ mod tests {
         RpcReply::new(move |response| sink.lock().unwrap().push(response))
     }
 
-    /// One frame through the real per-frame dispatch body ([`dispatch_one`]) with a
+    /// One frame through the real per-frame dispatch body (`dispatch_one`) with a
     /// recording reply, so the async park/immediate paths are exercised exactly as
     /// the serve loop runs them.
     fn dispatch_recording(state: &HostState, request: &str, sink: &Arc<Mutex<Vec<String>>>) {

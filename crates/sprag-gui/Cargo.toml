@@ -21,7 +21,7 @@ sprag-host = { workspace = true }
 # (an uncommitted preedit never in the PTY). The cell projection SSOT itself lives
 # host-side (pane_cells -> project_scrolled); this is the client's own half.
 sprag-grid = { workspace = true }
-# Modifiers: the encoder's modifier type the client passes to LocalHost::send_key
+# Modifiers: the encoder's modifier type the client passes to Host::send_key
 # (the input-over-the-client path). The key->PTY encoding itself is host-side
 # (sprag_host::send_key -> sprag_input::encode); this is just the typed arg.
 sprag-input = { workspace = true }

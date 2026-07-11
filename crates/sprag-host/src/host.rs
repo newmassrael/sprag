@@ -61,9 +61,30 @@ use crate::external::lock;
 /// round-trip). Named "facts", not "dims", so it is never confused with the grid
 /// geometry ([`pane_grid_size`](Host::pane_grid_size)) — `scrollback_len` is a
 /// history depth, not a dimension.
+///
+/// This is the ONE definition of the frame's non-cell field set: the in-process
+/// client reads it via [`Host::pane_scroll_facts`], and the wire `cells` action
+/// ([`SpragPaneExternal::read_cells`](crate::pane)) flattens the SAME type into
+/// its JSON frame (serde-derived), so the field names + wire keys cannot drift
+/// between the two clients. `Serialize`/`Deserialize` for the wire; `Eq` so a test
+/// can compare two reads.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PaneScrollFacts {
     pub scrollback_len: usize,
     pub visible_rows: u16,
+}
+
+impl PaneScrollFacts {
+    /// Read the non-cell facts from a live `screen` — the SINGLE population site,
+    /// shared by [`Host::pane_scroll_facts`] and the wire `cells` action, so the
+    /// two never disagree on how a fact is derived (adding a fact edits only here +
+    /// the struct).
+    pub(crate) fn from_screen(screen: &Screen) -> Self {
+        Self {
+            scrollback_len: screen.scrollback_len(),
+            visible_rows: screen.rows(),
+        }
+    }
 }
 
 /// The single [`Workspace`] owner + typed client protocol (topology B). See the
@@ -136,10 +157,7 @@ impl Host {
     #[must_use]
     pub fn pane_scroll_facts(&self, index: usize) -> PaneScrollFacts {
         self.with_pane(index, |pane| {
-            pane.session().with_screen(|screen| PaneScrollFacts {
-                scrollback_len: screen.scrollback_len(),
-                visible_rows: screen.rows(),
-            })
+            pane.session().with_screen(PaneScrollFacts::from_screen)
         })
     }
 
@@ -272,8 +290,7 @@ mod tests {
         let host = Host::new((40, 6));
         host.spawn(cat(), "cat".to_owned(), 40, 6, None).unwrap();
         assert!(host.send_text(0, "hello"));
-        // The cooked-mode `cat` echoes it back onto row 0.
-        let handle = host.pane_handle(0);
+        // The cooked-mode `cat` echoes it back into the pane's screen.
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(5) {
             if host.pane_full_text(0).contains("hello") {
@@ -281,7 +298,6 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        drop(handle);
         panic!("the sent text never echoed back through the host");
     }
 }

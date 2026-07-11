@@ -84,6 +84,10 @@ signal-hook = "0.3"
 # JSON parsing for tests that assert on the scene/snapshot RPC wire.
 serde_json = "1"
 
+# serde derive for sprag-host's wire DTOs (the pane `cells`-frame facts). Version
+# matches pinion's so the one serde instance is shared across the dep graph.
+serde = { version = "1", features = ["derive"] }
+
 # Production logging: first-party diagnostics are leveled `tracing` events
 # (targets like `sprag_gui::dock`), env-filtered by log level — NOT ad-hoc
 # eprintln. Versions match pinion's so the one global subscriber is shared.

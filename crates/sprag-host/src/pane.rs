@@ -17,7 +17,7 @@
 //! {text})` writes **literal** UTF-8 to the child (no key-encoding) — the seam
 //! for IME-composed input (a Hangul/CJK commit is text, not a keystroke) and
 //! for pasting; the AI peer drives the same wire. A read-shaped `invoke("cells",
-//! {offset})` returns the pane's cell FRAME — the projected [`GridBuffer`](pinion_core::GridBuffer) at that
+//! {offset})` returns the pane's cell FRAME — the projected [`GridBuffer`] at that
 //! scrollback offset (serde-able since PINION-PR49) plus the scroll facts
 //! (scrollback depth + visible rows) that ride with it — the wire display client's
 //! per-frame read (topology B: the client reconstructs the exact buffer the host
@@ -31,15 +31,17 @@
 
 use std::fmt;
 
+use pinion_core::GridBuffer;
 use pinion_core::external::{
     ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError,
 };
-use serde_json::{Value, json};
+use serde_json::Value;
 use sprag_input::Modifiers;
 use sprag_terminal::SessionHandle;
 use sprag_vt::Screen;
 
 use crate::external::rpc_external_impl;
+use crate::host::PaneScrollFacts;
 
 /// The invoke action that injects a key into the focused pane.
 const KEY_ACTION: &str = "key";
@@ -62,10 +64,10 @@ const FULL_TEXT_SLOT: &str = "full_text";
 /// `false` if the key is unencodable or the write failed.
 ///
 /// This is the key->PTY SSOT shared by the RPC input surface
-/// ([`SpragPaneExternal`]'s `key` action, which parses the JSON/scene wire) and an
-/// in-process display client (`sprag-gui`'s `LocalHost`, which calls this directly
-/// with typed args) — so the human keyboard path and the AI `scene/invoke` path
-/// encode IDENTICALLY.
+/// ([`SpragPaneExternal`]'s `key` action, which parses the JSON/scene wire) and the
+/// in-process display client ([`Host::send_key`](crate::Host::send_key), which calls
+/// this directly with typed args) — so the human keyboard path and the AI
+/// `scene/invoke` path encode IDENTICALLY.
 #[must_use]
 pub fn send_key(session: &SessionHandle, key: &str, mods: Modifiers) -> bool {
     match sprag_input::encode(key, mods, session.input_modes()) {
@@ -135,41 +137,53 @@ impl SpragPaneExternal {
     /// Return the pane's cell FRAME at scrollback `offset` — the wire display
     /// client's per-frame read (topology B). The frame is a JSON object:
     ///
-    /// * `cells` — the projected [`GridBuffer`](pinion_core::GridBuffer)
+    /// * `cells` — the projected [`GridBuffer`]
     ///   ([`sprag_grid::project_scrolled`], serde-able since PINION-PR49), the
     ///   paint-authoritative buffer the client reconstructs byte-for-byte;
     /// * `scrollback_len` — the retained history depth (the scrollbar extent + the
     ///   top-anchored offset math);
     /// * `visible_rows` — one scrollback page.
     ///
-    /// The three are read under ONE screen lock — an atomically consistent snapshot
-    /// (the cells and the scroll facts describe the SAME screen state, never a torn
-    /// read across two locks) — and the [`GridBuffer`](pinion_core::GridBuffer) is
-    /// serialized AFTER the lock is released, so the (CPU-bound) serialization never
-    /// holds the producer's screen. `offset == 0` is the live view; a larger offset
-    /// windows into history ([`sprag_grid::project_scrolled`] self-clamps to the
-    /// retained depth). A malformed `offset` is an [`InvokeError::TypeMismatch`]; a
-    /// serialization failure (never expected for a valid buffer) is
-    /// [`InvokeError::Rejected`].
+    /// The [`GridBuffer`] and the [`PaneScrollFacts`] are
+    /// read under ONE screen lock — an atomically consistent snapshot (the cells and
+    /// the scroll facts describe the SAME screen state, never a torn read across two
+    /// locks) — then serialized AFTER the lock is released, so the (CPU-bound)
+    /// serialization never holds the producer's screen. The facts flatten into the
+    /// frame from the ONE [`PaneScrollFacts`] type (its field names ARE the wire
+    /// keys), and are read through [`PaneScrollFacts::from_screen`] — the same
+    /// population the in-process [`Host::pane_scroll_facts`](crate::Host::pane_scroll_facts)
+    /// uses, so the two clients cannot disagree on the frame's non-cell shape.
+    ///
+    /// `offset == 0` is the live view; a larger offset windows into history
+    /// ([`sprag_grid::project_scrolled`] self-clamps to the retained depth). A
+    /// malformed `offset` is an [`InvokeError::TypeMismatch`]; a serialization failure
+    /// (never expected for a valid buffer) is [`InvokeError::Rejected`].
     fn read_cells(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let offset = parse_offset_arg(args)?;
         // One screen lock: project the scrolled cells + read the scroll facts that
         // ride with them, so the frame is a consistent snapshot. Serialization runs
         // after, off the lock.
-        let (cells, scrollback_len, visible_rows) = self.session.with_screen(|screen| {
-            (
-                sprag_grid::project_scrolled(screen, offset),
-                screen.scrollback_len(),
-                screen.rows(),
-            )
+        let frame = self.session.with_screen(|screen| CellFrame {
+            cells: sprag_grid::project_scrolled(screen, offset),
+            facts: PaneScrollFacts::from_screen(screen),
         });
-        let cells = serde_json::to_value(&cells).map_err(|_| InvokeError::Rejected)?;
-        Ok(IntrospectValue::Json(json!({
-            "cells": cells,
-            "scrollback_len": scrollback_len,
-            "visible_rows": visible_rows,
-        })))
+        serde_json::to_value(&frame)
+            .map(IntrospectValue::Json)
+            .map_err(|_| InvokeError::Rejected)
     }
+}
+
+/// The wire `cells`-action frame: the projected paint buffer plus the non-cell
+/// [`PaneScrollFacts`] that ride with it, serialized as one flat JSON object
+/// (`{cells, scrollback_len, visible_rows}`). `#[serde(flatten)]` pulls the facts'
+/// field names up as the wire keys, so the frame's non-cell keys are defined ONCE
+/// (on [`PaneScrollFacts`]) rather than re-listed here — the SSOT the wire client
+/// and the in-process client share.
+#[derive(serde::Serialize)]
+struct CellFrame {
+    cells: GridBuffer,
+    #[serde(flatten)]
+    facts: PaneScrollFacts,
 }
 
 impl fmt::Debug for SpragPaneExternal {

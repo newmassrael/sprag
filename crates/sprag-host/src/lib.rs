@@ -56,7 +56,8 @@ pub use host::{Host, PaneScrollFacts};
 pub use pane::{SpragPaneExternal, send_key, send_text};
 pub use plugins::PluginsExternal;
 pub use rpc::{
-    FrameIngress, HostState, SUPPORTED_METHODS, dispatch_frames, handle_request, stdin_frames,
+    FrameIngress, HostState, SUPPORTED_METHODS, bump_on_dirty, dispatch_frames, handle_parsed,
+    handle_request, stdin_frames,
 };
 pub use runs::{RunId, RunRegistry, RunState};
 pub use workspace::WorkspaceExternal;

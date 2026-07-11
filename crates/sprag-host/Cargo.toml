@@ -34,3 +34,6 @@ signal-hook = { workspace = true }
 tracing = { workspace = true }
 # Building the read-only method-gate error response.
 serde_json = { workspace = true }
+# serde derive for the wire DTOs (PaneScrollFacts + the pane cells-frame). The
+# GridBuffer's own serde comes from pinion-core; this is for sprag's frame types.
+serde = { workspace = true }

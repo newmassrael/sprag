@@ -26,7 +26,9 @@ use std::thread;
 
 use pinion_core::SceneRevision;
 use signal_hook::consts::{SIGINT, SIGTERM};
-use sprag_host::{FrameIngress, Host, HostState, RunRegistry, dispatch_frames, stdin_frames};
+use sprag_host::{
+    FrameIngress, Host, HostState, RunRegistry, bump_on_dirty, dispatch_frames, stdin_frames,
+};
 use sprag_rpc::SocketOpts;
 use sprag_terminal::CommandBuilder;
 
@@ -49,17 +51,8 @@ fn main() -> io::Result<()> {
     // BEFORE the spawn so the bumper and HostState share the one token.
     let revision = Arc::new(SceneRevision::new());
     let host = Host::new((cols, rows));
-    let dirty = Arc::clone(&revision);
-    host.spawn(
-        command,
-        label,
-        cols,
-        rows,
-        Some(Box::new(move || {
-            dirty.bump();
-        })),
-    )
-    .map_err(io::Error::other)?;
+    host.spawn(command, label, cols, rows, Some(bump_on_dirty(&revision)))
+        .map_err(io::Error::other)?;
     let state = HostState::new(host, revision);
 
     // One dispatch owner (this thread) serialises all dispatch; the always-on
