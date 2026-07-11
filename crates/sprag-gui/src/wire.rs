@@ -28,8 +28,23 @@
 //! off-thread-producer -> repaint shape `examples/hello-live-data` proves. A
 //! scrolled-history read (`offset > 0`) is the one synchronous fetch, off `view`'s
 //! hot path (an interactive gesture, not per-frame).
+//!
+//! The `since` baseline is read BEFORE the initial cell fetch (subscribe-then-
+//! snapshot), so output landing during boot is caught by the first `waitFor`
+//! (answered immediately when the scene already advanced) rather than lost against a
+//! stale first frame.
+//!
+//! ## Threading
+//!
+//! `WireHost` lives on the single UI thread (`Owner::cache`, never `Send`/`Sync`
+//! bound), so its request connection + tracked dims use [`RefCell`] (single-threaded
+//! interior mutability). Only the `cache` is genuinely shared with the poll thread
+//! and so is an `Arc<Mutex<_>>`.
 
+use std::cell::RefCell;
 use std::io;
+use std::net::Shutdown;
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -40,7 +55,10 @@ use std::time::Duration;
 
 use pinion_core::GridBuffer;
 use serde_json::{Value, json};
-use sprag_host::{HostClient, PaneScrollFacts};
+use sprag_host::wire::{
+    CELLS_ACTION, FULL_TEXT_SLOT, KEY_ACTION, PANES_SLOT, RESIZE_ACTION, SPAWN_ACTION, TEXT_ACTION,
+};
+use sprag_host::{CellFrame, HostClient, PaneScrollFacts, mux_action_path, pane_input_path};
 use sprag_input::Modifiers;
 use sprag_rpc::{HostConn, runtime_path};
 
@@ -62,24 +80,28 @@ struct PaneMeta {
     label: String,
 }
 
-/// One pane's live cell FRAME (offset 0), maintained by the poll thread and read by
-/// the pure `view` — the producer-authoritative buffer (the GUI's `hello-live-data`
-/// analog).
-struct Frame {
-    cells: GridBuffer,
-    facts: PaneScrollFacts,
+/// Kills + reaps a spawned host child if [`spawn_or_attach`](WireHost::spawn_or_attach)
+/// fails after the spawn — `std::process::Child`'s own `Drop` neither kills nor waits,
+/// so an error `?`-returned after `spawn_host` would otherwise leak the child until GUI
+/// exit. Disarmed with [`disarm`](Self::disarm) once boot succeeds (the child moves into
+/// the live `WireHost`). Holds `None` in attach mode (nothing to reap).
+struct ChildGuard(Option<Child>);
+
+impl ChildGuard {
+    /// Take the child out, disarming the guard — called on boot success so the reap
+    /// does NOT run (the child is now owned by the live `WireHost`).
+    fn disarm(mut self) -> Option<Child> {
+        self.0.take()
+    }
 }
 
-/// The wire-frame shape the host's `cells` action returns
-/// (`{cells, scrollback_len, visible_rows}`) — the client deserialize twin of the
-/// host's serialize-only `CellFrame`, sharing [`PaneScrollFacts`] as the flattened
-/// non-cell field set (its field names ARE the wire keys), so the two ends cannot
-/// drift.
-#[derive(serde::Deserialize)]
-struct WireFrame {
-    cells: GridBuffer,
-    #[serde(flatten)]
-    facts: PaneScrollFacts,
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 /// The GUI's wire client of a `sprag-term` host. See the module docs.
@@ -89,18 +111,26 @@ pub(crate) struct WireHost {
     /// Tile index -> pane identity (immutable after boot).
     panes: Vec<PaneMeta>,
     /// Per-pane current grid `(cols, rows)`. The GUI is the sole resizer of its
-    /// panes, so this tracks its own `resize` calls (updated there) — the reflow
-    /// no-op guard reads it immediately, with no round-trip and no resize loop.
-    dims: Mutex<Vec<(u16, u16)>>,
-    /// The UI thread's request connection (reads / input / resize). Behind a `Mutex`
-    /// only for the `&self` trait signature; one caller (the UI thread) touches it.
-    conn: Mutex<HostConn>,
-    /// The live per-pane frames (offset 0), swapped in by the poll thread on each
-    /// host change and read by `view` under a brief lock.
-    cache: Arc<Mutex<Vec<Frame>>>,
-    /// Set on Drop to stop the poll loop (a killed child also unblocks its read).
+    /// panes, so this tracks the host's true size: seeded from the host's pane list at
+    /// boot and advanced only when a `resize` RPC SUCCEEDS, so the reflow no-op guard
+    /// reads it immediately with no round-trip and no resize loop, and a failed resize
+    /// is retried rather than latched.
+    dims: RefCell<Vec<(u16, u16)>>,
+    /// The UI thread's request connection (reads / input / resize). `RefCell`, not
+    /// `Mutex`: `WireHost` is UI-thread-only (see the module docs), and the poll thread
+    /// owns a SEPARATE connection.
+    conn: RefCell<HostConn>,
+    /// The live per-pane frames (offset 0), swapped in by the poll thread on each host
+    /// change and read by `view` under a brief lock. The one genuinely-shared field.
+    cache: Arc<Mutex<Vec<CellFrame>>>,
+    /// Set on Drop to stop the poll loop.
     stop: Arc<AtomicBool>,
-    /// The background change-notification -> repaint thread (detached on Drop).
+    /// A shutdown handle onto the poll connection: Drop calls `shutdown(Both)` on it to
+    /// cancel the poll thread's parked `scene/waitFor` read so the join is deterministic
+    /// in BOTH spawn and attach modes (in attach mode there is no child kill to close the
+    /// socket for us).
+    poll_shutdown: UnixStream,
+    /// The background change-notification -> repaint thread, joined on Drop.
     poll: Option<JoinHandle<()>>,
 }
 
@@ -112,7 +142,8 @@ impl WireHost {
     /// # Errors
     ///
     /// Any failure to spawn the child, connect to its socket within
-    /// [`CONNECT_TIMEOUT`], or boot the panes over RPC.
+    /// [`CONNECT_TIMEOUT`], or boot the panes over RPC. A spawned child is reaped on
+    /// any such failure ([`ChildGuard`]).
     pub(crate) fn spawn_or_attach(
         argv: Option<Vec<String>>,
         cols: u16,
@@ -134,15 +165,27 @@ impl WireHost {
                 (Some(child), sock)
             }
         };
+        // Reap the spawned child on any boot error below (PR_SET_PDEATHSIG only covers
+        // GUI-process death, not an error return here). Disarmed on success.
+        let guard = ChildGuard(child);
 
         let mut conn = HostConn::connect(&sock, CONNECT_TIMEOUT)?;
-        let panes = boot_panes(&mut conn, argv.as_deref(), cols, rows, n_panes)?;
-        let dims = vec![(cols, rows); panes.len()];
+        let booted = boot_panes(&mut conn, argv.as_deref(), cols, rows, n_panes)?;
+        // Seed dims from the host's OWN pane list (its truth), not the GUI's window-
+        // derived guess — correct in attach mode where the host's panes may differ.
+        let dims: Vec<(u16, u16)> = booted.iter().map(|(_, d)| *d).collect();
+        let panes: Vec<PaneMeta> = booted.into_iter().map(|(m, _)| m).collect();
+
+        // Subscribe-then-snapshot: read the change-notification baseline BEFORE the
+        // initial cell fetch, so output landing during boot makes the first `waitFor`
+        // fire immediately (catch-up) instead of being lost against a stale first frame.
+        let since0 = read_revision(&mut conn)?;
         let cache = Arc::new(Mutex::new(fetch_all(&mut conn, &panes)?));
 
         // The poll thread's own connection — a parked `scene/waitFor` on it never
         // blocks the request connection above (separate host handler threads).
         let poll_conn = HostConn::connect(&sock, CONNECT_TIMEOUT)?;
+        let poll_shutdown = poll_conn.shutdown_handle()?;
         let stop = Arc::new(AtomicBool::new(false));
         let poll = spawn_poll(
             poll_conn,
@@ -150,32 +193,52 @@ impl WireHost {
             Arc::clone(&cache),
             on_change,
             Arc::clone(&stop),
-        );
+            since0,
+        )?;
 
         Ok(Self {
-            child,
+            child: guard.disarm(),
             panes,
-            dims: Mutex::new(dims),
-            conn: Mutex::new(conn),
+            dims: RefCell::new(dims),
+            conn: RefCell::new(conn),
             cache,
             stop,
+            poll_shutdown,
             poll: Some(poll),
         })
     }
 
-    /// Run `f` over the request connection (poison-tolerant — the UI thread is the
-    /// sole caller, so a poisoned lock only means a prior panic, not contention).
-    fn with_conn<R>(&self, f: impl FnOnce(&mut HostConn) -> R) -> R {
-        let mut conn = self.conn.lock().unwrap_or_else(PoisonError::into_inner);
-        f(&mut conn)
+    /// Issue one request over the UI-thread connection, tracing (not swallowing
+    /// silently) any wire failure — the ONE place a `WireHost` read/write RPC error is
+    /// handled, so every method's error policy is consistent (the "swallow is honest,
+    /// not silent" bar the in-process `Host` holds). Returns `None` on failure.
+    fn request(&self, method: &str, params: Value, ctx: &str) -> Option<Value> {
+        match self.conn.borrow_mut().call(method, params) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                tracing::debug!(target: "sprag_gui::wire", ctx, %error, "wire request failed");
+                None
+            }
+        }
     }
 
-    /// This pane's `/pane_<id>/sprag_input/external/<action>` invoke path.
-    fn pane_path(&self, index: usize, action: &str) -> String {
-        format!(
-            "/pane_{}/sprag_input/external/{action}",
-            self.panes[index].id
-        )
+    /// The host id of the pane at tile `index`, or `None` if out of range. The write /
+    /// input methods guard on this (returning the trait's no-op / `false`) exactly like
+    /// the read methods guard on the cache, so the whole impl handles an absent index
+    /// uniformly rather than half-panicking.
+    fn pane_id(&self, index: usize) -> Option<u64> {
+        self.panes.get(index).map(|p| p.id)
+    }
+
+    /// The cached live (offset 0) cell buffer for tile `index`, or a `1x1` placeholder
+    /// before the first frame / out of range.
+    fn live_cells(&self, index: usize) -> GridBuffer {
+        self.cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(index)
+            .map(|frame| frame.cells.clone())
+            .unwrap_or_else(|| GridBuffer::new(1, 1))
     }
 }
 
@@ -187,34 +250,20 @@ impl HostClient for WireHost {
     fn pane_cells(&self, index: usize, offset_lines: usize) -> GridBuffer {
         if offset_lines == 0 {
             // Live view: the poll-thread-maintained cache — no socket call in `view`.
-            return self
-                .cache
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .get(index)
-                .map(|f| f.cells.clone())
-                .unwrap_or_else(|| GridBuffer::new(1, 1));
+            return self.live_cells(index);
         }
         // Scrolled history: one synchronous fetch (an interactive gesture, off the
-        // per-frame hot path). On error, fall back to the cached live buffer.
-        let path = self.pane_path(index, "cells");
-        self.with_conn(|conn| {
-            conn.call(
-                "scene/invoke",
-                invoke(&path, json!({ "offset": offset_lines })),
-            )
-        })
-        .ok()
-        .and_then(|v| serde_json::from_value::<WireFrame>(v).ok())
-        .map(|f| f.cells)
-        .unwrap_or_else(|| {
-            self.cache
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .get(index)
-                .map(|f| f.cells.clone())
-                .unwrap_or_else(|| GridBuffer::new(1, 1))
-        })
+        // per-frame hot path). On any failure, fall back to the cached live buffer.
+        let Some(id) = self.pane_id(index) else {
+            return self.live_cells(index);
+        };
+        let params = invoke(
+            &pane_input_path(id, CELLS_ACTION),
+            json!({ "offset": offset_lines }),
+        );
+        self.request("scene/invoke", params, "pane_cells")
+            .and_then(|value| serde_json::from_value::<CellFrame>(value).ok())
+            .map_or_else(|| self.live_cells(index), |frame| frame.cells)
     }
 
     fn pane_scroll_facts(&self, index: usize) -> PaneScrollFacts {
@@ -222,7 +271,7 @@ impl HostClient for WireHost {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(index)
-            .map(|f| f.facts.clone())
+            .map(|frame| frame.facts.clone())
             .unwrap_or(PaneScrollFacts {
                 scrollback_len: 0,
                 visible_rows: 1,
@@ -230,38 +279,30 @@ impl HostClient for WireHost {
     }
 
     fn pane_grid_size(&self, index: usize) -> (u16, u16) {
-        self.dims
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(index)
-            .copied()
-            .unwrap_or((1, 1))
+        self.dims.borrow().get(index).copied().unwrap_or((1, 1))
     }
 
     fn resize(&self, index: usize, cols: u16, rows: u16) {
-        // Track the target locally FIRST (the GUI is the resize authority), so the
-        // reflow no-op guard sees the new size immediately — no resize loop while the
-        // host's reflowed cells propagate back through the poll.
-        if let Some(slot) = self
-            .dims
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get_mut(index)
-        {
-            *slot = (cols, rows);
-        }
-        let id = self.panes[index].id;
+        let Some(id) = self.pane_id(index) else {
+            return;
+        };
         let params = invoke(
-            "/sprag_mux/external/resize",
+            &mux_action_path(RESIZE_ACTION),
             json!({ "id": id, "cols": cols, "rows": rows }),
         );
-        if let Err(error) = self.with_conn(|conn| conn.call("scene/invoke", params)) {
-            tracing::debug!(target: "sprag_gui::wire", pane = index, %error, "resize over the wire failed");
+        // Advance the tracked size only on a SUCCESSFUL resize, so a failed resize is
+        // retried on the next reflow rather than latched into the no-op guard.
+        if self.request("scene/invoke", params, "resize").is_some()
+            && let Some(slot) = self.dims.borrow_mut().get_mut(index)
+        {
+            *slot = (cols, rows);
         }
     }
 
     fn send_key(&self, index: usize, key: &str, mods: Modifiers) -> bool {
-        let path = self.pane_path(index, "key");
+        let Some(id) = self.pane_id(index) else {
+            return false;
+        };
         let args = json!({
             "key": key,
             "ctrl": mods.ctrl,
@@ -269,51 +310,69 @@ impl HostClient for WireHost {
             "shift": mods.shift,
             "super": mods.sup,
         });
-        self.with_conn(|conn| conn.call("scene/invoke", invoke(&path, args)))
-            .is_ok()
+        self.request(
+            "scene/invoke",
+            invoke(&pane_input_path(id, KEY_ACTION), args),
+            "send_key",
+        )
+        .is_some()
     }
 
     fn send_text(&self, index: usize, text: &str) -> bool {
-        let path = self.pane_path(index, "text");
-        self.with_conn(|conn| conn.call("scene/invoke", invoke(&path, json!({ "text": text }))))
-            .is_ok()
+        let Some(id) = self.pane_id(index) else {
+            return false;
+        };
+        let params = invoke(&pane_input_path(id, TEXT_ACTION), json!({ "text": text }));
+        self.request("scene/invoke", params, "send_text").is_some()
     }
 
     fn pane_full_text(&self, index: usize) -> String {
-        let path = self.pane_path(index, "full_text");
-        self.with_conn(|conn| conn.call("scene/query", json!({ "path": path })))
-            .ok()
-            .and_then(|v| v.as_str().map(str::to_owned))
+        let Some(id) = self.pane_id(index) else {
+            return String::new();
+        };
+        let params = json!({ "path": pane_input_path(id, FULL_TEXT_SLOT) });
+        self.request("scene/query", params, "pane_full_text")
+            .and_then(|value| value.as_str().map(str::to_owned))
             .unwrap_or_default()
     }
 
     fn pane_command_label(&self, index: usize) -> String {
-        self.panes[index].label.clone()
+        self.panes
+            .get(index)
+            .map(|pane| pane.label.clone())
+            .unwrap_or_default()
     }
 }
 
 impl Drop for WireHost {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        // Reap a spawned child gracefully-ish: SIGKILL closes its PTY masters (the
-        // pane shells get SIGHUP) and its sockets, which unblocks the poll thread's
-        // parked read so it exits on its own. PR_SET_PDEATHSIG already covers an
-        // ungraceful GUI exit; this is the graceful path.
+        // Cancel the poll thread's parked `scene/waitFor` read so the join below is
+        // deterministic in BOTH modes (attach mode has no child kill to close the
+        // socket). All stream clones name one OS socket, so this reaches the reader.
+        let _ = self.poll_shutdown.shutdown(Shutdown::Both);
+        // Reap a spawned child (SIGKILL closes its PTY masters -> the pane shells get
+        // SIGHUP, and its sockets close). PR_SET_PDEATHSIG covers an ungraceful GUI
+        // exit; this is the graceful path.
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = child.wait();
-            if let Some(handle) = self.poll.take() {
-                let _ = handle.join();
-            }
         }
-        // Attach mode: the host stays up and the poll read stays parked, so don't
-        // join (it would hang). The detached thread exits when the process does.
+        if let Some(handle) = self.poll.take() {
+            let _ = handle.join();
+        }
     }
 }
 
 /// `scene/invoke` params: the addressed `path` + its `args`.
 fn invoke(path: &str, args: Value) -> Value {
     json!({ "path": path, "args": args })
+}
+
+/// Read the host's current scene revision (the async `scene/waitFor` baseline).
+fn read_revision(conn: &mut HostConn) -> io::Result<u64> {
+    let value = conn.call("scene/revision", json!({}))?;
+    Ok(value["revision"].as_u64().unwrap_or(0))
 }
 
 /// The `sprag-term` binary: `SPRAG_GUI_HOST_BIN`, else the sibling of the running
@@ -333,7 +392,9 @@ fn host_bin() -> PathBuf {
 
 /// Spawn a `sprag-term` child bound to `sock`, its initial pane running `argv`
 /// (`None` = the host's default `$SHELL`) at `cols x rows`. `PR_SET_PDEATHSIG`
-/// reaps it if the GUI dies ungracefully.
+/// reaps it if the GUI dies ungracefully. stdout/stderr are inherited (the host's
+/// tracing shows beside the GUI's); stdin is null (the socket is the transport, so
+/// the host's stdin reader ends at once and only the socket keeps it alive).
 fn spawn_host(
     argv: Option<&[String]>,
     cols: u16,
@@ -349,12 +410,12 @@ fn spawn_host(
     command
         .env("SPRAG_HOST_RPC_SOCK", sock)
         .env("SPRAG_HOST_RPC", "1")
-        // The socket is the transport; a null stdin ends the host's stdin reader at
-        // once (the always-on socket keeps the server alive).
         .stdin(Stdio::null());
     // SAFETY: `pre_exec` runs in the forked child before exec; `prctl` is
     // async-signal-safe. PR_SET_PDEATHSIG(SIGKILL) makes the kernel kill the child
-    // when THIS (the parent GUI) thread dies — the crash-safety net over kill-on-Drop.
+    // when the SPAWNING THREAD dies. The GUI spawns this on its long-lived
+    // winit/main thread (use_terminal boot), so "spawning-thread death" == GUI
+    // process exit — the crash-safety net over kill-on-Drop.
     unsafe {
         command.pre_exec(|| {
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {
@@ -371,7 +432,7 @@ fn spawn_host(
 fn query_panes(conn: &mut HostConn) -> io::Result<Vec<(PaneMeta, (u16, u16))>> {
     let value = conn.call(
         "scene/query",
-        json!({ "path": "/sprag_mux/external/panes" }),
+        json!({ "path": mux_action_path(PANES_SLOT) }),
     )?;
     let array = value
         .as_array()
@@ -390,74 +451,88 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<(PaneMeta, (u16, u16))>> {
         .collect()
 }
 
-/// Ensure the host has exactly `n_panes` panes (spawn extras running `argv` at
-/// `cols x rows` to reach it; adopt only the first `n_panes` if more exist), then
-/// return their identities in tile order. The GUI's fixed-slot model wants a stable
-/// count, so this normalizes both the spawn (1 boot pane -> N) and attach (adopt N)
-/// paths to `n_panes`.
+/// Ensure the host has at least `n_panes` panes (spawn extras running `argv` at
+/// `cols x rows` to reach it), then return the first `n_panes` with their identities
+/// AND their host-reported dims, in tile order. The GUI's fixed-slot model wants a
+/// stable count; this normalizes both the spawn (1 boot pane -> N) and attach (adopt
+/// the first N) paths to `n_panes`.
+///
+/// NOTE (attach mode): forcing the count onto a pre-existing host is a bridge until
+/// dynamic panes let the GUI mirror the host's live set; see the terminal module.
 fn boot_panes(
     conn: &mut HostConn,
     argv: Option<&[String]>,
     cols: u16,
     rows: u16,
     n_panes: usize,
-) -> io::Result<Vec<PaneMeta>> {
+) -> io::Result<Vec<(PaneMeta, (u16, u16))>> {
     let mut have = query_panes(conn)?.len();
     while have < n_panes {
         let mut args = json!({ "cols": cols, "rows": rows });
         if let Some(argv) = argv {
             args["cmd"] = json!(argv);
         }
-        conn.call("scene/invoke", invoke("/sprag_mux/external/spawn", args))?;
+        conn.call("scene/invoke", invoke(&mux_action_path(SPAWN_ACTION), args))?;
         have += 1;
     }
-    let mut panes: Vec<PaneMeta> = query_panes(conn)?.into_iter().map(|(m, _)| m).collect();
-    panes.truncate(n_panes.max(1));
+    let mut panes = query_panes(conn)?;
+    panes.truncate(n_panes);
     Ok(panes)
 }
 
 /// Fetch every pane's live (offset 0) frame — the initial cache fill before the
 /// first paint.
-fn fetch_all(conn: &mut HostConn, panes: &[PaneMeta]) -> io::Result<Vec<Frame>> {
-    panes.iter().map(|p| fetch_frame(conn, p.id, 0)).collect()
+fn fetch_all(conn: &mut HostConn, panes: &[PaneMeta]) -> io::Result<Vec<CellFrame>> {
+    panes
+        .iter()
+        .map(|pane| fetch_frame(conn, pane.id, 0))
+        .collect()
 }
 
-/// Fetch one pane's cell frame at `offset` over the `cells` action.
-fn fetch_frame(conn: &mut HostConn, id: u64, offset: usize) -> io::Result<Frame> {
-    let path = format!("/pane_{id}/sprag_input/external/cells");
-    let value = conn.call("scene/invoke", invoke(&path, json!({ "offset": offset })))?;
-    let frame: WireFrame = serde_json::from_value(value)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    Ok(Frame {
-        cells: frame.cells,
-        facts: frame.facts,
-    })
+/// Fetch one pane's cell frame at `offset` over the `cells` action — the shared
+/// [`CellFrame`] the host serializes, deserialized on this end (one wire type).
+fn fetch_frame(conn: &mut HostConn, id: u64, offset: usize) -> io::Result<CellFrame> {
+    let value = conn.call(
+        "scene/invoke",
+        invoke(
+            &pane_input_path(id, CELLS_ACTION),
+            json!({ "offset": offset }),
+        ),
+    )?;
+    serde_json::from_value(value).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
 /// Start the background poll: block on `scene/waitFor {since}`, refetch every pane's
 /// live cells into `cache` on each wake, and call `on_change` (repaint). Exits when
-/// `stop` is set (a killed child unblocks the parked read) or the host closes.
+/// `stop` is set (Drop cancels the parked read via a shutdown handle) or the host
+/// closes. A poll exit that is NOT a requested stop is logged at `warn` — the host
+/// connection was lost, so live updates have stopped and the GUI would otherwise
+/// silently freeze.
+///
+/// # Errors
+///
+/// Fails if the poll thread cannot be spawned (matching `spawn_or_attach`'s contract
+/// rather than panicking inside it).
 fn spawn_poll(
     mut conn: HostConn,
     ids: Vec<u64>,
-    cache: Arc<Mutex<Vec<Frame>>>,
+    cache: Arc<Mutex<Vec<CellFrame>>>,
     on_change: Box<dyn Fn() + Send>,
     stop: Arc<AtomicBool>,
-) -> JoinHandle<()> {
+    mut since: u64,
+) -> io::Result<JoinHandle<()>> {
     std::thread::Builder::new()
         .name("sprag-gui-wire-poll".to_owned())
         .spawn(move || {
-            let mut since = match conn.call("scene/revision", json!({})) {
-                Ok(value) => value["revision"].as_u64().unwrap_or(0),
-                Err(error) => {
-                    tracing::debug!(target: "sprag_gui::wire", %error, "revision bootstrap failed; poll ends");
-                    return;
-                }
-            };
             while !stop.load(Ordering::Relaxed) {
                 let response = match conn.call("scene/waitFor", json!({ "since": since })) {
                     Ok(value) => value,
-                    Err(_) => break, // host gone (or killed on Drop)
+                    Err(error) => {
+                        if !stop.load(Ordering::Relaxed) {
+                            tracing::warn!(target: "sprag_gui::wire", %error, "host connection lost; live updates stopped");
+                        }
+                        break;
+                    }
                 };
                 if stop.load(Ordering::Relaxed) {
                     break;
@@ -468,7 +543,8 @@ fn spawn_poll(
                 for &id in &ids {
                     match fetch_frame(&mut conn, id, 0) {
                         Ok(frame) => frames.push(frame),
-                        Err(_) => {
+                        Err(error) => {
+                            tracing::warn!(target: "sprag_gui::wire", %error, "pane cell refetch failed; live updates stopped");
                             ok = false;
                             break;
                         }
@@ -481,7 +557,6 @@ fn spawn_poll(
                 on_change();
             }
         })
-        .expect("spawn the sprag-gui wire poll thread")
 }
 
 #[cfg(test)]
@@ -489,26 +564,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wire_frame_deserializes_the_host_cell_frame() {
-        // The client's `WireFrame` must read the EXACT JSON the host's `cells` action
-        // emits ({cells: <GridBuffer>, scrollback_len, visible_rows} — the flattened
-        // PaneScrollFacts). Build that shape from a real GridBuffer and round it back:
-        // a field rename on either end (they live in different crates) fails HERE.
-        let buffer = GridBuffer::new(3, 2);
-        let frame = json!({
-            "cells": serde_json::to_value(&buffer).expect("GridBuffer serializes (PR-49)"),
-            "scrollback_len": 7,
-            "visible_rows": 2,
-        });
-        let wire: WireFrame = serde_json::from_value(frame).expect("host frame deserializes");
-        assert_eq!((wire.cells.cols(), wire.cells.rows()), (3, 2));
-        assert_eq!(wire.facts.scrollback_len, 7);
-        assert_eq!(wire.facts.visible_rows, 2);
+    fn fetch_frame_deserializes_the_shared_host_cell_frame() {
+        // The client and host share ONE `CellFrame` type (sprag-host), so a frame the
+        // host serializes deserializes back byte-for-byte here — the envelope (the
+        // `cells` key + GridBuffer) AND the flattened facts. Build a real CellFrame,
+        // serialize it as the host does, and read it back exactly as `fetch_frame` does.
+        let frame = CellFrame {
+            cells: GridBuffer::new(3, 2),
+            facts: PaneScrollFacts {
+                scrollback_len: 7,
+                visible_rows: 2,
+            },
+        };
+        let json = serde_json::to_value(&frame).expect("host serializes CellFrame");
+        // The wire keys are flat: cells + the flattened facts.
+        assert!(json.get("cells").is_some());
+        assert_eq!(json["scrollback_len"], 7);
+        assert_eq!(json["visible_rows"], 2);
+        let back: CellFrame = serde_json::from_value(json).expect("client deserializes CellFrame");
+        assert_eq!((back.cells.cols(), back.cells.rows()), (3, 2));
+        assert_eq!(back.facts.scrollback_len, 7);
+        assert_eq!(back.facts.visible_rows, 2);
     }
 
     #[test]
     fn invoke_params_carry_the_path_and_args() {
-        let params = invoke("/pane_0/sprag_input/external/key", json!({ "key": "a" }));
+        let params = invoke(&pane_input_path(0, KEY_ACTION), json!({ "key": "a" }));
         assert_eq!(params["path"], "/pane_0/sprag_input/external/key");
         assert_eq!(params["args"]["key"], "a");
     }

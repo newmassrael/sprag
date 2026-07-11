@@ -74,6 +74,21 @@ impl HostConn {
         })
     }
 
+    /// A clone of the underlying stream usable ONLY to cancel a blocked
+    /// [`call`](Self::call): another thread (typically a `Drop`) calls
+    /// [`shutdown`](UnixStream::shutdown)`(Both)` on it to force this connection's
+    /// in-flight blocking read to return, so a thread parked on a long-poll
+    /// `scene/waitFor` unblocks deterministically instead of leaking. All clones name
+    /// the same OS socket, so the shutdown reaches the reader half. Not for issuing
+    /// requests (use [`call`](Self::call)).
+    ///
+    /// # Errors
+    ///
+    /// Fails if the stream cannot be duplicated (an exhausted fd table).
+    pub fn shutdown_handle(&self) -> io::Result<UnixStream> {
+        self.writer.try_clone()
+    }
+
     /// Issue one `method` request with `params` and block until its response line
     /// arrives, returning the JSON-RPC `result` value (`Null` when absent). A
     /// JSON-RPC `error` object in the reply is surfaced as an [`io::Error`]; a

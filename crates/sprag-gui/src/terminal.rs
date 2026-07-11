@@ -168,13 +168,21 @@ fn split_command(spec: &str) -> Option<(String, Vec<String>)> {
 /// `$SHELL` (then `/bin/sh`). Read from the environment, not threaded through
 /// `main`, matching pinion's `Owner::cache` config-from-env pattern.
 fn pane_command() -> (CommandBuilder, String) {
-    // Policy: the GUI's command spec is `SPRAG_GUI_CMD`. The assembly (TERM,
-    // args, label) and the `$SHELL` fallback are the shared SSOT.
-    let spec = std::env::var("SPRAG_GUI_CMD").unwrap_or_default();
-    match split_command(&spec) {
+    // Policy: the GUI's command spec is `SPRAG_GUI_CMD` ([`command_spec`]). The
+    // assembly (TERM, args, label) and the `$SHELL` fallback are the shared SSOT.
+    match command_spec() {
         Some((program, args)) => sprag_terminal::command_from_parts(program, args),
         None => sprag_terminal::default_shell_command(),
     }
+}
+
+/// The GUI's command spec from `SPRAG_GUI_CMD` (whitespace-split: program + args; no
+/// shell quoting), or `None` when unset/empty. The ONE env-read + split site, shared
+/// by the in-process boot ([`pane_command`] -> `CommandBuilder`) and the wire boot
+/// ([`pane_argv`] -> JSON argv), so the two consumers cannot parse the spec differently.
+fn command_spec() -> Option<(String, Vec<String>)> {
+    let spec = std::env::var("SPRAG_GUI_CMD").unwrap_or_default();
+    split_command(&spec)
 }
 
 /// The booted terminal MODEL the GUI holds each frame: the [`HostClient`] it reaches
@@ -316,13 +324,11 @@ fn use_inprocess_host() -> bool {
 }
 
 /// The initial pane command as a wire argv (`[program, args…]`), or `None` for the
-/// host's default `$SHELL`. `SPRAG_GUI_CMD` (whitespace-split; no shell quoting) is
-/// the GUI's spec — parity with `pane_command`'s policy — passed to the host's
-/// `--`/mux spawn; `None` lets `sprag-term` apply the shared `default_shell_command`
-/// SSOT, so the shell fallback is never re-encoded here.
+/// host's default `$SHELL`. Reads the same [`command_spec`] as [`pane_command`] (one
+/// parser), passed to the host's `--`/mux spawn; `None` lets `sprag-term` apply the
+/// shared `default_shell_command` SSOT, so the shell fallback is never re-encoded here.
 fn pane_argv() -> Option<Vec<String>> {
-    let spec = std::env::var("SPRAG_GUI_CMD").unwrap_or_default();
-    split_command(&spec).map(|(program, args)| {
+    command_spec().map(|(program, args)| {
         let mut argv = Vec::with_capacity(args.len() + 1);
         argv.push(program);
         argv.extend(args);
