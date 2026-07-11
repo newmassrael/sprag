@@ -930,4 +930,71 @@ mod tests {
             "woke at a revision past the client's baseline",
         );
     }
+
+    // ─── R115b: pane cells over the wire (the client's per-frame data read) ───
+
+    /// The pane `cells` frame at `offset`, over the full dispatch path.
+    fn cells_frame(state: &HostState, offset: u64) -> serde_json::Value {
+        serve_one(
+            state,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{{"path":"/pane_0/sprag_input/external/cells","args":{{"offset":{offset}}}}}}}"#
+            ),
+        )
+    }
+
+    #[test]
+    fn pane_cells_action_returns_a_deserializable_grid_frame() {
+        // The wire client's per-frame read: the `cells` action returns a JSON frame
+        // whose `cells` deserialize back into the EXACT GridBuffer the host projected
+        // (PR-49 round-trip), carrying the pane content, plus the scroll facts that
+        // ride with it.
+        let state = host_with("printf hi", 20, 4);
+        wait_for_pane0_eof(&state);
+        let frame = cells_frame(&state, 0);
+        assert!(frame.get("error").is_none(), "cells error: {frame}");
+        let result = &frame["result"];
+        assert!(
+            result["scrollback_len"].is_u64(),
+            "scroll facts present: {result}"
+        );
+        assert_eq!(result["visible_rows"], 4);
+
+        let cells: pinion_core::GridBuffer = serde_json::from_value(result["cells"].clone())
+            .expect("GridBuffer deserializes off the wire");
+        assert_eq!(
+            (cells.cols(), cells.rows()),
+            (20, 4),
+            "buffer dims match the pane"
+        );
+        // "hi" is on row 0 — the wire buffer carries the exact projected content.
+        assert_eq!(cells.cell(0, 0).map(|c| c.cluster.as_ref()), Some("h"));
+        assert_eq!(cells.cell(1, 0).map(|c| c.cluster.as_ref()), Some("i"));
+    }
+
+    #[test]
+    fn pane_cells_action_honors_the_scrollback_offset() {
+        // 40 lines into a 4-row pane: most scroll off into history. The live view
+        // (offset 0) and a scrolled-up view differ, proving the offset param reaches
+        // the projection over the wire.
+        let state = host_with("seq 1 40", 20, 4);
+        wait_for_pane0_eof(&state);
+
+        let live = cells_frame(&state, 0);
+        assert!(
+            live["result"]["scrollback_len"].as_u64().unwrap() > 0,
+            "lines scrolled off into history: {live}",
+        );
+        let live_cells: pinion_core::GridBuffer =
+            serde_json::from_value(live["result"]["cells"].clone()).unwrap();
+
+        let scrolled = cells_frame(&state, 20);
+        let scrolled_cells: pinion_core::GridBuffer =
+            serde_json::from_value(scrolled["result"]["cells"].clone()).unwrap();
+
+        assert_ne!(
+            live_cells, scrolled_cells,
+            "a scrollback offset changes the projected buffer",
+        );
+    }
 }

@@ -16,7 +16,14 @@
 //! sprag-owned) and writes them to the child. A sibling `invoke("text",
 //! {text})` writes **literal** UTF-8 to the child (no key-encoding) — the seam
 //! for IME-composed input (a Hangul/CJK commit is text, not a keystroke) and
-//! for pasting; the AI peer drives the same wire. The read channel exposes the
+//! for pasting; the AI peer drives the same wire. A read-shaped `invoke("cells",
+//! {offset})` returns the pane's cell FRAME — the projected [`GridBuffer`](pinion_core::GridBuffer) at that
+//! scrollback offset (serde-able since PINION-PR49) plus the scroll facts
+//! (scrollback depth + visible rows) that ride with it — the wire display client's
+//! per-frame read (topology B: the client reconstructs the exact buffer the host
+//! projected and paints it, so "read data, not pixels" reaches the human path). It
+//! is an `invoke` rather than a `query` because it carries the `offset` parameter,
+//! which the path-only `scene/query` cannot. The read channel exposes the
 //! producer-owned input modes (`query("application_cursor_keys")`) and the
 //! pane's full output text (`query("full_text")`, scrollback + visible) — the
 //! same `Screen::full_text` the in-process capture path reads, so an external
@@ -27,7 +34,7 @@ use std::fmt;
 use pinion_core::external::{
     ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use sprag_input::Modifiers;
 use sprag_terminal::SessionHandle;
 use sprag_vt::Screen;
@@ -39,6 +46,9 @@ const KEY_ACTION: &str = "key";
 /// The invoke action that writes literal UTF-8 text into the pane (no
 /// key-encoding) — IME commit / paste. See [`SpragPaneExternal::inject_text`].
 const TEXT_ACTION: &str = "text";
+/// The invoke action returning one pane's cell FRAME — the wire display client's
+/// per-frame read. See [`SpragPaneExternal::read_cells`].
+const CELLS_ACTION: &str = "cells";
 /// The query slot reporting the producer's DECCKM (application cursor
 /// keys) state.
 const CURSOR_KEYS_SLOT: &str = "application_cursor_keys";
@@ -121,6 +131,45 @@ impl SpragPaneExternal {
             Err(InvokeError::Rejected)
         }
     }
+
+    /// Return the pane's cell FRAME at scrollback `offset` — the wire display
+    /// client's per-frame read (topology B). The frame is a JSON object:
+    ///
+    /// * `cells` — the projected [`GridBuffer`](pinion_core::GridBuffer)
+    ///   ([`sprag_grid::project_scrolled`], serde-able since PINION-PR49), the
+    ///   paint-authoritative buffer the client reconstructs byte-for-byte;
+    /// * `scrollback_len` — the retained history depth (the scrollbar extent + the
+    ///   top-anchored offset math);
+    /// * `visible_rows` — one scrollback page.
+    ///
+    /// The three are read under ONE screen lock — an atomically consistent snapshot
+    /// (the cells and the scroll facts describe the SAME screen state, never a torn
+    /// read across two locks) — and the [`GridBuffer`](pinion_core::GridBuffer) is
+    /// serialized AFTER the lock is released, so the (CPU-bound) serialization never
+    /// holds the producer's screen. `offset == 0` is the live view; a larger offset
+    /// windows into history ([`sprag_grid::project_scrolled`] self-clamps to the
+    /// retained depth). A malformed `offset` is an [`InvokeError::TypeMismatch`]; a
+    /// serialization failure (never expected for a valid buffer) is
+    /// [`InvokeError::Rejected`].
+    fn read_cells(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let offset = parse_offset_arg(args)?;
+        // One screen lock: project the scrolled cells + read the scroll facts that
+        // ride with them, so the frame is a consistent snapshot. Serialization runs
+        // after, off the lock.
+        let (cells, scrollback_len, visible_rows) = self.session.with_screen(|screen| {
+            (
+                sprag_grid::project_scrolled(screen, offset),
+                screen.scrollback_len(),
+                screen.rows(),
+            )
+        });
+        let cells = serde_json::to_value(&cells).map_err(|_| InvokeError::Rejected)?;
+        Ok(IntrospectValue::Json(json!({
+            "cells": cells,
+            "scrollback_len": scrollback_len,
+            "visible_rows": visible_rows,
+        })))
+    }
 }
 
 impl fmt::Debug for SpragPaneExternal {
@@ -138,6 +187,7 @@ impl ExternalIntrospect for SpragPaneExternal {
         IntrospectSchema::new(&[
             (KEY_ACTION, "action"),
             (TEXT_ACTION, "action"),
+            (CELLS_ACTION, "action"),
             (CURSOR_KEYS_SLOT, "bool"),
             (FULL_TEXT_SLOT, "string"),
         ])
@@ -169,6 +219,7 @@ impl ExternalIntrospect for SpragPaneExternal {
         match path {
             KEY_ACTION => self.inject_key(&args),
             TEXT_ACTION => self.inject_text(&args),
+            CELLS_ACTION => self.read_cells(&args),
             _ => Err(InvokeError::UnknownPath),
         }
     }
@@ -186,6 +237,30 @@ fn parse_text_args(args: &IntrospectValue) -> Result<String, InvokeError> {
             .and_then(Value::as_str)
             .map(str::to_owned)
             .ok_or(InvokeError::TypeMismatch),
+        _ => Err(InvokeError::TypeMismatch),
+    }
+}
+
+/// Parse the `cells` action's args into the scrollback `offset` (rows up from the
+/// live bottom). Accepts `null` (→ `0`, the live view), a bare non-negative integer,
+/// or an object `{offset: N}` (absent `offset` → `0`). A negative or non-integer
+/// `offset` — a client bug — is an [`InvokeError::TypeMismatch`]. Over-large offsets
+/// are NOT rejected here: [`sprag_grid::project_scrolled`] self-clamps to the
+/// retained scrollback depth, so a client that asks past the top gets the top.
+fn parse_offset_arg(args: &IntrospectValue) -> Result<usize, InvokeError> {
+    let from_json = |v: &Value| -> Result<usize, InvokeError> {
+        v.as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or(InvokeError::TypeMismatch)
+    };
+    match args {
+        IntrospectValue::Null => Ok(0),
+        IntrospectValue::Int(n) => usize::try_from(*n).map_err(|_| InvokeError::TypeMismatch),
+        IntrospectValue::Json(Value::Object(map)) => match map.get("offset") {
+            None => Ok(0),
+            Some(v) => from_json(v),
+        },
+        IntrospectValue::Json(v) => from_json(v),
         _ => Err(InvokeError::TypeMismatch),
     }
 }
@@ -295,6 +370,30 @@ mod tests {
         assert_eq!(
             parse_key_args(&json_args(json!({"key": "a", "state": "sideways"}))),
             Err(InvokeError::TypeMismatch),
+        );
+    }
+
+    #[test]
+    fn parse_offset_defaults_to_live_and_rejects_negatives() {
+        // Null / absent offset = the live view.
+        assert_eq!(parse_offset_arg(&IntrospectValue::Null), Ok(0));
+        assert_eq!(parse_offset_arg(&json_args(json!({}))), Ok(0));
+        // A non-negative offset, from an object or a bare int.
+        assert_eq!(parse_offset_arg(&json_args(json!({"offset": 7}))), Ok(7));
+        assert_eq!(parse_offset_arg(&IntrospectValue::Int(3)), Ok(3));
+        assert_eq!(parse_offset_arg(&json_args(json!(5))), Ok(5));
+        // A negative or non-integer offset is a client bug.
+        assert_eq!(
+            parse_offset_arg(&IntrospectValue::Int(-1)),
+            Err(InvokeError::TypeMismatch)
+        );
+        assert_eq!(
+            parse_offset_arg(&json_args(json!({"offset": -2}))),
+            Err(InvokeError::TypeMismatch)
+        );
+        assert_eq!(
+            parse_offset_arg(&IntrospectValue::Text("x".to_string())),
+            Err(InvokeError::TypeMismatch)
         );
     }
 
