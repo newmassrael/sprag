@@ -97,9 +97,10 @@ impl PaneScrollFacts {
 /// The GUI holds a `Box<dyn HostClient>` and reaches every pane ONLY through these
 /// methods, so the frontend code is identical whether the `Workspace` lives in its
 /// own process (in-process) or another (wire) — that structural equivalence is the
-/// point of topology B. Each method takes a tile `index`
-/// (`0..`[`pane_count`](HostClient::pane_count)); a wire impl maps it to the host's
-/// [`PaneId`] internally.
+/// point of topology B. Each method addresses a pane by its display SLOT `index`,
+/// drawn from [`occupied_slots`](HostClient::occupied_slots) (NOT the dense range
+/// `0..pane_count()` — a mirroring impl may leave holes, see that method); a wire impl
+/// maps the slot to the host's [`PaneId`] internally.
 ///
 /// [`Host::pane_handle`] is deliberately NOT on this trait: a live [`SessionHandle`]
 /// cannot cross a wire, so it stays an inherent `Host` method used only to build
@@ -114,10 +115,10 @@ pub trait HostClient {
     ///
     /// The default is the dense range `0..pane_count()` — correct for the in-process
     /// [`Host`], whose panes are a simple list. A wire client that MIRRORS a host's
-    /// pane set overrides this: it keeps each pane's slot STABLE for the pane's life
-    /// (so per-slot GUI state — scroll offset, IME preedit, focus — never migrates
-    /// onto a different pane), so a closed pane leaves a HOLE and its slots can be
-    /// non-contiguous. Callers must therefore iterate this set, not `0..pane_count()`.
+    /// pane set overrides this: it keeps a pane's slot STABLE across pane-set changes
+    /// (why is the client's own concern), so a closed pane leaves a HOLE and the set
+    /// can be non-contiguous. Callers must therefore iterate this set, not
+    /// `0..pane_count()`.
     fn occupied_slots(&self) -> Vec<usize> {
         (0..self.pane_count()).collect()
     }
