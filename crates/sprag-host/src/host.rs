@@ -108,6 +108,28 @@ pub trait HostClient {
     /// The number of live panes.
     fn pane_count(&self) -> usize;
 
+    /// The live display SLOTS, in display order — the set a client ITERATES instead
+    /// of assuming a contiguous `0..pane_count()`. Every other method addresses a
+    /// pane by its slot (`index` == slot).
+    ///
+    /// The default is the dense range `0..pane_count()` — correct for the in-process
+    /// [`Host`], whose panes are a simple list. A wire client that MIRRORS a host's
+    /// pane set overrides this: it keeps each pane's slot STABLE for the pane's life
+    /// (so per-slot GUI state — scroll offset, IME preedit, focus — never migrates
+    /// onto a different pane), so a closed pane leaves a HOLE and its slots can be
+    /// non-contiguous. Callers must therefore iterate this set, not `0..pane_count()`.
+    fn occupied_slots(&self) -> Vec<usize> {
+        (0..self.pane_count()).collect()
+    }
+
+    /// Whether display slot `slot` currently holds a pane. The `slot < pane_count()`
+    /// index guard is WRONG once slots go non-contiguous (a slot past the count can
+    /// be occupied while a lower one is a hole), so callers ask this. Default derives
+    /// it from [`occupied_slots`](HostClient::occupied_slots).
+    fn is_pane_occupied(&self, slot: usize) -> bool {
+        self.occupied_slots().contains(&slot)
+    }
+
     /// Pane `index`'s cell DATA scrolled `offset_lines` rows up — the paint buffer
     /// a client renders. `offset_lines == 0` is the live view; a larger offset
     /// windows into scrollback (self-clamped to the retained depth).
