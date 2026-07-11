@@ -18,3 +18,5 @@ pinion-rpc-transport = { workspace = true }
 signal-hook = { workspace = true }
 # Leveled endpoint diagnostics (target "sprag_rpc").
 tracing = { workspace = true }
+# The client half (HostConn): JSON-RPC request framing over the socket.
+serde_json = { workspace = true }

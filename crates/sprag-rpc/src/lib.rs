@@ -24,6 +24,9 @@ use std::sync::{Arc, OnceLock};
 use pinion_rpc::RpcIngress;
 use pinion_rpc_transport::{TransportControl, UnixSocketTransport};
 
+pub mod client;
+pub use client::HostConn;
+
 /// A frontend's socket policy: the endpoint's default file name plus the env
 /// vars that override its path and its boot state. The *mechanism* (bind,
 /// control, lifetime) is shared; only these names differ per frontend, so the
@@ -139,6 +142,16 @@ fn socket_path(opts: SocketOpts) -> PathBuf {
         std::env::var_os("XDG_RUNTIME_DIR"),
         opts.socket_name,
     )
+}
+
+/// A runtime-directory path for `file_name` (`$XDG_RUNTIME_DIR/<file_name>`, else
+/// the temp dir) — the SSOT for where a frontend places a runtime file such as the
+/// per-instance host socket a GUI spawns its `sprag-term` child on. The same
+/// resolution [`mount`] uses for its endpoint, so a spawner and the socket policy
+/// agree on the directory.
+#[must_use]
+pub fn runtime_path(file_name: &str) -> PathBuf {
+    resolve_socket_path(None, std::env::var_os("XDG_RUNTIME_DIR"), file_name)
 }
 
 /// Pure path resolution (env values injected so it is testable): an explicit
