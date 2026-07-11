@@ -148,12 +148,13 @@ pub(crate) fn use_dock_topology() -> Rc<Signal<Option<DockTopology>>> {
     // The boot tree spans the HOST's pane count (its truth): in attach mode the GUI
     // ADOPTS the host's live set, so the tree must match that count, not the env
     // `SPRAG_GUI_PANES` request (they coincide in spawn mode). Resolve `use_terminal`
-    // (idempotent; `create_extra_externals` boots it first) BEFORE the cache factory —
-    // an `Owner::cache` factory must not nest another cache resolution, and
-    // `use_terminal` resolves the SESSION_KEY slot.
-    let count = use_terminal().host.pane_count();
+    // (a cache dep) OUTSIDE the factory — an `Owner::cache` factory must not nest another
+    // cache resolution — but DEFER the `host.pane_count()` mirror lock INTO the
+    // once-fired factory, so the per-frame `use_dock_topology()` call pays only the cache
+    // lookup, not a mirror lock whose count is discarded every frame after the first.
+    let terminal = use_terminal();
     owner.cache(TOPOLOGY_KEY, move || {
-        Signal::new(build_boot_topology(count))
+        Signal::new(build_boot_topology(terminal.host.pane_count()))
     })
 }
 

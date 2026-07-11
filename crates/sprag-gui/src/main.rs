@@ -250,6 +250,13 @@ const ROOT_TAG: &str = "sprag_gui";
 /// `Owner::cache` key for the boot-focus seed marker ([`BootFocusSeed`]).
 const BOOT_FOCUS_KEY: &str = "sprag_gui.boot_focus_seed";
 
+/// The tile slot whose scrollbar is the shell's PRIMARY External (the `create_external`
+/// + `tag` pair); every OTHER occupied slot's scrollbar is an extra
+/// (`create_extra_externals`). One name for the coupling between those sites. (2b
+/// watch-item: slot 0 is assumed always occupied; a live close of it needs the primary
+/// re-homed onto a non-pane sentinel tag.)
+const PRIMARY_SCROLLBAR_SLOT: usize = 0;
+
 /// Zero-size marker cached once to run the boot focus request a single time. The
 /// dynamic external set ([`TerminalViewer::external_set_is_dynamic`]) makes the shell
 /// re-run [`create_extra_externals`](TerminalViewer::create_extra_externals) every
@@ -275,7 +282,7 @@ impl WidgetCore for TerminalViewer {
     /// interaction externals (scroll / split / dock); the retired `SpragPaneExternal`
     /// + `pane_handle` (a live `SessionHandle` cannot cross the wire) are gone.
     fn create_external() -> Box<dyn External> {
-        crate::scrollbar::pane_scrollbar_external(0).handle
+        crate::scrollbar::pane_scrollbar_external(PRIMARY_SCROLLBAR_SLOT).handle
     }
 
     /// Boot the live terminal (spawn the N pane PTYs + wire each `on_dirty` ->
@@ -333,16 +340,18 @@ impl WidgetCore for TerminalViewer {
         // shell's pointer router routes a press on the painted track to it. Like
         // the splitters, pointer-only (never focusable); the caller-owned
         // `ScrollState` authority (pinion R1032) needs no mirror.
+        // The occupied slots, snapshot ONCE (one mirror lock + alloc) and reused by both
+        // the scrollbar-extras and the dock-panel externals below.
+        let occupied = terminal.host.occupied_slots();
         // Slot 0's scrollbar is the PRIMARY external ([`Self::create_external`]); the
         // OTHER occupied slots are extras, so the drag-scrollbar set stays complete
         // without a duplicate registration at `pane_scrollbar_tag(0)`. (Slot 0 is always
         // occupied at boot; a Round 2b close of slot 0 would need the primary re-homed.)
         externals.extend(
-            terminal
-                .host
-                .occupied_slots()
-                .into_iter()
-                .filter(|&i| i != 0)
+            occupied
+                .iter()
+                .copied()
+                .filter(|&i| i != PRIMARY_SCROLLBAR_SLOT)
                 .map(scrollbar::pane_scrollbar_external),
         );
         // Drag-to-dock / tear-off (pinion R1081/R1084/R1094 §5.51, P2/PR-31): one R742
@@ -384,7 +393,7 @@ impl WidgetCore for TerminalViewer {
         // in-flight drag without collision.
         let reorganizer = split::use_dock_reorganizer();
         let drop_preview = split::use_drop_preview();
-        externals.extend(terminal.host.occupied_slots().into_iter().map(|i| {
+        externals.extend(occupied.iter().copied().map(|i| {
             ExtraExternal::new(
                 split::panel_id(i),
                 Box::new(
@@ -561,7 +570,7 @@ impl WidgetCore for TerminalViewer {
     /// (R1020 `collect_focusable_tags` over the `with_focusable` pane Containers), so
     /// it does NOT depend on this tag.
     fn tag() -> &'static str {
-        pane_scrollbar_tag(0)
+        pane_scrollbar_tag(PRIMARY_SCROLLBAR_SLOT)
     }
 
     fn read_state(_scene: &Scene) {}

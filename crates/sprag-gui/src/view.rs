@@ -105,24 +105,29 @@ fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
         Some(topo) => view_dock_surface(
             &topo,
             |panel_id| match pane_index_of_panel(panel_id) {
-                // A floating pane's leaf paints a placeholder holding its slot (R72): its
-                // real content lives in the pane's own undock window. Small-intrinsic, so
-                // it needs no `fill_definite` — the `view_dock_panel` content wrapper's
-                // flex_grow + cross-axis stretch fills the slot (matches pinion's editor).
-                Some(i) if tv.host.is_pane_occupied(i) && crate::dock::is_pane_floating(i) => {
-                    view_floating_placeholder(
-                        panel_id,
-                        theme,
-                        &FloatingPlaceholderStyle::m3_default(),
-                    )
-                }
-                // A docked pane: fill the dock panel's content area — the pane grid is no
-                // longer the direct splitter child (view_dock_panel wraps it under a
-                // header), so it needs its own definite extent or its full-window intrinsic
-                // size overflows the panel (the grid never gets a measured rect, the R1012
-                // reflow never fires, and the pane stays at its boot dims).
+                // One occupancy check per leaf, then branch on float state (was two match
+                // arms each re-evaluating `is_pane_occupied`).
                 Some(i) if tv.host.is_pane_occupied(i) => {
-                    fill_definite(build_pane_scene(tv, i, theme))
+                    if crate::dock::is_pane_floating(i) {
+                        // A floating pane's leaf paints a placeholder holding its slot
+                        // (R72): its real content lives in the pane's own undock window.
+                        // Small-intrinsic, so it needs no `fill_definite` — the
+                        // `view_dock_panel` content wrapper's flex_grow + cross-axis stretch
+                        // fills the slot (matches pinion's editor).
+                        view_floating_placeholder(
+                            panel_id,
+                            theme,
+                            &FloatingPlaceholderStyle::m3_default(),
+                        )
+                    } else {
+                        // A docked pane: fill the dock panel's content area — the pane grid
+                        // is no longer the direct splitter child (view_dock_panel wraps it
+                        // under a header), so it needs its own definite extent or its
+                        // full-window intrinsic size overflows the panel (the grid never
+                        // gets a measured rect, the R1012 reflow never fires, and the pane
+                        // stays at its boot dims).
+                        fill_definite(build_pane_scene(tv, i, theme))
+                    }
                 }
                 // A leaf with no live pane (out of range / stale) — defensive.
                 _ => Scene::Container(ContainerNode::new(Vec::new())),

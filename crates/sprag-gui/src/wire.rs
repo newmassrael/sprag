@@ -111,6 +111,13 @@ struct PaneEntry {
 /// migrating any per-slot GUI state (scroll / preedit / focus, all keyed by slot).
 type Mirror = Arc<Mutex<Vec<Option<PaneEntry>>>>;
 
+/// Lock the shared slot mirror, poison-tolerant — the ONE definition of the mirror's
+/// lock discipline, shared by the UI thread ([`WireHost::lock_mirror`]) and the poll
+/// thread, so "recover the guard on a poisoned lock" lives in one place.
+fn lock_slots(mirror: &Mutex<Vec<Option<PaneEntry>>>) -> MutexGuard<'_, Vec<Option<PaneEntry>>> {
+    mirror.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Kills + reaps a spawned host child if [`spawn_or_attach`](WireHost::spawn_or_attach)
 /// fails after the spawn — `std::process::Child`'s own `Drop` neither kills nor waits,
 /// so an error `?`-returned after `spawn_host` would otherwise leak the child until GUI
@@ -211,7 +218,7 @@ impl WireHost {
         // The slot-indexed mirror, filled by the ONE `reconcile` SSOT (boot = its all-new
         // path: contiguous slots `0..N` in host display order).
         let mut slots: Vec<Option<PaneEntry>> = (0..MAX_PANES).map(|_| None).collect();
-        reconcile(&mut slots, &mut conn, host_panes)?;
+        reconcile(&mut slots, &mut conn, host_panes);
         let mirror: Mirror = Arc::new(Mutex::new(slots));
 
         // The poll thread's own connection — a parked `scene/waitFor` on it never
@@ -254,7 +261,7 @@ impl WireHost {
     /// Lock the shared mirror (poison-tolerant, matching the rest of the wire client's
     /// lock discipline). The ONE place the mirror lock is taken on the UI thread.
     fn lock_mirror(&self) -> MutexGuard<'_, Vec<Option<PaneEntry>>> {
-        self.mirror.lock().unwrap_or_else(PoisonError::into_inner)
+        lock_slots(&self.mirror)
     }
 
     /// The host id of the pane at SLOT `index`, or `None` for a hole / out of range. The
@@ -293,6 +300,13 @@ impl HostClient for WireHost {
             .enumerate()
             .filter_map(|(slot, entry)| entry.as_ref().map(|_| slot))
             .collect()
+    }
+
+    fn is_pane_occupied(&self, slot: usize) -> bool {
+        // Override the trait default (which allocates a `Vec` + scans) with an O(1),
+        // alloc-free single-slot read: this is called per pane per frame on the paint
+        // hot path (`view_main` / a11y), so it must not build the whole slot list.
+        self.lock_mirror().get(slot).is_some_and(Option::is_some)
     }
 
     fn pane_cells(&self, index: usize, offset_lines: usize) -> GridBuffer {
@@ -507,8 +521,10 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<(PaneMeta, (u16, u16))>> {
 /// host-reported dims.
 ///
 /// * **Attach mode** (`attach`, the GUI reached an operator-run host) ADOPTS the host's
-///   live panes — the tmux-attach semantics — clamped to the GUI's slot cap
-///   [`MAX_PANES`]. No spawn / truncate to a GUI-chosen count: the GUI mirrors the host.
+///   live panes as-is — the tmux-attach semantics. No spawn / truncate to a GUI-chosen
+///   count: the GUI mirrors the host. The [`MAX_PANES`] slot cap is enforced ONCE, in
+///   [`plan_slots`] / [`reconcile`] (a host with more panes mirrors the first
+///   `MAX_PANES`, logged) — not with a second truncate here.
 /// * **Spawn mode** (the GUI owns the host child) ensures exactly `n_panes` (already
 ///   clamped to `[1, MAX_PANES]` by [`pane_count`](crate::terminal::pane_count)),
 ///   spawning extras running `argv` at `cols x rows` to reach it, then takes the first
@@ -525,9 +541,7 @@ fn boot_panes(
     attach: bool,
 ) -> io::Result<Vec<(PaneMeta, (u16, u16))>> {
     if attach {
-        let mut panes = query_panes(conn)?;
-        panes.truncate(MAX_PANES);
-        return Ok(panes);
+        return query_panes(conn);
     }
     let mut have = query_panes(conn)?.len();
     while have < n_panes {
@@ -560,53 +574,65 @@ fn reconcile(
     slots: &mut [Option<PaneEntry>],
     conn: &mut HostConn,
     host_panes: Vec<(PaneMeta, (u16, u16))>,
-) -> io::Result<()> {
+) {
     let current: Vec<Option<u64>> = slots
         .iter()
         .map(|slot| slot.as_ref().map(|entry| entry.meta.id))
         .collect();
     let host_ids: Vec<u64> = host_panes.iter().map(|(meta, _)| meta.id).collect();
-    let (frees, adds) = plan_slots(&current, &host_ids);
+    let (frees, adds, overflow) = plan_slots(&current, &host_ids);
 
     for slot in frees {
         slots[slot] = None;
     }
     // Move each newly-placed pane's identity + dims into its slot, fetching its first
-    // frame. Index the host panes by id so an add takes OWNERSHIP of its entry.
+    // frame. A fetch error SKIPS that pane (its slot stays empty) rather than failing
+    // the whole reconcile: the pane closed between the pane-list query and here — a real
+    // attach race, since the host's set is operator-controlled — and mirroring the panes
+    // we CAN reach beats a GUI-fatal boot error. Index the host panes by id so an add
+    // takes OWNERSHIP of its entry.
     let mut by_id: HashMap<u64, (PaneMeta, (u16, u16))> = host_panes
         .into_iter()
         .map(|(meta, dims)| (meta.id, (meta, dims)))
         .collect();
     for (slot, id) in adds {
         if let Some((meta, dims)) = by_id.remove(&id) {
-            let frame = fetch_frame(conn, id, 0)?;
-            slots[slot] = Some(PaneEntry { meta, frame, dims });
+            match fetch_frame(conn, id, 0) {
+                Ok(frame) => slots[slot] = Some(PaneEntry { meta, frame, dims }),
+                Err(error) => tracing::warn!(
+                    target: "sprag_gui::wire",
+                    pane = id,
+                    %error,
+                    "initial pane-frame fetch failed (pane likely closed mid-reconcile); slot left empty",
+                ),
+            }
         }
     }
-    // A host id in no slot after applying the plan overflowed the slot cap (survivors +
-    // placed adds fill every slot they can) — the honest MAX_PANES bound, logged once.
-    for id in host_ids {
-        if !slots.iter().flatten().any(|entry| entry.meta.id == id) {
-            tracing::warn!(
-                target: "sprag_gui::wire",
-                pane = id,
-                "host pane set exceeds MAX_PANES; pane not mirrored",
-            );
-        }
+    // A host set larger than the slot cap mirrors the first MAX_PANES (the honest
+    // bound); plan_slots already decided which ids had no slot, so log the count once.
+    if !overflow.is_empty() {
+        tracing::warn!(
+            target: "sprag_gui::wire",
+            dropped = overflow.len(),
+            cap = MAX_PANES,
+            "host pane set exceeds the slot cap; extra panes not mirrored",
+        );
     }
-    Ok(())
 }
 
 /// The PURE slot-allocation plan behind [`reconcile`] (so the allocator is unit-tested
 /// without a host): from each slot's current occupant id (`None` = a hole) and the
-/// host's live id list (display order), compute the slots to FREE (occupant vanished)
-/// and the `(slot, id)` ADDS (a host id with no slot yet, placed at the LOWEST free slot
-/// — reusing a slot freed in this same plan, so slot usage stays compact). A survivor (an
-/// id still present) keeps its existing slot and appears in neither list. A host id past
-/// the [`MAX_PANES`] slot cap gets no slot — it is absent from `adds` (the caller logs
-/// the overflow). This is the load-bearing Round 2b logic; boot exercises only its
-/// all-new path (contiguous `0..N`).
-fn plan_slots(current: &[Option<u64>], host_ids: &[u64]) -> (Vec<usize>, Vec<(usize, u64)>) {
+/// host's live id list (display order), compute the slots to FREE (occupant vanished),
+/// the `(slot, id)` ADDS (a host id with no slot yet, placed at the LOWEST free slot —
+/// reusing a slot freed in this same plan, so slot usage stays compact), and the
+/// OVERFLOW ids (a host id past the [`MAX_PANES`] slot cap that got no slot — the caller
+/// logs them; this is the ONE place the cap is decided). A survivor (an id still present)
+/// keeps its existing slot and appears in none of the three lists. This is the
+/// load-bearing Round 2b logic; boot exercises only its all-new path (contiguous `0..N`).
+fn plan_slots(
+    current: &[Option<u64>],
+    host_ids: &[u64],
+) -> (Vec<usize>, Vec<(usize, u64)>, Vec<u64>) {
     let live: HashSet<u64> = host_ids.iter().copied().collect();
     let mut taken: Vec<bool> = current.iter().map(Option::is_some).collect();
     let mut frees = Vec::new();
@@ -625,6 +651,7 @@ fn plan_slots(current: &[Option<u64>], host_ids: &[u64]) -> (Vec<usize>, Vec<(us
         .filter(|id| live.contains(id))
         .collect();
     let mut adds = Vec::new();
+    let mut overflow = Vec::new();
     for &id in host_ids {
         if survivors.contains(&id) {
             continue; // keeps its existing slot
@@ -632,10 +659,11 @@ fn plan_slots(current: &[Option<u64>], host_ids: &[u64]) -> (Vec<usize>, Vec<(us
         if let Some(free) = taken.iter().position(|slot_taken| !slot_taken) {
             taken[free] = true;
             adds.push((free, id));
+        } else {
+            overflow.push(id); // no free slot (host set > MAX_PANES)
         }
-        // else: no free slot (host set > MAX_PANES) — dropped; reconcile logs it.
     }
-    (frees, adds)
+    (frees, adds, overflow)
 }
 
 /// Fetch one pane's cell frame at `offset` over the `cells` action — the shared
@@ -651,12 +679,14 @@ fn fetch_frame(conn: &mut HostConn, id: u64, offset: usize) -> io::Result<CellFr
     serde_json::from_value(value).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
-/// Start the background poll: block on `scene/waitFor {since}`, refetch every pane's
-/// live cells into `cache` on each wake, and call `on_change` (repaint). Exits when
-/// `stop` is set (Drop cancels the parked read via a shutdown handle) or the host
-/// closes. A poll exit that is NOT a requested stop is logged at `warn` — the host
-/// connection was lost, so live updates have stopped and the GUI would otherwise
-/// silently freeze.
+/// Start the background poll: block on `scene/waitFor {since}`, refresh every occupied
+/// slot's frame in the slot [`Mirror`] on each wake, and call `on_change` (repaint).
+/// Exits ONLY when `stop` is set (Drop cancels the parked read via a shutdown handle) or
+/// the parked `scene/waitFor` itself errors (the host connection was lost — logged at
+/// `warn`, since live updates then stop and the GUI would otherwise silently freeze). A
+/// single pane's frame fetch erroring is NOT fatal — that pane closed host-side (an
+/// operator close in attach mode, or Round 2b), so it is skipped for this wake and the
+/// other panes keep updating.
 ///
 /// # Errors
 ///
@@ -691,7 +721,7 @@ fn spawn_poll(
                 // frames back to their slots. Round 2b inserts a `reconcile` (re-query the
                 // pane list) HERE, before deriving targets; the set is fixed in Round 2a.
                 let targets: Vec<(usize, u64)> = {
-                    let guard = mirror.lock().unwrap_or_else(PoisonError::into_inner);
+                    let guard = lock_slots(&mirror);
                     guard
                         .iter()
                         .enumerate()
@@ -701,26 +731,29 @@ fn spawn_poll(
                         .collect()
                 };
                 let mut fetched = Vec::with_capacity(targets.len());
-                let mut ok = true;
                 for (slot, id) in targets {
+                    // A per-pane fetch error is NOT fatal to the poll: the pane closed
+                    // host-side (an operator close in attach mode, or Round 2b), so skip
+                    // just this pane this wake and keep updating the others. A genuine
+                    // connection loss is caught by the next `scene/waitFor` above.
                     match fetch_frame(&mut conn, id, 0) {
-                        Ok(frame) => fetched.push((slot, frame)),
-                        Err(error) => {
-                            tracing::warn!(target: "sprag_gui::wire", %error, "pane cell refetch failed; live updates stopped");
-                            ok = false;
-                            break;
-                        }
+                        Ok(frame) => fetched.push((slot, id, frame)),
+                        Err(error) => tracing::debug!(
+                            target: "sprag_gui::wire",
+                            pane = id,
+                            %error,
+                            "pane cell refetch failed; skipped this wake",
+                        ),
                     }
                 }
-                if !ok {
-                    break;
-                }
-                // Write frames back only to slots STILL occupied by the same fetch target
-                // (a `get_mut(slot)` that is `Some(Some(entry))`); a slot freed meanwhile
-                // (Round 2b) is skipped rather than resurrected.
-                let mut guard = mirror.lock().unwrap_or_else(PoisonError::into_inner);
-                for (slot, frame) in fetched {
-                    if let Some(Some(entry)) = guard.get_mut(slot) {
+                // Write each frame back only to the slot STILL holding the SAME pane it was
+                // fetched for (`entry.meta.id == id`), so a Round 2b free-and-reuse between
+                // the fetch and here can never land an old pane's frame on a new occupant.
+                let mut guard = lock_slots(&mirror);
+                for (slot, id, frame) in fetched {
+                    if let Some(Some(entry)) = guard.get_mut(slot)
+                        && entry.meta.id == id
+                    {
                         entry.frame = frame;
                     }
                 }
@@ -768,19 +801,21 @@ mod tests {
     #[test]
     fn plan_slots_boot_is_contiguous_from_empty() {
         // Boot = the all-new path: an empty mirror + host ids -> contiguous slots 0..N in
-        // host display order, no frees.
-        let (frees, adds) = plan_slots(&[None, None, None, None], &[10, 11, 12]);
+        // host display order, no frees, no overflow.
+        let (frees, adds, overflow) = plan_slots(&[None, None, None, None], &[10, 11, 12]);
         assert!(frees.is_empty());
         assert_eq!(adds, vec![(0, 10), (1, 11), (2, 12)]);
+        assert!(overflow.is_empty());
     }
 
     #[test]
     fn plan_slots_survivors_keep_their_slots() {
         // Ids already mapped and still live keep their slots (neither freed nor re-added),
         // so no per-slot GUI state migrates.
-        let (frees, adds) = plan_slots(&[Some(10), Some(11), None, None], &[10, 11]);
+        let (frees, adds, overflow) = plan_slots(&[Some(10), Some(11), None, None], &[10, 11]);
         assert!(frees.is_empty());
         assert!(adds.is_empty());
+        assert!(overflow.is_empty());
     }
 
     #[test]
@@ -788,20 +823,28 @@ mod tests {
         // Pane at slot 1 closed, a new pane (20) appeared: slot 1 frees, the survivors (10,
         // 12) keep slots 0 and 2, and the newcomer takes the LOWEST free slot — the reused
         // hole at slot 1 — so slot usage stays compact.
-        let (frees, adds) = plan_slots(&[Some(10), Some(11), Some(12), None], &[10, 12, 20]);
+        let (frees, adds, overflow) =
+            plan_slots(&[Some(10), Some(11), Some(12), None], &[10, 12, 20]);
         assert_eq!(frees, vec![1]);
         assert_eq!(adds, vec![(1, 20)]);
+        assert!(overflow.is_empty());
     }
 
     #[test]
     fn plan_slots_drops_ids_past_the_slot_cap() {
         // A full mirror (no holes) with an extra host id: the newcomer gets NO slot (absent
-        // from adds) — the honest MAX_PANES bound the caller logs.
+        // from adds, present in overflow by its exact id) — the honest MAX_PANES bound the
+        // caller logs.
         let full: Vec<Option<u64>> = (0..MAX_PANES as u64).map(Some).collect();
         let mut host: Vec<u64> = (0..MAX_PANES as u64).collect();
         host.push(999);
-        let (frees, adds) = plan_slots(&full, &host);
+        let (frees, adds, overflow) = plan_slots(&full, &host);
         assert!(frees.is_empty());
         assert!(adds.is_empty(), "no free slot -> the extra id is dropped");
+        assert_eq!(
+            overflow,
+            vec![999],
+            "the specific overflowed id is reported"
+        );
     }
 }
