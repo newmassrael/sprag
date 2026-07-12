@@ -35,7 +35,8 @@
 //! `pane_tag` to its tile index and SENDS to the host
 //! ([`HostClient::send_key`](sprag_host::HostClient::send_key)); the model scene
 //! holds only the GUI's own interaction externals (scroll / split / dock), the
-//! primary ([`WidgetCore::create_external`]) being pane 0's scrollbar.
+//! primary ([`WidgetCore::create_external`]) being an inert non-pane scrollbar
+//! sentinel (every pane scrollbar is a symmetric extra — R122).
 //! `Ctrl+PageUp/Down` cycles focus; the
 //! framework draws the focus ring around the active pane. Per-pane GUI state
 //! (scroll offset, IME preedit) is keyed by tile index ([`input`]).
@@ -287,8 +288,10 @@ impl WidgetCore for TerminalViewer {
     /// paint and off the pure `view`. [`install_reflow`] resolves [`use_terminal`]
     /// (booting the panes) and wires every pane's reflow in one call. Then focus
     /// pane 0 so keystrokes reach a pane without a click — the shell drains this
-    /// focus request before the first paint. Returns panes 1.. as the extra input
-    /// Externals (pane 0 is the primary), each tagged its [`pane_tag`].
+    /// focus request before the first paint. Returns the GUI's own interaction
+    /// externals (a scrollbar per occupied slot + the dock splitters/panel handles);
+    /// the primary is a non-pane sentinel ([`Self::create_external`]), NOT a pane
+    /// scrollbar (R122), and topology B serves no per-pane INPUT external.
     fn create_extra_externals() -> Vec<ExtraExternal> {
         let terminal = use_terminal();
         install_reflow();
@@ -527,6 +530,15 @@ impl WidgetCore for TerminalViewer {
         let terminal = use_terminal();
         // (1) Mirror the host's live pane set onto slots, then fold the delta.
         let delta = terminal.slots.reconcile();
+        // FREED before ADDED is load-bearing: when a close + open land on the SAME slot in
+        // one reconcile (a reused slot -> freed==added), the leaf `terminal-i` must be
+        // evicted before it is re-inserted, else `split_leaf_into` hits `DuplicatePanelId`
+        // and the newcomer loses its leaf. Each freed slot resets its FULL per-slot registry
+        // so a reuse starts clean: dock leaf + floating window (evict_pane), the
+        // scrollbar-owned state — scroll / wheel-accum / interaction (reset_pane_scroll), and
+        // the IME preedit (reset_pane_preedit). The reflow Effect is slot-keyed and stays
+        // (it re-resolves the slot's live pane each fire). Any NEW per-slot `Owner::cache`
+        // state must be added to one of those resets.
         for slot in delta.freed {
             dock::evict_pane(slot);
             scrollbar::reset_pane_scroll(slot);

@@ -47,7 +47,9 @@ use pinion_core::style::{AlignItems, FlexDirection, LayoutStyle, SizeValue};
 use pinion_core::theme::{ColorRole, Theme};
 use pinion_core::widget_core::ExtraExternal;
 use pinion_core::widgets::scroll::{ScrollState, use_scroll_state};
-use pinion_core::widgets::scrollbar::{scrollbar_extra_external, use_scrollbar_interaction};
+use pinion_core::widgets::scrollbar::{
+    ScrollBarState, scrollbar_extra_external, use_scrollbar_interaction,
+};
 use pinion_core::widgets::virtual_list::{at_bottom, follow_tail};
 use pinion_widget_paint::scrollbar::{VerticalScrollbarStyle, view_vertical_scrollbar};
 use std::cell::Cell;
@@ -180,15 +182,19 @@ pub(crate) fn wheel_scroll_pane(i: usize, lines: f32) {
     });
 }
 
-/// Reset pane slot `i`'s scroll state when the slot FREES (Round 2b live delta): return
-/// its row-unit [`ScrollState`] to the live bottom (offset + bound `0`) and clear the
-/// wheel sub-row accumulator, so a slot REUSED by a later pane starts at the live view with
-/// no inherited history offset or pan fraction. By MUTATION, not eviction — pinion has no
-/// `Owner::cache` evict, and mutation keeps the boot-captured `Rc<ScrollState>` the primary
-/// scrollbar external ([`pane_scrollbar_external`]) holds VALID across the reuse (an evict
-/// would orphan it). [`reconcile_scroll`] re-grows the bound to the reused pane's scrollback
-/// on the next frame. Runs in the root owner (the pre-view `reconcile_frame` hook, which
-/// resolves the same per-slot cache slots).
+/// Reset pane slot `i`'s SCROLLBAR-owned per-slot state when the slot FREES (Round 2b live
+/// delta) — the ONE place ALL three scrollbar per-slot `Owner::cache` slots are reset, so a
+/// future per-slot addition has a single home to reset it in (the scattered-reset miss the
+/// R123 review caught): the row-unit [`ScrollState`] back to the live bottom (offset + bound
+/// `0`), the wheel sub-row accumulator to `0`, and the scrollbar INTERACTION signal
+/// ([`use_scrollbar_interaction`]) to [`ScrollBarState::Idle`] (else a slot reused by a pane
+/// closing mid-hover/drag would inherit a stale brightened/dragging highlight). So a reused
+/// slot starts at the live view with no inherited offset, pan fraction, or interaction
+/// state. By MUTATION, not eviction — pinion has no `Owner::cache` evict, and each slot is
+/// re-resolved (`use_pane_scroll` / `use_scrollbar_interaction`) per frame; mutation also
+/// keeps any boot-resolved handle valid. [`reconcile_scroll`] re-grows the bound to the
+/// reused pane's scrollback next frame. Runs in the root owner (the pre-view
+/// `reconcile_frame` hook, which resolves the same per-slot cache slots).
 pub(crate) fn reset_pane_scroll(i: usize) {
     let scroll = use_pane_scroll(i);
     scroll.set_max(0, 0);
@@ -197,6 +203,9 @@ pub(crate) fn reset_pane_scroll(i: usize) {
     owner
         .cache(pane_cache_key("wheel_accum", i), || Cell::new(0.0_f32))
         .set(0.0);
+    // The scrollbar interaction (hover/drag) state is per-slot too — reset it so a reused
+    // slot does not inherit a stale brightened / mid-drag highlight.
+    use_scrollbar_interaction(pane_scrollbar_tag(i)).set(ScrollBarState::Idle);
 }
 
 /// Build pane `i`'s vertical scrollbar from its [`ScrollState`] — pinion's
@@ -370,12 +379,19 @@ mod tests {
                 .unwrap()
                 .cache(pane_cache_key("wheel_accum", 3), || Cell::new(0.0_f32));
             assert!(accum.get() != 0.0, "a sub-row pan left a carried fraction");
+            // Leave the scrollbar in a non-Idle interaction state (as a mid-hover/drag close would).
+            use_scrollbar_interaction(pane_scrollbar_tag(3)).set(ScrollBarState::Dragging);
 
             reset_pane_scroll(3);
 
             assert_eq!(scroll.offset_y(), 0, "scroll returned to the top/live");
             assert_eq!(scroll.max().1, 0, "the bound was reset");
             assert_eq!(accum.get(), 0.0, "the wheel accumulator was cleared");
+            assert_eq!(
+                use_scrollbar_interaction(pane_scrollbar_tag(3)).get(),
+                ScrollBarState::Idle,
+                "the scrollbar interaction state was reset (no stale hover/drag on reuse)"
+            );
         });
     }
 
