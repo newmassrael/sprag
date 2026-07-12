@@ -15,7 +15,9 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use sprag_host::wire::{CELLS_ACTION, FULL_TEXT_SLOT, PANES_SLOT, SPAWN_ACTION, TEXT_ACTION};
+use sprag_host::wire::{
+    CELLS_ACTION, CLOSE_ACTION, FULL_TEXT_SLOT, PANES_SLOT, SPAWN_ACTION, TEXT_ACTION,
+};
 use sprag_host::{mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
 
@@ -200,6 +202,55 @@ fn a_mux_spawn_and_the_new_panes_output_both_advance_the_wire_notification() {
 }
 
 #[test]
+fn a_mux_close_shrinks_the_set_and_advances_the_wire_notification() {
+    // Round 2b's host-side trigger over the REAL socket: a mux `close` REMOVES a pane from
+    // the served list AND advances the scene revision (the R118 set-SHRINK rail), so a
+    // client long-polling change-notification learns the host lost a pane — exactly what
+    // the GUI wire poll re-queries and mirrors as a freed slot.
+    let sock = std::env::temp_dir().join(format!("sprag-wire-close-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&sock);
+    let _host = spawn_host(&sock);
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned host socket");
+
+    // Grow to two panes, capturing the 2nd pane's id.
+    assert_eq!(pane_count(&mut conn), 1, "one boot pane");
+    let spawned = conn
+        .call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(SPAWN_ACTION), "args": { "cmd": ["cat"] } }),
+        )
+        .expect("spawn a 2nd pane over the wire");
+    let victim = spawned.as_u64().expect("spawn returns the new pane id");
+    assert_eq!(pane_count(&mut conn), 2, "the mux spawn grew the set");
+
+    // Close the 2nd pane: the served set shrinks AND the revision advances.
+    let before_close = read_revision(&mut conn);
+    conn.call(
+        "scene/invoke",
+        json!({ "path": mux_action_path(CLOSE_ACTION), "args": { "id": victim } }),
+    )
+    .expect("close the 2nd pane over the wire");
+    assert_eq!(pane_count(&mut conn), 1, "the mux close shrank the set");
+    assert!(
+        !pane_ids(&mut conn).contains(&victim),
+        "the closed pane's id is no longer served (the mirror would drop its slot)",
+    );
+    // waitFor{baseline} reports the close advanced the scene (the set-shrink rail bump), so
+    // a parked poll wakes on the removal just as it does on output.
+    let after_close = conn
+        .call("scene/waitFor", json!({ "since": before_close }))
+        .expect("waitFor reports the close advance");
+    assert_eq!(after_close["changed"], true, "the close advanced the scene");
+    assert!(
+        after_close["revision"].as_u64().unwrap_or(0) > before_close,
+        "woke past the pre-close baseline: {after_close}",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+#[test]
 fn connect_fails_cleanly_when_no_host_is_listening() {
     // A short timeout against a path nothing bound: connect must error (not hang past
     // the timeout, not panic) — the boot-failure path WireHost turns into a reaped
@@ -239,6 +290,20 @@ fn pane_count(conn: &mut HostConn) -> usize {
     .ok()
     .and_then(|v| v.as_array().map(Vec::len))
     .unwrap_or(0)
+}
+
+/// The host's live pane ids over the `/sprag_mux` control surface.
+fn pane_ids(conn: &mut HostConn) -> Vec<u64> {
+    conn.call(
+        "scene/query",
+        json!({ "path": mux_action_path(PANES_SLOT) }),
+    )
+    .ok()
+    .and_then(|v| {
+        v.as_array()
+            .map(|arr| arr.iter().filter_map(|p| p["id"].as_u64()).collect())
+    })
+    .unwrap_or_default()
 }
 
 /// Poll `predicate` until true or `timeout` elapses.
