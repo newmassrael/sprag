@@ -381,4 +381,24 @@ mod tests {
         assert_eq!(view.occupied_slots(), vec![0, 2]);
         assert!(!view.is_pane_occupied(1));
     }
+
+    #[test]
+    fn reconcile_free_plus_two_adds_reuses_the_hole_then_takes_a_higher_slot() {
+        // A single free with TWO newcomers in one reconcile: one reuses the freed hole
+        // (lowest), the other takes the next free slot -> freed != added (the
+        // multi-add-after-free path the earlier delta tests don't exercise).
+        let ids = std::rc::Rc::new(RefCell::new(vec![pid(10), pid(11), pid(12)]));
+        let view = view_over(&ids);
+        assert_eq!(view.occupied_slots(), vec![0, 1, 2]);
+        // Pane 11 (slot 1) closes; panes 20 and 21 open (host order 10, 12, 20, 21).
+        *ids.borrow_mut() = vec![pid(10), pid(12), pid(20), pid(21)];
+        let delta = view.reconcile();
+        assert_eq!(delta.freed, vec![1], "slot 1 (pane 11) freed");
+        assert_eq!(
+            delta.added,
+            vec![1, 3],
+            "pane 20 reuses the hole at slot 1; pane 21 takes slot 3 (freed != added)"
+        );
+        assert_eq!(view.occupied_slots(), vec![0, 1, 2, 3]);
+    }
 }

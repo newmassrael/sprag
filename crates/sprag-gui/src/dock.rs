@@ -262,6 +262,14 @@ pub(crate) fn is_pane_floating(i: usize) -> bool {
 /// dragging a floater back onto an empty main is rim-only, not the whole window. (Both are
 /// collapse-mode concerns.) In [`DockMode::Placeholder`] the leaf survives (the slot is
 /// held), so the dock never truly empties and every pane may float.
+///
+/// SCOPE (R123): this is a FLOAT-GESTURE guard — it stops the USER stranding themselves by
+/// floating their last docked pane. It is deliberately NOT a global "the main is never
+/// empty" invariant: a host-side CLOSE ([`evict_pane`]) is authoritative (the pane is gone)
+/// and may legitimately empty the dock — including the case where a floater survives — since
+/// force-redocking the user's deliberately-floated pane would be more surprising than a
+/// blank main (which the all-panes-closed path already produces). So there is ONE enforcer
+/// of this guard ([`push_float`]); `evict_pane` is a different event class, not subject to it.
 fn float_would_empty_the_dock(i: usize) -> bool {
     if dock_mode() != DockMode::Collapse {
         return false;
@@ -473,10 +481,13 @@ pub(crate) fn toggle_pane_floating(i: usize) {
 /// freed. Unconditional of [`DockMode`] — a gone pane can hold neither a floating window nor
 /// a placeholder leaf, so unlike a live float this is NOT mode-gated (the mode choice is
 /// only about how a still-present pane's slot is treated). The freed slot's per-slot GUI
-/// state (scroll / preedit / wheel) is reset by the caller; this owns only the window +
-/// dock-tree cleanup. Runs in the root owner (the pre-view `reconcile_frame` hook), so
-/// [`use_windows_topology`] / the split-tree hooks resolve; the window drop is a plain
-/// `Signal::set` the shell applies at its next safe `reconcile_windows` (deferred via
+/// state (scroll / wheel / interaction / preedit) is reset by the caller; this owns only
+/// the window + dock-tree cleanup. Removing the LAST docked leaf empties the dock to a blank
+/// main — accepted even when a floater survives (a host close is authoritative; see
+/// [`float_would_empty_the_dock`]'s SCOPE note — that guard is float-gesture-only, not a
+/// global no-empty-main invariant). Runs in the root owner (the pre-view `reconcile_frame`
+/// hook), so [`use_windows_topology`] / the split-tree hooks resolve; the window drop is a
+/// plain `Signal::set` the shell applies at its next safe `reconcile_windows` (deferred via
 /// `AppEvent::WindowsDirty`), never a synchronous winit op mid-render.
 pub(crate) fn evict_pane(i: usize) {
     // Drop the floating window if the pane was undocked, else a `pane-{i}` window would
@@ -683,6 +694,29 @@ mod tests {
                     .panel_ids(),
                 vec![crate::split::panel_id(1)],
                 "evict also removed the closed pane's leaf (both authorities cleaned up)"
+            );
+        });
+    }
+
+    /// R123: `evict_pane` on a plain DOCKED pane (no floating window) still removes its leaf
+    /// — the window-absent branch (`position()` -> `None`, skip the drop, then
+    /// `remove_pane_leaf`). Complements the floating-pane eviction test above.
+    #[test]
+    fn evict_pane_removes_a_docked_pane_with_no_window() {
+        let owner = Owner::new();
+        owner.run(|| {
+            crate::split::use_dock_topology().set(None);
+            admit_pane(0);
+            admit_pane(1);
+            assert_eq!(crate::split::docked_pane_indices(), vec![0, 1]);
+            assert!(!is_pane_floating(1), "pane 1 is docked, no window");
+
+            evict_pane(1); // host closed the docked pane
+
+            assert_eq!(
+                crate::split::docked_pane_indices(),
+                vec![0],
+                "evict removes a docked pane's leaf even with no window to drop"
             );
         });
     }

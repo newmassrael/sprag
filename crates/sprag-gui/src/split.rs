@@ -353,7 +353,14 @@ pub(crate) fn insert_pane_leaf(index: usize) {
             };
             match inserted {
                 Ok(t) => t,
-                Err(_) => return, // defensive: leave the tree unchanged
+                // Defensive: leave the tree unchanged. Also the boot-race guard — if the
+                // `use_dock_topology` factory ever first-fired AFTER a runtime add (so its
+                // `occupied_slots()` snapshot already held leaf `index`), this returns
+                // `DuplicatePanelId` and we no-op rather than inserting a second `index` leaf.
+                // (Unreachable today: `SlotView::new`'s boot reconcile maps all boot panes, so
+                // the first `reconcile_frame` has an empty `added` delta and any real admit is
+                // many frames after the factory fired — but the tolerance keeps it sound.)
+                Err(_) => return,
             }
         }
     };
