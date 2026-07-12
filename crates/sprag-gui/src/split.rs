@@ -26,9 +26,9 @@
 //! leaves, built at boot ([`build_boot_topology`]) over ALL panes. How a FLOAT affects
 //! this tree is chosen by [`DockMode`](crate::dock::DockMode) (`SPRAG_GUI_DOCK_MODE`):
 //!
-//!  - **`Collapse` (DEFAULT, R60):** floating REMOVES the pane's leaf ([`float_pane`]) so
+//!  - **`Collapse` (DEFAULT, R60):** floating REMOVES the pane's leaf ([`remove_pane_leaf`]) so
 //!    the remaining panes reclaim the space — the terminal-multiplexer fill (tmux/zellij).
-//!    Docking back re-inserts it index-relative ([`dock_pane`]). The windows-signal and
+//!    Docking back re-inserts it index-relative ([`insert_pane_leaf`]). The windows-signal and
 //!    this tree CO-MUTATE (the tree tracks float state); `None` = all panes floated.
 //!  - **`Placeholder` (opt-in, R72):** the floated pane's leaf STAYS; the view paints a
 //!    [`view_floating_placeholder`](pinion_widget_paint::dock::view_floating_placeholder)
@@ -72,7 +72,7 @@
 use crate::terminal::{MAX_PANES, use_terminal};
 use pinion_core::reactive::{Owner, Signal};
 use pinion_widget_paint::dock::{
-    DockDropPreview, DockNode, DockReorganizer, DockSplitPosition, DockTopology, TopologyError,
+    DockDropPreview, DockReorganizer, DockSplitPosition, DockTopology, TopologyError,
 };
 use pinion_widget_paint::splitter::SplitterOrientation;
 use std::borrow::Cow;
@@ -231,32 +231,31 @@ pub(crate) fn docked_pane_indices() -> Vec<usize> {
 }
 
 /// Build the boot dock tree over the OCCUPIED display `slots` (from
-/// [`SlotView::occupied_slots`](crate::slotview::SlotView::occupied_slots)): a
-/// right-nested all-Horizontal split whose leaves are EXACTLY the occupied slots, in
-/// order (divider keyed by its left leaf's slot). Building from the occupied SET, not a
-/// count, keeps the topology a PROJECTION of the one membership authority — so a boot
-/// HOLE (an attach-race pane that failed its first-frame fetch, R120/R121) yields leaves
-/// only for the panes that exist, never orphaning a real pane or leaving a blank leaf
-/// (the count-based version's silent-orphan bug). Empty -> `None` (the zero-pane edge);
-/// one slot -> a single leaf, no split. Pure.
+/// [`SlotView::occupied_slots`](crate::slotview::SlotView::occupied_slots)) by FOLDING the
+/// SAME [`insert_leaf`] primitive the runtime admit path uses — ONE construction authority
+/// for the right-nested / index-ordered / `0.5`-default tree shape (R124: the former
+/// recursive `build_row_node`, a second algorithm encoding the identical policy, is
+/// retired). Slots arrive in ascending order, so each append's divider sits between the
+/// PREVIOUS slot (its left leaf) and the new one — keyed [`boot_split_id`] of that left
+/// leaf, which reproduces the former builder's stable divider ids EXACTLY (behaviour-
+/// preserving). Building from the occupied SET, not a count, keeps the topology a
+/// PROJECTION of the one membership authority — a boot HOLE (an attach-race pane that
+/// failed its first-frame fetch, R120/R121) yields leaves only for the panes that exist,
+/// never orphaning a real pane. Empty -> `None`; one slot -> a single leaf, no split.
 fn build_boot_topology(slots: &[usize]) -> Option<DockTopology> {
-    (!slots.is_empty()).then(|| DockTopology::new(build_row_node(slots)))
-}
-
-/// Right-nested Horizontal sub-tree over the non-empty `slots` slice: the leaf at
-/// `slots[0]` beside the recursively-built remainder, divided by
-/// [`boot_split_id`]`(slots[0])`.
-fn build_row_node(slots: &[usize]) -> DockNode {
-    match slots {
-        [] => unreachable!("build_row_node needs a non-empty slice"),
-        [only] => DockNode::leaf(panel_id(*only)),
-        [first, rest @ ..] => DockNode::split_horizontal(
-            boot_split_id(*first),
-            SPLIT_RATIO_DEFAULT,
-            DockNode::leaf(panel_id(*first)),
-            build_row_node(rest),
-        ),
+    let mut tree = None;
+    let mut prev: Option<usize> = None;
+    for &slot in slots {
+        // The divider this append forms (if any) sits between `prev` (its left leaf) and
+        // `slot`, so key it by `prev` to match the stable boot scheme. The first slot makes
+        // no divider, so the mint closure is never called (prev unused there).
+        let left = prev;
+        tree = insert_leaf(tree, slot, || {
+            boot_split_id(left.expect("a divider forms only after the first slot"))
+        });
+        prev = Some(slot);
     }
+    tree
 }
 
 // ── Collapse-model primitives (R60, restored R77) ───────────────────────────────
@@ -285,11 +284,11 @@ fn next_dock_split_id() -> String {
 /// Remove pane `index`'s leaf from the dock tree — the mode-neutral leaf-removal SSOT.
 /// The sibling sub-tree promotes into the parent Split's place so the remaining panes
 /// reclaim the space; removing the SOLE docked leaf empties the tree (`None`); removing a
-/// leaf already absent is a no-op. Shared by the collapse-mode float ([`float_pane`]) and
-/// the Round 2b pane-CLOSE eviction ([`crate::dock::evict_pane`]): a pane vanishing from
-/// the host set removes its leaf IDENTICALLY to a collapse-float, in BOTH dock models (a
-/// gone pane can hold no placeholder), so the mode-gating stays in the float caller
-/// (`crate::dock::push_float`), never here.
+/// leaf already absent is a no-op. Called directly by both leaf-removal entry points:
+/// `crate::dock::push_float` (a collapse-mode float — mode-gated in that caller) and
+/// [`crate::dock::evict_pane`] (a Round 2b pane CLOSE — unconditional of dock mode, since a
+/// gone pane can hold no placeholder). A vanished pane's leaf is removed IDENTICALLY to a
+/// collapse-float, so this stays mode-neutral and the mode decision lives in the caller.
 pub(crate) fn remove_pane_leaf(index: usize) {
     let topo = use_dock_topology();
     let Some(current) = topo.get() else {
@@ -304,85 +303,81 @@ pub(crate) fn remove_pane_leaf(index: usize) {
     }
 }
 
-/// Collapse-mode undock: remove pane `index`'s leaf so the remaining panes reclaim the
-/// space. An intent-named wrapper over [`remove_pane_leaf`] (the collapse-float role);
-/// called by `crate::dock::push_float` in `DockMode::Collapse`.
-pub(crate) fn float_pane(index: usize) {
-    remove_pane_leaf(index);
-}
-
-/// Insert pane `index`'s leaf into the dock tree in left-to-right INDEX order — the
-/// mode-neutral leaf-insert SSOT. Splits the smallest-indexed docked pane whose index
-/// exceeds `index` (the new leaf takes the `First`/left slot), or appends after the last
-/// docked pane (`Second`/right) when `index` is the largest; an empty tree (`None`)
-/// becomes the single leaf. The new divider gets a fresh id ([`next_dock_split_id`]) at
-/// the default ratio. Shared by the collapse-mode dock-back ([`dock_pane`]) and the Round
-/// 2b pane-OPEN admission ([`crate::dock::admit_pane`]): a new host pane appears docked
-/// index-relative in BOTH dock models (a fresh pane has no held slot to restore).
-pub(crate) fn insert_pane_leaf(index: usize) {
-    let topo = use_dock_topology();
-    let next = match topo.get() {
-        None => DockTopology::single(panel_id(index)),
-        Some(current) => {
-            let mut docked: Vec<usize> = current
-                .panel_ids()
-                .iter()
-                .filter_map(|p| pane_index_of_panel(p))
-                .collect();
-            // Index order is emergent (not enforced) — sort so the "first index >
-            // `index`" insertion point is unconditionally correct.
-            docked.sort_unstable();
-            let split_id = next_dock_split_id();
-            let inserted = match docked.iter().find(|&&j| j > index) {
-                Some(&j) => current.split_leaf_into(
-                    &panel_id(j),
-                    panel_id(index),
-                    split_id,
-                    SplitterOrientation::Horizontal,
-                    SPLIT_RATIO_DEFAULT,
-                    DockSplitPosition::First,
-                ),
-                None => current.split_leaf_into(
-                    &panel_id(*docked.last().expect("a Some topology has >= 1 docked pane")),
-                    panel_id(index),
-                    split_id,
-                    SplitterOrientation::Horizontal,
-                    SPLIT_RATIO_DEFAULT,
-                    DockSplitPosition::Second,
-                ),
-            };
-            match inserted {
-                Ok(t) => t,
-                // Defensive: leave the tree unchanged. Also the boot-race guard — if the
-                // `use_dock_topology` factory ever first-fired AFTER a runtime add (so its
-                // `occupied_slots()` snapshot already held leaf `index`), this returns
-                // `DuplicatePanelId` and we no-op rather than inserting a second `index` leaf.
-                // (Unreachable today: `SlotView::new`'s boot reconcile maps all boot panes, so
-                // the first `reconcile_frame` has an empty `added` delta and any real admit is
-                // many frames after the factory fired — but the tolerance keeps it sound.)
-                Err(_) => return,
-            }
-        }
+/// Insert pane `index`'s leaf into a dock `tree` in left-to-right INDEX order — the ONE
+/// tree-shape policy (right-nested Horizontal, `0.5` default), shared by the runtime admit
+/// ([`insert_pane_leaf`]) AND the boot fold ([`build_boot_topology`]), so the shape is
+/// single-sourced (R124). Splits the smallest-indexed docked pane whose index exceeds
+/// `index` (the new leaf takes the `First`/left slot), or appends after the last docked pane
+/// (`Second`/right) when `index` is the largest; an empty `tree` becomes the single leaf.
+/// `mint_id` supplies the new divider's id and is invoked ONLY when a divider is actually
+/// created (never for the single-leaf case) — so the runtime sequence counter is not
+/// consumed at boot. On the defensive `split_leaf_into` error (`DuplicatePanelId` — the
+/// boot-race guard, unreachable today) the tree is returned UNCHANGED. Pure (no `Signal`),
+/// so it is unit-tested directly.
+fn insert_leaf(
+    tree: Option<DockTopology>,
+    index: usize,
+    mint_id: impl FnOnce() -> String,
+) -> Option<DockTopology> {
+    let Some(current) = tree else {
+        return Some(DockTopology::single(panel_id(index)));
     };
-    topo.set(Some(next));
+    // Index order is emergent (not enforced) — sort so the "first index > `index`"
+    // insertion point is unconditionally correct.
+    let mut docked: Vec<usize> = current
+        .panel_ids()
+        .iter()
+        .filter_map(|p| pane_index_of_panel(p))
+        .collect();
+    docked.sort_unstable();
+    let split_id = mint_id();
+    let inserted = match docked.iter().find(|&&j| j > index) {
+        Some(&j) => current.split_leaf_into(
+            &panel_id(j),
+            panel_id(index),
+            split_id,
+            SplitterOrientation::Horizontal,
+            SPLIT_RATIO_DEFAULT,
+            DockSplitPosition::First,
+        ),
+        None => current.split_leaf_into(
+            &panel_id(*docked.last().expect("a Some topology has >= 1 docked pane")),
+            panel_id(index),
+            split_id,
+            SplitterOrientation::Horizontal,
+            SPLIT_RATIO_DEFAULT,
+            DockSplitPosition::Second,
+        ),
+    };
+    // Defensive boot-race guard: a `DuplicatePanelId` leaves the tree UNCHANGED rather than
+    // inserting a second `index` leaf. Unreachable today (the `use_dock_topology` factory
+    // fires after `SlotView::new`'s boot reconcile, and a runtime admit inserts a
+    // freshly-allocated slot), but the tolerance keeps it sound (`split_leaf_into` borrowed
+    // `current`, so it is intact for the fall-through).
+    Some(inserted.unwrap_or(current))
 }
 
-/// Collapse-mode dock-back: re-insert pane `index`'s leaf index-relative. An intent-named
-/// wrapper over [`insert_pane_leaf`] (the collapse-dock-back role); called by
-/// [`crate::dock::redock_pane`] in `DockMode::Collapse`.
+/// Insert pane `index`'s leaf at RUNTIME (Round 2b admit / collapse dock-back) via the ONE
+/// [`insert_leaf`] policy, minting a fresh sequence divider id ([`next_dock_split_id`]).
+/// Called directly by both leaf-insert entry points: [`crate::dock::admit_pane`] (a new
+/// host pane appears) and [`crate::dock::redock_pane`] (a collapse-mode dock-back). A new
+/// host pane / re-docked pane appears index-relative in BOTH dock models (a fresh pane has
+/// no held slot to restore).
 ///
 /// **v1 bound:** index-relative, not drop-zone-relative — a collapse-mode cross-window
 /// redock lands at the pane's index home, not where it was dropped (zone-honoring redock
 /// needs `DockMode::Placeholder`, where the surviving leaf is relocated by the reducer's
 /// `resolve_drop` SSOT). See the module docs + PINION-PR34.
-pub(crate) fn dock_pane(index: usize) {
-    insert_pane_leaf(index);
+pub(crate) fn insert_pane_leaf(index: usize) {
+    let topo = use_dock_topology();
+    topo.set(insert_leaf(topo.get(), index, next_dock_split_id));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use pinion_core::reactive::Owner;
+    use pinion_widget_paint::dock::DockNode; // used only by the boot-shape assertion
 
     #[test]
     fn panel_id_round_trips_through_pane_index_of_panel() {
@@ -529,9 +524,9 @@ mod tests {
     }
 
     /// COLLAPSE mode (the default): floating REMOVES a pane's leaf so the siblings reclaim
-    /// the space ([`float_pane`]), and docking back re-inserts it index-relative
-    /// ([`dock_pane`]). Exercises the restored R60 primitives directly (no windows-signal /
-    /// `use_terminal` needed — float_pane/dock_pane are pure topology mutations).
+    /// the space ([`remove_pane_leaf`]), and docking back re-inserts it index-relative
+    /// ([`insert_pane_leaf`]). Exercises the mode-neutral leaf primitives directly (no
+    /// windows-signal / `use_terminal` needed — they are pure topology mutations).
     #[test]
     fn collapse_float_removes_the_leaf_and_dock_restores_index_order() {
         let owner = Owner::new();
@@ -540,7 +535,7 @@ mod tests {
             assert_eq!(docked_pane_indices(), vec![0, 1, 2, 3]);
 
             // Float a MIDDLE pane (1) -> its leaf is REMOVED, siblings reclaim: [0, 2, 3].
-            float_pane(1);
+            remove_pane_leaf(1);
             assert_eq!(docked_pane_indices(), vec![0, 2, 3]);
             assert_eq!(
                 use_dock_topology().get().expect("still docked").panel_ids(),
@@ -549,7 +544,7 @@ mod tests {
             );
 
             // Dock pane 1 back -> re-inserted in INDEX order (before pane 2): [0, 1, 2, 3].
-            dock_pane(1);
+            insert_pane_leaf(1);
             assert_eq!(
                 docked_pane_indices(),
                 vec![0, 1, 2, 3],
@@ -558,7 +553,7 @@ mod tests {
 
             // Float every pane -> the tree empties to `None` (no docked panes).
             for i in 0..4 {
-                float_pane(i);
+                remove_pane_leaf(i);
             }
             assert!(
                 use_dock_topology().get().is_none(),
