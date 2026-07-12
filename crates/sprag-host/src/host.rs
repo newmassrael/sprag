@@ -97,72 +97,58 @@ impl PaneScrollFacts {
 /// The GUI holds a `Box<dyn HostClient>` and reaches every pane ONLY through these
 /// methods, so the frontend code is identical whether the `Workspace` lives in its
 /// own process (in-process) or another (wire) — that structural equivalence is the
-/// point of topology B. Each method addresses a pane by its display SLOT `index`,
-/// drawn from [`occupied_slots`](HostClient::occupied_slots) (NOT the dense range
-/// `0..pane_count()` — a mirroring impl may leave holes, see that method); a wire impl
-/// maps the slot to the host's [`PaneId`] internally.
+/// point of topology B. Each method addresses a pane by its host [`PaneId`] — the
+/// host's OWN stable identity (monotonic, never reused), NOT a display slot: "slots"
+/// are a GUI display concept the display client maps onto these ids ITSELF (see
+/// `sprag-gui`'s `SlotView`), and the host has no notion of them. [`pane_ids`](HostClient::pane_ids)
+/// is the membership source; an absent id returns each method's graceful default.
 ///
 /// [`Host::pane_handle`] is deliberately NOT on this trait: a live [`SessionHandle`]
 /// cannot cross a wire, so it stays an inherent `Host` method used only to build
 /// in-process input surfaces (retired as input clients attach to the host).
 pub trait HostClient {
-    /// The number of live panes.
-    fn pane_count(&self) -> usize;
+    /// The host's live pane identities, in host order — the ONE membership source a
+    /// display client reads (it maps these to its own display slots). Replaces the
+    /// former `pane_count` / `occupied_slots` (slot concepts that moved to the GUI's
+    /// `SlotView`).
+    fn pane_ids(&self) -> Vec<PaneId>;
 
-    /// The live display SLOTS, in display order — the set a client ITERATES instead
-    /// of assuming a contiguous `0..pane_count()`. Every other method addresses a
-    /// pane by its slot (`index` == slot).
-    ///
-    /// The default is the dense range `0..pane_count()` — correct for the in-process
-    /// [`Host`], whose panes are a simple list. A wire client that MIRRORS a host's
-    /// pane set overrides this: it keeps a pane's slot STABLE across pane-set changes
-    /// (why is the client's own concern), so a closed pane leaves a HOLE and the set
-    /// can be non-contiguous. Callers must therefore iterate this set, not
-    /// `0..pane_count()`.
-    fn occupied_slots(&self) -> Vec<usize> {
-        (0..self.pane_count()).collect()
-    }
+    /// Pane `id`'s cell DATA scrolled `offset_lines` rows up — the paint buffer a
+    /// client renders. `offset_lines == 0` is the live view; a larger offset windows
+    /// into scrollback (self-clamped to the retained depth). A `1x1` placeholder if
+    /// `id` is absent.
+    fn pane_cells(&self, id: PaneId, offset_lines: usize) -> GridBuffer;
 
-    /// Whether display slot `slot` currently holds a pane. The `slot < pane_count()`
-    /// index guard is WRONG once slots go non-contiguous (a slot past the count can
-    /// be occupied while a lower one is a hole), so callers ask this. Default derives
-    /// it from [`occupied_slots`](HostClient::occupied_slots).
-    fn is_pane_occupied(&self, slot: usize) -> bool {
-        self.occupied_slots().contains(&slot)
-    }
+    /// Pane `id`'s non-cell per-frame facts ([`PaneScrollFacts`]): scrollback depth +
+    /// visible rows. A zero-depth / one-row default if `id` is absent.
+    fn pane_scroll_facts(&self, id: PaneId) -> PaneScrollFacts;
 
-    /// Pane `index`'s cell DATA scrolled `offset_lines` rows up — the paint buffer
-    /// a client renders. `offset_lines == 0` is the live view; a larger offset
-    /// windows into scrollback (self-clamped to the retained depth).
-    fn pane_cells(&self, index: usize, offset_lines: usize) -> GridBuffer;
+    /// Pane `id`'s current grid `(cols, rows)` — the emulator screen size, which tracks
+    /// the last reflow target (the reflow no-op guard + an undock window's intrinsic
+    /// open size read it). `(1, 1)` if `id` is absent.
+    fn pane_grid_size(&self, id: PaneId) -> (u16, u16);
 
-    /// Pane `index`'s non-cell per-frame facts ([`PaneScrollFacts`]): scrollback
-    /// depth + visible rows.
-    fn pane_scroll_facts(&self, index: usize) -> PaneScrollFacts;
+    /// Resize pane `id`'s PTY (`TIOCSWINSZ`) + emulator — the reflow control path. A
+    /// no-op for an absent id.
+    fn resize(&self, id: PaneId, cols: u16, rows: u16);
 
-    /// Pane `index`'s current grid `(cols, rows)` — the emulator screen size, which
-    /// tracks the last reflow target (the reflow no-op guard + an undock window's
-    /// intrinsic open size read it).
-    fn pane_grid_size(&self, index: usize) -> (u16, u16);
-
-    /// Resize pane `index`'s PTY (`TIOCSWINSZ`) + emulator — the reflow control path.
-    fn resize(&self, index: usize, cols: u16, rows: u16);
-
-    /// Send a W3C `key` + `mods` to pane `index` — the CLIENT input path. `true` if
-    /// it reached the PTY; `false` if the key is unencodable or the send failed.
+    /// Send a W3C `key` + `mods` to pane `id` — the CLIENT input path. `true` if it
+    /// reached the PTY; `false` if `id` is absent, the key is unencodable, or the send
+    /// failed.
     #[must_use]
-    fn send_key(&self, index: usize, key: &str, mods: Modifiers) -> bool;
+    fn send_key(&self, id: PaneId, key: &str, mods: Modifiers) -> bool;
 
-    /// Write literal committed `text` to pane `index` — the IME-commit / paste
-    /// client path. Empty is a no-op success. `true` if it reached the PTY.
+    /// Write literal committed `text` to pane `id` — the IME-commit / paste client
+    /// path. Empty is a no-op success. `true` if it reached the PTY.
     #[must_use]
-    fn send_text(&self, index: usize, text: &str) -> bool;
+    fn send_text(&self, id: PaneId, text: &str) -> bool;
 
-    /// Pane `index`'s full text (scrollback + visible) — the a11y text SSOT.
-    fn pane_full_text(&self, index: usize) -> String;
+    /// Pane `id`'s full text (scrollback + visible) — the a11y text SSOT. Empty if
+    /// `id` is absent.
+    fn pane_full_text(&self, id: PaneId) -> String;
 
-    /// Pane `index`'s command label (the a11y node name).
-    fn pane_command_label(&self, index: usize) -> String;
+    /// Pane `id`'s command label (the a11y node name). Empty if `id` is absent.
+    fn pane_command_label(&self, id: PaneId) -> String;
 }
 
 /// The single [`Workspace`] owner (topology B), and the **in-process** arm of the
@@ -215,95 +201,85 @@ impl Host {
         &self.workspace
     }
 
-    /// Pane `index`'s cloneable I/O handle — the ONE non-wire-shaped method (module
+    /// Pane `id`'s cloneable I/O handle — the ONE non-wire-shaped method (module
     /// docs), so it is NOT on [`HostClient`]. It hands out a live [`SessionHandle`]
     /// to build the headless host's own RPC input `SpragPaneExternal`s; a display
     /// client's OWN keyboard / IME go through [`HostClient::send_key`] /
-    /// [`HostClient::send_text`], NOT this handle.
+    /// [`HostClient::send_text`], NOT this handle. `None` for an absent id.
     #[must_use]
-    pub fn pane_handle(&self, index: usize) -> SessionHandle {
-        self.with_pane(index, Pane::handle)
+    pub fn pane_handle(&self, id: PaneId) -> Option<SessionHandle> {
+        self.with_pane_id(id, Pane::handle)
     }
 
-    /// Run `f` over the pane at tile `index` under the workspace lock — the ONE place
-    /// "which pane?" resolves. The boot panes are spawned in order and never closed
-    /// this increment, so `index` (sourced from a pane / focus tag) is a hard in-range
-    /// invariant, not an `Option`. When a `close` path lands this becomes an
-    /// `Option`-returning lookup (flagged so it is not forgotten).
-    fn with_pane<R>(&self, index: usize, f: impl FnOnce(&Pane) -> R) -> R {
-        let workspace = lock(&self.workspace);
-        let pane = workspace
-            .panes()
-            .get(index)
-            .expect("pane index in range (boot panes spawned 0..pane_count, never closed)");
-        f(pane)
+    /// Run `f` over the pane with `id` under the workspace lock — the ONE place an id
+    /// resolves to a pane. `None` if no live pane has that id (closed / never existed),
+    /// so every [`HostClient`] method returns its graceful default for an absent id
+    /// rather than panicking (the widened identity-addressed contract).
+    fn with_pane_id<R>(&self, id: PaneId, f: impl FnOnce(&Pane) -> R) -> Option<R> {
+        lock(&self.workspace).pane(id).map(f)
     }
 }
 
 impl HostClient for Host {
-    fn pane_count(&self) -> usize {
-        lock(&self.workspace).panes().len()
+    fn pane_ids(&self) -> Vec<PaneId> {
+        lock(&self.workspace).panes().iter().map(Pane::id).collect()
     }
 
-    fn pane_cells(&self, index: usize, offset_lines: usize) -> GridBuffer {
-        self.with_pane(index, |pane| {
-            crate::pane_cells(pane.session(), offset_lines)
-        })
+    fn pane_cells(&self, id: PaneId, offset_lines: usize) -> GridBuffer {
+        self.with_pane_id(id, |pane| crate::pane_cells(pane.session(), offset_lines))
+            .unwrap_or_else(|| GridBuffer::new(1, 1))
     }
 
-    fn pane_scroll_facts(&self, index: usize) -> PaneScrollFacts {
-        self.with_pane(index, |pane| {
+    fn pane_scroll_facts(&self, id: PaneId) -> PaneScrollFacts {
+        self.with_pane_id(id, |pane| {
             pane.session().with_screen(PaneScrollFacts::from_screen)
         })
+        .unwrap_or(PaneScrollFacts {
+            scrollback_len: 0,
+            visible_rows: 1,
+        })
     }
 
-    fn pane_grid_size(&self, index: usize) -> (u16, u16) {
-        self.with_pane(index, |pane| pane.session().dimensions())
+    fn pane_grid_size(&self, id: PaneId) -> (u16, u16) {
+        self.with_pane_id(id, |pane| pane.session().dimensions())
+            .unwrap_or((1, 1))
     }
 
-    /// A closed / absent pane is TRACED and ignored (it cannot happen this increment
-    /// — boot panes never close — but the swallow is honest, not silent); so is a
-    /// winsize-ioctl failure.
-    fn resize(&self, index: usize, cols: u16, rows: u16) {
+    /// A closed / absent pane is TRACED and ignored (the swallow is honest, not
+    /// silent); so is a winsize-ioctl failure.
+    fn resize(&self, id: PaneId, cols: u16, rows: u16) {
         let workspace = lock(&self.workspace);
-        let Some(id) = workspace.panes().get(index).map(Pane::id) else {
-            tracing::trace!(
-                target: "sprag_host",
-                pane = index,
-                "resize of a closed/absent pane ignored",
-            );
+        if workspace.pane(id).is_none() {
+            tracing::trace!(target: "sprag_host", %id, "resize of a closed/absent pane ignored");
             return;
-        };
+        }
         if let Err(error) = workspace.resize(id, cols, rows) {
-            tracing::trace!(
-                target: "sprag_host",
-                pane = index,
-                ?error,
-                "resize winsize ioctl failed; ignored",
-            );
+            tracing::trace!(target: "sprag_host", %id, ?error, "resize winsize ioctl failed; ignored");
         }
     }
 
     /// Encodes to PTY bytes and writes via the shared [`crate::send_key`] SSOT (the
-    /// same encoder the RPC `scene/invoke` path uses).
-    fn send_key(&self, index: usize, key: &str, mods: Modifiers) -> bool {
-        let handle = self.with_pane(index, Pane::handle);
-        crate::send_key(&handle, key, mods)
+    /// same encoder the RPC `scene/invoke` path uses); `false` for an absent id.
+    fn send_key(&self, id: PaneId, key: &str, mods: Modifiers) -> bool {
+        self.with_pane_id(id, Pane::handle)
+            .is_some_and(|handle| crate::send_key(&handle, key, mods))
     }
 
-    fn send_text(&self, index: usize, text: &str) -> bool {
-        let handle = self.with_pane(index, Pane::handle);
-        crate::send_text(&handle, text)
+    fn send_text(&self, id: PaneId, text: &str) -> bool {
+        self.with_pane_id(id, Pane::handle)
+            .is_some_and(|handle| crate::send_text(&handle, text))
     }
 
-    fn pane_full_text(&self, index: usize) -> String {
-        self.with_pane(index, |pane| pane.session().with_screen(Screen::full_text))
+    fn pane_full_text(&self, id: PaneId) -> String {
+        self.with_pane_id(id, |pane| pane.session().with_screen(Screen::full_text))
+            .unwrap_or_default()
     }
 
     /// Owned (`String`, not `&str`) because the workspace lock is released before it
     /// returns.
-    fn pane_command_label(&self, index: usize) -> String {
-        self.with_pane(index, |pane| pane.command_label().to_owned())
+    fn pane_command_label(&self, id: PaneId) -> String {
+        self.with_pane_id(id, |pane| pane.command_label().to_owned())
+            .unwrap_or_default()
     }
 }
 
@@ -321,36 +297,58 @@ mod tests {
     }
 
     #[test]
-    fn spawn_grows_the_pane_count_and_exposes_geometry() {
+    fn spawn_grows_the_pane_set_and_exposes_geometry() {
         let host = Host::new((40, 6));
-        assert_eq!(host.pane_count(), 0);
-        host.spawn(cat(), "cat".to_owned(), 40, 6, None).unwrap();
-        assert_eq!(host.pane_count(), 1);
-        assert_eq!(host.pane_grid_size(0), (40, 6));
+        assert!(host.pane_ids().is_empty());
+        let id = host.spawn(cat(), "cat".to_owned(), 40, 6, None).unwrap();
+        assert_eq!(host.pane_ids(), vec![id]);
+        assert_eq!(host.pane_grid_size(id), (40, 6));
     }
 
     #[test]
     fn resize_updates_the_grid_geometry() {
         let host = Host::new((40, 6));
-        host.spawn(cat(), "cat".to_owned(), 40, 6, None).unwrap();
-        host.resize(0, 100, 30);
-        assert_eq!(host.pane_grid_size(0), (100, 30));
+        let id = host.spawn(cat(), "cat".to_owned(), 40, 6, None).unwrap();
+        host.resize(id, 100, 30);
+        assert_eq!(host.pane_grid_size(id), (100, 30));
     }
 
     #[test]
     fn send_text_reaches_the_pane_pty() {
         use std::time::{Duration, Instant};
         let host = Host::new((40, 6));
-        host.spawn(cat(), "cat".to_owned(), 40, 6, None).unwrap();
-        assert!(host.send_text(0, "hello"));
+        let id = host.spawn(cat(), "cat".to_owned(), 40, 6, None).unwrap();
+        assert!(host.send_text(id, "hello"));
         // The cooked-mode `cat` echoes it back into the pane's screen.
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(5) {
-            if host.pane_full_text(0).contains("hello") {
+            if host.pane_full_text(id).contains("hello") {
                 return;
             }
             std::thread::sleep(Duration::from_millis(20));
         }
         panic!("the sent text never echoed back through the host");
+    }
+
+    #[test]
+    fn an_absent_id_returns_graceful_defaults() {
+        // The widened identity contract (R121): a `PaneId` with no live pane no-ops /
+        // placeholders rather than panicking (was `with_pane`'s `.expect` before).
+        let host = Host::new((40, 6));
+        let ghost = PaneId(999);
+        assert_eq!(host.pane_grid_size(ghost), (1, 1));
+        assert_eq!(
+            (
+                host.pane_cells(ghost, 0).cols(),
+                host.pane_cells(ghost, 0).rows()
+            ),
+            (1, 1)
+        );
+        assert!(!host.send_text(ghost, "x"));
+        assert!(!host.send_key(ghost, "a", Modifiers::default()));
+        assert!(host.pane_full_text(ghost).is_empty());
+        assert!(host.pane_command_label(ghost).is_empty());
+        assert!(host.pane_handle(ghost).is_none());
+        host.resize(ghost, 10, 10); // no panic
     }
 }
