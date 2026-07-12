@@ -1365,6 +1365,50 @@
         "The R118-R124 attach-mode tmux-mirror arc remains COMPLETE + REVIEWED + REMEDIATED; R125 opens no new arc."
       ]
     },
+    "R126": {
+      "decision_summary": "Round 126: pin-bump all 8 pinion-* crates fec4de30 (R1294) -> d74e0775 (R1308) to make PINION-PR51 (optional primary External) AVAILABLE -- the one open pinion gap the R118-R124 tmux-mirror arc filed (the primary-scrollbar sentinel workaround). pinion DELIVERED PR51 across R1304-R1308 as a BACKWARD-COMPATIBLE descriptor: a new WidgetCore::primary_surface() -> Option<PrimarySurface> with a DEFAULT impl that delegates to the existing create_external()/tag() (R1306 \"default delegates = zero churn\"); compose_root now reads primary_surface() (a None binding never synthesizes the index-0 primary and never calls create_external/tag); no-primary RPC handling (R1305/R1307 bare /external rejects via a scene marker); TUI-renderable no-primary (R1304); and a hello-no-primary reference consumer + wire demo (R1308). Because the default delegates, sprag compiles + behaves IDENTICALLY at the new pin with ZERO source change -- this is an ENABLING bump (the R106/R114 pattern): the actual sprag consumption (override primary_surface()->None, retire the PRIMARY_SENTINEL_TAG sentinel) is a follow-up round. SCE unchanged: pinion@d74e0775's own [workspace.dependencies] SCE pin = 3078f8bf = sprag's sce-build/sce-rust-runtime pins, so the single shared Engine<StatePolicy> instance is preserved (no SCE bump). sprag source change 0; behaviour-preserving.",
+      "changes_bullets": [
+        "Cargo.toml: all 8 pinion-* revs (core/a11y/shell/runtime/widget-paint/forge/rpc/rpc-transport) fec4de3050be16babfae1ee44490521a65ac36a5 -> d74e077592628ba72fae62164098cc23f9a966dd (replace_all of the rev string; SCE 3078f8bf untouched). Cargo.lock re-resolved.",
+        "SCE unchanged: pinion@d74e0775's [workspace.dependencies] SCE pin = 3078f8bf = sprag's sce-build/sce-rust-runtime pins, so the one Engine<StatePolicy> instance holds (verified against pinion's Cargo.toml before bumping).",
+        "No sprag source change: R126 is the ENABLING bump making PR51's WidgetCore::primary_surface()->Option available (delivered R1304-R1308, default-delegating = backward-compatible); the sentinel-removal consumption is a follow-up round."
+      ],
+      "verification_bullets": [
+        "Target rev pushed: d74e0775 IS pinion origin/main HEAD (R1308). PR51 delivery verified by source read at d74e0775: widget_core.rs has WidgetCore::primary_surface()->Option<PrimarySurface> with a default impl; create_external/tag retained (backward-compat); compose_root reads primary_surface() (None -> no index-0 primary synthesized).",
+        "cargo build --workspace clean at the new pin with ZERO sprag source change (Finished dev in 8.09s) = the delivery is backward-compatible (sprag's default primary_surface delegates to its existing create_external/tag).",
+        "cargo test --workspace = 271 passed / 0 failed (TEST_EXIT=0). cargo clippy --workspace --all-targets = 0 warnings / 0 errors (CLIPPY_EXIT=0).",
+        "SCE-match check: pinion@d74e0775 Cargo.toml SCE rev == sprag Cargo.toml SCE rev == 3078f8bf -> one Engine<StatePolicy> instance preserved."
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "pinion pin now d74e0775 (R1308); SCE 3078f8bf unchanged. R126 = ENABLING bump: PINION-PR51 (optional primary) now AVAILABLE via WidgetCore::primary_surface()->Option, backward-compatible (default delegates = zero churn).",
+        "PR51 CONSUMPTION is the next round (option B): sprag TerminalViewer overrides primary_surface()->None + retire PRIMARY_SENTINEL_TAG / PRIMARY_SENTINEL_SCROLL_KEY / primary_scrollbar_external (scrollbar.rs + main.rs); all pane scrollbars are already symmetric create_extra_externals. NB pinion delivered a DIFFERENT shape than the PR51 draft (primary_surface() descriptor vs create_external/tag->Option) -- consume against the ACTUAL delivered API.",
+        "R126 (Cargo.toml + Cargo.lock + this ledger) is a LOCAL commit on top of pushed R125 (origin/main = 5ff7491); NOT pushed (push consent owed)."
+      ],
+      "publishable_decision_summary": "Round 126: pin-bump all 8 pinion-* crates fec4de30 (R1294) -> d74e0775 (R1308) to make PINION-PR51 (optional primary External) AVAILABLE -- the one open pinion gap the R118-R124 tmux-mirror arc filed (the primary-scrollbar sentinel workaround). pinion DELIVERED PR51 across R1304-R1308 as a BACKWARD-COMPATIBLE descriptor: a new WidgetCore::primary_surface() -> Option<PrimarySurface> with a DEFAULT impl that delegates to the existing create_external()/tag() (R1306 \"default delegates = zero churn\"); compose_root now reads primary_surface() (a None binding never synthesizes the index-0 primary and never calls create_external/tag); no-primary RPC handling (R1305/R1307 bare /external rejects via a scene marker); TUI-renderable no-primary (R1304); and a hello-no-primary reference consumer + wire demo (R1308). Because the default delegates, sprag compiles + behaves IDENTICALLY at the new pin with ZERO source change -- this is an ENABLING bump (the R106/R114 pattern): the actual sprag consumption (override primary_surface()->None, retire the PRIMARY_SENTINEL_TAG sentinel) is a follow-up round. SCE unchanged: pinion@d74e0775's own [workspace.dependencies] SCE pin = 3078f8bf = sprag's sce-build/sce-rust-runtime pins, so the single shared Engine<StatePolicy> instance is preserved (no SCE bump). sprag source change 0; behaviour-preserving.",
+      "publishable_changes_bullets": [
+        "Cargo.toml: all 8 pinion-* revs (core/a11y/shell/runtime/widget-paint/forge/rpc/rpc-transport) fec4de3050be16babfae1ee44490521a65ac36a5 -> d74e077592628ba72fae62164098cc23f9a966dd (replace_all of the rev string; SCE 3078f8bf untouched). Cargo.lock re-resolved.",
+        "SCE unchanged: pinion@d74e0775's [workspace.dependencies] SCE pin = 3078f8bf = sprag's sce-build/sce-rust-runtime pins, so the one Engine<StatePolicy> instance holds (verified against pinion's Cargo.toml before bumping).",
+        "No sprag source change: R126 is the ENABLING bump making PR51's WidgetCore::primary_surface()->Option available (delivered R1304-R1308, default-delegating = backward-compatible); the sentinel-removal consumption is a follow-up round."
+      ],
+      "publishable_verification_bullets": [
+        "Target rev pushed: d74e0775 IS pinion origin/main HEAD (R1308). PR51 delivery verified by source read at d74e0775: widget_core.rs has WidgetCore::primary_surface()->Option<PrimarySurface> with a default impl; create_external/tag retained (backward-compat); compose_root reads primary_surface() (None -> no index-0 primary synthesized).",
+        "cargo build --workspace clean at the new pin with ZERO sprag source change (Finished dev in 8.09s) = the delivery is backward-compatible (sprag's default primary_surface delegates to its existing create_external/tag).",
+        "cargo test --workspace = 271 passed / 0 failed (TEST_EXIT=0). cargo clippy --workspace --all-targets = 0 warnings / 0 errors (CLIPPY_EXIT=0).",
+        "SCE-match check: pinion@d74e0775 Cargo.toml SCE rev == sprag Cargo.toml SCE rev == 3078f8bf -> one Engine<StatePolicy> instance preserved."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "pinion pin now d74e0775 (R1308); SCE 3078f8bf unchanged. R126 = ENABLING bump: PINION-PR51 (optional primary) now AVAILABLE via WidgetCore::primary_surface()->Option, backward-compatible (default delegates = zero churn).",
+        "PR51 CONSUMPTION is the next round (option B): sprag TerminalViewer overrides primary_surface()->None + retire PRIMARY_SENTINEL_TAG / PRIMARY_SENTINEL_SCROLL_KEY / primary_scrollbar_external (scrollbar.rs + main.rs); all pane scrollbars are already symmetric create_extra_externals. NB pinion delivered a DIFFERENT shape than the PR51 draft (primary_surface() descriptor vs create_external/tag->Option) -- consume against the ACTUAL delivered API.",
+        "R126 (Cargo.toml + Cargo.lock + this ledger) is a LOCAL commit on top of pushed R125 (origin/main = 5ff7491); NOT pushed (push consent owed)."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
