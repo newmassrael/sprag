@@ -282,11 +282,15 @@ fn next_dock_split_id() -> String {
     format!("sprag_gui.split.dock.{n}")
 }
 
-/// Collapse-mode undock: remove pane `index`'s leaf from the dock tree so the remaining
-/// panes reclaim the space (the sibling sub-tree promotes into the parent Split's place).
-/// Floating the LAST docked pane empties the tree (`None`); floating a pane already
-/// absent is a no-op. Called by `crate::dock::push_float` in `DockMode::Collapse`.
-pub(crate) fn float_pane(index: usize) {
+/// Remove pane `index`'s leaf from the dock tree — the mode-neutral leaf-removal SSOT.
+/// The sibling sub-tree promotes into the parent Split's place so the remaining panes
+/// reclaim the space; removing the SOLE docked leaf empties the tree (`None`); removing a
+/// leaf already absent is a no-op. Shared by the collapse-mode float ([`float_pane`]) and
+/// the Round 2b pane-CLOSE eviction ([`crate::dock::evict_pane`]): a pane vanishing from
+/// the host set removes its leaf IDENTICALLY to a collapse-float, in BOTH dock models (a
+/// gone pane can hold no placeholder), so the mode-gating stays in the float caller
+/// (`crate::dock::push_float`), never here.
+pub(crate) fn remove_pane_leaf(index: usize) {
     let topo = use_dock_topology();
     let Some(current) = topo.get() else {
         return; // nothing docked
@@ -295,23 +299,27 @@ pub(crate) fn float_pane(index: usize) {
         Ok(next) => topo.set(Some(next)),
         // RootRemoval = pane `index` was the sole docked leaf -> no docked panes left.
         Err(TopologyError::RootRemoval) => topo.set(None),
-        // PanelNotFound (already floated) — leave the tree unchanged.
+        // PanelNotFound (already floated / already gone) — leave the tree unchanged.
         Err(_) => {}
     }
 }
 
-/// Collapse-mode dock-back: re-insert pane `index`'s leaf, preserving left-to-right pane
-/// INDEX order — split the smallest-indexed docked pane whose index exceeds `index` (the
-/// new leaf takes the `First`/left slot), or append after the last docked pane
-/// (`Second`/right) when `index` is the largest. An empty tree (`None`) becomes the
-/// single leaf. The new divider gets a fresh id ([`next_dock_split_id`]) at the default
-/// ratio. Called by [`crate::dock::redock_pane`] in `DockMode::Collapse`.
-///
-/// **v1 bound:** index-relative, not drop-zone-relative — a collapse-mode cross-window
-/// redock lands at the pane's index home, not where it was dropped (zone-honoring redock
-/// needs `DockMode::Placeholder`, where the surviving leaf is relocated by the reducer's
-/// `resolve_drop` SSOT). See the module docs + PINION-PR34.
-pub(crate) fn dock_pane(index: usize) {
+/// Collapse-mode undock: remove pane `index`'s leaf so the remaining panes reclaim the
+/// space. An intent-named wrapper over [`remove_pane_leaf`] (the collapse-float role);
+/// called by `crate::dock::push_float` in `DockMode::Collapse`.
+pub(crate) fn float_pane(index: usize) {
+    remove_pane_leaf(index);
+}
+
+/// Insert pane `index`'s leaf into the dock tree in left-to-right INDEX order — the
+/// mode-neutral leaf-insert SSOT. Splits the smallest-indexed docked pane whose index
+/// exceeds `index` (the new leaf takes the `First`/left slot), or appends after the last
+/// docked pane (`Second`/right) when `index` is the largest; an empty tree (`None`)
+/// becomes the single leaf. The new divider gets a fresh id ([`next_dock_split_id`]) at
+/// the default ratio. Shared by the collapse-mode dock-back ([`dock_pane`]) and the Round
+/// 2b pane-OPEN admission ([`crate::dock::admit_pane`]): a new host pane appears docked
+/// index-relative in BOTH dock models (a fresh pane has no held slot to restore).
+pub(crate) fn insert_pane_leaf(index: usize) {
     let topo = use_dock_topology();
     let next = match topo.get() {
         None => DockTopology::single(panel_id(index)),
@@ -350,6 +358,18 @@ pub(crate) fn dock_pane(index: usize) {
         }
     };
     topo.set(Some(next));
+}
+
+/// Collapse-mode dock-back: re-insert pane `index`'s leaf index-relative. An intent-named
+/// wrapper over [`insert_pane_leaf`] (the collapse-dock-back role); called by
+/// [`crate::dock::redock_pane`] in `DockMode::Collapse`.
+///
+/// **v1 bound:** index-relative, not drop-zone-relative — a collapse-mode cross-window
+/// redock lands at the pane's index home, not where it was dropped (zone-honoring redock
+/// needs `DockMode::Placeholder`, where the surviving leaf is relocated by the reducer's
+/// `resolve_drop` SSOT). See the module docs + PINION-PR34.
+pub(crate) fn dock_pane(index: usize) {
+    insert_pane_leaf(index);
 }
 
 #[cfg(test)]

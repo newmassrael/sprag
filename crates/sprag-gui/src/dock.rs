@@ -467,6 +467,42 @@ pub(crate) fn toggle_pane_floating(i: usize) {
     }
 }
 
+/// A host pane VANISHED (Round 2b live delta): drop its floating `pane-{i}` window if it
+/// has one and remove its dock leaf, so no OS window or dock leaf outlives the pane. Called
+/// from [`TerminalViewer::reconcile_frame`](crate::TerminalViewer) for each slot [`crate::slotview::SlotView::reconcile`]
+/// freed. Unconditional of [`DockMode`] — a gone pane can hold neither a floating window nor
+/// a placeholder leaf, so unlike a live float this is NOT mode-gated (the mode choice is
+/// only about how a still-present pane's slot is treated). The freed slot's per-slot GUI
+/// state (scroll / preedit / wheel) is reset by the caller; this owns only the window +
+/// dock-tree cleanup. Runs in the root owner (the pre-view `reconcile_frame` hook), so
+/// [`use_windows_topology`] / the split-tree hooks resolve; the window drop is a plain
+/// `Signal::set` the shell applies at its next safe `reconcile_windows` (deferred via
+/// `AppEvent::WindowsDirty`), never a synchronous winit op mid-render.
+pub(crate) fn evict_pane(i: usize) {
+    // Drop the floating window if the pane was undocked, else a `pane-{i}` window would
+    // outlive its pane (painting an empty slot / dangling OS window).
+    let signal = use_windows_topology();
+    let mut windows = signal.get();
+    if let Some(idx) = windows.iter().position(|w| w.id == pane_window_id(i)) {
+        windows.remove(idx);
+        signal.set(windows);
+    }
+    // Remove the dock leaf (mode-neutral: the pane is gone in both models).
+    crate::split::remove_pane_leaf(i);
+}
+
+/// A host pane APPEARED (Round 2b live delta): admit it as a docked leaf, index-relative,
+/// so a new host pane (an operator / AI spawn in attach mode) tiles into the main window.
+/// Called from [`TerminalViewer::reconcile_frame`](crate::TerminalViewer) for each slot
+/// [`crate::slotview::SlotView::reconcile`] added (never boot, which seeds the whole tree
+/// via `build_boot_topology`). Unconditional of [`DockMode`] — a fresh pane
+/// appears docked in both models (it has no held slot to restore). Its reflow Effect +
+/// scrollbar / dock-panel externals are (re)installed by the post-view
+/// `create_extra_externals` on the same frame (the dynamic external set).
+pub(crate) fn admit_pane(i: usize) {
+    crate::split::insert_pane_leaf(i);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -593,6 +629,60 @@ mod tests {
             assert!(
                 pane_is_movable(1),
                 "placeholder mode never locks a pane (the dock cannot empty)"
+            );
+        });
+    }
+
+    /// R122 (Round 2b): a new host pane is admitted as a docked leaf, index-relative, in
+    /// both dock modes. Seed an empty dock (overriding the boot tree) and admit out of
+    /// order to prove the index-relative insert.
+    #[test]
+    fn admit_pane_docks_a_new_leaf_in_index_order() {
+        let owner = Owner::new();
+        owner.run(|| {
+            crate::split::use_dock_topology().set(None); // start from an empty dock
+            admit_pane(0);
+            admit_pane(2);
+            assert_eq!(
+                crate::split::docked_pane_indices(),
+                vec![0, 2],
+                "admits build the tree in index order"
+            );
+            admit_pane(1); // a new pane at slot 1 lands BETWEEN 0 and 2
+            assert_eq!(crate::split::docked_pane_indices(), vec![0, 1, 2]);
+        });
+    }
+
+    /// R122 (Round 2b): when a host pane is CLOSED, `evict_pane` drops BOTH its floating
+    /// window and its dock leaf — unconditional of dock mode (a gone pane holds neither).
+    /// Placeholder mode keeps the leaf on a float, so this proves both authorities are
+    /// cleaned up (collapse would have removed the leaf on float already).
+    #[test]
+    fn evict_pane_drops_a_closed_floating_panes_window_and_leaf() {
+        let owner = Owner::new();
+        owner.run(|| {
+            set_dock_mode(DockMode::Placeholder);
+            crate::split::use_dock_topology().set(None);
+            admit_pane(0);
+            admit_pane(1);
+            open_floating(0, None); // pane 0 floats -> a pane-0 window; its leaf stays
+            assert!(is_pane_floating(0), "pane 0 floated");
+            assert_eq!(
+                crate::split::docked_pane_indices(),
+                vec![1],
+                "the floated pane is filtered from the docked set"
+            );
+
+            evict_pane(0); // host closed pane 0
+
+            assert!(!is_pane_floating(0), "evict drops the floating window");
+            assert_eq!(
+                crate::split::use_dock_topology()
+                    .get()
+                    .expect("pane 1 still docked")
+                    .panel_ids(),
+                vec![crate::split::panel_id(1)],
+                "evict also removed the closed pane's leaf (both authorities cleaned up)"
             );
         });
     }
