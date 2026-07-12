@@ -169,6 +169,10 @@ impl ExternalIntrospect for WorkspaceExternal {
                             "cols": p.cols,
                             "rows": p.rows,
                             "command": p.command_label,
+                            // The child's live OSC 0/2 window title, `null` until it sets
+                            // one. A DISPLAY name (a client prefers it over the command
+                            // label and falls back); never identity — the child sets it.
+                            "title": p.title,
                         })
                     })
                     .collect();
@@ -360,8 +364,41 @@ mod tests {
         let panes = ext.query(PANES_SLOT).unwrap();
         assert_eq!(
             panes,
-            IntrospectValue::Json(json!([{"id": 0, "cols": 40, "rows": 12, "command": "cat"}]))
+            // `title` is null until the child sets an OSC 0/2 window title (R128).
+            IntrospectValue::Json(
+                json!([{"id": 0, "cols": 40, "rows": 12, "command": "cat", "title": null}])
+            )
         );
+    }
+
+    /// The child's `OSC 2` window title reaches the WIRE (R128) — the pane-list query is
+    /// how a display client (the GUI) learns it. The child emits the escape on stdout,
+    /// exactly as a shell's `PROMPT_COMMAND` does.
+    #[test]
+    fn query_panes_reports_the_childs_osc_window_title() {
+        use std::time::{Duration, Instant};
+        let ws = workspace();
+        let (mut ext, _rev) = control(&ws);
+        ext.invoke(
+            SPAWN_ACTION,
+            IntrospectValue::Json(
+                json!({"cmd": ["sh", "-c", "printf '\\033]2;vim README\\007'"], "cols": 40, "rows": 12}),
+            ),
+        )
+        .unwrap();
+
+        // The reader thread applies the bytes asynchronously — poll the wire until the
+        // title lands (what a client does after a `scene/waitFor` wake).
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            if let Some(IntrospectValue::Json(Value::Array(entries))) = ext.query(PANES_SLOT)
+                && entries.first().and_then(|pane| pane["title"].as_str()) == Some("vim README")
+            {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("the child's OSC 2 window title never reached the pane-list wire");
     }
 
     #[test]

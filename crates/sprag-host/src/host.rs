@@ -157,6 +157,18 @@ pub trait HostClient {
 
     /// Pane `id`'s command label (the a11y node name). Empty if `id` is absent.
     fn pane_command_label(&self, id: PaneId) -> String;
+
+    /// Pane `id`'s child-reported window TITLE (`OSC 0` / `OSC 2`), or `None` if the
+    /// child never set one (or `id` is absent).
+    ///
+    /// This is LIVE, CHILD-CONTROLLED state — a shell's `PROMPT_COMMAND` rewrites it on
+    /// every prompt, vim sets the edited file, ssh the remote host — so it is strictly a
+    /// DISPLAY name: a surface prefers it and falls back to a stable one
+    /// ([`Self::pane_command_label`] / the client's own panel id). Pane IDENTITY (ids,
+    /// tags, panel ids) must NEVER derive from it, because the child sets it freely.
+    /// Distinct from `pane_command_label`, which names what was LAUNCHED and never
+    /// changes — conflating the two would silently rewrite the a11y node name too.
+    fn pane_title(&self, id: PaneId) -> Option<String>;
 }
 
 /// The single [`Workspace`] owner (topology B), and the **in-process** arm of the
@@ -288,6 +300,12 @@ impl HostClient for Host {
     fn pane_command_label(&self, id: PaneId) -> String {
         self.with_pane_id(id, |pane| pane.command_label().to_owned())
             .unwrap_or_default()
+    }
+
+    /// Flattens "absent pane" and "pane set no title" to the same `None` — both mean
+    /// "no title to display", and a caller that must distinguish them has `pane_ids`.
+    fn pane_title(&self, id: PaneId) -> Option<String> {
+        self.with_pane_id(id, Pane::title).flatten()
     }
 }
 
