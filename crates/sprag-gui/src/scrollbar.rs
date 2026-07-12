@@ -80,35 +80,6 @@ pub(crate) fn pane_scrollbar_external(i: usize) -> ExtraExternal {
     scrollbar_extra_external(use_pane_scroll(i), pane_scrollbar_tag(i))
 }
 
-/// The PRIMARY scrollbar external's tag — a non-pane SENTINEL (R122). The shell requires a
-/// primary `External`
-/// ([`create_external`](crate::TerminalViewer) / [`tag`](crate::TerminalViewer)), but
-/// homing it on a pane SLOT made that slot load-bearing: a Round 2b close of slot 0 would
-/// leave the primary dangling. Homing it here — a tag NOTHING paints — makes the primary an
-/// inert placeholder and lets EVERY pane scrollbar be a symmetric EXTRA
-/// ([`pane_scrollbar_external`]), so any slot (0 included) may close/reuse with no special
-/// case. Distinct from every [`pane_scrollbar_tag`]`(i)` (the `.primary` suffix is not a
-/// numeric index), so no pane scrollbar collides with it.
-pub(crate) const PRIMARY_SENTINEL_TAG: &str = "sprag_gui.scrollbar.primary";
-
-/// `Owner::cache` key for the primary sentinel's throwaway [`ScrollState`] — never a pane's
-/// (distinct from every [`pane_scroll_key`]`(i)`), since the primary external drives no
-/// painted track.
-const PRIMARY_SENTINEL_SCROLL_KEY: &str = "sprag_gui.scroll.primary";
-
-/// The primary scrollbar external over the non-pane [`PRIMARY_SENTINEL_TAG`] — the shell's
-/// required primary `External`, deliberately INERT (its tag is never painted, so no press
-/// ever routes to it). Every REAL pane scrollbar is a symmetric extra
-/// ([`pane_scrollbar_external`]) registered in [`create_extra_externals`](crate::TerminalViewer)
-/// instead, so no pane slot is load-bearing for the primary (R122). Wired in
-/// [`create_external`](crate::TerminalViewer).
-pub(crate) fn primary_scrollbar_external() -> ExtraExternal {
-    scrollbar_extra_external(
-        use_scroll_state(PRIMARY_SENTINEL_SCROLL_KEY),
-        PRIMARY_SENTINEL_TAG,
-    )
-}
-
 /// Reconcile pane `i`'s scroll bound to the live scrollback depth and follow the
 /// tail by delegating to pinion's [`follow_tail`] reducer in the terminal's ROW
 /// unit (`row_pitch = 1`, `viewport_h = 0`, so the content extent IS the row count

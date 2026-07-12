@@ -213,7 +213,7 @@ use pinion_core::event::{LINE_HEIGHT_PX, WheelDelta};
 use pinion_core::external::{DropPoint, External, IntrospectValue};
 use pinion_core::intent::Intent;
 use pinion_core::reactive::{Owner, Signal};
-use pinion_core::widget_core::ExtraExternal;
+use pinion_core::widget_core::{ExtraExternal, PrimarySurface};
 use pinion_core::{CompositionEvent, Frame, Modifiers, Scene, WidgetCore};
 use pinion_shell::{
     ShellConfig, SizeStrategy, WidgetView, WindowChromeStyle, WindowPolicy, WindowSpec,
@@ -285,21 +285,37 @@ impl WidgetCore for TerminalViewer {
     type State = ();
     type Event = ();
 
-    /// The primary External is the INERT non-pane scrollbar SENTINEL
-    /// ([`scrollbar::PRIMARY_SENTINEL_TAG`], R122): the shell requires a primary
-    /// `External`, but homing it on a pane slot made that slot load-bearing (a Round 2b
-    /// close of slot 0 would dangle it). EVERY pane scrollbar — slot 0 included — is a
-    /// symmetric extra ([`Self::create_extra_externals`]) instead, alongside the splitters
-    /// + dock-panel handles, so any slot may close/reuse with no special case.
+    /// sprag has **NO primary interactive surface** (R127, consuming PINION-PR51): every
+    /// routable surface is a per-pane / per-split DYNAMIC EXTRA
+    /// ([`Self::create_extra_externals`] — scrollbars, splitters, dock-panel handles;
+    /// `external_set_is_dynamic() == true`), so there is no single canonical primary to name.
+    /// Declaring the absence explicitly means the substrate composes the state scene from the
+    /// extras ALONE — no phantom index-0 node — and the bare `/external` RPC shorthand rejects
+    /// with `NoExternalAtPath` (pinion R1307) instead of silently resolving an arbitrary pane.
     ///
-    /// Topology B (R115c): the GUI serves NO pane-INPUT external on its own socket —
-    /// keyboard / IME are client SENDs to the host ([`Self::apply_key`] ->
-    /// `HostClient::send_key` / `send_text`), and an AI peer drives the HOST's own
-    /// pane input surface directly. So the model scene holds only the GUI's own
-    /// interaction externals (scroll / split / dock); the retired `SpragPaneExternal`
-    /// + `pane_handle` (a live `SessionHandle` cannot cross the wire) are gone.
+    /// This RETIRES the R122 inert `PRIMARY_SENTINEL_TAG` workaround: the primary used to be
+    /// homed on a tag nothing paints, purely to satisfy pinion's then-MANDATORY primary
+    /// contract (homing it on a pane slot instead would have made that slot load-bearing — a
+    /// close of slot 0 would dangle it). pinion R1306 made the primary optional, so the
+    /// workaround is gone and EVERY pane scrollbar — slot 0 included — is a symmetric extra.
+    ///
+    /// Contract obligations of a `None` binding (pinion R1306), all satisfied here:
+    /// [`Self::keybinding`] stays empty (not overridden — a keybinding event would reach the
+    /// no-op `send_to_primary` and be dropped; sprag drives its extras by tag), and
+    /// [`Self::apply_key`] never calls `forward_key_to_external` (which would re-derive
+    /// `Self::tag()`). Topology B (R115c): keyboard / IME are client SENDs to the host
+    /// ([`Self::apply_key`] -> `HostClient::send_key` / `send_text`), an AI peer drives the
+    /// HOST's own pane input surface directly, and pane focus is paint-derived (R1020
+    /// `collect_focusable_tags`) — never `tag()`-derived. So the model scene holds only the
+    /// GUI's own interaction externals (scroll / split / dock).
+    fn primary_surface() -> Option<PrimarySurface> {
+        None
+    }
+
+    /// Never reached — sprag declares no primary ([`Self::primary_surface`] is `None`, so the
+    /// default that would call this factory is overridden away).
     fn create_external() -> Box<dyn External> {
-        crate::scrollbar::primary_scrollbar_external().handle
+        unreachable!("sprag-gui has no primary surface — see primary_surface()")
     }
 
     /// Boot the live terminal (spawn the N pane PTYs + wire each `on_dirty` ->
@@ -614,14 +630,12 @@ impl WidgetCore for TerminalViewer {
         true
     }
 
-    /// The primary External's tag — the non-pane scrollbar SENTINEL
-    /// ([`scrollbar::PRIMARY_SENTINEL_TAG`], R122): the model-scene primary is registered at
-    /// `V::tag()`, but nothing paints this tag, so it is inert (every real pane scrollbar
-    /// routes through its own extra instead — see [`Self::create_external`]). Pane focus is
-    /// paint-derived (R1020 `collect_focusable_tags` over the `with_focusable` pane
-    /// Containers), so it does NOT depend on this tag.
+    /// Never reached — sprag declares no primary ([`Self::primary_surface`] is `None`), so no
+    /// substrate site routes through a primary tag and the R55.G.17 painted-primary-tag
+    /// convention does not apply. Pane focus is paint-derived (R1020 `collect_focusable_tags`
+    /// over the `with_focusable` pane Containers), so it never depended on this tag either.
     fn tag() -> &'static str {
-        scrollbar::PRIMARY_SENTINEL_TAG
+        unreachable!("sprag-gui has no primary surface — see primary_surface()")
     }
 
     fn read_state(_scene: &Scene) {}
@@ -1517,6 +1531,35 @@ mod tests {
         assert!(
             scene.contains_tag(pane_scrollbar_tag(1)),
             "pane 1 paints a tagged scrollbar track",
+        );
+    }
+
+    /// sprag declares NO primary surface (R127, consuming PINION-PR51): every routable
+    /// surface is a per-pane / per-split dynamic EXTRA, so the R122 inert sentinel is gone.
+    /// Three claims, all regressions someone re-adding a primary would trip:
+    /// (1) the opt-out is declared; (2) the substrate never REACHES the `unreachable!`
+    /// `create_external` / `tag` — booting a `ShellCore` + painting would panic if any site
+    /// still routed through a primary; (3) the composed state scene resolves NO primary, so
+    /// the bare `/external` RPC shorthand rejects (`NoExternalAtPath`, pinion R1307) instead
+    /// of silently naming an arbitrary pane — while the pane extras still paint.
+    #[test]
+    fn declares_no_primary_surface_and_composes_from_extras_alone() {
+        assert!(
+            <TerminalViewer as WidgetCore>::primary_surface().is_none(),
+            "sprag opts out of the primary contract — all surfaces are dynamic extras",
+        );
+
+        let mut core = ShellCore::<TerminalViewer>::new();
+        let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+
+        assert!(
+            core.scene().primary_external().is_none(),
+            "the state scene is no-primary-head: a bare `/external` must reject, not \
+             resolve an arbitrary pane extra",
+        );
+        assert!(
+            scene.contains_tag(pane_scrollbar_tag(0)),
+            "the pane extras still paint — the scene composes from the extras alone",
         );
     }
 
