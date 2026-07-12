@@ -78,6 +78,35 @@ pub(crate) fn pane_scrollbar_external(i: usize) -> ExtraExternal {
     scrollbar_extra_external(use_pane_scroll(i), pane_scrollbar_tag(i))
 }
 
+/// The PRIMARY scrollbar external's tag — a non-pane SENTINEL (R122). The shell requires a
+/// primary `External`
+/// ([`create_external`](crate::TerminalViewer) / [`tag`](crate::TerminalViewer)), but
+/// homing it on a pane SLOT made that slot load-bearing: a Round 2b close of slot 0 would
+/// leave the primary dangling. Homing it here — a tag NOTHING paints — makes the primary an
+/// inert placeholder and lets EVERY pane scrollbar be a symmetric EXTRA
+/// ([`pane_scrollbar_external`]), so any slot (0 included) may close/reuse with no special
+/// case. Distinct from every [`pane_scrollbar_tag`]`(i)` (the `.primary` suffix is not a
+/// numeric index), so no pane scrollbar collides with it.
+pub(crate) const PRIMARY_SENTINEL_TAG: &str = "sprag_gui.scrollbar.primary";
+
+/// `Owner::cache` key for the primary sentinel's throwaway [`ScrollState`] — never a pane's
+/// (distinct from every [`pane_scroll_key`]`(i)`), since the primary external drives no
+/// painted track.
+const PRIMARY_SENTINEL_SCROLL_KEY: &str = "sprag_gui.scroll.primary";
+
+/// The primary scrollbar external over the non-pane [`PRIMARY_SENTINEL_TAG`] — the shell's
+/// required primary `External`, deliberately INERT (its tag is never painted, so no press
+/// ever routes to it). Every REAL pane scrollbar is a symmetric extra
+/// ([`pane_scrollbar_external`]) registered in [`create_extra_externals`](crate::TerminalViewer)
+/// instead, so no pane slot is load-bearing for the primary (R122). Wired in
+/// [`create_external`](crate::TerminalViewer).
+pub(crate) fn primary_scrollbar_external() -> ExtraExternal {
+    scrollbar_extra_external(
+        use_scroll_state(PRIMARY_SENTINEL_SCROLL_KEY),
+        PRIMARY_SENTINEL_TAG,
+    )
+}
+
 /// Reconcile pane `i`'s scroll bound to the live scrollback depth and follow the
 /// tail by delegating to pinion's [`follow_tail`] reducer in the terminal's ROW
 /// unit (`row_pitch = 1`, `viewport_h = 0`, so the content extent IS the row count
@@ -149,6 +178,25 @@ pub(crate) fn wheel_scroll_pane(i: usize, lines: f32) {
     } else {
         total - rows
     });
+}
+
+/// Reset pane slot `i`'s scroll state when the slot FREES (Round 2b live delta): return
+/// its row-unit [`ScrollState`] to the live bottom (offset + bound `0`) and clear the
+/// wheel sub-row accumulator, so a slot REUSED by a later pane starts at the live view with
+/// no inherited history offset or pan fraction. By MUTATION, not eviction — pinion has no
+/// `Owner::cache` evict, and mutation keeps the boot-captured `Rc<ScrollState>` the primary
+/// scrollbar external ([`pane_scrollbar_external`]) holds VALID across the reuse (an evict
+/// would orphan it). [`reconcile_scroll`] re-grows the bound to the reused pane's scrollback
+/// on the next frame. Runs in the root owner (the pre-view `reconcile_frame` hook, which
+/// resolves the same per-slot cache slots).
+pub(crate) fn reset_pane_scroll(i: usize) {
+    let scroll = use_pane_scroll(i);
+    scroll.set_max(0, 0);
+    scroll.scroll_to(0, 0);
+    let owner = Owner::current().expect("reset_pane_scroll() requires an active Owner scope");
+    owner
+        .cache(pane_cache_key("wheel_accum", i), || Cell::new(0.0_f32))
+        .set(0.0);
 }
 
 /// Build pane `i`'s vertical scrollbar from its [`ScrollState`] — pinion's
@@ -308,6 +356,26 @@ mod tests {
                 49,
                 "accumulated remainder crosses one row"
             );
+        });
+    }
+
+    #[test]
+    fn reset_pane_scroll_returns_to_live_and_clears_the_wheel_accumulator() {
+        Owner::new().run(|| {
+            let scroll = use_pane_scroll(3);
+            scroll.set_max(0, 100);
+            scroll.scroll_to(0, 40); // paused mid-history
+            wheel_scroll_pane(3, -0.1); // a sub-row pan carries a fraction in the accumulator
+            let accum = Owner::current()
+                .unwrap()
+                .cache(pane_cache_key("wheel_accum", 3), || Cell::new(0.0_f32));
+            assert!(accum.get() != 0.0, "a sub-row pan left a carried fraction");
+
+            reset_pane_scroll(3);
+
+            assert_eq!(scroll.offset_y(), 0, "scroll returned to the top/live");
+            assert_eq!(scroll.max().1, 0, "the bound was reset");
+            assert_eq!(accum.get(), 0.0, "the wheel accumulator was cleared");
         });
     }
 

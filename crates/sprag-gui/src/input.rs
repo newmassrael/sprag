@@ -32,6 +32,15 @@ pub(crate) fn use_preedit(pane: usize) -> Signal<String> {
         .clone()
 }
 
+/// Clear pane slot `pane`'s IME preedit when the slot FREES (Round 2b live delta), so a
+/// slot REUSED by a later pane shows no inherited in-progress composition. By MUTATION
+/// (`set` to empty) — pinion has no `Owner::cache` evict, and `view` reads the same signal
+/// each frame, so a `set` flips the root owner dirty and the cleared overlay repaints. Runs
+/// in the root owner (the pre-view `reconcile_frame` hook, which resolves the cache slot).
+pub(crate) fn reset_pane_preedit(pane: usize) {
+    use_preedit(pane).set(String::new());
+}
+
 /// The signed row delta a `Shift+PageUp` / `Shift+PageDown` applies to the
 /// top-anchored `offset_y` ([`crate::scrollbar`]: `0` = oldest top, `max` = live
 /// bottom). `PageUp` walks toward older history (DECREASE `offset_y`), `PageDown`
@@ -713,6 +722,19 @@ mod tests {
             0,
             "pane 0 is unaffected (per-pane slots)"
         );
+    }
+
+    /// R122 (Round 2b): `reset_pane_preedit` clears a slot's in-progress composition when
+    /// the slot frees, so a slot reused by a later pane shows no inherited preedit overlay.
+    #[test]
+    fn reset_pane_preedit_clears_the_composition() {
+        Owner::new().run(|| {
+            let preedit = use_preedit(2);
+            preedit.set("がん".to_owned());
+            assert_eq!(preedit.get(), "がん");
+            reset_pane_preedit(2);
+            assert_eq!(preedit.get(), "", "the freed slot's preedit is cleared");
+        });
     }
 
     /// `apply_key` treats Shift+PageUp as a scroll (handled, not sent to the PTY)
