@@ -287,6 +287,15 @@ impl TerminalSession {
         f(lock(&self.emulator).screen())
     }
 
+    /// The child's self-reported window title (`OSC 0` / `OSC 2`), `None` until it sets
+    /// one. LIVE state (a shell rewrites it every prompt), distinct from the pane's
+    /// spawn [`command_label`](crate::workspace::Pane::command_label). Owned, because
+    /// it is read out from under the emulator lock.
+    #[must_use]
+    pub fn title(&self) -> Option<String> {
+        lock(&self.emulator).title().map(str::to_owned)
+    }
+
     /// An owned snapshot of the current screen.
     #[must_use]
     pub fn screen(&self) -> Screen {
@@ -408,6 +417,14 @@ impl SessionHandle {
     #[must_use]
     pub fn input_modes(&self) -> InputModes {
         lock(&self.emulator).input_modes()
+    }
+
+    /// The child's self-reported window title (`OSC 0` / `OSC 2`), `None` until it sets
+    /// one. Owned (not a borrow) because it is read out from under the emulator lock.
+    /// Live state — distinct from the pane's spawn command label.
+    #[must_use]
+    pub fn title(&self) -> Option<String> {
+        lock(&self.emulator).title().map(str::to_owned)
     }
 
     /// A snapshot of the child's raw output bytes (the source stream, before

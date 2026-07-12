@@ -56,6 +56,16 @@ impl Pane {
         &self.command_label
     }
 
+    /// The child's self-reported window title (`OSC 0` / `OSC 2`), `None` until it sets
+    /// one. Read LIVE from the emulator — a shell rewrites it on every prompt — so it is
+    /// NOT stored on the pane beside [`Self::command_label`] (which names what was
+    /// launched and never changes). A display surface prefers this and falls back to a
+    /// stable name; pane IDENTITY never derives from it, since a child sets it freely.
+    #[must_use]
+    pub fn title(&self) -> Option<String> {
+        self.session.title()
+    }
+
     /// A cloneable I/O handle onto this pane's session.
     #[must_use]
     pub fn handle(&self) -> SessionHandle {
@@ -71,6 +81,9 @@ pub struct PaneInfo {
     pub cols: u16,
     pub rows: u16,
     pub command_label: String,
+    /// The child's self-reported window title (`OSC 0` / `OSC 2`), `None` until it sets
+    /// one. Live and child-controlled, so it is a DISPLAY name only — never identity.
+    pub title: Option<String>,
 }
 
 /// The multiplexer's pane pool: a set of live panes, the monotonic id
@@ -211,6 +224,7 @@ impl Workspace {
                     cols,
                     rows,
                     command_label: p.command_label.clone(),
+                    title: p.title(),
                 }
             })
             .collect()
