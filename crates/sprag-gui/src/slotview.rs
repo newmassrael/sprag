@@ -9,17 +9,24 @@
 //! (`WireHost`) OR the in-process [`Host`](sprag_host::Host) — so both stay pure
 //! identity clients and the slot concept never leaks into `sprag-host`.
 //!
-//! ## Slot stability + reuse
+//! ## Slot stability + reuse (live deltas — Round 2b)
 //!
 //! A slot is STABLE for a pane's life: [`reconcile`](SlotView::reconcile) keeps a mapped
 //! `PaneId` in its slot and frees a slot only when its pane leaves the host set, so a
 //! survivor's per-slot GUI state never migrates onto a different pane. A freed slot may
 //! be REUSED by a later pane (the compact-slot allocator), so a reused slot's per-slot
 //! GUI state — keyed by slot index in `Owner::cache`, OUTSIDE this map — MUST be reset by
-//! the caller when the slot frees. `reconcile` returns the freed slots for exactly that
-//! (Round 2b, when live add/remove deltas arrive; boot never frees, so the reset is a
-//! documented Round 2b hook, not a Round 2a operation).
+//! the caller when the slot frees. `reconcile` returns a [`SlotDelta`] (the slots FREED +
+//! the slots ADDED) so the caller can, on the SAME pre-view frame, reset each freed slot's
+//! per-slot state + evict its dock leaf/window, and admit a dock leaf for each added slot.
+//!
+//! The map is behind a [`RefCell`]: `reconcile` runs each frame through the shared
+//! `Rc<TerminalView>` (from the pinion `reconcile_frame` pre-view hook — the sanctioned
+//! place to reconcile off-thread-producer state into the reactive graph), so it mutates
+//! the mapping via UI-thread interior mutability, matching `WireHost`'s own single-thread
+//! `RefCell`. Boot is just the first `reconcile` (all-added, no frees).
 
+use std::cell::RefCell;
 use std::collections::HashSet;
 
 use pinion_core::GridBuffer;
@@ -29,41 +36,60 @@ use sprag_terminal::PaneId;
 
 use crate::terminal::MAX_PANES;
 
+/// The membership change one [`SlotView::reconcile`] applied: the display slots FREED
+/// (their pane left the host set) and the slots newly ADDED (a new host pane took them),
+/// both ascending. The Round 2b live-delta hooks the caller acts on — a freed slot gets
+/// its per-slot GUI state reset + its dock leaf/window evicted; an added slot gets a dock
+/// leaf. Boot yields only `added` (the contiguous `0..N`); a steady frame yields both
+/// empty (nothing changed).
+pub(crate) struct SlotDelta {
+    /// Slots whose pane vanished this reconcile (ascending).
+    pub(crate) freed: Vec<usize>,
+    /// Slots a new host pane took this reconcile (ascending).
+    pub(crate) added: Vec<usize>,
+}
+
 /// The GUI's display-slot mapping over a host client (see the module docs). Consumers
 /// address panes by display SLOT; this translates each to the host's [`PaneId`] and
 /// delegates to the wrapped [`HostClient`]. An empty slot yields each method's graceful
 /// default, so a hole never panics.
 pub(crate) struct SlotView {
     host: Box<dyn HostClient>,
-    /// slot -> the `PaneId` occupying it (`None` = a hole). Length [`MAX_PANES`].
-    slots: Vec<Option<PaneId>>,
+    /// slot -> the `PaneId` occupying it (`None` = a hole). Length [`MAX_PANES`]. Behind a
+    /// [`RefCell`] because [`reconcile`](Self::reconcile) mutates the mapping each frame
+    /// through the shared `Rc<TerminalView>` (UI-thread only — see the module docs).
+    slots: RefCell<Vec<Option<PaneId>>>,
 }
 
 impl SlotView {
     /// Wrap `host` and map its current panes to slots (boot = the all-new path: host
     /// order -> contiguous slots `0..N`).
     pub(crate) fn new(host: Box<dyn HostClient>) -> Self {
-        let mut view = Self {
+        let view = Self {
             host,
-            slots: (0..MAX_PANES).map(|_| None).collect(),
+            slots: RefCell::new((0..MAX_PANES).map(|_| None).collect()),
         };
-        let _freed = view.reconcile();
+        let _boot = view.reconcile(); // boot is all-added, no frees; nothing to reset yet
         view
     }
 
     /// Re-map slots to the host's current pane set — the ONE place slot membership
     /// changes. Frees the slot of every mapped pane no longer present, allocates the
-    /// lowest free slot to each new host pane, and returns the FREED slots so the caller
-    /// resets their per-slot GUI state before reuse (the module-docs Round 2b hook; boot
-    /// frees nothing). No IO: the host owns the frame data, this owns only the mapping.
-    pub(crate) fn reconcile(&mut self) -> Vec<usize> {
+    /// lowest free slot to each new host pane, and returns the [`SlotDelta`] (freed +
+    /// added slots) so the caller resets each freed slot's per-slot GUI state and updates
+    /// the dock leaves (the module-docs Round 2b hook; boot only adds). No IO: the host
+    /// owns the frame data, this owns only the mapping. `&self` (interior-mutable) so it
+    /// runs through the shared `Rc<TerminalView>`.
+    pub(crate) fn reconcile(&self) -> SlotDelta {
         let host_ids = self.host.pane_ids();
-        let (frees, adds, overflow) = plan_slots(&self.slots, &host_ids);
-        for &slot in &frees {
-            self.slots[slot] = None;
+        let mut slots = self.slots.borrow_mut();
+        let (freed, adds, overflow) = plan_slots(&slots, &host_ids);
+        for &slot in &freed {
+            slots[slot] = None;
         }
+        let added: Vec<usize> = adds.iter().map(|&(slot, _)| slot).collect();
         for (slot, id) in adds {
-            self.slots[slot] = Some(id);
+            slots[slot] = Some(id);
         }
         if !overflow.is_empty() {
             tracing::warn!(
@@ -73,13 +99,14 @@ impl SlotView {
                 "host pane set exceeds the slot cap; extra panes not shown",
             );
         }
-        frees
+        SlotDelta { freed, added }
     }
 
     /// The occupied display slots, ascending — the set consumers ITERATE instead of
     /// assuming a contiguous `0..pane_count()` (a closed pane leaves a hole).
     pub(crate) fn occupied_slots(&self) -> Vec<usize> {
         self.slots
+            .borrow()
             .iter()
             .enumerate()
             .filter_map(|(slot, id)| id.map(|_| slot))
@@ -89,13 +116,13 @@ impl SlotView {
     /// Whether display slot `slot` currently holds a pane (O(1), alloc-free — the paint
     /// hot path calls it per leaf per frame).
     pub(crate) fn is_pane_occupied(&self, slot: usize) -> bool {
-        self.slots.get(slot).is_some_and(Option::is_some)
+        self.slots.borrow().get(slot).is_some_and(Option::is_some)
     }
 
     /// The `PaneId` at `slot`, if occupied — the ONE slot->id resolver the delegating
     /// methods share; a hole yields each method's graceful default.
     fn id(&self, slot: usize) -> Option<PaneId> {
-        self.slots.get(slot).copied().flatten()
+        self.slots.borrow().get(slot).copied().flatten()
     }
 
     /// Slot `slot`'s cell DATA at `offset_lines` (a `1x1` placeholder for a hole).
@@ -266,5 +293,92 @@ mod tests {
             vec![pid(999)],
             "the specific overflowed id is reported"
         );
+    }
+
+    /// A [`HostClient`] whose pane-id list the test controls (shared via `Rc<RefCell<..>>`),
+    /// so a live `reconcile` delta is driven without a real host. Every other method returns
+    /// its graceful default — the slot map / delta logic reads only `pane_ids`.
+    struct FakeHost {
+        ids: std::rc::Rc<RefCell<Vec<PaneId>>>,
+    }
+
+    impl HostClient for FakeHost {
+        fn pane_ids(&self) -> Vec<PaneId> {
+            self.ids.borrow().clone()
+        }
+        fn pane_cells(&self, _id: PaneId, _offset_lines: usize) -> GridBuffer {
+            GridBuffer::new(1, 1)
+        }
+        fn pane_scroll_facts(&self, _id: PaneId) -> PaneScrollFacts {
+            PaneScrollFacts {
+                scrollback_len: 0,
+                visible_rows: 1,
+            }
+        }
+        fn pane_grid_size(&self, _id: PaneId) -> (u16, u16) {
+            (1, 1)
+        }
+        fn resize(&self, _id: PaneId, _cols: u16, _rows: u16) {}
+        fn send_key(&self, _id: PaneId, _key: &str, _mods: Modifiers) -> bool {
+            false
+        }
+        fn send_text(&self, _id: PaneId, _text: &str) -> bool {
+            false
+        }
+        fn pane_full_text(&self, _id: PaneId) -> String {
+            String::new()
+        }
+        fn pane_command_label(&self, _id: PaneId) -> String {
+            String::new()
+        }
+    }
+
+    fn view_over(ids: &std::rc::Rc<RefCell<Vec<PaneId>>>) -> SlotView {
+        SlotView::new(Box::new(FakeHost {
+            ids: std::rc::Rc::clone(ids),
+        }))
+    }
+
+    #[test]
+    fn reconcile_boot_maps_all_added_then_a_steady_frame_is_a_no_op() {
+        let ids = std::rc::Rc::new(RefCell::new(vec![pid(10), pid(11)]));
+        let view = view_over(&ids);
+        // Boot mapped both host panes to contiguous slots 0, 1.
+        assert_eq!(view.occupied_slots(), vec![0, 1]);
+        assert!(view.is_pane_occupied(0) && view.is_pane_occupied(1));
+        // A steady reconcile (host set unchanged) frees + adds nothing.
+        let steady = view.reconcile();
+        assert!(steady.freed.is_empty() && steady.added.is_empty());
+    }
+
+    #[test]
+    fn reconcile_frees_a_closed_pane_and_reuses_its_slot_for_a_newcomer() {
+        let ids = std::rc::Rc::new(RefCell::new(vec![pid(10), pid(11)]));
+        let view = view_over(&ids);
+        assert_eq!(view.occupied_slots(), vec![0, 1]);
+        // Pane 11 (slot 1) closed host-side, pane 12 opened.
+        *ids.borrow_mut() = vec![pid(10), pid(12)];
+        let delta = view.reconcile();
+        assert_eq!(delta.freed, vec![1], "slot 1 (pane 11) freed");
+        assert_eq!(delta.added, vec![1], "pane 12 took the reused slot 1");
+        assert_eq!(view.occupied_slots(), vec![0, 1]);
+    }
+
+    #[test]
+    fn reconcile_shrink_leaves_a_hole_survivors_never_migrate() {
+        // The load-bearing property: a survivor keeps its slot for life, so a middle-pane
+        // close leaves a HOLE (not a compacting shift) and no per-slot GUI state migrates
+        // onto a different pane.
+        let ids = std::rc::Rc::new(RefCell::new(vec![pid(10), pid(11), pid(12)]));
+        let view = view_over(&ids);
+        assert_eq!(view.occupied_slots(), vec![0, 1, 2]);
+        // The MIDDLE pane (slot 1) closes.
+        *ids.borrow_mut() = vec![pid(10), pid(12)];
+        let delta = view.reconcile();
+        assert_eq!(delta.freed, vec![1]);
+        assert!(delta.added.is_empty());
+        // Pane 12 KEPT slot 2 (it did not slide into the hole at 1); slot 1 is a hole.
+        assert_eq!(view.occupied_slots(), vec![0, 2]);
+        assert!(!view.is_pane_occupied(1));
     }
 }

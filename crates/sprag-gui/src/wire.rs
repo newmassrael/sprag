@@ -23,13 +23,16 @@
 //! ## The repaint loop (producer-authoritative, off-thread — R999 / R1270)
 //!
 //! The poll thread blocks on `scene/waitFor {since}` (cheap — parked host-side until
-//! a pane produces output), then refreshes every mirrored pane's LIVE frame in the
-//! shared [`Cache`] and calls `on_change` (the shell's
+//! a pane produces output OR the pane set changes — the R118 rail bumps the revision on
+//! a spawn/close too), then RE-QUERIES the pane list and mirrors it into the shared
+//! [`Cache`] — adding new panes, dropping closed ones, and refreshing every survivor's
+//! LIVE frame (Round 2b live delta) — and calls `on_change` (the shell's
 //! `RepaintSink::request_repaint`). The pure `view` reads that cache — never a
 //! blocking socket call — exactly the off-thread-producer -> repaint shape
-//! `examples/hello-live-data` proves. A scrolled-history read (`offset > 0`) is the
-//! one synchronous fetch, off `view`'s hot path (an interactive gesture, not
-//! per-frame).
+//! `examples/hello-live-data` proves; the GUI's `SlotView` maps the mirrored set onto
+//! display slots on the UI thread (its own `reconcile` in the pinion `reconcile_frame`
+//! pre-view hook). A scrolled-history read (`offset > 0`) is the one synchronous fetch,
+//! off `view`'s hot path (an interactive gesture, not per-frame).
 //!
 //! The `since` baseline is read BEFORE the initial cell fetch (subscribe-then-
 //! snapshot), so output landing during boot is caught by the first `waitFor`
@@ -541,14 +544,109 @@ fn fetch_frame(conn: &mut HostConn, id: u64, offset: usize) -> io::Result<CellFr
     serde_json::from_value(value).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
-/// Start the background poll: block on `scene/waitFor {since}`, refresh every mirrored
-/// pane's frame in the [`Cache`] (by [`PaneId`]) on each wake, and call `on_change` (repaint).
+/// Refresh the cache to the host's live pane set (Round 2b live delta): mirror `seeds`
+/// (the re-queried pane list, host order) — DROP panes no longer present, ADD new panes
+/// (seeding their tracked dims from the query + fetching an initial frame), and REFRESH
+/// every survivor's live frame — while PRESERVING each survivor's GUI-tracked dims (those
+/// advance only on a successful `resize`, never clobbered by the query's momentary size)
+/// and label. Frames are fetched OFF the cache lock (never a socket call while locked);
+/// the rebuilt Vec swaps in under ONE lock, so a concurrent UI-thread read/resize sees an
+/// atomic set. A frame fetch that fails is tolerated: a SURVIVOR keeps its last frame
+/// (transient), a NEWCOMER is skipped this wake (retried next), so the GUI never mirrors a
+/// frameless pane, and [`pane_ids`](HostClient::pane_ids) omits it until it has a frame.
+fn refresh_to_set(conn: &mut HostConn, cache: &Cache, seeds: &[PaneSeed]) {
+    // Fetch every seed's live frame off the lock.
+    let mut fetched: Vec<(PaneId, CellFrame)> = Vec::with_capacity(seeds.len());
+    for seed in seeds {
+        match fetch_frame(conn, seed.id.0, 0) {
+            Ok(frame) => fetched.push((seed.id, frame)),
+            Err(error) => tracing::debug!(
+                target: "sprag_gui::wire",
+                pane = seed.id.0,
+                %error,
+                "pane frame fetch failed this wake; survivor keeps its frame, newcomer retries",
+            ),
+        }
+    }
+    // Rebuild the cache in host order under one lock (the pure merge is `merge_panes`).
+    let mut guard = lock_cache(cache);
+    let rebuilt = merge_panes(&guard, seeds, &fetched);
+    *guard = rebuilt;
+}
+
+/// Merge the re-queried host pane list into the cache — PURE, so the survivor-dims /
+/// newcomer-skip policy is unit-tested without a socket. Produces the new cache Vec in host
+/// (`seeds`) order: a SURVIVOR (an id already in `existing`) keeps its GUI-tracked dims +
+/// label (NOT the query's momentary size, which the reflow may not have caught up to) and
+/// takes its freshly-`fetched` frame, else its last frame if this wake's fetch missed; a
+/// NEWCOMER seeds dims + label from the query and takes its fetched frame, or is DROPPED if
+/// it has none yet (retried next wake, so no frameless pane is ever mirrored — and
+/// [`pane_ids`](HostClient::pane_ids) omits it); a pane absent from `seeds` is gone (not
+/// carried over).
+fn merge_panes(
+    existing: &[WirePane],
+    seeds: &[PaneSeed],
+    fetched: &[(PaneId, CellFrame)],
+) -> Vec<WirePane> {
+    let mut rebuilt = Vec::with_capacity(seeds.len());
+    for seed in seeds {
+        let prior = existing.iter().find(|pane| pane.id == seed.id);
+        let frame = fetched
+            .iter()
+            .find(|(id, _)| *id == seed.id)
+            .map(|(_, frame)| frame.clone())
+            .or_else(|| prior.map(|pane| pane.frame.clone()));
+        let Some(frame) = frame else {
+            continue; // a brand-new pane whose first frame is not here yet — next wake
+        };
+        rebuilt.push(WirePane {
+            id: seed.id,
+            label: prior.map_or_else(|| seed.label.clone(), |pane| pane.label.clone()),
+            frame,
+            dims: prior.map_or(seed.dims, |pane| pane.dims),
+        });
+    }
+    rebuilt
+}
+
+/// Refresh only the panes ALREADY in the cache (the pre-Round-2b path) — the fallback
+/// when a wake's pane-list re-query fails, so a transient query error still refreshes live
+/// output rather than freezing. Fetches each known pane's frame off the lock and writes it
+/// back by IDENTITY (a linear find), so a concurrent remove simply drops the write.
+fn refresh_known(conn: &mut HostConn, cache: &Cache) {
+    let ids: Vec<PaneId> = lock_cache(cache).iter().map(|pane| pane.id).collect();
+    let mut fetched = Vec::with_capacity(ids.len());
+    for id in ids {
+        match fetch_frame(conn, id.0, 0) {
+            Ok(frame) => fetched.push((id, frame)),
+            Err(error) => tracing::debug!(
+                target: "sprag_gui::wire",
+                pane = id.0,
+                %error,
+                "pane cell refetch failed; skipped this wake",
+            ),
+        }
+    }
+    let mut guard = lock_cache(cache);
+    for (id, frame) in fetched {
+        if let Some(pane) = guard.iter_mut().find(|pane| pane.id == id) {
+            pane.frame = frame;
+        }
+    }
+}
+
+/// Start the background poll: block on `scene/waitFor {since}`, then MIRROR the host's
+/// live pane set into the [`Cache`] on each wake — re-query the pane list and add/remove
+/// panes ([`refresh_to_set`]) so a host-side spawn/close is reflected, not just existing
+/// panes refreshed — and call `on_change` (repaint). The R118 notification rail bumps the
+/// scene revision on a set change too, so a spawn/close wakes this parked `waitFor` just
+/// like output does.
+///
 /// Exits ONLY when `stop` is set (Drop cancels the parked read via a shutdown handle) or
 /// the parked `scene/waitFor` itself errors (the host connection was lost — logged at
 /// `warn`, since live updates then stop and the GUI would otherwise silently freeze). A
-/// single pane's frame fetch erroring is NOT fatal — that pane closed host-side (an
-/// operator close in attach mode, or Round 2b), so it is skipped for this wake and the
-/// other panes keep updating.
+/// pane-list re-query failing a single wake is NOT fatal — it falls back to refreshing the
+/// known set ([`refresh_known`]) and the set change is picked up on a later wake.
 ///
 /// # Errors
 ///
@@ -578,37 +676,21 @@ fn spawn_poll(
                     break;
                 }
                 since = response["revision"].as_u64().unwrap_or(since);
-                // Snapshot the mirrored pane ids under a brief lock, fetch each frame OFF
-                // the lock (never a socket call while holding it), then write the frames
-                // back by IDENTITY. Round 2b inserts a pane-list re-query + cache add/remove
-                // HERE, before deriving ids; the set is fixed in Round 2a.
-                let ids: Vec<PaneId> = lock_cache(&cache).iter().map(|pane| pane.id).collect();
-                let mut fetched = Vec::with_capacity(ids.len());
-                for id in ids {
-                    // A per-pane fetch error is NOT fatal to the poll: the pane closed
-                    // host-side (an operator close in attach mode, or Round 2b), so skip
-                    // just this pane this wake and keep updating the others. A genuine
-                    // connection loss is caught by the next `scene/waitFor` above.
-                    match fetch_frame(&mut conn, id.0, 0) {
-                        Ok(frame) => fetched.push((id, frame)),
-                        Err(error) => tracing::debug!(
+                // Re-query the live pane set each wake so a host-side spawn/close is
+                // MIRRORED (cache add/remove), not just existing panes refreshed. On a
+                // transient query failure, refresh the known set instead so liveness holds
+                // (the set change is caught on a later wake).
+                match query_panes(&mut conn) {
+                    Ok(seeds) => refresh_to_set(&mut conn, &cache, &seeds),
+                    Err(error) => {
+                        tracing::debug!(
                             target: "sprag_gui::wire",
-                            pane = id.0,
                             %error,
-                            "pane cell refetch failed; skipped this wake",
-                        ),
+                            "pane-list re-query failed this wake; refreshing the known set",
+                        );
+                        refresh_known(&mut conn, &cache);
                     }
                 }
-                // Write each frame back to the pane STILL present with the SAME id (a
-                // linear find), so a Round 2b remove between the fetch and here simply drops
-                // the write rather than resurrecting a gone pane.
-                let mut guard = lock_cache(&cache);
-                for (id, frame) in fetched {
-                    if let Some(pane) = guard.iter_mut().find(|pane| pane.id == id) {
-                        pane.frame = frame;
-                    }
-                }
-                drop(guard);
                 on_change();
             }
         })
@@ -647,5 +729,103 @@ mod tests {
         let params = invoke(&pane_input_path(0, KEY_ACTION), json!({ "key": "a" }));
         assert_eq!(params["path"], "/pane_0/sprag_input/external/key");
         assert_eq!(params["args"]["key"], "a");
+    }
+
+    /// A cell frame `n` cols wide, so a test can tell frames apart by `cells.cols()`.
+    fn frame(cols: u16) -> CellFrame {
+        CellFrame {
+            cells: GridBuffer::new(cols, 1),
+            facts: PaneScrollFacts {
+                scrollback_len: 0,
+                visible_rows: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn merge_panes_keeps_survivor_dims_adds_newcomers_and_drops_gone_or_frameless() {
+        // Existing cache: pane 10 (dims tracked at 80x24 by a prior resize), pane 11.
+        let existing = vec![
+            WirePane {
+                id: PaneId(10),
+                label: "bash".to_owned(),
+                frame: frame(3),
+                dims: (80, 24),
+            },
+            WirePane {
+                id: PaneId(11),
+                label: "cat".to_owned(),
+                frame: frame(3),
+                dims: (40, 12),
+            },
+        ];
+        // Host now (host order): pane 10 (survivor, query reports a DIFFERENT momentary
+        // size 100x30 + a relabel), pane 12 (newcomer), pane 13 (newcomer, no frame yet).
+        // Pane 11 vanished.
+        let seeds = vec![
+            PaneSeed {
+                id: PaneId(10),
+                label: "bash-relabeled".to_owned(),
+                dims: (100, 30),
+            },
+            PaneSeed {
+                id: PaneId(12),
+                label: "vim".to_owned(),
+                dims: (80, 24),
+            },
+            PaneSeed {
+                id: PaneId(13),
+                label: "top".to_owned(),
+                dims: (80, 24),
+            },
+        ];
+        let fetched = vec![(PaneId(10), frame(5)), (PaneId(12), frame(7))]; // 13 not fetched
+
+        let merged = merge_panes(&existing, &seeds, &fetched);
+
+        // Host order; pane 11 gone, pane 13 dropped (no frame yet).
+        assert_eq!(
+            merged.iter().map(|p| p.id).collect::<Vec<_>>(),
+            vec![PaneId(10), PaneId(12)],
+        );
+        // Survivor 10 KEEPS its tracked dims + label (not the query's size/relabel), takes
+        // the fresh frame.
+        assert_eq!(
+            merged[0].dims,
+            (80, 24),
+            "survivor keeps its tracked dims, not the query's momentary size"
+        );
+        assert_eq!(merged[0].label, "bash", "survivor keeps its label");
+        assert_eq!(
+            merged[0].frame.cells.cols(),
+            5,
+            "survivor took the fresh frame"
+        );
+        // Newcomer 12 seeds dims + label from the query, takes its fetched frame.
+        assert_eq!(merged[1].dims, (80, 24));
+        assert_eq!(merged[1].label, "vim");
+        assert_eq!(merged[1].frame.cells.cols(), 7);
+    }
+
+    #[test]
+    fn merge_panes_survivor_keeps_its_last_frame_when_the_refetch_missed() {
+        let existing = vec![WirePane {
+            id: PaneId(10),
+            label: "bash".to_owned(),
+            frame: frame(3),
+            dims: (80, 24),
+        }];
+        let seeds = vec![PaneSeed {
+            id: PaneId(10),
+            label: "bash".to_owned(),
+            dims: (80, 24),
+        }];
+        let merged = merge_panes(&existing, &seeds, &[]); // fetch missed this wake
+        assert_eq!(merged.len(), 1, "the survivor is still mirrored");
+        assert_eq!(
+            merged[0].frame.cells.cols(),
+            3,
+            "kept its last frame when the refetch missed (not dropped)"
+        );
     }
 }
