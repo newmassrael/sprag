@@ -24,9 +24,9 @@
 //! ([`crate::split::use_dock_topology`], the shape/ratio authority) is mode-dependent:
 //!
 //!  - **[`DockMode::Collapse`] (default):** float/dock CO-MUTATE both — [`push_float`]
-//!    pushes the window AND removes the leaf ([`crate::split::float_pane`]) so the siblings
+//!    pushes the window AND removes the leaf ([`crate::split::remove_pane_leaf`]) so the siblings
 //!    reclaim the space; [`redock_pane`] drops the window AND re-inserts the leaf
-//!    ([`crate::split::dock_pane`]). The tree tracks float state (the terminal-multiplexer
+//!    ([`crate::split::insert_pane_leaf`]). The tree tracks float state (the terminal-multiplexer
 //!    fill).
 //!  - **[`DockMode::Placeholder`] (opt-in):** float/dock are WINDOW-ONLY ([`push_float`] /
 //!    [`redock_pane`] don't touch the tree); the leaf stays and the view paints a
@@ -96,9 +96,9 @@ pub(crate) const MAIN_WINDOW_ID: &str = "main";
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum DockMode {
     /// R60, the DEFAULT: floating a pane REMOVES its leaf from the split-tree
-    /// ([`crate::split::float_pane`]), so the remaining panes reclaim the freed space —
+    /// ([`crate::split::remove_pane_leaf`]), so the remaining panes reclaim the freed space —
     /// the terminal-multiplexer fill (tmux/zellij). Docking back re-inserts the leaf
-    /// index-relative ([`crate::split::dock_pane`]). float/dock CO-MUTATE the windows-signal
+    /// index-relative ([`crate::split::insert_pane_leaf`]). float/dock CO-MUTATE the windows-signal
     /// + the split-tree (the tree tracks float state).
     Collapse,
     /// R72, opt-in (`SPRAG_GUI_DOCK_MODE=placeholder`): the floated pane's leaf STAYS in
@@ -311,7 +311,7 @@ pub(crate) fn pane_is_movable(i: usize) -> bool {
 /// rule `view::compose` / `fill_definite` follow; the R55 undock bug was a forgotten fill).
 ///
 /// In [`DockMode::Collapse`] (default) it ALSO removes the pane's leaf from the split-tree
-/// ([`crate::split::float_pane`]) so the siblings reclaim the space (the two authorities
+/// ([`crate::split::remove_pane_leaf`]) so the siblings reclaim the space (the two authorities
 /// co-mutate). In [`DockMode::Placeholder`] it is window-only — the leaf stays and the view
 /// paints a placeholder.
 #[must_use]
@@ -321,7 +321,7 @@ fn push_float(windows: &mut Vec<WindowSpec>, i: usize, position: Option<(i32, i3
     }
     windows.push(undock_window_spec(i, position));
     if dock_mode() == DockMode::Collapse {
-        crate::split::float_pane(i); // collapse: remove the leaf so the rest reclaim space
+        crate::split::remove_pane_leaf(i); // collapse: remove the leaf so the rest reclaim space
     }
     true
 }
@@ -350,7 +350,7 @@ fn open_floating(i: usize, position: Option<(i32, i32)>) {
 /// branch and the live redock/restore (pinion R1094 / PINION-PR31).
 ///
 /// In [`DockMode::Collapse`] (default) it ALSO re-inserts the pane's leaf into the
-/// split-tree index-relative ([`crate::split::dock_pane`]) — the leaf was removed on
+/// split-tree index-relative ([`crate::split::insert_pane_leaf`]) — the leaf was removed on
 /// float. That index-relative re-insert is the DISCRETE dock-back (the `Ctrl+Shift+Enter` /
 /// `tear_off_redock` path, which carries no zone). A cross-window ZONE redock
 /// (`tear_off_redock_at`) is different now: the reducer arm calls
@@ -372,7 +372,7 @@ pub(crate) fn redock_pane(i: usize) {
     let before = windows.len();
     windows.remove(idx);
     if dock_mode() == DockMode::Collapse {
-        crate::split::dock_pane(i); // collapse: re-insert the leaf (it was removed on float)
+        crate::split::insert_pane_leaf(i); // collapse: re-insert the leaf (it was removed on float)
     }
     let after = windows.len();
     signal.set(windows);
@@ -717,6 +717,42 @@ mod tests {
                 crate::split::docked_pane_indices(),
                 vec![0],
                 "evict removes a docked pane's leaf even with no window to drop"
+            );
+        });
+    }
+
+    /// R124: pins the load-bearing FREED-before-ADDED ordering `reconcile_frame` relies on
+    /// for a same-slot reuse (a pane closes + a new one takes the freed slot in one
+    /// reconcile). Evict-then-admit on the same panel leaves exactly ONE leaf; the reversed
+    /// order would lose it (admit is a `DuplicatePanelId` no-op while the old leaf is still
+    /// present, then evict removes it) — which is WHY `reconcile_frame` folds freed before
+    /// added.
+    #[test]
+    fn reconcile_frame_reuses_a_slot_with_one_leaf() {
+        let owner = Owner::new();
+        owner.run(|| {
+            crate::split::use_dock_topology().set(None);
+            admit_pane(0);
+            admit_pane(1); // docked: terminal-0, terminal-1
+
+            // reconcile_frame's order for a reused slot 1 (freed==added==[1]): evict, admit.
+            evict_pane(1);
+            admit_pane(1);
+            assert_eq!(
+                crate::split::docked_pane_indices(),
+                vec![0, 1],
+                "evict-before-admit: the reused slot ends with exactly one leaf"
+            );
+
+            // The REVERSED order demonstrates the hazard: admit first is a DuplicatePanelId
+            // no-op (leaf 1 still present), then evict removes it -> the reused pane's leaf
+            // is lost. This is the invariant the fold order protects.
+            admit_pane(1); // no-op: terminal-1 already present
+            evict_pane(1);
+            assert_eq!(
+                crate::split::docked_pane_indices(),
+                vec![0],
+                "admit-before-evict would drop the reused pane's leaf"
             );
         });
     }
