@@ -259,6 +259,26 @@ const BOOT_FOCUS_KEY: &str = "sprag_gui.boot_focus_seed";
 /// fires exactly once (the R689 "boot-time seeding side effect must not re-fire" rule).
 struct BootFocusSeed;
 
+/// Reset ALL of display slot `slot`'s per-slot reactive state when the slot FREES (Round 2b
+/// live delta) — the ONE owner of "what freeing a slot entails", so a future per-slot
+/// `Owner::cache` addition has a single, compiler-reachable place to be reset (the R124 fix
+/// for the scattered-reset smell that let the scrollbar interaction signal be missed in
+/// R122). The per-slot state registry, in full:
+///
+/// * scroll offset + bound, wheel sub-row accumulator, scrollbar interaction (hover/drag) —
+///   all reset by [`scrollbar::reset_pane_scroll`] (the scrollbar module owns its three);
+/// * the IME preedit overlay — reset by [`input::reset_pane_preedit`].
+///
+/// NOT reset: the per-slot reflow [`Effect`](pinion_core::reactive::Effect) is slot-keyed and
+/// deliberately KEPT — it re-resolves the slot's live pane each fire, so it correctly reflows
+/// whatever pane later reuses the slot. The dock leaf + floating window are the topology
+/// authority, evicted separately by [`dock::evict_pane`] (not per-slot reactive state). Runs
+/// in the root owner (the pre-view `reconcile_frame` hook resolves the per-slot cache slots).
+fn reset_freed_slot(slot: usize) {
+    scrollbar::reset_pane_scroll(slot);
+    input::reset_pane_preedit(slot);
+}
+
 struct TerminalViewer;
 
 impl WidgetCore for TerminalViewer {
@@ -532,17 +552,12 @@ impl WidgetCore for TerminalViewer {
         let delta = terminal.slots.reconcile();
         // FREED before ADDED is load-bearing: when a close + open land on the SAME slot in
         // one reconcile (a reused slot -> freed==added), the leaf `terminal-i` must be
-        // evicted before it is re-inserted, else `split_leaf_into` hits `DuplicatePanelId`
-        // and the newcomer loses its leaf. Each freed slot resets its FULL per-slot registry
-        // so a reuse starts clean: dock leaf + floating window (evict_pane), the
-        // scrollbar-owned state — scroll / wheel-accum / interaction (reset_pane_scroll), and
-        // the IME preedit (reset_pane_preedit). The reflow Effect is slot-keyed and stays
-        // (it re-resolves the slot's live pane each fire). Any NEW per-slot `Owner::cache`
-        // state must be added to one of those resets.
+        // evicted before it is re-inserted, else `insert_leaf`/`split_leaf_into` hits
+        // `DuplicatePanelId` and the newcomer loses its leaf (guarded by the
+        // `reconcile_frame_reuses_a_slot_with_one_leaf` test).
         for slot in delta.freed {
-            dock::evict_pane(slot);
-            scrollbar::reset_pane_scroll(slot);
-            input::reset_pane_preedit(slot);
+            dock::evict_pane(slot); // dock leaf + floating window (the topology authority)
+            reset_freed_slot(slot); // the per-slot reactive state (the ONE reset owner)
         }
         for slot in delta.added {
             dock::admit_pane(slot);
@@ -1786,7 +1801,7 @@ mod tests {
     /// 1, the `tear_off_redock` intent (emitted on a same-window escape-return or a
     /// snap-back) docks it back through `WidgetCore::update` — the window is dropped and
     /// the pane's membership restores. Runs in the DEFAULT collapse mode, where the leaf was
-    /// REMOVED on float and `redock_pane`→`dock_pane` re-inserts it index-relative (in
+    /// REMOVED on float and `redock_pane`→`insert_pane_leaf` re-inserts it index-relative (in
     /// placeholder mode the leaf would never have left; the restored membership is the same
     /// either way). Then a SECOND redock (the pane already docked) is a harmless no-op. Live
     /// scoped tag + `Text` payload, asserting the membership both authorities expose.
