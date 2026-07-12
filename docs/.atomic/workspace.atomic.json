@@ -1319,6 +1319,52 @@
         "R122 (6) + R123 (5) + R124 (4 code + this ledger) are LOCAL commits, NOT pushed (consent owed). Everything through R121 (origin/main 3af61d8) is pushed. claudedocs/PINION-PR51 + REQUIREMENTS are gitignored local handoff docs."
       ]
     },
+    "R125": {
+      "decision_summary": "Round 125: pin-bump all 8 pinion-* crates 33e2ebcf (R1271) -> fec4de30 (R1294). Unlike R106 (consumed PR-49) and R114 (consumed PR-50), R125 is a pure CURRENCY bump, NOT a feature consumption: the R118-R124 attach-mode tmux-mirror arc needed no pinion change, and pinion's intervening R1272-R1294 commits are the real-time-audio-over-JSON-RPC path (R1292-R1294 proved audio over the wire) plus tray/text-editor domain work, all orthogonal to sprag's terminal/dock/shell/rpc usage -- sprag consumes none of it today. The pin is kept current so the next sprag round starts from pinion HEAD instead of a 23-round-stale rev, and to keep the pinion Consumer Contract (section 3) honest. Verified fec4de30 is on pinion origin/main (pushed) BEFORE bumping -- sprag git-pins the dep to the GitHub URL, so an unpushed local rev would fail to resolve. SCE unchanged: pinion@fec4de30's own [workspace.dependencies] SCE pin = 3078f8bf = sprag's sce-build/sce-rust-runtime pins, so the single shared Engine<StatePolicy> instance is preserved (no SCE bump). sprag source change 0; behaviour-preserving.",
+      "changes_bullets": [
+        "Cargo.toml: all 8 pinion-* revs (pinion-core/a11y/shell/runtime/widget-paint/forge/rpc/rpc-transport) 33e2ebcfaaac9fc7b88448d3cceb1d7f03aaede6 -> fec4de3050be16babfae1ee44490521a65ac36a5 (replace_all of the rev string; the SCE 3078f8bf string left untouched). Cargo.lock re-resolved (15 pinion pkgs -> the new rev, 0 stale).",
+        "SCE unchanged: pinion@fec4de30's own [workspace.dependencies] SCE pin = 3078f8bf = sprag's sce-build/sce-rust-runtime pins, so the one Engine<StatePolicy> instance holds (verified against pinion's Cargo.toml before bumping).",
+        "No sprag source change: R125 is a pure currency bump, no PR consumed (the R118-R124 arc needed no pinion change; the intervening pinion R1272-R1294 is the audio-over-wire path + tray/text-editor work, orthogonal to sprag)."
+      ],
+      "verification_bullets": [
+        "Target rev pushed BEFORE bumping: fec4de30 is on pinion origin/main (git branch -r --contains fec4de30 lists origin/main; git rev-list --left-right --count HEAD...origin/main = 0 0) -- sprag fetches the git dep from the remote URL, so an unpushed rev would not resolve.",
+        "cargo build --workspace clean at the new pin (pinion refetched + Cargo.lock re-resolved to 15 pkgs; Finished dev profile in 10.58s).",
+        "cargo test --workspace = 271 passed / 0 failed (CARGO_TEST_EXIT=0). cargo clippy --workspace --all-targets = 0 warnings / 0 errors (CLIPPY_EXIT=0).",
+        "SCE-match check: pinion@fec4de30 Cargo.toml SCE rev == sprag Cargo.toml SCE rev == 3078f8bf -> one Engine<StatePolicy> instance preserved."
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "pinion pin now fec4de30 (R1294); SCE 3078f8bf unchanged. R125 is a currency bump only -- no PR consumed, behaviour-preserving.",
+        "OPEN pinion gap unchanged (FILED, not delivered): PINION-PR51 = optional primary External; sprag interim = the inert primary-scrollbar sentinel (behaviour correct).",
+        "R125 (Cargo.toml + Cargo.lock + this ledger) is a LOCAL commit on top of the unpushed R122-R124 commits; NOT pushed (push consent owed). Everything through R121 (origin/main 3af61d8) is pushed.",
+        "The R118-R124 attach-mode tmux-mirror arc remains COMPLETE + REVIEWED + REMEDIATED; R125 opens no new arc."
+      ],
+      "publishable_decision_summary": "Round 125: pin-bump all 8 pinion-* crates 33e2ebcf (R1271) -> fec4de30 (R1294). Unlike R106 (consumed PR-49) and R114 (consumed PR-50), R125 is a pure CURRENCY bump, NOT a feature consumption: the R118-R124 attach-mode tmux-mirror arc needed no pinion change, and pinion's intervening R1272-R1294 commits are the real-time-audio-over-JSON-RPC path (R1292-R1294 proved audio over the wire) plus tray/text-editor domain work, all orthogonal to sprag's terminal/dock/shell/rpc usage -- sprag consumes none of it today. The pin is kept current so the next sprag round starts from pinion HEAD instead of a 23-round-stale rev, and to keep the pinion Consumer Contract (section 3) honest. Verified fec4de30 is on pinion origin/main (pushed) BEFORE bumping -- sprag git-pins the dep to the GitHub URL, so an unpushed local rev would fail to resolve. SCE unchanged: pinion@fec4de30's own [workspace.dependencies] SCE pin = 3078f8bf = sprag's sce-build/sce-rust-runtime pins, so the single shared Engine<StatePolicy> instance is preserved (no SCE bump). sprag source change 0; behaviour-preserving.",
+      "publishable_changes_bullets": [
+        "Cargo.toml: all 8 pinion-* revs (pinion-core/a11y/shell/runtime/widget-paint/forge/rpc/rpc-transport) 33e2ebcfaaac9fc7b88448d3cceb1d7f03aaede6 -> fec4de3050be16babfae1ee44490521a65ac36a5 (replace_all of the rev string; the SCE 3078f8bf string left untouched). Cargo.lock re-resolved (15 pinion pkgs -> the new rev, 0 stale).",
+        "SCE unchanged: pinion@fec4de30's own [workspace.dependencies] SCE pin = 3078f8bf = sprag's sce-build/sce-rust-runtime pins, so the one Engine<StatePolicy> instance holds (verified against pinion's Cargo.toml before bumping).",
+        "No sprag source change: R125 is a pure currency bump, no PR consumed (the R118-R124 arc needed no pinion change; the intervening pinion R1272-R1294 is the audio-over-wire path + tray/text-editor work, orthogonal to sprag)."
+      ],
+      "publishable_verification_bullets": [
+        "Target rev pushed BEFORE bumping: fec4de30 is on pinion origin/main (git branch -r --contains fec4de30 lists origin/main; git rev-list --left-right --count HEAD...origin/main = 0 0) -- sprag fetches the git dep from the remote URL, so an unpushed rev would not resolve.",
+        "cargo build --workspace clean at the new pin (pinion refetched + Cargo.lock re-resolved to 15 pkgs; Finished dev profile in 10.58s).",
+        "cargo test --workspace = 271 passed / 0 failed (CARGO_TEST_EXIT=0). cargo clippy --workspace --all-targets = 0 warnings / 0 errors (CLIPPY_EXIT=0).",
+        "SCE-match check: pinion@fec4de30 Cargo.toml SCE rev == sprag Cargo.toml SCE rev == 3078f8bf -> one Engine<StatePolicy> instance preserved."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "pinion pin now fec4de30 (R1294); SCE 3078f8bf unchanged. R125 is a currency bump only -- no PR consumed, behaviour-preserving.",
+        "OPEN pinion gap unchanged (FILED, not delivered): PINION-PR51 = optional primary External; sprag interim = the inert primary-scrollbar sentinel (behaviour correct).",
+        "R125 (Cargo.toml + Cargo.lock + this ledger) is a LOCAL commit on top of the unpushed R122-R124 commits; NOT pushed (push consent owed). Everything through R121 (origin/main 3af61d8) is pushed.",
+        "The R118-R124 attach-mode tmux-mirror arc remains COMPLETE + REVIEWED + REMEDIATED; R125 opens no new arc."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
