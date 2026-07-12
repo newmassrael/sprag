@@ -200,6 +200,7 @@ mod input;
 mod reflow;
 mod rpc;
 mod scrollbar;
+mod slotview;
 mod split;
 mod terminal;
 mod view;
@@ -250,11 +251,13 @@ const ROOT_TAG: &str = "sprag_gui";
 /// `Owner::cache` key for the boot-focus seed marker ([`BootFocusSeed`]).
 const BOOT_FOCUS_KEY: &str = "sprag_gui.boot_focus_seed";
 
-/// The tile slot whose scrollbar is the shell's PRIMARY External (the `create_external`
-/// + `tag` pair); every OTHER occupied slot's scrollbar is an extra
-/// (`create_extra_externals`). One name for the coupling between those sites. (2b
-/// watch-item: slot 0 is assumed always occupied; a live close of it needs the primary
-/// re-homed onto a non-pane sentinel tag.)
+/// The tile slot whose scrollbar is the shell's PRIMARY External (registered by
+/// `create_external`, named by `tag`); every OTHER occupied slot's scrollbar is an extra
+/// (`create_extra_externals`). One name for the coupling between those sites. Slot 0 is
+/// the primary; when it is EMPTY (a zero-pane attach, or a boot hole) the primary is a
+/// harmless dangling external — nothing paints it, since `view` / a11y render only
+/// occupied slots. Re-homing the primary onto a non-pane sentinel tag (so no pane slot is
+/// load-bearing) is future work.
 const PRIMARY_SCROLLBAR_SLOT: usize = 0;
 
 /// Zero-size marker cached once to run the boot focus request a single time. The
@@ -342,7 +345,7 @@ impl WidgetCore for TerminalViewer {
         // `ScrollState` authority (pinion R1032) needs no mirror.
         // The occupied slots, snapshot ONCE (one mirror lock + alloc) and reused by both
         // the scrollbar-extras and the dock-panel externals below.
-        let occupied = terminal.host.occupied_slots();
+        let occupied = terminal.slots.occupied_slots();
         // Slot 0's scrollbar is the PRIMARY external ([`Self::create_external`]); the
         // OTHER occupied slots are extras, so the drag-scrollbar set stays complete
         // without a duplicate registration at `pane_scrollbar_tag(0)`. (Slot 0 is always
@@ -513,8 +516,8 @@ impl WidgetCore for TerminalViewer {
     /// the primary repaints too).
     fn reconcile_frame() {
         let terminal = use_terminal();
-        for i in terminal.host.occupied_slots() {
-            let scrollback_len = terminal.host.pane_scroll_facts(i).scrollback_len;
+        for i in terminal.slots.occupied_slots() {
+            let scrollback_len = terminal.slots.pane_scroll_facts(i).scrollback_len;
             scrollbar::reconcile_scroll(&scrollbar::use_pane_scroll(i), scrollback_len);
         }
     }
@@ -545,7 +548,7 @@ impl WidgetCore for TerminalViewer {
         // painted in at most one window per frame (its dock window), so on an undock
         // window's single-pane scene the absent panes simply miss (rect -> None).
         let Some(i) = use_terminal()
-            .host
+            .slots
             .occupied_slots()
             .into_iter()
             .find(|&i| hit(pane_tag(i)) || hit(pane_scrollbar_tag(i)))
@@ -1478,7 +1481,9 @@ mod tests {
         let mut core = ShellCore::<TerminalViewer>::new();
         core.root_owner()
             .run(|| dock::set_dock_mode(dock::DockMode::Placeholder));
-        let n = core.root_owner().run(|| use_terminal().host.pane_count());
+        let n = core
+            .root_owner()
+            .run(|| use_terminal().slots.occupied_slots().len());
         core.root_owner().run(|| {
             for i in 0..n {
                 dock::toggle_pane_floating(i);
@@ -1983,7 +1988,7 @@ mod tests {
                     .collect::<BTreeSet<String>>()
             };
             let expected: BTreeSet<String> = use_terminal()
-                .host
+                .slots
                 .occupied_slots()
                 .into_iter()
                 .map(split::panel_id)

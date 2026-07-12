@@ -55,7 +55,7 @@ pub(crate) fn view_for_window(window_id: &str, _state: (), _frame: &Frame) -> Sc
         // the shell's routing tags are supplied HERE (the binding owns the window
         // lifecycle) so `try_chrome_press` routes close → `window_close_requested`
         // (dock-back, R86), min / max → per-window `set_minimized` / `set_maximized`.
-        Some(i) if tv.host.is_pane_occupied(i) => {
+        Some(i) if tv.slots.is_pane_occupied(i) => {
             let style = DockPanelStyle::m3_default(panel_id(i));
             let controls = view_window_controls(
                 &theme,
@@ -107,7 +107,7 @@ fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
             |panel_id| match pane_index_of_panel(panel_id) {
                 // One occupancy check per leaf, then branch on float state (was two match
                 // arms each re-evaluating `is_pane_occupied`).
-                Some(i) if tv.host.is_pane_occupied(i) => {
+                Some(i) if tv.slots.is_pane_occupied(i) => {
                     if crate::dock::is_pane_floating(i) {
                         // A floating pane's leaf paints a placeholder holding its slot
                         // (R72): its real content lives in the pane's own undock window.
@@ -201,7 +201,7 @@ fn build_pane_scene(tv: &TerminalView, i: usize, theme: &Theme) -> Scene {
     // offset math + scrollbar extent; visible rows for the bar). Convert the
     // (already-reconciled) top-anchored offset to the projection's "rows up from
     // the live bottom".
-    let dims = tv.host.pane_scroll_facts(i);
+    let dims = tv.slots.pane_scroll_facts(i);
     let offset_lines =
         crate::scrollbar::offset_lines_from_top(scroll.offset_y(), dims.scrollback_len);
     // Topology B: the GUI is a CLIENT of the host's per-pane cell DATA query
@@ -210,7 +210,7 @@ fn build_pane_scene(tv: &TerminalView, i: usize, theme: &Theme) -> Scene {
     // the PTY); the node is assembled CLIENT-side (`pane_view_scene_from_cells`, the
     // Screen-free seam). In-process now — the same steps ride the wire when the
     // Workspace moves to the host process (the transport step).
-    let cells = tv.host.pane_cells(i, offset_lines);
+    let cells = tv.slots.pane_cells(i, offset_lines);
     let cells = sprag_grid::overlay_preedit(cells, &preedit);
     let grid =
         sprag_host::pane_view_scene_from_cells(pane_tag(i), cells, tv.metric, tv.font_size_px);

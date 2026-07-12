@@ -52,7 +52,7 @@ fn page_delta(key: &str, page: i32) -> i32 {
 /// the row count; called from `apply_key` (outside any cache factory).
 fn scroll_view(pane: usize, key: &str) {
     let scroll = crate::scrollbar::use_pane_scroll(pane);
-    let rows = use_terminal().host.pane_scroll_facts(pane).visible_rows;
+    let rows = use_terminal().slots.pane_scroll_facts(pane).visible_rows;
     let page = i32::from(rows).saturating_sub(1).max(1);
     scroll.scroll_by(0, page_delta(key, page));
 }
@@ -83,7 +83,7 @@ fn next_focus(active: usize, key: &str, occupied: &[usize]) -> Option<usize> {
 /// the `apply_key` routing both follow the focus manager, so requesting the new
 /// pane's tag is the whole switch. A single-pane window is a no-op.
 fn cycle_focus(active: usize, key: &str) {
-    if let Some(next) = next_focus(active, key, &use_terminal().host.occupied_slots()) {
+    if let Some(next) = next_focus(active, key, &use_terminal().slots.occupied_slots()) {
         pinion_core::focus_request::request(pane_tag(next));
     }
 }
@@ -193,7 +193,7 @@ pub(crate) fn route_key(
     let scroll = crate::scrollbar::use_pane_scroll(active);
     scroll.scroll_to(0, scroll.max().1);
     use_terminal()
-        .host
+        .slots
         .send_key(active, key, to_input_mods(modifiers))
 }
 
@@ -263,7 +263,7 @@ pub(crate) fn route_composition(focused: Option<&str>, event: &CompositionEvent)
                 // IME commit to fall through to (unlike a keystroke, which returns
                 // false to the shell), so the result is intentionally discarded —
                 // made explicit now that `send_text` is `#[must_use]`.
-                let _ = use_terminal().host.send_text(active, text);
+                let _ = use_terminal().slots.send_text(active, text);
             }
             true
         }
@@ -318,10 +318,10 @@ mod tests {
     #[test]
     fn apply_key_routes_to_the_focused_pane_only() {
         let host = Host::new((40, 6));
-        host.spawn(cat(), "cat".to_owned(), 40, 6, None).unwrap();
-        host.spawn(cat(), "cat".to_owned(), 40, 6, None).unwrap();
-        let h0 = host.pane_handle(0);
-        let h1 = host.pane_handle(1);
+        let id0 = host.spawn(cat(), "cat".to_owned(), 40, 6, None).unwrap();
+        let id1 = host.spawn(cat(), "cat".to_owned(), 40, 6, None).unwrap();
+        let h0 = host.pane_handle(id0).expect("pane 0 handle");
+        let h1 = host.pane_handle(id1).expect("pane 1 handle");
         let owner = Owner::new();
         owner.run(|| {
             seed_terminal(host); // use_terminal() now returns these two cat panes
@@ -426,8 +426,8 @@ mod tests {
     #[test]
     fn apply_composition_commit_writes_to_the_focused_pane() {
         let host = Host::new((40, 6));
-        host.spawn(cat(), "cat".to_owned(), 40, 6, None).unwrap();
-        let handle = host.pane_handle(0);
+        let id = host.spawn(cat(), "cat".to_owned(), 40, 6, None).unwrap();
+        let handle = host.pane_handle(id).expect("pane handle");
         let owner = Owner::new();
         owner.run(|| {
             seed_terminal(host); // use_terminal() now returns this cat pane

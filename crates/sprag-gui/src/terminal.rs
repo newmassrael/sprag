@@ -2,6 +2,7 @@
 //! derivation — everything about *creating and holding* the live pane, spawned
 //! at boot off the pure `view`. See the crate-root module docs for the seams.
 
+use crate::slotview::SlotView;
 use crate::wire::WireHost;
 use crate::{WINDOW_H, WINDOW_W};
 use pinion_core::CellMetric;
@@ -185,19 +186,21 @@ fn command_spec() -> Option<(String, Vec<String>)> {
     split_command(&spec)
 }
 
-/// The booted terminal MODEL the GUI holds each frame: the [`HostClient`] it reaches
-/// the panes through, plus the client's own rendering config.
+/// The booted terminal MODEL the GUI holds each frame: the [`SlotView`] it reaches the
+/// panes through (by display slot), plus the client's own rendering config.
 ///
-/// The client is a `Box<dyn HostClient>` chosen at boot (topology B): by default a
+/// [`SlotView`] wraps a `Box<dyn HostClient>` chosen at boot (topology B): by default a
 /// [`WireHost`] — a pure wire client of a `sprag-term` host PROCESS (the GUI owns no
-/// `Workspace` / PTYs) — or, under `SPRAG_GUI_HOST=inprocess`, an in-process
-/// [`Host`] (the debug / test escape hatch). Every pane call site reaches the panes
-/// ONLY through this trait object, so the frontend code is identical across the two.
-/// The rendering config — the once-measured cell metric and the glyph size it was
-/// measured at — is read each frame by `view`, never re-measured; deliberately
-/// client-side, not host state.
+/// `Workspace` / PTYs) — or, under `SPRAG_GUI_HOST=inprocess`, an in-process [`Host`]
+/// (the debug / test escape hatch). Both are pure IDENTITY clients (they speak
+/// `PaneId`); the `SlotView` is the ONE place display slots map onto those ids, so the
+/// slot concept lives entirely in the GUI. Every pane call site reaches the panes ONLY
+/// through this slot view, so the frontend code is identical across the two clients. The
+/// rendering config — the once-measured cell metric and the glyph size it was measured at
+/// — is read each frame by `view`, never re-measured; deliberately client-side, not host
+/// state.
 pub(crate) struct TerminalView {
-    pub(crate) host: Box<dyn HostClient>,
+    pub(crate) slots: SlotView,
     pub(crate) metric: CellMetric,
     pub(crate) font_size_px: u32,
 }
@@ -301,7 +304,7 @@ pub(crate) fn use_terminal() -> Rc<TerminalView> {
             )
         };
         TerminalView {
-            host,
+            slots: SlotView::new(host),
             metric,
             font_size_px,
         }
@@ -347,7 +350,7 @@ fn pane_argv() -> Option<Vec<String>> {
 pub(crate) fn seed_terminal(host: Host) {
     let owner = Owner::current().expect("seed_terminal() requires an active Owner scope");
     owner.cache(SESSION_KEY, || TerminalView {
-        host: Box::new(host),
+        slots: SlotView::new(Box::new(host)),
         metric: CellMetric::DEFAULT,
         font_size_px: FONT_SIZE_PX,
     });

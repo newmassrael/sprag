@@ -2,11 +2,12 @@
 //! (topology B).
 //!
 //! [`WireHost`] implements the same [`HostClient`] protocol the in-process
-//! [`Host`](sprag_host::Host) does, but reaches the panes over an RPC socket to a
-//! `sprag-term` host PROCESS instead of an in-process `Workspace`. The GUI holds it
-//! as a `Box<dyn HostClient>` (`terminal::use_terminal`), so every pane call site is
-//! byte-identical to the in-process path — the R109 seam paying off across the
-//! process boundary.
+//! [`Host`](sprag_host::Host) does — addressing panes by their host [`PaneId`] — but
+//! reaches them over an RPC socket to a `sprag-term` host PROCESS instead of an
+//! in-process `Workspace`. The GUI wraps it in a [`SlotView`](crate::slotview::SlotView),
+//! the GUI-side slot↔`PaneId` adapter that maps the consumers' display slots onto host
+//! ids, so both this wire client and the in-process `Host` stay pure identity clients and
+//! the "slot" concept lives in ONE GUI place — the R109 seam across the process boundary.
 //!
 //! ## What runs where
 //!
@@ -22,9 +23,9 @@
 //! ## The repaint loop (producer-authoritative, off-thread — R999 / R1270)
 //!
 //! The poll thread blocks on `scene/waitFor {since}` (cheap — parked host-side until
-//! a pane produces output), then refreshes every occupied slot's LIVE frame in the
-//! shared slot [`Mirror`] and calls `on_change` (the shell's
-//! `RepaintSink::request_repaint`). The pure `view` reads that mirror — never a
+//! a pane produces output), then refreshes every mirrored pane's LIVE frame in the
+//! shared [`Cache`] and calls `on_change` (the shell's
+//! `RepaintSink::request_repaint`). The pure `view` reads that cache — never a
 //! blocking socket call — exactly the off-thread-producer -> repaint shape
 //! `examples/hello-live-data` proves. A scrolled-history read (`offset > 0`) is the
 //! one synchronous fetch, off `view`'s hot path (an interactive gesture, not
@@ -39,13 +40,12 @@
 //!
 //! `WireHost` lives on the single UI thread (`Owner::cache`, never `Send`/`Sync`
 //! bound), so its request connection uses [`RefCell`] (single-threaded interior
-//! mutability). Only the slot [`Mirror`] is genuinely shared with the poll thread —
-//! it holds the pane identities, live frames, AND tracked dims under one
-//! `Arc<Mutex<_>>`, so a poll-side frame refresh (and a Round 2b membership reconcile)
-//! is atomic vs a UI-thread read / resize.
+//! mutability). Only the pane [`Cache`] is genuinely shared with the poll thread — it
+//! holds the pane identities, live frames, AND tracked dims under one `Arc<Mutex<_>>`,
+//! so a poll-side frame refresh is atomic vs a UI-thread read / resize. Slot mapping
+//! (and its membership) is the GUI's `SlotView`, on the UI thread only.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
@@ -65,8 +65,7 @@ use sprag_host::wire::{
 use sprag_host::{CellFrame, HostClient, PaneScrollFacts, mux_action_path, pane_input_path};
 use sprag_input::Modifiers;
 use sprag_rpc::{HostConn, runtime_path};
-
-use crate::terminal::MAX_PANES;
+use sprag_terminal::PaneId;
 
 /// How long to wait for the host socket to accept — covers the child's bind race.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -78,44 +77,30 @@ const HOST_SOCK_ENV: &str = "SPRAG_GUI_HOST_SOCK";
 /// else `sprag-term` on `PATH`).
 const HOST_BIN_ENV: &str = "SPRAG_GUI_HOST_BIN";
 
-/// One pane's identity on the wire: the host [`PaneId`](sprag_terminal::PaneId) (the
-/// `/pane_<id>/…` address) and its command label (the a11y node name). Stable for the
-/// pane's life; it is what a slot maps to, so a pane KEEPS its slot as long as this id
-/// stays in the host's list ([`reconcile`]).
-struct PaneMeta {
-    id: u64,
+/// One pane the wire client mirrors, in HOST order (no holes — "slots" and their holes
+/// are the GUI `SlotView`'s concern, not this data client's). Holds the pane's host
+/// identity ([`PaneId`] + command label), its live (offset 0) [`CellFrame`] (refreshed
+/// by the poll thread on each host change), and the GUI-tracked grid size.
+struct WirePane {
+    id: PaneId,
     label: String,
-}
-
-/// One occupied mirror slot: the pane's [`PaneMeta`] identity, its live (offset 0)
-/// cell [`CellFrame`], and the GUI-authored grid size. A `None` slot in the mirror is
-/// a HOLE (a closed pane's freed slot, or a never-used slot beyond the current set).
-struct PaneEntry {
-    meta: PaneMeta,
-    /// The live (offset 0) frame, refreshed by the poll thread on each host change.
     frame: CellFrame,
-    /// The GUI's tracked grid `(cols, rows)`. The GUI is the sole resizer of its panes,
-    /// so this tracks the host's true size: seeded from the host's pane list at boot /
-    /// on appearance, advanced only when a `resize` RPC SUCCEEDS (so the reflow no-op
-    /// guard reads it with no round-trip and a failed resize is retried, not latched).
+    /// The GUI's tracked grid `(cols, rows)`: seeded from the host at boot, advanced only
+    /// when a `resize` RPC SUCCEEDS (so the reflow no-op guard reads it with no
+    /// round-trip and a failed resize is retried, not latched).
     dims: (u16, u16),
 }
 
-/// The slot-indexed mirror of the host's pane set: a `Vec<Option<PaneEntry>>` of length
-/// [`MAX_PANES`], `Some` = an occupied display slot, `None` = a hole. This is the ONE
-/// abstraction the whole GUI addresses panes through (topology B): the `HostClient`
-/// methods take a SLOT, mapped here to the pane's live `PaneId`. Shared between the UI
-/// thread (reads, input, resize) and the poll thread (frame refresh + [`reconcile`]) —
-/// one lock so a set change is atomic vs a UI read. Slots are stable per pane (a pane
-/// keeps its slot for life), designed so Round 2b can add / remove entries live without
-/// migrating any per-slot GUI state (scroll / preedit / focus, all keyed by slot).
-type Mirror = Arc<Mutex<Vec<Option<PaneEntry>>>>;
+/// The wire client's pane data cache, in host order. Shared between the UI thread
+/// (reads / input / resize) and the poll thread (frame refresh) under one lock. Addressed
+/// by [`PaneId`] identity (a linear scan over the small pane set), NOT by display slot —
+/// this client speaks the host's language; the GUI's `SlotView` owns slot mapping.
+type Cache = Arc<Mutex<Vec<WirePane>>>;
 
-/// Lock the shared slot mirror, poison-tolerant — the ONE definition of the mirror's
-/// lock discipline, shared by the UI thread ([`WireHost::lock_mirror`]) and the poll
-/// thread, so "recover the guard on a poisoned lock" lives in one place.
-fn lock_slots(mirror: &Mutex<Vec<Option<PaneEntry>>>) -> MutexGuard<'_, Vec<Option<PaneEntry>>> {
-    mirror.lock().unwrap_or_else(PoisonError::into_inner)
+/// Lock the shared pane cache, poison-tolerant — the ONE definition of the cache's lock
+/// discipline, shared by the UI thread ([`WireHost::lock_cache`]) and the poll thread.
+fn lock_cache(cache: &Mutex<Vec<WirePane>>) -> MutexGuard<'_, Vec<WirePane>> {
+    cache.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Kills + reaps a spawned host child if [`spawn_or_attach`](WireHost::spawn_or_attach)
@@ -146,12 +131,11 @@ impl Drop for ChildGuard {
 pub(crate) struct WireHost {
     /// The spawned host child (`None` when attached to an operator-run host).
     child: Option<Child>,
-    /// The slot-indexed mirror of the host's pane set (the ONE pane-state field:
-    /// identity + live frame + tracked dims per slot, [`Mirror`]). The UI thread reads
-    /// it under a brief lock; the poll thread refreshes frames (and, in Round 2b,
-    /// reconciles membership) under the same lock. The one genuinely-shared pane state,
-    /// replacing the former parallel `panes` / `dims` / `cache` fields.
-    mirror: Mirror,
+    /// The pane data cache ([`Cache`]) in host order: identity + live frame + tracked
+    /// dims per pane. The UI thread reads it under a brief lock; the poll thread refreshes
+    /// each pane's frame under the same lock. Addressed by [`PaneId`] — the GUI's
+    /// `SlotView` maps display slots onto these ids.
+    cache: Cache,
     /// The UI thread's request connection (reads / input / resize). `RefCell`, not
     /// `Mutex`: `WireHost` is UI-thread-only (see the module docs), and the poll thread
     /// owns a SEPARATE connection.
@@ -208,18 +192,13 @@ impl WireHost {
         let guard = ChildGuard(child);
 
         let mut conn = HostConn::connect(&sock, CONNECT_TIMEOUT)?;
-        let host_panes = boot_panes(&mut conn, argv.as_deref(), cols, rows, n_panes, attach)?;
+        let seeds = boot_panes(&mut conn, argv.as_deref(), cols, rows, n_panes, attach)?;
 
         // Subscribe-then-snapshot: read the change-notification baseline BEFORE the
-        // initial frame fetches (in `reconcile`), so output landing during boot makes the
-        // first `waitFor` fire immediately (catch-up) instead of being lost against a
-        // stale first frame.
+        // initial frame fetches, so output landing during boot makes the first `waitFor`
+        // fire immediately (catch-up) instead of being lost against a stale first frame.
         let since0 = read_revision(&mut conn)?;
-        // The slot-indexed mirror, filled by the ONE `reconcile` SSOT (boot = its all-new
-        // path: contiguous slots `0..N` in host display order).
-        let mut slots: Vec<Option<PaneEntry>> = (0..MAX_PANES).map(|_| None).collect();
-        reconcile(&mut slots, &mut conn, host_panes);
-        let mirror: Mirror = Arc::new(Mutex::new(slots));
+        let cache: Cache = Arc::new(Mutex::new(build_cache(&mut conn, seeds)));
 
         // The poll thread's own connection — a parked `scene/waitFor` on it never
         // blocks the request connection above (separate host handler threads).
@@ -228,7 +207,7 @@ impl WireHost {
         let stop = Arc::new(AtomicBool::new(false));
         let poll = spawn_poll(
             poll_conn,
-            Arc::clone(&mirror),
+            Arc::clone(&cache),
             on_change,
             Arc::clone(&stop),
             since0,
@@ -236,7 +215,7 @@ impl WireHost {
 
         Ok(Self {
             child: guard.disarm(),
-            mirror,
+            cache,
             conn: RefCell::new(conn),
             stop,
             poll_shutdown,
@@ -247,7 +226,8 @@ impl WireHost {
     /// Issue one request over the UI-thread connection, tracing (not swallowing
     /// silently) any wire failure — the ONE place a `WireHost` read/write RPC error is
     /// handled, so every method's error policy is consistent (the "swallow is honest,
-    /// not silent" bar the in-process `Host` holds). Returns `None` on failure.
+    /// not silent" bar the in-process [`Host`](sprag_host::Host) holds). Returns `None`
+    /// on failure.
     fn request(&self, method: &str, params: Value, ctx: &str) -> Option<Value> {
         match self.conn.borrow_mut().call(method, params) {
             Ok(value) => Some(value),
@@ -258,116 +238,80 @@ impl WireHost {
         }
     }
 
-    /// Lock the shared mirror (poison-tolerant, matching the rest of the wire client's
-    /// lock discipline). The ONE place the mirror lock is taken on the UI thread.
-    fn lock_mirror(&self) -> MutexGuard<'_, Vec<Option<PaneEntry>>> {
-        lock_slots(&self.mirror)
+    /// Lock the shared pane cache (poison-tolerant, matching the rest of the wire
+    /// client's lock discipline). The ONE place the cache lock is taken on the UI thread.
+    fn lock_cache(&self) -> MutexGuard<'_, Vec<WirePane>> {
+        lock_cache(&self.cache)
     }
 
-    /// The host id of the pane at SLOT `index`, or `None` for a hole / out of range. The
-    /// write / input methods guard on this (returning the trait's no-op / `false`)
-    /// exactly like the read methods guard on the mirror, so the whole impl handles an
-    /// empty slot uniformly rather than half-panicking.
-    fn pane_id(&self, index: usize) -> Option<u64> {
-        self.lock_mirror()
-            .get(index)
-            .and_then(|slot| slot.as_ref())
-            .map(|entry| entry.meta.id)
-    }
-
-    /// The cached live (offset 0) cell buffer for SLOT `index`, or a `1x1` placeholder
-    /// for a hole / out of range / before the first frame.
-    fn live_cells(&self, index: usize) -> GridBuffer {
-        self.lock_mirror()
-            .get(index)
-            .and_then(|slot| slot.as_ref())
-            .map(|entry| entry.frame.cells.clone())
+    /// The cached live (offset 0) cell buffer for pane `id`, or a `1x1` placeholder for
+    /// an absent id / before the first frame. Absent-id tolerance keeps every method's
+    /// contract graceful, matching the in-process [`Host`](sprag_host::Host).
+    fn live_cells(&self, id: PaneId) -> GridBuffer {
+        self.lock_cache()
+            .iter()
+            .find(|pane| pane.id == id)
+            .map(|pane| pane.frame.cells.clone())
             .unwrap_or_else(|| GridBuffer::new(1, 1))
     }
 }
 
 impl HostClient for WireHost {
-    fn pane_count(&self) -> usize {
-        self.lock_mirror()
-            .iter()
-            .filter(|slot| slot.is_some())
-            .count()
+    fn pane_ids(&self) -> Vec<PaneId> {
+        self.lock_cache().iter().map(|pane| pane.id).collect()
     }
 
-    fn occupied_slots(&self) -> Vec<usize> {
-        self.lock_mirror()
-            .iter()
-            .enumerate()
-            .filter_map(|(slot, entry)| entry.as_ref().map(|_| slot))
-            .collect()
-    }
-
-    fn is_pane_occupied(&self, slot: usize) -> bool {
-        // Override the trait default (which allocates a `Vec` + scans) with an O(1),
-        // alloc-free single-slot read: this is called per pane per frame on the paint
-        // hot path (`view_main` / a11y), so it must not build the whole slot list.
-        self.lock_mirror().get(slot).is_some_and(Option::is_some)
-    }
-
-    fn pane_cells(&self, index: usize, offset_lines: usize) -> GridBuffer {
+    fn pane_cells(&self, id: PaneId, offset_lines: usize) -> GridBuffer {
         if offset_lines == 0 {
             // Live view: the poll-thread-maintained cache — no socket call in `view`.
-            return self.live_cells(index);
+            return self.live_cells(id);
         }
         // Scrolled history: one synchronous fetch (an interactive gesture, off the
         // per-frame hot path). On any failure, fall back to the cached live buffer.
-        let Some(id) = self.pane_id(index) else {
-            return self.live_cells(index);
-        };
         let params = invoke(
-            &pane_input_path(id, CELLS_ACTION),
+            &pane_input_path(id.0, CELLS_ACTION),
             json!({ "offset": offset_lines }),
         );
         self.request("scene/invoke", params, "pane_cells")
             .and_then(|value| serde_json::from_value::<CellFrame>(value).ok())
-            .map_or_else(|| self.live_cells(index), |frame| frame.cells)
+            .map_or_else(|| self.live_cells(id), |frame| frame.cells)
     }
 
-    fn pane_scroll_facts(&self, index: usize) -> PaneScrollFacts {
-        self.lock_mirror()
-            .get(index)
-            .and_then(|slot| slot.as_ref())
-            .map(|entry| entry.frame.facts.clone())
+    fn pane_scroll_facts(&self, id: PaneId) -> PaneScrollFacts {
+        self.lock_cache()
+            .iter()
+            .find(|pane| pane.id == id)
+            .map(|pane| pane.frame.facts.clone())
             .unwrap_or(PaneScrollFacts {
                 scrollback_len: 0,
                 visible_rows: 1,
             })
     }
 
-    fn pane_grid_size(&self, index: usize) -> (u16, u16) {
-        self.lock_mirror()
-            .get(index)
-            .and_then(|slot| slot.as_ref())
-            .map(|entry| entry.dims)
+    fn pane_grid_size(&self, id: PaneId) -> (u16, u16) {
+        self.lock_cache()
+            .iter()
+            .find(|pane| pane.id == id)
+            .map(|pane| pane.dims)
             .unwrap_or((1, 1))
     }
 
-    fn resize(&self, index: usize, cols: u16, rows: u16) {
-        let Some(id) = self.pane_id(index) else {
-            return;
-        };
+    fn resize(&self, id: PaneId, cols: u16, rows: u16) {
         let params = invoke(
             &mux_action_path(RESIZE_ACTION),
-            json!({ "id": id, "cols": cols, "rows": rows }),
+            json!({ "id": id.0, "cols": cols, "rows": rows }),
         );
-        // Advance the tracked size only on a SUCCESSFUL resize, so a failed resize is
-        // retried on the next reflow rather than latched into the no-op guard.
+        // Advance the tracked size only on a SUCCESSFUL resize (else it is retried, not
+        // latched). Addressed by IDENTITY: the write-back finds the pane by `id`, so a
+        // freed/reused entry can never latch a resize onto a different pane (F8 dissolves).
         if self.request("scene/invoke", params, "resize").is_some()
-            && let Some(Some(entry)) = self.lock_mirror().get_mut(index)
+            && let Some(pane) = self.lock_cache().iter_mut().find(|pane| pane.id == id)
         {
-            entry.dims = (cols, rows);
+            pane.dims = (cols, rows);
         }
     }
 
-    fn send_key(&self, index: usize, key: &str, mods: Modifiers) -> bool {
-        let Some(id) = self.pane_id(index) else {
-            return false;
-        };
+    fn send_key(&self, id: PaneId, key: &str, mods: Modifiers) -> bool {
         let args = json!({
             "key": key,
             "ctrl": mods.ctrl,
@@ -377,35 +321,29 @@ impl HostClient for WireHost {
         });
         self.request(
             "scene/invoke",
-            invoke(&pane_input_path(id, KEY_ACTION), args),
+            invoke(&pane_input_path(id.0, KEY_ACTION), args),
             "send_key",
         )
         .is_some()
     }
 
-    fn send_text(&self, index: usize, text: &str) -> bool {
-        let Some(id) = self.pane_id(index) else {
-            return false;
-        };
-        let params = invoke(&pane_input_path(id, TEXT_ACTION), json!({ "text": text }));
+    fn send_text(&self, id: PaneId, text: &str) -> bool {
+        let params = invoke(&pane_input_path(id.0, TEXT_ACTION), json!({ "text": text }));
         self.request("scene/invoke", params, "send_text").is_some()
     }
 
-    fn pane_full_text(&self, index: usize) -> String {
-        let Some(id) = self.pane_id(index) else {
-            return String::new();
-        };
-        let params = json!({ "path": pane_input_path(id, FULL_TEXT_SLOT) });
+    fn pane_full_text(&self, id: PaneId) -> String {
+        let params = json!({ "path": pane_input_path(id.0, FULL_TEXT_SLOT) });
         self.request("scene/query", params, "pane_full_text")
             .and_then(|value| value.as_str().map(str::to_owned))
             .unwrap_or_default()
     }
 
-    fn pane_command_label(&self, index: usize) -> String {
-        self.lock_mirror()
-            .get(index)
-            .and_then(|slot| slot.as_ref())
-            .map(|entry| entry.meta.label.clone())
+    fn pane_command_label(&self, id: PaneId) -> String {
+        self.lock_cache()
+            .iter()
+            .find(|pane| pane.id == id)
+            .map(|pane| pane.label.clone())
             .unwrap_or_default()
     }
 }
@@ -493,9 +431,16 @@ fn spawn_host(
     command.spawn()
 }
 
-/// Query the host's pane list (`/sprag_mux/external/panes`), returning `(meta, dims)`
+/// A host pane as the pane-list query reports it, before its frame is fetched.
+struct PaneSeed {
+    id: PaneId,
+    label: String,
+    dims: (u16, u16),
+}
+
+/// Query the host's pane list (`/sprag_mux/external/panes`), returning a [`PaneSeed`]
 /// per pane in host order.
-fn query_panes(conn: &mut HostConn) -> io::Result<Vec<(PaneMeta, (u16, u16))>> {
+fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
     let value = conn.call(
         "scene/query",
         json!({ "path": mux_action_path(PANES_SLOT) }),
@@ -512,26 +457,24 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<(PaneMeta, (u16, u16))>> {
             let label = pane["command"].as_str().unwrap_or_default().to_owned();
             let cols = u16::try_from(pane["cols"].as_u64().unwrap_or(1)).unwrap_or(1);
             let rows = u16::try_from(pane["rows"].as_u64().unwrap_or(1)).unwrap_or(1);
-            Ok((PaneMeta { id, label }, (cols, rows)))
+            Ok(PaneSeed {
+                id: PaneId(id),
+                label,
+                dims: (cols, rows),
+            })
         })
         .collect()
 }
 
-/// The pane set the mirror boots with, in host display order, each with its identity +
-/// host-reported dims.
+/// The pane set the wire client boots with, in host order, each with its identity +
+/// host-reported dims. This client mirrors ALL the host's panes; "slots" and the display
+/// cap are the GUI `SlotView`'s concern, so there is NO cap here.
 ///
-/// * **Attach mode** (`attach`, the GUI reached an operator-run host) ADOPTS the host's
-///   live panes as-is — the tmux-attach semantics. No spawn / truncate to a GUI-chosen
-///   count: the GUI mirrors the host. The [`MAX_PANES`] slot cap is enforced ONCE, in
-///   [`plan_slots`] / [`reconcile`] (a host with more panes mirrors the first
-///   `MAX_PANES`, logged) — not with a second truncate here.
-/// * **Spawn mode** (the GUI owns the host child) ensures exactly `n_panes` (already
-///   clamped to `[1, MAX_PANES]` by [`pane_count`](crate::terminal::pane_count)),
-///   spawning extras running `argv` at `cols x rows` to reach it, then takes the first
-///   `n_panes` — the GUI is the operator and asks for its configured layout.
-///
-/// Forcing a count is now ONLY the spawn path (Round 1 of the tmux-mirror). Live add /
-/// remove of the adopted set is Round 2b.
+/// * **Attach mode** (the GUI reached an operator-run host) ADOPTS the host's live panes
+///   as-is — the tmux-attach semantics (no spawn / truncate to a GUI-chosen count).
+/// * **Spawn mode** (the GUI owns the host child) ensures exactly `n_panes` (the GUI is
+///   the operator asking for its configured layout), spawning extras running `argv` at
+///   `cols x rows` to reach it, then takes the first `n_panes`.
 fn boot_panes(
     conn: &mut HostConn,
     argv: Option<&[String]>,
@@ -539,7 +482,7 @@ fn boot_panes(
     rows: u16,
     n_panes: usize,
     attach: bool,
-) -> io::Result<Vec<(PaneMeta, (u16, u16))>> {
+) -> io::Result<Vec<PaneSeed>> {
     if attach {
         return query_panes(conn);
     }
@@ -557,113 +500,32 @@ fn boot_panes(
     Ok(panes)
 }
 
-/// Reconcile the slot mirror to the host's current pane list — the ONE place slot
-/// MEMBERSHIP changes. It frees the slot of every mapped pane no longer present, then
-/// allocates the lowest free slot to each host pane not yet mapped (fetching its initial
-/// frame). A pane thus KEEPS its slot for its whole life, so no per-slot GUI state
-/// (scroll / preedit / focus) migrates onto a different pane.
-///
-/// Boot calls this once against an all-`None` mirror — the all-new path, which lays the
-/// adopted panes in contiguous slots `0..N` in host display order. Round 2b calls it per
-/// poll wake to apply live add / remove deltas (the reason it is written against the
-/// delta case now, not a boot-only shortcut). Frame REFRESH of an already-mapped pane is
-/// the poll's separate per-wake fetch; this owns only membership + a newly-appeared
-/// pane's FIRST frame. A host set larger than [`MAX_PANES`] mirrors the first `MAX_PANES`
-/// (the honest slot-cap bound) and logs the overflow.
-fn reconcile(
-    slots: &mut [Option<PaneEntry>],
-    conn: &mut HostConn,
-    host_panes: Vec<(PaneMeta, (u16, u16))>,
-) {
-    let current: Vec<Option<u64>> = slots
-        .iter()
-        .map(|slot| slot.as_ref().map(|entry| entry.meta.id))
-        .collect();
-    let host_ids: Vec<u64> = host_panes.iter().map(|(meta, _)| meta.id).collect();
-    let (frees, adds, overflow) = plan_slots(&current, &host_ids);
-
-    for slot in frees {
-        slots[slot] = None;
-    }
-    // Move each newly-placed pane's identity + dims into its slot, fetching its first
-    // frame. A fetch error SKIPS that pane (its slot stays empty) rather than failing
-    // the whole reconcile: the pane closed between the pane-list query and here — a real
-    // attach race, since the host's set is operator-controlled — and mirroring the panes
-    // we CAN reach beats a GUI-fatal boot error. Index the host panes by id so an add
-    // takes OWNERSHIP of its entry.
-    let mut by_id: HashMap<u64, (PaneMeta, (u16, u16))> = host_panes
-        .into_iter()
-        .map(|(meta, dims)| (meta.id, (meta, dims)))
-        .collect();
-    for (slot, id) in adds {
-        if let Some((meta, dims)) = by_id.remove(&id) {
-            match fetch_frame(conn, id, 0) {
-                Ok(frame) => slots[slot] = Some(PaneEntry { meta, frame, dims }),
-                Err(error) => tracing::warn!(
-                    target: "sprag_gui::wire",
-                    pane = id,
-                    %error,
-                    "initial pane-frame fetch failed (pane likely closed mid-reconcile); slot left empty",
-                ),
-            }
+/// Fetch every seeded pane's initial frame into the cache, in host order. A pane whose
+/// first-frame fetch fails — it closed between the pane-list query and here, a real
+/// attach race since the host set is operator-controlled — is SKIPPED (logged) rather
+/// than failing the whole boot: the client mirrors the panes it could reach, and
+/// [`pane_ids`](HostClient::pane_ids) omits the skipped one, so the GUI's `SlotView`
+/// never maps a pane with no frame (the R120 tolerance, now with NO downstream orphan
+/// because the dock topology projects from `SlotView`'s occupied slots, not a count).
+fn build_cache(conn: &mut HostConn, seeds: Vec<PaneSeed>) -> Vec<WirePane> {
+    let mut panes = Vec::with_capacity(seeds.len());
+    for seed in seeds {
+        match fetch_frame(conn, seed.id.0, 0) {
+            Ok(frame) => panes.push(WirePane {
+                id: seed.id,
+                label: seed.label,
+                frame,
+                dims: seed.dims,
+            }),
+            Err(error) => tracing::warn!(
+                target: "sprag_gui::wire",
+                pane = seed.id.0,
+                %error,
+                "initial pane-frame fetch failed (pane likely closed mid-boot); not mirrored",
+            ),
         }
     }
-    // A host set larger than the slot cap mirrors the first MAX_PANES (the honest
-    // bound); plan_slots already decided which ids had no slot, so log the count once.
-    if !overflow.is_empty() {
-        tracing::warn!(
-            target: "sprag_gui::wire",
-            dropped = overflow.len(),
-            cap = MAX_PANES,
-            "host pane set exceeds the slot cap; extra panes not mirrored",
-        );
-    }
-}
-
-/// The PURE slot-allocation plan behind [`reconcile`] (so the allocator is unit-tested
-/// without a host): from each slot's current occupant id (`None` = a hole) and the
-/// host's live id list (display order), compute the slots to FREE (occupant vanished),
-/// the `(slot, id)` ADDS (a host id with no slot yet, placed at the LOWEST free slot —
-/// reusing a slot freed in this same plan, so slot usage stays compact), and the
-/// OVERFLOW ids (a host id past the [`MAX_PANES`] slot cap that got no slot — the caller
-/// logs them; this is the ONE place the cap is decided). A survivor (an id still present)
-/// keeps its existing slot and appears in none of the three lists. This is the
-/// load-bearing Round 2b logic; boot exercises only its all-new path (contiguous `0..N`).
-fn plan_slots(
-    current: &[Option<u64>],
-    host_ids: &[u64],
-) -> (Vec<usize>, Vec<(usize, u64)>, Vec<u64>) {
-    let live: HashSet<u64> = host_ids.iter().copied().collect();
-    let mut taken: Vec<bool> = current.iter().map(Option::is_some).collect();
-    let mut frees = Vec::new();
-    for (slot, occupant) in current.iter().enumerate() {
-        if let Some(id) = occupant
-            && !live.contains(id)
-        {
-            frees.push(slot);
-            taken[slot] = false; // available for an add below (hole reuse)
-        }
-    }
-    let survivors: HashSet<u64> = current
-        .iter()
-        .flatten()
-        .copied()
-        .filter(|id| live.contains(id))
-        .collect();
-    let mut adds = Vec::new();
-    let mut overflow = Vec::new();
-    for &id in host_ids {
-        if survivors.contains(&id) {
-            continue; // keeps its existing slot
-        }
-        if let Some(free) = taken.iter().position(|slot_taken| !slot_taken) {
-            taken[free] = true;
-            adds.push((free, id));
-        } else {
-            overflow.push(id); // no free slot (host set > MAX_PANES)
-        }
-    }
-    (frees, adds, overflow)
+    panes
 }
 
 /// Fetch one pane's cell frame at `offset` over the `cells` action — the shared
@@ -679,8 +541,8 @@ fn fetch_frame(conn: &mut HostConn, id: u64, offset: usize) -> io::Result<CellFr
     serde_json::from_value(value).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
-/// Start the background poll: block on `scene/waitFor {since}`, refresh every occupied
-/// slot's frame in the slot [`Mirror`] on each wake, and call `on_change` (repaint).
+/// Start the background poll: block on `scene/waitFor {since}`, refresh every mirrored
+/// pane's frame in the [`Cache`] (by [`PaneId`]) on each wake, and call `on_change` (repaint).
 /// Exits ONLY when `stop` is set (Drop cancels the parked read via a shutdown handle) or
 /// the parked `scene/waitFor` itself errors (the host connection was lost — logged at
 /// `warn`, since live updates then stop and the GUI would otherwise silently freeze). A
@@ -694,7 +556,7 @@ fn fetch_frame(conn: &mut HostConn, id: u64, offset: usize) -> io::Result<CellFr
 /// rather than panicking inside it).
 fn spawn_poll(
     mut conn: HostConn,
-    mirror: Mirror,
+    cache: Cache,
     on_change: Box<dyn Fn() + Send>,
     stop: Arc<AtomicBool>,
     mut since: u64,
@@ -716,45 +578,34 @@ fn spawn_poll(
                     break;
                 }
                 since = response["revision"].as_u64().unwrap_or(since);
-                // Snapshot the occupied (slot, id) targets under a brief lock, fetch each
-                // frame OFF the lock (never a socket call while holding it), then write the
-                // frames back to their slots. Round 2b inserts a `reconcile` (re-query the
-                // pane list) HERE, before deriving targets; the set is fixed in Round 2a.
-                let targets: Vec<(usize, u64)> = {
-                    let guard = lock_slots(&mirror);
-                    guard
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(slot, entry)| {
-                            entry.as_ref().map(|entry| (slot, entry.meta.id))
-                        })
-                        .collect()
-                };
-                let mut fetched = Vec::with_capacity(targets.len());
-                for (slot, id) in targets {
+                // Snapshot the mirrored pane ids under a brief lock, fetch each frame OFF
+                // the lock (never a socket call while holding it), then write the frames
+                // back by IDENTITY. Round 2b inserts a pane-list re-query + cache add/remove
+                // HERE, before deriving ids; the set is fixed in Round 2a.
+                let ids: Vec<PaneId> = lock_cache(&cache).iter().map(|pane| pane.id).collect();
+                let mut fetched = Vec::with_capacity(ids.len());
+                for id in ids {
                     // A per-pane fetch error is NOT fatal to the poll: the pane closed
                     // host-side (an operator close in attach mode, or Round 2b), so skip
                     // just this pane this wake and keep updating the others. A genuine
                     // connection loss is caught by the next `scene/waitFor` above.
-                    match fetch_frame(&mut conn, id, 0) {
-                        Ok(frame) => fetched.push((slot, id, frame)),
+                    match fetch_frame(&mut conn, id.0, 0) {
+                        Ok(frame) => fetched.push((id, frame)),
                         Err(error) => tracing::debug!(
                             target: "sprag_gui::wire",
-                            pane = id,
+                            pane = id.0,
                             %error,
                             "pane cell refetch failed; skipped this wake",
                         ),
                     }
                 }
-                // Write each frame back only to the slot STILL holding the SAME pane it was
-                // fetched for (`entry.meta.id == id`), so a Round 2b free-and-reuse between
-                // the fetch and here can never land an old pane's frame on a new occupant.
-                let mut guard = lock_slots(&mirror);
-                for (slot, id, frame) in fetched {
-                    if let Some(Some(entry)) = guard.get_mut(slot)
-                        && entry.meta.id == id
-                    {
-                        entry.frame = frame;
+                // Write each frame back to the pane STILL present with the SAME id (a
+                // linear find), so a Round 2b remove between the fetch and here simply drops
+                // the write rather than resurrecting a gone pane.
+                let mut guard = lock_cache(&cache);
+                for (id, frame) in fetched {
+                    if let Some(pane) = guard.iter_mut().find(|pane| pane.id == id) {
+                        pane.frame = frame;
                     }
                 }
                 drop(guard);
@@ -796,55 +647,5 @@ mod tests {
         let params = invoke(&pane_input_path(0, KEY_ACTION), json!({ "key": "a" }));
         assert_eq!(params["path"], "/pane_0/sprag_input/external/key");
         assert_eq!(params["args"]["key"], "a");
-    }
-
-    #[test]
-    fn plan_slots_boot_is_contiguous_from_empty() {
-        // Boot = the all-new path: an empty mirror + host ids -> contiguous slots 0..N in
-        // host display order, no frees, no overflow.
-        let (frees, adds, overflow) = plan_slots(&[None, None, None, None], &[10, 11, 12]);
-        assert!(frees.is_empty());
-        assert_eq!(adds, vec![(0, 10), (1, 11), (2, 12)]);
-        assert!(overflow.is_empty());
-    }
-
-    #[test]
-    fn plan_slots_survivors_keep_their_slots() {
-        // Ids already mapped and still live keep their slots (neither freed nor re-added),
-        // so no per-slot GUI state migrates.
-        let (frees, adds, overflow) = plan_slots(&[Some(10), Some(11), None, None], &[10, 11]);
-        assert!(frees.is_empty());
-        assert!(adds.is_empty());
-        assert!(overflow.is_empty());
-    }
-
-    #[test]
-    fn plan_slots_frees_a_closed_pane_and_reuses_the_hole() {
-        // Pane at slot 1 closed, a new pane (20) appeared: slot 1 frees, the survivors (10,
-        // 12) keep slots 0 and 2, and the newcomer takes the LOWEST free slot — the reused
-        // hole at slot 1 — so slot usage stays compact.
-        let (frees, adds, overflow) =
-            plan_slots(&[Some(10), Some(11), Some(12), None], &[10, 12, 20]);
-        assert_eq!(frees, vec![1]);
-        assert_eq!(adds, vec![(1, 20)]);
-        assert!(overflow.is_empty());
-    }
-
-    #[test]
-    fn plan_slots_drops_ids_past_the_slot_cap() {
-        // A full mirror (no holes) with an extra host id: the newcomer gets NO slot (absent
-        // from adds, present in overflow by its exact id) — the honest MAX_PANES bound the
-        // caller logs.
-        let full: Vec<Option<u64>> = (0..MAX_PANES as u64).map(Some).collect();
-        let mut host: Vec<u64> = (0..MAX_PANES as u64).collect();
-        host.push(999);
-        let (frees, adds, overflow) = plan_slots(&full, &host);
-        assert!(frees.is_empty());
-        assert!(adds.is_empty(), "no free slot -> the extra id is dropped");
-        assert_eq!(
-            overflow,
-            vec![999],
-            "the specific overflowed id is reported"
-        );
     }
 }
