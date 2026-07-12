@@ -251,15 +251,6 @@ const ROOT_TAG: &str = "sprag_gui";
 /// `Owner::cache` key for the boot-focus seed marker ([`BootFocusSeed`]).
 const BOOT_FOCUS_KEY: &str = "sprag_gui.boot_focus_seed";
 
-/// The tile slot whose scrollbar is the shell's PRIMARY External (registered by
-/// `create_external`, named by `tag`); every OTHER occupied slot's scrollbar is an extra
-/// (`create_extra_externals`). One name for the coupling between those sites. Slot 0 is
-/// the primary; when it is EMPTY (a zero-pane attach, or a boot hole) the primary is a
-/// harmless dangling external — nothing paints it, since `view` / a11y render only
-/// occupied slots. Re-homing the primary onto a non-pane sentinel tag (so no pane slot is
-/// load-bearing) is future work.
-const PRIMARY_SCROLLBAR_SLOT: usize = 0;
-
 /// Zero-size marker cached once to run the boot focus request a single time. The
 /// dynamic external set ([`TerminalViewer::external_set_is_dynamic`]) makes the shell
 /// re-run [`create_extra_externals`](TerminalViewer::create_extra_externals) every
@@ -273,10 +264,12 @@ impl WidgetCore for TerminalViewer {
     type State = ();
     type Event = ();
 
-    /// The primary External is **pane 0**'s draggable scrollbar (tagged
-    /// [`Self::tag`] == [`pane_scrollbar_tag`]`(0)`); panes 1.. scrollbars + the
-    /// splitters + dock-panel handles are the [`Self::create_extra_externals`]
-    /// extras.
+    /// The primary External is the INERT non-pane scrollbar SENTINEL
+    /// ([`scrollbar::PRIMARY_SENTINEL_TAG`], R122): the shell requires a primary
+    /// `External`, but homing it on a pane slot made that slot load-bearing (a Round 2b
+    /// close of slot 0 would dangle it). EVERY pane scrollbar — slot 0 included — is a
+    /// symmetric extra ([`Self::create_extra_externals`]) instead, alongside the splitters
+    /// + dock-panel handles, so any slot may close/reuse with no special case.
     ///
     /// Topology B (R115c): the GUI serves NO pane-INPUT external on its own socket —
     /// keyboard / IME are client SENDs to the host ([`Self::apply_key`] ->
@@ -285,7 +278,7 @@ impl WidgetCore for TerminalViewer {
     /// interaction externals (scroll / split / dock); the retired `SpragPaneExternal`
     /// + `pane_handle` (a live `SessionHandle` cannot cross the wire) are gone.
     fn create_external() -> Box<dyn External> {
-        crate::scrollbar::pane_scrollbar_external(PRIMARY_SCROLLBAR_SLOT).handle
+        crate::scrollbar::primary_scrollbar_external().handle
     }
 
     /// Boot the live terminal (spawn the N pane PTYs + wire each `on_dirty` ->
@@ -346,15 +339,13 @@ impl WidgetCore for TerminalViewer {
         // The occupied slots, snapshot ONCE (one mirror lock + alloc) and reused by both
         // the scrollbar-extras and the dock-panel externals below.
         let occupied = terminal.slots.occupied_slots();
-        // Slot 0's scrollbar is the PRIMARY external ([`Self::create_external`]); the
-        // OTHER occupied slots are extras, so the drag-scrollbar set stays complete
-        // without a duplicate registration at `pane_scrollbar_tag(0)`. (Slot 0 is always
-        // occupied at boot; a Round 2b close of slot 0 would need the primary re-homed.)
+        // EVERY occupied slot's scrollbar is a symmetric extra (R122): the primary external
+        // is a non-pane sentinel ([`Self::create_external`]), so no slot — 0 included — is
+        // load-bearing, and a Round 2b close of any slot just drops its extra here.
         externals.extend(
             occupied
                 .iter()
                 .copied()
-                .filter(|&i| i != PRIMARY_SCROLLBAR_SLOT)
                 .map(scrollbar::pane_scrollbar_external),
         );
         // Drag-to-dock / tear-off (pinion R1081/R1084/R1094 §5.51, P2/PR-31): one R742
@@ -502,20 +493,49 @@ impl WidgetCore for TerminalViewer {
         route_composition(focused, event)
     }
 
-    /// Pre-view reconcile (pinion R1047 / PR-20): grow each pane's row-unit
-    /// `ScrollState` bound to its live scrollback depth and tail-follow, BEFORE the
-    /// pure `view` fn runs. This is the sanctioned non-view-fn place for the
-    /// reactive `Signal` write the bar/projection need current — the terminal grid
-    /// is an `offset_lines`-projecting `Scene::TextGrid` (no `Scene::Scroll` clip for
-    /// the layout reducer) and `scrollback_len` lives in an off-thread PTY producer
-    /// (no `Signal` for an `Effect`), so neither runtime path can reconcile it. Runs
-    /// in the binding root `Owner`, so [`use_terminal`] / `use_pane_scroll` resolve.
-    /// Caveat: pinion gates this to the primary window's paint, so a FLOATED pane
-    /// whose undock window alone repaints can lag one bound-grow until the primary
-    /// repaints — harmless in practice (live PTY output flips the root dirty bit, so
-    /// the primary repaints too).
+    /// Pre-view reconcile (pinion R1047 / PR-20): the sanctioned non-view-fn place to
+    /// reconcile OFF-THREAD-PRODUCER state into the reactive graph, BEFORE the pure `view`
+    /// fn runs — pinion runs it every real paint (including a bare wire-poll
+    /// `request_repaint`) in the binding root `Owner`, so [`use_terminal`] / the per-slot
+    /// hooks resolve. Two off-thread facts are reconciled here (both live in the host with
+    /// no `Signal` for an `Effect` to subscribe):
+    ///
+    /// 1. **The pane SET (Round 2b live delta).** [`SlotView::reconcile`](crate::slotview::SlotView::reconcile)
+    ///    mirrors the host's current [`PaneId`](sprag_terminal::PaneId) set onto display
+    ///    slots and returns the freed + added slots. A FREED slot (its pane closed
+    ///    host-side — an operator/AI close in attach mode) evicts its dock leaf / floating
+    ///    window ([`dock::evict_pane`]) and resets its per-slot GUI state
+    ///    ([`scrollbar::reset_pane_scroll`] / [`input::reset_pane_preedit`]) so a slot
+    ///    reused by a later pane starts clean; an ADDED slot (a new host pane) admits a
+    ///    docked leaf ([`dock::admit_pane`]). Done FIRST so the scroll reconcile below,
+    ///    `view`, and the post-view `create_extra_externals` (the dynamic external set —
+    ///    scrollbars / dock panels / splitters) all project against the reconciled set on
+    ///    this SAME frame. The wire poll thread only mutates the plain cache + repaints; it
+    ///    never touches a `Signal`/`Owner::cache` (those are UI-thread-only), so the map
+    ///    reconcile is here, not on that thread.
+    /// 2. **Each pane's scrollback depth.** Grow each pane's row-unit `ScrollState` bound to
+    ///    its live `scrollback_len` and tail-follow — the terminal grid is an
+    ///    `offset_lines`-projecting `Scene::TextGrid` (no `Scene::Scroll` clip for the
+    ///    layout reducer) and the depth lives in the off-thread PTY producer, so neither
+    ///    runtime path can reconcile it.
+    ///
+    /// Caveat: pinion gates this to the primary window's paint, so a FLOATED pane whose
+    /// undock window alone repaints can lag one reconcile until the primary repaints —
+    /// harmless in practice (live PTY output / a set change flips the root dirty bit via
+    /// the R118 rail, so the primary repaints too).
     fn reconcile_frame() {
         let terminal = use_terminal();
+        // (1) Mirror the host's live pane set onto slots, then fold the delta.
+        let delta = terminal.slots.reconcile();
+        for slot in delta.freed {
+            dock::evict_pane(slot);
+            scrollbar::reset_pane_scroll(slot);
+            input::reset_pane_preedit(slot);
+        }
+        for slot in delta.added {
+            dock::admit_pane(slot);
+        }
+        // (2) Grow each occupied pane's scroll bound to its live scrollback depth.
         for i in terminal.slots.occupied_slots() {
             let scrollback_len = terminal.slots.pane_scroll_facts(i).scrollback_len;
             scrollbar::reconcile_scroll(&scrollbar::use_pane_scroll(i), scrollback_len);
@@ -567,13 +587,14 @@ impl WidgetCore for TerminalViewer {
         true
     }
 
-    /// The primary External's tag ([`Self::create_external`] is pane 0's scrollbar):
-    /// the model-scene primary is registered at `V::tag()`, so the shell routes a
-    /// press on pane 0's painted scrollbar track to it. Pane focus is paint-derived
-    /// (R1020 `collect_focusable_tags` over the `with_focusable` pane Containers), so
-    /// it does NOT depend on this tag.
+    /// The primary External's tag — the non-pane scrollbar SENTINEL
+    /// ([`scrollbar::PRIMARY_SENTINEL_TAG`], R122): the model-scene primary is registered at
+    /// `V::tag()`, but nothing paints this tag, so it is inert (every real pane scrollbar
+    /// routes through its own extra instead — see [`Self::create_external`]). Pane focus is
+    /// paint-derived (R1020 `collect_focusable_tags` over the `with_focusable` pane
+    /// Containers), so it does NOT depend on this tag.
     fn tag() -> &'static str {
-        pane_scrollbar_tag(PRIMARY_SCROLLBAR_SLOT)
+        scrollbar::PRIMARY_SENTINEL_TAG
     }
 
     fn read_state(_scene: &Scene) {}
