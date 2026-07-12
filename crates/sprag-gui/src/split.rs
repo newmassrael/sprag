@@ -87,8 +87,15 @@ use std::rc::Rc;
 /// namespace.
 const PANEL_ID_PREFIX: &str = "terminal-";
 
-/// The stable `panel_id` of the pane at tile `index` — the dock-tree leaf identity
-/// + the panel's header title + scene tag. Inverse of [`pane_index_of_panel`].
+/// The stable `panel_id` of the pane at tile `index` — the dock-tree leaf IDENTITY + scene
+/// tag. Inverse of [`pane_index_of_panel`].
+///
+/// It is also the DISPLAYED header title in two cases: the DOCKED panel (pinion's
+/// `view_dock_surface` walker passes the `panel_id` as the title and exposes no
+/// display-title seam — PINION-PR52), and any pane whose child has set no `OSC` title. The
+/// floater header already shows the child's title instead
+/// ([`pane_display_title`](crate::view::pane_display_title), R128) — so `panel_id` is
+/// identity FIRST, and a header string only as the fallback / where pinion forces it.
 pub(crate) fn panel_id(index: usize) -> String {
     format!("{PANEL_ID_PREFIX}{index}")
 }

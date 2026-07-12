@@ -87,6 +87,10 @@ const HOST_BIN_ENV: &str = "SPRAG_GUI_HOST_BIN";
 struct WirePane {
     id: PaneId,
     label: String,
+    /// The child's live `OSC 0`/`OSC 2` window title, `None` until it sets one.
+    /// Host-authoritative like [`Self::label`] (re-read on every poll re-query, since a
+    /// shell rewrites it each prompt). A DISPLAY name only — never identity.
+    title: Option<String>,
     frame: CellFrame,
     /// The GUI's tracked grid `(cols, rows)`: seeded from the host at boot, advanced only
     /// when a `resize` RPC SUCCEEDS (so the reflow no-op guard reads it with no
@@ -355,6 +359,16 @@ impl HostClient for WireHost {
             .map(|pane| pane.label.clone())
             .unwrap_or_default()
     }
+
+    /// Served from the mirror the poll thread refreshes (no socket round-trip on the
+    /// paint path); the title re-adopts the host's on every wake, so it tracks a shell
+    /// rewriting it each prompt.
+    fn pane_title(&self, id: PaneId) -> Option<String> {
+        self.lock_cache()
+            .iter()
+            .find(|pane| pane.id == id)
+            .and_then(|pane| pane.title.clone())
+    }
 }
 
 impl Drop for WireHost {
@@ -444,6 +458,9 @@ fn spawn_host(
 struct PaneSeed {
     id: PaneId,
     label: String,
+    /// The child's live OSC window title, `None` if it has set none (the wire sends
+    /// `null`).
+    title: Option<String>,
     dims: (u16, u16),
 }
 
@@ -464,11 +481,14 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
                 .as_u64()
                 .ok_or_else(|| io::Error::other("pane entry missing a numeric id"))?;
             let label = pane["command"].as_str().unwrap_or_default().to_owned();
+            // `null` (child set no title) and a missing key both mean "no title".
+            let title = pane["title"].as_str().map(str::to_owned);
             let cols = u16::try_from(pane["cols"].as_u64().unwrap_or(1)).unwrap_or(1);
             let rows = u16::try_from(pane["rows"].as_u64().unwrap_or(1)).unwrap_or(1);
             Ok(PaneSeed {
                 id: PaneId(id),
                 label,
+                title,
                 dims: (cols, rows),
             })
         })
@@ -583,7 +603,11 @@ fn refresh_to_set(conn: &mut HostConn, cache: &Cache, seeds: &[PaneSeed]) {
 ///   from the query.
 /// * **label** is HOST-authoritative (set at spawn, the GUI never mutates it), so it ALWAYS
 ///   comes from the query (`seed.label`) — a survivor adopts any host relabel rather than
-///   freezing the first-seen name (forward-correct if host titles ever go dynamic).
+///   freezing the first-seen name.
+/// * **title** (the child's live `OSC 0`/`OSC 2` window title, R128) is HOST-authoritative
+///   and genuinely DYNAMIC — a shell rewrites it on every prompt — so a survivor ALWAYS
+///   re-adopts `seed.title`, including back to `None` if the child clears it. This is the
+///   dynamic-title case the label rule above was written to be forward-correct for.
 ///
 /// The frame is the freshly-`fetched` one, else a survivor's last frame if this wake's fetch
 /// missed; a NEWCOMER with no frame yet is DROPPED (retried next wake, so no frameless pane
@@ -608,6 +632,7 @@ fn merge_panes(
         rebuilt.push(WirePane {
             id: seed.id,
             label: seed.label.clone(), // host-authoritative — always the query's label
+            title: seed.title.clone(), // host-authoritative + dynamic — re-adopt every wake
             frame,
             dims: prior.map_or(seed.dims, |pane| pane.dims), // GUI-authoritative — keep tracked
         });
@@ -678,6 +703,9 @@ fn spawn_poll(
                             .map(|pane| PaneSeed {
                                 id: pane.id,
                                 label: pane.label.clone(),
+                                // Re-query failed, so the host's current title is unknown —
+                                // KEEP the last-known one rather than blanking the display.
+                                title: pane.title.clone(),
                                 dims: pane.dims,
                             })
                             .collect();
@@ -742,12 +770,14 @@ mod tests {
             WirePane {
                 id: PaneId(10),
                 label: "bash".to_owned(),
+                title: None,
                 frame: frame(3),
                 dims: (80, 24),
             },
             WirePane {
                 id: PaneId(11),
                 label: "cat".to_owned(),
+                title: None,
                 frame: frame(3),
                 dims: (40, 12),
             },
@@ -759,16 +789,19 @@ mod tests {
             PaneSeed {
                 id: PaneId(10),
                 label: "bash-relabeled".to_owned(),
+                title: None,
                 dims: (100, 30),
             },
             PaneSeed {
                 id: PaneId(12),
                 label: "vim".to_owned(),
+                title: None,
                 dims: (80, 24),
             },
             PaneSeed {
                 id: PaneId(13),
                 label: "top".to_owned(),
+                title: None,
                 dims: (80, 24),
             },
         ];
@@ -809,12 +842,14 @@ mod tests {
         let existing = vec![WirePane {
             id: PaneId(10),
             label: "bash".to_owned(),
+            title: None,
             frame: frame(3),
             dims: (80, 24),
         }];
         let seeds = vec![PaneSeed {
             id: PaneId(10),
             label: "bash".to_owned(),
+            title: None,
             dims: (80, 24),
         }];
         let merged = merge_panes(&existing, &seeds, &[]); // fetch missed this wake
@@ -823,6 +858,57 @@ mod tests {
             merged[0].frame.cells.cols(),
             3,
             "kept its last frame when the refetch missed (not dropped)"
+        );
+    }
+
+    /// The OSC title (R128) is HOST-authoritative AND dynamic — a shell rewrites it on
+    /// every prompt. So a survivor must RE-ADOPT the query's title each wake, including
+    /// back to `None` when the child clears it; freezing the first-seen title would pin a
+    /// stale name (`vim README` long after vim exited).
+    #[test]
+    fn merge_panes_survivor_readopts_the_hosts_live_title_including_clearing_it() {
+        let existing = vec![
+            WirePane {
+                id: PaneId(10),
+                label: "bash".to_owned(),
+                title: Some("stale: vim README".to_owned()),
+                frame: frame(3),
+                dims: (80, 24),
+            },
+            WirePane {
+                id: PaneId(11),
+                label: "bash".to_owned(),
+                title: Some("about to be cleared".to_owned()),
+                frame: frame(3),
+                dims: (80, 24),
+            },
+        ];
+        let seeds = vec![
+            PaneSeed {
+                id: PaneId(10),
+                label: "bash".to_owned(),
+                title: Some("coin@host:~".to_owned()), // child retitled at the new prompt
+                dims: (80, 24),
+            },
+            PaneSeed {
+                id: PaneId(11),
+                label: "bash".to_owned(),
+                title: None, // child cleared its title
+                dims: (80, 24),
+            },
+        ];
+        let fetched = vec![(PaneId(10), frame(5)), (PaneId(11), frame(5))];
+
+        let merged = merge_panes(&existing, &seeds, &fetched);
+
+        assert_eq!(
+            merged[0].title.as_deref(),
+            Some("coin@host:~"),
+            "survivor re-adopts the host's live title, never freezing the first-seen one",
+        );
+        assert_eq!(
+            merged[1].title, None,
+            "a cleared title clears the mirror too (host is authoritative both ways)",
         );
     }
 }

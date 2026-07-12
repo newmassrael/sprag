@@ -184,6 +184,12 @@ impl SlotView {
             .map(|id| self.host.pane_command_label(id))
             .unwrap_or_default()
     }
+
+    /// Slot `slot`'s child-reported window title (`OSC 0`/`OSC 2`), `None` for a hole or
+    /// a child that has set none. A DISPLAY name only — see [`HostClient::pane_title`].
+    pub(crate) fn pane_title(&self, slot: usize) -> Option<String> {
+        self.id(slot).and_then(|id| self.host.pane_title(id))
+    }
 }
 
 /// The PURE slot-allocation plan behind [`SlotView::reconcile`] (so the allocator is
@@ -297,9 +303,12 @@ mod tests {
 
     /// A [`HostClient`] whose pane-id list the test controls (shared via `Rc<RefCell<..>>`),
     /// so a live `reconcile` delta is driven without a real host. Every other method returns
-    /// its graceful default — the slot map / delta logic reads only `pane_ids`.
+    /// its graceful default — the slot map / delta logic reads only `pane_ids` — except
+    /// `pane_title`, which serves `titles` so the R128 display-title policy is testable.
     struct FakeHost {
         ids: std::rc::Rc<RefCell<Vec<PaneId>>>,
+        /// Per-pane-id OSC title, for the `pane_title` / display-title tests.
+        titles: std::collections::HashMap<PaneId, String>,
     }
 
     impl HostClient for FakeHost {
@@ -331,12 +340,42 @@ mod tests {
         fn pane_command_label(&self, _id: PaneId) -> String {
             String::new()
         }
+        fn pane_title(&self, id: PaneId) -> Option<String> {
+            self.titles.get(&id).cloned()
+        }
     }
 
     fn view_over(ids: &std::rc::Rc<RefCell<Vec<PaneId>>>) -> SlotView {
         SlotView::new(Box::new(FakeHost {
             ids: std::rc::Rc::clone(ids),
+            titles: std::collections::HashMap::new(),
         }))
+    }
+
+    /// The R128 DISPLAY-title policy ([`crate::view::pane_display_title`]): prefer the
+    /// child's live OSC title, fall back to the stable `panel_id` when it has set none —
+    /// or set a BLANK one, which must not blank the header. Identity is never affected.
+    #[test]
+    fn display_title_prefers_the_osc_title_and_falls_back_to_the_panel_id() {
+        let ids = std::rc::Rc::new(RefCell::new(vec![pid(10), pid(11), pid(12)]));
+        let view = SlotView::new(Box::new(FakeHost {
+            ids: std::rc::Rc::clone(&ids),
+            titles: [
+                (pid(10), "vim README".to_owned()),
+                (pid(11), "   ".to_owned()), // child set a BLANK title
+            ]
+            .into_iter()
+            .collect(),
+        }));
+
+        // Slot 0's child set a title -> it is displayed.
+        assert_eq!(crate::view::pane_display_title(&view, 0), "vim README");
+        // Slot 1's child set a blank one -> fall back, never an empty header.
+        assert_eq!(crate::view::pane_display_title(&view, 1), "terminal-1");
+        // Slot 2's child set none -> the stable panel id.
+        assert_eq!(crate::view::pane_display_title(&view, 2), "terminal-2");
+        // A hole (no pane) still yields its stable panel id, never a panic.
+        assert_eq!(crate::view::pane_display_title(&view, 7), "terminal-7");
     }
 
     #[test]

@@ -6,6 +6,7 @@
 use crate::ROOT_TAG;
 use crate::dock::pane_window_index;
 use crate::input::use_preedit;
+use crate::slotview::SlotView;
 use crate::split::{
     pane_index_of_panel, panel_id, use_dock_topology, use_drop_preview, use_split_ratio,
 };
@@ -26,6 +27,25 @@ use pinion_widget_paint::dock::{
 
 /// Shared [`ThemeProvider`](pinion_core::ThemeProvider) cache key (the surface fill behind the grid).
 const THEME_TAG: &str = "app";
+
+/// The DISPLAY title of the pane in tile `i` (R128) — the ONE home for the fallback rule,
+/// so every title surface reads the same policy (the floater header today; the DOCKED
+/// header + the OS window title once PINION-PR52 lands those seams).
+///
+/// Prefers the child's live `OSC 0` / `OSC 2` window title — what tmux / `gnome-terminal`
+/// show (`vim README`, `coin@host:~`, an ssh remote) — and falls back to the stable
+/// [`panel_id`] when the child has set none, or set a BLANK one (which must not blank the
+/// header).
+///
+/// **Display only.** IDENTITY — the dock-leaf [`panel_id`], scene tags, focus, RPC paths —
+/// never derives from this: a child sets its title freely and rewrites it on every prompt,
+/// so deriving identity from it would let a pane rename its own address (R70).
+pub(crate) fn pane_display_title(slots: &SlotView, i: usize) -> String {
+    slots
+        .pane_title(i)
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| panel_id(i))
+}
 
 /// view-fn (§6.3): per-window paint. The **main** window tiles the DOCKED panes
 /// (those without an undock window); an **undock window** (`pane-{i}`) paints that
@@ -67,7 +87,7 @@ pub(crate) fn view_for_window(window_id: &str, _state: (), _frame: &Frame) -> Sc
                 },
             );
             view_dock_panel_with_actions(
-                &panel_id(i),
+                &pane_display_title(&tv.slots, i),
                 fill_definite_shrinkable(build_pane_scene(&tv, i, &theme)),
                 &theme,
                 &style,
