@@ -18,7 +18,7 @@ use termwiz::escape::csi::{
     EraseInLine, Mode, Sgr,
 };
 use termwiz::escape::parser::Parser;
-use termwiz::escape::{Action, ControlCode};
+use termwiz::escape::{Action, ControlCode, OperatingSystemCommand};
 
 use crate::port::{
     Attrs, Cell, Color, Cursor, CursorShape, InputModes, Rgb, Screen, ScreenKind, VtPort, Width,
@@ -46,6 +46,14 @@ pub struct Emulator {
     /// Input modes set by the child (DECCKM, …) that the key encoder
     /// reads; tracked here, exposed via [`VtPort::input_modes`].
     input_modes: InputModes,
+    /// The child's self-reported window TITLE (`OSC 0` / `OSC 2`), `None` until it
+    /// sets one. Exposed via [`VtPort::title`]; a shell's `PROMPT_COMMAND` (or vim,
+    /// ssh, tmux…) rewrites it continuously, so this is live state, NOT the spawn
+    /// command label. Deliberately does NOT bump [`Self::generation`] — that stamp is
+    /// ROW DAMAGE, and a title carries no cells; marking rows dirty for it would force
+    /// needless cell re-render. The change still reaches consumers because the OSC
+    /// bytes arrive as PTY output, which already fires the session's `on_dirty`.
+    title: Option<String>,
     /// Monotonic damage stamp, bumped on every row-mutating action.
     generation: u64,
     /// `true` between a resize and the next batch of bytes — the window in which a
@@ -98,6 +106,7 @@ impl Emulator {
             bg: Color::Default,
             attrs: Attrs::default(),
             input_modes: InputModes::default(),
+            title: None,
             generation: 0,
             in_resize_redraw: false,
         }
@@ -115,7 +124,24 @@ impl Emulator {
             Action::PrintString(s) => self.print_str(&s),
             Action::Control(code) => self.control(code),
             Action::CSI(csi) => self.csi(csi),
-            // Esc, OSC, device-control, APC: not part of the skeleton subset.
+            Action::OperatingSystemCommand(osc) => self.osc(&osc),
+            // Esc, device-control, APC: not part of the skeleton subset.
+            _ => {}
+        }
+    }
+
+    /// Operating-system commands. Only the WINDOW-TITLE family is in the subset:
+    /// `OSC 0` (icon name AND window title) and `OSC 2` (window title), plus termwiz's
+    /// Sun-style `OSC 2` spelling. `OSC 1` sets only the ICON name — not a window
+    /// title — so it is ignored, as is every other OSC (hyperlinks, clipboard,
+    /// colour queries): unhandled sequences are dropped, per the skeleton contract.
+    fn osc(&mut self, osc: &OperatingSystemCommand) {
+        match osc {
+            OperatingSystemCommand::SetWindowTitle(t)
+            | OperatingSystemCommand::SetWindowTitleSun(t)
+            | OperatingSystemCommand::SetIconNameAndWindowTitle(t) => {
+                self.title = Some(t.clone());
+            }
             _ => {}
         }
     }
@@ -442,6 +468,10 @@ impl VtPort for Emulator {
     fn input_modes(&self) -> InputModes {
         self.input_modes
     }
+
+    fn title(&self) -> Option<&str> {
+        self.title.as_deref()
+    }
 }
 
 /// Convert a termwiz `ColorSpec` to the port's `Color`.
@@ -565,6 +595,62 @@ mod tests {
         // After two line feeds past a 2-row screen, the top scrolls away.
         assert_eq!(cluster(&em, 0, 0), "b");
         assert_eq!(cluster(&em, 0, 1), "c");
+    }
+
+    /// `OSC 2` (window title) and `OSC 0` (icon name AND window title) both set the
+    /// title; the latest write wins (a shell rewrites it on every prompt).
+    #[test]
+    fn osc_0_and_2_set_the_window_title() {
+        let mut em = Emulator::new(8, 2);
+        assert_eq!(em.title(), None, "no title until the child sets one");
+
+        em.advance(b"\x1b]2;vim README\x07");
+        assert_eq!(em.title(), Some("vim README"));
+
+        em.advance(b"\x1b]0;coin@host:~\x07");
+        assert_eq!(em.title(), Some("coin@host:~"), "latest OSC wins");
+    }
+
+    /// `OSC 1` sets only the ICON name — not a window title — so it must NOT be
+    /// mistaken for one (the whole point of matching the variants, not the OSC code).
+    #[test]
+    fn osc_1_icon_name_does_not_set_the_window_title() {
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b]2;real title\x07");
+        em.advance(b"\x1b]1;icon-only\x07");
+        assert_eq!(
+            em.title(),
+            Some("real title"),
+            "OSC 1 must not overwrite it"
+        );
+    }
+
+    /// A title carries NO cells, so it must not stamp ROW DAMAGE — else every prompt
+    /// (which rewrites the title) would force a needless cell re-render. Consumers
+    /// still learn of it: the OSC bytes are PTY output, which fires `on_dirty`.
+    #[test]
+    fn setting_the_title_does_not_bump_the_damage_generation() {
+        let mut em = Emulator::new(8, 2);
+        let g0 = em.screen().row_generation(0).unwrap();
+        em.advance(b"\x1b]2;no damage\x07");
+        assert_eq!(em.title(), Some("no damage"));
+        assert_eq!(
+            em.screen().row_generation(0).unwrap(),
+            g0,
+            "a title-only OSC leaves row damage untouched",
+        );
+    }
+
+    /// The title survives an alt-screen round trip: it is emulator-level state, not a
+    /// property of either screen buffer (a fullscreen app sets a title, then restores).
+    #[test]
+    fn title_survives_the_alt_screen_round_trip() {
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b]2;editor\x07");
+        em.advance(b"\x1b[?1049h");
+        assert_eq!(em.title(), Some("editor"));
+        em.advance(b"\x1b[?1049l");
+        assert_eq!(em.title(), Some("editor"));
     }
 
     #[test]

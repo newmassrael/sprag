@@ -659,6 +659,14 @@ pub trait VtPort {
     /// The current input modes affecting key→PTY-byte encoding (DECCKM,
     /// …). Read by the sprag-owned key encoder (R2.6).
     fn input_modes(&self) -> InputModes;
+
+    /// The child's self-reported window TITLE (`OSC 0` / `OSC 2`), or `None` if it has
+    /// never set one. This is LIVE state — a shell's `PROMPT_COMMAND`, vim, ssh or a
+    /// nested tmux rewrite it continuously — and is distinct from the pane's spawn
+    /// COMMAND LABEL (which names what was launched and never changes). A display
+    /// surface prefers this and falls back to a stable name; pane IDENTITY (tags,
+    /// panel ids) never derives from it, since a child controls it freely.
+    fn title(&self) -> Option<&str>;
 }
 
 #[cfg(test)]
