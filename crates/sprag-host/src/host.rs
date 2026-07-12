@@ -112,12 +112,13 @@ pub trait HostClient {
     /// former `pane_count` / `occupied_slots` (slot concepts that moved to the GUI's
     /// `SlotView`).
     ///
-    /// CONTRACT: yields exactly the panes this client can RENDER right now. The in-process
-    /// [`Host`] returns every live workspace pane (a spawn is visible immediately). A wire
-    /// client may yield a just-spawned pane one wake LATE — it omits a pane until it has
-    /// fetched a first frame, so the client never maps a frameless pane (see the GUI's
-    /// `merge_panes`). So membership is "renderable now", and a runtime spawn appears
-    /// immediately in-process but one poll-wake later over the wire.
+    /// CONTRACT: yields exactly the panes this client can RENDER right now — membership is
+    /// "renderable now", not merely "exists". An impl MAY briefly omit a pane the host has
+    /// but it cannot yet render (e.g. a frame not fetched), so a consumer never maps a
+    /// frameless pane; the omitted pane appears once it becomes renderable. An impl that
+    /// renders the host's state directly reports the live set with no lag; a
+    /// transport-mediated impl may lag by however long it takes a new pane to become
+    /// renderable. (Each impl's own `pane_ids` documents how it honors this.)
     fn pane_ids(&self) -> Vec<PaneId>;
 
     /// Pane `id`'s cell DATA scrolled `offset_lines` rows up — the paint buffer a

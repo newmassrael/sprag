@@ -260,6 +260,12 @@ impl WireHost {
 }
 
 impl HostClient for WireHost {
+    /// The mirrored cache's ids, in host order. Honors the trait's "renderable now"
+    /// contract by construction: `merge_panes` only admits a pane once its first frame is
+    /// fetched (a frameless newcomer is dropped and retried next wake), so a just-spawned
+    /// host pane appears here at most one poll-wake after the host gained it — normally the
+    /// very next wake (its first `cells` fetch usually succeeds), later only if that fetch
+    /// keeps failing.
     fn pane_ids(&self) -> Vec<PaneId> {
         self.lock_cache().iter().map(|pane| pane.id).collect()
     }
