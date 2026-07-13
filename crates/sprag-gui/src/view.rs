@@ -134,8 +134,16 @@ fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
                         // Small-intrinsic, so it needs no `fill_definite` — the
                         // `view_dock_panel` content wrapper's flex_grow + cross-axis stretch
                         // fills the slot (matches pinion's editor).
+                        //
+                        // (R129, pinion R1320) `panel_id` and the DISPLAY name are separate
+                        // params: the tag stays `{panel_id}_placeholder` (load-bearing —
+                        // `resolve_drop` recovers the panel id from it to redock), while the
+                        // painted "(… torn off)" label takes the display title. Passing
+                        // `panel_id` for both would print "(terminal-0 torn off)" beside a
+                        // floater header reading "vim README" — the exact mismatch R1320 fixed.
                         view_floating_placeholder(
                             panel_id,
+                            &pane_display_title(&tv.slots, i),
                             theme,
                             &FloatingPlaceholderStyle::m3_default(),
                         )
