@@ -349,7 +349,7 @@ impl WidgetCore for TerminalViewer {
         let mut externals: Vec<ExtraExternal> = Vec::new();
         // The draggable dividers: one `SplitterExternal` per Split in the LIVE dock
         // topology ([`split::use_dock_topology`]), keyed on the Split's stable id —
-        // which IS the painted `SplitterStyle` tag the view's `view_dock_surface`
+        // which IS the painted `SplitterStyle` tag the view's `view_dock_surface_chrome`
         // walker emits (one SSOT), with the topology's orientation + initial ratio.
         // Walking the LIVE topology (not a fixed boot list) is what lets a dock-back-
         // minted split register its External and become drag-resizable:
@@ -389,7 +389,7 @@ impl WidgetCore for TerminalViewer {
         );
         // Drag-to-dock / tear-off (pinion R1081/R1084/R1094 §5.51, P2/PR-31): one R742
         // `DockPanelExternal` per pane, registered at the panel ROOT tag
-        // (`split::panel_id(i)` = the `view_dock_panel` root the `view_dock_surface`
+        // (`split::panel_id(i)` = the `view_dock_panel` root the `view_dock_surface_chrome`
         // walker emits — NOT the `#header` composite; the R51.42 dispatch splits at `#`
         // and routes the header press to the root-tagged external). Each shares the ONE
         // reorganizer (`split::use_dock_reorganizer`, total over the `Option` topology
@@ -1203,6 +1203,19 @@ mod tests {
                 dock::MAIN_WINDOW_TITLE,
                 "no focused pane -> the app name, not a stranded pane title",
             );
+
+            // (R133 review fix) A focused FLOATING pane does NOT name the main window: it
+            // is painted in its own window (titled by sync_floating_titles), not the main
+            // one. Focus is binding-wide and a torn-off pane keeps its slot occupied, so
+            // without the `!is_pane_floating` guard the main window would leak pane 0's
+            // title even though pane 0 is not in it.
+            dock::toggle_pane_floating(0); // tear pane 0 off
+            dock::sync_main_title(Some(0)); // pane 0 focused, but now floating
+            assert_eq!(
+                main_title(),
+                dock::MAIN_WINDOW_TITLE,
+                "a focused floating pane leaves the main window at the app name",
+            );
         });
     }
 
@@ -1683,7 +1696,7 @@ mod tests {
     /// End-to-end divider drag through the REAL viewer: setting the boot split's ratio
     /// Signal (the exact write a pointer drag performs via `SplitterExternal`)
     /// re-weights the two panes — the left pane reflows wider, tracking ~0.7. Proves
-    /// the read side (`view_dock_surface` -> `view_splitter` -> layout -> R1012 reflow)
+    /// the read side (`view_dock_surface_chrome` -> `view_splitter` -> layout -> R1012 reflow)
     /// sprag wires; the pointer->Signal write side is pinion's `SplitterExternal`
     /// (its own tests) + the live drag smoke.
     #[test]
