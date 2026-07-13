@@ -67,7 +67,7 @@
 //!
 //! The docked panes are arranged by a pinion [`DockTopology`](pinion_widget_paint::dock::DockTopology)
 //! — an identity-keyed binary split-tree ([`split`]) — lowered to pixels by
-//! [`view_dock_surface`](pinion_widget_paint::dock::view_dock_surface), which wraps
+//! [`view_dock_surface_chrome`](pinion_widget_paint::dock::view_dock_surface_chrome), which wraps
 //! each pane in a [`view_dock_panel`](pinion_widget_paint::dock::view_dock_panel)
 //! (a 28px header strip — the drag / tear-off handle — above the pane) and nests a
 //! `view_splitter` per Split. Each Split's ratio is an `Owner::cache`-shared
@@ -583,6 +583,10 @@ impl WidgetCore for TerminalViewer {
             let scrollback_len = terminal.slots.pane_scroll_facts(i).scrollback_len;
             scrollbar::reconcile_scroll(&scrollbar::use_pane_scroll(i), scrollback_len);
         }
+        // (3) (R130) Track each floating window's OS title to its pane's live display
+        // title (a child retitle renames its taskbar entry). Diffs internally, so it
+        // only writes the windows signal when a title actually changed.
+        dock::sync_floating_titles();
     }
 
     /// Mouse-wheel / touchpad two-finger scroll over a pane scrolls its scrollback
@@ -989,6 +993,8 @@ fn main() {
 mod tests {
     use super::*;
     use pinion_shell::ShellCore;
+    use sprag_host::{Host, HostClient};
+    use sprag_terminal::CommandBuilder;
 
     /// Collect every painted `TextGrid`'s `(cols, rows)` by walking the scene
     /// tree (the pane grids sit inside the tiling Containers; the focus-ring
@@ -1000,6 +1006,128 @@ mod tests {
             Scene::Scroll(s) => painted_grid_dims(&s.content),
             _ => Vec::new(),
         }
+    }
+
+    /// Every painted `Scene::Text` string, in tree order — lets a test assert on the
+    /// header/label strings a surface actually PAINTS (R130 titles).
+    fn painted_texts(scene: &Scene) -> Vec<String> {
+        match scene {
+            Scene::Text(node) => vec![node.content.clone()],
+            Scene::Container(c) => c.children.iter().flat_map(painted_texts).collect(),
+            Scene::Scroll(s) => painted_texts(&s.content),
+            _ => Vec::new(),
+        }
+    }
+
+    /// A pane that sets an `OSC 2` window title, then stays alive (`cat`) so the PTY
+    /// does not close before the paint.
+    fn titled_pane(title: &str) -> CommandBuilder {
+        let mut c = CommandBuilder::new("/bin/sh");
+        c.arg("-c");
+        c.arg(format!("printf '\\033]2;{title}\\007'; exec cat"));
+        c.env("TERM", "dumb");
+        c
+    }
+
+    /// (R130, PINION-PR52-A) The DOCKED panel's header paints the child's live OSC title,
+    /// not its `panel_id` — the surface R128 could not reach until pinion R1318 gave the
+    /// dock walker a display-title provider. The pane's IDENTITY is unchanged: the leaf /
+    /// scene tag is still `terminal-0`, so drag/dock/RPC keep addressing it by that.
+    #[test]
+    fn a_docked_panel_header_paints_the_childs_osc_title_not_its_panel_id() {
+        use std::time::{Duration, Instant};
+        let host = Host::new((40, 6));
+        let id = host
+            .spawn(titled_pane("vim README"), "sh".to_owned(), 40, 6, None)
+            .unwrap();
+
+        // The reader thread applies the OSC asynchronously — wait for the host to see it.
+        let start = Instant::now();
+        while host.pane_title(id).as_deref() != Some("vim README") {
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "the child's OSC title never reached the host",
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        let owner = Owner::new();
+        let scene = owner.run(|| {
+            crate::terminal::seed_terminal(host);
+            crate::dock::admit_pane(0); // give the pane its dock leaf
+            view::view_for_window(dock::MAIN_WINDOW_ID, (), &Frame::new())
+        });
+
+        let texts = painted_texts(&scene);
+        assert!(
+            texts.iter().any(|t| t == "vim README"),
+            "the docked header paints the child's OSC title; painted: {texts:?}",
+        );
+        assert!(
+            !texts.iter().any(|t| t == "terminal-0"),
+            "and no longer its panel_id; painted: {texts:?}",
+        );
+        // Identity is untouched: the leaf is still addressed as `terminal-0`.
+        assert!(
+            scene.contains_tag("terminal-0"),
+            "the panel's scene tag (its address) stays the panel_id, not the title",
+        );
+    }
+
+    /// (R130, PINION-PR52-B) A FLOATING window's OS title tracks its pane's live display
+    /// title, so a child that retitles renames its taskbar / alt-tab entry (pinion R1319
+    /// made `WindowSpec::title` live; pre-R1319 it was create-time only). The MAIN window
+    /// is deliberately left alone — its title would want the FOCUSED pane's, which the
+    /// binding cannot read in the paint path (PINION-PR53).
+    #[test]
+    fn a_floating_windows_os_title_tracks_its_panes_display_title() {
+        use std::time::{Duration, Instant};
+        let host = Host::new((40, 6));
+        let titled = host
+            .spawn(titled_pane("vim README"), "sh".to_owned(), 40, 6, None)
+            .unwrap();
+        // A second pane so floating the first is not refused (the last docked pane cannot
+        // float — `float_would_empty_the_dock`).
+        host.spawn(titled_pane("plain"), "sh".to_owned(), 40, 6, None)
+            .unwrap();
+
+        let start = Instant::now();
+        while host.pane_title(titled).as_deref() != Some("vim README") {
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "the child's OSC title never reached the host",
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        let owner = Owner::new();
+        owner.run(|| {
+            crate::terminal::seed_terminal(host);
+            dock::admit_pane(0);
+            dock::admit_pane(1);
+            dock::toggle_pane_floating(0); // tear pane 0 off into its own window
+            dock::sync_floating_titles();
+
+            let windows = dock::use_windows_topology().get();
+            let floater = windows
+                .iter()
+                .find(|w| w.id.as_ref() == dock::pane_window_id(0))
+                .expect("pane 0 has a floating window");
+            assert_eq!(
+                floater.title, "sprag terminal — vim README",
+                "the floater's OS title carries the child's live title (app prefix kept \
+                 so a taskbar entry still names the app)",
+            );
+
+            let main = windows
+                .iter()
+                .find(|w| w.id.as_ref() == dock::MAIN_WINDOW_ID)
+                .expect("the main window");
+            assert_eq!(
+                main.title, "sprag terminal (interactive)",
+                "the main window's title is NOT touched (it would want the focused pane's)",
+            );
+        });
     }
 
     /// End-to-end multi-pane reflow through the REAL `TerminalViewer` driven by

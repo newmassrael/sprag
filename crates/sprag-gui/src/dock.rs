@@ -201,6 +201,56 @@ pub(crate) fn use_windows_topology() -> Rc<Signal<Vec<WindowSpec>>> {
         })
 }
 
+/// The OS-level title of pane `i`'s floating window — its DISPLAY title
+/// ([`crate::view::pane_display_title`], so it reads the same as the window's own dock
+/// header) behind a stable app prefix, since this string lands in the taskbar / alt-tab
+/// switcher where "vim README" alone loses the app.
+///
+/// ONE fallback policy: when the child has set no `OSC` title the display title is the
+/// stable `terminal-{i}`, so this reads "sprag terminal — terminal-0" rather than
+/// inventing a second naming rule.
+fn floating_window_title(i: usize) -> String {
+    let tv = use_terminal();
+    format!(
+        "sprag terminal — {}",
+        crate::view::pane_display_title(&tv.slots, i)
+    )
+}
+
+/// (R130, pinion R1319 / PINION-PR52-B) Keep every FLOATING window's OS title in sync with
+/// its pane's live display title — a child that retitles to `vim README` renames its
+/// taskbar entry too, the way a real terminal does.
+///
+/// Pre-R1319 `WindowSpec::title` was create-time-only, so this could not work; the shell
+/// now diffs the spec titles and issues `Window::set_title` on an OPEN window. The binding
+/// is the sole title authority (nothing outside it can rename a window), so the sync must
+/// be driven from here.
+///
+/// Called from the pre-view `reconcile_frame` (the UI-thread seam that already folds the
+/// off-thread pane-set + scrollback deltas). It DIFFS and only `set`s the signal when a
+/// title actually changed: a `set` posts `AppEvent::WindowsDirty`, so a blind per-frame
+/// `set` would drive a winit window-reconcile on every paint. The MAIN window is left
+/// alone — its title would want the FOCUSED pane's, and the binding cannot read focus in
+/// the paint path (filed as PINION-PR53).
+pub(crate) fn sync_floating_titles() {
+    let signal = use_windows_topology();
+    let mut windows = signal.get();
+    let mut changed = false;
+    for spec in &mut windows {
+        let Some(i) = pane_window_index(spec.id.as_ref()) else {
+            continue; // the main window — not a pane's floater
+        };
+        let want = floating_window_title(i);
+        if spec.title != want {
+            spec.title = want;
+            changed = true;
+        }
+    }
+    if changed {
+        signal.set(windows);
+    }
+}
+
 /// Build an undock `WindowSpec` for pane `i`, optionally opened at a declared outer
 /// `position`. Shared by the two create paths: [`toggle_pane_floating`] passes
 /// `None` (WM-placed, the key path declares no position) and [`float_pane_at`]
@@ -218,7 +268,10 @@ fn undock_window_spec(i: usize, position: Option<(i32, i32)>) -> WindowSpec {
     let (width, height) = crate::terminal::cell_px(tv.metric, cols, rows);
     let spec = WindowSpec::new(
         Cow::Owned(pane_window_id(i)),
-        format!("sprag terminal — pane {i}"),
+        // Same title source as the live sync ([`sync_floating_titles`]), so the window
+        // opens with the child's title already showing rather than a create-time name the
+        // first sync then replaces.
+        floating_window_title(i),
         SizeStrategy::OpenResizable {
             size: (width.max(1), height.max(1)),
             min: None,
