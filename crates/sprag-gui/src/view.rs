@@ -20,10 +20,11 @@ use pinion_shell::{
     WINDOW_CHROME_CLOSE_TAG, WINDOW_CHROME_MAXIMIZE_TAG, WINDOW_CHROME_MINIMIZE_TAG,
 };
 use pinion_widget_paint::dock::{
-    DockPanelStyle, DockSplitState, FloatingPlaceholderStyle, WindowControlTags,
-    dock_outer_zone_highlight, view_dock_panel_with_actions, view_dock_surface,
+    DockPanelChrome, DockPanelStyle, DockSplitState, FloatingPlaceholderStyle, WindowControlTags,
+    dock_outer_zone_highlight, view_dock_panel_with_actions, view_dock_surface_chrome,
     view_floating_placeholder, view_window_controls,
 };
+use std::borrow::Cow;
 
 /// Shared [`ThemeProvider`](pinion_core::ThemeProvider) cache key (the surface fill behind the grid).
 const THEME_TAG: &str = "app";
@@ -100,7 +101,7 @@ pub(crate) fn view_for_window(window_id: &str, _state: (), _frame: &Frame) -> Sc
 }
 
 /// The main window: arrange the DOCKED panes with draggable dividers via pinion's
-/// [`view_dock_surface`] over the [`use_dock_topology`] split-tree. Each leaf's
+/// [`view_dock_surface_chrome`] over the [`use_dock_topology`] split-tree. Each leaf's
 /// `panel_id` maps back to its tile ([`pane_index_of_panel`]) and the
 /// `panel_content` callback projects that pane ([`build_pane_scene`]); each Split's
 /// ratio is the shared [`use_split_ratio`] Signal a drag re-weights (the SSOT both
@@ -120,9 +121,27 @@ fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
     // a dragged panel's `DockPanelExternal::drag_to` `set` repaints the target's zone.
     // `None` between drags (no panel highlights).
     let drop_preview = use_drop_preview().get();
+    // (R130, pinion R1318 / PINION-PR52) The DOCKED panel's header title + its tab label
+    // are DISPLAY names, not identity: the walker still owns the `panel_id` tag (it
+    // PANICS on a customizer that changes it), and this provider only supplies the string
+    // it PAINTS. So a docked pane shows `vim README` / `coin@host:~` — the same
+    // [`pane_display_title`] the floater header and the torn-off placeholder use — while
+    // its address (dock-leaf id, scene tag, RPC path, `DockPanelExternal` key) stays
+    // `terminal-{i}`. Two panes may safely share a display title; only the address must
+    // be unique. `Cow::Borrowed(panel_id)` = the walker's identity default, for a leaf
+    // with no live pane.
+    let chrome =
+        DockPanelChrome::default().with_title(|panel_id: &str| {
+            match pane_index_of_panel(panel_id) {
+                Some(i) if tv.slots.is_pane_occupied(i) => {
+                    Cow::Owned(pane_display_title(&tv.slots, i))
+                }
+                _ => Cow::Borrowed(panel_id),
+            }
+        });
     let content = match use_dock_topology().get() {
         None => Scene::Container(ContainerNode::new(Vec::new())),
-        Some(topo) => view_dock_surface(
+        Some(topo) => view_dock_surface_chrome(
             &topo,
             |panel_id| match pane_index_of_panel(panel_id) {
                 // One occupancy check per leaf, then branch on float state (was two match
@@ -176,6 +195,7 @@ fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
                     .filter(|p| p.target == panel_id)
                     .map(|p| p.zone)
             },
+            &chrome,
             theme,
         ),
     };
@@ -278,7 +298,7 @@ fn compose(content: Scene, theme: &Theme) -> Scene {
 ///    undock pane) so it fills the window-sized surface root. Forgetting this was the
 ///    R55 undock bug (the pane reflowed only its width).
 /// 2. [`view_main`]'s `panel_content` callback wraps EACH docked pane's content,
-///    because [`view_dock_surface`] interposes a sizeless `flex_grow(1.0)` content
+///    because [`view_dock_surface_chrome`] interposes a sizeless `flex_grow(1.0)` content
 ///    wrapper ([`view_dock_panel`](pinion_widget_paint::dock::view_dock_panel))
 ///    between the splitter and the pane grid — without a definite extent there the
 ///    grid keeps its full-window intrinsic width, never gets a measured rect, and the
