@@ -30,8 +30,11 @@ use std::borrow::Cow;
 const THEME_TAG: &str = "app";
 
 /// The DISPLAY title of the pane in tile `i` (R128) — the ONE home for the fallback rule,
-/// so every title surface reads the same policy (the floater header today; the DOCKED
-/// header + the OS window title once PINION-PR52 lands those seams).
+/// read by EVERY title surface: the docked panel header + tab label (via
+/// [`view_dock_surface_chrome`]'s `DockPanelChrome::with_title`, R130), the floater header
+/// (this fn's `view_for_window` arm), the torn-off placeholder label (R129), the floater's
+/// OS title, and — for the focused pane — the main window's OS title (both via
+/// [`crate::dock`], R130/R132). All PR52/PR53 surfaces now consume it.
 ///
 /// Prefers the child's live `OSC 0` / `OSC 2` window title — what tmux / `gnome-terminal`
 /// show (`vim README`, `coin@host:~`, an ssh remote) — and falls back to the stable
@@ -185,7 +188,7 @@ fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
                 // SplitterExternal::is_dragging() here for the M3 dragged overlay.
                 dragging: false,
             },
-            // drop-zone affordance per panel (pinion R1080/R1082 `view_dock_surface`
+            // drop-zone affordance per panel (pinion R1080/R1082 `view_dock_surface_chrome`
             // arg): the panel currently under a drag (the live `DockDropPreview` target)
             // paints its zone highlight; every other panel returns None. The dragged
             // panel's `DockPanelExternal::drag_to` writes `drop_preview` each cursor move.

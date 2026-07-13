@@ -62,7 +62,7 @@
 //! index via [`pane_index_of_panel`]); each Split a stable id ([`boot_split_id`]
 //! for the boot tree, a fresh `reorg`-prefixed id for a reorganize-minted divider).
 //! The per-split ratio Signal ([`use_split_ratio`]) is `Owner::cache`-keyed by that
-//! id and SHARED between the view (`view_dock_surface`) and the drag
+//! id and SHARED between the view (`view_dock_surface_chrome`) and the drag
 //! `SplitterExternal`, so a drag re-weights the painted panes. A Split id is the
 //! panel-id-distinct tag the [`view_dock_panel`](pinion_widget_paint::dock::view_dock_panel)
 //! header / `SplitterStyle` carry, so the scene tags never collide with the
@@ -127,7 +127,7 @@ pub(crate) fn boot_split_id(k: usize) -> String {
 const SPLIT_RATIO_DEFAULT: f32 = 0.5;
 
 /// Split `id`'s ratio `Signal` (left/top share, `[0, 1]`), an `Owner::cache`-backed
-/// `Rc<Signal<f32>>` SHARED between the read side (the view's `view_dock_surface`
+/// `Rc<Signal<f32>>` SHARED between the read side (the view's `view_dock_surface_chrome`
 /// `split_state` callback) and the write side (the `SplitterExternal` registered at
 /// the same id) — both resolve the same root-owner slot keyed on the Split id, so a
 /// drag (`set`) re-weights the painted panes. `initial` seeds the slot on first

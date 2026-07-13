@@ -419,14 +419,6 @@ impl SessionHandle {
         lock(&self.emulator).input_modes()
     }
 
-    /// The child's self-reported window title (`OSC 0` / `OSC 2`), `None` until it sets
-    /// one. Owned (not a borrow) because it is read out from under the emulator lock.
-    /// Live state — distinct from the pane's spawn command label.
-    #[must_use]
-    pub fn title(&self) -> Option<String> {
-        lock(&self.emulator).title().map(str::to_owned)
-    }
-
     /// A snapshot of the child's raw output bytes (the source stream, before
     /// emulation) paired with whether the capture was truncated at the cap —
     /// the seam a control plugin reads to parse structured output from a pane

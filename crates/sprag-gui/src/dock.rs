@@ -91,10 +91,17 @@ const WINDOWS_KEY: &str = "sprag_gui.windows";
 /// The canonical main-window id (maps to pinion's `DEFAULT_WINDOW`).
 pub(crate) const MAIN_WINDOW_ID: &str = "main";
 
-/// The app name — the MAIN window's title when no pane is focused (the seed + the
-/// no-focus fallback of [`sync_main_title`]) and the windowless
-/// [`WidgetCore::title`](crate::TerminalViewer) value. The ONE home for the string, so the
-/// three references cannot drift.
+/// The app-name token every window title shares. Single-sourced here so the pane-title
+/// prefix ([`window_title_for_pane`]) has one home; the no-focus main title
+/// [`MAIN_WINDOW_TITLE`] embeds the same token in its `"(interactive)"` form as a
+/// `&'static str` (the window seed + [`WidgetCore::title`](crate::TerminalViewer) both need
+/// one, and `const` cannot compose it from this), so a rebrand touches these two literals.
+const APP_NAME: &str = "sprag terminal";
+
+/// The MAIN window's title when no pane is focused: the seed, the no-focus fallback of
+/// [`sync_main_title`], and the windowless [`WidgetCore::title`](crate::TerminalViewer)
+/// value — the ONE home for THIS exact string (its three uses cannot drift). The
+/// focused-pane form is composed separately from [`APP_NAME`] by [`window_title_for_pane`].
 pub(crate) const MAIN_WINDOW_TITLE: &str = "sprag terminal (interactive)";
 
 /// The dock layout model — how a floated pane's slot in the main window is treated.
@@ -209,10 +216,10 @@ pub(crate) fn use_windows_topology() -> Rc<Signal<Vec<WindowSpec>>> {
 
 /// An OS-window title naming pane `i`: its DISPLAY title
 /// ([`crate::view::pane_display_title`], so it reads the same as the pane's dock header)
-/// behind a stable "sprag terminal — " prefix, since this string lands in the taskbar /
-/// alt-tab switcher where a bare "vim README" loses the app. Shared by the floating-window
-/// title ([`floating_window_title`]) and the focused-pane MAIN title ([`sync_main_title`])
-/// so both read one format.
+/// behind a stable [`APP_NAME`]` — ` prefix, since this string lands in the taskbar /
+/// alt-tab switcher where a bare "vim README" loses the app. Shared by every OS-title site
+/// (a floater's own window in [`sync_floating_titles`] / [`undock_window_spec`], and the
+/// focused-pane MAIN title in [`sync_main_title`]) so all read one format.
 ///
 /// ONE fallback policy: when the child has set no `OSC` title the display title is the
 /// stable `terminal-{i}`, so this reads "sprag terminal — terminal-0" rather than
@@ -220,14 +227,32 @@ pub(crate) fn use_windows_topology() -> Rc<Signal<Vec<WindowSpec>>> {
 fn window_title_for_pane(i: usize) -> String {
     let tv = use_terminal();
     format!(
-        "sprag terminal — {}",
+        "{APP_NAME} — {}",
         crate::view::pane_display_title(&tv.slots, i)
     )
 }
 
-/// The OS-level title of pane `i`'s floating window. See [`window_title_for_pane`].
-fn floating_window_title(i: usize) -> String {
-    window_title_for_pane(i)
+/// Retitle windows in place, hosting the diff-before-`set` discipline ONCE: recompute each
+/// spec's desired title via `want_for` (returning `None` leaves that spec untouched) and
+/// `set` the windows signal only if at least one title actually changed. A windows `set`
+/// posts `AppEvent::WindowsDirty` (a deferred winit reconcile), so a blind per-frame `set`
+/// would reconcile every paint — the diff is what keeps the pre-view `reconcile_frame`
+/// callers ([`sync_main_title`] / [`sync_floating_titles`]) quiescent in steady state.
+fn retitle_windows(want_for: impl Fn(&WindowSpec) -> Option<String>) {
+    let signal = use_windows_topology();
+    let mut windows = signal.get();
+    let mut changed = false;
+    for spec in &mut windows {
+        if let Some(want) = want_for(spec)
+            && spec.title != want
+        {
+            spec.title = want;
+            changed = true;
+        }
+    }
+    if changed {
+        signal.set(windows);
+    }
 }
 
 /// (R132, pinion R1327 / PINION-PR53) Track the MAIN window's OS title to the FOCUSED
@@ -236,6 +261,14 @@ fn floating_window_title(i: usize) -> String {
 /// pane (nothing focused, or a non-pane element); then the title falls back to the plain
 /// app name [`MAIN_WINDOW_TITLE`].
 ///
+/// The focused pane names the main window ONLY when it is DOCKED. Focus is binding-wide (a
+/// single tag across every window — pinion `focus_state`), and a torn-off pane keeps its
+/// slot OCCUPIED, so a focused FLOATING pane would otherwise leak its title onto the main
+/// window even though it is painted in its own window (which [`sync_floating_titles`]
+/// already titles). The `!`[`is_pane_floating`] guard resolves "which window is that pane
+/// in" via the sole float authority — a focused floater leaves the main window at the app
+/// name (R133; the R132 test only covered the both-docked case).
+///
 /// This is the last title surface PINION-PR52/53 opened: the docked header + floater OS
 /// title (R130) needed no focus, but the MAIN window tiles several panes, so "which pane's
 /// title" is decided by FOCUS — which the binding could not read in the paint path until
@@ -243,62 +276,26 @@ fn floating_window_title(i: usize) -> String {
 /// `focus_state::focused()` in [`reconcile_frame`](crate::TerminalViewer) (root Owner
 /// scope, so that read auto-subscribes and repaints on a focus change) and maps the tag to
 /// a pane index.
-///
-/// DIFFS before `set` for the same reason as [`sync_floating_titles`]: a `set` posts
-/// `AppEvent::WindowsDirty`, so a per-frame blind `set` would drive a winit reconcile every
-/// paint. Only the MAIN window spec is touched.
 pub(crate) fn sync_main_title(focused_pane: Option<usize>) {
-    let tv = use_terminal();
     let want = match focused_pane {
-        Some(i) if tv.slots.is_pane_occupied(i) => window_title_for_pane(i),
+        Some(i) if use_terminal().slots.is_pane_occupied(i) && !is_pane_floating(i) => {
+            window_title_for_pane(i)
+        }
         _ => MAIN_WINDOW_TITLE.to_owned(),
     };
-    let signal = use_windows_topology();
-    let mut windows = signal.get();
-    let mut changed = false;
-    for spec in &mut windows {
-        if spec.id.as_ref() == MAIN_WINDOW_ID && spec.title != want {
-            spec.title = want.clone();
-            changed = true;
-        }
-    }
-    if changed {
-        signal.set(windows);
-    }
+    retitle_windows(|spec| (spec.id.as_ref() == MAIN_WINDOW_ID).then(|| want.clone()));
 }
 
 /// (R130, pinion R1319 / PINION-PR52-B) Keep every FLOATING window's OS title in sync with
 /// its pane's live display title — a child that retitles to `vim README` renames its
-/// taskbar entry too, the way a real terminal does.
-///
-/// Pre-R1319 `WindowSpec::title` was create-time-only, so this could not work; the shell
-/// now diffs the spec titles and issues `Window::set_title` on an OPEN window. The binding
-/// is the sole title authority (nothing outside it can rename a window), so the sync must
-/// be driven from here.
-///
-/// Called from the pre-view `reconcile_frame` (the UI-thread seam that already folds the
-/// off-thread pane-set + scrollback deltas). It DIFFS and only `set`s the signal when a
-/// title actually changed: a `set` posts `AppEvent::WindowsDirty`, so a blind per-frame
-/// `set` would drive a winit window-reconcile on every paint. The MAIN window is left
-/// alone — its title would want the FOCUSED pane's, and the binding cannot read focus in
-/// the paint path (filed as PINION-PR53).
+/// taskbar entry too, the way a real terminal does. Pre-R1319 `WindowSpec::title` was
+/// create-time-only; the shell now diffs spec titles and issues `Window::set_title` on an
+/// OPEN window, and the binding is the sole title authority, so the sync is driven here
+/// from the pre-view `reconcile_frame`. The MAIN window is skipped ([`window_title_for_pane`]
+/// is keyed by [`pane_window_index`], `None` for the main id) — it is focus-driven by
+/// [`sync_main_title`] instead.
 pub(crate) fn sync_floating_titles() {
-    let signal = use_windows_topology();
-    let mut windows = signal.get();
-    let mut changed = false;
-    for spec in &mut windows {
-        let Some(i) = pane_window_index(spec.id.as_ref()) else {
-            continue; // the main window — not a pane's floater
-        };
-        let want = floating_window_title(i);
-        if spec.title != want {
-            spec.title = want;
-            changed = true;
-        }
-    }
-    if changed {
-        signal.set(windows);
-    }
+    retitle_windows(|spec| pane_window_index(spec.id.as_ref()).map(window_title_for_pane));
 }
 
 /// Build an undock `WindowSpec` for pane `i`, optionally opened at a declared outer
@@ -321,7 +318,7 @@ fn undock_window_spec(i: usize, position: Option<(i32, i32)>) -> WindowSpec {
         // Same title source as the live sync ([`sync_floating_titles`]), so the window
         // opens with the child's title already showing rather than a create-time name the
         // first sync then replaces.
-        floating_window_title(i),
+        window_title_for_pane(i),
         SizeStrategy::OpenResizable {
             size: (width.max(1), height.max(1)),
             min: None,
