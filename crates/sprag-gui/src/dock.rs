@@ -91,6 +91,12 @@ const WINDOWS_KEY: &str = "sprag_gui.windows";
 /// The canonical main-window id (maps to pinion's `DEFAULT_WINDOW`).
 pub(crate) const MAIN_WINDOW_ID: &str = "main";
 
+/// The app name — the MAIN window's title when no pane is focused (the seed + the
+/// no-focus fallback of [`sync_main_title`]) and the windowless
+/// [`WidgetCore::title`](crate::TerminalViewer) value. The ONE home for the string, so the
+/// three references cannot drift.
+pub(crate) const MAIN_WINDOW_TITLE: &str = "sprag terminal (interactive)";
+
 /// The dock layout model — how a floated pane's slot in the main window is treated.
 /// Selected by the `SPRAG_GUI_DOCK_MODE` env var ([`DockMode::from_env`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -190,7 +196,7 @@ pub(crate) fn use_windows_topology() -> Rc<Signal<Vec<WindowSpec>>> {
             Signal::new(vec![
                 WindowSpec::new(
                     Cow::Borrowed(MAIN_WINDOW_ID),
-                    "sprag terminal (interactive)",
+                    MAIN_WINDOW_TITLE,
                     SizeStrategy::Fixed {
                         width: WINDOW_W,
                         height: WINDOW_H,
@@ -201,20 +207,64 @@ pub(crate) fn use_windows_topology() -> Rc<Signal<Vec<WindowSpec>>> {
         })
 }
 
-/// The OS-level title of pane `i`'s floating window — its DISPLAY title
-/// ([`crate::view::pane_display_title`], so it reads the same as the window's own dock
-/// header) behind a stable app prefix, since this string lands in the taskbar / alt-tab
-/// switcher where "vim README" alone loses the app.
+/// An OS-window title naming pane `i`: its DISPLAY title
+/// ([`crate::view::pane_display_title`], so it reads the same as the pane's dock header)
+/// behind a stable "sprag terminal — " prefix, since this string lands in the taskbar /
+/// alt-tab switcher where a bare "vim README" loses the app. Shared by the floating-window
+/// title ([`floating_window_title`]) and the focused-pane MAIN title ([`sync_main_title`])
+/// so both read one format.
 ///
 /// ONE fallback policy: when the child has set no `OSC` title the display title is the
 /// stable `terminal-{i}`, so this reads "sprag terminal — terminal-0" rather than
 /// inventing a second naming rule.
-fn floating_window_title(i: usize) -> String {
+fn window_title_for_pane(i: usize) -> String {
     let tv = use_terminal();
     format!(
         "sprag terminal — {}",
         crate::view::pane_display_title(&tv.slots, i)
     )
+}
+
+/// The OS-level title of pane `i`'s floating window. See [`window_title_for_pane`].
+fn floating_window_title(i: usize) -> String {
+    window_title_for_pane(i)
+}
+
+/// (R132, pinion R1327 / PINION-PR53) Track the MAIN window's OS title to the FOCUSED
+/// pane's display title — the tmux / gnome-terminal convention (the active pane names the
+/// window). `focused_pane` is the tile the focus ring is on, or `None` when focus is off a
+/// pane (nothing focused, or a non-pane element); then the title falls back to the plain
+/// app name [`MAIN_WINDOW_TITLE`].
+///
+/// This is the last title surface PINION-PR52/53 opened: the docked header + floater OS
+/// title (R130) needed no focus, but the MAIN window tiles several panes, so "which pane's
+/// title" is decided by FOCUS — which the binding could not read in the paint path until
+/// pinion R1327's [`focus_state`](pinion_core::focus_state). The caller reads
+/// `focus_state::focused()` in [`reconcile_frame`](crate::TerminalViewer) (root Owner
+/// scope, so that read auto-subscribes and repaints on a focus change) and maps the tag to
+/// a pane index.
+///
+/// DIFFS before `set` for the same reason as [`sync_floating_titles`]: a `set` posts
+/// `AppEvent::WindowsDirty`, so a per-frame blind `set` would drive a winit reconcile every
+/// paint. Only the MAIN window spec is touched.
+pub(crate) fn sync_main_title(focused_pane: Option<usize>) {
+    let tv = use_terminal();
+    let want = match focused_pane {
+        Some(i) if tv.slots.is_pane_occupied(i) => window_title_for_pane(i),
+        _ => MAIN_WINDOW_TITLE.to_owned(),
+    };
+    let signal = use_windows_topology();
+    let mut windows = signal.get();
+    let mut changed = false;
+    for spec in &mut windows {
+        if spec.id.as_ref() == MAIN_WINDOW_ID && spec.title != want {
+            spec.title = want.clone();
+            changed = true;
+        }
+    }
+    if changed {
+        signal.set(windows);
+    }
 }
 
 /// (R130, pinion R1319 / PINION-PR52-B) Keep every FLOATING window's OS title in sync with

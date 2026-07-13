@@ -229,7 +229,7 @@ use std::rc::Rc;
 
 use crate::input::{route_composition, route_key};
 use crate::reflow::install_reflow;
-use crate::terminal::{pane_scrollbar_tag, pane_tag, use_terminal};
+use crate::terminal::{pane_index_of, pane_scrollbar_tag, pane_tag, use_terminal};
 
 include!(concat!(env!("OUT_DIR"), "/app.rs"));
 vello_renderer_impl!(SpragGuiRenderer, SpragGuiRendererError);
@@ -587,6 +587,15 @@ impl WidgetCore for TerminalViewer {
         // title (a child retitle renames its taskbar entry). Diffs internally, so it
         // only writes the windows signal when a title actually changed.
         dock::sync_floating_titles();
+        // (4) (R132, PINION-PR53) Track the MAIN window's title to the FOCUSED pane's
+        // display title (the tmux rule). `focus_state::focused()` is the focus manager's
+        // own tag (same SSOT as `apply_key`'s `focused` arg, reflecting click / Tab /
+        // request alike) and auto-subscribes this root-scope reconcile, so a focus change
+        // re-runs it and repaints. A non-pane / absent focus maps to `None` -> the app name.
+        let focused_pane = pinion_core::focus_state::focused()
+            .as_deref()
+            .and_then(pane_index_of);
+        dock::sync_main_title(focused_pane);
     }
 
     /// Mouse-wheel / touchpad two-finger scroll over a pane scrolls its scrollback
@@ -838,7 +847,7 @@ impl WidgetCore for TerminalViewer {
     // against the first paint scene's collected tags (pane 0 is among them).
 
     fn title() -> &'static str {
-        "sprag terminal (interactive)"
+        dock::MAIN_WINDOW_TITLE
     }
 }
 
@@ -1125,7 +1134,74 @@ mod tests {
                 .expect("the main window");
             assert_eq!(
                 main.title, "sprag terminal (interactive)",
-                "the main window's title is NOT touched (it would want the focused pane's)",
+                "sync_floating_titles leaves the main window alone (it is focus-driven, \
+                 handled by sync_main_title)",
+            );
+        });
+    }
+
+    /// (R132, PINION-PR53) The MAIN window's title tracks the FOCUSED pane's display title
+    /// (the tmux rule), and falls back to the app name when focus is off a pane. This is
+    /// the last title surface, unblocked by pinion R1327's readable focus. Driven at the
+    /// `sync_main_title` seam (the `reconcile_frame` caller reads `focus_state::focused()`
+    /// and maps the tag to this index; the focus manager itself needs the live shell).
+    #[test]
+    fn the_main_window_title_tracks_the_focused_panes_display_title() {
+        use std::time::{Duration, Instant};
+        let host = Host::new((40, 6));
+        let titled = host
+            .spawn(titled_pane("vim README"), "sh".to_owned(), 40, 6, None)
+            .unwrap();
+        host.spawn(titled_pane("plain"), "sh".to_owned(), 40, 6, None)
+            .unwrap();
+
+        let start = Instant::now();
+        while host.pane_title(titled).as_deref() != Some("vim README") {
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "the child's OSC title never reached the host",
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        let owner = Owner::new();
+        owner.run(|| {
+            crate::terminal::seed_terminal(host);
+            dock::admit_pane(0);
+            dock::admit_pane(1);
+
+            let main_title = || {
+                dock::use_windows_topology()
+                    .get()
+                    .iter()
+                    .find(|w| w.id.as_ref() == dock::MAIN_WINDOW_ID)
+                    .expect("the main window")
+                    .title
+                    .clone()
+            };
+
+            // Focus pane 0 (the OSC-titled one): the main window names it.
+            dock::sync_main_title(Some(0));
+            assert_eq!(
+                main_title(),
+                "sprag terminal — vim README",
+                "the focused pane's live title names the main window (tmux rule)",
+            );
+
+            // Focus pane 1 (no OSC title): its display title falls back to the panel_id.
+            dock::sync_main_title(Some(1));
+            assert_eq!(
+                main_title(),
+                "sprag terminal — terminal-1",
+                "a focused pane with no OSC title falls back to its stable panel_id",
+            );
+
+            // Focus off any pane (None): back to the plain app name.
+            dock::sync_main_title(None);
+            assert_eq!(
+                main_title(),
+                dock::MAIN_WINDOW_TITLE,
+                "no focused pane -> the app name, not a stranded pane title",
             );
         });
     }
