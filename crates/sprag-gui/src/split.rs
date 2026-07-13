@@ -3,7 +3,7 @@
 //! the former flat row/grid model (R38 row + R40 grid + position-keyed dividers).
 //! This module owns the topology MODEL (the tree + its mutation on dock/undock and
 //! the per-split ratio Signals); the view layer ([`crate::view`]) lowers it to
-//! pixels via [`view_dock_surface`](pinion_widget_paint::dock::view_dock_surface),
+//! pixels via [`view_dock_surface_chrome`](pinion_widget_paint::dock::view_dock_surface_chrome),
 //! and [`create_extra_externals`](crate::TerminalViewer) registers one drag
 //! `SplitterExternal` per Split.
 //!
@@ -79,8 +79,8 @@ use std::borrow::Cow;
 use std::rc::Rc;
 
 /// The `panel_id` prefix — a leaf's stable id is `terminal-{i}` for tile index `i`.
-/// A readable token (it is the [`view_dock_panel`](pinion_widget_paint::dock::view_dock_panel)
-/// header title) that doubles as the panel's scene tag, kept DISTINCT from the
+/// A readable token (the header's FALLBACK label when a child has set no `OSC` title —
+/// see [`panel_id`]) that doubles as the panel's scene tag, kept DISTINCT from the
 /// per-pane [`pane_tag`](crate::terminal::pane_tag) (`sprag_gui.pane.{i}`) the inner
 /// grid carries (the dock panel wraps the grid, so the two tags must not collide)
 /// and from the [`pane_window_id`](crate::dock::pane_window_id) (`pane-{i}`) window
@@ -88,14 +88,15 @@ use std::rc::Rc;
 const PANEL_ID_PREFIX: &str = "terminal-";
 
 /// The stable `panel_id` of the pane at tile `index` — the dock-tree leaf IDENTITY + scene
-/// tag. Inverse of [`pane_index_of_panel`].
+/// tag + RPC address + `DockPanelExternal` key. Inverse of [`pane_index_of_panel`].
 ///
-/// It is also the DISPLAYED header title in two cases: the DOCKED panel (pinion's
-/// `view_dock_surface` walker passes the `panel_id` as the title and exposes no
-/// display-title seam — PINION-PR52), and any pane whose child has set no `OSC` title. The
-/// floater header already shows the child's title instead
-/// ([`pane_display_title`](crate::view::pane_display_title), R128) — so `panel_id` is
-/// identity FIRST, and a header string only as the fallback / where pinion forces it.
+/// **Identity only, since R130.** It is no longer what any header PAINTS: every title
+/// surface now shows [`pane_display_title`](crate::view::pane_display_title) — the child's
+/// live `OSC` window title — via pinion R1318's `DockPanelChrome` display-title provider
+/// (docked header + tab label), the floater header, and the torn-off placeholder label.
+/// `panel_id` remains the string those surfaces FALL BACK to when a child has set no title,
+/// but it is never the address and the display name at once: a child rewrites its title
+/// every prompt, so a pane must not be able to rename its own address (R70).
 pub(crate) fn panel_id(index: usize) -> String {
     format!("{PANEL_ID_PREFIX}{index}")
 }
