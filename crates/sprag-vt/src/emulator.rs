@@ -135,12 +135,19 @@ impl Emulator {
     /// Sun-style `OSC 2` spelling. `OSC 1` sets only the ICON name — not a window
     /// title — so it is ignored, as is every other OSC (hyperlinks, clipboard,
     /// colour queries): unhandled sequences are dropped, per the skeleton contract.
+    ///
+    /// The title is CLAMPED to [`MAX_TITLE_BYTES`] ([`clamp_title`]): it is a
+    /// child-controlled string, and the underlying `vtparse` bounds the OSC parameter
+    /// COUNT, not the payload BYTE length — so a hostile/buggy child could otherwise
+    /// buffer an arbitrarily large title that is then stored, re-cloned every poll wake,
+    /// and shipped over the wire uncapped. This mirrors the `RAW_CAPTURE_CAP` bound on the
+    /// sibling child-controlled buffer.
     fn osc(&mut self, osc: &OperatingSystemCommand) {
         match osc {
             OperatingSystemCommand::SetWindowTitle(t)
             | OperatingSystemCommand::SetWindowTitleSun(t)
             | OperatingSystemCommand::SetIconNameAndWindowTitle(t) => {
-                self.title = Some(t.clone());
+                self.title = Some(clamp_title(t));
             }
             _ => {}
         }
@@ -474,6 +481,25 @@ impl VtPort for Emulator {
     }
 }
 
+/// Upper bound on a stored child window title. A title is a single taskbar / titlebar
+/// line, so a few KiB is generous; the cap exists to stop a hostile or runaway child from
+/// growing an unbounded `String` (see [`Emulator::osc`]). Bytes, not chars — the truncation
+/// respects a UTF-8 boundary.
+const MAX_TITLE_BYTES: usize = 2048;
+
+/// Clamp a child-set title to [`MAX_TITLE_BYTES`], truncating on a char boundary so the
+/// stored `String` stays valid UTF-8. Most titles are far under the cap and clone as-is.
+fn clamp_title(t: &str) -> String {
+    if t.len() <= MAX_TITLE_BYTES {
+        return t.to_owned();
+    }
+    let mut end = MAX_TITLE_BYTES;
+    while end > 0 && !t.is_char_boundary(end) {
+        end -= 1;
+    }
+    t[..end].to_owned()
+}
+
 /// Convert a termwiz `ColorSpec` to the port's `Color`.
 fn conv_color(spec: ColorSpec) -> Color {
     match spec {
@@ -623,6 +649,31 @@ mod tests {
             Some("real title"),
             "OSC 1 must not overwrite it"
         );
+    }
+
+    /// A child-controlled title is CLAMPED to `MAX_TITLE_BYTES` (vtparse bounds the OSC
+    /// param count, not the byte length, so a hostile/runaway child could otherwise buffer
+    /// an unbounded title). The truncation lands on a UTF-8 char boundary — here a `é`
+    /// (2 bytes) straddling the cap must not split into an invalid `String`.
+    #[test]
+    fn a_hostile_oversized_title_is_clamped_on_a_char_boundary() {
+        let mut em = Emulator::new(8, 2);
+        // A title of many `é` (2 bytes each), well over the 2048-byte cap.
+        let payload = "é".repeat(4000); // 8000 bytes
+        em.advance(format!("\x1b]2;{payload}\x07").as_bytes());
+        let title = em.title().expect("title set");
+        assert!(
+            title.len() <= MAX_TITLE_BYTES,
+            "clamped to the cap ({} <= {MAX_TITLE_BYTES})",
+            title.len(),
+        );
+        assert!(
+            title.chars().all(|c| c == 'é'),
+            "truncated on a char boundary — no split/replacement char",
+        );
+        // A title UNDER the cap is stored verbatim (the common path).
+        em.advance(b"\x1b]2;short\x07");
+        assert_eq!(em.title(), Some("short"));
     }
 
     /// A title carries NO cells, so it must not stamp ROW DAMAGE — else every prompt
