@@ -239,6 +239,17 @@ fn to_input_mods(m: Modifiers) -> sprag_input::Modifiers {
 /// live. (`WidgetView::ime_caret_rect`, Hanja-candidate positioning, is still
 /// unwired — polish, not shown during plain Hangul.)
 pub(crate) fn route_composition(focused: Option<&str>, event: &CompositionEvent) -> bool {
+    // Trace every composition reaching the binding (before the focus gate) so a
+    // Hangul-then-space stream is greppable against the key trace — a `commit` with
+    // no following space `key_in` pins an IME key swallowed upstream.
+    let (kind, text) = match event {
+        CompositionEvent::Start => ("start", ""),
+        CompositionEvent::Update(t) => ("update", t.as_str()),
+        CompositionEvent::Commit(t) => ("commit", t.as_str()),
+        CompositionEvent::Cancel => ("cancel", ""),
+        _ => ("other", ""),
+    };
+    crate::diag::composition(kind, text, focused);
     let Some(tag) = focused else {
         return false;
     };

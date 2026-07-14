@@ -106,7 +106,7 @@ fn char_utf8(c: char) -> Vec<u8> {
     c.encode_utf8(&mut buf).as_bytes().to_vec()
 }
 
-/// Encode a W3C named key (`"Enter"`, `"ArrowUp"`, `"F5"`, …).
+/// Encode a W3C named key (`"Enter"`, `"ArrowUp"`, `"F5"`, `"Space"`, …).
 fn encode_named(key: &str, mods: Modifiers, modes: InputModes) -> Option<Vec<u8>> {
     // Simple keys that map to a single C0/DEL byte. `Alt` prefixes `ESC`;
     // `Shift`+`Tab` is the back-tab (CBT) exception.
@@ -116,6 +116,13 @@ fn encode_named(key: &str, mods: Modifiers, modes: InputModes) -> Option<Vec<u8>
         "Tab" => return Some(simple(0x09, mods)),
         "Backspace" => return Some(simple(0x7f, mods)),
         "Escape" => return Some(simple(ESC, mods)),
+        // The spacebar's W3C `key` is the single space " " (handled by the
+        // single-codepoint path), but a platform / IME layer may deliver the
+        // `code`-style name "Space" instead — notably the space that COMMITS a
+        // Hangul/CJK composition arrives named, not as " ". Encode it identically to
+        // the space character (Ctrl+Space → NUL, Alt+Space → ESC-prefixed) so a space
+        // typed mid-composition is not silently dropped.
+        "Space" => return Some(encode_char(' ', mods)),
         _ => {}
     }
 
@@ -289,6 +296,18 @@ mod tests {
         assert_eq!(enc("Escape", Modifiers::default()), vec![ESC]);
         // Alt prefixes ESC on these too.
         assert_eq!(enc("Enter", ALT), vec![ESC, 0x0d]);
+    }
+
+    /// The named `"Space"` key (the form the IME-commit path delivers) encodes
+    /// identically to the space character — the fix for a space dropped while typing
+    /// Hangul. The single-space " " form still works via the character path.
+    #[test]
+    fn named_space_encodes_like_the_space_char() {
+        assert_eq!(enc("Space", Modifiers::default()), vec![0x20]);
+        assert_eq!(enc(" ", Modifiers::default()), vec![0x20]);
+        // Same modifier behaviour as the space character.
+        assert_eq!(enc("Space", CTRL), vec![0x00]); // Ctrl+Space → NUL
+        assert_eq!(enc("Space", ALT), vec![ESC, 0x20]); // Alt prefixes ESC
     }
 
     #[test]

@@ -74,6 +74,21 @@ pub(crate) fn key_in(
     );
 }
 
+/// An IME composition event ENTERED the binding — one per `apply_composition` call.
+/// `kind` is the [`CompositionEvent`](pinion_core::CompositionEvent) variant
+/// (`start` / `update` / `commit` / `cancel`), `text` its payload (the live preedit
+/// or the committed string). Pairs with [`key_in`] so a Hangul-then-space sequence
+/// reads as its true event stream — e.g. a `commit` with NO following space `key_in`
+/// exposes an IME key swallowed upstream. `trace!` — per-event fan-out (the same
+/// `sprag_gui::input` target as the key trace).
+pub(crate) fn composition(kind: &str, text: &str, focused: Option<&str>) {
+    tracing::trace!(
+        target: "sprag_gui::input",
+        kind, text, ?focused,
+        "composition",
+    );
+}
+
 /// `route_key`'s decision for a recognised window chord: `action` is `"act"` (it
 /// ran) or `"drop-repeat"` (an OS auto-repeat of a discrete chord, suppressed).
 /// Distinguishes "the dispatch arrived but was correctly dropped" from "it acted".
