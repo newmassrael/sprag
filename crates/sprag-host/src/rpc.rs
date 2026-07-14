@@ -100,10 +100,12 @@ impl HostState {
         }
     }
 
-    /// The shared pane workspace (the [`Host`]'s pool), for the scene-as-data
-    /// assembly and the control / plugin externals.
+    /// The CURRENT window's pane workspace (resolved out of the [`Host`]'s
+    /// [`SessionRegistry`](sprag_terminal::SessionRegistry)), for the scene-as-data
+    /// assembly and the control / plugin externals. A cloned `Arc` (not a borrow), so
+    /// each per-request scene assembly reflects the then-current window.
     #[must_use]
-    pub fn workspace(&self) -> &Arc<Mutex<Workspace>> {
+    pub fn workspace(&self) -> Arc<Mutex<Workspace>> {
         self.host.workspace()
     }
 
@@ -170,7 +172,8 @@ pub fn handle_request(state: &HostState, request_json: &str) -> Option<String> {
         Ok(request) => handle_parsed(state, request),
         Err(_) => {
             // Malformed: assemble a ctx only for the canonical parse-error reply.
-            let mut scene = crate::workspace_scene(state.workspace(), &state.runs, &state.revision);
+            let mut scene =
+                crate::workspace_scene(&state.workspace(), &state.runs, &state.revision);
             let mut ctx = DispatchContext::new(&mut scene, &state.previews, state.revision());
             dispatch(&mut ctx, request_json)
         }
@@ -188,7 +191,7 @@ pub fn handle_request(state: &HostState, request_json: &str) -> Option<String> {
 /// synchronous handler.
 #[must_use]
 pub fn handle_parsed(state: &HostState, request: Request) -> Option<String> {
-    let mut scene = crate::workspace_scene(state.workspace(), &state.runs, &state.revision);
+    let mut scene = crate::workspace_scene(&state.workspace(), &state.runs, &state.revision);
     let mut ctx = DispatchContext::new(&mut scene, &state.previews, state.revision());
     if SUPPORTED_METHODS.contains(&request.method.as_str()) {
         dispatch_parsed(&mut ctx, request)
@@ -368,7 +371,7 @@ mod tests {
     fn wait_for_pane0_eof(state: &HostState) {
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(5) {
-            let eof = lock(state.workspace())
+            let eof = lock(&state.workspace())
                 .pane(PaneId(0))
                 .is_none_or(|p| p.session().is_eof());
             if eof {
@@ -473,7 +476,7 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":3,"method":"scene/invoke","params":{"path":"/sprag_mux/external/close","args":{"id":0}}}"#,
         );
         assert!(closed.get("error").is_none(), "close error: {closed}");
-        assert_eq!(lock(state.workspace()).panes().len(), 1);
+        assert_eq!(lock(&state.workspace()).panes().len(), 1);
     }
 
     /// Poll `query("runs")` until run 0 reports `done`, returning its outcome
@@ -594,7 +597,7 @@ mod tests {
         );
         // Only the initial pane remains — every per-turn pane was reaped.
         assert_eq!(
-            lock(state.workspace()).panes().len(),
+            lock(&state.workspace()).panes().len(),
             1,
             "dialogue leaked a pane"
         );
@@ -656,7 +659,7 @@ mod tests {
             "raw envelope leaked: {output:?}"
         );
         assert_eq!(
-            lock(state.workspace()).panes().len(),
+            lock(&state.workspace()).panes().len(),
             1,
             "dialogue leaked a pane"
         );

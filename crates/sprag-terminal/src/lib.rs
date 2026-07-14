@@ -14,9 +14,11 @@
 //! host projects it).
 
 pub mod command;
+pub mod registry;
 pub mod session;
 pub mod workspace;
 
 pub use command::{command_from_parts, default_shell_command};
+pub use registry::{Session, SessionRegistry, Window};
 pub use session::{CommandBuilder, RawOutput, SessionError, SessionHandle, TerminalSession};
 pub use workspace::{Pane, PaneId, PaneInfo, Workspace};

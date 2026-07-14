@@ -48,7 +48,9 @@ use std::sync::{Arc, Mutex};
 
 use pinion_core::GridBuffer;
 use sprag_input::Modifiers;
-use sprag_terminal::{CommandBuilder, Pane, PaneId, SessionError, SessionHandle, Workspace};
+use sprag_terminal::{
+    CommandBuilder, Pane, PaneId, SessionError, SessionHandle, SessionRegistry, Workspace,
+};
 use sprag_vt::Screen;
 
 use crate::external::lock;
@@ -90,7 +92,8 @@ impl PaneScrollFacts {
 /// The typed client protocol a display client reaches the host's panes through —
 /// the topology-B wire contract expressed as a trait, with two impls:
 ///
-/// * the in-process [`Host`] (this crate) — direct `Arc<Mutex<Workspace>>` access;
+/// * the in-process [`Host`] (this crate) — resolves the current window's [`Workspace`]
+///   out of its [`SessionRegistry`];
 /// * the GUI's wire client (`sprag-gui`'s `WireHost`) — the SAME method surface
 ///   over an RPC socket to a `sprag-term` host process.
 ///
@@ -171,22 +174,28 @@ pub trait HostClient {
     fn pane_title(&self, id: PaneId) -> Option<String>;
 }
 
-/// The single [`Workspace`] owner (topology B), and the **in-process** arm of the
-/// [`HostClient`] protocol. See the module docs for the wire-shape + ownership
-/// notes. Constructed empty ([`new`](Host::new)) and populated with
-/// [`spawn`](Host::spawn); the headless server boots its panes this way and serves
-/// them, while the GUI reaches an out-of-process `Host` through a wire client.
+/// The owner of the session / window tree (a [`SessionRegistry`]), and the
+/// **in-process** arm of the [`HostClient`] protocol. See the module docs for the
+/// wire-shape + ownership notes. Constructed with one empty session / window
+/// ([`new`](Host::new)) and populated with [`spawn`](Host::spawn); the headless server
+/// boots its panes this way and serves them, while the GUI reaches an out-of-process
+/// `Host` through a wire client.
+///
+/// The registry is the durable authority the detach/reattach arc rests on; `Host`
+/// resolves the CURRENT window's [`Workspace`] out of it per operation, so the scene
+/// assembly and the control / plugin externals keep speaking a single
+/// `Arc<Mutex<Workspace>>` and never learn about the tree above them.
 pub struct Host {
-    workspace: Arc<Mutex<Workspace>>,
+    registry: Arc<Mutex<SessionRegistry>>,
 }
 
 impl Host {
-    /// A new host over an empty [`Workspace`] whose dimension-less spawns adopt
-    /// `default_size`. Boot panes are added with [`spawn`](Self::spawn).
+    /// A new host over a registry with one empty session / window whose dimension-less
+    /// spawns adopt `default_size`. Boot panes are added with [`spawn`](Self::spawn).
     #[must_use]
     pub fn new(default_size: (u16, u16)) -> Self {
         Self {
-            workspace: Arc::new(Mutex::new(Workspace::new(default_size))),
+            registry: Arc::new(Mutex::new(SessionRegistry::new(default_size))),
         }
     }
 
@@ -209,16 +218,20 @@ impl Host {
         rows: u16,
         on_dirty: Option<Box<dyn Fn() + Send>>,
     ) -> Result<PaneId, SessionError> {
-        lock(&self.workspace).spawn_with_dirty(command, label, cols, rows, on_dirty)
+        let workspace = self.workspace();
+        lock(&workspace).spawn_with_dirty(command, label, cols, rows, on_dirty)
     }
 
-    /// The shared pane pool, for the scene-as-data assembly ([`workspace_scene`](crate::workspace_scene))
-    /// and the control / plugin externals that hold their own `Arc` clone. The one
-    /// place the raw `Workspace` handle escapes; the [`HostClient`] methods are how a
-    /// client reaches panes.
+    /// The CURRENT window's pane pool, for the scene-as-data assembly
+    /// ([`workspace_scene`](crate::workspace_scene)) and the control / plugin externals
+    /// that hold their own `Arc` clone. Resolved out of the [`SessionRegistry`] on each
+    /// call (a cloned `Arc`, not a borrow), so once window switching lands the next
+    /// per-request scene assembly picks up the new current window with no re-plumbing.
+    /// The one place the raw `Workspace` handle escapes; the [`HostClient`] methods are
+    /// how a client reaches panes.
     #[must_use]
-    pub fn workspace(&self) -> &Arc<Mutex<Workspace>> {
-        &self.workspace
+    pub fn workspace(&self) -> Arc<Mutex<Workspace>> {
+        lock(&self.registry).current_workspace()
     }
 
     /// Pane `id`'s cloneable I/O handle — the ONE non-wire-shaped method (module
@@ -236,13 +249,15 @@ impl Host {
     /// so every [`HostClient`] method returns its graceful default for an absent id
     /// rather than panicking (the widened identity-addressed contract).
     fn with_pane_id<R>(&self, id: PaneId, f: impl FnOnce(&Pane) -> R) -> Option<R> {
-        lock(&self.workspace).pane(id).map(f)
+        let workspace = self.workspace();
+        lock(&workspace).pane(id).map(f)
     }
 }
 
 impl HostClient for Host {
     fn pane_ids(&self) -> Vec<PaneId> {
-        lock(&self.workspace).panes().iter().map(Pane::id).collect()
+        let workspace = self.workspace();
+        lock(&workspace).panes().iter().map(Pane::id).collect()
     }
 
     fn pane_cells(&self, id: PaneId, offset_lines: usize) -> GridBuffer {
@@ -268,7 +283,8 @@ impl HostClient for Host {
     /// A closed / absent pane is TRACED and ignored (the swallow is honest, not
     /// silent); so is a winsize-ioctl failure.
     fn resize(&self, id: PaneId, cols: u16, rows: u16) {
-        let workspace = lock(&self.workspace);
+        let ws = self.workspace();
+        let workspace = lock(&ws);
         if workspace.pane(id).is_none() {
             tracing::trace!(target: "sprag_host", %id, "resize of a closed/absent pane ignored");
             return;

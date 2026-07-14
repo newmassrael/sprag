@@ -13,6 +13,8 @@
 //! (Round 7 design note).
 
 use std::fmt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::session::{CommandBuilder, SessionError, SessionHandle, TerminalSession};
 
@@ -86,26 +88,42 @@ pub struct PaneInfo {
     pub title: Option<String>,
 }
 
-/// The multiplexer's pane pool: a set of live panes, the monotonic id
+/// The multiplexer's pane pool: a set of live panes, a monotonic id
 /// counter, and the default size a dimension-less spawn adopts.
 ///
 /// Pinion-free by design (producer layer). The host wraps this in
 /// `Arc<Mutex<Workspace>>` and exposes spawn/close/resize as `scene/invoke`
 /// actions on the `WorkspaceExternal`.
+///
+/// The id counter is an [`Arc<AtomicU64>`] so a [`SessionRegistry`](crate::SessionRegistry)
+/// can SHARE one counter across every window's workspace — giving pane ids that are
+/// unique across the WHOLE registry, not just within one window. That global
+/// uniqueness is what keeps a pane addressable by id alone (the per-pane wire path
+/// stays window-free). A standalone [`Workspace::new`] gets its own private counter.
 pub struct Workspace {
     panes: Vec<Pane>,
-    next_id: u64,
+    next_id: Arc<AtomicU64>,
     default_size: (u16, u16),
 }
 
 impl Workspace {
-    /// A new, empty workspace whose dimension-less spawns adopt
-    /// `default_size`.
+    /// A new, empty workspace with its OWN private id counter, whose dimension-less
+    /// spawns adopt `default_size`. For a standalone pane pool (and unit tests); a
+    /// registry-owned window uses [`Self::with_id_source`] to share the global counter.
     #[must_use]
     pub fn new(default_size: (u16, u16)) -> Self {
+        Self::with_id_source(default_size, Arc::new(AtomicU64::new(0)))
+    }
+
+    /// A new, empty workspace drawing pane ids from the SHARED `next_id` counter, so
+    /// every window under one [`SessionRegistry`](crate::SessionRegistry) mints
+    /// globally-unique, never-reused ids (the load-bearing invariant behind window-free
+    /// pane addressing).
+    #[must_use]
+    pub fn with_id_source(default_size: (u16, u16), next_id: Arc<AtomicU64>) -> Self {
         Self {
             panes: Vec::new(),
-            next_id: 0,
+            next_id,
             default_size,
         }
     }
@@ -155,8 +173,10 @@ impl Workspace {
         on_dirty: Option<Box<dyn Fn() + Send>>,
     ) -> Result<PaneId, SessionError> {
         let session = TerminalSession::spawn_with_dirty(command, cols, rows, on_dirty)?;
-        let id = PaneId(self.next_id);
-        self.next_id += 1;
+        // Mint AFTER a successful spawn so a failed spawn consumes no id (preserving the
+        // old counter's gap-free-on-failure behaviour). Relaxed ordering: ids need only
+        // uniqueness + monotonicity, not synchronization with other memory.
+        let id = PaneId(self.next_id.fetch_add(1, Ordering::Relaxed));
         self.panes.push(Pane {
             id,
             session,
