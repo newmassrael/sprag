@@ -195,6 +195,7 @@
 //! bottom) — a v1 limit.
 
 mod a11y;
+mod ctxmenu;
 mod diag;
 mod dock;
 mod input;
@@ -286,7 +287,10 @@ fn reset_freed_slot(slot: usize) {
 struct TerminalViewer;
 
 impl WidgetCore for TerminalViewer {
-    type State = ();
+    /// The context-menu open/active projection (R140) — sprag's first stateful surface,
+    /// so `State` grew from `()`. Read from the `ContextMenuExternal` each frame by
+    /// [`Self::read_state`] and rendered by the pure `view` ([`ctxmenu::overlay`]).
+    type State = ctxmenu::MenuState;
     type Event = ();
 
     /// sprag has **NO primary interactive surface** (R127, consuming PINION-PR51): every
@@ -460,6 +464,11 @@ impl WidgetCore for TerminalViewer {
                 ),
             )
         }));
+        // R140: the right-click context menu, one `ContextMenuExternal` at a constant
+        // tag (pinion R689 preserves its live open state across this per-frame rebuild,
+        // like the splitters). Its item clicks / barrier dismiss route through the shell
+        // pointer router; `apply_secondary_click` opens it, `update` runs its commands.
+        externals.push(ctxmenu::create_menu_external());
         externals
     }
 
@@ -551,6 +560,14 @@ impl WidgetCore for TerminalViewer {
             Some(i) => selection::paste_primary(i),
             None => false,
         }
+    }
+
+    /// Right-click opens the pane context menu (R140) at the press point — the
+    /// position-bearing secondary-click hook. Forwards to [`ctxmenu::open_at`], which
+    /// finds the menu external in the model scene and anchors the popup. The universal
+    /// AI peer `scene/click {button:"right"}` reaches this same override.
+    fn apply_secondary_click(scene: &mut Scene, x: f32, y: f32) -> bool {
+        ctxmenu::open_at(scene, x, y)
     }
 
     /// Pre-view reconcile (pinion R1047 / PR-20): the sanctioned non-view-fn place to
@@ -672,7 +689,11 @@ impl WidgetCore for TerminalViewer {
         unreachable!("sprag-gui has no primary surface — see primary_surface()")
     }
 
-    fn read_state(_scene: &Scene) {}
+    /// Project the context menu's open/active state out of the model scene (R140) —
+    /// the `read_state` seam the shell caches into [`Self::State`] for the pure `view`.
+    fn read_state(scene: &Scene) -> Self::State {
+        ctxmenu::read_menu_state(scene)
+    }
 
     /// Reducer — pinion routes external-drained intents through `WidgetCore::update`
     /// (R51.168 §5.23). sprag consumes the dock-panel **tear-off** family a
@@ -717,7 +738,13 @@ impl WidgetCore for TerminalViewer {
     /// field) is the correct SSOT — and splitting once avoids the per-call `format!`
     /// allocation a candidate-rebuild-per-arm would cost on the `follow` hot path
     /// (the follow fires per drag-move, hundreds of times in one gesture).
-    fn update(_state: (), intent: &Intent) -> Vec<Command> {
+    fn update(_state: ctxmenu::MenuState, intent: &Intent) -> Vec<Command> {
+        // R140: a context-menu item activation arrives as the menu's `"command"`
+        // intent — run its Copy / Paste / Select-all action and stop (it is not a
+        // dock-panel tag, so the panel routing below would drop it anyway).
+        if ctxmenu::handle_command(intent) {
+            return Vec::new();
+        }
         let Some((panel, event)) = intent.tag_str().rsplit_once('.') else {
             return Vec::new();
         };
@@ -847,7 +874,7 @@ impl WidgetCore for TerminalViewer {
     /// docked panes). The live multi-window paint goes through
     /// [`WidgetView::view_for_window`]; this keeps the no-window-context path
     /// (an RPC `scene/snapshot` without a window) showing what the human sees.
-    fn view(state: (), frame: &Frame) -> Scene {
+    fn view(state: Self::State, frame: &Frame) -> Scene {
         view::view_for_window(dock::MAIN_WINDOW_ID, state, frame)
     }
 
@@ -893,7 +920,7 @@ impl WidgetView for TerminalViewer {
 
     /// Per-window paint: the main window tiles the DOCKED panes; an undock window
     /// (`pane-{i}`) paints that pane alone. Delegates to [`view::view_for_window`].
-    fn view_for_window(window_id: &str, state: (), frame: &Frame) -> Scene {
+    fn view_for_window(window_id: &str, state: Self::State, frame: &Frame) -> Scene {
         view::view_for_window(window_id, state, frame)
     }
 
@@ -904,7 +931,7 @@ impl WidgetView for TerminalViewer {
     /// drag; a press off any pane grid returns `None` (dock / splitter / scrollbar
     /// gestures are untouched). `extend` (Shift) keeps the anchor and moves the focus.
     fn position_caret_for_point(
-        _state: &(),
+        _state: &Self::State,
         scene: &Scene,
         _focused: Option<&str>,
         hit_tag: Option<&str>,
@@ -921,7 +948,7 @@ impl WidgetView for TerminalViewer {
     /// ([`selection::drag`]). The `anchor` token is echoed but unused — the pane +
     /// anchor live in the reactive selection state, keyed by pane, not the byte token.
     fn select_drag_to_point(
-        _state: &(),
+        _state: &Self::State,
         scene: &Scene,
         _focused: Option<&str>,
         _anchor: usize,
@@ -1027,7 +1054,7 @@ impl WidgetView for TerminalViewer {
     /// [`a11y::access_nodes_for_window`].
     fn access_node_for_window(
         window_id: &str,
-        _state: &(),
+        _state: &ctxmenu::MenuState,
         focused: Option<&str>,
     ) -> Vec<AccessNode> {
         a11y::access_nodes_for_window(window_id, focused)
@@ -1119,7 +1146,11 @@ mod tests {
         let scene = owner.run(|| {
             crate::terminal::seed_terminal(host);
             crate::dock::admit_pane(0); // give the pane its dock leaf
-            view::view_for_window(dock::MAIN_WINDOW_ID, (), &Frame::new())
+            view::view_for_window(
+                dock::MAIN_WINDOW_ID,
+                ctxmenu::MenuState::default(),
+                &Frame::new(),
+            )
         });
 
         let texts = painted_texts(&scene);
@@ -2522,7 +2553,9 @@ mod tests {
         let core = ShellCore::<TerminalViewer>::new();
         core.root_owner().run(|| {
             let frame = Frame::new();
-            let render = || view::view_for_window(dock::MAIN_WINDOW_ID, (), &frame);
+            let render = || {
+                view::view_for_window(dock::MAIN_WINDOW_ID, ctxmenu::MenuState::default(), &frame)
+            };
 
             // Baseline: no preview.
             split::use_drop_preview().set(None);

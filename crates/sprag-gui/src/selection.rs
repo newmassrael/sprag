@@ -176,6 +176,28 @@ pub(crate) fn copy_selection() -> bool {
     true
 }
 
+/// Select pane `pane`'s ENTIRE visible grid (context-menu "Select all") and publish it
+/// to PRIMARY. Reads the pane's current visible cells for the `(cols, rows)` extent.
+pub(crate) fn select_all(pane: usize) {
+    let tv = use_terminal();
+    let scroll = crate::scrollbar::use_pane_scroll(pane);
+    let facts = tv.slots.pane_scroll_facts(pane);
+    let offset_lines =
+        crate::scrollbar::offset_lines_from_top(scroll.offset_y(), facts.scrollback_len);
+    let cells = tv.slots.pane_cells(pane, offset_lines);
+    let (cols, rows) = (cells.cols(), cells.rows());
+    if cols == 0 || rows == 0 {
+        return;
+    }
+    let selection = PaneSelection {
+        pane,
+        anchor: (0, 0),
+        focus: (cols - 1, rows - 1),
+    };
+    use_selection().set(Some(selection));
+    publish_primary(selection);
+}
+
 /// Paste the CLIPBOARD selection into pane `pane` (`Ctrl+Shift+V`).
 pub(crate) fn paste_clipboard(pane: usize) -> bool {
     paste_into(pane, ClipboardSelection::Clipboard)

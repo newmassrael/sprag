@@ -60,8 +60,11 @@ pub(crate) fn pane_display_title(slots: &SlotView, i: usize) -> String {
 /// pane content. [`WidgetCore::view`](crate::TerminalViewer) (the windowless /
 /// RPC-snapshot fallback) routes here as the main window. The producer threads (the PTY
 /// readers) live in `create_extra_externals`, not here.
-#[allow(clippy::trivially_copy_pass_by_ref)]
-pub(crate) fn view_for_window(window_id: &str, _state: (), _frame: &Frame) -> Scene {
+pub(crate) fn view_for_window(
+    window_id: &str,
+    state: crate::ctxmenu::MenuState,
+    _frame: &Frame,
+) -> Scene {
     let theme = use_theme(THEME_TAG).theme_animated();
     let tv = use_terminal();
     match pane_window_index(window_id) {
@@ -99,7 +102,9 @@ pub(crate) fn view_for_window(window_id: &str, _state: (), _frame: &Frame) -> Sc
                 Some(controls),
             )
         }
-        _ => view_main(&tv, &theme),
+        // The main window tiles the docked panes; overlay the right-click context menu
+        // (R140) when it is open (a no-op when closed) — LAST so the popup paints over.
+        _ => crate::ctxmenu::overlay(view_main(&tv, &theme), state, &theme),
     }
 }
 
