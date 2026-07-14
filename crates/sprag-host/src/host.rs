@@ -320,9 +320,13 @@ pub(crate) fn reconciled_layout(registry: &Arc<Mutex<SessionRegistry>>) -> Layou
     let mut registry = lock(registry);
     let window = registry.current_window_mut();
     let tree = LayoutWire::from(window.reconcile_layout(&panes));
+    let mut floating: Vec<PaneId> = window.floating().iter().copied().collect();
+    floating.sort_unstable(); // a HashSet's order is arbitrary; the wire must be stable or
+    // a client watching for change would see one where there is none
     LayoutSnapshot {
         revision: window.layout_revision(),
         tree,
+        floating,
     }
 }
 

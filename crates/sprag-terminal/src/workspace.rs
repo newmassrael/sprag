@@ -43,7 +43,12 @@ use crate::session::{CommandBuilder, SessionError, SessionHandle, TerminalSessio
 /// Serialises as its bare number, matching the `id` the pane-list wire has
 /// always carried; it is the identity a [`LayoutTree`](crate::LayoutTree) leaf
 /// names over the wire.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
+/// `Ord` is by mint order (the counter is monotonic and never reused), which is what lets a
+/// set of ids be serialised in a STABLE order — a wire list whose order wobbled would read
+/// as a change to a client watching for one.
+#[derive(
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, serde::Serialize, serde::Deserialize,
+)]
 pub struct PaneId(pub u64);
 
 impl fmt::Display for PaneId {

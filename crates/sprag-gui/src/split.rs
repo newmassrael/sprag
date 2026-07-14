@@ -327,6 +327,10 @@ pub(crate) fn adopt_layout(snapshot: &LayoutSnapshot, slots: &crate::slotview::S
         force_ratios(root);
     }
     use_dock_topology().set(project_layout(&tree, &|pane| slots.slot_of(pane)));
+    // The tree carries only TILED panes, so the float set is the other half of the same
+    // fact — project it too, or a floated pane would have neither a leaf nor a window and
+    // would vanish (which is exactly what a reattach used to do to it).
+    crate::dock::reconcile_float_windows(&snapshot.floating, &|pane| slots.slot_of(pane));
     let sync = use_layout_sync();
     let mut sync = sync.borrow_mut();
     sync.seen = snapshot.clone();

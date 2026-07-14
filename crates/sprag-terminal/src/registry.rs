@@ -121,13 +121,18 @@ impl Window {
     /// registry lock, so the two are never nested (see [`crate::layout`]).
     pub fn reconcile_layout(&mut self, panes: &[PaneId]) -> &LayoutTree {
         let live: HashSet<PaneId> = panes.iter().copied().collect();
-        self.floating.retain(|pane| live.contains(pane));
-        let tiled: Vec<PaneId> = panes
-            .iter()
-            .copied()
-            .filter(|pane| !self.floating.contains(pane))
-            .collect();
-        self.bump_if_changed(|layout| layout.reconcile(&tiled));
+        self.bump_if_changed(|window| {
+            // Prune INSIDE the compare: a floating pane that exits changes what a client
+            // must draw (one fewer window) while leaving the tiling untouched, so pruning
+            // outside would drop that change on the floor.
+            window.floating.retain(|pane| live.contains(pane));
+            let tiled: Vec<PaneId> = panes
+                .iter()
+                .copied()
+                .filter(|pane| !window.floating.contains(pane))
+                .collect();
+            window.layout.reconcile(&tiled);
+        });
         &self.layout
     }
 
@@ -141,7 +146,7 @@ impl Window {
     pub fn set_layout(&mut self, wire: LayoutWire) -> Result<(), LayoutError> {
         let mut next = self.layout.clone();
         next.set_from_wire(wire)?;
-        self.bump_if_changed(|layout| *layout = next);
+        self.bump_if_changed(|window| window.layout = next);
         Ok(())
     }
 
@@ -162,13 +167,18 @@ impl Window {
         }
     }
 
-    /// Apply `change` to the arrangement and bump [`layout_revision`](Self::layout_revision)
-    /// only if it actually differed — the ONE place the revision moves, so "the number
+    /// Apply `change` and bump [`layout_revision`](Self::layout_revision) only if the
+    /// arrangement actually differed — the ONE place the revision moves, so "the number
     /// changed" and "a client's projection is stale" cannot come apart.
-    fn bump_if_changed(&mut self, change: impl FnOnce(&mut LayoutTree)) {
-        let before = self.layout.clone();
-        change(&mut self.layout);
-        if self.layout != before {
+    ///
+    /// Compares the tree AND the float set, because both are state a client projects: a pane
+    /// that stops floating changes what the client must draw even on the rare path where the
+    /// tiling comes out identical.
+    fn bump_if_changed(&mut self, change: impl FnOnce(&mut Self)) {
+        let tree = self.layout.clone();
+        let floating = self.floating.clone();
+        change(self);
+        if self.layout != tree || self.floating != floating {
             self.layout_revision += 1;
         }
     }

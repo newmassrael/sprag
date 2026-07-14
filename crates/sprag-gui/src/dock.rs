@@ -354,6 +354,53 @@ fn push_float(windows: &mut Vec<WindowSpec>, i: usize, position: Option<(i32, i3
     true
 }
 
+/// Project the host's FLOAT set onto this client's OS windows: open a window for every pane
+/// the host floats but we do not show, and drop any whose pane the host no longer floats.
+///
+/// This is what makes a REATTACH whole. The host's tree carries only TILED panes, so a
+/// floated pane has no leaf; without this a freshly-attached client would render neither a
+/// leaf nor a window for it and the pane would simply VANISH — alive in the session,
+/// invisible to its user. It also keeps two attached clients in step: a float over there
+/// opens a window over here.
+///
+/// Position is deliberately not restored — the host stores none, because where a window sits
+/// on screen is pixels and belongs to whoever is drawing (see [`crate::split`]'s seam). A
+/// restored float is therefore WM-placed, and a client on a different screen is not asked to
+/// honour coordinates from someone else's.
+///
+/// `slot_of` maps a host pane to this client's display slot; a pane it cannot place yet (not
+/// admitted) is skipped and picked up once it is — the same "renderable now" contract the
+/// projection holds.
+pub(crate) fn reconcile_float_windows(
+    floating: &[sprag_terminal::PaneId],
+    slot_of: &impl Fn(sprag_terminal::PaneId) -> Option<usize>,
+) {
+    let want: Vec<usize> = floating.iter().filter_map(|p| slot_of(*p)).collect();
+    let signal = use_windows_topology();
+    let windows = signal.get();
+    let shown: Vec<usize> = windows
+        .iter()
+        .filter_map(|w| pane_window_index(&w.id))
+        .collect();
+    if shown.iter().all(|i| want.contains(i)) && want.iter().all(|i| shown.contains(i)) {
+        return; // already showing exactly the host's floats — never `set` an unchanged value
+    }
+    let mut next: Vec<WindowSpec> = windows
+        .into_iter()
+        // Drop a window whose pane the host no longer floats (another client docked it back).
+        .filter(|w| pane_window_index(&w.id).is_none_or(|i| want.contains(&i)))
+        .collect();
+    // Open one for each float we are not showing. WM-placed: this client was not the one
+    // that chose where it went.
+    for &i in &want {
+        if !next.iter().any(|w| w.id == pane_window_id(i)) {
+            next.push(undock_window_spec(i, None));
+        }
+    }
+    tracing::debug!(target: "sprag_gui::dock", ?want, ?shown, "projecting the host's float set");
+    signal.set(next);
+}
+
 /// Ask the host to take pane `i` out of the tiling (or put it back) and adopt the resulting
 /// arrangement — the ONE place this client changes float state, shared by [`push_float`] and
 /// [`redock_pane`].
@@ -691,6 +738,48 @@ mod tests {
             evict_pane(0); // the host closed pane 0
 
             assert!(!is_pane_floating(0), "evict drops the floating window");
+        });
+    }
+
+    /// REATTACH, the arc's payoff: a client that joins a session where a pane is already
+    /// floated must OPEN that pane's window.
+    ///
+    /// This is the bug B4 found live. The host's tree carries only TILED panes, so a floated
+    /// pane has no leaf; a fresh client rendered no leaf (right) and no window (wrong), and
+    /// the pane VANISHED — alive in the session, invisible to its user. Projecting the host's
+    /// float set is what puts it back.
+    #[test]
+    fn a_reattaching_client_restores_the_hosts_floats() {
+        let owner = Owner::new();
+        owner.run(|| {
+            project_host_layout();
+            let ids: Vec<_> = (0..2)
+                .map(|i| use_terminal().slots.pane_at(i).unwrap())
+                .collect();
+            let shown = || {
+                use_windows_topology()
+                    .get()
+                    .iter()
+                    .filter_map(|w| pane_window_index(&w.id))
+                    .collect::<Vec<_>>()
+            };
+            assert!(shown().is_empty(), "a fresh client floats nothing");
+
+            // The session says pane 0 is floated (another client left it that way).
+            reconcile_float_windows(&[ids[0]], &|p| use_terminal().slots.slot_of(p));
+            assert_eq!(shown(), vec![0], "the reattaching client re-floats pane 0");
+
+            // Idempotent: projecting the same set again must not churn the windows signal.
+            let before = use_windows_topology().get().len();
+            reconcile_float_windows(&[ids[0]], &|p| use_terminal().slots.slot_of(p));
+            assert_eq!(use_windows_topology().get().len(), before);
+
+            // The session says it was docked back (another client's gesture): drop the window.
+            reconcile_float_windows(&[], &|p| use_terminal().slots.slot_of(p));
+            assert!(
+                shown().is_empty(),
+                "a pane the host stopped floating loses its window"
+            );
         });
     }
 

@@ -460,6 +460,10 @@ fn a_clients_settled_arrangement_crosses_the_real_socket_and_is_named() {
         Some(sprag_terminal::LayoutNodeWire::Leaf(panes[0])),
         "the floated pane's leaf collapsed; its sibling reclaimed the space",
     );
+    // ...and WHICH pane is floated crosses the wire too. Without it a reattaching client
+    // would see a pane that is neither tiled nor floated, and simply not draw it.
+    assert_eq!(floated.floating, vec![panes[1]], "the float set is served");
+    let (_, _) = read_layout(&mut conn);
 
     // ...and the host REJECTS an arrangement that would corrupt the session, keeping the
     // one in force rather than absorbing it.

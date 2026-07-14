@@ -518,7 +518,7 @@ mod tests {
         assert_eq!(
             ext.query(LAYOUT_SLOT),
             Some(IntrospectValue::Json(
-                json!({"revision": 0, "tree": {"root": null}})
+                json!({"revision": 0, "tree": {"root": null}, "floating": []})
             )),
             "an empty window has no arrangement — and the wire carries no minting counter",
         );
@@ -624,6 +624,11 @@ mod tests {
             answer["tree"]["root"]["leaf"], 0,
             "the floated pane's leaf collapsed; its sibling reclaimed the space",
         );
+        // The float set is SERVED, not just applied: "absent from the tiling" is all a
+        // floated pane and an unknown pane have in common, so a client that could not read
+        // this would render the floated pane neither as a leaf nor as a window — it would
+        // vanish. This is what lets a reattaching client restore the user's floats.
+        assert_eq!(answer["floating"], json!([1]));
 
         // Docked back with no gesture to place it, it returns at the arrangement's end.
         ext.invoke(
@@ -634,6 +639,11 @@ mod tests {
         let layout = query_layout(&mut ext);
         assert_eq!(layout["tree"]["root"]["split"]["first"]["leaf"], 0);
         assert_eq!(layout["tree"]["root"]["split"]["second"]["leaf"], 1);
+        assert_eq!(
+            layout["floating"],
+            json!([]),
+            "docked back, it floats no more"
+        );
     }
 
     /// A client cannot install an arrangement that breaks the tree's invariants: the

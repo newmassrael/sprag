@@ -468,8 +468,8 @@ impl From<&LayoutNode> for LayoutNodeWire {
     }
 }
 
-/// A window's arrangement AND the revision it is at — what the host serves for the `layout`
-/// read, and what it returns from a write.
+/// A window's WHOLE arrangement — how its panes are tiled, which are floated out, and the
+/// revision it is all at. What the host serves for the `layout` read, and returns from a write.
 ///
 /// The revision is what lets a client hold a PROJECTION rather than a fork: it re-reads
 /// exactly when the number changes, so a host-side change (another client's gesture, a pane
@@ -480,8 +480,21 @@ impl From<&LayoutNode> for LayoutNodeWire {
 pub struct LayoutSnapshot {
     /// The revision this arrangement is at (see [`crate::Window::layout_revision`]).
     pub revision: u64,
-    /// The arrangement itself.
+    /// How the TILED panes are arranged.
     pub tree: LayoutWire,
+    /// The panes floated OUT of the tiling — those with no leaf in `tree`.
+    ///
+    /// Load-bearing for reattach, and not derivable from `tree`: "absent from the tiling"
+    /// is exactly what a floated pane and a pane this client cannot see look like, so a
+    /// client that only read `tree` would silently DROP a floated pane — it would render
+    /// neither a leaf (correct, it is not tiled) nor a window (wrong, the pane is alive).
+    /// Serving it is what lets a reattaching client put the user's floats back.
+    ///
+    /// WHERE each one's window sits on screen is deliberately NOT here: that is pixels, and
+    /// it belongs to whichever client is drawing (see [`crate::Window`]). A reattaching
+    /// client therefore restores WHICH panes float, and lets its window manager place them.
+    #[serde(default)]
+    pub floating: Vec<PaneId>,
 }
 
 #[cfg(test)]

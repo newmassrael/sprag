@@ -1134,6 +1134,21 @@ mod tests {
         c
     }
 
+    /// A pane whose child sets NO window title — for asserting the display-title FALLBACK.
+    ///
+    /// Deliberately distinct from [`titled_pane`]: a child that sets a title cannot prove
+    /// what happens when none is set, it can only prove it TRANSIENTLY, before its `printf`
+    /// lands. `the_main_window_title_tracks_the_focused_panes_display_title` used
+    /// `titled_pane("plain")` for exactly that and so raced its own fixture — passing only
+    /// while the child was slow, and failing on an idle machine where it was quick.
+    fn untitled_pane() -> CommandBuilder {
+        let mut c = CommandBuilder::new("/bin/sh");
+        c.arg("-c");
+        c.arg("exec cat");
+        c.env("TERM", "dumb");
+        c
+    }
+
     /// (R130, PINION-PR52-A) The DOCKED panel's header paints the child's live OSC title,
     /// not its `panel_id` — the surface R128 could not reach until pinion R1318 gave the
     /// dock walker a display-title provider. The pane's IDENTITY is unchanged: the leaf /
@@ -1196,8 +1211,8 @@ mod tests {
             .spawn(titled_pane("vim README"), "sh".to_owned(), 40, 6, None)
             .unwrap();
         // A second pane so floating the first is not refused (the last docked pane cannot
-        // float — `float_would_empty_the_dock`).
-        host.spawn(titled_pane("plain"), "sh".to_owned(), 40, 6, None)
+        // float — `float_would_empty_the_dock`). Its title is irrelevant here.
+        host.spawn(untitled_pane(), "sh".to_owned(), 40, 6, None)
             .unwrap();
 
         let start = Instant::now();
@@ -1251,7 +1266,9 @@ mod tests {
         let titled = host
             .spawn(titled_pane("vim README"), "sh".to_owned(), 40, 6, None)
             .unwrap();
-        host.spawn(titled_pane("plain"), "sh".to_owned(), 40, 6, None)
+        // A child that sets NO title, so the fallback assertion below is a FACT rather than
+        // a race against the child's own `printf` (see `untitled_pane`).
+        host.spawn(untitled_pane(), "sh".to_owned(), 40, 6, None)
             .unwrap();
 
         let start = Instant::now();
