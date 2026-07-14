@@ -146,8 +146,12 @@ pub(crate) fn use_split_ratio(id: impl Into<Cow<'static, str>>, initial: f32) ->
 /// are split, in what order, at what proportion (so it survives a detach); the client owns
 /// how that becomes pixels. Nothing here invents arrangement — it only translates identity
 /// to slots ([`SlotView::slot_of`](crate::slotview::SlotView::slot_of)) and the host's
-/// ratio into pinion's initial one. **v1 bound:** it runs ONCE, at boot (see
-/// [`use_dock_topology`]).
+/// ratio into pinion's initial one. Runs on every adopt ([`adopt_layout`]), not once at boot
+/// — the once-fired seed that then forked from the host forever is what R149 retired.
+///
+/// **LOSSY, deliberately** (see the collapse rule below), which is why [`sync_layout`] must
+/// never write an un-projection of this surface back without first checking that its pane
+/// set still matches the host's.
 ///
 /// A leaf whose pane this client cannot render yet (`slot_of` -> `None`, the "renderable
 /// now" contract) COLLAPSES into its sibling, exactly as a removed leaf does — so a
@@ -220,10 +224,14 @@ fn split_id_of_tag(tag: &str) -> Option<SplitId> {
 /// [`project_layout`], and what turns a settled gesture into session state.
 ///
 /// `None` means the surface is not representable as a host arrangement, in which case the
-/// caller must NOT write (silently writing a lossy tree would let the host store something
-/// the user never asked for). The only such shape is a pinion `Tabs` well, which cannot
-/// occur — [`use_dock_reorganizer`] runs `with_tabbing(false)`, so no path mints one — but
-/// it is a real variant of pinion's type, so it is refused honestly rather than assumed away.
+/// caller must NOT write. Two shapes reach it: a pinion `Tabs` well (unreachable —
+/// [`use_dock_reorganizer`] runs `with_tabbing(false)` — but a real variant of pinion's type,
+/// so it is refused honestly rather than assumed away), and a leaf whose slot holds no pane.
+///
+/// Returning `Some` is NOT on its own a licence to write: this reports only that every leaf
+/// PRESENT could be named. A pane [`project_layout`] dropped is simply absent, and no
+/// inspection here can see it — that check belongs to [`sync_layout`], against the host's
+/// own pane set.
 ///
 /// The ratio is read from the LIVE per-split signal ([`use_split_ratio`]), NOT from the
 /// node: pinion's `DockNode::Split.ratio` is only the value the divider OPENED at, while the
@@ -279,6 +287,27 @@ fn unproject_node(
             None
         }
     }
+}
+
+/// The panes an arrangement places, as a set — for checking that a write would not change
+/// MEMBERSHIP (see [`sync_layout`]).
+fn wire_panes(wire: &LayoutWire) -> std::collections::HashSet<PaneId> {
+    fn walk(node: &LayoutNodeWire, out: &mut std::collections::HashSet<PaneId>) {
+        match node {
+            LayoutNodeWire::Leaf(pane) => {
+                out.insert(*pane);
+            }
+            LayoutNodeWire::Split { first, second, .. } => {
+                walk(first, out);
+                walk(second, out);
+            }
+        }
+    }
+    let mut out = std::collections::HashSet::new();
+    if let Some(root) = &wire.root {
+        walk(root, &mut out);
+    }
+    out
 }
 
 /// What this client last learned from the host, plus the settle detector — the state
@@ -384,6 +413,25 @@ pub(crate) fn sync_layout(slots: &crate::slotview::SlotView) {
     }) else {
         return; // unrepresentable — never write a lossy arrangement
     };
+    // A gesture RE-ARRANGES panes; it never adds or removes one. So a surface whose pane set
+    // differs from the host's is not this user's intent — it is this client's RENDERING
+    // LIMIT, and writing it would promote that limit to session state.
+    //
+    // [`project_layout`] is deliberately lossy: a pane it cannot place (past the slot cap,
+    // or not yet admitted) COLLAPSES out of the surface. Un-projecting that and writing it
+    // would DELETE the pane from the session's arrangement; the host would then re-append it
+    // at the end with a fresh divider, changing the tree, which this client would re-project
+    // and lossily write again — a permanent write loop that also relocates the user's pane.
+    // The membership authority is the Workspace and it is never ours to edit, so the honest
+    // move is to render what we can and write NOTHING until we can represent the whole thing.
+    if wire_panes(&current) != wire_panes(&use_layout_sync().borrow().seen.tree) {
+        tracing::debug!(
+            target: "sprag_gui::split",
+            "this client cannot render every tiled pane; not writing (its arrangement is the host's)",
+        );
+        use_layout_sync().borrow_mut().settling = None;
+        return;
+    }
     if current == use_layout_sync().borrow().seen.tree {
         use_layout_sync().borrow_mut().settling = None;
         return; // the surface already IS the host's arrangement
@@ -710,6 +758,59 @@ mod tests {
             assert_eq!(
                 unproject_layout(None, &|slot| Some(PaneId(slot as u64))),
                 Some(LayoutWire { root: None }),
+            );
+        });
+    }
+
+    /// A pane this client cannot RENDER must never be deleted from the SESSION's
+    /// arrangement — the authority inversion this whole arc exists to prevent.
+    ///
+    /// [`project_layout`] is lossy on purpose: a pane with no slot (past `MAX_PANES`, or not
+    /// yet admitted) collapses out of the painted surface. Feeding that surface back through
+    /// [`unproject_layout`] yields a tree MISSING the pane — and R150's `sync_layout` would
+    /// have written it, whereupon the host re-appends the pane at the end with a fresh
+    /// divider, this client re-projects, drops it again, and writes again: a permanent write
+    /// loop on the UI thread that also relocates the user's pane for good, durably. Found by
+    /// the R151 3-lens review; missed here because the first round-trip test used a TOTAL
+    /// `slot_of`, so it could not see the case that matters.
+    #[test]
+    fn a_surface_missing_a_pane_the_client_cannot_render_is_never_written() {
+        let owner = Owner::new();
+        owner.run(|| {
+            let mut host = LayoutTree::new();
+            host.reconcile(&[PaneId(0), PaneId(1), PaneId(2)]);
+            let served = LayoutWire::from(&host);
+
+            // Pane 2 is real and tiled host-side, but this client has no slot for it.
+            let topo = project_layout(&host, &|p| (p.0 < 2).then_some(p.0 as usize))
+                .expect("the renderable panes still paint");
+            assert_eq!(
+                topo.leaf_count(),
+                2,
+                "the surface honestly shows what it can"
+            );
+
+            let would_write = unproject_layout(Some(&topo), &|slot| Some(PaneId(slot as u64)))
+                .expect("representable");
+            assert_ne!(
+                wire_panes(&would_write),
+                wire_panes(&served),
+                "the un-projected surface is MISSING pane 2 (this is the trap)",
+            );
+            // ...so the guard must refuse it: membership is the Workspace's, never ours.
+            assert!(
+                wire_panes(&would_write) != wire_panes(&served),
+                "sync_layout compares exactly this and declines to write",
+            );
+
+            // And the honest case still writes: same panes, different arrangement.
+            let full = project_layout(&host, &|p| Some(p.0 as usize)).expect("all render");
+            let rearranged = unproject_layout(Some(&full), &|slot| Some(PaneId(slot as u64)))
+                .expect("representable");
+            assert_eq!(
+                wire_panes(&rearranged),
+                wire_panes(&served),
+                "a real gesture re-arranges the SAME panes, so it passes the guard",
             );
         });
     }

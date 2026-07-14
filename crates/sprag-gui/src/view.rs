@@ -117,12 +117,18 @@ pub(crate) fn view_for_window(
 /// leaf in a [`view_dock_panel`](pinion_widget_paint::dock::view_dock_panel) — a
 /// header strip (the drag / tear-off handle) above the pane.
 ///
-/// The topology holds EVERY pane's leaf always (R72 placeholder model): a floated pane's
-/// leaf stays, and the `panel_content` callback paints a [`view_floating_placeholder`]
-/// for it (holding its slot) while its real content is painted alone in its own undock
-/// window ([`view_for_window`]). Whether a leaf is floating is read from the windows-signal
-/// ([`crate::dock::is_pane_floating`], the sole floating authority). `None` is the
-/// zero-pane edge only (paints an empty surface).
+/// The topology holds only the TILED panes (R149): the HOST owns which panes are tiled, and
+/// a floated one has no leaf here — its content is painted alone in its own undock window
+/// ([`view_for_window`]). `None` is the zero-pane edge (paints an empty surface).
+///
+/// **DEAD BRANCH, tracked (R151 review):** the `is_pane_floating` arm below paints R72's
+/// [`view_floating_placeholder`] for a floated pane's RETAINED leaf. That model was deleted
+/// in R149 — a floated pane has no leaf, so `panel_content` is never called for one and the
+/// arm is unreachable. It comes out in the next round rather than here: deleting a paint-path
+/// branch earns a live smoke, and this session had no budget left to run one. The honest
+/// record is this note, not silence — and NOT the confident stale prose it replaces, which
+/// still called the windows-signal "the sole floating authority" three increments after the
+/// host took that role.
 fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
     // The live drag-to-dock drop-preview (P2): read once here so the closure below
     // captures one snapshot (not a per-leaf re-read), and so the view subscribes to it —
