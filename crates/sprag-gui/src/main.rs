@@ -960,11 +960,12 @@ impl WidgetView for TerminalViewer {
 
     /// Suppress pinion's framework focus ring (R142) — the content-surface opt-out a
     /// terminal pane takes (pinion's own `hello-grid-pointer` does the same). sprag draws
-    /// its OWN focus indicator instead: a thin accent bar at the top of the FOCUSED pane
-    /// ([`view::build_pane_scene`], reading `focus_state::focused()`), which reads as an
-    /// active-header underline and — unlike the shell's top-most box ring overlay — never
-    /// paints over the context-menu popup. Focus semantics are untouched: panes stay
-    /// `with_focusable`, so Tab / click-to-focus / [`Self::apply_key`] routing all work.
+    /// its OWN focus indicator instead: a translucent dark scrim over every INACTIVE pane
+    /// (`view::build_pane_scene`'s `dim_inactive`, reading `focus_state::focused()`), so
+    /// the active pane reads brighter (the iTerm2 / kitty / tmux "dim inactive split"
+    /// convention) and — unlike the shell's top-most box ring overlay — never paints over
+    /// the context-menu popup. Focus semantics are untouched: panes stay `with_focusable`,
+    /// so Tab / click-to-focus / [`Self::apply_key`] routing all work.
     fn focus_ring_style(_focused_tag: &str) -> Option<pinion_shell::FocusRingStyle> {
         None
     }
