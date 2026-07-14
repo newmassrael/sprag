@@ -34,9 +34,9 @@
 //! serves NO per-pane INPUT external — [`WidgetCore::apply_key`] maps the focused
 //! `pane_tag` to its tile index and SENDS to the host
 //! ([`HostClient::send_key`](sprag_host::HostClient::send_key)); the model scene
-//! holds only the GUI's own interaction externals (scroll / split / dock), the
-//! primary ([`WidgetCore::create_external`]) being an inert non-pane scrollbar
-//! sentinel (every pane scrollbar is a symmetric extra — R122).
+//! holds only the GUI's own interaction externals (scroll / split / dock); sprag
+//! declares NO primary ([`WidgetCore::primary_surface`] is `None`, R127 / PINION-PR51),
+//! so every pane scrollbar is a symmetric extra and no slot is load-bearing (R122).
 //! `Ctrl+PageUp/Down` cycles focus; the
 //! framework draws the focus ring around the active pane. Per-pane GUI state
 //! (scroll offset, IME preedit) is keyed by tile index ([`input`]).
@@ -326,8 +326,8 @@ impl WidgetCore for TerminalViewer {
     /// pane 0 so keystrokes reach a pane without a click — the shell drains this
     /// focus request before the first paint. Returns the GUI's own interaction
     /// externals (a scrollbar per occupied slot + the dock splitters/panel handles);
-    /// the primary is a non-pane sentinel ([`Self::create_external`]), NOT a pane
-    /// scrollbar (R122), and topology B serves no per-pane INPUT external.
+    /// sprag declares no primary ([`Self::primary_surface`] is `None`, R127), so every
+    /// scrollbar is a symmetric extra (R122); topology B serves no per-pane INPUT external.
     fn create_extra_externals() -> Vec<ExtraExternal> {
         let terminal = use_terminal();
         install_reflow();
@@ -378,8 +378,8 @@ impl WidgetCore for TerminalViewer {
         // The occupied slots, snapshot ONCE (one mirror lock + alloc) and reused by both
         // the scrollbar-extras and the dock-panel externals below.
         let occupied = terminal.slots.occupied_slots();
-        // EVERY occupied slot's scrollbar is a symmetric extra (R122): the primary external
-        // is a non-pane sentinel ([`Self::create_external`]), so no slot — 0 included — is
+        // EVERY occupied slot's scrollbar is a symmetric extra (R122): sprag declares no
+        // primary ([`Self::primary_surface`] is `None`, R127), so no slot — 0 included — is
         // load-bearing, and a Round 2b close of any slot just drops its extra here.
         externals.extend(
             occupied
@@ -1753,17 +1753,28 @@ mod tests {
 
     /// sprag declares NO primary surface (R127, consuming PINION-PR51): every routable
     /// surface is a per-pane / per-split dynamic EXTRA, so the R122 inert sentinel is gone.
-    /// Three claims, all regressions someone re-adding a primary would trip:
+    /// FOUR claims, all regressions someone re-adding a primary would trip — the three
+    /// obligations pinion R1306 places on a `None`-primary binding plus the composition:
     /// (1) the opt-out is declared; (2) the substrate never REACHES the `unreachable!`
     /// `create_external` / `tag` — booting a `ShellCore` + painting would panic if any site
     /// still routed through a primary; (3) the composed state scene resolves NO primary, so
     /// the bare `/external` RPC shorthand rejects (`NoExternalAtPath`, pinion R1307) instead
-    /// of silently naming an arbitrary pane — while the pane extras still paint.
+    /// of silently naming an arbitrary pane — while the pane extras still paint; (4)
+    /// `keybinding` stays the empty default — pinion routes a keybinding event to the no-op
+    /// `send_to_primary` on a no-primary binding (it would be silently dropped), and sprag
+    /// drives every key through `apply_key` -> `route_key` -> the host instead, so an
+    /// override here would be a latent input-loss bug.
     #[test]
     fn declares_no_primary_surface_and_composes_from_extras_alone() {
         assert!(
             <TerminalViewer as WidgetCore>::primary_surface().is_none(),
             "sprag opts out of the primary contract — all surfaces are dynamic extras",
+        );
+        assert!(
+            <TerminalViewer as WidgetCore>::keybinding("Enter").is_none()
+                && <TerminalViewer as WidgetCore>::keybinding("a").is_none(),
+            "a no-primary binding must not bind keys — they would hit the no-op \
+             send_to_primary and be dropped (R1306 obligation)",
         );
 
         let mut core = ShellCore::<TerminalViewer>::new();
