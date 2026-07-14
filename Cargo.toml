@@ -24,6 +24,9 @@ members = [
     # The GPU windowed host (read-only terminal viewer). The ONLY crate that
     # depends on pinion-shell/vello — the headless RPC path stays GPU-free.
     "crates/sprag-gui",
+    # The agent-facing MCP surface: a stdio server that lets an AI running INSIDE
+    # a pane read/drive its sibling panes over the host wire (discoverable north star).
+    "crates/sprag-mcp",
 ]
 
 [workspace.package]

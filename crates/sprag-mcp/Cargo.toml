@@ -1,0 +1,27 @@
+[package]
+name = "sprag-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "MCP stdio server: exposes sibling-pane read/write to an agent running INSIDE a sprag terminal pane, bridging self-describing tools to the sprag-term host wire (the AI-reads-the-terminal-as-data north star, made discoverable)"
+publish = false
+
+[[bin]]
+name = "sprag-mcp"
+path = "src/main.rs"
+
+[dependencies]
+# The blocking JSON-RPC client + the runtime-dir socket path policy — the same
+# transport SSOT the GUI's WireHost uses to reach the host.
+sprag-rpc = { workspace = true }
+# The wire ABI vocabulary SSOT: the pane/mux path builders + action/slot consts.
+# Depending on the host crate (heavy) is deliberate — duplicating the grammar is
+# exactly the desync this module exists to prevent (see sprag_host::wire).
+sprag-host = { workspace = true }
+# MCP is JSON-RPC 2.0; we build/parse messages as untyped values.
+serde_json = { workspace = true }
+# Production logging facade — events to STDERR only (stdout is the MCP wire).
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

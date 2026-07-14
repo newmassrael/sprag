@@ -3524,6 +3524,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sprag-mcp"
+version = "0.0.1"
+dependencies = [
+ "serde_json",
+ "sprag-host",
+ "sprag-rpc",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "sprag-plugin"
 version = "0.0.1"
 dependencies = [
