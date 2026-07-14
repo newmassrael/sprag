@@ -201,6 +201,7 @@ mod input;
 mod reflow;
 mod rpc;
 mod scrollbar;
+mod selection;
 mod slotview;
 mod split;
 mod terminal;
@@ -267,7 +268,9 @@ struct BootFocusSeed;
 ///
 /// * scroll offset + bound, wheel sub-row accumulator, scrollbar interaction (hover/drag) —
 ///   all reset by [`scrollbar::reset_pane_scroll`] (the scrollbar module owns its three);
-/// * the IME preedit overlay — reset by [`input::reset_pane_preedit`].
+/// * the IME preedit overlay — reset by [`input::reset_pane_preedit`];
+/// * the mouse text selection — cleared by [`selection::reset_pane_selection`] iff the
+///   single active selection is in this slot (R139).
 ///
 /// NOT reset: the per-slot reflow [`Effect`](pinion_core::reactive::Effect) is slot-keyed and
 /// deliberately KEPT — it re-resolves the slot's live pane each fire, so it correctly reflows
@@ -277,6 +280,7 @@ struct BootFocusSeed;
 fn reset_freed_slot(slot: usize) {
     scrollbar::reset_pane_scroll(slot);
     input::reset_pane_preedit(slot);
+    selection::reset_pane_selection(slot);
 }
 
 struct TerminalViewer;
@@ -530,6 +534,23 @@ impl WidgetCore for TerminalViewer {
         event: &CompositionEvent,
     ) -> bool {
         route_composition(focused, event)
+    }
+
+    /// Middle-click pastes the X11 PRIMARY selection into the FOCUSED pane (R139) —
+    /// the desktop convention. This hook is focus-gated and coordinate-less (a click
+    /// focuses the pane under it first, so "focused" is the pane clicked), so the
+    /// PRIMARY text is written to that pane's PTY via the same
+    /// [`HostClient::send_text`](sprag_host::HostClient::send_text) seam an IME commit
+    /// uses. A no-op off a pane / with an empty PRIMARY.
+    fn apply_middle_click(
+        _scene: &mut Scene,
+        focused: Option<&str>,
+        _modifiers: Modifiers,
+    ) -> bool {
+        match focused.and_then(pane_index_of) {
+            Some(i) => selection::paste_primary(i),
+            None => false,
+        }
     }
 
     /// Pre-view reconcile (pinion R1047 / PR-20): the sanctioned non-view-fn place to
@@ -874,6 +895,40 @@ impl WidgetView for TerminalViewer {
     /// (`pane-{i}`) paints that pane alone. Delegates to [`view::view_for_window`].
     fn view_for_window(window_id: &str, state: (), frame: &Frame) -> Scene {
         view::view_for_window(window_id, state, frame)
+    }
+
+    /// Pointer press → text-selection anchor (R139). The shell fires this on every
+    /// press with the router-resolved `hit_tag` + window-local `(x, y)`; a press on a
+    /// pane grid (`{pane_tag}#grid`) anchors a selection at that cell ([`selection::press`])
+    /// and returns an arm token so the shell drives [`Self::select_drag_to_point`] on the
+    /// drag; a press off any pane grid returns `None` (dock / splitter / scrollbar
+    /// gestures are untouched). `extend` (Shift) keeps the anchor and moves the focus.
+    fn position_caret_for_point(
+        _state: &(),
+        scene: &Scene,
+        _focused: Option<&str>,
+        hit_tag: Option<&str>,
+        x: f32,
+        y: f32,
+        extend: bool,
+    ) -> Option<usize> {
+        selection::press(scene, hit_tag, x, y, extend)
+    }
+
+    /// Pointer drag → extend the active selection (R139). Fired on each move while the
+    /// button stays held after an arming [`Self::position_caret_for_point`]; sweeps the
+    /// selection focus to the cell under the cursor and publishes PRIMARY on a change
+    /// ([`selection::drag`]). The `anchor` token is echoed but unused — the pane +
+    /// anchor live in the reactive selection state, keyed by pane, not the byte token.
+    fn select_drag_to_point(
+        _state: &(),
+        scene: &Scene,
+        _focused: Option<&str>,
+        _anchor: usize,
+        x: f32,
+        y: f32,
+    ) -> bool {
+        selection::drag(scene, x, y)
     }
 
     /// Per-window chrome + resize policy (pinion R1190 `WindowPolicy`, which folded

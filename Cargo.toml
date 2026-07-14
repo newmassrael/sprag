@@ -58,6 +58,9 @@ pinion-runtime = { git = "https://github.com/newmassrael/pinion.git", rev = "4ea
 # under pinion-shell). sprag-gui uses `view_splitter` + `SplitterExternal` for
 # the draggable pane dividers (R38).
 pinion-widget-paint = { git = "https://github.com/newmassrael/pinion.git", rev = "4eaa21f9c6ca0f7eb1fd4c7ac842189db3cd59bc" }
+# Platform clipboard bridge (arboard: X11 PRIMARY/CLIPBOARD, Wayland, mac, Win).
+# sprag-gui uses `use_app_clipboard` for mouse-select copy + paste (R139).
+pinion-platform-clipboard = { git = "https://github.com/newmassrael/pinion.git", rev = "4eaa21f9c6ca0f7eb1fd4c7ac842189db3cd59bc" }
 pinion-forge = { git = "https://github.com/newmassrael/pinion.git", rev = "4eaa21f9c6ca0f7eb1fd4c7ac842189db3cd59bc" }
 # pinion-rpc: the scene-as-data introspection wire (snapshot.rs) + dispatch.
 # Confined to sprag-host (the RPC server layer) so the producer/projection

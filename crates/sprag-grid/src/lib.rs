@@ -170,6 +170,56 @@ pub fn overlay_preedit(buffer: GridBuffer, preedit: &str) -> GridBuffer {
     buffer.with_row(row, cells)
 }
 
+/// Overlay a mouse text selection onto `buffer` by INVERTING (toggling `reverse`)
+/// each selected cell — the xterm-idiomatic selection highlight (a cell already in
+/// reverse video reads normal under the band, exactly as a real terminal inverts the
+/// selected region). `start` and `end` are `(col, row)` in the buffer's VISIBLE grid,
+/// in reading (row-major) order (`start <= end`), both INCLUSIVE — a linear / stream
+/// selection: the first row runs from `start.col` to the row end, whole middle rows,
+/// the last row up to `end.col`. Rows / columns past the buffer are clamped; the caller
+/// gates out an empty span (a zero-width click selects nothing), so this always inverts
+/// at least the span it is given.
+///
+/// Like [`overlay_preedit`] this rewrites only the affected rows wholesale
+/// ([`GridBuffer::with_row`]) — the display-only projection is rebuilt every frame, so
+/// mutating the projected buffer never touches the producer's authoritative cells.
+#[must_use]
+pub fn overlay_selection(buffer: GridBuffer, start: (u16, u16), end: (u16, u16)) -> GridBuffer {
+    let cols = buffer.cols();
+    let rows = buffer.rows();
+    if cols == 0 || rows == 0 {
+        return buffer;
+    }
+    let (start_col, start_row) = start;
+    let (end_col, end_row) = end;
+    let last_row = end_row.min(rows - 1);
+    let mut buffer = buffer;
+    let mut row = start_row;
+    while row <= last_row {
+        let first = if row == start_row { start_col } else { 0 };
+        let last_incl = if row == end_row { end_col } else { cols - 1 }.min(cols - 1);
+        if first <= last_incl {
+            let cells: Vec<TermCell> = (0..cols)
+                .map(|col| {
+                    let cell = buffer
+                        .cell(col, row)
+                        .cloned()
+                        .unwrap_or_else(TermCell::blank);
+                    if col >= first && col <= last_incl {
+                        let attrs = cell.attrs;
+                        cell.with_attrs(attrs.with_reverse(!attrs.reverse))
+                    } else {
+                        cell
+                    }
+                })
+                .collect();
+            buffer = buffer.with_row(row, cells);
+        }
+        row += 1;
+    }
+    buffer
+}
+
 /// One preedit cell: the char in default colors, underlined to mark an
 /// in-progress composition. The grid cursor (a block at the compose position)
 /// highlights the active cell; the underline distinguishes the rest of the
@@ -519,5 +569,42 @@ mod tests {
             "x",
             "no overlay without a visible cursor"
         );
+    }
+
+    /// A same-row selection inverts exactly the selected columns; a cell already in
+    /// reverse video toggles back to normal under the band (xterm-style invert).
+    #[test]
+    fn overlay_selection_inverts_the_selected_span() {
+        let screen = screen_from(b"abcdef", 10, 1);
+        let buf = overlay_selection(project(&screen), (1, 0), (3, 0)); // cols 1..=3
+        assert!(!buf.cell(0, 0).unwrap().attrs.reverse, "col 0 outside");
+        assert!(buf.cell(1, 0).unwrap().attrs.reverse, "col 1 selected");
+        assert!(buf.cell(3, 0).unwrap().attrs.reverse, "col 3 selected");
+        assert!(!buf.cell(4, 0).unwrap().attrs.reverse, "col 4 outside");
+        // SGR 7 (reverse) cell toggles back to normal inside the selection.
+        let rev = screen_from(b"\x1b[7mX", 4, 1);
+        assert!(project(&rev).cell(0, 0).unwrap().attrs.reverse);
+        let sel = overlay_selection(project(&rev), (0, 0), (0, 0));
+        assert!(
+            !sel.cell(0, 0).unwrap().attrs.reverse,
+            "a reverse cell inverts to normal under the selection"
+        );
+    }
+
+    /// A multi-row selection is linear: first row from the start col to the row end,
+    /// whole middle rows, the last row up to the end col.
+    #[test]
+    fn overlay_selection_spans_rows_linearly() {
+        let screen = screen_from(b"aaaa\r\nbbbb\r\ncccc", 4, 3);
+        let buf = overlay_selection(project(&screen), (2, 0), (1, 2));
+        // Row 0: cols 2,3 selected; 0,1 not.
+        assert!(!buf.cell(1, 0).unwrap().attrs.reverse);
+        assert!(buf.cell(2, 0).unwrap().attrs.reverse);
+        // Row 1 (middle): fully selected.
+        assert!(buf.cell(0, 1).unwrap().attrs.reverse);
+        assert!(buf.cell(3, 1).unwrap().attrs.reverse);
+        // Row 2: cols 0,1 selected; 2,3 not.
+        assert!(buf.cell(1, 2).unwrap().attrs.reverse);
+        assert!(!buf.cell(2, 2).unwrap().attrs.reverse);
     }
 }

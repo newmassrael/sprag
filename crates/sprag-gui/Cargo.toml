@@ -35,6 +35,8 @@ pinion-a11y = { workspace = true }
 pinion-shell = { workspace = true }
 # view_splitter + SplitterExternal — the draggable pane dividers (R38).
 pinion-widget-paint = { workspace = true }
+# use_app_clipboard — mouse-drag select copy (PRIMARY/CLIPBOARD) + paste (R139).
+pinion-platform-clipboard = { workspace = true }
 # PR-47: sprag's shared RPC transport policy (always-on Unix socket + SIGUSR1/2
 # control). The GUI mounts it (rpc.rs) on the shell's `on_rpc_ingress` seam;
 # the reusable socket adapter + signal-hook are transitive through here. R115c

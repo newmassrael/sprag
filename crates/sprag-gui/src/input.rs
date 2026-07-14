@@ -141,6 +141,29 @@ fn window_chord(key: &str, modifiers: Modifiers) -> Option<WindowChord> {
     }
 }
 
+/// A `Ctrl+Shift+C` (copy) / `Ctrl+Shift+V` (paste) clipboard chord (R139).
+#[derive(Debug, PartialEq, Eq)]
+enum ClipboardChord {
+    Copy,
+    Paste,
+}
+
+/// Recognize a clipboard chord, or `None` for a normal keystroke. Terminal convention:
+/// `Ctrl+C` is SIGINT and `Ctrl+V` is literal-next, so copy / paste are the `Shift`
+/// variants (matching `gnome-terminal` / xterm). `Shift` upper-cases the letter, so
+/// match case-insensitively; `Alt` excluded so `Ctrl+Alt+Shift+*` is not stolen. Pure.
+fn clipboard_chord(key: &str, modifiers: Modifiers) -> Option<ClipboardChord> {
+    if modifiers.ctrl && modifiers.shift && !modifiers.alt {
+        if key.eq_ignore_ascii_case("c") {
+            return Some(ClipboardChord::Copy);
+        }
+        if key.eq_ignore_ascii_case("v") {
+            return Some(ClipboardChord::Paste);
+        }
+    }
+    None
+}
+
 /// Route a focused keystroke to the **focused pane's** PTY. The roving-tabindex
 /// gate maps `focused` to a pane tile ([`pane_index_of`]); a non-pane / absent
 /// focus is a no-op (falls through to the shell default). A reserved
@@ -169,6 +192,20 @@ pub(crate) fn route_key(
     let Some(active) = pane_index_of(tag) else {
         return false;
     };
+    // Clipboard chords (R139) act on the selection / clipboard, not the PTY: copy the
+    // active selection to CLIPBOARD, or paste CLIPBOARD into the focused pane. Consumed
+    // either way so `Ctrl+Shift+C/V` never reach the shell (Ctrl+C there is SIGINT).
+    if let Some(chord) = clipboard_chord(key, modifiers) {
+        match chord {
+            ClipboardChord::Copy => {
+                crate::selection::copy_selection();
+            }
+            ClipboardChord::Paste => {
+                let _ = crate::selection::paste_clipboard(active);
+            }
+        }
+        return true;
+    }
     // Reserved window chords act on the layout, not the PTY.
     if let Some(chord) = window_chord(key, modifiers) {
         // Discrete chords (dock-toggle, focus-cycle) act once per press: drop an OS
@@ -201,6 +238,10 @@ pub(crate) fn route_key(
     // returns `false`, so it falls through to the shell default rather than swallowing.
     let scroll = crate::scrollbar::use_pane_scroll(active);
     scroll.scroll_to(0, scroll.max().1);
+    // A typed key clears any mouse selection (R139): its inverted band would go stale
+    // as the pane's content changes, and the text is already on PRIMARY by now
+    // (select-to-copy). No-op when nothing is selected.
+    crate::selection::clear();
     use_terminal()
         .slots
         .send_key(active, key, to_input_mods(modifiers))

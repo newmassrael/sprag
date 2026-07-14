@@ -263,6 +263,12 @@ fn build_pane_scene(tv: &TerminalView, i: usize, theme: &Theme) -> Scene {
     // Workspace moves to the host process (the transport step).
     let cells = tv.slots.pane_cells(i, offset_lines);
     let cells = sprag_grid::overlay_preedit(cells, &preedit);
+    // R139: invert the mouse-selected cell band (read here subscribes the paint, so a
+    // drag repaints the band live — the same reactive path as the preedit overlay).
+    let cells = match crate::selection::span_for(i) {
+        Some((start, end)) => sprag_grid::overlay_selection(cells, start, end),
+        None => cells,
+    };
     let grid =
         sprag_host::pane_view_scene_from_cells(pane_tag(i), cells, tv.metric, tv.font_size_px);
     let bar = crate::scrollbar::view_pane_scrollbar(i, &scroll, dims.visible_rows, track_h, theme);
