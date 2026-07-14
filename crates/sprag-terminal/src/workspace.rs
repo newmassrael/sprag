@@ -7,10 +7,24 @@
 //! `WorkspaceExternal`).
 //!
 //! Headless multiplexing is pane *control*, not visual tiling: each pane is
-//! an independently-sized terminal addressed by [`PaneId`]. There is no
-//! geometric split tree — that only has meaning relative to a display
-//! surface to divide, so it is a rendering concern deferred to the GUI round
-//! (Round 7 design note).
+//! an independently-sized terminal addressed by [`PaneId`]. This pool holds no
+//! arrangement at all — it is the membership authority (which panes exist), and
+//! nothing more.
+//!
+//! ## Round 7's "no split tree here" note, superseded in part
+//!
+//! That note said a split tree "only has meaning relative to a display surface
+//! to divide, so it is a rendering concern". True of PIXEL geometry (what rect a
+//! pane occupies at one client's size) — that stays in the display client. But it
+//! conflated pixels with the LOGICAL arrangement (which panes are split, in what
+//! order, at what proportion), which is session state: tmux keeps it server-side
+//! so a client can detach and reattach — at a different size, from a different
+//! machine — and get its layout back. The detach/reattach arc therefore moved the
+//! logical arrangement host-side into [`Window`](crate::Window)'s
+//! [`LayoutTree`](crate::LayoutTree) (still pinion-free, still rect-free); pixels
+//! remain the client's. It is deliberately NOT in this pool: membership and
+//! arrangement are separate authorities, and the arrangement reconciles against
+//! this one.
 
 use std::fmt;
 use std::sync::Arc;

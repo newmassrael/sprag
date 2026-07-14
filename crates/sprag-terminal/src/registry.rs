@@ -35,16 +35,20 @@
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
+use crate::layout::LayoutTree;
 use crate::workspace::Workspace;
 
-/// One window: a named layout unit owning a pane pool.
+/// One window: a named layout unit owning a pane pool and how those panes are ARRANGED.
 ///
-/// Increment A holds only the [`Workspace`]; the logical split (layout) tree — today
-/// still in the display client — lands here in a later increment, at which point a
-/// reattaching client can restore the exact layout.
+/// The [`LayoutTree`] is the logical arrangement only (no pixels — see
+/// [`layout`](crate::layout)); it lives here, client-independently, so a detached
+/// session keeps the user's layout and a reattaching client restores it. Membership
+/// stays the [`Workspace`]'s: the arrangement self-heals against the pane set via
+/// [`LayoutTree::reconcile`], since pane lifecycle runs through the workspace directly.
 pub struct Window {
     name: String,
     workspace: Arc<Mutex<Workspace>>,
+    layout: LayoutTree,
 }
 
 impl Window {
@@ -59,6 +63,24 @@ impl Window {
     #[must_use]
     pub fn workspace(&self) -> &Arc<Mutex<Workspace>> {
         &self.workspace
+    }
+
+    /// How this window's panes are arranged (logical only, never pixels).
+    ///
+    /// May lag the pane set until [`reconcile_layout`](Self::reconcile_layout) folds in
+    /// a spawn/close that went straight to the [`Workspace`] — read it through the host,
+    /// which reconciles first.
+    #[must_use]
+    pub fn layout(&self) -> &LayoutTree {
+        &self.layout
+    }
+
+    /// Self-heal the arrangement against `panes` (the workspace's live ids) and return
+    /// it. The caller resolves `panes` under the WORKSPACE lock and calls this under the
+    /// registry lock, so the two locks are never nested (see [`crate::layout`]).
+    pub fn reconcile_layout(&mut self, panes: &[crate::PaneId]) -> &LayoutTree {
+        self.layout.reconcile(panes);
+        &self.layout
     }
 }
 
@@ -127,6 +149,7 @@ impl SessionRegistry {
                 default_size,
                 id_counter,
             ))),
+            layout: LayoutTree::new(),
         };
         let session = Session {
             name: "0".to_owned(),
@@ -180,7 +203,7 @@ impl SessionRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::CommandBuilder;
+    use crate::{CommandBuilder, Pane};
 
     /// A long-lived `cat` child so a spawned pane's PTY stays open across assertions.
     fn cmd() -> CommandBuilder {
@@ -211,6 +234,32 @@ mod tests {
         let b = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
         assert_eq!((a.0, b.0), (0, 1), "the current window mints from 0");
         assert_eq!(lock(&ws).panes().len(), 2);
+    }
+
+    #[test]
+    fn a_windows_layout_reconciles_against_its_real_workspace_panes() {
+        // The Window seam: pane lifecycle runs through the Workspace directly (a plugin
+        // spawns/reaps without ever seeing a Window), so the arrangement must self-heal
+        // against the pool rather than be co-mutated. Driven here through a REAL
+        // workspace, not a synthetic id list.
+        let mut reg = SessionRegistry::new((80, 24));
+        let ws = reg.current_workspace();
+        let a = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
+        let b = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
+
+        // Resolve the pane ids under the WORKSPACE lock, then reconcile under the
+        // registry lock — the two are never nested.
+        let panes: Vec<_> = lock(&ws).panes().iter().map(Pane::id).collect();
+        let window = &mut reg.sessions[0].windows[0];
+        assert_eq!(window.reconcile_layout(&panes).panes(), vec![a, b]);
+
+        // A pane reaped straight off the pool: its leaf collapses into its sibling.
+        let removed = lock(&ws).close(a);
+        assert!(removed.is_some());
+        let panes: Vec<_> = lock(&ws).panes().iter().map(Pane::id).collect();
+        let window = &mut reg.sessions[0].windows[0];
+        assert_eq!(window.reconcile_layout(&panes).panes(), vec![b]);
+        assert_eq!(window.layout().root(), Some(&crate::LayoutNode::Leaf(b)));
     }
 
     #[test]
