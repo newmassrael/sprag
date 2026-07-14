@@ -480,6 +480,55 @@ mod tests {
     /// the sole float authority), and `docked_pane_indices` derives membership by FILTERING
     /// the leaves. Modeled by pushing the window directly (which is exactly what
     /// placeholder-mode `push_float` does — window-only, leaf untouched).
+    /// (R136, consuming PINION-PR54 / pinion R1338) In a 2-PANE dock, an outer
+    /// full-span dock is REDUNDANT at every edge: removing either pane leaves a single
+    /// leaf, so the outer band is `Split[dragged | lone]` — structurally identical to an
+    /// INNER split of that lone pane (only the thin `OUTER_DOCK_NEW_FRAC` ratio differs).
+    /// pinion now reports it redundant, so `resolve_drop` snaps back instead of docking a
+    /// worse-ratio full-span strip, and the user's top/bottom EDGE drop yields the inner
+    /// 50/50 split (the "왜 절반이 아니라 끝에 붙나" complaint). At >=3 panes the outer band
+    /// spans multiple REMAINING panes an inner split cannot reproduce, so it stays offered.
+    ///
+    /// sprag owns this integration claim (its `panel_id` scheme + `tabbing=false`
+    /// reorganizer over the boot topology); pinion owns the redundancy logic + the pointer
+    /// drag that consumes it. sprag has NO code for the gesture (a same-window docked drag
+    /// is resolved inside pinion's `DockPanelExternal`), so this pins the behaviour sprag
+    /// gets for free and guards against a pinion regression reaching it.
+    #[test]
+    fn two_pane_outer_dock_is_redundant_but_three_pane_stays_offered() {
+        use pinion_widget_paint::dock::DockDropZone;
+
+        // Two panes: outer dock at EVERY edge duplicates a plain split -> redundant.
+        let owner = Owner::new();
+        owner.run(|| {
+            use_dock_topology().set(build_boot_topology(&[0, 1]));
+            let reorg = use_dock_reorganizer();
+            for zone in [
+                DockDropZone::Top,
+                DockDropZone::Bottom,
+                DockDropZone::Left,
+                DockDropZone::Right,
+            ] {
+                assert!(
+                    reorg.outer_dock_is_redundant(&panel_id(1), zone),
+                    "2-pane outer {zone:?} duplicates a plain split -> must snap back (PR-54)",
+                );
+            }
+        });
+
+        // Three panes: an outer TOP puts the dragged pane above the two REMAINING panes at
+        // once -> a full-span row no single inner split reaches -> genuinely offered.
+        let owner = Owner::new();
+        owner.run(|| {
+            use_dock_topology().set(build_boot_topology(&[0, 1, 2]));
+            let reorg = use_dock_reorganizer();
+            assert!(
+                !reorg.outer_dock_is_redundant(&panel_id(2), DockDropZone::Top),
+                "3-pane outer Top spans the other two panes -> a distinct full-span row",
+            );
+        });
+    }
+
     #[test]
     fn docked_membership_filters_floating_panes_while_the_leaf_survives() {
         use pinion_shell::{SizeStrategy, WindowSpec};
