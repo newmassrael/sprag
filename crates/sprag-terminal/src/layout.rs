@@ -14,9 +14,22 @@
 //!   get its layout back. If it lived only in the client, detaching would destroy it.
 //!
 //! The detach/reattach arc needs the second one to outlive any client, so the logical
-//! arrangement moves here and the Round 7 note is superseded for it (never for pixels).
+//! arrangement belongs here and the Round 7 note is superseded for it (never for pixels).
 //! This type is deliberately pinion-free: the display client PROJECTS it into pinion's
 //! `DockTopology` / Scene, which keeps "pixels are pinion's" intact.
+//!
+//! ## v1 bound: this is a SEED, not yet the authority (read this before trusting it)
+//!
+//! Only the READ half is built (host → wire → client projection). There is no
+//! client→host write path: no mux action or `intervene` slot mutates the arrangement, and
+//! [`LayoutTree::append_pane`] / [`remove_pane`](LayoutTree::remove_pane) are reached
+//! only from [`reconcile`](LayoutTree::reconcile). So today this tree carries NO
+//! information the pane list does not already have — `dir` is always
+//! `SplitDir::Horizontal` and `ratio` always `RATIO_DEFAULT`, because nothing writes
+//! them. The client seeds its dock tree from this ONCE and then forks: every subsequent
+//! split / drag / reorganize lives only in the client, and a reattach would re-derive the
+//! default even row rather than restore the user's layout. Until the write path lands,
+//! the CLIENT is the arrangement authority and this is its boot seed.
 //!
 //! ## Membership is the Workspace's, arrangement is ours (reconcile, don't co-mutate)
 //!
@@ -70,9 +83,13 @@ pub enum LayoutNode {
     Leaf(PaneId),
     /// A division of two sub-trees at `ratio` (the `first` child's share, `0.0..=1.0`).
     ///
-    /// `ratio` is the DURABLE share — what a reattaching client opens the divider at. A
-    /// live drag is client-side state; the client writes the settled value back here so
-    /// it survives a detach.
+    /// `ratio` is the share a client OPENS the divider at.
+    ///
+    /// **v1 bound:** it is not yet durable. A live drag lives in the client's own
+    /// per-split signal, and no write-back path exists, so a dragged ratio does NOT
+    /// survive a detach today — the arrangement served here is still whatever
+    /// [`LayoutTree::reconcile`] derives from the pane set (always `RATIO_DEFAULT`).
+    /// Making this the durable share is what the client→host write path buys.
     Split {
         id: SplitId,
         dir: SplitDir,

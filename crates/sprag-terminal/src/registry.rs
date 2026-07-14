@@ -9,15 +9,16 @@
 //! ```text
 //! SessionRegistry            -- all sessions + the current one + the ONE global id counter
 //!   Session (named)          -- the attach unit: an ordered set of windows + a current one
-//!     Window (named)         -- the layout unit: a pane pool (a LayoutTree lands here later)
+//!     Window (named)         -- the layout unit: a pane pool + its LayoutTree
 //!       Workspace            -- the pane pool (crate::workspace), shared id counter
 //!         Pane (PTY + emulator)
 //! ```
 //!
-//! ## What this layer does and does not own (increment A)
+//! ## What this layer does and does not own
 //!
-//! Today a [`Window`] holds just a [`Workspace`]; the logical split/layout tree is a
-//! later increment (it moves out of the display client into [`Window`]). This layer is
+//! A [`Window`] holds a [`Workspace`] (its panes) and a [`LayoutTree`] (how they are
+//! arranged). **v1 bound:** that tree is only a boot seed for the client, not yet the
+//! arrangement authority — see [`crate::layout`]. This layer is
 //! deliberately pinion-free (producer concern) and keeps the plugin/control surfaces
 //! speaking `Arc<Mutex<Workspace>>` — a plugin operates on a *workspace*, not a session
 //! tree (Interface Segregation). The host resolves "which workspace is current" through
@@ -41,9 +42,10 @@ use crate::workspace::Workspace;
 /// One window: a named layout unit owning a pane pool and how those panes are ARRANGED.
 ///
 /// The [`LayoutTree`] is the logical arrangement only (no pixels — see
-/// [`layout`](crate::layout)); it lives here, client-independently, so a detached
-/// session keeps the user's layout and a reattaching client restores it. Membership
-/// stays the [`Workspace`]'s: the arrangement self-heals against the pane set via
+/// [`layout`](crate::layout)); it lives here, client-independently, so that a detached
+/// session CAN keep the user's layout — though the write path that would put the user's
+/// intent into it is not built yet (v1 bound, see [`crate::layout`]). Membership stays
+/// the [`Workspace`]'s: the arrangement self-heals against the pane set via
 /// [`LayoutTree::reconcile`], since pane lifecycle runs through the workspace directly.
 pub struct Window {
     name: String,
@@ -117,8 +119,10 @@ impl Session {
     }
 }
 
-/// The durable server's whole state: every [`Session`], the current one, and the
-/// default pane size.
+/// The durable server's whole state: every [`Session`] and which one is current.
+///
+/// The default pane size is NOT held here — each window's [`Workspace`] owns it, and that
+/// is the only copy production reads, so there is nothing to drift.
 ///
 /// The SINGLE global [`PaneId`](crate::PaneId) counter is not held here separately — it
 /// lives with the thing it counts, shared (`Arc`) by every window's [`Workspace`] and
@@ -132,7 +136,6 @@ impl Session {
 pub struct SessionRegistry {
     sessions: Vec<Session>,
     current_session: usize,
-    default_size: (u16, u16),
 }
 
 impl SessionRegistry {
@@ -159,14 +162,7 @@ impl SessionRegistry {
         Self {
             sessions: vec![session],
             current_session: 0,
-            default_size,
         }
-    }
-
-    /// The default `(cols, rows)` a dimension-less spawn adopts (registry-wide).
-    #[must_use]
-    pub fn default_size(&self) -> (u16, u16) {
-        self.default_size
     }
 
     /// All sessions, in creation order.
@@ -234,7 +230,6 @@ mod tests {
         assert_eq!(reg.current_session().name(), "0");
         assert_eq!(reg.current_session().windows().len(), 1);
         assert_eq!(reg.current_window().name(), "0");
-        assert_eq!(reg.default_size(), (80, 24));
 
         let ws = reg.current_workspace();
         let a = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();

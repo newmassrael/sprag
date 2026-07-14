@@ -136,6 +136,12 @@ impl SlotView {
         self.slots.borrow().iter().position(|id| *id == Some(pane))
     }
 
+    /// The mapped panes in SLOT order — this client's own view of which panes it holds,
+    /// independent of any wire read.
+    pub(crate) fn pane_ids(&self) -> Vec<PaneId> {
+        self.slots.borrow().iter().flatten().copied().collect()
+    }
+
     /// The host's LOGICAL arrangement of the current window's panes — what this client
     /// PROJECTS into its dock surface (the host owns it so it survives a detach).
     ///

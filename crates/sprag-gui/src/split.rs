@@ -114,11 +114,13 @@ pub(crate) fn pane_index_of_panel(panel_id: &str) -> Option<usize> {
         .filter(|&i| i < MAX_PANES)
 }
 
-/// The stable Split id of the boot tree's divider whose LEFT child is the leaf at
-/// tile `k` (the right-nested row: divider `k` separates pane `k` from everything to
-/// its right). Stable for the life of the boot tree; a reorganize gesture
-/// ([`use_dock_reorganizer`]) mints fresh `reorg`-prefixed ids instead, so the two id
-/// spaces never collide.
+/// The scene / cache tag of the host's split `id` — `sprag_gui.split.{n}`.
+///
+/// Keyed on the HOST's [`SplitId`] (a mint sequence), NOT on the left leaf's tile index as
+/// the retired boot scheme was: a slot-keyed id re-binds a divider's drag state when panes
+/// reshuffle, while a `SplitId` follows its boundary for life. A contiguous boot yields the
+/// identical strings (slot k == sequence k); a holed set does not. Distinct from the
+/// reorganize / dock-back id spaces so the tag spaces never collide.
 pub(crate) fn split_tag(id: SplitId) -> String {
     format!("sprag_gui.split.{}", id.0)
 }
@@ -143,11 +145,12 @@ pub(crate) fn use_split_ratio(id: impl Into<Cow<'static, str>>, initial: f32) ->
 /// Project the HOST's logical arrangement onto this client's dock surface — the ONE
 /// place the host's `LayoutTree` becomes a pinion [`DockTopology`].
 ///
-/// This is the seam the whole detach/reattach arc rests on: the host owns WHICH panes are
-/// split, in what order, at what proportion (so it survives a detach); the client owns how
-/// that becomes pixels. Nothing here invents arrangement — it only translates identity to
-/// slots ([`SlotView::slot_of`](crate::slotview::SlotView::slot_of)) and the durable ratio
-/// into pinion's initial one.
+/// This is the seam the whole detach/reattach arc rests on: the host is to own WHICH panes
+/// are split, in what order, at what proportion (so it survives a detach); the client owns
+/// how that becomes pixels. Nothing here invents arrangement — it only translates identity
+/// to slots ([`SlotView::slot_of`](crate::slotview::SlotView::slot_of)) and the host's
+/// ratio into pinion's initial one. **v1 bound:** it runs ONCE, at boot (see
+/// [`use_dock_topology`]).
 ///
 /// A leaf whose pane this client cannot render yet (`slot_of` -> `None`, the "renderable
 /// now" contract) COLLAPSES into its sibling, exactly as a removed leaf does — so a
@@ -207,26 +210,56 @@ const TOPOLOGY_KEY: &str = "sprag_gui.dock_topology";
 /// zero-pane edge only). Cached in the root owner (the view fn, the splitter-External
 /// registration, and the reorganizer resolve the same shared slot), seeded once with
 /// the HOST's arrangement ([`project_layout`], which names panes by identity and maps
-/// them onto this client's slots — so the tree is a projection of the host's truth, and a
-/// detached/reattached session restores its layout). Float/dock
+/// them onto this client's slots). **v1 bound:** this SEEDS once and is then mutated
+/// CLIENT-side (float / reorganize / ratio / admit) with no write-back, so from frame two
+/// this Signal — not the host — is the arrangement authority, and a reattach would not
+/// restore the user's layout. See [`sprag_terminal::layout`]. Float/dock
 /// do NOT mutate it (placeholder model — see the module docs); only a reorganize
 /// gesture ([`use_dock_reorganizer`]) restructures it. The shell's `view` subscribes
 /// it (a `set` repaints) and `reconcile_externals` re-walks it to register a
 /// reorganize-minted Split's drag External (pinion R689).
 pub(crate) fn use_dock_topology() -> Rc<Signal<Option<DockTopology>>> {
     let owner = Owner::current().expect("use_dock_topology() requires an active Owner scope");
-    // The boot tree spans the HOST's pane count (its truth): in attach mode the GUI
-    // ADOPTS the host's live set, so the tree must match that count, not the env
-    // `SPRAG_GUI_PANES` request (they coincide in spawn mode). Resolve `use_terminal`
-    // (a cache dep) OUTSIDE the factory — an `Owner::cache` factory must not nest another
-    // cache resolution — but DEFER the `host.occupied_slots()` mirror lock INTO the
-    // once-fired factory, so the per-frame `use_dock_topology()` call pays only the cache
-    // lookup, not a mirror lock whose count is discarded every frame after the first.
+    // The boot tree comes from the HOST's arrangement (its truth): in attach mode the GUI
+    // ADOPTS the host's live set, not the env `SPRAG_GUI_PANES` request (they coincide in
+    // spawn mode). Resolve `use_terminal` (a cache dep) OUTSIDE the factory — an
+    // `Owner::cache` factory must not nest another cache resolution — but DEFER the
+    // `slots.layout()` read INTO the once-fired factory, so the per-frame
+    // `use_dock_topology()` call pays only the cache lookup. NB under the prod `WireHost`
+    // that deferred read is a BLOCKING socket round-trip, paid once on the first paint.
     let terminal = use_terminal();
     owner.cache(TOPOLOGY_KEY, move || {
         let slots = &terminal.slots;
-        Signal::new(project_layout(&slots.layout(), &|pane| slots.slot_of(pane)))
+        Signal::new(project_layout(&seed_layout(slots), &|pane| {
+            slots.slot_of(pane)
+        }))
     })
+}
+
+/// The arrangement to seed the dock tree from: the host's, or — if the host reports NO
+/// arrangement while this client plainly holds live panes — one arranged locally from the
+/// pane set.
+///
+/// The fallback exists because a wire failure and "this window is empty" arrive as the
+/// SAME value (`WireHost::layout` maps any error to an empty tree), and the seed is cached
+/// once for the process: without this, a single hiccuped boot query would leave a
+/// permanently blank window over live PTYs. It arranges through the host's OWN
+/// [`LayoutTree::reconcile`], so it is not a second tree-shape builder — just the same
+/// algebra applied to locally-known ids.
+fn seed_layout(slots: &crate::slotview::SlotView) -> LayoutTree {
+    let host = slots.layout();
+    let panes = slots.pane_ids();
+    if host.root().is_some() || panes.is_empty() {
+        return host;
+    }
+    tracing::warn!(
+        target: "sprag_gui::split",
+        panes = panes.len(),
+        "host reported no arrangement for live panes; arranging locally (layout read failed?)",
+    );
+    let mut local = LayoutTree::new();
+    local.reconcile(&panes);
+    local
 }
 
 /// `Owner::cache` key for the shared drag-to-dock reorganize coordinator.
@@ -359,10 +392,19 @@ pub(crate) fn remove_pane_leaf(index: usize) {
     }
 }
 
-/// Insert pane `index`'s leaf into a dock `tree` in left-to-right INDEX order — the ONE
-/// tree-shape policy (right-nested Horizontal, `0.5` default), shared by the runtime admit
-/// ([`insert_pane_leaf`]) AND, via the host, the boot projection, so the shape is
-/// single-sourced (R124). Splits the smallest-indexed docked pane whose index exceeds
+/// Insert pane `index`'s leaf into a dock `tree` in left-to-right INDEX order.
+///
+/// **SSOT DEBT (regressed here, was R124-clean):** this is now the SECOND implementation
+/// of one policy ("append a leaf, right-nested Horizontal, 0.5 default"). The host's
+/// [`LayoutTree`] has its own — `LayoutNode::append` (descends the right spine) vs this
+/// (splits the first greater index) — with its own `RATIO_DEFAULT` beside this module's
+/// [`SPLIT_RATIO_DEFAULT`]. They agree on a contiguous set only by coincidence of shape,
+/// and they already DISAGREE on reuse: a reused slot lands index-relative here but on the
+/// right spine there. R124 unified the two builders that existed then; moving the
+/// arrangement host-side reintroduced the split across a crate boundary. The fix is not
+/// another unification here — it is the client→host write path, after which the host is
+/// the only builder and this, [`SPLIT_RATIO_DEFAULT`] and [`next_dock_split_id`] are
+/// deleted. Splits the smallest-indexed docked pane whose index exceeds
 /// `index` (the new leaf takes the `First`/left slot), or appends after the last docked pane
 /// (`Second`/right) when `index` is the largest; an empty `tree` becomes the single leaf.
 /// `mint_id` supplies the new divider's id and is invoked ONLY when a divider is actually
@@ -447,6 +489,27 @@ mod tests {
         assert_eq!(pane_index_of_panel("terminal-"), None); // no index
         assert_eq!(pane_index_of_panel("terminal-x"), None); // non-numeric
         assert_eq!(pane_index_of_panel(&panel_id(MAX_PANES)), None); // out of range
+    }
+
+    /// A host that answers the layout read with NOTHING (what `WireHost` returns for ANY
+    /// wire failure) must not blank a client that holds live panes.
+    ///
+    /// The seed is cached for the process, so before the fallback a single hiccuped boot
+    /// query left a permanently empty window over running PTYs — a regression against the
+    /// retired local boot fold, and invisible because the failure and "this window is
+    /// empty" are the same value.
+    #[test]
+    fn an_empty_host_layout_with_live_panes_falls_back_to_a_local_arrangement() {
+        let mut local = LayoutTree::new();
+        local.reconcile(&[PaneId(0), PaneId(1)]);
+        let projected =
+            project_layout(&local, &|pane| Some(pane.0 as usize)).expect("live panes arrange");
+        assert_eq!(projected.leaf_count(), 2, "both live panes are rendered");
+
+        // ...whereas a genuinely empty host layout over NO panes stays empty.
+        assert!(
+            project_layout(&LayoutTree::new(), &|pane: PaneId| Some(pane.0 as usize)).is_none()
+        );
     }
 
     #[test]

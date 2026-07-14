@@ -39,7 +39,7 @@ use pinion_core::external::{
     ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError,
 };
 use serde_json::{Map, Value};
-use sprag_terminal::{CommandBuilder, Pane, PaneId, SessionRegistry, Workspace};
+use sprag_terminal::{CommandBuilder, SessionRegistry, Workspace};
 
 use crate::bump_on_dirty;
 use crate::external::{as_object, lock, opt_dim, require_pane_id, rpc_external_impl};
@@ -202,15 +202,18 @@ impl ExternalIntrospect for WorkspaceExternal {
             // Reconciled against the live pool first, since pane lifecycle runs through
             // the Workspace directly and the tree is not the membership authority.
             LAYOUT_SLOT => {
-                let pool = self.workspace();
-                let panes: Vec<PaneId> = lock(&pool).panes().iter().map(Pane::id).collect();
-                let layout = lock(&self.registry)
-                    .current_window_mut()
-                    .reconcile_layout(&panes)
-                    .clone();
-                serde_json::to_value(&layout)
-                    .ok()
-                    .map(IntrospectValue::Json)
+                let layout = crate::host::reconciled_layout(&self.registry);
+                match serde_json::to_value(&layout) {
+                    Ok(json) => Some(IntrospectValue::Json(json)),
+                    // Unreachable today (only a non-finite ratio serialises badly, and
+                    // nothing mints one), but traced rather than silently answered as
+                    // "unknown slot" — the file's own "the swallow is honest, not
+                    // silent" bar.
+                    Err(error) => {
+                        tracing::error!(target: "sprag_host", %error, "layout failed to serialise");
+                        None
+                    }
+                }
             }
             _ => None,
         }

@@ -165,14 +165,23 @@ pub trait HostClient {
     /// The current window's LOGICAL arrangement of its panes — which panes are split,
     /// in what order, at what proportion — reconciled against the live pane set.
     ///
-    /// Host-owned so it outlives any client: that is what lets a detached session keep
-    /// the user's layout and a reattaching client restore it. Logical ONLY — it carries
-    /// no rect, because pixel geometry belongs to whichever client is rendering (a TUI
-    /// and a GUI at different sizes project the same tree differently). A client
-    /// PROJECTS this into its own surface; it never receives pixels here.
+    /// Logical ONLY — it carries no rect, because pixel geometry belongs to whichever
+    /// client is rendering (a TUI and a GUI at different sizes project the same tree
+    /// differently). A client PROJECTS this into its own surface; it never receives
+    /// pixels here.
     ///
-    /// Not a per-frame read: a client seeds its layout from this and re-reads it when
-    /// the arrangement changes.
+    /// **v1 bound:** host-owned so it CAN outlive a client, but the client→host write
+    /// path is not built, so this is currently only a boot SEED — it is derived from the
+    /// pane set and never records a user's splits or dragged ratios (see
+    /// [`sprag_terminal::layout`]). A detached session does not yet keep its layout.
+    ///
+    /// Read ONCE at boot, not per frame. (Nothing re-reads it today; a re-read needs a
+    /// layout revision to watch, which lands with the write path.)
+    ///
+    /// **Scope note:** this is WINDOW state on an otherwise pane-addressed trait. It
+    /// lives here because both impls and the client's one `Box<dyn HostClient>` already
+    /// existed; when the window surface grows (write-back, window list, select-window) it
+    /// should move to its own mux/window client trait.
     fn layout(&self) -> LayoutTree;
 
     /// Pane `id`'s child-reported window TITLE (`OSC 0` / `OSC 2`), or `None` if the
@@ -278,6 +287,29 @@ impl Host {
     }
 }
 
+/// The current window's arrangement, self-healed against its live pane set — the ONE
+/// place this sequence exists (both the in-process [`Host::layout`] and the mux control
+/// external's `layout` slot call it).
+///
+/// It is single-sourced because its CORRECTNESS IS ITS ORDERING: the pane ids are read
+/// under the WORKSPACE lock and the reconcile runs under the REGISTRY lock, taken
+/// SEQUENTIALLY. Fusing them (`lock(registry)…reconcile(&lock(pool)…)`) would nest the
+/// workspace lock inside the registry lock and invert the order the rest of the host
+/// holds them in. A rule that load-bearing must live in one function, not in a comment
+/// copied to each caller.
+///
+/// A pane spawning / closing between the two steps leaves the arrangement one read
+/// behind; the next read heals it (the tree is not the membership authority — the
+/// workspace is).
+pub(crate) fn reconciled_layout(registry: &Arc<Mutex<SessionRegistry>>) -> LayoutTree {
+    let workspace = lock(registry).current_workspace();
+    let panes: Vec<PaneId> = lock(&workspace).panes().iter().map(Pane::id).collect();
+    lock(registry)
+        .current_window_mut()
+        .reconcile_layout(&panes)
+        .clone()
+}
+
 impl HostClient for Host {
     fn pane_ids(&self) -> Vec<PaneId> {
         let workspace = self.workspace();
@@ -348,20 +380,8 @@ impl HostClient for Host {
         self.with_pane_id(id, Pane::title).flatten()
     }
 
-    /// Reads the pane ids under the WORKSPACE lock, then reconciles under the REGISTRY
-    /// lock — the two are taken sequentially, never nested, so this cannot invert the
-    /// registry → workspace order the rest of the host holds them in.
-    ///
-    /// A pane spawning / closing between the two steps just leaves the arrangement one
-    /// reconcile behind; the next read self-heals it (the tree is not the membership
-    /// authority — the workspace is).
     fn layout(&self) -> LayoutTree {
-        let workspace = self.workspace();
-        let panes: Vec<PaneId> = lock(&workspace).panes().iter().map(Pane::id).collect();
-        lock(&self.registry)
-            .current_window_mut()
-            .reconcile_layout(&panes)
-            .clone()
+        reconciled_layout(&self.registry)
     }
 }
 
