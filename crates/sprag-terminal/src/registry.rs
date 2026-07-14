@@ -16,9 +16,8 @@
 //!
 //! ## What this layer does and does not own
 //!
-//! A [`Window`] holds a [`Workspace`] (its panes) and a [`LayoutTree`] (how they are
-//! arranged). **v1 bound:** that tree is only a boot seed for the client, not yet the
-//! arrangement authority — see [`crate::layout`]. This layer is
+//! A [`Window`] holds a [`Workspace`] (its panes), a [`LayoutTree`] (how the tiled ones are
+//! arranged), and the set of panes a client has FLOATED out of the tiling. This layer is
 //! deliberately pinion-free (producer concern) and keeps the plugin/control surfaces
 //! speaking `Arc<Mutex<Workspace>>` — a plugin operates on a *workspace*, not a session
 //! tree (Interface Segregation). The host resolves "which workspace is current" through
@@ -28,29 +27,46 @@
 //! ## The load-bearing invariant
 //!
 //! Every window's [`Workspace`] shares ONE `Arc<AtomicU64>` id counter
-//! ([`Workspace::with_id_source`]), so a [`PaneId`](crate::PaneId) is unique across the
+//! ([`Workspace::with_id_source`]), so a [`PaneId`] is unique across the
 //! WHOLE registry, monotonic, and never reused. That is what lets a pane be addressed
 //! by id alone regardless of which window/session holds it — the per-pane wire path
 //! stays window-free, and adding windows later needs no address migration.
 
+use std::collections::HashSet;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
-use crate::layout::LayoutTree;
+use crate::PaneId;
+use crate::layout::{LayoutError, LayoutTree, LayoutWire};
 use crate::workspace::Workspace;
 
-/// One window: a named layout unit owning a pane pool and how those panes are ARRANGED.
+/// One window: a named layout unit owning a pane pool, how its tiled panes are ARRANGED,
+/// and which of them a client has FLOATED out of the tiling.
 ///
 /// The [`LayoutTree`] is the logical arrangement only (no pixels — see
-/// [`layout`](crate::layout)); it lives here, client-independently, so that a detached
-/// session CAN keep the user's layout — though the write path that would put the user's
-/// intent into it is not built yet (v1 bound, see [`crate::layout`]). Membership stays
-/// the [`Workspace`]'s: the arrangement self-heals against the pane set via
-/// [`LayoutTree::reconcile`], since pane lifecycle runs through the workspace directly.
+/// [`layout`](crate::layout)); it lives here, client-independently, so a detached session
+/// keeps the user's layout. Membership stays the [`Workspace`]'s: the arrangement
+/// self-heals against the pane set via [`LayoutTree::reconcile`], since pane lifecycle runs
+/// through the workspace directly.
+///
+/// ## Why float lives here and not in the client
+///
+/// A floating pane is one the user took OUT of the tiling — that is the same class of fact
+/// as how the rest are split, so it is session state and it belongs on the same side of the
+/// wire. Keeping it here is also what makes the client's tree an exact projection: the host
+/// reconciles over `panes − floating`, so what a client renders IS [`Self::layout`], with no
+/// client-side filter to diverge and no merge to reconstruct on the way back. The seam holds
+/// on the same line the rest of the module draws: WHICH panes are tiled is logical and lives
+/// here; WHERE a floating window sits on the user's screen is pixels and never does.
 pub struct Window {
     name: String,
     workspace: Arc<Mutex<Workspace>>,
     layout: LayoutTree,
+    /// Panes taken out of the tiling — [`layout`](Self::layout) holds no leaf for these.
+    /// Pruned against the live pool by [`reconcile_layout`](Self::reconcile_layout), so a
+    /// floating pane that exits leaves no entry behind.
+    floating: HashSet<PaneId>,
+    layout_revision: u64,
 }
 
 impl Window {
@@ -67,22 +83,94 @@ impl Window {
         &self.workspace
     }
 
-    /// How this window's panes are arranged (logical only, never pixels).
+    /// How this window's TILED panes are arranged (logical only, never pixels).
     ///
-    /// May lag the pane set until [`reconcile_layout`](Self::reconcile_layout) folds in
-    /// a spawn/close that went straight to the [`Workspace`] — read it through the host,
+    /// May lag the pane set until [`reconcile_layout`](Self::reconcile_layout) folds in a
+    /// spawn/close that went straight to the [`Workspace`] — read it through the host,
     /// which reconciles first.
     #[must_use]
     pub fn layout(&self) -> &LayoutTree {
         &self.layout
     }
 
-    /// Self-heal the arrangement against `panes` (the workspace's live ids) and return
-    /// it. The caller resolves `panes` under the WORKSPACE lock and calls this under the
-    /// registry lock, so the two locks are never nested (see [`crate::layout`]).
-    pub fn reconcile_layout(&mut self, panes: &[crate::PaneId]) -> &LayoutTree {
-        self.layout.reconcile(panes);
+    /// Which panes are floated out of the tiling (see the type docs).
+    #[must_use]
+    pub fn floating(&self) -> &HashSet<PaneId> {
+        &self.floating
+    }
+
+    /// How many times this window's arrangement has CHANGED — the number a client watches
+    /// to know its projection is stale.
+    ///
+    /// Bumped only on a real change (a write that differs, a reconcile that moves a leaf, a
+    /// float), never on a read, so a client that re-reads on every bump does no wasted work
+    /// and — more importantly — never re-projects on top of a gesture the user is mid-way
+    /// through. Monotonic for the window's life.
+    #[must_use]
+    pub fn layout_revision(&self) -> u64 {
+        self.layout_revision
+    }
+
+    /// Self-heal the arrangement against `panes` (the workspace's live ids) and return it.
+    ///
+    /// Reconciles over the TILED panes (`panes − floating`), so a floated pane holds no
+    /// leaf, and prunes float entries whose pane has exited — the float set is a view of
+    /// the pool, never an authority over it.
+    ///
+    /// The caller resolves `panes` under the WORKSPACE lock and calls this under the
+    /// registry lock, so the two are never nested (see [`crate::layout`]).
+    pub fn reconcile_layout(&mut self, panes: &[PaneId]) -> &LayoutTree {
+        let live: HashSet<PaneId> = panes.iter().copied().collect();
+        self.floating.retain(|pane| live.contains(pane));
+        let tiled: Vec<PaneId> = panes
+            .iter()
+            .copied()
+            .filter(|pane| !self.floating.contains(pane))
+            .collect();
+        self.bump_if_changed(|layout| layout.reconcile(&tiled));
         &self.layout
+    }
+
+    /// Install a client's settled arrangement (see [`LayoutTree::set_from_wire`], which
+    /// names the dividers the client minted and validates the whole shape).
+    ///
+    /// # Errors
+    ///
+    /// [`LayoutError`] if the arrangement is not well-formed; the window keeps the one it
+    /// had, unchanged and un-bumped.
+    pub fn set_layout(&mut self, wire: LayoutWire) -> Result<(), LayoutError> {
+        let mut next = self.layout.clone();
+        next.set_from_wire(wire)?;
+        self.bump_if_changed(|layout| *layout = next);
+        Ok(())
+    }
+
+    /// Take `pane` out of the tiling (`floating == true`) or put it back.
+    ///
+    /// The tree is not touched here: the change lands on the next
+    /// [`reconcile_layout`](Self::reconcile_layout), which is what every read goes through
+    /// — so there is ONE place a leaf appears or collapses, rather than a second removal
+    /// path to keep in step with it. Re-docking therefore returns the pane to the
+    /// arrangement's end; a client that wants it somewhere else drops it there and writes
+    /// the tree ([`set_layout`](Self::set_layout)), which is the gesture that carries the
+    /// user's intent. A no-op if `pane` is already in that state.
+    pub fn set_floating(&mut self, pane: PaneId, floating: bool) {
+        if floating {
+            self.floating.insert(pane);
+        } else {
+            self.floating.remove(&pane);
+        }
+    }
+
+    /// Apply `change` to the arrangement and bump [`layout_revision`](Self::layout_revision)
+    /// only if it actually differed — the ONE place the revision moves, so "the number
+    /// changed" and "a client's projection is stale" cannot come apart.
+    fn bump_if_changed(&mut self, change: impl FnOnce(&mut LayoutTree)) {
+        let before = self.layout.clone();
+        change(&mut self.layout);
+        if self.layout != before {
+            self.layout_revision += 1;
+        }
     }
 }
 
@@ -124,7 +212,7 @@ impl Session {
 /// The default pane size is NOT held here — each window's [`Workspace`] owns it, and that
 /// is the only copy production reads, so there is nothing to drift.
 ///
-/// The SINGLE global [`PaneId`](crate::PaneId) counter is not held here separately — it
+/// The SINGLE global [`PaneId`] counter is not held here separately — it
 /// lives with the thing it counts, shared (`Arc`) by every window's [`Workspace`] and
 /// seeded once at [`new`](Self::new). A future new-window/new-session path clones it
 /// out of an existing window's workspace, so there is no duplicated handle to keep in
@@ -153,6 +241,8 @@ impl SessionRegistry {
                 id_counter,
             ))),
             layout: LayoutTree::new(),
+            floating: HashSet::new(),
+            layout_revision: 0,
         };
         let session = Session {
             name: "0".to_owned(),
@@ -206,7 +296,7 @@ impl SessionRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CommandBuilder, Pane};
+    use crate::{CommandBuilder, LayoutNode, Pane, SplitDir};
 
     /// A long-lived `cat` child so a spawned pane's PTY stays open across assertions.
     fn cmd() -> CommandBuilder {
@@ -262,6 +352,157 @@ mod tests {
         let window = &mut reg.sessions[0].windows[0];
         assert_eq!(window.reconcile_layout(&panes).panes(), vec![b]);
         assert_eq!(window.layout().root(), Some(&crate::LayoutNode::Leaf(b)));
+    }
+
+    /// Float is session state, so taking a pane out of the tiling collapses its leaf
+    /// host-side — the client renders an exact projection and needs no filter of its own.
+    #[test]
+    fn a_floated_pane_loses_its_leaf_and_docks_back_at_the_end() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let ws = reg.current_workspace();
+        let ids: Vec<_> = (0..3)
+            .map(|_| lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap())
+            .collect();
+        let panes: Vec<_> = lock(&ws).panes().iter().map(Pane::id).collect();
+
+        let window = reg.current_window_mut();
+        assert_eq!(window.reconcile_layout(&panes).panes(), ids);
+
+        // Float the MIDDLE pane: its leaf collapses, the siblings reclaim the space.
+        window.set_floating(ids[1], true);
+        assert_eq!(
+            window.reconcile_layout(&panes).panes(),
+            vec![ids[0], ids[2]],
+            "a floated pane holds no leaf",
+        );
+        assert_eq!(window.floating(), &HashSet::from([ids[1]]));
+
+        // Dock it back with no gesture to say where: it returns at the END (see
+        // `set_floating` — a client that wants it elsewhere drops it there and writes).
+        window.set_floating(ids[1], false);
+        assert_eq!(
+            window.reconcile_layout(&panes).panes(),
+            vec![ids[0], ids[2], ids[1]],
+        );
+    }
+
+    /// A floating pane that EXITS must leave no entry behind, or the set would slowly
+    /// become an authority over membership instead of a view of it — and worse, a reused
+    /// id could be born floating.
+    #[test]
+    fn a_floating_pane_that_exits_is_pruned_from_the_set() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let ws = reg.current_workspace();
+        let a = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
+        let b = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
+
+        let window = reg.current_window_mut();
+        window.set_floating(b, true);
+        window.reconcile_layout(&[a, b]);
+        assert_eq!(window.floating(), &HashSet::from([b]));
+
+        assert!(lock(&ws).close(b).is_some());
+        let panes: Vec<_> = lock(&ws).panes().iter().map(Pane::id).collect();
+        let window = reg.current_window_mut();
+        window.reconcile_layout(&panes);
+        assert!(window.floating().is_empty(), "the exited pane was pruned");
+    }
+
+    /// The revision is the client's staleness signal, so it must move on every real change
+    /// and on nothing else — a spurious bump re-projects on top of a live gesture, a missed
+    /// one leaves the client rendering a layout the session no longer has.
+    #[test]
+    fn the_revision_moves_on_a_real_change_and_only_then() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let ws = reg.current_workspace();
+        let a = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
+        let b = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
+        let window = reg.current_window_mut();
+
+        assert_eq!(
+            window.layout_revision(),
+            0,
+            "an untouched window is at zero"
+        );
+        window.reconcile_layout(&[a, b]);
+        let arranged = window.layout_revision();
+        assert!(arranged > 0, "arranging the boot panes is a change");
+
+        // Reading / reconciling an unchanged set is not.
+        window.reconcile_layout(&[a, b]);
+        window.reconcile_layout(&[a, b]);
+        assert_eq!(window.layout_revision(), arranged, "a read never bumps");
+
+        // A write that installs the SAME arrangement is not a change either.
+        let same = LayoutWire::from(window.layout());
+        window.set_layout(same).expect("valid");
+        assert_eq!(
+            window.layout_revision(),
+            arranged,
+            "an identical write does not bump",
+        );
+
+        // A write that moves the divider IS.
+        let LayoutNode::Split { id, dir, .. } = window.layout().root().unwrap() else {
+            panic!("two panes root at a split");
+        };
+        window
+            .set_layout(LayoutWire {
+                root: Some(crate::LayoutNodeWire::Split {
+                    id: Some(*id),
+                    dir: *dir,
+                    ratio: 0.8,
+                    first: Box::new(crate::LayoutNodeWire::Leaf(a)),
+                    second: Box::new(crate::LayoutNodeWire::Leaf(b)),
+                }),
+            })
+            .expect("valid");
+        assert_eq!(window.layout_revision(), arranged + 1, "a drag bumps once");
+
+        // A REJECTED write changes nothing, so it must not bump.
+        assert!(
+            window
+                .set_layout(LayoutWire {
+                    root: Some(crate::LayoutNodeWire::Leaf(a)),
+                })
+                .is_ok(),
+        );
+        let dropped = window.layout_revision();
+        assert!(
+            window
+                .set_layout(LayoutWire {
+                    root: Some(crate::LayoutNodeWire::Split {
+                        id: None,
+                        dir: SplitDir::Horizontal,
+                        ratio: f32::NAN,
+                        first: Box::new(crate::LayoutNodeWire::Leaf(a)),
+                        second: Box::new(crate::LayoutNodeWire::Leaf(b)),
+                    }),
+                })
+                .is_err(),
+        );
+        assert_eq!(
+            window.layout_revision(),
+            dropped,
+            "a rejected write is inert"
+        );
+
+        // That write dropped b's leaf, so reconciling re-arranges it (a change) — and only
+        // then is floating it one.
+        window.reconcile_layout(&[a, b]);
+        let rearranged = window.layout_revision();
+        assert!(rearranged > dropped, "an unarranged pane gets placed");
+
+        // Floating lands on the next reconcile — the one place a leaf collapses.
+        window.set_floating(b, true);
+        window.reconcile_layout(&[a, b]);
+        assert!(window.layout_revision() > rearranged, "a float is a change");
+        window.reconcile_layout(&[a, b]);
+        assert_eq!(
+            window.layout_revision(),
+            rearranged + 1,
+            "and reconciling a settled float again is not",
+        );
     }
 
     #[test]

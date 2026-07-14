@@ -39,11 +39,30 @@ pub const CLOSE_ACTION: &str = "close";
 pub const RESIZE_ACTION: &str = "resize";
 /// The mux control external query slot: the live pane list as JSON.
 pub const PANES_SLOT: &str = "panes";
-/// The mux control external query slot: the current window's LOGICAL layout
-/// ([`LayoutTree`](sprag_terminal::LayoutTree)) as JSON — the arrangement a display
-/// client projects, and the state that lets a reattaching client restore the user's
-/// layout. Logical only: it carries no pixels.
+/// The mux control external query slot: the current window's LOGICAL layout + the
+/// revision it is at ([`LayoutSnapshot`](sprag_terminal::LayoutSnapshot)) as JSON — the
+/// arrangement a display client projects, and the state that lets a reattaching client
+/// restore the user's layout. Logical only: it carries no pixels.
 pub const LAYOUT_SLOT: &str = "layout";
+/// The mux control external invoke action that INSTALLS a client's settled arrangement
+/// (a [`LayoutWire`](sprag_terminal::LayoutWire) as the `tree` arg), returning the
+/// canonical [`LayoutSnapshot`](sprag_terminal::LayoutSnapshot).
+///
+/// The write half of the arc: a client resolves a gesture on its own surface and sends
+/// the result here, which is what turns the user's arrangement into session state. It is
+/// an ACTION, not an `intervene` slot, because it is not a plain assignment — the host
+/// names the dividers the client minted, validates the shape, and answers with the
+/// canonical tree ([`LayoutTree::set_from_wire`](sprag_terminal::LayoutTree::set_from_wire)).
+pub const SET_LAYOUT_ACTION: &str = "set_layout";
+/// The mux control external invoke action that takes a pane OUT of the tiling or puts it
+/// back (`{id, floating}`), returning the resulting
+/// [`LayoutSnapshot`](sprag_terminal::LayoutSnapshot).
+///
+/// Float is session state, not a client's private display concern: a floated pane is one
+/// the user took out of the tiling, which is the same class of fact as how the rest are
+/// split. WHERE the client then puts that pane's window on screen is pixels, and stays the
+/// client's alone.
+pub const SET_FLOATING_ACTION: &str = "set_floating";
 
 /// The container tag of the pane with host id `pane_id` — the `pane_<id>` node the
 /// per-pane data grid + input external live under (the head of a pane-addressed

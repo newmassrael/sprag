@@ -11,11 +11,13 @@
 //! * `spawn {cmd?:[..], cols?, rows?}` → spawns a pane, returns its id.
 //! * `close {id}` → reaps a pane.
 //! * `resize {id, cols, rows}` → resizes a pane's PTY + emulator.
+//! * `set_layout {tree}` → installs a client's settled arrangement, returns the canonical one.
+//! * `set_floating {id, floating}` → takes a pane out of the tiling / puts it back.
 //!
 //! Read channel (`scene/query`):
 //!
 //! * `panes` → the live pane list as JSON.
-//! * `layout` → the current window's LOGICAL arrangement as JSON.
+//! * `layout` → the current window's LOGICAL arrangement + its revision, as JSON.
 //!
 //! ## Why this surface holds the REGISTRY (and the plugin host does not)
 //!
@@ -39,14 +41,17 @@ use pinion_core::external::{
     ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError,
 };
 use serde_json::{Map, Value};
-use sprag_terminal::{CommandBuilder, SessionRegistry, Workspace};
+use sprag_terminal::{CommandBuilder, LayoutSnapshot, LayoutWire, SessionRegistry, Workspace};
 
 use crate::bump_on_dirty;
 use crate::external::{as_object, lock, opt_dim, require_pane_id, rpc_external_impl};
 
 // The mux control action names + query slots are the shared wire ABI vocabulary
 // ([`crate::wire`]) — the SAME consts a client addresses for pane lifecycle.
-use crate::wire::{CLOSE_ACTION, LAYOUT_SLOT, PANES_SLOT, RESIZE_ACTION, SPAWN_ACTION};
+use crate::wire::{
+    CLOSE_ACTION, LAYOUT_SLOT, PANES_SLOT, RESIZE_ACTION, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
+    SPAWN_ACTION,
+};
 
 /// The mux-management engine `External`: a control surface over the shared
 /// [`SessionRegistry`]. Holds `Arc<Mutex<SessionRegistry>>` so its `scene/invoke`
@@ -155,6 +160,46 @@ impl WorkspaceExternal {
             Err(_) => Err(InvokeError::Rejected),    // winsize ioctl failed
         }
     }
+
+    /// `set_layout {tree}` action: install a client's settled arrangement, answering with
+    /// the canonical one — the write half of the arc (see [`crate::wire::SET_LAYOUT_ACTION`]).
+    ///
+    /// The answer carries the tree as the host stores it, with every client-minted divider
+    /// now named, so one round trip both records the gesture and tells the client which
+    /// identities to key its per-split state on.
+    fn set_layout(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let tree = as_object(args)?
+            .get("tree")
+            .ok_or(InvokeError::TypeMismatch)?
+            .clone();
+        // A tree that will not even deserialise is a malformed REQUEST (the client and host
+        // disagree on the shape), distinct from the well-formed-JSON-but-invalid-arrangement
+        // the tree's own validation rejects — so it fails here as a TypeMismatch rather than
+        // reaching the window.
+        let tree: LayoutWire = serde_json::from_value(tree).map_err(|error| {
+            tracing::warn!(target: "sprag_host", %error, "set_layout: undeserialisable tree");
+            InvokeError::TypeMismatch
+        })?;
+        let snapshot = crate::host::set_layout(&self.registry, tree);
+        // The arrangement changed: wake parked waiters so another attached client
+        // re-projects promptly, exactly as a pane-set change does.
+        self.revision.bump();
+        layout_value(snapshot).ok_or(InvokeError::Rejected)
+    }
+
+    /// `set_floating {id, floating}` action: take a pane out of the tiling or put it back,
+    /// answering with the resulting arrangement (see [`crate::wire::SET_FLOATING_ACTION`]).
+    fn set_floating(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let map = as_object(args)?;
+        let id = require_pane_id(map, "id")?;
+        let floating = map
+            .get("floating")
+            .and_then(Value::as_bool)
+            .ok_or(InvokeError::TypeMismatch)?;
+        let snapshot = crate::host::set_floating(&self.registry, id, floating);
+        self.revision.bump();
+        layout_value(snapshot).ok_or(InvokeError::Rejected)
+    }
 }
 
 impl fmt::Debug for WorkspaceExternal {
@@ -171,6 +216,8 @@ impl ExternalIntrospect for WorkspaceExternal {
             (SPAWN_ACTION, "action"),
             (CLOSE_ACTION, "action"),
             (RESIZE_ACTION, "action"),
+            (SET_LAYOUT_ACTION, "action"),
+            (SET_FLOATING_ACTION, "action"),
             (PANES_SLOT, "list"),
             (LAYOUT_SLOT, "tree"),
         ])
@@ -197,30 +244,20 @@ impl ExternalIntrospect for WorkspaceExternal {
                     .collect();
                 Some(IntrospectValue::Json(Value::Array(entries)))
             }
-            // The current window's LOGICAL arrangement (no pixels): what a display
-            // client projects, and what lets a reattaching client restore the layout.
-            // Reconciled against the live pool first, since pane lifecycle runs through
-            // the Workspace directly and the tree is not the membership authority.
-            LAYOUT_SLOT => {
-                let layout = crate::host::reconciled_layout(&self.registry);
-                match serde_json::to_value(&layout) {
-                    Ok(json) => Some(IntrospectValue::Json(json)),
-                    // Unreachable today (only a non-finite ratio serialises badly, and
-                    // nothing mints one), but traced rather than silently answered as
-                    // "unknown slot" — the file's own "the swallow is honest, not
-                    // silent" bar.
-                    Err(error) => {
-                        tracing::error!(target: "sprag_host", %error, "layout failed to serialise");
-                        None
-                    }
-                }
-            }
+            // The current window's LOGICAL arrangement (no pixels) + its revision: what a
+            // display client projects, and what lets a reattaching client restore the
+            // layout. Reconciled against the live pool first, since pane lifecycle runs
+            // through the Workspace directly and the tree is not the membership authority.
+            LAYOUT_SLOT => layout_value(crate::host::reconciled_layout(&self.registry)),
             _ => None,
         }
     }
 
     fn intervene(&mut self, _path: &str, _value: IntrospectValue) -> Result<(), InterveneError> {
-        // No writable state slots: pane management is action-shaped (invoke).
+        // No writable state slots. Pane management and the arrangement write are both
+        // action-shaped (invoke): neither is a plain assignment — a spawn answers with a
+        // new id, and an arrangement write names the client's dividers, validates the
+        // shape, and answers with the canonical tree.
         Err(InterveneError::UnknownPath)
     }
 
@@ -233,7 +270,27 @@ impl ExternalIntrospect for WorkspaceExternal {
             SPAWN_ACTION => self.spawn(&args),
             CLOSE_ACTION => self.close(&args),
             RESIZE_ACTION => self.resize(&args),
+            SET_LAYOUT_ACTION => self.set_layout(&args),
+            SET_FLOATING_ACTION => self.set_floating(&args),
             _ => Err(InvokeError::UnknownPath),
+        }
+    }
+}
+
+/// Serialise an arrangement for the wire — the ONE place a [`LayoutSnapshot`] becomes JSON,
+/// shared by the `layout` read and both writes' answers, so a client cannot meet two shapes
+/// for one fact.
+///
+/// A serialisation failure is unreachable (the tree's own validation rejects the non-finite
+/// ratio that is the only way to author bad JSON here), but it is TRACED rather than
+/// silently answered as "unknown slot" — this file's own "the swallow is honest, not
+/// silent" bar.
+fn layout_value(snapshot: LayoutSnapshot) -> Option<IntrospectValue> {
+    match serde_json::to_value(&snapshot) {
+        Ok(json) => Some(IntrospectValue::Json(json)),
+        Err(error) => {
+            tracing::error!(target: "sprag_host", %error, "layout failed to serialise");
+            None
         }
     }
 }
@@ -461,9 +518,9 @@ mod tests {
         assert_eq!(
             ext.query(LAYOUT_SLOT),
             Some(IntrospectValue::Json(
-                json!({"root": null, "next_split": 0})
+                json!({"revision": 0, "tree": {"root": null}})
             )),
-            "an empty window has no arrangement",
+            "an empty window has no arrangement — and the wire carries no minting counter",
         );
 
         ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
@@ -471,26 +528,156 @@ mod tests {
         ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
             .unwrap();
 
-        let Some(IntrospectValue::Json(layout)) = ext.query(LAYOUT_SLOT) else {
-            panic!("the layout slot answers with JSON");
-        };
+        let layout = query_layout(&mut ext);
         // Two spawned panes arrange as one split of leaf 0 | leaf 1 — the tree the
         // display client projects, carrying no pixels.
-        assert_eq!(layout["root"]["split"]["first"]["leaf"], 0);
-        assert_eq!(layout["root"]["split"]["second"]["leaf"], 1);
-        assert_eq!(layout["root"]["split"]["dir"], "horizontal");
-        assert_eq!(layout["root"]["split"]["ratio"], 0.5);
+        assert_eq!(layout["tree"]["root"]["split"]["first"]["leaf"], 0);
+        assert_eq!(layout["tree"]["root"]["split"]["second"]["leaf"], 1);
+        assert_eq!(layout["tree"]["root"]["split"]["dir"], "horizontal");
+        assert_eq!(layout["tree"]["root"]["split"]["ratio"], 0.5);
 
         // A closed pane's leaf collapses: the survivor takes the root, no half-split.
         ext.invoke(CLOSE_ACTION, IntrospectValue::Json(json!({"id": 0})))
             .unwrap();
+        let layout = query_layout(&mut ext);
+        assert_eq!(
+            layout["tree"]["root"]["leaf"], 1,
+            "the survivor reclaimed the space"
+        );
+    }
+
+    /// The mux `layout` slot as JSON (the shape a client actually parses).
+    fn query_layout(ext: &mut WorkspaceExternal) -> Value {
         let Some(IntrospectValue::Json(layout)) = ext.query(LAYOUT_SLOT) else {
             panic!("the layout slot answers with JSON");
         };
+        layout
+    }
+
+    /// The write half through the control surface: a client's settled arrangement installs,
+    /// its self-minted divider comes back NAMED, and the answer IS what the slot then
+    /// serves — so one round trip records the gesture and tells the client the identity to
+    /// key its per-split state on.
+    #[test]
+    fn set_layout_installs_a_clients_arrangement_and_names_its_divider() {
+        let reg = registry();
+        let (mut ext, revision) = control(&reg);
+        for _ in 0..2 {
+            ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+                .unwrap();
+        }
+        let before = revision.current();
+
+        // The client sends a VERTICAL split at a dragged ratio, through a divider it minted
+        // itself (no `id` — naming one is the host's job).
+        let Ok(IntrospectValue::Json(answer)) = ext.invoke(
+            SET_LAYOUT_ACTION,
+            IntrospectValue::Json(json!({ "tree": { "root": { "split": {
+                "dir": "vertical",
+                "ratio": 0.75,
+                "first": { "leaf": 1 },
+                "second": { "leaf": 0 },
+            } } } })),
+        ) else {
+            panic!("the write answers with JSON");
+        };
+
+        assert_eq!(answer["tree"]["root"]["split"]["dir"], "vertical");
+        assert_eq!(answer["tree"]["root"]["split"]["ratio"], 0.75);
         assert_eq!(
-            layout["root"]["leaf"], 1,
-            "the survivor reclaimed the space"
+            answer["tree"]["root"]["split"]["first"]["leaf"], 1,
+            "the client's pane ORDER is the user's intent, and it stuck",
         );
+        assert!(
+            answer["tree"]["root"]["split"]["id"].is_number(),
+            "the host NAMED the client's divider: {answer}",
+        );
+        assert_eq!(
+            query_layout(&mut ext),
+            answer,
+            "the answer is what is served"
+        );
+        assert!(
+            revision.current() > before,
+            "an arrangement change wakes parked waiters, as a pane-set change does",
+        );
+    }
+
+    /// Float is session state: taking a pane out of the tiling collapses its leaf HERE, so
+    /// a display client renders an exact projection rather than filtering one itself.
+    #[test]
+    fn set_floating_takes_a_pane_out_of_the_tiling_and_puts_it_back() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        for _ in 0..2 {
+            ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+                .unwrap();
+        }
+
+        let Ok(IntrospectValue::Json(answer)) = ext.invoke(
+            SET_FLOATING_ACTION,
+            IntrospectValue::Json(json!({ "id": 1, "floating": true })),
+        ) else {
+            panic!("the float write answers with JSON");
+        };
+        assert_eq!(
+            answer["tree"]["root"]["leaf"], 0,
+            "the floated pane's leaf collapsed; its sibling reclaimed the space",
+        );
+
+        // Docked back with no gesture to place it, it returns at the arrangement's end.
+        ext.invoke(
+            SET_FLOATING_ACTION,
+            IntrospectValue::Json(json!({ "id": 1, "floating": false })),
+        )
+        .unwrap();
+        let layout = query_layout(&mut ext);
+        assert_eq!(layout["tree"]["root"]["split"]["first"]["leaf"], 0);
+        assert_eq!(layout["tree"]["root"]["split"]["second"]["leaf"], 1);
+    }
+
+    /// A client cannot install an arrangement that breaks the tree's invariants: the
+    /// session keeps the layout it had rather than absorbing a wrong-but-plausible one that
+    /// would outlive the buggy client that sent it.
+    #[test]
+    fn set_layout_rejects_a_malformed_arrangement_and_keeps_the_one_in_force() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        for _ in 0..2 {
+            ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+                .unwrap();
+        }
+        let good = query_layout(&mut ext);
+
+        // The same pane twice, at a ratio that is not a share.
+        let Ok(IntrospectValue::Json(answer)) = ext.invoke(
+            SET_LAYOUT_ACTION,
+            IntrospectValue::Json(json!({ "tree": { "root": { "split": {
+                "dir": "horizontal",
+                "ratio": 4.2,
+                "first": { "leaf": 0 },
+                "second": { "leaf": 0 },
+            } } } })),
+        ) else {
+            panic!("a rejected write still answers with the truth to project");
+        };
+        assert_eq!(answer, good, "the arrangement in force is untouched");
+
+        // A tree that does not even deserialise is a malformed REQUEST, not a bad
+        // arrangement — the client and host disagree on the shape.
+        assert_eq!(
+            ext.invoke(
+                SET_LAYOUT_ACTION,
+                IntrospectValue::Json(json!({ "tree": { "root": "sideways" } })),
+            ),
+            Err(InvokeError::TypeMismatch),
+        );
+        assert_eq!(
+            ext.invoke(SET_LAYOUT_ACTION, IntrospectValue::Json(json!({}))),
+            Err(InvokeError::TypeMismatch),
+            "the tree arg is required",
+        );
+        assert_eq!(query_layout(&mut ext), good, "and still untouched");
     }
 
     #[test]

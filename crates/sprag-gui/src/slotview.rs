@@ -32,7 +32,7 @@ use std::collections::HashSet;
 use pinion_core::GridBuffer;
 use sprag_host::{HostClient, PaneScrollFacts};
 use sprag_input::Modifiers;
-use sprag_terminal::{LayoutTree, PaneId};
+use sprag_terminal::{LayoutSnapshot, PaneId};
 
 use crate::terminal::MAX_PANES;
 
@@ -136,18 +136,13 @@ impl SlotView {
         self.slots.borrow().iter().position(|id| *id == Some(pane))
     }
 
-    /// The mapped panes in SLOT order — this client's own view of which panes it holds,
-    /// independent of any wire read.
-    pub(crate) fn pane_ids(&self) -> Vec<PaneId> {
-        self.slots.borrow().iter().flatten().copied().collect()
-    }
-
-    /// The host's LOGICAL arrangement of the current window's panes — what this client
-    /// PROJECTS into its dock surface (the host owns it so it survives a detach).
+    /// The host's LOGICAL arrangement of the current window's tiled panes, and the revision
+    /// it is at — what this client PROJECTS into its dock surface (the host owns it so it
+    /// survives a detach).
     ///
-    /// Not a per-frame read: the client seeds its topology from this and re-reads it when
-    /// the arrangement changes.
-    pub(crate) fn layout(&self) -> LayoutTree {
+    /// Read every frame to notice the projection is stale; the wire client mirrors it, so
+    /// this costs a lock and a clone rather than a round trip.
+    pub(crate) fn layout(&self) -> LayoutSnapshot {
         self.host.layout()
     }
 
@@ -341,10 +336,16 @@ mod tests {
         fn pane_ids(&self) -> Vec<PaneId> {
             self.ids.borrow().clone()
         }
-        /// Empty: these tests drive the slot map / delta logic, which reads only
+        /// Inert: these tests drive the slot map / delta logic, which reads only
         /// `pane_ids` — the arrangement is a separate authority.
-        fn layout(&self) -> sprag_terminal::LayoutTree {
-            sprag_terminal::LayoutTree::new()
+        fn layout(&self) -> LayoutSnapshot {
+            LayoutSnapshot::default()
+        }
+        fn set_layout(&self, _tree: sprag_terminal::LayoutWire) -> LayoutSnapshot {
+            LayoutSnapshot::default()
+        }
+        fn set_floating(&self, _id: PaneId, _floating: bool) -> LayoutSnapshot {
+            LayoutSnapshot::default()
         }
         fn pane_cells(&self, _id: PaneId, _offset_lines: usize) -> GridBuffer {
             GridBuffer::new(1, 1)

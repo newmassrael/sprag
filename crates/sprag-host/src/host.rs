@@ -49,8 +49,8 @@ use std::sync::{Arc, Mutex};
 use pinion_core::GridBuffer;
 use sprag_input::Modifiers;
 use sprag_terminal::{
-    CommandBuilder, LayoutTree, Pane, PaneId, SessionError, SessionHandle, SessionRegistry,
-    Workspace,
+    CommandBuilder, LayoutSnapshot, LayoutWire, Pane, PaneId, SessionError, SessionHandle,
+    SessionRegistry, Workspace,
 };
 use sprag_vt::Screen;
 
@@ -162,27 +162,40 @@ pub trait HostClient {
     /// Pane `id`'s command label (the a11y node name). Empty if `id` is absent.
     fn pane_command_label(&self, id: PaneId) -> String;
 
-    /// The current window's LOGICAL arrangement of its panes — which panes are split,
-    /// in what order, at what proportion — reconciled against the live pane set.
+    /// The current window's LOGICAL arrangement of its TILED panes — which panes are
+    /// split, in what order, at what proportion — reconciled against the live pane set,
+    /// with the revision it is at.
     ///
     /// Logical ONLY — it carries no rect, because pixel geometry belongs to whichever
     /// client is rendering (a TUI and a GUI at different sizes project the same tree
     /// differently). A client PROJECTS this into its own surface; it never receives
     /// pixels here.
     ///
-    /// **v1 bound:** host-owned so it CAN outlive a client, but the client→host write
-    /// path is not built, so this is currently only a boot SEED — it is derived from the
-    /// pane set and never records a user's splits or dragged ratios (see
-    /// [`sprag_terminal::layout`]). A detached session does not yet keep its layout.
+    /// A client re-reads exactly when [`revision`](sprag_terminal::LayoutSnapshot::revision)
+    /// changes, which is what keeps its tree a projection rather than a fork.
     ///
-    /// Read ONCE at boot, not per frame. (Nothing re-reads it today; a re-read needs a
-    /// layout revision to watch, which lands with the write path.)
+    /// **Scope note:** this and its two writes are WINDOW state on an otherwise
+    /// pane-addressed trait. They live here because both impls and the client's one
+    /// `Box<dyn HostClient>` already existed; when the window surface grows (window list,
+    /// select-window) they should move to their own mux/window client trait.
+    fn layout(&self) -> LayoutSnapshot;
+
+    /// Install `tree` as the current window's arrangement, returning the CANONICAL result
+    /// — the write half of the arc (see [`sprag_terminal::layout`]).
     ///
-    /// **Scope note:** this is WINDOW state on an otherwise pane-addressed trait. It
-    /// lives here because both impls and the client's one `Box<dyn HostClient>` already
-    /// existed; when the window surface grows (write-back, window list, select-window) it
-    /// should move to its own mux/window client trait.
-    fn layout(&self) -> LayoutTree;
+    /// The answer is the tree as the host stores it, with every divider the client minted
+    /// now named, so the caller adopts it directly rather than re-reading. A rejected write
+    /// (a malformed arrangement) leaves the session's layout untouched and answers with it
+    /// unchanged, so a client always learns the truth it must project.
+    fn set_layout(&self, tree: LayoutWire) -> LayoutSnapshot;
+
+    /// Take pane `id` out of the tiling (`floating == true`) or put it back, returning the
+    /// resulting arrangement.
+    ///
+    /// Floating collapses the pane's leaf host-side, so the siblings reclaim its space; a
+    /// pane docked back with no gesture to place it returns at the arrangement's end. WHERE
+    /// a floating pane's window then sits on screen is the client's own business.
+    fn set_floating(&self, id: PaneId, floating: bool) -> LayoutSnapshot;
 
     /// Pane `id`'s child-reported window TITLE (`OSC 0` / `OSC 2`), or `None` if the
     /// child never set one (or `id` is absent).
@@ -287,9 +300,9 @@ impl Host {
     }
 }
 
-/// The current window's arrangement, self-healed against its live pane set — the ONE
-/// place this sequence exists (both the in-process [`Host::layout`] and the mux control
-/// external's `layout` slot call it).
+/// The current window's arrangement, self-healed against its live pane set, plus the
+/// revision it is at — the ONE place this sequence exists (the in-process [`Host::layout`],
+/// both write paths below, and the mux control external's `layout` slot all call it).
 ///
 /// It is single-sourced because its CORRECTNESS IS ITS ORDERING: the pane ids are read
 /// under the WORKSPACE lock and the reconcile runs under the REGISTRY lock, taken
@@ -301,13 +314,54 @@ impl Host {
 /// A pane spawning / closing between the two steps leaves the arrangement one read
 /// behind; the next read heals it (the tree is not the membership authority — the
 /// workspace is).
-pub(crate) fn reconciled_layout(registry: &Arc<Mutex<SessionRegistry>>) -> LayoutTree {
+pub(crate) fn reconciled_layout(registry: &Arc<Mutex<SessionRegistry>>) -> LayoutSnapshot {
     let workspace = lock(registry).current_workspace();
     let panes: Vec<PaneId> = lock(&workspace).panes().iter().map(Pane::id).collect();
+    let mut registry = lock(registry);
+    let window = registry.current_window_mut();
+    let tree = LayoutWire::from(window.reconcile_layout(&panes));
+    LayoutSnapshot {
+        revision: window.layout_revision(),
+        tree,
+    }
+}
+
+/// Install a client's settled arrangement, then answer with the canonical one — the ONE
+/// place a write lands (the in-process [`Host::set_layout`] and the mux `set_layout` action
+/// share it).
+///
+/// A malformed arrangement is TRACED and dropped, and the caller is answered with the
+/// layout that is actually in force. Rejecting is the honest outcome: the alternative —
+/// storing a tree that violates the type's invariants — would outlive the buggy client that
+/// sent it and corrupt the session for every later one.
+///
+/// The registry lock is released before [`reconciled_layout`] takes the workspace lock, so
+/// the two are sequential here as everywhere else.
+pub(crate) fn set_layout(
+    registry: &Arc<Mutex<SessionRegistry>>,
+    tree: LayoutWire,
+) -> LayoutSnapshot {
+    if let Err(error) = lock(registry).current_window_mut().set_layout(tree) {
+        tracing::warn!(
+            target: "sprag_host",
+            %error,
+            "a client's arrangement was rejected; keeping the one in force",
+        );
+    }
+    reconciled_layout(registry)
+}
+
+/// Take a pane out of the tiling or put it back, then answer with the resulting
+/// arrangement — the ONE place a float lands (see [`HostClient::set_floating`]).
+pub(crate) fn set_floating(
+    registry: &Arc<Mutex<SessionRegistry>>,
+    id: PaneId,
+    floating: bool,
+) -> LayoutSnapshot {
     lock(registry)
         .current_window_mut()
-        .reconcile_layout(&panes)
-        .clone()
+        .set_floating(id, floating);
+    reconciled_layout(registry)
 }
 
 impl HostClient for Host {
@@ -380,8 +434,16 @@ impl HostClient for Host {
         self.with_pane_id(id, Pane::title).flatten()
     }
 
-    fn layout(&self) -> LayoutTree {
+    fn layout(&self) -> LayoutSnapshot {
         reconciled_layout(&self.registry)
+    }
+
+    fn set_layout(&self, tree: LayoutWire) -> LayoutSnapshot {
+        set_layout(&self.registry, tree)
+    }
+
+    fn set_floating(&self, id: PaneId, floating: bool) -> LayoutSnapshot {
+        set_floating(&self.registry, id, floating)
     }
 }
 

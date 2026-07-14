@@ -63,13 +63,13 @@ use std::time::Duration;
 use pinion_core::GridBuffer;
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    CELLS_ACTION, FULL_TEXT_SLOT, KEY_ACTION, LAYOUT_SLOT, PANES_SLOT, RESIZE_ACTION, SPAWN_ACTION,
-    TEXT_ACTION,
+    CELLS_ACTION, FULL_TEXT_SLOT, KEY_ACTION, LAYOUT_SLOT, PANES_SLOT, RESIZE_ACTION,
+    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION,
 };
 use sprag_host::{CellFrame, HostClient, PaneScrollFacts, mux_action_path, pane_input_path};
 use sprag_input::Modifiers;
 use sprag_rpc::{HostConn, runtime_path};
-use sprag_terminal::{LayoutTree, PaneId};
+use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId};
 
 /// How long to wait for the host socket to accept — covers the child's bind race.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -111,6 +111,31 @@ fn lock_cache(cache: &Mutex<Vec<WirePane>>) -> MutexGuard<'_, Vec<WirePane>> {
     cache.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// The host's current arrangement, mirrored. Shared between the UI thread (which projects
+/// it, and replaces it with the answer to its own writes) and the poll thread (which
+/// re-reads it whenever the host says the scene moved), under one lock.
+///
+/// Mirrored rather than fetched on demand for the same reason the pane frames are: the
+/// paint path must never make a socket call. A client reads this every frame to notice its
+/// projection is stale, so a round trip there would put the wire on the UI thread's hot
+/// path — and a client whose arrangement is a projection reads it a great deal.
+type LayoutMirror = Arc<Mutex<LayoutSnapshot>>;
+
+/// Lock the mirrored arrangement, poison-tolerant (see [`lock_cache`] for the discipline).
+fn lock_layout(layout: &Mutex<LayoutSnapshot>) -> MutexGuard<'_, LayoutSnapshot> {
+    layout.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Read the host's arrangement off the wire — the ONE place the `layout` slot is queried,
+/// shared by the boot read and the poll thread's refresh.
+fn query_layout(conn: &mut HostConn) -> io::Result<LayoutSnapshot> {
+    let value = conn.call(
+        "scene/query",
+        json!({ "path": mux_action_path(LAYOUT_SLOT) }),
+    )?;
+    serde_json::from_value(value).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
 /// Kills + reaps a spawned host child if [`spawn_or_attach`](WireHost::spawn_or_attach)
 /// fails after the spawn — `std::process::Child`'s own `Drop` neither kills nor waits,
 /// so an error `?`-returned after `spawn_host` would otherwise leak the child until GUI
@@ -144,6 +169,10 @@ pub(crate) struct WireHost {
     /// each pane's frame under the same lock. Addressed by [`PaneId`] — the GUI's
     /// `SlotView` maps display slots onto these ids.
     cache: Cache,
+    /// The host's arrangement, mirrored ([`LayoutMirror`]) — what this client PROJECTS.
+    /// The poll thread re-reads it on every scene change; a write on the UI thread replaces
+    /// it with the host's canonical answer.
+    layout: LayoutMirror,
     /// The UI thread's request connection (reads / input / resize). `RefCell`, not
     /// `Mutex`: `WireHost` is UI-thread-only (see the module docs), and the poll thread
     /// owns a SEPARATE connection.
@@ -207,6 +236,11 @@ impl WireHost {
         // fire immediately (catch-up) instead of being lost against a stale first frame.
         let since0 = read_revision(&mut conn)?;
         let cache: Cache = Arc::new(Mutex::new(build_cache(&mut conn, seeds)));
+        // The arrangement is part of BOOTING, not a best-effort read: this client renders a
+        // projection of it, so failing to read it means there is nothing honest to paint.
+        // Failing the attach says exactly that, where a silent empty tree would leave a
+        // blank window over live PTYs and blame nothing.
+        let layout: LayoutMirror = Arc::new(Mutex::new(query_layout(&mut conn)?));
 
         // The poll thread's own connection — a parked `scene/waitFor` on it never
         // blocks the request connection above (separate host handler threads).
@@ -216,6 +250,7 @@ impl WireHost {
         let poll = spawn_poll(
             poll_conn,
             Arc::clone(&cache),
+            Arc::clone(&layout),
             on_change,
             Arc::clone(&stop),
             since0,
@@ -224,11 +259,34 @@ impl WireHost {
         Ok(Self {
             child: guard.disarm(),
             cache,
+            layout,
             conn: RefCell::new(conn),
             stop,
             poll_shutdown,
             poll: Some(poll),
         })
+    }
+
+    /// Send an arrangement write and adopt the host's canonical answer — the ONE place this
+    /// client's mirror is replaced by a write's result, shared by
+    /// [`set_layout`](HostClient::set_layout) and [`set_floating`](HostClient::set_floating).
+    ///
+    /// The answer is authoritative: it carries the tree as the host stores it, with any
+    /// divider this client minted now NAMED, so adopting it (rather than what we sent)
+    /// is what keeps this client a projection. A write that does not land leaves the
+    /// mirror alone and answers with it — a failed write must report the arrangement that
+    /// is actually in force, never the one we hoped for.
+    fn write_layout(&self, params: Value, ctx: &str) -> LayoutSnapshot {
+        match self
+            .request("scene/invoke", params, ctx)
+            .and_then(|value| serde_json::from_value::<LayoutSnapshot>(value).ok())
+        {
+            Some(snapshot) => {
+                *lock_layout(&self.layout) = snapshot.clone();
+                snapshot
+            }
+            None => self.layout(),
+        }
     }
 
     /// Issue one request over the UI-thread connection, tracing (not swallowing
@@ -291,21 +349,32 @@ impl HostClient for WireHost {
             .map_or_else(|| self.live_cells(id), |frame| frame.cells)
     }
 
-    /// One synchronous `scene/query` against the host's mux surface — NOT a per-frame
-    /// read: a client seeds its layout from this and re-reads it when the arrangement
-    /// changes, so the round-trip is off the paint hot path.
+    /// The mirrored arrangement — a lock and a clone, never a socket call, so the paint
+    /// path can read it every frame to notice its projection is stale (see [`LayoutMirror`]).
     ///
-    /// An empty arrangement on any wire failure: the caller then renders nothing rather
-    /// than a wrong layout, and the next read self-heals (the same honest-swallow policy
-    /// every other method here holds).
-    fn layout(&self) -> LayoutTree {
-        self.request(
-            "scene/query",
-            json!({ "path": mux_action_path(LAYOUT_SLOT) }),
-            "layout",
+    /// Booted from a real read and kept current by the poll thread; a transient wire failure
+    /// leaves the LAST KNOWN arrangement standing rather than reporting an empty one, since
+    /// "the host did not answer" and "this window tiles nothing" are opposite facts that
+    /// must never arrive as the same value.
+    fn layout(&self) -> LayoutSnapshot {
+        lock_layout(&self.layout).clone()
+    }
+
+    fn set_layout(&self, tree: LayoutWire) -> LayoutSnapshot {
+        self.write_layout(
+            json!({ "path": mux_action_path(SET_LAYOUT_ACTION), "args": { "tree": tree } }),
+            "set_layout",
         )
-        .and_then(|value| serde_json::from_value::<LayoutTree>(value).ok())
-        .unwrap_or_default()
+    }
+
+    fn set_floating(&self, id: PaneId, floating: bool) -> LayoutSnapshot {
+        self.write_layout(
+            json!({
+                "path": mux_action_path(SET_FLOATING_ACTION),
+                "args": { "id": id.0, "floating": floating },
+            }),
+            "set_floating",
+        )
     }
 
     fn pane_scroll_facts(&self, id: PaneId) -> PaneScrollFacts {
@@ -679,6 +748,7 @@ fn merge_panes(
 fn spawn_poll(
     mut conn: HostConn,
     cache: Cache,
+    layout: LayoutMirror,
     on_change: Box<dyn Fn() + Send>,
     stop: Arc<AtomicBool>,
     mut since: u64,
@@ -729,6 +799,18 @@ fn spawn_poll(
                             .collect();
                         refresh_to_set(&mut conn, &cache, &seeds);
                     }
+                }
+                // Re-read the arrangement each wake too, so a host-side change — another
+                // attached client's gesture, a plugin's spawn, a float — reaches this
+                // client's projection. On a transient failure the last-known arrangement
+                // stands (a hiccup means "no news", never "your layout is gone").
+                match query_layout(&mut conn) {
+                    Ok(snapshot) => *lock_layout(&layout) = snapshot,
+                    Err(error) => tracing::debug!(
+                        target: "sprag_gui::wire",
+                        %error,
+                        "layout re-read failed this wake; keeping the last-known arrangement",
+                    ),
                 }
                 on_change();
             }

@@ -236,30 +236,28 @@ pub(crate) fn use_dock_topology() -> Rc<Signal<Option<DockTopology>>> {
     })
 }
 
-/// The arrangement to seed the dock tree from: the host's, or — if the host reports NO
-/// arrangement while this client plainly holds live panes — one arranged locally from the
-/// pane set.
+/// The host's arrangement, installed into a [`LayoutTree`] — the ONE place a served
+/// arrangement is adopted.
 ///
-/// The fallback exists because a wire failure and "this window is empty" arrive as the
-/// SAME value (`WireHost::layout` maps any error to an empty tree), and the seed is cached
-/// once for the process: without this, a single hiccuped boot query would leave a
-/// permanently blank window over live PTYs. It arranges through the host's OWN
-/// [`LayoutTree::reconcile`], so it is not a second tree-shape builder — just the same
-/// algebra applied to locally-known ids.
+/// Installing rather than reading the wire form directly does two things. It VALIDATES what
+/// the host sent (a client is no more entitled to render a malformed arrangement than the
+/// host is to store one), and it yields definite divider ids, which is what the per-split
+/// ratio state is keyed on. A rejected arrangement is traced and yields the zero-pane tree
+/// — there is nothing honest to draw from a tree we could not make sense of.
+///
+/// No local fallback: a wire failure can no longer masquerade as "this window is empty",
+/// because the client BOOTS from a real read (a failure there fails the attach outright) and
+/// the mirror keeps the last-known arrangement across a hiccup.
 fn seed_layout(slots: &crate::slotview::SlotView) -> LayoutTree {
-    let host = slots.layout();
-    let panes = slots.pane_ids();
-    if host.root().is_some() || panes.is_empty() {
-        return host;
+    let mut tree = LayoutTree::new();
+    if let Err(error) = tree.set_from_wire(slots.layout().tree) {
+        tracing::error!(
+            target: "sprag_gui::split",
+            %error,
+            "the host served an arrangement this client cannot render",
+        );
     }
-    tracing::warn!(
-        target: "sprag_gui::split",
-        panes = panes.len(),
-        "host reported no arrangement for live panes; arranging locally (layout read failed?)",
-    );
-    let mut local = LayoutTree::new();
-    local.reconcile(&panes);
-    local
+    tree
 }
 
 /// `Owner::cache` key for the shared drag-to-dock reorganize coordinator.

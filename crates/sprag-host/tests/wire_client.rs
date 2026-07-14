@@ -16,7 +16,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    CELLS_ACTION, CLOSE_ACTION, FULL_TEXT_SLOT, LAYOUT_SLOT, PANES_SLOT, SPAWN_ACTION, TEXT_ACTION,
+    CELLS_ACTION, CLOSE_ACTION, FULL_TEXT_SLOT, LAYOUT_SLOT, PANES_SLOT, SET_FLOATING_ACTION,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION,
 };
 use sprag_host::{mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
@@ -332,14 +333,7 @@ fn the_window_layout_crosses_the_real_socket() {
         .expect("connect to the spawned sprag-term host");
 
     // The boot pane alone arranges as a bare leaf — no split to divide.
-    let value = conn
-        .call(
-            "scene/query",
-            json!({ "path": mux_action_path(LAYOUT_SLOT) }),
-        )
-        .expect("the layout query answers");
-    let layout: sprag_terminal::LayoutTree =
-        serde_json::from_value(value).expect("the layout deserialises off the wire");
+    let (revision, layout) = read_layout(&mut conn);
     let boot = layout.panes();
     assert_eq!(boot.len(), 1, "the boot pane is arranged: {boot:?}");
 
@@ -350,20 +344,14 @@ fn the_window_layout_crosses_the_real_socket() {
     )
     .expect("spawn a second pane");
 
-    let value = conn
-        .call(
-            "scene/query",
-            json!({ "path": mux_action_path(LAYOUT_SLOT) }),
-        )
-        .expect("the layout query answers");
-    let layout: sprag_terminal::LayoutTree =
-        serde_json::from_value(value).expect("the layout deserialises off the wire");
+    let (grown, layout) = read_layout(&mut conn);
     assert_eq!(
         layout.panes().len(),
         2,
         "the spawned pane joined the arrangement: {:?}",
         layout.panes(),
     );
+    assert!(grown > revision, "arranging a new pane moved the revision");
     // The tree is a real split (not two orphan roots), and carries no pixels.
     assert!(
         matches!(
@@ -372,6 +360,128 @@ fn the_window_layout_crosses_the_real_socket() {
         ),
         "two panes arrange as a split, got {:?}",
         layout.root(),
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// Read the current arrangement off the wire, exactly as a display client does: query the
+/// mux `layout` slot, deserialise the snapshot, and install its tree — which VALIDATES what
+/// the host sent and yields definite divider ids to key per-split state on.
+fn read_layout(conn: &mut HostConn) -> (u64, sprag_terminal::LayoutTree) {
+    let value = conn
+        .call(
+            "scene/query",
+            json!({ "path": mux_action_path(LAYOUT_SLOT) }),
+        )
+        .expect("the layout query answers");
+    let snapshot: sprag_terminal::LayoutSnapshot =
+        serde_json::from_value(value).expect("the layout deserialises off the wire");
+    let mut tree = sprag_terminal::LayoutTree::new();
+    tree.set_from_wire(snapshot.tree)
+        .expect("a served arrangement is well-formed");
+    (snapshot.revision, tree)
+}
+
+/// The WRITE half over a REAL socket: a client's settled arrangement — a divider it minted
+/// itself, dragged off-centre — reaches the host, comes back NAMED, and is what the host
+/// then serves. This is the claim the whole detach/reattach arc rests on: the user's layout
+/// is session state, not something the client is merely holding.
+#[test]
+fn a_clients_settled_arrangement_crosses_the_real_socket_and_is_named() {
+    let sock = socket_path();
+    let _ = std::fs::remove_file(&sock);
+    let _host = spawn_host(&sock);
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term host");
+
+    conn.call(
+        "scene/invoke",
+        json!({ "path": mux_action_path(SPAWN_ACTION), "args": { "cmd": ["cat"] } }),
+    )
+    .expect("spawn a second pane");
+    let (revision, layout) = read_layout(&mut conn);
+    let panes = layout.panes();
+    assert_eq!(panes.len(), 2);
+
+    // The client drops the two panes into a VERTICAL split at a ratio the user dragged,
+    // through a divider of its own minting (`id` omitted — it has no authority to name one).
+    let value = conn
+        .call(
+            "scene/invoke",
+            json!({
+                "path": mux_action_path(SET_LAYOUT_ACTION),
+                "args": { "tree": { "root": { "split": {
+                    "dir": "vertical",
+                    "ratio": 0.75,
+                    "first": { "leaf": panes[0].0 },
+                    "second": { "leaf": panes[1].0 },
+                } } } },
+            }),
+        )
+        .expect("the arrangement write answers");
+    let answer: sprag_terminal::LayoutSnapshot =
+        serde_json::from_value(value).expect("the write answers with a snapshot");
+    assert!(answer.revision > revision, "the write moved the revision");
+
+    // The host NAMED the client's divider, and a fresh read serves the same arrangement —
+    // the user's intent is now the session's, not the client's.
+    let (served, layout) = read_layout(&mut conn);
+    assert_eq!(
+        served, answer.revision,
+        "the write's answer IS what is served"
+    );
+    let Some(sprag_terminal::LayoutNode::Split { id, dir, ratio, .. }) = layout.root() else {
+        panic!("the written split survived, got {:?}", layout.root());
+    };
+    assert_eq!(*dir, sprag_terminal::SplitDir::Vertical, "direction stuck");
+    assert!((*ratio - 0.75).abs() < f32::EPSILON, "the ratio stuck");
+    assert_eq!(
+        answer.tree,
+        sprag_terminal::LayoutWire::from(&layout),
+        "the answer is the canonical tree, with the divider named {id:?}",
+    );
+
+    // A pane floated OUT of the tiling loses its leaf host-side, so the client's tree stays
+    // an exact projection with no filter of its own.
+    let value = conn
+        .call(
+            "scene/invoke",
+            json!({
+                "path": mux_action_path(SET_FLOATING_ACTION),
+                "args": { "id": panes[1].0, "floating": true },
+            }),
+        )
+        .expect("the float write answers");
+    let floated: sprag_terminal::LayoutSnapshot =
+        serde_json::from_value(value).expect("the float answers with a snapshot");
+    assert_eq!(
+        floated.tree.root,
+        Some(sprag_terminal::LayoutNodeWire::Leaf(panes[0])),
+        "the floated pane's leaf collapsed; its sibling reclaimed the space",
+    );
+
+    // ...and the host REJECTS an arrangement that would corrupt the session, keeping the
+    // one in force rather than absorbing it.
+    let value = conn
+        .call(
+            "scene/invoke",
+            json!({
+                "path": mux_action_path(SET_LAYOUT_ACTION),
+                "args": { "tree": { "root": { "split": {
+                    "dir": "horizontal",
+                    "ratio": 4.2, // not a share
+                    "first": { "leaf": panes[0].0 },
+                    "second": { "leaf": panes[0].0 }, // and the same pane twice
+                } } } },
+            }),
+        )
+        .expect("a rejected write still answers");
+    let kept: sprag_terminal::LayoutSnapshot =
+        serde_json::from_value(value).expect("the rejection answers with a snapshot");
+    assert_eq!(
+        kept.tree, floated.tree,
+        "a rejected write left the session's arrangement exactly as it was",
     );
 
     let _ = std::fs::remove_file(&sock);
