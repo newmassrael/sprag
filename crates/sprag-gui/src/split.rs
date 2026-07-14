@@ -23,7 +23,7 @@
 //! ## Two selectable dock models (R77): collapse (default) | placeholder
 //!
 //! [`use_dock_topology`] holds `Signal<Option<DockTopology>>` — the tree of the panes'
-//! leaves, built at boot ([`build_boot_topology`]) over ALL panes. How a FLOAT affects
+//! leaves, PROJECTED from the host's arrangement ([`project_layout`]). How a FLOAT affects
 //! this tree is chosen by [`DockMode`](crate::dock::DockMode) (`SPRAG_GUI_DOCK_MODE`):
 //!
 //!  - **`Collapse` (DEFAULT, R60):** floating REMOVES the pane's leaf ([`remove_pane_leaf`]) so
@@ -59,8 +59,8 @@
 //! ## Identity-keyed ids
 //!
 //! Each leaf carries a stable [`panel_id`] (`terminal-{i}`, mapping 1:1 to the tile
-//! index via [`pane_index_of_panel`]); each Split a stable id ([`boot_split_id`]
-//! for the boot tree, a fresh `reorg`-prefixed id for a reorganize-minted divider).
+//! index via [`pane_index_of_panel`]); each Split a stable id ([`split_tag`] of
+//! the host's `SplitId`, a fresh `reorg`-prefixed id for a reorganize-minted divider).
 //! The per-split ratio Signal ([`use_split_ratio`]) is `Owner::cache`-keyed by that
 //! id and SHARED between the view (`view_dock_surface_chrome`) and the drag
 //! `SplitterExternal`, so a drag re-weights the painted panes. A Split id is the
@@ -72,9 +72,10 @@
 use crate::terminal::{MAX_PANES, use_terminal};
 use pinion_core::reactive::{Owner, Signal};
 use pinion_widget_paint::dock::{
-    DockDropPreview, DockReorganizer, DockSplitPosition, DockTopology, TopologyError,
+    DockDropPreview, DockNode, DockReorganizer, DockSplitPosition, DockTopology, TopologyError,
 };
 use pinion_widget_paint::splitter::SplitterOrientation;
+use sprag_terminal::{LayoutNode, LayoutTree, PaneId, SplitDir, SplitId};
 use std::borrow::Cow;
 use std::rc::Rc;
 
@@ -118,8 +119,8 @@ pub(crate) fn pane_index_of_panel(panel_id: &str) -> Option<usize> {
 /// its right). Stable for the life of the boot tree; a reorganize gesture
 /// ([`use_dock_reorganizer`]) mints fresh `reorg`-prefixed ids instead, so the two id
 /// spaces never collide.
-pub(crate) fn boot_split_id(k: usize) -> String {
-    format!("sprag_gui.split.{k}")
+pub(crate) fn split_tag(id: SplitId) -> String {
+    format!("sprag_gui.split.{}", id.0)
 }
 
 /// The default divider ratio — even (left/top share `0.5`), matching the former
@@ -139,15 +140,75 @@ pub(crate) fn use_split_ratio(id: impl Into<Cow<'static, str>>, initial: f32) ->
         .cache(id, move || Signal::new(initial))
 }
 
+/// Project the HOST's logical arrangement onto this client's dock surface — the ONE
+/// place the host's `LayoutTree` becomes a pinion [`DockTopology`].
+///
+/// This is the seam the whole detach/reattach arc rests on: the host owns WHICH panes are
+/// split, in what order, at what proportion (so it survives a detach); the client owns how
+/// that becomes pixels. Nothing here invents arrangement — it only translates identity to
+/// slots ([`SlotView::slot_of`](crate::slotview::SlotView::slot_of)) and the durable ratio
+/// into pinion's initial one.
+///
+/// A leaf whose pane this client cannot render yet (`slot_of` -> `None`, the "renderable
+/// now" contract) COLLAPSES into its sibling, exactly as a removed leaf does — so a
+/// not-yet-admitted host pane yields a smaller correct tree, never a wrong slot. An empty
+/// arrangement -> `None` (the zero-pane edge).
+fn project_layout(
+    tree: &LayoutTree,
+    slot_of: &impl Fn(PaneId) -> Option<usize>,
+) -> Option<DockTopology> {
+    let node = project_node(tree.root()?, slot_of)?;
+    // try_new validates pinion's invariants (unique panel/split ids, finite ratios); the
+    // host mints unique ids + reconciles a unique pane set, so a rejection means the host
+    // handed us something we cannot render — drop to the zero-pane edge rather than panic.
+    DockTopology::try_new(node)
+        .inspect_err(
+            |error| tracing::warn!(target: "sprag_gui::split", ?error, "host layout rejected"),
+        )
+        .ok()
+}
+
+/// Translate one host [`LayoutNode`] into a [`DockNode`] (see [`project_layout`]).
+fn project_node(node: &LayoutNode, slot_of: &impl Fn(PaneId) -> Option<usize>) -> Option<DockNode> {
+    match node {
+        LayoutNode::Leaf(pane) => slot_of(*pane).map(|slot| DockNode::Leaf {
+            panel_id: Cow::Owned(panel_id(slot)),
+        }),
+        LayoutNode::Split {
+            id,
+            dir,
+            ratio,
+            first,
+            second,
+        } => match (project_node(first, slot_of), project_node(second, slot_of)) {
+            (Some(first), Some(second)) => Some(DockNode::Split {
+                id: Cow::Owned(split_tag(*id)),
+                orientation: match dir {
+                    SplitDir::Horizontal => SplitterOrientation::Horizontal,
+                    SplitDir::Vertical => SplitterOrientation::Vertical,
+                },
+                // The host's DURABLE share seeds pinion's INITIAL ratio; the live drag
+                // value then lives in the per-split Signal (`use_split_ratio`).
+                ratio: *ratio,
+                first: Box::new(first),
+                second: Box::new(second),
+            }),
+            // Only one side is renderable: it takes this split's place (no half-split).
+            (Some(alone), None) | (None, Some(alone)) => Some(alone),
+            (None, None) => None,
+        },
+    }
+}
+
 /// `Owner::cache` key for the held dock-tree topology Signal.
 const TOPOLOGY_KEY: &str = "sprag_gui.dock_topology";
 
 /// The dock-tree topology Signal — the layout of ALL panes' leaves (`None` = the
 /// zero-pane edge only). Cached in the root owner (the view fn, the splitter-External
 /// registration, and the reorganizer resolve the same shared slot), seeded once with
-/// the boot tree ([`build_boot_topology`] over the [`SlotView`](crate::slotview::SlotView)'s
-/// OCCUPIED slots — the one membership authority, so the tree is a projection of it, not a
-/// count; in attach mode this is the adopted host set, not the env request). Float/dock
+/// the HOST's arrangement ([`project_layout`], which names panes by identity and maps
+/// them onto this client's slots — so the tree is a projection of the host's truth, and a
+/// detached/reattached session restores its layout). Float/dock
 /// do NOT mutate it (placeholder model — see the module docs); only a reorganize
 /// gesture ([`use_dock_reorganizer`]) restructures it. The shell's `view` subscribes
 /// it (a `set` repaints) and `reconcile_externals` re-walks it to register a
@@ -163,7 +224,8 @@ pub(crate) fn use_dock_topology() -> Rc<Signal<Option<DockTopology>>> {
     // lookup, not a mirror lock whose count is discarded every frame after the first.
     let terminal = use_terminal();
     owner.cache(TOPOLOGY_KEY, move || {
-        Signal::new(build_boot_topology(&terminal.slots.occupied_slots()))
+        let slots = &terminal.slots;
+        Signal::new(project_layout(&slots.layout(), &|pane| slots.slot_of(pane)))
     })
 }
 
@@ -238,32 +300,18 @@ pub(crate) fn docked_pane_indices() -> Vec<usize> {
         .unwrap_or_default()
 }
 
-/// Build the boot dock tree over the OCCUPIED display `slots` (from
-/// [`SlotView::occupied_slots`](crate::slotview::SlotView::occupied_slots)) by FOLDING the
-/// SAME [`insert_leaf`] primitive the runtime admit path uses — ONE construction authority
-/// for the right-nested / index-ordered / `0.5`-default tree shape (R124: the former
-/// recursive `build_row_node`, a second algorithm encoding the identical policy, is
-/// retired). Slots arrive in ascending order, so each append's divider sits between the
-/// PREVIOUS slot (its left leaf) and the new one — keyed [`boot_split_id`] of that left
-/// leaf, which reproduces the former builder's stable divider ids EXACTLY (behaviour-
-/// preserving). Building from the occupied SET, not a count, keeps the topology a
-/// PROJECTION of the one membership authority — a boot HOLE (an attach-race pane that
-/// failed its first-frame fetch, R120/R121) yields leaves only for the panes that exist,
-/// never orphaning a real pane. Empty -> `None`; one slot -> a single leaf, no split.
-fn build_boot_topology(slots: &[usize]) -> Option<DockTopology> {
-    let mut tree = None;
-    let mut prev: Option<usize> = None;
-    for &slot in slots {
-        // The divider this append forms (if any) sits between `prev` (its left leaf) and
-        // `slot`, so key it by `prev` to match the stable boot scheme. The first slot makes
-        // no divider, so the mint closure is never called (prev unused there).
-        let left = prev;
-        tree = insert_leaf(tree, slot, || {
-            boot_split_id(left.expect("a divider forms only after the first slot"))
-        });
-        prev = Some(slot);
-    }
-    tree
+/// TEST FIXTURE: the dock tree `slots` (as pane ids, identity-mapped) arrange into.
+///
+/// Production no longer builds a boot tree at all — the HOST owns the arrangement and
+/// [`use_dock_topology`] PROJECTS it ([`project_layout`]). This mirror exists only so the
+/// tree-shaped tests below have a fixture, and it is built by running the REAL host
+/// reconcile + projection, so there is exactly ONE tree-shape authority (a second
+/// hand-rolled builder is what R124 retired).
+#[cfg(test)]
+fn boot_tree(slots: &[usize]) -> Option<DockTopology> {
+    let mut tree = LayoutTree::new();
+    tree.reconcile(&slots.iter().map(|&s| PaneId(s as u64)).collect::<Vec<_>>());
+    project_layout(&tree, &|pane| Some(pane.0 as usize))
 }
 
 // ── Collapse-model primitives (R60, restored R77) ───────────────────────────────
@@ -279,7 +327,7 @@ const SPLIT_SEQ_KEY: &str = "sprag_gui.dock_split_seq";
 /// (`sprag_gui.split.dock.{seq}`). A monotonic `Owner::cache`-backed counter, so a
 /// re-inserted divider gets a unique id (its ratio starts at the default — a
 /// dock/undock cycle does not remember the old boundary's ratio, a v1 bound). Distinct
-/// from the boot ids ([`boot_split_id`]) so the two spaces never collide.
+/// from the host-projected ids ([`split_tag`]) so the two spaces never collide.
 fn next_dock_split_id() -> String {
     let seq = Owner::current()
         .expect("next_dock_split_id() requires an active Owner scope")
@@ -313,7 +361,7 @@ pub(crate) fn remove_pane_leaf(index: usize) {
 
 /// Insert pane `index`'s leaf into a dock `tree` in left-to-right INDEX order — the ONE
 /// tree-shape policy (right-nested Horizontal, `0.5` default), shared by the runtime admit
-/// ([`insert_pane_leaf`]) AND the boot fold ([`build_boot_topology`]), so the shape is
+/// ([`insert_pane_leaf`]) AND, via the host, the boot projection, so the shape is
 /// single-sourced (R124). Splits the smallest-indexed docked pane whose index exceeds
 /// `index` (the new leaf takes the `First`/left slot), or appends after the last docked pane
 /// (`Second`/right) when `index` is the largest; an empty `tree` becomes the single leaf.
@@ -394,7 +442,7 @@ mod tests {
             assert_eq!(panel_id(i), format!("terminal-{i}"));
         }
         // Non-panel ids (the splitter tag, a window id, garbage) are not panes.
-        assert_eq!(pane_index_of_panel(&boot_split_id(0)), None);
+        assert_eq!(pane_index_of_panel(&split_tag(SplitId(0))), None);
         assert_eq!(pane_index_of_panel("pane-0"), None); // window-id namespace
         assert_eq!(pane_index_of_panel("terminal-"), None); // no index
         assert_eq!(pane_index_of_panel("terminal-x"), None); // non-numeric
@@ -404,19 +452,19 @@ mod tests {
     #[test]
     fn boot_topology_is_a_right_nested_horizontal_row() {
         // 0 panes -> no topology.
-        assert!(build_boot_topology(&[]).is_none());
+        assert!(boot_tree(&[]).is_none());
 
         // 1 pane -> a single leaf, no split.
-        let one = build_boot_topology(&[0]).expect("one pane docks");
+        let one = boot_tree(&[0]).expect("one pane docks");
         assert_eq!(one.leaf_count(), 1);
         assert_eq!(one.split_count(), 0);
         assert_eq!(one.panel_ids(), vec![panel_id(0)]);
 
         // 2 panes -> one Horizontal split (== the old row default at 2 panes).
-        let two = build_boot_topology(&[0, 1]).expect("two panes dock");
+        let two = boot_tree(&[0, 1]).expect("two panes dock");
         assert_eq!(two.leaf_count(), 2);
         assert_eq!(two.split_count(), 1);
-        assert_eq!(two.split_ids(), vec![boot_split_id(0)]);
+        assert_eq!(two.split_ids(), vec![split_tag(SplitId(0))]);
         assert_eq!(two.panel_ids(), vec![panel_id(0), panel_id(1)]);
         let DockNode::Split { orientation, .. } = two.root() else {
             panic!("two-pane root is a Split");
@@ -424,7 +472,7 @@ mod tests {
         assert_eq!(*orientation, SplitterOrientation::Horizontal);
 
         // 4 panes -> three Horizontal dividers, panes in tile order, ids gapless.
-        let four = build_boot_topology(&[0, 1, 2, 3]).expect("four panes dock");
+        let four = boot_tree(&[0, 1, 2, 3]).expect("four panes dock");
         assert_eq!(four.leaf_count(), 4);
         assert_eq!(four.split_count(), 3);
         assert_eq!(
@@ -434,40 +482,49 @@ mod tests {
         );
         assert_eq!(
             four.split_ids(),
-            (0..3).map(boot_split_id).collect::<Vec<_>>(),
+            (0..3).map(|k| split_tag(SplitId(k))).collect::<Vec<_>>(),
             "boot dividers are ids 0..n-1 in pre-order"
         );
 
         // A HOLE (slot 1 empty — an attach-race pane that failed its first fetch, R121):
-        // leaves exist for EXACTLY the occupied slots (0, 2, 3), never orphaning the pane
-        // at slot 3 nor painting a blank leaf at slot 1. This is why the boot tree
-        // projects from occupied_slots(), not a count (the F6 silent-orphan fix).
-        let holed = build_boot_topology(&[0, 2, 3]).expect("three occupied slots dock");
+        // leaves exist for EXACTLY the renderable panes (0, 2, 3), never orphaning the
+        // pane at slot 3 nor painting a blank leaf at slot 1 (the F6 silent-orphan fix,
+        // now upheld by `project_layout` collapsing an unmappable leaf into its sibling).
+        let holed = boot_tree(&[0, 2, 3]).expect("three occupied slots dock");
         assert_eq!(
             holed.panel_ids(),
             vec![panel_id(0), panel_id(2), panel_id(3)],
             "leaves are exactly the occupied slots; the hole at slot 1 has none"
         );
         assert_eq!(holed.leaf_count(), 3);
-        assert_eq!(holed.split_ids(), vec![boot_split_id(0), boot_split_id(2)]);
+        // Divider ids are the HOST's split sequence (0, 1) — NOT the left leaf's slot
+        // (which would be 0, 2). The scheme changed with the arrangement moving host-side,
+        // and sequence ids are the stronger identity: a slot-keyed id re-binds a divider's
+        // drag state when panes reshuffle, while the host's SplitId follows its boundary
+        // for life. Contiguous boots are unaffected (slot k == sequence k), so only a
+        // holed set like this one observes the difference.
+        assert_eq!(
+            holed.split_ids(),
+            vec![split_tag(SplitId(0)), split_tag(SplitId(1))],
+        );
     }
 
     #[test]
     fn use_split_ratio_is_per_id_memoised_and_seeds_default() {
         let owner = Owner::new();
         owner.run(|| {
-            let a = use_split_ratio(boot_split_id(0), SPLIT_RATIO_DEFAULT);
-            let b = use_split_ratio(boot_split_id(0), SPLIT_RATIO_DEFAULT);
+            let a = use_split_ratio(split_tag(SplitId(0)), SPLIT_RATIO_DEFAULT);
+            let b = use_split_ratio(split_tag(SplitId(0)), SPLIT_RATIO_DEFAULT);
             assert!(Rc::ptr_eq(&a, &b), "memoised by Split id");
             assert!((a.get() - SPLIT_RATIO_DEFAULT).abs() < f32::EPSILON);
             a.set(0.7);
             assert!(
-                (use_split_ratio(boot_split_id(0), SPLIT_RATIO_DEFAULT).get() - 0.7).abs()
+                (use_split_ratio(split_tag(SplitId(0)), SPLIT_RATIO_DEFAULT).get() - 0.7).abs()
                     < f32::EPSILON,
                 "drag re-weights; the seed does not reset an existing slot"
             );
             assert!(
-                (use_split_ratio(boot_split_id(1), SPLIT_RATIO_DEFAULT).get()
+                (use_split_ratio(split_tag(SplitId(1)), SPLIT_RATIO_DEFAULT).get()
                     - SPLIT_RATIO_DEFAULT)
                     .abs()
                     < f32::EPSILON,
@@ -501,7 +558,7 @@ mod tests {
         // Two panes: outer dock at EVERY edge duplicates a plain split -> redundant.
         let owner = Owner::new();
         owner.run(|| {
-            use_dock_topology().set(build_boot_topology(&[0, 1]));
+            use_dock_topology().set(boot_tree(&[0, 1]));
             let reorg = use_dock_reorganizer();
             for zone in [
                 DockDropZone::Top,
@@ -520,7 +577,7 @@ mod tests {
         // once -> a full-span row no single inner split reaches -> genuinely offered.
         let owner = Owner::new();
         owner.run(|| {
-            use_dock_topology().set(build_boot_topology(&[0, 1, 2]));
+            use_dock_topology().set(boot_tree(&[0, 1, 2]));
             let reorg = use_dock_reorganizer();
             assert!(
                 !reorg.outer_dock_is_redundant(&panel_id(2), DockDropZone::Top),
@@ -538,7 +595,7 @@ mod tests {
             // Seed a 4-pane tree directly (independent of SPRAG_GUI_PANES). No floating
             // windows yet (the windows-signal seeds with just the main window), so all
             // four panes read as docked.
-            use_dock_topology().set(build_boot_topology(&[0, 1, 2, 3]));
+            use_dock_topology().set(boot_tree(&[0, 1, 2, 3]));
             assert_eq!(docked_pane_indices(), vec![0, 1, 2, 3]);
 
             // Float a MIDDLE pane (1) by pushing its `pane-1` window — the windows-signal
@@ -588,7 +645,7 @@ mod tests {
     fn collapse_float_removes_the_leaf_and_dock_restores_index_order() {
         let owner = Owner::new();
         owner.run(|| {
-            use_dock_topology().set(build_boot_topology(&[0, 1, 2, 3]));
+            use_dock_topology().set(boot_tree(&[0, 1, 2, 3]));
             assert_eq!(docked_pane_indices(), vec![0, 1, 2, 3]);
 
             // Float a MIDDLE pane (1) -> its leaf is REMOVED, siblings reclaim: [0, 2, 3].

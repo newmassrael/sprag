@@ -32,7 +32,7 @@ use std::collections::HashSet;
 use pinion_core::GridBuffer;
 use sprag_host::{HostClient, PaneScrollFacts};
 use sprag_input::Modifiers;
-use sprag_terminal::PaneId;
+use sprag_terminal::{LayoutTree, PaneId};
 
 use crate::terminal::MAX_PANES;
 
@@ -123,6 +123,26 @@ impl SlotView {
     /// methods share; a hole yields each method's graceful default.
     fn id(&self, slot: usize) -> Option<PaneId> {
         self.slots.borrow().get(slot).copied().flatten()
+    }
+
+    /// The display slot holding `pane` — the inverse of [`Self::id`], for PROJECTING
+    /// host-side state that names panes by identity (the window's arrangement) onto this
+    /// client's slots.
+    ///
+    /// `None` for a host pane this client has not admitted yet (the "renderable now"
+    /// contract, e.g. a first frame not fetched). A projection then simply omits it, the
+    /// same way a slot hole is omitted — never a wrong slot.
+    pub(crate) fn slot_of(&self, pane: PaneId) -> Option<usize> {
+        self.slots.borrow().iter().position(|id| *id == Some(pane))
+    }
+
+    /// The host's LOGICAL arrangement of the current window's panes — what this client
+    /// PROJECTS into its dock surface (the host owns it so it survives a detach).
+    ///
+    /// Not a per-frame read: the client seeds its topology from this and re-reads it when
+    /// the arrangement changes.
+    pub(crate) fn layout(&self) -> LayoutTree {
+        self.host.layout()
     }
 
     /// Slot `slot`'s cell DATA at `offset_lines` (a `1x1` placeholder for a hole).

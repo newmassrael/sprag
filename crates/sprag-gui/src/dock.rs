@@ -606,7 +606,7 @@ pub(crate) fn evict_pane(i: usize) {
 /// so a new host pane (an operator / AI spawn in attach mode) tiles into the main window.
 /// Called from [`TerminalViewer::reconcile_frame`](crate::TerminalViewer) for each slot
 /// [`crate::slotview::SlotView::reconcile`] added (never boot, which seeds the whole tree
-/// via `build_boot_topology`). Unconditional of [`DockMode`] — a fresh pane
+/// via the host-layout projection). Unconditional of [`DockMode`] — a fresh pane
 /// appears docked in both models (it has no held slot to restore). Its reflow Effect +
 /// scrollbar / dock-panel externals are (re)installed by the post-view
 /// `create_extra_externals` on the same frame (the dynamic external set).

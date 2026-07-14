@@ -1809,9 +1809,10 @@ mod tests {
         );
 
         // Drag divider 0 to a 0.7 left-share (the same Signal a pointer drag sets).
-        // The boot split between pane 0 and pane 1 carries `boot_split_id(0)`.
-        core.root_owner()
-            .run(|| split::use_split_ratio(split::boot_split_id(0), 0.5).set(0.7));
+        // The boot split between pane 0 and pane 1 carries the host SplitId(0) tag.
+        core.root_owner().run(|| {
+            split::use_split_ratio(split::split_tag(sprag_terminal::SplitId(0)), 0.5).set(0.7)
+        });
         let weighted = painted_grid_dims(&core.compute_paint_scene(WINDOW_W, WINDOW_H));
         assert_eq!(weighted.len(), 2);
         let (left, right) = (weighted[0].0, weighted[1].0);
