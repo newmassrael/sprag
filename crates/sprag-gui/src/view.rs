@@ -10,7 +10,7 @@ use crate::slotview::SlotView;
 use crate::split::{
     pane_index_of_panel, panel_id, use_dock_topology, use_drop_preview, use_split_ratio,
 };
-use crate::terminal::{TerminalView, pane_tag, use_terminal};
+use crate::terminal::{TerminalView, pane_index_of, pane_tag, use_terminal};
 use pinion_core::external::OUTER_DOCK_ZONE_TAG;
 use pinion_core::scene::ContainerNode;
 use pinion_core::style::{BoxStyle, LayoutStyle, Size, SizeValue};
@@ -277,7 +277,58 @@ fn build_pane_scene(tv: &TerminalView, i: usize, theme: &Theme) -> Scene {
     let grid =
         sprag_host::pane_view_scene_from_cells(pane_tag(i), cells, tv.metric, tv.font_size_px);
     let bar = crate::scrollbar::view_pane_scrollbar(i, &scroll, dims.visible_rows, track_h, theme);
-    crate::scrollbar::wrap_pane_with_bar(grid, bar)
+    let pane = crate::scrollbar::wrap_pane_with_bar(grid, bar);
+    // R142: sprag's focus indicator = DIM THE INACTIVE panes (the iTerm2 / kitty / tmux
+    // convention) — the FOCUSED pane stays full-brightness, every other pane gets a
+    // translucent dark scrim so the active one stands out, with no added chrome and no
+    // ring painting over the context menu. The focused pane is
+    // `pinion_core::focus_state::focused()` — pinion's R1335 owner-scoped focus mirror has
+    // PRODUCER PARITY (locked by pinion R1343, which refuted PINION-PR55): populated in the
+    // live winit paint AND the RPC snapshot/screenshot produce path, so the dim shows on
+    // screen AND in a snapshot. Reading it here auto-subscribes the paint, so the dim
+    // follows a click / Tab focus move.
+    if pinion_core::focus_state::focused()
+        .as_deref()
+        .and_then(pane_index_of)
+        == Some(i)
+    {
+        pane
+    } else {
+        dim_inactive(pane)
+    }
+}
+
+/// The dim-scrim alpha over an inactive pane (0 = clear .. 255 = opaque black).
+const DIM_ALPHA: u8 = 120;
+
+/// Dim an INACTIVE pane (R142) — sprag's focus indicator overlays a translucent dark
+/// scrim over every pane EXCEPT the focused one, so the active pane reads brighter (the
+/// iTerm2 / kitty / tmux "dim inactive split" convention), with no added chrome and no
+/// ring painting over the context menu. The scrim is a `pointer_transparent` absolute
+/// overlay (does NOT block click-to-focus / drag-select) appended LAST so it paints over
+/// the pane content; a full-cover `Percent(100)` fill, so — unlike a thin fixed-height
+/// bar — it cannot collapse on a flex axis.
+fn dim_inactive(pane: Scene) -> Scene {
+    let scrim = Scene::Container(
+        ContainerNode::new(Vec::new())
+            .with_tag("sprag_gui.pane_dim")
+            .with_style(BoxStyle::filled(
+                pinion_core::style::Color::rgb(0, 0, 0).with_alpha(DIM_ALPHA),
+            ))
+            .with_layout(
+                LayoutStyle::new()
+                    .with_absolute_position(0, 0)
+                    .with_size(fill_size())
+                    .with_pointer_transparent(true),
+            ),
+    );
+    match pane {
+        Scene::Container(mut c) => {
+            c.children.push(scrim);
+            Scene::Container(c)
+        }
+        other => other,
+    }
 }
 
 /// Wrap the workspace `content` in the surface-filled paint root (tagged
