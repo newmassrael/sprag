@@ -411,7 +411,7 @@ fn a_clients_settled_arrangement_crosses_the_real_socket_and_is_named() {
             "scene/invoke",
             json!({
                 "path": mux_action_path(SET_LAYOUT_ACTION),
-                "args": { "tree": { "root": { "split": {
+                "args": { "expected_revision": revision, "tree": { "root": { "split": {
                     "dir": "vertical",
                     "ratio": 0.75,
                     "first": { "leaf": panes[0].0 },
@@ -472,7 +472,7 @@ fn a_clients_settled_arrangement_crosses_the_real_socket_and_is_named() {
             "scene/invoke",
             json!({
                 "path": mux_action_path(SET_LAYOUT_ACTION),
-                "args": { "tree": { "root": { "split": {
+                "args": { "expected_revision": floated.revision, "tree": { "root": { "split": {
                     "dir": "horizontal",
                     "ratio": 4.2, // not a share
                     "first": { "leaf": panes[0].0 },

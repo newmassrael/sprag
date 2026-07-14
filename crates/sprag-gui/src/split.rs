@@ -123,8 +123,16 @@ pub(crate) fn pane_index_of_panel(panel_id: &str) -> Option<usize> {
 /// identical strings (slot k == sequence k); a holed set does not. Distinct from the
 /// reorganize / dock-back id spaces so the tag spaces never collide.
 pub(crate) fn split_tag(id: SplitId) -> String {
-    format!("sprag_gui.split.{}", id.0)
+    format!("{SPLIT_TAG_PREFIX}{}", id.0)
 }
+
+/// The scene / cache tag prefix of a host divider — `sprag_gui.split.{n}`.
+///
+/// A const for the same reason [`PANEL_ID_PREFIX`] is: [`split_tag`] and [`split_id_of_tag`]
+/// are an exact inverse pair, and a prefix typed twice can be renamed once. Renaming only the
+/// formatter would make the parser return `None` for EVERY divider, so the host would mint a
+/// fresh `SplitId` on every settle — a silent, unbounded id churn no type check would catch.
+const SPLIT_TAG_PREFIX: &str = "sprag_gui.split.";
 
 /// Split `id`'s ratio `Signal` (left/top share, `[0, 1]`), an `Owner::cache`-backed
 /// `Rc<Signal<f32>>` SHARED between the read side (the view's `view_dock_surface_chrome`
@@ -134,9 +142,53 @@ pub(crate) fn split_tag(id: SplitId) -> String {
 /// resolution (the topology's declared ratio, threaded through by the walker), so
 /// the topology stays the single source of the initial value.
 pub(crate) fn use_split_ratio(id: impl Into<Cow<'static, str>>, initial: f32) -> Rc<Signal<f32>> {
+    let ratios = use_split_ratios();
+    let id = id.into();
+    if let Some(existing) = ratios.borrow().get(&id) {
+        return Rc::clone(existing);
+    }
+    let signal = Rc::new(Signal::new(initial));
+    ratios.borrow_mut().insert(id, Rc::clone(&signal));
+    signal
+}
+
+/// `Owner::cache` key for the per-divider ratio table.
+const SPLIT_RATIOS_KEY: &str = "sprag_gui.split_ratios";
+
+/// Every live divider's ratio signal, keyed by its scene tag — the shared table behind
+/// [`use_split_ratio`], held in one `Owner::cache` slot so it can be PRUNED (see
+/// [`use_split_ratios`]).
+type SplitRatios = Rc<RefCell<std::collections::HashMap<Cow<'static, str>, Rc<Signal<f32>>>>>;
+
+/// Every live divider's ratio signal, by tag — the storage behind [`use_split_ratio`].
+///
+/// One table in ONE `Owner::cache` slot, rather than one cache slot per divider, for a
+/// reason the per-slot form could not solve: `Owner::cache` never evicts. A divider's tag is
+/// minted (pinion's transient `reorg-split-{n}`, then the host's canonical id) and RETIRED
+/// (a `SplitId` is never reused; a collapsed split's id is gone for good), so a per-slot
+/// scheme leaked a `Signal` per gesture, forever, in a process designed to outlive many of
+/// them. Owning the table lets [`prune_split_ratios`] drop what the tree no longer has.
+fn use_split_ratios() -> SplitRatios {
     Owner::current()
         .expect("use_split_ratio() requires an active Owner scope")
-        .cache(id, move || Signal::new(initial))
+        .cache(SPLIT_RATIOS_KEY, || {
+            RefCell::new(std::collections::HashMap::new())
+        })
+}
+
+/// Drop the ratio signal of every divider `topology` no longer holds — the eviction the
+/// arc's long-lived session needs (see [`use_split_ratios`]).
+///
+/// Called on each adopt, which is the one place the set of live dividers changes. A signal
+/// pinion's `SplitterExternal` still holds keeps working (it owns an `Rc`); it simply stops
+/// being reachable by tag, which is correct — that tag names a boundary that no longer exists.
+fn prune_split_ratios(topology: Option<&DockTopology>) {
+    let live: Vec<String> = topology
+        .map(|t| t.split_ids().iter().map(|s| (*s).to_owned()).collect())
+        .unwrap_or_default();
+    use_split_ratios()
+        .borrow_mut()
+        .retain(|tag, _| live.iter().any(|l| l == tag.as_ref()));
 }
 
 /// Project the HOST's logical arrangement onto this client's dock surface — the ONE
@@ -214,7 +266,7 @@ fn project_node(node: &LayoutNode, slot_of: &impl Fn(PaneId) -> Option<usize>) -
 /// the HOST names it on the write ([`LayoutTree::set_from_wire`]), after which this client
 /// re-projects and the divider carries a durable identity from then on.
 fn split_id_of_tag(tag: &str) -> Option<SplitId> {
-    tag.strip_prefix("sprag_gui.split.")?
+    tag.strip_prefix(SPLIT_TAG_PREFIX)?
         .parse()
         .ok()
         .map(SplitId)
@@ -272,7 +324,10 @@ fn unproject_node(
                 SplitterOrientation::Horizontal => SplitDir::Horizontal,
                 SplitterOrientation::Vertical => SplitDir::Vertical,
             },
-            ratio: use_split_ratio(id.to_string(), *ratio).get(),
+            // `id.clone()` not `id.to_string()`: this runs for every divider on every
+            // painted frame, and the id is already a `Cow<'static, str>` — cloning a
+            // `Borrowed` costs nothing, while `to_string` allocates each time.
+            ratio: use_split_ratio(id.clone(), *ratio).get(),
             first: Box::new(unproject_node(first, pane_at)?),
             second: Box::new(unproject_node(second, pane_at)?),
         }),
@@ -335,11 +390,20 @@ fn use_layout_sync() -> Rc<RefCell<LayoutSync>> {
 /// Adopt `snapshot` as this client's projection — the ONE place the host's arrangement
 /// becomes the dock surface.
 ///
-/// Also FORCES each divider's live ratio to the adopted share. That is load-bearing:
-/// [`use_split_ratio`] memoises per id, so a signal that already exists ignores the seed —
-/// without this, an arrangement changed host-side would re-project every divider's position
-/// except the one thing the user most directly set. A divider whose id the host has just
-/// minted has no signal yet and is simply created at the right value.
+/// Also drives each divider's live ratio to the adopted share — but ONLY where the host's
+/// share actually CHANGED (`was`, the arrangement we last saw). Both halves matter:
+///
+/// * forcing at all is load-bearing, because [`use_split_ratio`] memoises per id, so a signal
+///   that already exists ignores the seed — without it, an arrangement changed host-side
+///   would re-project every divider's position except the one thing the user most directly set;
+/// * forcing only what changed is what keeps a gesture alive. Every adopt runs for the WHOLE
+///   window, so an unrelated host change — a plugin spawning a pane, another client's
+///   gesture — would otherwise slam every divider back to its stored share, including the one
+///   under the user's cursor mid-drag. A divider the host did not move is left exactly as the
+///   user has it, and their in-flight drag survives news about some other pane.
+///
+/// A divider whose id the host has just minted has no signal yet and is created at the
+/// right value.
 pub(crate) fn adopt_layout(snapshot: &LayoutSnapshot, slots: &crate::slotview::SlotView) {
     let mut tree = LayoutTree::new();
     if let Err(error) = tree.set_from_wire(snapshot.tree.clone()) {
@@ -352,10 +416,16 @@ pub(crate) fn adopt_layout(snapshot: &LayoutSnapshot, slots: &crate::slotview::S
         );
         return;
     }
+    // Drive only the shares the host actually moved (see the fn docs).
+    let was = use_layout_sync().borrow().seen.tree.clone();
     if let Some(root) = tree.root() {
-        force_ratios(root);
+        force_changed_ratios(root, &ratios_of(&was));
     }
-    use_dock_topology().set(project_layout(&tree, &|pane| slots.slot_of(pane)));
+    let projected = project_layout(&tree, &|pane| slots.slot_of(pane));
+    // Evict the ratio signals of dividers this arrangement no longer has — a `SplitId` is
+    // never reused, so without this a long session leaks one signal per retired boundary.
+    prune_split_ratios(projected.as_ref());
+    use_dock_topology().set(projected);
     // The tree carries only TILED panes, so the float set is the other half of the same
     // fact — project it too, or a floated pane would have neither a leaf nor a window and
     // would vanish (which is exactly what a reattach used to do to it).
@@ -366,8 +436,35 @@ pub(crate) fn adopt_layout(snapshot: &LayoutSnapshot, slots: &crate::slotview::S
     sync.settling = None;
 }
 
-/// Drive each divider's live ratio signal to the arrangement's share (see [`adopt_layout`]).
-fn force_ratios(node: &LayoutNode) {
+/// Each divider's share in `wire`, by id — what [`adopt_layout`] diffs the incoming
+/// arrangement against so it can drive only the ones the host moved.
+fn ratios_of(wire: &LayoutWire) -> std::collections::HashMap<SplitId, f32> {
+    fn walk(node: &LayoutNodeWire, out: &mut std::collections::HashMap<SplitId, f32>) {
+        if let LayoutNodeWire::Split {
+            id,
+            ratio,
+            first,
+            second,
+            ..
+        } = node
+        {
+            if let Some(id) = id {
+                out.insert(*id, *ratio);
+            }
+            walk(first, out);
+            walk(second, out);
+        }
+    }
+    let mut out = std::collections::HashMap::new();
+    if let Some(root) = &wire.root {
+        walk(root, &mut out);
+    }
+    out
+}
+
+/// Drive the live ratio signal of every divider whose share the host MOVED since `was` — a
+/// divider it left alone keeps whatever the user has done to it (see [`adopt_layout`]).
+fn force_changed_ratios(node: &LayoutNode, was: &std::collections::HashMap<SplitId, f32>) {
     if let LayoutNode::Split {
         id,
         ratio,
@@ -376,9 +473,16 @@ fn force_ratios(node: &LayoutNode) {
         ..
     } = node
     {
-        use_split_ratio(split_tag(*id), *ratio).set(*ratio);
-        force_ratios(first);
-        force_ratios(second);
+        // A divider we have not seen before (freshly minted) has no signal yet; one whose
+        // share is unchanged must not be touched, or an unrelated adopt yanks a live drag.
+        if was
+            .get(id)
+            .is_none_or(|before| before.to_bits() != ratio.to_bits())
+        {
+            use_split_ratio(split_tag(*id), *ratio).set(*ratio);
+        }
+        force_changed_ratios(first, was);
+        force_changed_ratios(second, was);
     }
 }
 
@@ -440,7 +544,12 @@ pub(crate) fn sync_layout(slots: &crate::slotview::SlotView) {
         use_layout_sync().borrow_mut().settling = Some(current);
         return; // still moving — let the gesture finish
     }
-    adopt_layout(&slots.set_layout(current), slots);
+    // The gesture was authored against the arrangement we last saw, and says so: if the host
+    // has moved on since, this write is about a layout that no longer exists and is refused.
+    // The answer then carries the truth, which we adopt — the user's gesture is dropped, but
+    // that is the outcome they would have reached had they seen the new layout first.
+    let expected = use_layout_sync().borrow().seen.revision;
+    adopt_layout(&slots.set_layout(current, expected), slots);
 }
 
 /// `Owner::cache` key for the held dock-tree topology Signal.
@@ -567,15 +676,14 @@ mod tests {
         assert_eq!(pane_index_of_panel(&panel_id(MAX_PANES)), None); // out of range
     }
 
-    /// A host that answers the layout read with NOTHING (what `WireHost` returns for ANY
-    /// wire failure) must not blank a client that holds live panes.
+    /// The host's live panes become leaves, and a genuinely empty arrangement stays empty.
     ///
-    /// The seed is cached for the process, so before the fallback a single hiccuped boot
-    /// query left a permanently empty window over running PTYs — a regression against the
-    /// retired local boot fold, and invisible because the failure and "this window is
-    /// empty" are the same value.
+    /// (R151: this was named `..._falls_back_to_a_local_arrangement` and documented a
+    /// `WireHost`-returns-nothing fallback that R149 DELETED — `WireHost::layout` now serves
+    /// the last-known mirror and boot fails hard instead. The body never exercised a fallback
+    /// even then, so the name guarded nothing. Renamed to what it actually proves.)
     #[test]
-    fn an_empty_host_layout_with_live_panes_falls_back_to_a_local_arrangement() {
+    fn project_layout_maps_live_panes_to_leaves_and_keeps_the_zero_pane_edge() {
         let mut local = LayoutTree::new();
         local.reconcile(&[PaneId(0), PaneId(1)]);
         let projected =
@@ -812,6 +920,44 @@ mod tests {
                 wire_panes(&served),
                 "a real gesture re-arranges the SAME panes, so it passes the guard",
             );
+        });
+    }
+
+    /// A retired divider's ratio signal is EVICTED — the long session this arc exists for
+    /// must not leak one per gesture.
+    ///
+    /// `SplitId`s are never reused and pinion mints a transient `reorg-split-{n}` per drop,
+    /// so every reorganize used to strand two entries in a cache that never evicts.
+    #[test]
+    fn a_retired_dividers_ratio_is_evicted_on_adopt() {
+        let owner = Owner::new();
+        owner.run(|| {
+            let live = |tag: &str| use_split_ratios().borrow().contains_key(tag);
+
+            // A divider the host knows, and one pinion minted mid-gesture.
+            use_split_ratio(split_tag(SplitId(0)), 0.5).set(0.7);
+            use_split_ratio(Cow::Borrowed("reorg-split-0"), 0.5);
+            assert!(live(&split_tag(SplitId(0))) && live("reorg-split-0"));
+
+            // The adopted arrangement holds ONLY divider 0 — the transient is gone for good.
+            let mut tree = LayoutTree::new();
+            tree.reconcile(&[PaneId(0), PaneId(1)]);
+            let topo = project_layout(&tree, &|p| Some(p.0 as usize));
+            prune_split_ratios(topo.as_ref());
+
+            assert!(
+                live(&split_tag(SplitId(0))),
+                "a live divider keeps its ratio"
+            );
+            assert!(!live("reorg-split-0"), "the transient divider is evicted");
+            assert!(
+                (use_split_ratio(split_tag(SplitId(0)), 0.5).get() - 0.7).abs() < f32::EPSILON,
+                "and the surviving divider kept the user's dragged share",
+            );
+
+            // Every divider retired (the split collapsed): nothing is left behind.
+            prune_split_ratios(None);
+            assert!(use_split_ratios().borrow().is_empty());
         });
     }
 

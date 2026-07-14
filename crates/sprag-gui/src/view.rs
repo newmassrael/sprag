@@ -20,9 +20,8 @@ use pinion_shell::{
     WINDOW_CHROME_CLOSE_TAG, WINDOW_CHROME_MAXIMIZE_TAG, WINDOW_CHROME_MINIMIZE_TAG,
 };
 use pinion_widget_paint::dock::{
-    DockPanelChrome, DockPanelStyle, DockSplitState, FloatingPlaceholderStyle, WindowControlTags,
-    dock_outer_zone_highlight, view_dock_panel_with_actions, view_dock_surface_chrome,
-    view_floating_placeholder, view_window_controls,
+    DockPanelChrome, DockPanelStyle, DockSplitState, WindowControlTags, dock_outer_zone_highlight,
+    view_dock_panel_with_actions, view_dock_surface_chrome, view_window_controls,
 };
 use std::borrow::Cow;
 
@@ -121,14 +120,12 @@ pub(crate) fn view_for_window(
 /// a floated one has no leaf here — its content is painted alone in its own undock window
 /// ([`view_for_window`]). `None` is the zero-pane edge (paints an empty surface).
 ///
-/// **DEAD BRANCH, tracked (R151 review):** the `is_pane_floating` arm below paints R72's
-/// [`view_floating_placeholder`] for a floated pane's RETAINED leaf. That model was deleted
-/// in R149 — a floated pane has no leaf, so `panel_content` is never called for one and the
-/// arm is unreachable. It comes out in the next round rather than here: deleting a paint-path
-/// branch earns a live smoke, and this session had no budget left to run one. The honest
-/// record is this note, not silence — and NOT the confident stale prose it replaces, which
-/// still called the windows-signal "the sole floating authority" three increments after the
-/// host took that role.
+/// (R151: this used to branch on [`is_pane_floating`](crate::dock::is_pane_floating) and
+/// paint a `view_floating_placeholder` for a floated pane's RETAINED leaf — R72's model,
+/// where the topology held every pane's leaf and the windows-signal was the float authority.
+/// R149 gave both roles to the host, which made the branch unreachable: a floated pane has no
+/// leaf, so `panel_content` is never called for one. Deleted rather than left to rot behind a
+/// doc that still called the windows-signal "the sole floating authority".)
 fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
     // The live drag-to-dock drop-preview (P2): read once here so the closure below
     // captures one snapshot (not a per-leaf re-read), and so the view subscribes to it —
@@ -160,35 +157,14 @@ fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
             |panel_id| match pane_index_of_panel(panel_id) {
                 // One occupancy check per leaf, then branch on float state (was two match
                 // arms each re-evaluating `is_pane_occupied`).
+                // A leaf is a TILED pane (the host tiles nothing else): fill the dock
+                // panel's content area — the pane grid is no longer the direct splitter
+                // child (`view_dock_panel` wraps it under a header), so it needs its own
+                // definite extent or its full-window intrinsic size overflows the panel (the
+                // grid never gets a measured rect, the R1012 reflow never fires, and the
+                // pane stays at its boot dims).
                 Some(i) if tv.slots.is_pane_occupied(i) => {
-                    if crate::dock::is_pane_floating(i) {
-                        // A floating pane's leaf paints a placeholder holding its slot
-                        // (R72): its real content lives in the pane's own undock window.
-                        // Small-intrinsic, so it needs no `fill_definite` — the
-                        // `view_dock_panel` content wrapper's flex_grow + cross-axis stretch
-                        // fills the slot (matches pinion's editor).
-                        //
-                        // (R129, pinion R1320) `panel_id` and the DISPLAY name are separate
-                        // params: the tag stays `{panel_id}_placeholder` (load-bearing —
-                        // `resolve_drop` recovers the panel id from it to redock), while the
-                        // painted "(… torn off)" label takes the display title. Passing
-                        // `panel_id` for both would print "(terminal-0 torn off)" beside a
-                        // floater header reading "vim README" — the exact mismatch R1320 fixed.
-                        view_floating_placeholder(
-                            panel_id,
-                            &pane_display_title(&tv.slots, i),
-                            theme,
-                            &FloatingPlaceholderStyle::m3_default(),
-                        )
-                    } else {
-                        // A docked pane: fill the dock panel's content area — the pane grid
-                        // is no longer the direct splitter child (view_dock_panel wraps it
-                        // under a header), so it needs its own definite extent or its
-                        // full-window intrinsic size overflows the panel (the grid never
-                        // gets a measured rect, the R1012 reflow never fires, and the pane
-                        // stays at its boot dims).
-                        fill_definite(build_pane_scene(tv, i, theme))
-                    }
+                    fill_definite(build_pane_scene(tv, i, theme))
                 }
                 // A leaf with no live pane (out of range / stale) — defensive.
                 _ => Scene::Container(ContainerNode::new(Vec::new())),

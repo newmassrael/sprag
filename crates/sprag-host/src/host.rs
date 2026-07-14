@@ -183,11 +183,13 @@ pub trait HostClient {
     /// Install `tree` as the current window's arrangement, returning the CANONICAL result
     /// — the write half of the arc (see [`sprag_terminal::layout`]).
     ///
-    /// The answer is the tree as the host stores it, with every divider the client minted
-    /// now named, so the caller adopts it directly rather than re-reading. A rejected write
-    /// (a malformed arrangement) leaves the session's layout untouched and answers with it
-    /// unchanged, so a client always learns the truth it must project.
-    fn set_layout(&self, tree: LayoutWire) -> LayoutSnapshot;
+    /// `expected` is the revision this gesture was authored against; the write is REFUSED if
+    /// the arrangement has moved on (another client, a plugin's spawn), because a gesture
+    /// means "in the layout I am looking at". The answer is the tree as the host stores it,
+    /// with every divider the client minted now named, so the caller adopts it directly
+    /// rather than re-reading — and a refused write answers with the arrangement actually in
+    /// force, so a client always learns the truth it must project.
+    fn set_layout(&self, tree: LayoutWire, expected: u64) -> LayoutSnapshot;
 
     /// Take pane `id` out of the tiling (`floating == true`) or put it back, returning the
     /// resulting arrangement.
@@ -195,6 +197,10 @@ pub trait HostClient {
     /// Floating collapses the pane's leaf host-side, so the siblings reclaim its space; a
     /// pane docked back with no gesture to place it returns at the arrangement's end. WHERE
     /// a floating pane's window then sits on screen is the client's own business.
+    ///
+    /// REFUSED if it would leave the window tiling nothing (a terminal window always shows a
+    /// terminal). The answer then carries the arrangement still in force, so a client that
+    /// asked anyway learns the truth rather than being trusted to have checked first.
     fn set_floating(&self, id: PaneId, floating: bool) -> LayoutSnapshot;
 
     /// Pane `id`'s child-reported window TITLE (`OSC 0` / `OSC 2`), or `None` if the
@@ -344,8 +350,12 @@ pub(crate) fn reconciled_layout(registry: &Arc<Mutex<SessionRegistry>>) -> Layou
 pub(crate) fn set_layout(
     registry: &Arc<Mutex<SessionRegistry>>,
     tree: LayoutWire,
+    expected: u64,
 ) -> LayoutSnapshot {
-    if let Err(error) = lock(registry).current_window_mut().set_layout(tree) {
+    if let Err(error) = lock(registry)
+        .current_window_mut()
+        .set_layout(tree, Some(expected))
+    {
         tracing::warn!(
             target: "sprag_host",
             %error,
@@ -362,9 +372,21 @@ pub(crate) fn set_floating(
     id: PaneId,
     floating: bool,
 ) -> LayoutSnapshot {
-    lock(registry)
+    // The window's invariant needs the live pane set to judge "would this untile the last
+    // one?", so it is read under the WORKSPACE lock and handed down — the same sequential
+    // order as everywhere else, never nested.
+    let workspace = lock(registry).current_workspace();
+    let panes: Vec<PaneId> = lock(&workspace).panes().iter().map(Pane::id).collect();
+    if !lock(registry)
         .current_window_mut()
-        .set_floating(id, floating);
+        .set_floating(id, floating, &panes)
+    {
+        tracing::debug!(
+            target: "sprag_host",
+            %id,
+            "refused to float the last tiled pane; the window keeps a terminal",
+        );
+    }
     reconciled_layout(registry)
 }
 
@@ -442,8 +464,8 @@ impl HostClient for Host {
         reconciled_layout(&self.registry)
     }
 
-    fn set_layout(&self, tree: LayoutWire) -> LayoutSnapshot {
-        set_layout(&self.registry, tree)
+    fn set_layout(&self, tree: LayoutWire, expected: u64) -> LayoutSnapshot {
+        set_layout(&self.registry, tree, expected)
     }
 
     fn set_floating(&self, id: PaneId, floating: bool) -> LayoutSnapshot {

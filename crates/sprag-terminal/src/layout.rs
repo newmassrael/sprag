@@ -320,6 +320,9 @@ pub enum LayoutError {
     /// A divider's ratio is not a share in `0.0..=1.0` (out of range, infinite, or NaN).
     /// A NaN would also make the tree's `PartialEq` lie about its own equality.
     InvalidRatio(f32),
+    /// The write was authored against an arrangement that is no longer in force — someone
+    /// else changed it first. Not malformed: simply answering a question that has moved on.
+    Stale { expected: u64, actual: u64 },
 }
 
 impl std::fmt::Display for LayoutError {
@@ -328,6 +331,10 @@ impl std::fmt::Display for LayoutError {
             Self::DuplicatePane(pane) => write!(f, "pane {pane} is arranged twice"),
             Self::DuplicateSplitId(id) => write!(f, "split id {} is claimed twice", id.0),
             Self::InvalidRatio(ratio) => write!(f, "split ratio {ratio} is not a 0..=1 share"),
+            Self::Stale { expected, actual } => write!(
+                f,
+                "arrangement was authored against revision {expected}, but {actual} is in force"
+            ),
         }
     }
 }

@@ -136,14 +136,38 @@ impl Window {
         &self.layout
     }
 
-    /// Install a client's settled arrangement (see [`LayoutTree::set_from_wire`], which
-    /// names the dividers the client minted and validates the whole shape).
+    /// Install a client's settled arrangement, but only if it was authored against the
+    /// arrangement still in force — a compare-and-set on
+    /// [`layout_revision`](Self::layout_revision).
+    ///
+    /// `expected` is the revision the client last read. A gesture is a statement about a
+    /// SPECIFIC arrangement ("put this divider here, in the layout I am looking at"), so
+    /// applying it to a different one is not what the user asked for. Two attached clients
+    /// are the whole point of a durable session, and without this the later write silently
+    /// reverts the earlier one with neither client told. Refusing instead makes the loser
+    /// re-read and re-project, which is the outcome it would have reached anyway had it
+    /// seen the truth first.
+    ///
+    /// `None` writes unconditionally — for a caller with no prior read to be stale against.
     ///
     /// # Errors
     ///
-    /// [`LayoutError`] if the arrangement is not well-formed; the window keeps the one it
-    /// had, unchanged and un-bumped.
-    pub fn set_layout(&mut self, wire: LayoutWire) -> Result<(), LayoutError> {
+    /// [`LayoutError::Stale`] if `expected` is not the current revision, or another
+    /// [`LayoutError`] if the arrangement is not well-formed. Either way the window keeps the
+    /// one it had, unchanged and un-bumped.
+    pub fn set_layout(
+        &mut self,
+        wire: LayoutWire,
+        expected: Option<u64>,
+    ) -> Result<(), LayoutError> {
+        if let Some(expected) = expected
+            && expected != self.layout_revision
+        {
+            return Err(LayoutError::Stale {
+                expected,
+                actual: self.layout_revision,
+            });
+        }
         let mut next = self.layout.clone();
         next.set_from_wire(wire)?;
         self.bump_if_changed(|window| window.layout = next);
@@ -152,19 +176,54 @@ impl Window {
 
     /// Take `pane` out of the tiling (`floating == true`) or put it back.
     ///
-    /// The tree is not touched here: the change lands on the next
-    /// [`reconcile_layout`](Self::reconcile_layout), which is what every read goes through
-    /// — so there is ONE place a leaf appears or collapses, rather than a second removal
-    /// path to keep in step with it. Re-docking therefore returns the pane to the
-    /// arrangement's end; a client that wants it somewhere else drops it there and writes
-    /// the tree ([`set_layout`](Self::set_layout)), which is the gesture that carries the
-    /// user's intent. A no-op if `pane` is already in that state.
-    pub fn set_floating(&mut self, pane: PaneId, floating: bool) {
-        if floating {
-            self.floating.insert(pane);
-        } else {
-            self.floating.remove(&pane);
+    /// The tree is not touched here: the leaf appears or collapses on the next
+    /// [`reconcile_layout`](Self::reconcile_layout), which every read goes through — so there
+    /// is ONE place a leaf moves, rather than a second removal path to keep in step with it.
+    /// A float therefore moves the revision TWICE (once here, once when the tiling follows);
+    /// they are two real changes to what a client must draw, and the revision is opaque, so
+    /// the cost is one extra re-read rather than a correctness question. Going through the
+    /// one revision-bumping seam is what makes that structural: a caller
+    /// cannot leave this window claiming a revision that predates its own float set.
+    ///
+    /// **v1 bound — this DESTROYS the pane's place in the arrangement.** Its leaf is gone, so
+    /// re-docking returns it to the END, durably: float the middle of `0|1|2`, detach,
+    /// reattach, dock back, and it is `0|2|1` for good. A client that wants it elsewhere must
+    /// drop it there and write the tree ([`set_layout`](Self::set_layout)). Keeping the home
+    /// needs the leaf retained here with `floating` as a FLAG on it — a real design, deferred,
+    /// not refuted. A no-op if `pane` is already in that state.
+    pub fn set_floating(&mut self, pane: PaneId, floating: bool, panes: &[PaneId]) -> bool {
+        if floating && self.would_untile_the_last(pane, panes) {
+            return false;
         }
+        self.bump_if_changed(|window| {
+            if floating {
+                window.floating.insert(pane);
+            } else {
+                window.floating.remove(&pane);
+            }
+        });
+        true
+    }
+
+    /// Whether floating `pane` would leave the window tiling NOTHING — the invariant a
+    /// terminal multiplexer keeps: a window always shows at least one terminal.
+    ///
+    /// It lives HERE because the fact it guards lives here. Float became session state, and
+    /// [`set_floating`](Self::set_floating) is reachable over a public wire action — from a
+    /// second client, an AI peer, or a plugin — so a client-side check guards only the client
+    /// that happens to make it, and the authority would accept from anyone else the one state
+    /// it is supposed to forbid. An invariant enforced anywhere but at its authority is a
+    /// convention, not an invariant.
+    ///
+    /// A pane the window does not hold cannot untile anything, so it is never refused here
+    /// (it is pruned instead). A CLOSE is a different event class and is not subject to this:
+    /// a gone pane may legitimately empty the tiling, and forcing a deliberately-floated pane
+    /// back would be more surprising than an empty window.
+    fn would_untile_the_last(&self, pane: PaneId, panes: &[PaneId]) -> bool {
+        panes.contains(&pane)
+            && panes
+                .iter()
+                .all(|p| *p == pane || self.floating.contains(p))
     }
 
     /// Apply `change` and bump [`layout_revision`](Self::layout_revision) only if the
@@ -379,7 +438,7 @@ mod tests {
         assert_eq!(window.reconcile_layout(&panes).panes(), ids);
 
         // Float the MIDDLE pane: its leaf collapses, the siblings reclaim the space.
-        window.set_floating(ids[1], true);
+        let _ = window.set_floating(ids[1], true, &panes);
         assert_eq!(
             window.reconcile_layout(&panes).panes(),
             vec![ids[0], ids[2]],
@@ -389,10 +448,113 @@ mod tests {
 
         // Dock it back with no gesture to say where: it returns at the END (see
         // `set_floating` — a client that wants it elsewhere drops it there and writes).
-        window.set_floating(ids[1], false);
+        let _ = window.set_floating(ids[1], false, &panes);
         assert_eq!(
             window.reconcile_layout(&panes).panes(),
             vec![ids[0], ids[2], ids[1]],
+        );
+    }
+
+    /// A gesture authored against an arrangement that has moved on is REFUSED — a durable
+    /// session's whole point is more than one client, and silent last-write-wins would let
+    /// one revert the other with neither told.
+    #[test]
+    fn a_write_against_a_stale_arrangement_is_refused() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let ws = reg.current_workspace();
+        let a = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
+        let b = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
+        let window = reg.current_window_mut();
+        window.reconcile_layout(&[a, b]);
+        let read_by_both = window.layout_revision();
+
+        // Client A's gesture lands first.
+        let vertical = |ratio: f32| LayoutWire {
+            root: Some(crate::LayoutNodeWire::Split {
+                id: None,
+                dir: SplitDir::Vertical,
+                ratio,
+                first: Box::new(crate::LayoutNodeWire::Leaf(a)),
+                second: Box::new(crate::LayoutNodeWire::Leaf(b)),
+            }),
+        };
+        window
+            .set_layout(vertical(0.7), Some(read_by_both))
+            .expect("A wrote against what it read");
+        let after_a = window.layout_revision();
+        assert!(after_a > read_by_both);
+
+        // Client B settled its gesture against the SAME revision it read, before A's landed.
+        assert_eq!(
+            window.set_layout(vertical(0.2), Some(read_by_both)),
+            Err(LayoutError::Stale {
+                expected: read_by_both,
+                actual: after_a,
+            }),
+            "B's gesture is about a layout that no longer exists",
+        );
+        let LayoutNode::Split { ratio, .. } = window.layout().root().unwrap() else {
+            panic!("a split");
+        };
+        assert!(
+            (*ratio - 0.7).abs() < f32::EPSILON,
+            "A's arrangement stands; B did not silently revert it",
+        );
+        assert_eq!(
+            window.layout_revision(),
+            after_a,
+            "a refused write is inert"
+        );
+
+        // B re-reads and re-writes against the truth: now it wins.
+        window
+            .set_layout(vertical(0.2), Some(window.layout_revision()))
+            .expect("a gesture against the live arrangement applies");
+    }
+
+    /// The window keeps a terminal: floating the LAST tiled pane is REFUSED — by the HOST,
+    /// because the host is what owns float now.
+    ///
+    /// The client has its own guard, but `set_floating` is a public wire action reachable by
+    /// a second client, an AI peer, or a plugin. A guard that lives only in one client is a
+    /// convention; this is the invariant.
+    #[test]
+    fn floating_the_last_tiled_pane_is_refused_by_the_authority() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let ws = reg.current_workspace();
+        let a = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
+        let b = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
+        let panes = [a, b];
+        let window = reg.current_window_mut();
+        window.reconcile_layout(&panes);
+
+        assert!(window.set_floating(a, true, &panes), "one of two may float");
+        assert_eq!(window.reconcile_layout(&panes).panes(), vec![b]);
+
+        let settled = window.layout_revision();
+        assert!(
+            !window.set_floating(b, true, &panes),
+            "the LAST tiled pane may not float, however politely asked",
+        );
+        assert_eq!(window.floating(), &HashSet::from([a]), "b never floated");
+        assert_eq!(
+            window.layout_revision(),
+            settled,
+            "a refused float is inert — it must not even move the revision",
+        );
+        assert_eq!(
+            window.reconcile_layout(&panes).panes(),
+            vec![b],
+            "b still tiles"
+        );
+
+        // A pane the window does not hold cannot untile anything: never refused, just pruned.
+        assert!(window.set_floating(PaneId(999), true, &panes));
+        window.reconcile_layout(&panes);
+        assert_eq!(
+            window.floating(),
+            &HashSet::from([a]),
+            "the ghost was pruned"
         );
     }
 
@@ -407,7 +569,7 @@ mod tests {
         let b = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
 
         let window = reg.current_window_mut();
-        window.set_floating(b, true);
+        let _ = window.set_floating(b, true, &[a, b]);
         window.reconcile_layout(&[a, b]);
         assert_eq!(window.floating(), &HashSet::from([b]));
 
@@ -445,7 +607,7 @@ mod tests {
 
         // A write that installs the SAME arrangement is not a change either.
         let same = LayoutWire::from(window.layout());
-        window.set_layout(same).expect("valid");
+        window.set_layout(same, None).expect("valid");
         assert_eq!(
             window.layout_revision(),
             arranged,
@@ -457,38 +619,47 @@ mod tests {
             panic!("two panes root at a split");
         };
         window
-            .set_layout(LayoutWire {
-                root: Some(crate::LayoutNodeWire::Split {
-                    id: Some(*id),
-                    dir: *dir,
-                    ratio: 0.8,
-                    first: Box::new(crate::LayoutNodeWire::Leaf(a)),
-                    second: Box::new(crate::LayoutNodeWire::Leaf(b)),
-                }),
-            })
+            .set_layout(
+                LayoutWire {
+                    root: Some(crate::LayoutNodeWire::Split {
+                        id: Some(*id),
+                        dir: *dir,
+                        ratio: 0.8,
+                        first: Box::new(crate::LayoutNodeWire::Leaf(a)),
+                        second: Box::new(crate::LayoutNodeWire::Leaf(b)),
+                    }),
+                },
+                None,
+            )
             .expect("valid");
         assert_eq!(window.layout_revision(), arranged + 1, "a drag bumps once");
 
         // A REJECTED write changes nothing, so it must not bump.
         assert!(
             window
-                .set_layout(LayoutWire {
-                    root: Some(crate::LayoutNodeWire::Leaf(a)),
-                })
+                .set_layout(
+                    LayoutWire {
+                        root: Some(crate::LayoutNodeWire::Leaf(a)),
+                    },
+                    None
+                )
                 .is_ok(),
         );
         let dropped = window.layout_revision();
         assert!(
             window
-                .set_layout(LayoutWire {
-                    root: Some(crate::LayoutNodeWire::Split {
-                        id: None,
-                        dir: SplitDir::Horizontal,
-                        ratio: f32::NAN,
-                        first: Box::new(crate::LayoutNodeWire::Leaf(a)),
-                        second: Box::new(crate::LayoutNodeWire::Leaf(b)),
-                    }),
-                })
+                .set_layout(
+                    LayoutWire {
+                        root: Some(crate::LayoutNodeWire::Split {
+                            id: None,
+                            dir: SplitDir::Horizontal,
+                            ratio: f32::NAN,
+                            first: Box::new(crate::LayoutNodeWire::Leaf(a)),
+                            second: Box::new(crate::LayoutNodeWire::Leaf(b)),
+                        }),
+                    },
+                    None
+                )
                 .is_err(),
         );
         assert_eq!(
@@ -504,14 +675,24 @@ mod tests {
         assert!(rearranged > dropped, "an unarranged pane gets placed");
 
         // Floating lands on the next reconcile — the one place a leaf collapses.
-        window.set_floating(b, true);
-        window.reconcile_layout(&[a, b]);
-        assert!(window.layout_revision() > rearranged, "a float is a change");
+        let _ = window.set_floating(b, true, &[a, b]);
+        let floated = window.layout_revision();
+        assert_eq!(
+            floated,
+            rearranged + 1,
+            "taking a pane out of the tiling is itself a change a client must see",
+        );
         window.reconcile_layout(&[a, b]);
         assert_eq!(
             window.layout_revision(),
-            rearranged + 1,
-            "and reconciling a settled float again is not",
+            floated + 1,
+            "and the tiling following it is a second, real one (the leaf collapsed)",
+        );
+        window.reconcile_layout(&[a, b]);
+        assert_eq!(
+            window.layout_revision(),
+            floated + 1,
+            "but reconciling a settled float again changes nothing",
         );
     }
 

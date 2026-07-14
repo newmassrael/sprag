@@ -168,10 +168,16 @@ impl WorkspaceExternal {
     /// now named, so one round trip both records the gesture and tells the client which
     /// identities to key its per-split state on.
     fn set_layout(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
-        let tree = as_object(args)?
-            .get("tree")
-            .ok_or(InvokeError::TypeMismatch)?
-            .clone();
+        let map = as_object(args)?;
+        // The revision this gesture was authored against — the arrangement the client was
+        // looking at. Required: a write with no answer to "which layout is this about?"
+        // cannot be adjudicated, and silently accepting it is how one client reverts
+        // another's gesture with neither told.
+        let expected = map
+            .get("expected_revision")
+            .and_then(Value::as_u64)
+            .ok_or(InvokeError::TypeMismatch)?;
+        let tree = map.get("tree").ok_or(InvokeError::TypeMismatch)?.clone();
         // A tree that will not even deserialise is a malformed REQUEST (the client and host
         // disagree on the shape), distinct from the well-formed-JSON-but-invalid-arrangement
         // the tree's own validation rejects — so it fails here as a TypeMismatch rather than
@@ -180,7 +186,7 @@ impl WorkspaceExternal {
             tracing::warn!(target: "sprag_host", %error, "set_layout: undeserialisable tree");
             InvokeError::TypeMismatch
         })?;
-        let snapshot = crate::host::set_layout(&self.registry, tree);
+        let snapshot = crate::host::set_layout(&self.registry, tree, expected);
         // The arrangement changed: wake parked waiters so another attached client
         // re-projects promptly, exactly as a pane-set change does.
         self.revision.bump();
@@ -570,14 +576,19 @@ mod tests {
 
         // The client sends a VERTICAL split at a dragged ratio, through a divider it minted
         // itself (no `id` — naming one is the host's job).
+        let at = query_layout(&mut ext)["revision"]
+            .as_u64()
+            .expect("a revision");
         let Ok(IntrospectValue::Json(answer)) = ext.invoke(
             SET_LAYOUT_ACTION,
-            IntrospectValue::Json(json!({ "tree": { "root": { "split": {
+            IntrospectValue::Json(
+                json!({ "expected_revision": at, "tree": { "root": { "split": {
                 "dir": "vertical",
                 "ratio": 0.75,
                 "first": { "leaf": 1 },
                 "second": { "leaf": 0 },
-            } } } })),
+            } } } }),
+            ),
         ) else {
             panic!("the write answers with JSON");
         };
@@ -660,14 +671,17 @@ mod tests {
         let good = query_layout(&mut ext);
 
         // The same pane twice, at a ratio that is not a share.
+        let at = good["revision"].as_u64().expect("a revision");
         let Ok(IntrospectValue::Json(answer)) = ext.invoke(
             SET_LAYOUT_ACTION,
-            IntrospectValue::Json(json!({ "tree": { "root": { "split": {
+            IntrospectValue::Json(
+                json!({ "expected_revision": at, "tree": { "root": { "split": {
                 "dir": "horizontal",
                 "ratio": 4.2,
                 "first": { "leaf": 0 },
                 "second": { "leaf": 0 },
-            } } } })),
+            } } } }),
+            ),
         ) else {
             panic!("a rejected write still answers with the truth to project");
         };
@@ -678,7 +692,9 @@ mod tests {
         assert_eq!(
             ext.invoke(
                 SET_LAYOUT_ACTION,
-                IntrospectValue::Json(json!({ "tree": { "root": "sideways" } })),
+                IntrospectValue::Json(
+                    json!({ "expected_revision": at, "tree": { "root": "sideways" } })
+                ),
             ),
             Err(InvokeError::TypeMismatch),
         );
@@ -686,6 +702,15 @@ mod tests {
             ext.invoke(SET_LAYOUT_ACTION, IntrospectValue::Json(json!({}))),
             Err(InvokeError::TypeMismatch),
             "the tree arg is required",
+        );
+        assert_eq!(
+            ext.invoke(
+                SET_LAYOUT_ACTION,
+                IntrospectValue::Json(json!({ "tree": { "root": { "leaf": 0 } } })),
+            ),
+            Err(InvokeError::TypeMismatch),
+            "so is the revision it was authored against — a write with no answer to \
+             'which layout is this about?' cannot be adjudicated",
         );
         assert_eq!(query_layout(&mut ext), good, "and still untouched");
     }

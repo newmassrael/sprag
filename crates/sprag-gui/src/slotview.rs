@@ -146,8 +146,11 @@ impl SlotView {
 
     /// Write this client's settled arrangement back, adopting the host's canonical answer —
     /// the gesture-to-session-state path (see [`sprag_terminal::layout`]).
-    pub(crate) fn set_layout(&self, tree: LayoutWire) -> LayoutSnapshot {
-        self.host.set_layout(tree)
+    ///
+    /// `expected` is the revision the gesture was authored against; a write against an
+    /// arrangement that has since moved on is refused, and the answer carries the truth.
+    pub(crate) fn set_layout(&self, tree: LayoutWire, expected: u64) -> LayoutSnapshot {
+        self.host.set_layout(tree, expected)
     }
 
     /// Take slot `slot`'s pane out of the tiling (`floating == true`) or put it back,
@@ -362,7 +365,7 @@ mod tests {
         fn layout(&self) -> LayoutSnapshot {
             LayoutSnapshot::default()
         }
-        fn set_layout(&self, _tree: LayoutWire) -> LayoutSnapshot {
+        fn set_layout(&self, _tree: LayoutWire, _expected: u64) -> LayoutSnapshot {
             LayoutSnapshot::default()
         }
         fn set_floating(&self, _id: PaneId, _floating: bool) -> LayoutSnapshot {

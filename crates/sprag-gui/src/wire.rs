@@ -126,6 +126,29 @@ fn lock_layout(layout: &Mutex<LayoutSnapshot>) -> MutexGuard<'_, LayoutSnapshot>
     layout.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Store `snapshot` in the mirror unless it is OLDER than what is already there — the ONE
+/// place the mirror is written, shared by the poll thread and the UI thread's writes.
+///
+/// The revision is monotonic per window, so an older snapshot is stale by definition. Two
+/// threads race here: the poll thread reads the layout OFF the lock and stores it after, so
+/// its read can be overtaken by a UI-thread write that lands first. Storing unconditionally
+/// let the mirror move BACKWARD — the client then saw a revision it had already passed,
+/// re-projected the pre-gesture tree, and visibly snapped the user's just-settled divider
+/// back until an unrelated later bump healed it.
+fn store_layout(layout: &Mutex<LayoutSnapshot>, snapshot: LayoutSnapshot) {
+    let mut mirror = lock_layout(layout);
+    if snapshot.revision >= mirror.revision {
+        *mirror = snapshot;
+    } else {
+        tracing::trace!(
+            target: "sprag_gui::wire",
+            stale = snapshot.revision,
+            held = mirror.revision,
+            "dropped a layout read overtaken by a newer one",
+        );
+    }
+}
+
 /// Read the host's arrangement off the wire — the ONE place the `layout` slot is queried,
 /// shared by the boot read and the poll thread's refresh.
 fn query_layout(conn: &mut HostConn) -> io::Result<LayoutSnapshot> {
@@ -282,7 +305,7 @@ impl WireHost {
             .and_then(|value| serde_json::from_value::<LayoutSnapshot>(value).ok())
         {
             Some(snapshot) => {
-                *lock_layout(&self.layout) = snapshot.clone();
+                store_layout(&self.layout, snapshot.clone());
                 snapshot
             }
             None => self.layout(),
@@ -360,9 +383,12 @@ impl HostClient for WireHost {
         lock_layout(&self.layout).clone()
     }
 
-    fn set_layout(&self, tree: LayoutWire) -> LayoutSnapshot {
+    fn set_layout(&self, tree: LayoutWire, expected: u64) -> LayoutSnapshot {
         self.write_layout(
-            json!({ "path": mux_action_path(SET_LAYOUT_ACTION), "args": { "tree": tree } }),
+            json!({
+                "path": mux_action_path(SET_LAYOUT_ACTION),
+                "args": { "tree": tree, "expected_revision": expected },
+            }),
             "set_layout",
         )
     }
@@ -805,7 +831,7 @@ fn spawn_poll(
                 // client's projection. On a transient failure the last-known arrangement
                 // stands (a hiccup means "no news", never "your layout is gone").
                 match query_layout(&mut conn) {
-                    Ok(snapshot) => *lock_layout(&layout) = snapshot,
+                    Ok(snapshot) => store_layout(&layout, snapshot),
                     Err(error) => tracing::debug!(
                         target: "sprag_gui::wire",
                         %error,

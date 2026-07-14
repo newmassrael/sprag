@@ -45,8 +45,12 @@ pub const PANES_SLOT: &str = "panes";
 /// restore the user's layout. Logical only: it carries no pixels.
 pub const LAYOUT_SLOT: &str = "layout";
 /// The mux control external invoke action that INSTALLS a client's settled arrangement
-/// (a [`LayoutWire`](sprag_terminal::LayoutWire) as the `tree` arg), returning the
-/// canonical [`LayoutSnapshot`](sprag_terminal::LayoutSnapshot).
+/// (`{tree, expected_revision}`), returning the canonical
+/// [`LayoutSnapshot`](sprag_terminal::LayoutSnapshot).
+///
+/// `expected_revision` is the revision the gesture was authored against — a compare-and-set,
+/// so a write against an arrangement that has moved on is REFUSED rather than silently
+/// reverting whoever moved it.
 ///
 /// The write half of the arc: a client resolves a gesture on its own surface and sends
 /// the result here, which is what turns the user's arrangement into session state. It is

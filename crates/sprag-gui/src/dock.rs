@@ -345,13 +345,38 @@ pub(crate) fn pane_is_movable(i: usize) -> bool {
 /// tiling is session state, so this client requests the change rather than making it: that is
 /// what lets the float survive a detach (see [`crate::split`]).
 #[must_use]
-fn push_float(windows: &mut Vec<WindowSpec>, i: usize, position: Option<(i32, i32)>) -> bool {
+fn push_float(i: usize, position: Option<(i32, i32)>) -> bool {
     if float_would_empty_the_dock(i) {
         return false; // tmux semantics: the main window keeps its last docked pane
     }
-    windows.push(undock_window_spec(i, position));
+    // Ask the host, then let the adopt OPEN the window ([`reconcile_float_windows`] is the
+    // one window creator), then place it where the gesture wants it. This must NOT push a
+    // window itself: the adopt writes the same signal, so a caller holding a snapshot across
+    // this call would clobber it — and a float another client made in the meantime would be
+    // dropped, leaving that pane with no leaf and no window, i.e. invisible. That is the bug
+    // R150/B4 fixed on the reattach path; it must not come back on the float path.
     set_pane_floating(i, true);
+    if let Some(pos) = position {
+        place_float(i, pos);
+    }
     true
+}
+
+/// Put pane `i`'s floating window at `pos` — where the CLIENT decides a float goes (pixels
+/// are ours; the host stores none). Separate from opening it, so there is one creator and
+/// one placer rather than two writers racing on the windows signal. A no-op if the pane has
+/// no window, or is already there (no `set`, no repaint).
+fn place_float(i: usize, pos: (i32, i32)) {
+    let signal = use_windows_topology();
+    let mut windows = signal.get();
+    let target = pane_window_id(i);
+    if let Some(spec) = windows.iter_mut().find(|w| w.id == target) {
+        if spec.position == Some(pos) {
+            return;
+        }
+        spec.position = Some(pos);
+        signal.set(windows);
+    }
 }
 
 /// Project the host's FLOAT set onto this client's OS windows: open a window for every pane
@@ -422,14 +447,11 @@ fn set_pane_floating(i: usize, floating: bool) {
 /// grows the window list by one. Single-responsibility — create only; the live-follow
 /// reposition is [`float_pane_at`]'s, never here.
 fn open_floating(i: usize, position: Option<(i32, i32)>) {
-    let signal = use_windows_topology();
-    let mut windows = signal.get();
-    let before = windows.len();
-    if !push_float(&mut windows, i, position) {
-        return; // refused (last docked pane) — nothing changed, no set/diag
+    let before = use_windows_topology().get().len();
+    if !push_float(i, position) {
+        return; // refused (last docked pane) — nothing changed, no diag
     }
-    let after = windows.len();
-    signal.set(windows);
+    let after = use_windows_topology().get().len();
     crate::diag::dock_toggle(i, true, before, after);
 }
 
@@ -496,17 +518,19 @@ pub(crate) fn float_pane_at(i: usize, source_window: Option<&str>, cursor: (f64,
             return; // stationary cursor -> no set, no repaint
         }
         spec.position = Some(pos);
+        signal.set(windows);
     } else {
         // First escaped move: float at the cursor. [`push_float`] carries the last-pane
         // invariant — if it refuses (this is the sole docked pane, tmux semantics), the
-        // tear-off does nothing and the pane stays put, so skip the `set` (nothing changed).
-        let before = windows.len();
-        if !push_float(&mut windows, i, Some(pos)) {
+        // tear-off does nothing and the pane stays put. It also OPENS and PLACES the window
+        // itself (through the host), so the `windows` snapshot read above is stale from here
+        // on and must not be written back.
+        let before = use_windows_topology().get().len();
+        if !push_float(i, Some(pos)) {
             return;
         }
-        crate::diag::dock_toggle(i, true, before, windows.len());
+        crate::diag::dock_toggle(i, true, before, use_windows_topology().get().len());
     }
-    signal.set(windows);
 }
 
 /// Borderless title-bar window move (pinion R1116/R1118 / PINION-PR38 ②): relocate pane
