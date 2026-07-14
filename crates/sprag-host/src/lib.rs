@@ -17,7 +17,9 @@
 //! and the `scene/snapshot` wire), keeping the producer ([`sprag_terminal`])
 //! and projection ([`sprag_grid`]) crates free of its heavy transitive deps.
 //!
-//! Pipeline (DESIGN.md §5): the producer's [`Workspace`] holds the panes;
+//! Pipeline (DESIGN.md §5): the producer's [`Workspace`](sprag_terminal::Workspace)
+//! holds the panes (the current window's, resolved out of the
+//! [`SessionRegistry`]);
 //! [`workspace_scene`] assembles the tree (refreshing each grid from its live
 //! screen, handing engines their `SessionHandle`); [`snapshot`] reads one
 //! grid back as the [`TextGridSnapshot`] an AI consumer sees; [`dispatch_frames`]
@@ -70,7 +72,7 @@ use std::sync::{Arc, Mutex};
 use pinion_core::scene::{ContainerNode, ExternalNode, TextGridNode};
 use pinion_core::style::{LayoutStyle, Size, SizeValue};
 use pinion_core::{CellMetric, GridBuffer, Scene, SceneRevision};
-use sprag_terminal::{PaneId, TerminalSession, Workspace};
+use sprag_terminal::{PaneId, SessionRegistry, TerminalSession};
 use sprag_vt::Screen;
 
 use crate::external::lock;
@@ -262,7 +264,8 @@ fn pane_container(id: PaneId, session: &TerminalSession) -> Scene {
 ///
 /// Each pane child is refreshed from its session's current screen; the
 /// engines and the control surface hold shared handles (a `SessionHandle`
-/// per pane, an `Arc<Mutex<Workspace>>` for control), so the per-request
+/// per pane, an `Arc<Mutex<SessionRegistry>>` for mux control and an
+/// `Arc<Mutex<Workspace>>` for the plugin host), so the per-request
 /// scene stays a throwaway projection (R969) while input and pane lifecycle
 /// reach live state. The workspace lock is released before returning so a
 /// dispatched `scene/invoke` (spawn/close/resize) can re-acquire it without
@@ -276,28 +279,36 @@ fn pane_container(id: PaneId, session: &TerminalSession) -> Scene {
 /// long-polls change-notification would never learn about mux-spawned panes.
 #[must_use]
 pub fn workspace_scene(
-    workspace: &Arc<Mutex<Workspace>>,
+    registry: &Arc<Mutex<SessionRegistry>>,
     runs: &Arc<Mutex<RunRegistry>>,
     revision: &Arc<SceneRevision>,
 ) -> Scene {
+    // The CURRENT window's pane pool. Resolved once per assembly (a cloned `Arc`), so
+    // the registry lock is released before the workspace lock — never nested — and a
+    // later current-window switch is reflected by the next assembly with no re-plumbing.
+    let workspace = lock(registry).current_workspace();
     let mut children: Vec<Scene> = {
-        let guard = lock(workspace);
+        let guard = lock(&workspace);
         guard
             .panes()
             .iter()
             .map(|pane| pane_container(pane.id(), pane.session()))
             .collect()
     };
+    // The mux control plane speaks the REGISTRY (sessions / windows / layout are mux
+    // concerns)...
     children.push(Scene::External(
         ExternalNode::new(Box::new(workspace::WorkspaceExternal::new(
-            Arc::clone(workspace),
+            Arc::clone(registry),
             Arc::clone(revision),
         )))
         .with_tag(MUX_TAG),
     ));
+    // ...while the plugin host speaks only the pane POOL: a plugin has no business
+    // knowing about the session tree (Interface Segregation).
     children.push(Scene::External(
         ExternalNode::new(Box::new(plugins::PluginsExternal::new(
-            Arc::clone(workspace),
+            Arc::clone(&workspace),
             Arc::clone(runs),
         )))
         .with_tag(PLUGINS_TAG),

@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    CELLS_ACTION, CLOSE_ACTION, FULL_TEXT_SLOT, PANES_SLOT, SPAWN_ACTION, TEXT_ACTION,
+    CELLS_ACTION, CLOSE_ACTION, FULL_TEXT_SLOT, LAYOUT_SLOT, PANES_SLOT, SPAWN_ACTION, TEXT_ACTION,
 };
 use sprag_host::{mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
@@ -316,4 +316,63 @@ fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) -> bool {
         std::thread::sleep(Duration::from_millis(20));
     }
     false
+}
+
+/// The detach/reattach arc's core wire claim, over a REAL host process: a window's
+/// LOGICAL arrangement crosses the socket and deserialises back into the exact
+/// [`LayoutTree`] the host holds. This is what will let a reattaching client restore the
+/// user's layout instead of re-evening it — so it is proven against a real `sprag-term`,
+/// not an in-process fake.
+#[test]
+fn the_window_layout_crosses_the_real_socket() {
+    let sock = socket_path();
+    let _ = std::fs::remove_file(&sock);
+    let _host = spawn_host(&sock);
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term host");
+
+    // The boot pane alone arranges as a bare leaf — no split to divide.
+    let value = conn
+        .call(
+            "scene/query",
+            json!({ "path": mux_action_path(LAYOUT_SLOT) }),
+        )
+        .expect("the layout query answers");
+    let layout: sprag_terminal::LayoutTree =
+        serde_json::from_value(value).expect("the layout deserialises off the wire");
+    let boot = layout.panes();
+    assert_eq!(boot.len(), 1, "the boot pane is arranged: {boot:?}");
+
+    // Spawn a second pane: the arrangement grows a split over BOTH panes, in order.
+    conn.call(
+        "scene/invoke",
+        json!({ "path": mux_action_path(SPAWN_ACTION), "args": { "cmd": ["cat"] } }),
+    )
+    .expect("spawn a second pane");
+
+    let value = conn
+        .call(
+            "scene/query",
+            json!({ "path": mux_action_path(LAYOUT_SLOT) }),
+        )
+        .expect("the layout query answers");
+    let layout: sprag_terminal::LayoutTree =
+        serde_json::from_value(value).expect("the layout deserialises off the wire");
+    assert_eq!(
+        layout.panes().len(),
+        2,
+        "the spawned pane joined the arrangement: {:?}",
+        layout.panes(),
+    );
+    // The tree is a real split (not two orphan roots), and carries no pixels.
+    assert!(
+        matches!(
+            layout.root(),
+            Some(sprag_terminal::LayoutNode::Split { .. })
+        ),
+        "two panes arrange as a split, got {:?}",
+        layout.root(),
+    );
+
+    let _ = std::fs::remove_file(&sock);
 }

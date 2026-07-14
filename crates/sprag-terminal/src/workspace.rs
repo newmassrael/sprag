@@ -35,8 +35,15 @@ use crate::session::{CommandBuilder, SessionError, SessionHandle, TerminalSessio
 /// A stable, monotonic identifier for a pane within a [`Workspace`].
 ///
 /// Ids are never reused, so a stale reference fails closed (the pane is
-/// simply absent) rather than aliasing a pane that took its place.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+/// simply absent) rather than aliasing a pane that took its place. Unique
+/// across a whole [`SessionRegistry`](crate::SessionRegistry) (every window's
+/// pool draws from one counter), so a pane is addressable by id alone —
+/// independent of which window holds it.
+///
+/// Serialises as its bare number, matching the `id` the pane-list wire has
+/// always carried; it is the identity a [`LayoutTree`](crate::LayoutTree) leaf
+/// names over the wire.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PaneId(pub u64);
 
 impl fmt::Display for PaneId {

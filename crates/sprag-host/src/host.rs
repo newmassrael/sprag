@@ -49,7 +49,8 @@ use std::sync::{Arc, Mutex};
 use pinion_core::GridBuffer;
 use sprag_input::Modifiers;
 use sprag_terminal::{
-    CommandBuilder, Pane, PaneId, SessionError, SessionHandle, SessionRegistry, Workspace,
+    CommandBuilder, LayoutTree, Pane, PaneId, SessionError, SessionHandle, SessionRegistry,
+    Workspace,
 };
 use sprag_vt::Screen;
 
@@ -161,6 +162,19 @@ pub trait HostClient {
     /// Pane `id`'s command label (the a11y node name). Empty if `id` is absent.
     fn pane_command_label(&self, id: PaneId) -> String;
 
+    /// The current window's LOGICAL arrangement of its panes — which panes are split,
+    /// in what order, at what proportion — reconciled against the live pane set.
+    ///
+    /// Host-owned so it outlives any client: that is what lets a detached session keep
+    /// the user's layout and a reattaching client restore it. Logical ONLY — it carries
+    /// no rect, because pixel geometry belongs to whichever client is rendering (a TUI
+    /// and a GUI at different sizes project the same tree differently). A client
+    /// PROJECTS this into its own surface; it never receives pixels here.
+    ///
+    /// Not a per-frame read: a client seeds its layout from this and re-reads it when
+    /// the arrangement changes.
+    fn layout(&self) -> LayoutTree;
+
     /// Pane `id`'s child-reported window TITLE (`OSC 0` / `OSC 2`), or `None` if the
     /// child never set one (or `id` is absent).
     ///
@@ -232,6 +246,16 @@ impl Host {
     #[must_use]
     pub fn workspace(&self) -> Arc<Mutex<Workspace>> {
         lock(&self.registry).current_workspace()
+    }
+
+    /// The mux state tree, for the scene-as-data assembly
+    /// ([`workspace_scene`](crate::workspace_scene)) and the mux control external, which
+    /// resolve the current window out of it per request. The plugin host deliberately
+    /// gets [`workspace`](Self::workspace) instead — a plugin operates on a pane pool,
+    /// not a session tree (Interface Segregation).
+    #[must_use]
+    pub fn registry(&self) -> &Arc<Mutex<SessionRegistry>> {
+        &self.registry
     }
 
     /// Pane `id`'s cloneable I/O handle — the ONE non-wire-shaped method (module
@@ -322,6 +346,22 @@ impl HostClient for Host {
     /// "no title to display", and a caller that must distinguish them has `pane_ids`.
     fn pane_title(&self, id: PaneId) -> Option<String> {
         self.with_pane_id(id, Pane::title).flatten()
+    }
+
+    /// Reads the pane ids under the WORKSPACE lock, then reconciles under the REGISTRY
+    /// lock — the two are taken sequentially, never nested, so this cannot invert the
+    /// registry → workspace order the rest of the host holds them in.
+    ///
+    /// A pane spawning / closing between the two steps just leaves the arrangement one
+    /// reconcile behind; the next read self-heals it (the tree is not the membership
+    /// authority — the workspace is).
+    fn layout(&self) -> LayoutTree {
+        let workspace = self.workspace();
+        let panes: Vec<PaneId> = lock(&workspace).panes().iter().map(Pane::id).collect();
+        lock(&self.registry)
+            .current_window_mut()
+            .reconcile_layout(&panes)
+            .clone()
     }
 }
 

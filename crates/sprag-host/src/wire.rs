@@ -39,6 +39,11 @@ pub const CLOSE_ACTION: &str = "close";
 pub const RESIZE_ACTION: &str = "resize";
 /// The mux control external query slot: the live pane list as JSON.
 pub const PANES_SLOT: &str = "panes";
+/// The mux control external query slot: the current window's LOGICAL layout
+/// ([`LayoutTree`](sprag_terminal::LayoutTree)) as JSON — the arrangement a display
+/// client projects, and the state that lets a reattaching client restore the user's
+/// layout. Logical only: it carries no pixels.
+pub const LAYOUT_SLOT: &str = "layout";
 
 /// The container tag of the pane with host id `pane_id` — the `pane_<id>` node the
 /// per-pane data grid + input external live under (the head of a pane-addressed

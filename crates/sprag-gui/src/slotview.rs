@@ -315,6 +315,11 @@ mod tests {
         fn pane_ids(&self) -> Vec<PaneId> {
             self.ids.borrow().clone()
         }
+        /// Empty: these tests drive the slot map / delta logic, which reads only
+        /// `pane_ids` — the arrangement is a separate authority.
+        fn layout(&self) -> sprag_terminal::LayoutTree {
+            sprag_terminal::LayoutTree::new()
+        }
         fn pane_cells(&self, _id: PaneId, _offset_lines: usize) -> GridBuffer {
             GridBuffer::new(1, 1)
         }

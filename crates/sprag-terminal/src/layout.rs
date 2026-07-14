@@ -42,7 +42,8 @@ use crate::workspace::PaneId;
 /// `Horizontal` lays `first` LEFT and `second` RIGHT; `Vertical` lays `first` TOP and
 /// `second` BOTTOM (pinion `DockNode::Split`'s convention, so the client's projection is
 /// a direct mapping).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum SplitDir {
     Horizontal,
     Vertical,
@@ -54,7 +55,7 @@ pub enum SplitDir {
 /// on it rather than on traversal order — the same reason pinion's `DockNode::Split`
 /// carries a stable id. The client formats this into its own id string; the number is
 /// the durable part.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SplitId(pub u64);
 
 /// The even divider share a freshly-minted split opens at (matching the client's
@@ -62,7 +63,8 @@ pub struct SplitId(pub u64);
 const RATIO_DEFAULT: f32 = 0.5;
 
 /// One node of a window's logical layout: either a pane, or a division of two sub-trees.
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LayoutNode {
     /// A pane occupies this cell, addressed by its registry-global [`PaneId`].
     Leaf(PaneId),
@@ -155,7 +157,7 @@ impl LayoutNode {
 ///
 /// Empty (`root == None`) means the window has no panes — the honest zero-pane state,
 /// not an error.
-#[derive(Clone, PartialEq, Debug, Default)]
+#[derive(Clone, PartialEq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct LayoutTree {
     root: Option<LayoutNode>,
     next_split: u64,
@@ -238,6 +240,21 @@ mod tests {
         (0..n).map(PaneId).collect()
     }
 
+    /// Every split id in `node`, depth-first.
+    fn split_ids(node: &LayoutNode) -> Vec<SplitId> {
+        match node {
+            LayoutNode::Leaf(_) => Vec::new(),
+            LayoutNode::Split {
+                id, first, second, ..
+            } => {
+                let mut out = vec![*id];
+                out.extend(split_ids(first));
+                out.extend(split_ids(second));
+                out
+            }
+        }
+    }
+
     #[test]
     fn an_empty_layout_has_no_panes() {
         let tree = LayoutTree::new();
@@ -300,18 +317,7 @@ mod tests {
         for pane in ids(3) {
             tree.append_pane(pane);
         }
-        let mut seen = Vec::new();
-        fn walk(node: &LayoutNode, seen: &mut Vec<SplitId>) {
-            if let LayoutNode::Split {
-                id, first, second, ..
-            } = node
-            {
-                seen.push(*id);
-                walk(first, seen);
-                walk(second, seen);
-            }
-        }
-        walk(tree.root().unwrap(), &mut seen);
+        let seen = split_ids(tree.root().unwrap());
         let unique: HashSet<SplitId> = seen.iter().copied().collect();
         assert_eq!(unique.len(), seen.len(), "split ids are unique: {seen:?}");
 
@@ -368,6 +374,38 @@ mod tests {
             other => panic!("expected a split, got {other:?}"),
         }
         assert_eq!(tree.panes(), ids(3));
+    }
+
+    #[test]
+    fn the_layout_round_trips_the_wire_losslessly() {
+        // The arc's load-bearing wire claim: a detached session's arrangement reaches a
+        // reattaching client EXACTLY — every pane, split identity, direction, and the
+        // user's dragged ratio. If serde dropped a field the client would silently
+        // restore a DIFFERENT layout, which is the whole thing detach/reattach sells.
+        let mut tree = LayoutTree::new();
+        tree.reconcile(&ids(3));
+        if let Some(LayoutNode::Split { ratio, dir, .. }) = tree.root.as_mut() {
+            *ratio = 0.73;
+            *dir = SplitDir::Vertical;
+        }
+
+        let json = serde_json::to_string(&tree).expect("the layout serializes");
+        let back: LayoutTree = serde_json::from_str(&json).expect("the layout round-trips");
+        assert_eq!(back, tree, "serde is lossless for the whole arrangement");
+        assert_eq!(back.panes(), ids(3));
+
+        // A restored tree must keep minting FRESH split ids (next_split survived), or a
+        // reattached client's next split would collide with an existing divider.
+        let mut back = back;
+        let before: Vec<_> = split_ids(back.root().unwrap());
+        back.append_pane(PaneId(9));
+        let after = split_ids(back.root().unwrap());
+        let fresh: Vec<_> = after.iter().filter(|id| !before.contains(id)).collect();
+        assert_eq!(fresh.len(), 1, "exactly one new divider");
+        assert!(
+            !before.contains(fresh[0]),
+            "a restored tree does not reissue a split id",
+        );
     }
 
     #[test]

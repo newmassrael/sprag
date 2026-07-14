@@ -188,6 +188,13 @@ impl SessionRegistry {
         self.current_session().current_window()
     }
 
+    /// The current window, mutably — the seam a caller reconciles the arrangement
+    /// through ([`Window::reconcile_layout`]).
+    pub fn current_window_mut(&mut self) -> &mut Window {
+        let session = &mut self.sessions[self.current_session];
+        &mut session.windows[session.current_window]
+    }
+
     /// A clone of the current window's pane-pool handle — the `Arc<Mutex<Workspace>>`
     /// the host hands to the per-request scene assembly and the control / plugin
     /// externals. Cloned (not borrowed) so the registry lock is released before the

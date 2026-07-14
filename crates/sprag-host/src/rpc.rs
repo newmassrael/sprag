@@ -1,8 +1,8 @@
 //! The headless JSON-RPC server loop.
 //!
 //! Serves pinion's scene-as-data wire over a line-delimited transport,
-//! assembling the live [`Workspace`] panes into a fresh scene for each
-//! request. This is the runnable form of the headless data path
+//! assembling the current window's live [`Workspace`](sprag_terminal::Workspace)
+//! panes into a fresh scene for each request. This is the runnable form of the headless data path
 //! (DESIGN.md §1/§3): an external AI peer reads the terminals as data and
 //! drives input / pane lifecycle, with no GPU and no shell event loop.
 //!
@@ -33,13 +33,13 @@ use pinion_rpc::{
     DispatchContext, Request, RpcFrame, RpcIngress, RpcReply, WaiterRegistry, dispatch,
     dispatch_parsed, parse_request, try_async_wait_for,
 };
-use sprag_terminal::Workspace;
+use sprag_terminal::SessionRegistry;
 
 use crate::host::Host;
 use crate::runs::RunRegistry;
 
 /// The long-lived host state threaded through the serve loop: the booted [`Host`]
-/// (the single [`Workspace`] owner), the background plugin-run registry, pinion's
+/// (the single [`SessionRegistry`] owner), the background plugin-run registry, pinion's
 /// per-session dispatch ledgers, and the async `scene/waitFor` waiter registry.
 /// Bundled so the per-request handler signature stays stable as future control
 /// surfaces are added.
@@ -100,13 +100,12 @@ impl HostState {
         }
     }
 
-    /// The CURRENT window's pane workspace (resolved out of the [`Host`]'s
-    /// [`SessionRegistry`](sprag_terminal::SessionRegistry)), for the scene-as-data
-    /// assembly and the control / plugin externals. A cloned `Arc` (not a borrow), so
-    /// each per-request scene assembly reflects the then-current window.
+    /// The mux state tree (the [`Host`]'s [`SessionRegistry`]), for the scene-as-data
+    /// assembly. The assembly resolves the CURRENT window's pane pool out of it per
+    /// request, so a later window switch needs no re-plumbing.
     #[must_use]
-    pub fn workspace(&self) -> Arc<Mutex<Workspace>> {
-        self.host.workspace()
+    pub fn registry(&self) -> &Arc<Mutex<SessionRegistry>> {
+        self.host.registry()
     }
 
     /// The shared background plugin-run registry.
@@ -172,8 +171,7 @@ pub fn handle_request(state: &HostState, request_json: &str) -> Option<String> {
         Ok(request) => handle_parsed(state, request),
         Err(_) => {
             // Malformed: assemble a ctx only for the canonical parse-error reply.
-            let mut scene =
-                crate::workspace_scene(&state.workspace(), &state.runs, &state.revision);
+            let mut scene = crate::workspace_scene(state.registry(), &state.runs, &state.revision);
             let mut ctx = DispatchContext::new(&mut scene, &state.previews, state.revision());
             dispatch(&mut ctx, request_json)
         }
@@ -191,7 +189,7 @@ pub fn handle_request(state: &HostState, request_json: &str) -> Option<String> {
 /// synchronous handler.
 #[must_use]
 pub fn handle_parsed(state: &HostState, request: Request) -> Option<String> {
-    let mut scene = crate::workspace_scene(&state.workspace(), &state.runs, &state.revision);
+    let mut scene = crate::workspace_scene(state.registry(), &state.runs, &state.revision);
     let mut ctx = DispatchContext::new(&mut scene, &state.previews, state.revision());
     if SUPPORTED_METHODS.contains(&request.method.as_str()) {
         dispatch_parsed(&mut ctx, request)
@@ -371,7 +369,7 @@ mod tests {
     fn wait_for_pane0_eof(state: &HostState) {
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(5) {
-            let eof = lock(&state.workspace())
+            let eof = lock(&state.host.workspace())
                 .pane(PaneId(0))
                 .is_none_or(|p| p.session().is_eof());
             if eof {
@@ -476,7 +474,7 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":3,"method":"scene/invoke","params":{"path":"/sprag_mux/external/close","args":{"id":0}}}"#,
         );
         assert!(closed.get("error").is_none(), "close error: {closed}");
-        assert_eq!(lock(&state.workspace()).panes().len(), 1);
+        assert_eq!(lock(&state.host.workspace()).panes().len(), 1);
     }
 
     /// Poll `query("runs")` until run 0 reports `done`, returning its outcome
@@ -597,7 +595,7 @@ mod tests {
         );
         // Only the initial pane remains — every per-turn pane was reaped.
         assert_eq!(
-            lock(&state.workspace()).panes().len(),
+            lock(&state.host.workspace()).panes().len(),
             1,
             "dialogue leaked a pane"
         );
@@ -659,7 +657,7 @@ mod tests {
             "raw envelope leaked: {output:?}"
         );
         assert_eq!(
-            lock(&state.workspace()).panes().len(),
+            lock(&state.host.workspace()).panes().len(),
             1,
             "dialogue leaked a pane"
         );

@@ -63,12 +63,13 @@ use std::time::Duration;
 use pinion_core::GridBuffer;
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    CELLS_ACTION, FULL_TEXT_SLOT, KEY_ACTION, PANES_SLOT, RESIZE_ACTION, SPAWN_ACTION, TEXT_ACTION,
+    CELLS_ACTION, FULL_TEXT_SLOT, KEY_ACTION, LAYOUT_SLOT, PANES_SLOT, RESIZE_ACTION, SPAWN_ACTION,
+    TEXT_ACTION,
 };
 use sprag_host::{CellFrame, HostClient, PaneScrollFacts, mux_action_path, pane_input_path};
 use sprag_input::Modifiers;
 use sprag_rpc::{HostConn, runtime_path};
-use sprag_terminal::PaneId;
+use sprag_terminal::{LayoutTree, PaneId};
 
 /// How long to wait for the host socket to accept — covers the child's bind race.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -288,6 +289,23 @@ impl HostClient for WireHost {
         self.request("scene/invoke", params, "pane_cells")
             .and_then(|value| serde_json::from_value::<CellFrame>(value).ok())
             .map_or_else(|| self.live_cells(id), |frame| frame.cells)
+    }
+
+    /// One synchronous `scene/query` against the host's mux surface — NOT a per-frame
+    /// read: a client seeds its layout from this and re-reads it when the arrangement
+    /// changes, so the round-trip is off the paint hot path.
+    ///
+    /// An empty arrangement on any wire failure: the caller then renders nothing rather
+    /// than a wrong layout, and the next read self-heals (the same honest-swallow policy
+    /// every other method here holds).
+    fn layout(&self) -> LayoutTree {
+        self.request(
+            "scene/query",
+            json!({ "path": mux_action_path(LAYOUT_SLOT) }),
+            "layout",
+        )
+        .and_then(|value| serde_json::from_value::<LayoutTree>(value).ok())
+        .unwrap_or_default()
     }
 
     fn pane_scroll_facts(&self, id: PaneId) -> PaneScrollFacts {

@@ -3677,6 +3677,8 @@ name = "sprag-terminal"
 version = "0.0.1"
 dependencies = [
  "portable-pty",
+ "serde",
+ "serde_json",
  "sprag-vt",
 ]
 
