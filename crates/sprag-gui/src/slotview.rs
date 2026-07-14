@@ -32,21 +32,23 @@ use std::collections::HashSet;
 use pinion_core::GridBuffer;
 use sprag_host::{HostClient, PaneScrollFacts};
 use sprag_input::Modifiers;
-use sprag_terminal::{LayoutSnapshot, PaneId};
+use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId};
 
 use crate::terminal::MAX_PANES;
 
 /// The membership change one [`SlotView::reconcile`] applied: the display slots FREED
-/// (their pane left the host set) and the slots newly ADDED (a new host pane took them),
-/// both ascending. The Round 2b live-delta hooks the caller acts on — a freed slot gets
-/// its per-slot GUI state reset + its dock leaf/window evicted; an added slot gets a dock
-/// leaf. Boot yields only `added` (the contiguous `0..N`); a steady frame yields both
-/// empty (nothing changed).
+/// (their pane left the host set), ascending. The Round 2b live-delta hook the caller acts
+/// on — a freed slot gets its per-slot GUI state reset and its floating window dropped. A
+/// steady frame yields an empty one.
+///
+/// An ADDED slot needs no hook, which is why none is reported (R149): a new pane appears in
+/// the HOST's arrangement, so the client's projection admits its leaf on the same frame
+/// ([`crate::split::sync_layout`]). A freed slot still needs one because the state it must
+/// clear — scroll offset, preedit, its OS window — is this client's own, and the host knows
+/// nothing about it.
 pub(crate) struct SlotDelta {
     /// Slots whose pane vanished this reconcile (ascending).
     pub(crate) freed: Vec<usize>,
-    /// Slots a new host pane took this reconcile (ascending).
-    pub(crate) added: Vec<usize>,
 }
 
 /// The GUI's display-slot mapping over a host client (see the module docs). Consumers
@@ -75,11 +77,10 @@ impl SlotView {
 
     /// Re-map slots to the host's current pane set — the ONE place slot membership
     /// changes. Frees the slot of every mapped pane no longer present, allocates the
-    /// lowest free slot to each new host pane, and returns the [`SlotDelta`] (freed +
-    /// added slots) so the caller resets each freed slot's per-slot GUI state and updates
-    /// the dock leaves (the module-docs Round 2b hook; boot only adds). No IO: the host
-    /// owns the frame data, this owns only the mapping. `&self` (interior-mutable) so it
-    /// runs through the shared `Rc<TerminalView>`.
+    /// lowest free slot to each new host pane, and returns the [`SlotDelta`] so the caller
+    /// resets each freed slot's per-slot GUI state. No IO: the host owns the frame data,
+    /// this owns only the mapping. `&self` (interior-mutable) so it runs through the shared
+    /// `Rc<TerminalView>`.
     pub(crate) fn reconcile(&self) -> SlotDelta {
         let host_ids = self.host.pane_ids();
         let mut slots = self.slots.borrow_mut();
@@ -87,7 +88,6 @@ impl SlotView {
         for &slot in &freed {
             slots[slot] = None;
         }
-        let added: Vec<usize> = adds.iter().map(|&(slot, _)| slot).collect();
         for (slot, id) in adds {
             slots[slot] = Some(id);
         }
@@ -99,7 +99,7 @@ impl SlotView {
                 "host pane set exceeds the slot cap; extra panes not shown",
             );
         }
-        SlotDelta { freed, added }
+        SlotDelta { freed }
     }
 
     /// The occupied display slots, ascending — the set consumers ITERATE instead of
@@ -134,6 +134,27 @@ impl SlotView {
     /// same way a slot hole is omitted — never a wrong slot.
     pub(crate) fn slot_of(&self, pane: PaneId) -> Option<usize> {
         self.slots.borrow().iter().position(|id| *id == Some(pane))
+    }
+
+    /// The `PaneId` at display slot `slot`, if occupied — for UN-projecting this client's
+    /// dock surface back into the host's language (the inverse direction of
+    /// [`slot_of`](Self::slot_of)). `None` for a hole, which makes the surface
+    /// unrepresentable rather than silently mis-addressed.
+    pub(crate) fn pane_at(&self, slot: usize) -> Option<PaneId> {
+        self.id(slot)
+    }
+
+    /// Write this client's settled arrangement back, adopting the host's canonical answer —
+    /// the gesture-to-session-state path (see [`sprag_terminal::layout`]).
+    pub(crate) fn set_layout(&self, tree: LayoutWire) -> LayoutSnapshot {
+        self.host.set_layout(tree)
+    }
+
+    /// Take slot `slot`'s pane out of the tiling (`floating == true`) or put it back,
+    /// answering with the resulting arrangement. `None` for a hole — a slot with no pane has
+    /// nothing to float.
+    pub(crate) fn set_floating(&self, slot: usize, floating: bool) -> Option<LayoutSnapshot> {
+        self.id(slot).map(|id| self.host.set_floating(id, floating))
     }
 
     /// The host's LOGICAL arrangement of the current window's tiled panes, and the revision
@@ -341,7 +362,7 @@ mod tests {
         fn layout(&self) -> LayoutSnapshot {
             LayoutSnapshot::default()
         }
-        fn set_layout(&self, _tree: sprag_terminal::LayoutWire) -> LayoutSnapshot {
+        fn set_layout(&self, _tree: LayoutWire) -> LayoutSnapshot {
             LayoutSnapshot::default()
         }
         fn set_floating(&self, _id: PaneId, _floating: bool) -> LayoutSnapshot {
@@ -417,9 +438,8 @@ mod tests {
         // Boot mapped both host panes to contiguous slots 0, 1.
         assert_eq!(view.occupied_slots(), vec![0, 1]);
         assert!(view.is_pane_occupied(0) && view.is_pane_occupied(1));
-        // A steady reconcile (host set unchanged) frees + adds nothing.
-        let steady = view.reconcile();
-        assert!(steady.freed.is_empty() && steady.added.is_empty());
+        // A steady reconcile (host set unchanged) frees nothing.
+        assert!(view.reconcile().freed.is_empty());
     }
 
     #[test]
@@ -431,7 +451,11 @@ mod tests {
         *ids.borrow_mut() = vec![pid(10), pid(12)];
         let delta = view.reconcile();
         assert_eq!(delta.freed, vec![1], "slot 1 (pane 11) freed");
-        assert_eq!(delta.added, vec![1], "pane 12 took the reused slot 1");
+        assert_eq!(
+            view.pane_at(1),
+            Some(pid(12)),
+            "pane 12 took the reused slot 1"
+        );
         assert_eq!(view.occupied_slots(), vec![0, 1]);
     }
 
@@ -447,7 +471,6 @@ mod tests {
         *ids.borrow_mut() = vec![pid(10), pid(12)];
         let delta = view.reconcile();
         assert_eq!(delta.freed, vec![1]);
-        assert!(delta.added.is_empty());
         // Pane 12 KEPT slot 2 (it did not slide into the hole at 1); slot 1 is a hole.
         assert_eq!(view.occupied_slots(), vec![0, 2]);
         assert!(!view.is_pane_occupied(1));
@@ -466,9 +489,14 @@ mod tests {
         let delta = view.reconcile();
         assert_eq!(delta.freed, vec![1], "slot 1 (pane 11) freed");
         assert_eq!(
-            delta.added,
-            vec![1, 3],
-            "pane 20 reuses the hole at slot 1; pane 21 takes slot 3 (freed != added)"
+            view.pane_at(1),
+            Some(pid(20)),
+            "pane 20 reuses the hole at 1"
+        );
+        assert_eq!(
+            view.pane_at(3),
+            Some(pid(21)),
+            "pane 21 takes the next free slot"
         );
         assert_eq!(view.occupied_slots(), vec![0, 1, 2, 3]);
     }

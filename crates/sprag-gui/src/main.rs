@@ -78,12 +78,11 @@
 //! drag re-weights the flex layout -> the pane rects change -> the R1012 reflow
 //! Effects resize the PTYs (automatic; the `reflow` seam was built for it).
 //!
-//! This retires the former flat row/grid model (and the `SPRAG_GUI_LAYOUT` env). The dock
-//! model is SELECTABLE (R77, `SPRAG_GUI_DOCK_MODE`): in the DEFAULT `collapse` mode floating
-//! a pane REMOVES its leaf so siblings reclaim the space (tmux fill); in the opt-in
-//! `placeholder` mode the leaf STAYS and the view paints a placeholder holding its slot.
-//! Either way [`split`] / [`dock`] own the orthogonal authorities and the docked set is
-//! DERIVED (see [`dock::DockMode`]). The tree is also restructured by a reorganize gesture
+//! This retires the former flat row/grid model (and the `SPRAG_GUI_LAYOUT` env). Floating a
+//! pane asks the HOST to take it out of the tiling, so its leaf collapses and the siblings reclaim the
+//! space. [`split`] / [`dock`] own the two orthogonal authorities -- the host's arrangement
+//! (projected) and this client's OS windows -- and the docked set is DERIVED from the
+//! projected tree. The tree is also restructured by a reorganize gesture
 //! (drag-to-dock + zone-redock), which mints a fresh Split id,
 //! so the splitter set is a runtime-mutable projection of the topology —
 //! [`create_extra_externals`](TerminalViewer)
@@ -583,8 +582,9 @@ impl WidgetCore for TerminalViewer {
     ///    host-side — an operator/AI close in attach mode) evicts its dock leaf / floating
     ///    window ([`dock::evict_pane`]) and resets its per-slot GUI state
     ///    ([`scrollbar::reset_pane_scroll`] / [`input::reset_pane_preedit`]) so a slot
-    ///    reused by a later pane starts clean; an ADDED slot (a new host pane) admits a
-    ///    docked leaf ([`dock::admit_pane`]). Done FIRST so the scroll reconcile below,
+    ///    reused by a later pane starts clean. An ADDED slot needs no hook: a new pane is in
+    ///    the HOST's arrangement, which [`split::sync_layout`] projects on the same frame.
+    ///    Done FIRST so the layout sync, the scroll reconcile below,
     ///    `view`, and the post-view `create_extra_externals` (the dynamic external set —
     ///    scrollbars / dock panels / splitters) all project against the reconciled set on
     ///    this SAME frame. The wire poll thread only mutates the plain cache + repaints; it
@@ -602,20 +602,20 @@ impl WidgetCore for TerminalViewer {
     /// the R118 rail, so the primary repaints too).
     fn reconcile_frame() {
         let terminal = use_terminal();
-        // (1) Mirror the host's live pane set onto slots, then fold the delta.
+        // (1) Mirror the host's live pane set onto slots, then fold the delta. A slot that
+        // FREED drops its floating window and resets its per-slot reactive state; the dock
+        // LEAF is not touched here, because the host's arrangement is the one authority on
+        // which panes are tiled and (2) projects it.
         let delta = terminal.slots.reconcile();
-        // FREED before ADDED is load-bearing: when a close + open land on the SAME slot in
-        // one reconcile (a reused slot -> freed==added), the leaf `terminal-i` must be
-        // evicted before it is re-inserted, else `insert_leaf`/`split_leaf_into` hits
-        // `DuplicatePanelId` and the newcomer loses its leaf (guarded by the
-        // `reconcile_frame_reuses_a_slot_with_one_leaf` test).
         for slot in delta.freed {
-            dock::evict_pane(slot); // dock leaf + floating window (the topology authority)
+            dock::evict_pane(slot); // the floating window (pixels — this client's)
             reset_freed_slot(slot); // the per-slot reactive state (the ONE reset owner)
         }
-        for slot in delta.added {
-            dock::admit_pane(slot);
-        }
+        // (2) Keep the dock surface and the host's arrangement in step: project a change the
+        // host made (a spawn, a close, another client's gesture) and write back one this
+        // client's user just settled. Runs BEFORE the view, so the first paint already has
+        // the host's arrangement and no frame is painted from a stale tree.
+        split::sync_layout(&terminal.slots);
         // (2) Grow each occupied pane's scroll bound to its live scrollback depth.
         for i in terminal.slots.occupied_slots() {
             let scrollback_len = terminal.slots.pane_scroll_facts(i).scrollback_len;
@@ -784,12 +784,14 @@ impl WidgetCore for TerminalViewer {
             // the float window; a dead-zone `Float` leaves the pane floating (R1163b
             // preview==result). Only the main window bears the dock topology; a non-main
             // window gate above keeps a non-slot target out.
-            // Order matters: relocate-leaf-while-still-floating THEN drop-window, so the
-            // redock paints ONCE at the final slot (reversing it would flash the pane at its
-            // old slot first). The two `signal.set`s (topology, then windows) are distinct
-            // reactive txns but paint-atomic here — they run inside one `update` tick with no
-            // reconcile between; a future refactor splitting them across ticks would expose
-            // the transient (leaf relocated, still floating).
+            // Order (R149, reversed): REDOCK first — the host puts the pane back into the
+            // tiling (at the arrangement's end) and we adopt that — THEN relocate the
+            // now-present leaf to the resolved zone, which `sync_layout` writes back once the
+            // gesture settles. So the pane lands where it was DROPPED, not at its index home.
+            // The intermediate "tiled at the end" arrangement is never painted: both steps
+            // run inside one `update` tick with no reconcile between, so the redock still
+            // paints ONCE at the final slot. A future refactor splitting them across ticks
+            // would expose that transient.
             (TEAR_OFF_REDOCK_AT_EVENT, IntrospectValue::Json(v)) => {
                 if v.get("window").and_then(serde_json::Value::as_str) == Some(dock::MAIN_WINDOW_ID)
                     && let (Some(target), Some(x_rel), Some(y_rel)) = (
@@ -834,16 +836,16 @@ impl WidgetCore for TerminalViewer {
                     );
                     match resolution {
                         DropResolution::Dock { target, zone } => {
+                            dock::redock_pane(i);
                             let _ = reorganizer.dock_panel_at_resolved_zone(
                                 &split::panel_id(i),
                                 &target,
                                 zone,
                             );
-                            dock::redock_pane(i);
                         }
                         DropResolution::OuterDock { edge } => {
-                            let _ = reorganizer.dock_panel_outer(&split::panel_id(i), edge);
                             dock::redock_pane(i);
+                            let _ = reorganizer.dock_panel_outer(&split::panel_id(i), edge);
                         }
                         DropResolution::SnapBack { .. } => dock::redock_pane(i),
                         DropResolution::Float => {}
@@ -1157,7 +1159,7 @@ mod tests {
         let owner = Owner::new();
         let scene = owner.run(|| {
             crate::terminal::seed_terminal(host);
-            crate::dock::admit_pane(0); // give the pane its dock leaf
+            split::sync_layout(&use_terminal().slots); // project the host arrangement
             view::view_for_window(
                 dock::MAIN_WINDOW_ID,
                 ctxmenu::MenuState::default(),
@@ -1210,8 +1212,7 @@ mod tests {
         let owner = Owner::new();
         owner.run(|| {
             crate::terminal::seed_terminal(host);
-            dock::admit_pane(0);
-            dock::admit_pane(1);
+            split::sync_layout(&use_terminal().slots);
             dock::toggle_pane_floating(0); // tear pane 0 off into its own window
             dock::sync_floating_titles();
 
@@ -1265,8 +1266,7 @@ mod tests {
         let owner = Owner::new();
         owner.run(|| {
             crate::terminal::seed_terminal(host);
-            dock::admit_pane(0);
-            dock::admit_pane(1);
+            split::sync_layout(&use_terminal().slots);
 
             let main_title = || {
                 dock::use_windows_topology()
@@ -1890,51 +1890,6 @@ mod tests {
         );
     }
 
-    /// Undocking every pane in PLACEHOLDER mode: the topology is UNCHANGED (every leaf
-    /// survives), so `view_main` paints a placeholder per leaf — no pane grid, no panic.
-    /// (Collapse mode empties the tree to `None` and paints nothing — see
-    /// `collapse_float_removes_the_leaf_and_dock_restores_index_order` in split.rs.)
-    #[test]
-    fn undock_all_panes_paints_placeholders_not_grids() {
-        let mut core = ShellCore::<TerminalViewer>::new();
-        core.root_owner()
-            .run(|| dock::set_dock_mode(dock::DockMode::Placeholder));
-        let n = core
-            .root_owner()
-            .run(|| use_terminal().slots.occupied_slots().len());
-        core.root_owner().run(|| {
-            for i in 0..n {
-                dock::toggle_pane_floating(i);
-            }
-        });
-        // The topology still holds every leaf (no collapse).
-        assert_eq!(
-            core.root_owner().run(|| split::use_dock_topology()
-                .get()
-                .map(|t| t.panel_ids().len())),
-            Some(n),
-            "every leaf survives the float (placeholder model)"
-        );
-        let main = core.compute_paint_scene_for_window(dock::MAIN_WINDOW_ID, WINDOW_W, WINDOW_H);
-        for i in 0..n {
-            assert!(
-                !main.contains_tag(pane_tag(i)),
-                "pane {i}'s grid is floated, not in main"
-            );
-            assert!(
-                main.contains_tag(format!("{}_placeholder", split::panel_id(i)).as_str()),
-                "pane {i}'s leaf paints a placeholder holding its slot"
-            );
-        }
-    }
-
-    /// Drag tear-off (P2 / pinion R1081 §5.51): the `tear_off` intent a
-    /// [`DockPanelExternal`] emits on an escape-drop (header dragged out past every
-    /// drop target), routed by the REAL shell through `WidgetCore::update`, floats the
-    /// named pane — the SAME `dock::toggle_pane_floating` window/topology mutation the
-    /// Ctrl+Shift+Enter key path drives (P2 drag tear-off + P3 key undock = one SSOT).
-    /// Driven via `ShellCore::dispatch_intent` (the reducer arc), so it pins the WIRING
-    /// (shell routes the external's intent to sprag's reducer), not just the reducer body.
     #[test]
     fn tear_off_intent_floats_the_named_pane() {
         use std::borrow::Cow;
@@ -2170,11 +2125,11 @@ mod tests {
     /// Live redock / restore (R1094 / PINION-PR31): after a live-follow floated pane
     /// 1, the `tear_off_redock` intent (emitted on a same-window escape-return or a
     /// snap-back) docks it back through `WidgetCore::update` — the window is dropped and
-    /// the pane's membership restores. Runs in the DEFAULT collapse mode, where the leaf was
-    /// REMOVED on float and `redock_pane`→`insert_pane_leaf` re-inserts it index-relative (in
-    /// placeholder mode the leaf would never have left; the restored membership is the same
-    /// either way). Then a SECOND redock (the pane already docked) is a harmless no-op. Live
-    /// scoped tag + `Text` payload, asserting the membership both authorities expose.
+    /// the pane's membership restores. The leaf was removed on float (the host stopped tiling
+    /// it) and the redock asks the host to tile it again, so membership is restored by
+    /// PROJECTING the host's answer — not by a second builder here. Then a SECOND redock (the
+    /// pane already docked) is a harmless no-op. Live scoped tag + `Text` payload, asserting
+    /// the membership both authorities expose.
     #[test]
     fn tear_off_redock_intent_docks_the_floated_pane() {
         use std::borrow::Cow;
@@ -2228,118 +2183,26 @@ mod tests {
         );
     }
 
-    /// Cross-window zone-honoring redock — the REDUCER ARM (R1100 / PINION-PR33). This
-    /// guards the half sprag owns: GIVEN the `terminal-0.tear_off_redock_at` intent (the
-    /// one pinion's R1148→R1163b `over_window` composition is designed to fire when a
-    /// floater is dropped over another window's dock zone), the reducer relocates the leaf
-    /// via the `resolve_drop` SSOT and drops the float window. Float pane 0 (its leaf
-    /// SURVIVES — placeholder mode, set below — which is what lets the reorganizer relocate
-    /// it), dispatch the exact live-scoped intent + Json (over terminal-1's RIGHT edge), and
-    /// assert the pane re-tiles AT the drop zone (`[terminal-1, terminal-0]`), the reverse of
-    /// boot home. R67/R68: the synthetic input matches the live wire (scoped tag + exact
-    /// payload) and the assertion is the real topology relocation, not "an intent ran".
+    /// Cross-window zone-honoring redock — the REDUCER ARM (R1100 / PINION-PR33), and the
+    /// claim that let R149 delete the placeholder model.
+    ///
+    /// GIVEN the `terminal-0.tear_off_redock_at` intent (what pinion's R1148->R1163b
+    /// `over_window` composition fires when a floater is dropped over another window's dock
+    /// zone), the reducer must land the pane AT THE DROP ZONE — `[terminal-1, terminal-0]`,
+    /// the reverse of boot home — not at its index home. Zone-honoring here was once
+    /// placeholder mode's whole reason to exist; it now works with the leaf REMOVED on float,
+    /// because the reducer redocks first (the host tiles the pane again) and then relocates
+    /// the leaf, which `sync_layout` writes back. pinion R1173 also made
+    /// `dock_panel_at_resolved_zone` total over an absent leaf.
     ///
     /// SCOPE (honest, avoiding the R69/R83 overclaim): this does NOT prove the LIVE gesture
-    /// "drag a settled floater onto main → it redocks" end to end — whether the shell FIRES
-    /// this intent with `window:"main"` on that gesture is pinion's over_window composition
-    /// (delivered R1163b; observed firing cross-window in the R91 diag, but this exact
-    /// floater→main direction is not yet clean-live-verified here). This guard covers the
-    /// consumption; the live firing is a separate check owed a real mouse.
-    #[test]
-    fn tear_off_redock_at_relocates_the_leaf_to_the_dropped_zone() {
-        use std::borrow::Cow;
-        let mut core = ShellCore::<TerminalViewer>::new();
-        // Placeholder mode (the surviving leaf is what resolve_drop relocates). Collapse
-        // ALSO zone-honors now via R1173 — see the sibling
-        // `tear_off_redock_at_in_collapse_honors_the_zone_cleanly`; this test isolates the
-        // placeholder path where the leaf never left.
-        core.root_owner()
-            .run(|| dock::set_dock_mode(dock::DockMode::Placeholder));
-        let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
-        core.finalize_frame(scene);
-
-        // Boot order is [terminal-0, terminal-1].
-        assert_eq!(
-            core.root_owner().run(|| split::use_dock_topology()
-                .get()
-                .expect("boots docked")
-                .panel_ids()
-                .iter()
-                .map(|s| s.to_string())
-                .collect::<Vec<String>>()),
-            vec![split::panel_id(0), split::panel_id(1)],
-        );
-
-        // Float pane 0 (window appears; its leaf STAYS in the tree, painting a placeholder).
-        core.root_owner().run(|| dock::toggle_pane_floating(0));
-        assert_eq!(
-            core.root_owner()
-                .run(|| dock::use_windows_topology().get().len()),
-            2,
-            "pane 0 floated (precondition)"
-        );
-
-        // The cross-window drop the shell resolves + fires: terminal-0 released over
-        // terminal-1's RIGHT edge (x_rel high) in the MAIN window.
-        core.dispatch_intent(&Intent {
-            tag: Cow::Owned(format!(
-                "{}.{}",
-                split::panel_id(0),
-                TEAR_OFF_REDOCK_AT_EVENT
-            )),
-            payload: IntrospectValue::Json(serde_json::json!({
-                "panel": split::panel_id(0),
-                "window": dock::MAIN_WINDOW_ID,
-                "target": split::panel_id(1),
-                "x_rel": 0.85,
-                "y_rel": 0.5,
-            })),
-        });
-
-        // The float window is gone (de-floated) ...
-        assert_eq!(
-            core.root_owner()
-                .run(|| dock::use_windows_topology().get().len()),
-            1,
-            "the floating window dropped on redock"
-        );
-        // ... and pane 0 re-tiled AT THE ZONE — to the RIGHT of pane 1, the reverse of its
-        // boot home order. In placeholder mode the surviving leaf is what resolve_drop
-        // relocates (collapse reaches the same zone via R1173's total insert).
-        assert_eq!(
-            core.root_owner().run(|| split::use_dock_topology()
-                .get()
-                .expect("docked")
-                .panel_ids()
-                .iter()
-                .map(|s| s.to_string())
-                .collect::<Vec<String>>()),
-            vec![split::panel_id(1), split::panel_id(0)],
-            "redock-at-zone placed pane 0 to the right of pane 1, not its index home"
-        );
-        assert_eq!(
-            core.root_owner().run(split::docked_pane_indices),
-            vec![1, 0],
-            "both panes docked again, in the dropped visual order"
-        );
-    }
-
-    /// R92: the SAME cross-window `tear_off_redock_at`, but in the DEFAULT collapse mode —
-    /// the path most users hit, and the one the placeholder guard above does NOT cover.
-    /// Writing this guard corrected a stale belief: pinion R1173's `dock_panel_at_resolved_zone`
-    /// is TOTAL over an absent source leaf (it materializes the collapse-removed leaf directly
-    /// at the resolved zone), so collapse now ALSO honors the drop zone — landing pane 0 at
-    /// the dropped position `[terminal-1, terminal-0]`, NOT its index home. (The PINION-PR34
-    /// fix effectively delivered inside R1173; the earlier "collapse lands index-relative"
-    /// docs were stale.) Pins: de-floats (one window), zone-honored order, a CLEAN tree (no
-    /// duplicate leaf despite `redock_pane`'s collapse leaf-op running after the zone insert),
-    /// no panic.
+    /// "drag a settled floater onto main -> it redocks" end to end — whether the shell FIRES
+    /// this intent on that gesture is pinion's `over_window` composition. This guard covers
+    /// sprag's half, the consumption; the live firing is a separate check owed a real mouse.
     #[test]
     fn tear_off_redock_at_in_collapse_honors_the_zone_cleanly() {
         use std::borrow::Cow;
         let mut core = ShellCore::<TerminalViewer>::new();
-        core.root_owner()
-            .run(|| dock::set_dock_mode(dock::DockMode::Collapse));
         let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
         core.finalize_frame(scene);
 
@@ -2597,9 +2460,12 @@ mod tests {
     /// without a live cross-window drag.
     #[test]
     fn dock_drop_preview_hook_previews_for_dock_zones_none_for_dead_zones() {
-        // The hook resolves through `use_dock_reorganizer` (needs a booted topology owner).
+        // The hook resolves through `use_dock_reorganizer`, which classifies against the
+        // LIVE topology — so project the host's arrangement first, as the pre-view reconcile
+        // does each frame (an unprojected surface has no panels to drop onto).
         let core = ShellCore::<TerminalViewer>::new();
         core.root_owner().run(|| {
+            split::sync_layout(&use_terminal().slots);
             let rect = pinion_core::scene::Rect::new(0, 0, 800, 600);
             let preview = |target: &str, x: f32, y: f32| {
                 <TerminalViewer as WidgetView>::dock_drop_preview(
@@ -2646,6 +2512,7 @@ mod tests {
         use pinion_widget_paint::dock::DockReorganizeIntent;
         let core = ShellCore::<TerminalViewer>::new();
         core.root_owner().run(|| {
+            split::sync_layout(&use_terminal().slots); // the pre-view projection
             assert_eq!(
                 split::docked_pane_indices(),
                 vec![0, 1],

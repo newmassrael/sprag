@@ -20,42 +20,42 @@
 //! across mutations (a ratio follows its boundary, never reshuffles) — is now
 //! reachable, and is the foundation drag-to-dock (P2) and tear-off (P3) build on.
 //!
-//! ## Two selectable dock models (R77): collapse (default) | placeholder
+//! ## The tree is a PROJECTION of the host's arrangement, not a fork (R149)
 //!
-//! [`use_dock_topology`] holds `Signal<Option<DockTopology>>` — the tree of the panes'
-//! leaves, PROJECTED from the host's arrangement ([`project_layout`]). How a FLOAT affects
-//! this tree is chosen by [`DockMode`](crate::dock::DockMode) (`SPRAG_GUI_DOCK_MODE`):
+//! [`use_dock_topology`] holds `Signal<Option<DockTopology>>` — the tiled panes' leaves,
+//! PROJECTED from the host's arrangement ([`project_layout`]) and written BACK to it when a
+//! gesture settles ([`sync_layout`]). The host is the authority: it owns which panes are
+//! tiled, how they are split, at what share, and which are floated out of the tiling — so
+//! the arrangement outlives this client (see [`sprag_terminal::layout`]). This client owns
+//! how that becomes pixels, and resolving the gesture that PROPOSES the next arrangement.
 //!
-//!  - **`Collapse` (DEFAULT, R60):** floating REMOVES the pane's leaf ([`remove_pane_leaf`]) so
-//!    the remaining panes reclaim the space — the terminal-multiplexer fill (tmux/zellij).
-//!    Docking back re-inserts it index-relative ([`insert_pane_leaf`]). The windows-signal and
-//!    this tree CO-MUTATE (the tree tracks float state); `None` = all panes floated.
-//!  - **`Placeholder` (opt-in, R72):** the floated pane's leaf STAYS; the view paints a
-//!    [`view_floating_placeholder`](pinion_widget_paint::dock::view_floating_placeholder)
-//!    holding its slot. The windows-signal ([`crate::dock::use_windows_topology`]) is then
-//!    the SOLE float authority, ORTHOGONAL to this tree (never co-mutated by float/dock).
-//!    Mirrors pinion's `hello-dock-panels-editor` (one DockTopology, leaves never removed).
+//! Floating removes the pane's leaf, so the remaining panes reclaim the space — the
+//! terminal-multiplexer fill (tmux/zellij). That removal is the HOST's (`Window::set_floating`
+//! and its reconcile over `panes − floating`); this client asks for it and re-projects the
+//! answer. `None` = no pane is tiled (every one floated, or none exists).
 //!
-//! [`docked_pane_indices`] works for BOTH: it DERIVES the docked set as the tree's leaves
-//! filtered by `!`[`is_pane_floating`](crate::dock::is_pane_floating). In placeholder mode
-//! the filter is load-bearing (it drops the still-present floated leaves — R61's deferred
-//! "membership is derived, not a third stored copy" cleanup); in collapse mode the floated
-//! panes aren't leaves anyway, so the filter is redundant-but-correct. The tree is also
-//! restructured by reorganize gestures (drag-to-dock + zone-redock, via
-//! [`use_dock_reorganizer`]'s [`DockReorganizer`]) in both modes.
+//! [`docked_pane_indices`] DERIVES the docked set as the tree's leaves — with no float
+//! filter, because a floated pane HAS no leaf. The tree is restructured by reorganize
+//! gestures (drag-to-dock + zone-redock, via [`use_dock_reorganizer`]'s [`DockReorganizer`]);
+//! [`sync_layout`] writes the settled result back and adopts the canonical answer.
 //!
-//! ## Why both models exist (R60 → R72 → R77 — keep the rationale of each)
+//! ## Why the dock-model choice is gone (R60 → R72 → R77 → R149)
 //!
-//! R60 chose **collapse** for the TWM fill (siblings reclaim a torn-off pane's space).
-//! R72 reversed to **placeholder** (the slot is held) because it makes zone-honoring
-//! cross-window redock trivially correct — the surviving leaf is what the reducer's
-//! `resolve_drop` SSOT relocates to the drop zone (mooting PINION-PR34) —
-//! and mirrors pinion's IDE-dock reference (VS Code dragging a panel out). Live-testing,
-//! the held slot felt un-terminal-like (the user expected the fill), so **R77 made both
-//! selectable and restored collapse as the DEFAULT.** The trade is inherent: collapse =
-//! siblings reclaim, but cross-window redock lands index-relative (the leaf is gone, can't
-//! be zone-placed); placeholder = zone-honoring redock, but the slot is held. Two
-//! reasonable desktop semantics; the user picks per run.
+//! R77 made two models selectable (`SPRAG_GUI_DOCK_MODE`): **collapse** (the default —
+//! siblings reclaim a torn-off pane's space) and **placeholder** (the floated pane's leaf
+//! stays, painting a placeholder that holds its slot). Placeholder existed for ONE reason:
+//! it made zone-honoring cross-window redock trivially correct, since a SURVIVING leaf is
+//! what the reducer's `resolve_drop` SSOT relocates to the drop zone (PINION-PR34). Both
+//! halves of that rationale are now gone. pinion R1173 made `dock_panel_at_resolved_zone`
+//! total over an ABSENT source leaf, so collapse zone-honors too; and R149 made the host the
+//! arrangement authority, which settles the question outright — a floated pane is not tiled,
+//! so there is no leaf to hold a slot. Keeping placeholder would mean the host's tree
+//! carrying panes it does not tile and this client filtering them back out: a second
+//! authority diverging from the first, the exact pattern R124/R148 retired. So the mode is
+//! deleted, collapse (the terminal idiom the user chose as default) is the only model, and a
+//! redock lands where it was DROPPED because this client resolves the drop and writes the
+//! resulting tree.
+//!
 //! ## Identity-keyed ids
 //!
 //! Each leaf carries a stable [`panel_id`] (`terminal-{i}`, mapping 1:1 to the tile
@@ -69,14 +69,15 @@
 //! per-pane [`pane_tag`](crate::terminal::pane_tag) (`sprag_gui.pane.{i}`) the grid
 //! inside each leaf carries.
 
-use crate::terminal::{MAX_PANES, use_terminal};
+use crate::terminal::MAX_PANES;
 use pinion_core::reactive::{Owner, Signal};
-use pinion_widget_paint::dock::{
-    DockDropPreview, DockNode, DockReorganizer, DockSplitPosition, DockTopology, TopologyError,
-};
+use pinion_widget_paint::dock::{DockDropPreview, DockNode, DockReorganizer, DockTopology};
 use pinion_widget_paint::splitter::SplitterOrientation;
-use sprag_terminal::{LayoutNode, LayoutTree, PaneId, SplitDir, SplitId};
+use sprag_terminal::{
+    LayoutNode, LayoutNodeWire, LayoutSnapshot, LayoutTree, LayoutWire, PaneId, SplitDir, SplitId,
+};
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 /// The `panel_id` prefix — a leaf's stable id is `terminal-{i}` for tile index `i`.
@@ -124,10 +125,6 @@ pub(crate) fn pane_index_of_panel(panel_id: &str) -> Option<usize> {
 pub(crate) fn split_tag(id: SplitId) -> String {
     format!("sprag_gui.split.{}", id.0)
 }
-
-/// The default divider ratio — even (left/top share `0.5`), matching the former
-/// even tiling so the boot layout is unchanged.
-const SPLIT_RATIO_DEFAULT: f32 = 0.5;
 
 /// Split `id`'s ratio `Signal` (left/top share, `[0, 1]`), an `Owner::cache`-backed
 /// `Rc<Signal<f32>>` SHARED between the read side (the view's `view_dock_surface_chrome`
@@ -203,61 +200,217 @@ fn project_node(node: &LayoutNode, slot_of: &impl Fn(PaneId) -> Option<usize>) -
     }
 }
 
-/// `Owner::cache` key for the held dock-tree topology Signal.
-const TOPOLOGY_KEY: &str = "sprag_gui.dock_topology";
-
-/// The dock-tree topology Signal — the layout of ALL panes' leaves (`None` = the
-/// zero-pane edge only). Cached in the root owner (the view fn, the splitter-External
-/// registration, and the reorganizer resolve the same shared slot), seeded once with
-/// the HOST's arrangement ([`project_layout`], which names panes by identity and maps
-/// them onto this client's slots). **v1 bound:** this SEEDS once and is then mutated
-/// CLIENT-side (float / reorganize / ratio / admit) with no write-back, so from frame two
-/// this Signal — not the host — is the arrangement authority, and a reattach would not
-/// restore the user's layout. See [`sprag_terminal::layout`]. Float/dock
-/// do NOT mutate it (placeholder model — see the module docs); only a reorganize
-/// gesture ([`use_dock_reorganizer`]) restructures it. The shell's `view` subscribes
-/// it (a `set` repaints) and `reconcile_externals` re-walks it to register a
-/// reorganize-minted Split's drag External (pinion R689).
-pub(crate) fn use_dock_topology() -> Rc<Signal<Option<DockTopology>>> {
-    let owner = Owner::current().expect("use_dock_topology() requires an active Owner scope");
-    // The boot tree comes from the HOST's arrangement (its truth): in attach mode the GUI
-    // ADOPTS the host's live set, not the env `SPRAG_GUI_PANES` request (they coincide in
-    // spawn mode). Resolve `use_terminal` (a cache dep) OUTSIDE the factory — an
-    // `Owner::cache` factory must not nest another cache resolution — but DEFER the
-    // `slots.layout()` read INTO the once-fired factory, so the per-frame
-    // `use_dock_topology()` call pays only the cache lookup. NB under the prod `WireHost`
-    // that deferred read is a BLOCKING socket round-trip, paid once on the first paint.
-    let terminal = use_terminal();
-    owner.cache(TOPOLOGY_KEY, move || {
-        let slots = &terminal.slots;
-        Signal::new(project_layout(&seed_layout(slots), &|pane| {
-            slots.slot_of(pane)
-        }))
-    })
+/// The host's split id behind a [`split_tag`] string, or `None` for a divider this client
+/// minted itself — the inverse of [`split_tag`], and the hinge of the write path.
+///
+/// A gesture is resolved on THIS client's surface (that is what makes it feel instant), and
+/// pinion mints its own id for a divider a drop creates (`reorg-split-{n}`). Such an id has
+/// no [`SplitId`] and cannot: an id must be unique and never reused across the arrangement's
+/// whole life, which only its owner can promise. So an unrecognised tag maps to `None` and
+/// the HOST names it on the write ([`LayoutTree::set_from_wire`]), after which this client
+/// re-projects and the divider carries a durable identity from then on.
+fn split_id_of_tag(tag: &str) -> Option<SplitId> {
+    tag.strip_prefix("sprag_gui.split.")?
+        .parse()
+        .ok()
+        .map(SplitId)
 }
 
-/// The host's arrangement, installed into a [`LayoutTree`] — the ONE place a served
-/// arrangement is adopted.
+/// Un-project this client's dock surface back into the host's language — the inverse of
+/// [`project_layout`], and what turns a settled gesture into session state.
 ///
-/// Installing rather than reading the wire form directly does two things. It VALIDATES what
-/// the host sent (a client is no more entitled to render a malformed arrangement than the
-/// host is to store one), and it yields definite divider ids, which is what the per-split
-/// ratio state is keyed on. A rejected arrangement is traced and yields the zero-pane tree
-/// — there is nothing honest to draw from a tree we could not make sense of.
+/// `None` means the surface is not representable as a host arrangement, in which case the
+/// caller must NOT write (silently writing a lossy tree would let the host store something
+/// the user never asked for). The only such shape is a pinion `Tabs` well, which cannot
+/// occur — [`use_dock_reorganizer`] runs `with_tabbing(false)`, so no path mints one — but
+/// it is a real variant of pinion's type, so it is refused honestly rather than assumed away.
 ///
-/// No local fallback: a wire failure can no longer masquerade as "this window is empty",
-/// because the client BOOTS from a real read (a failure there fails the attach outright) and
-/// the mirror keeps the last-known arrangement across a hiccup.
-fn seed_layout(slots: &crate::slotview::SlotView) -> LayoutTree {
+/// The ratio is read from the LIVE per-split signal ([`use_split_ratio`]), NOT from the
+/// node: pinion's `DockNode::Split.ratio` is only the value the divider OPENED at, while the
+/// user's drag lives in the signal. Reading the node instead would persist an arrangement
+/// the user can see is not the one on their screen.
+fn unproject_layout(
+    topology: Option<&DockTopology>,
+    pane_at: &impl Fn(usize) -> Option<PaneId>,
+) -> Option<LayoutWire> {
+    match topology {
+        // No tiled panes is a legal arrangement, not a failure to represent one.
+        None => Some(LayoutWire { root: None }),
+        Some(topology) => Some(LayoutWire {
+            root: Some(unproject_node(topology.root(), pane_at)?),
+        }),
+    }
+}
+
+/// Translate one pinion [`DockNode`] back into a host [`LayoutNodeWire`] (see
+/// [`unproject_layout`]). `None` = unrepresentable.
+fn unproject_node(
+    node: &DockNode,
+    pane_at: &impl Fn(usize) -> Option<PaneId>,
+) -> Option<LayoutNodeWire> {
+    match node {
+        DockNode::Leaf { panel_id } => pane_index_of_panel(panel_id)
+            .and_then(pane_at)
+            .map(LayoutNodeWire::Leaf),
+        DockNode::Split {
+            id,
+            orientation,
+            ratio,
+            first,
+            second,
+        } => Some(LayoutNodeWire::Split {
+            id: split_id_of_tag(id),
+            dir: match orientation {
+                SplitterOrientation::Horizontal => SplitDir::Horizontal,
+                SplitterOrientation::Vertical => SplitDir::Vertical,
+            },
+            ratio: use_split_ratio(id.to_string(), *ratio).get(),
+            first: Box::new(unproject_node(first, pane_at)?),
+            second: Box::new(unproject_node(second, pane_at)?),
+        }),
+        // A tab well has no host equivalent, and tabbing is off on this surface — so this
+        // is unreachable rather than unhandled. Refuse the write instead of dropping panes.
+        other => {
+            tracing::warn!(
+                target: "sprag_gui::split",
+                ?other,
+                "dock surface holds a node the host arrangement cannot express; not writing",
+            );
+            None
+        }
+    }
+}
+
+/// What this client last learned from the host, plus the settle detector — the state
+/// [`sync_layout`] needs to tell "the user is still dragging" from "the arrangement moved".
+#[derive(Default)]
+struct LayoutSync {
+    /// The arrangement the host last told us it holds, at the revision it was at. A local
+    /// surface that differs from this is an un-written gesture.
+    seen: LayoutSnapshot,
+    /// The PREVIOUS frame's un-projection. A gesture in flight changes every frame; one that
+    /// matches the last frame has stopped, and only then is it worth writing.
+    settling: Option<LayoutWire>,
+}
+
+/// `Owner::cache` key for the client's record of the host's arrangement.
+const LAYOUT_SYNC_KEY: &str = "sprag_gui.layout_sync";
+
+/// The shared [`LayoutSync`] state (root-owner cached, UI-thread only).
+fn use_layout_sync() -> Rc<RefCell<LayoutSync>> {
+    Owner::current()
+        .expect("use_layout_sync() requires an active Owner scope")
+        .cache(LAYOUT_SYNC_KEY, || RefCell::new(LayoutSync::default()))
+}
+
+/// Adopt `snapshot` as this client's projection — the ONE place the host's arrangement
+/// becomes the dock surface.
+///
+/// Also FORCES each divider's live ratio to the adopted share. That is load-bearing:
+/// [`use_split_ratio`] memoises per id, so a signal that already exists ignores the seed —
+/// without this, an arrangement changed host-side would re-project every divider's position
+/// except the one thing the user most directly set. A divider whose id the host has just
+/// minted has no signal yet and is simply created at the right value.
+pub(crate) fn adopt_layout(snapshot: &LayoutSnapshot, slots: &crate::slotview::SlotView) {
     let mut tree = LayoutTree::new();
-    if let Err(error) = tree.set_from_wire(slots.layout().tree) {
+    if let Err(error) = tree.set_from_wire(snapshot.tree.clone()) {
+        // The host validates every write, so this means the two ends disagree on the shape.
+        // Keep what is on screen rather than blanking it on a fact we cannot parse.
         tracing::error!(
             target: "sprag_gui::split",
             %error,
-            "the host served an arrangement this client cannot render",
+            "the host served an arrangement this client cannot render; keeping the current one",
         );
+        return;
     }
-    tree
+    if let Some(root) = tree.root() {
+        force_ratios(root);
+    }
+    use_dock_topology().set(project_layout(&tree, &|pane| slots.slot_of(pane)));
+    let sync = use_layout_sync();
+    let mut sync = sync.borrow_mut();
+    sync.seen = snapshot.clone();
+    sync.settling = None;
+}
+
+/// Drive each divider's live ratio signal to the arrangement's share (see [`adopt_layout`]).
+fn force_ratios(node: &LayoutNode) {
+    if let LayoutNode::Split {
+        id,
+        ratio,
+        first,
+        second,
+        ..
+    } = node
+    {
+        use_split_ratio(split_tag(*id), *ratio).set(*ratio);
+        force_ratios(first);
+        force_ratios(second);
+    }
+}
+
+/// Keep this client's dock surface and the host's arrangement in step — the write half of
+/// the arc, run once per frame from the pre-view reconcile hook.
+///
+/// Two directions, and never both at once:
+///
+/// * the HOST moved (another attached client's gesture, a plugin's spawn, a float): its
+///   revision differs from what we last saw, so we re-project. The host wins outright — it
+///   is the authority, and a client that argued would fork the tree, which is precisely what
+///   R148 found and this retires.
+/// * WE moved (the user dragged a divider or re-docked a pane): the surface no longer
+///   matches what the host holds, so we write it — but only once it has STOPPED changing.
+///   A drag moves every frame; writing each one would put a synchronous socket round trip on
+///   the UI thread sixty times a second to record intermediate states nobody asked to keep.
+///   Waiting for one still frame costs a frame of latency on a gesture that has already
+///   ended, and the user cannot perceive it.
+///
+/// The write's ANSWER is adopted directly (it carries the canonical ids), so a gesture costs
+/// exactly one round trip and converges: re-projecting it yields the same surface, whose
+/// un-projection then equals what the host holds, so nothing is written again.
+pub(crate) fn sync_layout(slots: &crate::slotview::SlotView) {
+    let host = slots.layout();
+    if host.revision != use_layout_sync().borrow().seen.revision {
+        adopt_layout(&host, slots);
+        return;
+    }
+
+    let Some(current) = unproject_layout(use_dock_topology().get().as_ref(), &|slot| {
+        slots.pane_at(slot)
+    }) else {
+        return; // unrepresentable — never write a lossy arrangement
+    };
+    if current == use_layout_sync().borrow().seen.tree {
+        use_layout_sync().borrow_mut().settling = None;
+        return; // the surface already IS the host's arrangement
+    }
+    if use_layout_sync().borrow().settling.as_ref() != Some(&current) {
+        use_layout_sync().borrow_mut().settling = Some(current);
+        return; // still moving — let the gesture finish
+    }
+    adopt_layout(&slots.set_layout(current), slots);
+}
+
+/// `Owner::cache` key for the held dock-tree topology Signal.
+const TOPOLOGY_KEY: &str = "sprag_gui.dock_topology";
+
+/// The dock-tree topology Signal — the tiled panes' leaves (`None` = nothing tiled).
+/// Cached in the root owner, so the view fn, the splitter-External registration, and the
+/// reorganizer all resolve the same shared slot. The shell's `view` subscribes it (a `set`
+/// repaints) and `reconcile_externals` re-walks it to register a reorganize-minted Split's
+/// drag External (pinion R689).
+///
+/// Starts EMPTY and is filled by [`adopt_layout`] on the first [`sync_layout`], which runs
+/// in the pre-view hook — so the first paint already has the host's arrangement, and there
+/// is exactly one place the tree is populated. (It was once seeded here, in a factory that
+/// fired once and then forked from the host forever: the R148 finding this retires.)
+///
+/// A gesture mutates it directly — that is what makes the drag feel instant — and
+/// [`sync_layout`] writes the settled result back to the host, which owns it.
+pub(crate) fn use_dock_topology() -> Rc<Signal<Option<DockTopology>>> {
+    Owner::current()
+        .expect("use_dock_topology() requires an active Owner scope")
+        .cache(TOPOLOGY_KEY, || Signal::new(None))
 }
 
 /// `Owner::cache` key for the shared drag-to-dock reorganize coordinator.
@@ -306,18 +459,16 @@ pub(crate) fn use_drop_preview() -> Rc<Signal<Option<DockDropPreview>>> {
         .cache(DROP_PREVIEW_KEY, || Signal::new(None))
 }
 
-/// The tile indices of the panes currently DOCKED — the dock-tree's leaves (in
-/// left-to-right paint order) MINUS those whose pane is floating
-/// ([`crate::dock::is_pane_floating`]), or empty at the zero-pane edge. The SINGLE
-/// authority for "which panes does the main window show" — read by BOTH the paint
+/// The tile indices of the panes currently DOCKED — the dock-tree's leaves, in
+/// left-to-right paint order, or empty when nothing is tiled. The SINGLE authority for
+/// "which panes does the main window show" — read by BOTH the paint
 /// ([`crate::view::view_for_window`]) and the per-window a11y projection
 /// ([`crate::a11y::access_nodes_for_window`]), so they can never disagree.
 ///
-/// In the placeholder model (R72) the tree holds EVERY pane's leaf always; a floated
-/// pane's leaf stays (painting a placeholder), so docked membership is DERIVED here by
-/// filtering the leaf set by the windows-signal (the sole floating authority). This is
-/// R61's deferred "membership is a projection of one authority" cleanup: the tree is no
-/// longer co-mutated to track float state — it is filtered.
+/// No float filter: the tree projects the host's arrangement, which tiles only the panes
+/// that are not floated, so a floated pane HAS no leaf here. (The filter existed for the
+/// retired placeholder model, where the tree held every pane's leaf and membership had to be
+/// derived by subtracting the floaters — see the module docs.)
 pub(crate) fn docked_pane_indices() -> Vec<usize> {
     use_dock_topology()
         .get()
@@ -325,7 +476,6 @@ pub(crate) fn docked_pane_indices() -> Vec<usize> {
             t.panel_ids()
                 .iter()
                 .filter_map(|p| pane_index_of_panel(p))
-                .filter(|&i| !crate::dock::is_pane_floating(i))
                 .collect()
         })
         .unwrap_or_default()
@@ -343,130 +493,6 @@ fn boot_tree(slots: &[usize]) -> Option<DockTopology> {
     let mut tree = LayoutTree::new();
     tree.reconcile(&slots.iter().map(|&s| PaneId(s as u64)).collect::<Vec<_>>());
     project_layout(&tree, &|pane| Some(pane.0 as usize))
-}
-
-// ── Collapse-model primitives (R60, restored R77) ───────────────────────────────
-// These mutate the topology and are called by [`crate::dock`] ONLY in
-// [`DockMode::Collapse`](crate::dock::DockMode) (the default). In
-// [`DockMode::Placeholder`] the topology is static under float/dock (the leaf stays,
-// painting a placeholder) and these are never called — see the module docs.
-
-/// `Owner::cache` key for the dock-back Split-id sequence counter.
-const SPLIT_SEQ_KEY: &str = "sprag_gui.dock_split_seq";
-
-/// Mint a fresh, never-reused Split id for a collapse-mode dock-back insert
-/// (`sprag_gui.split.dock.{seq}`). A monotonic `Owner::cache`-backed counter, so a
-/// re-inserted divider gets a unique id (its ratio starts at the default — a
-/// dock/undock cycle does not remember the old boundary's ratio, a v1 bound). Distinct
-/// from the host-projected ids ([`split_tag`]) so the two spaces never collide.
-fn next_dock_split_id() -> String {
-    let seq = Owner::current()
-        .expect("next_dock_split_id() requires an active Owner scope")
-        .cache(SPLIT_SEQ_KEY, || Signal::new(0_u64));
-    let n = seq.get();
-    seq.set(n + 1);
-    format!("sprag_gui.split.dock.{n}")
-}
-
-/// Remove pane `index`'s leaf from the dock tree — the mode-neutral leaf-removal SSOT.
-/// The sibling sub-tree promotes into the parent Split's place so the remaining panes
-/// reclaim the space; removing the SOLE docked leaf empties the tree (`None`); removing a
-/// leaf already absent is a no-op. Called directly by both leaf-removal entry points:
-/// `crate::dock::push_float` (a collapse-mode float — mode-gated in that caller) and
-/// [`crate::dock::evict_pane`] (a Round 2b pane CLOSE — unconditional of dock mode, since a
-/// gone pane can hold no placeholder). A vanished pane's leaf is removed IDENTICALLY to a
-/// collapse-float, so this stays mode-neutral and the mode decision lives in the caller.
-pub(crate) fn remove_pane_leaf(index: usize) {
-    let topo = use_dock_topology();
-    let Some(current) = topo.get() else {
-        return; // nothing docked
-    };
-    match current.remove_leaf(&panel_id(index)) {
-        Ok(next) => topo.set(Some(next)),
-        // RootRemoval = pane `index` was the sole docked leaf -> no docked panes left.
-        Err(TopologyError::RootRemoval) => topo.set(None),
-        // PanelNotFound (already floated / already gone) — leave the tree unchanged.
-        Err(_) => {}
-    }
-}
-
-/// Insert pane `index`'s leaf into a dock `tree` in left-to-right INDEX order.
-///
-/// **SSOT DEBT (regressed here, was R124-clean):** this is now the SECOND implementation
-/// of one policy ("append a leaf, right-nested Horizontal, 0.5 default"). The host's
-/// [`LayoutTree`] has its own — `LayoutNode::append` (descends the right spine) vs this
-/// (splits the first greater index) — with its own `RATIO_DEFAULT` beside this module's
-/// [`SPLIT_RATIO_DEFAULT`]. They agree on a contiguous set only by coincidence of shape,
-/// and they already DISAGREE on reuse: a reused slot lands index-relative here but on the
-/// right spine there. R124 unified the two builders that existed then; moving the
-/// arrangement host-side reintroduced the split across a crate boundary. The fix is not
-/// another unification here — it is the client→host write path, after which the host is
-/// the only builder and this, [`SPLIT_RATIO_DEFAULT`] and [`next_dock_split_id`] are
-/// deleted. Splits the smallest-indexed docked pane whose index exceeds
-/// `index` (the new leaf takes the `First`/left slot), or appends after the last docked pane
-/// (`Second`/right) when `index` is the largest; an empty `tree` becomes the single leaf.
-/// `mint_id` supplies the new divider's id and is invoked ONLY when a divider is actually
-/// created (never for the single-leaf case) — so the runtime sequence counter is not
-/// consumed at boot. On the defensive `split_leaf_into` error (`DuplicatePanelId` — the
-/// boot-race guard, unreachable today) the tree is returned UNCHANGED. Pure (no `Signal`),
-/// so it is unit-tested directly.
-fn insert_leaf(
-    tree: Option<DockTopology>,
-    index: usize,
-    mint_id: impl FnOnce() -> String,
-) -> Option<DockTopology> {
-    let Some(current) = tree else {
-        return Some(DockTopology::single(panel_id(index)));
-    };
-    // Index order is emergent (not enforced) — sort so the "first index > `index`"
-    // insertion point is unconditionally correct.
-    let mut docked: Vec<usize> = current
-        .panel_ids()
-        .iter()
-        .filter_map(|p| pane_index_of_panel(p))
-        .collect();
-    docked.sort_unstable();
-    let split_id = mint_id();
-    let inserted = match docked.iter().find(|&&j| j > index) {
-        Some(&j) => current.split_leaf_into(
-            &panel_id(j),
-            panel_id(index),
-            split_id,
-            SplitterOrientation::Horizontal,
-            SPLIT_RATIO_DEFAULT,
-            DockSplitPosition::First,
-        ),
-        None => current.split_leaf_into(
-            &panel_id(*docked.last().expect("a Some topology has >= 1 docked pane")),
-            panel_id(index),
-            split_id,
-            SplitterOrientation::Horizontal,
-            SPLIT_RATIO_DEFAULT,
-            DockSplitPosition::Second,
-        ),
-    };
-    // Defensive boot-race guard: a `DuplicatePanelId` leaves the tree UNCHANGED rather than
-    // inserting a second `index` leaf. Unreachable today (the `use_dock_topology` factory
-    // fires after `SlotView::new`'s boot reconcile, and a runtime admit inserts a
-    // freshly-allocated slot), but the tolerance keeps it sound (`split_leaf_into` borrowed
-    // `current`, so it is intact for the fall-through).
-    Some(inserted.unwrap_or(current))
-}
-
-/// Insert pane `index`'s leaf at RUNTIME (Round 2b admit / collapse dock-back) via the ONE
-/// [`insert_leaf`] policy, minting a fresh sequence divider id ([`next_dock_split_id`]).
-/// Called directly by both leaf-insert entry points: [`crate::dock::admit_pane`] (a new
-/// host pane appears) and [`crate::dock::redock_pane`] (a collapse-mode dock-back). A new
-/// host pane / re-docked pane appears index-relative in BOTH dock models (a fresh pane has
-/// no held slot to restore).
-///
-/// **v1 bound:** index-relative, not drop-zone-relative — a collapse-mode cross-window
-/// redock lands at the pane's index home, not where it was dropped (zone-honoring redock
-/// needs `DockMode::Placeholder`, where the surviving leaf is relocated by the reducer's
-/// `resolve_drop` SSOT). See the module docs + PINION-PR34.
-pub(crate) fn insert_pane_leaf(index: usize) {
-    let topo = use_dock_topology();
-    topo.set(insert_leaf(topo.get(), index, next_dock_split_id));
 }
 
 #[cfg(test)]
@@ -570,34 +596,142 @@ mod tests {
         );
     }
 
+    /// The even share a divider opens at — the host's `RATIO_DEFAULT`, restated here only
+    /// as a test expectation (production reads the share off the host's arrangement).
+    const RATIO_EVEN: f32 = 0.5;
+
+    /// A tree the host served, projected and un-projected, must come back IDENTICAL — the
+    /// write path's core promise. If the round trip drifted, every settled gesture would
+    /// write a subtly different arrangement than the one on screen, and (worse) the drift
+    /// would differ from the host's, so `sync_layout` would write on every frame forever.
+    #[test]
+    fn unprojecting_a_projected_arrangement_returns_it_unchanged() {
+        let owner = Owner::new();
+        owner.run(|| {
+            let mut tree = LayoutTree::new();
+            tree.reconcile(&[PaneId(0), PaneId(1), PaneId(2)]);
+            let wire = LayoutWire::from(&tree);
+
+            let topo = project_layout(&tree, &|p| Some(p.0 as usize)).expect("panes arrange");
+            let back = unproject_layout(Some(&topo), &|slot| Some(PaneId(slot as u64)))
+                .expect("a projected surface is representable");
+
+            assert_eq!(back, wire, "project -> unproject is the identity");
+        });
+    }
+
+    /// The hinge of the write path: a divider PINION minted while resolving a drop has no
+    /// `SplitId`, so it must un-project as `id: None` and let the host name it. Reading a
+    /// number out of `reorg-split-0` (or dropping the divider) would either collide with a
+    /// real id or silently lose the user's split.
+    #[test]
+    fn a_client_minted_divider_unprojects_unnamed_for_the_host_to_name() {
+        let owner = Owner::new();
+        owner.run(|| {
+            let topo = DockTopology::new(DockNode::Split {
+                id: Cow::Borrowed("reorg-split-0"), // pinion's own, not the host's
+                orientation: SplitterOrientation::Vertical,
+                ratio: 0.5,
+                first: Box::new(DockNode::leaf(panel_id(0))),
+                second: Box::new(DockNode::leaf(panel_id(1))),
+            });
+            let wire = unproject_layout(Some(&topo), &|slot| Some(PaneId(slot as u64)))
+                .expect("representable");
+            let Some(LayoutNodeWire::Split { id, dir, .. }) = wire.root else {
+                panic!("the root is a split, got {:?}", wire.root);
+            };
+            assert_eq!(id, None, "a client-minted divider goes to the host UNNAMED");
+            assert_eq!(
+                dir,
+                SplitDir::Vertical,
+                "its direction is the user's intent"
+            );
+
+            // ...whereas one the host DID name keeps its identity across the round trip.
+            assert_eq!(split_id_of_tag(&split_tag(SplitId(7))), Some(SplitId(7)));
+            assert_eq!(split_id_of_tag("reorg-split-0"), None);
+            assert_eq!(split_id_of_tag("sprag_gui.split.x"), None);
+        });
+    }
+
+    /// What gets written is the ratio the user DRAGGED, not the one the divider opened at.
+    ///
+    /// pinion's `DockNode::Split.ratio` is only the initial value — a live drag lives in the
+    /// per-split signal — so un-projecting the node would persist the old boundary and throw
+    /// away the exact thing the gesture expressed.
+    #[test]
+    fn unproject_writes_the_dragged_ratio_not_the_one_the_divider_opened_at() {
+        let owner = Owner::new();
+        owner.run(|| {
+            let mut tree = LayoutTree::new();
+            tree.reconcile(&[PaneId(0), PaneId(1)]);
+            let topo = project_layout(&tree, &|p| Some(p.0 as usize)).expect("panes arrange");
+
+            // The user drags the divider: the SIGNAL moves, the node still says 0.5.
+            use_split_ratio(split_tag(SplitId(0)), RATIO_EVEN).set(0.82);
+
+            let wire = unproject_layout(Some(&topo), &|slot| Some(PaneId(slot as u64)))
+                .expect("representable");
+            let Some(LayoutNodeWire::Split { ratio, .. }) = wire.root else {
+                panic!("the root is a split");
+            };
+            assert!(
+                (ratio - 0.82).abs() < f32::EPSILON,
+                "the DRAGGED share is what reaches the host, got {ratio}",
+            );
+        });
+    }
+
+    /// A surface the host's arrangement cannot express is REFUSED, not written lossily.
+    ///
+    /// A pinion tab well is the only such shape, and it is unreachable (this surface runs
+    /// `with_tabbing(false)`) — but it is a real variant of pinion's type, so an honest
+    /// `None` beats an assumption. Writing the panes minus their well would silently destroy
+    /// the arrangement the user is looking at.
+    #[test]
+    fn an_unrepresentable_surface_refuses_the_write() {
+        let owner = Owner::new();
+        owner.run(|| {
+            let tabs = DockTopology::new(DockNode::tabs(
+                "well-0",
+                vec![Cow::Owned(panel_id(0)), Cow::Owned(panel_id(1))],
+                0,
+            ));
+            assert_eq!(
+                unproject_layout(Some(&tabs), &|slot| Some(PaneId(slot as u64))),
+                None,
+                "a tab well is refused rather than written lossily",
+            );
+            // The zero-pane surface, by contrast, is a legal arrangement.
+            assert_eq!(
+                unproject_layout(None, &|slot| Some(PaneId(slot as u64))),
+                Some(LayoutWire { root: None }),
+            );
+        });
+    }
+
     #[test]
     fn use_split_ratio_is_per_id_memoised_and_seeds_default() {
         let owner = Owner::new();
         owner.run(|| {
-            let a = use_split_ratio(split_tag(SplitId(0)), SPLIT_RATIO_DEFAULT);
-            let b = use_split_ratio(split_tag(SplitId(0)), SPLIT_RATIO_DEFAULT);
+            let a = use_split_ratio(split_tag(SplitId(0)), RATIO_EVEN);
+            let b = use_split_ratio(split_tag(SplitId(0)), RATIO_EVEN);
             assert!(Rc::ptr_eq(&a, &b), "memoised by Split id");
-            assert!((a.get() - SPLIT_RATIO_DEFAULT).abs() < f32::EPSILON);
+            assert!((a.get() - RATIO_EVEN).abs() < f32::EPSILON);
             a.set(0.7);
             assert!(
-                (use_split_ratio(split_tag(SplitId(0)), SPLIT_RATIO_DEFAULT).get() - 0.7).abs()
+                (use_split_ratio(split_tag(SplitId(0)), RATIO_EVEN).get() - 0.7).abs()
                     < f32::EPSILON,
                 "drag re-weights; the seed does not reset an existing slot"
             );
             assert!(
-                (use_split_ratio(split_tag(SplitId(1)), SPLIT_RATIO_DEFAULT).get()
-                    - SPLIT_RATIO_DEFAULT)
-                    .abs()
+                (use_split_ratio(split_tag(SplitId(1)), RATIO_EVEN).get() - RATIO_EVEN).abs()
                     < f32::EPSILON,
                 "a different divider is independent"
             );
         });
     }
 
-    /// PLACEHOLDER mode: floating leaves a pane's leaf in the tree (the windows-signal is
-    /// the sole float authority), and `docked_pane_indices` derives membership by FILTERING
-    /// the leaves. Modeled by pushing the window directly (which is exactly what
-    /// placeholder-mode `push_float` does — window-only, leaf untouched).
     /// (R136, consuming PINION-PR54 / pinion R1338) In a 2-PANE dock, an outer
     /// full-span dock is REDUNDANT at every edge: removing either pane leaves a single
     /// leaf, so the outer band is `Split[dragged | lone]` — structurally identical to an
@@ -643,96 +777,6 @@ mod tests {
             assert!(
                 !reorg.outer_dock_is_redundant(&panel_id(2), DockDropZone::Top),
                 "3-pane outer Top spans the other two panes -> a distinct full-span row",
-            );
-        });
-    }
-
-    #[test]
-    fn docked_membership_filters_floating_panes_while_the_leaf_survives() {
-        use pinion_shell::{SizeStrategy, WindowSpec};
-        let owner = Owner::new();
-        owner.run(|| {
-            crate::dock::set_dock_mode(crate::dock::DockMode::Placeholder);
-            // Seed a 4-pane tree directly (independent of SPRAG_GUI_PANES). No floating
-            // windows yet (the windows-signal seeds with just the main window), so all
-            // four panes read as docked.
-            use_dock_topology().set(boot_tree(&[0, 1, 2, 3]));
-            assert_eq!(docked_pane_indices(), vec![0, 1, 2, 3]);
-
-            // Float a MIDDLE pane (1) by pushing its `pane-1` window — the windows-signal
-            // is the SOLE floating authority. The topology is NOT touched (placeholder
-            // model): the leaf stays so the main window can paint its placeholder.
-            let windows = crate::dock::use_windows_topology();
-            let mut w = windows.get();
-            w.push(WindowSpec::new(
-                Cow::Owned(crate::dock::pane_window_id(1)),
-                "floating pane 1",
-                SizeStrategy::Fixed {
-                    width: 100,
-                    height: 100,
-                },
-            ));
-            windows.set(w);
-
-            // Membership DROPS pane 1 (filtered by is_pane_floating) ...
-            assert_eq!(
-                docked_pane_indices(),
-                vec![0, 2, 3],
-                "a floating pane is filtered from the docked set"
-            );
-            // ... but the topology STILL holds all four leaves (no collapse).
-            assert_eq!(
-                use_dock_topology()
-                    .get()
-                    .expect("topology intact")
-                    .panel_ids(),
-                (0..4).map(panel_id).collect::<Vec<_>>(),
-                "the floated pane's leaf survives in the tree (placeholder model)"
-            );
-
-            // De-float pane 1 (drop its window) -> membership restores, leaf unchanged.
-            let mut w = windows.get();
-            w.retain(|s| s.id != crate::dock::pane_window_id(1));
-            windows.set(w);
-            assert_eq!(docked_pane_indices(), vec![0, 1, 2, 3]);
-        });
-    }
-
-    /// COLLAPSE mode (the default): floating REMOVES a pane's leaf so the siblings reclaim
-    /// the space ([`remove_pane_leaf`]), and docking back re-inserts it index-relative
-    /// ([`insert_pane_leaf`]). Exercises the mode-neutral leaf primitives directly (no
-    /// windows-signal / `use_terminal` needed — they are pure topology mutations).
-    #[test]
-    fn collapse_float_removes_the_leaf_and_dock_restores_index_order() {
-        let owner = Owner::new();
-        owner.run(|| {
-            use_dock_topology().set(boot_tree(&[0, 1, 2, 3]));
-            assert_eq!(docked_pane_indices(), vec![0, 1, 2, 3]);
-
-            // Float a MIDDLE pane (1) -> its leaf is REMOVED, siblings reclaim: [0, 2, 3].
-            remove_pane_leaf(1);
-            assert_eq!(docked_pane_indices(), vec![0, 2, 3]);
-            assert_eq!(
-                use_dock_topology().get().expect("still docked").panel_ids(),
-                vec![panel_id(0), panel_id(2), panel_id(3)],
-                "collapse: the floated pane's leaf is gone from the tree"
-            );
-
-            // Dock pane 1 back -> re-inserted in INDEX order (before pane 2): [0, 1, 2, 3].
-            insert_pane_leaf(1);
-            assert_eq!(
-                docked_pane_indices(),
-                vec![0, 1, 2, 3],
-                "collapse dock-back restores left-to-right index order"
-            );
-
-            // Float every pane -> the tree empties to `None` (no docked panes).
-            for i in 0..4 {
-                remove_pane_leaf(i);
-            }
-            assert!(
-                use_dock_topology().get().is_none(),
-                "collapse: floating the last docked pane empties the tree to None"
             );
         });
     }

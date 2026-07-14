@@ -160,6 +160,9 @@ mod tests {
     fn access_nodes_partition_by_window() {
         let owner = Owner::new();
         owner.run(|| {
+            // Project the host's arrangement, as the pre-view reconcile does each frame —
+            // "docked" IS that projection, so a test that skips it advertises nothing.
+            crate::split::sync_layout(&use_terminal().slots);
             let n = use_terminal().slots.occupied_slots().len();
             // Boot: all docked -> main advertises every pane.
             assert_eq!(

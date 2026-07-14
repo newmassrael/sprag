@@ -17,30 +17,21 @@
 //! `tear_off_follow` / `tear_off_redock` seam — non-toggling, so a per-move re-emit
 //! only repositions or restores, never flips).
 //!
-//! ## OS windows vs dock-tree shape — the relationship depends on [`DockMode`] (R77)
+//! ## OS windows vs dock-tree shape (R149)
 //!
-//! This module's `Signal<Vec<WindowSpec>>` is the **floating authority** — a `pane-{i}`
-//! window exists IFF pane `i` floats. Its relationship to the dock split-tree
-//! ([`crate::split::use_dock_topology`], the shape/ratio authority) is mode-dependent:
+//! Two authorities, on opposite sides of the wire, and they do not overlap. The windows
+//! signal ([`use_windows_topology`]) owns WHERE a floating pane's OS window sits — pixels,
+//! this client's alone. The HOST owns WHICH panes are tiled and how ([`crate::split`]); a
+//! float takes the pane out of the tiling, so its leaf collapses and the siblings reclaim
+//! the space (the terminal-multiplexer fill). [`push_float`] / [`redock_pane`] therefore do
+//! two things: move the OS window, and ASK the host to change the tiling — then adopt the
+//! arrangement it answers with. Neither invents a tiling of its own; that is what R149
+//! retired, along with the selectable placeholder model (see [`crate::split`]'s module docs).
 //!
-//!  - **[`DockMode::Collapse`] (default):** float/dock CO-MUTATE both — [`push_float`]
-//!    pushes the window AND removes the leaf ([`crate::split::remove_pane_leaf`]) so the siblings
-//!    reclaim the space; [`redock_pane`] drops the window AND re-inserts the leaf
-//!    ([`crate::split::insert_pane_leaf`]). The tree tracks float state (the terminal-multiplexer
-//!    fill).
-//!  - **[`DockMode::Placeholder`] (opt-in):** float/dock are WINDOW-ONLY ([`push_float`] /
-//!    [`redock_pane`] don't touch the tree); the leaf stays and the view paints a
-//!    [`view_floating_placeholder`](pinion_widget_paint::dock::view_floating_placeholder)
-//!    holding its slot. The two authorities are then ORTHOGONAL (R76) — this is R61's
-//!    deferred "membership derived, not co-mutated" cleanup, available as the opt-in mode.
-//!
-//! All entry points route through the two primitives: [`open_floating`] (key path) and
-//! [`float_pane_at`]'s create branch call [`push_float`]; both [`toggle_pane_floating`]
-//! and the live redock call [`redock_pane`]. The docked set
-//! ([`crate::split::docked_pane_indices`], read by both paint and a11y) is DERIVED in both
-//! modes (the tree's leaves filtered by [`is_pane_floating`]), so it can never disagree
-//! with the windows-signal. The tree is also restructured by reorganize gestures
-//! (drag-to-dock + the cross-window zone-redock via `resolve_drop`) in both modes.
+//! The docked set ([`crate::split::docked_pane_indices`], read by both paint and a11y) is
+//! DERIVED from the projected tree's leaves, so it cannot disagree with what the host tiles.
+//! The tree is also restructured by reorganize gestures (drag-to-dock + the cross-window
+//! zone-redock via `resolve_drop`), which [`crate::split::sync_layout`] writes back.
 //!
 //! ## Why the undock window opens at the pane's intrinsic size (and now reflows)
 //!
@@ -82,7 +73,6 @@ use crate::{WINDOW_H, WINDOW_W};
 use pinion_core::reactive::{Owner, Signal};
 use pinion_shell::{SizeStrategy, WindowSpec};
 use std::borrow::Cow;
-use std::cell::Cell;
 use std::rc::Rc;
 
 /// `Owner::cache` key for the runtime window topology Signal.
@@ -103,63 +93,6 @@ const APP_NAME: &str = "sprag terminal";
 /// value — the ONE home for THIS exact string (its three uses cannot drift). The
 /// focused-pane form is composed separately from [`APP_NAME`] by [`window_title_for_pane`].
 pub(crate) const MAIN_WINDOW_TITLE: &str = "sprag terminal (interactive)";
-
-/// The dock layout model — how a floated pane's slot in the main window is treated.
-/// Selected by the `SPRAG_GUI_DOCK_MODE` env var ([`DockMode::from_env`]).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum DockMode {
-    /// R60, the DEFAULT: floating a pane REMOVES its leaf from the split-tree
-    /// ([`crate::split::remove_pane_leaf`]), so the remaining panes reclaim the freed space —
-    /// the terminal-multiplexer fill (tmux/zellij). Docking back re-inserts the leaf
-    /// index-relative ([`crate::split::insert_pane_leaf`]). float/dock CO-MUTATE the windows-signal
-    /// + the split-tree (the tree tracks float state).
-    Collapse,
-    /// R72, opt-in (`SPRAG_GUI_DOCK_MODE=placeholder`): the floated pane's leaf STAYS in
-    /// the tree; the view paints a placeholder holding its slot ([`crate::view`]). The
-    /// windows-signal is the SOLE float authority, ORTHOGONAL to the tree (R76). This is
-    /// the only mode where zone-honoring cross-window redock works (the surviving leaf is
-    /// what the reducer's `resolve_drop` SSOT relocates to the drop zone), at the cost
-    /// that siblings do NOT reclaim a floated pane's slot.
-    Placeholder,
-}
-
-impl DockMode {
-    /// Parse the `SPRAG_GUI_DOCK_MODE` env value: `placeholder` → [`Self::Placeholder`],
-    /// anything else (incl. unset / unknown) → [`Self::Collapse`] (the default).
-    fn from_env() -> Self {
-        match std::env::var("SPRAG_GUI_DOCK_MODE").ok().as_deref() {
-            Some("placeholder") => DockMode::Placeholder,
-            _ => DockMode::Collapse,
-        }
-    }
-}
-
-/// `Owner::cache` key for the active dock-model Signal.
-const DOCK_MODE_KEY: &str = "sprag_gui.dock_mode";
-
-/// The active dock-model cell — `Owner::cache`d (per-owner), seeded once from the env
-/// ([`DockMode::from_env`], default [`DockMode::Collapse`]). A `Cell` rather than a
-/// process-global so the test suite can select EITHER mode in its own `Owner` scope
-/// (`set_dock_mode`); a live run reads the env once and never changes it. (Not a
-/// reactive `Signal` — the mode is a boot constant, not a paint input.)
-fn use_dock_mode_cell() -> Rc<Cell<DockMode>> {
-    Owner::current()
-        .expect("use_dock_mode_cell() requires an active Owner scope")
-        .cache(DOCK_MODE_KEY, || Cell::new(DockMode::from_env()))
-}
-
-/// The active dock model (default [`DockMode::Collapse`]). Read by [`push_float`] /
-/// [`redock_pane`] to gate whether float/dock also mutate the split-tree.
-pub(crate) fn dock_mode() -> DockMode {
-    use_dock_mode_cell().get()
-}
-
-/// Test seam: force the dock model in the current `Owner` scope (call before any
-/// float/dock op the test exercises).
-#[cfg(test)]
-pub(crate) fn set_dock_mode(mode: DockMode) {
-    use_dock_mode_cell().set(mode);
-}
 
 /// The undock-window id prefix; an undock window for pane `i` is `pane-{i}`.
 const UNDOCK_WINDOW_PREFIX: &str = "pane-";
@@ -341,10 +274,12 @@ fn undock_window_spec(i: usize, position: Option<(i32, i32)>) -> WindowSpec {
 }
 
 /// `true` iff pane `i` currently floats — its `pane-{i}` OS window exists in the
-/// windows-signal. The window-existence float authority in BOTH dock models: in
-/// [`DockMode::Placeholder`] it is the SOLE authority (the tree always holds the leaf);
-/// in [`DockMode::Collapse`] it agrees with the tree (a floated pane has no leaf AND a
-/// window). Read by [`crate::split::docked_pane_indices`] and [`toggle_pane_floating`].
+/// windows-signal.
+///
+/// This client's own view of the float, and it agrees with the host's by construction: a
+/// floated pane has a window here AND no leaf in the projected tree, because the same call
+/// ([`push_float`] / [`redock_pane`]) does both. Read by [`toggle_pane_floating`] to pick
+/// its branch, and by [`sync_main_title`] to resolve which window a pane's title belongs to.
 pub(crate) fn is_pane_floating(i: usize) -> bool {
     use_windows_topology()
         .get()
@@ -352,16 +287,14 @@ pub(crate) fn is_pane_floating(i: usize) -> bool {
         .any(|w| w.id == pane_window_id(i))
 }
 
-/// In [`DockMode::Collapse`], floating pane `i` would EMPTY the main dock if it is the
-/// ONLY docked pane: collapse removes its leaf and the tree empties to `None`. The PRIMARY
+/// Floating pane `i` would EMPTY the main dock if it is the ONLY docked pane: the float
+/// removes its leaf and the tree empties to `None`. The PRIMARY
 /// reason to refuse this is a product decision the user chose — tmux/zellij semantics: a
 /// terminal window always shows at least one terminal, so the main window keeps at least
 /// ONE docked pane and such a float is REFUSED (the last pane stays put). A secondary
 /// motivation is that an empty dock is a poor drop surface — pinion synthesizes an
 /// outer-dock band from the window rect (its 32px rim) but the interior is dead, so
-/// dragging a floater back onto an empty main is rim-only, not the whole window. (Both are
-/// collapse-mode concerns.) In [`DockMode::Placeholder`] the leaf survives (the slot is
-/// held), so the dock never truly empties and every pane may float.
+/// dragging a floater back onto an empty main is rim-only, not the whole window.
 ///
 /// SCOPE (R123): this is a FLOAT-GESTURE guard — it stops the USER stranding themselves by
 /// floating their last docked pane. It is deliberately NOT a global "the main is never
@@ -371,15 +304,12 @@ pub(crate) fn is_pane_floating(i: usize) -> bool {
 /// blank main (which the all-panes-closed path already produces). So there is ONE enforcer
 /// of this guard ([`push_float`]); `evict_pane` is a different event class, not subject to it.
 fn float_would_empty_the_dock(i: usize) -> bool {
-    if dock_mode() != DockMode::Collapse {
-        return false;
-    }
     let docked = crate::split::docked_pane_indices();
     docked.len() == 1 && docked.first() == Some(&i)
 }
 
 /// Whether pane `i`'s dock-panel header may START a drag (tear-off / reorder). FALSE only
-/// for the sole docked pane in collapse mode — the one [`float_would_empty_the_dock`]
+/// for the sole docked pane — the one [`float_would_empty_the_dock`]
 /// refuses to float. Wired to pinion's `DockPanelExternal::with_movable` in
 /// `create_extra_externals`: the INTENT is to block the drag AT THE SOURCE (`begin_drag`
 /// returns `None` → no drag session → no drag-image chip and no drop-preview for a pane
@@ -410,20 +340,32 @@ pub(crate) fn pane_is_movable(i: usize) -> bool {
 /// and a future third caller cannot forget the gate (the same single-enforcement-point
 /// rule `view::compose` / `fill_definite` follow; the R55 undock bug was a forgotten fill).
 ///
-/// In [`DockMode::Collapse`] (default) it ALSO removes the pane's leaf from the split-tree
-/// ([`crate::split::remove_pane_leaf`]) so the siblings reclaim the space (the two authorities
-/// co-mutate). In [`DockMode::Placeholder`] it is window-only — the leaf stays and the view
-/// paints a placeholder.
+/// It also asks the HOST to take the pane out of the tiling, and adopts the arrangement it
+/// answers with — which is where the leaf collapses and the siblings reclaim the space. The
+/// tiling is session state, so this client requests the change rather than making it: that is
+/// what lets the float survive a detach (see [`crate::split`]).
 #[must_use]
 fn push_float(windows: &mut Vec<WindowSpec>, i: usize, position: Option<(i32, i32)>) -> bool {
     if float_would_empty_the_dock(i) {
         return false; // tmux semantics: the main window keeps its last docked pane
     }
     windows.push(undock_window_spec(i, position));
-    if dock_mode() == DockMode::Collapse {
-        crate::split::remove_pane_leaf(i); // collapse: remove the leaf so the rest reclaim space
-    }
+    set_pane_floating(i, true);
     true
+}
+
+/// Ask the host to take pane `i` out of the tiling (or put it back) and adopt the resulting
+/// arrangement — the ONE place this client changes float state, shared by [`push_float`] and
+/// [`redock_pane`].
+///
+/// Adopting the answer (rather than editing the tree here) is what keeps this client a
+/// projection: the host decides where the leaf goes, so there is exactly one builder. A hole
+/// (no pane at the slot) has nothing to float and is a no-op.
+fn set_pane_floating(i: usize, floating: bool) {
+    let terminal = use_terminal();
+    if let Some(snapshot) = terminal.slots.set_floating(i, floating) {
+        crate::split::adopt_layout(&snapshot, &terminal.slots);
+    }
 }
 
 /// Open pane `i` as a floating window at `position` (`None` → WM-placed; the key path
@@ -449,19 +391,12 @@ fn open_floating(i: usize, position: Option<(i32, i32)>) {
 /// gesture never floated is harmless). Shared by [`toggle_pane_floating`]'s dock-back
 /// branch and the live redock/restore (pinion R1094 / PINION-PR31).
 ///
-/// In [`DockMode::Collapse`] (default) it ALSO re-inserts the pane's leaf into the
-/// split-tree index-relative ([`crate::split::insert_pane_leaf`]) — the leaf was removed on
-/// float. That index-relative re-insert is the DISCRETE dock-back (the `Ctrl+Shift+Enter` /
-/// `tear_off_redock` path, which carries no zone). A cross-window ZONE redock
-/// (`tear_off_redock_at`) is different now: the reducer arm calls
-/// `dock_panel_at_resolved_zone` FIRST, and pinion R1173 made that TOTAL over an absent
-/// source leaf (it materializes the collapse-removed leaf at the dropped zone), so collapse
-/// ALSO zone-honors — the pane lands AT the drop zone, not its index home (the earlier
-/// "PINION-PR34 v1 bound / needs Placeholder" limitation is retired; guarded by
-/// `tear_off_redock_at_in_collapse_honors_the_zone_cleanly`). In [`DockMode::Placeholder`]
-/// it is window-only: the leaf never left, so de-floating just drops the window (the view
-/// stops painting the placeholder and paints content, re-tiled in place); a zone redock was
-/// already relocated by the surviving leaf. Both modes now zone-honor a cross-window drop.
+/// It also asks the HOST to put the pane back into the tiling, and adopts the answer. With
+/// no gesture to place it, the host returns it at the arrangement's END. A cross-window ZONE
+/// redock is different: the reducer arm redocks FIRST and then relocates the now-present leaf
+/// to the resolved zone, and [`crate::split::sync_layout`] writes THAT back — so a dropped
+/// pane lands where it was dropped. (pinion R1173 also made `dock_panel_at_resolved_zone`
+/// total over an absent leaf, so the ordering is belt-and-braces rather than load-bearing.)
 pub(crate) fn redock_pane(i: usize) {
     let signal = use_windows_topology();
     let mut windows = signal.get();
@@ -471,9 +406,7 @@ pub(crate) fn redock_pane(i: usize) {
     };
     let before = windows.len();
     windows.remove(idx);
-    if dock_mode() == DockMode::Collapse {
-        crate::split::insert_pane_leaf(i); // collapse: re-insert the leaf (it was removed on float)
-    }
+    set_pane_floating(i, false);
     let after = windows.len();
     signal.set(windows);
     crate::diag::dock_toggle(i, false, before, after);
@@ -576,11 +509,11 @@ pub(crate) fn toggle_pane_floating(i: usize) {
 }
 
 /// A host pane VANISHED (Round 2b live delta): drop its floating `pane-{i}` window if it
-/// has one and remove its dock leaf, so no OS window or dock leaf outlives the pane. Called
+/// has one, so no OS window outlives the pane. The dock LEAF needs no action here — the pane
+/// left the host's pool, so the host's own reconcile collapses its leaf and the next
+/// [`crate::split::sync_layout`] projects the result. Called
 /// from [`TerminalViewer::reconcile_frame`](crate::TerminalViewer) for each slot [`crate::slotview::SlotView::reconcile`]
-/// freed. Unconditional of [`DockMode`] — a gone pane can hold neither a floating window nor
-/// a placeholder leaf, so unlike a live float this is NOT mode-gated (the mode choice is
-/// only about how a still-present pane's slot is treated). The freed slot's per-slot GUI
+/// freed. The freed slot's per-slot GUI
 /// state (scroll / wheel / interaction / preedit) is reset by the caller; this owns only
 /// the window + dock-tree cleanup. Removing the LAST docked leaf empties the dock to a blank
 /// main — accepted even when a floater survives (a host close is authoritative; see
@@ -598,25 +531,19 @@ pub(crate) fn evict_pane(i: usize) {
         windows.remove(idx);
         signal.set(windows);
     }
-    // Remove the dock leaf (mode-neutral: the pane is gone in both models).
-    crate::split::remove_pane_leaf(i);
-}
-
-/// A host pane APPEARED (Round 2b live delta): admit it as a docked leaf, index-relative,
-/// so a new host pane (an operator / AI spawn in attach mode) tiles into the main window.
-/// Called from [`TerminalViewer::reconcile_frame`](crate::TerminalViewer) for each slot
-/// [`crate::slotview::SlotView::reconcile`] added (never boot, which seeds the whole tree
-/// via the host-layout projection). Unconditional of [`DockMode`] — a fresh pane
-/// appears docked in both models (it has no held slot to restore). Its reflow Effect +
-/// scrollbar / dock-panel externals are (re)installed by the post-view
-/// `create_extra_externals` on the same frame (the dynamic external set).
-pub(crate) fn admit_pane(i: usize) {
-    crate::split::insert_pane_leaf(i);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Project the REAL host's arrangement into the dock surface — what `reconcile_frame`
+    /// does every frame before the view, and what these tests need before a float gesture
+    /// (the last-docked-pane guard reads the projected tree, so an unprojected surface would
+    /// report nothing tiled).
+    fn project_host_layout() {
+        crate::split::sync_layout(&use_terminal().slots);
+    }
 
     #[test]
     fn pane_window_id_round_trips_through_index() {
@@ -637,6 +564,7 @@ mod tests {
         // reaps them. The topology starts with the lone main window.
         let owner = Owner::new();
         owner.run(|| {
+            project_host_layout();
             let windows = use_windows_topology();
             // "pane i has an OS window" = its `pane-{i}` window exists.
             let floating = |i: usize| windows.get().iter().any(|w| w.id == pane_window_id(i));
@@ -656,24 +584,31 @@ mod tests {
         });
     }
 
-    /// R87 (tmux semantics, user's choice): in COLLAPSE mode the main window keeps at
-    /// least one docked pane — floating the LAST docked pane is refused, so the dock never
-    /// empties to a state with no drop target (an empty dock can't be dragged back into).
-    /// PLACEHOLDER mode keeps the leaf (held slot), so the dock never truly empties and
-    /// every pane may float.
+    /// R87 (tmux semantics, the user's choice): the main window keeps at least one docked
+    /// pane — floating the LAST docked pane is refused, so the dock never empties to a state
+    /// with no drop target (an empty dock cannot be dragged back into).
+    ///
+    /// Drives the REAL host: a float now asks it to take the pane out of the tiling, and the
+    /// refusal must happen before that ask (a refused float must leave the session's
+    /// arrangement untouched, not un-float it afterwards).
     #[test]
-    fn collapse_refuses_to_float_the_last_docked_pane_placeholder_allows_it() {
+    fn floating_the_last_docked_pane_is_refused() {
         let owner = Owner::new();
         owner.run(|| {
+            project_host_layout();
             let windows = use_windows_topology();
             let floating = |i: usize| windows.get().iter().any(|w| w.id == pane_window_id(i));
 
-            // COLLAPSE (default): float pane 0 (pane 1 still docked — allowed) ...
-            set_dock_mode(DockMode::Collapse);
+            // Float pane 0 (pane 1 still docked — allowed) ...
             toggle_pane_floating(0);
             assert!(
                 floating(0),
                 "pane 0 floats (pane 1 keeps the dock non-empty)"
+            );
+            assert_eq!(
+                crate::split::docked_pane_indices(),
+                vec![1],
+                "the host took the floated pane out of the tiling",
             );
             // ... then floating pane 1, the LAST docked pane, is REFUSED.
             toggle_pane_floating(1);
@@ -681,18 +616,16 @@ mod tests {
                 !floating(1),
                 "the last docked pane stays put (tmux semantics: dock keeps >=1 pane)"
             );
-            // Restore: dock pane 0 back for a clean placeholder run.
+            assert_eq!(
+                crate::split::docked_pane_indices(),
+                vec![1],
+                "and the refused float never reached the host's arrangement",
+            );
+
+            // Dock pane 0 back: the host tiles it again.
             toggle_pane_floating(0);
             assert!(!floating(0) && !floating(1), "both docked again");
-
-            // PLACEHOLDER: the leaf survives, so even the last pane may float.
-            set_dock_mode(DockMode::Placeholder);
-            toggle_pane_floating(0);
-            toggle_pane_floating(1);
-            assert!(
-                floating(0) && floating(1),
-                "placeholder mode lets every pane float (the held leaf is the drop target)"
-            );
+            assert_eq!(crate::split::docked_pane_indices().len(), 2);
         });
     }
 
@@ -700,8 +633,8 @@ mod tests {
     /// sole docked pane (its drag would empty the dock), TRUE otherwise. It is wired to
     /// `DockPanelExternal::with_movable` so pinion's `begin_drag` returns `None` for a
     /// locked pane (no drag → no chip/preview). This guard pins the PREDICATE (both docked
-    /// → both movable; float one → the sole pane computes non-movable; re-dock → restored;
-    /// placeholder never locks). NOTE: the LIVE source-level block is blocked on
+    /// → both movable; float one → the sole pane computes non-movable; re-dock → restored).
+    /// NOTE: the LIVE source-level block is blocked on
     /// PINION-PR42 — `reconcile_externals` early-returns on an unchanged tag set (sprag's
     /// tags never change), discarding the rebuilt external, so the dynamic `movable=false`
     /// is not applied after boot (create-time-only). Behavior stays correct via the
@@ -710,7 +643,7 @@ mod tests {
     fn the_sole_docked_pane_computes_non_movable() {
         let owner = Owner::new();
         owner.run(|| {
-            set_dock_mode(DockMode::Collapse);
+            project_host_layout();
             // Both docked → both movable (either may float, leaving the other).
             assert!(
                 pane_is_movable(0) && pane_is_movable(1),
@@ -733,127 +666,45 @@ mod tests {
                 pane_is_movable(0) && pane_is_movable(1),
                 "re-docking restores movability for both"
             );
-
-            // Placeholder: the leaf survives, so no pane ever locks.
-            set_dock_mode(DockMode::Placeholder);
-            toggle_pane_floating(0);
-            assert!(
-                pane_is_movable(1),
-                "placeholder mode never locks a pane (the dock cannot empty)"
-            );
         });
     }
 
-    /// R122 (Round 2b): a new host pane is admitted as a docked leaf, index-relative, in
-    /// both dock modes. Seed an empty dock (overriding the boot tree) and admit out of
-    /// order to prove the index-relative insert.
+    /// R122/R149: when a host pane is CLOSED, `evict_pane` drops its floating window, so no
+    /// OS window outlives its pane.
+    ///
+    /// It deliberately does NOT touch the dock leaf: the pane left the host's pool, so the
+    /// host's own reconcile collapses the leaf and the projection follows. (Before R149 this
+    /// removed the leaf itself — one of the two builders that could disagree.)
     #[test]
-    fn admit_pane_docks_a_new_leaf_in_index_order() {
+    fn evict_pane_drops_a_closed_panes_floating_window() {
         let owner = Owner::new();
         owner.run(|| {
-            crate::split::use_dock_topology().set(None); // start from an empty dock
-            admit_pane(0);
-            admit_pane(2);
-            assert_eq!(
-                crate::split::docked_pane_indices(),
-                vec![0, 2],
-                "admits build the tree in index order"
-            );
-            admit_pane(1); // a new pane at slot 1 lands BETWEEN 0 and 2
-            assert_eq!(crate::split::docked_pane_indices(), vec![0, 1, 2]);
-        });
-    }
-
-    /// R122 (Round 2b): when a host pane is CLOSED, `evict_pane` drops BOTH its floating
-    /// window and its dock leaf — unconditional of dock mode (a gone pane holds neither).
-    /// Placeholder mode keeps the leaf on a float, so this proves both authorities are
-    /// cleaned up (collapse would have removed the leaf on float already).
-    #[test]
-    fn evict_pane_drops_a_closed_floating_panes_window_and_leaf() {
-        let owner = Owner::new();
-        owner.run(|| {
-            set_dock_mode(DockMode::Placeholder);
-            crate::split::use_dock_topology().set(None);
-            admit_pane(0);
-            admit_pane(1);
-            open_floating(0, None); // pane 0 floats -> a pane-0 window; its leaf stays
+            project_host_layout();
+            open_floating(0, None); // pane 0 floats -> a pane-0 window
             assert!(is_pane_floating(0), "pane 0 floated");
             assert_eq!(
                 crate::split::docked_pane_indices(),
                 vec![1],
-                "the floated pane is filtered from the docked set"
+                "the host stopped tiling the floated pane"
             );
 
-            evict_pane(0); // host closed pane 0
+            evict_pane(0); // the host closed pane 0
 
             assert!(!is_pane_floating(0), "evict drops the floating window");
-            assert_eq!(
-                crate::split::use_dock_topology()
-                    .get()
-                    .expect("pane 1 still docked")
-                    .panel_ids(),
-                vec![crate::split::panel_id(1)],
-                "evict also removed the closed pane's leaf (both authorities cleaned up)"
-            );
         });
     }
 
-    /// R123: `evict_pane` on a plain DOCKED pane (no floating window) still removes its leaf
-    /// — the window-absent branch (`position()` -> `None`, skip the drop, then
-    /// `remove_pane_leaf`). Complements the floating-pane eviction test above.
+    /// Evicting a plain DOCKED pane (no floating window) is a clean no-op on the windows
+    /// signal — the window-absent branch.
     #[test]
-    fn evict_pane_removes_a_docked_pane_with_no_window() {
+    fn evict_pane_of_a_docked_pane_touches_no_window() {
         let owner = Owner::new();
         owner.run(|| {
-            crate::split::use_dock_topology().set(None);
-            admit_pane(0);
-            admit_pane(1);
-            assert_eq!(crate::split::docked_pane_indices(), vec![0, 1]);
+            project_host_layout();
+            let before = use_windows_topology().get().len();
             assert!(!is_pane_floating(1), "pane 1 is docked, no window");
-
-            evict_pane(1); // host closed the docked pane
-
-            assert_eq!(
-                crate::split::docked_pane_indices(),
-                vec![0],
-                "evict removes a docked pane's leaf even with no window to drop"
-            );
-        });
-    }
-
-    /// R124: pins the load-bearing FREED-before-ADDED ordering `reconcile_frame` relies on
-    /// for a same-slot reuse (a pane closes + a new one takes the freed slot in one
-    /// reconcile). Evict-then-admit on the same panel leaves exactly ONE leaf; the reversed
-    /// order would lose it (admit is a `DuplicatePanelId` no-op while the old leaf is still
-    /// present, then evict removes it) — which is WHY `reconcile_frame` folds freed before
-    /// added.
-    #[test]
-    fn reconcile_frame_reuses_a_slot_with_one_leaf() {
-        let owner = Owner::new();
-        owner.run(|| {
-            crate::split::use_dock_topology().set(None);
-            admit_pane(0);
-            admit_pane(1); // docked: terminal-0, terminal-1
-
-            // reconcile_frame's order for a reused slot 1 (freed==added==[1]): evict, admit.
             evict_pane(1);
-            admit_pane(1);
-            assert_eq!(
-                crate::split::docked_pane_indices(),
-                vec![0, 1],
-                "evict-before-admit: the reused slot ends with exactly one leaf"
-            );
-
-            // The REVERSED order demonstrates the hazard: admit first is a DuplicatePanelId
-            // no-op (leaf 1 still present), then evict removes it -> the reused pane's leaf
-            // is lost. This is the invariant the fold order protects.
-            admit_pane(1); // no-op: terminal-1 already present
-            evict_pane(1);
-            assert_eq!(
-                crate::split::docked_pane_indices(),
-                vec![0],
-                "admit-before-evict would drop the reused pane's leaf"
-            );
+            assert_eq!(use_windows_topology().get().len(), before);
         });
     }
 }
