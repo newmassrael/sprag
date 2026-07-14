@@ -23,6 +23,7 @@
 use crate::terminal::pane_index_of;
 use crate::{WINDOW_H, WINDOW_W};
 use pinion_core::external::IntrospectValue;
+use pinion_core::reactive::{Owner, Signal};
 use pinion_core::theme::Theme;
 use pinion_core::widget_core::ExtraExternal;
 use pinion_core::widgets::context_menu::{ContextMenuExternal, read_open_state};
@@ -45,6 +46,20 @@ const CTXMENU_BARRIER_TAG: &str = "sprag_gui.ctxmenu#barrier";
 /// The scoped intent the [`ContextMenuExternal`] emits on activation — pinion prefixes
 /// the emitting external's tag, so `"command"` arrives as `{CTXMENU_TAG}.command`.
 const COMMAND_INTENT_TAG: &str = "sprag_gui.ctxmenu.command";
+
+/// `Owner::cache` key for the [`use_target_pane`] capture.
+const TARGET_PANE_KEY: &str = "sprag_gui.ctxmenu.target_pane";
+
+/// The pane the menu's Paste / Select-all act on, CAPTURED when the menu opens
+/// (right-click time). Clicking a menu item afterwards blurs the pane focus, so the
+/// reducer cannot read the focused pane then — it reads this snapshot instead.
+fn use_target_pane() -> Signal<Option<usize>> {
+    Owner::current()
+        .expect("use_target_pane() requires an active Owner scope")
+        .cache(TARGET_PANE_KEY, || Signal::new(None))
+        .as_ref()
+        .clone()
+}
 
 /// The binding [`State`](crate::TerminalViewer): the context menu's open anchor +
 /// active item, read from the [`ContextMenuExternal`] each frame ([`read_menu_state`]).
@@ -84,6 +99,9 @@ pub(crate) fn read_menu_state(scene: &Scene) -> MenuState {
 /// `apply_secondary_click` body. Locates the menu external in the model scene and
 /// invokes its `open_at`; reports the External's open verdict.
 pub(crate) fn open_at(scene: &mut Scene, x: f32, y: f32) -> bool {
+    // Snapshot the target pane NOW, while the pane still holds focus — a subsequent
+    // click on a menu item blurs it, so the reducer's Paste / Select all read this.
+    use_target_pane().set(focused_pane());
     let Some(node) = scene.find_external_with_tag_mut(CTXMENU_TAG) else {
         return false;
     };
@@ -155,19 +173,24 @@ fn command_index(payload: &IntrospectValue) -> Option<usize> {
 /// Select all act on the FOCUSED pane (a right-click does not retarget focus, and the
 /// `apply_secondary_click` scene has no pane rects to hit-test).
 fn run_item(index: usize) {
-    match MENU_ITEMS.get(index).copied() {
-        Some("Copy") => {
-            crate::selection::copy_selection();
+    let item = MENU_ITEMS.get(index).copied().unwrap_or("?");
+    match item {
+        "Copy" => {
+            let copied = crate::selection::copy_selection();
+            tracing::debug!(target: "sprag_gui::input", item, copied, "ctxmenu action");
         }
-        Some("Paste") => {
-            if let Some(pane) = focused_pane() {
-                crate::selection::paste_clipboard(pane);
-            }
+        "Paste" => {
+            // The pane snapshotted at open time (focus is blurred by the item click).
+            let pane = use_target_pane().get();
+            let pasted = pane.is_some_and(crate::selection::paste_clipboard);
+            tracing::debug!(target: "sprag_gui::input", item, ?pane, pasted, "ctxmenu action");
         }
-        Some("Select all") => {
-            if let Some(pane) = focused_pane() {
-                crate::selection::select_all(pane);
+        "Select all" => {
+            let pane = use_target_pane().get();
+            if let Some(p) = pane {
+                crate::selection::select_all(p);
             }
+            tracing::debug!(target: "sprag_gui::input", item, ?pane, "ctxmenu action");
         }
         _ => {}
     }
