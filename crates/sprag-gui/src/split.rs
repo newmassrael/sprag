@@ -311,14 +311,16 @@ fn split_id_of_tag(tag: &str) -> Option<SplitId> {
 /// caller must NOT write. Two shapes reach it: a pinion `Tabs` well, and a leaf whose slot
 /// holds no pane.
 ///
-/// **A `Tabs` well is REACHABLE (R154 correction).** This doc used to call it unreachable
-/// because [`use_dock_reorganizer`] runs `with_tabbing(false)` — but that flag governs the
-/// zone CLASSIFIER, not direct topology edits, and R153 registered
-/// [`DOCK_REORGANIZE_TAG`]'s surface, whose `reorganize` invoke pinion deliberately does NOT
-/// gate on tabbing. So an agent naming `zone: "Center"` mints a real tab well here. Refusing
-/// the write keeps SESSION state safe, but the client is then stuck rendering a well the host
-/// cannot hold and — because no host revision moved — nothing re-projects it away.
-/// PINION-PR60 asks for the invoke to honour the surface's own policy.
+/// **A `Tabs` well is no longer reachable — but this refusal STAYS.** R154 recorded that
+/// `with_tabbing(false)` gated only the zone CLASSIFIER, so the `reorganize` invoke R153
+/// registered on [`DOCK_REORGANIZE_TAG`] could still mint a real tab well by naming
+/// `zone: "Center"`; PINION-PR60 (pinion R1351) now gates the invoke on the same policy, and
+/// `the_reorganize_invoke_honors_the_surfaces_no_tabbing_policy` pins it. The refusal here is
+/// kept anyway, because the two guard different things: pinion guarantees no ONE surface
+/// tabifies against its own policy, while this function is the last thing standing between
+/// ANY unrepresentable topology and the host's session state. An unrepresentable shape must
+/// fail closed at the write, not rely on every producer upstream having been configured
+/// correctly.
 ///
 /// Returning `Some` is NOT on its own a licence to write: this reports only that every leaf
 /// PRESENT could be named. A pane [`project_layout`] dropped is simply absent, and no
@@ -723,13 +725,14 @@ const REORGANIZER_KEY: &str = "sprag_gui.dock_reorganizer";
 /// the nearest edge (split) instead of a tab well, so no `Center`/tab drop zone is offered
 /// to a pointer.
 ///
-/// **It does NOT cover every path (R154 correction).** This doc used to claim "EVERY path
-/// (drag, RPC, cross-window redock)". The flag gates the CLASSIFIER; the symbolic
-/// `reorganize` invoke on the surface R153 registered ([`DOCK_REORGANIZE_TAG`]) names a zone
-/// outright and pinion deliberately does not gate it — so `zone: "Center"` still tabifies,
-/// and [`unproject_layout`] can then no longer represent this client's own surface.
-/// PINION-PR60 asks pinion to honour the surface policy there too, which is the same
-/// consistency argument R1112 already won for the classifier.
+/// **It NOW covers the symbolic path too (PINION-PR60 delivered, pinion R1351).** R154
+/// corrected this doc's original "EVERY path" claim: the flag gated only the CLASSIFIER,
+/// while the `reorganize` invoke on the surface R153 registered ([`DOCK_REORGANIZE_TAG`])
+/// named a zone outright and pinion deliberately did not gate it — so `zone: "Center"`
+/// tabified, and [`unproject_layout`] could then no longer represent this client's own
+/// surface. pinion now honours the surface policy there too (the same consistency argument
+/// R1112 had already won for the classifier), so both the pointer and the wire reach one
+/// answer. Pinned by `the_reorganize_invoke_honors_the_surfaces_no_tabbing_policy`.
 ///
 /// `with_float_policy(Collapse)` (R153) matches this surface's declaration to what the user
 /// actually sees: the host REMOVES a floated pane's leaf and the siblings reclaim the space.
@@ -759,10 +762,12 @@ const REORGANIZER_KEY: &str = "sprag_gui.dock_reorganizer";
 /// a floated pane loses its index home durably (the tracked host-side float-home-anchor gap).
 /// The declared half is the half a user can observe, and the half `Placeholder` got backwards.
 ///
-/// **Bound (upstream, PINION-PR59):** `set_float_policy` is an INVOKE on the reorganize
-/// surface [`DOCK_REORGANIZE_TAG`] registers, so this value is wire-MUTABLE: an agent can flip
-/// this dock back to `Placeholder` at runtime and re-create the lie. A surface policy should
-/// not be writable by a client that cannot implement it.
+/// **No longer wire-mutable (PINION-PR59 delivered, pinion R1350).** Declaring the policy
+/// here now LOCKS it: `set_float_policy` is refused on this surface, so an agent can no
+/// longer flip the dock back to `Placeholder` at runtime and re-create the lie R153 fixed.
+/// The lock is readable (`float_policy_locked`), so an agent learns the policy is fixed by
+/// ASKING rather than by being rejected — the same read-only shape `tabbing` already had,
+/// which is what made the request a consistency argument rather than a new mechanism.
 pub(crate) fn use_dock_reorganizer() -> Rc<DockReorganizer> {
     let topology = use_dock_topology();
     Owner::current()
@@ -829,6 +834,9 @@ fn boot_tree(slots: &[usize]) -> Option<DockTopology> {
 
 #[cfg(test)]
 mod tests {
+    use pinion_core::external::{ExternalIntrospect, IntrospectValue};
+    use pinion_widget_paint::dock::DockReorganizeExternal;
+
     use super::*;
     use pinion_core::reactive::Owner;
     use pinion_widget_paint::dock::DockNode; // used only by the boot-shape assertion
@@ -1015,11 +1023,14 @@ mod tests {
 
     /// A surface the host's arrangement cannot express is REFUSED, not written lossily.
     ///
-    /// A pinion tab well is the only such shape. `with_tabbing(false)` keeps it out of the
-    /// pointer's reach, but NOT out of the symbolic `reorganize` invoke R153 registered
-    /// (pinion does not gate that on tabbing — PINION-PR60), so this refusal is live, not
-    /// theoretical. Writing the panes minus their well would silently destroy the arrangement
-    /// the user is looking at.
+    /// A pinion tab well is the only such shape, and `with_tabbing(false)` now keeps it out of
+    /// BOTH the pointer's reach and the symbolic `reorganize` invoke R153 registered
+    /// (PINION-PR60, pinion R1351). So this case is no longer reachable through sprag's own
+    /// surface — which is exactly why the test builds the well DIRECTLY rather than asking the
+    /// reorganizer for one: the refusal guards the WRITE, and it must hold for any topology
+    /// that arrives however it arrived, not only for the ones today's producers can mint.
+    /// Writing the panes minus their well would silently destroy the arrangement the user is
+    /// looking at.
     #[test]
     fn an_unrepresentable_surface_refuses_the_write() {
         let owner = Owner::new();
@@ -1163,14 +1174,15 @@ mod tests {
     /// worse-ratio full-span strip. At >=3 panes the outer band spans multiple REMAINING
     /// panes an inner split cannot reproduce, so it stays offered.
     ///
-    /// **R154 correction:** this doc used to claim the suppression makes "the user's
-    /// top/bottom EDGE drop yield the inner 50/50 split". It does not, and PINION-PR57 is
-    /// filed on exactly that. The redundancy is applied when RESOLVING, but the router still
-    /// CLAIMS the perimeter band (`InputRouter::resolve_own_outer_dock` hands back the
-    /// `OUTER_DOCK_ZONE_TAG` sentinel on distance alone), and `outer_drop_zone` keys purely on
-    /// that tag — so a suppressed edge cannot fall through to the panel underneath. The band
-    /// is DEAD: it shows nothing, does nothing, and shadows the panel's own 22% split bands.
-    /// For a 2-pane terminal — the default layout — that is the entire perimeter.
+    /// **The dead band is gone (PINION-PR57 delivered, pinion R1348).** R154 recorded that
+    /// suppression ran at RESOLVE while the router still CLAIMED the perimeter on distance
+    /// alone, so a redundant edge could not fall through to the panel underneath: the band
+    /// showed nothing, did nothing, and shadowed that panel's own 22% split bands — for a
+    /// 2-pane terminal, the default layout, that was the ENTIRE perimeter. pinion now asks the
+    /// drag SOURCE (`accepts_outer_dock`) before claiming, and its dock answers with this very
+    /// predicate, so a band it would only refuse is never claimed and the split bands beneath
+    /// are reachable. sprag consumes the fix by driving pinion's dock; there is nothing to
+    /// implement here, which is why this test still pins only the PREDICATE.
     ///
     /// sprag owns this integration claim (its `panel_id` scheme + `tabbing=false`
     /// reorganizer over the boot topology); pinion owns the redundancy logic + the pointer
@@ -1218,21 +1230,131 @@ mod tests {
     /// this dock treats a tear-off. Left at pinion's default it answered exactly backwards, and
     /// nothing noticed until R153 made the surface queryable at all.
     ///
-    /// This pins the VALUE, and that is all it can pin — worth stating, because R154's review
-    /// found two things it cannot reach. The value is not inert (pinion branches on it in
-    /// `DockPanelExternal::collapse_leaf_if_policy`; see [`use_dock_reorganizer`]), and it is
-    /// wire-MUTABLE (`set_float_policy` is an invoke on the surface [`DOCK_REORGANIZE_TAG`]
-    /// registers), so an agent can flip it at runtime and this test would still pass.
-    /// PINION-PR59 asks for a policy a client cannot rewrite.
+    /// **PINION-PR59 DELIVERED (pinion R1350), so this now pins the WHOLE property.** R154's
+    /// review recorded that the test could only pin the constructor VALUE: `set_float_policy`
+    /// was an invoke on the surface [`DOCK_REORGANIZE_TAG`] registers, so an agent could flip
+    /// this dock back to `placeholder` at runtime and re-create the exact lie with the test
+    /// still green. Declaring a policy now LOCKS it, and the lock is READABLE
+    /// (`float_policy_locked`) — so an agent learns the policy is fixed by asking, rather than
+    /// by being rejected. The value is also not inert: pinion branches on it in
+    /// `DockPanelExternal::collapse_leaf_if_policy` (see [`use_dock_reorganizer`]).
     #[test]
-    fn the_dock_declares_the_float_policy_it_actually_follows() {
+    fn the_dock_declares_the_float_policy_it_actually_follows_and_the_wire_cannot_rewrite_it() {
         let owner = Owner::new();
         owner.run(|| {
+            let reorg = use_dock_reorganizer();
             assert_eq!(
-                use_dock_reorganizer().float_policy(),
+                reorg.float_policy(),
                 FloatPolicy::Collapse,
                 "the host removes a floated pane's leaf (siblings reclaim), so the surface \
                  must not report `placeholder` to an agent asking how it treats a tear-off",
+            );
+            // DECLARED ⇒ locked, and the surface says so rather than making an agent
+            // discover it by rejection.
+            assert!(
+                reorg.float_policy_locked(),
+                "sprag declares the policy via `with_float_policy`, so it must read as locked",
+            );
+
+            // And the refusal is real: the wire cannot restore the lie R153 fixed.
+            let mut surface = DockReorganizeExternal::from_reorganizer(Rc::clone(&reorg));
+            assert!(
+                surface
+                    .invoke(
+                        "set_float_policy",
+                        IntrospectValue::Text("placeholder".to_string()),
+                    )
+                    .is_err(),
+                "a declared policy must not be wire-writable",
+            );
+            assert_eq!(
+                reorg.float_policy(),
+                FloatPolicy::Collapse,
+                "...and the refused write must leave the policy standing",
+            );
+
+            // CONTROL — without it the assertion above is satisfied by a TYPO. An
+            // `Err(UnknownPath)` from a misspelled action is indistinguishable from a
+            // refusal, so a test that only asserts `is_err()` passes hardest when it is
+            // addressing nothing at all. The same call on an UNDECLARED policy must SUCCEED,
+            // which is what proves the path and the payload are right and that the LOCK is
+            // the thing doing the refusing.
+            let undeclared = Rc::new(DockReorganizer::new(use_dock_topology()));
+            assert!(
+                !undeclared.float_policy_locked(),
+                "a policy the binding never declared is not locked",
+            );
+            let mut open_surface = DockReorganizeExternal::from_reorganizer(Rc::clone(&undeclared));
+            assert!(
+                open_surface
+                    .invoke(
+                        "set_float_policy",
+                        IntrospectValue::Text("placeholder".to_string()),
+                    )
+                    .is_ok(),
+                "the same call must reach an undeclared surface (else the refusal above is a typo)",
+            );
+            assert_eq!(undeclared.float_policy(), FloatPolicy::Placeholder);
+        });
+    }
+
+    /// The symbolic `reorganize` invoke honours `with_tabbing(false)` — **PINION-PR60
+    /// DELIVERED (pinion R1351)**.
+    ///
+    /// This is the gap R154 filed as the MAJOR one, and it was never cosmetic. The flag gated
+    /// pinion's drop CLASSIFIER, so no pointer could reach a tab well; the symbolic invoke
+    /// named a zone outright and pinion deliberately did not gate it. A `zone: "Center"`
+    /// therefore minted a `Tabs` well that sprag's host cannot express, so
+    /// [`unproject_layout`] correctly REFUSED the write — and refusing the write saves the
+    /// session, not the screen: no host revision moved, so nothing re-projected and the
+    /// client forked from the host permanently, with no self-heal. A surface that cannot be
+    /// asked for the unrepresentable cannot fork.
+    #[test]
+    fn the_reorganize_invoke_honors_the_surfaces_no_tabbing_policy() {
+        let owner = Owner::new();
+        owner.run(|| {
+            use_dock_topology().set(boot_tree(&[0, 1]));
+            let reorg = use_dock_reorganizer();
+            let mut surface = DockReorganizeExternal::from_reorganizer(Rc::clone(&reorg));
+
+            let refused = surface.invoke(
+                "reorganize",
+                IntrospectValue::Json(serde_json::json!({
+                    "source": panel_id(0),
+                    "target": panel_id(1),
+                    "zone": "Center",
+                })),
+            );
+            assert!(
+                refused.is_err(),
+                "a `with_tabbing(false)` surface must refuse to tabify: {refused:?}",
+            );
+
+            // CONTROL — the refusal must be about the ZONE, not about a path this test
+            // misspelled or a payload pinion never parsed. An edge zone on the same surface,
+            // with the same shape, must go through.
+            let accepted = surface.invoke(
+                "reorganize",
+                IntrospectValue::Json(serde_json::json!({
+                    "source": panel_id(0),
+                    "target": panel_id(1),
+                    "zone": "Right",
+                })),
+            );
+            assert!(
+                accepted.is_ok(),
+                "an edge zone must still reorganize (else the refusal above is a typo): \
+                 {accepted:?}",
+            );
+
+            // The topology is still a shape this client can un-project and the host can
+            // store — which is the property the refusal exists to protect.
+            assert!(
+                unproject_layout(use_dock_topology().get().as_ref(), &|slot| Some(PaneId(
+                    slot as u64
+                )))
+                .is_some(),
+                "the refused tabify must leave a representable tree",
             );
         });
     }
