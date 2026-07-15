@@ -37,7 +37,8 @@ use std::fmt;
 
 use pinion_core::GridBuffer;
 use pinion_core::external::{
-    ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError, SchemaField,
+    ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError,
+    read_only_or_unknown,
 };
 use serde_json::Value;
 use sprag_input::Modifiers;
@@ -50,7 +51,10 @@ use crate::host::PaneScrollFacts;
 // The action names + query slots this external answers are the shared wire ABI
 // vocabulary ([`crate::wire`]) — the SAME consts the wire client addresses, so the
 // two cannot drift.
-use crate::wire::{CELLS_FIELD, CURSOR_KEYS_SLOT, FULL_TEXT_SLOT, KEY_ACTION, TEXT_ACTION};
+use crate::wire::{
+    CELLS_FIELD, CURSOR_KEYS_SLOT, FRAMES_SLOT, FULL_TEXT_SLOT, KEY_ACTION, PANE_SCHEMA,
+    TEXT_ACTION,
+};
 
 /// Encode a W3C `key` + `mods` to PTY bytes (the sprag-owned R2.6 encoder,
 /// [`sprag_input::encode`]) and write them to `session`. `true` on success;
@@ -190,17 +194,9 @@ rpc_external_impl!(SpragPaneExternal);
 
 impl ExternalIntrospect for SpragPaneExternal {
     fn schema(&self) -> IntrospectSchema {
-        IntrospectSchema::new(
-            const {
-                &[
-                    SchemaField::new(KEY_ACTION, "action"),
-                    SchemaField::new(TEXT_ACTION, "action"),
-                    CELLS_FIELD,
-                    SchemaField::new(CURSOR_KEYS_SLOT, "bool"),
-                    SchemaField::new(FULL_TEXT_SLOT, "string"),
-                ]
-            },
-        )
+        // Declared in `wire`, beside the addresses — a field's TYPE is part of its
+        // declaration, and this surface's vocabulary has ONE home.
+        IntrospectSchema::new(PANE_SCHEMA)
     }
 
     fn query(&self, path: &str) -> Option<IntrospectValue> {
@@ -209,17 +205,33 @@ impl ExternalIntrospect for SpragPaneExternal {
         // live and history alike — is a READ, so no client can wake the waiter it is
         // parked on merely by looking (the R152 livelock, and the wheel-tick bump that
         // outlived it).
-        if let Some(rest) = path.strip_prefix(CELLS_FIELD.literal_prefix()) {
-            // Strip against the DECLARED prefix, so this arm answers exactly the family
-            // `$schema` advertises. A malformed offset (`cells.zzz`) resolves to `None`:
-            // `query` has no error channel, and answering a plausible frame for an
-            // unparseable address is the quiet wrong answer PR-61 was filed about.
-            let offset: usize = rest.parse().ok()?;
-            return serde_json::to_value(self.frame_at(offset))
-                .ok()
-                .map(IntrospectValue::Json);
+        if let Some(arg) = path.strip_prefix(CELLS_FIELD.literal_prefix()) {
+            // Stripping the DECLARED prefix is what makes a path a MEMBER of the family —
+            // the same question `SchemaField::addresses` answers, and the reason a malformed
+            // member is `Null` (present-but-empty) rather than `None`. `None` here becomes
+            // `UnknownIntrospectPath`, whose definition is "not in its schema" — and
+            // `cells.zzz` IS in the schema. pinion states the model on `addresses`
+            // ("`width.zzz` belongs to `width` and is malformed, not unknown") and the
+            // remedy on `at_index` ("reports `Null` … never absence").
+            //
+            // R155's review caught the first draft answering `None` and defending it as
+            // "`query` has no error channel, and answering a plausible frame is the quiet
+            // wrong answer" — a false dichotomy that skipped the third option pinion
+            // specifies. Absence was the quiet wrong answer: it denied the surface owned an
+            // address it advertises.
+            return Some(cells_offset(arg).map_or(IntrospectValue::Null, |offset| {
+                serde_json::to_value(self.frame_at(offset))
+                    .map_or(IntrospectValue::Null, IntrospectValue::Json)
+            }));
         }
         match path {
+            // The count that bounds `cells.<offset>` (`IndexOf(FRAMES_SLOT)`): the live view
+            // plus one per retained history line. An agent reads this scalar to learn where
+            // history ends, instead of fetching whole cell grids to find out.
+            FRAMES_SLOT => Some(IntrospectValue::Int(
+                i64::try_from(self.session.with_screen(Screen::scrollback_len)).unwrap_or(i64::MAX)
+                    + 1,
+            )),
             CURSOR_KEYS_SLOT => Some(IntrospectValue::Bool(
                 self.session.input_modes().application_cursor_keys,
             )),
@@ -230,10 +242,16 @@ impl ExternalIntrospect for SpragPaneExternal {
         }
     }
 
-    fn intervene(&mut self, _path: &str, _value: IntrospectValue) -> Result<(), InterveneError> {
-        // No writable state slots: input is an action (invoke `key`) and the
-        // cursor-keys mode is producer-owned (read-only here).
-        Err(InterveneError::UnknownPath)
+    fn intervene(&mut self, path: &str, _value: IntrospectValue) -> Result<(), InterveneError> {
+        // Nothing here is writable: input is an action (invoke `key`), and every slot is
+        // producer-owned. But "not writable" and "not there" are different facts, and
+        // saying the wrong one is pinion's §2 #7 lie — an agent told `UnknownPath` for
+        // `full_text`, which it can plainly `query`, learns something false about the
+        // surface. `read_only_or_unknown` answers from the SCHEMA (routing through
+        // `SchemaField::addresses`, so `cells.0` reports read-only like any other member),
+        // which is why the declaration belongs in one place. R1353 shipped this helper; the
+        // first draft of R155 imported the vocabulary and kept the flat lie.
+        Err(read_only_or_unknown(&self.schema(), path))
     }
 
     fn invoke(
@@ -263,6 +281,33 @@ fn parse_text_args(args: &IntrospectValue) -> Result<String, InvokeError> {
             .ok_or(InvokeError::TypeMismatch),
         _ => Err(InvokeError::TypeMismatch),
     }
+}
+
+/// Parse a [`CELLS_FIELD`] member's `<offset>` argument — canonical non-negative decimal
+/// only. `None` means the member is MALFORMED (the caller answers `Null`), never that the
+/// path is unknown.
+///
+/// **Canonical, because `cells.7` / `cells.007` / `cells.+7` were three addresses for one
+/// frame** — shipped by R155's first draft (a bare `parse::<usize>`, which accepts both) in
+/// the same commit whose test doc says "a tolerated alias is how a split grows back". The
+/// retired JSON-arg parser could not express either spelling (JSON has no `007`), so
+/// consuming PR-61 had quietly INTRODUCED the aliases it was meant to remove. One frame, one
+/// address.
+///
+/// An integer too large for `usize` SATURATES rather than being called malformed: it means
+/// exactly what every other past-the-top offset means, and [`frame_at`]'s projection clamps
+/// it to the top. Answering `2^64-1` with the top frame while calling `2^64` malformed would
+/// split one concept across two answers for no reason a caller could predict.
+///
+/// [`frame_at`]: SpragPaneExternal::frame_at
+fn cells_offset(arg: &str) -> Option<usize> {
+    if arg.is_empty() || !arg.bytes().all(|b| b.is_ascii_digit()) {
+        return None; // a sign, a space, or a non-digit: not this argument's type
+    }
+    if arg.len() > 1 && arg.starts_with('0') {
+        return None; // `007` is `7` spelled a second way
+    }
+    Some(arg.parse::<usize>().unwrap_or(usize::MAX))
 }
 
 /// Parse the `key` action's args into a `(key, modifiers)` pair, or `None`

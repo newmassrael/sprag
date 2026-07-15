@@ -1180,9 +1180,27 @@ mod tests {
     /// showed nothing, did nothing, and shadowed that panel's own 22% split bands — for a
     /// 2-pane terminal, the default layout, that was the ENTIRE perimeter. pinion now asks the
     /// drag SOURCE (`accepts_outer_dock`) before claiming, and its dock answers with this very
-    /// predicate, so a band it would only refuse is never claimed and the split bands beneath
-    /// are reachable. sprag consumes the fix by driving pinion's dock; there is nothing to
-    /// implement here, which is why this test still pins only the PREDICATE.
+    /// predicate (sprag builds every panel `.with_reorganizer(..)`, which is what arms it —
+    /// a panel without one silently keeps the dead band).
+    ///
+    /// **This is the one consumed PR that CHANGES BEHAVIOUR, and the fall-through is not all
+    /// upside.** R155's first draft called it "free … nothing to implement here" and omitted
+    /// the caveat pinion CAPITALIZES: *"WHAT THE FALL-THROUGH RESOLVES IS NOT GUARANTEED TO
+    /// BE A DOCK … the interior's outcome over a non-panel (a splitter gutter, a tab-strip
+    /// background) or a dead-zone ring is `DropResolution::Float` — a TEAR-OFF for a
+    /// floatable panel … So a vetoed band inherits that too, where pre-R1348 it was inert."*
+    /// sprag's divider spans the dock, so its ends sit inside the top/bottom bands: a pane
+    /// dropped there now resolves over a gutter and may FLOAT where yesterday nothing
+    /// happened. That matters more here than upstream because sprag's float HOME ANCHOR is
+    /// unimplemented — a float plus a dock-back relocates the pane to the arrangement's end
+    /// DURABLY (`0|1|2` → `0|2|1` forever). Consuming PR-57 therefore made the arc's one
+    /// remaining sprag-side debt materially easier to hit, and pinion is explicit that
+    /// suppressing only the band's float would restore the asymmetry R1348 removed — so the
+    /// answer is the anchor, not a local veto.
+    ///
+    /// This test still pins only the PREDICATE, which is all it can: the claim itself is
+    /// pinion's router's, verified by reading its source, and the perimeter's real geometry
+    /// is a live question this test does not ask.
     ///
     /// sprag owns this integration claim (its `panel_id` scheme + `tabbing=false`
     /// reorganizer over the boot topology); pinion owns the redundancy logic + the pointer
@@ -1289,12 +1307,21 @@ mod tests {
                 open_surface
                     .invoke(
                         "set_float_policy",
-                        IntrospectValue::Text("placeholder".to_string()),
+                        IntrospectValue::Text("collapse".to_string()),
                     )
                     .is_ok(),
                 "the same call must reach an undeclared surface (else the refusal above is a typo)",
             );
-            assert_eq!(undeclared.float_policy(), FloatPolicy::Placeholder);
+            // `collapse`, NOT `placeholder`: R155's review caught the control writing the
+            // value the surface ALREADY held (`Placeholder` is `#[default]`, and
+            // `DockReorganizer::new` seeds it), so a `set_float_policy` that was a no-op
+            // returning `Ok` would have satisfied it. The control has to move the state to
+            // prove the write lands, or it only proves the call was accepted.
+            assert_eq!(
+                undeclared.float_policy(),
+                FloatPolicy::Collapse,
+                "the accepted write must actually change the policy",
+            );
         });
     }
 
@@ -1330,6 +1357,20 @@ mod tests {
                 "a `with_tabbing(false)` surface must refuse to tabify: {refused:?}",
             );
 
+            // The REFUSAL's own tree is still one this client can un-project and the host can
+            // store — the property the refusal exists to protect. Asserted HERE, before the
+            // control below mutates anything: R155's review caught this running last, where
+            // it observed the CONTROL's tree instead. Had `Center` tabified, the control's
+            // `SplitInsert` would likely have pulled both panels back into a split and the
+            // assertion would have passed anyway — it would have pinned nothing.
+            assert!(
+                unproject_layout(use_dock_topology().get().as_ref(), &|slot| Some(PaneId(
+                    slot as u64
+                )))
+                .is_some(),
+                "the refused tabify must leave a representable tree",
+            );
+
             // CONTROL — the refusal must be about the ZONE, not about a path this test
             // misspelled or a payload pinion never parsed. An edge zone on the same surface,
             // with the same shape, must go through.
@@ -1345,16 +1386,6 @@ mod tests {
                 accepted.is_ok(),
                 "an edge zone must still reorganize (else the refusal above is a typo): \
                  {accepted:?}",
-            );
-
-            // The topology is still a shape this client can un-project and the host can
-            // store — which is the property the refusal exists to protect.
-            assert!(
-                unproject_layout(use_dock_topology().get().as_ref(), &|slot| Some(PaneId(
-                    slot as u64
-                )))
-                .is_some(),
-                "the refused tabify must leave a representable tree",
             );
         });
     }

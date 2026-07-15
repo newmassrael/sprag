@@ -144,36 +144,35 @@ fn wire_client_drives_a_real_sprag_term_host() {
         "reading the live frame must not bump the revision (else the poll loop livelocks)",
     );
 
-    // The SAME must hold for a SCROLLBACK read, and that is what consuming PINION-PR61
-    // bought. History was an invoke (a `MethodOcc::Mutate`) for as long as sprag believed a
-    // read could not take an argument, so one client's wheel tick bumped the revision and
-    // woke every OTHER attached client's parked `waitFor` into a full re-fetch. Bounded and
-    // terminating, so never the R152 livelock — but the same defect. The offset now rides
-    // the path, so history is a read like any other and wakes nobody.
+    // A SCROLLBACK read does not bump either — and it needs no loop of its own here, which
+    // is worth stating because R155's first draft wrote one and it was theatre twice over.
+    // `MethodOcc` is a STATIC TABLE KEYED BY METHOD NAME (`("scene/query", Read)` /
+    // `("scene/invoke", Mutate)`), consulted before the handler ever reads `params.path` —
+    // so the classification cannot vary by offset, and the loop above already pins it for
+    // every member of the family. Worse, the extra loop read no history at all: this pane is
+    // `cat` and has emitted nothing, so `project_scrolled` clamps every offset back to the
+    // live view. It re-ran the same read five more times while its comment claimed to prove
+    // a second property.
     //
-    // The same `cat` reasoning above makes this a fact rather than a coin flip: nothing else
-    // can move the revision across this window.
-    for offset in 1..=5 {
-        conn.call(
-            "scene/query",
-            json!({ "path": pane_input_path(0, &cells_slot_at(offset)) }),
-        )
-        .expect("scrollback frame query");
-    }
-    assert_eq!(
-        read_revision(&mut conn),
-        before_read,
-        "a scrollback read must not bump either (else one client's wheel tick wakes all)",
-    );
+    // The real property PR-61 bought — that history is a READ rather than the revision-
+    // bumping invoke it used to be — is pinned where it can be observed: the offset-carrying
+    // path is exercised over real scrollback by `rpc::tests::the_cells_family_honors_the_
+    // scrollback_offset` (a `seq 1 40` pane), and routing it back through `scene/invoke`
+    // fails that test outright, since the query would answer nothing.
+    //
+    // The two requirements genuinely fight, which is why they live in two tests: real
+    // history needs output, and output bumps the revision — the very thing measured here.
 
-    // The family answers its members and nothing else. The bare stem carries no offset, so
-    // it addresses no frame; a malformed one is refused rather than answered with a
-    // plausible default — the quiet wrong answer PR-61 was filed about.
-    for dead in ["cells", "cells.", "cells.zzz", "cells.-1"] {
+    // The retired doors answer nothing. `cells` is the bare stem: it carries no argument, so
+    // it is not a MEMBER of the family and is correctly absent. (A member whose argument is
+    // malformed — `cells.zzz` — is a different case, and answers `Null` rather than absence;
+    // that taxonomy is pinned in `rpc::tests::the_cells_family_answers_the_paths_it_declares`,
+    // where a live pane can be driven.)
+    for absent in ["cells", "frame"] {
         assert!(
-            conn.call("scene/query", json!({ "path": pane_input_path(0, dead) }))
+            conn.call("scene/query", json!({ "path": pane_input_path(0, absent) }))
                 .is_err(),
-            "`{dead}` addresses no frame and must not answer one",
+            "`{absent}` addresses no frame and must not answer one",
         );
     }
 

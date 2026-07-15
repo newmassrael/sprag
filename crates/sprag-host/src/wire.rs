@@ -22,20 +22,36 @@ pub const KEY_ACTION: &str = "key";
 /// The pane-input external invoke action that writes literal UTF-8 (IME commit /
 /// paste), no key-encoding.
 pub const TEXT_ACTION: &str = "text";
-/// The arguments of [`CELLS_FIELD`] — one scrollback `offset`.
+/// The pane-input external query slot: how many distinct frames [`CELLS_FIELD`] can address
+/// — `scrollback_len + 1` (the live view, plus one per retained history line).
 ///
-/// [`ArgDomain::Open`](pinion_core::external::ArgDomain::Open) is a decision, not a default
-/// (pinion's own doc calls an unearned `Open` "an affirmative false statement"): the bound is
-/// REAL but is not expressible here. A valid offset runs `0..=scrollback_len` INCLUSIVE —
-/// `0` is the live view and `scrollback_len` is fully scrolled back, both answerable — while
-/// [`ArgDomain::IndexOf`](pinion_core::external::ArgDomain::IndexOf) states an EXCLUSIVE
-/// `0..count`. Declaring `IndexOf` would
-/// therefore disown the topmost page, so it would be false in the direction that matters.
-/// This is pinion's own first honest reason for `Open` (its `datepicker` declares
-/// `state.<day>` the same way, for `1..=days`). The depth itself is not hidden: every frame
-/// this family answers carries `scrollback_len` in its payload, and an out-of-range offset
-/// clamps to it rather than erroring.
-const CELLS_ARGS: &[SchemaArg] = &[SchemaArg::open("offset", "int")];
+/// It exists to make [`CELLS_FIELD`]'s argument able to state its bound. A count, not a
+/// length, and the
+/// `+ 1` is the whole point: offsets run `0..=scrollback_len` INCLUSIVE (`0` is live,
+/// `scrollback_len` is fully scrolled back, both answerable), so the EXCLUSIVE `0..frames`
+/// that [`ArgDomain::IndexOf`](pinion_core::external::ArgDomain::IndexOf) means is exactly
+/// right against `scrollback_len + 1` and would have been false against the length.
+pub const FRAMES_SLOT: &str = "frames";
+
+/// The arguments of [`CELLS_FIELD`] — one scrollback `offset`, bounded by [`FRAMES_SLOT`].
+///
+/// **`IndexOf`, not `Open`, and R155's review is why.** The first draft declared
+/// [`ArgDomain::Open`](pinion_core::external::ArgDomain::Open) with a confident paragraph
+/// arguing the bound was "real but not expressible", citing pinion's `datepicker` as the
+/// same shape. **pinion's datepicker comment refutes that analogy in its own words**: its
+/// `state.<day>` is inexpressible because it is ONE-BASED (`1..=days`, so `IndexOf` "would be
+/// false at BOTH ends"), and it *publishes* `days` regardless. This offset is ZERO-based, so
+/// `0..=scrollback_len` is plainly `0..(scrollback_len + 1)` — an `IndexOf` against a count
+/// this surface simply had to publish. `Open` was not a bound we could not state; it was a
+/// count we had not exposed, and pinion's own doc calls an unearned `Open` "an affirmative
+/// false statement … worse than the pre-R1353 silence it replaced, because now it carries a
+/// schema's authority".
+///
+/// An out-of-range offset still CLAMPS rather than erroring (`project_scrolled`), which
+/// `IndexOf` does not promise away — pinion declares `width.<col>` the same way over a
+/// clamping reader. The domain says which offsets are MEANINGFUL, so an agent reads one
+/// scalar instead of fetching whole cell grids to discover where history ends.
+const CELLS_ARGS: &[SchemaArg] = &[SchemaArg::index("offset", FRAMES_SLOT)];
 
 /// The pane-input external query FAMILY: the pane's cell FRAME
 /// ([`CellFrame`](crate::CellFrame)) at scrollback `offset` — `cells.<offset>`, where
@@ -75,6 +91,27 @@ pub const FULL_TEXT_SLOT: &str = "full_text";
 /// The pane-input external query slot: the producer's DECCKM (application cursor
 /// keys) mode.
 pub const CURSOR_KEYS_SLOT: &str = "application_cursor_keys";
+
+/// The pane-input external's DECLARED SCHEMA — every path it answers, with its type and any
+/// arguments, in `$schema` order. [`SpragPaneExternal`](crate::SpragPaneExternal) publishes
+/// this verbatim.
+///
+/// The declarations live HERE, beside the addresses, because this module claims to be "the
+/// ONE definition of the … grammar and action names" and a field's TYPE is part of its
+/// declaration. R155's review caught the module owning `CELLS_FIELD` whole while the other
+/// four fields kept their names here and their types at the use site — one concept, two
+/// homes, split by nothing more principled than which field happened to be parametric.
+///
+/// Each entry reuses its address const rather than re-spelling it, so a field's path and the
+/// path a client builds are the same string by construction.
+pub const PANE_SCHEMA: &[SchemaField] = &[
+    SchemaField::new(KEY_ACTION, "action"),
+    SchemaField::new(TEXT_ACTION, "action"),
+    CELLS_FIELD,
+    SchemaField::new(FRAMES_SLOT, "int"),
+    SchemaField::new(CURSOR_KEYS_SLOT, "bool"),
+    SchemaField::new(FULL_TEXT_SLOT, "string"),
+];
 
 /// The mux control external invoke action that spawns a pane, returning its id.
 pub const SPAWN_ACTION: &str = "spawn";
@@ -171,28 +208,43 @@ mod tests {
         );
     }
 
-    /// The family answers exactly the paths it advertises — checked with pinion's OWN
-    /// matcher ([`SchemaField::addresses`], the same predicate its dispatch uses), so this
-    /// is the real contract rather than sprag's spelling of it.
+    /// The declaration says the exact words the wire uses — a TRIPWIRE on the one spelling
+    /// everything else derives from.
     ///
-    /// The failure this exists to catch is the §2 #2 lie PR-61 was filed about: a schema
-    /// that advertises one address while the surface answers another leaves an agent to
-    /// guess, and the guess fails quietly. Since the template is the one definition and the
-    /// prefix and the builder both derive from it, a drift takes a deliberate edit — this
-    /// pins that they still agree after one.
+    /// **This test's first draft claimed far more and proved less, and R155's review proved
+    /// the gap by experiment.** It asserted "the family answers exactly the paths it
+    /// advertises — checked with pinion's OWN matcher, the same predicate its dispatch
+    /// uses". Three lies in one sentence: `SchemaField::addresses` runs in NO dispatch path
+    /// (pinion's `scene/query` calls `intro.query(path).ok_or(UnknownIntrospectPath)`; the
+    /// matcher is reachable only through `read_only_or_unknown`, on `intervene`); the test
+    /// calls no `query`, so it cannot observe what the family ANSWERS; and the `addresses`
+    /// assertions were TAUTOLOGIES — a reviewer re-ran all four against a field renamed to
+    /// `frames.<offset>` and every one still passed, because `cells_slot_at` builds its
+    /// probe FROM `literal_prefix()`, so both sides move together. It was the R154 scar
+    /// ("the test builds its tag from the very const under test") repeated one round later,
+    /// wearing a doc that congratulated itself for avoiding it.
+    ///
+    /// So the tautologies are gone and what remains is the hardcoded spelling the old doc
+    /// apologized for ("rather than sprag's spelling of it"). That line is the whole value:
+    /// it is the only assertion a rename cannot satisfy, and a rename is the only drift
+    /// worth catching here. `the_cells_family_answers_the_paths_it_declares` in `rpc.rs`
+    /// owns the other half — what the surface actually answers — because that needs a live
+    /// pane, which is exactly why this test could never have proved it.
     #[test]
-    fn the_cells_family_declares_the_paths_it_answers() {
+    fn the_cells_family_declares_the_wire_words_it_uses() {
+        // The template IS the definition; pin it verbatim.
+        assert_eq!(CELLS_FIELD.path, "cells.<offset>");
+        // What a `query` impl strips, and what `cells_slot_at` builds from.
         assert_eq!(CELLS_FIELD.literal_prefix(), "cells.");
-        assert!(CELLS_FIELD.addresses(&cells_slot_at(0)));
-        assert!(CELLS_FIELD.addresses(&cells_slot_at(4096)));
-        // The bare stem is NOT a member: `cells` carries no offset, so it addresses no
-        // frame and must not pollute a snapshot with a plausible default.
-        assert!(!CELLS_FIELD.addresses("cells"));
-        assert!(!CELLS_FIELD.addresses("cells."));
-        // The declared argument is the one the surface actually takes.
+        assert_eq!(cells_slot_at(7), "cells.7");
+        // The declared argument, and the count path that bounds it — `frames`, which this
+        // surface must actually serve for the domain to be true (`rpc.rs` proves it does).
         assert_eq!(CELLS_FIELD.args.len(), 1);
         assert_eq!(CELLS_FIELD.args[0].name, "offset");
-        assert!(matches!(CELLS_FIELD.args[0].domain, ArgDomain::Open));
+        assert!(matches!(
+            CELLS_FIELD.args[0].domain,
+            ArgDomain::IndexOf(FRAMES_SLOT)
+        ));
     }
 
     #[test]

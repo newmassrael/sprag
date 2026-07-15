@@ -1032,17 +1032,25 @@ mod tests {
 
     // ─── R115b: pane cells over the wire (the client's per-frame data read) ───
 
+    /// `scene/query` pane 0's input external at `member`, over the full dispatch path.
+    fn query_pane0(state: &HostState, member: &str) -> serde_json::Value {
+        serve_one(
+            state,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"scene/query","params":{{"path":"/pane_0/sprag_input/external/{member}"}}}}"#
+            ),
+        )
+    }
+
     /// The pane's frame at scrollback `offset`, over the full dispatch path — the
     /// `cells.<offset>` QUERY, the ONE address of the concept since PINION-PR61 (`offset ==
     /// 0` is the live view the poll loop reads each wake). A `MethodOcc::Read` at every
     /// offset, so no frame read — live or history — bumps the revision.
-    fn cells_frame(state: &HostState, offset: u64) -> serde_json::Value {
-        serve_one(
-            state,
-            &format!(
-                r#"{{"jsonrpc":"2.0","id":1,"method":"scene/query","params":{{"path":"/pane_0/sprag_input/external/cells.{offset}"}}}}"#
-            ),
-        )
+    ///
+    /// Built through [`cells_slot_at`], the same builder the client uses, so a test cannot
+    /// address a member the production path never would.
+    fn cells_frame(state: &HostState, offset: usize) -> serde_json::Value {
+        query_pane0(state, &crate::wire::cells_slot_at(offset))
     }
 
     /// One concept, ONE address — and the ABI, not a comment, is what says so.
@@ -1078,6 +1086,63 @@ mod tests {
         assert!(
             cells_frame(&state, 0)["result"]["cells"].is_object(),
             "`cells.0` is the live view",
+        );
+    }
+
+    /// What the family ANSWERS matches what it DECLARES — over the real dispatch path, with
+    /// a live pane, which is the only place this can be observed.
+    ///
+    /// The split with `wire.rs`'s tripwire is deliberate: that one pins the declaration's
+    /// spelling, this one pins the surface's behaviour. R155's first draft tried to do both
+    /// in `wire.rs` with `SchemaField::addresses` and did neither — `addresses` is not the
+    /// predicate `query` dispatch uses, so the test asserted an agreement between two things
+    /// that never meet.
+    ///
+    /// The taxonomy under test is pinion's, not sprag's invention:
+    /// * a NON-member (`cells`, the bare stem) is ABSENT — it carries no argument, so it
+    ///   addresses no frame;
+    /// * a MEMBER whose argument is malformed (`cells.zzz`, `cells.-1`) is PRESENT-BUT-EMPTY
+    ///   (`Null`) — "`width.zzz` belongs to `width` and is malformed, not unknown";
+    /// * a MEMBER past the top CLAMPS, because the domain says which offsets are meaningful,
+    ///   not which are answerable.
+    #[test]
+    fn the_cells_family_answers_the_paths_it_declares() {
+        let state = host_with("printf hi", 20, 4);
+        wait_for_pane0_eof(&state);
+
+        // The count that bounds the family — served, or `IndexOf(FRAMES_SLOT)` would name a
+        // path an agent cannot read, which is the discovery hole PR-61 was filed about.
+        let frames = query_pane0(&state, crate::wire::FRAMES_SLOT);
+        assert_eq!(
+            frames["result"], 1,
+            "a pane with no scrollback addresses exactly the live frame: {frames}",
+        );
+
+        // A member the argument makes malformed: present-but-empty, NOT absent.
+        for malformed in ["cells.zzz", "cells.-1", "cells.+1", "cells.007"] {
+            let answer = query_pane0(&state, malformed);
+            assert!(
+                answer.get("error").is_none(),
+                "`{malformed}` is a MEMBER of a declared family — denying the path exists \
+                 tells an agent something false about the surface: {answer}",
+            );
+            assert!(
+                answer["result"].is_null(),
+                "...and a malformed argument answers Null, never a plausible frame: {answer}",
+            );
+        }
+
+        // A non-member really is absent: the stem carries no argument.
+        assert!(
+            query_pane0(&state, "cells").get("error").is_some(),
+            "the bare stem addresses no frame",
+        );
+
+        // Past the top clamps to a real frame rather than erroring (the projection's
+        // documented behaviour, which `IndexOf` does not promise away).
+        assert!(
+            query_pane0(&state, "cells.99999")["result"]["cells"].is_object(),
+            "an out-of-range offset clamps to the top",
         );
     }
 
