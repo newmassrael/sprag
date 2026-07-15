@@ -48,9 +48,20 @@ fn spawn_host(sock: &Path) -> HostChild {
     HostChild(child)
 }
 
-/// A unique per-process socket path under the temp dir.
+/// A socket path unique to this CALL, under the temp dir.
+///
+/// The counter is load-bearing, not decoration. `cargo test` runs this file's tests in
+/// PARALLEL THREADS OF ONE BINARY, so a path keyed only on `process::id()` is the SAME
+/// string in every test — and each one opens with `remove_file(&sock)` before spawning its
+/// host, i.e. it unlinks the socket a concurrently-running sibling is serving on. The
+/// sibling's next call then dies with `BrokenPipe`. It was a live race the whole time and
+/// only surfaced when R152 lengthened `wire_client_drives_a_real_sprag_term_host` (a settle
+/// poll + repeated reads) enough to widen the overlap — a reminder that "passes today" and
+/// "is isolated" are different claims.
 fn socket_path() -> PathBuf {
-    std::env::temp_dir().join(format!("sprag-wire-it-{}.sock", std::process::id()))
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!("sprag-wire-it-{}-{n}.sock", std::process::id()))
 }
 
 #[test]
@@ -97,6 +108,23 @@ fn wire_client_drives_a_real_sprag_term_host() {
     // scene revision. The poll loop re-reads this frame on every `scene/waitFor` wake, so
     // a read that bumped would wake the very waiter it answered — a ~30Hz idle spin. A
     // query is a `MethodOcc::Read`; the retired `cells`-invoke live path was a Mutate.
+    //
+    // QUIESCE FIRST. The boot transient (the pane's PTY coming up, its first screen) bumps
+    // the revision legitimately, and it races this guard: measuring stability across it
+    // asserts a coin flip, not a fact — the exact R150 mistake (a transient asserted as an
+    // invariant, green until the machine's timing shifts). Settle on two consecutive equal
+    // reads first; `cat` then emits nothing until written to, so any later bump is the
+    // read's own doing, which is what this measures.
+    let mut prev = read_revision(&mut conn);
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            let now = read_revision(&mut conn);
+            let settled = now == prev;
+            prev = now;
+            settled
+        }),
+        "the boot transient never settled, so the read's own effect cannot be isolated",
+    );
     let before_read = read_revision(&mut conn);
     for _ in 0..5 {
         conn.call(
