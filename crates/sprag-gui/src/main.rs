@@ -748,6 +748,14 @@ impl WidgetCore for TerminalViewer {
         let Some((panel, event)) = intent.tag_str().rsplit_once('.') else {
             return Vec::new();
         };
+        // A settled splitter drag (pinion PR-56): the tag here is a SPLIT tag, not a pane, so
+        // this must precede the pane routing below (which would drop it). The final ratio is
+        // already in the divider's signal (the live drag set it), so we write the arrangement
+        // now — the explicit commit edge that lets the layout survive with no idle repaint.
+        if event == split::RATIO_COMMITTED_EVENT {
+            split::commit_layout(&use_terminal().slots);
+            return Vec::new();
+        }
         let Some(i) = split::pane_index_of_panel(panel) else {
             return Vec::new();
         };
@@ -1951,6 +1959,47 @@ mod tests {
                 .map(|t| t.panel_ids().len())),
             Some(1),
             "collapse mode: pane 1's leaf is removed (the sibling reclaims the slot)"
+        );
+    }
+
+    /// A settled splitter drag (pinion PR-56 `ratio_committed`) writes the new ratio to the
+    /// host in ONE reducer dispatch — no settle frame. The intent's tag is a SPLIT tag, not a
+    /// pane, so this also guards that the reducer routes it BEFORE the pane-panel gate (which
+    /// would drop it). This is the explicit commit edge the ratio path relies on now that the
+    /// idle-repaint livelock fix (R152) removed the spurious frames the settle detector rode.
+    #[test]
+    fn ratio_committed_intent_writes_the_settled_ratio_to_the_host() {
+        use sprag_terminal::{LayoutNodeWire, SplitId};
+        use std::borrow::Cow;
+        let mut core = ShellCore::<TerminalViewer>::new();
+        let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+        core.finalize_frame(scene); // boot layout adopted: `seen` + topology populated
+
+        // The boot two-pane row has one divider, host SplitId 0 -> tag "sprag_gui.split.0".
+        let tag = split::split_tag(SplitId(0));
+        let host_ratio = |core: &ShellCore<TerminalViewer>| {
+            core.root_owner()
+                .run(|| match use_terminal().slots.layout().tree.root {
+                    Some(LayoutNodeWire::Split { ratio, .. }) => Some(ratio),
+                    _ => None,
+                })
+        };
+        assert_eq!(host_ratio(&core), Some(0.5), "the boot divider is even");
+
+        // Simulate the live drag: pinion's `pointer_move` sets this signal; set it directly,
+        // then fire the drag-end intent the shell delivers on release.
+        core.root_owner()
+            .run(|| split::use_split_ratio(tag.clone(), 0.5).set(0.75));
+        let intent = Intent {
+            tag: Cow::Owned(format!("{tag}.{}", split::RATIO_COMMITTED_EVENT)),
+            payload: IntrospectValue::Float(0.75),
+        };
+        core.dispatch_intent(&intent);
+
+        assert_eq!(
+            host_ratio(&core),
+            Some(0.75),
+            "the settled ratio reached the host in one dispatch, with no settle frame",
         );
     }
 

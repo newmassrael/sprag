@@ -46,7 +46,9 @@ use crate::host::PaneScrollFacts;
 // The action names + query slots this external answers are the shared wire ABI
 // vocabulary ([`crate::wire`]) — the SAME consts the wire client addresses, so the
 // two cannot drift.
-use crate::wire::{CELLS_ACTION, CURSOR_KEYS_SLOT, FULL_TEXT_SLOT, KEY_ACTION, TEXT_ACTION};
+use crate::wire::{
+    CELLS_ACTION, CURSOR_KEYS_SLOT, FULL_TEXT_SLOT, KEY_ACTION, LIVE_FRAME_SLOT, TEXT_ACTION,
+};
 
 /// Encode a W3C `key` + `mods` to PTY bytes (the sprag-owned R2.6 encoder,
 /// [`sprag_input::encode`]) and write them to `session`. `true` on success;
@@ -123,8 +125,8 @@ impl SpragPaneExternal {
         }
     }
 
-    /// Return the pane's cell FRAME at scrollback `offset` — the wire display
-    /// client's per-frame read (topology B). The frame is a JSON object:
+    /// The pane's cell FRAME at scrollback `offset` — the wire display client's
+    /// per-frame read (topology B). A JSON-able struct:
     ///
     /// * `cells` — the projected [`GridBuffer`]
     ///   ([`sprag_grid::project_scrolled`], serde-able since PINION-PR49), the
@@ -133,30 +135,33 @@ impl SpragPaneExternal {
     ///   top-anchored offset math);
     /// * `visible_rows` — one scrollback page.
     ///
-    /// The [`GridBuffer`] and the [`PaneScrollFacts`] are
-    /// read under ONE screen lock — an atomically consistent snapshot (the cells and
-    /// the scroll facts describe the SAME screen state, never a torn read across two
-    /// locks) — then serialized AFTER the lock is released, so the (CPU-bound)
-    /// serialization never holds the producer's screen. The facts flatten into the
-    /// frame from the ONE [`PaneScrollFacts`] type (its field names ARE the wire
-    /// keys), and are read through [`PaneScrollFacts::from_screen`] — the same
-    /// population the in-process [`HostClient::pane_scroll_facts`](crate::HostClient::pane_scroll_facts)
+    /// The [`GridBuffer`] and the [`PaneScrollFacts`] are read under ONE screen lock —
+    /// an atomically consistent snapshot (the cells and the scroll facts describe the
+    /// SAME screen state, never a torn read across two locks). The facts flatten into
+    /// the frame from the ONE [`PaneScrollFacts`] type (its field names ARE the wire
+    /// keys), read through [`PaneScrollFacts::from_screen`] — the same population the
+    /// in-process [`HostClient::pane_scroll_facts`](crate::HostClient::pane_scroll_facts)
     /// uses, so the two clients cannot disagree on the frame's non-cell shape.
     ///
-    /// `offset == 0` is the live view; a larger offset windows into history
-    /// ([`sprag_grid::project_scrolled`] self-clamps to the retained depth). A
-    /// malformed `offset` is an [`InvokeError::TypeMismatch`]; a serialization failure
-    /// (never expected for a valid buffer) is [`InvokeError::Rejected`].
-    fn read_cells(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
-        let offset = parse_offset_arg(args)?;
-        // One screen lock: project the scrolled cells + read the scroll facts that
-        // ride with them, so the frame is a consistent snapshot. Serialization runs
-        // after, off the lock.
-        let frame = self.session.with_screen(|screen| CellFrame {
+    /// `offset == 0` is the live view ([`LIVE_FRAME_SLOT`], a query); a larger offset
+    /// windows into history ([`CELLS_ACTION`], an invoke) and self-clamps to the
+    /// retained depth.
+    fn frame_at(&self, offset: usize) -> CellFrame {
+        self.session.with_screen(|screen| CellFrame {
             cells: sprag_grid::project_scrolled(screen, offset),
             facts: PaneScrollFacts::from_screen(screen),
-        });
-        serde_json::to_value(&frame)
+        })
+    }
+
+    /// Serve [`frame_at`](Self::frame_at) at the args' scrollback `offset` — the
+    /// [`CELLS_ACTION`] invoke (history reads only; the live `offset == 0` view is the
+    /// [`LIVE_FRAME_SLOT`] query, so it stays off the revision-bumping invoke path).
+    /// Serialization runs off the screen lock. A malformed `offset` is an
+    /// [`InvokeError::TypeMismatch`]; a serialization failure (never expected for a
+    /// valid buffer) is [`InvokeError::Rejected`].
+    fn read_cells(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let offset = parse_offset_arg(args)?;
+        serde_json::to_value(self.frame_at(offset))
             .map(IntrospectValue::Json)
             .map_err(|_| InvokeError::Rejected)
     }
@@ -200,6 +205,7 @@ impl ExternalIntrospect for SpragPaneExternal {
             (KEY_ACTION, "action"),
             (TEXT_ACTION, "action"),
             (CELLS_ACTION, "action"),
+            (LIVE_FRAME_SLOT, "frame"),
             (CURSOR_KEYS_SLOT, "bool"),
             (FULL_TEXT_SLOT, "string"),
         ])
@@ -207,6 +213,11 @@ impl ExternalIntrospect for SpragPaneExternal {
 
     fn query(&self, path: &str) -> Option<IntrospectValue> {
         match path {
+            // The live frame is a READ (not the `cells` invoke) so the wire client's
+            // poll loop can re-read it without bumping the revision it waits on.
+            LIVE_FRAME_SLOT => serde_json::to_value(self.frame_at(0))
+                .ok()
+                .map(IntrospectValue::Json),
             CURSOR_KEYS_SLOT => Some(IntrospectValue::Bool(
                 self.session.input_modes().application_cursor_keys,
             )),

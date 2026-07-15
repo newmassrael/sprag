@@ -21,9 +21,24 @@ pub const KEY_ACTION: &str = "key";
 /// paste), no key-encoding.
 pub const TEXT_ACTION: &str = "text";
 /// The pane-input external invoke action returning the pane's cell FRAME
-/// ([`CellFrame`](crate::CellFrame)) at a scrollback offset — the wire client's
-/// per-frame read.
+/// ([`CellFrame`](crate::CellFrame)) at a SCROLLBACK offset (`offset != 0`) — a
+/// user-driven history read, NOT the live view.
+///
+/// The live view (`offset == 0`) is served by the [`LIVE_FRAME_SLOT`] READ slot
+/// instead, deliberately: a display client re-reads the live frame every time the
+/// scene revision moves (the `scene/waitFor` poll loop), and an invoke is a
+/// `MethodOcc::Mutate` that bumps the revision — so serving the live frame as an
+/// action made every read wake the very waiter it answered, a ~30Hz idle livelock.
+/// A query is a `MethodOcc::Read` and bumps nothing, so the loop parks until a real
+/// output change. Scrollback stays an action because it carries an argument and is
+/// never on the poll path.
 pub const CELLS_ACTION: &str = "cells";
+/// The pane-input external query slot: the pane's LIVE cell FRAME
+/// ([`CellFrame`](crate::CellFrame)) — the `offset == 0` view a display client
+/// projects each frame. A READ (see [`CELLS_ACTION`] for why the live view is a
+/// slot, not an action): it bumps no revision, so the wire client's `scene/waitFor`
+/// poll loop does not self-wake by reading it.
+pub const LIVE_FRAME_SLOT: &str = "frame";
 /// The pane-input external query slot: the pane's full output text (scrollback +
 /// visible).
 pub const FULL_TEXT_SLOT: &str = "full_text";

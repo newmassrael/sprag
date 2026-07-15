@@ -3,8 +3,8 @@
 //!
 //! The GUI's `WireHost` (in `sprag-gui`) and an AI peer both drive the host through
 //! exactly this contract — `HostConn` request/response over the socket, the
-//! `/sprag_mux/…` pane list, the `/pane_<id>/sprag_input/external/cells` frame, the
-//! `key`/`text` input actions, and the async `scene/revision` + `scene/waitFor`
+//! `/sprag_mux/…` pane list, the `/pane_<id>/sprag_input/external/frame` live-frame
+//! read, the `key`/`text` input actions, and the async `scene/revision` + `scene/waitFor`
 //! change-notification. R115c's default (wire) boot path is otherwise exercised only
 //! by a manual live drive; this gives it automated coverage against the real binary
 //! (`CARGO_BIN_EXE_sprag-term`), so a break in the wire ABI fails in CI, not by hand.
@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    CELLS_ACTION, CLOSE_ACTION, FULL_TEXT_SLOT, LAYOUT_SLOT, PANES_SLOT, SET_FLOATING_ACTION,
+    CLOSE_ACTION, FULL_TEXT_SLOT, LAYOUT_SLOT, LIVE_FRAME_SLOT, PANES_SLOT, SET_FLOATING_ACTION,
     SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION,
 };
 use sprag_host::{mux_action_path, pane_input_path};
@@ -75,14 +75,15 @@ fn wire_client_drives_a_real_sprag_term_host() {
         "one boot pane: {panes}"
     );
 
-    // The cell FRAME deserializes as the shared CellFrame shape (cells + flattened
-    // facts) — the exact wire contract WireHost reads each frame.
+    // The LIVE cell FRAME is a QUERY (the `frame` read slot), not the `cells` invoke —
+    // the exact wire contract WireHost's poll loop reads each wake. It deserializes as
+    // the shared CellFrame shape (cells + flattened facts).
     let frame = conn
         .call(
-            "scene/invoke",
-            json!({ "path": pane_input_path(0, CELLS_ACTION), "args": { "offset": 0 } }),
+            "scene/query",
+            json!({ "path": pane_input_path(0, LIVE_FRAME_SLOT) }),
         )
-        .expect("cells frame");
+        .expect("live frame query");
     assert!(frame.get("cells").is_some(), "frame carries cells: {frame}");
     assert_eq!(
         frame["visible_rows"], 6,
@@ -91,6 +92,24 @@ fn wire_client_drives_a_real_sprag_term_host() {
     let cells: pinion_core::GridBuffer =
         serde_json::from_value(frame["cells"].clone()).expect("cells deserialize to a GridBuffer");
     assert_eq!((cells.cols(), cells.rows()), (40, 6));
+
+    // The livelock regression guard (R152): reading the live frame must NOT advance the
+    // scene revision. The poll loop re-reads this frame on every `scene/waitFor` wake, so
+    // a read that bumped would wake the very waiter it answered — a ~30Hz idle spin. A
+    // query is a `MethodOcc::Read`; the retired `cells`-invoke live path was a Mutate.
+    let before_read = read_revision(&mut conn);
+    for _ in 0..5 {
+        conn.call(
+            "scene/query",
+            json!({ "path": pane_input_path(0, LIVE_FRAME_SLOT) }),
+        )
+        .expect("live frame re-query");
+    }
+    assert_eq!(
+        read_revision(&mut conn),
+        before_read,
+        "reading the live frame must not bump the revision (else the poll loop livelocks)",
+    );
 
     // Async change-notification: read the baseline, send input (cat echoes it → pane
     // output → revision bump), and confirm a waitFor{baseline} reports the advance.

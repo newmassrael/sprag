@@ -63,8 +63,8 @@ use std::time::Duration;
 use pinion_core::GridBuffer;
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    CELLS_ACTION, FULL_TEXT_SLOT, KEY_ACTION, LAYOUT_SLOT, PANES_SLOT, RESIZE_ACTION,
-    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION,
+    CELLS_ACTION, FULL_TEXT_SLOT, KEY_ACTION, LAYOUT_SLOT, LIVE_FRAME_SLOT, PANES_SLOT,
+    RESIZE_ACTION, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION,
 };
 use sprag_host::{CellFrame, HostClient, PaneScrollFacts, mux_action_path, pane_input_path};
 use sprag_input::Modifiers;
@@ -652,7 +652,7 @@ fn boot_panes(
 fn fetch_frames(conn: &mut HostConn, seeds: &[PaneSeed]) -> Vec<(PaneId, CellFrame)> {
     let mut fetched = Vec::with_capacity(seeds.len());
     for seed in seeds {
-        match fetch_frame(conn, seed.id.0, 0) {
+        match fetch_frame(conn, seed.id.0) {
             Ok(frame) => fetched.push((seed.id, frame)),
             Err(error) => tracing::debug!(
                 target: "sprag_gui::wire",
@@ -676,15 +676,18 @@ fn build_cache(conn: &mut HostConn, seeds: Vec<PaneSeed>) -> Vec<WirePane> {
     merge_panes(&[], &seeds, &fetched)
 }
 
-/// Fetch one pane's cell frame at `offset` over the `cells` action — the shared
+/// Fetch one pane's LIVE cell frame over the [`LIVE_FRAME_SLOT`] query — the shared
 /// [`CellFrame`] the host serializes, deserialized on this end (one wire type).
-fn fetch_frame(conn: &mut HostConn, id: u64, offset: usize) -> io::Result<CellFrame> {
+///
+/// A `scene/query` (READ), NOT the `cells` invoke: this runs on every poll-thread wake,
+/// and an invoke is a `MethodOcc::Mutate` that bumps the scene revision — so fetching the
+/// frame over the action woke the very `scene/waitFor` that dispatched the wake, a ~30Hz
+/// idle livelock. A query bumps nothing, so the loop parks until real output moves the
+/// revision. (Scrollback stays [`CELLS_ACTION`]: it carries an offset and is never polled.)
+fn fetch_frame(conn: &mut HostConn, id: u64) -> io::Result<CellFrame> {
     let value = conn.call(
-        "scene/invoke",
-        invoke(
-            &pane_input_path(id, CELLS_ACTION),
-            json!({ "offset": offset }),
-        ),
+        "scene/query",
+        json!({ "path": pane_input_path(id, LIVE_FRAME_SLOT) }),
     )?;
     serde_json::from_value(value).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }

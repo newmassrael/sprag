@@ -134,6 +134,15 @@ pub(crate) fn split_tag(id: SplitId) -> String {
 /// fresh `SplitId` on every settle — a silent, unbounded id churn no type check would catch.
 const SPLIT_TAG_PREFIX: &str = "sprag_gui.split.";
 
+/// The event suffix of the intent pinion's `SplitterExternal` fires on drag-end (PR-56),
+/// carrying the settled ratio — reaching the reducer as `{split_tag}.ratio_committed`.
+///
+/// A sprag const because pinion emits the tag as a string literal and exports no
+/// symbol for it; this mirrors that literal, so a drift shows up as a missed commit
+/// (the ratio silently stops persisting) rather than a compile error — hence pinned here,
+/// next to the divider tag it rides on, and asserted by the commit test.
+pub(crate) const RATIO_COMMITTED_EVENT: &str = "ratio_committed";
+
 /// Split `id`'s ratio `Signal` (left/top share, `[0, 1]`), an `Owner::cache`-backed
 /// `Rc<Signal<f32>>` SHARED between the read side (the view's `view_dock_surface_chrome`
 /// `split_state` callback) and the write side (the `SplitterExternal` registered at
@@ -511,45 +520,86 @@ pub(crate) fn sync_layout(slots: &crate::slotview::SlotView) {
         adopt_layout(&host, slots);
         return;
     }
+    match pending_write(slots) {
+        // Nothing legitimate to write (unrepresentable, a foreign pane set, or already the
+        // host's): no gesture is in flight, so forget any half-tracked settle.
+        None => use_layout_sync().borrow_mut().settling = None,
+        Some((current, expected)) => {
+            // A REORGANIZE (drag-to-dock) has no explicit commit edge — pinion only mutates
+            // the topology signal as the drag moves — so settle it: write once the surface
+            // has stopped changing (this frame's un-projection == last frame's), else a drag
+            // would put a synchronous socket round trip on the UI thread every frame. A drag
+            // that has already ended costs one still frame of latency the user cannot perceive.
+            // (A RATIO drag does not come through here — it commits via [`commit_layout`] on
+            // the `ratio_committed` intent, which is why removing the idle-repaint livelock did
+            // not strand it on a frame that never arrives.)
+            if use_layout_sync().borrow().settling.as_ref() != Some(&current) {
+                use_layout_sync().borrow_mut().settling = Some(current);
+                return;
+            }
+            adopt_layout(&slots.set_layout(current, expected), slots);
+            use_layout_sync().borrow_mut().settling = None;
+        }
+    }
+}
 
-    let Some(current) = unproject_layout(use_dock_topology().get().as_ref(), &|slot| {
+/// Write the settled arrangement to the host NOW, without the [`sync_layout`] settle gate —
+/// the RATIO-drag commit path.
+///
+/// pinion (PR-56) fires a `ratio_committed` intent on splitter drag-end, and the final ratio
+/// is already in the divider's [`use_split_ratio`] signal (the live drag set it), so this
+/// un-projects that value and writes immediately. It is the explicit commit edge the
+/// reorganize path lacks: a ratio release re-sets no signal, so no repaint follows it, so the
+/// settle detector's "one still frame" would never arrive once the idle-repaint livelock was
+/// fixed. The intent reaches the reducer regardless of painting, so committing here is frame-
+/// independent by construction.
+///
+/// Shares [`pending_write`] with [`sync_layout`] — same membership guard, same
+/// compare-and-set — so a ratio commit cannot write a lossy or foreign arrangement any more
+/// than a settled reorganize can.
+pub(crate) fn commit_layout(slots: &crate::slotview::SlotView) {
+    let host = slots.layout();
+    if host.revision != use_layout_sync().borrow().seen.revision {
+        adopt_layout(&host, slots); // the host moved under the drag; it wins, the drag is dropped
+        return;
+    }
+    if let Some((current, expected)) = pending_write(slots) {
+        adopt_layout(&slots.set_layout(current, expected), slots);
+    }
+}
+
+/// Un-project this client's surface and, when it is a well-formed re-arrangement of the SAME
+/// panes the host holds and it differs from the host's, the `(topology, expected_revision)` to
+/// write. `None` when there is nothing legitimate to write — the shared decision behind both
+/// [`sync_layout`] (which then settle-gates) and [`commit_layout`] (which writes at once).
+///
+/// `None` covers three cases, none of which a client may promote to session state:
+/// * UNREPRESENTABLE — [`unproject_layout`] cannot form a tree (e.g. a tab well).
+/// * a FOREIGN pane SET — the surface tiles different panes than the host. A gesture
+///   RE-ARRANGES panes; it never adds or removes one. [`project_layout`] is deliberately lossy
+///   (a pane past the slot cap or not yet admitted COLLAPSES out), so writing the un-projection
+///   would DELETE that pane from the session; the host would re-append it with a fresh divider,
+///   which the client re-projects and writes again — a permanent loop that also relocates the
+///   pane. Membership is the Workspace's and never the client's to edit, so we render what we
+///   can and write nothing until we can represent the whole set.
+/// * ALREADY the host's — the surface equals what the host holds, so there is nothing to record.
+fn pending_write(slots: &crate::slotview::SlotView) -> Option<(LayoutWire, u64)> {
+    let current = unproject_layout(use_dock_topology().get().as_ref(), &|slot| {
         slots.pane_at(slot)
-    }) else {
-        return; // unrepresentable — never write a lossy arrangement
-    };
-    // A gesture RE-ARRANGES panes; it never adds or removes one. So a surface whose pane set
-    // differs from the host's is not this user's intent — it is this client's RENDERING
-    // LIMIT, and writing it would promote that limit to session state.
-    //
-    // [`project_layout`] is deliberately lossy: a pane it cannot place (past the slot cap,
-    // or not yet admitted) COLLAPSES out of the surface. Un-projecting that and writing it
-    // would DELETE the pane from the session's arrangement; the host would then re-append it
-    // at the end with a fresh divider, changing the tree, which this client would re-project
-    // and lossily write again — a permanent write loop that also relocates the user's pane.
-    // The membership authority is the Workspace and it is never ours to edit, so the honest
-    // move is to render what we can and write NOTHING until we can represent the whole thing.
-    if wire_panes(&current) != wire_panes(&use_layout_sync().borrow().seen.tree) {
+    })?;
+    let sync = use_layout_sync();
+    if wire_panes(&current) != wire_panes(&sync.borrow().seen.tree) {
         tracing::debug!(
             target: "sprag_gui::split",
             "this client cannot render every tiled pane; not writing (its arrangement is the host's)",
         );
-        use_layout_sync().borrow_mut().settling = None;
-        return;
+        return None;
     }
-    if current == use_layout_sync().borrow().seen.tree {
-        use_layout_sync().borrow_mut().settling = None;
-        return; // the surface already IS the host's arrangement
+    if current == sync.borrow().seen.tree {
+        return None;
     }
-    if use_layout_sync().borrow().settling.as_ref() != Some(&current) {
-        use_layout_sync().borrow_mut().settling = Some(current);
-        return; // still moving — let the gesture finish
-    }
-    // The gesture was authored against the arrangement we last saw, and says so: if the host
-    // has moved on since, this write is about a layout that no longer exists and is refused.
-    // The answer then carries the truth, which we adopt — the user's gesture is dropped, but
-    // that is the outcome they would have reached had they seen the new layout first.
-    let expected = use_layout_sync().borrow().seen.revision;
-    adopt_layout(&slots.set_layout(current, expected), slots);
+    let expected = sync.borrow().seen.revision;
+    Some((current, expected))
 }
 
 /// `Owner::cache` key for the held dock-tree topology Signal.
