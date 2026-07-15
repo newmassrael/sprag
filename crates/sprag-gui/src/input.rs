@@ -343,7 +343,7 @@ mod tests {
     use pinion_core::WidgetCore;
     use pinion_core::scene::ContainerNode;
     use sprag_host::Host;
-    use sprag_terminal::{CommandBuilder, SessionHandle};
+    use sprag_terminal::{CommandBuilder, PanePtyHandle};
     use std::thread::sleep;
     use std::time::{Duration, Instant};
 
@@ -357,7 +357,7 @@ mod tests {
     }
 
     /// Poll a handle's row 0 until it contains `needle` or the deadline passes.
-    fn wait_for_row0(handle: &SessionHandle, needle: &str) -> String {
+    fn wait_for_row0(handle: &PanePtyHandle, needle: &str) -> String {
         let start = Instant::now();
         let mut row0 = String::new();
         while start.elapsed() < Duration::from_secs(5) {

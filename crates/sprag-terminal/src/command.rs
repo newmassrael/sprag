@@ -10,7 +10,7 @@
 //! two functions are that one assembly site; a frontend keeps only its policy
 //! (where the spec comes from) and calls one of these.
 
-use crate::session::CommandBuilder;
+use crate::pane_pty::CommandBuilder;
 
 /// Build a pane command from a program and its arguments: a [`CommandBuilder`]
 /// with `TERM=xterm-256color` set (the rest of the environment inherited by the

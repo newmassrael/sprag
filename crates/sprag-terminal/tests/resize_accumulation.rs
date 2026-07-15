@@ -41,7 +41,7 @@
 
 use std::time::{Duration, Instant};
 
-use sprag_terminal::{CommandBuilder, TerminalSession};
+use sprag_terminal::{CommandBuilder, PanePty};
 
 /// The fixed prompt (PS1) bash redraws on `SIGWINCH`. Deliberately LONG (40
 /// cols, like a real `user@host:~$` prompt) so that at an extreme-narrow width it
@@ -55,7 +55,7 @@ const MARKER: &str = "RZPROMPT";
 
 /// Spawn an INTERACTIVE bash (readline active, so it redraws `PROMPT` on
 /// `SIGWINCH`) with a fixed prompt and no rc/profile noise.
-fn bash_session(cols: u16, rows: u16) -> TerminalSession {
+fn bash_session(cols: u16, rows: u16) -> PanePty {
     let mut cmd = CommandBuilder::new("/bin/bash");
     cmd.arg("--norc");
     cmd.arg("--noprofile");
@@ -63,12 +63,12 @@ fn bash_session(cols: u16, rows: u16) -> TerminalSession {
     cmd.env("PS1", PROMPT);
     cmd.env("PROMPT_COMMAND", "");
     cmd.env("TERM", "xterm");
-    TerminalSession::spawn_with_dirty(cmd, cols, rows, None).expect("spawn bash on a PTY")
+    PanePty::spawn_with_dirty(cmd, cols, rows, None).expect("spawn bash on a PTY")
 }
 
 /// The screen's highest per-row damage stamp — a cheap "did anything change"
 /// signal for waiting on bash's asynchronous redraw.
-fn max_generation(session: &TerminalSession) -> u64 {
+fn max_generation(session: &PanePty) -> u64 {
     session.with_screen(|s| {
         (0..s.rows())
             .filter_map(|r| s.row_generation(r))
@@ -79,14 +79,14 @@ fn max_generation(session: &TerminalSession) -> u64 {
 
 /// How many times the prompt appears in the whole pane text (visible + scroll
 /// history) — the accumulation metric.
-fn prompt_count(session: &TerminalSession) -> usize {
+fn prompt_count(session: &PanePty) -> usize {
     session.with_screen(|s| s.full_text().matches(MARKER).count())
 }
 
 /// Block until the screen's damage stamp holds steady for `quiet` (bash has
 /// finished redrawing), or `cap` elapses. Bash's redraw is asynchronous (PTY →
 /// reader thread → emulator), so a guard must wait on settle, never a fixed sleep.
-fn settle(session: &TerminalSession, quiet: Duration, cap: Duration) {
+fn settle(session: &PanePty, quiet: Duration, cap: Duration) {
     let start = Instant::now();
     let mut last = max_generation(session);
     let mut stable_since = Instant::now();
@@ -119,7 +119,7 @@ fn drag_widths(wide: u16, narrow: u16) -> Vec<u16> {
 /// keeps the redraw one logical line that collapses on widen. Returns the prompt
 /// count after the sweep settles wide.
 fn drag_sweep(
-    session: &TerminalSession,
+    session: &PanePty,
     input: &[u8],
     widths: &[u16],
     rows: u16,

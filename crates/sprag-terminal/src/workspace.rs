@@ -1,7 +1,7 @@
 //! The workspace — sprag's pane registry (the multiplexer's producer pool).
 //!
 //! README core scope ("멀티플렉싱: ... pane 생명주기"): the multiplexer
-//! manages a set of live [`TerminalSession`] panes. This is a producer-layer
+//! manages a set of live [`PanePty`] panes. This is a producer-layer
 //! concern — owning PTYs and their lifecycle — so it stays pinion-free here;
 //! the pinion scene/control surface lives one layer up in sprag-host (the
 //! `WorkspaceExternal`).
@@ -30,7 +30,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::session::{CommandBuilder, SessionError, SessionHandle, TerminalSession};
+use crate::pane_pty::{CommandBuilder, PanePty, PanePtyError, PanePtyHandle};
 
 /// A stable, monotonic identifier for a pane within a [`Workspace`].
 ///
@@ -57,11 +57,11 @@ impl fmt::Display for PaneId {
     }
 }
 
-/// One managed pane: a live [`TerminalSession`] plus its id and a
+/// One managed pane: a live [`PanePty`] plus its id and a
 /// human/AI-readable command label (surfaced via introspection).
 pub struct Pane {
     id: PaneId,
-    session: TerminalSession,
+    pty: PanePty,
     command_label: String,
 }
 
@@ -72,10 +72,10 @@ impl Pane {
         self.id
     }
 
-    /// The live terminal session backing this pane.
+    /// The live pseudoterminal backing this pane.
     #[must_use]
-    pub fn session(&self) -> &TerminalSession {
-        &self.session
+    pub fn pty(&self) -> &PanePty {
+        &self.pty
     }
 
     /// The label this pane was spawned with (typically the program name).
@@ -91,13 +91,13 @@ impl Pane {
     /// stable name; pane IDENTITY never derives from it, since a child sets it freely.
     #[must_use]
     pub fn title(&self) -> Option<String> {
-        self.session.title()
+        self.pty.title()
     }
 
     /// A cloneable I/O handle onto this pane's session.
     #[must_use]
-    pub fn handle(&self) -> SessionHandle {
-        self.session.handle()
+    pub fn handle(&self) -> PanePtyHandle {
+        self.pty.handle()
     }
 }
 
@@ -165,7 +165,7 @@ impl Workspace {
     ///
     /// # Errors
     ///
-    /// Returns [`SessionError`] if the pseudoterminal or child cannot be
+    /// Returns [`PanePtyError`] if the pseudoterminal or child cannot be
     /// started; on failure no pane is added and the id is not consumed.
     pub fn spawn(
         &mut self,
@@ -173,12 +173,12 @@ impl Workspace {
         label: String,
         cols: u16,
         rows: u16,
-    ) -> Result<PaneId, SessionError> {
+    ) -> Result<PaneId, PanePtyError> {
         self.spawn_with_dirty(command, label, cols, rows, None)
     }
 
     /// [`Self::spawn`] with an `on_dirty` callback wired into the pane's PTY
-    /// reader (threaded to [`TerminalSession::spawn_with_dirty`]).
+    /// reader (threaded to [`PanePty::spawn_with_dirty`]).
     ///
     /// A windowed host passes `Some(Box::new(move || sink.request_repaint()))`
     /// (the pinion R999 `RepaintSink` seam) so this pane's output wakes the
@@ -188,7 +188,7 @@ impl Workspace {
     ///
     /// # Errors
     ///
-    /// Returns [`SessionError`] if the pseudoterminal or child cannot be
+    /// Returns [`PanePtyError`] if the pseudoterminal or child cannot be
     /// started; on failure no pane is added and the id is not consumed.
     pub fn spawn_with_dirty(
         &mut self,
@@ -197,22 +197,22 @@ impl Workspace {
         cols: u16,
         rows: u16,
         on_dirty: Option<Box<dyn Fn() + Send>>,
-    ) -> Result<PaneId, SessionError> {
-        let session = TerminalSession::spawn_with_dirty(command, cols, rows, on_dirty)?;
+    ) -> Result<PaneId, PanePtyError> {
+        let pty = PanePty::spawn_with_dirty(command, cols, rows, on_dirty)?;
         // Mint AFTER a successful spawn so a failed spawn consumes no id (preserving the
         // old counter's gap-free-on-failure behaviour). Relaxed ordering: ids need only
         // uniqueness + monotonicity, not synchronization with other memory.
         let id = PaneId(self.next_id.fetch_add(1, Ordering::Relaxed));
         self.panes.push(Pane {
             id,
-            session,
+            pty,
             command_label: label,
         });
         Ok(id)
     }
 
     /// Remove the pane with `id`, **returning it** so the caller drops it —
-    /// running [`TerminalSession`]'s `kill` / `wait` / `join` on `Drop` —
+    /// running [`PanePty`]'s `kill` / `wait` / `join` on `Drop` —
     /// *outside* any lock the caller is holding (those are blocking process
     /// ops; reaping under a shared lock would stall everything contending on
     /// it, e.g. an in-flight plugin run). Returns `None` if no pane has `id`.
@@ -227,7 +227,7 @@ impl Workspace {
     /// Returns `Ok(true)` when the pane exists and was resized, `Ok(false)`
     /// when no pane has that id.
     ///
-    /// Takes `&self`: [`TerminalSession::resize`] is `&self` (interior-mutable
+    /// Takes `&self`: [`PanePty::resize`] is `&self` (interior-mutable
     /// PTY + emulator), so a shared `&Workspace` — e.g. one reached through an
     /// `Rc` in the GUI's resize Effect — can reflow a pane without owning the
     /// pool. The host caller (which holds a `MutexGuard<Workspace>`) is
@@ -235,11 +235,11 @@ impl Workspace {
     ///
     /// # Errors
     ///
-    /// Returns [`SessionError`] if the PTY winsize ioctl fails.
-    pub fn resize(&self, id: PaneId, cols: u16, rows: u16) -> Result<bool, SessionError> {
+    /// Returns [`PanePtyError`] if the PTY winsize ioctl fails.
+    pub fn resize(&self, id: PaneId, cols: u16, rows: u16) -> Result<bool, PanePtyError> {
         match self.panes.iter().find(|p| p.id == id) {
             Some(pane) => {
-                pane.session.resize(cols, rows)?;
+                pane.pty.resize(cols, rows)?;
                 Ok(true)
             }
             None => Ok(false),
@@ -264,7 +264,7 @@ impl Workspace {
         self.panes
             .iter()
             .map(|p| {
-                let (cols, rows) = p.session.dimensions();
+                let (cols, rows) = p.pty.dimensions();
                 PaneInfo {
                     id: p.id.0,
                     cols,
@@ -321,13 +321,13 @@ mod tests {
         // The emulator resizes synchronously (only the PTY ioctl is debounced),
         // so `dimensions()` is current immediately after `resize`.
         assert!(ws.resize(a, 100, 30).unwrap());
-        assert_eq!(ws.pane(a).unwrap().session().dimensions(), (100, 30));
+        assert_eq!(ws.pane(a).unwrap().pty().dimensions(), (100, 30));
         assert!(!ws.resize(PaneId(999), 10, 10).unwrap());
         // Through a SHARED &Workspace — the path the GUI reflow Effect uses via
         // an Rc; resize needs no &mut now that the session is interior-mutable.
         let shared: &Workspace = &ws;
         assert!(shared.resize(a, 64, 20).unwrap());
-        assert_eq!(ws.pane(a).unwrap().session().dimensions(), (64, 20));
+        assert_eq!(ws.pane(a).unwrap().pty().dimensions(), (64, 20));
     }
 
     #[test]

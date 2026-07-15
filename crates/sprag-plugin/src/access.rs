@@ -2,7 +2,7 @@
 //!
 //! A plugin's whole view of the core: enumerate panes, read a pane's screen as
 //! scene-as-data, and inject input — all addressed by [`PaneId`], never by
-//! reaching into a `SessionHandle` or `Screen` directly. This is the single
+//! reaching into a `PanePtyHandle` or `Screen` directly. This is the single
 //! read+inject path: every plugin (and any future control consumer) goes
 //! through it, so reads and injections are consistent and the input-encoding
 //! lives in one place.
@@ -13,7 +13,7 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use sprag_input::{Modifiers, encode};
-use sprag_terminal::{CommandBuilder, Pane, PaneId, RawOutput, SessionHandle, Workspace};
+use sprag_terminal::{CommandBuilder, Pane, PaneId, PanePtyHandle, RawOutput, Workspace};
 use sprag_vt::Screen;
 
 /// One screen row: its damage `generation` paired with its (trailing-trimmed)
@@ -176,7 +176,7 @@ impl WorkspacePaneAccess {
     /// Clone the pane's I/O handle under the workspace lock (released before
     /// the handle is used), so screen reads / writes never hold the workspace
     /// lock.
-    fn handle(&self, id: PaneId) -> Option<SessionHandle> {
+    fn handle(&self, id: PaneId) -> Option<PanePtyHandle> {
         lock(&self.workspace).pane(id).map(Pane::handle)
     }
 }
@@ -199,7 +199,7 @@ impl PaneAccess for WorkspacePaneAccess {
         // cloning the handle) is negligible and needs no producer change.
         lock(&self.workspace)
             .pane(id)
-            .map(|pane| pane.session().is_eof())
+            .map(|pane| pane.pty().is_eof())
     }
 
     fn pane_full_text(&self, id: PaneId) -> Option<String> {

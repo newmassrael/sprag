@@ -1,13 +1,13 @@
-//! The PTY-driven terminal session — the producer.
+//! A pane's pseudoterminal — the producer.
 //!
-//! [`TerminalSession`] owns an OS pseudoterminal (via `portable-pty`, the
+//! [`PanePty`] owns an OS pseudoterminal (via `portable-pty`, the
 //! cross-platform abstraction the README NFR mandates), the child process
 //! running on its slave, and the [`Emulator`] its output feeds. A background
 //! thread reads the master and applies bytes to the emulator **directly**,
 //! so the authoritative screen is always current and bounded by the grid
 //! size — there is no unbounded byte backlog and no caller-side pump step.
 //!
-//! Screen access goes through [`with_screen`](TerminalSession::with_screen)
+//! Screen access goes through [`with_screen`](PanePty::with_screen)
 //! under the emulator lock; because the reader applies one `advance` batch at
 //! a time, every observed grid is consistent (termwiz buffers any partial
 //! escape across batches).
@@ -27,7 +27,7 @@ use sprag_vt::{Emulator, InputModes, Screen, VtPort};
 pub use portable_pty::CommandBuilder;
 
 /// The PTY master writer, shared (and interior-mutable) so both the owning
-/// [`TerminalSession`] and any [`SessionHandle`] can inject input without a
+/// [`PanePty`] and any [`PanePtyHandle`] can inject input without a
 /// `&mut` borrow — the session is already concurrent (the reader thread
 /// holds the emulator lock), so the writer is shared the same way.
 type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
@@ -104,19 +104,19 @@ impl RawCapture {
 }
 
 /// Shared raw-output capture: the reader thread appends to it as it reads the
-/// PTY master; a [`SessionHandle`] snapshots it. Shared the same `Arc<Mutex>`
+/// PTY master; a [`PanePtyHandle`] snapshots it. Shared the same `Arc<Mutex>`
 /// way as the emulator and the eof flag.
 type SharedRawCapture = Arc<Mutex<RawCapture>>;
 
 /// A failure setting up or driving the pseudoterminal. Wraps the underlying
 /// `portable-pty` / IO error message with the operation that produced it.
 #[derive(Debug)]
-pub struct SessionError {
+pub struct PanePtyError {
     context: &'static str,
     source: String,
 }
 
-impl SessionError {
+impl PanePtyError {
     fn new(context: &'static str, source: &dyn std::fmt::Display) -> Self {
         Self {
             context,
@@ -125,21 +125,17 @@ impl SessionError {
     }
 }
 
-impl std::fmt::Display for SessionError {
+impl std::fmt::Display for PanePtyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "terminal session: {} failed: {}",
-            self.context, self.source
-        )
+        write!(f, "pane pty: {} failed: {}", self.context, self.source)
     }
 }
 
-impl std::error::Error for SessionError {}
+impl std::error::Error for PanePtyError {}
 
 /// A live terminal: a child process on a PTY, its output parsed into a
 /// queryable [`Screen`] that the reader thread keeps current.
-pub struct TerminalSession {
+pub struct PanePty {
     // The PTY master is OWNED BY the resize coalescer thread (`resize` is its
     // sole user), so resizes apply off the caller's thread and are debounced —
     // see [`run_resize_coalescer`]. The session hands target sizes to it via
@@ -154,14 +150,14 @@ pub struct TerminalSession {
     resize_thread: Option<JoinHandle<()>>,
 }
 
-impl TerminalSession {
+impl PanePty {
     /// Spawn `command` on a fresh `cols × rows` pseudoterminal.
     ///
     /// # Errors
     ///
-    /// Returns [`SessionError`] if the PTY cannot be opened, the child
+    /// Returns [`PanePtyError`] if the PTY cannot be opened, the child
     /// cannot be spawned, or the master reader/writer cannot be acquired.
-    pub fn spawn(command: CommandBuilder, cols: u16, rows: u16) -> Result<Self, SessionError> {
+    pub fn spawn(command: CommandBuilder, cols: u16, rows: u16) -> Result<Self, PanePtyError> {
         Self::spawn_with_dirty(command, cols, rows, None)
     }
 
@@ -184,7 +180,7 @@ impl TerminalSession {
         cols: u16,
         rows: u16,
         on_dirty: Option<Box<dyn Fn() + Send>>,
-    ) -> Result<Self, SessionError> {
+    ) -> Result<Self, PanePtyError> {
         let cols = cols.max(1);
         let rows = rows.max(1);
         let pty_system = native_pty_system();
@@ -196,22 +192,22 @@ impl TerminalSession {
         };
         let pair = pty_system
             .openpty(size)
-            .map_err(|e| SessionError::new("open pty", &e))?;
+            .map_err(|e| PanePtyError::new("open pty", &e))?;
         let child = pair
             .slave
             .spawn_command(command)
-            .map_err(|e| SessionError::new("spawn command", &e))?;
+            .map_err(|e| PanePtyError::new("spawn command", &e))?;
         // The child now holds the slave fd; drop ours so the master reads
         // EOF once the child exits (otherwise the reader blocks forever).
         drop(pair.slave);
         let mut reader = pair
             .master
             .try_clone_reader()
-            .map_err(|e| SessionError::new("clone reader", &e))?;
+            .map_err(|e| PanePtyError::new("clone reader", &e))?;
         let writer: SharedWriter = Arc::new(Mutex::new(
             pair.master
                 .take_writer()
-                .map_err(|e| SessionError::new("take writer", &e))?,
+                .map_err(|e| PanePtyError::new("take writer", &e))?,
         ));
 
         let emulator = Arc::new(Mutex::new(Emulator::new(cols, rows)));
@@ -247,7 +243,7 @@ impl TerminalSession {
                 }
                 reader_eof.store(true, Ordering::Release);
             })
-            .map_err(|e| SessionError::new("spawn reader thread", &e))?;
+            .map_err(|e| PanePtyError::new("spawn reader thread", &e))?;
 
         // `TIOCSWINSZ` coalescer: own thread, owns the PTY master (its only
         // user). The caller's reflow (a continuous drag) resizes the emulator
@@ -268,7 +264,7 @@ impl TerminalSession {
                     });
                 });
             })
-            .map_err(|e| SessionError::new("spawn resize thread", &e))?;
+            .map_err(|e| PanePtyError::new("spawn resize thread", &e))?;
 
         Ok(Self {
             child,
@@ -329,13 +325,13 @@ impl TerminalSession {
         write_shared(&self.writer, bytes)
     }
 
-    /// A cloneable [`SessionHandle`] sharing this session's emulator and
+    /// A cloneable [`PanePtyHandle`] sharing this session's emulator and
     /// PTY writer — the seam an input-injecting consumer (the host's pane
     /// `External`) holds to read the screen/modes and write encoded keys
     /// without owning the session.
     #[must_use]
-    pub fn handle(&self) -> SessionHandle {
-        SessionHandle {
+    pub fn handle(&self) -> PanePtyHandle {
+        PanePtyHandle {
             emulator: Arc::clone(&self.emulator),
             writer: Arc::clone(&self.writer),
             raw_output: Arc::clone(&self.raw_output),
@@ -347,7 +343,7 @@ impl TerminalSession {
     ///
     /// Takes `&self`: `MasterPty::resize` is `&self` and the emulator is behind
     /// a `Mutex`, so the size is updated through interior mutability with no
-    /// exclusive borrow. This is what lets a shared `&TerminalSession` (e.g. a
+    /// exclusive borrow. This is what lets a shared `&PanePty` (e.g. a
     /// pane reached through an `Rc` in the GUI's resize Effect) reflow the PTY
     /// without owning it. The size is held only by the emulator (see
     /// [`dimensions`](Self::dimensions)), so there is no cache field to update.
@@ -361,8 +357,8 @@ impl TerminalSession {
     ///
     /// # Errors
     ///
-    /// Returns [`SessionError`] if the master resize fails.
-    pub fn resize(&self, cols: u16, rows: u16) -> Result<(), SessionError> {
+    /// Returns [`PanePtyError`] if the master resize fails.
+    pub fn resize(&self, cols: u16, rows: u16) -> Result<(), PanePtyError> {
         let cols = cols.max(1);
         let rows = rows.max(1);
         // Resize the emulator screen SYNCHRONOUSLY so the grid reflows the SAME
@@ -396,18 +392,18 @@ impl TerminalSession {
 
 /// A cloneable handle to a live session's shared I/O: the emulator (read
 /// the screen and input modes) and the PTY writer (inject input bytes).
-/// Both are `Arc`-shared with the owning [`TerminalSession`] and its reader
+/// Both are `Arc`-shared with the owning [`PanePty`] and its reader
 /// thread, so a handle stays valid for the session's lifetime. This is the
 /// producer-side seam the host's pane `External` holds to drive input
 /// without owning the session (DESIGN.md §3 producer ownership; R2.6).
 #[derive(Clone)]
-pub struct SessionHandle {
+pub struct PanePtyHandle {
     emulator: Arc<Mutex<Emulator>>,
     writer: SharedWriter,
     raw_output: SharedRawCapture,
 }
 
-impl SessionHandle {
+impl PanePtyHandle {
     /// Read the current authoritative screen under the emulator lock.
     pub fn with_screen<R>(&self, f: impl FnOnce(&Screen) -> R) -> R {
         f(lock(&self.emulator).screen())
@@ -422,7 +418,7 @@ impl SessionHandle {
     /// A snapshot of the child's raw output bytes (the source stream, before
     /// emulation) paired with whether the capture was truncated at the cap —
     /// the seam a control plugin reads to parse structured output from a pane
-    /// it does not own. See [`TerminalSession::raw_output`].
+    /// it does not own. See [`PanePty::raw_output`].
     #[must_use]
     pub fn raw_output(&self) -> RawOutput {
         lock(&self.raw_output).snapshot()
@@ -500,7 +496,7 @@ fn run_resize_coalescer(
     }
 }
 
-impl Drop for TerminalSession {
+impl Drop for PanePty {
     fn drop(&mut self) {
         // Disconnect the resize channel so the coalescer flushes its final
         // pending size and exits (it owns the PTY master, which then closes);
@@ -533,7 +529,7 @@ mod tests {
         command.arg("-c");
         command.arg("printf hi");
         command.env("TERM", "dumb");
-        let session = TerminalSession::spawn(command, 20, 4).expect("spawn pty session");
+        let session = PanePty::spawn(command, 20, 4).expect("spawn pty session");
 
         let start = Instant::now();
         while !session.is_eof() && start.elapsed() < Duration::from_secs(5) {
@@ -549,7 +545,7 @@ mod tests {
         assert_eq!(session.dimensions(), (20, 4));
     }
 
-    /// `resize` is `&self`: a shared `&TerminalSession` reflows the PTY +
+    /// `resize` is `&self`: a shared `&PanePty` reflows the PTY +
     /// emulator (the capability the GUI resize Effect needs through an `Rc`),
     /// and `dimensions()` reports the new size from the emulator — the single
     /// source, with no stale cache field to drift.
@@ -559,10 +555,10 @@ mod tests {
         command.arg("-c");
         command.arg("cat"); // long-lived: keeps the PTY open across the resize
         command.env("TERM", "dumb");
-        let session = TerminalSession::spawn(command, 20, 4).expect("spawn pty session");
+        let session = PanePty::spawn(command, 20, 4).expect("spawn pty session");
         assert_eq!(session.dimensions(), (20, 4));
         // Through a SHARED borrow — proves the resize needs no `&mut`.
-        let shared: &TerminalSession = &session;
+        let shared: &PanePty = &session;
         shared.resize(100, 30).expect("resize the shared session");
         // The emulator resizes synchronously (only the PTY ioctl is debounced),
         // so `dimensions()` is current immediately.
@@ -577,7 +573,7 @@ mod tests {
     }
 
     /// Wait (bounded) until the child has exited and all its bytes are applied.
-    fn wait_eof(session: &TerminalSession) {
+    fn wait_eof(session: &PanePty) {
         let start = Instant::now();
         while !session.is_eof() && start.elapsed() < Duration::from_secs(5) {
             sleep(Duration::from_millis(20));
@@ -598,7 +594,7 @@ mod tests {
         command.arg("-c");
         command.arg(format!("printf '%s' '{payload}'"));
         command.env("TERM", "dumb");
-        let session = TerminalSession::spawn(command, 20, 4).expect("spawn pty session");
+        let session = PanePty::spawn(command, 20, 4).expect("spawn pty session");
         wait_eof(&session);
 
         let RawOutput { bytes, truncated } = session.raw_output();
@@ -623,7 +619,7 @@ mod tests {
         command.arg("-c");
         command.arg(format!("yes a | tr -d '\\n' | head -c {want}"));
         command.env("TERM", "dumb");
-        let session = TerminalSession::spawn(command, 80, 24).expect("spawn pty session");
+        let session = PanePty::spawn(command, 80, 24).expect("spawn pty session");
         wait_eof(&session);
 
         let RawOutput { bytes, truncated } = session.raw_output();

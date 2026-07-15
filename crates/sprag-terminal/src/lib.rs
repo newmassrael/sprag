@@ -15,8 +15,8 @@
 
 pub mod command;
 pub mod layout;
+pub mod pane_pty;
 pub mod registry;
-pub mod session;
 pub mod workspace;
 
 pub use command::{command_from_parts, default_shell_command};
@@ -24,6 +24,6 @@ pub use layout::{
     FloatHome, LayoutError, LayoutNode, LayoutNodeWire, LayoutSnapshot, LayoutTree, LayoutWire,
     SplitDir, SplitId, SplitSide,
 };
+pub use pane_pty::{CommandBuilder, PanePty, PanePtyError, PanePtyHandle, RawOutput};
 pub use registry::{Session, SessionRegistry, Window};
-pub use session::{CommandBuilder, RawOutput, SessionError, SessionHandle, TerminalSession};
 pub use workspace::{Pane, PaneId, PaneInfo, Workspace};

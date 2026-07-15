@@ -21,7 +21,7 @@
 //! holds the panes (the current window's, resolved out of the
 //! [`SessionRegistry`]);
 //! [`workspace_scene`] assembles the tree (refreshing each grid from its live
-//! screen, handing engines their `SessionHandle`); [`snapshot`] reads one
+//! screen, handing engines their `PanePtyHandle`); [`snapshot`] reads one
 //! grid back as the [`TextGridSnapshot`] an AI consumer sees; [`dispatch_frames`]
 //! runs the single-owner JSON-RPC dispatch loop (R104).
 //!
@@ -72,7 +72,7 @@ use std::sync::{Arc, Mutex};
 use pinion_core::scene::{ContainerNode, ExternalNode, TextGridNode};
 use pinion_core::style::{LayoutStyle, Size, SizeValue};
 use pinion_core::{CellMetric, GridBuffer, Scene, SceneRevision};
-use sprag_terminal::{PaneId, SessionRegistry, TerminalSession};
+use sprag_terminal::{PaneId, PanePty, SessionRegistry};
 use sprag_vt::Screen;
 
 use crate::external::lock;
@@ -148,7 +148,7 @@ pub(crate) fn text_grid_node(screen: &Screen, metric: CellMetric) -> TextGridNod
 /// drops the cursor while scrolled — so a client `overlay_preedit` self-gates off
 /// a history view with no extra check).
 #[must_use]
-pub fn pane_cells(session: &TerminalSession, offset_lines: usize) -> GridBuffer {
+pub fn pane_cells(session: &PanePty, offset_lines: usize) -> GridBuffer {
     session.with_screen(|screen| sprag_grid::project_scrolled(screen, offset_lines))
 }
 
@@ -244,9 +244,9 @@ pub fn scene_with_metric(screen: &Screen, metric: CellMetric) -> Scene {
 /// Build one pane's `Scene::Container` (tagged `pane_<id>`) — the R1.7
 /// data/engine split: a `TextGrid` projected from the pane's live screen,
 /// and a [`SpragPaneExternal`] input engine holding the pane's
-/// [`SessionHandle`](sprag_terminal::SessionHandle) so `scene/invoke` reaches
+/// [`PanePtyHandle`](sprag_terminal::PanePtyHandle) so `scene/invoke` reaches
 /// that pane's PTY.
-fn pane_container(id: PaneId, session: &TerminalSession) -> Scene {
+fn pane_container(id: PaneId, session: &PanePty) -> Scene {
     let children = session.with_screen(|screen| {
         vec![
             Scene::TextGrid(text_grid_node(screen, CellMetric::DEFAULT)),
@@ -263,7 +263,7 @@ fn pane_container(id: PaneId, session: &TerminalSession) -> Scene {
 /// pane-management [`WorkspaceExternal`] (Round 7 multiplex control core).
 ///
 /// Each pane child is refreshed from its session's current screen; the
-/// engines and the control surface hold shared handles (a `SessionHandle`
+/// engines and the control surface hold shared handles (a `PanePtyHandle`
 /// per pane, an `Arc<Mutex<SessionRegistry>>` for mux control and an
 /// `Arc<Mutex<Workspace>>` for the plugin host), so the per-request
 /// scene stays a throwaway projection (R969) while input and pane lifecycle
@@ -292,7 +292,7 @@ pub fn workspace_scene(
         guard
             .panes()
             .iter()
-            .map(|pane| pane_container(pane.id(), pane.session()))
+            .map(|pane| pane_container(pane.id(), pane.pty()))
             .collect()
     };
     // The mux control plane speaks the REGISTRY (sessions / windows / layout are mux

@@ -33,7 +33,7 @@
 //!   [`pane_command_label`](HostClient::pane_command_label)) for the a11y tree.
 //!
 //! The ONE method NOT on the trait is [`pane_handle`](Host::pane_handle) — it
-//! hands out a live [`SessionHandle`] that cannot cross a wire; it stays an
+//! hands out a live [`PanePtyHandle`] that cannot cross a wire; it stays an
 //! inherent [`Host`] method used only by in-process input surfaces, and retires as
 //! input clients attach to the host.
 //!
@@ -49,7 +49,7 @@ use std::sync::{Arc, Mutex};
 use pinion_core::GridBuffer;
 use sprag_input::Modifiers;
 use sprag_terminal::{
-    CommandBuilder, LayoutSnapshot, LayoutWire, Pane, PaneId, SessionError, SessionHandle,
+    CommandBuilder, LayoutSnapshot, LayoutWire, Pane, PaneId, PanePtyError, PanePtyHandle,
     SessionRegistry, Workspace,
 };
 use sprag_vt::Screen;
@@ -107,7 +107,7 @@ impl PaneScrollFacts {
 /// `sprag-gui`'s `SlotView`), and the host has no notion of them. [`pane_ids`](HostClient::pane_ids)
 /// is the membership source; an absent id returns each method's graceful default.
 ///
-/// [`Host::pane_handle`] is deliberately NOT on this trait: a live [`SessionHandle`]
+/// [`Host::pane_handle`] is deliberately NOT on this trait: a live [`PanePtyHandle`]
 /// cannot cross a wire, so it stays an inherent `Host` method used only to build
 /// in-process input surfaces (retired as input clients attach to the host).
 pub trait HostClient {
@@ -251,7 +251,7 @@ impl Host {
     ///
     /// # Errors
     ///
-    /// Returns [`SessionError`] if the pseudoterminal or child cannot be started.
+    /// Returns [`PanePtyError`] if the pseudoterminal or child cannot be started.
     pub fn spawn(
         &self,
         command: CommandBuilder,
@@ -259,7 +259,7 @@ impl Host {
         cols: u16,
         rows: u16,
         on_dirty: Option<Box<dyn Fn() + Send>>,
-    ) -> Result<PaneId, SessionError> {
+    ) -> Result<PaneId, PanePtyError> {
         let workspace = self.workspace();
         lock(&workspace).spawn_with_dirty(command, label, cols, rows, on_dirty)
     }
@@ -287,12 +287,12 @@ impl Host {
     }
 
     /// Pane `id`'s cloneable I/O handle — the ONE non-wire-shaped method (module
-    /// docs), so it is NOT on [`HostClient`]. It hands out a live [`SessionHandle`]
+    /// docs), so it is NOT on [`HostClient`]. It hands out a live [`PanePtyHandle`]
     /// to build the headless host's own RPC input `SpragPaneExternal`s; a display
     /// client's OWN keyboard / IME go through [`HostClient::send_key`] /
     /// [`HostClient::send_text`], NOT this handle. `None` for an absent id.
     #[must_use]
-    pub fn pane_handle(&self, id: PaneId) -> Option<SessionHandle> {
+    pub fn pane_handle(&self, id: PaneId) -> Option<PanePtyHandle> {
         self.with_pane_id(id, Pane::handle)
     }
 
@@ -397,13 +397,13 @@ impl HostClient for Host {
     }
 
     fn pane_cells(&self, id: PaneId, offset_lines: usize) -> GridBuffer {
-        self.with_pane_id(id, |pane| crate::pane_cells(pane.session(), offset_lines))
+        self.with_pane_id(id, |pane| crate::pane_cells(pane.pty(), offset_lines))
             .unwrap_or_else(|| GridBuffer::new(1, 1))
     }
 
     fn pane_scroll_facts(&self, id: PaneId) -> PaneScrollFacts {
         self.with_pane_id(id, |pane| {
-            pane.session().with_screen(PaneScrollFacts::from_screen)
+            pane.pty().with_screen(PaneScrollFacts::from_screen)
         })
         .unwrap_or(PaneScrollFacts {
             scrollback_len: 0,
@@ -412,7 +412,7 @@ impl HostClient for Host {
     }
 
     fn pane_grid_size(&self, id: PaneId) -> (u16, u16) {
-        self.with_pane_id(id, |pane| pane.session().dimensions())
+        self.with_pane_id(id, |pane| pane.pty().dimensions())
             .unwrap_or((1, 1))
     }
 
@@ -443,7 +443,7 @@ impl HostClient for Host {
     }
 
     fn pane_full_text(&self, id: PaneId) -> String {
-        self.with_pane_id(id, |pane| pane.session().with_screen(Screen::full_text))
+        self.with_pane_id(id, |pane| pane.pty().with_screen(Screen::full_text))
             .unwrap_or_default()
     }
 

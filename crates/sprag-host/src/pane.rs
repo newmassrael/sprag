@@ -6,7 +6,7 @@
 //! projection), while the PTY+emulator engine sits behind an `External`
 //! boundary (process-side opacity justified). [`SpragPaneExternal`] is that
 //! engine surface. It carries no scene state of its own — only a
-//! [`SessionHandle`] onto the live producer — so input is a *producer*
+//! [`PanePtyHandle`] onto the live producer — so input is a *producer*
 //! mutation reached through pinion's canonical `scene/invoke`, not a
 //! mutation of pinion's projection (R969: pinion projects, the producer
 //! owns state).
@@ -42,7 +42,7 @@ use pinion_core::external::{
 };
 use serde_json::Value;
 use sprag_input::Modifiers;
-use sprag_terminal::SessionHandle;
+use sprag_terminal::PanePtyHandle;
 use sprag_vt::Screen;
 
 use crate::external::rpc_external_impl;
@@ -66,7 +66,7 @@ use crate::wire::{
 /// this directly with typed args) — so the human keyboard path and the AI
 /// `scene/invoke` path encode IDENTICALLY.
 #[must_use]
-pub fn send_key(session: &SessionHandle, key: &str, mods: Modifiers) -> bool {
+pub fn send_key(session: &PanePtyHandle, key: &str, mods: Modifiers) -> bool {
     match sprag_input::encode(key, mods, session.input_modes()) {
         Some(bytes) => session.write(&bytes).is_ok(),
         None => false,
@@ -78,7 +78,7 @@ pub fn send_key(session: &SessionHandle, key: &str, mods: Modifiers) -> bool {
 /// write failure. The text->PTY SSOT shared by [`SpragPaneExternal`]'s `text`
 /// action and the in-process client.
 #[must_use]
-pub fn send_text(session: &SessionHandle, text: &str) -> bool {
+pub fn send_text(session: &PanePtyHandle, text: &str) -> bool {
     if text.is_empty() {
         return true;
     }
@@ -86,18 +86,18 @@ pub fn send_text(session: &SessionHandle, text: &str) -> bool {
 }
 
 /// The pane engine `External`: a thin, scene-stateless forwarder onto the
-/// live [`SessionHandle`]. Input arrives via `scene/invoke` and is encoded
+/// live [`PanePtyHandle`]. Input arrives via `scene/invoke` and is encoded
 /// to PTY bytes by the sprag-owned encoder (R2.6); the producer's reader
 /// thread lives behind this boundary, so the engine is `UiThreadSync` from
 /// pinion's vantage (it does its work synchronously when invoked).
 pub struct SpragPaneExternal {
-    session: SessionHandle,
+    session: PanePtyHandle,
 }
 
 impl SpragPaneExternal {
     /// Build the engine surface over a live session's I/O handle.
     #[must_use]
-    pub fn new(session: SessionHandle) -> Self {
+    pub fn new(session: PanePtyHandle) -> Self {
         Self { session }
     }
 
@@ -184,7 +184,7 @@ pub struct CellFrame {
 
 impl fmt::Debug for SpragPaneExternal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // `SessionHandle` wraps un-`Debug` PTY/emulator handles; the engine
+        // `PanePtyHandle` wraps un-`Debug` PTY/emulator handles; the engine
         // is identified structurally (External: Debug is required by §5.2).
         f.debug_struct("SpragPaneExternal").finish_non_exhaustive()
     }

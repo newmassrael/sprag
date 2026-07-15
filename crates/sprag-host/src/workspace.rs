@@ -462,7 +462,7 @@ mod tests {
             lock(&pool(&reg))
                 .pane(PaneId(0))
                 .unwrap()
-                .session()
+                .pty()
                 .dimensions(),
             (100, 30)
         );
