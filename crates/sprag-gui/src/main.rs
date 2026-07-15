@@ -221,9 +221,9 @@ use pinion_shell::{
     vello_renderer_impl,
 };
 use pinion_widget_paint::dock::{
-    DockPanelExternal, DropResolution, TEAR_OFF_EVENT, TEAR_OFF_FOLLOW_EVENT,
-    TEAR_OFF_REDOCK_AT_EVENT, TEAR_OFF_REDOCK_EVENT, WINDOW_MOVE_EVENT, dock_drop_preview_overlay,
-    dock_outer_preview_overlay, dock_redock_preview_tint, resolve_drop,
+    DockPanelExternal, DockReorganizeExternal, DropResolution, TEAR_OFF_EVENT,
+    TEAR_OFF_FOLLOW_EVENT, TEAR_OFF_REDOCK_AT_EVENT, TEAR_OFF_REDOCK_EVENT, WINDOW_MOVE_EVENT,
+    dock_drop_preview_overlay, dock_outer_preview_overlay, dock_redock_preview_tint, resolve_drop,
 };
 use pinion_widget_paint::splitter::SplitterExternal;
 use std::rc::Rc;
@@ -463,6 +463,27 @@ impl WidgetCore for TerminalViewer {
                 ),
             )
         }));
+        // (R153) The CANONICAL REORGANIZE SURFACE — the dock as DATA, driven and observed
+        // with NO pixels. It shares the same `DockReorganizer` and `drop_preview` Signal the
+        // panel externals above hold, so it is a view onto the live gesture, never a second
+        // authority.
+        //
+        // This is pinion's §2 #2 "RPC-as-primary-path" contract, which sprag had been failing
+        // for its dock alone: a splitter drag and a pane's key/cells are all addressable as
+        // data, but a dock reorganize was reachable ONLY by synthesising pixel coordinates
+        // (`scene/drag`) — which meant no agent (and no test) could drive or watch a dock
+        // gesture by intent. It cost real time: hunting drop-zone pixels landed on the window
+        // RESIZE border instead of the dock band, and a near-miss tore a pane off rather than
+        // docking it. `reorganize`/`drop` now take a `{source, target, zone}`; `drop_preview`
+        // reports the in-flight `{source, target, zone}`; `last_outcome` reports what
+        // committed; `topology` serves the tree. Same surface the editor example registers.
+        externals.push(ExtraExternal::new(
+            split::DOCK_REORGANIZE_TAG,
+            Box::new(
+                DockReorganizeExternal::from_reorganizer(Rc::clone(&reorganizer))
+                    .with_drop_preview(Rc::clone(&drop_preview)),
+            ),
+        ));
         // R140: the right-click context menu, one `ContextMenuExternal` at a constant
         // tag (pinion R689 preserves its live open state across this per-frame rebuild,
         // like the splitters). Its item clicks / barrier dismiss route through the shell
@@ -2307,6 +2328,32 @@ mod tests {
             2,
             "clean tree — exactly two docked leaves, no duplicate"
         );
+    }
+
+    /// The dock is addressable as DATA: the canonical reorganize surface is registered, so a
+    /// gesture is drivable + observable BY INTENT (`reorganize {source,target,zone}`,
+    /// `drop_preview`, `last_outcome`, `topology`) with no pixels — pinion's §2 #2
+    /// RPC-as-primary-path contract.
+    ///
+    /// Guarded because its ABSENCE is silent and expensive: without it the only way to drive a
+    /// dock reorganize is synthesising drop-zone COORDINATES, which no test can do reliably —
+    /// R153 burned a session proving that, landing on the window resize border and tearing a
+    /// pane off on a near-miss. A surface that exists only in pixels is untestable by
+    /// construction.
+    #[test]
+    fn the_dock_is_drivable_by_intent_not_only_by_pixels() {
+        let core = ShellCore::<TerminalViewer>::new();
+        core.root_owner().run(|| {
+            let tags: Vec<String> = <TerminalViewer as WidgetCore>::create_extra_externals()
+                .into_iter()
+                .map(|e| e.tag.into_owned())
+                .collect();
+            assert!(
+                tags.iter().any(|t| t == split::DOCK_REORGANIZE_TAG),
+                "the canonical reorganize surface must be registered, else the dock is \
+                 reachable only by synthesised pixels: {tags:?}",
+            );
+        });
     }
 
     /// R70: `create_extra_externals` registers a `DockPanelExternal` for EVERY pane,

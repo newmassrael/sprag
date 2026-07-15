@@ -134,6 +134,15 @@ pub(crate) fn split_tag(id: SplitId) -> String {
 /// fresh `SplitId` on every settle — a silent, unbounded id churn no type check would catch.
 const SPLIT_TAG_PREFIX: &str = "sprag_gui.split.";
 
+/// The scene tag of the CANONICAL REORGANIZE SURFACE — the dock addressed as DATA.
+///
+/// An agent (or a test) drives a dock gesture by INTENT through
+/// `scene/invoke /sprag_gui.dock/external/reorganize` with a `{source, target, zone}`, reads
+/// the in-flight gesture from `drop_preview`, what committed from `last_outcome`, and the tree
+/// from `topology` — pinion's §2 #2 RPC-as-primary-path contract, with no pixels anywhere.
+/// Distinct from the per-pane [`panel_id`] and per-divider [`split_tag`] namespaces.
+pub(crate) const DOCK_REORGANIZE_TAG: &str = "sprag_gui.dock";
+
 /// The event suffix of the intent pinion's `SplitterExternal` fires on drag-end (PR-56),
 /// carrying the settled ratio — reaching the reducer as `{split_tag}.ratio_committed`.
 ///
