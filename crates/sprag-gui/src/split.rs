@@ -71,7 +71,9 @@
 
 use crate::terminal::MAX_PANES;
 use pinion_core::reactive::{Owner, Signal};
-use pinion_widget_paint::dock::{DockDropPreview, DockNode, DockReorganizer, DockTopology};
+use pinion_widget_paint::dock::{
+    DockDropPreview, DockNode, DockReorganizer, DockTopology, FloatPolicy,
+};
 use pinion_widget_paint::splitter::SplitterOrientation;
 use sprag_terminal::{
     LayoutNode, LayoutNodeWire, LayoutSnapshot, LayoutTree, LayoutWire, PaneId, SplitDir, SplitId,
@@ -653,12 +655,31 @@ const REORGANIZER_KEY: &str = "sprag_gui.dock_reorganizer";
 /// to the nearest edge (split) instead of a tab well, on EVERY path (drag, RPC, cross-window
 /// redock — R1112 lifted the flag to this one surface SSOT). So no `Center`/tab drop zone
 /// appears for the user.
+///
+/// `with_float_policy(Collapse)` (R153) DECLARES what this surface actually does. It gates
+/// no behaviour — nothing in pinion branches on it, and sprag never drives pinion's float
+/// path at all (`float_out_panel` / `restore_panel_home` are unused; a float goes to the
+/// HOST via `SlotView::set_floating`, because WHICH panes are tiled is session state). It is
+/// purely the wire's answer to `query("float_policy")`. Left at pinion's `Placeholder`
+/// default it answered the exact OPPOSITE of the truth — "the leaf stays, the slot is
+/// preserved" — to any agent asking how this dock treats a torn-off pane, while the host
+/// removes the leaf and the siblings reclaim the space. A surface that reports its own
+/// policy backwards is worse than one that reports nothing, and R153 exposed this the moment
+/// the reorganize surface became queryable.
+///
+/// **Honest bound:** `Collapse` is pinion's "remove the leaf on float, RESTORE IT TO THE
+/// CAPTURED HOME ANCHOR on dock-back". sprag matches the first half exactly and does not yet
+/// do the second — a dock-back appends at the arrangement's END, so a floated pane loses its
+/// index home durably. That gap is tracked (the host-side float home anchor); this constant
+/// declares the half the user can observe today, which is the half `Placeholder` got wrong.
 pub(crate) fn use_dock_reorganizer() -> Rc<DockReorganizer> {
     let topology = use_dock_topology();
     Owner::current()
         .expect("use_dock_reorganizer() requires an active Owner scope")
         .cache(REORGANIZER_KEY, move || {
-            DockReorganizer::new(topology).with_tabbing(false)
+            DockReorganizer::new(topology)
+                .with_tabbing(false)
+                .with_float_policy(FloatPolicy::Collapse)
         })
 }
 
@@ -1056,6 +1077,26 @@ mod tests {
     /// drag that consumes it. sprag has NO code for the gesture (a same-window docked drag
     /// is resolved inside pinion's `DockPanelExternal`), so this pins the behaviour sprag
     /// gets for free and guards against a pinion regression reaching it.
+    /// The dock surface DECLARES the float policy it actually follows.
+    ///
+    /// Guarded because the value gates nothing — it is pure wire declaration, so a wrong one
+    /// breaks no test and no pixel; it just lies to whoever asks. Left at pinion's
+    /// `Placeholder` default it answered the exact opposite of what the host does (the leaf
+    /// is REMOVED on float and the siblings reclaim), and that went unnoticed until R153 made
+    /// the reorganize surface queryable at all.
+    #[test]
+    fn the_dock_declares_the_float_policy_it_actually_follows() {
+        let owner = Owner::new();
+        owner.run(|| {
+            assert_eq!(
+                use_dock_reorganizer().float_policy(),
+                FloatPolicy::Collapse,
+                "the host removes a floated pane's leaf (siblings reclaim), so the surface \
+                 must not report `placeholder` to an agent asking how it treats a tear-off",
+            );
+        });
+    }
+
     #[test]
     fn two_pane_outer_dock_is_redundant_but_three_pane_stays_offered() {
         use pinion_widget_paint::dock::DockDropZone;
