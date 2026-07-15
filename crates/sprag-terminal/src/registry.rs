@@ -34,7 +34,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::PaneId;
 use crate::layout::{FloatHome, LayoutError, LayoutTree, LayoutWire};
@@ -81,6 +81,22 @@ pub struct Window {
 }
 
 impl Window {
+    /// An empty window named `name`, its pane pool minting from the SHARED `id_counter`
+    /// (the registry-wide uniqueness invariant — see the module docs).
+    fn new(name: &str, default_size: (u16, u16), id_counter: Arc<AtomicU64>) -> Self {
+        Self {
+            name: name.to_owned(),
+            workspace: Arc::new(Mutex::new(Workspace::with_id_source(
+                default_size,
+                id_counter,
+            ))),
+            layout: LayoutTree::new(),
+            floating: HashSet::new(),
+            homes: HashMap::new(),
+            layout_revision: 0,
+        }
+    }
+
     /// The window's display name (default `"0"`, `"1"`, …; user-renamable later).
     #[must_use]
     pub fn name(&self) -> &str {
@@ -277,6 +293,26 @@ impl Window {
     }
 }
 
+/// Why a session operation was refused. The registry is unchanged in either case.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum SessionError {
+    /// The name is already taken ([`SessionRegistry::new_session`]).
+    Duplicate(String),
+    /// No session carries the name ([`SessionRegistry::select_session`]).
+    Unknown(String),
+}
+
+impl std::fmt::Display for SessionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Duplicate(name) => write!(f, "a session named {name:?} already exists"),
+            Self::Unknown(name) => write!(f, "no session named {name:?}"),
+        }
+    }
+}
+
+impl std::error::Error for SessionError {}
+
 /// One session: a named attach unit owning an ordered, non-empty set of [`Window`]s
 /// with exactly one current window.
 ///
@@ -290,6 +326,17 @@ pub struct Session {
 }
 
 impl Session {
+    /// A session named `name` holding one empty window `"0"` — a session always has at
+    /// least one window, which is what makes [`current_window`](Self::current_window)
+    /// total.
+    fn new(name: &str, default_size: (u16, u16), id_counter: Arc<AtomicU64>) -> Self {
+        Self {
+            name: name.to_owned(),
+            windows: vec![Window::new("0", default_size, id_counter)],
+            current_window: 0,
+        }
+    }
+
     /// The session's display name (default `"0"`; the tmux `-s` name later).
     #[must_use]
     pub fn name(&self) -> &str {
@@ -336,25 +383,8 @@ impl SessionRegistry {
     /// fresh global id counter (which later windows will share).
     #[must_use]
     pub fn new(default_size: (u16, u16)) -> Self {
-        let id_counter = Arc::new(AtomicU64::new(0));
-        let window = Window {
-            name: "0".to_owned(),
-            workspace: Arc::new(Mutex::new(Workspace::with_id_source(
-                default_size,
-                id_counter,
-            ))),
-            layout: LayoutTree::new(),
-            floating: HashSet::new(),
-            homes: HashMap::new(),
-            layout_revision: 0,
-        };
-        let session = Session {
-            name: "0".to_owned(),
-            windows: vec![window],
-            current_window: 0,
-        };
         Self {
-            sessions: vec![session],
+            sessions: vec![Session::new("0", default_size, Arc::new(AtomicU64::new(0)))],
             current_session: 0,
         }
     }
@@ -363,6 +393,77 @@ impl SessionRegistry {
     #[must_use]
     pub fn sessions(&self) -> &[Session] {
         &self.sessions
+    }
+
+    /// Resolve a session by NAME. `None` if no session carries it.
+    ///
+    /// Name, never index, is how a session is addressed from outside this type — see
+    /// [`select_session`](Self::select_session) for why that is structural rather than
+    /// stylistic.
+    #[must_use]
+    pub fn session(&self, name: &str) -> Option<&Session> {
+        self.sessions.iter().find(|s| s.name == name)
+    }
+
+    /// Resolve a session by NAME, mutably.
+    pub fn session_mut(&mut self, name: &str) -> Option<&mut Session> {
+        self.sessions.iter_mut().find(|s| s.name == name)
+    }
+
+    /// Create a session named `name`, holding one empty window.
+    ///
+    /// Its pane pool clones the id counter out of a pool that already exists, so ids stay
+    /// unique across the WHOLE registry (the module's load-bearing invariant) with no second
+    /// home to keep in step. Size is inherited from the current window's pool, which is the
+    /// only copy production reads.
+    ///
+    /// Does NOT make the new session current: creating and attaching are separate acts, and
+    /// a client that creates a session for someone else must not yank the scope out from
+    /// under whoever is attached now.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::Duplicate`] if `name` is already taken — a name is how a session is
+    /// addressed, so two of them would make the address ambiguous and let one client's
+    /// request silently land in another's session.
+    /// Returns nothing rather than a borrow of the new session: creating is not attaching,
+    /// so a caller that wants it looks it up by the name it just chose ([`session`](Self::session)).
+    pub fn new_session(&mut self, name: &str) -> Result<(), SessionError> {
+        if self.session(name).is_some() {
+            return Err(SessionError::Duplicate(name.to_owned()));
+        }
+        let seed = self.current_workspace();
+        let (default_size, id_counter) = {
+            let pool = seed.lock().unwrap_or_else(PoisonError::into_inner);
+            (pool.default_size(), pool.id_source())
+        };
+        self.sessions
+            .push(Session::new(name, default_size, id_counter));
+        Ok(())
+    }
+
+    /// Make the session named `name` the current one — the scope an UNSCOPED request acts on.
+    ///
+    /// **This is why the current pointer cannot be driven off the wire as an index.** It is
+    /// resolved from a NAME here, so the only index ever stored is one this type just found
+    /// in its own `sessions`; a name that does not resolve is an `Err`, not an out-of-range
+    /// write that a later read turns into a panic on some unrelated request. The invariant
+    /// ("the index addresses a session that exists") is upheld by construction at the one
+    /// site that can move it, rather than by a comment asking every future caller to be
+    /// careful.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::Unknown`] if no session carries `name`; the current session is
+    /// unchanged.
+    pub fn select_session(&mut self, name: &str) -> Result<(), SessionError> {
+        let index = self
+            .sessions
+            .iter()
+            .position(|s| s.name == name)
+            .ok_or_else(|| SessionError::Unknown(name.to_owned()))?;
+        self.current_session = index;
+        Ok(())
     }
 
     /// The current session. Never panics: `current_session` is kept `< sessions.len()`
@@ -584,6 +685,85 @@ mod tests {
             before + 1,
             "the float set changed once; the home is not a client-visible change",
         );
+    }
+
+    /// A second session is a real, independent attach unit — the shape the owner's
+    /// several-windows workflow needs once ONE daemon holds every session.
+    #[test]
+    fn a_new_session_is_independent_and_is_not_attached_to_on_creation() {
+        let mut reg = SessionRegistry::new((80, 24));
+        assert_eq!(reg.sessions().len(), 1);
+
+        reg.new_session("work").expect("a free name");
+        let created = reg
+            .session("work")
+            .expect("looked up by the name just chosen");
+        assert_eq!(created.name(), "work");
+        assert_eq!(created.windows().len(), 1, "a session always has a window");
+        assert!(created.current_window().layout().panes().is_empty());
+
+        // Creating is not attaching: whoever is attached to "0" keeps their scope.
+        assert_eq!(
+            reg.current_session().name(),
+            "0",
+            "creating a session for someone else must not yank the current scope",
+        );
+        assert_eq!(reg.sessions().len(), 2);
+        assert_eq!(reg.session("work").map(Session::name), Some("work"));
+        assert!(reg.session("nope").is_none());
+    }
+
+    /// A name is an ADDRESS, so two sessions sharing one would make a request ambiguous —
+    /// it could silently land in the wrong client's session.
+    #[test]
+    fn a_duplicate_session_name_is_refused_and_changes_nothing() {
+        let mut reg = SessionRegistry::new((80, 24));
+        reg.new_session("work").unwrap();
+        assert_eq!(
+            reg.new_session("work").unwrap_err(),
+            SessionError::Duplicate("work".to_owned()),
+        );
+        assert_eq!(reg.sessions().len(), 2, "the refused create added nothing");
+    }
+
+    /// THE STRUCTURAL CLAIM: the current pointer is resolved from a NAME, so the only index
+    /// ever stored is one the registry just found in its own `sessions`. An unknown name is
+    /// an `Err` that changes nothing — it cannot leave a dangling index for some later,
+    /// unrelated request to panic on.
+    #[test]
+    fn selecting_an_unknown_session_is_an_error_not_a_dangling_index() {
+        let mut reg = SessionRegistry::new((80, 24));
+        reg.new_session("work").unwrap();
+        reg.select_session("work").expect("a real name resolves");
+        assert_eq!(reg.current_session().name(), "work");
+
+        assert_eq!(
+            reg.select_session("ghost").unwrap_err(),
+            SessionError::Unknown("ghost".to_owned()),
+        );
+        // The pointer did not move, and every accessor still answers — the property a
+        // wire-supplied INDEX could not have given us.
+        assert_eq!(reg.current_session().name(), "work");
+        assert_eq!(reg.current_window().name(), "0");
+        let _ = reg.current_workspace();
+        let _ = reg.current_window_mut();
+    }
+
+    /// Pane ids stay unique across SESSIONS, not just across windows: the new session's pool
+    /// clones the id counter rather than starting its own, so no second home can drift.
+    #[test]
+    fn a_new_sessions_pool_shares_the_one_global_id_counter() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let first = reg.current_workspace();
+        let a = lock(&first).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
+
+        reg.new_session("work").unwrap();
+        reg.select_session("work").unwrap();
+        let second = reg.current_workspace();
+        let b = lock(&second).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
+
+        assert_ne!(a, b, "a pane id is unique across the WHOLE registry");
+        assert!(b > a, "and monotonic: {a} then {b}");
     }
 
     /// A gesture authored against an arrangement that has moved on is REFUSED — a durable

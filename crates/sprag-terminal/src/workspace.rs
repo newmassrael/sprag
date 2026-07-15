@@ -160,6 +160,19 @@ impl Workspace {
         self.default_size
     }
 
+    /// A handle on the id counter this pool mints from, for
+    /// [`with_id_source`](Self::with_id_source) to seed a SIBLING pool with.
+    ///
+    /// The counter lives with the thing it counts, so a new window / session clones it out
+    /// of a pool that already exists rather than reading it from a second home that would
+    /// have to be kept in step. Cloning the `Arc` is what makes ids unique across every
+    /// pool in one [`SessionRegistry`](crate::SessionRegistry) — copying the VALUE would
+    /// mint duplicates immediately.
+    #[must_use]
+    pub fn id_source(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.next_id)
+    }
+
     /// Spawn `command` on a fresh `cols x rows` pane, returning its id.
     /// `label` is the introspection label (typically the program name).
     ///
