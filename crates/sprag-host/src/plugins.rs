@@ -23,7 +23,7 @@ use std::thread;
 use std::time::Duration;
 
 use pinion_core::external::{
-    ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError,
+    ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError, SchemaField,
 };
 use serde_json::{Map, Value, json};
 use sprag_plugin::{
@@ -226,12 +226,16 @@ rpc_external_impl!(PluginsExternal);
 
 impl ExternalIntrospect for PluginsExternal {
     fn schema(&self) -> IntrospectSchema {
-        IntrospectSchema::new(&[
-            (RUN_ACTION, "action"),
-            (CANCEL_ACTION, "action"),
-            (RUNS_SLOT, "list"),
-            (PLUGINS_SLOT, "list"),
-        ])
+        IntrospectSchema::new(
+            const {
+                &[
+                    SchemaField::new(RUN_ACTION, "action"),
+                    SchemaField::new(CANCEL_ACTION, "action"),
+                    SchemaField::new(RUNS_SLOT, "list"),
+                    SchemaField::new(PLUGINS_SLOT, "list"),
+                ]
+            },
+        )
     }
 
     fn query(&self, path: &str) -> Option<IntrospectValue> {

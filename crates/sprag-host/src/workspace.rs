@@ -38,7 +38,7 @@ use std::sync::{Arc, Mutex};
 
 use pinion_core::SceneRevision;
 use pinion_core::external::{
-    ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError,
+    ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError, SchemaField,
 };
 use serde_json::{Map, Value};
 use sprag_terminal::{CommandBuilder, LayoutSnapshot, LayoutWire, SessionRegistry, Workspace};
@@ -218,15 +218,19 @@ rpc_external_impl!(WorkspaceExternal);
 
 impl ExternalIntrospect for WorkspaceExternal {
     fn schema(&self) -> IntrospectSchema {
-        IntrospectSchema::new(&[
-            (SPAWN_ACTION, "action"),
-            (CLOSE_ACTION, "action"),
-            (RESIZE_ACTION, "action"),
-            (SET_LAYOUT_ACTION, "action"),
-            (SET_FLOATING_ACTION, "action"),
-            (PANES_SLOT, "list"),
-            (LAYOUT_SLOT, "tree"),
-        ])
+        IntrospectSchema::new(
+            const {
+                &[
+                    SchemaField::new(SPAWN_ACTION, "action"),
+                    SchemaField::new(CLOSE_ACTION, "action"),
+                    SchemaField::new(RESIZE_ACTION, "action"),
+                    SchemaField::new(SET_LAYOUT_ACTION, "action"),
+                    SchemaField::new(SET_FLOATING_ACTION, "action"),
+                    SchemaField::new(PANES_SLOT, "list"),
+                    SchemaField::new(LAYOUT_SLOT, "tree"),
+                ]
+            },
+        )
     }
 
     fn query(&self, path: &str) -> Option<IntrospectValue> {

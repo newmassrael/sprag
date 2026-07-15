@@ -33,7 +33,7 @@ use std::fmt;
 
 use pinion_core::GridBuffer;
 use pinion_core::external::{
-    ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError,
+    ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError, SchemaField,
 };
 use serde_json::Value;
 use sprag_input::Modifiers;
@@ -214,14 +214,18 @@ rpc_external_impl!(SpragPaneExternal);
 
 impl ExternalIntrospect for SpragPaneExternal {
     fn schema(&self) -> IntrospectSchema {
-        IntrospectSchema::new(&[
-            (KEY_ACTION, "action"),
-            (TEXT_ACTION, "action"),
-            (CELLS_ACTION, "action"),
-            (LIVE_FRAME_SLOT, "frame"),
-            (CURSOR_KEYS_SLOT, "bool"),
-            (FULL_TEXT_SLOT, "string"),
-        ])
+        IntrospectSchema::new(
+            const {
+                &[
+                    SchemaField::new(KEY_ACTION, "action"),
+                    SchemaField::new(TEXT_ACTION, "action"),
+                    SchemaField::new(CELLS_ACTION, "action"),
+                    SchemaField::new(LIVE_FRAME_SLOT, "frame"),
+                    SchemaField::new(CURSOR_KEYS_SLOT, "bool"),
+                    SchemaField::new(FULL_TEXT_SLOT, "string"),
+                ]
+            },
+        )
     }
 
     fn query(&self, path: &str) -> Option<IntrospectValue> {
