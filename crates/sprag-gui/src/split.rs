@@ -392,9 +392,6 @@ struct LayoutSync {
     /// The arrangement the host last told us it holds, at the revision it was at. A local
     /// surface that differs from this is an un-written gesture.
     seen: LayoutSnapshot,
-    /// The PREVIOUS frame's un-projection. A gesture in flight changes every frame; one that
-    /// matches the last frame has stopped, and only then is it worth writing.
-    settling: Option<LayoutWire>,
 }
 
 /// `Owner::cache` key for the client's record of the host's arrangement.
@@ -450,10 +447,7 @@ pub(crate) fn adopt_layout(snapshot: &LayoutSnapshot, slots: &crate::slotview::S
     // fact — project it too, or a floated pane would have neither a leaf nor a window and
     // would vanish (which is exactly what a reattach used to do to it).
     crate::dock::reconcile_float_windows(&snapshot.floating, &|pane| slots.slot_of(pane));
-    let sync = use_layout_sync();
-    let mut sync = sync.borrow_mut();
-    sync.seen = snapshot.clone();
-    sync.settling = None;
+    use_layout_sync().borrow_mut().seen = snapshot.clone();
 }
 
 /// Each divider's share in `wire`, by id — what [`adopt_layout`] diffs the incoming
@@ -515,59 +509,111 @@ fn force_changed_ratios(node: &LayoutNode, was: &std::collections::HashMap<Split
 ///   revision differs from what we last saw, so we re-project. The host wins outright — it
 ///   is the authority, and a client that argued would fork the tree, which is precisely what
 ///   R148 found and this retires.
-/// * WE moved (the user dragged a divider or re-docked a pane): the surface no longer
-///   matches what the host holds, so we write it — but only once it has STOPPED changing.
-///   A drag moves every frame; writing each one would put a synchronous socket round trip on
-///   the UI thread sixty times a second to record intermediate states nobody asked to keep.
-///   Waiting for one still frame costs a frame of latency on a gesture that has already
-///   ended, and the user cannot perceive it.
+/// * WE moved: the surface no longer matches what the host holds. A SHAPE change is written
+///   here, at once; a RATIO change is not ours — see below.
 ///
 /// The write's ANSWER is adopted directly (it carries the canonical ids), so a gesture costs
 /// exactly one round trip and converges: re-projecting it yields the same surface, whose
 /// un-projection then equals what the host holds, so nothing is written again.
+///
+/// ## Why a shape change needs no settle gate (R154 — the regression this retires)
+///
+/// This used to wait for one STILL frame before writing, on the theory that a gesture moves
+/// every frame. That was wrong twice over, and R152 turned it into a live defect: it made the
+/// write depend on a frame arriving AFTER the gesture ended, and the only thing supplying that
+/// frame was the idle-repaint livelock R152 deleted. With the livelock gone the shell parks on
+/// `ControlFlow::Wait`, a commit arms exactly ONE repaint, that frame merely recorded the
+/// "settling" candidate, and the second frame never came — so a settled drag-to-dock
+/// re-arrangement was **never written to the host and was lost on detach**, the very thing this
+/// arc exists to prevent. Worse, it was nondeterministic: any later unrelated repaint (a pane
+/// printing) would flush the stale candidate, so a busy pane hid what an idle pane lost.
+///
+/// The gate was never needed for a shape change: pinion mutates the dock topology in exactly
+/// ONE place — `DockReorganizer::commit`, at the drop — and never mid-drag (a drag only writes
+/// the separate drop-preview signal). So a shape difference is SETTLED BY CONSTRUCTION, and the
+/// single repaint the commit arms is both all we get and all we need.
+///
+/// A RATIO drag is the opposite: [`unproject_layout`] reads the LIVE ratio signal, so its
+/// un-projection changes on every frame of the drag and has no settled moment visible from
+/// here. It therefore belongs to its own commit edge ([`commit_layout`], on pinion's
+/// `ratio_committed` intent) and is skipped here — which also retires the old gate's other
+/// bug: if the user paused a divider drag while any pane happened to print (`top`, a log
+/// tail — the ordinary case in a terminal), the incidental repaint made "unchanged since last
+/// frame" look like "settled", and the intermediate ratio was written mid-gesture.
 pub(crate) fn sync_layout(slots: &crate::slotview::SlotView) {
     let host = slots.layout();
     if host.revision != use_layout_sync().borrow().seen.revision {
         adopt_layout(&host, slots);
         return;
     }
-    match pending_write(slots) {
-        // Nothing legitimate to write (unrepresentable, a foreign pane set, or already the
-        // host's): no gesture is in flight, so forget any half-tracked settle.
-        None => use_layout_sync().borrow_mut().settling = None,
-        Some((current, expected)) => {
-            // A REORGANIZE (drag-to-dock) has no explicit commit edge — pinion only mutates
-            // the topology signal as the drag moves — so settle it: write once the surface
-            // has stopped changing (this frame's un-projection == last frame's), else a drag
-            // would put a synchronous socket round trip on the UI thread every frame. A drag
-            // that has already ended costs one still frame of latency the user cannot perceive.
-            // (A RATIO drag does not come through here — it commits via [`commit_layout`] on
-            // the `ratio_committed` intent, which is why removing the idle-repaint livelock did
-            // not strand it on a frame that never arrives.)
-            if use_layout_sync().borrow().settling.as_ref() != Some(&current) {
-                use_layout_sync().borrow_mut().settling = Some(current);
-                return;
-            }
-            adopt_layout(&slots.set_layout(current, expected), slots);
-            use_layout_sync().borrow_mut().settling = None;
+    let Some((current, expected)) = pending_write(slots) else {
+        return;
+    };
+    if same_shape(&current, &use_layout_sync().borrow().seen.tree) {
+        return; // ratio-only: not ours (see the docs above) — `commit_layout` owns it
+    }
+    adopt_layout(&slots.set_layout(current, expected), slots);
+}
+
+/// Whether two arrangements tile the same panes the same way, IGNORING every divider's share.
+///
+/// The [`sync_layout`] / [`commit_layout`] split rests on this: a shape difference can only
+/// have come from a `DockReorganizer::commit` (a drop) and is settled by construction, while a
+/// ratio difference is an in-flight drag reading the live signal. Divider IDENTITY is part of
+/// the shape on purpose — a reorganize mints a divider this client cannot name (`id: None`,
+/// for the host to stamp), and that is a real structural change, not a re-weighting.
+fn same_shape(a: &LayoutWire, b: &LayoutWire) -> bool {
+    fn node(a: &LayoutNodeWire, b: &LayoutNodeWire) -> bool {
+        match (a, b) {
+            (LayoutNodeWire::Leaf(x), LayoutNodeWire::Leaf(y)) => x == y,
+            (
+                LayoutNodeWire::Split {
+                    id: ia,
+                    dir: da,
+                    first: fa,
+                    second: sa,
+                    ..
+                },
+                LayoutNodeWire::Split {
+                    id: ib,
+                    dir: db,
+                    first: fb,
+                    second: sb,
+                    ..
+                },
+            ) => ia == ib && da == db && node(fa, fb) && node(sa, sb),
+            _ => false,
         }
+    }
+    match (&a.root, &b.root) {
+        (None, None) => true,
+        (Some(x), Some(y)) => node(x, y),
+        _ => false,
     }
 }
 
-/// Write the settled arrangement to the host NOW, without the [`sync_layout`] settle gate —
-/// the RATIO-drag commit path.
+/// Write the settled arrangement to the host NOW — the RATIO-drag commit edge.
 ///
-/// pinion (PR-56) fires a `ratio_committed` intent on splitter drag-end, and the final ratio
-/// is already in the divider's [`use_split_ratio`] signal (the live drag set it), so this
-/// un-projects that value and writes immediately. It is the explicit commit edge the
-/// reorganize path lacks: a ratio release re-sets no signal, so no repaint follows it, so the
-/// settle detector's "one still frame" would never arrive once the idle-repaint livelock was
-/// fixed. The intent reaches the reducer regardless of painting, so committing here is frame-
-/// independent by construction.
+/// A ratio drag has no settled moment [`sync_layout`] can see: [`unproject_layout`] reads the
+/// LIVE ratio signal, so the un-projection moves on every frame of the drag and stops moving
+/// without announcing it. pinion (PR-56) supplies the announcement — a `ratio_committed`
+/// intent on drag-end, whose final ratio is already in the divider's [`use_split_ratio`]
+/// signal — and this un-projects that value and writes at once. The intent drains in the
+/// shell's dispatch tail and reaches the reducer whether or not anything paints, so this is
+/// FRAME-INDEPENDENT by construction: the property the retired settle detector lacked, and
+/// the reason R152's livelock fix did not strand the ratio the way it stranded the reorganize
+/// (see [`sync_layout`]).
 ///
 /// Shares [`pending_write`] with [`sync_layout`] — same membership guard, same
 /// compare-and-set — so a ratio commit cannot write a lossy or foreign arrangement any more
-/// than a settled reorganize can.
+/// than a reorganize can.
+///
+/// **Known bound (upstream, PINION-PR58):** `PointerCancel` is silent. pinion tears the drag
+/// down and emits NO intent, while leaving the ratio its in-flight moves already applied — so
+/// a cancelled drag (an OS capture revoke: alt-tab, focus loss) leaves this client showing a
+/// share the host does not hold, with no edge to write it on. It self-corrects on the next
+/// [`adopt_layout`], i.e. whenever the host's arrangement next moves. Not worked around here:
+/// the missing edge is pinion's to emit.
 pub(crate) fn commit_layout(slots: &crate::slotview::SlotView) {
     let host = slots.layout();
     if host.revision != use_layout_sync().borrow().seen.revision {

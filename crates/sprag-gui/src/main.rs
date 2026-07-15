@@ -2330,6 +2330,117 @@ mod tests {
         );
     }
 
+    /// Paint ONE frame — the budget the real app has once it parks on `ControlFlow::Wait`.
+    ///
+    /// This models the single property R152 changed and no other test here captures. A signal
+    /// mutation arms exactly ONE repaint, so a settled gesture gets exactly ONE frame to be
+    /// written; every other test in this file paints unconditionally and therefore silently
+    /// hands the code frames the real app stopped producing the moment the idle-repaint
+    /// livelock was fixed. That gap is how a lost-layout regression shipped with 110 tests
+    /// green (R152 -> R154).
+    fn paint_one_frame(core: &mut ShellCore<TerminalViewer>) {
+        let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+        core.finalize_frame(scene);
+    }
+
+    /// The host's arrangement, as the client's mirror reports it.
+    fn host_layout(core: &ShellCore<TerminalViewer>) -> sprag_terminal::LayoutWire {
+        core.root_owner().run(|| use_terminal().slots.layout().tree)
+    }
+
+    /// A settled drag-to-dock re-arrangement reaches the HOST on the single frame its commit
+    /// arms — no second frame required.
+    ///
+    /// The regression this pins (R152 -> R154) lost the user's layout: `sync_layout` waited for
+    /// one STILL frame before writing, which only ever arrived because the idle-repaint livelock
+    /// was manufacturing frames. R152 fixed the livelock, the shell began parking on
+    /// `ControlFlow::Wait`, a commit armed exactly ONE repaint — the frame that merely RECORDED
+    /// the settle candidate — and the write never happened. The re-arrangement was then lost on
+    /// detach, defeating the whole point of the arc, and nondeterministically: any later
+    /// unrelated repaint would flush the stale candidate, so a busy pane hid what an idle pane
+    /// lost.
+    ///
+    /// So this drives the gesture through the SAME call pinion's drop path uses
+    /// (`dock_panel_at_resolved_zone` -> `DockReorganizer::commit` -> the topology signal) and
+    /// then paints exactly ONE frame — the budget a commit arms. Asserting the HOST's tree, not
+    /// the client's, is the point: the client repainted correctly the entire time it was losing
+    /// the user's work.
+    #[test]
+    fn a_settled_reorganize_reaches_the_host_on_the_one_frame_it_arms() {
+        use pinion_widget_paint::dock::DockDropZone;
+        let mut core = ShellCore::<TerminalViewer>::new();
+        paint_one_frame(&mut core);
+
+        let before = host_layout(&core);
+        assert!(
+            matches!(
+                before.root,
+                Some(sprag_terminal::LayoutNodeWire::Split {
+                    dir: sprag_terminal::SplitDir::Horizontal,
+                    ..
+                })
+            ),
+            "the boot host arrangement is a horizontal row: {before:?}",
+        );
+
+        // The drop: dock pane 0 under pane 1. This is what pinion's `drag_release_at` calls.
+        core.root_owner().run(|| {
+            let reorg = split::use_dock_reorganizer();
+            let _ = reorg.dock_panel_at_resolved_zone(
+                &split::panel_id(0),
+                &split::panel_id(1),
+                DockDropZone::Bottom,
+            );
+        });
+
+        paint_one_frame(&mut core);
+        let after = host_layout(&core);
+        assert_ne!(
+            after, before,
+            "the settled re-arrangement never reached the host on the one frame its commit \
+             arms — it would be LOST on detach",
+        );
+        assert!(
+            matches!(
+                after.root,
+                Some(sprag_terminal::LayoutNodeWire::Split {
+                    dir: sprag_terminal::SplitDir::Vertical,
+                    ..
+                })
+            ),
+            "the host holds the dropped arrangement (a vertical stack): {after:?}",
+        );
+    }
+
+    /// A divider drag must NOT write mid-gesture just because something else repainted.
+    ///
+    /// The retired settle detector inferred "settled" from "unchanged since the last frame", so
+    /// a user pausing a drag while any pane printed (`top`, a log tail — ordinary in a terminal)
+    /// got the intermediate ratio written: a blocking socket round trip on the UI thread, the
+    /// exact thing the gate existed to prevent. Ratio is now owned solely by the
+    /// `ratio_committed` commit edge, so no number of frames can write a drag that has not ended.
+    #[test]
+    fn frames_alone_never_write_an_unfinished_ratio_drag() {
+        use sprag_terminal::SplitId;
+        let mut core = ShellCore::<TerminalViewer>::new();
+        paint_one_frame(&mut core);
+
+        let before = host_layout(&core);
+        // Mid-drag: pinion's `pointer_move` has moved the live ratio, but no release yet.
+        core.root_owner()
+            .run(|| split::use_split_ratio(split::split_tag(SplitId(0)), 0.5).set(0.8));
+
+        // Paint generously — far more than a real pause over a printing pane would ever see.
+        for _ in 0..4 {
+            paint_one_frame(&mut core);
+        }
+        assert_eq!(
+            host_layout(&core),
+            before,
+            "an unfinished ratio drag must not be written by frames alone",
+        );
+    }
+
     /// The dock is addressable as DATA: the canonical reorganize surface is registered, so a
     /// gesture is drivable + observable BY INTENT (`reorganize {source,target,zone}`,
     /// `drop_preview`, `last_outcome`, `topology`) with no pixels — pinion's §2 #2
