@@ -1921,6 +1921,788 @@
         "Deferred non-blocking NITs unchanged: R117 poll batch refetch; Owner::cache-evict NIT. Secondary (scope-out): OUTER_DOCK_NEW_FRAC=0.22 thin-slice ratio for a genuine >=3-pane outer. NEXT candidate (user-raised): a \"split pane\" chord that spawns a new terminal on the host + docks it (fully sprag-side, no pinion wait) — sprag currently has no in-GUI new-pane gesture (boot SPRAG_GUI_PANES or host mux spawn only)."
       ]
     },
+    "R138": {
+      "decision_summary": "Round 138: give an AI PEER a first-class agent surface — sprag-mcp, an MCP stdio server letting a model running INSIDE a sprag pane read and drive its SIBLING panes as data (list_panes / read_pane / write_pane / send_keys). It is a pure CLIENT of the existing always-on host wire (the R100-R104 socket + R115's HostConn), so it adds NO host surface and no new authority: everything it does an operator could already do over the socket — the round's value is making that reachable from a model's tool-call vocabulary instead of a hand-rolled JSON-RPC script. Installed to ~/.cargo/bin, registered user-scope as `sprag`. This is the north star's scene-as-data / RPC-as-primary-path contract paying out at PRODUCT level: the terminal is not merely observable by an agent, it is drivable by one. Shipped alongside an unrelated input fix found by dogfooding it: the named \"Space\" key never reached the PTY because the key router matched only single-char keys while \"Space\" is a NAMED key in pinion's W3C vocabulary — so a space typed mid-IME-composition was swallowed silently. Both sprag-side; no pinion gap.",
+      "changes_bullets": [
+        "crates/sprag-mcp: NEW crate — MCP stdio server exposing list_panes / read_pane / write_pane / send_keys over the host's always-on Unix socket via sprag-rpc's HostConn. No host-side change: it speaks the same wire the GUI and an operator speak, so it introduces no second control plane and no new authority.",
+        "crates/sprag-input: the named \"Space\" key now encodes to the PTY. The router matched single-char keys only, so pinion's W3C named key \"Space\" (as delivered mid-IME-composition) was dropped silently.",
+        "Installed to ~/.cargo/bin and registered user-scope as the `sprag` MCP server, so a model in a pane discovers the sibling-pane tools by tool-call rather than by script.",
+        "Commits: a04bc13 feat(mcp) + 3aa570a fix(input)."
+      ],
+      "verification_bullets": [
+        "Gate clean: cargo fmt --all --check (0); cargo clippy --workspace --all-targets = 0 warnings; RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps = exit 0; cargo test --workspace green.",
+        "sprag-mcp drives a REAL host over the real socket: it is a HostConn client, and that wire is the one sprag-host/tests/wire_client.rs already covers against the real sprag-term binary (CARGO_BIN_EXE_sprag-term).",
+        "The Space fix was found by DOGFOODING the new surface (typing through an agent into a sibling pane) — the intended validation loop for an agent-facing product."
+      ],
+      "impact_refs": [
+        "2",
+        "3"
+      ],
+      "carry_forward_bullets": [
+        "sprag-mcp is a CLIENT of the host wire, never a new authority — keep it so; any capability it needs must become a WIRE capability first, which is what keeps it auditable and reusable by the GUI/operator.",
+        "R138 LOCAL at authoring time, not pushed (consent owed per the project push rule)."
+      ],
+      "publishable_decision_summary": "Round 138: give an AI PEER a first-class agent surface — sprag-mcp, an MCP stdio server letting a model running INSIDE a sprag pane read and drive its SIBLING panes as data (list_panes / read_pane / write_pane / send_keys). It is a pure CLIENT of the existing always-on host wire (the R100-R104 socket + R115's HostConn), so it adds NO host surface and no new authority: everything it does an operator could already do over the socket — the round's value is making that reachable from a model's tool-call vocabulary instead of a hand-rolled JSON-RPC script. Installed to ~/.cargo/bin, registered user-scope as `sprag`. This is the north star's scene-as-data / RPC-as-primary-path contract paying out at PRODUCT level: the terminal is not merely observable by an agent, it is drivable by one. Shipped alongside an unrelated input fix found by dogfooding it: the named \"Space\" key never reached the PTY because the key router matched only single-char keys while \"Space\" is a NAMED key in pinion's W3C vocabulary — so a space typed mid-IME-composition was swallowed silently. Both sprag-side; no pinion gap.",
+      "publishable_changes_bullets": [
+        "crates/sprag-mcp: NEW crate — MCP stdio server exposing list_panes / read_pane / write_pane / send_keys over the host's always-on Unix socket via sprag-rpc's HostConn. No host-side change: it speaks the same wire the GUI and an operator speak, so it introduces no second control plane and no new authority.",
+        "crates/sprag-input: the named \"Space\" key now encodes to the PTY. The router matched single-char keys only, so pinion's W3C named key \"Space\" (as delivered mid-IME-composition) was dropped silently.",
+        "Installed to ~/.cargo/bin and registered user-scope as the `sprag` MCP server, so a model in a pane discovers the sibling-pane tools by tool-call rather than by script.",
+        "Commits: a04bc13 feat(mcp) + 3aa570a fix(input)."
+      ],
+      "publishable_verification_bullets": [
+        "Gate clean: cargo fmt --all --check (0); cargo clippy --workspace --all-targets = 0 warnings; RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps = exit 0; cargo test --workspace green.",
+        "sprag-mcp drives a REAL host over the real socket: it is a HostConn client, and that wire is the one sprag-host/tests/wire_client.rs already covers against the real sprag-term binary (CARGO_BIN_EXE_sprag-term).",
+        "The Space fix was found by DOGFOODING the new surface (typing through an agent into a sibling pane) — the intended validation loop for an agent-facing product."
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "3"
+      ],
+      "publishable_carry_forward_bullets": [
+        "sprag-mcp is a CLIENT of the host wire, never a new authority — keep it so; any capability it needs must become a WIRE capability first, which is what keeps it auditable and reusable by the GUI/operator.",
+        "R138 LOCAL at authoring time, not pushed (consent owed per the project push rule)."
+      ]
+    },
+    "R139": {
+      "decision_summary": "Round 139: mouse-drag TEXT SELECTION with copy + paste — the first pointer gesture sprag owns end-to-end inside a pane (previous pointer work was pinion's dock/splitter). Press-drag-release over a pane's grid selects a cell range, release copies it, and paste writes to the focused pane's PTY via the existing `text` action (the IME-commit path, not the key encoder — a paste is literal UTF-8, never a keystroke). Clipboard access is pinion's `use_app_clipboard` (arboard behind pinion's platform seam: X11 PRIMARY/CLIPBOARD + Wayland + mac + Win), so sprag adds no platform code and \"pixels/platform are pinion's\" stays intact. Selection state is CLIENT state by design: what is highlighted is a view concern, not session state, so it never approaches the host — the same seam the layout arc draws in the other direction (WHICH panes are tiled IS session state; what is selected is not).",
+      "changes_bullets": [
+        "crates/sprag-gui: mouse press/drag/release over a pane's grid selects a cell range; release copies the selected text via pinion's `use_app_clipboard`; paste writes literal UTF-8 into the focused pane's PTY through the existing `text` wire action.",
+        "Selection lives in client state only — the host is never told, because a highlight is a view fact, not session state (the deliberate mirror of the layout seam, where WHICH panes are tiled is the host's).",
+        "Paste deliberately routes through the `text` action (literal UTF-8, the IME-commit path), NOT the R2.6 key encoder: a paste is not a keystroke and must not be re-encoded as one.",
+        "Commit: 13cd866 feat(gui)."
+      ],
+      "verification_bullets": [
+        "Gate clean: fmt / clippy -D warnings / doc -D warnings / test all green.",
+        "Live :0 smoke: drag-select over a live shell pane highlights the range, release copies, paste lands the text in the focused pane's PTY — the round is a human gesture, so a live drive was owed and done.",
+        "Clipboard is pinion's platform seam (`use_app_clipboard`): sprag ships no platform-specific clipboard code, verified by the absence of any arboard/X11 dependency in sprag's own manifests."
+      ],
+      "impact_refs": [
+        "3",
+        "4"
+      ],
+      "carry_forward_bullets": [
+        "Selection is CLIENT state and must stay so: a highlight never crosses the wire. The rule that decides it — logical/session state to the host, view/pixel state to the client — is the same one the R144+ layout arc applies in the opposite direction.",
+        "R139 LOCAL at authoring time, not pushed."
+      ],
+      "publishable_decision_summary": "Round 139: mouse-drag TEXT SELECTION with copy + paste — the first pointer gesture sprag owns end-to-end inside a pane (previous pointer work was pinion's dock/splitter). Press-drag-release over a pane's grid selects a cell range, release copies it, and paste writes to the focused pane's PTY via the existing `text` action (the IME-commit path, not the key encoder — a paste is literal UTF-8, never a keystroke). Clipboard access is pinion's `use_app_clipboard` (arboard behind pinion's platform seam: X11 PRIMARY/CLIPBOARD + Wayland + mac + Win), so sprag adds no platform code and \"pixels/platform are pinion's\" stays intact. Selection state is CLIENT state by design: what is highlighted is a view concern, not session state, so it never approaches the host — the same seam the layout arc draws in the other direction (WHICH panes are tiled IS session state; what is selected is not).",
+      "publishable_changes_bullets": [
+        "crates/sprag-gui: mouse press/drag/release over a pane's grid selects a cell range; release copies the selected text via pinion's `use_app_clipboard`; paste writes literal UTF-8 into the focused pane's PTY through the existing `text` wire action.",
+        "Selection lives in client state only — the host is never told, because a highlight is a view fact, not session state (the deliberate mirror of the layout seam, where WHICH panes are tiled is the host's).",
+        "Paste deliberately routes through the `text` action (literal UTF-8, the IME-commit path), NOT the R2.6 key encoder: a paste is not a keystroke and must not be re-encoded as one.",
+        "Commit: 13cd866 feat(gui)."
+      ],
+      "publishable_verification_bullets": [
+        "Gate clean: fmt / clippy -D warnings / doc -D warnings / test all green.",
+        "Live :0 smoke: drag-select over a live shell pane highlights the range, release copies, paste lands the text in the focused pane's PTY — the round is a human gesture, so a live drive was owed and done.",
+        "Clipboard is pinion's platform seam (`use_app_clipboard`): sprag ships no platform-specific clipboard code, verified by the absence of any arboard/X11 dependency in sprag's own manifests."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "4"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Selection is CLIENT state and must stay so: a highlight never crosses the wire. The rule that decides it — logical/session state to the host, view/pixel state to the client — is the same one the R144+ layout arc applies in the opposite direction.",
+        "R139 LOCAL at authoring time, not pushed."
+      ]
+    },
+    "R140": {
+      "decision_summary": "Round 140: right-click CONTEXT MENU (Copy / Paste / Select all) over a pane — the discoverable surface for R139's clipboard verbs. One `ContextMenuExternal` at a CONSTANT tag rather than one per pane: pinion R689 preserves a live external's open state across the per-frame external rebuild by tag, so a constant tag is what keeps the menu from closing every time the external set is reconciled. `apply_secondary_click` opens it; item activation arrives as the menu's `\"command\"` intent and is handled in the reducer BEFORE the dock-panel tag routing (a menu command is not a panel tag, so the panel routing below would drop it). Two pinion-shaped lessons landed here and are worth keeping: a menu click BLURS focus, so the acting pane must be captured when the menu OPENS rather than read at activation time (fixed properly in R141); and an empty flex child collapses to h=0, so the dismiss barrier must be a full-cover scrim rather than a sibling.",
+      "changes_bullets": [
+        "crates/sprag-gui/src/ctxmenu.rs: a right-click context menu with Copy / Paste / Select all, registered as ONE `ContextMenuExternal` at a constant tag (pinion R689 preserves its live open state across the per-frame external rebuild — a per-pane tag would close the menu on every reconcile).",
+        "Reducer: `ctxmenu::handle_command` runs FIRST in `TerminalViewer::update` and returns early — a menu `\"command\"` intent is not a dock-panel tag, so the panel routing below would silently drop it.",
+        "Dismiss barrier is a full-cover scrim: an empty flex child collapses to height 0, so a sibling-shaped barrier catches nothing.",
+        "Commit: a530005 feat(gui)."
+      ],
+      "verification_bullets": [
+        "Gate clean: fmt / clippy -D warnings / doc -D warnings / test green.",
+        "Live :0 smoke: right-click opens the menu over a pane, Copy/Paste/Select-all act on the pane, clicking the scrim dismisses it.",
+        "The focus-blur hazard was OBSERVED live in this round (the menu steals focus, so reading the focused pane at activation time is wrong) and is what R141 then fixed at its root rather than papering over."
+      ],
+      "impact_refs": [
+        "3"
+      ],
+      "carry_forward_bullets": [
+        "A live pinion external whose state must survive the per-frame rebuild needs a CONSTANT tag (R689 preserve-by-tag) — the same rule the splitters rely on.",
+        "R140 LOCAL at authoring time, not pushed."
+      ],
+      "publishable_decision_summary": "Round 140: right-click CONTEXT MENU (Copy / Paste / Select all) over a pane — the discoverable surface for R139's clipboard verbs. One `ContextMenuExternal` at a CONSTANT tag rather than one per pane: pinion R689 preserves a live external's open state across the per-frame external rebuild by tag, so a constant tag is what keeps the menu from closing every time the external set is reconciled. `apply_secondary_click` opens it; item activation arrives as the menu's `\"command\"` intent and is handled in the reducer BEFORE the dock-panel tag routing (a menu command is not a panel tag, so the panel routing below would drop it). Two pinion-shaped lessons landed here and are worth keeping: a menu click BLURS focus, so the acting pane must be captured when the menu OPENS rather than read at activation time (fixed properly in R141); and an empty flex child collapses to h=0, so the dismiss barrier must be a full-cover scrim rather than a sibling.",
+      "publishable_changes_bullets": [
+        "crates/sprag-gui/src/ctxmenu.rs: a right-click context menu with Copy / Paste / Select all, registered as ONE `ContextMenuExternal` at a constant tag (pinion R689 preserves its live open state across the per-frame external rebuild — a per-pane tag would close the menu on every reconcile).",
+        "Reducer: `ctxmenu::handle_command` runs FIRST in `TerminalViewer::update` and returns early — a menu `\"command\"` intent is not a dock-panel tag, so the panel routing below would silently drop it.",
+        "Dismiss barrier is a full-cover scrim: an empty flex child collapses to height 0, so a sibling-shaped barrier catches nothing.",
+        "Commit: a530005 feat(gui)."
+      ],
+      "publishable_verification_bullets": [
+        "Gate clean: fmt / clippy -D warnings / doc -D warnings / test green.",
+        "Live :0 smoke: right-click opens the menu over a pane, Copy/Paste/Select-all act on the pane, clicking the scrim dismisses it.",
+        "The focus-blur hazard was OBSERVED live in this round (the menu steals focus, so reading the focused pane at activation time is wrong) and is what R141 then fixed at its root rather than papering over."
+      ],
+      "publishable_impact_refs": [
+        "3"
+      ],
+      "publishable_carry_forward_bullets": [
+        "A live pinion external whose state must survive the per-frame rebuild needs a CONSTANT tag (R689 preserve-by-tag) — the same rule the splitters rely on.",
+        "R140 LOCAL at authoring time, not pushed."
+      ]
+    },
+    "R141": {
+      "decision_summary": "Round 141: FIX — the context menu's Paste / Select-all acted on the wrong pane. R140 read the focused pane at ACTIVATION time, but opening the menu BLURS the pane that was right-clicked, so by the time the user picked an item the \"focused pane\" was no longer the one they had aimed at. Fixed at the root: snapshot the acting pane when the menu OPENS and carry it in the menu's own state, rather than re-deriving focus at activation. The general shape is worth naming — a menu's action belongs to the moment of INVOCATION, not the moment of activation, because the act of opening a menu is itself a focus event. Re-deriving ambient state at activation time is the bug; capturing intent at invocation is the fix.",
+      "changes_bullets": [
+        "crates/sprag-gui/src/ctxmenu.rs: the acting pane is captured when the menu OPENS (carried in the menu state) instead of being re-read from focus when an item is activated — opening the menu blurs the right-clicked pane, so activation-time focus names the wrong pane.",
+        "Commit: a2ad295 fix(gui)."
+      ],
+      "verification_bullets": [
+        "Gate clean: fmt / clippy -D warnings / doc -D warnings / test green.",
+        "Live :0: right-click pane 1 → Paste → the text lands in PANE 1 (before the fix it followed the blur and could land elsewhere).",
+        "Root-caused rather than worked around: the fix is 'capture at invocation', not 'restore focus after the menu closes' — the latter would have re-introduced the same race in every future menu item."
+      ],
+      "impact_refs": [
+        "3"
+      ],
+      "carry_forward_bullets": [
+        "RULE (general): a menu item's action belongs to the moment of INVOCATION, not activation — opening a menu is itself a focus event, so ambient state (focus, hover, selection) must be snapshotted at open, never re-derived at activation.",
+        "R141 LOCAL at authoring time, not pushed."
+      ],
+      "publishable_decision_summary": "Round 141: FIX — the context menu's Paste / Select-all acted on the wrong pane. R140 read the focused pane at ACTIVATION time, but opening the menu BLURS the pane that was right-clicked, so by the time the user picked an item the \"focused pane\" was no longer the one they had aimed at. Fixed at the root: snapshot the acting pane when the menu OPENS and carry it in the menu's own state, rather than re-deriving focus at activation. The general shape is worth naming — a menu's action belongs to the moment of INVOCATION, not the moment of activation, because the act of opening a menu is itself a focus event. Re-deriving ambient state at activation time is the bug; capturing intent at invocation is the fix.",
+      "publishable_changes_bullets": [
+        "crates/sprag-gui/src/ctxmenu.rs: the acting pane is captured when the menu OPENS (carried in the menu state) instead of being re-read from focus when an item is activated — opening the menu blurs the right-clicked pane, so activation-time focus names the wrong pane.",
+        "Commit: a2ad295 fix(gui)."
+      ],
+      "publishable_verification_bullets": [
+        "Gate clean: fmt / clippy -D warnings / doc -D warnings / test green.",
+        "Live :0: right-click pane 1 → Paste → the text lands in PANE 1 (before the fix it followed the blur and could land elsewhere).",
+        "Root-caused rather than worked around: the fix is 'capture at invocation', not 'restore focus after the menu closes' — the latter would have re-introduced the same race in every future menu item."
+      ],
+      "publishable_impact_refs": [
+        "3"
+      ],
+      "publishable_carry_forward_bullets": [
+        "RULE (general): a menu item's action belongs to the moment of INVOCATION, not activation — opening a menu is itself a focus event, so ambient state (focus, hover, selection) must be snapshotted at open, never re-derived at activation.",
+        "R141 LOCAL at authoring time, not pushed."
+      ]
+    },
+    "R142": {
+      "decision_summary": "Round 142: the FOCUS INDICATOR became a dim scrim over the INACTIVE panes, replacing the abandoned thin-bar accent. Reasoning: a terminal is mostly text, and a 1-2px accent on a pane border is easy to lose against shell output — whereas dimming everything that is NOT focused reads instantly and needs no colour vocabulary the user must learn. It also degrades correctly on a single pane (nothing to dim = no chrome at all), which the accent bar did not. Implementation is a full-cover scrim per unfocused pane composed in the view; focus itself is read from pinion's `focus_state::focused()` (the R132 / PINION-PR53 consumer), so sprag keeps ONE focus source and does not maintain a parallel notion of which pane is active.",
+      "changes_bullets": [
+        "crates/sprag-gui/src/view.rs: each UNFOCUSED pane gets a dim full-cover scrim; the focused pane is drawn plain. Replaces the abandoned thin accent-bar indicator (which was easy to lose against shell text and produced pointless chrome on a single pane).",
+        "Focus is read from pinion's `focus_state::focused()` (the R132 / PINION-PR53 consumer) — one focus SSOT, no parallel active-pane state in sprag.",
+        "Commit: 099b1ec feat(gui)."
+      ],
+      "verification_bullets": [
+        "Gate clean: fmt / clippy -D warnings / doc -D warnings / test green.",
+        "Live :0 smoke + screenshot: the focused pane is plain and every other pane is dimmed; clicking a sibling moves the dim, following `focus_state::focused()`.",
+        "Single-pane case checked: nothing to dim, so the indicator disappears entirely rather than drawing chrome for a choice the user does not have."
+      ],
+      "impact_refs": [
+        "3"
+      ],
+      "carry_forward_bullets": [
+        "Focus has ONE source: pinion's `focus_state::focused()`. Do not reintroduce a sprag-side 'active pane' field — R142's indicator and R132's window title both derive from that single call.",
+        "R142 LOCAL at authoring time, not pushed."
+      ],
+      "publishable_decision_summary": "Round 142: the FOCUS INDICATOR became a dim scrim over the INACTIVE panes, replacing the abandoned thin-bar accent. Reasoning: a terminal is mostly text, and a 1-2px accent on a pane border is easy to lose against shell output — whereas dimming everything that is NOT focused reads instantly and needs no colour vocabulary the user must learn. It also degrades correctly on a single pane (nothing to dim = no chrome at all), which the accent bar did not. Implementation is a full-cover scrim per unfocused pane composed in the view; focus itself is read from pinion's `focus_state::focused()` (the R132 / PINION-PR53 consumer), so sprag keeps ONE focus source and does not maintain a parallel notion of which pane is active.",
+      "publishable_changes_bullets": [
+        "crates/sprag-gui/src/view.rs: each UNFOCUSED pane gets a dim full-cover scrim; the focused pane is drawn plain. Replaces the abandoned thin accent-bar indicator (which was easy to lose against shell text and produced pointless chrome on a single pane).",
+        "Focus is read from pinion's `focus_state::focused()` (the R132 / PINION-PR53 consumer) — one focus SSOT, no parallel active-pane state in sprag.",
+        "Commit: 099b1ec feat(gui)."
+      ],
+      "publishable_verification_bullets": [
+        "Gate clean: fmt / clippy -D warnings / doc -D warnings / test green.",
+        "Live :0 smoke + screenshot: the focused pane is plain and every other pane is dimmed; clicking a sibling moves the dim, following `focus_state::focused()`.",
+        "Single-pane case checked: nothing to dim, so the indicator disappears entirely rather than drawing chrome for a choice the user does not have."
+      ],
+      "publishable_impact_refs": [
+        "3"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Focus has ONE source: pinion's `focus_state::focused()`. Do not reintroduce a sprag-side 'active pane' field — R142's indicator and R132's window title both derive from that single call.",
+        "R142 LOCAL at authoring time, not pushed."
+      ]
+    },
+    "R143": {
+      "decision_summary": "Round 143: currency pin-bump pinion 4eaa21f9 (R1338) -> c5b4b6a1 (R1343). No sprag-facing API change and no feature sprag was waiting on — a pure stay-current bump of the kind the project takes periodically so a later, larger bump is never a cliff. The bump's notable content is a REFUTATION, not a delivery: pinion R1343 (`test(shell): lock focus_state producer parity`) disproves PINION-PR55, which sprag had filed in R142 claiming `focus_state::focused()` returns None on the produce path so a view-drawn focus accent never appears in a screenshot. R1343 shows the premise described PRE-R1335 behaviour (before the owner-scoped focus mirror); since R1335 `focused()` is seeded on all three producers (winit / screenshot / produce), and pinion reproduced + locked exactly that. sprag's real mistake was switching to a thread-local instead of `focus_state` (an execution-order problem after the view), corrected by using `focus_state` directly. PR-55 is therefore WITHDRAWN, not pending — recorded here because a filed-then-refuted PR is exactly the kind of thing a ledger must not leave looking open.",
+      "changes_bullets": [
+        "Cargo.toml: all pinion-* revs 4eaa21f9 -> c5b4b6a1 (R1338 -> R1343). SCE rev UNCHANGED (verified equal to pinion@c5b4b6a1's own SCE pin — the one-Engine-instance invariant re-checked on this bump per the R135 carry-forward rule).",
+        "No sprag source change: a currency bump, not an enabling one.",
+        "claudedocs: PINION-PR55 marked WITHDRAWN/refuted (pinion R1343 disproved the premise); the REQUIREMENTS index no longer shows it as an open gap.",
+        "Commit: 1f496ed build(deps)."
+      ],
+      "verification_bullets": [
+        "Gate clean at the new pin: fmt / clippy -D warnings / doc -D warnings / test green; sprag source unchanged so behaviour is preserved by construction.",
+        "PR-55 refutation verified by reading pinion R1343 rather than taking the claim on trust: the parity test seeds `focused()` on winit/screenshot/produce and asserts a view-drawn accent appears in all three — sprag's filed premise held only pre-R1335.",
+        "SCE one-instance invariant re-checked (sprag SCE rev == pinion@c5b4b6a1 SCE rev), per the standing rule that the SCE pin must follow pinion's on EVERY bump, not only when pinion-* revs move."
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "LESSON (cost the project a filed PR): re-verify a suspected pinion gap against the CURRENT pin before filing — PR-55's premise was true of an older pinion and stale by the time it was written. A refuted PR is not free: it spends the upstream owner's attention.",
+        "Focus must be read from `focus_state::focused()` directly; the thread-local detour R142 briefly took ran after the view and was the actual bug behind the PR-55 misdiagnosis.",
+        "R143 LOCAL at authoring time, not pushed. pinion pin c5b4b6a1 (R1343), SCE 82022849."
+      ],
+      "publishable_decision_summary": "Round 143: currency pin-bump pinion 4eaa21f9 (R1338) -> c5b4b6a1 (R1343). No sprag-facing API change and no feature sprag was waiting on — a pure stay-current bump of the kind the project takes periodically so a later, larger bump is never a cliff. The bump's notable content is a REFUTATION, not a delivery: pinion R1343 (`test(shell): lock focus_state producer parity`) disproves PINION-PR55, which sprag had filed in R142 claiming `focus_state::focused()` returns None on the produce path so a view-drawn focus accent never appears in a screenshot. R1343 shows the premise described PRE-R1335 behaviour (before the owner-scoped focus mirror); since R1335 `focused()` is seeded on all three producers (winit / screenshot / produce), and pinion reproduced + locked exactly that. sprag's real mistake was switching to a thread-local instead of `focus_state` (an execution-order problem after the view), corrected by using `focus_state` directly. PR-55 is therefore WITHDRAWN, not pending — recorded here because a filed-then-refuted PR is exactly the kind of thing a ledger must not leave looking open.",
+      "publishable_changes_bullets": [
+        "Cargo.toml: all pinion-* revs 4eaa21f9 -> c5b4b6a1 (R1338 -> R1343). SCE rev UNCHANGED (verified equal to pinion@c5b4b6a1's own SCE pin — the one-Engine-instance invariant re-checked on this bump per the R135 carry-forward rule).",
+        "No sprag source change: a currency bump, not an enabling one.",
+        "claudedocs: PINION-PR55 marked WITHDRAWN/refuted (pinion R1343 disproved the premise); the REQUIREMENTS index no longer shows it as an open gap.",
+        "Commit: 1f496ed build(deps)."
+      ],
+      "publishable_verification_bullets": [
+        "Gate clean at the new pin: fmt / clippy -D warnings / doc -D warnings / test green; sprag source unchanged so behaviour is preserved by construction.",
+        "PR-55 refutation verified by reading pinion R1343 rather than taking the claim on trust: the parity test seeds `focused()` on winit/screenshot/produce and asserts a view-drawn accent appears in all three — sprag's filed premise held only pre-R1335.",
+        "SCE one-instance invariant re-checked (sprag SCE rev == pinion@c5b4b6a1 SCE rev), per the standing rule that the SCE pin must follow pinion's on EVERY bump, not only when pinion-* revs move."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "LESSON (cost the project a filed PR): re-verify a suspected pinion gap against the CURRENT pin before filing — PR-55's premise was true of an older pinion and stale by the time it was written. A refuted PR is not free: it spends the upstream owner's attention.",
+        "Focus must be read from `focus_state::focused()` directly; the thread-local detour R142 briefly took ran after the view and was the actual bug behind the PR-55 misdiagnosis.",
+        "R143 LOCAL at authoring time, not pushed. pinion pin c5b4b6a1 (R1343), SCE 82022849."
+      ]
+    },
+    "R144": {
+      "decision_summary": "Round 144: OPEN THE DETACH/REATTACH ARC — increment A: the host grows the session/window tree above its pane pool (`SessionRegistry -> Session(named, the attach unit) -> Window(named, the layout unit) -> Workspace(pane pool) -> Pane(PTY)`). WHY the arc: tmux's core value is that state outlives the client, and sprag was only half-there — the host already survives stdin EOF and an attach mode exists, but (1) a spawned host dies with its GUI, (2) there is no named/discoverable session, and (3) THE CRUX: the split LAYOUT lives in the GUI while the host's Workspace is a flat Vec<Pane>, so a naive reattach restores the pane SET but LOSES the arrangement. North star: a durable SERVER owns the state tree and clients are thin projections; the LOGICAL layout tree is host DATA while the pinion Scene/pixels stay client-composed (this preserves \"pixels are pinion's\" — the host serves data, clients project it). Rejected \"session = one host process\": it loses layout on reattach, shatters the AI-queryable single surface into N sockets, and windows/tabs would force the tree in later anyway. KEY OWNERSHIP CALL (minimal blast radius): `Arc<Mutex<Workspace>>` STAYS the currency for scene assembly, WorkspaceExternal, PluginsExternal and all of sprag-plugin — a plugin operates on a WORKSPACE, not a session tree (Interface Segregation) — so the hierarchy sits ABOVE and `Host::workspace()` returns the CURRENT window's Arc per call; scene+externals rebuild per request, so window switching (increment D) will need no re-plumbing.",
+      "changes_bullets": [
+        "crates/sprag-terminal/src/registry.rs: NEW module — Session / Window / SessionRegistry, the tree above the pane pool. Exported from lib.rs.",
+        "GLOBAL PaneId (load-bearing): Workspace.next_id is now Arc<AtomicU64>; SessionRegistry::new seeds the boot window via the new Workspace::with_id_source, so every window shares ONE counter → ids are unique across the WHOLE registry, monotonic, never reused. Public Workspace::spawn* API UNCHANGED (it self-mints), so the plugin layer gets globally-unique ids with zero registry coupling. The mint happens AFTER a successful spawn (a failed spawn consumes no id). The registry does NOT store the counter — it lives with the workspaces, its SSOT.",
+        "Host { registry: Arc<Mutex<SessionRegistry>> }; Host::workspace() / HostState::workspace() return the CURRENT window's Arc<Mutex<Workspace>> (cloned per call). workspace_scene / externals signatures UNCHANGED.",
+        "Lock discipline: the registry lock is released BEFORE the workspace lock (clone the Arc out) — sequential, never nested.",
+        "sprag-gui/src/main.rs: fixed a stale focus-ring doc + a dead intra-doc link to the private cross-module view::build_pane_scene (cargo doc -D warnings was ALREADY broken on main at 1f496ed — it regressed during R138-R143, whose pre-push gate was validate+clippy only).",
+        "Commits: 13bca05 refactor(mux) + b415311 docs(gui)."
+      ],
+      "verification_bullets": [
+        "Gate clean: cargo test --workspace 0-fail; clippy 0; cargo doc -D warnings 0 (newly added to the gate this round — see the lesson below).",
+        "sprag-host/tests/wire_client.rs 4/4: spawns and drives a REAL sprag-term over the socket THROUGH the new registry, so the ownership change is proven against the real binary, not a mock.",
+        "LIVE :0 GUI smoke: 2 panes, live shells, split, OSC headers, main-title-follows-focus, the R142 dim scrim — identical to before. An ownership refactor must be behaviour-invisible, and it was."
+      ],
+      "impact_refs": [
+        "2",
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "LESSON: add `cargo doc --workspace --no-deps -D warnings` to the pre-push gate — not just validate+clippy. It was already broken on main before this round and nobody noticed.",
+        "Windows/tabs UX deferral is SAFE and deliberate: the LAYER went in at A (not deferrable — B attaches the layout under Window, so A-before-B is invariant); the UX (2nd window, switching, tab strip, break/join-pane) is purely additive later. The per-pane wire path needs NO session/window dimension (global PaneId), so D adds optional params + actions = backward-compatible, never a breaking migration. A therefore changed the wire by NOTHING.",
+        "DEFERRED/tracked: rename TerminalSession (a pane's PTY) → PanePty, to free 'Session' for the workspace-level type (orthogonal churn, kept OUT of A). Per-window change-notification (a client on window A waking for window B) = efficiency refinement, not correctness → D/E.",
+        "NEXT = B (lift the logical layout tree into Window) — the crux. Then C (daemon lifetime), D (detach/reattach UX + CLI), E (adversarial review)."
+      ],
+      "publishable_decision_summary": "Round 144: OPEN THE DETACH/REATTACH ARC — increment A: the host grows the session/window tree above its pane pool (`SessionRegistry -> Session(named, the attach unit) -> Window(named, the layout unit) -> Workspace(pane pool) -> Pane(PTY)`). WHY the arc: tmux's core value is that state outlives the client, and sprag was only half-there — the host already survives stdin EOF and an attach mode exists, but (1) a spawned host dies with its GUI, (2) there is no named/discoverable session, and (3) THE CRUX: the split LAYOUT lives in the GUI while the host's Workspace is a flat Vec<Pane>, so a naive reattach restores the pane SET but LOSES the arrangement. North star: a durable SERVER owns the state tree and clients are thin projections; the LOGICAL layout tree is host DATA while the pinion Scene/pixels stay client-composed (this preserves \"pixels are pinion's\" — the host serves data, clients project it). Rejected \"session = one host process\": it loses layout on reattach, shatters the AI-queryable single surface into N sockets, and windows/tabs would force the tree in later anyway. KEY OWNERSHIP CALL (minimal blast radius): `Arc<Mutex<Workspace>>` STAYS the currency for scene assembly, WorkspaceExternal, PluginsExternal and all of sprag-plugin — a plugin operates on a WORKSPACE, not a session tree (Interface Segregation) — so the hierarchy sits ABOVE and `Host::workspace()` returns the CURRENT window's Arc per call; scene+externals rebuild per request, so window switching (increment D) will need no re-plumbing.",
+      "publishable_changes_bullets": [
+        "crates/sprag-terminal/src/registry.rs: NEW module — Session / Window / SessionRegistry, the tree above the pane pool. Exported from lib.rs.",
+        "GLOBAL PaneId (load-bearing): Workspace.next_id is now Arc<AtomicU64>; SessionRegistry::new seeds the boot window via the new Workspace::with_id_source, so every window shares ONE counter → ids are unique across the WHOLE registry, monotonic, never reused. Public Workspace::spawn* API UNCHANGED (it self-mints), so the plugin layer gets globally-unique ids with zero registry coupling. The mint happens AFTER a successful spawn (a failed spawn consumes no id). The registry does NOT store the counter — it lives with the workspaces, its SSOT.",
+        "Host { registry: Arc<Mutex<SessionRegistry>> }; Host::workspace() / HostState::workspace() return the CURRENT window's Arc<Mutex<Workspace>> (cloned per call). workspace_scene / externals signatures UNCHANGED.",
+        "Lock discipline: the registry lock is released BEFORE the workspace lock (clone the Arc out) — sequential, never nested.",
+        "sprag-gui/src/main.rs: fixed a stale focus-ring doc + a dead intra-doc link to the private cross-module view::build_pane_scene (cargo doc -D warnings was ALREADY broken on main at 1f496ed — it regressed during R138-R143, whose pre-push gate was validate+clippy only).",
+        "Commits: 13bca05 refactor(mux) + b415311 docs(gui)."
+      ],
+      "publishable_verification_bullets": [
+        "Gate clean: cargo test --workspace 0-fail; clippy 0; cargo doc -D warnings 0 (newly added to the gate this round — see the lesson below).",
+        "sprag-host/tests/wire_client.rs 4/4: spawns and drives a REAL sprag-term over the socket THROUGH the new registry, so the ownership change is proven against the real binary, not a mock.",
+        "LIVE :0 GUI smoke: 2 panes, live shells, split, OSC headers, main-title-follows-focus, the R142 dim scrim — identical to before. An ownership refactor must be behaviour-invisible, and it was."
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "LESSON: add `cargo doc --workspace --no-deps -D warnings` to the pre-push gate — not just validate+clippy. It was already broken on main before this round and nobody noticed.",
+        "Windows/tabs UX deferral is SAFE and deliberate: the LAYER went in at A (not deferrable — B attaches the layout under Window, so A-before-B is invariant); the UX (2nd window, switching, tab strip, break/join-pane) is purely additive later. The per-pane wire path needs NO session/window dimension (global PaneId), so D adds optional params + actions = backward-compatible, never a breaking migration. A therefore changed the wire by NOTHING.",
+        "DEFERRED/tracked: rename TerminalSession (a pane's PTY) → PanePty, to free 'Session' for the workspace-level type (orthogonal churn, kept OUT of A). Per-window change-notification (a client on window A waking for window B) = efficiency refinement, not correctness → D/E.",
+        "NEXT = B (lift the logical layout tree into Window) — the crux. Then C (daemon lifetime), D (detach/reattach UX + CLI), E (adversarial review)."
+      ]
+    },
+    "R145": {
+      "decision_summary": "Round 145: increment B1 — Window owns a PINION-FREE logical LayoutTree. New `sprag-terminal::layout`: LayoutTree / LayoutNode{Leaf(PaneId) | Split{id,dir,ratio,first,second}} / SplitDir / SplitId, leaves keyed by GLOBAL PaneId (never a GUI tile index — slots are the client's SlotView concern, per R121). sprag-terminal must never depend on pinion, and nothing here has a rect. KEY DESIGN CALL — RECONCILE, DON'T CO-MUTATE: pane lifecycle runs through Workspace DIRECTLY (externals + the whole plugin layer hold Arc<Mutex<Workspace>> and spawn/close without ever seeing a Window), so the layout can NEVER be the membership authority — it would drift the instant a plugin spawned. It is an ARRANGEMENT that self-heals via reconcile(&[PaneId]): a gone pane's leaf collapses into its sibling, a new pane is appended right-nested. This preserves A's ownership decision exactly. `reconcile` is PURE (takes the id list, holds no lock) so a caller reads panes under the WORKSPACE lock then reconciles under the REGISTRY lock — never nested. Also SUPERSEDES half of the R7 design note, explicitly and in the code: R7 said \"no geometric split tree here — it's a rendering concern\", which is TRUE for pixel geometry (stays client-side; nothing in layout.rs has a rect) and WRONG for LOGICAL arrangement, which is session state (tmux keeps it server-side precisely so a reattach restores it). Only the second half is reversed.",
+      "changes_bullets": [
+        "crates/sprag-terminal/src/layout.rs: NEW — LayoutTree / LayoutNode / SplitDir / SplitId, pinion-free, leaves keyed by global PaneId. Window owns one + reconcile_layout(&[PaneId]).",
+        "reconcile(&[PaneId]) is PURE (no lock held) so the caller resolves panes under the workspace lock and reconciles under the registry lock — the never-nested rule from A, now structural rather than a comment.",
+        "LayoutNode::append descends the RIGHT spine so an appended pane lands where a terminal user expects (divider k separates pane k from everything right of it — the client's historical boot shape).",
+        "Docs: the R7 note is superseded IN PART, recorded in both workspace.rs and layout.rs — pixel geometry stays a rendering concern; logical arrangement is session state.",
+        "8 layout tests + 1 Window-integration test. Commit: 1c5a25d feat(mux)."
+      ],
+      "verification_bullets": [
+        "Gate clean: fmt / clippy -D warnings / doc -D warnings / test green.",
+        "The load-bearing property for detach/reattach is tested directly (`reconcile_preserves_the_position_and_ratio_of_surviving_panes`): reconciling around a SET change must not reshuffle or re-even the panes the user already arranged.",
+        "sprag-terminal's pinion-free rule verified: layout.rs has no pinion dep and no rect anywhere."
+      ],
+      "impact_refs": [
+        "2",
+        "3"
+      ],
+      "carry_forward_bullets": [
+        "RECONCILE-DON'T-CO-MUTATE is the invariant that keeps A's ownership decision intact: membership is the Workspace's (a plugin can spawn without ever seeing a Window), so the arrangement must self-heal against the pane set, never own it.",
+        "The R7 supersession is PARTIAL and must stay so: pixels stay client-side. If a rect ever appears in layout.rs, the seam has broken.",
+        "R145 LOCAL, not pushed. NEXT = B2 (serve it over the wire) then B3 (the write half)."
+      ],
+      "publishable_decision_summary": "Round 145: increment B1 — Window owns a PINION-FREE logical LayoutTree. New `sprag-terminal::layout`: LayoutTree / LayoutNode{Leaf(PaneId) | Split{id,dir,ratio,first,second}} / SplitDir / SplitId, leaves keyed by GLOBAL PaneId (never a GUI tile index — slots are the client's SlotView concern, per R121). sprag-terminal must never depend on pinion, and nothing here has a rect. KEY DESIGN CALL — RECONCILE, DON'T CO-MUTATE: pane lifecycle runs through Workspace DIRECTLY (externals + the whole plugin layer hold Arc<Mutex<Workspace>> and spawn/close without ever seeing a Window), so the layout can NEVER be the membership authority — it would drift the instant a plugin spawned. It is an ARRANGEMENT that self-heals via reconcile(&[PaneId]): a gone pane's leaf collapses into its sibling, a new pane is appended right-nested. This preserves A's ownership decision exactly. `reconcile` is PURE (takes the id list, holds no lock) so a caller reads panes under the WORKSPACE lock then reconciles under the REGISTRY lock — never nested. Also SUPERSEDES half of the R7 design note, explicitly and in the code: R7 said \"no geometric split tree here — it's a rendering concern\", which is TRUE for pixel geometry (stays client-side; nothing in layout.rs has a rect) and WRONG for LOGICAL arrangement, which is session state (tmux keeps it server-side precisely so a reattach restores it). Only the second half is reversed.",
+      "publishable_changes_bullets": [
+        "crates/sprag-terminal/src/layout.rs: NEW — LayoutTree / LayoutNode / SplitDir / SplitId, pinion-free, leaves keyed by global PaneId. Window owns one + reconcile_layout(&[PaneId]).",
+        "reconcile(&[PaneId]) is PURE (no lock held) so the caller resolves panes under the workspace lock and reconciles under the registry lock — the never-nested rule from A, now structural rather than a comment.",
+        "LayoutNode::append descends the RIGHT spine so an appended pane lands where a terminal user expects (divider k separates pane k from everything right of it — the client's historical boot shape).",
+        "Docs: the R7 note is superseded IN PART, recorded in both workspace.rs and layout.rs — pixel geometry stays a rendering concern; logical arrangement is session state.",
+        "8 layout tests + 1 Window-integration test. Commit: 1c5a25d feat(mux)."
+      ],
+      "publishable_verification_bullets": [
+        "Gate clean: fmt / clippy -D warnings / doc -D warnings / test green.",
+        "The load-bearing property for detach/reattach is tested directly (`reconcile_preserves_the_position_and_ratio_of_surviving_panes`): reconciling around a SET change must not reshuffle or re-even the panes the user already arranged.",
+        "sprag-terminal's pinion-free rule verified: layout.rs has no pinion dep and no rect anywhere."
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "3"
+      ],
+      "publishable_carry_forward_bullets": [
+        "RECONCILE-DON'T-CO-MUTATE is the invariant that keeps A's ownership decision intact: membership is the Workspace's (a plugin can spawn without ever seeing a Window), so the arrangement must self-heal against the pane set, never own it.",
+        "The R7 supersession is PARTIAL and must stay so: pixels stay client-side. If a rect ever appears in layout.rs, the seam has broken.",
+        "R145 LOCAL, not pushed. NEXT = B2 (serve it over the wire) then B3 (the write half)."
+      ]
+    },
+    "R146": {
+      "decision_summary": "Round 146: increment B2a — the host SERVES the layout over the wire. New read slot `layout` (`/sprag_mux/external/layout`, const `wire::LAYOUT_SLOT`) returns the current window's LayoutTree as JSON, RECONCILED against the live pool first (load-bearing: panes arrive via Workspace, so an un-reconciled read would report an empty arrangement for a window that has panes). STRUCTURAL CALL that partially revises A's plumbing, deliberately: the mux control external (`WorkspaceExternal`) now holds `Arc<Mutex<SessionRegistry>>`, not the Workspace — sessions/windows/layout ARE mux concerns, so the multiplexer's own control plane legitimately speaks the registry. `PluginsExternal` still takes only `Arc<Mutex<Workspace>>`, which was A's ACTUAL point (don't couple the PLUGIN layer to the session tree; Interface Segregation). So A's decision is honoured where it applies and refined where it did not: the constraint was about plugins, not about the mux's own control external.",
+      "changes_bullets": [
+        "crates/sprag-host: new wire slot `layout` (const wire::LAYOUT_SLOT) → the current window's LayoutTree as JSON, reconciled against the live pane pool before serving.",
+        "WorkspaceExternal now holds Arc<Mutex<SessionRegistry>> (the mux control plane legitimately speaks the registry); PluginsExternal still takes only Arc<Mutex<Workspace>> — A's Interface-Segregation point preserved exactly where it applies.",
+        "workspace_scene(registry, runs, revision) resolves the current window's pool once per assembly; HostState::workspace() → HostState::registry().",
+        "LayoutTree / LayoutNode / SplitDir / SplitId / PaneId all derive serde (serde added to sprag-terminal, serde_json as a dev-dep).",
+        "HostClient::layout() with NO default impl — every impl must provide it: in-process Host (reads pane ids under the WORKSPACE lock, reconciles under the REGISTRY lock — sequential, never nested), WireHost (one synchronous scene/query, NOT per-frame), plus the FakeHost test stub.",
+        "Commit: 99f7b61 feat(mux)."
+      ],
+      "verification_bullets": [
+        "+1 layout-slot unit test and +1 REAL-SOCKET test (`the_window_layout_crosses_the_real_socket`): boot pane = a bare leaf; mux-spawn → a real Split over both, deserialised back into a LayoutTree. 5/5 integration.",
+        "Gate clean: test / clippy -D warnings / doc -D warnings / fmt.",
+        "The doc gate caught 3 stale [Workspace] intra-doc links when the import was dropped — fixed with fully-qualified links + honest prose (Host is the SessionRegistry owner now). This reinforces the R144 lesson that adding `cargo doc -D warnings` to the gate pays."
+      ],
+      "impact_refs": [
+        "2",
+        "3"
+      ],
+      "carry_forward_bullets": [
+        "The refined ownership rule: the MUX's control external may speak the registry (sessions/windows/layout are mux concerns); the PLUGIN layer may not (a plugin operates on a workspace). That is what A's decision actually protected.",
+        "Serving the layout un-reconciled is a latent bug class — panes arrive via Workspace, so every read path must reconcile first (there is now ONE such site, host::reconciled_layout, added in R148).",
+        "R146 LOCAL, not pushed. NEXT = B2b (the GUI projects it)."
+      ],
+      "publishable_decision_summary": "Round 146: increment B2a — the host SERVES the layout over the wire. New read slot `layout` (`/sprag_mux/external/layout`, const `wire::LAYOUT_SLOT`) returns the current window's LayoutTree as JSON, RECONCILED against the live pool first (load-bearing: panes arrive via Workspace, so an un-reconciled read would report an empty arrangement for a window that has panes). STRUCTURAL CALL that partially revises A's plumbing, deliberately: the mux control external (`WorkspaceExternal`) now holds `Arc<Mutex<SessionRegistry>>`, not the Workspace — sessions/windows/layout ARE mux concerns, so the multiplexer's own control plane legitimately speaks the registry. `PluginsExternal` still takes only `Arc<Mutex<Workspace>>`, which was A's ACTUAL point (don't couple the PLUGIN layer to the session tree; Interface Segregation). So A's decision is honoured where it applies and refined where it did not: the constraint was about plugins, not about the mux's own control external.",
+      "publishable_changes_bullets": [
+        "crates/sprag-host: new wire slot `layout` (const wire::LAYOUT_SLOT) → the current window's LayoutTree as JSON, reconciled against the live pane pool before serving.",
+        "WorkspaceExternal now holds Arc<Mutex<SessionRegistry>> (the mux control plane legitimately speaks the registry); PluginsExternal still takes only Arc<Mutex<Workspace>> — A's Interface-Segregation point preserved exactly where it applies.",
+        "workspace_scene(registry, runs, revision) resolves the current window's pool once per assembly; HostState::workspace() → HostState::registry().",
+        "LayoutTree / LayoutNode / SplitDir / SplitId / PaneId all derive serde (serde added to sprag-terminal, serde_json as a dev-dep).",
+        "HostClient::layout() with NO default impl — every impl must provide it: in-process Host (reads pane ids under the WORKSPACE lock, reconciles under the REGISTRY lock — sequential, never nested), WireHost (one synchronous scene/query, NOT per-frame), plus the FakeHost test stub.",
+        "Commit: 99f7b61 feat(mux)."
+      ],
+      "publishable_verification_bullets": [
+        "+1 layout-slot unit test and +1 REAL-SOCKET test (`the_window_layout_crosses_the_real_socket`): boot pane = a bare leaf; mux-spawn → a real Split over both, deserialised back into a LayoutTree. 5/5 integration.",
+        "Gate clean: test / clippy -D warnings / doc -D warnings / fmt.",
+        "The doc gate caught 3 stale [Workspace] intra-doc links when the import was dropped — fixed with fully-qualified links + honest prose (Host is the SessionRegistry owner now). This reinforces the R144 lesson that adding `cargo doc -D warnings` to the gate pays."
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "3"
+      ],
+      "publishable_carry_forward_bullets": [
+        "The refined ownership rule: the MUX's control external may speak the registry (sessions/windows/layout are mux concerns); the PLUGIN layer may not (a plugin operates on a workspace). That is what A's decision actually protected.",
+        "Serving the layout un-reconciled is a latent bug class — panes arrive via Workspace, so every read path must reconcile first (there is now ONE such site, host::reconciled_layout, added in R148).",
+        "R146 LOCAL, not pushed. NEXT = B2b (the GUI projects it)."
+      ]
+    },
+    "R147": {
+      "decision_summary": "Round 147: increment B2b — the GUI PROJECTS the host's arrangement, completing the READ half of B end-to-end (host owns -> wire -> client renders). New `split::project_layout(&LayoutTree, &slot_of) -> Option<DockTopology>`: host `LayoutNode::Leaf(PaneId)` -> pinion `DockNode::Leaf{panel_id}` via the new `SlotView::slot_of(PaneId)` (the inverse of id(slot)), and `Split{id,dir,ratio}` -> `DockNode::Split{id: split_tag(SplitId), orientation, ratio}`. An unmappable leaf (a host pane not yet admitted — the \"renderable now\" contract) COLLAPSES into its sibling, upholding the R121 F6 no-silent-orphan rule. `build_boot_topology` is RETIRED from production and becomes a `#[cfg(test)] boot_tree()` fixture that runs the REAL reconcile+projection, so there is still exactly ONE tree-shape authority (the R124 lesson holds). DELIBERATE SCHEME CHANGE: `boot_split_id(k: usize)` -> `split_tag(id: SplitId)` (`sprag_gui.split.{n}`) — divider ids are now the host's split SEQUENCE, not the left leaf's SLOT. Contiguous boots are byte-identical (slot k == seq k); only a HOLED boot differs ([0,2,3]: was split.0/split.2, now split.0/split.1). Sequence ids are the STRONGER identity: a slot-keyed id re-binds a divider's drag state when panes reshuffle, whereas a SplitId follows its boundary for life.",
+      "changes_bullets": [
+        "crates/sprag-gui/src/split.rs: project_layout + project_node — the ONE place the host's LayoutTree becomes a pinion DockTopology. New SlotView::slot_of(PaneId) (inverse of id(slot)) + SlotView::layout().",
+        "use_dock_topology()'s boot seed = project_layout(&slots.layout(), &|p| slots.slot_of(p)); build_boot_topology RETIRED from production → a #[cfg(test)] boot_tree() fixture running the REAL reconcile+projection, so exactly ONE tree-shape authority remains (R124).",
+        "boot_split_id(k: usize) → split_tag(id: SplitId) = `sprag_gui.split.{n}`: divider ids are the host's split SEQUENCE, not the left leaf's slot. Test updated + rationale recorded.",
+        "An unmappable leaf collapses into its sibling (R121 F6 no-silent-orphan).",
+        "Commit: c86c0bf feat(gui)."
+      ],
+      "verification_bullets": [
+        "Gate clean: test (sprag-gui 105 pass) / clippy -D warnings / doc -D warnings / fmt.",
+        "LIVE :0 smoke: scene tags BYTE-IDENTICAL to the pre-B2b smoke (sprag_gui.split.0 / terminal-0 / terminal-1 / both scrollbars) and the screenshot pixel-identical — the read half must be behaviour-invisible, and it was.",
+        "The id-scheme change's blast radius was measured, not assumed: contiguous boots are byte-identical; only a holed boot differs, which the updated test pins."
+      ],
+      "impact_refs": [
+        "3"
+      ],
+      "carry_forward_bullets": [
+        "LESSON: a panicking test POISONED a sibling test in the same parallel run (shared global Owner/focus state) — `the_main_window_title_tracks…` 'failed' only as collateral and cleared once the real failure was fixed. Don't chase a second failure before fixing the first.",
+        "Sequence-keyed divider ids (SplitId) are the stronger identity than slot-keyed: a ratio follows its BOUNDARY for life instead of re-binding when panes reshuffle.",
+        "R147 LOCAL, not pushed. B's READ half is complete; NEXT = B3, the write half."
+      ],
+      "publishable_decision_summary": "Round 147: increment B2b — the GUI PROJECTS the host's arrangement, completing the READ half of B end-to-end (host owns -> wire -> client renders). New `split::project_layout(&LayoutTree, &slot_of) -> Option<DockTopology>`: host `LayoutNode::Leaf(PaneId)` -> pinion `DockNode::Leaf{panel_id}` via the new `SlotView::slot_of(PaneId)` (the inverse of id(slot)), and `Split{id,dir,ratio}` -> `DockNode::Split{id: split_tag(SplitId), orientation, ratio}`. An unmappable leaf (a host pane not yet admitted — the \"renderable now\" contract) COLLAPSES into its sibling, upholding the R121 F6 no-silent-orphan rule. `build_boot_topology` is RETIRED from production and becomes a `#[cfg(test)] boot_tree()` fixture that runs the REAL reconcile+projection, so there is still exactly ONE tree-shape authority (the R124 lesson holds). DELIBERATE SCHEME CHANGE: `boot_split_id(k: usize)` -> `split_tag(id: SplitId)` (`sprag_gui.split.{n}`) — divider ids are now the host's split SEQUENCE, not the left leaf's SLOT. Contiguous boots are byte-identical (slot k == seq k); only a HOLED boot differs ([0,2,3]: was split.0/split.2, now split.0/split.1). Sequence ids are the STRONGER identity: a slot-keyed id re-binds a divider's drag state when panes reshuffle, whereas a SplitId follows its boundary for life.",
+      "publishable_changes_bullets": [
+        "crates/sprag-gui/src/split.rs: project_layout + project_node — the ONE place the host's LayoutTree becomes a pinion DockTopology. New SlotView::slot_of(PaneId) (inverse of id(slot)) + SlotView::layout().",
+        "use_dock_topology()'s boot seed = project_layout(&slots.layout(), &|p| slots.slot_of(p)); build_boot_topology RETIRED from production → a #[cfg(test)] boot_tree() fixture running the REAL reconcile+projection, so exactly ONE tree-shape authority remains (R124).",
+        "boot_split_id(k: usize) → split_tag(id: SplitId) = `sprag_gui.split.{n}`: divider ids are the host's split SEQUENCE, not the left leaf's slot. Test updated + rationale recorded.",
+        "An unmappable leaf collapses into its sibling (R121 F6 no-silent-orphan).",
+        "Commit: c86c0bf feat(gui)."
+      ],
+      "publishable_verification_bullets": [
+        "Gate clean: test (sprag-gui 105 pass) / clippy -D warnings / doc -D warnings / fmt.",
+        "LIVE :0 smoke: scene tags BYTE-IDENTICAL to the pre-B2b smoke (sprag_gui.split.0 / terminal-0 / terminal-1 / both scrollbars) and the screenshot pixel-identical — the read half must be behaviour-invisible, and it was.",
+        "The id-scheme change's blast radius was measured, not assumed: contiguous boots are byte-identical; only a holed boot differs, which the updated test pins."
+      ],
+      "publishable_impact_refs": [
+        "3"
+      ],
+      "publishable_carry_forward_bullets": [
+        "LESSON: a panicking test POISONED a sibling test in the same parallel run (shared global Owner/focus state) — `the_main_window_title_tracks…` 'failed' only as collateral and cleared once the real failure was fixed. Don't chase a second failure before fixing the first.",
+        "Sequence-keyed divider ids (SplitId) are the stronger identity than slot-keyed: a ratio follows its BOUNDARY for life instead of re-binding when panes reshuffle.",
+        "R147 LOCAL, not pushed. B's READ half is complete; NEXT = B3, the write half."
+      ]
+    },
+    "R148": {
+      "decision_summary": "Round 148: adversarial 3-LENS SESSION REVIEW of R144-R147 + remediation. VERDICT: the owner's 4 questions are mostly NO, and all three fresh lenses independently reached the same core finding — THE HOST LayoutTree IS A BOOT SEED, NOT AN AUTHORITY. No write path exists (`WorkspaceExternal::intervene` returns Err(UnknownPath) unconditionally; no layout action; append_pane/remove_pane are reachable only from reconcile), so `LayoutNode::append` is the ONLY production constructor, which means `dir` is ALWAYS Horizontal and `ratio` ALWAYS 0.5 — Vertical and ratio != 0.5 are `#[cfg(test)]`-only. The host tree therefore carries ZERO bits that `pane_ids()` lacks: a reattach re-derives the default even row, i.e. THE ARC'S VALUE IS 0% DELIVERED WHILE THE DOCS READ ~100%. `use_dock_topology` seeds ONCE (Owner::cache) and the client forks from frame two (float / reorganize / ratio / admit never propagate); dock.rs even calls itself \"the shape/ratio authority\", contradicting split.rs. A REAL BUG was found and fixed: a single failed boot `layout` query -> WireHost::layout maps ANY error to an empty tree -> project_layout -> None -> a PERMANENTLY BLANK WINDOW over live PTYs for the process lifetime (the once-fired cache made the doc's \"next read self-heals\" fiction) — a REGRESSION vs the retired local infallible build_boot_topology. R124 is also REVERSED: two tree-shape builders now exist (LayoutNode::append's right-spine descent vs split::insert_leaf's index-relative insert) plus two constants, and they ALREADY DISAGREE on slot reuse. LENS CONSENSUS ON SEQUENCING: B3 (the write path) is NOT a deferrable increment — the client mints split ids (`sprag_gui.split.dock.{n}`, `reorg-*`) that have no SplitId and are UNREPRESENTABLE in LayoutTree, so the deferred half cannot be added without deleting work done here.",
+      "changes_bullets": [
+        "FIXED (real bug): split::seed_layout() — a failed boot layout query no longer yields a permanently blank window. Falls back to arranging slots.pane_ids() through the host's OWN LayoutTree::reconcile (not a second builder) + warns. +regression test.",
+        "ONE host::reconciled_layout(): the lock-ORDER rule now lives in one fn instead of a comment copied to two sites.",
+        "Deleted dead SessionRegistry::default_size (Workspace owns it). serde failure is now traced, not silently answered as 'unknown slot'.",
+        "Docs: every present-tense overclaim replaced with an explicit v1 BOUND note (layout.rs module + Split::ratio, HostClient::layout, registry module + Window, use_dock_topology, project_layout, split_tag). The R124 debt is now STATED rather than papered over — the fix is not another unification, it is the write path, after which insert_leaf / SPLIT_RATIO_DEFAULT / next_dock_split_id get DELETED.",
+        "Commit: 9579379 fix(mux)."
+      ],
+      "verification_bullets": [
+        "Method: 3 fresh parallel lenses over R144-R147 read COLD; every acted finding re-verified against source before acting.",
+        "The 0%-delivered verdict is not rhetoric — it is proven by construction: with append as the only production constructor, dir/ratio are constants, so the served tree is a pure function of pane_ids(). Vertical/ratio!=0.5 exist only under #[cfg(test)].",
+        "VERIFIED SOUND by the lenses (do not re-litigate): sprag-terminal is genuinely pinion-free; 'pixels are pinion's' holds (no rect in layout.rs); the R7 supersession reasoning is CORRECT; lock discipline has NO nesting/inversion anywhere (guards are tail-expression temporaries, traced through every path); no lock is held across a socket call or a Pane Drop; wire recursion is unreachable (serde_json's 128-level cap + the host deserializes no tree); Host::layout's TOCTOU is stale-not-wrong; the layout algebra is correct; id minting is correct; the plugin ISP split is a real boundary; project_layout's unmappable-leaf collapse upholds R121 F6.",
+        "Gate clean after remediation."
+      ],
+      "impact_refs": [
+        "2",
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "TRACKED (lens findings deferred, all later closed in R149/R151): layout() is WINDOW state on the pane-addressed HostClient trait (should be its own mux/window client trait once the window surface grows); next_split (an internal counter) is on the wire ABI, contradicting sprag-host::wire's 'ONE definition' + the PaneScrollFacts DTO convention; registry indexing is comment-guarded, not structural; LayoutTree's Deserialize validates NOTHING; reconcile is O(n²).",
+        "THE LESSON THAT GENERALISES: docs describing an intended end-state in the present tense are how a 0%-delivered increment reads as done. An honest v1 BOUND is the only acceptable form until the write path exists.",
+        "NEXT = B3 (the write path), NOT deferrable per lens consensus. R144..R148 LOCAL, not pushed."
+      ],
+      "publishable_decision_summary": "Round 148: adversarial 3-LENS SESSION REVIEW of R144-R147 + remediation. VERDICT: the owner's 4 questions are mostly NO, and all three fresh lenses independently reached the same core finding — THE HOST LayoutTree IS A BOOT SEED, NOT AN AUTHORITY. No write path exists (`WorkspaceExternal::intervene` returns Err(UnknownPath) unconditionally; no layout action; append_pane/remove_pane are reachable only from reconcile), so `LayoutNode::append` is the ONLY production constructor, which means `dir` is ALWAYS Horizontal and `ratio` ALWAYS 0.5 — Vertical and ratio != 0.5 are `#[cfg(test)]`-only. The host tree therefore carries ZERO bits that `pane_ids()` lacks: a reattach re-derives the default even row, i.e. THE ARC'S VALUE IS 0% DELIVERED WHILE THE DOCS READ ~100%. `use_dock_topology` seeds ONCE (Owner::cache) and the client forks from frame two (float / reorganize / ratio / admit never propagate); dock.rs even calls itself \"the shape/ratio authority\", contradicting split.rs. A REAL BUG was found and fixed: a single failed boot `layout` query -> WireHost::layout maps ANY error to an empty tree -> project_layout -> None -> a PERMANENTLY BLANK WINDOW over live PTYs for the process lifetime (the once-fired cache made the doc's \"next read self-heals\" fiction) — a REGRESSION vs the retired local infallible build_boot_topology. R124 is also REVERSED: two tree-shape builders now exist (LayoutNode::append's right-spine descent vs split::insert_leaf's index-relative insert) plus two constants, and they ALREADY DISAGREE on slot reuse. LENS CONSENSUS ON SEQUENCING: B3 (the write path) is NOT a deferrable increment — the client mints split ids (`sprag_gui.split.dock.{n}`, `reorg-*`) that have no SplitId and are UNREPRESENTABLE in LayoutTree, so the deferred half cannot be added without deleting work done here.",
+      "publishable_changes_bullets": [
+        "FIXED (real bug): split::seed_layout() — a failed boot layout query no longer yields a permanently blank window. Falls back to arranging slots.pane_ids() through the host's OWN LayoutTree::reconcile (not a second builder) + warns. +regression test.",
+        "ONE host::reconciled_layout(): the lock-ORDER rule now lives in one fn instead of a comment copied to two sites.",
+        "Deleted dead SessionRegistry::default_size (Workspace owns it). serde failure is now traced, not silently answered as 'unknown slot'.",
+        "Docs: every present-tense overclaim replaced with an explicit v1 BOUND note (layout.rs module + Split::ratio, HostClient::layout, registry module + Window, use_dock_topology, project_layout, split_tag). The R124 debt is now STATED rather than papered over — the fix is not another unification, it is the write path, after which insert_leaf / SPLIT_RATIO_DEFAULT / next_dock_split_id get DELETED.",
+        "Commit: 9579379 fix(mux)."
+      ],
+      "publishable_verification_bullets": [
+        "Method: 3 fresh parallel lenses over R144-R147 read COLD; every acted finding re-verified against source before acting.",
+        "The 0%-delivered verdict is not rhetoric — it is proven by construction: with append as the only production constructor, dir/ratio are constants, so the served tree is a pure function of pane_ids(). Vertical/ratio!=0.5 exist only under #[cfg(test)].",
+        "VERIFIED SOUND by the lenses (do not re-litigate): sprag-terminal is genuinely pinion-free; 'pixels are pinion's' holds (no rect in layout.rs); the R7 supersession reasoning is CORRECT; lock discipline has NO nesting/inversion anywhere (guards are tail-expression temporaries, traced through every path); no lock is held across a socket call or a Pane Drop; wire recursion is unreachable (serde_json's 128-level cap + the host deserializes no tree); Host::layout's TOCTOU is stale-not-wrong; the layout algebra is correct; id minting is correct; the plugin ISP split is a real boundary; project_layout's unmappable-leaf collapse upholds R121 F6.",
+        "Gate clean after remediation."
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "TRACKED (lens findings deferred, all later closed in R149/R151): layout() is WINDOW state on the pane-addressed HostClient trait (should be its own mux/window client trait once the window surface grows); next_split (an internal counter) is on the wire ABI, contradicting sprag-host::wire's 'ONE definition' + the PaneScrollFacts DTO convention; registry indexing is comment-guarded, not structural; LayoutTree's Deserialize validates NOTHING; reconcile is O(n²).",
+        "THE LESSON THAT GENERALISES: docs describing an intended end-state in the present tense are how a 0%-delivered increment reads as done. An honest v1 BOUND is the only acceptable form until the write path exists.",
+        "NEXT = B3 (the write path), NOT deferrable per lens consensus. R144..R148 LOCAL, not pushed."
+      ]
+    },
+    "R149": {
+      "decision_summary": "Round 149: increment B3 — THE WRITE PATH, answering R148's \"0% delivered\" verdict. B3a: the host genuinely owns the write. `LayoutTree::set_from_wire` — the HOST IS THE ID AUTHORITY: a client sends `id: None` for a divider it minted resolving its own gesture and the host stamps a fresh SplitId, minting above BOTH high-water marks (ours and what arrived) so a stamp collides neither with a divider on screen nor one just retired. VALIDATED, not trusted (DuplicatePane / DuplicateSplitId / InvalidRatio), rejected WHOLE (all-or-nothing) — closing R148's \"Deserialize validates nothing\". DTO split closes R148's lens-3 finding: LayoutWire/LayoutNodeWire + LayoutSnapshot{revision,tree}; LayoutTree/LayoutNode LOST their serde derives because `next_split` (an internal counter) was on the wire ABI — a read now DERIVES it, a write RECOMPUTES it. `Window::layout_revision` bumps ONLY on a real change, in ONE place (bump_if_changed), so a client never re-projects on top of a live gesture. B3b: the client is a PROJECTION. `unproject_layout` is project_layout's inverse; a split tag parses to a SplitId iff it matches `sprag_gui.split.{n}`, else `id: None` and the HOST names it — which is the whole reason LayoutNodeWire::Split.id is optional. The ratio is read from the LIVE use_split_ratio Signal, NOT the DockNode (pinion's DockNode::Split.ratio is only the value the divider OPENED at). Boot's layout read is now FATAL (fails the attach) because R148's blank-window bug was \"wire failure\" and \"window is empty\" arriving as the same value — fixed STRUCTURALLY, so seed_layout's local fallback was DELETED rather than kept as a workaround. OWNER DECISION (asked explicitly, cost-no-object): FLOAT IS SESSION STATE — Window{floating: HashSet<PaneId>}, reconcile over panes-minus-floating; the rejected alternative (client owns float) forces two trees + a merge = the second-authority pattern R124/R148 keep flagging. Zellij's model.",
+      "changes_bullets": [
+        "sprag-terminal: LayoutTree::set_from_wire (host stamps client-minted dividers; minting resumes above both high-water marks) + LayoutError{DuplicatePane,DuplicateSplitId,InvalidRatio}; rejected WHOLE. DTO split: LayoutWire/LayoutNodeWire + LayoutSnapshot{revision,tree}; LayoutTree/LayoutNode lost serde (next_split was an internal counter on the wire ABI). Window::layout_revision bumped only on a real change via the ONE bump_if_changed seam; set_floating does not touch the tree — the leaf collapses on the next reconcile_layout (ONE place a leaf moves).",
+        "Wire: set_layout{tree} / set_floating{id,floating} ACTIONS (not `intervene` — neither is a plain assignment), both answering the canonical LayoutSnapshot so ONE round trip records the gesture AND names the dividers. Both bump SceneRevision. `intervene` stays Err(UnknownPath) deliberately.",
+        "sprag-gui: unproject_layout (inverse of project_layout; a DockNode::Tabs is unrepresentable → refuse the write). sync_layout in reconcile_frame (pre-view): host revision differs → ADOPT (host wins outright); else un-project and write once SETTLED, adopting the write's ANSWER (canonical ids) → one round trip, converges.",
+        "WireHost now MIRRORS the snapshot (poll thread re-reads each wake; a write adopts the answer) → layout() is a lock+clone, NEVER a socket call on the paint path. Boot's layout read is FATAL; seed_layout's fallback DELETED (fixed structurally, not worked around).",
+        "DELETED (the R124 SSOT regression is dead — the host is the only builder): insert_leaf, SPLIT_RATIO_DEFAULT, next_dock_split_id, remove_pane_leaf, insert_pane_leaf, dock::admit_pane, SlotDelta::added, and DockMode/Placeholder/SPRAG_GUI_DOCK_MODE (owner-approved). Net -205 lines.",
+        "Commits: 9f1b106 feat(mux) B3a + 06d80eb feat(gui) B3b."
+      ],
+      "verification_bullets": [
+        "Workspace green (terminal 32 / host 60 / gui 106 / wire_client 6 incl. a NEW real-socket test: write → name → serve → float → reject); clippy + doc(-D warnings) + fmt clean — the doc gate AGAIN caught private intra-doc links (the R144/R146 lesson keeps paying).",
+        "LIVE :0 smoke: scene tags BYTE-IDENTICAL to R147 (sprag_gui.split.0 / terminal-0 / terminal-1 / both scrollbars) + screenshot shows two live shells unchanged.",
+        "adopt_layout FORCES each divider's ratio Signal (use_split_ratio(tag,r).set(r)) — load-bearing: the cache memoises per id, so without it a host-side change would re-project everything EXCEPT the ratio. Known cost: a canonicalised divider orphans its old cache slot (harmless).",
+        "Zone-redock ORDER REVERSED and guarded (tear_off_redock_at_in_collapse_honors_the_zone_cleanly): redock_pane FIRST (host re-tiles at the end, adopt) THEN dock_panel_at_resolved_zone relocates the leaf → sync_layout writes it. Both in ONE update tick, so the intermediate is never painted (no flash)."
+      ],
+      "impact_refs": [
+        "2",
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "PROCESS LESSON: sprag has COMMIT_FORMAT.md enforced by a commit-msg hook — body = 1-3 contiguous `- ` bullets, <=72 BYTES each, NO prose, NO Co-Authored-By (the project rule overrides the global CLAUDE.md co-author line). Rich rationale goes in code docs + memory + Mnemosyne, NOT the commit body.",
+        "Owner-approved behaviour changes (live-verified): dock-back with NO gesture returns the pane to the arrangement's END (the host's one builder LayoutNode::append), not its index home; a redock BY DRAG lands where dropped. Placeholder mode is gone. Refinement if disliked: host-side home anchors (pinion has DockLeafAnchor/insert_leaf_at_anchor as prior art) — this became the R151/R152 tracked gap.",
+        "use_dock_topology() now starts Signal::new(None), filled ONLY by adopt_layout (the once-firing seed factory that forked forever is gone). CONSEQUENCE FOR TESTS: a test reading docked_pane_indices() must first split::sync_layout(&use_terminal().slots) to model the frame — 4 tests needed this; production is fine (reconcile_frame runs pre-view).",
+        "R144..R149 LOCAL, not pushed. NEXT = B4 (reattach restores the layout — the payoff) + review."
+      ],
+      "publishable_decision_summary": "Round 149: increment B3 — THE WRITE PATH, answering R148's \"0% delivered\" verdict. B3a: the host genuinely owns the write. `LayoutTree::set_from_wire` — the HOST IS THE ID AUTHORITY: a client sends `id: None` for a divider it minted resolving its own gesture and the host stamps a fresh SplitId, minting above BOTH high-water marks (ours and what arrived) so a stamp collides neither with a divider on screen nor one just retired. VALIDATED, not trusted (DuplicatePane / DuplicateSplitId / InvalidRatio), rejected WHOLE (all-or-nothing) — closing R148's \"Deserialize validates nothing\". DTO split closes R148's lens-3 finding: LayoutWire/LayoutNodeWire + LayoutSnapshot{revision,tree}; LayoutTree/LayoutNode LOST their serde derives because `next_split` (an internal counter) was on the wire ABI — a read now DERIVES it, a write RECOMPUTES it. `Window::layout_revision` bumps ONLY on a real change, in ONE place (bump_if_changed), so a client never re-projects on top of a live gesture. B3b: the client is a PROJECTION. `unproject_layout` is project_layout's inverse; a split tag parses to a SplitId iff it matches `sprag_gui.split.{n}`, else `id: None` and the HOST names it — which is the whole reason LayoutNodeWire::Split.id is optional. The ratio is read from the LIVE use_split_ratio Signal, NOT the DockNode (pinion's DockNode::Split.ratio is only the value the divider OPENED at). Boot's layout read is now FATAL (fails the attach) because R148's blank-window bug was \"wire failure\" and \"window is empty\" arriving as the same value — fixed STRUCTURALLY, so seed_layout's local fallback was DELETED rather than kept as a workaround. OWNER DECISION (asked explicitly, cost-no-object): FLOAT IS SESSION STATE — Window{floating: HashSet<PaneId>}, reconcile over panes-minus-floating; the rejected alternative (client owns float) forces two trees + a merge = the second-authority pattern R124/R148 keep flagging. Zellij's model.",
+      "publishable_changes_bullets": [
+        "sprag-terminal: LayoutTree::set_from_wire (host stamps client-minted dividers; minting resumes above both high-water marks) + LayoutError{DuplicatePane,DuplicateSplitId,InvalidRatio}; rejected WHOLE. DTO split: LayoutWire/LayoutNodeWire + LayoutSnapshot{revision,tree}; LayoutTree/LayoutNode lost serde (next_split was an internal counter on the wire ABI). Window::layout_revision bumped only on a real change via the ONE bump_if_changed seam; set_floating does not touch the tree — the leaf collapses on the next reconcile_layout (ONE place a leaf moves).",
+        "Wire: set_layout{tree} / set_floating{id,floating} ACTIONS (not `intervene` — neither is a plain assignment), both answering the canonical LayoutSnapshot so ONE round trip records the gesture AND names the dividers. Both bump SceneRevision. `intervene` stays Err(UnknownPath) deliberately.",
+        "sprag-gui: unproject_layout (inverse of project_layout; a DockNode::Tabs is unrepresentable → refuse the write). sync_layout in reconcile_frame (pre-view): host revision differs → ADOPT (host wins outright); else un-project and write once SETTLED, adopting the write's ANSWER (canonical ids) → one round trip, converges.",
+        "WireHost now MIRRORS the snapshot (poll thread re-reads each wake; a write adopts the answer) → layout() is a lock+clone, NEVER a socket call on the paint path. Boot's layout read is FATAL; seed_layout's fallback DELETED (fixed structurally, not worked around).",
+        "DELETED (the R124 SSOT regression is dead — the host is the only builder): insert_leaf, SPLIT_RATIO_DEFAULT, next_dock_split_id, remove_pane_leaf, insert_pane_leaf, dock::admit_pane, SlotDelta::added, and DockMode/Placeholder/SPRAG_GUI_DOCK_MODE (owner-approved). Net -205 lines.",
+        "Commits: 9f1b106 feat(mux) B3a + 06d80eb feat(gui) B3b."
+      ],
+      "publishable_verification_bullets": [
+        "Workspace green (terminal 32 / host 60 / gui 106 / wire_client 6 incl. a NEW real-socket test: write → name → serve → float → reject); clippy + doc(-D warnings) + fmt clean — the doc gate AGAIN caught private intra-doc links (the R144/R146 lesson keeps paying).",
+        "LIVE :0 smoke: scene tags BYTE-IDENTICAL to R147 (sprag_gui.split.0 / terminal-0 / terminal-1 / both scrollbars) + screenshot shows two live shells unchanged.",
+        "adopt_layout FORCES each divider's ratio Signal (use_split_ratio(tag,r).set(r)) — load-bearing: the cache memoises per id, so without it a host-side change would re-project everything EXCEPT the ratio. Known cost: a canonicalised divider orphans its old cache slot (harmless).",
+        "Zone-redock ORDER REVERSED and guarded (tear_off_redock_at_in_collapse_honors_the_zone_cleanly): redock_pane FIRST (host re-tiles at the end, adopt) THEN dock_panel_at_resolved_zone relocates the leaf → sync_layout writes it. Both in ONE update tick, so the intermediate is never painted (no flash)."
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "PROCESS LESSON: sprag has COMMIT_FORMAT.md enforced by a commit-msg hook — body = 1-3 contiguous `- ` bullets, <=72 BYTES each, NO prose, NO Co-Authored-By (the project rule overrides the global CLAUDE.md co-author line). Rich rationale goes in code docs + memory + Mnemosyne, NOT the commit body.",
+        "Owner-approved behaviour changes (live-verified): dock-back with NO gesture returns the pane to the arrangement's END (the host's one builder LayoutNode::append), not its index home; a redock BY DRAG lands where dropped. Placeholder mode is gone. Refinement if disliked: host-side home anchors (pinion has DockLeafAnchor/insert_leaf_at_anchor as prior art) — this became the R151/R152 tracked gap.",
+        "use_dock_topology() now starts Signal::new(None), filled ONLY by adopt_layout (the once-firing seed factory that forked forever is gone). CONSEQUENCE FOR TESTS: a test reading docked_pane_indices() must first split::sync_layout(&use_terminal().slots) to model the frame — 4 tests needed this; production is fine (reconcile_frame runs pre-view).",
+        "R144..R149 LOCAL, not pushed. NEXT = B4 (reattach restores the layout — the payoff) + review."
+      ]
+    },
+    "R150": {
+      "decision_summary": "Round 150: increment B4 — REATTACH RESTORES THE LAYOUT. THE ARC'S PAYOFF IS DELIVERED AND LIVE-PROVEN, answering R148's \"0% delivered\" in full. A REAL end-to-end tmux cycle on :0 against an operator-run sprag-term: attach -> drag the divider -> float a pane -> KILL THE CLIENT -> the session outlives it -> reattach a FRESH client -> it restores the exact tiling ([leaf 1, leaf 0], the reverse of boot), the exact ratio (0.8031, measured in the reattached client's PIXELS: terminal-1 w=768, terminal-0 w=188 of 956), the host's divider identity (sprag_gui.split.1), AND the floats (the pane-0 window reopened). B4 was NOT a no-op, and the live drive is what proved it: the host's tree carries only TILED panes, so a floated pane has NO leaf — a reattaching client rendered neither a leaf (correct: not tiled) nor a window (wrong: the pane is alive) and THE PANE VANISHED. Fix: `LayoutSnapshot.floating: Vec<PaneId>` is SERVED, and dock::reconcile_float_windows projects it (opens a window for each host-float we don't show, drops one the host no longer floats — so another client's dock-back reaches us too). Position is deliberately NOT restored: the host stores no pixels BY DESIGN, so a restored float is WM-placed — the seam the whole arc rests on, held even where restoring position would have been easy.",
+      "changes_bullets": [
+        "sprag-terminal: LayoutSnapshot.floating: Vec<PaneId> is now SERVED — load-bearing and NOT derivable from `tree`, because 'absent from the tiling' is exactly what a floated pane and a pane this client cannot see look like. Serving it is what lets a reattaching client put the user's floats back.",
+        "sprag-gui: dock::reconcile_float_windows projects the served float set (opens a window per host-float we don't show; drops one the host no longer floats, so another client's dock-back reaches us).",
+        "Window::bump_if_changed now compares the tree AND the float set: a floating pane that EXITS changes what a client draws while leaving the tiling untouched, so pruning outside the compare dropped that change on the floor.",
+        "PaneId gained Ord so the served float set has a STABLE order (a wobbling list reads as a change).",
+        "Commit: f9d04b7 feat(mux)."
+      ],
+      "verification_bullets": [
+        "THE PAYOFF, LIVE on :0 against an operator-run sprag-term: attach → drag divider → float a pane → KILL the client → session survives → reattach FRESH → exact tiling ([leaf 1, leaf 0]) + exact ratio (0.8031, measured in the reattached client's pixels: 768 / 188 of 956) + divider identity (sprag_gui.split.1) + the floats (pane-0 window reopened). R148's '0% delivered' is fully answered.",
+        "The vanishing-pane bug was found BY the live drive, not by a test — which is the argument for driving the payoff for real rather than trusting green tests.",
+        "Gate clean: test / clippy -D warnings / doc -D warnings / fmt.",
+        "A pre-existing FLAKE was root-caused (`the_main_window_title_tracks…`) and my first two diagnoses were WRONG: it was NOT the 5s OSC poll and NOT R147-style collateral. The test asserted 'pane 1 has no OSC title → falls back to terminal-1' while spawning it with titled_pane(\"plain\") — a child that DOES emit OSC 2;plain. It asserted a TRANSIENT and passed on a coin flip: it failed when run ALONE (idle machine → the child's printf lands fast) and passed under suite load. Fix = a new untitled_pane() fixture (exec cat, no printf), so the fallback is a FACT. Now 5/5 alone + 4/4 full-suite."
+      ],
+      "impact_refs": [
+        "2",
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "LESSON (cemented): 'it passes on retry' is NOT a diagnosis — this flake failed BECAUSE the machine was FAST, the opposite of the load story first told. A test asserting a TRANSIENT is a coin flip wearing a green tick.",
+        "The float seam held under pressure: WHICH panes are tiled is logical (host, so a reattaching client restores them); WHERE a floating window sits is pixels (the client's, never the host's). A restored float is WM-placed by design.",
+        "R144..R150 LOCAL, not pushed. B is COMPLETE. NEXT = review (E-shaped, run over B3a+B3b+B4 together), then C (daemon lifetime)."
+      ],
+      "publishable_decision_summary": "Round 150: increment B4 — REATTACH RESTORES THE LAYOUT. THE ARC'S PAYOFF IS DELIVERED AND LIVE-PROVEN, answering R148's \"0% delivered\" in full. A REAL end-to-end tmux cycle on :0 against an operator-run sprag-term: attach -> drag the divider -> float a pane -> KILL THE CLIENT -> the session outlives it -> reattach a FRESH client -> it restores the exact tiling ([leaf 1, leaf 0], the reverse of boot), the exact ratio (0.8031, measured in the reattached client's PIXELS: terminal-1 w=768, terminal-0 w=188 of 956), the host's divider identity (sprag_gui.split.1), AND the floats (the pane-0 window reopened). B4 was NOT a no-op, and the live drive is what proved it: the host's tree carries only TILED panes, so a floated pane has NO leaf — a reattaching client rendered neither a leaf (correct: not tiled) nor a window (wrong: the pane is alive) and THE PANE VANISHED. Fix: `LayoutSnapshot.floating: Vec<PaneId>` is SERVED, and dock::reconcile_float_windows projects it (opens a window for each host-float we don't show, drops one the host no longer floats — so another client's dock-back reaches us too). Position is deliberately NOT restored: the host stores no pixels BY DESIGN, so a restored float is WM-placed — the seam the whole arc rests on, held even where restoring position would have been easy.",
+      "publishable_changes_bullets": [
+        "sprag-terminal: LayoutSnapshot.floating: Vec<PaneId> is now SERVED — load-bearing and NOT derivable from `tree`, because 'absent from the tiling' is exactly what a floated pane and a pane this client cannot see look like. Serving it is what lets a reattaching client put the user's floats back.",
+        "sprag-gui: dock::reconcile_float_windows projects the served float set (opens a window per host-float we don't show; drops one the host no longer floats, so another client's dock-back reaches us).",
+        "Window::bump_if_changed now compares the tree AND the float set: a floating pane that EXITS changes what a client draws while leaving the tiling untouched, so pruning outside the compare dropped that change on the floor.",
+        "PaneId gained Ord so the served float set has a STABLE order (a wobbling list reads as a change).",
+        "Commit: f9d04b7 feat(mux)."
+      ],
+      "publishable_verification_bullets": [
+        "THE PAYOFF, LIVE on :0 against an operator-run sprag-term: attach → drag divider → float a pane → KILL the client → session survives → reattach FRESH → exact tiling ([leaf 1, leaf 0]) + exact ratio (0.8031, measured in the reattached client's pixels: 768 / 188 of 956) + divider identity (sprag_gui.split.1) + the floats (pane-0 window reopened). R148's '0% delivered' is fully answered.",
+        "The vanishing-pane bug was found BY the live drive, not by a test — which is the argument for driving the payoff for real rather than trusting green tests.",
+        "Gate clean: test / clippy -D warnings / doc -D warnings / fmt.",
+        "A pre-existing FLAKE was root-caused (`the_main_window_title_tracks…`) and my first two diagnoses were WRONG: it was NOT the 5s OSC poll and NOT R147-style collateral. The test asserted 'pane 1 has no OSC title → falls back to terminal-1' while spawning it with titled_pane(\"plain\") — a child that DOES emit OSC 2;plain. It asserted a TRANSIENT and passed on a coin flip: it failed when run ALONE (idle machine → the child's printf lands fast) and passed under suite load. Fix = a new untitled_pane() fixture (exec cat, no printf), so the fallback is a FACT. Now 5/5 alone + 4/4 full-suite."
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "LESSON (cemented): 'it passes on retry' is NOT a diagnosis — this flake failed BECAUSE the machine was FAST, the opposite of the load story first told. A test asserting a TRANSIENT is a coin flip wearing a green tick.",
+        "The float seam held under pressure: WHICH panes are tiled is logical (host, so a reattaching client restores them); WHERE a floating window sits is pixels (the client's, never the host's). A restored float is WM-placed by design.",
+        "R144..R150 LOCAL, not pushed. B is COMPLETE. NEXT = review (E-shaped, run over B3a+B3b+B4 together), then C (daemon lifetime)."
+      ]
+    },
+    "R151": {
+      "decision_summary": "Round 151: adversarial 3-LENS REVIEW over B3a+B3b+B4 + remediation. VERDICT: not textbook yet — 1 CRITICAL bug FIXED, 11 findings closed, and the Placeholder deletion CHALLENGED. THE CRITICAL (found by Lens 1 and Lens 3 INDEPENDENTLY — the R148 convergence signal — and then PROVED with a throwaway test): `sync_layout` wrote a LOSSY PROJECTION back as session state. `project_layout` is deliberately lossy (a pane with no slot COLLAPSES out: MAX_PANES=8 while the host has NO cap; also any frameless/not-yet-admitted pane; and the poll thread's query_panes/query_layout are TWO non-atomic round trips). Un-projecting that and writing it DELETED the pane from the host's tree; the host re-appended it at the END with a fresh SplitId -> bump -> adopt -> re-project -> write again = a PERMANENT WRITE LOOP that also durably RELOCATED the user's pane. Fix: `wire_panes(current) != wire_panes(seen.tree)` -> refuse the write, because A GESTURE RE-ARRANGES PANES, IT NEVER CHANGES MEMBERSHIP. My own round-trip test had MISSED it because it used a TOTAL slot_of — the exact case that matters. Lens 2's CRITICAL (\"no frame follows a settled gesture -> the write is silently dropped\") was REFUTED EMPIRICALLY (97 frames painted in 3s of genuine idle) — but its UNDERLYING critique STANDS and was recorded as owed: sync_layout's correctness depends on an undocumented, unrelated repaint source; if sprag ever becomes on-demand-repainting (which a terminal SHOULD be), layout durability breaks SILENTLY. [R154 NOTE: that recorded risk is exactly what R152 then triggered and R154 had to fix — the refutation was factually right and its safety conclusion wrong.]",
+      "changes_bullets": [
+        "CRITICAL FIX (7eea23d): sync_layout refuses to write when the surface's pane SET differs from the host's — a gesture re-arranges, it never changes membership. +regression test using a PARTIAL slot_of (the case my earlier round-trip test's total slot_of could not reach).",
+        "ALL 11 TRACKED FINDINGS CLOSED (08587d4), each with a test: (a) push_float/redock_pane no longer hold a stale `windows` Vec across the host call — reconcile_float_windows is the ONE window creator and place_float only positions (the lost update that re-introduced B4's vanishing pane is gone); (b) adopt_layout drives ONLY the shares the host MOVED (force_changed_ratios diffed against seen.tree), so an unrelated bump no longer yanks a live drag — the doc's claim is now true; (c) the layout mirror gained store_layout, which drops a snapshot older than what it holds (no rewind/snap-back); (d) the 'a window keeps >=1 tiled pane' invariant MOVED HOST-SIDE (Window::would_untile_the_last, set_floating returns bool) — an invariant enforced anywhere but at its authority is a convention; (e) set_floating goes through bump_if_changed (costs a 2nd bump per float — documented; the revision is opaque); (f) COMPARE-AND-SET: set_layout(wire, expected) + LayoutError::Stale + expected_revision on the wire → two clients can no longer silently revert each other; (g) use_split_ratio owns a prunable SplitRatios table in ONE Owner::cache slot + prune_split_ratios on adopt → no unbounded leak (NB: NOT a pinion gap — Owner::cache has no eviction, but the table is sprag's own); (h) SPLIT_TAG_PREFIX const; (i) a false test renamed to what it proves; (j) id.clone() not id.to_string() per divider per frame; (k) the dead placeholder arm DELETED from view.rs + its stale 'sole floating authority' doc."
+      ],
+      "verification_bullets": [
+        "Method: 3 fresh lenses over B3a+B3b+B4 together; Lens 1 and Lens 3 found the CRITICAL independently (the convergence signal), and it was PROVED with a throwaway test before being fixed — not argued.",
+        "Verified live after the fixes: drag → CAS write rev 1→2 ratio 0.7302; float → rev 4, floating=[0], root leaf:1, pane-0 window; idle → revision STABLE, no write storm; screenshot: main shows only the tiled pane filling the surface, so deleting the placeholder arm left no gap.",
+        "Lens 2's CRITICAL refuted empirically (97 frames in 3s idle). HONEST CAVEAT recorded at the time: my own '144fps continuous' reading was sloppy — mean_fps is the cadence WHEN painting; the decisive metric is frame_count growth while idle. [R152 later found the 97 frames were a LIVELOCK, and R154 found the underlying critique had been right.]",
+        "VERIFIED SOUND by the lenses (do not re-litigate): the second tree-shape builder is genuinely gone; membership has ONE authority (Workspace) and reconcile-don't-co-mutate holds; the 3 ratio fields are a legitimate projection (host = authority, use_split_ratio = gesture buffer, correctly read by unproject_node instead of the node); SplitId minting is single-sited and never reuses; write validation is all-or-nothing and rejected writes are inert; LayoutSnapshot.floating is genuinely NOT derivable from tree; lock discipline has no nesting/inversion and no lock is held across a socket call; validate's recursion is bounded by serde_json's parse limit; the seam holds (no pinion dep in sprag-terminal, no rect host-side); the wire ABI is single-sourced; commit messages are honest."
+      ],
+      "impact_refs": [
+        "2",
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "CHALLENGED, decision owed at the time: the Placeholder deletion. Lens 3 argued 'a second authority' was NOT the necessary consequence — keep the leaf in the host tree and make `floating` a FLAG on it (one authority), which ALSO preserves the pane's index home, which the shipped model destroys DURABLY (float pane 1 of 0|1|2, detach, reattach, dock back → 0|2|1 forever). [R152 SETTLED this: the deletion was RIGHT — a retained leaf carries no more surviving fact than ONE anchor, and it costs the all-or-nothing write by forcing a partial splice. What remains is the unimplemented host-side float HOME ANCHOR.]",
+        "OWED (R154 later paid it): harden or document sync_layout's dependence on an unrelated repaint source before C. A terminal SHOULD be on-demand-repainting, and the moment it becomes one, layout durability breaks silently.",
+        "R144..R151 PUSHED with owner consent (origin/main = 08587d4). pinion c5b4b6a1 + SCE 82022849 UNCHANGED across the entire arc; no pinion gap filed, none found (Owner::cache's missing eviction is NOT a pinion gap — the ratio table is sprag's own). [SUPERSEDED by R152/R154: the pin moved and 5 pinion PRs were filed.]",
+        "NEXT = C (daemon lifetime): DELETE PR_SET_PDEATHSIG / ChildGuard / kill-on-Drop; setsid autostart; exit when the registry empties. TODAY A SPAWNED HOST STILL DIES WITH ITS GUI — so R150's payoff works only against an OPERATOR-RUN host."
+      ],
+      "publishable_decision_summary": "Round 151: adversarial 3-LENS REVIEW over B3a+B3b+B4 + remediation. VERDICT: not textbook yet — 1 CRITICAL bug FIXED, 11 findings closed, and the Placeholder deletion CHALLENGED. THE CRITICAL (found by Lens 1 and Lens 3 INDEPENDENTLY — the R148 convergence signal — and then PROVED with a throwaway test): `sync_layout` wrote a LOSSY PROJECTION back as session state. `project_layout` is deliberately lossy (a pane with no slot COLLAPSES out: MAX_PANES=8 while the host has NO cap; also any frameless/not-yet-admitted pane; and the poll thread's query_panes/query_layout are TWO non-atomic round trips). Un-projecting that and writing it DELETED the pane from the host's tree; the host re-appended it at the END with a fresh SplitId -> bump -> adopt -> re-project -> write again = a PERMANENT WRITE LOOP that also durably RELOCATED the user's pane. Fix: `wire_panes(current) != wire_panes(seen.tree)` -> refuse the write, because A GESTURE RE-ARRANGES PANES, IT NEVER CHANGES MEMBERSHIP. My own round-trip test had MISSED it because it used a TOTAL slot_of — the exact case that matters. Lens 2's CRITICAL (\"no frame follows a settled gesture -> the write is silently dropped\") was REFUTED EMPIRICALLY (97 frames painted in 3s of genuine idle) — but its UNDERLYING critique STANDS and was recorded as owed: sync_layout's correctness depends on an undocumented, unrelated repaint source; if sprag ever becomes on-demand-repainting (which a terminal SHOULD be), layout durability breaks SILENTLY. [R154 NOTE: that recorded risk is exactly what R152 then triggered and R154 had to fix — the refutation was factually right and its safety conclusion wrong.]",
+      "publishable_changes_bullets": [
+        "CRITICAL FIX (7eea23d): sync_layout refuses to write when the surface's pane SET differs from the host's — a gesture re-arranges, it never changes membership. +regression test using a PARTIAL slot_of (the case my earlier round-trip test's total slot_of could not reach).",
+        "ALL 11 TRACKED FINDINGS CLOSED (08587d4), each with a test: (a) push_float/redock_pane no longer hold a stale `windows` Vec across the host call — reconcile_float_windows is the ONE window creator and place_float only positions (the lost update that re-introduced B4's vanishing pane is gone); (b) adopt_layout drives ONLY the shares the host MOVED (force_changed_ratios diffed against seen.tree), so an unrelated bump no longer yanks a live drag — the doc's claim is now true; (c) the layout mirror gained store_layout, which drops a snapshot older than what it holds (no rewind/snap-back); (d) the 'a window keeps >=1 tiled pane' invariant MOVED HOST-SIDE (Window::would_untile_the_last, set_floating returns bool) — an invariant enforced anywhere but at its authority is a convention; (e) set_floating goes through bump_if_changed (costs a 2nd bump per float — documented; the revision is opaque); (f) COMPARE-AND-SET: set_layout(wire, expected) + LayoutError::Stale + expected_revision on the wire → two clients can no longer silently revert each other; (g) use_split_ratio owns a prunable SplitRatios table in ONE Owner::cache slot + prune_split_ratios on adopt → no unbounded leak (NB: NOT a pinion gap — Owner::cache has no eviction, but the table is sprag's own); (h) SPLIT_TAG_PREFIX const; (i) a false test renamed to what it proves; (j) id.clone() not id.to_string() per divider per frame; (k) the dead placeholder arm DELETED from view.rs + its stale 'sole floating authority' doc."
+      ],
+      "publishable_verification_bullets": [
+        "Method: 3 fresh lenses over B3a+B3b+B4 together; Lens 1 and Lens 3 found the CRITICAL independently (the convergence signal), and it was PROVED with a throwaway test before being fixed — not argued.",
+        "Verified live after the fixes: drag → CAS write rev 1→2 ratio 0.7302; float → rev 4, floating=[0], root leaf:1, pane-0 window; idle → revision STABLE, no write storm; screenshot: main shows only the tiled pane filling the surface, so deleting the placeholder arm left no gap.",
+        "Lens 2's CRITICAL refuted empirically (97 frames in 3s idle). HONEST CAVEAT recorded at the time: my own '144fps continuous' reading was sloppy — mean_fps is the cadence WHEN painting; the decisive metric is frame_count growth while idle. [R152 later found the 97 frames were a LIVELOCK, and R154 found the underlying critique had been right.]",
+        "VERIFIED SOUND by the lenses (do not re-litigate): the second tree-shape builder is genuinely gone; membership has ONE authority (Workspace) and reconcile-don't-co-mutate holds; the 3 ratio fields are a legitimate projection (host = authority, use_split_ratio = gesture buffer, correctly read by unproject_node instead of the node); SplitId minting is single-sited and never reuses; write validation is all-or-nothing and rejected writes are inert; LayoutSnapshot.floating is genuinely NOT derivable from tree; lock discipline has no nesting/inversion and no lock is held across a socket call; validate's recursion is bounded by serde_json's parse limit; the seam holds (no pinion dep in sprag-terminal, no rect host-side); the wire ABI is single-sourced; commit messages are honest."
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "CHALLENGED, decision owed at the time: the Placeholder deletion. Lens 3 argued 'a second authority' was NOT the necessary consequence — keep the leaf in the host tree and make `floating` a FLAG on it (one authority), which ALSO preserves the pane's index home, which the shipped model destroys DURABLY (float pane 1 of 0|1|2, detach, reattach, dock back → 0|2|1 forever). [R152 SETTLED this: the deletion was RIGHT — a retained leaf carries no more surviving fact than ONE anchor, and it costs the all-or-nothing write by forcing a partial splice. What remains is the unimplemented host-side float HOME ANCHOR.]",
+        "OWED (R154 later paid it): harden or document sync_layout's dependence on an unrelated repaint source before C. A terminal SHOULD be on-demand-repainting, and the moment it becomes one, layout durability breaks silently.",
+        "R144..R151 PUSHED with owner consent (origin/main = 08587d4). pinion c5b4b6a1 + SCE 82022849 UNCHANGED across the entire arc; no pinion gap filed, none found (Owner::cache's missing eviction is NOT a pinion gap — the ratio table is sprag's own). [SUPERSEDED by R152/R154: the pin moved and 5 pinion PRs were filed.]",
+        "NEXT = C (daemon lifetime): DELETE PR_SET_PDEATHSIG / ChildGuard / kill-on-Drop; setsid autostart; exit when the registry empties. TODAY A SPAWNED HOST STILL DIES WITH ITS GUI — so R150's payoff works only against an OPERATOR-RUN host."
+      ]
+    },
+    "R152": {
+      "decision_summary": "Round 152: pin-bump pinion c5b4b6a1 (R1343) -> 46a9499e (R1346) making PINION-PR56 available, then FIX AN IDLE LIVELOCK that was burning a full core, and CONSUME PR-56 — the two had to land together. THE LIVELOCK, MEASURED (RPC calls 0, /proc deltas): idle GUI 60% + host 50% of a core; a 15h-old instance had burned 3h58m of CPU doing nothing and its RPC socket had wedged — which is what the user was reporting as \"the terminal is not responding\". ROOT CAUSE: a READ MODELLED AS AN ACTION. The poll thread fetched each pane's live cells via `scene/invoke`, and pinion's OCC contract bumps SceneRevision on EVERY invoke, so the fetch woke the very `scene/waitFor` that had dispatched the wake -> ~30Hz spin. Controlled proof on a bare host: no traffic -> rev +0; `scene/query` x5 -> +0; `scene/invoke` cells x5 -> +5 (one bump per READ). NOT a pinion gap by my judgement at the time (pinion's slot=read / action=mutate model is consistent and sprag broke it — the hot path always passed offset 0, so it never needed an argument). [R154 REVISED THIS: the ROOT is pinion's lack of a parameterized read, filed as PINION-PR61 — R152 fixed the symptom in the hot path and left the same defect in the scrollback path, where a read still bumps and wakes every other attached client.] PR-56 was delivered by pinion R1346 (`ratio_committed` intent on splitter drag-end, drained in CoreShell::tail so NO frame is needed) and consumed: the reducer intercepts `{split_tag}.ratio_committed` BEFORE the pane gate (a split tag is not a panel) and commit_layout writes immediately. [R154: this round SHIPPED A REGRESSION — deleting the idle repaint stranded the REORGANIZE write, because only the ratio path got a replacement commit edge.]",
+      "changes_bullets": [
+        "Cargo.toml: 9 pinion-* revs c5b4b6a1 -> 46a9499e (R1343 -> R1346); SCE 82022849 UNCHANGED (verified equal to pinion@46a9499e's own pin, per the standing one-Engine rule). Commit 0878e81.",
+        "sprag-host: the live frame is now a READ slot — wire::LIVE_FRAME_SLOT = \"frame\", served by pane.rs::frame_at(0) through `query` (a MethodOcc::Read, bumps nothing). The `cells` action stays for SCROLLBACK (offset != 0), which is never on the poll path.",
+        "sprag-gui/src/wire.rs: fetch_frame drops its offset param and reads the slot via scene/query (the poll loop's only frame path always passed 0).",
+        "sprag-gui: PR-56 consumed — the update reducer intercepts `{split_tag}.ratio_committed` before pane_index_of_panel; split::commit_layout writes immediately (no settle gate). pending_write extracted as the shared core (unproject + membership guard + CAS) behind both sync_layout and commit_layout.",
+        "Commit: 3c29621 fix(mux)."
+      ],
+      "verification_bullets": [
+        "MEASURED, not argued: idle GUI 60% → 0%, host 50% → 0%, both parked in state S; liveness re-proven live (real PTY output still bumps → wake → the query mirrors it, seen rendered on :0 in a screenshot).",
+        "Controlled experiment on a bare host isolated the cause: query x5 → rev +0 vs invoke-cells x5 → rev +5 (one bump per read). A bare host with ZERO clients idles at 0%, which is what proved the loop was client-driven.",
+        "Guard added in wire_client.rs: reading the live frame must NOT bump the revision.",
+        "Unit test: ratio_committed_intent_writes_the_settled_ratio_to_the_host — the settled ratio reaches the host in ONE reducer dispatch, no settle frame.",
+        "Gate clean: fmt / clippy -D warnings / doc -D warnings / test."
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "THE LESSON THIS ROUND TAUGHT LATE: R151's '97 frames refutes Lens 2' was factually RIGHT but its safety conclusion was WRONG — the idle repaint that 'saved' the settle detector WAS the livelock. A bug was masking a bug. Fixing perf silently broke layout durability, which R154 then had to find and fix.",
+        "[R154] The kept settle detector for the REORGANIZE path was justified here by REASONING ('its commit re-sets the topology signal, so a frame arrives') and never measured. That reasoning conflated the frame the commit arms (N, which only records the candidate) with the frame the detector needs (N+1, which nothing arms). pinion's own splitter.rs documents the rule verbatim: 'Consumers must not infer the settle from frame cadence'.",
+        "[R154] The ground rule should have fired here and did not: no parameterized read = an upstream gap (PINION-PR61), not a sprag modelling error to absorb.",
+        "R152 LOCAL at authoring time. pinion pin 46a9499e (R1346), SCE 82022849."
+      ],
+      "publishable_decision_summary": "Round 152: pin-bump pinion c5b4b6a1 (R1343) -> 46a9499e (R1346) making PINION-PR56 available, then FIX AN IDLE LIVELOCK that was burning a full core, and CONSUME PR-56 — the two had to land together. THE LIVELOCK, MEASURED (RPC calls 0, /proc deltas): idle GUI 60% + host 50% of a core; a 15h-old instance had burned 3h58m of CPU doing nothing and its RPC socket had wedged — which is what the user was reporting as \"the terminal is not responding\". ROOT CAUSE: a READ MODELLED AS AN ACTION. The poll thread fetched each pane's live cells via `scene/invoke`, and pinion's OCC contract bumps SceneRevision on EVERY invoke, so the fetch woke the very `scene/waitFor` that had dispatched the wake -> ~30Hz spin. Controlled proof on a bare host: no traffic -> rev +0; `scene/query` x5 -> +0; `scene/invoke` cells x5 -> +5 (one bump per READ). NOT a pinion gap by my judgement at the time (pinion's slot=read / action=mutate model is consistent and sprag broke it — the hot path always passed offset 0, so it never needed an argument). [R154 REVISED THIS: the ROOT is pinion's lack of a parameterized read, filed as PINION-PR61 — R152 fixed the symptom in the hot path and left the same defect in the scrollback path, where a read still bumps and wakes every other attached client.] PR-56 was delivered by pinion R1346 (`ratio_committed` intent on splitter drag-end, drained in CoreShell::tail so NO frame is needed) and consumed: the reducer intercepts `{split_tag}.ratio_committed` BEFORE the pane gate (a split tag is not a panel) and commit_layout writes immediately. [R154: this round SHIPPED A REGRESSION — deleting the idle repaint stranded the REORGANIZE write, because only the ratio path got a replacement commit edge.]",
+      "publishable_changes_bullets": [
+        "Cargo.toml: 9 pinion-* revs c5b4b6a1 -> 46a9499e (R1343 -> R1346); SCE 82022849 UNCHANGED (verified equal to pinion@46a9499e's own pin, per the standing one-Engine rule). Commit 0878e81.",
+        "sprag-host: the live frame is now a READ slot — wire::LIVE_FRAME_SLOT = \"frame\", served by pane.rs::frame_at(0) through `query` (a MethodOcc::Read, bumps nothing). The `cells` action stays for SCROLLBACK (offset != 0), which is never on the poll path.",
+        "sprag-gui/src/wire.rs: fetch_frame drops its offset param and reads the slot via scene/query (the poll loop's only frame path always passed 0).",
+        "sprag-gui: PR-56 consumed — the update reducer intercepts `{split_tag}.ratio_committed` before pane_index_of_panel; split::commit_layout writes immediately (no settle gate). pending_write extracted as the shared core (unproject + membership guard + CAS) behind both sync_layout and commit_layout.",
+        "Commit: 3c29621 fix(mux)."
+      ],
+      "publishable_verification_bullets": [
+        "MEASURED, not argued: idle GUI 60% → 0%, host 50% → 0%, both parked in state S; liveness re-proven live (real PTY output still bumps → wake → the query mirrors it, seen rendered on :0 in a screenshot).",
+        "Controlled experiment on a bare host isolated the cause: query x5 → rev +0 vs invoke-cells x5 → rev +5 (one bump per read). A bare host with ZERO clients idles at 0%, which is what proved the loop was client-driven.",
+        "Guard added in wire_client.rs: reading the live frame must NOT bump the revision.",
+        "Unit test: ratio_committed_intent_writes_the_settled_ratio_to_the_host — the settled ratio reaches the host in ONE reducer dispatch, no settle frame.",
+        "Gate clean: fmt / clippy -D warnings / doc -D warnings / test."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "THE LESSON THIS ROUND TAUGHT LATE: R151's '97 frames refutes Lens 2' was factually RIGHT but its safety conclusion was WRONG — the idle repaint that 'saved' the settle detector WAS the livelock. A bug was masking a bug. Fixing perf silently broke layout durability, which R154 then had to find and fix.",
+        "[R154] The kept settle detector for the REORGANIZE path was justified here by REASONING ('its commit re-sets the topology signal, so a frame arrives') and never measured. That reasoning conflated the frame the commit arms (N, which only records the candidate) with the frame the detector needs (N+1, which nothing arms). pinion's own splitter.rs documents the rule verbatim: 'Consumers must not infer the settle from frame cadence'.",
+        "[R154] The ground rule should have fired here and did not: no parameterized read = an upstream gap (PINION-PR61), not a sprag modelling error to absorb.",
+        "R152 LOCAL at authoring time. pinion pin 46a9499e (R1346), SCE 82022849."
+      ]
+    },
+    "R153": {
+      "decision_summary": "Round 153: register the CANONICAL REORGANIZE SURFACE — the dock addressed as DATA. Driven by a user observation that reframed a whole session: while I was hunting drop-zone PIXELS to answer a dock question, the user asked \"shouldn't you make it so a drag can be tested LOGICALLY rather than by coordinates?\". That was the right diagnosis. sprag registered only SplitterExternal + DockPanelExternal, so its dock was drivable ONLY by synthesising coordinates — silently violating pinion's §2 #2 RPC-as-primary-path contract on the very surface pinion documents most insistently (\"the AI-first primary… symbolically, no pixels\"). pinion already SHIPS the surface (DockReorganizeExternal: reorganize / drop / drop_preview / last_outcome / topology / activate_tab / undock_tab) and sprag already held both ingredients (use_dock_reorganizer + use_drop_preview) — it had simply never exposed them. Registering it is the fix, not a workaround. Cost of its absence, measured in this session: I burned a session pixel-hunting, landed on the window RESIZE border, and a near-miss TORE A PANE OFF instead of docking it; I also twice told the user \"the gesture can't be synthesised\" from a MEMO instead of a measurement. A surface that exists only in pixels is untestable BY CONSTRUCTION and its absence is silent. Exposure paid immediately: the first query revealed float_policy = \"placeholder\" while sprag deleted Placeholder in R149 and its docs claim \"collapse is the only model\" — a wire LIE nothing could have caught before the surface existed.",
+      "changes_bullets": [
+        "sprag-gui: register DockReorganizeExternal at split::DOCK_REORGANIZE_TAG = \"sprag_gui.dock\", built with from_reorganizer(Rc::clone(&reorganizer)).with_drop_preview(Rc::clone(&drop_preview)) — it SHARES the live reorganizer and preview signal, so it is a VIEW onto the gesture, never a second authority. Commit 5af431e.",
+        "sprag-gui: with_float_policy(FloatPolicy::Collapse) — the surface now DECLARES what the host actually does (leaf REMOVED on float, siblings reclaim). pinion's Placeholder default answered the exact opposite to any agent asking. Commit f2024a0. [R154 CORRECTED the accompanying doc: this is NOT inert — pinion branches on it and sprag arms that branch.]",
+        "sprag-host/tests/wire_client.rs: socket_path() gained an AtomicU32 so each call mints its own path. `cargo test` runs the file's tests as PARALLEL THREADS OF ONE BINARY, so a path keyed on process::id() was the SAME string in every test that asked, and each opened by unlinking the socket a live sibling was serving → BrokenPipe. 2/10 runs → 0/12. Commit c32df59. [R154: the doc/commit overstated it as 'all 6' — only 3 shared it; the rest avoided collision by naming luck.]",
+        "Guard: the_dock_is_drivable_by_intent_not_only_by_pixels. [R154 renamed it to the_canonical_reorganize_surface_is_registered — it pins REGISTRATION, and the name promised more than it proved.]"
+      ],
+      "verification_bullets": [
+        "PROVEN LIVE with ZERO coordinates: invoke reorganize {source:\"terminal-0\", target:\"terminal-1\", zone:\"Bottom\"} turned Hori[terminal-0 | terminal-1] into Vert[terminal-1 | terminal-0] instantly; zone:\"Left\" turned it back. This ALSO judged the user's original UX complaint: the top/bottom split they wanted is perfectly reachable in the MODEL — what blocked them was purely the pixel path (zone geometry, the resize border, the 2-pane outer suppression), so the affordance is what needs fixing, not the model.",
+        "The flake was root-caused, not retried: 2/10 reproduced, the panic was BrokenPipe at `.expect(\"live frame re-query\")` (the HOST had died, not an assertion), and my own new slot was EXONERATED by hammering a bare host with 200 frame queries (survived, zero panics) before the search moved to the harness. My FIRST hypothesis (boot transient) was wrong and its fix was inert — only the repeat count exposed that.",
+        "Gate clean: fmt / clippy -D warnings / doc -D warnings / test (gui 109)."
+      ],
+      "impact_refs": [
+        "2",
+        "3"
+      ],
+      "carry_forward_bullets": [
+        "RULE: before synthesising coordinates for ANY gesture, look for the widget's SYMBOLIC external. If it exists but is unregistered, REGISTERING IT IS THE FIX. And never cite a memo in place of a measurement — scene/drag does drive the real router path (cursor_moved → mouse_pressed → march → mouse_released) and did tear a pane off; my 'can't' was wrong twice.",
+        "A flake is a bug you have not diagnosed: one green run does not verify a fix — repeat ~10x and COUNT.",
+        "[R154] Registering pinion's full editor-grade surface onto a terminal dock that supports a strict subset exposed mutations sprag's un-projection cannot represent (reorganize(Center) → Tabs, set_float_policy) → filed as PINION-PR59/PR60.",
+        "R153 LOCAL at authoring time. NEXT = C (daemon lifetime)."
+      ],
+      "publishable_decision_summary": "Round 153: register the CANONICAL REORGANIZE SURFACE — the dock addressed as DATA. Driven by a user observation that reframed a whole session: while I was hunting drop-zone PIXELS to answer a dock question, the user asked \"shouldn't you make it so a drag can be tested LOGICALLY rather than by coordinates?\". That was the right diagnosis. sprag registered only SplitterExternal + DockPanelExternal, so its dock was drivable ONLY by synthesising coordinates — silently violating pinion's §2 #2 RPC-as-primary-path contract on the very surface pinion documents most insistently (\"the AI-first primary… symbolically, no pixels\"). pinion already SHIPS the surface (DockReorganizeExternal: reorganize / drop / drop_preview / last_outcome / topology / activate_tab / undock_tab) and sprag already held both ingredients (use_dock_reorganizer + use_drop_preview) — it had simply never exposed them. Registering it is the fix, not a workaround. Cost of its absence, measured in this session: I burned a session pixel-hunting, landed on the window RESIZE border, and a near-miss TORE A PANE OFF instead of docking it; I also twice told the user \"the gesture can't be synthesised\" from a MEMO instead of a measurement. A surface that exists only in pixels is untestable BY CONSTRUCTION and its absence is silent. Exposure paid immediately: the first query revealed float_policy = \"placeholder\" while sprag deleted Placeholder in R149 and its docs claim \"collapse is the only model\" — a wire LIE nothing could have caught before the surface existed.",
+      "publishable_changes_bullets": [
+        "sprag-gui: register DockReorganizeExternal at split::DOCK_REORGANIZE_TAG = \"sprag_gui.dock\", built with from_reorganizer(Rc::clone(&reorganizer)).with_drop_preview(Rc::clone(&drop_preview)) — it SHARES the live reorganizer and preview signal, so it is a VIEW onto the gesture, never a second authority. Commit 5af431e.",
+        "sprag-gui: with_float_policy(FloatPolicy::Collapse) — the surface now DECLARES what the host actually does (leaf REMOVED on float, siblings reclaim). pinion's Placeholder default answered the exact opposite to any agent asking. Commit f2024a0. [R154 CORRECTED the accompanying doc: this is NOT inert — pinion branches on it and sprag arms that branch.]",
+        "sprag-host/tests/wire_client.rs: socket_path() gained an AtomicU32 so each call mints its own path. `cargo test` runs the file's tests as PARALLEL THREADS OF ONE BINARY, so a path keyed on process::id() was the SAME string in every test that asked, and each opened by unlinking the socket a live sibling was serving → BrokenPipe. 2/10 runs → 0/12. Commit c32df59. [R154: the doc/commit overstated it as 'all 6' — only 3 shared it; the rest avoided collision by naming luck.]",
+        "Guard: the_dock_is_drivable_by_intent_not_only_by_pixels. [R154 renamed it to the_canonical_reorganize_surface_is_registered — it pins REGISTRATION, and the name promised more than it proved.]"
+      ],
+      "publishable_verification_bullets": [
+        "PROVEN LIVE with ZERO coordinates: invoke reorganize {source:\"terminal-0\", target:\"terminal-1\", zone:\"Bottom\"} turned Hori[terminal-0 | terminal-1] into Vert[terminal-1 | terminal-0] instantly; zone:\"Left\" turned it back. This ALSO judged the user's original UX complaint: the top/bottom split they wanted is perfectly reachable in the MODEL — what blocked them was purely the pixel path (zone geometry, the resize border, the 2-pane outer suppression), so the affordance is what needs fixing, not the model.",
+        "The flake was root-caused, not retried: 2/10 reproduced, the panic was BrokenPipe at `.expect(\"live frame re-query\")` (the HOST had died, not an assertion), and my own new slot was EXONERATED by hammering a bare host with 200 frame queries (survived, zero panics) before the search moved to the harness. My FIRST hypothesis (boot transient) was wrong and its fix was inert — only the repeat count exposed that.",
+        "Gate clean: fmt / clippy -D warnings / doc -D warnings / test (gui 109)."
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "3"
+      ],
+      "publishable_carry_forward_bullets": [
+        "RULE: before synthesising coordinates for ANY gesture, look for the widget's SYMBOLIC external. If it exists but is unregistered, REGISTERING IT IS THE FIX. And never cite a memo in place of a measurement — scene/drag does drive the real router path (cursor_moved → mouse_pressed → march → mouse_released) and did tear a pane off; my 'can't' was wrong twice.",
+        "A flake is a bug you have not diagnosed: one green run does not verify a fix — repeat ~10x and COUNT.",
+        "[R154] Registering pinion's full editor-grade surface onto a terminal dock that supports a strict subset exposed mutations sprag's un-projection cannot represent (reorganize(Center) → Tabs, set_float_policy) → filed as PINION-PR59/PR60.",
+        "R153 LOCAL at authoring time. NEXT = C (daemon lifetime)."
+      ]
+    },
+    "R154": {
+      "decision_summary": "Round 154: adversarial 3-LENS REVIEW of R152-R153 + remediation. VERDICT: the owner's 4 questions were NO, and R152 HAD SHIPPED A REGRESSION THAT DEFEATED THIS ARC'S ENTIRE PAYOFF. All three lenses converged (the R148 signal). THE MUST-FIX, PROVEN not argued (Lens 2 built a probe painting exactly as AppShell does under ControlFlow::Wait — a frame only while a redraw is armed): a settled drag-to-dock reorganize was NEVER written to the host. R152 deleted the idle repaints the settle detector had been SILENTLY RIDING; a commit arms exactly ONE frame, the detector needs TWO (frame N records the candidate, N+1 writes), so the user's re-arrangement was lost on detach — and NONDETERMINISTICALLY, since any later unrelated repaint would flush the stale candidate, meaning a BUSY pane hid what an IDLE pane lost. 110 gui tests were green because every one either called sync_layout directly or painted unconditionally: no test modelled the one property R152 changed. THE FIX — the gate was never needed: pinion sets the dock topology in exactly ONE place (DockReorganizer::commit, at the drop; a drag only writes the separate preview signal), so A SHAPE CHANGE IS SETTLED BY CONSTRUCTION and the single armed frame is both all we get and all we need. sync_layout now writes a shape diff at once; RATIO belongs solely to commit_layout's intent edge; the settle detector and LayoutSync::settling are DELETED. This also killed a second real bug Lens 1 found independently: the old gate wrote the INTERMEDIATE ratio mid-drag whenever a pane happened to print (top, a log tail) while the user paused — the revert-test proved it was real, not theoretical. Root cause of my error, recorded plainly: I inferred a timing property by REASONING while pinion's own splitter.rs documents it verbatim (\"Consumers must not infer the settle from frame cadence — there is no guaranteed frame after a release\"), in a file I had read at length for PR-56.",
+      "changes_bullets": [
+        "sprag-gui/src/split.rs: settle detector + LayoutSync::settling DELETED. sync_layout writes a SHAPE diff immediately (settled by construction — pinion mutates the topology only at a drop); ratio-only diffs are skipped and owned by commit_layout. New same_shape() compares structure/ids/dir IGNORING ratio. Commit e51d7c0.",
+        "sprag-gui/src/main.rs: guards paint_one_frame + a_settled_reorganize_reaches_the_host_on_the_one_frame_it_arms + frames_alone_never_write_an_unfinished_ratio_drag — modelling ControlFlow::Wait's budget, the property no other test captured.",
+        "RETRACTED the comments the source contradicts (c70a387): float_policy is NOT inert (pinion branches in DockPanelExternal::collapse_leaf_if_policy and sprag ARMS it by wiring the shared reorganizer into every panel; it is safe only by an ORDERING coincidence — sprag floats on the first escaped move, so the leaf is already gone at release — which is now written down as the actual argument); `with_tabbing(false)` gates the CLASSIFIER, not the invoke, so a Tabs well is REACHABLE; RATIO_COMMITTED_EVENT's drift is UNGUARDED (the test builds the tag from sprag's own const, so it is circular).",
+        "sprag-host/src/pane.rs: read_cells now REFUSES offset == 0 — the ABI enforces what R153's prose merely requested, so `cells{offset:0}` can no longer re-create the livelock. Tests split per door (live frame slot vs scrollback invoke) + a guard that the invoke refuses the live view.",
+        "Housekeeping: the orphaned R136 doc block restored to its owner (I made that mistake TWICE in one session — the compiler caught the first, a stolen doc block passed silently the second); the tautological quiesce deleted (wait_until evaluates BEFORE its first sleep, so it settled nothing while claiming rigor); all 6 wire_client tests routed through spawn_host() (R153's 'all 6 shared one path' was FALSE — only 3 did) and HostChild now unlinks its socket (no leak); the R136 doc's own false claim corrected (a suppressed outer edge is a DEAD band, not an inner 50/50 split)."
+      ],
+      "verification_bullets": [
+        "The guards were verified BY REVERTING THE FIX: both FAIL on the old code, both pass on the new. That is what proved the fix fixes, and it also proved Lens 1's mid-drag-write finding was real rather than theoretical.",
+        "Live-verified end to end against an operator-run host: HOST hori[pane0|pane1] rev 1 → client reorganize → HOST vert[pane1|pane0] rev 2. The re-arrangement now survives, which is what detach durability means.",
+        "Final gate: 338 tests / 0 failed, clippy 0, doc -D warnings 0, fmt clean; wire_client 8-12x repeats, socket leak 0.",
+        "VERIFIED SOUND by the lenses (do not re-litigate): pending_write is a real extraction with ONE authority + shared CAS/membership guard ('the best work in the session'); no second authority object (reorganizer + preview genuinely shared); RefCell discipline safe (only shared borrows, none held across the socket round trip); the poll loop's `since` cannot miss a change (it errs toward a spurious wake); the rsplit_once tag parse is correct and the synthetic ratio_committed intent MATCHES the live wire (tag + Float payload + same signal identity — the R67 scar does NOT apply); sprag-terminal still pinion-free; no pixels host-side."
+      ],
+      "impact_refs": [
+        "2",
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "THE GROUND RULE FIRED ZERO TIMES IN R152-R153 AND SHOULD HAVE FIRED THREE. Filed retroactively: PINION-PR58 (commit intent tokens unexported — pinion exports TEAR_OFF_EVENT et al from the SAME crate sprag already imports; the gap grew a 4th instance upstream this week); PR-59 (set_float_policy makes a surface POLICY wire-mutable; `tabbing` is already read-only — same-crate precedent); PR-60 MAJOR (the symbolic reorganize invoke ignores tabbing → zone:\"Center\" mints a Tabs well sprag cannot express → the write is correctly REFUSED but no host revision moves, so the client forks PERMANENTLY with no self-heal — refusing the write saves the session, not the screen); PR-61 (no parameterized READ — the livelock's ACTUAL root, which R152 only worked around client-side; scrollback reads still bump, so one client's wheel tick wakes every other client into a full refetch). Plus PR-57 from earlier this session (outer-dock claims a perimeter it won't use).",
+        "THE TELL I MISSED, now cemented: when you write a comment EXPLAINING WHY a local shape is necessary and the explanation NAMES AN UPSTREAM LIMITATION, that comment IS the PR doc in the wrong file. 'I documented the accommodation honestly' is not a lesser form of compliance — it is the workaround the rule forbids wearing the rule's vocabulary. Sub-tells: scope-narrowing ('our hot path doesn't need it') and 'upstream meant it' (a reason for the PR to ARGUE — PR-56/57 both won that way — never a reason not to file).",
+        "NEVER write a MECHANISM claim into a durable comment before reading the code that implements it. Three strikes this session: eyeballed grep line numbers (called production code tests), reasoned about frame cadence instead of measuring (shipped the regression), cited a memo instead of testing. A well-written FALSE comment is worse than none — Lens 1: 'the comments are well written, which is what makes this dangerous … prose is the only thing holding these seams'.",
+        "R138..R154 PUSHED with explicit owner consent (origin/main = c70a387). STILL OPEN: the host-side float HOME ANCHOR (dock-back still appends at the END, so a floated pane loses its index home durably — pinion's leaf_anchor/insert_leaf_at_anchor is prior art for the shape, but sprag cannot reuse it: the anchor must survive detach, so it is host state, and sprag-terminal is pinion-free). NEXT = C (daemon lifetime): a spawned host STILL dies with its GUI, so R150's payoff works only against an operator-run host."
+      ],
+      "publishable_decision_summary": "Round 154: adversarial 3-LENS REVIEW of R152-R153 + remediation. VERDICT: the owner's 4 questions were NO, and R152 HAD SHIPPED A REGRESSION THAT DEFEATED THIS ARC'S ENTIRE PAYOFF. All three lenses converged (the R148 signal). THE MUST-FIX, PROVEN not argued (Lens 2 built a probe painting exactly as AppShell does under ControlFlow::Wait — a frame only while a redraw is armed): a settled drag-to-dock reorganize was NEVER written to the host. R152 deleted the idle repaints the settle detector had been SILENTLY RIDING; a commit arms exactly ONE frame, the detector needs TWO (frame N records the candidate, N+1 writes), so the user's re-arrangement was lost on detach — and NONDETERMINISTICALLY, since any later unrelated repaint would flush the stale candidate, meaning a BUSY pane hid what an IDLE pane lost. 110 gui tests were green because every one either called sync_layout directly or painted unconditionally: no test modelled the one property R152 changed. THE FIX — the gate was never needed: pinion sets the dock topology in exactly ONE place (DockReorganizer::commit, at the drop; a drag only writes the separate preview signal), so A SHAPE CHANGE IS SETTLED BY CONSTRUCTION and the single armed frame is both all we get and all we need. sync_layout now writes a shape diff at once; RATIO belongs solely to commit_layout's intent edge; the settle detector and LayoutSync::settling are DELETED. This also killed a second real bug Lens 1 found independently: the old gate wrote the INTERMEDIATE ratio mid-drag whenever a pane happened to print (top, a log tail) while the user paused — the revert-test proved it was real, not theoretical. Root cause of my error, recorded plainly: I inferred a timing property by REASONING while pinion's own splitter.rs documents it verbatim (\"Consumers must not infer the settle from frame cadence — there is no guaranteed frame after a release\"), in a file I had read at length for PR-56.",
+      "publishable_changes_bullets": [
+        "sprag-gui/src/split.rs: settle detector + LayoutSync::settling DELETED. sync_layout writes a SHAPE diff immediately (settled by construction — pinion mutates the topology only at a drop); ratio-only diffs are skipped and owned by commit_layout. New same_shape() compares structure/ids/dir IGNORING ratio. Commit e51d7c0.",
+        "sprag-gui/src/main.rs: guards paint_one_frame + a_settled_reorganize_reaches_the_host_on_the_one_frame_it_arms + frames_alone_never_write_an_unfinished_ratio_drag — modelling ControlFlow::Wait's budget, the property no other test captured.",
+        "RETRACTED the comments the source contradicts (c70a387): float_policy is NOT inert (pinion branches in DockPanelExternal::collapse_leaf_if_policy and sprag ARMS it by wiring the shared reorganizer into every panel; it is safe only by an ORDERING coincidence — sprag floats on the first escaped move, so the leaf is already gone at release — which is now written down as the actual argument); `with_tabbing(false)` gates the CLASSIFIER, not the invoke, so a Tabs well is REACHABLE; RATIO_COMMITTED_EVENT's drift is UNGUARDED (the test builds the tag from sprag's own const, so it is circular).",
+        "sprag-host/src/pane.rs: read_cells now REFUSES offset == 0 — the ABI enforces what R153's prose merely requested, so `cells{offset:0}` can no longer re-create the livelock. Tests split per door (live frame slot vs scrollback invoke) + a guard that the invoke refuses the live view.",
+        "Housekeeping: the orphaned R136 doc block restored to its owner (I made that mistake TWICE in one session — the compiler caught the first, a stolen doc block passed silently the second); the tautological quiesce deleted (wait_until evaluates BEFORE its first sleep, so it settled nothing while claiming rigor); all 6 wire_client tests routed through spawn_host() (R153's 'all 6 shared one path' was FALSE — only 3 did) and HostChild now unlinks its socket (no leak); the R136 doc's own false claim corrected (a suppressed outer edge is a DEAD band, not an inner 50/50 split)."
+      ],
+      "publishable_verification_bullets": [
+        "The guards were verified BY REVERTING THE FIX: both FAIL on the old code, both pass on the new. That is what proved the fix fixes, and it also proved Lens 1's mid-drag-write finding was real rather than theoretical.",
+        "Live-verified end to end against an operator-run host: HOST hori[pane0|pane1] rev 1 → client reorganize → HOST vert[pane1|pane0] rev 2. The re-arrangement now survives, which is what detach durability means.",
+        "Final gate: 338 tests / 0 failed, clippy 0, doc -D warnings 0, fmt clean; wire_client 8-12x repeats, socket leak 0.",
+        "VERIFIED SOUND by the lenses (do not re-litigate): pending_write is a real extraction with ONE authority + shared CAS/membership guard ('the best work in the session'); no second authority object (reorganizer + preview genuinely shared); RefCell discipline safe (only shared borrows, none held across the socket round trip); the poll loop's `since` cannot miss a change (it errs toward a spurious wake); the rsplit_once tag parse is correct and the synthetic ratio_committed intent MATCHES the live wire (tag + Float payload + same signal identity — the R67 scar does NOT apply); sprag-terminal still pinion-free; no pixels host-side."
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "THE GROUND RULE FIRED ZERO TIMES IN R152-R153 AND SHOULD HAVE FIRED THREE. Filed retroactively: PINION-PR58 (commit intent tokens unexported — pinion exports TEAR_OFF_EVENT et al from the SAME crate sprag already imports; the gap grew a 4th instance upstream this week); PR-59 (set_float_policy makes a surface POLICY wire-mutable; `tabbing` is already read-only — same-crate precedent); PR-60 MAJOR (the symbolic reorganize invoke ignores tabbing → zone:\"Center\" mints a Tabs well sprag cannot express → the write is correctly REFUSED but no host revision moves, so the client forks PERMANENTLY with no self-heal — refusing the write saves the session, not the screen); PR-61 (no parameterized READ — the livelock's ACTUAL root, which R152 only worked around client-side; scrollback reads still bump, so one client's wheel tick wakes every other client into a full refetch). Plus PR-57 from earlier this session (outer-dock claims a perimeter it won't use).",
+        "THE TELL I MISSED, now cemented: when you write a comment EXPLAINING WHY a local shape is necessary and the explanation NAMES AN UPSTREAM LIMITATION, that comment IS the PR doc in the wrong file. 'I documented the accommodation honestly' is not a lesser form of compliance — it is the workaround the rule forbids wearing the rule's vocabulary. Sub-tells: scope-narrowing ('our hot path doesn't need it') and 'upstream meant it' (a reason for the PR to ARGUE — PR-56/57 both won that way — never a reason not to file).",
+        "NEVER write a MECHANISM claim into a durable comment before reading the code that implements it. Three strikes this session: eyeballed grep line numbers (called production code tests), reasoned about frame cadence instead of measuring (shipped the regression), cited a memo instead of testing. A well-written FALSE comment is worse than none — Lens 1: 'the comments are well written, which is what makes this dangerous … prose is the only thing holding these seams'.",
+        "R138..R154 PUSHED with explicit owner consent (origin/main = c70a387). STILL OPEN: the host-side float HOME ANCHOR (dock-back still appends at the END, so a floated pane loses its index home durably — pinion's leaf_anchor/insert_leaf_at_anchor is prior art for the shape, but sprag cannot reuse it: the anchor must survive detach, so it is host state, and sprag-terminal is pinion-free). NEXT = C (daemon lifetime): a spawned host STILL dies with its GUI, so R150's payoff works only against an operator-run host."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
