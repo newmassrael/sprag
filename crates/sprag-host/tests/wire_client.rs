@@ -3,7 +3,7 @@
 //!
 //! The GUI's `WireHost` (in `sprag-gui`) and an AI peer both drive the host through
 //! exactly this contract — `HostConn` request/response over the socket, the
-//! `/sprag_mux/…` pane list, the `/pane_<id>/sprag_input/external/frame` live-frame
+//! `/sprag_mux/…` pane list, the `/pane_<id>/sprag_input/external/cells.<offset>` frame
 //! read, the `key`/`text` input actions, and the async `scene/revision` + `scene/waitFor`
 //! change-notification. R115c's default (wire) boot path is otherwise exercised only
 //! by a manual live drive; this gives it automated coverage against the real binary
@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    CLOSE_ACTION, FULL_TEXT_SLOT, LAYOUT_SLOT, LIVE_FRAME_SLOT, PANES_SLOT, SET_FLOATING_ACTION,
-    SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION,
+    CLOSE_ACTION, FULL_TEXT_SLOT, LAYOUT_SLOT, PANES_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
+    SPAWN_ACTION, TEXT_ACTION, cells_slot_at,
 };
 use sprag_host::{mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
@@ -99,13 +99,13 @@ fn wire_client_drives_a_real_sprag_term_host() {
         "one boot pane: {panes}"
     );
 
-    // The LIVE cell FRAME is a QUERY (the `frame` read slot), not the `cells` invoke —
-    // the exact wire contract WireHost's poll loop reads each wake. It deserializes as
-    // the shared CellFrame shape (cells + flattened facts).
+    // The LIVE cell FRAME is a QUERY — `cells.0`, the live member of the host's
+    // `cells.<offset>` family — the exact wire contract WireHost's poll loop reads each
+    // wake. It deserializes as the shared CellFrame shape (cells + flattened facts).
     let frame = conn
         .call(
             "scene/query",
-            json!({ "path": pane_input_path(0, LIVE_FRAME_SLOT) }),
+            json!({ "path": pane_input_path(0, &cells_slot_at(0)) }),
         )
         .expect("live frame query");
     assert!(frame.get("cells").is_some(), "frame carries cells: {frame}");
@@ -134,7 +134,7 @@ fn wire_client_drives_a_real_sprag_term_host() {
     for _ in 0..5 {
         conn.call(
             "scene/query",
-            json!({ "path": pane_input_path(0, LIVE_FRAME_SLOT) }),
+            json!({ "path": pane_input_path(0, &cells_slot_at(0)) }),
         )
         .expect("live frame re-query");
     }
@@ -143,6 +143,39 @@ fn wire_client_drives_a_real_sprag_term_host() {
         before_read,
         "reading the live frame must not bump the revision (else the poll loop livelocks)",
     );
+
+    // The SAME must hold for a SCROLLBACK read, and that is what consuming PINION-PR61
+    // bought. History was an invoke (a `MethodOcc::Mutate`) for as long as sprag believed a
+    // read could not take an argument, so one client's wheel tick bumped the revision and
+    // woke every OTHER attached client's parked `waitFor` into a full re-fetch. Bounded and
+    // terminating, so never the R152 livelock — but the same defect. The offset now rides
+    // the path, so history is a read like any other and wakes nobody.
+    //
+    // The same `cat` reasoning above makes this a fact rather than a coin flip: nothing else
+    // can move the revision across this window.
+    for offset in 1..=5 {
+        conn.call(
+            "scene/query",
+            json!({ "path": pane_input_path(0, &cells_slot_at(offset)) }),
+        )
+        .expect("scrollback frame query");
+    }
+    assert_eq!(
+        read_revision(&mut conn),
+        before_read,
+        "a scrollback read must not bump either (else one client's wheel tick wakes all)",
+    );
+
+    // The family answers its members and nothing else. The bare stem carries no offset, so
+    // it addresses no frame; a malformed one is refused rather than answered with a
+    // plausible default — the quiet wrong answer PR-61 was filed about.
+    for dead in ["cells", "cells.", "cells.zzz", "cells.-1"] {
+        assert!(
+            conn.call("scene/query", json!({ "path": pane_input_path(0, dead) }))
+                .is_err(),
+            "`{dead}` addresses no frame and must not answer one",
+        );
+    }
 
     // Async change-notification: read the baseline, send input (cat echoes it → pane
     // output → revision bump), and confirm a waitFor{baseline} reports the advance.

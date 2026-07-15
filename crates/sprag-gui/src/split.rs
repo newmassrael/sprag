@@ -152,18 +152,19 @@ pub(crate) const DOCK_REORGANIZE_TAG: &str = "sprag_gui.dock";
 /// The event suffix of the intent pinion's `SplitterExternal` fires on drag-end (PR-56),
 /// carrying the settled ratio — reaching the reducer as `{split_tag}.ratio_committed`.
 ///
-/// A sprag const because pinion emits the tag as a bare string literal and exports no symbol
-/// for it — unlike its sibling dock tokens (`TEAR_OFF_EVENT` and friends), which pinion DOES
-/// export from the same crate `main.rs` already imports them from. **PINION-PR58 asks for the
-/// export**; this mirror is the interim, and the ground rule says an upstream gap gets a PR,
-/// not a local accommodation with a nice comment.
+/// **PINION-PR58 DELIVERED (pinion R1349): this is pinion's symbol, not a sprag mirror.**
+/// `widgets::commit` is now the one definition of the commit-channel vocabulary, and this
+/// re-export is how sprag's two consumers (the reducer's match arm and the synthetic-intent
+/// test) reach it under the module's own vocabulary, beside [`SPLIT_TAG_PREFIX`] and
+/// [`DOCK_REORGANIZE_TAG`].
 ///
-/// **The drift is UNGUARDED, and R154's review caught the first draft of this doc claiming
-/// otherwise.** If pinion renames its literal, this const still compiles, the commit test
-/// still passes — because that test builds its intent tag FROM this very const, so both ends
-/// are sprag's — and the only symptom is the user's dragged ratio silently ceasing to
-/// persist. Re-check this string by hand on every pinion rev bump until PR-58 lands.
-pub(crate) const RATIO_COMMITTED_EVENT: &str = "ratio_committed";
+/// What the re-export buys is the failure mode the mirrored literal could not have: a rename
+/// or removal upstream is a **compile error at this `use`**. The interim const compiled
+/// through a rename, kept its test passing (that test built its intent tag from the very
+/// const under test, so both ends were sprag's), and reported the drift only as the user's
+/// dragged ratio silently ceasing to persist. Drift is now impossible by construction rather
+/// than by a hand re-check on every rev bump — so no re-check note replaces this one.
+pub(crate) use pinion_core::widgets::commit::RATIO_COMMITTED_EVENT;
 
 /// Split `id`'s ratio `Signal` (left/top share, `[0, 1]`), an `Owner::cache`-backed
 /// `Rc<Signal<f32>>` SHARED between the read side (the view's `view_dock_surface_chrome`

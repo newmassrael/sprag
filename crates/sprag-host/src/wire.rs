@@ -12,6 +12,8 @@
 //! externals match on these consts, and the client builds its request paths from the
 //! same builders, so the ABI is defined once.
 
+use pinion_core::external::{SchemaArg, SchemaField};
+
 use crate::{INPUT_TAG, MUX_TAG};
 
 /// The pane-input external invoke action that injects a key (W3C key + mods →
@@ -20,30 +22,53 @@ pub const KEY_ACTION: &str = "key";
 /// The pane-input external invoke action that writes literal UTF-8 (IME commit /
 /// paste), no key-encoding.
 pub const TEXT_ACTION: &str = "text";
-/// The pane-input external invoke action returning the pane's cell FRAME
-/// ([`CellFrame`](crate::CellFrame)) at a SCROLLBACK offset — a user-driven history read.
-/// **`offset == 0` is REFUSED**: the live view is [`LIVE_FRAME_SLOT`].
+/// The arguments of [`CELLS_FIELD`] — one scrollback `offset`.
 ///
-/// That split is deliberate, and enforced rather than merely documented. A display client
-/// re-reads the live frame every time the scene revision moves (the `scene/waitFor` poll
-/// loop), and an invoke is a `MethodOcc::Mutate` that bumps the revision — so serving the
-/// live frame here made every read wake the very waiter it answered: a ~30Hz idle livelock
-/// that burned a full core (R152). A query is a `MethodOcc::Read` and bumps nothing, so the
-/// loop parks until real output. Scrollback stays an action only because it carries an
-/// ARGUMENT, which pinion's `scene/query` cannot take (PINION-PR61 asks for a parameterized
-/// read, which would collapse these two names back into one).
+/// [`ArgDomain::Open`](pinion_core::external::ArgDomain::Open) is a decision, not a default
+/// (pinion's own doc calls an unearned `Open` "an affirmative false statement"): the bound is
+/// REAL but is not expressible here. A valid offset runs `0..=scrollback_len` INCLUSIVE —
+/// `0` is the live view and `scrollback_len` is fully scrolled back, both answerable — while
+/// [`ArgDomain::IndexOf`](pinion_core::external::ArgDomain::IndexOf) states an EXCLUSIVE
+/// `0..count`. Declaring `IndexOf` would
+/// therefore disown the topmost page, so it would be false in the direction that matters.
+/// This is pinion's own first honest reason for `Open` (its `datepicker` declares
+/// `state.<day>` the same way, for `1..=days`). The depth itself is not hidden: every frame
+/// this family answers carries `scrollback_len` in its payload, and an out-of-range offset
+/// clamps to it rather than erroring.
+const CELLS_ARGS: &[SchemaArg] = &[SchemaArg::open("offset", "int")];
+
+/// The pane-input external query FAMILY: the pane's cell FRAME
+/// ([`CellFrame`](crate::CellFrame)) at scrollback `offset` — `cells.<offset>`, where
+/// `cells.0` is the live view a display client projects each frame and a larger offset
+/// windows into history.
 ///
-/// A scrollback read therefore still bumps, and that is not free: it wakes every OTHER
-/// attached client's parked `waitFor` into a full re-fetch. It is bounded (a wheel tick, not
-/// a poll) and terminates, so it is not the livelock — but it is the same defect, and only
-/// PR-61 removes it.
-pub const CELLS_ACTION: &str = "cells";
-/// The pane-input external query slot: the pane's LIVE cell FRAME
-/// ([`CellFrame`](crate::CellFrame)) — the `offset == 0` view a display client
-/// projects each frame. A READ (see [`CELLS_ACTION`] for why the live view is a
-/// slot, not an action): it bumps no revision, so the wire client's `scene/waitFor`
-/// poll loop does not self-wake by reading it.
-pub const LIVE_FRAME_SLOT: &str = "frame";
+/// **This declaration is the ONE definition of the family**, and everything else derives
+/// from it rather than re-spelling it: the host's schema publishes it, the host's `query`
+/// strips [`SchemaField::literal_prefix`] off an arriving path, and both ends build an
+/// address through [`cells_slot_at`]. So the template an agent discovers in `$schema`, the
+/// prefix the host matches, and the path a client sends cannot drift apart —
+/// `the_cells_family_declares_the_paths_it_answers` holds them to it.
+///
+/// ## Why ONE name, and why a query
+///
+/// This was TWO wire names until PR-61 landed (a `frame` query for the live view and a
+/// `cells` invoke for history), and the reason was a mistake worth keeping recorded. A
+/// display client re-reads the live frame on every scene-revision move, an invoke is a
+/// `MethodOcc::Mutate` that bumps the revision, so serving the live frame through an action
+/// woke the very waiter it answered — a ~30Hz idle livelock that burned a full core (R152).
+/// The livelock was real and the query fixed it; the SPLIT was the part that was wrong.
+/// sprag split the concept because it read `query(&self, path: &str)`'s argument-free
+/// signature as "a parameterized read is impossible" — and PR-61's answer (pinion R1352) was
+/// that it never was: **the argument rides the path**, as `width.<col>` and `id_at.<pos>`
+/// already did upstream. What was genuinely missing was the ability to SAY so, which R1353
+/// then delivered ([`SchemaField::parametric`]) — so the family is now discoverable rather
+/// than conventional.
+///
+/// Collapsing the names is what retires the split's last defect. A scrollback read was still
+/// an invoke, so it still bumped: one client's wheel tick woke every OTHER attached client's
+/// parked `waitFor` into a full re-fetch. Bounded and terminating, so never the livelock —
+/// but the same defect, and one door to one concept is what removes it.
+pub const CELLS_FIELD: SchemaField = SchemaField::parametric("cells.<offset>", "frame", CELLS_ARGS);
 /// The pane-input external query slot: the pane's full output text (scrollback +
 /// visible).
 pub const FULL_TEXT_SLOT: &str = "full_text";
@@ -116,8 +141,22 @@ pub fn mux_action_path(action: &str) -> String {
     format!("/{MUX_TAG}/external/{action}")
 }
 
+/// The [`CELLS_FIELD`] query slot addressing the frame at scrollback `offset` —
+/// `cells.<offset>` with the argument filled in (`cells_slot_at(0)` is the live view).
+///
+/// Derived from the declaration's own [`literal_prefix`](SchemaField::literal_prefix)
+/// rather than re-spelling `"cells."`, so the address a client sends is built from the
+/// same string the schema publishes and the host strips. Compose it with
+/// [`pane_input_path`] to address a specific pane.
+#[must_use]
+pub fn cells_slot_at(offset: usize) -> String {
+    format!("{}{offset}", CELLS_FIELD.literal_prefix())
+}
+
 #[cfg(test)]
 mod tests {
+    use pinion_core::external::ArgDomain;
+
     use super::*;
 
     #[test]
@@ -127,9 +166,33 @@ mod tests {
             "/pane_0/sprag_input/external/key"
         );
         assert_eq!(
-            pane_input_path(3, CELLS_ACTION),
-            "/pane_3/sprag_input/external/cells"
+            pane_input_path(3, &cells_slot_at(12)),
+            "/pane_3/sprag_input/external/cells.12"
         );
+    }
+
+    /// The family answers exactly the paths it advertises — checked with pinion's OWN
+    /// matcher ([`SchemaField::addresses`], the same predicate its dispatch uses), so this
+    /// is the real contract rather than sprag's spelling of it.
+    ///
+    /// The failure this exists to catch is the §2 #2 lie PR-61 was filed about: a schema
+    /// that advertises one address while the surface answers another leaves an agent to
+    /// guess, and the guess fails quietly. Since the template is the one definition and the
+    /// prefix and the builder both derive from it, a drift takes a deliberate edit — this
+    /// pins that they still agree after one.
+    #[test]
+    fn the_cells_family_declares_the_paths_it_answers() {
+        assert_eq!(CELLS_FIELD.literal_prefix(), "cells.");
+        assert!(CELLS_FIELD.addresses(&cells_slot_at(0)));
+        assert!(CELLS_FIELD.addresses(&cells_slot_at(4096)));
+        // The bare stem is NOT a member: `cells` carries no offset, so it addresses no
+        // frame and must not pollute a snapshot with a plausible default.
+        assert!(!CELLS_FIELD.addresses("cells"));
+        assert!(!CELLS_FIELD.addresses("cells."));
+        // The declared argument is the one the surface actually takes.
+        assert_eq!(CELLS_FIELD.args.len(), 1);
+        assert_eq!(CELLS_FIELD.args[0].name, "offset");
+        assert!(matches!(CELLS_FIELD.args[0].domain, ArgDomain::Open));
     }
 
     #[test]

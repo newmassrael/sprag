@@ -1032,58 +1032,63 @@ mod tests {
 
     // ─── R115b: pane cells over the wire (the client's per-frame data read) ───
 
-    /// The pane's SCROLLBACK frame at `offset`, over the full dispatch path — the `cells`
-    /// INVOKE. `offset == 0` is refused by design (R154); the live view is [`frame_slot`].
+    /// The pane's frame at scrollback `offset`, over the full dispatch path — the
+    /// `cells.<offset>` QUERY, the ONE address of the concept since PINION-PR61 (`offset ==
+    /// 0` is the live view the poll loop reads each wake). A `MethodOcc::Read` at every
+    /// offset, so no frame read — live or history — bumps the revision.
     fn cells_frame(state: &HostState, offset: u64) -> serde_json::Value {
         serve_one(
             state,
             &format!(
-                r#"{{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{{"path":"/pane_0/sprag_input/external/cells","args":{{"offset":{offset}}}}}}}"#
+                r#"{{"jsonrpc":"2.0","id":1,"method":"scene/query","params":{{"path":"/pane_0/sprag_input/external/cells.{offset}"}}}}"#
             ),
         )
     }
 
-    /// The pane's LIVE frame, over the full dispatch path — the `frame` QUERY the wire
-    /// client's poll loop actually reads each wake (a `MethodOcc::Read`, so it bumps nothing).
-    fn frame_slot(state: &HostState) -> serde_json::Value {
-        serve_one(
-            state,
-            r#"{"jsonrpc":"2.0","id":1,"method":"scene/query","params":{"path":"/pane_0/sprag_input/external/frame"}}"#,
-        )
-    }
-
-    /// The live frame slot REFUSES to be an invoke, and the invoke refuses to be live.
+    /// One concept, ONE address — and the ABI, not a comment, is what says so.
     ///
-    /// The wire has one address per concept, and the ABI — not a comment — is what says so.
-    /// An invoke is a `MethodOcc::Mutate`: serving the live view through `cells` would bump
-    /// the revision on a READ, so a polling client's fetch would wake the `scene/waitFor` that
-    /// dispatched it (the ~30Hz idle spin R152 removed, which burned a whole core). R153 left
-    /// `cells{offset:0}` working and only asked prose not to use it, so the schema advertised
-    /// two doors to one concept with nothing marking the wrong one.
+    /// This replaces R154's `the_cells_invoke_refuses_the_live_view_…`, whose subject no
+    /// longer exists: that test pinned a REFUSAL that policed a two-door split (a `frame`
+    /// query beside a `cells` invoke), and PR-61 retired the split rather than the door.
+    /// The property it was really defending survives here — a frame is reachable at exactly
+    /// one kind of address — so the two retired doors must now answer nothing at all. A
+    /// tolerated alias is how a split grows back.
     #[test]
-    fn the_cells_invoke_refuses_the_live_view_that_belongs_to_the_frame_slot() {
+    fn the_retired_two_door_addresses_are_gone() {
         let state = host_with("printf hi", 20, 4);
         wait_for_pane0_eof(&state);
-        let refused = cells_frame(&state, 0);
-        assert!(
-            refused.get("error").is_some(),
-            "the live view must not be reachable through the revision-bumping invoke: {refused}",
+
+        let old_slot = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/query","params":{"path":"/pane_0/sprag_input/external/frame"}}"#,
         );
         assert!(
-            frame_slot(&state)["result"]["cells"].is_object(),
-            "...and the query serves it instead",
+            old_slot.get("error").is_some(),
+            "the retired `frame` slot must answer nothing: {old_slot}",
+        );
+        let old_action = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/pane_0/sprag_input/external/cells","args":{"offset":3}}}"#,
+        );
+        assert!(
+            old_action.get("error").is_some(),
+            "the retired `cells` invoke must answer nothing: {old_action}",
+        );
+        // ...and the surviving family serves the live view.
+        assert!(
+            cells_frame(&state, 0)["result"]["cells"].is_object(),
+            "`cells.0` is the live view",
         );
     }
 
     #[test]
-    fn live_frame_slot_returns_a_deserializable_grid_frame() {
-        // The wire client's per-frame read: the `frame` slot returns a JSON frame
-        // whose `cells` deserialize back into the EXACT GridBuffer the host projected
-        // (PR-49 round-trip), carrying the pane content, plus the scroll facts that
-        // ride with it.
+    fn the_cells_family_returns_a_deserializable_grid_frame() {
+        // The wire client's per-frame read: `cells.0` returns a JSON frame whose `cells`
+        // deserialize back into the EXACT GridBuffer the host projected (PR-49 round-trip),
+        // carrying the pane content, plus the scroll facts that ride with it.
         let state = host_with("printf hi", 20, 4);
         wait_for_pane0_eof(&state);
-        let frame = frame_slot(&state);
+        let frame = cells_frame(&state, 0);
         assert!(frame.get("error").is_none(), "frame error: {frame}");
         let result = &frame["result"];
         assert!(
@@ -1105,14 +1110,14 @@ mod tests {
     }
 
     #[test]
-    fn pane_cells_action_honors_the_scrollback_offset() {
-        // 40 lines into a 4-row pane: most scroll off into history. The live view (the
-        // `frame` slot) and a scrolled-up view (the `cells` invoke) differ, proving the
-        // offset param reaches the projection over the wire.
+    fn the_cells_family_honors_the_scrollback_offset() {
+        // 40 lines into a 4-row pane: most scroll off into history. The live view
+        // (`cells.0`) and a scrolled-up view (`cells.20`) differ, proving the offset reaches
+        // the projection over the wire — carried on the PATH, which is the whole of PR-61.
         let state = host_with("seq 1 40", 20, 4);
         wait_for_pane0_eof(&state);
 
-        let live = frame_slot(&state);
+        let live = cells_frame(&state, 0);
         assert!(
             live["result"]["scrollback_len"].as_u64().unwrap() > 0,
             "lines scrolled off into history: {live}",

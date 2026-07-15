@@ -67,7 +67,7 @@ use crate::external::lock;
 ///
 /// This is the ONE definition of the frame's non-cell field set: the in-process
 /// client reads it via [`Host::pane_scroll_facts`](HostClient::pane_scroll_facts),
-/// and the wire `cells` action ([`SpragPaneExternal::read_cells`](crate::pane))
+/// and the wire's `cells.<offset>` query family ([`CELLS_FIELD`](crate::wire::CELLS_FIELD))
 /// flattens the SAME type into its JSON frame (serde-derived), so the field
 /// names + wire keys cannot drift between the two clients. `Serialize` /
 /// `Deserialize` for the wire; `Eq` so a test can compare two reads.

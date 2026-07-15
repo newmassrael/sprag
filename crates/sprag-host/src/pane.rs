@@ -16,18 +16,22 @@
 //! sprag-owned) and writes them to the child. A sibling `invoke("text",
 //! {text})` writes **literal** UTF-8 to the child (no key-encoding) — the seam
 //! for IME-composed input (a Hangul/CJK commit is text, not a keystroke) and
-//! for pasting; the AI peer drives the same wire. A read-shaped `invoke("cells",
-//! {offset})` returns the pane's cell FRAME — the projected [`GridBuffer`] at that
-//! scrollback offset (serde-able since PINION-PR49) plus the scroll facts
-//! (scrollback depth + visible rows) that ride with it — the wire display client's
-//! per-frame read (topology B: the client reconstructs the exact buffer the host
-//! projected and paints it, so "read data, not pixels" reaches the human path). It
-//! is an `invoke` rather than a `query` because it carries the `offset` parameter,
-//! which the path-only `scene/query` cannot. The read channel exposes the
-//! producer-owned input modes (`query("application_cursor_keys")`) and the
-//! pane's full output text (`query("full_text")`, scrollback + visible) — the
-//! same `Screen::full_text` the in-process capture path reads, so an external
-//! peer and a plugin share one notion of the screen.
+//! for pasting; the AI peer drives the same wire.
+//!
+//! The read channel serves the pane's cell FRAME as the `query("cells.<offset>")` family
+//! ([`CELLS_FIELD`]) — the projected [`GridBuffer`] at that scrollback offset (serde-able
+//! since PINION-PR49) plus the scroll facts (scrollback depth + visible rows) that ride with
+//! it — the wire display client's per-frame read (topology B: the client reconstructs the
+//! exact buffer the host projected and paints it, so "read data, not pixels" reaches the
+//! human path). The argument RIDES THE PATH, which is what makes a frame read a read: this
+//! was an `invoke` while sprag believed the path-only `scene/query` could not carry an
+//! offset, and PINION-PR61 established it never could not (`width.<col>` and `id_at.<pos>`
+//! were already doing it upstream). An invoke is a `MethodOcc::Mutate`, so that belief cost a
+//! ~30Hz idle livelock and, after R152 half-fixed it, a wheel tick that woke every other
+//! attached client. It also exposes the producer-owned input modes
+//! (`query("application_cursor_keys")`) and the pane's full output text
+//! (`query("full_text")`, scrollback + visible) — the same `Screen::full_text` the in-process
+//! capture path reads, so an external peer and a plugin share one notion of the screen.
 
 use std::fmt;
 
@@ -46,9 +50,7 @@ use crate::host::PaneScrollFacts;
 // The action names + query slots this external answers are the shared wire ABI
 // vocabulary ([`crate::wire`]) — the SAME consts the wire client addresses, so the
 // two cannot drift.
-use crate::wire::{
-    CELLS_ACTION, CURSOR_KEYS_SLOT, FULL_TEXT_SLOT, KEY_ACTION, LIVE_FRAME_SLOT, TEXT_ACTION,
-};
+use crate::wire::{CELLS_FIELD, CURSOR_KEYS_SLOT, FULL_TEXT_SLOT, KEY_ACTION, TEXT_ACTION};
 
 /// Encode a W3C `key` + `mods` to PTY bytes (the sprag-owned R2.6 encoder,
 /// [`sprag_input::encode`]) and write them to `session`. `true` on success;
@@ -143,52 +145,26 @@ impl SpragPaneExternal {
     /// in-process [`HostClient::pane_scroll_facts`](crate::HostClient::pane_scroll_facts)
     /// uses, so the two clients cannot disagree on the frame's non-cell shape.
     ///
-    /// `offset == 0` is the live view ([`LIVE_FRAME_SLOT`], a query); a larger offset
-    /// windows into history ([`CELLS_ACTION`], an invoke) and self-clamps to the
-    /// retained depth.
+    /// Served at every offset through the ONE [`CELLS_FIELD`] query family: `offset == 0` is
+    /// the live view and a larger offset windows into history, self-clamping to the retained
+    /// depth (so `0..=scrollback_len` are all answerable, and past the top gets the top).
     fn frame_at(&self, offset: usize) -> CellFrame {
         self.session.with_screen(|screen| CellFrame {
             cells: sprag_grid::project_scrolled(screen, offset),
             facts: PaneScrollFacts::from_screen(screen),
         })
     }
-
-    /// Serve [`frame_at`](Self::frame_at) at the args' SCROLLBACK `offset` — the
-    /// [`CELLS_ACTION`] invoke. Serialization runs off the screen lock.
-    ///
-    /// `offset == 0` is REFUSED, and the refusal is the point: an invoke is a
-    /// `MethodOcc::Mutate`, so answering the live view here would bump the scene revision and
-    /// hand a polling client the exact livelock R152 removed (its read waking the waiter that
-    /// dispatched it). R153 stated "history reads only" in prose while this code cheerfully
-    /// served offset 0, so the schema advertised two doors to one concept and nothing marked
-    /// the wrong one — a client had to read a comment to stay correct. Now the ABI says it:
-    /// the live view is [`LIVE_FRAME_SLOT`], a query, and only history comes through here.
-    ///
-    /// # Errors
-    ///
-    /// [`InvokeError::Rejected`] for `offset == 0` (use [`LIVE_FRAME_SLOT`]) or a
-    /// serialization failure (never expected for a valid buffer); a malformed `offset` is an
-    /// [`InvokeError::TypeMismatch`].
-    fn read_cells(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
-        let offset = parse_offset_arg(args)?;
-        if offset == 0 {
-            return Err(InvokeError::Rejected);
-        }
-        serde_json::to_value(self.frame_at(offset))
-            .map(IntrospectValue::Json)
-            .map_err(|_| InvokeError::Rejected)
-    }
 }
 
-/// The wire `cells`-action frame: the projected paint buffer plus the non-cell
-/// [`PaneScrollFacts`] that ride with it, serialized as one flat JSON object
+/// The wire frame the [`CELLS_FIELD`] family answers: the projected paint buffer plus the
+/// non-cell [`PaneScrollFacts`] that ride with it, serialized as one flat JSON object
 /// (`{cells, scrollback_len, visible_rows}`). `#[serde(flatten)]` pulls the facts'
 /// field names up as the wire keys, so the frame's non-cell keys are defined ONCE
 /// (on [`PaneScrollFacts`]) rather than re-listed here.
 ///
 /// This is the ONE definition of the whole pane frame's wire shape — the envelope
 /// (the `cells` key + its [`GridBuffer`] type) AND the flattened facts — with BOTH
-/// `Serialize` (the host `read_cells` end) and `Deserialize` (the wire client end,
+/// `Serialize` (the host `query` end) and `Deserialize` (the wire client end,
 /// `sprag-gui`'s `WireHost`). A single type owned by this crate, so a field rename
 /// on either end is a compile error, not a silent runtime divergence (the exact
 /// SSOT the R116 review established for the facts, here extended to the envelope).
@@ -219,8 +195,7 @@ impl ExternalIntrospect for SpragPaneExternal {
                 &[
                     SchemaField::new(KEY_ACTION, "action"),
                     SchemaField::new(TEXT_ACTION, "action"),
-                    SchemaField::new(CELLS_ACTION, "action"),
-                    SchemaField::new(LIVE_FRAME_SLOT, "frame"),
+                    CELLS_FIELD,
                     SchemaField::new(CURSOR_KEYS_SLOT, "bool"),
                     SchemaField::new(FULL_TEXT_SLOT, "string"),
                 ]
@@ -229,12 +204,22 @@ impl ExternalIntrospect for SpragPaneExternal {
     }
 
     fn query(&self, path: &str) -> Option<IntrospectValue> {
-        match path {
-            // The live frame is a READ (not the `cells` invoke) so the wire client's
-            // poll loop can re-read it without bumping the revision it waits on.
-            LIVE_FRAME_SLOT => serde_json::to_value(self.frame_at(0))
+        // The parametric family goes FIRST, before the exact-path arms: its argument rides
+        // the path, so it is matched by prefix rather than by equality. Every frame read —
+        // live and history alike — is a READ, so no client can wake the waiter it is
+        // parked on merely by looking (the R152 livelock, and the wheel-tick bump that
+        // outlived it).
+        if let Some(rest) = path.strip_prefix(CELLS_FIELD.literal_prefix()) {
+            // Strip against the DECLARED prefix, so this arm answers exactly the family
+            // `$schema` advertises. A malformed offset (`cells.zzz`) resolves to `None`:
+            // `query` has no error channel, and answering a plausible frame for an
+            // unparseable address is the quiet wrong answer PR-61 was filed about.
+            let offset: usize = rest.parse().ok()?;
+            return serde_json::to_value(self.frame_at(offset))
                 .ok()
-                .map(IntrospectValue::Json),
+                .map(IntrospectValue::Json);
+        }
+        match path {
             CURSOR_KEYS_SLOT => Some(IntrospectValue::Bool(
                 self.session.input_modes().application_cursor_keys,
             )),
@@ -259,7 +244,6 @@ impl ExternalIntrospect for SpragPaneExternal {
         match path {
             KEY_ACTION => self.inject_key(&args),
             TEXT_ACTION => self.inject_text(&args),
-            CELLS_ACTION => self.read_cells(&args),
             _ => Err(InvokeError::UnknownPath),
         }
     }
@@ -277,30 +261,6 @@ fn parse_text_args(args: &IntrospectValue) -> Result<String, InvokeError> {
             .and_then(Value::as_str)
             .map(str::to_owned)
             .ok_or(InvokeError::TypeMismatch),
-        _ => Err(InvokeError::TypeMismatch),
-    }
-}
-
-/// Parse the `cells` action's args into the scrollback `offset` (rows up from the
-/// live bottom). Accepts `null` (→ `0`, the live view), a bare non-negative integer,
-/// or an object `{offset: N}` (absent `offset` → `0`). A negative or non-integer
-/// `offset` — a client bug — is an [`InvokeError::TypeMismatch`]. Over-large offsets
-/// are NOT rejected here: [`sprag_grid::project_scrolled`] self-clamps to the
-/// retained scrollback depth, so a client that asks past the top gets the top.
-fn parse_offset_arg(args: &IntrospectValue) -> Result<usize, InvokeError> {
-    let from_json = |v: &Value| -> Result<usize, InvokeError> {
-        v.as_u64()
-            .and_then(|n| usize::try_from(n).ok())
-            .ok_or(InvokeError::TypeMismatch)
-    };
-    match args {
-        IntrospectValue::Null => Ok(0),
-        IntrospectValue::Int(n) => usize::try_from(*n).map_err(|_| InvokeError::TypeMismatch),
-        IntrospectValue::Json(Value::Object(map)) => match map.get("offset") {
-            None => Ok(0),
-            Some(v) => from_json(v),
-        },
-        IntrospectValue::Json(v) => from_json(v),
         _ => Err(InvokeError::TypeMismatch),
     }
 }
@@ -410,30 +370,6 @@ mod tests {
         assert_eq!(
             parse_key_args(&json_args(json!({"key": "a", "state": "sideways"}))),
             Err(InvokeError::TypeMismatch),
-        );
-    }
-
-    #[test]
-    fn parse_offset_defaults_to_live_and_rejects_negatives() {
-        // Null / absent offset = the live view.
-        assert_eq!(parse_offset_arg(&IntrospectValue::Null), Ok(0));
-        assert_eq!(parse_offset_arg(&json_args(json!({}))), Ok(0));
-        // A non-negative offset, from an object or a bare int.
-        assert_eq!(parse_offset_arg(&json_args(json!({"offset": 7}))), Ok(7));
-        assert_eq!(parse_offset_arg(&IntrospectValue::Int(3)), Ok(3));
-        assert_eq!(parse_offset_arg(&json_args(json!(5))), Ok(5));
-        // A negative or non-integer offset is a client bug.
-        assert_eq!(
-            parse_offset_arg(&IntrospectValue::Int(-1)),
-            Err(InvokeError::TypeMismatch)
-        );
-        assert_eq!(
-            parse_offset_arg(&json_args(json!({"offset": -2}))),
-            Err(InvokeError::TypeMismatch)
-        );
-        assert_eq!(
-            parse_offset_arg(&IntrospectValue::Text("x".to_string())),
-            Err(InvokeError::TypeMismatch)
         );
     }
 

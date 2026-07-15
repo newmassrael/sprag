@@ -63,8 +63,8 @@ use std::time::Duration;
 use pinion_core::GridBuffer;
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    CELLS_ACTION, FULL_TEXT_SLOT, KEY_ACTION, LAYOUT_SLOT, LIVE_FRAME_SLOT, PANES_SLOT,
-    RESIZE_ACTION, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION,
+    FULL_TEXT_SLOT, KEY_ACTION, LAYOUT_SLOT, PANES_SLOT, RESIZE_ACTION, SET_FLOATING_ACTION,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, cells_slot_at,
 };
 use sprag_host::{CellFrame, HostClient, PaneScrollFacts, mux_action_path, pane_input_path};
 use sprag_input::Modifiers;
@@ -363,11 +363,14 @@ impl HostClient for WireHost {
         }
         // Scrolled history: one synchronous fetch (an interactive gesture, off the
         // per-frame hot path). On any failure, fall back to the cached live buffer.
-        let params = invoke(
-            &pane_input_path(id.0, CELLS_ACTION),
-            json!({ "offset": offset_lines }),
-        );
-        self.request("scene/invoke", params, "pane_cells")
+        //
+        // A `scene/query` against the same `cells.<offset>` family the live view reads, with
+        // the offset riding the path. It was an invoke until PR-61 landed, which made a wheel
+        // tick a `Mutate`: it bumped the scene revision and woke every OTHER attached client's
+        // parked `waitFor` into a full re-fetch. Bounded and terminating, so never the R152
+        // livelock — but the same defect, and a read has no business waking anyone.
+        let params = json!({ "path": pane_input_path(id.0, &cells_slot_at(offset_lines)) });
+        self.request("scene/query", params, "pane_cells")
             .and_then(|value| serde_json::from_value::<CellFrame>(value).ok())
             .map_or_else(|| self.live_cells(id), |frame| frame.cells)
     }
@@ -676,18 +679,18 @@ fn build_cache(conn: &mut HostConn, seeds: Vec<PaneSeed>) -> Vec<WirePane> {
     merge_panes(&[], &seeds, &fetched)
 }
 
-/// Fetch one pane's LIVE cell frame over the [`LIVE_FRAME_SLOT`] query — the shared
-/// [`CellFrame`] the host serializes, deserialized on this end (one wire type).
+/// Fetch one pane's LIVE cell frame — [`cells_slot_at(0)`](cells_slot_at), the live member
+/// of the host's `cells.<offset>` query family — as the shared [`CellFrame`] the host
+/// serializes, deserialized on this end (one wire type).
 ///
-/// A `scene/query` (READ), NOT the `cells` invoke: this runs on every poll-thread wake,
-/// and an invoke is a `MethodOcc::Mutate` that bumps the scene revision — so fetching the
-/// frame over the action woke the very `scene/waitFor` that dispatched the wake, a ~30Hz
-/// idle livelock. A query bumps nothing, so the loop parks until real output moves the
-/// revision. (Scrollback stays [`CELLS_ACTION`]: it carries an offset and is never polled.)
+/// A `scene/query` (READ) because this runs on every poll-thread wake, and an invoke is a
+/// `MethodOcc::Mutate` that bumps the scene revision — so fetching the frame over an action
+/// woke the very `scene/waitFor` that dispatched the wake, a ~30Hz idle livelock. A query
+/// bumps nothing, so the loop parks until real output moves the revision.
 fn fetch_frame(conn: &mut HostConn, id: u64) -> io::Result<CellFrame> {
     let value = conn.call(
         "scene/query",
-        json!({ "path": pane_input_path(id, LIVE_FRAME_SLOT) }),
+        json!({ "path": pane_input_path(id, &cells_slot_at(0)) }),
     )?;
     serde_json::from_value(value).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
