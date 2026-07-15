@@ -645,7 +645,10 @@ mod tests {
         // vanish. This is what lets a reattaching client restore the user's floats.
         assert_eq!(answer["floating"], json!([1]));
 
-        // Docked back with no gesture to place it, it returns at the arrangement's end.
+        // Docked back with no gesture to place it, it returns to the home the float captured
+        // (`Window::set_floating`). With two panes that is also the end, so this pins the
+        // shape rather than the mechanism — the home path's own guards live beside it, in
+        // `sprag-terminal`.
         ext.invoke(
             SET_FLOATING_ACTION,
             IntrospectValue::Json(json!({ "id": 1, "floating": false })),

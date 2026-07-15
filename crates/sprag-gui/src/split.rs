@@ -757,10 +757,13 @@ const REORGANIZER_KEY: &str = "sprag_gui.dock_reorganizer";
 /// re-project — the pane would simply be invisible. The guard rail is real; the coincidence
 /// keeping us off it is not documented anywhere else.
 ///
-/// **Bound:** `Collapse` also promises pinion's "restore to the captured home anchor on
-/// dock-back". sprag does not do that half — a dock-back appends at the arrangement's END, so
-/// a floated pane loses its index home durably (the tracked host-side float-home-anchor gap).
-/// The declared half is the half a user can observe, and the half `Placeholder` got backwards.
+/// `Collapse`'s other half — pinion's "restore to the captured home anchor on dock-back" — is
+/// now honored too, HOST-side (`Window::set_floating` captures a `FloatHome`; the next
+/// reconcile re-splits the sibling it recorded). sprag cannot reuse pinion's
+/// `DockLeafAnchor` for it: the home must survive a detach, so it is session state, and
+/// `sprag-terminal` is pinion-free by rule. Honest bounds, both the host's: a home whose
+/// sibling has since left the tiling degrades to an append, and a sub-tree sibling restores
+/// adjacent rather than nested (pinion documents the same limit for the same reason).
 ///
 /// **No longer wire-mutable (PINION-PR59 delivered, pinion R1350).** Declaring the policy
 /// here now LOCKS it: `set_float_policy` is refused on this surface, so an agent can no
@@ -1191,12 +1194,14 @@ mod tests {
     /// floatable panel … So a vetoed band inherits that too, where pre-R1348 it was inert."*
     /// sprag's divider spans the dock, so its ends sit inside the top/bottom bands: a pane
     /// dropped there now resolves over a gutter and may FLOAT where yesterday nothing
-    /// happened. That matters more here than upstream because sprag's float HOME ANCHOR is
-    /// unimplemented — a float plus a dock-back relocates the pane to the arrangement's end
-    /// DURABLY (`0|1|2` → `0|2|1` forever). Consuming PR-57 therefore made the arc's one
-    /// remaining sprag-side debt materially easier to hit, and pinion is explicit that
-    /// suppressing only the band's float would restore the asymmetry R1348 removed — so the
-    /// answer is the anchor, not a local veto.
+    /// happened. When this was written that was DURABLE damage — the float HOME ANCHOR was
+    /// unimplemented, so the accidental float plus a dock-back relocated the pane for good
+    /// (`0|1|2` → `0|2|1` forever). The anchor is now implemented host-side
+    /// (`Window::set_floating` captures a `FloatHome`), which is the answer pinion pointed at:
+    /// it was explicit that suppressing only the band's float would restore the asymmetry
+    /// R1348 removed, so the fix was the anchor and never a local veto. What remains is an
+    /// accidental float being SURPRISING, not lossy — dock it back and the pane is where the
+    /// user left it.
     ///
     /// This test still pins only the PREDICATE, which is all it can: the claim itself is
     /// pinion's router's, verified by reading its source, and the perimeter's real geometry

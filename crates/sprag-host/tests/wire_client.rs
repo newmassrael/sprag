@@ -442,6 +442,65 @@ fn the_window_layout_crosses_the_real_socket() {
     let _ = std::fs::remove_file(&sock);
 }
 
+/// A floated pane docks back into ITS OWN PLACE, across a real socket, against a real host.
+///
+/// THREE panes, and the middle one floated — because with two, "home" and "the end" are the
+/// same position and a test cannot tell the mechanism from the coincidence. The pane's place
+/// is session state the host captured; nothing the client says is involved, which is the
+/// whole point: it survives the client that floated it going away.
+#[test]
+fn a_floated_pane_docks_back_at_its_home_across_the_real_socket() {
+    let (_host, sock) = spawn_host();
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term host");
+
+    // Boot pane + two more: `0 | 1 | 2`.
+    for _ in 0..2 {
+        conn.call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(SPAWN_ACTION), "args": { "cmd": ["cat"] } }),
+        )
+        .expect("spawn a pane");
+    }
+    let (_, layout) = read_layout(&mut conn);
+    let panes = layout.panes();
+    assert_eq!(panes.len(), 3, "three panes tiled: {panes:?}");
+
+    // Float the MIDDLE one out of the tiling.
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(SET_FLOATING_ACTION),
+            "args": { "id": panes[1].0, "floating": true },
+        }),
+    )
+    .expect("the float write answers");
+    let (_, layout) = read_layout(&mut conn);
+    assert_eq!(
+        layout.panes(),
+        vec![panes[0], panes[2]],
+        "the floated pane left the tiling",
+    );
+
+    // Dock it back with NO gesture to say where. Pre-anchor this answered `0 | 2 | 1`.
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(SET_FLOATING_ACTION),
+            "args": { "id": panes[1].0, "floating": false },
+        }),
+    )
+    .expect("the dock-back write answers");
+    let (_, layout) = read_layout(&mut conn);
+    assert_eq!(
+        layout.panes(),
+        panes,
+        "the pane came home to the middle, not to the end",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
 /// Read the current arrangement off the wire, exactly as a display client does: query the
 /// mux `layout` slot, deserialise the snapshot, and install its tree — which VALIDATES what
 /// the host sent and yields definite divider ids to key per-split state on.

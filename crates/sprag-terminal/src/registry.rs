@@ -32,12 +32,12 @@
 //! by id alone regardless of which window/session holds it — the per-pane wire path
 //! stays window-free, and adding windows later needs no address migration.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use crate::PaneId;
-use crate::layout::{LayoutError, LayoutTree, LayoutWire};
+use crate::layout::{FloatHome, LayoutError, LayoutTree, LayoutWire};
 use crate::workspace::Workspace;
 
 /// One window: a named layout unit owning a pane pool, how its tiled panes are ARRANGED,
@@ -66,6 +66,17 @@ pub struct Window {
     /// Pruned against the live pool by [`reconcile_layout`](Self::reconcile_layout), so a
     /// floating pane that exits leaves no entry behind.
     floating: HashSet<PaneId>,
+    /// Where each floated pane came FROM, so it docks back into its own place rather than
+    /// at the end ([`FloatHome`]).
+    ///
+    /// A sidecar, not an authority: `floating` alone says which panes are out, and a missing
+    /// or unhonorable home costs an append, never correctness. It is deliberately NOT the
+    /// same map as `floating`, because the two have different lifetimes — a home is captured
+    /// when the pane floats and spent when the pane is TILED AGAIN, which is one
+    /// [`reconcile_layout`](Self::reconcile_layout) LATER than the moment it stops floating.
+    /// Keyed in one map, the dock-back that clears the float flag would drop the home on the
+    /// floor before the leaf it was captured for could be placed.
+    homes: HashMap<PaneId, FloatHome>,
     layout_revision: u64,
 }
 
@@ -117,6 +128,10 @@ impl Window {
     /// leaf, and prunes float entries whose pane has exited — the float set is a view of
     /// the pool, never an authority over it.
     ///
+    /// A pane that is tiled again lands at the [`FloatHome`] its float captured, if that home
+    /// is still honorable; this is the one place a leaf moves, so it is also the one place a
+    /// home is spent.
+    ///
     /// The caller resolves `panes` under the WORKSPACE lock and calls this under the
     /// registry lock, so the two are never nested (see [`crate::layout`]).
     pub fn reconcile_layout(&mut self, panes: &[PaneId]) -> &LayoutTree {
@@ -126,12 +141,15 @@ impl Window {
             // must draw (one fewer window) while leaving the tiling untouched, so pruning
             // outside would drop that change on the floor.
             window.floating.retain(|pane| live.contains(pane));
+            // A pane that exits takes its home with it — nothing will ever come back to it,
+            // and its id must not sit here waiting to collide with a future one.
+            window.homes.retain(|pane, _| live.contains(pane));
             let tiled: Vec<PaneId> = panes
                 .iter()
                 .copied()
                 .filter(|pane| !window.floating.contains(pane))
                 .collect();
-            window.layout.reconcile(&tiled);
+            window.layout.reconcile_homing(&tiled, &mut window.homes);
         });
         &self.layout
     }
@@ -185,18 +203,32 @@ impl Window {
     /// one revision-bumping seam is what makes that structural: a caller
     /// cannot leave this window claiming a revision that predates its own float set.
     ///
-    /// **v1 bound — this DESTROYS the pane's place in the arrangement.** Its leaf is gone, so
-    /// re-docking returns it to the END, durably: float the middle of `0|1|2`, detach,
-    /// reattach, dock back, and it is `0|2|1` for good. A client that wants it elsewhere must
-    /// drop it there and write the tree ([`set_layout`](Self::set_layout)). Keeping the home
-    /// needs the leaf retained here with `floating` as a FLAG on it — a real design, deferred,
-    /// not refuted. A no-op if `pane` is already in that state.
+    /// **Floating CAPTURES the pane's place** ([`FloatHome`]) before the leaf collapses, so
+    /// docking it back returns it there rather than to the end: float the middle of `0|1|2`,
+    /// detach, reattach, dock back, and it is `0|1|2` again, at the share the user dragged.
+    /// The home is read here because here is the last moment it exists — once the tiling
+    /// reflows over the gap, nothing can reconstruct where the pane sat. It is honored on the
+    /// next [`reconcile_layout`](Self::reconcile_layout), which is where the leaf reappears.
+    ///
+    /// A home is a memo, not a promise: if its sibling has since exited or been floated out
+    /// too, the pane docks back at the END (the old behaviour) rather than failing. A client
+    /// that wants it somewhere specific still drops it there and writes the tree
+    /// ([`set_layout`](Self::set_layout)) — a gesture outranks a memo.
+    ///
+    /// A no-op if `pane` is already in that state.
     pub fn set_floating(&mut self, pane: PaneId, floating: bool, panes: &[PaneId]) -> bool {
         if floating && self.would_untile_the_last(pane, panes) {
             return false;
         }
         self.bump_if_changed(|window| {
             if floating {
+                // Capture BEFORE the float set collapses the leaf. `None` is the honest
+                // answer for a pane holding no leaf to remember (never yet reconciled), and
+                // for the sole tiled pane — which has no sibling to come home to, and which
+                // `would_untile_the_last` refuses to float anyway.
+                if let Some(home) = window.layout.leaf_home(pane) {
+                    window.homes.insert(pane, home);
+                }
                 window.floating.insert(pane);
             } else {
                 window.floating.remove(&pane);
@@ -232,7 +264,9 @@ impl Window {
     ///
     /// Compares the tree AND the float set, because both are state a client projects: a pane
     /// that stops floating changes what the client must draw even on the rare path where the
-    /// tiling comes out identical.
+    /// tiling comes out identical. It does NOT compare `homes` — a home is not served and not
+    /// projected, so capturing one changes nothing a client could re-read. Bumping on it would
+    /// wake every client to fetch an arrangement identical to the one it holds.
     fn bump_if_changed(&mut self, change: impl FnOnce(&mut Self)) {
         let tree = self.layout.clone();
         let floating = self.floating.clone();
@@ -311,6 +345,7 @@ impl SessionRegistry {
             ))),
             layout: LayoutTree::new(),
             floating: HashSet::new(),
+            homes: HashMap::new(),
             layout_revision: 0,
         };
         let session = Session {
@@ -424,9 +459,10 @@ mod tests {
     }
 
     /// Float is session state, so taking a pane out of the tiling collapses its leaf
-    /// host-side — the client renders an exact projection and needs no filter of its own.
+    /// host-side — the client renders an exact projection and needs no filter of its own —
+    /// and docking it back returns it to the place the float captured, not to the end.
     #[test]
-    fn a_floated_pane_loses_its_leaf_and_docks_back_at_the_end() {
+    fn a_floated_pane_loses_its_leaf_and_docks_back_at_its_home() {
         let mut reg = SessionRegistry::new((80, 24));
         let ws = reg.current_workspace();
         let ids: Vec<_> = (0..3)
@@ -446,12 +482,107 @@ mod tests {
         );
         assert_eq!(window.floating(), &HashSet::from([ids[1]]));
 
-        // Dock it back with no gesture to say where: it returns at the END (see
-        // `set_floating` — a client that wants it elsewhere drops it there and writes).
+        // Dock it back with no gesture to say where: it goes HOME — the middle it left,
+        // beside the neighbour it left it beside.
         let _ = window.set_floating(ids[1], false, &panes);
         assert_eq!(
             window.reconcile_layout(&panes).panes(),
+            ids,
+            "the pane's place in the arrangement survived the float",
+        );
+    }
+
+    /// The home is a memo the authority keeps, not a promise it can always keep: float a pane
+    /// AND its home sibling, and the first one back has nothing to come home to. It appends —
+    /// the old behaviour — rather than failing the dock-back.
+    ///
+    /// This is the case [`crate::LayoutTree`] cannot tell apart from an exited sibling (it
+    /// sees only "absent from the tiling"), so it is pinned here, where `floating` is a fact.
+    #[test]
+    fn a_home_whose_sibling_floated_out_too_docks_back_at_the_end() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let ws = reg.current_workspace();
+        let ids: Vec<_> = (0..3)
+            .map(|_| lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap())
+            .collect();
+        let panes: Vec<_> = lock(&ws).panes().iter().map(Pane::id).collect();
+        let window = reg.current_window_mut();
+        window.reconcile_layout(&panes);
+
+        // Pane 1's home names pane 2; float both, so 1's home is unhonorable while 2 is out.
+        assert!(window.set_floating(ids[1], true, &panes));
+        window.reconcile_layout(&panes);
+        assert!(window.set_floating(ids[2], true, &panes));
+        assert_eq!(
+            window.reconcile_layout(&panes).panes(),
+            vec![ids[0]],
+            "both floated out; only pane 0 is tiled",
+        );
+
+        // Pane 1 comes back ALONE: its sibling is alive but not tiled.
+        assert!(window.set_floating(ids[1], false, &panes));
+        assert_eq!(
+            window.reconcile_layout(&panes).panes(),
+            vec![ids[0], ids[1]],
+            "no home to honor, so it appends",
+        );
+        // …and pane 2, still floating, keeps its own home for when it returns.
+        assert!(window.set_floating(ids[2], false, &panes));
+        assert_eq!(
+            window.reconcile_layout(&panes).panes(),
             vec![ids[0], ids[2], ids[1]],
+            "pane 2 went home (beside 0), which is now ahead of the appended pane 1",
+        );
+    }
+
+    /// A home is captured at the float and spent when the leaf comes back — so a pane that
+    /// EXITS while floating must not leave one behind for its id to outlive it.
+    #[test]
+    fn a_home_is_pruned_when_its_pane_exits_while_floating() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let ws = reg.current_workspace();
+        let ids: Vec<_> = (0..3)
+            .map(|_| lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap())
+            .collect();
+        let panes: Vec<_> = lock(&ws).panes().iter().map(Pane::id).collect();
+        let window = reg.current_window_mut();
+        window.reconcile_layout(&panes);
+
+        assert!(window.set_floating(ids[1], true, &panes));
+        window.reconcile_layout(&panes);
+        assert!(window.homes.contains_key(&ids[1]), "the float captured one");
+
+        // Pane 1 exits while floating: the pool no longer holds it.
+        let live = vec![ids[0], ids[2]];
+        window.reconcile_layout(&live);
+        assert!(window.floating().is_empty(), "the float set is pruned");
+        assert!(
+            window.homes.is_empty(),
+            "and so is its home — nothing will ever come back to it",
+        );
+    }
+
+    /// Capturing a home is invisible to a client: it is not served and not projected, so it
+    /// must not move the revision every attached client watches.
+    #[test]
+    fn capturing_a_home_does_not_bump_the_revision_on_its_own() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let ws = reg.current_workspace();
+        let ids: Vec<_> = (0..2)
+            .map(|_| lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap())
+            .collect();
+        let panes: Vec<_> = lock(&ws).panes().iter().map(Pane::id).collect();
+        let window = reg.current_window_mut();
+        window.reconcile_layout(&panes);
+        let before = window.layout_revision();
+
+        // A float bumps ONCE for the float set (the tiling follows on the next reconcile);
+        // the home captured alongside it adds nothing a client could re-read.
+        assert!(window.set_floating(ids[0], true, &panes));
+        assert_eq!(
+            window.layout_revision(),
+            before + 1,
+            "the float set changed once; the home is not a client-visible change",
         );
     }
 
