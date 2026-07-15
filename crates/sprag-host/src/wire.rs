@@ -21,17 +21,22 @@ pub const KEY_ACTION: &str = "key";
 /// paste), no key-encoding.
 pub const TEXT_ACTION: &str = "text";
 /// The pane-input external invoke action returning the pane's cell FRAME
-/// ([`CellFrame`](crate::CellFrame)) at a SCROLLBACK offset (`offset != 0`) — a
-/// user-driven history read, NOT the live view.
+/// ([`CellFrame`](crate::CellFrame)) at a SCROLLBACK offset — a user-driven history read.
+/// **`offset == 0` is REFUSED**: the live view is [`LIVE_FRAME_SLOT`].
 ///
-/// The live view (`offset == 0`) is served by the [`LIVE_FRAME_SLOT`] READ slot
-/// instead, deliberately: a display client re-reads the live frame every time the
-/// scene revision moves (the `scene/waitFor` poll loop), and an invoke is a
-/// `MethodOcc::Mutate` that bumps the revision — so serving the live frame as an
-/// action made every read wake the very waiter it answered, a ~30Hz idle livelock.
-/// A query is a `MethodOcc::Read` and bumps nothing, so the loop parks until a real
-/// output change. Scrollback stays an action because it carries an argument and is
-/// never on the poll path.
+/// That split is deliberate, and enforced rather than merely documented. A display client
+/// re-reads the live frame every time the scene revision moves (the `scene/waitFor` poll
+/// loop), and an invoke is a `MethodOcc::Mutate` that bumps the revision — so serving the
+/// live frame here made every read wake the very waiter it answered: a ~30Hz idle livelock
+/// that burned a full core (R152). A query is a `MethodOcc::Read` and bumps nothing, so the
+/// loop parks until real output. Scrollback stays an action only because it carries an
+/// ARGUMENT, which pinion's `scene/query` cannot take (PINION-PR61 asks for a parameterized
+/// read, which would collapse these two names back into one).
+///
+/// A scrollback read therefore still bumps, and that is not free: it wakes every OTHER
+/// attached client's parked `waitFor` into a full re-fetch. It is bounded (a wheel tick, not
+/// a poll) and terminates, so it is not the livelock — but it is the same defect, and only
+/// PR-61 removes it.
 pub const CELLS_ACTION: &str = "cells";
 /// The pane-input external query slot: the pane's LIVE cell FRAME
 /// ([`CellFrame`](crate::CellFrame)) — the `offset == 0` view a display client

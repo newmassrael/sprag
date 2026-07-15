@@ -153,14 +153,27 @@ impl SpragPaneExternal {
         })
     }
 
-    /// Serve [`frame_at`](Self::frame_at) at the args' scrollback `offset` — the
-    /// [`CELLS_ACTION`] invoke (history reads only; the live `offset == 0` view is the
-    /// [`LIVE_FRAME_SLOT`] query, so it stays off the revision-bumping invoke path).
-    /// Serialization runs off the screen lock. A malformed `offset` is an
-    /// [`InvokeError::TypeMismatch`]; a serialization failure (never expected for a
-    /// valid buffer) is [`InvokeError::Rejected`].
+    /// Serve [`frame_at`](Self::frame_at) at the args' SCROLLBACK `offset` — the
+    /// [`CELLS_ACTION`] invoke. Serialization runs off the screen lock.
+    ///
+    /// `offset == 0` is REFUSED, and the refusal is the point: an invoke is a
+    /// `MethodOcc::Mutate`, so answering the live view here would bump the scene revision and
+    /// hand a polling client the exact livelock R152 removed (its read waking the waiter that
+    /// dispatched it). R153 stated "history reads only" in prose while this code cheerfully
+    /// served offset 0, so the schema advertised two doors to one concept and nothing marked
+    /// the wrong one — a client had to read a comment to stay correct. Now the ABI says it:
+    /// the live view is [`LIVE_FRAME_SLOT`], a query, and only history comes through here.
+    ///
+    /// # Errors
+    ///
+    /// [`InvokeError::Rejected`] for `offset == 0` (use [`LIVE_FRAME_SLOT`]) or a
+    /// serialization failure (never expected for a valid buffer); a malformed `offset` is an
+    /// [`InvokeError::TypeMismatch`].
     fn read_cells(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let offset = parse_offset_arg(args)?;
+        if offset == 0 {
+            return Err(InvokeError::Rejected);
+        }
         serde_json::to_value(self.frame_at(offset))
             .map(IntrospectValue::Json)
             .map_err(|_| InvokeError::Rejected)

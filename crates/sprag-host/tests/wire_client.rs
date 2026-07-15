@@ -10,7 +10,7 @@
 //! (`CARGO_BIN_EXE_sprag-term`), so a break in the wire ABI fails in CI, not by hand.
 
 use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -23,41 +23,56 @@ use sprag_host::{mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
 
 /// Kills + reaps the spawned host on scope exit (including a test panic), so a failed
-/// assertion never leaks a `sprag-term`.
-struct HostChild(Child);
+/// assertion never leaks a `sprag-term` — and unlinks its socket, so it leaks no file either.
+///
+/// Owning the PATH (not just the `Child`) is the point: [`socket_path`] mints a fresh name per
+/// call, so without this every run would strew one dead socket per test under the temp dir,
+/// forever. The kill must come first — the host holds the socket open until it exits.
+struct HostChild(Child, PathBuf);
 impl Drop for HostChild {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
+        let _ = std::fs::remove_file(&self.1);
     }
 }
 
 /// Spawn a `sprag-term` whose initial pane runs `cat` (a deterministic echo pane that
-/// keeps its PTY open), bound to `sock`.
-fn spawn_host(sock: &Path) -> HostChild {
+/// keeps its PTY open), on a socket path of its OWN — see [`socket_path`].
+///
+/// Returns the guard and the path, so a caller never names a socket itself: hand-rolling one
+/// is exactly how three of these tests used to collide (below).
+fn spawn_host() -> (HostChild, PathBuf) {
+    let sock = socket_path();
+    let _ = std::fs::remove_file(&sock);
     let child = Command::new(env!("CARGO_BIN_EXE_sprag-term"))
         .arg("--size")
         .arg("40x6")
         .arg("--")
         .arg("cat")
-        .env("SPRAG_HOST_RPC_SOCK", sock)
+        .env("SPRAG_HOST_RPC_SOCK", &sock)
         .env("SPRAG_HOST_RPC", "1")
         .stdin(Stdio::null())
         .spawn()
         .expect("spawn the sprag-term host binary");
-    HostChild(child)
+    (HostChild(child, sock.clone()), sock)
 }
 
 /// A socket path unique to this CALL, under the temp dir.
 ///
-/// The counter is load-bearing, not decoration. `cargo test` runs this file's tests in
-/// PARALLEL THREADS OF ONE BINARY, so a path keyed only on `process::id()` is the SAME
-/// string in every test — and each one opens with `remove_file(&sock)` before spawning its
-/// host, i.e. it unlinks the socket a concurrently-running sibling is serving on. The
-/// sibling's next call then dies with `BrokenPipe`. It was a live race the whole time and
-/// only surfaced when R152 lengthened `wire_client_drives_a_real_sprag_term_host` (a settle
-/// poll + repeated reads) enough to widen the overlap — a reminder that "passes today" and
-/// "is isolated" are different claims.
+/// The counter is load-bearing, not decoration. `cargo test` runs this file's tests as
+/// PARALLEL THREADS OF ONE BINARY, so a path keyed only on `process::id()` is the SAME string
+/// in every test that asks for one — and each test opens by unlinking that path before
+/// spawning its host, i.e. it removes the socket a concurrently-running sibling is serving on.
+/// The loser's next call dies with `BrokenPipe`. A live race the whole time; it only surfaced
+/// when R152 lengthened `wire_client_drives_a_real_sprag_term_host` enough to widen the
+/// overlap. "Passes today" and "is isolated" are different claims.
+///
+/// **R154:** the race was among the THREE tests that shared `sprag-wire-it-{pid}` — the R153
+/// fix and its commit message both overstated it as "all 6". The other three hand-rolled their
+/// own names (`spawn` / `close` / `absent` infixes) and so avoided collision by NAMING LUCK,
+/// one copy-pasted infix away from re-creating it. They now all come through here, and
+/// [`spawn_host`] owns the minting so no test can name a socket at all.
 fn socket_path() -> PathBuf {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -66,9 +81,7 @@ fn socket_path() -> PathBuf {
 
 #[test]
 fn wire_client_drives_a_real_sprag_term_host() {
-    let sock = socket_path();
-    let _ = std::fs::remove_file(&sock);
-    let _host = spawn_host(&sock);
+    let (_host, sock) = spawn_host();
 
     let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
         .expect("connect to the spawned host socket");
@@ -109,22 +122,14 @@ fn wire_client_drives_a_real_sprag_term_host() {
     // a read that bumped would wake the very waiter it answered — a ~30Hz idle spin. A
     // query is a `MethodOcc::Read`; the retired `cells`-invoke live path was a Mutate.
     //
-    // QUIESCE FIRST. The boot transient (the pane's PTY coming up, its first screen) bumps
-    // the revision legitimately, and it races this guard: measuring stability across it
-    // asserts a coin flip, not a fact — the exact R150 mistake (a transient asserted as an
-    // invariant, green until the machine's timing shifts). Settle on two consecutive equal
-    // reads first; `cat` then emits nothing until written to, so any later bump is the
-    // read's own doing, which is what this measures.
-    let mut prev = read_revision(&mut conn);
-    assert!(
-        wait_until(Duration::from_secs(5), || {
-            let now = read_revision(&mut conn);
-            let settled = now == prev;
-            prev = now;
-            settled
-        }),
-        "the boot transient never settled, so the read's own effect cannot be isolated",
-    );
+    // Nothing else can move the revision across this window, which is what makes it a FACT
+    // rather than a coin flip: the boot pane is `cat`, which emits not one byte until it is
+    // written to, and the queries above already proved it is up and sized. So any bump here
+    // is the read's own doing. (R153 wrapped this in a "quiesce" loop that R154 deleted: it
+    // polled for two equal reads, but `wait_until` evaluates before its first sleep, so both
+    // reads landed microseconds apart and it returned true immediately — mid-transient
+    // included. It waited for nothing while its comment claimed rigor, which is worse than
+    // not being there.)
     let before_read = read_revision(&mut conn);
     for _ in 0..5 {
         conn.call(
@@ -187,9 +192,7 @@ fn a_mux_spawn_and_the_new_panes_output_both_advance_the_wire_notification() {
     // Single connection, no parked blocking read (the park->wake mechanism is covered
     // deterministically by the rpc-level unit tests); here we cross the OS socket +
     // the real `/sprag_mux` dispatch and read the non-blocking `scene/revision`.
-    let sock = std::env::temp_dir().join(format!("sprag-wire-spawn-{}.sock", std::process::id()));
-    let _ = std::fs::remove_file(&sock);
-    let _host = spawn_host(&sock);
+    let (_host, sock) = spawn_host();
     let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
         .expect("connect to the spawned host socket");
 
@@ -255,9 +258,7 @@ fn a_mux_close_shrinks_the_set_and_advances_the_wire_notification() {
     // the served list AND advances the scene revision (the R118 set-SHRINK rail), so a
     // client long-polling change-notification learns the host lost a pane — exactly what
     // the GUI wire poll re-queries and mirrors as a freed slot.
-    let sock = std::env::temp_dir().join(format!("sprag-wire-close-{}.sock", std::process::id()));
-    let _ = std::fs::remove_file(&sock);
-    let _host = spawn_host(&sock);
+    let (_host, sock) = spawn_host();
     let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
         .expect("connect to the spawned host socket");
 
@@ -303,8 +304,7 @@ fn connect_fails_cleanly_when_no_host_is_listening() {
     // A short timeout against a path nothing bound: connect must error (not hang past
     // the timeout, not panic) — the boot-failure path WireHost turns into a reaped
     // child + a clean error.
-    let sock = std::env::temp_dir().join(format!("sprag-wire-absent-{}.sock", std::process::id()));
-    let _ = std::fs::remove_file(&sock);
+    let sock = socket_path(); // never bound: no host is spawned for it
     let start = Instant::now();
     let result = HostConn::connect(&sock, Duration::from_millis(300));
     assert!(result.is_err(), "connect to an unbound socket must fail");
@@ -373,9 +373,7 @@ fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) -> bool {
 /// not an in-process fake.
 #[test]
 fn the_window_layout_crosses_the_real_socket() {
-    let sock = socket_path();
-    let _ = std::fs::remove_file(&sock);
-    let _host = spawn_host(&sock);
+    let (_host, sock) = spawn_host();
     let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
 
@@ -436,9 +434,7 @@ fn read_layout(conn: &mut HostConn) -> (u64, sprag_terminal::LayoutTree) {
 /// is session state, not something the client is merely holding.
 #[test]
 fn a_clients_settled_arrangement_crosses_the_real_socket_and_is_named() {
-    let sock = socket_path();
-    let _ = std::fs::remove_file(&sock);
-    let _host = spawn_host(&sock);
+    let (_host, sock) = spawn_host();
     let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
 

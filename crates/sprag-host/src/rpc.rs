@@ -1032,7 +1032,8 @@ mod tests {
 
     // ─── R115b: pane cells over the wire (the client's per-frame data read) ───
 
-    /// The pane `cells` frame at `offset`, over the full dispatch path.
+    /// The pane's SCROLLBACK frame at `offset`, over the full dispatch path — the `cells`
+    /// INVOKE. `offset == 0` is refused by design (R154); the live view is [`frame_slot`].
     fn cells_frame(state: &HostState, offset: u64) -> serde_json::Value {
         serve_one(
             state,
@@ -1042,16 +1043,48 @@ mod tests {
         )
     }
 
+    /// The pane's LIVE frame, over the full dispatch path — the `frame` QUERY the wire
+    /// client's poll loop actually reads each wake (a `MethodOcc::Read`, so it bumps nothing).
+    fn frame_slot(state: &HostState) -> serde_json::Value {
+        serve_one(
+            state,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/query","params":{"path":"/pane_0/sprag_input/external/frame"}}"#,
+        )
+    }
+
+    /// The live frame slot REFUSES to be an invoke, and the invoke refuses to be live.
+    ///
+    /// The wire has one address per concept, and the ABI — not a comment — is what says so.
+    /// An invoke is a `MethodOcc::Mutate`: serving the live view through `cells` would bump
+    /// the revision on a READ, so a polling client's fetch would wake the `scene/waitFor` that
+    /// dispatched it (the ~30Hz idle spin R152 removed, which burned a whole core). R153 left
+    /// `cells{offset:0}` working and only asked prose not to use it, so the schema advertised
+    /// two doors to one concept with nothing marking the wrong one.
     #[test]
-    fn pane_cells_action_returns_a_deserializable_grid_frame() {
-        // The wire client's per-frame read: the `cells` action returns a JSON frame
+    fn the_cells_invoke_refuses_the_live_view_that_belongs_to_the_frame_slot() {
+        let state = host_with("printf hi", 20, 4);
+        wait_for_pane0_eof(&state);
+        let refused = cells_frame(&state, 0);
+        assert!(
+            refused.get("error").is_some(),
+            "the live view must not be reachable through the revision-bumping invoke: {refused}",
+        );
+        assert!(
+            frame_slot(&state)["result"]["cells"].is_object(),
+            "...and the query serves it instead",
+        );
+    }
+
+    #[test]
+    fn live_frame_slot_returns_a_deserializable_grid_frame() {
+        // The wire client's per-frame read: the `frame` slot returns a JSON frame
         // whose `cells` deserialize back into the EXACT GridBuffer the host projected
         // (PR-49 round-trip), carrying the pane content, plus the scroll facts that
         // ride with it.
         let state = host_with("printf hi", 20, 4);
         wait_for_pane0_eof(&state);
-        let frame = cells_frame(&state, 0);
-        assert!(frame.get("error").is_none(), "cells error: {frame}");
+        let frame = frame_slot(&state);
+        assert!(frame.get("error").is_none(), "frame error: {frame}");
         let result = &frame["result"];
         assert!(
             result["scrollback_len"].is_u64(),
@@ -1073,13 +1106,13 @@ mod tests {
 
     #[test]
     fn pane_cells_action_honors_the_scrollback_offset() {
-        // 40 lines into a 4-row pane: most scroll off into history. The live view
-        // (offset 0) and a scrolled-up view differ, proving the offset param reaches
-        // the projection over the wire.
+        // 40 lines into a 4-row pane: most scroll off into history. The live view (the
+        // `frame` slot) and a scrolled-up view (the `cells` invoke) differ, proving the
+        // offset param reaches the projection over the wire.
         let state = host_with("seq 1 40", 20, 4);
         wait_for_pane0_eof(&state);
 
-        let live = cells_frame(&state, 0);
+        let live = frame_slot(&state);
         assert!(
             live["result"]["scrollback_len"].as_u64().unwrap() > 0,
             "lines scrolled off into history: {live}",

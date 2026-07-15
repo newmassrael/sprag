@@ -36,8 +36,12 @@
 //!
 //! [`docked_pane_indices`] DERIVES the docked set as the tree's leaves — with no float
 //! filter, because a floated pane HAS no leaf. The tree is restructured by reorganize
-//! gestures (drag-to-dock + zone-redock, via [`use_dock_reorganizer`]'s [`DockReorganizer`]);
-//! [`sync_layout`] writes the settled result back and adopts the canonical answer.
+//! gestures (drag-to-dock + zone-redock, via [`use_dock_reorganizer`]'s [`DockReorganizer`]).
+//! There are TWO write edges, and each exists because the gesture it serves settles in a way
+//! the other cannot see: [`sync_layout`] writes a SHAPE change (pinion only ever mutates the
+//! topology at a drop, so it is settled by construction), and [`commit_layout`] writes a RATIO
+//! on pinion's `ratio_committed` intent (a drag moves the live signal every frame and stops
+//! silently). Both adopt the canonical answer.
 //!
 //! ## Why the dock-model choice is gone (R60 → R72 → R77 → R149)
 //!
@@ -148,10 +152,17 @@ pub(crate) const DOCK_REORGANIZE_TAG: &str = "sprag_gui.dock";
 /// The event suffix of the intent pinion's `SplitterExternal` fires on drag-end (PR-56),
 /// carrying the settled ratio — reaching the reducer as `{split_tag}.ratio_committed`.
 ///
-/// A sprag const because pinion emits the tag as a string literal and exports no
-/// symbol for it; this mirrors that literal, so a drift shows up as a missed commit
-/// (the ratio silently stops persisting) rather than a compile error — hence pinned here,
-/// next to the divider tag it rides on, and asserted by the commit test.
+/// A sprag const because pinion emits the tag as a bare string literal and exports no symbol
+/// for it — unlike its sibling dock tokens (`TEAR_OFF_EVENT` and friends), which pinion DOES
+/// export from the same crate `main.rs` already imports them from. **PINION-PR58 asks for the
+/// export**; this mirror is the interim, and the ground rule says an upstream gap gets a PR,
+/// not a local accommodation with a nice comment.
+///
+/// **The drift is UNGUARDED, and R154's review caught the first draft of this doc claiming
+/// otherwise.** If pinion renames its literal, this const still compiles, the commit test
+/// still passes — because that test builds its intent tag FROM this very const, so both ends
+/// are sprag's — and the only symptom is the user's dragged ratio silently ceasing to
+/// persist. Re-check this string by hand on every pinion rev bump until PR-58 lands.
 pub(crate) const RATIO_COMMITTED_EVENT: &str = "ratio_committed";
 
 /// Split `id`'s ratio `Signal` (left/top share, `[0, 1]`), an `Owner::cache`-backed
@@ -221,9 +232,9 @@ fn prune_split_ratios(topology: Option<&DockTopology>) {
 /// ratio into pinion's initial one. Runs on every adopt ([`adopt_layout`]), not once at boot
 /// — the once-fired seed that then forked from the host forever is what R149 retired.
 ///
-/// **LOSSY, deliberately** (see the collapse rule below), which is why [`sync_layout`] must
-/// never write an un-projection of this surface back without first checking that its pane
-/// set still matches the host's.
+/// **LOSSY, deliberately** (see the collapse rule below), which is why [`pending_write`] must
+/// never let an un-projection of this surface be written back without first checking that its
+/// pane set still matches the host's.
 ///
 /// A leaf whose pane this client cannot render yet (`slot_of` -> `None`, the "renderable
 /// now" contract) COLLAPSES into its sibling, exactly as a removed leaf does — so a
@@ -296,13 +307,21 @@ fn split_id_of_tag(tag: &str) -> Option<SplitId> {
 /// [`project_layout`], and what turns a settled gesture into session state.
 ///
 /// `None` means the surface is not representable as a host arrangement, in which case the
-/// caller must NOT write. Two shapes reach it: a pinion `Tabs` well (unreachable —
-/// [`use_dock_reorganizer`] runs `with_tabbing(false)` — but a real variant of pinion's type,
-/// so it is refused honestly rather than assumed away), and a leaf whose slot holds no pane.
+/// caller must NOT write. Two shapes reach it: a pinion `Tabs` well, and a leaf whose slot
+/// holds no pane.
+///
+/// **A `Tabs` well is REACHABLE (R154 correction).** This doc used to call it unreachable
+/// because [`use_dock_reorganizer`] runs `with_tabbing(false)` — but that flag governs the
+/// zone CLASSIFIER, not direct topology edits, and R153 registered
+/// [`DOCK_REORGANIZE_TAG`]'s surface, whose `reorganize` invoke pinion deliberately does NOT
+/// gate on tabbing. So an agent naming `zone: "Center"` mints a real tab well here. Refusing
+/// the write keeps SESSION state safe, but the client is then stuck rendering a well the host
+/// cannot hold and — because no host revision moved — nothing re-projects it away.
+/// PINION-PR60 asks for the invoke to honour the surface's own policy.
 ///
 /// Returning `Some` is NOT on its own a licence to write: this reports only that every leaf
 /// PRESENT could be named. A pane [`project_layout`] dropped is simply absent, and no
-/// inspection here can see it — that check belongs to [`sync_layout`], against the host's
+/// inspection here can see it — that check belongs to [`pending_write`], against the host's
 /// own pane set.
 ///
 /// The ratio is read from the LIVE per-split signal ([`use_split_ratio`]), NOT from the
@@ -628,7 +647,8 @@ pub(crate) fn commit_layout(slots: &crate::slotview::SlotView) {
 /// Un-project this client's surface and, when it is a well-formed re-arrangement of the SAME
 /// panes the host holds and it differs from the host's, the `(topology, expected_revision)` to
 /// write. `None` when there is nothing legitimate to write — the shared decision behind both
-/// [`sync_layout`] (which then settle-gates) and [`commit_layout`] (which writes at once).
+/// [`sync_layout`] (which then writes only a SHAPE diff) and [`commit_layout`] (which writes
+/// whatever the ratio commit edge hands it).
 ///
 /// `None` covers three cases, none of which a client may promote to session state:
 /// * UNREPRESENTABLE — [`unproject_layout`] cannot form a tree (e.g. a tab well).
@@ -673,8 +693,9 @@ const TOPOLOGY_KEY: &str = "sprag_gui.dock_topology";
 /// is exactly one place the tree is populated. (It was once seeded here, in a factory that
 /// fired once and then forked from the host forever: the R148 finding this retires.)
 ///
-/// A gesture mutates it directly — that is what makes the drag feel instant — and
-/// [`sync_layout`] writes the settled result back to the host, which owns it.
+/// A gesture mutates it directly — that is what makes the drag feel instant — and the write
+/// edges ([`sync_layout`] for a shape, [`commit_layout`] for a ratio) put the settled result
+/// back to the host, which owns it.
 pub(crate) fn use_dock_topology() -> Rc<Signal<Option<DockTopology>>> {
     Owner::current()
         .expect("use_dock_topology() requires an active Owner scope")
@@ -697,27 +718,50 @@ const REORGANIZER_KEY: &str = "sprag_gui.dock_reorganizer";
 ///
 /// `with_tabbing(false)` (pinion R1111/R1112 / PINION-PR37): a terminal multiplexer docks
 /// by SPLIT only — "stack two terminals as tabs in one slot" (the centre-zone `Tabify`) is
-/// not a terminal idiom. Tabbing-off makes pinion's drop classification route a centre drop
-/// to the nearest edge (split) instead of a tab well, on EVERY path (drag, RPC, cross-window
-/// redock — R1112 lifted the flag to this one surface SSOT). So no `Center`/tab drop zone
-/// appears for the user.
+/// not a terminal idiom. Tabbing-off makes pinion's drop CLASSIFIER route a centre drop to
+/// the nearest edge (split) instead of a tab well, so no `Center`/tab drop zone is offered
+/// to a pointer.
 ///
-/// `with_float_policy(Collapse)` (R153) DECLARES what this surface actually does. It gates
-/// no behaviour — nothing in pinion branches on it, and sprag never drives pinion's float
-/// path at all (`float_out_panel` / `restore_panel_home` are unused; a float goes to the
-/// HOST via `SlotView::set_floating`, because WHICH panes are tiled is session state). It is
-/// purely the wire's answer to `query("float_policy")`. Left at pinion's `Placeholder`
-/// default it answered the exact OPPOSITE of the truth — "the leaf stays, the slot is
-/// preserved" — to any agent asking how this dock treats a torn-off pane, while the host
-/// removes the leaf and the siblings reclaim the space. A surface that reports its own
-/// policy backwards is worse than one that reports nothing, and R153 exposed this the moment
-/// the reorganize surface became queryable.
+/// **It does NOT cover every path (R154 correction).** This doc used to claim "EVERY path
+/// (drag, RPC, cross-window redock)". The flag gates the CLASSIFIER; the symbolic
+/// `reorganize` invoke on the surface R153 registered ([`DOCK_REORGANIZE_TAG`]) names a zone
+/// outright and pinion deliberately does not gate it — so `zone: "Center"` still tabifies,
+/// and [`unproject_layout`] can then no longer represent this client's own surface.
+/// PINION-PR60 asks pinion to honour the surface policy there too, which is the same
+/// consistency argument R1112 already won for the classifier.
 ///
-/// **Honest bound:** `Collapse` is pinion's "remove the leaf on float, RESTORE IT TO THE
-/// CAPTURED HOME ANCHOR on dock-back". sprag matches the first half exactly and does not yet
-/// do the second — a dock-back appends at the arrangement's END, so a floated pane loses its
-/// index home durably. That gap is tracked (the host-side float home anchor); this constant
-/// declares the half the user can observe today, which is the half `Placeholder` got wrong.
+/// `with_float_policy(Collapse)` (R153) matches this surface's declaration to what the user
+/// actually sees: the host REMOVES a floated pane's leaf and the siblings reclaim the space.
+/// Left at pinion's `Placeholder` default, `query("float_policy")` answered the exact OPPOSITE
+/// — "the leaf stays, the slot is preserved" — to any agent asking how this dock treats a
+/// torn-off pane. R153 exposed that the moment the reorganize surface became queryable.
+///
+/// **It is NOT inert, and the first draft of this comment said it was (R154 corrected it).**
+/// pinion branches on the value in `DockPanelExternal::{collapse_leaf_if_policy,
+/// restore_leaf_home_if_policy}`, and sprag ARMS that branch by wiring this same reorganizer
+/// into every panel external — so under `Collapse` a tear-off release now asks pinion to
+/// remove the leaf from OUR topology signal, client-side, with the host not consulted. sprag
+/// does not CALL `float_out_panel` / `restore_panel_home`; it causes pinion to.
+///
+/// That is safe here, but by ORDERING, not by never happening — write the reason down because
+/// it is the whole load-bearing argument: sprag floats on the FIRST ESCAPED MOVE
+/// (`tear_off_follow` → `float_pane_at` → `push_float`), which asks the HOST and adopts the
+/// answer synchronously. By release time the leaf is already gone, so `float_out_panel` finds
+/// no such panel and no-ops. Move sprag's float to the RELEASE instead and pinion would strip
+/// the leaf while the host still tiles the pane: [`pending_write`]'s membership guard would
+/// then refuse the write (correctly) AND no host revision would change, so nothing would
+/// re-project — the pane would simply be invisible. The guard rail is real; the coincidence
+/// keeping us off it is not documented anywhere else.
+///
+/// **Bound:** `Collapse` also promises pinion's "restore to the captured home anchor on
+/// dock-back". sprag does not do that half — a dock-back appends at the arrangement's END, so
+/// a floated pane loses its index home durably (the tracked host-side float-home-anchor gap).
+/// The declared half is the half a user can observe, and the half `Placeholder` got backwards.
+///
+/// **Bound (upstream, PINION-PR59):** `set_float_policy` is an INVOKE on the reorganize
+/// surface [`DOCK_REORGANIZE_TAG`] registers, so this value is wire-MUTABLE: an agent can flip
+/// this dock back to `Placeholder` at runtime and re-create the lie. A surface policy should
+/// not be writable by a client that cannot implement it.
 pub(crate) fn use_dock_reorganizer() -> Rc<DockReorganizer> {
     let topology = use_dock_topology();
     Owner::current()
@@ -970,10 +1014,11 @@ mod tests {
 
     /// A surface the host's arrangement cannot express is REFUSED, not written lossily.
     ///
-    /// A pinion tab well is the only such shape, and it is unreachable (this surface runs
-    /// `with_tabbing(false)`) — but it is a real variant of pinion's type, so an honest
-    /// `None` beats an assumption. Writing the panes minus their well would silently destroy
-    /// the arrangement the user is looking at.
+    /// A pinion tab well is the only such shape. `with_tabbing(false)` keeps it out of the
+    /// pointer's reach, but NOT out of the symbolic `reorganize` invoke R153 registered
+    /// (pinion does not gate that on tabbing — PINION-PR60), so this refusal is live, not
+    /// theoretical. Writing the panes minus their well would silently destroy the arrangement
+    /// the user is looking at.
     #[test]
     fn an_unrepresentable_surface_refuses_the_write() {
         let owner = Owner::new();
@@ -1113,36 +1158,24 @@ mod tests {
     /// full-span dock is REDUNDANT at every edge: removing either pane leaves a single
     /// leaf, so the outer band is `Split[dragged | lone]` — structurally identical to an
     /// INNER split of that lone pane (only the thin `OUTER_DOCK_NEW_FRAC` ratio differs).
-    /// pinion now reports it redundant, so `resolve_drop` snaps back instead of docking a
-    /// worse-ratio full-span strip, and the user's top/bottom EDGE drop yields the inner
-    /// 50/50 split (the "왜 절반이 아니라 끝에 붙나" complaint). At >=3 panes the outer band
-    /// spans multiple REMAINING panes an inner split cannot reproduce, so it stays offered.
+    /// pinion reports it redundant, so `resolve_drop` snaps back instead of docking a
+    /// worse-ratio full-span strip. At >=3 panes the outer band spans multiple REMAINING
+    /// panes an inner split cannot reproduce, so it stays offered.
+    ///
+    /// **R154 correction:** this doc used to claim the suppression makes "the user's
+    /// top/bottom EDGE drop yield the inner 50/50 split". It does not, and PINION-PR57 is
+    /// filed on exactly that. The redundancy is applied when RESOLVING, but the router still
+    /// CLAIMS the perimeter band (`InputRouter::resolve_own_outer_dock` hands back the
+    /// `OUTER_DOCK_ZONE_TAG` sentinel on distance alone), and `outer_drop_zone` keys purely on
+    /// that tag — so a suppressed edge cannot fall through to the panel underneath. The band
+    /// is DEAD: it shows nothing, does nothing, and shadows the panel's own 22% split bands.
+    /// For a 2-pane terminal — the default layout — that is the entire perimeter.
     ///
     /// sprag owns this integration claim (its `panel_id` scheme + `tabbing=false`
     /// reorganizer over the boot topology); pinion owns the redundancy logic + the pointer
     /// drag that consumes it. sprag has NO code for the gesture (a same-window docked drag
     /// is resolved inside pinion's `DockPanelExternal`), so this pins the behaviour sprag
     /// gets for free and guards against a pinion regression reaching it.
-    /// The dock surface DECLARES the float policy it actually follows.
-    ///
-    /// Guarded because the value gates nothing — it is pure wire declaration, so a wrong one
-    /// breaks no test and no pixel; it just lies to whoever asks. Left at pinion's
-    /// `Placeholder` default it answered the exact opposite of what the host does (the leaf
-    /// is REMOVED on float and the siblings reclaim), and that went unnoticed until R153 made
-    /// the reorganize surface queryable at all.
-    #[test]
-    fn the_dock_declares_the_float_policy_it_actually_follows() {
-        let owner = Owner::new();
-        owner.run(|| {
-            assert_eq!(
-                use_dock_reorganizer().float_policy(),
-                FloatPolicy::Collapse,
-                "the host removes a floated pane's leaf (siblings reclaim), so the surface \
-                 must not report `placeholder` to an agent asking how it treats a tear-off",
-            );
-        });
-    }
-
     #[test]
     fn two_pane_outer_dock_is_redundant_but_three_pane_stays_offered() {
         use pinion_widget_paint::dock::DockDropZone;
@@ -1174,6 +1207,31 @@ mod tests {
             assert!(
                 !reorg.outer_dock_is_redundant(&panel_id(2), DockDropZone::Top),
                 "3-pane outer Top spans the other two panes -> a distinct full-span row",
+            );
+        });
+    }
+
+    /// The dock surface declares the float policy the HOST actually follows: a floated pane's
+    /// leaf is REMOVED and the siblings reclaim the space, so `query("float_policy")` must not
+    /// answer `placeholder` ("the leaf stays, the slot is preserved") to an agent asking how
+    /// this dock treats a tear-off. Left at pinion's default it answered exactly backwards, and
+    /// nothing noticed until R153 made the surface queryable at all.
+    ///
+    /// This pins the VALUE, and that is all it can pin — worth stating, because R154's review
+    /// found two things it cannot reach. The value is not inert (pinion branches on it in
+    /// `DockPanelExternal::collapse_leaf_if_policy`; see [`use_dock_reorganizer`]), and it is
+    /// wire-MUTABLE (`set_float_policy` is an invoke on the surface [`DOCK_REORGANIZE_TAG`]
+    /// registers), so an agent can flip it at runtime and this test would still pass.
+    /// PINION-PR59 asks for a policy a client cannot rewrite.
+    #[test]
+    fn the_dock_declares_the_float_policy_it_actually_follows() {
+        let owner = Owner::new();
+        owner.run(|| {
+            assert_eq!(
+                use_dock_reorganizer().float_policy(),
+                FloatPolicy::Collapse,
+                "the host removes a floated pane's leaf (siblings reclaim), so the surface \
+                 must not report `placeholder` to an agent asking how it treats a tear-off",
             );
         });
     }
