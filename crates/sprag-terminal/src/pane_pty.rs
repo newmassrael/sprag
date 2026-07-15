@@ -28,7 +28,7 @@ pub use portable_pty::CommandBuilder;
 
 /// The PTY master writer, shared (and interior-mutable) so both the owning
 /// [`PanePty`] and any [`PanePtyHandle`] can inject input without a
-/// `&mut` borrow — the session is already concurrent (the reader thread
+/// `&mut` borrow — the pty is already concurrent (the reader thread
 /// holds the emulator lock), so the writer is shared the same way.
 type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
@@ -138,7 +138,7 @@ impl std::error::Error for PanePtyError {}
 pub struct PanePty {
     // The PTY master is OWNED BY the resize coalescer thread (`resize` is its
     // sole user), so resizes apply off the caller's thread and are debounced —
-    // see [`run_resize_coalescer`]. The session hands target sizes to it via
+    // see [`run_resize_coalescer`]. The pty hands target sizes to it via
     // `resize_tx`.
     child: Box<dyn Child + Send + Sync>,
     writer: SharedWriter,
@@ -325,10 +325,10 @@ impl PanePty {
         write_shared(&self.writer, bytes)
     }
 
-    /// A cloneable [`PanePtyHandle`] sharing this session's emulator and
+    /// A cloneable [`PanePtyHandle`] sharing this pty's emulator and
     /// PTY writer — the seam an input-injecting consumer (the host's pane
     /// `External`) holds to read the screen/modes and write encoded keys
-    /// without owning the session.
+    /// without owning the pty.
     #[must_use]
     pub fn handle(&self) -> PanePtyHandle {
         PanePtyHandle {
@@ -370,14 +370,14 @@ impl PanePty {
         // applies one ioctl per settle.
         lock(&self.emulator).resize(cols, rows);
         if let Some(tx) = &self.resize_tx {
-            // A send only fails once the session is dropping (coalescer gone),
+            // A send only fails once the pty is dropping (coalescer gone),
             // where a stale PTY size is moot.
             let _ = tx.send((cols, rows));
         }
         Ok(())
     }
 
-    /// The current `(cols, rows)` the session is sized to, read from the
+    /// The current `(cols, rows)` the pty is sized to, read from the
     /// emulator screen — the single source of the size (the emulator's
     /// dimensions are authoritative; there is no duplicate cache field). The PTY
     /// winsize is updated alongside the emulator in [`resize`](Self::resize),
@@ -390,12 +390,12 @@ impl PanePty {
     }
 }
 
-/// A cloneable handle to a live session's shared I/O: the emulator (read
+/// A cloneable handle to a live pty's shared I/O: the emulator (read
 /// the screen and input modes) and the PTY writer (inject input bytes).
 /// Both are `Arc`-shared with the owning [`PanePty`] and its reader
-/// thread, so a handle stays valid for the session's lifetime. This is the
+/// thread, so a handle stays valid for the pty's lifetime. This is the
 /// producer-side seam the host's pane `External` holds to drive input
-/// without owning the session (DESIGN.md §3 producer ownership; R2.6).
+/// without owning the pty (DESIGN.md §3 producer ownership; R2.6).
 #[derive(Clone)]
 pub struct PanePtyHandle {
     emulator: Arc<Mutex<Emulator>>,
@@ -435,7 +435,7 @@ impl PanePtyHandle {
     }
 }
 
-/// Lock a session mutex (emulator or raw capture), recovering the guard if a
+/// Lock a pty mutex (emulator or raw capture), recovering the guard if a
 /// holder panicked (the grid stays structurally valid and the byte buffer is
 /// plain data; neither `advance` nor `push` panics in practice).
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -462,7 +462,7 @@ const RESIZE_DEBOUNCE: Duration = Duration::from_millis(40);
 /// master — `resize` is the master's only user, so no sharing is needed).
 /// Trailing debounce: every request resets the quiet timer and overwrites the
 /// pending size (last-write-wins), so only the FINAL size of a burst is applied,
-/// once, after `quiet` of silence. On channel disconnect (the session dropping)
+/// once, after `quiet` of silence. On channel disconnect (the pty dropping)
 /// it flushes the final pending size synchronously so a resize-then-quit never
 /// strands the PTY at a stale size. Generic over `apply` so the debounce policy
 /// is unit-tested without a real PTY.
@@ -529,20 +529,20 @@ mod tests {
         command.arg("-c");
         command.arg("printf hi");
         command.env("TERM", "dumb");
-        let session = PanePty::spawn(command, 20, 4).expect("spawn pty session");
+        let pty = PanePty::spawn(command, 20, 4).expect("spawn a pty");
 
         let start = Instant::now();
-        while !session.is_eof() && start.elapsed() < Duration::from_secs(5) {
+        while !pty.is_eof() && start.elapsed() < Duration::from_secs(5) {
             sleep(Duration::from_millis(20));
         }
 
-        let row0 = session.with_screen(|screen| {
+        let row0 = pty.with_screen(|screen| {
             (0..screen.cols())
                 .filter_map(|col| screen.cell(col, 0).map(|cell| cell.cluster.clone()))
                 .collect::<String>()
         });
         assert!(row0.starts_with("hi"), "row0 = {row0:?}");
-        assert_eq!(session.dimensions(), (20, 4));
+        assert_eq!(pty.dimensions(), (20, 4));
     }
 
     /// `resize` is `&self`: a shared `&PanePty` reflows the PTY +
@@ -555,30 +555,26 @@ mod tests {
         command.arg("-c");
         command.arg("cat"); // long-lived: keeps the PTY open across the resize
         command.env("TERM", "dumb");
-        let session = PanePty::spawn(command, 20, 4).expect("spawn pty session");
-        assert_eq!(session.dimensions(), (20, 4));
+        let pty = PanePty::spawn(command, 20, 4).expect("spawn a pty");
+        assert_eq!(pty.dimensions(), (20, 4));
         // Through a SHARED borrow — proves the resize needs no `&mut`.
-        let shared: &PanePty = &session;
-        shared.resize(100, 30).expect("resize the shared session");
+        let shared: &PanePty = &pty;
+        shared.resize(100, 30).expect("resize through a shared ref");
         // The emulator resizes synchronously (only the PTY ioctl is debounced),
         // so `dimensions()` is current immediately.
-        assert_eq!(
-            session.dimensions(),
-            (100, 30),
-            "dimensions track the emulator"
-        );
+        assert_eq!(pty.dimensions(), (100, 30), "dimensions track the emulator");
         // The floor at 1x1 holds (a zero dimension cannot reach the PTY).
         shared.resize(0, 0).expect("resize floors at 1x1");
-        assert_eq!(session.dimensions(), (1, 1));
+        assert_eq!(pty.dimensions(), (1, 1));
     }
 
     /// Wait (bounded) until the child has exited and all its bytes are applied.
-    fn wait_eof(session: &PanePty) {
+    fn wait_eof(pty: &PanePty) {
         let start = Instant::now();
-        while !session.is_eof() && start.elapsed() < Duration::from_secs(5) {
+        while !pty.is_eof() && start.elapsed() < Duration::from_secs(5) {
             sleep(Duration::from_millis(20));
         }
-        assert!(session.is_eof(), "child did not reach EOF in time");
+        assert!(pty.is_eof(), "child did not reach EOF in time");
     }
 
     /// The raw capture is byte-faithful even when the output is a single
@@ -594,10 +590,10 @@ mod tests {
         command.arg("-c");
         command.arg(format!("printf '%s' '{payload}'"));
         command.env("TERM", "dumb");
-        let session = PanePty::spawn(command, 20, 4).expect("spawn pty session");
-        wait_eof(&session);
+        let pty = PanePty::spawn(command, 20, 4).expect("spawn a pty");
+        wait_eof(&pty);
 
-        let RawOutput { bytes, truncated } = session.raw_output();
+        let RawOutput { bytes, truncated } = pty.raw_output();
         assert!(!truncated, "small payload must not truncate");
         assert_eq!(
             String::from_utf8_lossy(&bytes),
@@ -605,7 +601,7 @@ mod tests {
             "raw capture must equal the emitted bytes exactly (no wrap, no trim)"
         );
         // The handle sees the same capture.
-        assert_eq!(session.handle().raw_output().bytes, bytes);
+        assert_eq!(pty.handle().raw_output().bytes, bytes);
     }
 
     /// A child that emits more than the cap latches `truncated` and keeps the
@@ -619,10 +615,10 @@ mod tests {
         command.arg("-c");
         command.arg(format!("yes a | tr -d '\\n' | head -c {want}"));
         command.env("TERM", "dumb");
-        let session = PanePty::spawn(command, 80, 24).expect("spawn pty session");
-        wait_eof(&session);
+        let pty = PanePty::spawn(command, 80, 24).expect("spawn a pty");
+        wait_eof(&pty);
 
-        let RawOutput { bytes, truncated } = session.raw_output();
+        let RawOutput { bytes, truncated } = pty.raw_output();
         assert!(
             truncated,
             "an over-cap child must mark the capture truncated"
@@ -637,7 +633,7 @@ mod tests {
 
     /// A1 resize debounce: a rapid burst of distinct sizes (a continuous drag)
     /// collapses to ONE applied size — the FINAL one — and a disconnect (the
-    /// session dropping) flushes the final pending size so it is never stranded.
+    /// pty dropping) flushes the final pending size so it is never stranded.
     /// Pure policy test (no real PTY) via the `apply`-generic coalescer.
     #[test]
     fn resize_coalescer_debounces_to_the_final_size_and_flushes_on_drop() {

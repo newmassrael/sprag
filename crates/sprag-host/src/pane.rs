@@ -57,7 +57,7 @@ use crate::wire::{
 };
 
 /// Encode a W3C `key` + `mods` to PTY bytes (the sprag-owned R2.6 encoder,
-/// [`sprag_input::encode`]) and write them to `session`. `true` on success;
+/// [`sprag_input::encode`]) and write them to `pty`. `true` on success;
 /// `false` if the key is unencodable or the write failed.
 ///
 /// This is the key->PTY SSOT shared by the RPC input surface
@@ -66,23 +66,23 @@ use crate::wire::{
 /// this directly with typed args) — so the human keyboard path and the AI
 /// `scene/invoke` path encode IDENTICALLY.
 #[must_use]
-pub fn send_key(session: &PanePtyHandle, key: &str, mods: Modifiers) -> bool {
-    match sprag_input::encode(key, mods, session.input_modes()) {
-        Some(bytes) => session.write(&bytes).is_ok(),
+pub fn send_key(pty: &PanePtyHandle, key: &str, mods: Modifiers) -> bool {
+    match sprag_input::encode(key, mods, pty.input_modes()) {
+        Some(bytes) => pty.write(&bytes).is_ok(),
         None => false,
     }
 }
 
-/// Write literal UTF-8 `text` to `session` (no key-encoding) — the IME-commit /
+/// Write literal UTF-8 `text` to `pty` (no key-encoding) — the IME-commit /
 /// paste seam. Empty text is a no-op success. `true` on success; `false` on a
 /// write failure. The text->PTY SSOT shared by [`SpragPaneExternal`]'s `text`
 /// action and the in-process client.
 #[must_use]
-pub fn send_text(session: &PanePtyHandle, text: &str) -> bool {
+pub fn send_text(pty: &PanePtyHandle, text: &str) -> bool {
     if text.is_empty() {
         return true;
     }
-    session.write(text.as_bytes()).is_ok()
+    pty.write(text.as_bytes()).is_ok()
 }
 
 /// The pane engine `External`: a thin, scene-stateless forwarder onto the
@@ -91,14 +91,14 @@ pub fn send_text(session: &PanePtyHandle, text: &str) -> bool {
 /// thread lives behind this boundary, so the engine is `UiThreadSync` from
 /// pinion's vantage (it does its work synchronously when invoked).
 pub struct SpragPaneExternal {
-    session: PanePtyHandle,
+    pty: PanePtyHandle,
 }
 
 impl SpragPaneExternal {
-    /// Build the engine surface over a live session's I/O handle.
+    /// Build the engine surface over a live pane's PTY I/O handle.
     #[must_use]
-    pub fn new(session: PanePtyHandle) -> Self {
-        Self { session }
+    pub fn new(pty: PanePtyHandle) -> Self {
+        Self { pty }
     }
 
     /// Encode a `key` action's args and write the resulting bytes to the
@@ -109,7 +109,7 @@ impl SpragPaneExternal {
         let Some((key, mods)) = parse_key_args(args)? else {
             return Ok(IntrospectValue::Null); // suppressed key-up edge
         };
-        if send_key(&self.session, &key, mods) {
+        if send_key(&self.pty, &key, mods) {
             Ok(IntrospectValue::Null)
         } else {
             Err(InvokeError::Rejected)
@@ -124,7 +124,7 @@ impl SpragPaneExternal {
     /// [`InvokeError::Rejected`].
     fn inject_text(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let text = parse_text_args(args)?;
-        if send_text(&self.session, &text) {
+        if send_text(&self.pty, &text) {
             Ok(IntrospectValue::Null)
         } else {
             Err(InvokeError::Rejected)
@@ -153,7 +153,7 @@ impl SpragPaneExternal {
     /// the live view and a larger offset windows into history, self-clamping to the retained
     /// depth (so `0..=scrollback_len` are all answerable, and past the top gets the top).
     fn frame_at(&self, offset: usize) -> CellFrame {
-        self.session.with_screen(|screen| CellFrame {
+        self.pty.with_screen(|screen| CellFrame {
             cells: sprag_grid::project_scrolled(screen, offset),
             facts: PaneScrollFacts::from_screen(screen),
         })
@@ -229,14 +229,13 @@ impl ExternalIntrospect for SpragPaneExternal {
             // plus one per retained history line. An agent reads this scalar to learn where
             // history ends, instead of fetching whole cell grids to find out.
             FRAMES_SLOT => Some(IntrospectValue::Int(
-                i64::try_from(self.session.with_screen(Screen::scrollback_len)).unwrap_or(i64::MAX)
-                    + 1,
+                i64::try_from(self.pty.with_screen(Screen::scrollback_len)).unwrap_or(i64::MAX) + 1,
             )),
             CURSOR_KEYS_SLOT => Some(IntrospectValue::Bool(
-                self.session.input_modes().application_cursor_keys,
+                self.pty.input_modes().application_cursor_keys,
             )),
             FULL_TEXT_SLOT => Some(IntrospectValue::Text(
-                self.session.with_screen(Screen::full_text),
+                self.pty.with_screen(Screen::full_text),
             )),
             _ => None,
         }

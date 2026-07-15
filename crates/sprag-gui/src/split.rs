@@ -831,7 +831,10 @@ pub(crate) fn docked_pane_indices() -> Vec<usize> {
 #[cfg(test)]
 fn boot_tree(slots: &[usize]) -> Option<DockTopology> {
     let mut tree = LayoutTree::new();
-    tree.reconcile(&slots.iter().map(|&s| PaneId(s as u64)).collect::<Vec<_>>());
+    tree.reconcile(
+        &slots.iter().map(|&s| PaneId(s as u64)).collect::<Vec<_>>(),
+        &mut std::collections::HashMap::new(),
+    );
     project_layout(&tree, &|pane| Some(pane.0 as usize))
 }
 
@@ -867,7 +870,10 @@ mod tests {
     #[test]
     fn project_layout_maps_live_panes_to_leaves_and_keeps_the_zero_pane_edge() {
         let mut local = LayoutTree::new();
-        local.reconcile(&[PaneId(0), PaneId(1)]);
+        local.reconcile(
+            &[PaneId(0), PaneId(1)],
+            &mut std::collections::HashMap::new(),
+        );
         let projected =
             project_layout(&local, &|pane| Some(pane.0 as usize)).expect("live panes arrange");
         assert_eq!(projected.leaf_count(), 2, "both live panes are rendered");
@@ -951,7 +957,10 @@ mod tests {
         let owner = Owner::new();
         owner.run(|| {
             let mut tree = LayoutTree::new();
-            tree.reconcile(&[PaneId(0), PaneId(1), PaneId(2)]);
+            tree.reconcile(
+                &[PaneId(0), PaneId(1), PaneId(2)],
+                &mut std::collections::HashMap::new(),
+            );
             let wire = LayoutWire::from(&tree);
 
             let topo = project_layout(&tree, &|p| Some(p.0 as usize)).expect("panes arrange");
@@ -1006,7 +1015,10 @@ mod tests {
         let owner = Owner::new();
         owner.run(|| {
             let mut tree = LayoutTree::new();
-            tree.reconcile(&[PaneId(0), PaneId(1)]);
+            tree.reconcile(
+                &[PaneId(0), PaneId(1)],
+                &mut std::collections::HashMap::new(),
+            );
             let topo = project_layout(&tree, &|p| Some(p.0 as usize)).expect("panes arrange");
 
             // The user drags the divider: the SIGNAL moves, the node still says 0.5.
@@ -1072,7 +1084,10 @@ mod tests {
         let owner = Owner::new();
         owner.run(|| {
             let mut host = LayoutTree::new();
-            host.reconcile(&[PaneId(0), PaneId(1), PaneId(2)]);
+            host.reconcile(
+                &[PaneId(0), PaneId(1), PaneId(2)],
+                &mut std::collections::HashMap::new(),
+            );
             let served = LayoutWire::from(&host);
 
             // Pane 2 is real and tiled host-side, but this client has no slot for it.
@@ -1127,7 +1142,10 @@ mod tests {
 
             // The adopted arrangement holds ONLY divider 0 — the transient is gone for good.
             let mut tree = LayoutTree::new();
-            tree.reconcile(&[PaneId(0), PaneId(1)]);
+            tree.reconcile(
+                &[PaneId(0), PaneId(1)],
+                &mut std::collections::HashMap::new(),
+            );
             let topo = project_layout(&tree, &|p| Some(p.0 as usize));
             prune_split_ratios(topo.as_ref());
 

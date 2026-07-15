@@ -99,19 +99,38 @@ pub enum SplitSide {
 /// (the sibling is gone, or floated out itself) degrades to an append, never an error.
 #[derive(Clone, PartialEq, Debug)]
 pub struct FloatHome {
-    /// A representative pane of the sibling sub-tree the leaf was paired with.
+    /// The sibling pane this leaf sits next to IN PAINT ORDER — see [`leaf_home_rec`] for why
+    /// that is a different end of the sub-tree on each side.
     ///
-    /// EXACT when that sibling was a bare leaf. When it was a sub-tree, the pane returns
-    /// adjacent to this representative rather than wrapping the whole sub-tree — no pane is
-    /// lost or reordered, the nesting is just flatter than it was (pinion's
-    /// `DockTopology::leaf_anchor` documents the same bound for the same reason).
+    /// EXACT when the sibling was a bare leaf. When it was a SUB-TREE the pane returns
+    /// adjacent to this representative rather than wrapping the whole sub-tree, and the
+    /// honest bound is narrower than it looks:
+    ///
+    /// * the pane SEQUENCE is restored — that is what picking the adjacent end buys, and it
+    ///   is the headline claim;
+    /// * no pane is lost;
+    /// * but the SHARES permute, and panes the user never touched are resized. See
+    ///   [`FloatHome::ratio`].
+    ///
+    /// pinion's `DockTopology::leaf_anchor` documents a sub-tree bound too, but claims only
+    /// *"no panel lost"* — do not read this as sourced from it beyond that word, and do not
+    /// read pinion as promising the rest. pinion also calls a fully sub-tree-faithful wrap
+    /// "a deferred follow-up gated on a consumer that needs pixel-exact nesting"; sprag IS
+    /// that consumer, so this bound is sprag's to retire, not an inherited excuse.
     sibling: PaneId,
     /// Which side of the parent split the leaf held.
     side: SplitSide,
     /// The parent split's axis.
     dir: SplitDir,
-    /// The parent split's share — so a dock-back restores the boundary the user dragged,
-    /// not an even default.
+    /// The parent split's share.
+    ///
+    /// **Restores the dragged boundary only when the sibling was a BARE LEAF.** Against a
+    /// sub-tree sibling it is re-applied to the split the leaf is re-inserted at, which is a
+    /// DIFFERENT boundary from the one it was captured off — so the order comes home and the
+    /// sizes do not. `append` builds a right-nested spine, so in a row of N panes only the
+    /// last two have a bare-leaf sibling: **the permuting case is the majority, not the
+    /// corner**. Measured: `0|(1|2)` at even shares, float pane 0, dock back → order
+    /// `[0,1,2]` restored, areas `.50/.25/.25` → `.25/.25/.50`.
     ratio: f32,
 }
 
@@ -229,7 +248,7 @@ impl LayoutNode {
         out
     }
 
-    /// This sub-tree's first pane in paint order — its representative.
+    /// This sub-tree's first pane in paint order.
     ///
     /// Total, not optional: a node is either a leaf or a division of two nodes, so every
     /// one bottoms out in at least one pane. Only [`LayoutTree::root`] can be empty.
@@ -237,6 +256,15 @@ impl LayoutNode {
         match self {
             Self::Leaf(pane) => *pane,
             Self::Split { first, .. } => first.first_pane(),
+        }
+    }
+
+    /// This sub-tree's last pane in paint order. Total, for the same reason as
+    /// [`Self::first_pane`].
+    fn last_pane(&self) -> PaneId {
+        match self {
+            Self::Leaf(pane) => *pane,
+            Self::Split { second, .. } => second.last_pane(),
         }
     }
 
@@ -288,6 +316,19 @@ impl LayoutNode {
 /// Capture the home of `target`'s leaf: the parent split's axis / share, which side the leaf
 /// held, and a representative pane of the sibling sub-tree.
 ///
+/// **The representative is the sibling's pane ADJACENT IN PAINT ORDER, which is a different
+/// end of the sub-tree on each side** — `second.first_pane()` for a `First` leaf,
+/// `first.last_pane()` for a `Second` one. Re-splitting that leaf returns the pane to its old
+/// slot in the pane SEQUENCE; re-splitting the far end inserts it into the middle instead.
+///
+/// Geometry cannot decide this and it is a mistake to reach for it: against a sub-tree sibling
+/// there is often no single neighbouring pane — in `(0 over 2) | 1` BOTH 0 and 2 border pane
+/// 1 — so paint order, which is total, is the fact that picks. Taking the far end for a
+/// `Second` leaf made `(0 over 2) | 1` dock back as `(0|1) over 2`: the pane landed inside its
+/// neighbour's quadrant at half its area while an untouched pane doubled — strictly WORSE than
+/// the plain append this replaced. Every home test before that one used a right-nested boot
+/// row, where the floated leaf is always `First` and the asymmetry cannot show.
+///
 /// `None` when `target` holds no leaf here, or holds the ROOT leaf — a sole tiled pane has no
 /// parent split, hence no neighbour to come home to.
 fn leaf_home_rec(node: &LayoutNode, target: PaneId) -> Option<FloatHome> {
@@ -312,7 +353,8 @@ fn leaf_home_rec(node: &LayoutNode, target: PaneId) -> Option<FloatHome> {
     }
     if is_target(second) {
         return Some(FloatHome {
-            sibling: first.first_pane(),
+            // The sibling's LAST pane: the one this leaf follows in paint order.
+            sibling: first.last_pane(),
             side: SplitSide::Second,
             dir: *dir,
             ratio: *ratio,
@@ -424,21 +466,6 @@ impl LayoutTree {
         true
     }
 
-    /// Self-heal this arrangement against the window's live pane set, with no homes to
-    /// restore — every pane not yet placed is appended.
-    ///
-    /// This is how the tree stays true without being the membership authority — the
-    /// workspace is (see the module docs). PURE: it holds no lock, so a caller reads the
-    /// pane ids first and reconciles after, never nesting the registry lock inside the
-    /// workspace lock.
-    ///
-    /// The [`Window`](crate::Window) calls [`reconcile_homing`](Self::reconcile_homing)
-    /// instead, since it owns the homes its floats captured. This form is for a caller with
-    /// none to offer — a client re-deriving a default arrangement from a bare pane list.
-    pub fn reconcile(&mut self, panes: &[PaneId]) {
-        self.reconcile_homing(panes, &mut HashMap::new());
-    }
-
     /// Self-heal this arrangement against the window's live pane set: drop the leaves of
     /// panes that are gone (siblings reclaim), then place every pane not yet arranged — at
     /// its [`FloatHome`] if `homes` has an honorable one, else appended in `panes` order.
@@ -456,7 +483,7 @@ impl LayoutTree {
     /// pass restores whoever can, until a pass restores nobody; then the rest append.
     /// The loop terminates: every pass either places a pane (there are finitely many) or
     /// breaks.
-    pub fn reconcile_homing(&mut self, panes: &[PaneId], homes: &mut HashMap<PaneId, FloatHome>) {
+    pub fn reconcile(&mut self, panes: &[PaneId], homes: &mut HashMap<PaneId, FloatHome>) {
         let live: HashSet<PaneId> = panes.iter().copied().collect();
         for gone in self.panes().into_iter().filter(|p| !live.contains(p)) {
             self.remove_pane(gone);
@@ -482,6 +509,15 @@ impl LayoutTree {
             homes.remove(pane);
             self.append_pane(*pane);
         }
+        // A home is spent when its pane IS TILED — not only when this call placed it. A pane
+        // can already hold a leaf and a home at once (floated and un-floated between two
+        // reconciles, so the leaf never collapsed), and the loops above skip exactly that
+        // pane because it is already arranged. Draining on the FACT ("it is tiled, so it has
+        // a real position") rather than on the EVENT ("I just placed it") is what makes the
+        // claim above true by construction, instead of true only while every caller happens
+        // to reconcile between one float and the next.
+        let tiled: HashSet<PaneId> = self.panes().into_iter().collect();
+        homes.retain(|pane, _| !tiled.contains(pane));
     }
 
     /// Replace this arrangement with a client's `wire` one, stamping a fresh [`SplitId`]
@@ -724,6 +760,12 @@ pub struct LayoutSnapshot {
 mod tests {
     use super::*;
 
+    /// `reconcile` with no homes to restore — what a caller with none must now write, and
+    /// writing it is the point: there is no shorter overload that drops them silently.
+    fn heal(tree: &mut LayoutTree, panes: &[PaneId]) {
+        tree.reconcile(panes, &mut HashMap::new());
+    }
+
     fn ids(n: u64) -> Vec<PaneId> {
         (0..n).map(PaneId).collect()
     }
@@ -821,13 +863,102 @@ mod tests {
     #[test]
     fn a_leaf_home_captures_the_sibling_side_and_share() {
         let mut tree = LayoutTree::new();
-        tree.reconcile(&ids(3));
+        heal(&mut tree, &ids(3));
+        // The user drags the inner divider off its even default, so the captured share is a
+        // value only the TREE can supply. Asserting RATIO_DEFAULT here would pin nothing:
+        // `append_pane` writes that same const, so a `leaf_home` that hardcoded it instead of
+        // reading `*ratio` would pass.
+        if let Some(LayoutNode::Split { second, .. }) = tree.root.as_mut()
+            && let LayoutNode::Split { ratio, .. } = second.as_mut()
+        {
+            *ratio = 0.8;
+        }
         // Right-nested `0 | (1 | 2)`: pane 1 is FIRST under the inner split, beside 2.
         let home = tree.leaf_home(PaneId(1)).expect("pane 1 is tiled beside 2");
         assert_eq!(home.sibling, PaneId(2));
         assert_eq!(home.side, SplitSide::First);
         assert_eq!(home.dir, SplitDir::Horizontal);
-        assert_eq!(home.ratio, RATIO_DEFAULT);
+        assert!((home.ratio - 0.8).abs() < f32::EPSILON, "read, not assumed");
+    }
+
+    /// `(0 over 2) | 1` — two ordinary drags from boot. Pane 1 is the `Second` side of the
+    /// root, so its home names the sibling COLUMN's last pane, not its first.
+    ///
+    /// Every other home test uses a right-nested boot row, where the floated leaf is always
+    /// `First` and `second.first_pane()` happens to be the adjacent end — so the asymmetry
+    /// hides and 48 green tests prove nothing about it. Getting this wrong docked pane 1 back
+    /// INSIDE the top-left quadrant at half its area, which the plain append it replaced got
+    /// right.
+    #[test]
+    fn a_second_side_leaf_comes_home_beside_its_actual_neighbour() {
+        let mut tree = LayoutTree::new();
+        tree.root = Some(LayoutNode::Split {
+            id: SplitId(0),
+            dir: SplitDir::Horizontal,
+            ratio: 0.5,
+            first: Box::new(LayoutNode::Split {
+                id: SplitId(1),
+                dir: SplitDir::Vertical,
+                ratio: 0.5,
+                first: Box::new(LayoutNode::Leaf(PaneId(0))),
+                second: Box::new(LayoutNode::Leaf(PaneId(2))),
+            }),
+            second: Box::new(LayoutNode::Leaf(PaneId(1))),
+        });
+        tree.next_split = 2;
+        let before = tree.panes();
+        assert_eq!(before, vec![PaneId(0), PaneId(2), PaneId(1)]);
+
+        let home = tree.leaf_home(PaneId(1)).expect("pane 1 is tiled");
+        assert_eq!(
+            home.sibling,
+            PaneId(2),
+            "pane 1 FOLLOWS the column's last pane (2) in paint order; 0 is the far end",
+        );
+
+        let mut homes = HashMap::from([(PaneId(1), home)]);
+        heal(&mut tree, &[PaneId(0), PaneId(2)]); // pane 1 floats out
+        tree.reconcile(&before, &mut homes); // …and docks back
+        assert_eq!(
+            tree.panes(),
+            before,
+            "the pane came home to its own column, not into its neighbour's quadrant",
+        );
+    }
+
+    /// THE HONEST BOUND, pinned so it cannot be forgotten or quietly overstated: against a
+    /// SUB-TREE sibling the pane's ORDER comes home but the SHARES permute — and that is the
+    /// MAJORITY of positions in a default row, not a corner case (`append` builds a
+    /// right-nested spine, so only the last two panes have a bare-leaf sibling).
+    ///
+    /// pinion ships a guard for its equivalent bound; R156 copied the bound's PROSE and left
+    /// the guard behind, so nothing modelled the reachable-majority branch. If a future round
+    /// makes the restore sub-tree-faithful, this test SHOULD fail — that is its job.
+    #[test]
+    fn a_subtree_sibling_restores_the_order_but_permutes_the_shares() {
+        let mut tree = LayoutTree::new();
+        heal(&mut tree, &ids(3)); // `0 | (1 | 2)`, every share even
+        let before = tree.panes();
+
+        // Float the LEFTMOST pane — the most ordinary float there is, and its sibling is the
+        // whole `(1|2)` sub-tree.
+        let home = tree.leaf_home(PaneId(0)).expect("pane 0 is tiled");
+        let mut homes = HashMap::from([(PaneId(0), home)]);
+        heal(&mut tree, &[PaneId(1), PaneId(2)]);
+        tree.reconcile(&before, &mut homes);
+
+        assert_eq!(tree.panes(), before, "the ORDER comes home");
+        // …but pane 0 held half the window and now holds a quarter: the captured ratio was
+        // re-applied to a boundary that is not the one it came off.
+        let LayoutNode::Split { first, ratio, .. } = tree.root().unwrap() else {
+            panic!("still a row")
+        };
+        assert!((*ratio - RATIO_DEFAULT).abs() < f32::EPSILON);
+        assert!(
+            matches!(first.as_ref(), LayoutNode::Split { .. }),
+            "pane 0 came back NESTED beside pane 1, not spanning the left half: {:?}",
+            tree.root(),
+        );
     }
 
     /// The sole tiled pane has no parent split, hence no neighbour to come home to. `None`
@@ -835,7 +966,7 @@ mod tests {
     #[test]
     fn the_sole_leaf_has_no_home_and_an_untiled_pane_has_none_either() {
         let mut tree = LayoutTree::new();
-        tree.reconcile(&ids(1));
+        heal(&mut tree, &ids(1));
         assert!(tree.leaf_home(PaneId(0)).is_none(), "no parent split");
         assert!(tree.leaf_home(PaneId(7)).is_none(), "not tiled at all");
         assert!(LayoutTree::new().leaf_home(PaneId(0)).is_none(), "no root");
@@ -846,7 +977,7 @@ mod tests {
     #[test]
     fn a_home_restores_the_pane_to_its_place_and_share() {
         let mut tree = LayoutTree::new();
-        tree.reconcile(&ids(3));
+        heal(&mut tree, &ids(3));
         // The user drags the inner divider off its even default; that share is the one that
         // must come home.
         if let Some(LayoutNode::Split { second, .. }) = tree.root.as_mut()
@@ -858,10 +989,10 @@ mod tests {
         let home = tree.leaf_home(PaneId(1)).unwrap();
         assert!((home.ratio - 0.8).abs() < f32::EPSILON, "captured the drag");
         let mut homes = HashMap::from([(PaneId(1), home)]);
-        tree.reconcile(&[PaneId(0), PaneId(2)]); // pane 1 floats out
+        heal(&mut tree, &[PaneId(0), PaneId(2)]); // pane 1 floats out
         assert_eq!(tree.panes(), vec![PaneId(0), PaneId(2)]);
 
-        tree.reconcile_homing(&ids(3), &mut homes); // …and docks back
+        tree.reconcile(&ids(3), &mut homes); // …and docks back
         assert_eq!(tree.panes(), ids(3), "home, not the end");
         assert!(homes.is_empty(), "an honored home is spent");
         let LayoutNode::Split { second, .. } = tree.root().unwrap() else {
@@ -882,13 +1013,13 @@ mod tests {
     #[test]
     fn a_restored_home_mints_a_fresh_split_id_and_never_reissues_the_retired_one() {
         let mut tree = LayoutTree::new();
-        tree.reconcile(&ids(3));
+        heal(&mut tree, &ids(3));
         let before: HashSet<SplitId> = split_ids(tree.root().unwrap()).into_iter().collect();
 
         let home = tree.leaf_home(PaneId(1)).unwrap();
         let mut homes = HashMap::from([(PaneId(1), home)]);
-        tree.reconcile(&[PaneId(0), PaneId(2)]);
-        tree.reconcile_homing(&ids(3), &mut homes);
+        heal(&mut tree, &[PaneId(0), PaneId(2)]);
+        tree.reconcile(&ids(3), &mut homes);
 
         let after = split_ids(tree.root().unwrap());
         let unique: HashSet<SplitId> = after.iter().copied().collect();
@@ -910,14 +1041,14 @@ mod tests {
     #[test]
     fn a_home_whose_sibling_is_not_tiled_degrades_to_an_append() {
         let mut tree = LayoutTree::new();
-        tree.reconcile(&ids(3));
+        heal(&mut tree, &ids(3));
         let home = tree.leaf_home(PaneId(1)).unwrap();
         assert_eq!(home.sibling, PaneId(2));
         let mut homes = HashMap::from([(PaneId(1), home)]);
 
         // Pane 1 leaves the tiling, and so does its home sibling 2.
-        tree.reconcile(&[PaneId(0)]);
-        tree.reconcile_homing(&[PaneId(0), PaneId(1)], &mut homes);
+        heal(&mut tree, &[PaneId(0)]);
+        tree.reconcile(&[PaneId(0), PaneId(1)], &mut homes);
 
         assert_eq!(
             tree.panes(),
@@ -938,17 +1069,17 @@ mod tests {
     #[test]
     fn homes_are_restored_to_a_fixpoint_not_in_pane_order() {
         let mut tree = LayoutTree::new();
-        tree.reconcile(&ids(3));
+        heal(&mut tree, &ids(3));
         let home_1 = tree.leaf_home(PaneId(1)).unwrap();
         assert_eq!(home_1.sibling, PaneId(2), "1's home names 2");
-        tree.reconcile(&[PaneId(0), PaneId(2)]);
+        heal(&mut tree, &[PaneId(0), PaneId(2)]);
         let home_2 = tree.leaf_home(PaneId(2)).unwrap();
         assert_eq!(home_2.sibling, PaneId(0), "2's home names 0");
-        tree.reconcile(&[PaneId(0)]);
+        heal(&mut tree, &[PaneId(0)]);
 
         // Both dock back at once. Pane 1 is unrestorable until pane 2 is back.
         let mut homes = HashMap::from([(PaneId(1), home_1), (PaneId(2), home_2)]);
-        tree.reconcile_homing(&ids(3), &mut homes);
+        tree.reconcile(&ids(3), &mut homes);
         assert_eq!(
             tree.panes(),
             ids(3),
@@ -957,30 +1088,18 @@ mod tests {
         assert!(homes.is_empty());
     }
 
-    /// `reconcile` is `reconcile_homing` with nothing to restore — one implementation, so a
-    /// caller with no homes cannot drift from the one that has them.
-    #[test]
-    fn reconcile_without_homes_appends_exactly_as_it_always_did() {
-        let mut with = LayoutTree::new();
-        with.reconcile_homing(&ids(3), &mut HashMap::new());
-        let mut without = LayoutTree::new();
-        without.reconcile(&ids(3));
-        assert_eq!(with, without);
-        assert_eq!(without.panes(), ids(3));
-    }
-
     #[test]
     fn reconcile_adds_new_panes_and_drops_gone_ones() {
         let mut tree = LayoutTree::new();
-        tree.reconcile(&ids(3));
+        heal(&mut tree, &ids(3));
         assert_eq!(tree.panes(), ids(3), "unarranged panes get placed");
 
         // Pane 1 closed (e.g. a plugin reaped it straight off the Workspace) and pane 3
         // appeared: the arrangement self-heals against the live set.
-        tree.reconcile(&[PaneId(0), PaneId(2), PaneId(3)]);
+        heal(&mut tree, &[PaneId(0), PaneId(2), PaneId(3)]);
         assert_eq!(tree.panes(), vec![PaneId(0), PaneId(2), PaneId(3)]);
 
-        tree.reconcile(&[]);
+        heal(&mut tree, &[]);
         assert!(
             tree.root().is_none(),
             "an emptied workspace empties the layout"
@@ -992,7 +1111,7 @@ mod tests {
         // The load-bearing property for detach/reattach: reconciling around a set change
         // must not reshuffle or re-even the panes the user already arranged.
         let mut tree = LayoutTree::new();
-        tree.reconcile(&ids(2));
+        heal(&mut tree, &ids(2));
         // The user dragged the divider off-centre.
         if let Some(LayoutNode::Split { ratio, .. }) = tree.root.as_mut() {
             *ratio = 0.8;
@@ -1002,7 +1121,7 @@ mod tests {
             other => panic!("expected a split, got {other:?}"),
         };
 
-        tree.reconcile(&ids(3)); // a third pane appears
+        heal(&mut tree, &ids(3)); // a third pane appears
 
         match tree.root().unwrap() {
             LayoutNode::Split { id, ratio, .. } => {
@@ -1024,7 +1143,7 @@ mod tests {
         // user's dragged ratio. If serde dropped a field the client would silently
         // restore a DIFFERENT layout, which is the whole thing detach/reattach sells.
         let mut tree = LayoutTree::new();
-        tree.reconcile(&ids(3));
+        heal(&mut tree, &ids(3));
         if let Some(LayoutNode::Split { ratio, dir, .. }) = tree.root.as_mut() {
             *ratio = 0.73;
             *dir = SplitDir::Vertical;
@@ -1059,7 +1178,7 @@ mod tests {
     #[test]
     fn a_write_stamps_client_minted_dividers_and_keeps_known_ones() {
         let mut tree = LayoutTree::new();
-        tree.reconcile(&ids(2)); // one divider, id 0
+        heal(&mut tree, &ids(2)); // one divider, id 0
 
         // The client dragged pane 2 in, minting a divider it cannot name (`id: None`),
         // and kept the divider it already knew (id 0) at a ratio the user dragged.
@@ -1153,7 +1272,7 @@ mod tests {
     #[test]
     fn a_malformed_write_is_rejected_whole() {
         let mut tree = LayoutTree::new();
-        tree.reconcile(&ids(2));
+        heal(&mut tree, &ids(2));
         let good = tree.clone();
 
         let split = |ratio: f32, first, second| LayoutWire {
@@ -1218,7 +1337,7 @@ mod tests {
     #[test]
     fn an_empty_write_is_legal_and_keeps_the_minting_mark() {
         let mut tree = LayoutTree::new();
-        tree.reconcile(&ids(3));
+        heal(&mut tree, &ids(3));
         let mark = tree.next_split;
         assert!(mark > 0);
 
@@ -1231,9 +1350,9 @@ mod tests {
     #[test]
     fn reconcile_is_idempotent() {
         let mut tree = LayoutTree::new();
-        tree.reconcile(&ids(3));
+        heal(&mut tree, &ids(3));
         let once = tree.clone();
-        tree.reconcile(&ids(3));
+        heal(&mut tree, &ids(3));
         assert_eq!(tree, once, "reconciling an unchanged set changes nothing");
     }
 }

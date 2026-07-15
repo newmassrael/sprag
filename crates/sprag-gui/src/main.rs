@@ -814,10 +814,11 @@ impl WidgetCore for TerminalViewer {
             // preview==result). Only the main window bears the dock topology; a non-main
             // window gate above keeps a non-slot target out.
             // Order (R149, reversed): REDOCK first — the host puts the pane back into the
-            // tiling (at the arrangement's end) and we adopt that — THEN relocate the
-            // now-present leaf to the resolved zone, which `sync_layout` writes back once the
-            // gesture settles. So the pane lands where it was DROPPED, not at its index home.
-            // The intermediate "tiled at the end" arrangement is never painted: both steps
+            // tiling (at its captured FloatHome since R156) and we adopt that — THEN relocate
+            // the now-present leaf to the resolved zone, which `sync_layout` writes back once
+            // the gesture settles. So the pane lands where it was DROPPED: a gesture outranks
+            // the memo, because the gesture is applied second and is what gets written.
+            // The intermediate "tiled at its home" arrangement is never painted: both steps
             // run inside one `update` tick with no reconcile between, so the redock still
             // paints ONCE at the final slot. A future refactor splitting them across ticks
             // would expose that transient.
@@ -2276,11 +2277,18 @@ mod tests {
     /// GIVEN the `terminal-0.tear_off_redock_at` intent (what pinion's R1148->R1163b
     /// `over_window` composition fires when a floater is dropped over another window's dock
     /// zone), the reducer must land the pane AT THE DROP ZONE — `[terminal-1, terminal-0]`,
-    /// the reverse of boot home — not at its index home. Zone-honoring here was once
+    /// the reverse of boot home — not at the place it came from. Zone-honoring here was once
     /// placeholder mode's whole reason to exist; it now works with the leaf REMOVED on float,
     /// because the reducer redocks first (the host tiles the pane again) and then relocates
     /// the leaf, which `sync_layout` writes back. pinion R1173 also made
     /// `dock_panel_at_resolved_zone` total over an absent leaf.
+    ///
+    /// **R156 SHARPENED THIS TEST WITHOUT TOUCHING IT.** Before the float home anchor the
+    /// redock step APPENDED, which for two panes already produced `[terminal-1, terminal-0]`
+    /// — so the assertion was satisfiable with the relocate doing nothing at all. Now the
+    /// redock puts the pane back at its home (`[terminal-0, terminal-1]`), so only the
+    /// relocate can produce what this asserts. It stopped being a coincidence and became a
+    /// test of the thing it names.
     ///
     /// SCOPE (honest, avoiding the R69/R83 overclaim): this does NOT prove the LIVE gesture
     /// "drag a settled floater onto main -> it redocks" end to end — whether the shell FIRES

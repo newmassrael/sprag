@@ -460,8 +460,9 @@ fn open_floating(i: usize, position: Option<(i32, i32)>) {
 /// gesture never floated is harmless). Shared by [`toggle_pane_floating`]'s dock-back
 /// branch and the live redock/restore (pinion R1094 / PINION-PR31).
 ///
-/// It also asks the HOST to put the pane back into the tiling, and adopts the answer. With
-/// no gesture to place it, the host returns it at the arrangement's END. A cross-window ZONE
+/// It also asks the HOST to put the pane back into the tiling, and adopts the answer. With no
+/// gesture to place it, the host returns it to the place its float captured (its `FloatHome`),
+/// falling back to the arrangement's END only when that home cannot be honored. A cross-window ZONE
 /// redock is different: the reducer arm redocks FIRST and then relocates the now-present leaf
 /// to the resolved zone, and [`crate::split::sync_layout`] writes THAT back — so a dropped
 /// pane lands where it was dropped. (pinion R1173 also made `dock_panel_at_resolved_zone`

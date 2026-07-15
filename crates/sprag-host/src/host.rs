@@ -194,9 +194,12 @@ pub trait HostClient {
     /// Take pane `id` out of the tiling (`floating == true`) or put it back, returning the
     /// resulting arrangement.
     ///
-    /// Floating collapses the pane's leaf host-side, so the siblings reclaim its space; a
-    /// pane docked back with no gesture to place it returns at the arrangement's end. WHERE
-    /// a floating pane's window then sits on screen is the client's own business.
+    /// Floating collapses the pane's leaf host-side, so the siblings reclaim its space. A
+    /// pane docked back with no gesture to place it returns to the place its float captured
+    /// (`sprag_terminal::FloatHome`): the pane SEQUENCE comes home, and the shares come home
+    /// too when its sibling was a bare leaf. It falls back to the arrangement's END only when
+    /// the home cannot be honored — its sibling has since exited, or been floated out itself.
+    /// WHERE a floating pane's window then sits on screen is the client's own business.
     ///
     /// REFUSED if it would leave the window tiling nothing (a terminal window always shows a
     /// terminal). The answer then carries the arrangement still in force, so a client that

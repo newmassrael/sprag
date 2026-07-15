@@ -18,7 +18,7 @@
 //! `scene/invoke` action channel against the pane's engine `External`, whose
 //! handler encodes the key (sprag-owned, R2.6) and writes to the live PTY
 //! (R1.7). The scene is rebuilt and discarded per request, but the mutation
-//! target — the PTY — lives in the session behind the External's
+//! target — the PTY — lives behind the External's
 //! `PanePtyHandle`, so the write reaches live state even though the scene
 //! does not persist.
 

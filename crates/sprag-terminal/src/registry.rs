@@ -7,10 +7,10 @@
 //! the detach/reattach arc (and windows/tabs) possible:
 //!
 //! ```text
-//! SessionRegistry            -- all sessions + the current one + the ONE global id counter
+//! SessionRegistry            -- all sessions + which one is current
 //!   Session (named)          -- the attach unit: an ordered set of windows + a current one
 //!     Window (named)         -- the layout unit: a pane pool + its LayoutTree
-//!       Workspace            -- the pane pool (crate::workspace), shared id counter
+//!       Workspace            -- the pane pool (crate::workspace); OWNS the shared id counter
 //!         Pane (PTY + emulator)
 //! ```
 //!
@@ -27,13 +27,12 @@
 //! ## The load-bearing invariant
 //!
 //! Every window's [`Workspace`] shares ONE `Arc<AtomicU64>` id counter
-//! ([`Workspace::with_id_source`]), so a [`PaneId`] is unique across the
+//! ([`Workspace::sibling`]), so a [`PaneId`] is unique across the
 //! WHOLE registry, monotonic, and never reused. That is what lets a pane be addressed
 //! by id alone regardless of which window/session holds it — the per-pane wire path
 //! stays window-free, and adding windows later needs no address migration.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::PaneId;
@@ -81,15 +80,13 @@ pub struct Window {
 }
 
 impl Window {
-    /// An empty window named `name`, its pane pool minting from the SHARED `id_counter`
-    /// (the registry-wide uniqueness invariant — see the module docs).
-    fn new(name: &str, default_size: (u16, u16), id_counter: Arc<AtomicU64>) -> Self {
+    /// An empty window named `name` over `pool` — which the caller obtains from
+    /// [`Workspace::sibling`], so every window in the registry mints from ONE id counter
+    /// (the load-bearing invariant; see the module docs).
+    fn new(name: &str, pool: Workspace) -> Self {
         Self {
             name: name.to_owned(),
-            workspace: Arc::new(Mutex::new(Workspace::with_id_source(
-                default_size,
-                id_counter,
-            ))),
+            workspace: Arc::new(Mutex::new(pool)),
             layout: LayoutTree::new(),
             floating: HashSet::new(),
             homes: HashMap::new(),
@@ -157,15 +154,17 @@ impl Window {
             // must draw (one fewer window) while leaving the tiling untouched, so pruning
             // outside would drop that change on the floor.
             window.floating.retain(|pane| live.contains(pane));
-            // A pane that exits takes its home with it — nothing will ever come back to it,
-            // and its id must not sit here waiting to collide with a future one.
+            // A pane that exits takes its home with it: nothing will ever come back to it, so
+            // the entry is dead weight that would accumulate for the window's life. (NOT to
+            // avoid an id collision — ids are minted from one registry-wide counter and are
+            // never reused, so a stale home cannot be mistaken for a future pane's.)
             window.homes.retain(|pane, _| live.contains(pane));
             let tiled: Vec<PaneId> = panes
                 .iter()
                 .copied()
                 .filter(|pane| !window.floating.contains(pane))
                 .collect();
-            window.layout.reconcile_homing(&tiled, &mut window.homes);
+            window.layout.reconcile(&tiled, &mut window.homes);
         });
         &self.layout
     }
@@ -329,10 +328,10 @@ impl Session {
     /// A session named `name` holding one empty window `"0"` — a session always has at
     /// least one window, which is what makes [`current_window`](Self::current_window)
     /// total.
-    fn new(name: &str, default_size: (u16, u16), id_counter: Arc<AtomicU64>) -> Self {
+    fn new(name: &str, pool: Workspace) -> Self {
         Self {
             name: name.to_owned(),
-            windows: vec![Window::new("0", default_size, id_counter)],
+            windows: vec![Window::new("0", pool)],
             current_window: 0,
         }
     }
@@ -384,7 +383,7 @@ impl SessionRegistry {
     #[must_use]
     pub fn new(default_size: (u16, u16)) -> Self {
         Self {
-            sessions: vec![Session::new("0", default_size, Arc::new(AtomicU64::new(0)))],
+            sessions: vec![Session::new("0", Workspace::new(default_size))],
             current_session: 0,
         }
     }
@@ -403,11 +402,6 @@ impl SessionRegistry {
     #[must_use]
     pub fn session(&self, name: &str) -> Option<&Session> {
         self.sessions.iter().find(|s| s.name == name)
-    }
-
-    /// Resolve a session by NAME, mutably.
-    pub fn session_mut(&mut self, name: &str) -> Option<&mut Session> {
-        self.sessions.iter_mut().find(|s| s.name == name)
     }
 
     /// Create a session named `name`, holding one empty window.
@@ -433,12 +427,11 @@ impl SessionRegistry {
             return Err(SessionError::Duplicate(name.to_owned()));
         }
         let seed = self.current_workspace();
-        let (default_size, id_counter) = {
-            let pool = seed.lock().unwrap_or_else(PoisonError::into_inner);
-            (pool.default_size(), pool.id_source())
-        };
-        self.sessions
-            .push(Session::new(name, default_size, id_counter));
+        let pool = seed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .sibling();
+        self.sessions.push(Session::new(name, pool));
         Ok(())
     }
 
@@ -663,27 +656,70 @@ mod tests {
         );
     }
 
-    /// Capturing a home is invisible to a client: it is not served and not projected, so it
-    /// must not move the revision every attached client watches.
+    /// A pane that is TILED holds no home, whatever route it took to get there.
+    ///
+    /// Float then un-float with no reconcile between: the leaf never collapsed, so the pane
+    /// is still tiled AND holds a home. Nothing places it (it is already arranged), so a
+    /// spend-on-placement rule would leave that memo forever, to hijack some later
+    /// re-placement. `sprag-host` cannot reach this today — it reconciles after every float —
+    /// but that is the caller being well-behaved, and this type's doc promises the invariant
+    /// itself. R154's scar was exactly an invariant that held only by an accident of caller
+    /// ordering.
     #[test]
-    fn capturing_a_home_does_not_bump_the_revision_on_its_own() {
+    fn a_tiled_pane_holds_no_home_even_if_it_never_left_the_tiling() {
         let mut reg = SessionRegistry::new((80, 24));
         let ws = reg.current_workspace();
-        let ids: Vec<_> = (0..2)
+        let ids: Vec<_> = (0..3)
             .map(|_| lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap())
             .collect();
         let panes: Vec<_> = lock(&ws).panes().iter().map(Pane::id).collect();
         let window = reg.current_window_mut();
         window.reconcile_layout(&panes);
-        let before = window.layout_revision();
 
-        // A float bumps ONCE for the float set (the tiling follows on the next reconcile);
-        // the home captured alongside it adds nothing a client could re-read.
-        assert!(window.set_floating(ids[0], true, &panes));
+        // Float and un-float with NO reconcile between — the leaf never collapses.
+        assert!(window.set_floating(ids[1], true, &panes));
+        assert!(window.set_floating(ids[1], false, &panes));
+        window.reconcile_layout(&panes);
+
+        assert_eq!(
+            window.layout().panes(),
+            ids,
+            "the pane never left the tiling"
+        );
+        assert!(
+            window.homes.is_empty(),
+            "a tiled pane's home is spent; a stale memo could only fight its real position",
+        );
+    }
+
+    /// Capturing a home is invisible to a client: it is not served and not projected, so it
+    /// must not move the revision every attached client watches.
+    #[test]
+    fn a_homes_only_change_does_not_bump_the_revision() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let ws = reg.current_workspace();
+        let ids: Vec<_> = (0..3)
+            .map(|_| lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap())
+            .collect();
+        let panes: Vec<_> = lock(&ws).panes().iter().map(Pane::id).collect();
+        let window = reg.current_window_mut();
+        window.reconcile_layout(&panes);
+
+        // Float and un-float. The float set is back where it started and the tiling never
+        // moved, so the ONLY thing this pair of calls changed is `homes` — it captured one
+        // and the reconcile spent it. That is the isolation the old version of this test
+        // never achieved: it stimulated a FLOAT, which moves the float set, so it read
+        // `before + 1` whether or not `homes` was compared. It could not fail.
+        assert!(window.set_floating(ids[1], true, &panes));
+        assert!(window.set_floating(ids[1], false, &panes));
+        let settled = window.layout_revision();
+        assert_eq!(window.layout().panes(), ids, "the tiling never moved");
+
+        window.reconcile_layout(&panes);
         assert_eq!(
             window.layout_revision(),
-            before + 1,
-            "the float set changed once; the home is not a client-visible change",
+            settled,
+            "spending a home changes nothing a client can re-read, so it must not wake one",
         );
     }
 
@@ -1011,17 +1047,10 @@ mod tests {
     fn a_shared_counter_makes_ids_globally_unique_across_windows() {
         // The load-bearing invariant: two windows drawing from ONE registry counter never
         // collide, so a pane is addressable by id alone regardless of which window holds
-        // it. (Windows are constructed directly here — the registry's own new-window API
+        // it. (Pools are constructed directly here — the registry's own new-window API
         // is a later increment; this proves the counter-sharing the registry relies on.)
-        let counter = Arc::new(AtomicU64::new(0));
-        let win_a = Arc::new(Mutex::new(Workspace::with_id_source(
-            (80, 24),
-            Arc::clone(&counter),
-        )));
-        let win_b = Arc::new(Mutex::new(Workspace::with_id_source(
-            (80, 24),
-            Arc::clone(&counter),
-        )));
+        let win_a = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let win_b = Arc::new(Mutex::new(lock(&win_a).sibling()));
 
         let a0 = lock(&win_a).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
         let b0 = lock(&win_b).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();

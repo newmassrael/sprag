@@ -137,7 +137,7 @@ pub(crate) fn text_grid_node(screen: &Screen, metric: CellMetric) -> TextGridNod
 /// ([`sprag_grid::overlay_preedit`]) is a CLIENT-local step (an uncommitted
 /// composition that never reaches the PTY). Topology B splits the three along the
 /// wire boundary: the host PROJECTS (here), the client OVERLAYS its preedit and
-/// ASSEMBLES the node. The in-process GUI calls this directly on its own session;
+/// ASSEMBLES the node. The in-process GUI calls this directly on its own pane pool;
 /// the end-state wire client reads the serialized `GridBuffer` off the host over
 /// RPC and skips this. The `with_screen` lock is released when this returns (the
 /// owned buffer needs none), so the client's overlay + assembly run lock-free —
@@ -148,8 +148,8 @@ pub(crate) fn text_grid_node(screen: &Screen, metric: CellMetric) -> TextGridNod
 /// drops the cursor while scrolled — so a client `overlay_preedit` self-gates off
 /// a history view with no extra check).
 #[must_use]
-pub fn pane_cells(session: &PanePty, offset_lines: usize) -> GridBuffer {
-    session.with_screen(|screen| sprag_grid::project_scrolled(screen, offset_lines))
+pub fn pane_cells(pty: &PanePty, offset_lines: usize) -> GridBuffer {
+    pty.with_screen(|screen| sprag_grid::project_scrolled(screen, offset_lines))
 }
 
 /// Assemble ONE pane's `Scene::Container` from an already-projected cell buffer
@@ -175,7 +175,7 @@ pub fn pane_cells(session: &PanePty, offset_lines: usize) -> GridBuffer {
 ///
 /// **This is the seam the topology-B display client assembles the pane node from.**
 /// The in-process GUI
-/// reaches it by projecting its session's screen via [`pane_cells`] and overlaying
+/// reaches it by projecting its PTY's screen via [`pane_cells`] and overlaying
 /// its IME preedit ([`sprag_grid::overlay_preedit`]) first; the end-state wire
 /// client feeds cells it reconstructed off the host's served data model — both
 /// build the byte-identical pane node without this assembly ever touching a live
@@ -226,7 +226,7 @@ fn view_text_grid(
 /// using the 8×16 baseline cell metric ([`CellMetric::DEFAULT`]).
 ///
 /// This is the pure data projection — a function of the screen alone, with
-/// no live session — used by [`snapshot`] and data-only consumers. The RPC
+/// no live pty — used by [`snapshot`] and data-only consumers. The RPC
 /// server assembles the full pane tree via [`workspace_scene`]; the windowed
 /// host builds per-pane scenes via [`pane_view_scene_from_cells`] (from cells it
 /// reads through [`pane_cells`]) and arranges them GUI-side.
@@ -246,12 +246,12 @@ pub fn scene_with_metric(screen: &Screen, metric: CellMetric) -> Scene {
 /// and a [`SpragPaneExternal`] input engine holding the pane's
 /// [`PanePtyHandle`](sprag_terminal::PanePtyHandle) so `scene/invoke` reaches
 /// that pane's PTY.
-fn pane_container(id: PaneId, session: &PanePty) -> Scene {
-    let children = session.with_screen(|screen| {
+fn pane_container(id: PaneId, pty: &PanePty) -> Scene {
+    let children = pty.with_screen(|screen| {
         vec![
             Scene::TextGrid(text_grid_node(screen, CellMetric::DEFAULT)),
             Scene::External(
-                ExternalNode::new(Box::new(pane::SpragPaneExternal::new(session.handle())))
+                ExternalNode::new(Box::new(pane::SpragPaneExternal::new(pty.handle())))
                     .with_tag(INPUT_TAG),
             ),
         ]
@@ -262,7 +262,7 @@ fn pane_container(id: PaneId, session: &PanePty) -> Scene {
 /// Assemble the live workspace as a `Scene::Container` of its panes plus the
 /// pane-management [`WorkspaceExternal`] (Round 7 multiplex control core).
 ///
-/// Each pane child is refreshed from its session's current screen; the
+/// Each pane child is refreshed from its PTY's current screen; the
 /// engines and the control surface hold shared handles (a `PanePtyHandle`
 /// per pane, an `Arc<Mutex<SessionRegistry>>` for mux control and an
 /// `Arc<Mutex<Workspace>>` for the plugin host), so the per-request

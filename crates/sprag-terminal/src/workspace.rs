@@ -94,7 +94,7 @@ impl Pane {
         self.pty.title()
     }
 
-    /// A cloneable I/O handle onto this pane's session.
+    /// A cloneable I/O handle onto this pane's pseudoterminal.
     #[must_use]
     pub fn handle(&self) -> PanePtyHandle {
         self.pty.handle()
@@ -135,18 +135,20 @@ pub struct Workspace {
 impl Workspace {
     /// A new, empty workspace with its OWN private id counter, whose dimension-less
     /// spawns adopt `default_size`. For a standalone pane pool (and unit tests); a
-    /// registry-owned window uses [`Self::with_id_source`] to share the global counter.
+    /// registry-owned window uses [`Self::sibling`] to share the global counter.
     #[must_use]
     pub fn new(default_size: (u16, u16)) -> Self {
         Self::with_id_source(default_size, Arc::new(AtomicU64::new(0)))
     }
 
-    /// A new, empty workspace drawing pane ids from the SHARED `next_id` counter, so
-    /// every window under one [`SessionRegistry`](crate::SessionRegistry) mints
-    /// globally-unique, never-reused ids (the load-bearing invariant behind window-free
-    /// pane addressing).
-    #[must_use]
-    pub fn with_id_source(default_size: (u16, u16), next_id: Arc<AtomicU64>) -> Self {
+    /// A new, empty workspace drawing pane ids from `next_id`.
+    ///
+    /// PRIVATE: sharing a counter is [`sibling`](Self::sibling)'s job, and routing every
+    /// sharer through it is what keeps the counter inside the type that owns the
+    /// never-reused invariant. A public constructor taking the counter would let a caller
+    /// supply a fresh one for a pool that ought to share, re-introducing the duplicate ids
+    /// `sibling` exists to prevent.
+    fn with_id_source(default_size: (u16, u16), next_id: Arc<AtomicU64>) -> Self {
         Self {
             panes: Vec::new(),
             next_id,
@@ -160,17 +162,22 @@ impl Workspace {
         self.default_size
     }
 
-    /// A handle on the id counter this pool mints from, for
-    /// [`with_id_source`](Self::with_id_source) to seed a SIBLING pool with.
+    /// A new, empty pool minting from THIS one's id counter and inheriting its default size —
+    /// how a [`SessionRegistry`](crate::SessionRegistry) adds a window or a session.
     ///
-    /// The counter lives with the thing it counts, so a new window / session clones it out
-    /// of a pool that already exists rather than reading it from a second home that would
-    /// have to be kept in step. Cloning the `Arc` is what makes ids unique across every
-    /// pool in one [`SessionRegistry`](crate::SessionRegistry) — copying the VALUE would
-    /// mint duplicates immediately.
+    /// **Hands out the OPERATION, not the resource.** The obvious shape — a getter returning
+    /// the `Arc<AtomicU64>` — looks like a read handle and is not: the caller also gets
+    /// `.store()`, and one call would reset the counter and mint duplicate [`PaneId`]s across
+    /// every window in every session, which is the invariant this module calls load-bearing.
+    /// The enforcement of an invariant must not leave the type that owns it, so the counter
+    /// never leaves; only the ability to start a pool that shares it does.
     #[must_use]
-    pub fn id_source(&self) -> Arc<AtomicU64> {
-        Arc::clone(&self.next_id)
+    pub fn sibling(&self) -> Self {
+        Self {
+            panes: Vec::new(),
+            next_id: Arc::clone(&self.next_id),
+            default_size: self.default_size,
+        }
     }
 
     /// Spawn `command` on a fresh `cols x rows` pane, returning its id.
@@ -337,7 +344,7 @@ mod tests {
         assert_eq!(ws.pane(a).unwrap().pty().dimensions(), (100, 30));
         assert!(!ws.resize(PaneId(999), 10, 10).unwrap());
         // Through a SHARED &Workspace — the path the GUI reflow Effect uses via
-        // an Rc; resize needs no &mut now that the session is interior-mutable.
+        // an Rc; resize needs no &mut now that the pty is interior-mutable.
         let shared: &Workspace = &ws;
         assert!(shared.resize(a, 64, 20).unwrap());
         assert_eq!(ws.pane(a).unwrap().pty().dimensions(), (64, 20));
