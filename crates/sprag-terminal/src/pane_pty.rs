@@ -161,16 +161,22 @@ impl PanePty {
         Self::spawn_with_dirty(command, cols, rows, None)
     }
 
-    /// [`Self::spawn`] with an `on_dirty` callback invoked on the reader
-    /// thread after each parsed PTY batch is applied to the screen.
+    /// [`Self::spawn`] with an `on_dirty` callback invoked on the reader thread
+    /// after each parsed PTY batch is applied to the screen, **and once more when
+    /// the child exits** — after [`is_eof`](Self::is_eof) publishes, so a wake can
+    /// never observe the pane it announces as still live.
     ///
-    /// This is the sprag side of the pinion R999 `RepaintSink` seam: a
-    /// windowed host passes `Some(Box::new(move || sink.request_repaint()))`
-    /// so PTY output wakes the shell to repaint. The callback is deliberately
-    /// pinion-free (`Box<dyn Fn() + Send>`), so this crate stays decoupled
-    /// from the GUI shell — the pinion coupling lives in the host. Headless
-    /// hosts pass `None` (the RPC `scene/snapshot` poll drives frames; no wake
-    /// is needed).
+    /// The exit wake is what lets a caller treat "this child is gone" as an event
+    /// rather than something it must poll for: the daemon ends its own process when
+    /// the last live pane dies, and a client repaints the pane's final screen.
+    ///
+    /// This is the sprag side of the pinion R999 `RepaintSink` seam. The callback is
+    /// deliberately pinion-free (`Box<dyn Fn() + Send>`), so this crate stays
+    /// decoupled from the GUI shell — the pinion coupling lives in the host. A
+    /// windowed host passes `Some(Box::new(move || sink.request_repaint()))`; the
+    /// headless host passes `bump_on_dirty`, which moves the scene revision so a
+    /// parked `scene/waitFor` wakes. `None` is for a caller with nothing to notify
+    /// (this crate's own tests, and [`spawn`](Self::spawn)).
     ///
     /// # Errors
     ///
@@ -241,7 +247,17 @@ impl PanePty {
                         Err(_) => break,
                     }
                 }
+                // Publish EOF BEFORE the wake, never after: the notify below is what
+                // the daemon's "any live panes left?" check runs off, and a wake that
+                // overtook this flag would count the very pane that just died as live.
                 reader_eof.store(true, Ordering::Release);
+                // Wake the host for the child's EXIT, not just its output. A pane dying
+                // changes what a client draws, and it is the event the daemon's lifetime
+                // turns on — but the loop above notified only on `Ok(n)`, so an exit
+                // reached whoever happened to poll next and nobody else.
+                if let Some(ref notify) = on_dirty {
+                    notify();
+                }
             })
             .map_err(|e| PanePtyError::new("spawn reader thread", &e))?;
 
@@ -575,6 +591,47 @@ mod tests {
             sleep(Duration::from_millis(20));
         }
         assert!(pty.is_eof(), "child did not reach EOF in time");
+    }
+
+    /// A child that exits without ever writing a byte still wakes the host, and EOF
+    /// is published by the time that wake lands.
+    ///
+    /// The `Ok(n)` branch is the only other notifier and it NEVER runs for a silent
+    /// child, so a wake observed here can have come from the exit path alone — the
+    /// guard cannot pass by accident. The wake is what the daemon ends its process on
+    /// (last live pane gone) and what repaints a dead pane's final screen; before it,
+    /// an exit reached only whoever happened to poll next.
+    ///
+    /// The second assert pins the ORDER the daemon's check depends on: the store is
+    /// `Release`-published before the notify, and the channel send happens after it,
+    /// so a receiver is guaranteed to see it. Were the two swapped, a wake could
+    /// count the very pane that just died as still live.
+    #[test]
+    fn a_silent_childs_exit_still_wakes_the_host() {
+        let (tx, rx) = mpsc::channel();
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg("exec true"); // exits at once, writes nothing to the pty
+        command.env("TERM", "dumb");
+        let pty = PanePty::spawn_with_dirty(
+            command,
+            20,
+            4,
+            Some(Box::new(move || {
+                let _ = tx.send(());
+            })),
+        )
+        .expect("spawn a pty");
+
+        assert!(
+            rx.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "the child's exit woke nobody",
+        );
+        assert!(
+            pty.is_eof(),
+            "the wake landed before EOF was published — a live-pane count run from it \
+             would still count this pane",
+        );
     }
 
     /// The raw capture is byte-faithful even when the output is a single
