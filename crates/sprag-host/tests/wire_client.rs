@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    CLOSE_ACTION, FULL_TEXT_SLOT, LAYOUT_SLOT, PANES_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
-    SPAWN_ACTION, TEXT_ACTION, cells_slot_at,
+    CLOSE_ACTION, FULL_TEXT_SLOT, LAYOUT_SLOT, NEW_SESSION_ACTION, PANES_SLOT, SESSIONS_SLOT,
+    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, cells_slot_at,
 };
 use sprag_host::{mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
@@ -353,6 +353,36 @@ fn connect_fails_cleanly_when_no_host_is_listening() {
     );
 }
 
+/// Spawn a `cat` pane into the session named `session`, over the real socket — the pane-set
+/// grows in THAT session and nowhere else. Returns the new pane's id.
+fn spawn_in(conn: &mut HostConn, session: &str) -> u64 {
+    conn.call(
+        "scene/invoke",
+        json!({
+            "session": session,
+            "path": mux_action_path(SPAWN_ACTION),
+            "args": { "cmd": ["cat"] },
+        }),
+    )
+    .expect("spawn a pane in the named session")
+    .as_u64()
+    .expect("spawn returns the new pane id")
+}
+
+/// The pane ids the session named `session` holds, over the mux `panes` slot.
+fn pane_ids_in(conn: &mut HostConn, session: &str) -> Vec<u64> {
+    conn.call(
+        "scene/query",
+        json!({ "session": session, "path": mux_action_path(PANES_SLOT) }),
+    )
+    .ok()
+    .and_then(|v| {
+        v.as_array()
+            .map(|arr| arr.iter().filter_map(|p| p["id"].as_u64()).collect())
+    })
+    .unwrap_or_default()
+}
+
 /// Read the host's current scene revision.
 fn read_revision(conn: &mut HostConn) -> u64 {
     conn.call("scene/revision", json!({}))
@@ -501,6 +531,122 @@ fn a_floated_pane_docks_back_at_its_home_across_the_real_socket() {
     let _ = std::fs::remove_file(&sock);
 }
 
+/// Two sessions under ONE daemon are independent, over a REAL socket — the shape the owner's
+/// several-windows workflow needs once one process holds every session (the point of C1a).
+///
+/// A single connection creates `work`, then drives BOTH sessions by naming each on the wire.
+/// Every assertion is paired with its complement: `work`'s panes are `work`'s AND not the
+/// default's, its arrangement is its own AND leaves the default's untouched. A daemon that
+/// merged the two — or answered whichever session happened to be first — fails the second
+/// half of each pair, which the first half alone could not catch.
+#[test]
+fn two_sessions_under_one_daemon_are_independent_over_the_real_socket() {
+    let (_host, sock) = spawn_host();
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term host");
+
+    // The daemon boots with one session, "0", holding its boot `cat` pane (id 0).
+    let sessions = conn
+        .call(
+            "scene/query",
+            json!({ "path": mux_action_path(SESSIONS_SLOT) }),
+        )
+        .expect("the sessions slot answers");
+    assert_eq!(
+        sessions.as_array().map(Vec::len),
+        Some(1),
+        "one session at boot: {sessions}",
+    );
+    assert_eq!(
+        pane_ids_in(&mut conn, "0"),
+        vec![0],
+        "the default's boot pane"
+    );
+
+    // Create a second session by name, over the wire.
+    let created = conn
+        .call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(NEW_SESSION_ACTION), "args": { "name": "work" } }),
+        )
+        .expect("new_session answers");
+    assert_eq!(
+        created, "work",
+        "the answer is the name to scope with: {created}"
+    );
+
+    // Spawn two panes into `work`. Ids come from ONE registry-wide counter, so they are 1 and
+    // 2 — distinct from the default's 0, which is what lets the sets be told apart.
+    let w1 = spawn_in(&mut conn, "work");
+    let w2 = spawn_in(&mut conn, "work");
+    assert_eq!(
+        pane_ids_in(&mut conn, "work"),
+        vec![w1, w2],
+        "work holds exactly what was spawned into it",
+    );
+    assert_eq!(
+        pane_ids_in(&mut conn, "0"),
+        vec![0],
+        "...and the default still holds only its boot pane — the two do not merge",
+    );
+
+    // Arrange `work`'s two panes as a vertical split at a dragged ratio, naming `work`.
+    let (rev, _) = read_layout_in(&mut conn, "work");
+    conn.call(
+        "scene/invoke",
+        json!({
+            "session": "work",
+            "path": mux_action_path(SET_LAYOUT_ACTION),
+            "args": { "expected_revision": rev, "tree": { "root": { "split": {
+                "dir": "vertical",
+                "ratio": 0.8,
+                "first": { "leaf": w1 },
+                "second": { "leaf": w2 },
+            } } } },
+        }),
+    )
+    .expect("work's arrangement write answers");
+
+    // work's window carries the split; the default's window is still a lone boot leaf.
+    let (_, work_tree) = read_layout_in(&mut conn, "work");
+    assert!(
+        matches!(
+            work_tree.root(),
+            Some(sprag_terminal::LayoutNode::Split {
+                dir: sprag_terminal::SplitDir::Vertical,
+                ..
+            })
+        ),
+        "work holds the vertical split it was given: {:?}",
+        work_tree.root(),
+    );
+    let (_, default_tree) = read_layout_in(&mut conn, "0");
+    assert_eq!(
+        default_tree.root(),
+        Some(&sprag_terminal::LayoutNode::Leaf(sprag_terminal::PaneId(0))),
+        "the default session's arrangement was never touched by work's gesture",
+    );
+
+    // Closing work's pane leaves the default's set alone — lifecycle is scoped too.
+    conn.call(
+        "scene/invoke",
+        json!({ "session": "work", "path": mux_action_path(CLOSE_ACTION), "args": { "id": w2 } }),
+    )
+    .expect("close in work answers");
+    assert_eq!(
+        pane_ids_in(&mut conn, "work"),
+        vec![w1],
+        "work lost its pane"
+    );
+    assert_eq!(
+        pane_ids_in(&mut conn, "0"),
+        vec![0],
+        "...and the default is untouched by a close in another session",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
 /// Read the current arrangement off the wire, exactly as a display client does: query the
 /// mux `layout` slot, deserialise the snapshot, and install its tree — which VALIDATES what
 /// the host sent and yields definite divider ids to key per-split state on.
@@ -511,6 +657,23 @@ fn read_layout(conn: &mut HostConn) -> (u64, sprag_terminal::LayoutTree) {
             json!({ "path": mux_action_path(LAYOUT_SLOT) }),
         )
         .expect("the layout query answers");
+    let snapshot: sprag_terminal::LayoutSnapshot =
+        serde_json::from_value(value).expect("the layout deserialises off the wire");
+    let mut tree = sprag_terminal::LayoutTree::new();
+    tree.set_from_wire(snapshot.tree)
+        .expect("a served arrangement is well-formed");
+    (snapshot.revision, tree)
+}
+
+/// [`read_layout`] scoped to the session named `session` — the arrangement of THAT session's
+/// current window.
+fn read_layout_in(conn: &mut HostConn, session: &str) -> (u64, sprag_terminal::LayoutTree) {
+    let value = conn
+        .call(
+            "scene/query",
+            json!({ "session": session, "path": mux_action_path(LAYOUT_SLOT) }),
+        )
+        .expect("the scoped layout query answers");
     let snapshot: sprag_terminal::LayoutSnapshot =
         serde_json::from_value(value).expect("the layout deserialises off the wire");
     let mut tree = sprag_terminal::LayoutTree::new();

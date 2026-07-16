@@ -113,6 +113,52 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     SchemaField::new(FULL_TEXT_SLOT, "string"),
 ];
 
+/// The out-of-band request param naming the SESSION a request acts on — `{"session": "work"}`
+/// alongside `path` / `args`, never part of the address.
+///
+/// ## Why a param and not connection identity
+///
+/// One daemon holds every session, so a request must say which one it is about. The obvious
+/// shape — "the host learns who is asking from the connection" — is not available and should
+/// not be: pinion's `RpcFrame` carries a request string and a reply sink and no identity, so
+/// teaching the funnel about connections would be an upstream ask. It is also the wrong
+/// model. Which session a client is attached to is the CLIENT's state; it knows it, and
+/// sending it makes each request self-describing and the host free of per-connection
+/// bookkeeping. tmux's `switch-client` then costs nothing here — a client switches by sending
+/// a different name.
+///
+/// ## The contract, copied from pinion's own precedent
+///
+/// pinion carries the same shape for its display windows (`Request::window_scope`, R890.1
+/// §5.49 — a different concept that merely shares the word "window"), and sprag mirrors it
+/// deliberately rather than inventing a second convention for one idea:
+///
+/// * **absent** → the default scope ([`SessionRegistry::default_session`](sprag_terminal::SessionRegistry::default_session));
+/// * **a string** → the session of that name;
+/// * **present but not a string** → `-32602`, before method routing, never a silent fallback
+///   to the default. pinion's doc records why in its own scars: silently dropping a
+///   malformed scope made the request act on the primary — "wrong target for writes, wrong
+///   data for reads" — and that survived an entire campaign to kill aliasing precisely
+///   because it hid in the type-error corner;
+/// * **a name no session carries** → refused wholesale, for the same reason.
+pub const SESSION_PARAM: &str = "session";
+
+/// The mux control external query slot: every session's name, plus which one an unscoped
+/// request acts on — how a client discovers what it can address with [`SESSION_PARAM`].
+///
+/// Served rather than left to convention: a scope param an agent cannot enumerate is one it
+/// must guess at, and the whole point of the scene-as-data surface is that a peer ASKS.
+pub const SESSIONS_SLOT: &str = "sessions";
+
+/// The mux control external invoke action that creates a session (`{name}`), returning its
+/// name.
+///
+/// An ACTION, not an `intervene` slot: it is not a plain assignment — the name must be free
+/// (a name is an ADDRESS, so a duplicate would make one ambiguous) and the create is
+/// refusable. Creating is deliberately NOT attaching: it changes no other client's scope,
+/// because nothing can — the default is immutable and every other client names its own.
+pub const NEW_SESSION_ACTION: &str = "new_session";
+
 /// The mux control external invoke action that spawns a pane, returning its id.
 pub const SPAWN_ACTION: &str = "spawn";
 /// The mux control external invoke action that closes a pane.
@@ -121,7 +167,8 @@ pub const CLOSE_ACTION: &str = "close";
 pub const RESIZE_ACTION: &str = "resize";
 /// The mux control external query slot: the live pane list as JSON.
 pub const PANES_SLOT: &str = "panes";
-/// The mux control external query slot: the current window's LOGICAL layout + the
+/// The mux control external query slot: the LOGICAL layout of the current window of the
+/// session the request is SCOPED to ([`SESSION_PARAM`]), plus the
 /// revision it is at ([`LayoutSnapshot`](sprag_terminal::LayoutSnapshot)) as JSON — the
 /// arrangement a display client projects, and the state that lets a reattaching client
 /// restore the user's layout. Logical only: it carries no pixels.

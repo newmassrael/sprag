@@ -1,8 +1,9 @@
 //! The headless JSON-RPC server loop.
 //!
 //! Serves pinion's scene-as-data wire over a line-delimited transport,
-//! assembling the current window's live [`Workspace`](sprag_terminal::Workspace)
-//! panes into a fresh scene for each request. This is the runnable form of the headless data path
+//! resolving each request's [`SessionScope`] and assembling that session's current-window
+//! live [`Workspace`](sprag_terminal::Workspace)
+//! panes into a fresh scene. This is the runnable form of the headless data path
 //! (DESIGN.md §1/§3): an external AI peer reads the terminals as data and
 //! drives input / pane lifecycle, with no GPU and no shell event loop.
 //!
@@ -30,13 +31,14 @@ use std::sync::{Arc, Mutex};
 use pinion_core::SceneRevision;
 use pinion_rpc::preview::PreviewLedger;
 use pinion_rpc::{
-    DispatchContext, Request, RpcFrame, RpcIngress, RpcReply, WaiterRegistry, dispatch,
+    DispatchContext, Request, RpcError, RpcFrame, RpcIngress, RpcReply, WaiterRegistry, dispatch,
     dispatch_parsed, parse_request, try_async_wait_for,
 };
 use sprag_terminal::SessionRegistry;
 
 use crate::host::Host;
 use crate::runs::RunRegistry;
+use crate::scope::{ScopeError, SessionScope};
 
 /// The long-lived host state threaded through the serve loop: the booted [`Host`]
 /// (the single [`SessionRegistry`] owner), the background plugin-run registry, pinion's
@@ -170,32 +172,78 @@ pub fn handle_request(state: &HostState, request_json: &str) -> Option<String> {
     match parse_request(request_json) {
         Ok(request) => handle_parsed(state, request),
         Err(_) => {
-            // Malformed: assemble a ctx only for the canonical parse-error reply.
-            let mut scene = crate::workspace_scene(state.registry(), &state.runs, &state.revision);
+            // Malformed: assemble a ctx only for the canonical parse-error reply. It cannot
+            // carry a scope (there is no parsed request to read one off), and it does not
+            // need one — the reply is about the envelope, not about any session.
+            let scope = SessionScope::unscoped(state.registry());
+            let mut scene =
+                crate::workspace_scene(&scope, state.registry(), &state.runs, &state.revision);
             let mut ctx = DispatchContext::new(&mut scene, &state.previews, state.revision());
             dispatch(&mut ctx, request_json)
         }
     }
 }
 
-/// Answer one already-parsed JSON-RPC `request` against the workspace's current
-/// panes — the dispatch core shared by the string entry ([`handle_request`]) and
+/// Answer one already-parsed JSON-RPC `request` against the panes of the session it is
+/// SCOPED to — the dispatch core shared by the string entry ([`handle_request`]) and
 /// the live dispatch owner (`dispatch_one`, which parses once to intercept async
-/// `scene/waitFor` and hands the parsed request straight here). Assembles a fresh
-/// workspace scene (`Container[panes… + control External]`), then dispatches an
-/// allowlisted method ([`SUPPORTED_METHODS`]) or rejects a non-allowlisted one with
-/// a method-not-found error. Only the async `scene/waitFor` form is handled earlier
-/// (in `dispatch_one`); the v0 since-less form falls through here to pinion's
-/// synchronous handler.
+/// `scene/waitFor` and hands the parsed request straight here). Resolves the request's
+/// [`SessionScope`], assembles a fresh scene for that session
+/// (`Container[panes… + control External]`), then dispatches an allowlisted method
+/// ([`SUPPORTED_METHODS`]) or rejects a non-allowlisted one with a method-not-found error.
+/// Only the async `scene/waitFor` form is handled earlier (in `dispatch_one`); the v0
+/// since-less form falls through here to pinion's synchronous handler.
+///
+/// **Scope before method**, copying pinion's own ordering (`dispatch_parsed` validates its
+/// `window` scope ahead of routing): a request whose scope cannot be honored is refused
+/// whole, whatever it was going to ask. Routing first would mean deciding what a
+/// malformed-scope read or write "probably meant", and the honest answer is that it means
+/// nothing.
 #[must_use]
 pub fn handle_parsed(state: &HostState, request: Request) -> Option<String> {
-    let mut scene = crate::workspace_scene(state.registry(), &state.runs, &state.revision);
+    match SessionScope::resolve(state.registry(), &request) {
+        Ok(scope) => handle_scoped(state, &scope, request),
+        Err(error) => scope_refused(&request, &error),
+    }
+}
+
+/// Answer `request` against the session `scope` already names — the dispatch body, split from
+/// [`handle_parsed`] so the live owner (`dispatch_one`) can resolve the scope EARLY, refuse a
+/// bad one before the async intercept, and then hand the resolved answer straight here.
+///
+/// The split is what keeps one request to one resolution: without it `dispatch_one` would
+/// check the scope and `handle_parsed` would immediately derive it again, and two derivations
+/// of one fact is how they come to disagree.
+#[must_use]
+fn handle_scoped(state: &HostState, scope: &SessionScope, request: Request) -> Option<String> {
+    let mut scene = crate::workspace_scene(scope, state.registry(), &state.runs, &state.revision);
     let mut ctx = DispatchContext::new(&mut scene, &state.previews, state.revision());
     if SUPPORTED_METHODS.contains(&request.method.as_str()) {
         dispatch_parsed(&mut ctx, request)
     } else {
         Some(method_not_supported(&request))
     }
+}
+
+/// The JSON-RPC reply for a request whose session scope could not be honored — `-32602
+/// Invalid params`, built through pinion's own [`RpcError::invalid_params`] so the code and
+/// envelope are its vocabulary rather than a second spelling of them.
+///
+/// `None` for a NOTIFICATION (no `id`): there is nobody to tell, and inventing a reply for a
+/// request that asked for none would violate JSON-RPC. Silent, but not silently WRONG — the
+/// scope is refused either way, which is the property that matters. pinion's `dispatch_parsed`
+/// makes the identical choice at the identical point.
+fn scope_refused(request: &Request, error: &ScopeError) -> Option<String> {
+    let id = request.id.clone()?;
+    let rpc = RpcError::invalid_params(error);
+    Some(
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": { "code": rpc.code, "message": rpc.message, "data": rpc.data },
+        })
+        .to_string(),
+    )
 }
 
 /// Build the JSON-RPC method-not-found (-32601) reply for a well-formed but
@@ -262,25 +310,55 @@ pub fn dispatch_frames(state: &HostState, rx: Receiver<RpcFrame>) {
 /// split out so the async `scene/waitFor` park/wake path is unit-testable without
 /// standing up the channel loop.
 ///
-/// Parses the frame ONCE. An async `scene/waitFor {since}` is intercepted BEFORE
+/// Parses the frame ONCE, then resolves its session scope ONCE. An async
+/// `scene/waitFor {since}` is intercepted BEFORE
 /// the synchronous core: [`try_async_wait_for`] either answers it immediately (the
 /// scene already advanced past `since`) or PARKS its reply in the waiter registry —
 /// in which case the reply fires LATER, off this dispatch thread, on the scene bump
 /// that wakes it ([`HostState`] installed the wake observer). A non-`waitFor` frame
-/// (or a since-less v0 `waitFor`) is handed straight to [`handle_parsed`] with the
-/// already-parsed request — no re-parse. A malformed frame goes to [`handle_request`]
+/// (or a since-less v0 `waitFor`) is handed straight to [`handle_scoped`] with the
+/// already-parsed request and its already-resolved scope — no re-parse, no re-resolve. A
+/// malformed frame goes to [`handle_request`]
 /// for the canonical parse-error reply. Parking does not build the workspace scene,
 /// so a blocked wait costs nothing until a pane actually produces output.
+///
+/// ## The scope is resolved before the async intercept, deliberately
+///
+/// `try_async_wait_for` parks on the revision without ever looking at a scope, so validating
+/// inside [`handle_parsed`] would leave `scene/waitFor` the ONE method where a malformed or
+/// unknown `session` was accepted and ignored — a hole in exactly the shape of the bug the
+/// param exists to close, in exactly the corner (the async path) that pinion's own R890.1
+/// scar hid in. Resolving here covers every method by construction rather than by each one
+/// remembering.
+///
+/// **v1 bound, honest and documented rather than silent:** a waitFor's scope is CHECKED but
+/// not yet HONORED — the revision is one token for the whole registry, so a client scoped to
+/// `work` is woken when any session moves. The contract it can rely on is therefore "you are
+/// woken AT LEAST when your session changes": the wake is a hint to re-read, and the re-read
+/// is scoped and exact. Over-reporting is safe by construction here (`park_if_current` only
+/// ever answers early; nothing reads the revision as a write precondition), so tightening
+/// this to "only when" strengthens the contract without breaking a client built on it. That
+/// is why a scoped waitFor is accepted rather than refused — refusing would force every
+/// client to special-case the one method it scopes uniformly, and buy nothing.
 fn dispatch_one(state: &HostState, frame: RpcFrame) {
     let RpcFrame { request, reply } = frame;
     match parse_request(&request) {
         Ok(parsed) => {
+            let scope = match SessionScope::resolve(state.registry(), &parsed) {
+                Ok(scope) => scope,
+                Err(error) => {
+                    if let Some(response) = scope_refused(&parsed, &error) {
+                        reply.send(response);
+                    }
+                    return;
+                }
+            };
             match try_async_wait_for(&parsed, state.revision(), state.waiters(), reply) {
                 // Parked (or answered immediately) by the registry — nothing more to do.
                 ControlFlow::Break(()) => {}
                 // Not an async waitFor: dispatch the ALREADY-parsed request (no re-parse).
                 ControlFlow::Continue(reply) => {
-                    if let Some(response) = handle_parsed(state, parsed) {
+                    if let Some(response) = handle_scoped(state, &scope, parsed) {
                         reply.send(response);
                     }
                 }
@@ -863,6 +941,210 @@ mod tests {
         dispatch_one(
             state,
             RpcFrame::new(request.to_owned(), recording_reply(sink)),
+        );
+    }
+
+    // ─── C1a: the session scope, over the real dispatch path ───
+
+    /// A scope that cannot be honored refuses the request WHOLE — `-32602`, whatever it was
+    /// going to ask, across every method the host serves.
+    ///
+    /// The per-method sweep is the point rather than thoroughness theatre: the failure this
+    /// guards is a scope silently ignored on ONE surface, so checking a single method would
+    /// leave exactly the hole the test claims to close.
+    ///
+    /// **Scope of the claim, and it is narrower than it looks:** this drives the SYNCHRONOUS
+    /// entry ([`handle_request`]), so its `scene/waitFor` row proves nothing about the async
+    /// intercept — that frame is answered here by the very core `dispatch_one` skips. The
+    /// path that matters for waitFor has its own test
+    /// ([`a_wait_for_with_an_unhonorable_scope_is_refused_and_never_parks`]), because it is
+    /// the one place a scope could be accepted and ignored.
+    #[test]
+    fn a_scope_that_cannot_be_honored_refuses_every_method() {
+        let state = host_with("cat", 20, 4);
+        for method in SUPPORTED_METHODS {
+            for (scope, why) in [
+                (r#"42"#, "a non-string scope"),
+                (r#""ghost""#, "a name no session carries"),
+            ] {
+                let request = format!(
+                    r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{{"path":"","since":0,"session":{scope}}}}}"#
+                );
+                let value = serve_one(&state, &request);
+                assert_eq!(
+                    value["error"]["code"], -32602,
+                    "{why} on {method} must be Invalid params, not acted on: {value}",
+                );
+            }
+        }
+    }
+
+    /// The refusal is not merely an error — it is an error INSTEAD of the act.
+    ///
+    /// A `-32602` that had already spawned the pane would satisfy the test above while being
+    /// the exact bug it is written against, so this one checks the pane set.
+    #[test]
+    fn a_refused_scope_never_reaches_the_default_session() {
+        let state = host_with("cat", 20, 4);
+        let before = lock(&state.host.workspace()).panes().len();
+        let spawn = |scope: &str| {
+            format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{{"session":{scope},"path":"/sprag_mux/external/spawn","args":{{"cmd":["cat"]}}}}}}"#
+            )
+        };
+        for scope in ["42", r#""ghost""#] {
+            let value = serve_one(&state, &spawn(scope));
+            assert_eq!(value["error"]["code"], -32602, "{value}");
+        }
+        assert_eq!(
+            lock(&state.host.workspace()).panes().len(),
+            before,
+            "a request whose scope was refused must not have spawned anything, least of all \
+             into the session it did not name",
+        );
+        // The control: the SAME spawn with a scope that resolves does land — so the
+        // assertion above is about the scope, not about a spawn path that never works.
+        let value = serve_one(&state, &spawn(r#""0""#));
+        assert!(value.get("error").is_none(), "{value}");
+        assert_eq!(lock(&state.host.workspace()).panes().len(), before + 1);
+    }
+
+    /// An unscoped request keeps working, unchanged — every client that predates the param
+    /// sends none, and the default is what it has always meant.
+    #[test]
+    fn an_unscoped_request_still_answers_from_the_default_session() {
+        let state = host_with("printf hi", 20, 4);
+        wait_for_pane0_eof(&state);
+        let value = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/snapshot","params":{"path":""}}"#,
+        );
+        assert!(value.get("error").is_none(), "unexpected error: {value}");
+        assert!(
+            value["result"].to_string().contains("hi"),
+            "the boot pane's screen still answers with no session named: {}",
+            value["result"],
+        );
+    }
+
+    /// A second session over the REAL dispatch: created by name, then addressed by it — and
+    /// what it holds is its own.
+    #[test]
+    fn a_named_session_is_addressable_and_holds_its_own_panes() {
+        let state = host_with("cat", 20, 4);
+        let created = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_mux/external/new_session","args":{"name":"work"}}}"#,
+        );
+        assert_eq!(created["result"], "work", "{created}");
+
+        // Spawn into `work` by naming it. The default already holds the boot pane, so a
+        // surface that ignored the scope would answer 2 here, not 1.
+        let spawned = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":2,"method":"scene/invoke","params":{"session":"work","path":"/sprag_mux/external/spawn","args":{"cmd":["cat"]}}}"#,
+        );
+        assert!(spawned.get("error").is_none(), "{spawned}");
+
+        let panes = |scope: &str| -> usize {
+            let request = format!(
+                r#"{{"jsonrpc":"2.0","id":3,"method":"scene/query","params":{{"session":"{scope}","path":"/sprag_mux/external/panes"}}}}"#
+            );
+            serve_one(&state, &request)["result"]
+                .as_array()
+                .map(Vec::len)
+                .expect("the panes slot answers with an array")
+        };
+        assert_eq!(panes("work"), 1, "work holds only what was spawned into it");
+        assert_eq!(panes("0"), 1, "the default still holds only its boot pane");
+    }
+
+    /// The async intercept honors the scope too: a `scene/waitFor` whose scope cannot be
+    /// honored is REFUSED and never parks — exercised through the REAL `dispatch_one`, the
+    /// path `handle_request` cannot reach.
+    ///
+    /// This is the guard the per-method sweep could not give. `try_async_wait_for` parks on
+    /// the revision without ever seeing a scope, so if the check lived in `handle_parsed`
+    /// instead of ahead of the intercept, a bad-scope waitFor would slip past it and park —
+    /// the accept-and-ignore failure, in the exact corner (the async path) pinion's own
+    /// R890.1 scar hid in. Resolving the scope before the intercept is what closes it, and a
+    /// parked-count of zero after a refusal is what proves the close.
+    #[test]
+    fn a_wait_for_with_an_unhonorable_scope_is_refused_and_never_parks() {
+        let state = host_with("cat", 20, 4);
+        let since = state.revision().current();
+        for (scope, why) in [
+            ("42", "a non-string scope"),
+            (r#""ghost""#, "an unknown session"),
+        ] {
+            let sink = Arc::new(Mutex::new(Vec::new()));
+            dispatch_recording(
+                &state,
+                &format!(
+                    r#"{{"jsonrpc":"2.0","id":5,"method":"scene/waitFor","params":{{"since":{since},"session":{scope}}}}}"#
+                ),
+                &sink,
+            );
+            assert_eq!(
+                state.waiters().parked_count(),
+                0,
+                "{why} must be refused BEFORE the async park, not parked and ignored",
+            );
+            let responses = sink.lock().unwrap();
+            assert_eq!(responses.len(), 1, "the refusal was answered: {why}");
+            let v: serde_json::Value = serde_json::from_str(&responses[0]).unwrap();
+            assert_eq!(v["error"]["code"], -32602, "{why}: {v}");
+        }
+
+        // The control: a well-scoped waitFor against a live baseline DOES park — so the
+        // zero-parked assertions above are the refusal at work, not a waitFor that never
+        // parks regardless.
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        dispatch_recording(
+            &state,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":6,"method":"scene/waitFor","params":{{"since":{since},"session":"0"}}}}"#
+            ),
+            &sink,
+        );
+        assert_eq!(
+            state.waiters().parked_count(),
+            1,
+            "a well-scoped waitFor against the current revision parks normally",
+        );
+        assert!(
+            sink.lock().unwrap().is_empty(),
+            "...and is not answered while parked",
+        );
+    }
+
+    /// A pane of another session is not addressable — not refused by a check, but absent
+    /// from the scene the request is answered against, which is why there is no check to
+    /// forget.
+    #[test]
+    fn a_pane_of_another_session_is_not_in_the_scoped_scene() {
+        let state = host_with("cat", 20, 4);
+        serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_mux/external/new_session","args":{"name":"work"}}}"#,
+        );
+        // Pane 0 is the default session's boot pane. Ask `work` for it.
+        let value = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":2,"method":"scene/query","params":{"session":"work","path":"/pane_0/sprag_input/external/full_text"}}"#,
+        );
+        assert!(
+            value.get("error").is_some(),
+            "pane 0 belongs to the default session; `work` must not be able to read it: {value}",
+        );
+        // The control: the session that DOES hold it answers.
+        let value = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":3,"method":"scene/query","params":{"session":"0","path":"/pane_0/sprag_input/external/full_text"}}"#,
+        );
+        assert!(
+            value.get("error").is_none(),
+            "the default session holds pane 0 and must answer for it: {value}",
         );
     }
 

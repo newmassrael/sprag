@@ -7,12 +7,18 @@
 //! the detach/reattach arc (and windows/tabs) possible:
 //!
 //! ```text
-//! SessionRegistry            -- all sessions + which one is current
+//! SessionRegistry            -- every session; one of them is the default scope
 //!   Session (named)          -- the attach unit: an ordered set of windows + a current one
 //!     Window (named)         -- the layout unit: a pane pool + its LayoutTree
 //!       Workspace            -- the pane pool (crate::workspace); OWNS the shared id counter
 //!         Pane (PTY + emulator)
 //! ```
+//!
+//! A session is addressed by NAME, from outside this module and over the wire alike. The
+//! registry keeps no "current session" pointer: which session a request acts on is the
+//! request's own business (an out-of-band scope param), and the only unnamed scope is the
+//! immutable [`SessionRegistry::default_session`]. See its type docs for why a server-side
+//! selector would be the wrong shape.
 //!
 //! ## What this layer does and does not own
 //!
@@ -297,15 +303,12 @@ impl Window {
 pub enum SessionError {
     /// The name is already taken ([`SessionRegistry::new_session`]).
     Duplicate(String),
-    /// No session carries the name ([`SessionRegistry::select_session`]).
-    Unknown(String),
 }
 
 impl std::fmt::Display for SessionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Duplicate(name) => write!(f, "a session named {name:?} already exists"),
-            Self::Unknown(name) => write!(f, "no session named {name:?}"),
         }
     }
 }
@@ -356,7 +359,7 @@ impl Session {
     }
 }
 
-/// The durable server's whole state: every [`Session`] and which one is current.
+/// The durable server's whole state: every [`Session`].
 ///
 /// The default pane size is NOT held here — each window's [`Workspace`] owns it, and that
 /// is the only copy production reads, so there is nothing to drift.
@@ -367,12 +370,25 @@ impl Session {
 /// out of an existing window's workspace, so there is no duplicated handle to keep in
 /// sync.
 ///
-/// The host owns this behind an `Arc<Mutex<SessionRegistry>>` and resolves the current
-/// window's workspace out of it per request (so window/session switching, added later,
-/// needs no re-plumbing of the scene or externals).
+/// The host owns this behind an `Arc<Mutex<SessionRegistry>>` and resolves the session a
+/// request is SCOPED to out of it per request, by NAME
+/// ([`session`](Self::session) / [`window_mut`](Self::window_mut)).
+///
+/// ## Why there is no "current session" pointer
+///
+/// There used to be one, moved by a `select_session`, and it was a single-client-era
+/// artifact. tmux's server has no such thing: each CLIENT is attached to a session, and
+/// `switch-client` changes THAT client's attachment, not a server-wide global. Under an
+/// out-of-band `session` scope param a client says which session each request is about, so
+/// switching is purely a client-side change — it sends a different name. A server-side
+/// mutator's only remaining job would be to move the default OUT FROM UNDER every other
+/// attached client, which is the hazard [`new_session`](Self::new_session) already refuses
+/// to create. So the only scope that is not named by the caller is
+/// [`default_session`](Self::default_session), and nothing can move it.
 pub struct SessionRegistry {
+    /// Never empty: [`new`](Self::new) seeds one, and no removal path exists — which is
+    /// what makes [`default_session`](Self::default_session) total.
     sessions: Vec<Session>,
-    current_session: usize,
 }
 
 impl SessionRegistry {
@@ -384,7 +400,6 @@ impl SessionRegistry {
     pub fn new(default_size: (u16, u16)) -> Self {
         Self {
             sessions: vec![Session::new("0", Workspace::new(default_size))],
-            current_session: 0,
         }
     }
 
@@ -396,9 +411,11 @@ impl SessionRegistry {
 
     /// Resolve a session by NAME. `None` if no session carries it.
     ///
-    /// Name, never index, is how a session is addressed from outside this type — see
-    /// [`select_session`](Self::select_session) for why that is structural rather than
-    /// stylistic.
+    /// Name, never index, is how a session is addressed from outside this type: an index
+    /// supplied from outside is a number that means nothing until it is checked, and the
+    /// checking is what every caller forgets. A name that does not resolve is `None` here
+    /// and a refusal at the wire, rather than an out-of-range value some later, unrelated
+    /// request panics on.
     #[must_use]
     pub fn session(&self, name: &str) -> Option<&Session> {
         self.sessions.iter().find(|s| s.name == name)
@@ -408,12 +425,13 @@ impl SessionRegistry {
     ///
     /// Its pane pool clones the id counter out of a pool that already exists, so ids stay
     /// unique across the WHOLE registry (the module's load-bearing invariant) with no second
-    /// home to keep in step. Size is inherited from the current window's pool, which is the
+    /// home to keep in step. Size is inherited from the default session's pool, which is the
     /// only copy production reads.
     ///
-    /// Does NOT make the new session current: creating and attaching are separate acts, and
-    /// a client that creates a session for someone else must not yank the scope out from
-    /// under whoever is attached now.
+    /// Does NOT change any other client's scope: creating and attaching are separate acts,
+    /// and a client that creates a session for someone else must not yank the scope out from
+    /// under whoever is attached now. Nothing here can — the default is immutable, and every
+    /// other client names its own scope.
     ///
     /// # Errors
     ///
@@ -426,7 +444,7 @@ impl SessionRegistry {
         if self.session(name).is_some() {
             return Err(SessionError::Duplicate(name.to_owned()));
         }
-        let seed = self.current_workspace();
+        let seed = Arc::clone(self.default_session().current_window().workspace());
         let pool = seed
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -435,59 +453,47 @@ impl SessionRegistry {
         Ok(())
     }
 
-    /// Make the session named `name` the current one — the scope an UNSCOPED request acts on.
+    /// The session an UNSCOPED request acts on — the one the host booted with.
     ///
-    /// **This is why the current pointer cannot be driven off the wire as an index.** It is
-    /// resolved from a NAME here, so the only index ever stored is one this type just found
-    /// in its own `sessions`; a name that does not resolve is an `Err`, not an out-of-range
-    /// write that a later read turns into a panic on some unrelated request. The invariant
-    /// ("the index addresses a session that exists") is upheld by construction at the one
-    /// site that can move it, rather than by a comment asking every future caller to be
-    /// careful.
+    /// Total, and immutably so: `sessions` is seeded non-empty and has no removal path, and
+    /// nothing moves which session is the default (see the type docs — a client that wants
+    /// another session NAMES it). So this is not a pointer that must be maintained; it is the
+    /// first session, for the life of the registry.
     ///
-    /// # Errors
+    /// **Bound for the daemon increment:** "exit when the registry empties" would introduce
+    /// the first way for `sessions` to shrink, and a kill of the boot session is exactly what
+    /// this totality rests on. That increment must decide what an unscoped request means with
+    /// the default gone — the honest answers are to re-establish a default explicitly or to
+    /// make this fallible — rather than discovering it as a panic.
+    #[must_use]
+    pub fn default_session(&self) -> &Session {
+        &self.sessions[0]
+    }
+
+    /// The window a request scoped to the session named `session` acts on, mutably — the seam
+    /// a caller reconciles the arrangement through ([`Window::reconcile_layout`]). `None` if
+    /// no session carries the name.
     ///
-    /// [`SessionError::Unknown`] if no session carries `name`; the current session is
-    /// unchanged.
-    pub fn select_session(&mut self, name: &str) -> Result<(), SessionError> {
-        let index = self
-            .sessions
-            .iter()
-            .position(|s| s.name == name)
-            .ok_or_else(|| SessionError::Unknown(name.to_owned()))?;
-        self.current_session = index;
-        Ok(())
+    /// The `Option` is what makes a vanished scope a REFUSAL at the caller rather than a
+    /// panic here: a scope is validated when a request arrives, but the authority for "does
+    /// this session exist" is this type, and asking it again at the moment of use is what
+    /// keeps the two from drifting once a removal path exists.
+    pub fn window_mut(&mut self, session: &str) -> Option<&mut Window> {
+        let session = self.sessions.iter_mut().find(|s| s.name == session)?;
+        Some(&mut session.windows[session.current_window])
     }
 
-    /// The current session. Never panics: `current_session` is kept `< sessions.len()`
-    /// and `sessions` is never empty.
+    /// A clone of the pane-pool handle of the window a request scoped to `session` acts on —
+    /// the `Arc<Mutex<Workspace>>` the host hands to the per-request scene assembly and the
+    /// control / plugin externals. `None` if no session carries the name.
+    ///
+    /// Cloned (not borrowed) so the registry lock is released before the workspace lock is
+    /// taken; because the scene + externals are rebuilt per request from this call, a window
+    /// switch is reflected on the next request with no re-plumbing.
     #[must_use]
-    pub fn current_session(&self) -> &Session {
-        &self.sessions[self.current_session]
-    }
-
-    /// The current window (the current session's current window).
-    #[must_use]
-    pub fn current_window(&self) -> &Window {
-        self.current_session().current_window()
-    }
-
-    /// The current window, mutably — the seam a caller reconciles the arrangement
-    /// through ([`Window::reconcile_layout`]).
-    pub fn current_window_mut(&mut self) -> &mut Window {
-        let session = &mut self.sessions[self.current_session];
-        &mut session.windows[session.current_window]
-    }
-
-    /// A clone of the current window's pane-pool handle — the `Arc<Mutex<Workspace>>`
-    /// the host hands to the per-request scene assembly and the control / plugin
-    /// externals. Cloned (not borrowed) so the registry lock is released before the
-    /// workspace lock is taken; because the scene + externals are rebuilt per request
-    /// from this call, a later current-window switch is reflected on the next request
-    /// with no re-plumbing.
-    #[must_use]
-    pub fn current_workspace(&self) -> Arc<Mutex<Workspace>> {
-        Arc::clone(self.current_window().workspace())
+    pub fn workspace_of(&self, session: &str) -> Option<Arc<Mutex<Workspace>>> {
+        self.session(session)
+            .map(|s| Arc::clone(s.current_window().workspace()))
     }
 }
 
@@ -509,17 +515,38 @@ mod tests {
         ws.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// The DEFAULT session's name — the scope an unscoped request resolves to. Tests address
+    /// through this rather than hardcoding `"0"`, so what the host boots with stays the
+    /// registry's business and only [`boots_one_session_one_window_matching_a_standalone_workspace`]
+    /// pins the literal.
+    fn default_name(reg: &SessionRegistry) -> String {
+        reg.default_session().name().to_owned()
+    }
+
+    /// The default session's pane pool — what an unscoped request acts on.
+    fn pool(reg: &SessionRegistry) -> Arc<Mutex<Workspace>> {
+        reg.workspace_of(&default_name(reg))
+            .expect("the default session always resolves")
+    }
+
+    /// The default session's window, mutably.
+    fn default_window(reg: &mut SessionRegistry) -> &mut Window {
+        let name = default_name(reg);
+        reg.window_mut(&name)
+            .expect("the default session always resolves")
+    }
+
     #[test]
     fn boots_one_session_one_window_matching_a_standalone_workspace() {
         // Behaviour-preserving boot: exactly one session, one window, an empty pool that
         // mints ids from 0 — the single Workspace the host owned before this layer.
         let reg = SessionRegistry::new((80, 24));
         assert_eq!(reg.sessions().len(), 1);
-        assert_eq!(reg.current_session().name(), "0");
-        assert_eq!(reg.current_session().windows().len(), 1);
-        assert_eq!(reg.current_window().name(), "0");
+        assert_eq!(reg.default_session().name(), "0");
+        assert_eq!(reg.default_session().windows().len(), 1);
+        assert_eq!(reg.default_session().current_window().name(), "0");
 
-        let ws = reg.current_workspace();
+        let ws = pool(&reg);
         let a = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
         let b = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
         assert_eq!((a.0, b.0), (0, 1), "the current window mints from 0");
@@ -533,7 +560,7 @@ mod tests {
         // against the pool rather than be co-mutated. Driven here through a REAL
         // workspace, not a synthetic id list.
         let mut reg = SessionRegistry::new((80, 24));
-        let ws = reg.current_workspace();
+        let ws = pool(&reg);
         let a = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
         let b = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
 
@@ -558,13 +585,13 @@ mod tests {
     #[test]
     fn a_floated_pane_loses_its_leaf_and_docks_back_at_its_home() {
         let mut reg = SessionRegistry::new((80, 24));
-        let ws = reg.current_workspace();
+        let ws = pool(&reg);
         let ids: Vec<_> = (0..3)
             .map(|_| lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap())
             .collect();
         let panes: Vec<_> = lock(&ws).panes().iter().map(Pane::id).collect();
 
-        let window = reg.current_window_mut();
+        let window = default_window(&mut reg);
         assert_eq!(window.reconcile_layout(&panes).panes(), ids);
 
         // Float the MIDDLE pane: its leaf collapses, the siblings reclaim the space.
@@ -595,12 +622,12 @@ mod tests {
     #[test]
     fn a_home_whose_sibling_floated_out_too_docks_back_at_the_end() {
         let mut reg = SessionRegistry::new((80, 24));
-        let ws = reg.current_workspace();
+        let ws = pool(&reg);
         let ids: Vec<_> = (0..3)
             .map(|_| lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap())
             .collect();
         let panes: Vec<_> = lock(&ws).panes().iter().map(Pane::id).collect();
-        let window = reg.current_window_mut();
+        let window = default_window(&mut reg);
         window.reconcile_layout(&panes);
 
         // Pane 1's home names pane 2; float both, so 1's home is unhonorable while 2 is out.
@@ -634,12 +661,12 @@ mod tests {
     #[test]
     fn a_home_is_pruned_when_its_pane_exits_while_floating() {
         let mut reg = SessionRegistry::new((80, 24));
-        let ws = reg.current_workspace();
+        let ws = pool(&reg);
         let ids: Vec<_> = (0..3)
             .map(|_| lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap())
             .collect();
         let panes: Vec<_> = lock(&ws).panes().iter().map(Pane::id).collect();
-        let window = reg.current_window_mut();
+        let window = default_window(&mut reg);
         window.reconcile_layout(&panes);
 
         assert!(window.set_floating(ids[1], true, &panes));
@@ -668,12 +695,12 @@ mod tests {
     #[test]
     fn a_tiled_pane_holds_no_home_even_if_it_never_left_the_tiling() {
         let mut reg = SessionRegistry::new((80, 24));
-        let ws = reg.current_workspace();
+        let ws = pool(&reg);
         let ids: Vec<_> = (0..3)
             .map(|_| lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap())
             .collect();
         let panes: Vec<_> = lock(&ws).panes().iter().map(Pane::id).collect();
-        let window = reg.current_window_mut();
+        let window = default_window(&mut reg);
         window.reconcile_layout(&panes);
 
         // Float and un-float with NO reconcile between — the leaf never collapses.
@@ -697,12 +724,12 @@ mod tests {
     #[test]
     fn a_homes_only_change_does_not_bump_the_revision() {
         let mut reg = SessionRegistry::new((80, 24));
-        let ws = reg.current_workspace();
+        let ws = pool(&reg);
         let ids: Vec<_> = (0..3)
             .map(|_| lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap())
             .collect();
         let panes: Vec<_> = lock(&ws).panes().iter().map(Pane::id).collect();
-        let window = reg.current_window_mut();
+        let window = default_window(&mut reg);
         window.reconcile_layout(&panes);
 
         // Float and un-float. The float set is back where it started and the tiling never
@@ -738,11 +765,11 @@ mod tests {
         assert_eq!(created.windows().len(), 1, "a session always has a window");
         assert!(created.current_window().layout().panes().is_empty());
 
-        // Creating is not attaching: whoever is attached to "0" keeps their scope.
+        // Creating is not attaching: whoever is scoped to "0" keeps their scope.
         assert_eq!(
-            reg.current_session().name(),
+            reg.default_session().name(),
             "0",
-            "creating a session for someone else must not yank the current scope",
+            "creating a session for someone else must not move anyone else's scope",
         );
         assert_eq!(reg.sessions().len(), 2);
         assert_eq!(reg.session("work").map(Session::name), Some("work"));
@@ -762,27 +789,35 @@ mod tests {
         assert_eq!(reg.sessions().len(), 2, "the refused create added nothing");
     }
 
-    /// THE STRUCTURAL CLAIM: the current pointer is resolved from a NAME, so the only index
-    /// ever stored is one the registry just found in its own `sessions`. An unknown name is
-    /// an `Err` that changes nothing — it cannot leave a dangling index for some later,
-    /// unrelated request to panic on.
+    /// THE STRUCTURAL CLAIM, and it is stronger than the `select_session` whose test this
+    /// replaces: the registry stores NO index for a session, so an unknown name cannot leave
+    /// one dangling for a later, unrelated request to panic on.
+    ///
+    /// The old test guarded that failure mode by proving `select_session` resolved a name
+    /// before storing the index it derived. Retiring the selector REMOVED the failure mode
+    /// instead: the only way to reach a session is to name it, a name that does not resolve
+    /// is `None` at every site that resolves one, and the single unnamed scope is immutable.
+    /// A guard is not needed for a state that is unrepresentable.
     #[test]
-    fn selecting_an_unknown_session_is_an_error_not_a_dangling_index() {
+    fn an_unknown_session_name_resolves_to_nothing_and_moves_no_scope() {
         let mut reg = SessionRegistry::new((80, 24));
         reg.new_session("work").unwrap();
-        reg.select_session("work").expect("a real name resolves");
-        assert_eq!(reg.current_session().name(), "work");
 
-        assert_eq!(
-            reg.select_session("ghost").unwrap_err(),
-            SessionError::Unknown("ghost".to_owned()),
-        );
-        // The pointer did not move, and every accessor still answers — the property a
-        // wire-supplied INDEX could not have given us.
-        assert_eq!(reg.current_session().name(), "work");
-        assert_eq!(reg.current_window().name(), "0");
-        let _ = reg.current_workspace();
-        let _ = reg.current_window_mut();
+        // Absent at every resolution site — not an error to be handled, just nothing.
+        assert!(reg.session("ghost").is_none());
+        assert!(reg.workspace_of("ghost").is_none());
+        assert!(reg.window_mut("ghost").is_none());
+
+        // ...while a real name resolves at each of them. Without this half, the assertions
+        // above would pass just as well against a registry that resolves NOTHING.
+        assert_eq!(reg.session("work").map(Session::name), Some("work"));
+        assert!(reg.workspace_of("work").is_some());
+        assert!(reg.window_mut("work").is_some());
+
+        // And nothing above moved the default: not creating a session, not naming one, not
+        // naming a ghost. An unscoped request still lands where it did at boot.
+        assert_eq!(reg.default_session().name(), "0");
+        assert_eq!(reg.default_session().current_window().name(), "0");
     }
 
     /// Pane ids stay unique across SESSIONS, not just across windows: the new session's pool
@@ -790,12 +825,13 @@ mod tests {
     #[test]
     fn a_new_sessions_pool_shares_the_one_global_id_counter() {
         let mut reg = SessionRegistry::new((80, 24));
-        let first = reg.current_workspace();
+        let first = pool(&reg);
         let a = lock(&first).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
 
         reg.new_session("work").unwrap();
-        reg.select_session("work").unwrap();
-        let second = reg.current_workspace();
+        let second = reg
+            .workspace_of("work")
+            .expect("the name just created resolves");
         let b = lock(&second).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
 
         assert_ne!(a, b, "a pane id is unique across the WHOLE registry");
@@ -808,10 +844,10 @@ mod tests {
     #[test]
     fn a_write_against_a_stale_arrangement_is_refused() {
         let mut reg = SessionRegistry::new((80, 24));
-        let ws = reg.current_workspace();
+        let ws = pool(&reg);
         let a = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
         let b = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
-        let window = reg.current_window_mut();
+        let window = default_window(&mut reg);
         window.reconcile_layout(&[a, b]);
         let read_by_both = window.layout_revision();
 
@@ -868,11 +904,11 @@ mod tests {
     #[test]
     fn floating_the_last_tiled_pane_is_refused_by_the_authority() {
         let mut reg = SessionRegistry::new((80, 24));
-        let ws = reg.current_workspace();
+        let ws = pool(&reg);
         let a = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
         let b = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
         let panes = [a, b];
-        let window = reg.current_window_mut();
+        let window = default_window(&mut reg);
         window.reconcile_layout(&panes);
 
         assert!(window.set_floating(a, true, &panes), "one of two may float");
@@ -911,18 +947,18 @@ mod tests {
     #[test]
     fn a_floating_pane_that_exits_is_pruned_from_the_set() {
         let mut reg = SessionRegistry::new((80, 24));
-        let ws = reg.current_workspace();
+        let ws = pool(&reg);
         let a = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
         let b = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
 
-        let window = reg.current_window_mut();
+        let window = default_window(&mut reg);
         let _ = window.set_floating(b, true, &[a, b]);
         window.reconcile_layout(&[a, b]);
         assert_eq!(window.floating(), &HashSet::from([b]));
 
         assert!(lock(&ws).close(b).is_some());
         let panes: Vec<_> = lock(&ws).panes().iter().map(Pane::id).collect();
-        let window = reg.current_window_mut();
+        let window = default_window(&mut reg);
         window.reconcile_layout(&panes);
         assert!(window.floating().is_empty(), "the exited pane was pruned");
     }
@@ -933,10 +969,10 @@ mod tests {
     #[test]
     fn the_revision_moves_on_a_real_change_and_only_then() {
         let mut reg = SessionRegistry::new((80, 24));
-        let ws = reg.current_workspace();
+        let ws = pool(&reg);
         let a = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
         let b = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
-        let window = reg.current_window_mut();
+        let window = default_window(&mut reg);
 
         assert_eq!(
             window.layout_revision(),

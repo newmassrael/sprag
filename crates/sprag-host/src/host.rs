@@ -55,6 +55,7 @@ use sprag_terminal::{
 use sprag_vt::Screen;
 
 use crate::external::lock;
+use crate::scope::SessionScope;
 
 /// Per-pane facts the client reads each frame that are NOT carried in the cell
 /// buffer but ride ALONGSIDE it in one pane-frame: the scrollback depth (the
@@ -93,8 +94,8 @@ impl PaneScrollFacts {
 /// The typed client protocol a display client reaches the host's panes through —
 /// the topology-B wire contract expressed as a trait, with two impls:
 ///
-/// * the in-process [`Host`] (this crate) — resolves the current window's [`Workspace`]
-///   out of its [`SessionRegistry`];
+/// * the in-process [`Host`] (this crate) — resolves the DEFAULT session's current-window
+///   [`Workspace`] out of its [`SessionRegistry`] (it has no request to name another);
 /// * the GUI's wire client (`sprag-gui`'s `WireHost`) — the SAME method surface
 ///   over an RPC socket to a `sprag-term` host process.
 ///
@@ -267,16 +268,25 @@ impl Host {
         lock(&workspace).spawn_with_dirty(command, label, cols, rows, on_dirty)
     }
 
-    /// The CURRENT window's pane pool, for the scene-as-data assembly
-    /// ([`workspace_scene`](crate::workspace_scene)) and the control / plugin externals
-    /// that hold their own `Arc` clone. Resolved out of the [`SessionRegistry`] on each
-    /// call (a cloned `Arc`, not a borrow), so once window switching lands the next
-    /// per-request scene assembly picks up the new current window with no re-plumbing.
-    /// The one place the raw `Workspace` handle escapes; the [`HostClient`] methods are
-    /// how a client reaches panes.
+    /// The DEFAULT session's current window pane pool — this arm's panes.
+    ///
+    /// Resolved out of the [`SessionRegistry`] on each call (a cloned `Arc`, not a borrow),
+    /// so once window switching lands the next call picks up the new current window with no
+    /// re-plumbing. The one place the raw `Workspace` handle escapes; the [`HostClient`]
+    /// methods are how a client reaches panes.
+    ///
+    /// The DEFAULT session, because an in-process caller has no request to name another and
+    /// this is what an unscoped one gets ([`SessionScope::unscoped`]). A caller that wants a
+    /// specific session comes over the wire and names it — see
+    /// [`SESSION_PARAM`](crate::wire::SESSION_PARAM).
     #[must_use]
     pub fn workspace(&self) -> Arc<Mutex<Workspace>> {
-        lock(&self.registry).current_workspace()
+        Arc::clone(self.scope().workspace())
+    }
+
+    /// This arm's scope: the default session (see [`workspace`](Self::workspace)).
+    fn scope(&self) -> SessionScope {
+        SessionScope::unscoped(&self.registry)
     }
 
     /// The mux state tree, for the scene-as-data assembly
@@ -309,9 +319,10 @@ impl Host {
     }
 }
 
-/// The current window's arrangement, self-healed against its live pane set, plus the
-/// revision it is at — the ONE place this sequence exists (the in-process [`Host::layout`],
-/// both write paths below, and the mux control external's `layout` slot all call it).
+/// The arrangement of the window `scope` names, self-healed against its live pane set, plus
+/// the revision it is at — the ONE place this sequence exists (the in-process
+/// [`Host::layout`], both write paths below, and the mux control external's `layout` slot all
+/// call it).
 ///
 /// It is single-sourced because its CORRECTNESS IS ITS ORDERING: the pane ids are read
 /// under the WORKSPACE lock and the reconcile runs under the REGISTRY lock, taken
@@ -323,20 +334,33 @@ impl Host {
 /// A pane spawning / closing between the two steps leaves the arrangement one read
 /// behind; the next read heals it (the tree is not the membership authority — the
 /// workspace is).
-pub(crate) fn reconciled_layout(registry: &Arc<Mutex<SessionRegistry>>) -> LayoutSnapshot {
-    let workspace = lock(registry).current_workspace();
-    let panes: Vec<PaneId> = lock(&workspace).panes().iter().map(Pane::id).collect();
+///
+/// `None` if no session carries `scope`'s name. Unreachable through a wire request, whose
+/// scope resolved before the scene was assembled — but the registry is the authority on
+/// which sessions exist, and asking it again at the moment of use is what keeps this honest
+/// once a session can be killed.
+pub(crate) fn reconciled_layout(
+    registry: &Arc<Mutex<SessionRegistry>>,
+    scope: &SessionScope,
+) -> Option<LayoutSnapshot> {
+    // The pool travels with the scope, so there is no lookup to fail here and no lock to
+    // take — the fallible half is the WINDOW below, which only the registry can hand out.
+    let panes: Vec<PaneId> = lock(scope.workspace())
+        .panes()
+        .iter()
+        .map(Pane::id)
+        .collect();
     let mut registry = lock(registry);
-    let window = registry.current_window_mut();
+    let window = registry.window_mut(scope.session())?;
     let tree = LayoutWire::from(window.reconcile_layout(&panes));
     let mut floating: Vec<PaneId> = window.floating().iter().copied().collect();
     floating.sort_unstable(); // a HashSet's order is arbitrary; the wire must be stable or
     // a client watching for change would see one where there is none
-    LayoutSnapshot {
+    Some(LayoutSnapshot {
         revision: window.layout_revision(),
         tree,
         floating,
-    }
+    })
 }
 
 /// Install a client's settled arrangement, then answer with the canonical one — the ONE
@@ -352,45 +376,54 @@ pub(crate) fn reconciled_layout(registry: &Arc<Mutex<SessionRegistry>>) -> Layou
 /// the two are sequential here as everywhere else.
 pub(crate) fn set_layout(
     registry: &Arc<Mutex<SessionRegistry>>,
+    scope: &SessionScope,
     tree: LayoutWire,
     expected: u64,
-) -> LayoutSnapshot {
-    if let Err(error) = lock(registry)
-        .current_window_mut()
-        .set_layout(tree, Some(expected))
-    {
-        tracing::warn!(
-            target: "sprag_host",
-            %error,
-            "a client's arrangement was rejected; keeping the one in force",
-        );
+) -> Option<LayoutSnapshot> {
+    match lock(registry).window_mut(scope.session()) {
+        Some(window) => {
+            if let Err(error) = window.set_layout(tree, Some(expected)) {
+                tracing::warn!(
+                    target: "sprag_host",
+                    %error,
+                    session = scope.session(),
+                    "a client's arrangement was rejected; keeping the one in force",
+                );
+            }
+        }
+        None => return None,
     }
-    reconciled_layout(registry)
+    reconciled_layout(registry, scope)
 }
 
 /// Take a pane out of the tiling or put it back, then answer with the resulting
 /// arrangement — the ONE place a float lands (see [`HostClient::set_floating`]).
 pub(crate) fn set_floating(
     registry: &Arc<Mutex<SessionRegistry>>,
+    scope: &SessionScope,
     id: PaneId,
     floating: bool,
-) -> LayoutSnapshot {
+) -> Option<LayoutSnapshot> {
     // The window's invariant needs the live pane set to judge "would this untile the last
     // one?", so it is read under the WORKSPACE lock and handed down — the same sequential
     // order as everywhere else, never nested.
-    let workspace = lock(registry).current_workspace();
-    let panes: Vec<PaneId> = lock(&workspace).panes().iter().map(Pane::id).collect();
+    let panes: Vec<PaneId> = lock(scope.workspace())
+        .panes()
+        .iter()
+        .map(Pane::id)
+        .collect();
     if !lock(registry)
-        .current_window_mut()
+        .window_mut(scope.session())?
         .set_floating(id, floating, &panes)
     {
         tracing::debug!(
             target: "sprag_host",
             %id,
+            session = scope.session(),
             "refused to float the last tiled pane; the window keeps a terminal",
         );
     }
-    reconciled_layout(registry)
+    reconciled_layout(registry, scope)
 }
 
 impl HostClient for Host {
@@ -463,18 +496,34 @@ impl HostClient for Host {
         self.with_pane_id(id, Pane::title).flatten()
     }
 
+    /// The DEFAULT session's window (see [`Host::workspace`]).
     fn layout(&self) -> LayoutSnapshot {
-        reconciled_layout(&self.registry)
+        reconciled_layout(&self.registry, &self.scope()).expect(DEFAULT_ALWAYS_RESOLVES)
     }
 
     fn set_layout(&self, tree: LayoutWire, expected: u64) -> LayoutSnapshot {
-        set_layout(&self.registry, tree, expected)
+        set_layout(&self.registry, &self.scope(), tree, expected).expect(DEFAULT_ALWAYS_RESOLVES)
     }
 
     fn set_floating(&self, id: PaneId, floating: bool) -> LayoutSnapshot {
-        set_floating(&self.registry, id, floating)
+        set_floating(&self.registry, &self.scope(), id, floating).expect(DEFAULT_ALWAYS_RESOLVES)
     }
 }
+
+/// Why the in-process arm may unwrap a scoped layout read that a wire caller must handle.
+///
+/// The `Option` those three return is about a NAMED session having gone; this arm names none
+/// — it scopes to the default, which [`SessionRegistry::default_session`] makes total by
+/// construction (`sessions` is seeded non-empty and has no removal path). The wire path never
+/// unwraps: it answers a vanished scope with a refusal, because there a name really can come
+/// from a client and really can be stale.
+///
+/// This is a panic guarding an invariant, not a shortcut around one. If the daemon increment
+/// gives `sessions` a way to shrink, this is the site that must be revisited — and it says so
+/// loudly rather than silently serving an empty arrangement, which is the failure that would
+/// actually reach a user.
+const DEFAULT_ALWAYS_RESOLVES: &str = "the default session resolves by construction: it is the first of a never-empty, \
+     never-shrinking session list (SessionRegistry::default_session)";
 
 #[cfg(test)]
 mod tests {

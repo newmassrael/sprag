@@ -18,8 +18,8 @@
 //! and projection ([`sprag_grid`]) crates free of its heavy transitive deps.
 //!
 //! Pipeline (DESIGN.md §5): the producer's [`Workspace`](sprag_terminal::Workspace)
-//! holds the panes (the current window's, resolved out of the
-//! [`SessionRegistry`]);
+//! holds the panes (those of the current window of the session a request is SCOPED to,
+//! resolved out of the [`SessionRegistry`] — see [`SessionScope`]);
 //! [`workspace_scene`] assembles the tree (refreshing each grid from its live
 //! screen, handing engines their `PanePtyHandle`); [`snapshot`] reads one
 //! grid back as the [`TextGridSnapshot`] an AI consumer sees; [`dispatch_frames`]
@@ -52,6 +52,7 @@ pub mod pane;
 pub mod plugins;
 pub mod rpc;
 pub mod runs;
+pub mod scope;
 pub mod wire;
 pub mod workspace;
 
@@ -63,6 +64,7 @@ pub use rpc::{
     handle_request, stdin_frames,
 };
 pub use runs::{RunId, RunRegistry, RunState};
+pub use scope::{ScopeError, SessionScope};
 pub use wire::{mux_action_path, pane_container_tag, pane_input_path};
 pub use workspace::WorkspaceExternal;
 
@@ -259,8 +261,8 @@ fn pane_container(id: PaneId, pty: &PanePty) -> Scene {
     Scene::Container(ContainerNode::new(children).with_tag(wire::pane_container_tag(id.0)))
 }
 
-/// Assemble the live workspace as a `Scene::Container` of its panes plus the
-/// pane-management [`WorkspaceExternal`] (Round 7 multiplex control core).
+/// Assemble the window of the session `scope` names as a `Scene::Container` of its panes
+/// plus the pane-management [`WorkspaceExternal`] (Round 7 multiplex control core).
 ///
 /// Each pane child is refreshed from its PTY's current screen; the
 /// engines and the control surface hold shared handles (a `PanePtyHandle`
@@ -271,24 +273,47 @@ fn pane_container(id: PaneId, pty: &PanePty) -> Scene {
 /// dispatched `scene/invoke` (spawn/close/resize) can re-acquire it without
 /// deadlock.
 ///
+/// ## The scope is the whole assembly, not a filter on it
+///
+/// Everything here is built from [`scope`](SessionScope)'s pool, so a request sees exactly
+/// the one session it named: its panes are the only `pane_<id>` nodes in the tree, and a
+/// pane belonging to another session is not addressable — `scene/invoke` on it answers
+/// unknown-path, because the node genuinely is not there. Scoping is therefore structural
+/// rather than a check each surface has to remember to make.
+///
+/// The control external is handed the scope too, and that is load-bearing rather than
+/// tidy: it is the one child that reaches PAST the pool to the registry (sessions, windows
+/// and layout are mux concerns), so without the scope it would assemble under `work` and
+/// write to the default session — pinion's R889 "wrong target for writes", exactly. The
+/// plugin host and the pane children need no such care: they are built from the resolved
+/// pool and cannot address anything else. That the tightest surface needs the most
+/// threading, and the narrow ones none, is the Interface Segregation split paying off.
+///
 /// `revision` is the shared scene-version token ([`HostState`]'s): the control
 /// surface wires each pane it SPAWNS with a `bump_on_dirty(&revision)` hook (so a
 /// mux-spawned pane's output wakes parked `scene/waitFor`, exactly as the boot
 /// pane's does) and bumps it directly on a spawn / close (so a pane-set change
 /// wakes a waiter before the new pane's first output). Without it a client that
 /// long-polls change-notification would never learn about mux-spawned panes.
+///
+/// **v1 bound:** that token is ONE for the whole registry, so a change in any session wakes
+/// every attached client, which then re-reads its own scene and finds it unchanged. That is
+/// waste, not error — a shared revision can only over-report (`park_if_current` answers a
+/// stale baseline and parks a current one; nothing consults it as a write precondition), so
+/// no session's request is ever refused or mis-answered because another was busy.
 #[must_use]
 pub fn workspace_scene(
+    scope: &SessionScope,
     registry: &Arc<Mutex<SessionRegistry>>,
     runs: &Arc<Mutex<RunRegistry>>,
     revision: &Arc<SceneRevision>,
 ) -> Scene {
-    // The CURRENT window's pane pool. Resolved once per assembly (a cloned `Arc`), so
-    // the registry lock is released before the workspace lock — never nested — and a
-    // later current-window switch is reflected by the next assembly with no re-plumbing.
-    let workspace = lock(registry).current_workspace();
+    // The scoped session's pool, resolved when the scope was (never re-derived here — one
+    // question, one answer). The registry lock is not held, so taking the workspace lock
+    // below cannot nest inside it.
+    let workspace = scope.workspace();
     let mut children: Vec<Scene> = {
-        let guard = lock(&workspace);
+        let guard = lock(workspace);
         guard
             .panes()
             .iter()
@@ -296,19 +321,21 @@ pub fn workspace_scene(
             .collect()
     };
     // The mux control plane speaks the REGISTRY (sessions / windows / layout are mux
-    // concerns)...
+    // concerns), so it carries the scope that says WHICH session it may act on...
     children.push(Scene::External(
         ExternalNode::new(Box::new(workspace::WorkspaceExternal::new(
             Arc::clone(registry),
+            scope.clone(),
             Arc::clone(revision),
         )))
         .with_tag(MUX_TAG),
     ));
     // ...while the plugin host speaks only the pane POOL: a plugin has no business
-    // knowing about the session tree (Interface Segregation).
+    // knowing about the session tree (Interface Segregation), and holding the scoped pool
+    // is already all the scoping it can need.
     children.push(Scene::External(
         ExternalNode::new(Box::new(plugins::PluginsExternal::new(
-            Arc::clone(&workspace),
+            Arc::clone(workspace),
             Arc::clone(runs),
         )))
         .with_tag(PLUGINS_TAG),
