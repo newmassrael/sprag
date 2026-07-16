@@ -290,10 +290,13 @@ impl Host {
     }
 
     /// The mux state tree, for the scene-as-data assembly
-    /// ([`workspace_scene`](crate::workspace_scene)) and the mux control external, which
-    /// resolve the current window out of it per request. The plugin host deliberately
-    /// gets [`workspace`](Self::workspace) instead — a plugin operates on a pane pool,
-    /// not a session tree (Interface Segregation).
+    /// ([`workspace_scene`](crate::workspace_scene)) and the mux control external. Each
+    /// request's [`SessionScope`] is resolved once at the door and passed to the assembly;
+    /// the registry travels alongside it for the mux external's registry-WIDE operations
+    /// (resolving a scoped window by name, creating a session, listing sessions) — the pane
+    /// pool a request acts on comes from the scope, not from a re-resolution here. The plugin
+    /// host deliberately gets [`workspace`](Self::workspace) instead — a plugin operates on a
+    /// pane pool, not a session tree (Interface Segregation).
     #[must_use]
     pub fn registry(&self) -> &Arc<Mutex<SessionRegistry>> {
         &self.registry

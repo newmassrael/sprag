@@ -1032,6 +1032,17 @@ mod tests {
             ]))),
             "the new session is listed, and creating it moved the default for nobody",
         );
+
+        // This slot is deliberately registry-WIDE: a WORK-scoped surface still sees EVERY
+        // session, not just its own. It is the one member whose subject is the set of scopes,
+        // so scoping it would answer a question nobody asked — and a client discovers what it
+        // may name by asking from wherever it happens to be scoped.
+        let (work, _rev) = scoped_control(&reg, scope_of(&reg, "work"));
+        assert_eq!(
+            work.query(SESSIONS_SLOT),
+            ext.query(SESSIONS_SLOT),
+            "the sessions list does not narrow to the caller's own scope",
+        );
     }
 
     /// A name is an ADDRESS: two sessions sharing one would make a request ambiguous, so the

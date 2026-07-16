@@ -7,13 +7,28 @@
 //! proof: constructing one requires the session to have resolved, so nothing downstream has
 //! to re-ask, re-check, or decide what to do when the answer is no.
 //!
-//! ## Resolve once, or the two answers drift
+//! ## Resolve once — for the POOL. The window is re-resolved by name, and that is honest.
 //!
 //! The scene assembly and the mux control external both need the scope, and both used to
 //! resolve "the current window" for themselves. Two independent resolutions of one question
 //! is the second-authority pattern this arc keeps flagging: they agree only as long as
-//! nothing moves between them. Resolving here, once, and handing the SAME answer to both
-//! makes agreement structural rather than incidental.
+//! nothing moves between them. Resolving here, once, and handing the SAME pane-pool handle to
+//! both makes THAT agreement structural — the pool is an `Arc`, so it can be carried.
+//!
+//! The WINDOW is a different story, and the honest account matters. A
+//! [`Window`](sprag_terminal::Window) owns the
+//! layout authority (its `LayoutTree`, floats, revision) and is an inline field of its
+//! session, not behind an `Arc` — so it cannot be cloned out and carried across the registry
+//! lock's release. The layout paths therefore re-resolve it BY NAME under the registry lock
+//! at the moment of use ([`SessionRegistry::window_mut`]). That is a second resolution, and
+//! today it agrees with the carried pool only because two invariants hold: a session has
+//! exactly ONE window, and dispatch is single-threaded, so nothing switches the current
+//! window between a request's resolve and its use. **This is precisely the "agree only as
+//! long as nothing moves" shape — not yet exploitable, but real.** When window-switching
+//! lands, the scope must carry the window's identity (name/index) too and the layout paths
+//! must resolve pool AND window under one lock, or a request could read one window's panes
+//! and reconcile them against another's tree. The pool half is structural now; the window
+//! half is a bound, not a done thing.
 //!
 //! ## The failure it exists to prevent
 //!
@@ -153,16 +168,6 @@ impl fmt::Debug for SessionScope {
     }
 }
 
-/// A scope is identified by the session it names — the pool is DERIVED from it, so comparing
-/// it too would only restate the name. Test-only: it exists so a test can assert
-/// `resolve(...) == Ok(expected)`, and the production paths compare nothing.
-#[cfg(test)]
-impl PartialEq for SessionScope {
-    fn eq(&self, other: &Self) -> bool {
-        self.session == other.session
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,9 +221,14 @@ mod tests {
     fn a_non_string_param_is_refused_and_never_falls_back_to_the_default() {
         let reg = registry();
         for bad in ["42", "true", "null", "[\"work\"]", "{\"name\":\"work\"}"] {
-            assert_eq!(
-                SessionScope::resolve(&reg, &request(&format!(r#"{{"session":{bad}}}"#))),
-                Err(ScopeError::NotAString),
+            // `matches!`, not `==`: a scope is not a comparable value (its pool is an
+            // opaque handle), and pattern-matching the variant is exactly the claim — this
+            // is refused, as `NotAString`.
+            assert!(
+                matches!(
+                    SessionScope::resolve(&reg, &request(&format!(r#"{{"session":{bad}}}"#))),
+                    Err(ScopeError::NotAString)
+                ),
                 "a {bad} scope must be refused, not silently aliased to the default",
             );
         }
@@ -227,9 +237,12 @@ mod tests {
     #[test]
     fn an_unknown_session_name_is_refused_whole() {
         let reg = registry();
-        assert_eq!(
-            SessionScope::resolve(&reg, &request(r#"{"session":"ghost"}"#)),
-            Err(ScopeError::Unknown("ghost".to_owned())),
+        assert!(
+            matches!(
+                SessionScope::resolve(&reg, &request(r#"{"session":"ghost"}"#)),
+                Err(ScopeError::Unknown(name)) if name == "ghost"
+            ),
+            "a name no session carries is refused as Unknown, carrying the name asked for",
         );
     }
 }
