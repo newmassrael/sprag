@@ -141,7 +141,12 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
 ///   data for reads" — and that survived an entire campaign to kill aliasing precisely
 ///   because it hid in the type-error corner;
 /// * **a name no session carries** → refused wholesale, for the same reason.
-pub const SESSION_PARAM: &str = "session";
+///
+/// The string itself is defined by the transport client that WRITES it
+/// ([`sprag_rpc::SESSION_PARAM`]) and re-exported here for the host that READS it, so the two
+/// ends of the wire share ONE spelling. This doc is the reader's contract; the writer's is on
+/// the definition.
+pub use sprag_rpc::SESSION_PARAM;
 
 /// The mux control external query slot: every session's name, plus which one an unscoped
 /// request acts on — how a client discovers what it can address with [`SESSION_PARAM`].

@@ -20,6 +20,21 @@
 //!   `scene/waitFor` change-notification, and a REQUEST connection serves the UI
 //!   thread's reads / input / resize.
 //!
+//! ## Which session
+//!
+//! One host holds many sessions; a client acts on exactly one. At boot the client resolves
+//! its session ([`resolve_session`]) and scopes BOTH connections to it
+//! ([`HostConn::scope_to`]), so every request names it and none can leak into another. Naming
+//! a session ([`SESSION_ENV`]) ATTACHES to it (adopt its live panes — the tmux reattach);
+//! naming none ALLOCATES a fresh session and spawns this client's panes into it, so two GUIs
+//! against one host never mirror the same session.
+//!
+//! **Transient bound (until the daemon flip):** a self-spawned host still boots one pane in
+//! its default session (`sprag-term`'s standalone behaviour), which a client that allocates
+//! its OWN session never shows — an invisible stray shell, reaped when the per-client host
+//! dies with the GUI. It vanishes once the host boots empty (`--daemon`) and the client
+//! connect-or-spawns one shared daemon instead of its own; both are later commits in this arc.
+//!
 //! ## The repaint loop (producer-authoritative, off-thread — R999 / R1270)
 //!
 //! The poll thread blocks on `scene/waitFor {since}` (cheap — parked host-side until
@@ -63,8 +78,8 @@ use std::time::Duration;
 use pinion_core::{GridBuffer, QuitSink};
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    FULL_TEXT_SLOT, KEY_ACTION, LAYOUT_SLOT, PANES_SLOT, RESIZE_ACTION, SET_FLOATING_ACTION,
-    SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, cells_slot_at,
+    FULL_TEXT_SLOT, KEY_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION, PANES_SLOT, RESIZE_ACTION,
+    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, cells_slot_at,
 };
 use sprag_host::{CellFrame, HostClient, PaneScrollFacts, mux_action_path, pane_input_path};
 use sprag_input::Modifiers;
@@ -80,6 +95,11 @@ const HOST_SOCK_ENV: &str = "SPRAG_GUI_HOST_SOCK";
 /// Env override: the `sprag-term` binary to spawn (else the sibling of the GUI exe,
 /// else `sprag-term` on `PATH`).
 const HOST_BIN_ENV: &str = "SPRAG_GUI_HOST_BIN";
+/// Env: the SESSION to attach to (adopt its live panes) — the reattach gesture. Absent, the
+/// client allocates a fresh session and spawns its own panes into it, so two GUIs never
+/// mirror one session (the owner's several-windows workflow). A `sprag attach` CLI is a later
+/// increment; env is the established GUI-config channel (`SPRAG_GUI_PANES`/`_HOST_SOCK`/…).
+const SESSION_ENV: &str = "SPRAG_GUI_SESSION";
 
 /// One pane the wire client mirrors, in HOST order (no holes — "slots" and their holes
 /// are the GUI `SlotView`'s concern, not this data client's). Holds the pane's host
@@ -251,15 +271,19 @@ impl WireHost {
         };
         // Reap the spawned child on any boot error below (PR_SET_PDEATHSIG only covers
         // GUI-process death, not an error return here). Disarmed on success.
-        //
-        // Attach mode (no child) ADOPTS the host's live pane set (tmux-attach); spawn
-        // mode reaches exactly `n_panes` (the GUI is the operator). `boot_panes` branches
-        // on this — read BEFORE the child moves into the guard.
-        let attach = child.is_none();
         let guard = ChildGuard(child);
 
         let mut conn = HostConn::connect(&sock, CONNECT_TIMEOUT)?;
-        let seeds = boot_panes(&mut conn, argv.as_deref(), cols, rows, n_panes, attach)?;
+
+        // Resolve WHICH session this client acts on before booting panes, and scope every
+        // request to it (both this connection and the poll one below), so a request can never
+        // silently land in another session. Naming one ATTACHES (adopt its panes); naming none
+        // ALLOCATES a fresh one (spawn our own panes) — the "each launch is its own session"
+        // model. `boot_panes` branches on `created`, replacing the old "did we spawn the host"
+        // key with "did we create the session".
+        let (session, created) = resolve_session(&mut conn)?;
+        conn.scope_to(session.clone());
+        let seeds = boot_panes(&mut conn, argv.as_deref(), cols, rows, n_panes, created)?;
 
         // Subscribe-then-snapshot: read the change-notification baseline BEFORE the
         // initial frame fetches, so output landing during boot makes the first `waitFor`
@@ -273,8 +297,11 @@ impl WireHost {
         let layout: LayoutMirror = Arc::new(Mutex::new(query_layout(&mut conn)?));
 
         // The poll thread's own connection — a parked `scene/waitFor` on it never
-        // blocks the request connection above (separate host handler threads).
-        let poll_conn = HostConn::connect(&sock, CONNECT_TIMEOUT)?;
+        // blocks the request connection above (separate host handler threads). Scoped to the
+        // SAME session, so its `waitFor`/`revision`/re-queries watch the client's own session
+        // and never another's.
+        let mut poll_conn = HostConn::connect(&sock, CONNECT_TIMEOUT)?;
+        poll_conn.scope_to(session);
         let poll_shutdown = poll_conn.shutdown_handle()?;
         let stop = Arc::new(AtomicBool::new(false));
         let poll = spawn_poll(
@@ -619,24 +646,51 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
         .collect()
 }
 
+/// Resolve WHICH session this client acts on, over `conn` (before it is scoped).
+///
+/// Returns the session name and whether this client CREATED it:
+/// * [`SESSION_ENV`] names one → ATTACH (`created = false`): the session must already exist
+///   on the reached host; its live panes are adopted (tmux reattach). A name no session
+///   carries makes the first scoped read fail, which fails the boot honestly rather than
+///   silently opening an empty window.
+/// * absent → ALLOCATE a fresh session (`created = true`) via the registry's own auto-naming
+///   ([`NEW_SESSION_ACTION`] with no name), so two clients never invent one name and race.
+///   This call is deliberately made BEFORE the connection is scoped — creating a session is a
+///   registry-wide act, not one scoped to a session that does not exist yet.
+fn resolve_session(conn: &mut HostConn) -> io::Result<(String, bool)> {
+    if let Some(name) = std::env::var_os(SESSION_ENV).filter(|name| !name.is_empty()) {
+        return Ok((name.to_string_lossy().into_owned(), false));
+    }
+    let answer = conn.call(
+        "scene/invoke",
+        invoke(&mux_action_path(NEW_SESSION_ACTION), json!({})),
+    )?;
+    let name = answer
+        .as_str()
+        .ok_or_else(|| io::Error::other("new_session did not answer with a name"))?
+        .to_owned();
+    Ok((name, true))
+}
+
 /// The pane set the wire client boots with, in host order, each with its identity +
 /// host-reported dims. This client mirrors ALL the host's panes; "slots" and the display
 /// cap are the GUI `SlotView`'s concern, so there is NO cap here.
 ///
-/// * **Attach mode** (the GUI reached an operator-run host) ADOPTS the host's live panes
-///   as-is — the tmux-attach semantics (no spawn / truncate to a GUI-chosen count).
-/// * **Spawn mode** (the GUI owns the host child) ensures exactly `n_panes` (the GUI is
-///   the operator asking for its configured layout), spawning extras running `argv` at
-///   `cols x rows` to reach it, then takes the first `n_panes`.
+/// * **Attached** (`created == false` — the GUI named an existing session) ADOPTS that
+///   session's live panes as-is — the tmux-attach semantics (no spawn / truncate to a
+///   GUI-chosen count).
+/// * **Created** (`created == true` — the GUI allocated a fresh session) ensures exactly
+///   `n_panes` (the GUI is the operator asking for its configured layout), spawning extras
+///   running `argv` at `cols x rows` to reach it, then takes the first `n_panes`.
 fn boot_panes(
     conn: &mut HostConn,
     argv: Option<&[String]>,
     cols: u16,
     rows: u16,
     n_panes: usize,
-    attach: bool,
+    created: bool,
 ) -> io::Result<Vec<PaneSeed>> {
-    if attach {
+    if !created {
         return query_panes(conn);
     }
     let mut have = query_panes(conn)?.len();

@@ -25,6 +25,17 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+/// The JSON-RPC `params` key naming the SESSION a request is scoped to — the out-of-band
+/// scope param that "one daemon holds every session" needs, so a request says which session
+/// it is about.
+///
+/// It is defined HERE, in the transport client that WRITES it ([`HostConn::scope_to`] merges
+/// it into every request), and re-exported by the host that READS it
+/// (`sprag_host::wire::SESSION_PARAM`), so the two ends of the wire share ONE spelling and
+/// cannot drift. The host's own doc records the contract it enforces (absent → the default
+/// session, a string → that session, anything else → refused whole).
+pub const SESSION_PARAM: &str = "session";
+
 /// A blocking JSON-RPC connection to a host socket — the client end of the wire.
 ///
 /// One request/response at a time (see the module docs). Construct with
@@ -38,6 +49,13 @@ pub struct HostConn {
     reader: BufReader<UnixStream>,
     /// The next JSON-RPC request id. Monotonic; the server echoes it back.
     next_id: u64,
+    /// The session every request on this connection is scoped to
+    /// ([`SESSION_PARAM`]), or `None` for the default session. Set once by
+    /// [`scope_to`](Self::scope_to) after the session is known, and merged into each
+    /// request's params by [`call`](Self::call) — the ONE place scoping happens, so a
+    /// client's several connections (its request stream and its long-poll) cannot address
+    /// different sessions.
+    session: Option<String>,
 }
 
 impl HostConn {
@@ -71,7 +89,35 @@ impl HostConn {
             writer: stream,
             reader,
             next_id: 1,
+            session: None,
         })
+    }
+
+    /// Scope every subsequent request on this connection to the session named `session`, by
+    /// merging [`SESSION_PARAM`] into each request's params.
+    ///
+    /// A client learns its session name once (it attaches to a named one, or the daemon
+    /// allocates one), then scopes ALL its connections to it — both the request connection
+    /// and the long-poll — through this single seam, so no request can silently address a
+    /// different session than its siblings. Idempotent and settable again, though a client
+    /// scopes once at boot.
+    pub fn scope_to(&mut self, session: impl Into<String>) {
+        self.session = Some(session.into());
+    }
+
+    /// Merge this connection's session scope (if any) into a request's params. Only an object
+    /// `params` can carry the key; every scoped request the wire client issues is object-shaped
+    /// (`{"path": ..}`), so a non-object is passed through untouched rather than reshaped —
+    /// carrying a scope on a request that has no place for it is not something the wire client
+    /// ever needs.
+    fn scoped(&self, params: Value) -> Value {
+        match (&self.session, params) {
+            (Some(session), Value::Object(mut map)) => {
+                map.insert(SESSION_PARAM.to_owned(), Value::String(session.clone()));
+                Value::Object(map)
+            }
+            (_, params) => params,
+        }
     }
 
     /// A clone of the underlying stream usable ONLY to cancel a blocked
@@ -109,7 +155,7 @@ impl HostConn {
             "jsonrpc": "2.0",
             "id": id,
             "method": method,
-            "params": params,
+            "params": self.scoped(params),
         });
         writeln!(self.writer, "{request}")?;
         self.writer.flush()?;
@@ -196,6 +242,54 @@ mod tests {
             json!({"hello": "world"})
         );
         assert_eq!(conn.call("scene/echo", json!(42)).unwrap(), json!(42));
+
+        drop(control);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_scoped_connection_puts_the_session_on_every_request() {
+        let path =
+            std::env::temp_dir().join(format!("sprag-rpc-scope-test-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let (tx, rx) = channel();
+        thread::spawn(move || echo_dispatch(rx));
+        let control = UnixSocketTransport::serve(&path, Arc::new(ChannelIngress { tx }))
+            .expect("bind the test socket");
+        control.set_enabled(true);
+
+        let mut conn =
+            HostConn::connect(&path, Duration::from_secs(2)).expect("connect to the socket");
+
+        // Unscoped: params reach the host verbatim (the echo mirrors them back).
+        assert_eq!(
+            conn.call("scene/query", json!({ "path": "p" })).unwrap(),
+            json!({ "path": "p" }),
+            "an unscoped connection adds nothing",
+        );
+
+        // Scope it, and EVERY subsequent request carries the session as a params sibling —
+        // the one seam a client scopes through, so its connections cannot drift.
+        conn.scope_to("work");
+        assert_eq!(
+            conn.call("scene/query", json!({ "path": "p" })).unwrap(),
+            json!({ "path": "p", "session": "work" }),
+            "a scoped connection names its session on every request",
+        );
+        assert_eq!(
+            conn.call("scene/invoke", json!({ "path": "spawn", "args": {} }))
+                .unwrap(),
+            json!({ "path": "spawn", "args": {}, "session": "work" }),
+            "...including a different method with its own args",
+        );
+
+        // A non-object params has no place for the key, so it is passed through untouched
+        // rather than reshaped — the wire client never scopes such a request.
+        assert_eq!(
+            conn.call("scene/echo", json!(42)).unwrap(),
+            json!(42),
+            "a non-object params carries no scope",
+        );
 
         drop(control);
         let _ = std::fs::remove_file(&path);

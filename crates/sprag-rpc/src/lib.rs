@@ -25,7 +25,7 @@ use pinion_rpc::RpcIngress;
 use pinion_rpc_transport::{TransportControl, UnixSocketTransport};
 
 pub mod client;
-pub use client::HostConn;
+pub use client::{HostConn, SESSION_PARAM};
 
 /// A frontend's socket policy: the endpoint's default file name plus the env
 /// vars that override its path and its boot state. The *mechanism* (bind,
