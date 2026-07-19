@@ -7,7 +7,7 @@ use crate::wire::WireHost;
 use crate::{WINDOW_H, WINDOW_W};
 use pinion_core::CellMetric;
 use pinion_core::reactive::Owner;
-use pinion_core::use_repaint_sink;
+use pinion_core::{use_quit_sink, use_repaint_sink};
 use sprag_host::{Host, HostClient};
 use sprag_terminal::CommandBuilder;
 use std::rc::Rc;
@@ -256,6 +256,10 @@ pub(crate) fn use_terminal() -> Rc<TerminalView> {
     // `Owner::cache` (the repaint-sink / monospace-metrics provider slots), so
     // resolving them inside the factory would re-enter and panic.
     let sink = use_repaint_sink();
+    // The shell's quit edge, resolved here for the same reason as the repaint sink
+    // (a cache-backed provider read, so BEFORE the factory — the nested-factory
+    // guard) and handed to the wire host's poll thread: a dead daemon ends the client.
+    let quit = use_quit_sink();
     let font_size_px = font_size_px();
     // R1003 view-time seam: the shell seeded the monospace-metrics provider
     // before the factories run, so this is the font the shell will paint.
@@ -299,6 +303,7 @@ pub(crate) fn use_terminal() -> Rc<TerminalView> {
                     rows,
                     pane_count(),
                     Box::new(move || sink.request_repaint()),
+                    quit,
                 )
                 .expect("boot the sprag-term wire host"),
             )

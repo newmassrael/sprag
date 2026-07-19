@@ -60,7 +60,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use pinion_core::GridBuffer;
+use pinion_core::{GridBuffer, QuitSink};
 use serde_json::{Value, json};
 use sprag_host::wire::{
     FULL_TEXT_SLOT, KEY_ACTION, LAYOUT_SLOT, PANES_SLOT, RESIZE_ACTION, SET_FLOATING_ACTION,
@@ -216,6 +216,12 @@ impl WireHost {
     /// `argv` (`None` = the host's default `$SHELL`), each at `cols x rows`, then
     /// start the background change-notification -> `on_change` repaint poll.
     ///
+    /// `quit` is the shell's [`QuitSink`]: when the poll thread's parked
+    /// `scene/waitFor` returns an error while the host is NOT being torn down by us
+    /// (a definitive host-gone, the daemon exited under a detached client), it asks
+    /// the shell to end — the tmux convention that a client detaches when its server
+    /// dies. It rides here as a `Send` handle exactly as `on_change` does.
+    ///
     /// # Errors
     ///
     /// Any failure to spawn the child, connect to its socket within
@@ -227,6 +233,7 @@ impl WireHost {
         rows: u16,
         n_panes: usize,
         on_change: Box<dyn Fn() + Send>,
+        quit: Arc<dyn QuitSink>,
     ) -> io::Result<Self> {
         let (child, sock) = match std::env::var_os(HOST_SOCK_ENV) {
             Some(path) => {
@@ -275,6 +282,7 @@ impl WireHost {
             Arc::clone(&cache),
             Arc::clone(&layout),
             on_change,
+            quit,
             Arc::clone(&stop),
             since0,
         )?;
@@ -767,11 +775,14 @@ fn merge_panes(
 /// like output does.
 ///
 /// Exits ONLY when `stop` is set (Drop cancels the parked read via a shutdown handle) or
-/// the parked `scene/waitFor` itself errors (the host connection was lost — logged at
-/// `warn`, since live updates then stop and the GUI would otherwise silently freeze). A
-/// pane-list re-query failing a single wake is NOT fatal — it falls back to refreshing the
-/// current cache ids (a cache-derived seed snapshot through the same [`refresh_to_set`]
-/// path, so no adds/removes) and the set change is picked up on a later wake.
+/// the parked `scene/waitFor` itself errors (the host connection was lost). The two are
+/// told apart by `stop`: a stop-initiated error is our own graceful teardown and is
+/// silent, but an error while `stop` is CLEAR is a definitive host-gone (the daemon
+/// exited under a detached client), which asks the shell to quit via `quit` — the GUI
+/// would otherwise sit frozen over dead content. A pane-list re-query failing a single
+/// wake is NOT fatal — it falls back to refreshing the current cache ids (a cache-derived
+/// seed snapshot through the same [`refresh_to_set`] path, so no adds/removes) and the set
+/// change is picked up on a later wake.
 ///
 /// # Errors
 ///
@@ -782,6 +793,7 @@ fn spawn_poll(
     cache: Cache,
     layout: LayoutMirror,
     on_change: Box<dyn Fn() + Send>,
+    quit: Arc<dyn QuitSink>,
     stop: Arc<AtomicBool>,
     mut since: u64,
 ) -> io::Result<JoinHandle<()>> {
@@ -792,8 +804,13 @@ fn spawn_poll(
                 let response = match conn.call("scene/waitFor", json!({ "since": since })) {
                     Ok(value) => value,
                     Err(error) => {
+                        // Distinguish OUR teardown from the host's death: a stop-initiated
+                        // error is the graceful Drop that shut this socket down, and quitting
+                        // then would be redundant at best. An error while stop is CLEAR means
+                        // the daemon went away under us — end the client (tmux detach).
                         if !stop.load(Ordering::Relaxed) {
-                            tracing::warn!(target: "sprag_gui::wire", %error, "host connection lost; live updates stopped");
+                            tracing::warn!(target: "sprag_gui::wire", %error, "host gone; requesting client exit");
+                            quit.request_quit();
                         }
                         break;
                     }
@@ -852,6 +869,96 @@ fn spawn_poll(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::net::UnixListener;
+    use std::sync::atomic::AtomicUsize;
+
+    /// A [`QuitSink`] that counts requests, so a test can assert the poll thread asked
+    /// the shell to end (and did so across the thread boundary).
+    #[derive(Default)]
+    struct RecordingQuit(AtomicUsize);
+    impl QuitSink for RecordingQuit {
+        fn request_quit(&self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// A connected [`HostConn`] whose server end is already CLOSED, plus the listener +
+    /// socket path to keep alive / clean up. The next `call` on the conn reads EOF — the
+    /// exact wire condition a daemon exiting under a detached client produces.
+    fn a_dead_host_conn(tag: &str) -> (HostConn, UnixListener, PathBuf) {
+        let path =
+            std::env::temp_dir().join(format!("sprag-wire-quit-{}-{tag}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).expect("bind the throwaway host socket");
+        let conn = HostConn::connect(&path, Duration::from_secs(2)).expect("connect to it");
+        // Accept then drop the server side: the client's next read returns EOF, which is
+        // what `HostConn::call` maps to `UnexpectedEof` — the host is gone.
+        let (server, _) = listener.accept().expect("accept the client");
+        drop(server);
+        (conn, listener, path)
+    }
+
+    /// The tmux convention, deterministically: when the poll thread's parked `scene/waitFor`
+    /// fails and we are NOT tearing the host down ourselves, it asks the shell to quit. Driven
+    /// over a REAL closed socket (no `sprag-term`, no global env, no `WireHost` env branch), so
+    /// it exercises the actual `spawn_poll` error arm rather than a stand-in.
+    ///
+    /// REVERT-PROOF: delete the `quit.request_quit()` call in the error arm and this reads 0 —
+    /// the guard is not vacuous, it pins the one line that turns a dead daemon into a client
+    /// that exits instead of a window frozen over dead content.
+    #[test]
+    fn a_dead_host_asks_the_shell_to_quit() {
+        let (conn, _listener, path) = a_dead_host_conn("gone");
+        let quit = Arc::new(RecordingQuit::default());
+        let stop = Arc::new(AtomicBool::new(false)); // NOT our teardown: the host died
+        let poll = spawn_poll(
+            conn,
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(LayoutSnapshot::default())),
+            Box::new(|| {}),
+            Arc::clone(&quit) as Arc<dyn QuitSink>,
+            Arc::clone(&stop),
+            0,
+        )
+        .expect("spawn the poll thread");
+        poll.join().expect("the poll thread exited");
+
+        assert_eq!(
+            quit.0.load(Ordering::SeqCst),
+            1,
+            "a host that vanished under us must ask the client to exit exactly once",
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The other half: when WE are the one tearing down (`stop` set — the graceful `Drop`
+    /// path that shuts our own socket), the same socket error must NOT quit. Otherwise every
+    /// ordinary shutdown would fire a redundant quit, and a refactor that hoisted the call
+    /// out of the `!stop` guard would go uncaught.
+    #[test]
+    fn our_own_teardown_does_not_ask_the_shell_to_quit() {
+        let (conn, _listener, path) = a_dead_host_conn("teardown");
+        let quit = Arc::new(RecordingQuit::default());
+        let stop = Arc::new(AtomicBool::new(true)); // WE are stopping
+        let poll = spawn_poll(
+            conn,
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(LayoutSnapshot::default())),
+            Box::new(|| {}),
+            Arc::clone(&quit) as Arc<dyn QuitSink>,
+            Arc::clone(&stop),
+            0,
+        )
+        .expect("spawn the poll thread");
+        poll.join().expect("the poll thread exited");
+
+        assert_eq!(
+            quit.0.load(Ordering::SeqCst),
+            0,
+            "a socket error during our own teardown is not a host death; it must not quit",
+        );
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn fetch_frame_deserializes_the_shared_host_cell_frame() {
