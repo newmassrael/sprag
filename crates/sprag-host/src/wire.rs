@@ -164,6 +164,15 @@ pub const SESSIONS_SLOT: &str = "sessions";
 /// because nothing can — the default is immutable and every other client names its own.
 pub const NEW_SESSION_ACTION: &str = "new_session";
 
+/// The mux control external invoke action that kills a session (`{name}`) — tmux
+/// `kill-session`.
+///
+/// An ACTION, not an `intervene` slot: it removes a session (or, for the last one, drains it
+/// and ends the daemon), so it is a lifecycle event a client requests, not an assignment. A
+/// non-last kill answers `null`; killing the LAST session ends the server, so its answer may
+/// never reach the client (the socket closes as the daemon exits).
+pub const KILL_SESSION_ACTION: &str = "kill_session";
+
 /// The mux control external invoke action that spawns a pane, returning its id.
 pub const SPAWN_ACTION: &str = "spawn";
 /// The mux control external invoke action that closes a pane.

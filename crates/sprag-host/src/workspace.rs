@@ -14,6 +14,7 @@
 //! * `set_layout {tree}` → installs a client's settled arrangement, returns the canonical one.
 //! * `set_floating {id, floating}` → takes a pane out of the tiling / puts it back.
 //! * `new_session {name?}` → creates a session (absent name → lowest free), returns its name.
+//! * `kill_session {name}` → kills a session; the last one ends the daemon (tmux kill-session).
 //!
 //! Read channel (`scene/query`):
 //!
@@ -33,15 +34,15 @@
 //!
 //! Holding the registry is holding EVERY session, so this surface alone can act outside the
 //! one the request named — which is why it is handed a [`SessionScope`] and every action but
-//! `new_session` / `sessions` goes through it. The rest of the scene needs no such care: a
+//! the registry-wide session ones goes through it. The rest of the scene needs no such care: a
 //! pane child and the plugin host are built from the scoped pool and can address nothing
 //! else. The privilege is what creates the obligation.
 //!
-//! Two members are deliberately registry-WIDE rather than scoped, and for the same reason:
+//! Three members are deliberately registry-WIDE rather than scoped, and for the same reason:
 //! their subject is the set of sessions itself, so answering them within one session would
 //! answer a question nobody asked. `sessions` enumerates the scopes a client may name;
-//! `new_session` makes one — and neither can disturb another client, because creating is not
-//! attaching and no scope but the immutable default is anyone else's.
+//! `new_session` makes one and `kill_session` removes one — each NAMES its session directly
+//! rather than acting on the request's scope, and none can silently disturb another client.
 //!
 //! Still no PIXEL division here — headless multiplexing is pane control, not screen
 //! division (the Round 7 note). The `layout` slot is the LOGICAL arrangement (which
@@ -57,7 +58,9 @@ use pinion_core::external::{
     ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError, SchemaField,
 };
 use serde_json::{Map, Value};
-use sprag_terminal::{CommandBuilder, LayoutSnapshot, LayoutWire, SessionRegistry, Workspace};
+use sprag_terminal::{
+    CommandBuilder, KillOutcome, LayoutSnapshot, LayoutWire, SessionRegistry, Workspace,
+};
 
 use crate::bump_on_dirty;
 use crate::external::{as_object, lock, opt_dim, require_pane_id, rpc_external_impl};
@@ -66,8 +69,8 @@ use crate::scope::SessionScope;
 // The mux control action names + query slots are the shared wire ABI vocabulary
 // ([`crate::wire`]) — the SAME consts a client addresses for pane lifecycle.
 use crate::wire::{
-    CLOSE_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION, PANES_SLOT, RESIZE_ACTION, SESSIONS_SLOT,
-    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION,
+    CLOSE_ACTION, KILL_SESSION_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION, PANES_SLOT, RESIZE_ACTION,
+    SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION,
 };
 
 /// The mux-management engine `External`: a control surface over the shared
@@ -292,6 +295,42 @@ impl WorkspaceExternal {
         self.revision.bump();
         Ok(IntrospectValue::Json(Value::String(allocated)))
     }
+
+    /// `kill_session {name}` action: kill a session (tmux `kill-session`).
+    ///
+    /// A non-last kill removes the session and answers `null` — a set change, so a client
+    /// watching [`SESSIONS_SLOT`] is woken. Killing the LAST session drains it and ENDS the
+    /// daemon: it fires the SAME death-signal a pane exit does ([`on_pane_exit`]), so the reaper
+    /// re-checks liveness, finds none, and exits through the one SIGTERM shutdown funnel — the
+    /// library names neither exit nor SIGTERM. Off a daemon (a GUI's in-process host, the tests)
+    /// `on_pane_exit` is `None`, so the kill removes the session but nothing exits, which is
+    /// exactly right there.
+    ///
+    /// [`on_pane_exit`]: Self::on_pane_exit
+    fn kill_session(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let name = as_object(args)?
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or(InvokeError::TypeMismatch)?;
+        match lock(&self.registry).kill_session(name) {
+            Ok(KillOutcome::Removed) => {
+                self.revision.bump();
+            }
+            Ok(KillOutcome::KilledServer) => {
+                // Nudge the reaper to re-check liveness (the drained session leaves none) so it
+                // exits through the SIGTERM funnel. An empty last session drains nothing, so
+                // this signal — not a pane's Drop — is what triggers the check there.
+                if let Some(on_pane_exit) = &self.on_pane_exit {
+                    on_pane_exit();
+                }
+            }
+            Err(error) => {
+                tracing::debug!(target: "sprag_host", %error, "refused to kill a session");
+                return Err(InvokeError::Rejected);
+            }
+        }
+        Ok(IntrospectValue::Json(Value::Null))
+    }
 }
 
 impl fmt::Debug for WorkspaceExternal {
@@ -313,6 +352,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                     SchemaField::new(SET_LAYOUT_ACTION, "action"),
                     SchemaField::new(SET_FLOATING_ACTION, "action"),
                     SchemaField::new(NEW_SESSION_ACTION, "action"),
+                    SchemaField::new(KILL_SESSION_ACTION, "action"),
                     SchemaField::new(PANES_SLOT, "list"),
                     SchemaField::new(LAYOUT_SLOT, "tree"),
                     SchemaField::new(SESSIONS_SLOT, "list"),
@@ -396,6 +436,7 @@ impl ExternalIntrospect for WorkspaceExternal {
             SET_LAYOUT_ACTION => self.set_layout(&args),
             SET_FLOATING_ACTION => self.set_floating(&args),
             NEW_SESSION_ACTION => self.new_session(&args),
+            KILL_SESSION_ACTION => self.kill_session(&args),
             _ => Err(InvokeError::UnknownPath),
         }
     }
@@ -1148,6 +1189,105 @@ mod tests {
             lock(&reg).sessions().len(),
             3,
             "the boot session, plus 1 and 2"
+        );
+    }
+
+    /// Killing a NON-last session over the wire removes it and answers `null`, and — a set
+    /// change — wakes a client watching the sessions list.
+    #[test]
+    fn kill_session_removes_a_non_last_session_over_the_wire() {
+        let reg = registry();
+        lock(&reg).new_session(Some("work")).unwrap();
+        let (mut ext, revision) = control(&reg);
+        let before = revision.current();
+
+        assert_eq!(
+            ext.invoke(
+                KILL_SESSION_ACTION,
+                IntrospectValue::Json(json!({"name": "work"})),
+            ),
+            Ok(IntrospectValue::Json(Value::Null)),
+        );
+        assert!(lock(&reg).session("work").is_none(), "the session is gone");
+        assert_eq!(lock(&reg).sessions().len(), 1, "only the default remains");
+        assert!(
+            revision.current() > before,
+            "the session set changed, which a watching client must be woken for",
+        );
+
+        // An unknown name is a REJECTION, not a type error; a missing / non-string name IS a
+        // type error (you must name the session to kill).
+        assert_eq!(
+            ext.invoke(
+                KILL_SESSION_ACTION,
+                IntrospectValue::Json(json!({"name": "ghost"})),
+            ),
+            Err(InvokeError::Rejected),
+        );
+        assert_eq!(
+            ext.invoke(KILL_SESSION_ACTION, IntrospectValue::Json(json!({}))),
+            Err(InvokeError::TypeMismatch),
+        );
+        assert_eq!(
+            ext.invoke(
+                KILL_SESSION_ACTION,
+                IntrospectValue::Json(json!({"name": 42})),
+            ),
+            Err(InvokeError::TypeMismatch),
+        );
+    }
+
+    /// Killing the LAST session ENDS the daemon: it fires the injected death-signal (the same
+    /// one a pane's exit does), so the reaper re-checks liveness and exits through the SIGTERM
+    /// funnel. Proven with a recording signal — the empty last session drains nothing, so this
+    /// firing, not a pane Drop, is what triggers the exit there.
+    #[test]
+    fn kill_session_on_the_last_ends_the_daemon_via_the_death_signal() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let reg = registry(); // the only session, "0", empty
+        let fired = Arc::new(AtomicUsize::new(0));
+        let signal: Arc<dyn Fn() + Send + Sync> = {
+            let fired = Arc::clone(&fired);
+            Arc::new(move || {
+                fired.fetch_add(1, Ordering::SeqCst);
+            })
+        };
+        let mut ext = WorkspaceExternal::new(
+            Arc::clone(&reg),
+            SessionScope::unscoped(&reg),
+            Arc::new(SceneRevision::new()),
+            Some(signal),
+        );
+
+        assert_eq!(
+            ext.invoke(
+                KILL_SESSION_ACTION,
+                IntrospectValue::Json(json!({"name": "0"})),
+            ),
+            Ok(IntrospectValue::Json(Value::Null)),
+        );
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            1,
+            "killing the last session fired the daemon-exit signal exactly once",
+        );
+        assert_eq!(
+            lock(&reg).sessions().len(),
+            1,
+            "the last session is NOT removed — the shell is kept so the default stays total",
+        );
+
+        // Off a daemon (no injected signal), the same kill still removes/drains but nothing
+        // exits — exactly right for a GUI's in-process host and the tests.
+        let (mut headless, _rev) = control(&reg);
+        assert_eq!(
+            headless.invoke(
+                KILL_SESSION_ACTION,
+                IntrospectValue::Json(json!({"name": "0"})),
+            ),
+            Ok(IntrospectValue::Json(Value::Null)),
+            "a last-session kill with no reaper is a no-op exit, not an error",
         );
     }
 }

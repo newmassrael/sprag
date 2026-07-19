@@ -303,17 +303,33 @@ impl Window {
 pub enum SessionError {
     /// The name is already taken ([`SessionRegistry::new_session`]).
     Duplicate(String),
+    /// No session carries the name ([`SessionRegistry::kill_session`]).
+    Unknown(String),
 }
 
 impl std::fmt::Display for SessionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Duplicate(name) => write!(f, "a session named {name:?} already exists"),
+            Self::Unknown(name) => write!(f, "no session named {name:?}"),
         }
     }
 }
 
 impl std::error::Error for SessionError {}
+
+/// What a [`kill_session`](SessionRegistry::kill_session) did.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum KillOutcome {
+    /// A non-last session was removed; the registry still holds at least one, so the daemon
+    /// keeps serving.
+    Removed,
+    /// The LAST session was killed — its panes were drained and the caller must EXIT the daemon
+    /// (tmux's "killing the last session ends the server"). The empty session shell is kept in
+    /// the registry so [`default_session`](SessionRegistry::default_session) stays total for the
+    /// brief window before the process actually dies.
+    KilledServer,
+}
 
 /// One session: a named attach unit owning an ordered, non-empty set of [`Window`]s
 /// with exactly one current window.
@@ -356,6 +372,27 @@ impl Session {
     #[must_use]
     pub fn current_window(&self) -> &Window {
         &self.windows[self.current_window]
+    }
+
+    /// Close every pane in every window — used when the LAST session is killed
+    /// ([`SessionRegistry::kill_session`]), so no live pane keeps the daemon alive, WITHOUT
+    /// removing the session (which would empty the registry and unresolve the default). Closing
+    /// each pane drops its [`PanePty`](crate::PanePty), which SIGHUPs the child and fires its
+    /// `on_exit` — so the reaper is nudged to re-check and finds the daemon idle.
+    fn drain_panes(&mut self) {
+        for window in &self.windows {
+            let mut pool = window
+                .workspace()
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let ids: Vec<PaneId> = pool.panes().iter().map(|pane| pane.id()).collect();
+            for id in ids {
+                // Dropping the removed pane IS the reap: its `PanePty::Drop` SIGHUPs the child
+                // and closes the PTY. Explicit `drop` so the intent — and the `#[must_use]` — is
+                // honored rather than relying on the statement-end temporary drop.
+                drop(pool.close(id));
+            }
+        }
     }
 }
 
@@ -486,18 +523,58 @@ impl SessionRegistry {
             .expect("some name in 0..=len is always free")
     }
 
-    /// The session an UNSCOPED request acts on — the one the host booted with.
+    /// Kill the session named `name` — tmux `kill-session`.
     ///
-    /// Total, and immutably so: `sessions` is seeded non-empty and has no removal path, and
-    /// nothing moves which session is the default (see the type docs — a client that wants
-    /// another session NAMES it). So this is not a pointer that must be maintained; it is the
-    /// first session, for the life of the registry.
+    /// A NON-last session is REMOVED: its windows and their panes drop, closing every PTY master
+    /// so the child shells receive SIGHUP, and the registry shrinks. If the removed one was the
+    /// default (first) session, the next becomes the default — an unscoped request now lands
+    /// there. That the default can MOVE is new: it was immutable only because nothing could
+    /// remove a session; killing the one an unscoped request happens to land in re-points it,
+    /// which is the honest consequence, not a bug (a client that wants a specific session names
+    /// it).
     ///
-    /// **Bound for the daemon increment:** "exit when the registry empties" would introduce
-    /// the first way for `sessions` to shrink, and a kill of the boot session is exactly what
-    /// this totality rests on. That increment must decide what an unscoped request means with
-    /// the default gone — the honest answers are to re-establish a default explicitly or to
-    /// make this fallible — rather than discovering it as a panic.
+    /// The LAST session is NOT removed but DRAINED (its panes closed), and
+    /// [`KillOutcome::KilledServer`] is returned so the caller exits the daemon. Draining rather
+    /// than removing is what keeps
+    /// [`default_session`](Self::default_session) total: an empty registry still answering
+    /// requests would leave the unscoped path unresolvable, and the daemon is about to exit
+    /// anyway, so the emptied shell simply outlives the last request by the width of a shutdown.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::Unknown`] if no session carries `name`.
+    pub fn kill_session(&mut self, name: &str) -> Result<KillOutcome, SessionError> {
+        let idx = self
+            .sessions
+            .iter()
+            .position(|session| session.name == name)
+            .ok_or_else(|| SessionError::Unknown(name.to_owned()))?;
+        if self.sessions.len() == 1 {
+            // The last session: drain it (no live pane remains, so the reaper exits the daemon)
+            // but keep the shell so `default_session` stays total until the process dies.
+            self.sessions[idx].drain_panes();
+            return Ok(KillOutcome::KilledServer);
+        }
+        // Removing the session drops its windows -> workspaces -> panes; each PanePty::Drop
+        // SIGHUPs its child and fires `on_exit`, so the reaper is nudged with no extra signal.
+        self.sessions.remove(idx);
+        Ok(KillOutcome::Removed)
+    }
+
+    /// The session an UNSCOPED request acts on — the first in the list.
+    ///
+    /// Total: `sessions` is seeded non-empty and NEVER becomes empty — [`kill_session`] removes
+    /// a non-last session but DRAINS (rather than removes) the last one, so at least one shell
+    /// always remains. So this is not a pointer that must be maintained; it is the first
+    /// session, for the life of the registry.
+    ///
+    /// It is no longer IMMUTABLE, though: since [`kill_session`] can remove the first session,
+    /// killing the current default re-points this at the next one. That is the honest
+    /// consequence of a removal path (a client that wants a specific session names it); the
+    /// answer the registry's own earlier bound note called for ("re-establish a default") is
+    /// taken structurally — the list order IS the default, and removal just shifts it.
+    ///
+    /// [`kill_session`]: Self::kill_session
     #[must_use]
     pub fn default_session(&self) -> &Session {
         &self.sessions[0]
@@ -847,6 +924,76 @@ mod tests {
             reg.sessions().len(),
             6,
             "the boot session plus the five created"
+        );
+    }
+
+    /// Killing a NON-last session removes it; killing the DEFAULT (first) re-points the default
+    /// at the next — the honest consequence of a removal path, which the old immutable-default
+    /// doc could promise only because nothing could remove a session.
+    #[test]
+    fn kill_session_removes_a_non_last_session_and_can_move_the_default() {
+        let mut reg = SessionRegistry::new((80, 24));
+        reg.new_session(Some("work")).unwrap();
+        reg.new_session(Some("play")).unwrap();
+        assert_eq!(reg.sessions().len(), 3);
+        assert_eq!(reg.default_session().name(), "0");
+
+        // A non-default session: removed, the default unchanged.
+        assert_eq!(reg.kill_session("work").unwrap(), KillOutcome::Removed);
+        assert!(reg.session("work").is_none());
+        assert_eq!(reg.sessions().len(), 2);
+        assert_eq!(
+            reg.default_session().name(),
+            "0",
+            "killing another session leaves the default where it was",
+        );
+
+        // The DEFAULT session: the next becomes the default.
+        assert_eq!(reg.kill_session("0").unwrap(), KillOutcome::Removed);
+        assert!(reg.session("0").is_none());
+        assert_eq!(
+            reg.default_session().name(),
+            "play",
+            "killing the default re-points it at the next session",
+        );
+    }
+
+    /// Killing an unknown session is refused and changes nothing.
+    #[test]
+    fn kill_session_refuses_an_unknown_name() {
+        let mut reg = SessionRegistry::new((80, 24));
+        reg.new_session(Some("work")).unwrap();
+        assert_eq!(
+            reg.kill_session("ghost").unwrap_err(),
+            SessionError::Unknown("ghost".to_owned()),
+        );
+        assert_eq!(reg.sessions().len(), 2, "the refused kill removed nothing");
+        assert!(reg.session("work").is_some());
+    }
+
+    /// Killing the LAST session does NOT remove it — that would empty the registry and unresolve
+    /// the default — but DRAINS its panes and reports [`KillOutcome::KilledServer`] so the caller
+    /// ends the daemon. The shell is kept, so `default_session` stays total.
+    #[test]
+    fn kill_session_on_the_last_drains_it_and_keeps_the_default_total() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let ws = pool(&reg);
+        let _a = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
+        let _b = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
+        assert_eq!(lock(&ws).panes().len(), 2);
+
+        let name = default_name(&reg);
+        assert_eq!(reg.kill_session(&name).unwrap(), KillOutcome::KilledServer);
+
+        assert_eq!(reg.sessions().len(), 1, "the last session is NOT removed");
+        assert_eq!(
+            reg.default_session().name(),
+            name,
+            "so the default still resolves — total by construction",
+        );
+        assert!(
+            lock(&ws).panes().is_empty(),
+            "but its panes are drained, so no live pane keeps the daemon alive",
         );
     }
 

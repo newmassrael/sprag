@@ -287,7 +287,10 @@ impl Host {
         Arc::clone(self.scope().workspace())
     }
 
-    /// This arm's scope: the default session (see [`workspace`](Self::workspace)).
+    /// This arm's scope: the default session (see [`workspace`](Self::workspace)). Total: this
+    /// in-process arm is single-session and cannot reach `kill_session` (a wire action), so its
+    /// registry never shrinks — the daemon's can, but it resolves scopes over the fallible wire
+    /// path, not through here.
     fn scope(&self) -> SessionScope {
         SessionScope::unscoped(&self.registry)
     }
@@ -520,16 +523,15 @@ impl HostClient for Host {
 ///
 /// The `Option` those three return is about a NAMED session having gone; this arm names none
 /// — it scopes to the default, which [`SessionRegistry::default_session`] makes total by
-/// construction (`sessions` is seeded non-empty and has no removal path). The wire path never
-/// unwraps: it answers a vanished scope with a refusal, because there a name really can come
-/// from a client and really can be stale.
+/// construction (`sessions` is seeded non-empty and NEVER becomes empty: `kill_session` drains
+/// rather than removes the last one). The wire path never unwraps: it answers a vanished scope
+/// with a refusal, because there a name really can come from a client and really can be stale.
 ///
-/// This is a panic guarding an invariant, not a shortcut around one. If the daemon increment
-/// gives `sessions` a way to shrink, this is the site that must be revisited — and it says so
-/// loudly rather than silently serving an empty arrangement, which is the failure that would
-/// actually reach a user.
-const DEFAULT_ALWAYS_RESOLVES: &str = "the default session resolves by construction: it is the first of a never-empty, \
-     never-shrinking session list (SessionRegistry::default_session)";
+/// This is a panic guarding an invariant, not a shortcut around one. The daemon increment gave
+/// `sessions` a way to SHRINK (a non-last kill), but not a way to EMPTY — so this arm, which is
+/// single-session and cannot reach the kill action anyway, stays total.
+const DEFAULT_ALWAYS_RESOLVES: &str = "the default session resolves by construction: it is the first of a never-empty \
+     session list (SessionRegistry::default_session); kill_session never removes the last one";
 
 #[cfg(test)]
 mod tests {
