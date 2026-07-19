@@ -99,6 +99,14 @@ impl SessionScope {
     /// session is known to exist, and travels with the name — so the assembly downstream
     /// needs no second lookup and has no absent case to invent an answer for.
     ///
+    /// Scope resolution gates EVERY method, including the registry-WIDE ones
+    /// (`new_session`, `sessions`) — a scoped connection carries its `session` on all of them.
+    /// Harmless today (sessions have no removal path, and a client creates its session on an
+    /// UNSCOPED connection before scoping), but when session-close lands a client scoped to a
+    /// just-killed session could not even LIST sessions or CREATE a replacement over that
+    /// connection until it re-scopes. That increment must let a registry-wide method bypass the
+    /// gate, or hand the client a way to clear its scope.
+    ///
     /// # Errors
     ///
     /// [`ScopeError::NotAString`] for a present-but-non-string param;

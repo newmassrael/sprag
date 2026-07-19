@@ -240,8 +240,9 @@ pub(crate) fn cell_px(metric: CellMetric, cols: u16, rows: u16) -> (u32, u32) {
 /// the [`HostClient`] the GUI reaches its [`pane_count`] panes through.
 ///
 /// By default (topology B) that is a [`WireHost`] — a wire client of a `sprag-term`
-/// host PROCESS the GUI spawns (or attaches to via `SPRAG_GUI_HOST_SOCK`); its poll
-/// thread wakes the window on host output. Under `SPRAG_GUI_HOST=inprocess` it is an
+/// DAEMON the GUI connect-or-spawns on the well-known socket (never a child it owns; it
+/// outlives the GUI, the tmux detach); its poll thread wakes the window on host output.
+/// Under `SPRAG_GUI_HOST=inprocess` it is an
 /// in-process [`Host`] whose panes wire their `on_dirty` straight to the shell's
 /// [`RepaintSink`](pinion_core::RepaintSink) (the R23 -> R999 seam). Either way this
 /// boots on first call — therefore invoked from `create_extra_externals` (boot),
@@ -295,9 +296,10 @@ pub(crate) fn use_terminal() -> Rc<TerminalView> {
             }
             Box::new(host)
         } else {
-            // Default (topology B): a pure wire client of a `sprag-term` host process
-            // (spawned as a child, or attached via `SPRAG_GUI_HOST_SOCK`). Its panes'
-            // output repaints the window through the poll thread's `on_change`.
+            // Default (topology B): a pure wire client of a `sprag-term` DAEMON the GUI
+            // connect-or-spawns on the well-known socket (detached, never owned; it survives
+            // this GUI). Its panes' output repaints the window through the poll thread's
+            // `on_change`.
             let sink = sink.clone();
             Box::new(
                 WireHost::spawn_or_attach(

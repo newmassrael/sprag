@@ -540,7 +540,7 @@ fn host_bin() -> PathBuf {
 fn host_socket() -> PathBuf {
     match std::env::var_os(HOST_SOCK_ENV) {
         Some(path) => PathBuf::from(path),
-        None => runtime_path("sprag-host.sock"),
+        None => runtime_path(sprag_rpc::HOST_SOCKET_NAME),
     }
 }
 
@@ -618,6 +618,15 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
 ///   ([`NEW_SESSION_ACTION`] with no name), so two clients never invent one name and race.
 ///   This call is deliberately made BEFORE the connection is scoped — creating a session is a
 ///   registry-wide act, not one scoped to a session that does not exist yet.
+///
+/// **Bound (allocate path, joining an existing daemon):** the freshly-allocated session is
+/// empty until [`boot_panes`] spawns its first pane one round trip later, and the daemon's
+/// self-cleaning counts an empty session as having no live panes. So if the daemon's last
+/// OTHER pane exits in that create→spawn window, the daemon can self-exit and this boot fails
+/// with `UnexpectedEof` — an honest error, never corruption, and unreachable for the FIRST
+/// client of a fresh daemon (no pane exists to die). It resolves when session-close semantics
+/// let a just-created session pin liveness (a later increment); until then the window is one
+/// RPC wide, so the spawn follows the allocate promptly.
 fn resolve_session(conn: &mut HostConn) -> io::Result<(String, bool)> {
     if let Some(name) = std::env::var_os(SESSION_ENV).filter(|name| !name.is_empty()) {
         return Ok((name.to_string_lossy().into_owned(), false));
@@ -798,6 +807,13 @@ fn merge_panes(
 /// wake is NOT fatal — it falls back to refreshing the current cache ids (a cache-derived
 /// seed snapshot through the same [`refresh_to_set`] path, so no adds/removes) and the set
 /// change is picked up on a later wake.
+///
+/// **Bound:** quit is triggered by the SOCKET dying, not by this client's SESSION emptying.
+/// With one daemon holding many sessions, a client whose own session loses its last pane
+/// while OTHER sessions keep the daemon alive keeps a live socket, so it shows an empty window
+/// instead of detaching the way tmux does when a session is destroyed. Closing that gap is
+/// session-close's job (a later increment): the host must tell a client its session is gone,
+/// which needs the session-lifecycle events that increment introduces.
 ///
 /// # Errors
 ///

@@ -27,6 +27,14 @@ use pinion_rpc_transport::{TransportControl, UnixSocketTransport};
 pub mod client;
 pub use client::{HostConn, SESSION_PARAM};
 
+/// The well-known host socket file name — the endpoint a `sprag-term` daemon binds and a
+/// `sprag-gui` client connect-or-spawns on. Defined here, in the shared transport crate, so
+/// the daemon's default ([`SocketOpts::socket_name`]) and the GUI's default (its
+/// `host_socket()`) name ONE fact once, the way both ends of a wire must (mirroring
+/// [`SESSION_PARAM`]). A per-instance override still travels by env var; this is only the
+/// default both sides fall back to.
+pub const HOST_SOCKET_NAME: &str = "sprag-host.sock";
+
 /// A frontend's socket policy: the endpoint's default file name plus the env
 /// vars that override its path and its boot state. The *mechanism* (bind,
 /// control, lifetime) is shared; only these names differ per frontend, so the
@@ -135,8 +143,12 @@ fn install_control_signals(socket_name: &'static str) {
 }
 
 /// The fixed endpoint path from the environment for `opts` (precedence:
-/// explicit override -> per-user runtime dir -> temp dir).
-fn socket_path(opts: SocketOpts) -> PathBuf {
+/// explicit override -> per-user runtime dir -> temp dir) — the SAME resolution [`mount`]
+/// uses, exposed so a daemon can derive per-endpoint sidecar files (its single-instance lock,
+/// its log) from the ONE path that identifies it, rather than from a second, independently
+/// spelled default that an override could desynchronize.
+#[must_use]
+pub fn socket_path(opts: SocketOpts) -> PathBuf {
     resolve_socket_path(
         std::env::var_os(opts.path_env),
         std::env::var_os("XDG_RUNTIME_DIR"),
@@ -146,7 +158,7 @@ fn socket_path(opts: SocketOpts) -> PathBuf {
 
 /// A runtime-directory path for `file_name` (`$XDG_RUNTIME_DIR/<file_name>`, else
 /// the temp dir) — the SSOT for where a frontend places a runtime file such as the
-/// per-instance host socket a GUI spawns its `sprag-term` child on. The same
+/// well-known host socket a GUI connect-or-spawns a daemon on. The same
 /// resolution [`mount`] uses for its endpoint, so a spawner and the socket policy
 /// agree on the directory.
 #[must_use]

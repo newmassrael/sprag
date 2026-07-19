@@ -27,11 +27,12 @@
 //!
 //! `--daemon` boots the long-lived multiplexer a GUI connect-or-spawns: it self-daemonizes
 //! (fork, the parent exits so the spawner reaps a short-lived intermediate and the real
-//! daemon reparents to init; `setsid` drops the controlling terminal), redirects stdio to
-//! `$XDG_RUNTIME_DIR/sprag-host.log`, and holds a single-instance advisory `flock` so a race
-//! to spawn one leaves exactly one alive. It boots with NO pane — every pane belongs to a
-//! client's session, and a stray boot pane would both be unseen and pin the self-cleaning
-//! count above zero forever. Standalone mode (no `--daemon`) is unchanged.
+//! daemon reparents to init; `setsid` drops the controlling terminal), redirects stdio to the
+//! endpoint's log (`<socket>.log`), and holds a single-instance advisory `flock` on
+//! `<socket>.lock` so a race to spawn one leaves exactly one alive. The lock and log derive
+//! from the endpoint path, so an overridden socket keeps its own pair. It boots with NO pane —
+//! every pane belongs to a client's session, and a stray boot pane would both be unseen and
+//! pin the self-cleaning count above zero forever. Standalone mode (no `--daemon`) is unchanged.
 
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -53,7 +54,7 @@ use sprag_terminal::CommandBuilder;
 /// The headless host endpoint policy: `$XDG_RUNTIME_DIR/sprag-host.sock`
 /// (override `SPRAG_HOST_RPC_SOCK`), enabled unless `SPRAG_HOST_RPC` is falsey.
 const HOST_SOCKET: SocketOpts = SocketOpts {
-    socket_name: "sprag-host.sock",
+    socket_name: sprag_rpc::HOST_SOCKET_NAME,
     path_env: "SPRAG_HOST_RPC_SOCK",
     enable_env: "SPRAG_HOST_RPC",
 };
@@ -61,14 +62,22 @@ const HOST_SOCKET: SocketOpts = SocketOpts {
 fn main() -> io::Result<()> {
     let args = parse_args();
 
+    // The endpoint path resolved ONCE, the same way `mount` resolves it — the daemon's single
+    // identity. Its lock and log are DERIVED from it (`<socket>.lock` / `<socket>.log`), so an
+    // override (`SPRAG_HOST_RPC_SOCK`) keeps all three in step: two daemons on two sockets get
+    // two locks (tmux's per-socket-server model), and a spawned daemon's lock always matches the
+    // socket its spawner will connect to. For the default socket these derive to the same
+    // `sprag-host.lock` / `sprag-host.log` as a fixed name would.
+    let sock = sprag_rpc::socket_path(HOST_SOCKET);
+
     // A daemon self-daemonizes as the FIRST act of `main`, before any thread exists
     // (fork duplicates only the calling thread, so a fork after `spawn_reaper`/`mount` would
     // leave the child missing them mid-lock), then holds a single-instance lock for the whole
     // run. If another daemon already owns it, exit quietly — its socket is the one to use.
     // Standalone mode is untouched: no fork, stdio kept, one boot pane.
     let _instance = if args.daemon {
-        daemonize()?;
-        match acquire_single_instance()? {
+        daemonize(&sock)?;
+        match acquire_single_instance(&sock)? {
             Some(lock) => Some(lock),
             None => return Ok(()),
         }
@@ -217,14 +226,17 @@ fn parse_args() -> BootArgs {
 
 /// Self-daemonize: `fork`, the PARENT exits (so a spawner reaps a short-lived intermediate and
 /// the real daemon reparents to init — no `PR_SET_PDEATHSIG`, no zombie), then the CHILD
-/// starts a new session (`setsid`, dropping any controlling terminal) and redirects its stdio.
+/// starts a new session (`setsid`, dropping any controlling terminal) and redirects its stdio
+/// to `sock`'s log (`<socket>.log`).
 ///
 /// MUST be the first act of `main`: `fork` duplicates only the calling thread, so forking after
 /// a thread is spawned would leave the child missing it, possibly mid-lock.
-fn daemonize() -> io::Result<()> {
-    // SAFETY: called before any thread is spawned, so the child is single-threaded; between
-    // fork and re-entering normal code it only calls async-signal-safe `setsid`/`dup2` (in
-    // `redirect_stdio`) or exits.
+fn daemonize(sock: &Path) -> io::Result<()> {
+    // SAFETY: this is called before any thread is spawned, so the forked child is
+    // single-threaded. That is the whole safety argument: with no other thread, no lock can be
+    // held across the fork, so the child may call even the NON-async-signal-safe code in
+    // `redirect_stdio` (open/alloc) without risking a deadlock on an inconsistent lock. (Only
+    // `setsid` runs here directly, and it IS async-signal-safe.)
     match unsafe { libc::fork() } {
         -1 => return Err(io::Error::last_os_error()),
         0 => {}                     // child: become the daemon
@@ -233,17 +245,17 @@ fn daemonize() -> io::Result<()> {
     if unsafe { libc::setsid() } == -1 {
         return Err(io::Error::last_os_error());
     }
-    redirect_stdio()
+    redirect_stdio(&sock.with_extension("log"))
 }
 
-/// Point stdin at `/dev/null` and stdout+stderr at `$XDG_RUNTIME_DIR/sprag-host.log` — a
-/// detached daemon has no terminal to inherit, and its `tracing`/panic output must land
-/// somewhere an operator can read rather than vanish.
-fn redirect_stdio() -> io::Result<()> {
+/// Point stdin at `/dev/null` and stdout+stderr at `log_path` — a detached daemon has no
+/// terminal to inherit, and its `tracing`/panic output must land somewhere an operator can
+/// read rather than vanish.
+fn redirect_stdio(log_path: &Path) -> io::Result<()> {
     let log = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(sprag_rpc::runtime_path("sprag-host.log"))?;
+        .open(log_path)?;
     let devnull = OpenOptions::new().read(true).open("/dev/null")?;
     // dup2 the targets onto the standard fds; the source handles close on scope exit, leaving
     // 0/1/2 as independent duplicates pointing at the log / null.
@@ -259,9 +271,11 @@ fn redirect_stdio() -> io::Result<()> {
     Ok(())
 }
 
-/// Take the daemon's single-instance lock (`$XDG_RUNTIME_DIR/sprag-host.lock`).
-fn acquire_single_instance() -> io::Result<Option<File>> {
-    flock_guard(&sprag_rpc::runtime_path("sprag-host.lock"))
+/// Take the daemon's single-instance lock, `<socket>.lock` — DERIVED from the endpoint path so
+/// each socket has its own lock: two daemons on two sockets do not contend (tmux's per-socket
+/// model), and a spawned daemon's lock always matches the socket its spawner will connect to.
+fn acquire_single_instance(sock: &Path) -> io::Result<Option<File>> {
+    flock_guard(&sock.with_extension("lock"))
 }
 
 /// A non-blocking exclusive advisory `flock` on `path`: `Some(file)` when taken (held for as
