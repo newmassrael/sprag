@@ -114,9 +114,15 @@ pub struct PaneSnapshot {
     /// `None` when it could not be read (the child had exited, or a non-Linux host) — the
     /// restored shell then falls back to the daemon's own cwd.
     pub cwd: Option<PathBuf>,
-    /// What was LAUNCHED in the pane (its introspection label) — kept for display continuity and
-    /// for the later exact-command-restore increment. Slice 1 re-spawns a shell regardless.
+    /// What was LAUNCHED in the pane (its introspection label / program name) — a display name.
     pub command_label: String,
+    /// The full argv the pane was launched with (`[program, args…]`) — what an EXACT-COMMAND
+    /// restore re-runs for an allowlisted program (`Host::restore`), else it falls back to a shell.
+    /// `#[serde(default)]` so a pre-argv (slice-1) snapshot still loads — an empty argv simply
+    /// restores a shell, the slice-1 behaviour. Env is deliberately NOT here: a restored command
+    /// inherits the DAEMON's environment (where API keys live), so no secret is written to disk.
+    #[serde(default)]
+    pub argv: Vec<String>,
     /// The pane's size, so the restored shell opens at the same dimensions.
     pub cols: u16,
     pub rows: u16,
@@ -270,11 +276,14 @@ pub struct PaneRestore {
     /// The id to spawn it under (the layout references it by this — see
     /// [`spawn_with_dirty_id`](crate::Workspace::spawn_with_dirty_id)).
     pub id: PaneId,
-    /// Where to spawn the shell; `None` falls back to the daemon's cwd.
+    /// Where to spawn; `None` falls back to the daemon's cwd.
     pub cwd: Option<PathBuf>,
-    /// What was launched (kept for display / the future exact-command increment).
+    /// What was launched (a display name).
     pub command_label: String,
-    /// The size to open the shell at.
+    /// The full argv (`[program, args…]`) — re-run exactly for an allowlisted program, else a
+    /// shell in the cwd. Empty (a pre-argv snapshot) restores a shell.
+    pub argv: Vec<String>,
+    /// The size to open at.
     pub cols: u16,
     pub rows: u16,
 }
@@ -287,6 +296,7 @@ pub(crate) fn pane_snapshot(pane: &Pane) -> PaneSnapshot {
         id: pane.id(),
         cwd: pane.pty().cwd(),
         command_label: pane.command_label().to_owned(),
+        argv: pane.argv().to_vec(),
         cols,
         rows,
     }
@@ -407,6 +417,11 @@ mod tests {
             .find(|p| p.session == "work")
             .expect("work's pane is in the plan");
         assert_eq!(work_pane.command_label, "claude");
+        assert_eq!(
+            work_pane.argv,
+            vec!["/bin/sh", "-c", "cat"],
+            "the full launch argv survives — what an exact-command restore re-runs",
+        );
         assert_eq!((work_pane.cols, work_pane.rows), (100, 30));
         assert_eq!(
             work_pane.cwd.as_deref().and_then(|c| c.canonicalize().ok()),
@@ -517,6 +532,7 @@ mod tests {
             id: PaneId(id),
             cwd: None,
             command_label: "sh".to_owned(),
+            argv: vec!["sh".to_owned()],
             cols: 80,
             rows: 24,
         }

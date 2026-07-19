@@ -57,12 +57,18 @@ impl fmt::Display for PaneId {
     }
 }
 
-/// One managed pane: a live [`PanePty`] plus its id and a
-/// human/AI-readable command label (surfaced via introspection).
+/// One managed pane: a live [`PanePty`] plus its id, a human/AI-readable command label
+/// (surfaced via introspection), and the full argv it was launched with (for an exact-command
+/// restore).
 pub struct Pane {
     id: PaneId,
     pty: PanePty,
     command_label: String,
+    /// The full launch command (`[program, args…]`), captured from the [`CommandBuilder`] at
+    /// spawn. What an exact-command restore re-runs for an allowlisted program (else it falls
+    /// back to a shell). Distinct from [`command_label`](Self::command_label), which is just the
+    /// program name for display. Empty only for a pane whose snapshot predates argv capture.
+    argv: Vec<String>,
 }
 
 impl Pane {
@@ -82,6 +88,14 @@ impl Pane {
     #[must_use]
     pub fn command_label(&self) -> &str {
         &self.command_label
+    }
+
+    /// The full argv this pane was launched with (`[program, args…]`) — what an exact-command
+    /// restore re-runs (for an allowlisted program) or falls back to a shell for. Captured at
+    /// spawn from the [`CommandBuilder`]; empty only for a pane restored from a pre-argv snapshot.
+    #[must_use]
+    pub fn argv(&self) -> &[String] {
+        &self.argv
     }
 
     /// The child's self-reported window title (`OSC 0` / `OSC 2`), `None` until it sets
@@ -248,6 +262,9 @@ impl Workspace {
         on_dirty: Option<Box<dyn Fn() + Send>>,
         on_exit: Option<Box<dyn Fn() + Send>>,
     ) -> Result<PaneId, PanePtyError> {
+        // Capture the launch argv BEFORE the builder is moved into the spawn, so a snapshot can
+        // later re-run it (an allowlisted program) or fall back to a shell.
+        let argv = argv_of(&command);
         let pty = PanePty::spawn_with_dirty(command, cols, rows, on_dirty, on_exit)?;
         // Mint AFTER a successful spawn so a failed spawn consumes no id (preserving the
         // old counter's gap-free-on-failure behaviour). Relaxed ordering: ids need only
@@ -257,6 +274,7 @@ impl Workspace {
             id,
             pty,
             command_label: label,
+            argv,
         });
         Ok(id)
     }
@@ -288,6 +306,7 @@ impl Workspace {
         on_exit: Option<Box<dyn Fn() + Send>>,
     ) -> Result<(), PanePtyError> {
         let (cols, rows) = size;
+        let argv = argv_of(&command);
         let pty = PanePty::spawn_with_dirty(command, cols, rows, on_dirty, on_exit)?;
         // Reserve the id above the counter so a future mint cannot reissue it (saturating so a
         // pathological u64::MAX id cannot wrap the reservation back to 0). Relaxed matches the
@@ -298,6 +317,7 @@ impl Workspace {
             id,
             pty,
             command_label: label,
+            argv,
         });
         Ok(())
     }
@@ -366,6 +386,18 @@ impl Workspace {
             })
             .collect()
     }
+}
+
+/// The argv of a [`CommandBuilder`] as owned strings (`[program, args…]`) — read at spawn so a
+/// pane remembers what to re-run on restore. Lossy on a non-UTF-8 arg (which an exec'd program
+/// path effectively never is); the fidelity that matters — the program and its flags — is
+/// preserved.
+fn argv_of(command: &CommandBuilder) -> Vec<String> {
+    command
+        .get_argv()
+        .iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect()
 }
 
 #[cfg(test)]

@@ -50,7 +50,7 @@ use pinion_core::GridBuffer;
 use sprag_input::Modifiers;
 use sprag_terminal::{
     CommandBuilder, LayoutSnapshot, LayoutWire, Pane, PaneId, PanePtyError, PanePtyHandle,
-    SessionRegistry, Snapshot, SnapshotError, WindowInfo, Workspace, default_shell_command,
+    SessionRegistry, Snapshot, SnapshotError, WindowInfo, Workspace,
 };
 use sprag_vt::Screen;
 
@@ -329,6 +329,9 @@ impl Host {
         // Swap the CONTENTS, preserving the Arc the reaper already holds a clone of.
         *lock(&self.registry) = registry;
 
+        // Resolve the exact-command allowlist ONCE (it reads the environment) — which recorded
+        // programs re-run exactly vs. fall back to a shell.
+        let allowlist = crate::restore_allowlist();
         let mut restored = 0usize;
         for pane in plan.panes {
             // Resolve the target window's pool (cloned Arc), then release the registry lock before
@@ -339,10 +342,10 @@ impl Host {
                 // but the resolve is fallible, so skip rather than unwrap a should-not-happen.
                 continue;
             };
-            let (mut command, label) = default_shell_command();
-            if let Some(cwd) = &pane.cwd {
-                command.cwd(cwd);
-            }
+            // Re-run the exact command for an allowlisted program, else a shell in the cwd (a
+            // shell / non-allowlisted / cwd-less pane). Env is re-derived from the daemon, not disk.
+            let (command, label) =
+                crate::restore_command(&pane.argv, pane.cwd.as_deref(), &allowlist);
             match lock(&pool).spawn_with_dirty_id(
                 pane.id,
                 command,
@@ -803,6 +806,7 @@ mod tests {
                             id: PaneId(0),
                             cwd: Some("/tmp".into()),
                             command_label: "sh".to_owned(),
+                            argv: vec!["sh".to_owned()],
                             cols: 80,
                             rows: 24,
                         },
@@ -810,6 +814,7 @@ mod tests {
                             id: PaneId(1),
                             cwd: None, // no recorded cwd -> falls back to the daemon's
                             command_label: "sh".to_owned(),
+                            argv: vec!["sh".to_owned()],
                             cols: 80,
                             rows: 24,
                         },
