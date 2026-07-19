@@ -194,17 +194,19 @@ impl Workspace {
         cols: u16,
         rows: u16,
     ) -> Result<PaneId, PanePtyError> {
-        self.spawn_with_dirty(command, label, cols, rows, None)
+        self.spawn_with_dirty(command, label, cols, rows, None, None)
     }
 
-    /// [`Self::spawn`] with an `on_dirty` callback wired into the pane's PTY
-    /// reader (threaded to [`PanePty::spawn_with_dirty`]).
+    /// [`Self::spawn`] with the pane's two PTY-reader callbacks (threaded to
+    /// [`PanePty::spawn_with_dirty`]): `on_dirty` (per output batch + at exit) and
+    /// `on_exit` (once, at the child's exit).
     ///
-    /// A windowed host passes `Some(Box::new(move || sink.request_repaint()))`
-    /// (the pinion R999 `RepaintSink` seam) so this pane's output wakes the
-    /// shell to repaint. The callback is pinion-free (`Box<dyn Fn() + Send>`),
-    /// keeping this crate decoupled from the GUI shell. Headless callers use
-    /// [`Self::spawn`] (`None`).
+    /// A windowed host passes `on_dirty = Some(Box::new(move || sink.request_repaint()))`
+    /// (the pinion R999 `RepaintSink` seam) so this pane's output wakes the shell to
+    /// repaint; the headless host passes `bump_on_dirty`. `on_exit` is the "this child is
+    /// gone" event the host lifetime turns on (the daemon exits when its last live pane
+    /// does). Both are pinion-free (`Box<dyn Fn() + Send>`), keeping this crate decoupled
+    /// from the GUI shell and the host lifetime; callers with neither use [`Self::spawn`].
     ///
     /// # Errors
     ///
@@ -217,8 +219,9 @@ impl Workspace {
         cols: u16,
         rows: u16,
         on_dirty: Option<Box<dyn Fn() + Send>>,
+        on_exit: Option<Box<dyn Fn() + Send>>,
     ) -> Result<PaneId, PanePtyError> {
-        let pty = PanePty::spawn_with_dirty(command, cols, rows, on_dirty)?;
+        let pty = PanePty::spawn_with_dirty(command, cols, rows, on_dirty, on_exit)?;
         // Mint AFTER a successful spawn so a failed spawn consumes no id (preserving the
         // old counter's gap-free-on-failure behaviour). Relaxed ordering: ids need only
         // uniqueness + monotonicity, not synchronization with other memory.

@@ -249,9 +249,11 @@ impl Host {
     /// returning its id. `on_dirty` is the pinion-free wake hook a windowed client
     /// passes (`Some(Box::new(move || sink.request_repaint()))`, the R999
     /// `RepaintSink` seam) so this pane's output repaints the window; the headless
-    /// server passes `None`. Keeping the hook a `Box<dyn Fn() + Send>` (not a
-    /// pinion type) is why the display concern can live in the GUI while the spawn
-    /// lives here.
+    /// server passes `bump_on_dirty`. `on_exit` is the "this child is gone" hook the
+    /// daemon reads to end its own process when the last live pane dies (the headless
+    /// server passes [`reap_hook`](crate::reap_hook); a windowed / test caller passes
+    /// `None`). Both are `Box<dyn Fn() + Send>` (not pinion types), so the display and
+    /// lifetime concerns live above while the spawn lives here.
     ///
     /// # Errors
     ///
@@ -263,9 +265,10 @@ impl Host {
         cols: u16,
         rows: u16,
         on_dirty: Option<Box<dyn Fn() + Send>>,
+        on_exit: Option<Box<dyn Fn() + Send>>,
     ) -> Result<PaneId, PanePtyError> {
         let workspace = self.workspace();
-        lock(&workspace).spawn_with_dirty(command, label, cols, rows, on_dirty)
+        lock(&workspace).spawn_with_dirty(command, label, cols, rows, on_dirty, on_exit)
     }
 
     /// The DEFAULT session's current window pane pool — this arm's panes.
@@ -545,7 +548,9 @@ mod tests {
     fn spawn_grows_the_pane_set_and_exposes_geometry() {
         let host = Host::new((40, 6));
         assert!(host.pane_ids().is_empty());
-        let id = host.spawn(cat(), "cat".to_owned(), 40, 6, None).unwrap();
+        let id = host
+            .spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+            .unwrap();
         assert_eq!(host.pane_ids(), vec![id]);
         assert_eq!(host.pane_grid_size(id), (40, 6));
     }
@@ -553,7 +558,9 @@ mod tests {
     #[test]
     fn resize_updates_the_grid_geometry() {
         let host = Host::new((40, 6));
-        let id = host.spawn(cat(), "cat".to_owned(), 40, 6, None).unwrap();
+        let id = host
+            .spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+            .unwrap();
         host.resize(id, 100, 30);
         assert_eq!(host.pane_grid_size(id), (100, 30));
     }
@@ -562,7 +569,9 @@ mod tests {
     fn send_text_reaches_the_pane_pty() {
         use std::time::{Duration, Instant};
         let host = Host::new((40, 6));
-        let id = host.spawn(cat(), "cat".to_owned(), 40, 6, None).unwrap();
+        let id = host
+            .spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+            .unwrap();
         assert!(host.send_text(id, "hello"));
         // The cooked-mode `cat` echoes it back into the pane's screen.
         let start = Instant::now();

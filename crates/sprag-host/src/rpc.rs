@@ -2,8 +2,8 @@
 //!
 //! Serves pinion's scene-as-data wire over a line-delimited transport,
 //! resolving each request's [`SessionScope`] and assembling that session's current-window
-//! live [`Workspace`](sprag_terminal::Workspace)
-//! panes into a fresh scene. This is the runnable form of the headless data path
+//! live [`Workspace`] panes into a fresh scene. This is the runnable form of the headless
+//! data path
 //! (DESIGN.md §1/§3): an external AI peer reads the terminals as data and
 //! drives input / pane lifecycle, with no GPU and no shell event loop.
 //!
@@ -34,8 +34,9 @@ use pinion_rpc::{
     DispatchContext, Request, RpcError, RpcFrame, RpcIngress, RpcReply, WaiterRegistry, dispatch,
     dispatch_parsed, parse_request, try_async_wait_for,
 };
-use sprag_terminal::SessionRegistry;
+use sprag_terminal::{SessionRegistry, Workspace};
 
+use crate::external::lock;
 use crate::host::Host;
 use crate::runs::RunRegistry;
 use crate::scope::{ScopeError, SessionScope};
@@ -64,6 +65,12 @@ pub struct HostState {
     revision: Arc<SceneRevision>,
     /// Parked async `scene/waitFor` replies, woken off `revision`'s observer.
     waiters: Arc<WaiterRegistry>,
+    /// The self-cleaning daemon's exit action, threaded into each mux-spawned pane's
+    /// `on_exit` (via [`workspace_scene`](crate::workspace_scene) → the mux external →
+    /// [`reap_hook`]) so a mux pane's death can end the daemon. `None` off a daemon (the
+    /// GUI's in-process host, the tests) — the boot pane's own exit hook is wired
+    /// separately by the binary, since it is spawned before this state exists.
+    on_empty: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl HostState {
@@ -72,8 +79,24 @@ impl HostState {
     /// `scene/waitFor` wake observer on it (`move |n| waiters.wake(n)`), so a
     /// revision bump (a pane's output) wakes every parked waiter. A fresh run
     /// registry and waiter registry are created here.
+    ///
+    /// `on_empty` is the self-cleaning daemon's exit action, carried to each mux-spawned
+    /// pane's `on_exit`; `None` off a daemon. Use [`new`](Self::new) (which passes `None`)
+    /// unless you are the daemon binary wiring its own lifetime.
     #[must_use]
     pub fn new(host: Host, revision: Arc<SceneRevision>) -> Self {
+        Self::with_reaper(host, revision, None)
+    }
+
+    /// [`new`](Self::new) plus the daemon's `on_empty` exit action (see the field docs).
+    /// Separate constructor so the common callers state no lifetime policy, and only the
+    /// daemon names one.
+    #[must_use]
+    pub fn with_reaper(
+        host: Host,
+        revision: Arc<SceneRevision>,
+        on_empty: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Self {
         let waiters = Arc::new(WaiterRegistry::new());
         // The wake half of the no-lost-wakeup discipline: a revision bump (an OCC
         // mutation OR a pane's external output via on_dirty) fires this, draining
@@ -99,7 +122,16 @@ impl HostState {
             previews: PreviewLedger::default(),
             revision,
             waiters,
+            on_empty,
         }
+    }
+
+    /// The daemon's exit action, cloned for a scene assembly
+    /// ([`workspace_scene`](crate::workspace_scene)) — `None` off a daemon, so a non-daemon
+    /// caller wires no pane to end the process.
+    #[must_use]
+    pub fn on_empty(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+        self.on_empty.clone()
     }
 
     /// The mux state tree (the [`Host`]'s [`SessionRegistry`]), for the scene-as-data
@@ -145,6 +177,52 @@ pub fn bump_on_dirty(revision: &Arc<SceneRevision>) -> Box<dyn Fn() + Send> {
     })
 }
 
+/// The pane `on_exit` hook a self-cleaning daemon wires at EVERY spawn site (the boot pane
+/// AND each mux-spawned pane): when the child that just exited was the LAST live one across
+/// all sessions, run `on_empty`. The daemon passes `on_empty = || process::exit(0)` (the
+/// tmux convention that a server with nothing left to serve ends), so this library never
+/// names process exit itself — a test injects a recording action instead, which is what
+/// makes the exact-once behaviour assertable without ending the test process.
+///
+/// This is an `on_exit`, so the liveness scan runs once per pane DEATH, never per output
+/// batch (the R152 lesson: no per-output work on the hot path). Wired at every spawn site
+/// because any pane may be the last to die, and hung on the pane hook so a daemon with no
+/// panes has no hook and cannot exit before its first pane is even spawned.
+#[must_use]
+pub fn reap_hook(
+    registry: Arc<Mutex<SessionRegistry>>,
+    on_empty: Arc<dyn Fn() + Send + Sync>,
+) -> Box<dyn Fn() + Send> {
+    Box::new(move || {
+        if no_live_panes(&registry) {
+            on_empty();
+        }
+    })
+}
+
+/// Whether NO pane in ANY session's ANY window is still live (every one has reached
+/// [`is_eof`](sprag_terminal::PanePty::is_eof)).
+///
+/// The registry is the authority for pane MEMBERSHIP and each pane's `is_eof` for its
+/// LIVENESS, so this reads both rather than keeping a parallel counter that could drift from
+/// them. It collects the pools under the registry lock and releases it BEFORE locking any
+/// workspace — the registry→workspace order the rest of the host keeps, so it nests with
+/// neither. Short-circuits on the first live pane, so on the common path (some pane alive) it
+/// stops at once.
+fn no_live_panes(registry: &Arc<Mutex<SessionRegistry>>) -> bool {
+    let pools: Vec<Arc<Mutex<Workspace>>> = {
+        let reg = lock(registry);
+        reg.sessions()
+            .iter()
+            .flat_map(|session| session.windows().iter())
+            .map(|window| Arc::clone(window.workspace()))
+            .collect()
+    };
+    pools
+        .iter()
+        .all(|pool| lock(pool).panes().iter().all(|pane| pane.pty().is_eof()))
+}
+
 /// The methods the headless host answers: pure reads over the pane scene
 /// (`scene/snapshot`, `scene/query`), the `scene/invoke` input + plugin channels,
 /// and the async change-notification pair (`scene/revision` reads the current
@@ -176,8 +254,13 @@ pub fn handle_request(state: &HostState, request_json: &str) -> Option<String> {
             // carry a scope (there is no parsed request to read one off), and it does not
             // need one — the reply is about the envelope, not about any session.
             let scope = SessionScope::unscoped(state.registry());
-            let mut scene =
-                crate::workspace_scene(&scope, state.registry(), &state.runs, &state.revision);
+            let mut scene = crate::workspace_scene(
+                &scope,
+                state.registry(),
+                &state.runs,
+                &state.revision,
+                state.on_empty(),
+            );
             let mut ctx = DispatchContext::new(&mut scene, &state.previews, state.revision());
             dispatch(&mut ctx, request_json)
         }
@@ -216,7 +299,13 @@ pub fn handle_parsed(state: &HostState, request: Request) -> Option<String> {
 /// of one fact is how they come to disagree.
 #[must_use]
 fn handle_scoped(state: &HostState, scope: &SessionScope, request: Request) -> Option<String> {
-    let mut scene = crate::workspace_scene(scope, state.registry(), &state.runs, &state.revision);
+    let mut scene = crate::workspace_scene(
+        scope,
+        state.registry(),
+        &state.runs,
+        &state.revision,
+        state.on_empty(),
+    );
     let mut ctx = DispatchContext::new(&mut scene, &state.previews, state.revision());
     if SUPPORTED_METHODS.contains(&request.method.as_str()) {
         dispatch_parsed(&mut ctx, request)
@@ -430,6 +519,7 @@ mod tests {
             cols,
             rows,
             Some(bump_on_dirty(&revision)),
+            None,
         )
         .expect("spawn pane");
         HostState::new(host, revision)
@@ -455,6 +545,109 @@ mod tests {
             }
             sleep(Duration::from_millis(20));
         }
+    }
+
+    /// Block (bounded) until pane `id` in `host`'s default workspace has reached EOF.
+    fn wait_for_eof(host: &Host, id: PaneId) {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            if lock(&host.workspace())
+                .pane(id)
+                .is_none_or(|p| p.pty().is_eof())
+            {
+                return;
+            }
+            sleep(Duration::from_millis(20));
+        }
+        panic!("pane {id:?} never reached EOF");
+    }
+
+    /// `no_live_panes` tracks registry liveness both ways: false while a child runs, true
+    /// once every child has exited. It is the predicate the daemon ends its process on, so a
+    /// wrong answer either strands a daemon over dead panes or kills one still serving.
+    #[test]
+    fn no_live_panes_tracks_the_registrys_liveness() {
+        // A running `cat` keeps it false.
+        let host = Host::new((40, 6));
+        host.spawn(sh("exec cat"), "cat".into(), 40, 6, None, None)
+            .expect("spawn cat");
+        assert!(
+            !no_live_panes(host.registry()),
+            "a running child means panes are live",
+        );
+
+        // A sole pane whose child exits flips it true (polled — the child exits async).
+        let host = Host::new((40, 6));
+        let id = host
+            .spawn(sh("exec true"), "true".into(), 40, 6, None, None)
+            .expect("spawn true");
+        wait_for_eof(&host, id);
+        assert!(
+            no_live_panes(host.registry()),
+            "the sole pane's child exited, so nothing is live",
+        );
+    }
+
+    /// `reap_hook` runs its injected action EXACTLY when the pane that just died left nothing
+    /// live — the daemon's exit edge, on the real path (a child exits → its reader reaches
+    /// EOF → the `on_exit` hook checks the registry). Both halves matter: the last pane's
+    /// death ends the daemon, and a death beside a live pane must NOT.
+    #[test]
+    fn reap_hook_fires_only_when_the_last_pane_is_gone() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // The last pane's death fires the action exactly once.
+        let host = Host::new((40, 6));
+        let fired = Arc::new(AtomicUsize::new(0));
+        let f = Arc::clone(&fired);
+        let action: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            f.fetch_add(1, Ordering::SeqCst);
+        });
+        let id = host
+            .spawn(
+                sh("exec true"),
+                "true".into(),
+                40,
+                6,
+                None,
+                Some(reap_hook(Arc::clone(host.registry()), action)),
+            )
+            .expect("spawn true");
+        wait_for_eof(&host, id);
+        // EOF is published before on_exit; a brief grace lets the hook run.
+        sleep(Duration::from_millis(200));
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            1,
+            "the last pane's death ends the daemon exactly once",
+        );
+
+        // A pane dying beside a LIVE one must not fire — the daemon serves on.
+        let host = Host::new((40, 6));
+        let fired = Arc::new(AtomicUsize::new(0));
+        let f = Arc::clone(&fired);
+        let action: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            f.fetch_add(1, Ordering::SeqCst);
+        });
+        host.spawn(sh("exec cat"), "cat".into(), 40, 6, None, None)
+            .expect("spawn cat"); // stays live
+        let dying = host
+            .spawn(
+                sh("exec true"),
+                "true".into(),
+                40,
+                6,
+                None,
+                Some(reap_hook(Arc::clone(host.registry()), action)),
+            )
+            .expect("spawn true");
+        wait_for_eof(&host, dying);
+        sleep(Duration::from_millis(200));
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            0,
+            "a pane dying beside a live one must not end the daemon",
+        );
     }
 
     fn invoke_key(state: &HostState, pane: u64, key: &str) {

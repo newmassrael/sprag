@@ -287,6 +287,9 @@ pub(crate) fn use_terminal() -> Rc<TerminalView> {
                     cols,
                     rows,
                     Some(Box::new(move || sink.request_repaint())),
+                    // The in-process host (a test / debug escape hatch) does not self-exit:
+                    // it lives with the GUI process, so no daemon reaper.
+                    None,
                 )
                 .expect("spawn a sprag-gui pane");
             }

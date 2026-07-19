@@ -17,7 +17,9 @@
 //! policy: `$XDG_RUNTIME_DIR/sprag-host.sock` (override `SPRAG_HOST_RPC_SOCK`),
 //! enabled unless `SPRAG_HOST_RPC` is falsey; `kill -USR1`/`-USR2` enable /
 //! disable it live. As a server it runs until SIGINT/SIGTERM (which cancels +
-//! joins in-flight plugin runs), not until stdin EOF.
+//! joins in-flight plugin runs) OR until its LAST live pane exits — the
+//! self-cleaning tmux convention (a host with nothing left to serve ends). Not
+//! until stdin EOF.
 
 use std::io;
 use std::sync::mpsc;
@@ -27,7 +29,8 @@ use std::thread;
 use pinion_core::SceneRevision;
 use signal_hook::consts::{SIGINT, SIGTERM};
 use sprag_host::{
-    FrameIngress, Host, HostState, RunRegistry, bump_on_dirty, dispatch_frames, stdin_frames,
+    FrameIngress, Host, HostState, RunRegistry, bump_on_dirty, dispatch_frames, reap_hook,
+    stdin_frames,
 };
 use sprag_rpc::SocketOpts;
 use sprag_terminal::CommandBuilder;
@@ -51,9 +54,24 @@ fn main() -> io::Result<()> {
     // BEFORE the spawn so the bumper and HostState share the one token.
     let revision = Arc::new(SceneRevision::new());
     let host = Host::new((cols, rows));
-    host.spawn(command, label, cols, rows, Some(bump_on_dirty(&revision)))
-        .map_err(io::Error::other)?;
-    let state = HostState::new(host, revision);
+    // Self-cleaning lifetime: when the LAST live pane across all sessions exits, the daemon
+    // has nothing left to serve, so it ends — the tmux convention. The action is INJECTED
+    // (not named in sprag-host) so the library never calls `process::exit`; the binary owns
+    // its own lifetime. It rides each pane's `on_exit`, so the check runs once per pane
+    // death, never per output batch, and a daemon with no panes has no hook and cannot exit
+    // before its first pane.
+    let on_empty: Arc<dyn Fn() + Send + Sync> = Arc::new(|| std::process::exit(0));
+    let boot_reaper = reap_hook(Arc::clone(host.registry()), Arc::clone(&on_empty));
+    host.spawn(
+        command,
+        label,
+        cols,
+        rows,
+        Some(bump_on_dirty(&revision)),
+        Some(boot_reaper),
+    )
+    .map_err(io::Error::other)?;
+    let state = HostState::with_reaper(host, revision, Some(on_empty));
 
     // One dispatch owner (this thread) serialises all dispatch; the always-on
     // socket and stdin are producers of RpcFrames into it, so a socket client

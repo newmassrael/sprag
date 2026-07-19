@@ -61,7 +61,7 @@ pub use pane::{CellFrame, SpragPaneExternal, send_key, send_text};
 pub use plugins::PluginsExternal;
 pub use rpc::{
     FrameIngress, HostState, SUPPORTED_METHODS, bump_on_dirty, dispatch_frames, handle_parsed,
-    handle_request, stdin_frames,
+    handle_request, reap_hook, stdin_frames,
 };
 pub use runs::{RunId, RunRegistry, RunState};
 pub use scope::{ScopeError, SessionScope};
@@ -307,6 +307,7 @@ pub fn workspace_scene(
     registry: &Arc<Mutex<SessionRegistry>>,
     runs: &Arc<Mutex<RunRegistry>>,
     revision: &Arc<SceneRevision>,
+    on_empty: Option<Arc<dyn Fn() + Send + Sync>>,
 ) -> Scene {
     // The scoped session's pool, resolved when the scope was (never re-derived here — one
     // question, one answer). The registry lock is not held, so taking the workspace lock
@@ -327,6 +328,7 @@ pub fn workspace_scene(
             Arc::clone(registry),
             scope.clone(),
             Arc::clone(revision),
+            on_empty,
         )))
         .with_tag(MUX_TAG),
     ));

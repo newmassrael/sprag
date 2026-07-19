@@ -1188,7 +1188,14 @@ mod tests {
         use std::time::{Duration, Instant};
         let host = Host::new((40, 6));
         let id = host
-            .spawn(titled_pane("vim README"), "sh".to_owned(), 40, 6, None)
+            .spawn(
+                titled_pane("vim README"),
+                "sh".to_owned(),
+                40,
+                6,
+                None,
+                None,
+            )
             .unwrap();
 
         // The reader thread applies the OSC asynchronously — wait for the host to see it.
@@ -1238,11 +1245,18 @@ mod tests {
         use std::time::{Duration, Instant};
         let host = Host::new((40, 6));
         let titled = host
-            .spawn(titled_pane("vim README"), "sh".to_owned(), 40, 6, None)
+            .spawn(
+                titled_pane("vim README"),
+                "sh".to_owned(),
+                40,
+                6,
+                None,
+                None,
+            )
             .unwrap();
         // A second pane so floating the first is not refused (the last docked pane cannot
         // float — `float_would_empty_the_dock`). Its title is irrelevant here.
-        host.spawn(untitled_pane(), "sh".to_owned(), 40, 6, None)
+        host.spawn(untitled_pane(), "sh".to_owned(), 40, 6, None, None)
             .unwrap();
 
         let start = Instant::now();
@@ -1294,11 +1308,18 @@ mod tests {
         use std::time::{Duration, Instant};
         let host = Host::new((40, 6));
         let titled = host
-            .spawn(titled_pane("vim README"), "sh".to_owned(), 40, 6, None)
+            .spawn(
+                titled_pane("vim README"),
+                "sh".to_owned(),
+                40,
+                6,
+                None,
+                None,
+            )
             .unwrap();
         // A child that sets NO title, so the fallback assertion below is a FACT rather than
         // a race against the child's own `printf` (see `untitled_pane`).
-        host.spawn(untitled_pane(), "sh".to_owned(), 40, 6, None)
+        host.spawn(untitled_pane(), "sh".to_owned(), 40, 6, None, None)
             .unwrap();
 
         let start = Instant::now();

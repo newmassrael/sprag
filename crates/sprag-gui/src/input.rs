@@ -379,8 +379,12 @@ mod tests {
     #[test]
     fn apply_key_routes_to_the_focused_pane_only() {
         let host = Host::new((40, 6));
-        let id0 = host.spawn(cat(), "cat".to_owned(), 40, 6, None).unwrap();
-        let id1 = host.spawn(cat(), "cat".to_owned(), 40, 6, None).unwrap();
+        let id0 = host
+            .spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+            .unwrap();
+        let id1 = host
+            .spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+            .unwrap();
         let h0 = host.pane_handle(id0).expect("pane 0 handle");
         let h1 = host.pane_handle(id1).expect("pane 1 handle");
         let owner = Owner::new();
@@ -487,7 +491,9 @@ mod tests {
     #[test]
     fn apply_composition_commit_writes_to_the_focused_pane() {
         let host = Host::new((40, 6));
-        let id = host.spawn(cat(), "cat".to_owned(), 40, 6, None).unwrap();
+        let id = host
+            .spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+            .unwrap();
         let handle = host.pane_handle(id).expect("pane handle");
         let owner = Owner::new();
         owner.run(|| {
