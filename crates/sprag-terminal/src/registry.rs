@@ -421,7 +421,20 @@ impl SessionRegistry {
         self.sessions.iter().find(|s| s.name == name)
     }
 
-    /// Create a session named `name`, holding one empty window.
+    /// Create a session, holding one empty window, and return the name it got.
+    ///
+    /// `name` is the caller's choice; `None` asks the registry to ALLOCATE the lowest free
+    /// name, the way tmux's `new-session` with no `-s` does. Allocation belongs here rather
+    /// than in the caller for the reason [`session`](Self::session) gives about an index
+    /// supplied from outside: a client that invents a name and retries on
+    /// [`Duplicate`](SessionError::Duplicate) is doing check-then-act against a namespace it
+    /// does not own, and two such clients race. Here the check and the act are one, under the
+    /// one lock that owns the namespace — the same reason nothing else in this type is
+    /// addressed by a caller-chosen index.
+    ///
+    /// The returned name is what the caller scopes its next request with — indispensable for
+    /// the allocated case (the caller did not choose it), and harmlessly the same string back
+    /// for the explicit one.
     ///
     /// Its pane pool clones the id counter out of a pool that already exists, so ids stay
     /// unique across the WHOLE registry (the module's load-bearing invariant) with no second
@@ -435,22 +448,42 @@ impl SessionRegistry {
     ///
     /// # Errors
     ///
-    /// [`SessionError::Duplicate`] if `name` is already taken — a name is how a session is
-    /// addressed, so two of them would make the address ambiguous and let one client's
-    /// request silently land in another's session.
-    /// Returns nothing rather than a borrow of the new session: creating is not attaching,
-    /// so a caller that wants it looks it up by the name it just chose ([`session`](Self::session)).
-    pub fn new_session(&mut self, name: &str) -> Result<(), SessionError> {
-        if self.session(name).is_some() {
-            return Err(SessionError::Duplicate(name.to_owned()));
-        }
+    /// [`SessionError::Duplicate`] if an explicit `name` is already taken — a name is how a
+    /// session is addressed, so two of them would make the address ambiguous and let one
+    /// client's request silently land in another's session. The allocated path cannot fail:
+    /// it picks a name that is free by construction.
+    pub fn new_session(&mut self, name: Option<&str>) -> Result<String, SessionError> {
+        let name = match name {
+            Some(name) => {
+                if self.session(name).is_some() {
+                    return Err(SessionError::Duplicate(name.to_owned()));
+                }
+                name.to_owned()
+            }
+            None => self.lowest_free_name(),
+        };
         let seed = Arc::clone(self.default_session().current_window().workspace());
         let pool = seed
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .sibling();
-        self.sessions.push(Session::new(name, pool));
-        Ok(())
+        self.sessions.push(Session::new(&name, pool));
+        Ok(name)
+    }
+
+    /// The lowest non-negative integer name not currently in use, as a string.
+    ///
+    /// tmux allocates the same way (`new-session` with no `-s` picks the lowest free number).
+    /// The boot session is `"0"`, so this returns `"1"` first; a session a user explicitly
+    /// named `"3"` is stepped over, never handed out again while it lives.
+    ///
+    /// Total: at most `sessions.len()` names are taken, so at least one of the `len + 1`
+    /// candidates in `0..=len` is free — the scan cannot run past the end.
+    fn lowest_free_name(&self) -> String {
+        (0u64..)
+            .map(|n| n.to_string())
+            .find(|candidate| self.session(candidate).is_none())
+            .expect("some name in 0..=len is always free")
     }
 
     /// The session an UNSCOPED request acts on — the one the host booted with.
@@ -757,7 +790,7 @@ mod tests {
         let mut reg = SessionRegistry::new((80, 24));
         assert_eq!(reg.sessions().len(), 1);
 
-        reg.new_session("work").expect("a free name");
+        reg.new_session(Some("work")).expect("a free name");
         let created = reg
             .session("work")
             .expect("looked up by the name just chosen");
@@ -781,12 +814,40 @@ mod tests {
     #[test]
     fn a_duplicate_session_name_is_refused_and_changes_nothing() {
         let mut reg = SessionRegistry::new((80, 24));
-        reg.new_session("work").unwrap();
+        reg.new_session(Some("work")).unwrap();
         assert_eq!(
-            reg.new_session("work").unwrap_err(),
+            reg.new_session(Some("work")).unwrap_err(),
             SessionError::Duplicate("work".to_owned()),
         );
         assert_eq!(reg.sessions().len(), 2, "the refused create added nothing");
+    }
+
+    /// With no name, the registry ALLOCATES the lowest free one — tmux's `new-session`
+    /// without `-s`. The caller learns the name it got (it did not choose it), and because the
+    /// allocation happens under the registry lock, two clients cannot invent the same name and
+    /// race for it.
+    #[test]
+    fn an_unnamed_new_session_allocates_the_lowest_free_name() {
+        let mut reg = SessionRegistry::new((80, 24));
+
+        // The boot session is "0", so the first allocation is "1", the next "2".
+        assert_eq!(reg.new_session(None).unwrap(), "1");
+        assert_eq!(reg.new_session(None).unwrap(), "2");
+
+        // An explicit numeric name is STEPPED OVER, never reused: name "4" by hand, and the
+        // next allocation fills the "3" gap, then continues at "5".
+        reg.new_session(Some("4")).unwrap();
+        assert_eq!(reg.new_session(None).unwrap(), "3");
+        assert_eq!(reg.new_session(None).unwrap(), "5");
+
+        for name in ["1", "2", "3", "4", "5"] {
+            assert!(reg.session(name).is_some(), "{name} is its own session");
+        }
+        assert_eq!(
+            reg.sessions().len(),
+            6,
+            "the boot session plus the five created"
+        );
     }
 
     /// THE STRUCTURAL CLAIM, and it is stronger than the `select_session` whose test this
@@ -801,7 +862,7 @@ mod tests {
     #[test]
     fn an_unknown_session_name_resolves_to_nothing_and_moves_no_scope() {
         let mut reg = SessionRegistry::new((80, 24));
-        reg.new_session("work").unwrap();
+        reg.new_session(Some("work")).unwrap();
 
         // Absent at every resolution site — not an error to be handled, just nothing.
         assert!(reg.session("ghost").is_none());
@@ -828,7 +889,7 @@ mod tests {
         let first = pool(&reg);
         let a = lock(&first).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
 
-        reg.new_session("work").unwrap();
+        reg.new_session(Some("work")).unwrap();
         let second = reg
             .workspace_of("work")
             .expect("the name just created resolves");

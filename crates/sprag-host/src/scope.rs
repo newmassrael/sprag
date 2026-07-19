@@ -200,7 +200,7 @@ mod tests {
     #[test]
     fn a_named_session_resolves_to_that_session_and_its_pool() {
         let reg = registry();
-        lock(&reg).new_session("work").unwrap();
+        lock(&reg).new_session(Some("work")).unwrap();
 
         let scope = SessionScope::resolve(&reg, &request(r#"{"session":"work"}"#))
             .expect("a real name resolves");

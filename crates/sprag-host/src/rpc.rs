@@ -747,7 +747,9 @@ mod tests {
         let (signal, fired) = recording_reaper(registry);
 
         // Session "work" with a live `cat` (blocks on its PTY, so it stays live).
-        lock(registry).new_session("work").expect("a free name");
+        lock(registry)
+            .new_session(Some("work"))
+            .expect("a free name");
         let work_pool = lock(registry)
             .workspace_of("work")
             .expect("the created session resolves");

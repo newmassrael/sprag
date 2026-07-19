@@ -13,7 +13,7 @@
 //! * `resize {id, cols, rows}` → resizes a pane's PTY + emulator.
 //! * `set_layout {tree}` → installs a client's settled arrangement, returns the canonical one.
 //! * `set_floating {id, floating}` → takes a pane out of the tiling / puts it back.
-//! * `new_session {name}` → creates a session, returns its name.
+//! * `new_session {name?}` → creates a session (absent name → lowest free), returns its name.
 //!
 //! Read channel (`scene/query`):
 //!
@@ -260,30 +260,37 @@ impl WorkspaceExternal {
         layout_value(snapshot).ok_or(InvokeError::Rejected)
     }
 
-    /// `new_session {name}` action: create a session, answering with its name.
+    /// `new_session {name?}` action: create a session, answering with its name.
+    ///
+    /// `name` mirrors the `session` scope param's own three-way shape: ABSENT asks the
+    /// registry to allocate the lowest free name (tmux's `new-session` with no `-s`), a STRING
+    /// names it, and a NON-STRING is a malformed request — rejected, never silently allocated,
+    /// which would be the same alias smell the scope param refuses in its type-error corner.
     ///
     /// Creating is not attaching, and nothing here changes what any other client sees: the
     /// new session starts empty, and every client's scope is either its own name or the
-    /// immutable default. The answer is the name so a caller can scope its next request with
-    /// what it just made, without a round trip to [`SESSIONS_SLOT`] to confirm.
+    /// immutable default. The answer is the name — indispensable for the allocated case (the
+    /// caller did not choose it) — so a caller can scope its next request with what it just
+    /// made, without a round trip to [`SESSIONS_SLOT`] to confirm.
     fn new_session(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
-        let name = as_object(args)?
-            .get("name")
-            .and_then(Value::as_str)
-            .ok_or(InvokeError::TypeMismatch)?;
-        match lock(&self.registry).new_session(name) {
-            Ok(()) => {}
+        let name = match as_object(args)?.get("name") {
+            None => None,
+            Some(Value::String(name)) => Some(name.as_str()),
+            Some(_) => return Err(InvokeError::TypeMismatch),
+        };
+        let allocated = match lock(&self.registry).new_session(name) {
+            Ok(allocated) => allocated,
             Err(error) => {
                 tracing::debug!(target: "sprag_host", %error, "refused to create a session");
                 // A taken name is the client's mistake, not a malformed request: it is
                 // well-formed and simply cannot be honored.
                 return Err(InvokeError::Rejected);
             }
-        }
+        };
         // The session SET changed, so a client watching the surface learns of it the way it
         // learns of a pane-set change — by being woken, not by polling.
         self.revision.bump();
-        Ok(IntrospectValue::Json(Value::String(name.to_owned())))
+        Ok(IntrospectValue::Json(Value::String(allocated)))
     }
 }
 
@@ -876,7 +883,7 @@ mod tests {
     #[test]
     fn a_spawn_lands_in_the_session_the_request_named_and_nowhere_else() {
         let reg = registry();
-        lock(&reg).new_session("work").unwrap();
+        lock(&reg).new_session(Some("work")).unwrap();
 
         let (mut work, _rev) = scoped_control(&reg, scope_of(&reg, "work"));
         work.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
@@ -911,7 +918,7 @@ mod tests {
     #[test]
     fn a_layout_write_reaches_the_scoped_sessions_window_only() {
         let reg = registry();
-        lock(&reg).new_session("work").unwrap();
+        lock(&reg).new_session(Some("work")).unwrap();
 
         // Ids are minted from ONE registry-wide counter, so spawning work's pair first makes
         // them 0 and 1, and the default's 2 and 3 — distinct, which is what lets the
@@ -969,7 +976,7 @@ mod tests {
     #[test]
     fn the_layout_slot_answers_about_the_scoped_session() {
         let reg = registry();
-        lock(&reg).new_session("work").unwrap();
+        lock(&reg).new_session(Some("work")).unwrap();
         let (mut work, _w) = scoped_control(&reg, scope_of(&reg, "work"));
         let (mut default, _d) = control(&reg);
 
@@ -999,7 +1006,7 @@ mod tests {
     #[test]
     fn the_panes_slot_lists_only_the_scoped_sessions_panes() {
         let reg = registry();
-        lock(&reg).new_session("work").unwrap();
+        lock(&reg).new_session(Some("work")).unwrap();
         let (mut work, _w) = scoped_control(&reg, scope_of(&reg, "work"));
         let (mut default, _d) = control(&reg);
         work.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
@@ -1101,17 +1108,46 @@ mod tests {
             "and a refused create is inert — it must not even move the revision",
         );
 
-        // The name is required, and must be a string.
-        assert_eq!(
-            ext.invoke(NEW_SESSION_ACTION, IntrospectValue::Json(json!({}))),
-            Err(InvokeError::TypeMismatch),
-        );
+        // A present name must be a STRING — a non-string is a malformed request, never
+        // silently allocated (the scope param's own type-error corner).
         assert_eq!(
             ext.invoke(
                 NEW_SESSION_ACTION,
                 IntrospectValue::Json(json!({"name": 42}))
             ),
             Err(InvokeError::TypeMismatch),
+        );
+    }
+
+    /// An ABSENT name is no longer an error: it asks the registry to ALLOCATE the lowest free
+    /// one (tmux's `new-session` with no `-s`), and the answer tells the caller what it got —
+    /// the only way it can learn a name it did not choose.
+    #[test]
+    fn an_unnamed_new_session_over_the_wire_allocates_the_lowest_free_name() {
+        let reg = registry();
+        let (mut ext, revision) = control(&reg);
+        let before = revision.current();
+
+        // The boot session is "0", so the first allocation is "1".
+        assert_eq!(
+            ext.invoke(NEW_SESSION_ACTION, IntrospectValue::Json(json!({}))),
+            Ok(IntrospectValue::Json(Value::String("1".to_owned()))),
+            "no name asks the registry to allocate the lowest free one",
+        );
+        assert!(
+            revision.current() > before,
+            "an allocation is a real create — a watching client must be woken",
+        );
+
+        // And the next one is "2": each allocation is its own independent session.
+        assert_eq!(
+            ext.invoke(NEW_SESSION_ACTION, IntrospectValue::Json(json!({}))),
+            Ok(IntrospectValue::Json(Value::String("2".to_owned()))),
+        );
+        assert_eq!(
+            lock(&reg).sessions().len(),
+            3,
+            "the boot session, plus 1 and 2"
         );
     }
 }
