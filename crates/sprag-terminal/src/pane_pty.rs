@@ -13,6 +13,7 @@
 //! escape across batches).
 
 use std::io::{self, Read, Write};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -322,6 +323,29 @@ impl PanePty {
         self.with_screen(Screen::clone)
     }
 
+    /// The OS process id of the child on this pty's slave, or `None` once it has been
+    /// reaped (the id is unavailable after the child is gone).
+    #[must_use]
+    pub fn pid(&self) -> Option<u32> {
+        self.child.process_id()
+    }
+
+    /// The child's current working directory, read LIVE from the OS.
+    ///
+    /// This is the fact the durability ring restores: a reboot kills the PTY and the child,
+    /// but a fresh shell re-spawned in this directory puts the pane back where the user was
+    /// working. Read at snapshot time (a shell rewrites its cwd on every `cd`), so it is NOT
+    /// stored on the pane — like [`title`](Self::title), it is live child state, not the
+    /// stable `command_label`.
+    ///
+    /// `None` when the child has exited (no pid), the directory was removed out from under
+    /// it, or the platform has no `/proc` (Linux-only for now; elsewhere a restored pane
+    /// falls back to the daemon's own cwd).
+    #[must_use]
+    pub fn cwd(&self) -> Option<PathBuf> {
+        read_cwd(self.child.process_id()?)
+    }
+
     /// Whether the child has closed the pseudoterminal (no more output).
     /// Once set, the reader thread has applied every byte it received.
     #[must_use]
@@ -459,6 +483,24 @@ impl PanePtyHandle {
     }
 }
 
+/// Read a process's current working directory from the OS.
+///
+/// Linux: the kernel exposes it as the `/proc/<pid>/cwd` symlink, resolved to the real
+/// path (which is why a restore that reads this then re-spawns a shell there survives a
+/// `cd`). `None` if the process is gone or the link cannot be read (a removed directory,
+/// a permission the caller lacks — though a child of this process is always readable).
+#[cfg(target_os = "linux")]
+fn read_cwd(pid: u32) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
+}
+
+/// No `/proc` off Linux: cwd-from-pid needs a platform-specific syscall not yet wired, so a
+/// restored pane falls back to the daemon's own cwd. An honest `None`, not a guess.
+#[cfg(not(target_os = "linux"))]
+fn read_cwd(_pid: u32) -> Option<PathBuf> {
+    None
+}
+
 /// Lock a pty mutex (emulator or raw capture), recovering the guard if a
 /// holder panicked (the grid stays structurally valid and the byte buffer is
 /// plain data; neither `advance` nor `push` panics in practice).
@@ -568,6 +610,32 @@ mod tests {
         });
         assert!(row0.starts_with("hi"), "row0 = {row0:?}");
         assert_eq!(pty.dimensions(), (20, 4));
+    }
+
+    /// `pid` resolves a live child, and `cwd` reads where it is working — the fact the
+    /// durability ring snapshots so a restored shell re-spawns in the same directory. The
+    /// child is `cd`'d into a known dir at spawn (`CommandBuilder::cwd`), and `cwd()` reads
+    /// it back through `/proc`. Linux-only: elsewhere `cwd()` is an honest `None`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pid_and_cwd_report_the_live_child() {
+        let dir = std::env::temp_dir();
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg("cat"); // long-lived: keeps the child (and its cwd) alive
+        command.cwd(&dir);
+        command.env("TERM", "dumb");
+        let pty = PanePty::spawn(command, 20, 4).expect("spawn a pty");
+
+        assert!(pty.pid().is_some(), "a live child has a process id");
+        let cwd = pty.cwd().expect("a live child's cwd is readable on Linux");
+        // Canonicalize both: the spawn dir may be a symlink (e.g. /tmp), while /proc
+        // resolves the link to the real path — comparing raw strings would spuriously fail.
+        assert_eq!(
+            cwd.canonicalize().ok(),
+            dir.canonicalize().ok(),
+            "cwd tracks the directory the child was spawned in",
+        );
     }
 
     /// `resize` is `&self`: a shared `&PanePty` reflows the PTY +
