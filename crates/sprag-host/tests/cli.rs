@@ -50,11 +50,19 @@ struct CliRun {
 
 /// Run the `sprag` CLI against `sock`.
 fn sprag(sock: &Path, args: &[&str]) -> CliRun {
-    let output = Command::new(env!("CARGO_BIN_EXE_sprag"))
-        .args(args)
-        .env("SPRAG_HOST_RPC_SOCK", sock)
-        .output()
-        .expect("run the sprag CLI");
+    sprag_env(sock, args, &[])
+}
+
+/// Run the `sprag` CLI against `sock` with EXTRA env vars — the attach test points `SPRAG_GUI_BIN`
+/// at a harmless stand-in (`/usr/bin/env`) for the real GUI window, so the launch + env
+/// propagation are provable headlessly.
+fn sprag_env(sock: &Path, args: &[&str], envs: &[(&str, &str)]) -> CliRun {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_sprag"));
+    cmd.args(args).env("SPRAG_HOST_RPC_SOCK", sock);
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
+    let output = cmd.output().expect("run the sprag CLI");
     CliRun {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
@@ -139,5 +147,65 @@ fn the_cli_kill_server_ends_the_daemon() {
     assert!(
         gone,
         "kill-server ended the daemon: ls no longer finds a server"
+    );
+}
+
+/// `attach` PRE-FLIGHTS (does the session exist?) over the same connect-only path, then launches
+/// the GUI scoped to that session and pinned to THIS daemon's socket. `/usr/bin/env` stands in for
+/// the real GUI window (prints its env, exits 0), so the launch + env propagation are provable
+/// without a display.
+#[test]
+fn the_cli_attach_preflights_then_launches_the_gui_scoped_to_the_session() {
+    let (_host, sock) = spawn_host();
+    assert!(
+        sprag(&sock, &["new", "work"]).ok,
+        "created a session to attach to"
+    );
+
+    // A missing session is a CLEAN pre-flight error — the "no session" message, NOT a
+    // "could not launch sprag-gui" one, which proves no GUI was launched on the bad name.
+    let bad = sprag_env(
+        &sock,
+        &["attach", "ghost"],
+        &[("SPRAG_GUI_BIN", "/usr/bin/env")],
+    );
+    assert!(!bad.ok, "attach to a missing session fails");
+    assert!(
+        bad.stderr.contains("no session named"),
+        "clean pre-flight error, no gui launch: {}",
+        bad.stderr,
+    );
+
+    // No name is an argument error.
+    let noarg = sprag(&sock, &["attach"]);
+    assert!(!noarg.ok, "attach with no name fails");
+    assert!(
+        noarg.stderr.contains("needs a session name"),
+        "arg error: {}",
+        noarg.stderr,
+    );
+
+    // A real session: the pre-flight passes and the GUI is launched with the session and THIS
+    // socket in its env (the stand-in inherits the CLI's stdout, so its env dump is captured here).
+    let ok = sprag_env(
+        &sock,
+        &["attach", "work"],
+        &[("SPRAG_GUI_BIN", "/usr/bin/env")],
+    );
+    assert!(
+        ok.ok,
+        "attach to a real session launches the gui and succeeds: {}",
+        ok.stderr
+    );
+    assert!(
+        ok.stdout.contains("SPRAG_GUI_SESSION=work"),
+        "the gui is handed the session to adopt: {}",
+        ok.stdout,
+    );
+    assert!(
+        ok.stdout
+            .contains(&format!("SPRAG_GUI_HOST_SOCK={}", sock.display())),
+        "the gui is pinned to THIS daemon's socket, not a default: {}",
+        ok.stdout,
     );
 }
