@@ -46,6 +46,7 @@
 //! design (not faked to mirror the buffer). A future windowed host fills the
 //! rect via `pinion_runtime::compute_layout`.
 
+pub mod durability;
 mod external;
 pub mod host;
 pub mod pane;
@@ -56,6 +57,7 @@ pub mod scope;
 pub mod wire;
 pub mod workspace;
 
+pub use durability::{load_snapshot, save_snapshot, snapshot_path};
 pub use host::{Host, HostClient, PaneScrollFacts};
 pub use pane::{CellFrame, SpragPaneExternal, send_key, send_text};
 pub use plugins::PluginsExternal;

@@ -50,7 +50,7 @@ use pinion_core::GridBuffer;
 use sprag_input::Modifiers;
 use sprag_terminal::{
     CommandBuilder, LayoutSnapshot, LayoutWire, Pane, PaneId, PanePtyError, PanePtyHandle,
-    SessionRegistry, WindowInfo, Workspace,
+    SessionRegistry, Snapshot, SnapshotError, WindowInfo, Workspace, default_shell_command,
 };
 use sprag_vt::Screen;
 
@@ -292,6 +292,76 @@ impl Host {
     ) -> Result<PaneId, PanePtyError> {
         let workspace = self.workspace();
         lock(&workspace).spawn_with_dirty(command, label, cols, rows, on_dirty, on_exit)
+    }
+
+    /// Rebuild this host's registry from a durability [`Snapshot`] and re-spawn its panes — the
+    /// restore half of the cmux-parity ring (`sprag-terminal::snapshot`).
+    ///
+    /// Replaces the empty boot registry with the snapshot's SHAPE (sessions, windows, layout
+    /// trees, float sets, the seeded id counter), then re-spawns every recorded pane as a fresh
+    /// shell IN ITS RECORDED CWD, under its OLD id so the trees resolve, with the daemon's own
+    /// `on_dirty` / `on_exit` hooks — the D4 birth-at-host seam: a restored pane must feed the
+    /// reaper exactly like a boot pane. The `Arc<Mutex<SessionRegistry>>` IDENTITY is preserved
+    /// (only its contents swap), so the reaper wired to it BEFORE this call stays valid.
+    ///
+    /// Hooks are FACTORIES — a fresh `Box` per pane (a `Box<dyn Fn>` cannot be reused) — so the
+    /// daemon passes `|| Some(bump_on_dirty(&revision))` and
+    /// `|| Some(pane_exit_hook(&on_pane_exit))`, the same hooks its boot pane gets.
+    ///
+    /// A pane whose shell fails to spawn (a cwd removed since the snapshot, an unexecutable
+    /// `$SHELL`) is LOGGED and skipped — best-effort, the way the boot pane's own spawn failure
+    /// is non-fatal; the first [`reconcile_layout`](sprag_terminal::Window) drops its now-empty
+    /// leaf. Returns how many panes actually came back.
+    ///
+    /// # Errors
+    ///
+    /// [`SnapshotError`] if the snapshot itself is unusable (bad version, malformed shape, or a
+    /// malformed stored layout). The registry is then LEFT AS IT WAS (the empty boot), so a
+    /// corrupt snapshot degrades to a clean empty daemon, never a half-restored one.
+    pub fn restore(
+        &self,
+        snapshot: Snapshot,
+        mut on_dirty: impl FnMut() -> Option<Box<dyn Fn() + Send>>,
+        mut on_exit: impl FnMut() -> Option<Box<dyn Fn() + Send>>,
+    ) -> Result<usize, SnapshotError> {
+        // Build the new shape FIRST (fallible), so a bad snapshot leaves the boot registry intact.
+        let (registry, plan) = SessionRegistry::from_snapshot(snapshot)?;
+        // Swap the CONTENTS, preserving the Arc the reaper already holds a clone of.
+        *lock(&self.registry) = registry;
+
+        let mut restored = 0usize;
+        for pane in plan.panes {
+            // Resolve the target window's pool (cloned Arc), then release the registry lock before
+            // taking the workspace lock — the workspace-then-registry order the host keeps.
+            let Some(pool) = lock(&self.registry).window_workspace(&pane.session, &pane.window)
+            else {
+                // The window vanished between from_snapshot and here — unreachable on one thread,
+                // but the resolve is fallible, so skip rather than unwrap a should-not-happen.
+                continue;
+            };
+            let (mut command, label) = default_shell_command();
+            if let Some(cwd) = &pane.cwd {
+                command.cwd(cwd);
+            }
+            match lock(&pool).spawn_with_dirty_id(
+                pane.id,
+                command,
+                label,
+                (pane.cols, pane.rows),
+                on_dirty(),
+                on_exit(),
+            ) {
+                Ok(()) => restored += 1,
+                Err(e) => tracing::warn!(
+                    target: "sprag_host::durability",
+                    session = %pane.session,
+                    window = %pane.window,
+                    id = %pane.id,
+                    "restore: pane shell failed to spawn ({e}); its leaf will reconcile away",
+                ),
+            }
+        }
+        Ok(restored)
     }
 
     /// The DEFAULT session's current window pane pool — this arm's panes.
@@ -654,6 +724,59 @@ mod tests {
             .unwrap();
         host.resize(id, 100, 30);
         assert_eq!(host.pane_grid_size(id), (100, 30));
+    }
+
+    /// The reboot payoff at the host level: a live host is snapshotted, a FRESH host restores it,
+    /// and every pane comes back under its OLD id in the SAME session — two in the default, one in
+    /// a second session. Restore replaces the empty boot registry with the snapshot's shape and
+    /// re-spawns each pane's shell; membership (which the plan carries) is independent of the tree.
+    #[test]
+    fn restore_rebuilds_the_shape_and_respawns_panes_under_their_old_ids() {
+        // A live host: two panes in the default session…
+        let live = Host::new((80, 24));
+        let a = live
+            .spawn(cat(), "sh".to_owned(), 80, 24, None, None)
+            .unwrap();
+        let b = live
+            .spawn(cat(), "sh".to_owned(), 80, 24, None, None)
+            .unwrap();
+        // …and a second session "work" with one pane of its own.
+        lock(live.registry()).new_session(Some("work")).unwrap();
+        let work_pool = lock(live.registry()).workspace_of("work").unwrap();
+        let c = lock(&work_pool)
+            .spawn(cat(), "sh".to_owned(), 80, 24)
+            .unwrap();
+
+        let snap = sprag_terminal::snapshot(live.registry());
+        assert_eq!(snap.next_id, 3, "three panes minted across both sessions");
+
+        // A FRESH host restores it, as a daemon boot would (no hooks needed for the mechanism).
+        let restored = Host::new((80, 24));
+        let n = restored
+            .restore(snap, || None, || None)
+            .expect("a valid snapshot restores");
+        assert_eq!(n, 3, "all three panes came back");
+
+        // The default session's panes returned under their old ids.
+        let ids = restored.pane_ids();
+        assert!(
+            ids.contains(&a) && ids.contains(&b),
+            "default panes back under their old ids: {ids:?}",
+        );
+        // The second session and its pane returned — a restore is registry-wide, not just default.
+        let work = lock(restored.registry()).workspace_of("work").unwrap();
+        let work_ids: Vec<PaneId> = lock(&work).panes().iter().map(Pane::id).collect();
+        assert_eq!(work_ids, vec![c], "work's pane came back under its old id");
+
+        // A fresh spawn on the restored host mints ABOVE the restored ids — never reissuing one.
+        let next = restored
+            .spawn(cat(), "sh".to_owned(), 80, 24, None, None)
+            .unwrap();
+        assert_eq!(
+            next,
+            PaneId(3),
+            "the counter resumed above the restored ids"
+        );
     }
 
     #[test]
