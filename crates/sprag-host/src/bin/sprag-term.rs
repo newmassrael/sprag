@@ -30,8 +30,8 @@ use std::thread;
 use pinion_core::SceneRevision;
 use signal_hook::consts::{SIGINT, SIGTERM};
 use sprag_host::{
-    FrameIngress, Host, HostState, RunRegistry, bump_on_dirty, dispatch_frames, reap_hook,
-    stdin_frames,
+    FrameIngress, Host, HostState, RunRegistry, bump_on_dirty, dispatch_frames, pane_exit_hook,
+    spawn_reaper, stdin_frames,
 };
 use sprag_rpc::SocketOpts;
 use sprag_terminal::CommandBuilder;
@@ -55,33 +55,32 @@ fn main() -> io::Result<()> {
     // BEFORE the spawn so the bumper and HostState share the one token.
     let revision = Arc::new(SceneRevision::new());
     let host = Host::new((cols, rows));
-    // Self-cleaning lifetime: when the LAST live pane across all sessions exits, the daemon
-    // has nothing left to serve, so it ends — the tmux convention. The action is INJECTED
-    // (not named in sprag-host) so the library never calls `process::exit`; the binary owns
-    // its own lifetime. It rides each pane's `on_exit`, so the check runs once per pane
-    // death, never per output batch, and a daemon with no panes has no hook and cannot exit
-    // before its first pane.
-    //
-    // It raises SIGTERM rather than exiting directly, so BOTH shutdown edges (an operator's
-    // Ctrl-C and the last pane dying) funnel through the ONE `install_shutdown` routine that
-    // cancels + joins in-flight plugin runs — a bare `process::exit` here would abandon a
-    // live plugin run. Raising before that handler is installed (an instant-exit boot
-    // command) falls back to SIGTERM's default terminate, which is harmless: no run can be in
-    // flight before the server is up, so there is nothing to join.
-    let on_empty: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {
-        let _ = signal_hook::low_level::raise(SIGTERM);
-    });
-    let boot_reaper = reap_hook(Arc::clone(host.registry()), Arc::clone(&on_empty));
+    // Self-cleaning lifetime: when the LAST live pane across all sessions exits, the daemon has
+    // nothing left to serve, so it ends — the tmux convention. `spawn_reaper` owns a dedicated
+    // thread that runs the liveness scan OFF the PTY reader threads (so a pane Drop that joins
+    // a reader can never deadlock the scan) and returns the registry-free death-signal every
+    // pane's `on_exit` feeds. The exit action is INJECTED here (the library names neither exit
+    // nor SIGTERM): it raises SIGTERM, so BOTH shutdown edges (an operator's Ctrl-C and the
+    // last pane dying) funnel through the ONE `install_shutdown` routine that cancels + joins
+    // in-flight plugin runs. A daemon with no panes has no hook and cannot exit before its
+    // first pane; raising before the handler is installed (an instant-exit boot command) falls
+    // back to SIGTERM's default terminate, harmless since no run is in flight before boot.
+    let on_pane_exit = spawn_reaper(
+        Arc::clone(host.registry()),
+        Arc::new(|| {
+            let _ = signal_hook::low_level::raise(SIGTERM);
+        }),
+    );
     host.spawn(
         command,
         label,
         cols,
         rows,
         Some(bump_on_dirty(&revision)),
-        Some(boot_reaper),
+        Some(pane_exit_hook(&on_pane_exit)),
     )
     .map_err(io::Error::other)?;
-    let state = HostState::with_reaper(host, revision, Some(on_empty));
+    let state = HostState::new(host, revision, Some(on_pane_exit));
 
     // One dispatch owner (this thread) serialises all dispatch; the always-on
     // socket and stdin are producers of RpcFrames into it, so a socket client

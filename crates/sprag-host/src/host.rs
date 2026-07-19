@@ -249,9 +249,9 @@ impl Host {
     /// returning its id. `on_dirty` is the pinion-free wake hook a windowed client
     /// passes (`Some(Box::new(move || sink.request_repaint()))`, the R999
     /// `RepaintSink` seam) so this pane's output repaints the window; the headless
-    /// server passes `bump_on_dirty`. `on_exit` is the "this child is gone" hook the
-    /// daemon reads to end its own process when the last live pane dies (the headless
-    /// server passes [`reap_hook`](crate::reap_hook); a windowed / test caller passes
+    /// server passes `bump_on_dirty`. `on_exit` is the "this child is gone" hook the daemon
+    /// feeds to its reaper to end its own process when the last live pane dies (the headless
+    /// server passes [`pane_exit_hook`](crate::pane_exit_hook); a windowed / test caller passes
     /// `None`). Both are `Box<dyn Fn() + Send>` (not pinion types), so the display and
     /// lifetime concerns live above while the spawn lives here.
     ///

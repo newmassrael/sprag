@@ -61,7 +61,7 @@ pub use pane::{CellFrame, SpragPaneExternal, send_key, send_text};
 pub use plugins::PluginsExternal;
 pub use rpc::{
     FrameIngress, HostState, SUPPORTED_METHODS, bump_on_dirty, dispatch_frames, handle_parsed,
-    handle_request, reap_hook, stdin_frames,
+    handle_request, pane_exit_hook, spawn_reaper, stdin_frames,
 };
 pub use runs::{RunId, RunRegistry, RunState};
 pub use scope::{ScopeError, SessionScope};
@@ -307,7 +307,7 @@ pub fn workspace_scene(
     registry: &Arc<Mutex<SessionRegistry>>,
     runs: &Arc<Mutex<RunRegistry>>,
     revision: &Arc<SceneRevision>,
-    on_empty: Option<Arc<dyn Fn() + Send + Sync>>,
+    on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
 ) -> Scene {
     // The scoped session's pool, resolved when the scope was (never re-derived here — one
     // question, one answer). The registry lock is not held, so taking the workspace lock
@@ -328,17 +328,21 @@ pub fn workspace_scene(
             Arc::clone(registry),
             scope.clone(),
             Arc::clone(revision),
-            on_empty,
+            on_pane_exit.clone(),
         )))
         .with_tag(MUX_TAG),
     ));
-    // ...while the plugin host speaks only the pane POOL: a plugin has no business
-    // knowing about the session tree (Interface Segregation), and holding the scoped pool
-    // is already all the scoping it can need.
+    // ...while the plugin host speaks only the pane POOL: a plugin has no business knowing
+    // about the session tree (Interface Segregation). It DOES carry the same `on_pane_exit`
+    // death-signal, but that is a registry-FREE opaque `Fn` (see [`crate::spawn_reaper`]) — a
+    // plugin-spawned pane feeds the reaper exactly like a mux one without the plugin layer ever
+    // learning what the hook does, so no pane category can leave a lingering daemon and the ISP
+    // boundary is intact.
     children.push(Scene::External(
         ExternalNode::new(Box::new(plugins::PluginsExternal::new(
             Arc::clone(workspace),
             Arc::clone(runs),
+            on_pane_exit,
         )))
         .with_tag(PLUGINS_TAG),
     ));

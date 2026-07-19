@@ -99,31 +99,31 @@ pub struct WorkspaceExternal {
     /// clients attached to every other, which re-read and find nothing changed. Waste, not
     /// error — see [`crate::workspace_scene`].
     revision: Arc<SceneRevision>,
-    /// What to do when a pane this surface SPAWNS turns out to be the last live one anywhere
-    /// — the self-cleaning daemon's `|| process::exit(0)`, or `None` off a daemon (a GUI's
-    /// in-process host, the unit tests). Injected rather than named here so this library
-    /// never calls `process::exit`, and so a test spawns and reaps panes through this exact
-    /// surface without ending its own process. Wired into each spawned pane's `on_exit` via
-    /// [`crate::reap_hook`], so the check is per pane DEATH, not per output batch.
-    on_empty: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// The self-cleaning daemon's pane-`on_exit` death-signal hook ([`crate::spawn_reaper`]),
+    /// or `None` off a daemon (a GUI's in-process host, the unit tests). Wired into each pane
+    /// this surface SPAWNS so its death feeds the reaper. Injected (not named here) so this
+    /// library never decides process lifetime, and so a test spawns and reaps panes through
+    /// this exact surface without ending its own process. It is registry-FREE (just a channel
+    /// send), so it is safe to run from any thread.
+    on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl WorkspaceExternal {
     /// Build the control surface over the shared mux registry, the session it is scoped to,
-    /// the shared scene-version token, and the daemon's `on_empty` exit action (`None` off a
-    /// daemon) — see the struct docs for each field's role.
+    /// the shared scene-version token, and the daemon's `on_pane_exit` death-signal (`None` off
+    /// a daemon) — see the struct docs for each field's role.
     #[must_use]
     pub fn new(
         registry: Arc<Mutex<SessionRegistry>>,
         scope: SessionScope,
         revision: Arc<SceneRevision>,
-        on_empty: Option<Arc<dyn Fn() + Send + Sync>>,
+        on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Self {
         Self {
             registry,
             scope,
             revision,
-            on_empty,
+            on_pane_exit,
         }
     }
 
@@ -152,13 +152,9 @@ impl WorkspaceExternal {
         // Spawn WITH the change-notification hook (not the plain `spawn`), so this
         // pane's output bumps the SAME revision the boot pane's does — a client's
         // `scene/waitFor` then wakes on a mux-spawned pane exactly as it does on the
-        // boot pane. Under a daemon it also carries the exit hook, so THIS pane's death
-        // can end the process if it was the last live one anywhere. The lock is scoped so
-        // the set-change bump below fires without it.
-        let on_exit = self
-            .on_empty
-            .as_ref()
-            .map(|action| crate::reap_hook(Arc::clone(&self.registry), Arc::clone(action)));
+        // boot pane. Under a daemon it also carries the death-signal, so THIS pane's death
+        // feeds the reaper. The lock is scoped so the set-change bump below fires without it.
+        let on_exit = self.on_pane_exit.as_ref().map(crate::pane_exit_hook);
         let id = {
             let pool = self.workspace();
             let mut workspace = lock(pool);

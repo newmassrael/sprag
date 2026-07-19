@@ -67,13 +67,26 @@ const DEFAULT_MAX_TOKENS: u64 = 200_000;
 pub struct PluginsExternal {
     workspace: Arc<Mutex<Workspace>>,
     runs: Arc<Mutex<RunRegistry>>,
+    /// The daemon's opaque pane-exit death-signal ([`crate::spawn_reaper`]), or `None` off a
+    /// daemon — passed to each pane a plugin spawns so it feeds the reaper. Registry-free, so
+    /// carrying it does not breach the plugin layer's session-tree-free boundary.
+    on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl PluginsExternal {
-    /// Build the host over the shared workspace + run registry.
+    /// Build the host over the shared workspace + run registry, plus the daemon's
+    /// `on_pane_exit` death-signal (`None` off a daemon).
     #[must_use]
-    pub fn new(workspace: Arc<Mutex<Workspace>>, runs: Arc<Mutex<RunRegistry>>) -> Self {
-        Self { workspace, runs }
+    pub fn new(
+        workspace: Arc<Mutex<Workspace>>,
+        runs: Arc<Mutex<RunRegistry>>,
+        on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Self {
+        Self {
+            workspace,
+            runs,
+            on_pane_exit,
+        }
     }
 
     /// `run` action: build the named plugin, validate its target panes, spawn
@@ -204,7 +217,8 @@ impl PluginsExternal {
         // the registry holds a clone so a `cancel`/shutdown can set it.
         let cancel = Arc::new(AtomicBool::new(false));
         let run_ctx = RunContext::new(Arc::clone(&cancel));
-        let access = WorkspacePaneAccess::new(Arc::clone(&self.workspace));
+        let access = WorkspacePaneAccess::new(Arc::clone(&self.workspace))
+            .with_pane_exit(self.on_pane_exit.clone());
         let handle = thread::spawn(move || {
             let outcome = Driver::new(guardrails).run(plugin.as_plugin(), &access, &run_ctx);
             // The worker still owns the plugin after the run, so it can read any

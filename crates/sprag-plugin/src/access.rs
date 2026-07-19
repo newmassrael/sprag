@@ -164,13 +164,34 @@ pub trait PaneRawCapture {
 /// [`PaneAccess`] over a shared [`Workspace`] — the production implementation.
 pub struct WorkspacePaneAccess {
     workspace: Arc<Mutex<Workspace>>,
+    /// An OPAQUE hook run once when a pane this surface [`spawn`](PaneLifecycle::spawn)ed
+    /// exits (the daemon's reaper death-signal), or `None`. Deliberately a bare
+    /// `Fn` and NOT the registry: the plugin layer stays session-tree-free (Interface
+    /// Segregation, the R144 decision) while a plugin-spawned pane still feeds the daemon's
+    /// self-cleaning exactly like a mux one — this layer never learns what the hook does.
+    /// Set only by the host's plugin surface via [`with_pane_exit`](Self::with_pane_exit); the
+    /// default is `None`, so nothing but the daemon wires it.
+    on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl WorkspacePaneAccess {
-    /// Wrap a shared workspace as the plugin pane-access surface.
+    /// Wrap a shared workspace as the plugin pane-access surface (no pane-exit hook — see
+    /// [`with_pane_exit`](Self::with_pane_exit)).
     #[must_use]
     pub fn new(workspace: Arc<Mutex<Workspace>>) -> Self {
-        Self { workspace }
+        Self {
+            workspace,
+            on_pane_exit: None,
+        }
+    }
+
+    /// Attach the daemon's opaque pane-exit death-signal, so a pane this surface spawns feeds
+    /// the reaper on its death. A builder (not a `new` parameter) so the many non-daemon
+    /// constructors — plugin machinery, tests — stay untouched and pass nothing.
+    #[must_use]
+    pub fn with_pane_exit(mut self, hook: Option<Arc<dyn Fn() + Send + Sync>>) -> Self {
+        self.on_pane_exit = hook;
+        self
     }
 
     /// Clone the pane's I/O handle under the workspace lock (released before
@@ -248,8 +269,15 @@ impl PaneLifecycle for WorkspacePaneAccess {
         // The emulator parses (and strips) escape sequences, so captured cell
         // text stays clean regardless of TERM; match the host's spawn default.
         command.env("TERM", "xterm-256color");
+        // Carry the daemon's death-signal (if any) so a plugin-spawned pane feeds the reaper
+        // exactly like a boot/mux one — the opaque hook is just a channel send, so this
+        // registry-free layer wires it without learning what it does.
+        let on_exit = self.on_pane_exit.as_ref().map(|hook| {
+            let hook = Arc::clone(hook);
+            Box::new(move || hook()) as Box<dyn Fn() + Send>
+        });
         lock(&self.workspace)
-            .spawn(command, program.clone(), cols, rows)
+            .spawn_with_dirty(command, program.clone(), cols, rows, None, on_exit)
             .map_err(|e| PaneError::Spawn(e.to_string()))
     }
 

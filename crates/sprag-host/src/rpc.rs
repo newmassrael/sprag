@@ -65,12 +65,14 @@ pub struct HostState {
     revision: Arc<SceneRevision>,
     /// Parked async `scene/waitFor` replies, woken off `revision`'s observer.
     waiters: Arc<WaiterRegistry>,
-    /// The self-cleaning daemon's exit action, threaded into each mux-spawned pane's
-    /// `on_exit` (via [`workspace_scene`](crate::workspace_scene) → the mux external →
-    /// [`reap_hook`]) so a mux pane's death can end the daemon. `None` off a daemon (the
-    /// GUI's in-process host, the tests) — the boot pane's own exit hook is wired
-    /// separately by the binary, since it is spawned before this state exists.
-    on_empty: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// The self-cleaning daemon's pane-`on_exit` death-signal hook ([`spawn_reaper`]), threaded
+    /// into each mux- AND plugin-spawned pane's `on_exit` (via
+    /// [`workspace_scene`](crate::workspace_scene) → the mux + plugin externals) so any pane's
+    /// death feeds the reaper. `None` off a daemon (the GUI's in-process host, the tests) — the
+    /// boot pane's hook is wired separately by the binary, since it is spawned before this
+    /// state exists. `Option`, not a hidden default: a non-daemon caller states `None` at the
+    /// call site rather than inheriting a policy silently.
+    on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl HostState {
@@ -80,22 +82,14 @@ impl HostState {
     /// revision bump (a pane's output) wakes every parked waiter. A fresh run
     /// registry and waiter registry are created here.
     ///
-    /// `on_empty` is the self-cleaning daemon's exit action, carried to each mux-spawned
-    /// pane's `on_exit`; `None` off a daemon. Use [`new`](Self::new) (which passes `None`)
-    /// unless you are the daemon binary wiring its own lifetime.
+    /// `on_pane_exit` is the self-cleaning daemon's death-signal hook ([`spawn_reaper`]),
+    /// carried to each mux/plugin-spawned pane's `on_exit`; `None` off a daemon (the GUI's
+    /// in-process host, the tests state it explicitly).
     #[must_use]
-    pub fn new(host: Host, revision: Arc<SceneRevision>) -> Self {
-        Self::with_reaper(host, revision, None)
-    }
-
-    /// [`new`](Self::new) plus the daemon's `on_empty` exit action (see the field docs).
-    /// Separate constructor so the common callers state no lifetime policy, and only the
-    /// daemon names one.
-    #[must_use]
-    pub fn with_reaper(
+    pub fn new(
         host: Host,
         revision: Arc<SceneRevision>,
-        on_empty: Option<Arc<dyn Fn() + Send + Sync>>,
+        on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Self {
         let waiters = Arc::new(WaiterRegistry::new());
         // The wake half of the no-lost-wakeup discipline: a revision bump (an OCC
@@ -122,16 +116,16 @@ impl HostState {
             previews: PreviewLedger::default(),
             revision,
             waiters,
-            on_empty,
+            on_pane_exit,
         }
     }
 
-    /// The daemon's exit action, cloned for a scene assembly
+    /// The daemon's pane-`on_exit` death-signal hook, cloned for a scene assembly
     /// ([`workspace_scene`](crate::workspace_scene)) — `None` off a daemon, so a non-daemon
-    /// caller wires no pane to end the process.
+    /// caller wires no pane to the reaper.
     #[must_use]
-    pub fn on_empty(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
-        self.on_empty.clone()
+    pub fn on_pane_exit(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+        self.on_pane_exit.clone()
     }
 
     /// The mux state tree (the [`Host`]'s [`SessionRegistry`]), for the scene-as-data
@@ -177,43 +171,66 @@ pub fn bump_on_dirty(revision: &Arc<SceneRevision>) -> Box<dyn Fn() + Send> {
     })
 }
 
-/// The pane `on_exit` hook a self-cleaning daemon wires at its DAEMON-owned spawn sites (the
-/// boot pane and each mux-spawned pane): when the child that just exited was the LAST live
-/// one across all sessions, run `on_empty`. The daemon injects the exit action (it raises
-/// SIGTERM so the shutdown routine cancels + joins runs), so this library never names process
-/// exit itself — a test injects a recording action instead, which is what makes the
-/// exact-once behaviour assertable without ending the test process.
+/// Spawn the daemon's REAPER and return the registry-free pane-`on_exit` hook that feeds it —
+/// the self-cleaning lifetime seam.
 ///
-/// This is an `on_exit`, so the liveness scan runs once per pane DEATH, never per output
-/// batch (the R152 lesson: no per-output work on the hot path). Hung on the pane hook so a
-/// daemon with no panes has no hook and cannot exit before its first pane is even spawned.
+/// A dedicated reaper thread owns the `registry` and a death-signal channel. The returned hook
+/// (wired as every spawned pane's `on_exit`) does nothing but SEND a signal on that channel;
+/// each death wakes the reaper thread, which runs `no_live_panes` and, when the child that
+/// just exited was the LAST live one across all sessions, runs `on_empty`. The daemon injects
+/// `on_empty` (it raises SIGTERM so the one shutdown routine cancels + joins runs), so this
+/// library never names process exit itself — a test injects a recording action instead, which
+/// is what makes the exact-once behaviour assertable without ending the test process.
 ///
-/// **TRACKED GAP (not "every" spawn site).** Panes a PLUGIN spawns go through
-/// `WorkspacePaneAccess::spawn` → `Workspace::spawn` (no `on_exit`), yet they land in the
-/// same pool and so `no_live_panes` COUNTS them live. A plugin pane keeps the daemon up
-/// correctly, but its death fires no hook — so if it is the last to die the daemon lingers
-/// with zero live panes. Closing it is deferred to the plugin/session-lifetime increment:
-/// wiring the reaper through the plugin surface would hand the deliberately registry-free
-/// plugin layer (Interface Segregation, the R144 decision) a lifetime concern, so it needs
-/// an opaque-hook seam designed with that layer, not a quick coupling here.
+/// **Why a thread + channel, not a scan on the pane hook (the structural point).** The scan
+/// takes workspace locks, and `PanePty::Drop` JOINS the PTY reader thread — so running the
+/// scan ON that reader thread would deadlock the moment a future pane-drop site held a
+/// workspace lock across the drop (Drop waits on the join; the reader waits on the lock). By
+/// moving the scan to a dedicated thread the reader hook only SENDS (non-blocking, no lock),
+/// so a Drop-join can never wait on a workspace lock a reader holds — the deadlock is
+/// impossible by construction, not by a convention future drop sites must remember. It also
+/// keeps the liveness check off the per-output hot path (the R152 lesson): the hook fires once
+/// per pane DEATH (it is an `on_exit`), and the scan is one message per death.
 ///
-/// **HAZARD (lock discipline).** This runs on the PTY reader thread and `no_live_panes`
-/// takes workspace locks. `PanePty::Drop` JOINS that reader thread, so invoking a reap from a
-/// pane Drop WHILE HOLDING a workspace lock would deadlock (Drop waits on the join; the
-/// reader waits on the lock). It is safe today only because the one drop site — the mux
-/// `close` action — releases the workspace guard BEFORE the `Pane` drops (the R11
-/// return-then-drop pattern). Any future pane-drop site (session/window close, bulk teardown)
-/// MUST keep that ordering.
+/// **Wired at EVERY spawn site.** The hook is registry-free (just a channel send), so wiring
+/// it into the deliberately registry-free plugin surface (`WorkspacePaneAccess`, the R144
+/// Interface-Segregation decision) hands that layer NO lifetime concern — it holds an opaque
+/// `Fn`, not the registry. So boot, mux-spawned, AND plugin-spawned panes all feed the one
+/// reaper, and no pane category can leave a lingering daemon.
+///
+/// A daemon with no panes has no hook, so it cannot exit before its first pane. A stale signal
+/// (the pane it announced was not the last) is harmless: the scan is idempotent and only the
+/// last live pane's death finds the registry empty.
 #[must_use]
-pub fn reap_hook(
+pub fn spawn_reaper(
     registry: Arc<Mutex<SessionRegistry>>,
     on_empty: Arc<dyn Fn() + Send + Sync>,
-) -> Box<dyn Fn() + Send> {
-    Box::new(move || {
-        if no_live_panes(&registry) {
-            on_empty();
-        }
+) -> Arc<dyn Fn() + Send + Sync> {
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    std::thread::Builder::new()
+        .name("sprag-reaper".to_owned())
+        .spawn(move || {
+            for () in rx {
+                if no_live_panes(&registry) {
+                    on_empty();
+                }
+            }
+        })
+        .expect("spawn the reaper thread");
+    Arc::new(move || {
+        // A dead channel (the reaper thread gone) means the process is already ending; drop
+        // the signal, matching the `on_dirty` / RpcIngress error-absorption convention.
+        let _ = tx.send(());
     })
+}
+
+/// Wrap the shared death-`signal` ([`spawn_reaper`]) as a fresh per-pane `on_exit` box — the
+/// ONE conversion every spawn site (boot, mux, plugin) uses, so the `Arc` → `Box` shape is not
+/// re-spelled three times.
+#[must_use]
+pub fn pane_exit_hook(signal: &Arc<dyn Fn() + Send + Sync>) -> Box<dyn Fn() + Send> {
+    let signal = Arc::clone(signal);
+    Box::new(move || signal())
 }
 
 /// Whether NO pane in ANY session's ANY window is still live (every one has reached
@@ -223,8 +240,9 @@ pub fn reap_hook(
 /// LIVENESS, so this reads both rather than keeping a parallel counter that could drift from
 /// them. It collects the pools under the registry lock and releases it BEFORE locking any
 /// workspace — the registry→workspace order the rest of the host keeps, so it nests with
-/// neither (see the [`reap_hook`] hazard note). Short-circuits on the first live pane, so on
-/// the common path (some pane alive) it stops at once.
+/// neither. Runs on the dedicated reaper thread ([`spawn_reaper`]), never a PTY reader thread,
+/// so a pane Drop that joins a reader cannot deadlock it. Short-circuits on the first live
+/// pane, so on the common path (some pane alive) it stops at once.
 ///
 /// **A session with no panes counts as having no LIVE ones** (`[].all(..)` is vacuously
 /// true). So an EMPTY session does not keep the daemon alive: if the last pane elsewhere dies
@@ -284,7 +302,7 @@ pub fn handle_request(state: &HostState, request_json: &str) -> Option<String> {
                 state.registry(),
                 &state.runs,
                 &state.revision,
-                state.on_empty(),
+                state.on_pane_exit(),
             );
             let mut ctx = DispatchContext::new(&mut scene, &state.previews, state.revision());
             dispatch(&mut ctx, request_json)
@@ -329,7 +347,7 @@ fn handle_scoped(state: &HostState, scope: &SessionScope, request: Request) -> O
         state.registry(),
         &state.runs,
         &state.revision,
-        state.on_empty(),
+        state.on_pane_exit(),
     );
     let mut ctx = DispatchContext::new(&mut scene, &state.previews, state.revision());
     if SUPPORTED_METHODS.contains(&request.method.as_str()) {
@@ -547,7 +565,7 @@ mod tests {
             None,
         )
         .expect("spawn pane");
-        HostState::new(host, revision)
+        HostState::new(host, revision, None)
     }
 
     /// One request through the dispatch path (no serve loop / shutdown join), so
@@ -613,31 +631,43 @@ mod tests {
         );
     }
 
-    /// `reap_hook` runs its injected action EXACTLY when the pane that just died left nothing
-    /// live — the daemon's exit edge, on the real path (a child exits → its reader reaches
-    /// EOF → the `on_exit` hook checks the registry). Both halves matter: the last pane's
-    /// death ends the daemon, and a death beside a live pane must NOT.
-    #[test]
-    fn reap_hook_fires_only_when_the_last_pane_is_gone() {
+    /// A recording `on_empty` for [`spawn_reaper`], plus the death-signal it returns.
+    fn recording_reaper(
+        registry: &Arc<Mutex<SessionRegistry>>,
+    ) -> (
+        Arc<dyn Fn() + Send + Sync>,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
         use std::sync::atomic::{AtomicUsize, Ordering};
+        let fired = Arc::new(AtomicUsize::new(0));
+        let f = Arc::clone(&fired);
+        let on_empty: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            f.fetch_add(1, Ordering::SeqCst);
+        });
+        (spawn_reaper(Arc::clone(registry), on_empty), fired)
+    }
+
+    /// The self-cleaning edge, driven through the REAL seam ([`spawn_reaper`] +
+    /// [`pane_exit_hook`]): a pane's death signals a dedicated reaper thread, which scans the
+    /// registry and runs `on_empty` ONLY when nothing live remains. The scan is off the PTY
+    /// reader threads by construction, so it cannot deadlock a pane Drop.
+    #[test]
+    fn the_reaper_fires_only_when_the_last_pane_is_gone() {
+        use std::sync::atomic::Ordering;
 
         // The last pane's death fires the action exactly once.
         let host = Host::new((40, 6));
-        let fired = Arc::new(AtomicUsize::new(0));
-        let f = Arc::clone(&fired);
-        let action: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-            f.fetch_add(1, Ordering::SeqCst);
-        });
+        let (signal, fired) = recording_reaper(host.registry());
         host.spawn(
             sh("exec true"),
             "true".into(),
             40,
             6,
             None,
-            Some(reap_hook(Arc::clone(host.registry()), action)),
+            Some(pane_exit_hook(&signal)),
         )
         .expect("spawn true");
-        // Poll for the fire (not a fixed sleep — the project's "poll, don't sleep" discipline).
+        // Poll for the fire (the reaper thread scans asynchronously; poll, don't sleep).
         let start = Instant::now();
         while fired.load(Ordering::SeqCst) == 0 && start.elapsed() < Duration::from_secs(5) {
             sleep(Duration::from_millis(20));
@@ -650,11 +680,7 @@ mod tests {
 
         // A pane dying beside a LIVE one must not fire — the daemon serves on.
         let host = Host::new((40, 6));
-        let fired = Arc::new(AtomicUsize::new(0));
-        let f = Arc::clone(&fired);
-        let action: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-            f.fetch_add(1, Ordering::SeqCst);
-        });
+        let (signal, fired) = recording_reaper(host.registry());
         host.spawn(sh("exec cat"), "cat".into(), 40, 6, None, None)
             .expect("spawn cat"); // stays live
         let dying = host
@@ -664,11 +690,11 @@ mod tests {
                 40,
                 6,
                 None,
-                Some(reap_hook(Arc::clone(host.registry()), action)),
+                Some(pane_exit_hook(&signal)),
             )
             .expect("spawn true");
         wait_for_eof(&host, dying);
-        sleep(Duration::from_millis(200));
+        sleep(Duration::from_millis(200)); // ample for the reaper to have scanned, had it fired
         assert_eq!(
             fired.load(Ordering::SeqCst),
             0,
@@ -676,21 +702,49 @@ mod tests {
         );
     }
 
+    /// A PLUGIN-spawned pane's death ALSO feeds the reaper — the R160-review gap, closed. The
+    /// plugin surface ([`WorkspacePaneAccess`]) is deliberately registry-free, but it carries
+    /// the same opaque death-signal via [`with_pane_exit`](sprag_plugin::WorkspacePaneAccess::with_pane_exit),
+    /// so a pane it spawns is no longer a category that can leave a lingering daemon. Driven
+    /// through the real `PaneLifecycle::spawn` (the path that had NO hook before the fix).
+    #[test]
+    fn a_plugin_spawned_panes_death_also_feeds_the_reaper() {
+        use sprag_plugin::{PaneLifecycle, WorkspacePaneAccess};
+        use std::sync::atomic::Ordering;
+
+        let host = Host::new((40, 6));
+        let (signal, fired) = recording_reaper(host.registry());
+        // The plugin surface over the default session's pool (what the reaper scans),
+        // carrying the daemon's death-signal — the wiring `workspace_scene` does in production.
+        let access = WorkspacePaneAccess::new(host.workspace()).with_pane_exit(Some(signal));
+        let id = access
+            .spawn(&["/bin/sh".into(), "-c".into(), "exec true".into()], 40, 6)
+            .expect("plugin-spawn a pane");
+
+        wait_for_eof(&host, id);
+        let start = Instant::now();
+        while fired.load(Ordering::SeqCst) == 0 && start.elapsed() < Duration::from_secs(5) {
+            sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            1,
+            "a plugin-spawned pane was the last to die, so the daemon must self-clean — \
+             before the fix this pane category fed no hook and left a lingering daemon",
+        );
+    }
+
     /// The multi-SESSION case C1a made first-class, exercised rather than assumed: a live pane
-    /// in ANOTHER session keeps the daemon alive when the default session empties. `reap_hook`
+    /// in ANOTHER session keeps the daemon alive when the default session empties. The reaper
     /// scans every session, so the default's dying pane finds `work`'s live one and does not
-    /// end the process. Without the cross-session traversal this would false-exit.
+    /// fire. Without the cross-session traversal this would false-exit.
     #[test]
     fn a_live_pane_in_another_session_keeps_the_daemon_alive() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::atomic::Ordering;
 
         let host = Host::new((40, 6));
         let registry = host.registry();
-        let fired = Arc::new(AtomicUsize::new(0));
-        let f = Arc::clone(&fired);
-        let action: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-            f.fetch_add(1, Ordering::SeqCst);
-        });
+        let (signal, fired) = recording_reaper(registry);
 
         // Session "work" with a live `cat` (blocks on its PTY, so it stays live).
         lock(registry).new_session("work").expect("a free name");
@@ -701,7 +755,7 @@ mod tests {
             .spawn(sh("exec cat"), "work-cat".into(), 40, 6)
             .expect("spawn cat into work");
 
-        // The default session's sole pane exits, carrying the reaper.
+        // The default session's sole pane exits, carrying the death-signal.
         let dying = host
             .spawn(
                 sh("exec true"),
@@ -709,7 +763,7 @@ mod tests {
                 40,
                 6,
                 None,
-                Some(reap_hook(Arc::clone(registry), action)),
+                Some(pane_exit_hook(&signal)),
             )
             .expect("spawn true into the default");
         wait_for_eof(&host, dying);
