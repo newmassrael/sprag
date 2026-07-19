@@ -611,10 +611,13 @@ mod tests {
     /// (last live pane gone) and what repaints a dead pane's final screen; before it,
     /// an exit reached only whoever happened to poll next.
     ///
-    /// The second assert pins the ORDER the daemon's check depends on: the store is
-    /// `Release`-published before the notify, and the channel send happens after it,
-    /// so a receiver is guaranteed to see it. Were the two swapped, a wake could
-    /// count the very pane that just died as still live.
+    /// The second assert is a SANITY CHECK that EOF is observable once the wake lands, not a
+    /// guard on the store-before-notify ORDER — that order is guaranteed by construction (the
+    /// reader stores `Release` then calls the callbacks, sequentially on one thread), and a
+    /// test cannot reliably pin it: reverse the two and the reader usually still wins the
+    /// store before the main thread reads `is_eof`, so the swap slips past most runs. The real
+    /// dependant (the daemon's liveness scan) is exercised where it lives, in
+    /// `sprag-host::reap_hook_fires_only_when_the_last_pane_is_gone`.
     #[test]
     fn a_silent_childs_exit_still_wakes_the_host() {
         let (tx, rx) = mpsc::channel();
@@ -639,8 +642,8 @@ mod tests {
         );
         assert!(
             pty.is_eof(),
-            "the wake landed before EOF was published — a live-pane count run from it \
-             would still count this pane",
+            "EOF is observable once the exit wake has landed (a sanity check, not an \
+             ordering guard — see the fn doc)",
         );
     }
 

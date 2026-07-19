@@ -16,10 +16,11 @@
 //! With no command the initial pane runs `$SHELL` (else `/bin/sh`). Socket
 //! policy: `$XDG_RUNTIME_DIR/sprag-host.sock` (override `SPRAG_HOST_RPC_SOCK`),
 //! enabled unless `SPRAG_HOST_RPC` is falsey; `kill -USR1`/`-USR2` enable /
-//! disable it live. As a server it runs until SIGINT/SIGTERM (which cancels +
-//! joins in-flight plugin runs) OR until its LAST live pane exits — the
-//! self-cleaning tmux convention (a host with nothing left to serve ends). Not
-//! until stdin EOF.
+//! disable it live. As a server it runs until SIGINT/SIGTERM OR until its LAST
+//! live pane exits — the self-cleaning tmux convention (a host with nothing left
+//! to serve ends). Both edges funnel through ONE shutdown routine that cancels +
+//! joins in-flight plugin runs (the last-pane edge raises SIGTERM into it), so
+//! neither abandons a run. Not until stdin EOF.
 
 use std::io;
 use std::sync::mpsc;
@@ -60,7 +61,16 @@ fn main() -> io::Result<()> {
     // its own lifetime. It rides each pane's `on_exit`, so the check runs once per pane
     // death, never per output batch, and a daemon with no panes has no hook and cannot exit
     // before its first pane.
-    let on_empty: Arc<dyn Fn() + Send + Sync> = Arc::new(|| std::process::exit(0));
+    //
+    // It raises SIGTERM rather than exiting directly, so BOTH shutdown edges (an operator's
+    // Ctrl-C and the last pane dying) funnel through the ONE `install_shutdown` routine that
+    // cancels + joins in-flight plugin runs — a bare `process::exit` here would abandon a
+    // live plugin run. Raising before that handler is installed (an instant-exit boot
+    // command) falls back to SIGTERM's default terminate, which is harmless: no run can be in
+    // flight before the server is up, so there is nothing to join.
+    let on_empty: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {
+        let _ = signal_hook::low_level::raise(SIGTERM);
+    });
     let boot_reaper = reap_hook(Arc::clone(host.registry()), Arc::clone(&on_empty));
     host.spawn(
         command,

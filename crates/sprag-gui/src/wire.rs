@@ -869,6 +869,7 @@ fn spawn_poll(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader};
     use std::os::unix::net::UnixListener;
     use std::sync::atomic::AtomicUsize;
 
@@ -882,20 +883,38 @@ mod tests {
         }
     }
 
-    /// A connected [`HostConn`] whose server end is already CLOSED, plus the listener +
-    /// socket path to keep alive / clean up. The next `call` on the conn reads EOF — the
-    /// exact wire condition a daemon exiting under a detached client produces.
-    fn a_dead_host_conn(tag: &str) -> (HostConn, UnixListener, PathBuf) {
+    /// Unlinks a test socket file on scope exit — INCLUDING a panic (an assertion failure or
+    /// a revert-proof run), which a bare end-of-test `remove_file` skips, leaking one socket
+    /// per panicked run under the temp dir. Mirrors `wire_client.rs`'s `HostChild` discipline.
+    struct SockGuard(PathBuf);
+    impl Drop for SockGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    /// A throwaway host socket path unique to this CALL (pid + `tag`, so parallel test threads
+    /// in one binary never collide — the R152/R153 socket-race lesson), pre-cleared.
+    fn sock_path(tag: &str) -> PathBuf {
         let path =
             std::env::temp_dir().join(format!("sprag-wire-quit-{}-{tag}.sock", std::process::id()));
         let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    /// A connected [`HostConn`] whose server end is already CLOSED. The next `call` on the
+    /// conn reads EOF — the exact wire condition a daemon exiting under a detached client
+    /// produces. The listener + [`SockGuard`] are returned so the caller keeps them alive and
+    /// the socket file is unlinked even on panic.
+    fn a_dead_host_conn(tag: &str) -> (HostConn, UnixListener, SockGuard) {
+        let path = sock_path(tag);
         let listener = UnixListener::bind(&path).expect("bind the throwaway host socket");
         let conn = HostConn::connect(&path, Duration::from_secs(2)).expect("connect to it");
         // Accept then drop the server side: the client's next read returns EOF, which is
         // what `HostConn::call` maps to `UnexpectedEof` — the host is gone.
         let (server, _) = listener.accept().expect("accept the client");
         drop(server);
-        (conn, listener, path)
+        (conn, listener, SockGuard(path))
     }
 
     /// The tmux convention, deterministically: when the poll thread's parked `scene/waitFor`
@@ -908,7 +927,7 @@ mod tests {
     /// that exits instead of a window frozen over dead content.
     #[test]
     fn a_dead_host_asks_the_shell_to_quit() {
-        let (conn, _listener, path) = a_dead_host_conn("gone");
+        let (conn, _listener, _guard) = a_dead_host_conn("gone");
         let quit = Arc::new(RecordingQuit::default());
         let stop = Arc::new(AtomicBool::new(false)); // NOT our teardown: the host died
         let poll = spawn_poll(
@@ -928,18 +947,28 @@ mod tests {
             1,
             "a host that vanished under us must ask the client to exit exactly once",
         );
-        let _ = std::fs::remove_file(&path);
     }
 
-    /// The other half: when WE are the one tearing down (`stop` set — the graceful `Drop`
-    /// path that shuts our own socket), the same socket error must NOT quit. Otherwise every
-    /// ordinary shutdown would fire a redundant quit, and a refactor that hoisted the call
-    /// out of the `!stop` guard would go uncaught.
+    /// The other half, and NOT vacuously: when WE are the one tearing down, the socket error
+    /// must NOT quit — even though the poll thread was already RUNNING (past its `while !stop`
+    /// entry guard) when `stop` flipped. This is the real `Drop` race: the thread is parked in
+    /// `conn.call`, and `WireHost::drop` sets `stop` THEN shuts the socket. The old version of
+    /// this test preset `stop = true`, so the loop never entered and the error-arm `!stop`
+    /// guard it claimed to protect was never reached — it passed even with `request_quit`
+    /// hoisted out of that guard. This drives the thread INTO the parked read first.
+    ///
+    /// REVERT-PROOF: hoist `quit.request_quit()` out of the error arm's `if !stop` and this
+    /// reads 1 — proving it exercises that exact guard, which the preset-`true` version did not.
     #[test]
     fn our_own_teardown_does_not_ask_the_shell_to_quit() {
-        let (conn, _listener, path) = a_dead_host_conn("teardown");
+        let path = sock_path("teardown");
+        let listener = UnixListener::bind(&path).expect("bind");
+        let _guard = SockGuard(path.clone());
+        let conn = HostConn::connect(&path, Duration::from_secs(2)).expect("connect");
+        let (server, _) = listener.accept().expect("accept");
+
         let quit = Arc::new(RecordingQuit::default());
-        let stop = Arc::new(AtomicBool::new(true)); // WE are stopping
+        let stop = Arc::new(AtomicBool::new(false)); // FALSE, so the loop actually enters
         let poll = spawn_poll(
             conn,
             Arc::new(Mutex::new(Vec::new())),
@@ -950,6 +979,20 @@ mod tests {
             0,
         )
         .expect("spawn the poll thread");
+
+        // Synchronize: read the `scene/waitFor` request the thread wrote. Once it arrives, the
+        // thread is past `while !stop` and BLOCKED in `conn.call` reading the (never-coming)
+        // reply — exactly where `WireHost::drop` finds it.
+        let mut reader = BufReader::new(server.try_clone().expect("clone server"));
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("read the request");
+        assert!(line.contains("scene/waitFor"), "the parked request: {line}");
+
+        // Now WE tear down, in Drop's order: set stop, THEN close the socket. The blocked read
+        // returns EOF, the error arm sees stop=true, and must NOT quit.
+        stop.store(true, Ordering::Relaxed);
+        drop(reader);
+        drop(server);
         poll.join().expect("the poll thread exited");
 
         assert_eq!(
@@ -957,7 +1000,6 @@ mod tests {
             0,
             "a socket error during our own teardown is not a host death; it must not quit",
         );
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

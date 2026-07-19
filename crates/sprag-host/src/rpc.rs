@@ -177,17 +177,33 @@ pub fn bump_on_dirty(revision: &Arc<SceneRevision>) -> Box<dyn Fn() + Send> {
     })
 }
 
-/// The pane `on_exit` hook a self-cleaning daemon wires at EVERY spawn site (the boot pane
-/// AND each mux-spawned pane): when the child that just exited was the LAST live one across
-/// all sessions, run `on_empty`. The daemon passes `on_empty = || process::exit(0)` (the
-/// tmux convention that a server with nothing left to serve ends), so this library never
-/// names process exit itself — a test injects a recording action instead, which is what
-/// makes the exact-once behaviour assertable without ending the test process.
+/// The pane `on_exit` hook a self-cleaning daemon wires at its DAEMON-owned spawn sites (the
+/// boot pane and each mux-spawned pane): when the child that just exited was the LAST live
+/// one across all sessions, run `on_empty`. The daemon injects the exit action (it raises
+/// SIGTERM so the shutdown routine cancels + joins runs), so this library never names process
+/// exit itself — a test injects a recording action instead, which is what makes the
+/// exact-once behaviour assertable without ending the test process.
 ///
 /// This is an `on_exit`, so the liveness scan runs once per pane DEATH, never per output
-/// batch (the R152 lesson: no per-output work on the hot path). Wired at every spawn site
-/// because any pane may be the last to die, and hung on the pane hook so a daemon with no
-/// panes has no hook and cannot exit before its first pane is even spawned.
+/// batch (the R152 lesson: no per-output work on the hot path). Hung on the pane hook so a
+/// daemon with no panes has no hook and cannot exit before its first pane is even spawned.
+///
+/// **TRACKED GAP (not "every" spawn site).** Panes a PLUGIN spawns go through
+/// `WorkspacePaneAccess::spawn` → `Workspace::spawn` (no `on_exit`), yet they land in the
+/// same pool and so `no_live_panes` COUNTS them live. A plugin pane keeps the daemon up
+/// correctly, but its death fires no hook — so if it is the last to die the daemon lingers
+/// with zero live panes. Closing it is deferred to the plugin/session-lifetime increment:
+/// wiring the reaper through the plugin surface would hand the deliberately registry-free
+/// plugin layer (Interface Segregation, the R144 decision) a lifetime concern, so it needs
+/// an opaque-hook seam designed with that layer, not a quick coupling here.
+///
+/// **HAZARD (lock discipline).** This runs on the PTY reader thread and `no_live_panes`
+/// takes workspace locks. `PanePty::Drop` JOINS that reader thread, so invoking a reap from a
+/// pane Drop WHILE HOLDING a workspace lock would deadlock (Drop waits on the join; the
+/// reader waits on the lock). It is safe today only because the one drop site — the mux
+/// `close` action — releases the workspace guard BEFORE the `Pane` drops (the R11
+/// return-then-drop pattern). Any future pane-drop site (session/window close, bulk teardown)
+/// MUST keep that ordering.
 #[must_use]
 pub fn reap_hook(
     registry: Arc<Mutex<SessionRegistry>>,
@@ -207,8 +223,17 @@ pub fn reap_hook(
 /// LIVENESS, so this reads both rather than keeping a parallel counter that could drift from
 /// them. It collects the pools under the registry lock and releases it BEFORE locking any
 /// workspace — the registry→workspace order the rest of the host keeps, so it nests with
-/// neither. Short-circuits on the first live pane, so on the common path (some pane alive) it
-/// stops at once.
+/// neither (see the [`reap_hook`] hazard note). Short-circuits on the first live pane, so on
+/// the common path (some pane alive) it stops at once.
+///
+/// **A session with no panes counts as having no LIVE ones** (`[].all(..)` is vacuously
+/// true). So an EMPTY session does not keep the daemon alive: if the last pane elsewhere dies
+/// while a freshly-created, not-yet-populated session exists, the daemon still exits and that
+/// session is discarded. This matches the owner's "zero live panes ⇒ exit" policy (the
+/// daemon's lifetime is tied to live panes, not to session existence — session-close
+/// semantics are a later increment), but a client that `new_session`s should spawn into it
+/// promptly. The unscoped-default totality this rests on is noted on
+/// [`SessionRegistry::default_session`](sprag_terminal::SessionRegistry::default_session).
 fn no_live_panes(registry: &Arc<Mutex<SessionRegistry>>) -> bool {
     let pools: Vec<Arc<Mutex<Workspace>>> = {
         let reg = lock(registry);
@@ -603,19 +628,20 @@ mod tests {
         let action: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
             f.fetch_add(1, Ordering::SeqCst);
         });
-        let id = host
-            .spawn(
-                sh("exec true"),
-                "true".into(),
-                40,
-                6,
-                None,
-                Some(reap_hook(Arc::clone(host.registry()), action)),
-            )
-            .expect("spawn true");
-        wait_for_eof(&host, id);
-        // EOF is published before on_exit; a brief grace lets the hook run.
-        sleep(Duration::from_millis(200));
+        host.spawn(
+            sh("exec true"),
+            "true".into(),
+            40,
+            6,
+            None,
+            Some(reap_hook(Arc::clone(host.registry()), action)),
+        )
+        .expect("spawn true");
+        // Poll for the fire (not a fixed sleep — the project's "poll, don't sleep" discipline).
+        let start = Instant::now();
+        while fired.load(Ordering::SeqCst) == 0 && start.elapsed() < Duration::from_secs(5) {
+            sleep(Duration::from_millis(20));
+        }
         assert_eq!(
             fired.load(Ordering::SeqCst),
             1,
@@ -647,6 +673,56 @@ mod tests {
             fired.load(Ordering::SeqCst),
             0,
             "a pane dying beside a live one must not end the daemon",
+        );
+    }
+
+    /// The multi-SESSION case C1a made first-class, exercised rather than assumed: a live pane
+    /// in ANOTHER session keeps the daemon alive when the default session empties. `reap_hook`
+    /// scans every session, so the default's dying pane finds `work`'s live one and does not
+    /// end the process. Without the cross-session traversal this would false-exit.
+    #[test]
+    fn a_live_pane_in_another_session_keeps_the_daemon_alive() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let host = Host::new((40, 6));
+        let registry = host.registry();
+        let fired = Arc::new(AtomicUsize::new(0));
+        let f = Arc::clone(&fired);
+        let action: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            f.fetch_add(1, Ordering::SeqCst);
+        });
+
+        // Session "work" with a live `cat` (blocks on its PTY, so it stays live).
+        lock(registry).new_session("work").expect("a free name");
+        let work_pool = lock(registry)
+            .workspace_of("work")
+            .expect("the created session resolves");
+        lock(&work_pool)
+            .spawn(sh("exec cat"), "work-cat".into(), 40, 6)
+            .expect("spawn cat into work");
+
+        // The default session's sole pane exits, carrying the reaper.
+        let dying = host
+            .spawn(
+                sh("exec true"),
+                "0-true".into(),
+                40,
+                6,
+                None,
+                Some(reap_hook(Arc::clone(registry), action)),
+            )
+            .expect("spawn true into the default");
+        wait_for_eof(&host, dying);
+        sleep(Duration::from_millis(200)); // let the reaper's check run
+
+        assert!(
+            !no_live_panes(registry),
+            "work's live cat means panes remain — the daemon must not be empty",
+        );
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            0,
+            "the default emptying must not end a daemon that still serves another session",
         );
     }
 
