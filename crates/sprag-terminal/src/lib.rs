@@ -25,5 +25,7 @@ pub use layout::{
     SplitDir, SplitId, SplitSide,
 };
 pub use pane_pty::{CommandBuilder, PanePty, PanePtyError, PanePtyHandle, RawOutput};
-pub use registry::{KillOutcome, Session, SessionError, SessionRegistry, Window};
+pub use registry::{
+    KillOutcome, Session, SessionError, SessionRegistry, Window, WindowInfo, WindowKillOutcome,
+};
 pub use workspace::{Pane, PaneId, PaneInfo, Workspace};

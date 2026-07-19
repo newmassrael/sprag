@@ -193,12 +193,19 @@ pub const PANES_SLOT: &str = "panes";
 /// restore the user's layout. Logical only: it carries no pixels.
 pub const LAYOUT_SLOT: &str = "layout";
 /// The mux control external invoke action that INSTALLS a client's settled arrangement
-/// (`{tree, expected_revision}`), returning the canonical
+/// (`{tree, expected_revision, expected_window?}`), returning the canonical
 /// [`LayoutSnapshot`](sprag_terminal::LayoutSnapshot).
 ///
 /// `expected_revision` is the revision the gesture was authored against — a compare-and-set,
 /// so a write against an arrangement that has moved on is REFUSED rather than silently
 /// reverting whoever moved it.
+///
+/// `expected_window` is optional: the NAME of the window the gesture was drawn on. Because the
+/// per-window revision has no cross-window ordering, a client that has since switched windows
+/// could otherwise land a stale write on a DIFFERENT window whose revision happened to collide;
+/// naming the window makes the compare-and-set refuse that too. Absent ⇒ no window check (a
+/// single-client / older caller); present but not a string ⇒ malformed, refused like a
+/// wrong-typed `expected_revision`.
 ///
 /// The write half of the arc: a client resolves a gesture on its own surface and sends
 /// the result here, which is what turns the user's arrangement into session state. It is
@@ -215,6 +222,38 @@ pub const SET_LAYOUT_ACTION: &str = "set_layout";
 /// split. WHERE the client then puts that pane's window on screen is pixels, and stays the
 /// client's alone.
 pub const SET_FLOATING_ACTION: &str = "set_floating";
+
+/// The mux control external query slot: the SCOPED session's windows — each window's name and
+/// whether it is the current one (`[{name, current}]`) — [`SESSIONS_SLOT`] one level down. How a
+/// tabbed client learns which tabs to draw and which is active.
+///
+/// SCOPED to the request's session (unlike `sessions`, whose subject is the set of sessions):
+/// windows are a property OF a session, so this answers about the one the request named.
+pub const WINDOWS_SLOT: &str = "windows";
+
+/// The mux control external invoke action that creates a window in the SCOPED session, born with
+/// a shell, selects it, and returns its name (`{name?, cmd?, cols?, rows?}`) — tmux `new-window`.
+///
+/// SCOPED (it acts on the request's session), unlike [`NEW_SESSION_ACTION`] which names a session
+/// directly. `name` absent ⇒ the lowest free integer; `cmd`/`cols`/`rows` shape the birth pane,
+/// exactly as [`NEW_SESSION_ACTION`]. Selecting the new window is session state — every attached
+/// client follows it, as tmux does.
+pub const NEW_WINDOW_ACTION: &str = "new_window";
+
+/// The mux control external invoke action that makes a window current in the SCOPED session
+/// (`{window}`) — tmux `select-window`. Session state: every attached client follows.
+pub const SELECT_WINDOW_ACTION: &str = "select_window";
+
+/// The mux control external invoke action that renames a window of the SCOPED session
+/// (`{window?, name}`) — tmux `rename-window`. `window` absent ⇒ the current one; `name` is the
+/// new name.
+pub const RENAME_WINDOW_ACTION: &str = "rename_window";
+
+/// The mux control external invoke action that kills a window of the SCOPED session (`{window?}`)
+/// — tmux `kill-window`. `window` absent ⇒ the current one. Killing the session's LAST window
+/// ends the SESSION (and the last session ends the daemon), tmux's "kill the last window ⇒ the
+/// session is gone".
+pub const KILL_WINDOW_ACTION: &str = "kill_window";
 
 /// The container tag of the pane with host id `pane_id` — the `pane_<id>` node the
 /// per-pane data grid + input external live under (the head of a pane-addressed

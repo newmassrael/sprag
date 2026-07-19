@@ -32,7 +32,7 @@ use std::collections::HashSet;
 use pinion_core::GridBuffer;
 use sprag_host::{HostClient, PaneScrollFacts};
 use sprag_input::Modifiers;
-use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId};
+use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId, WindowInfo};
 
 use crate::terminal::MAX_PANES;
 
@@ -168,6 +168,30 @@ impl SlotView {
     /// this costs a lock and a clone rather than a round trip.
     pub(crate) fn layout(&self) -> LayoutSnapshot {
         self.host.layout()
+    }
+
+    /// The scoped session's windows (tmux "windows") — each name and whether it is current: the
+    /// list the tab strip draws. NOT slot-mapped: windows are session-scoped, not pane-addressed,
+    /// so this passes straight through (the reducer addresses windows by NAME, never by slot).
+    pub(crate) fn windows(&self) -> Vec<WindowInfo> {
+        self.host.windows()
+    }
+
+    /// Make the window named `name` current (tmux `select-window`) — a tab click.
+    pub(crate) fn select_window(&self, name: &str) {
+        self.host.select_window(name);
+    }
+
+    /// Create + select a window, born with a shell (tmux `new-window`), returning its name — the
+    /// "+" tab.
+    pub(crate) fn new_window(&self) -> String {
+        self.host.new_window()
+    }
+
+    /// Kill the window named `name` (tmux `kill-window`) — a tab's close affordance. The
+    /// session's last window ends the session.
+    pub(crate) fn kill_window(&self, name: &str) {
+        self.host.kill_window(name);
     }
 
     /// Slot `slot`'s cell DATA at `offset_lines` (a `1x1` placeholder for a hole).
@@ -399,6 +423,15 @@ mod tests {
         fn pane_title(&self, id: PaneId) -> Option<String> {
             self.titles.get(&id).cloned()
         }
+        /// Inert: these tests drive the pane slot map, not the window surface.
+        fn windows(&self) -> Vec<WindowInfo> {
+            Vec::new()
+        }
+        fn select_window(&self, _name: &str) {}
+        fn new_window(&self) -> String {
+            String::new()
+        }
+        fn kill_window(&self, _name: &str) {}
     }
 
     fn view_over(ids: &std::rc::Rc<RefCell<Vec<PaneId>>>) -> SlotView {

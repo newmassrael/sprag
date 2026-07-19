@@ -207,6 +207,7 @@ mod split;
 mod terminal;
 mod view;
 mod wire;
+mod wtabs;
 
 use pinion_a11y::AccessNode;
 use pinion_core::command::Command;
@@ -489,6 +490,11 @@ impl WidgetCore for TerminalViewer {
         // like the splitters). Its item clicks / barrier dismiss route through the shell
         // pointer router; `apply_secondary_click` opens it, `update` runs its commands.
         externals.push(ctxmenu::create_menu_external());
+        // The window tab strip's buttons: one `ButtonExternal` per possible tab plus "+" / "×",
+        // all at fixed tags (pinion R689 preserves them across this per-frame rebuild, like the
+        // context menu and splitters). Their clicks route through `update` to `SlotView` window
+        // actions (select / new / kill window).
+        externals.extend(wtabs::create_window_externals());
         externals
     }
 
@@ -764,6 +770,12 @@ impl WidgetCore for TerminalViewer {
         // intent — run its Copy / Paste / Select-all action and stop (it is not a
         // dock-panel tag, so the panel routing below would drop it anyway).
         if ctxmenu::handle_command(intent) {
+            return Vec::new();
+        }
+        // The window tab strip: a tab / "+" / "×" button click routes to a `SlotView` window
+        // action (select / new / kill window). Handled first, like the context menu — these are
+        // not pane tags, so the panel routing below would drop them.
+        if wtabs::handle_window_intent(intent, &use_terminal().slots) {
             return Vec::new();
         }
         let Some((panel, event)) = intent.tag_str().rsplit_once('.') else {
@@ -1414,11 +1426,17 @@ mod tests {
         // SSOT against the twice-reduced height.
         let chrome_px = WindowChromeStyle::default().height_px;
         let header_px = pinion_widget_paint::dock::DockPanelStyle::m3_default("x").header_height_px;
-        let content_rows =
-            crate::terminal::grid_dims((WINDOW_W, WINDOW_H - chrome_px - header_px), metric).1;
+        // The window tab strip (tmux "windows") takes a fixed band above the panes too, so the
+        // pane content height is the window minus ALL THREE: chrome + tab strip + dock header.
+        let strip_px = crate::wtabs::STRIP_HEIGHT;
+        let content_rows = crate::terminal::grid_dims(
+            (WINDOW_W, WINDOW_H - chrome_px - strip_px - header_px),
+            metric,
+        )
+        .1;
         assert!(
             content_rows < full_rows,
-            "the chrome strip + dock header subtract rows"
+            "the chrome strip + tab strip + dock header subtract rows"
         );
 
         assert_eq!(
@@ -2044,6 +2062,60 @@ mod tests {
             Some(0.75),
             "the settled ratio reached the host in one dispatch, with no settle frame",
         );
+    }
+
+    /// The window tab strip end to end through the REAL shell: a "+" click creates + selects a
+    /// window, a tab click selects one by its index into the live list, and a "×" click closes the
+    /// current one — each routed by `update` to a `SlotView` window action against the in-process
+    /// host. Built with the SCOPED button tags the shell actually delivers (`{tag}.click`), the
+    /// R67/R68 lesson that a synthetic input which does not match the live wire masks the bug.
+    #[test]
+    fn window_tab_clicks_route_to_the_host_select_new_and_close() {
+        use std::borrow::Cow;
+        let mut core = ShellCore::<TerminalViewer>::new();
+        let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+        core.finalize_frame(scene);
+
+        // Read the in-process host's window list through the SlotView, in the root owner scope.
+        let windows = |core: &ShellCore<TerminalViewer>| {
+            core.root_owner().run(|| use_terminal().slots.windows())
+        };
+        let current = |core: &ShellCore<TerminalViewer>| {
+            windows(core)
+                .into_iter()
+                .find(|w| w.current)
+                .map(|w| w.name)
+        };
+        let click = |tag: &str| Intent {
+            tag: Cow::Owned(format!("{tag}.click")),
+            payload: IntrospectValue::Null,
+        };
+
+        // Boot: one window "0", current.
+        assert_eq!(windows(&core).len(), 1, "one boot window");
+        assert_eq!(current(&core).as_deref(), Some("0"));
+
+        // "+" creates a window AND selects it (tmux new-window).
+        core.dispatch_intent(&click("sprag_gui.wnew"));
+        assert_eq!(windows(&core).len(), 2, "the + button created a window");
+        let created = current(&core).expect("a current window");
+        assert_ne!(created, "0", "new-window selected the new one");
+
+        // A tab click on tab index 0 selects window "0" (tmux select-window) — every click fires,
+        // so switching back to the pre-`+` tab is NOT silenced.
+        core.dispatch_intent(&click("sprag_gui.wtab.0"));
+        assert_eq!(
+            current(&core).as_deref(),
+            Some("0"),
+            "the tab click selected window 0",
+        );
+
+        // "×" closes the CURRENT window ("0"); the other survives and becomes current.
+        core.dispatch_intent(&click("sprag_gui.wclose"));
+        let after = windows(&core);
+        assert_eq!(after.len(), 1, "the × button closed the current window");
+        assert_eq!(after[0].name, created, "the other window survived");
+        assert!(after[0].current, "and it is now current");
     }
 
     /// Live cursor-following tear-off (R1094 / PINION-PR31): the `tear_off_follow`

@@ -100,7 +100,8 @@ impl Window {
         }
     }
 
-    /// The window's display name (default `"0"`, `"1"`, …; user-renamable later).
+    /// The window's display name (default `"0"`, `"1"`, …; renamable via
+    /// [`SessionRegistry::rename_window`]).
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
@@ -296,6 +297,23 @@ impl Window {
             self.layout_revision += 1;
         }
     }
+
+    /// Close every pane in this window's pool and RETURN them, so the caller runs each pane's
+    /// blocking [`PanePty`](crate::PanePty) `Drop` (kill / wait / join the reader) OFF the
+    /// registry lock — the discipline [`KillOutcome`] exists to keep. Used when one window is
+    /// killed ([`SessionRegistry::kill_window`]) and, per window, when a whole session is
+    /// ([`Session::drain_panes`]).
+    ///
+    /// Closing removes each pane from the pool first, so the window already counts as idle
+    /// (empty pool) before the returned panes are dropped.
+    fn drain(&self) -> Vec<Pane> {
+        let mut pool = self
+            .workspace
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let ids: Vec<PaneId> = pool.panes().iter().map(Pane::id).collect();
+        ids.into_iter().flat_map(|id| pool.close(id)).collect()
+    }
 }
 
 /// Why a session operation was refused. The registry is unchanged in either case.
@@ -337,12 +355,42 @@ pub enum KillOutcome {
     KilledServer(Vec<Pane>),
 }
 
+/// What a [`kill_window`](SessionRegistry::kill_window) did.
+///
+/// Like [`KillOutcome`], it carries the reaped panes so the CALLER drops them (running each
+/// pane's blocking [`PanePty`](crate::PanePty) `Drop`) OFF the registry lock.
+pub enum WindowKillOutcome {
+    /// A non-last window was removed from its session; its drained panes ride here to drop
+    /// off-lock. The session (and the daemon) keep running.
+    Removed(Vec<Pane>),
+    /// The window was the session's LAST, so killing it ended the SESSION (tmux "kill the last
+    /// window ⇒ the session is gone"). The escalation's own [`KillOutcome`] rides here — the
+    /// caller handles it exactly as a [`kill_session`](SessionRegistry::kill_session) result (a
+    /// non-last session removed, or the last one drained and the daemon ended).
+    Session(KillOutcome),
+}
+
+/// A window's public identity for a display client — the mux `windows` slot and the tabbed
+/// client that draws from it: the window's NAME and whether it is its session's CURRENT window.
+///
+/// A view over the tree, not part of it: built on demand by [`Session::window_infos`], serialised
+/// over the wire, and returned by the `HostClient` window read — one shape the wire slot, a
+/// client's mirror, and the in-process arm all speak, so none can drift.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WindowInfo {
+    /// The window's display name (a tab label).
+    pub name: String,
+    /// Whether this is the session's current window (the active tab).
+    pub current: bool,
+}
+
 /// One session: a named attach unit owning an ordered, non-empty set of [`Window`]s
 /// with exactly one current window.
 ///
-/// A client attaches to a session and views its current window. Increment A boots with
-/// a single window; multi-window (new/select/rename) is a later increment, additive on
-/// this shape.
+/// A client attaches to a session and views its current window. A session boots with a single
+/// window; [`new_window`](Self::new_window) / [`select_window`](Self::select_window) /
+/// [`rename_window`](Self::rename_window) and the registry's
+/// [`kill_window`](SessionRegistry::kill_window) are the ops on this shape (tmux's windows).
 pub struct Session {
     name: String,
     windows: Vec<Window>,
@@ -380,6 +428,20 @@ impl Session {
         &self.windows[self.current_window]
     }
 
+    /// This session's windows as [`WindowInfo`]s, in order, with the current one marked — the
+    /// list the mux `windows` slot serves and a tabbed client draws.
+    #[must_use]
+    pub fn window_infos(&self) -> Vec<WindowInfo> {
+        let current = self.current_window().name();
+        self.windows
+            .iter()
+            .map(|window| WindowInfo {
+                name: window.name.clone(),
+                current: window.name == current,
+            })
+            .collect()
+    }
+
     /// Remove every pane from every window and RETURN them — used when the LAST session is killed
     /// ([`SessionRegistry::kill_session`]), so no live pane keeps the daemon alive, WITHOUT
     /// removing the session (which would empty the registry and unresolve the default).
@@ -389,19 +451,100 @@ impl Session {
     /// pane from the pool first, so the session already counts as idle (empty pool) before the
     /// returned panes are dropped — and each drop then SIGHUPs the child and fires its `on_exit`,
     /// nudging the reaper.
-    fn drain_panes(&mut self) -> Vec<Pane> {
-        let mut reaped = Vec::new();
-        for window in &self.windows {
-            let mut pool = window
-                .workspace()
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            let ids: Vec<PaneId> = pool.panes().iter().map(|pane| pane.id()).collect();
-            for id in ids {
-                reaped.extend(pool.close(id));
+    fn drain_panes(&self) -> Vec<Pane> {
+        self.windows.iter().flat_map(Window::drain).collect()
+    }
+
+    /// The lowest non-negative integer name not currently in use by a window of this session,
+    /// as a string — how [`new_window`](Self::new_window) allocates, mirroring tmux's
+    /// `new-window` picking the lowest free index and the registry's own
+    /// [`lowest_free_name`](SessionRegistry::lowest_free_name) one level up.
+    ///
+    /// Total by the same argument: at most `windows.len()` names are taken, so one of the
+    /// `len + 1` candidates in `0..=len` is free.
+    fn lowest_free_window_name(&self) -> String {
+        (0u64..)
+            .map(|n| n.to_string())
+            .find(|candidate| !self.windows.iter().any(|w| w.name == *candidate))
+            .expect("some name in 0..=len is always free")
+    }
+
+    /// Create a window, holding an empty pool, SELECT it, and return the name it got — tmux
+    /// `new-window`, which appends a window and makes it current.
+    ///
+    /// `name` is the caller's choice; `None` allocates the lowest free integer name
+    /// (`lowest_free_window_name`), the way tmux's
+    /// `new-window` with no `-n` does. The pool clones the ONE registry-wide id counter out of
+    /// an existing window ([`Workspace::sibling`]), so a [`PaneId`] stays unique across every
+    /// window of every session (the module's load-bearing invariant).
+    ///
+    /// The window is born EMPTY here; the host births its first pane (the D4 seam — a birth
+    /// pane must carry the daemon's `on_pane_exit` death-signal, which the pinion-free registry
+    /// does not hold). Selecting it is the tmux behaviour and is session state: every client
+    /// attached to this session follows the current window, so a `new-window` moves them all,
+    /// exactly as tmux does.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::Duplicate`] if an explicit `name` is already a window of this session —
+    /// a name is how a window is addressed, so two of them would make the address ambiguous.
+    /// The allocated path cannot fail: it picks a name free by construction.
+    pub fn new_window(&mut self, name: Option<&str>) -> Result<String, SessionError> {
+        let name = match name {
+            Some(name) => {
+                if self.windows.iter().any(|w| w.name == name) {
+                    return Err(SessionError::Duplicate(name.to_owned()));
+                }
+                name.to_owned()
             }
+            None => self.lowest_free_window_name(),
+        };
+        let pool = self
+            .current_window()
+            .workspace()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .sibling();
+        self.windows.push(Window::new(&name, pool));
+        self.current_window = self.windows.len() - 1;
+        Ok(name)
+    }
+
+    /// Make the window named `name` current — tmux `select-window`. Session state: every
+    /// attached client follows it.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::Unknown`] if no window of this session carries `name`. The current
+    /// window is unchanged.
+    pub fn select_window(&mut self, name: &str) -> Result<(), SessionError> {
+        let idx = self
+            .windows
+            .iter()
+            .position(|w| w.name == name)
+            .ok_or_else(|| SessionError::Unknown(name.to_owned()))?;
+        self.current_window = idx;
+        Ok(())
+    }
+
+    /// Rename the window named `name` to `new` — tmux `rename-window`.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::Unknown`] if no window carries `name`; [`SessionError::Duplicate`] if
+    /// `new` is already another window's name (a name is an address, so it must stay unique).
+    /// Renaming a window to the name it already has is a no-op, not a duplicate.
+    pub fn rename_window(&mut self, name: &str, new: &str) -> Result<(), SessionError> {
+        let idx = self
+            .windows
+            .iter()
+            .position(|w| w.name == name)
+            .ok_or_else(|| SessionError::Unknown(name.to_owned()))?;
+        if new != name && self.windows.iter().any(|w| w.name == new) {
+            return Err(SessionError::Duplicate(new.to_owned()));
         }
-        reaped
+        self.windows[idx].name = new.to_owned();
+        Ok(())
     }
 }
 
@@ -412,9 +555,9 @@ impl Session {
 ///
 /// The SINGLE global [`PaneId`] counter is not held here separately — it
 /// lives with the thing it counts, shared (`Arc`) by every window's [`Workspace`] and
-/// seeded once at [`new`](Self::new). A future new-window/new-session path clones it
-/// out of an existing window's workspace, so there is no duplicated handle to keep in
-/// sync.
+/// seeded once at [`new`](Self::new). The [`new_window`](Session::new_window) /
+/// [`new_session`](Self::new_session) paths clone it out of an existing window's workspace, so
+/// there is no duplicated handle to keep in sync.
 ///
 /// The host owns this behind an `Arc<Mutex<SessionRegistry>>` and resolves the session a
 /// request is SCOPED to out of it per request, by NAME
@@ -491,8 +634,9 @@ impl SessionRegistry {
     ///
     /// Does NOT change any other client's scope: creating and attaching are separate acts,
     /// and a client that creates a session for someone else must not yank the scope out from
-    /// under whoever is attached now. Nothing here can — the default is immutable, and every
-    /// other client names its own scope.
+    /// under whoever is attached now. Nothing here can — `new_session` APPENDS, so it never moves
+    /// the default (`sessions[0]`); only [`kill_session`](Self::kill_session) of the default can,
+    /// and every other client names its own scope.
     ///
     /// # Errors
     ///
@@ -574,6 +718,109 @@ impl SessionRegistry {
         Ok(KillOutcome::Removed(self.sessions.remove(idx)))
     }
 
+    /// The session named `name`, mutably, or [`SessionError::Unknown`] — the resolution the
+    /// window wrappers below share, so "no such session" is one refusal carrying its name.
+    fn session_named_mut(&mut self, name: &str) -> Result<&mut Session, SessionError> {
+        self.sessions
+            .iter_mut()
+            .find(|s| s.name == name)
+            .ok_or_else(|| SessionError::Unknown(name.to_owned()))
+    }
+
+    /// Create a window in the session named `session`, select it, and return its name — the
+    /// registry-level entry the wire handler uses (it resolves the session, then delegates to
+    /// [`Session::new_window`]). The host births its first pane; see that primitive.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::Unknown`] if no session carries `session`; [`SessionError::Duplicate`]
+    /// if an explicit window `name` is already taken in it.
+    pub fn new_window(
+        &mut self,
+        session: &str,
+        name: Option<&str>,
+    ) -> Result<String, SessionError> {
+        self.session_named_mut(session)?.new_window(name)
+    }
+
+    /// Make the window named `name` current in the session named `session` — tmux
+    /// `select-window`. See [`Session::select_window`].
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::Unknown`] for an unknown session OR window.
+    pub fn select_window(&mut self, session: &str, name: &str) -> Result<(), SessionError> {
+        self.session_named_mut(session)?.select_window(name)
+    }
+
+    /// Rename the window named `name` of the session named `session` to `new` — tmux
+    /// `rename-window`. See [`Session::rename_window`].
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::Unknown`] for an unknown session OR window; [`SessionError::Duplicate`]
+    /// if `new` is already another window's name.
+    pub fn rename_window(
+        &mut self,
+        session: &str,
+        name: &str,
+        new: &str,
+    ) -> Result<(), SessionError> {
+        self.session_named_mut(session)?.rename_window(name, new)
+    }
+
+    /// Kill the window named `window` of the session named `session` — tmux `kill-window`.
+    ///
+    /// A NON-last window is removed and its panes drained ([`WindowKillOutcome::Removed`]),
+    /// which keeps the session's [`current_window`](Session::current_window) valid and, tmux-like,
+    /// on the window that took the killed one's place (the next; the previous if the last was
+    /// killed). The LAST window of a session cannot be removed without emptying it, and tmux ends
+    /// the session with its last window — so this delegates to [`kill_session`](Self::kill_session)
+    /// and reports [`WindowKillOutcome::Session`], which also folds in the last-SESSION case
+    /// (draining the panes and ending the daemon).
+    ///
+    /// The reaped panes ride back in the outcome so the caller drops them off the registry lock,
+    /// the same discipline [`kill_session`](Self::kill_session) keeps.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::Unknown`] carrying the session name if none exists, or the window name if
+    /// the session has no such window.
+    pub fn kill_window(
+        &mut self,
+        session: &str,
+        window: &str,
+    ) -> Result<WindowKillOutcome, SessionError> {
+        let sidx = self
+            .sessions
+            .iter()
+            .position(|s| s.name == session)
+            .ok_or_else(|| SessionError::Unknown(session.to_owned()))?;
+        let widx = self.sessions[sidx]
+            .windows
+            .iter()
+            .position(|w| w.name == window)
+            .ok_or_else(|| SessionError::Unknown(window.to_owned()))?;
+        if self.sessions[sidx].windows.len() == 1 {
+            // The session's last window: tmux ends the session with it. Escalating also handles
+            // the last-SESSION case (drain + end the daemon) in one place — this never removes a
+            // window such that the session is left with zero.
+            return Ok(WindowKillOutcome::Session(self.kill_session(session)?));
+        }
+        let sess = &mut self.sessions[sidx];
+        // Drain BEFORE removing, so the returned panes' blocking Drop runs off-lock (the caller
+        // drops the Vec); the emptied window then drops with nothing left to tear down.
+        let reaped = sess.windows[widx].drain();
+        sess.windows.remove(widx);
+        // Keep current_window in range and on the neighbour that takes the killed window's place.
+        if sess.current_window > widx {
+            sess.current_window -= 1;
+        } else if sess.current_window == widx {
+            sess.current_window = widx.min(sess.windows.len() - 1);
+        }
+        Ok(WindowKillOutcome::Removed(reaped))
+    }
+
     /// The session an UNSCOPED request acts on — the first in the list.
     ///
     /// Total: `sessions` is seeded non-empty and NEVER becomes empty — [`kill_session`] removes
@@ -593,17 +840,23 @@ impl SessionRegistry {
         &self.sessions[0]
     }
 
-    /// The window a request scoped to the session named `session` acts on, mutably — the seam
-    /// a caller reconciles the arrangement through ([`Window::reconcile_layout`]). `None` if
-    /// no session carries the name.
+    /// The window named `window` of the session named `session`, mutably — the seam a caller
+    /// reconciles the arrangement through ([`Window::reconcile_layout`]). `None` if no session
+    /// carries the session name OR no window of it carries the window name.
+    ///
+    /// Name-addressed on BOTH dimensions, and that is what closes the window-switch bound
+    /// [`crate::layout`] flagged: a request's `SessionScope` (in `sprag-host`) pins the
+    /// window it was assembled for, so the layout paths act on THAT window rather than
+    /// "whichever is current at the moment of use" — the two agree even if the current window
+    /// moved between a request's resolve and its use.
     ///
     /// The `Option` is what makes a vanished scope a REFUSAL at the caller rather than a
     /// panic here: a scope is validated when a request arrives, but the authority for "does
-    /// this session exist" is this type, and asking it again at the moment of use is what
-    /// keeps the two from drifting once a removal path exists.
-    pub fn window_mut(&mut self, session: &str) -> Option<&mut Window> {
+    /// this session / window exist" is this type, and asking it again at the moment of use is
+    /// what keeps the two from drifting once a removal path exists.
+    pub fn window_mut(&mut self, session: &str, window: &str) -> Option<&mut Window> {
         let session = self.sessions.iter_mut().find(|s| s.name == session)?;
-        Some(&mut session.windows[session.current_window])
+        session.windows.iter_mut().find(|w| w.name == window)
     }
 
     /// A clone of the pane-pool handle of the window a request scoped to `session` acts on —
@@ -652,10 +905,11 @@ mod tests {
             .expect("the default session always resolves")
     }
 
-    /// The default session's window, mutably.
+    /// The default session's CURRENT window, mutably.
     fn default_window(reg: &mut SessionRegistry) -> &mut Window {
         let name = default_name(reg);
-        reg.window_mut(&name)
+        let window = reg.default_session().current_window().name().to_owned();
+        reg.window_mut(&name, &window)
             .expect("the default session always resolves")
     }
 
@@ -1036,13 +1290,15 @@ mod tests {
         // Absent at every resolution site — not an error to be handled, just nothing.
         assert!(reg.session("ghost").is_none());
         assert!(reg.workspace_of("ghost").is_none());
-        assert!(reg.window_mut("ghost").is_none());
+        assert!(reg.window_mut("ghost", "0").is_none());
 
         // ...while a real name resolves at each of them. Without this half, the assertions
         // above would pass just as well against a registry that resolves NOTHING.
         assert_eq!(reg.session("work").map(Session::name), Some("work"));
         assert!(reg.workspace_of("work").is_some());
-        assert!(reg.window_mut("work").is_some());
+        assert!(reg.window_mut("work", "0").is_some());
+        // A real session but an unknown WINDOW is also nothing — the address is two-dimensional.
+        assert!(reg.window_mut("work", "ghost").is_none());
 
         // And nothing above moved the default: not creating a session, not naming one, not
         // naming a ghost. An unscoped request still lands where it did at boot.
@@ -1313,8 +1569,9 @@ mod tests {
     fn a_shared_counter_makes_ids_globally_unique_across_windows() {
         // The load-bearing invariant: two windows drawing from ONE registry counter never
         // collide, so a pane is addressable by id alone regardless of which window holds
-        // it. (Pools are constructed directly here — the registry's own new-window API
-        // is a later increment; this proves the counter-sharing the registry relies on.)
+        // it. (Pools are constructed directly here to isolate the counter-sharing the registry
+        // relies on; `new_window_appends_selects_and_shares_the_id_counter` proves the same
+        // through the registry's real new-window API.)
         let win_a = Arc::new(Mutex::new(Workspace::new((80, 24))));
         let win_b = Arc::new(Mutex::new(lock(&win_a).sibling()));
 
@@ -1326,5 +1583,293 @@ mod tests {
         let mut ids = [a0.0, b0.0, a1.0];
         ids.sort_unstable();
         assert_eq!(ids, [0, 1, 2], "ids are globally unique across windows");
+    }
+
+    // ─── windows: new / select / rename / kill ───
+
+    /// tmux `new-window`: it APPENDS a window, MAKES IT CURRENT, and its pool draws from the
+    /// ONE registry-wide id counter — a pane spawned there gets a fresh global id, never a
+    /// collision with window "0".
+    #[test]
+    fn new_window_appends_selects_and_shares_the_id_counter() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        // A pane in window "0" takes id 0 before the new window exists.
+        let ws0 = pool(&reg);
+        let a = lock(&ws0).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
+        assert_eq!(a.0, 0);
+
+        assert_eq!(
+            reg.new_window(&default, None).unwrap(),
+            "1",
+            "lowest free name"
+        );
+        let session = reg.session(&default).unwrap();
+        assert_eq!(session.windows().len(), 2);
+        assert_eq!(
+            session.current_window().name(),
+            "1",
+            "new-window makes the new one current",
+        );
+        assert!(
+            session.current_window().layout().panes().is_empty(),
+            "born empty — the host births its pane",
+        );
+
+        // The new window's pool mints the NEXT global id, not a fresh 0.
+        let ws1 = reg
+            .workspace_of(&default)
+            .expect("current = the new window");
+        let b = lock(&ws1).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
+        assert!(
+            b > a && b.0 == 1,
+            "a shared, monotonic counter: {a} then {b}"
+        );
+    }
+
+    /// With no name the registry allocates the lowest free integer, tmux-style; an explicit
+    /// name is stepped over, and a duplicate is refused with nothing added.
+    #[test]
+    fn new_window_names_allocate_step_over_and_refuse_duplicates() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+
+        assert_eq!(reg.new_window(&default, None).unwrap(), "1");
+        reg.new_window(&default, Some("3")).unwrap();
+        assert_eq!(
+            reg.new_window(&default, None).unwrap(),
+            "2",
+            "fills the gap"
+        );
+        assert_eq!(
+            reg.new_window(&default, None).unwrap(),
+            "4",
+            "then continues"
+        );
+
+        assert_eq!(
+            reg.new_window(&default, Some("3")).unwrap_err(),
+            SessionError::Duplicate("3".to_owned()),
+            "a taken window name is refused",
+        );
+        assert_eq!(
+            reg.session(&default).unwrap().windows().len(),
+            5,
+            "the boot window plus four created; the refused one added nothing",
+        );
+        // An unknown session is Unknown, not Duplicate.
+        assert!(matches!(
+            reg.new_window("ghost", None),
+            Err(SessionError::Unknown(name)) if name == "ghost",
+        ));
+    }
+
+    /// `select-window` moves the current window (session state — every attached client
+    /// follows), and an unknown window is refused, leaving the current one put.
+    #[test]
+    fn select_window_moves_the_current_and_refuses_unknown() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        reg.new_window(&default, Some("work")).unwrap();
+        assert_eq!(
+            reg.session(&default).unwrap().current_window().name(),
+            "work"
+        );
+
+        reg.select_window(&default, "0").unwrap();
+        assert_eq!(reg.session(&default).unwrap().current_window().name(), "0");
+
+        assert!(matches!(
+            reg.select_window(&default, "ghost"),
+            Err(SessionError::Unknown(name)) if name == "ghost",
+        ));
+        assert_eq!(
+            reg.session(&default).unwrap().current_window().name(),
+            "0",
+            "a refused select leaves the current window unchanged",
+        );
+    }
+
+    /// `rename-window` renames, refuses a name another window holds, and treats renaming a
+    /// window to the name it already has as a no-op (not a duplicate).
+    #[test]
+    fn rename_window_renames_refuses_a_duplicate_and_allows_a_noop() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        reg.new_window(&default, Some("1")).unwrap();
+
+        reg.rename_window(&default, "0", "editor").unwrap();
+        let names = |reg: &SessionRegistry| -> Vec<String> {
+            reg.session(&default)
+                .unwrap()
+                .windows()
+                .iter()
+                .map(|w| w.name().to_owned())
+                .collect()
+        };
+        assert_eq!(names(&reg), vec!["editor".to_owned(), "1".to_owned()]);
+
+        // Renaming onto a name another window holds is refused.
+        assert_eq!(
+            reg.rename_window(&default, "1", "editor").unwrap_err(),
+            SessionError::Duplicate("editor".to_owned()),
+        );
+        assert_eq!(
+            names(&reg),
+            vec!["editor".to_owned(), "1".to_owned()],
+            "unchanged"
+        );
+
+        // Renaming a window to its own current name is a no-op, not a duplicate.
+        reg.rename_window(&default, "editor", "editor").unwrap();
+        assert_eq!(names(&reg), vec!["editor".to_owned(), "1".to_owned()]);
+
+        // Unknown window / session refuse.
+        assert!(matches!(
+            reg.rename_window(&default, "ghost", "x"),
+            Err(SessionError::Unknown(name)) if name == "ghost",
+        ));
+    }
+
+    /// Killing a NON-last window removes it, drains its panes, and keeps `current_window` valid
+    /// and on the neighbour that took its place — the next window, or the previous if the last
+    /// was killed. The session and daemon keep running.
+    #[test]
+    fn kill_window_removes_a_non_last_and_keeps_current_on_a_neighbour() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        // Windows "0", "1", "2"; a live pane in "1" so its kill actually drains something.
+        reg.new_window(&default, Some("1")).unwrap();
+        reg.new_window(&default, Some("2")).unwrap();
+        let ws1 = {
+            reg.select_window(&default, "1").unwrap();
+            reg.workspace_of(&default).unwrap()
+        };
+        let _p = lock(&ws1).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
+        assert_eq!(lock(&ws1).panes().len(), 1);
+
+        // Current is "1" (the middle). Killing it drops to the window that took its slot ("2").
+        assert!(matches!(
+            reg.kill_window(&default, "1").unwrap(),
+            WindowKillOutcome::Removed(panes) if panes.len() == 1,
+        ));
+        let session = reg.session(&default).unwrap();
+        assert_eq!(session.windows().len(), 2);
+        assert!(
+            session.windows().iter().all(|w| w.name() != "1"),
+            "1 is gone"
+        );
+        assert_eq!(
+            session.current_window().name(),
+            "2",
+            "current follows to the window that took the killed one's index",
+        );
+        assert!(
+            lock(&ws1).panes().is_empty(),
+            "the killed window's pane was drained"
+        );
+
+        // Killing the LAST window (by index) when it is current lands the current on the
+        // previous: select "2" (now last), kill it, current becomes "0".
+        reg.select_window(&default, "2").unwrap();
+        assert!(matches!(
+            reg.kill_window(&default, "2").unwrap(),
+            WindowKillOutcome::Removed(_),
+        ));
+        assert_eq!(
+            reg.session(&default).unwrap().current_window().name(),
+            "0",
+            "killing the last (current) window falls back to the previous",
+        );
+    }
+
+    /// Killing the session's LAST window ends the SESSION (tmux) — it escalates to
+    /// `kill_session`, reported as [`WindowKillOutcome::Session`]. A non-last session removed;
+    /// the last one drains and ends the daemon.
+    #[test]
+    fn killing_the_last_window_escalates_to_killing_the_session() {
+        let mut reg = SessionRegistry::new((80, 24));
+        reg.new_session(Some("work")).unwrap();
+        assert_eq!(reg.sessions().len(), 2);
+
+        // "work" has one window; killing it removes the whole session (a non-last session).
+        assert!(matches!(
+            reg.kill_window("work", "0").unwrap(),
+            WindowKillOutcome::Session(KillOutcome::Removed(_)),
+        ));
+        assert!(
+            reg.session("work").is_none(),
+            "the session went with its last window"
+        );
+        assert_eq!(reg.sessions().len(), 1);
+
+        // The default now has one window; killing it is the LAST session ⇒ end the daemon.
+        let default = default_name(&reg);
+        assert!(matches!(
+            reg.kill_window(&default, "0").unwrap(),
+            WindowKillOutcome::Session(KillOutcome::KilledServer(_)),
+        ));
+        assert_eq!(
+            reg.sessions().len(),
+            1,
+            "the last session is drained, not removed"
+        );
+    }
+
+    /// Killing a window at an index BELOW the current one decrements `current_window` so it keeps
+    /// pointing at the SAME window (the `> widx` branch, which every other kill test — all killing
+    /// the current window — leaves unexercised).
+    #[test]
+    fn kill_window_below_the_current_keeps_current_on_the_same_window() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        // Windows "0","a","b","c" (indices 0..3); make "c" (index 3) current.
+        for name in ["a", "b", "c"] {
+            reg.new_window(&default, Some(name)).unwrap();
+        }
+        reg.select_window(&default, "c").unwrap();
+        assert_eq!(reg.session(&default).unwrap().current_window().name(), "c");
+
+        // Kill "a" (index 1), which is BELOW current (index 3): current decrements to stay on "c".
+        assert!(matches!(
+            reg.kill_window(&default, "a").unwrap(),
+            WindowKillOutcome::Removed(_),
+        ));
+        assert_eq!(
+            reg.session(&default).unwrap().current_window().name(),
+            "c",
+            "killing a window below the current one keeps current on the SAME window",
+        );
+        let names: Vec<_> = reg
+            .session(&default)
+            .unwrap()
+            .windows()
+            .iter()
+            .map(|w| w.name().to_owned())
+            .collect();
+        assert_eq!(names, vec!["0".to_owned(), "b".to_owned(), "c".to_owned()]);
+    }
+
+    /// kill-window refuses an unknown session or window, carrying the missing name, and removes
+    /// nothing.
+    #[test]
+    fn kill_window_refuses_an_unknown_session_or_window() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        reg.new_window(&default, Some("1")).unwrap();
+
+        assert!(matches!(
+            reg.kill_window("ghost", "0"),
+            Err(SessionError::Unknown(name)) if name == "ghost",
+        ));
+        assert!(matches!(
+            reg.kill_window(&default, "ghost"),
+            Err(SessionError::Unknown(name)) if name == "ghost",
+        ));
+        assert_eq!(
+            reg.session(&default).unwrap().windows().len(),
+            2,
+            "a refused kill removed nothing",
+        );
     }
 }

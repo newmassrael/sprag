@@ -60,7 +60,8 @@ use pinion_core::external::{
 };
 use serde_json::{Map, Value};
 use sprag_terminal::{
-    CommandBuilder, KillOutcome, LayoutSnapshot, LayoutWire, PaneId, SessionRegistry, Workspace,
+    CommandBuilder, KillOutcome, LayoutSnapshot, LayoutWire, PaneId, SessionRegistry,
+    WindowKillOutcome, Workspace,
 };
 
 use crate::bump_on_dirty;
@@ -70,8 +71,9 @@ use crate::scope::SessionScope;
 // The mux control action names + query slots are the shared wire ABI vocabulary
 // ([`crate::wire`]) — the SAME consts a client addresses for pane lifecycle.
 use crate::wire::{
-    CLOSE_ACTION, KILL_SESSION_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION, PANES_SLOT, RESIZE_ACTION,
-    SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION,
+    CLOSE_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION,
+    NEW_WINDOW_ACTION, PANES_SLOT, RENAME_WINDOW_ACTION, RESIZE_ACTION, SELECT_WINDOW_ACTION,
+    SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, WINDOWS_SLOT,
 };
 
 /// The mux-management engine `External`: a control surface over the shared
@@ -274,8 +276,19 @@ impl WorkspaceExternal {
             tracing::warn!(target: "sprag_host", %error, "set_layout: undeserialisable tree");
             InvokeError::TypeMismatch
         })?;
-        let snapshot = crate::host::set_layout(&self.registry, &self.scope, tree, expected)
-            .ok_or(InvokeError::Rejected)?;
+        // Optional: the NAME of the window the gesture was authored against. Absent ⇒ no
+        // window-staleness check (an older or single-client caller); present-but-not-a-string is
+        // malformed, the same refusal a wrong-typed `expected_revision` gets. It closes the
+        // per-window-revision bound: a write drawn on a window the client has switched away from
+        // is refused rather than mis-applied to whatever is current now.
+        let expected_window = match map.get("expected_window") {
+            None => None,
+            Some(Value::String(name)) => Some(name.as_str()),
+            Some(_) => return Err(InvokeError::TypeMismatch),
+        };
+        let snapshot =
+            crate::host::set_layout(&self.registry, &self.scope, tree, expected, expected_window)
+                .ok_or(InvokeError::Rejected)?;
         // The arrangement changed: wake parked waiters so another attached client
         // re-projects promptly, exactly as a pane-set change does.
         self.revision.bump();
@@ -402,22 +415,147 @@ impl WorkspaceExternal {
         // OFF the lock — the `close` action's discipline.
         let outcome = lock(&self.registry).kill_session(name);
         match outcome {
-            Ok(KillOutcome::Removed(_removed)) => {
-                // A set change — wake a client watching the sessions list. `_removed` drops here,
-                // off-lock, tearing its panes down.
+            Ok(outcome) => self.handle_session_kill(outcome),
+            Err(error) => {
+                tracing::debug!(target: "sprag_host", %error, "refused to kill a session");
+                return Err(InvokeError::Rejected);
+            }
+        }
+        Ok(IntrospectValue::Json(Value::Null))
+    }
+
+    /// React to a [`KillOutcome`] that has already been bound OFF the registry lock (so its
+    /// reaped owners drop here, outside the lock): a removed session is a set change that wakes a
+    /// client watching the sessions list; the last-session case nudges the reaper (via the pane
+    /// death-signal) to re-check liveness and exit through the SIGTERM funnel. Shared by
+    /// [`kill_session`](Self::kill_session) and the last-window escalation in
+    /// [`kill_window`](Self::kill_window), so the two cannot drift.
+    fn handle_session_kill(&self, outcome: KillOutcome) {
+        match outcome {
+            KillOutcome::Removed(_removed) => {
                 self.revision.bump();
             }
-            Ok(KillOutcome::KilledServer(_drained)) => {
-                // Nudge the reaper to re-check liveness (the drained session leaves none) so it
-                // exits through the SIGTERM funnel. An empty last session drains nothing, so
-                // this signal — not a pane's Drop — is what triggers the check there. `_drained`
-                // (any panes the last session held) drops off-lock right after.
+            KillOutcome::KilledServer(_drained) => {
                 if let Some(on_pane_exit) = &self.on_pane_exit {
                     on_pane_exit();
                 }
             }
+        }
+    }
+
+    /// Resolve a `window` TARGET arg (used by `rename_window` / `kill_window`): absent ⇒ the
+    /// current window (the scope's), a string ⇒ that window, present-but-not-a-string ⇒ malformed
+    /// — the same aliasing corner the session scope param refuses, rather than silently falling
+    /// back to the current window and acting on the wrong one.
+    fn window_target<'a>(&'a self, map: &'a Map<String, Value>) -> Result<&'a str, InvokeError> {
+        match map.get("window") {
+            None => Ok(self.scope.window()),
+            Some(Value::String(name)) => Ok(name),
+            Some(_) => Err(InvokeError::TypeMismatch),
+        }
+    }
+
+    /// `new_window {name?, cmd?, cols?, rows?}` action: create a window in THIS request's session,
+    /// born with a shell, SELECT it, and answer with its name — tmux `new-window`.
+    ///
+    /// The window is created + selected under the registry lock, then its pool (now the current
+    /// window's) is cloned OUT and the birth pane spawned OFF the lock — the exact
+    /// [`new_session`](Self::new_session) pattern one level down, so the same death-signal and
+    /// change-notification wiring applies and no fork runs under the registry lock. A runtime
+    /// fork/exec failure leaves the window empty (logged, non-fatal); a malformed birth spec is
+    /// rejected before anything is created.
+    fn new_window(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let map = as_object(args)?;
+        let name = match map.get("name") {
+            None => None,
+            Some(Value::String(name)) => Some(name.as_str()),
+            Some(_) => return Err(InvokeError::TypeMismatch),
+        };
+        // Validate the birth spec BEFORE creating anything (uniform with `new_session`).
+        let spec = Self::parse_spawn(map)?;
+        let (created, pool) = {
+            let mut registry = lock(&self.registry);
+            let created = registry
+                .new_window(self.scope.session(), name)
+                .map_err(|error| {
+                    tracing::debug!(target: "sprag_host", %error, "refused to create a window");
+                    // A taken window name is well-formed and simply cannot be honored.
+                    InvokeError::Rejected
+                })?;
+            // `new_window` selected the new window, so the scoped session's current-window pool IS
+            // the new window's — clone it out to birth off-lock.
+            let pool = registry
+                .workspace_of(self.scope.session())
+                .expect("the scoped session resolves; new_window just selected the new window");
+            (created, pool)
+        };
+        if let Err(error) = self.spawn_parsed(&pool, spec) {
+            tracing::warn!(
+                target: "sprag_host",
+                ?error,
+                session = self.scope.session(),
+                window = %created,
+                "the window's birth pane could not spawn; the window was created empty",
+            );
+        }
+        self.revision.bump();
+        Ok(IntrospectValue::Json(Value::String(created)))
+    }
+
+    /// `select_window {window}` action: make a window current in THIS request's session — tmux
+    /// `select-window`. Session state: every attached client follows on its next read.
+    fn select_window(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let window = as_object(args)?
+            .get("window")
+            .and_then(Value::as_str)
+            .ok_or(InvokeError::TypeMismatch)?;
+        lock(&self.registry)
+            .select_window(self.scope.session(), window)
+            .map_err(|error| {
+                tracing::debug!(target: "sprag_host", %error, "refused to select a window");
+                InvokeError::Rejected
+            })?;
+        self.revision.bump();
+        Ok(IntrospectValue::Json(Value::Null))
+    }
+
+    /// `rename_window {window?, name}` action: rename a window of THIS request's session — tmux
+    /// `rename-window`. `window` absent ⇒ the current one; `name` is the new name (required).
+    fn rename_window(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let map = as_object(args)?;
+        let window = self.window_target(map)?.to_owned();
+        let new = map
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or(InvokeError::TypeMismatch)?;
+        lock(&self.registry)
+            .rename_window(self.scope.session(), &window, new)
+            .map_err(|error| {
+                tracing::debug!(target: "sprag_host", %error, "refused to rename a window");
+                InvokeError::Rejected
+            })?;
+        self.revision.bump();
+        Ok(IntrospectValue::Json(Value::Null))
+    }
+
+    /// `kill_window {window?}` action: kill a window of THIS request's session — tmux
+    /// `kill-window`. `window` absent ⇒ the current one. Killing the session's LAST window ends
+    /// the SESSION (the last session ends the daemon), handled through the SAME
+    /// [`handle_session_kill`](Self::handle_session_kill) path a `kill_session` uses.
+    fn kill_window(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let map = as_object(args)?;
+        let window = self.window_target(map)?.to_owned();
+        // Bind off-lock so the reaped panes' blocking Drop runs outside the registry lock.
+        let outcome = lock(&self.registry).kill_window(self.scope.session(), &window);
+        match outcome {
+            Ok(WindowKillOutcome::Removed(_panes)) => {
+                // A non-last window: its drained panes drop here, off-lock; wake clients watching
+                // the windows list.
+                self.revision.bump();
+            }
+            Ok(WindowKillOutcome::Session(kill)) => self.handle_session_kill(kill),
             Err(error) => {
-                tracing::debug!(target: "sprag_host", %error, "refused to kill a session");
+                tracing::debug!(target: "sprag_host", %error, "refused to kill a window");
                 return Err(InvokeError::Rejected);
             }
         }
@@ -445,9 +583,14 @@ impl ExternalIntrospect for WorkspaceExternal {
                     SchemaField::new(SET_FLOATING_ACTION, "action"),
                     SchemaField::new(NEW_SESSION_ACTION, "action"),
                     SchemaField::new(KILL_SESSION_ACTION, "action"),
+                    SchemaField::new(NEW_WINDOW_ACTION, "action"),
+                    SchemaField::new(SELECT_WINDOW_ACTION, "action"),
+                    SchemaField::new(RENAME_WINDOW_ACTION, "action"),
+                    SchemaField::new(KILL_WINDOW_ACTION, "action"),
                     SchemaField::new(PANES_SLOT, "list"),
                     SchemaField::new(LAYOUT_SLOT, "tree"),
                     SchemaField::new(SESSIONS_SLOT, "list"),
+                    SchemaField::new(WINDOWS_SLOT, "list"),
                 ]
             },
         )
@@ -504,6 +647,24 @@ impl ExternalIntrospect for WorkspaceExternal {
                     .collect();
                 Some(IntrospectValue::Json(Value::Array(entries)))
             }
+            // The SCOPED session's windows — each window's name and whether it is the CURRENT
+            // one — how a tabbed client learns which tabs to draw and which is active. Scoped
+            // (unlike `sessions`): windows are a property of a session, so this answers about the
+            // one the request named. `None` only if that session has since gone (a killed scope),
+            // which within a single request is unreachable.
+            WINDOWS_SLOT => {
+                let registry = lock(&self.registry);
+                let infos = registry.session(self.scope.session())?.window_infos();
+                // One `WindowInfo` shape, shared with a client's mirror and the in-process arm —
+                // serialised here the way the `layout` slot serialises its snapshot.
+                match serde_json::to_value(&infos) {
+                    Ok(json) => Some(IntrospectValue::Json(json)),
+                    Err(error) => {
+                        tracing::error!(target: "sprag_host", %error, "windows failed to serialise");
+                        None
+                    }
+                }
+            }
             _ => None,
         }
     }
@@ -529,6 +690,10 @@ impl ExternalIntrospect for WorkspaceExternal {
             SET_FLOATING_ACTION => self.set_floating(&args),
             NEW_SESSION_ACTION => self.new_session(&args),
             KILL_SESSION_ACTION => self.kill_session(&args),
+            NEW_WINDOW_ACTION => self.new_window(&args),
+            SELECT_WINDOW_ACTION => self.select_window(&args),
+            RENAME_WINDOW_ACTION => self.rename_window(&args),
+            KILL_WINDOW_ACTION => self.kill_window(&args),
             _ => Err(InvokeError::UnknownPath),
         }
     }
@@ -1516,6 +1681,362 @@ mod tests {
             ),
             Ok(IntrospectValue::Json(Value::Null)),
             "a last-session kill with no reaper is a no-op exit, not an error",
+        );
+    }
+
+    // ─── windows: new / select / rename / kill over the wire ───
+
+    /// `new_window` over the surface creates a window in the SCOPED session, SELECTS it, births a
+    /// shell into it, and answers with its name — the birth landing in the NEW window, not the one
+    /// the request was scoped to.
+    #[test]
+    fn new_window_creates_a_selected_window_born_with_a_pane() {
+        let reg = registry();
+        let (mut ext, rev) = control(&reg); // scoped to session "0", window "0"
+        let before = rev.current();
+
+        let created = ext
+            .invoke(
+                NEW_WINDOW_ACTION,
+                IntrospectValue::Json(json!({"cmd": ["cat"]})),
+            )
+            .unwrap();
+        assert_eq!(
+            created,
+            IntrospectValue::Json(Value::String("1".to_owned())),
+            "the lowest free window name",
+        );
+        assert!(rev.current() > before, "a window creation wakes waiters");
+
+        // The windows slot (read fresh) shows two, the new one current.
+        assert_eq!(
+            ext.query(WINDOWS_SLOT),
+            Some(IntrospectValue::Json(json!([
+                {"name": "0", "current": false},
+                {"name": "1", "current": true},
+            ]))),
+        );
+
+        // The birth pane landed in the NEW window: a fresh scope to the session (now current =
+        // "1") sees exactly one pane, while the request's own window "0" is still empty.
+        let (fresh, _r) = scoped_control(&reg, scope_of(&reg, "0"));
+        let Some(IntrospectValue::Json(Value::Array(panes))) = fresh.query(PANES_SLOT) else {
+            panic!("the panes slot answers with a JSON array");
+        };
+        assert_eq!(panes.len(), 1, "the new window is born with its shell");
+        assert!(
+            lock(ext.workspace()).panes().is_empty(),
+            "and the window the request was scoped to is untouched",
+        );
+    }
+
+    /// `select_window` moves the session's current window (a set-ish change that wakes waiters),
+    /// and a missing / unknown target is refused with the current window left put.
+    #[test]
+    fn select_window_moves_the_current_window() {
+        let reg = registry();
+        let (mut ext, rev) = control(&reg);
+        lock(&reg).new_window("0", Some("logs")).unwrap(); // current is now "logs"
+        let before = rev.current();
+
+        assert_eq!(
+            ext.invoke(
+                SELECT_WINDOW_ACTION,
+                IntrospectValue::Json(json!({"window": "0"}))
+            ),
+            Ok(IntrospectValue::Json(Value::Null)),
+        );
+        assert!(rev.current() > before, "a select wakes waiters to re-read");
+        assert_eq!(
+            ext.query(WINDOWS_SLOT),
+            Some(IntrospectValue::Json(json!([
+                {"name": "0", "current": true},
+                {"name": "logs", "current": false},
+            ]))),
+        );
+
+        // A target is required, and an unknown one is a rejection (well-formed, unhonorable).
+        assert_eq!(
+            ext.invoke(SELECT_WINDOW_ACTION, IntrospectValue::Json(json!({}))),
+            Err(InvokeError::TypeMismatch),
+        );
+        assert_eq!(
+            ext.invoke(
+                SELECT_WINDOW_ACTION,
+                IntrospectValue::Json(json!({"window": "ghost"}))
+            ),
+            Err(InvokeError::Rejected),
+        );
+    }
+
+    /// `rename_window` renames the CURRENT window by default (`window` absent ⇒ the scope's), and
+    /// a rename onto a name another window holds is refused.
+    #[test]
+    fn rename_window_renames_the_current_by_default_and_refuses_a_duplicate() {
+        let reg = registry();
+        let (mut ext, _r) = control(&reg); // scope window "0"
+
+        // window absent ⇒ the current window ("0") is renamed.
+        assert_eq!(
+            ext.invoke(
+                RENAME_WINDOW_ACTION,
+                IntrospectValue::Json(json!({"name": "main"}))
+            ),
+            Ok(IntrospectValue::Json(Value::Null)),
+        );
+        lock(&reg).new_window("0", Some("logs")).unwrap();
+        // Renaming "logs" onto the taken name "main" is refused.
+        assert_eq!(
+            ext.invoke(
+                RENAME_WINDOW_ACTION,
+                IntrospectValue::Json(json!({"window": "logs", "name": "main"})),
+            ),
+            Err(InvokeError::Rejected),
+        );
+        // The rename took and "logs" kept its name; the slot reads the session fresh, so "current"
+        // reflects reality ("logs", which new_window selected).
+        assert_eq!(
+            ext.query(WINDOWS_SLOT),
+            Some(IntrospectValue::Json(json!([
+                {"name": "main", "current": false},
+                {"name": "logs", "current": true},
+            ]))),
+        );
+    }
+
+    /// Killing a NON-last window over the wire removes it, keeps the current window valid, and
+    /// wakes a client watching the windows list.
+    #[test]
+    fn kill_window_removes_a_non_last_window_over_the_wire() {
+        let reg = registry();
+        let (mut ext, rev) = control(&reg);
+        lock(&reg).new_window("0", Some("logs")).unwrap(); // current = "logs"; two windows
+        let before = rev.current();
+
+        assert_eq!(
+            ext.invoke(
+                KILL_WINDOW_ACTION,
+                IntrospectValue::Json(json!({"window": "logs"}))
+            ),
+            Ok(IntrospectValue::Json(Value::Null)),
+        );
+        assert!(rev.current() > before, "a window kill wakes waiters");
+        assert_eq!(
+            ext.query(WINDOWS_SLOT),
+            Some(IntrospectValue::Json(
+                json!([{"name": "0", "current": true}])
+            )),
+            "logs is gone and the current fell back to the surviving window",
+        );
+        assert_eq!(
+            ext.invoke(
+                KILL_WINDOW_ACTION,
+                IntrospectValue::Json(json!({"window": "ghost"}))
+            ),
+            Err(InvokeError::Rejected),
+        );
+    }
+
+    /// Killing a session's LAST window ends the SESSION (tmux) — the escalation removes the whole
+    /// session when it is not the last one.
+    #[test]
+    fn kill_window_on_a_sessions_last_window_ends_the_session() {
+        let reg = registry();
+        lock(&reg).new_session(Some("work")).unwrap(); // "work" holds one window "0"
+        assert_eq!(lock(&reg).sessions().len(), 2);
+
+        let (mut work, _r) = scoped_control(&reg, scope_of(&reg, "work"));
+        assert_eq!(
+            work.invoke(
+                KILL_WINDOW_ACTION,
+                IntrospectValue::Json(json!({"window": "0"}))
+            ),
+            Ok(IntrospectValue::Json(Value::Null)),
+        );
+        assert!(
+            lock(&reg).session("work").is_none(),
+            "the session went with its last window",
+        );
+        assert_eq!(lock(&reg).sessions().len(), 1, "only the default remains");
+    }
+
+    /// Killing the last window of the LAST session ends the DAEMON: the escalation reaches
+    /// `kill_session`'s last-session arm, firing the injected death-signal so the reaper exits
+    /// through the SIGTERM funnel — the same path a `kill_session` of the last session takes.
+    #[test]
+    fn kill_window_on_the_last_window_of_the_last_session_ends_the_daemon() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let reg = registry(); // one session "0", one window "0", empty
+        let fired = Arc::new(AtomicUsize::new(0));
+        let signal: Arc<dyn Fn() + Send + Sync> = {
+            let fired = Arc::clone(&fired);
+            Arc::new(move || {
+                fired.fetch_add(1, Ordering::SeqCst);
+            })
+        };
+        let mut ext = WorkspaceExternal::new(
+            Arc::clone(&reg),
+            SessionScope::unscoped(&reg),
+            Arc::new(SceneRevision::new()),
+            Some(signal),
+        );
+
+        assert_eq!(
+            ext.invoke(
+                KILL_WINDOW_ACTION,
+                IntrospectValue::Json(json!({"window": "0"}))
+            ),
+            Ok(IntrospectValue::Json(Value::Null)),
+        );
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            1,
+            "the last window's kill escalated to a last-session kill and fired the exit signal once",
+        );
+        assert_eq!(
+            lock(&reg).sessions().len(),
+            1,
+            "the last session is drained, not removed — the default stays total",
+        );
+    }
+
+    /// The `windows` slot is SCOPED: a session sees only its OWN windows, with the current one
+    /// marked — the read a tabbed client draws from.
+    #[test]
+    fn the_windows_slot_lists_the_scoped_sessions_windows_and_marks_current() {
+        let reg = registry();
+        lock(&reg).new_session(Some("work")).unwrap();
+        lock(&reg).new_window("work", Some("logs")).unwrap(); // work: "0", "logs"(current)
+
+        let (default_ext, _d) = control(&reg);
+        assert_eq!(
+            default_ext.query(WINDOWS_SLOT),
+            Some(IntrospectValue::Json(
+                json!([{"name": "0", "current": true}])
+            )),
+            "the default session sees only its own one window",
+        );
+
+        let (work, _w) = scoped_control(&reg, scope_of(&reg, "work"));
+        assert_eq!(
+            work.query(WINDOWS_SLOT),
+            Some(IntrospectValue::Json(json!([
+                {"name": "0", "current": false},
+                {"name": "logs", "current": true},
+            ]))),
+            "work sees its two windows, logs current",
+        );
+    }
+
+    /// The per-window-revision bound (d): a `set_layout` that NAMES a window other than the one
+    /// the request is scoped to is refused — the belt to the revision compare-and-set's suspenders,
+    /// so a client that switched windows cannot land a stale write on the wrong one whose revision
+    /// happened to collide. The CONTROL is the same gesture naming the scoped window, which applies.
+    #[test]
+    fn set_layout_refuses_a_write_authored_against_a_different_window() {
+        let reg = registry();
+        let (mut ext, _r) = control(&reg); // scope.window() == "0"
+        for _ in 0..2 {
+            ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+                .unwrap();
+        }
+        let good = query_layout(&mut ext);
+        let at = good["revision"].as_u64().expect("a revision");
+        let gesture = |window: &str| {
+            json!({
+                "expected_revision": at,
+                "expected_window": window,
+                "tree": { "root": { "split": {
+                    "dir": "vertical", "ratio": 0.75, "first": { "leaf": 1 }, "second": { "leaf": 0 },
+                } } },
+            })
+        };
+
+        // Naming a window OTHER than the scoped one is refused: the arrangement in force is
+        // untouched, and the answer is that truth for the client to re-project.
+        let Ok(IntrospectValue::Json(answer)) = ext.invoke(
+            SET_LAYOUT_ACTION,
+            IntrospectValue::Json(gesture("elsewhere")),
+        ) else {
+            panic!("a refused write still answers with the truth");
+        };
+        assert_eq!(
+            answer, good,
+            "a window mismatch refused it; window 0 kept its arrangement"
+        );
+
+        // Control: naming the ACTUAL scoped window lets the SAME gesture through.
+        let Ok(IntrospectValue::Json(answer)) =
+            ext.invoke(SET_LAYOUT_ACTION, IntrospectValue::Json(gesture("0")))
+        else {
+            panic!("the accepted write answers with JSON");
+        };
+        assert_eq!(
+            answer["tree"]["root"]["split"]["ratio"], 0.75,
+            "naming the current window applied the gesture",
+        );
+        assert_eq!(
+            answer["tree"]["root"]["split"]["first"]["leaf"], 1,
+            "the order stuck"
+        );
+    }
+
+    /// The window actions refuse a NON-STRING arg where the ABI promises a string — never a silent
+    /// fall-back (the same aliasing corner the session scope param refuses).
+    #[test]
+    fn window_actions_reject_non_string_args() {
+        let reg = registry();
+        let (mut ext, _r) = control(&reg);
+        for _ in 0..2 {
+            ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+                .unwrap();
+        }
+        let at = query_layout(&mut ext)["revision"]
+            .as_u64()
+            .expect("a revision");
+
+        // set_layout: a non-string `expected_window` is malformed, like a wrong-typed
+        // `expected_revision` — not a silent "no window check".
+        assert_eq!(
+            ext.invoke(
+                SET_LAYOUT_ACTION,
+                IntrospectValue::Json(json!({
+                    "expected_revision": at, "expected_window": 42, "tree": { "root": null },
+                })),
+            ),
+            Err(InvokeError::TypeMismatch),
+        );
+        // rename / kill: a non-string `window` target is malformed (never a silent fall-back to
+        // the current window and acting on the wrong one).
+        assert_eq!(
+            ext.invoke(
+                RENAME_WINDOW_ACTION,
+                IntrospectValue::Json(json!({ "window": 42, "name": "x" })),
+            ),
+            Err(InvokeError::TypeMismatch),
+        );
+        assert_eq!(
+            ext.invoke(
+                KILL_WINDOW_ACTION,
+                IntrospectValue::Json(json!({ "window": 42 }))
+            ),
+            Err(InvokeError::TypeMismatch),
+        );
+        // new_window / select_window: a non-string name / target is malformed too.
+        assert_eq!(
+            ext.invoke(
+                NEW_WINDOW_ACTION,
+                IntrospectValue::Json(json!({ "name": 42 }))
+            ),
+            Err(InvokeError::TypeMismatch),
+        );
+        assert_eq!(
+            ext.invoke(
+                SELECT_WINDOW_ACTION,
+                IntrospectValue::Json(json!({ "window": 42 })),
+            ),
+            Err(InvokeError::TypeMismatch),
         );
     }
 }

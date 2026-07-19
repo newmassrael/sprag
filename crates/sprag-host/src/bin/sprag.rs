@@ -6,7 +6,18 @@
 //! sprag attach NAME        open a sprag-gui window attached to a session (tmux attach-session)
 //! sprag kill-session NAME   kill a session (the last one ends the daemon)
 //! sprag kill-server        kill every session, ending the daemon
+//!
+//! sprag windows -t SESSION                list a session's windows (name, and which is current)
+//! sprag new-window -t SESSION [name]      create + select a window, born with a shell; print its name
+//! sprag select-window -t SESSION NAME     make NAME the session's current window
+//! sprag rename-window -t SESSION [win] NEW rename a window (default: the current one) to NEW
+//! sprag kill-window -t SESSION [win]      kill a window (default: the current one); the last ends the session
 //! ```
+//!
+//! The window commands take a `-t SESSION` target because a window lives IN a session and the
+//! daemon holds several — the same out-of-band `session` scope the GUI sends. They pre-flight the
+//! session's existence (like [`attach`]) so an unknown session is a clean error, then drive the
+//! SCOPED mux window actions.
 //!
 //! It drives the daemon over the SAME always-on socket the GUI connect-or-spawns
 //! (`$XDG_RUNTIME_DIR/sprag-host.sock`, override `SPRAG_HOST_RPC_SOCK`) via the SAME mux
@@ -23,7 +34,10 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use sprag_host::mux_action_path;
-use sprag_host::wire::{KILL_SESSION_ACTION, NEW_SESSION_ACTION, SESSIONS_SLOT};
+use sprag_host::wire::{
+    KILL_SESSION_ACTION, KILL_WINDOW_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION,
+    RENAME_WINDOW_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, WINDOWS_SLOT,
+};
 use sprag_rpc::{HOST_SOCKET, HostConn, socket_path};
 
 /// A management command is talking to an already-running daemon, so the socket either accepts
@@ -45,6 +59,11 @@ fn run() -> io::Result<()> {
         Some("attach") => attach(args.next()),
         Some("kill-session") => kill_session(args.next()),
         Some("kill-server") => kill_server(),
+        Some("windows") => windows(args.collect()),
+        Some("new-window") => new_window(args.collect()),
+        Some("select-window") => select_window(args.collect()),
+        Some("rename-window") => rename_window(args.collect()),
+        Some("kill-window") => kill_window(args.collect()),
         Some("-h" | "--help" | "help") | None => {
             print_usage();
             Ok(())
@@ -58,7 +77,11 @@ fn run() -> io::Result<()> {
 }
 
 fn print_usage() {
-    eprintln!("usage: sprag <ls | new [name] | attach NAME | kill-session NAME | kill-server>");
+    eprintln!(
+        "usage: sprag <ls | new [name] | attach NAME | kill-session NAME | kill-server>\n\
+         \x20      sprag <windows | new-window [name] | select-window NAME\n\
+         \x20             | rename-window [window] NAME | kill-window [window]> -t SESSION"
+    );
 }
 
 /// Env override: the `sprag-gui` binary [`attach`] launches (else the sibling of this exe — they
@@ -279,4 +302,215 @@ fn kill_one(conn: &mut HostConn, name: &str) -> io::Result<()> {
         json!({ "path": mux_action_path(KILL_SESSION_ACTION), "args": { "name": name } }),
     )
     .map(|_: Value| ())
+}
+
+/// Split a window subcommand's args into its required `-t SESSION` target and any trailing
+/// positionals. A window lives IN a session, and the daemon holds several — so, like tmux's
+/// window/pane commands, these take `-t`.
+fn target_and_rest(args: Vec<String>, command: &str) -> io::Result<(String, Vec<String>)> {
+    let mut session = None;
+    let mut rest = Vec::new();
+    let mut it = args.into_iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "-t" | "--target" => {
+                session = Some(it.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("{command}: -t needs a session name"),
+                    )
+                })?);
+            }
+            _ => rest.push(arg),
+        }
+    }
+    let session = session.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{command}: a target session is required (-t SESSION)"),
+        )
+    })?;
+    Ok((session, rest))
+}
+
+/// Refuse cleanly if the daemon holds no session named `session` — the window-command pre-flight
+/// (like [`attach`]'s), so an unknown session is a clear error rather than a raw scope-refusal, and
+/// any later action refusal can be reported as the window-level problem it then must be.
+fn require_session(conn: &mut HostConn, session: &str) -> io::Result<()> {
+    if session_exists(conn, session)? {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("no session named {session:?}"),
+        ))
+    }
+}
+
+/// `windows -t SESSION`: one line per window — its name, and `(current)` on the active one.
+fn windows(args: Vec<String>) -> io::Result<()> {
+    let (session, _rest) = target_and_rest(args, "windows")?;
+    let mut conn = connect()?;
+    require_session(&mut conn, &session)?;
+    let windows = conn.call(
+        "scene/query",
+        json!({ "session": session, "path": mux_action_path(WINDOWS_SLOT) }),
+    )?;
+    for window in windows.as_array().into_iter().flatten() {
+        let name = window["name"].as_str().unwrap_or("?");
+        let marker = if window["current"].as_bool().unwrap_or(false) {
+            " (current)"
+        } else {
+            ""
+        };
+        println!("{name}{marker}");
+    }
+    Ok(())
+}
+
+/// `new-window -t SESSION [name]`: create + select a window, born with a shell, and print the
+/// name it got (the registry allocates the lowest free one when none is given).
+fn new_window(args: Vec<String>) -> io::Result<()> {
+    let (session, rest) = target_and_rest(args, "new-window")?;
+    let name = rest.into_iter().next();
+    let mut conn = connect()?;
+    require_session(&mut conn, &session)?;
+    let action_args = match &name {
+        Some(name) => json!({ "name": name }),
+        None => json!({}),
+    };
+    let answer = conn.call(
+        "scene/invoke",
+        json!({ "session": session, "path": mux_action_path(NEW_WINDOW_ACTION), "args": action_args }),
+    );
+    match answer {
+        Ok(answer) => match answer.as_str() {
+            Some(created) => {
+                println!("{created}");
+                Ok(())
+            }
+            None => Err(io::Error::other("new-window did not answer with a name")),
+        },
+        // The only refusal for an explicitly-named window is a duplicate (the session was
+        // pre-flighted), which surfaces as `Other`.
+        Err(error) if error.kind() == io::ErrorKind::Other => {
+            let named = name.as_deref().unwrap_or_default();
+            Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("a window named {named:?} already exists in session {session:?}"),
+            ))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// `select-window -t SESSION NAME`: make NAME the session's current window.
+fn select_window(args: Vec<String>) -> io::Result<()> {
+    let (session, rest) = target_and_rest(args, "select-window")?;
+    let window = rest.into_iter().next().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "select-window needs a window name",
+        )
+    })?;
+    let mut conn = connect()?;
+    require_session(&mut conn, &session)?;
+    scoped_window_action(
+        &mut conn,
+        &session,
+        SELECT_WINDOW_ACTION,
+        json!({ "window": window }),
+        &format!("no window named {window:?} in session {session:?}"),
+    )?;
+    println!("selected {window}");
+    Ok(())
+}
+
+/// `rename-window -t SESSION [window] NEW`: rename a window (default: the current one) to NEW.
+fn rename_window(args: Vec<String>) -> io::Result<()> {
+    let (session, mut rest) = target_and_rest(args, "rename-window")?;
+    let new = rest.pop().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "rename-window needs a new name",
+        )
+    })?;
+    // An optional leading positional names the window to rename; absent ⇒ the current one.
+    let window = rest.pop();
+    let mut conn = connect()?;
+    require_session(&mut conn, &session)?;
+    let action_args = match &window {
+        Some(window) => json!({ "window": window, "name": new }),
+        None => json!({ "name": new }),
+    };
+    scoped_window_action(
+        &mut conn,
+        &session,
+        RENAME_WINDOW_ACTION,
+        action_args,
+        &format!("rename-window: window not found, or {new:?} is already taken"),
+    )?;
+    println!("renamed to {new}");
+    Ok(())
+}
+
+/// `kill-window -t SESSION [window]`: kill a window (default: the current one). The session's LAST
+/// window ends the SESSION — and the last session ends the daemon, so the reply can be cut short by
+/// the exit, which is success (the same `server_gone` handling `kill-session` uses).
+fn kill_window(args: Vec<String>) -> io::Result<()> {
+    let (session, rest) = target_and_rest(args, "kill-window")?;
+    let window = rest.into_iter().next();
+    let mut conn = connect()?;
+    require_session(&mut conn, &session)?;
+    let action_args = match &window {
+        Some(window) => json!({ "window": window }),
+        None => json!({}),
+    };
+    let answer = conn.call(
+        "scene/invoke",
+        json!({ "session": session, "path": mux_action_path(KILL_WINDOW_ACTION), "args": action_args }),
+    );
+    let target = window.as_deref().unwrap_or("the current window");
+    match answer {
+        Ok(_) => {
+            println!("killed {target}");
+            Ok(())
+        }
+        // Killing the LAST window ends the session, and the last session ends the daemon: the reply
+        // can be severed by the exit (EOF / broken pipe / reset), which is success.
+        Err(error) if server_gone(&error) => {
+            println!("killed {target} (server ended)");
+            Ok(())
+        }
+        // Otherwise the only refusal (the session was pre-flighted) is an unknown window.
+        Err(error) if error.kind() == io::ErrorKind::Other => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("no window named {target:?} in session {session:?}"),
+        )),
+        Err(error) => Err(error),
+    }
+}
+
+/// Issue a scoped window `scene/invoke`, mapping a request-level refusal (`Other`) to `message` —
+/// the shared call behind `select-window` / `rename-window`, whose only refusal (the session
+/// pre-flighted) is a window-level one.
+fn scoped_window_action(
+    conn: &mut HostConn,
+    session: &str,
+    action: &str,
+    action_args: Value,
+    message: &str,
+) -> io::Result<()> {
+    conn.call(
+        "scene/invoke",
+        json!({ "session": session, "path": mux_action_path(action), "args": action_args }),
+    )
+    .map(|_: Value| ())
+    .map_err(|error| {
+        if error.kind() == io::ErrorKind::Other {
+            io::Error::new(io::ErrorKind::NotFound, message.to_owned())
+        } else {
+            error
+        }
+    })
 }

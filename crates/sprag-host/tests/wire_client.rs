@@ -16,8 +16,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    CLOSE_ACTION, FULL_TEXT_SLOT, LAYOUT_SLOT, NEW_SESSION_ACTION, PANES_SLOT, SESSIONS_SLOT,
-    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, cells_slot_at,
+    CLOSE_ACTION, FULL_TEXT_SLOT, LAYOUT_SLOT, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT,
+    SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION,
+    TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
 };
 use sprag_host::{mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
@@ -383,6 +384,42 @@ fn pane_ids_in(conn: &mut HostConn, session: &str) -> Vec<u64> {
     .unwrap_or_default()
 }
 
+/// The `(name, current)` of each window of the session named `session`, over the mux `windows`
+/// slot — what a tabbed client draws from.
+fn windows_in(conn: &mut HostConn, session: &str) -> Vec<(String, bool)> {
+    conn.call(
+        "scene/query",
+        json!({ "session": session, "path": mux_action_path(WINDOWS_SLOT) }),
+    )
+    .ok()
+    .and_then(|v| {
+        v.as_array().map(|arr| {
+            arr.iter()
+                .map(|w| {
+                    (
+                        w["name"].as_str().unwrap_or_default().to_owned(),
+                        w["current"].as_bool().unwrap_or(false),
+                    )
+                })
+                .collect()
+        })
+    })
+    .unwrap_or_default()
+}
+
+/// Make `window` current in the session named `session`, over the mux `select_window` action.
+fn select_window(conn: &mut HostConn, session: &str, window: &str) {
+    conn.call(
+        "scene/invoke",
+        json!({
+            "session": session,
+            "path": mux_action_path(SELECT_WINDOW_ACTION),
+            "args": { "window": window },
+        }),
+    )
+    .expect("select_window answers");
+}
+
 /// Read the host's current scene revision.
 fn read_revision(conn: &mut HostConn) -> u64 {
     conn.call("scene/revision", json!({}))
@@ -658,6 +695,166 @@ fn two_sessions_under_one_daemon_are_independent_over_the_real_socket() {
     );
 
     let _ = std::fs::remove_file(&sock);
+}
+
+/// Two WINDOWS in ONE session are independent, over a REAL socket — the tmux "windows" shape.
+///
+/// A `new_window` is born with its own shell and BECOMES current, so the session's reads answer
+/// about it; selecting a window re-scopes what those reads see; each window's pane set is its
+/// own. As with the two-sessions test, every claim is paired with its complement, so a daemon
+/// that merged windows or ignored the selection fails the second half of each pair.
+#[test]
+fn two_windows_in_one_session_are_independent_over_the_real_socket() {
+    let (_host, sock) = spawn_host();
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term host");
+
+    // The default session boots with one window "0" holding its boot `cat` pane (id 0).
+    assert_eq!(
+        windows_in(&mut conn, "0"),
+        vec![("0".to_owned(), true)],
+        "one boot window, and it is current",
+    );
+    assert_eq!(pane_ids_in(&mut conn, "0"), vec![0], "the boot pane");
+
+    // Create a second window: born with a shell and SELECTED, so the session's reads now answer
+    // about it — and its birth pane's id is fresh (the ONE global counter), never window 0's.
+    let created = conn
+        .call(
+            "scene/invoke",
+            json!({ "session": "0", "path": mux_action_path(NEW_WINDOW_ACTION), "args": {} }),
+        )
+        .expect("new_window answers");
+    assert_eq!(created, "1", "the lowest free window name");
+    assert_eq!(
+        windows_in(&mut conn, "0"),
+        vec![("0".to_owned(), false), ("1".to_owned(), true)],
+        "two windows, the new one current",
+    );
+    let win1 = pane_ids_in(&mut conn, "0");
+    assert_eq!(
+        win1.len(),
+        1,
+        "the new window is born with exactly its shell"
+    );
+    let birth = win1[0];
+    assert_ne!(birth, 0, "a fresh global id, not window 0's boot pane");
+
+    // Select back to window "0": the session's reads answer about window 0 again — its boot pane,
+    // and NOT window 1's birth pane.
+    select_window(&mut conn, "0", "0");
+    assert_eq!(
+        windows_in(&mut conn, "0"),
+        vec![("0".to_owned(), true), ("1".to_owned(), false)],
+        "the selection moved back",
+    );
+    assert_eq!(
+        pane_ids_in(&mut conn, "0"),
+        vec![0],
+        "window 0's boot pane — and not window 1's birth pane",
+    );
+
+    // A pane spawned NOW lands in the current window (0), leaving window 1's set alone.
+    let w0_extra = spawn_in(&mut conn, "0");
+    assert_eq!(
+        pane_ids_in(&mut conn, "0"),
+        vec![0, w0_extra],
+        "the spawn grew the current window",
+    );
+    select_window(&mut conn, "0", "1");
+    assert_eq!(
+        pane_ids_in(&mut conn, "0"),
+        vec![birth],
+        "...and window 1 is untouched by the spawn into window 0 — the two do not merge",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// Bound d over the REAL socket: a `set_layout` whose `expected_window` names a window that is
+/// NOT the session's current one is REFUSED — the host does not mis-apply it to whatever is
+/// current. This is the end-to-end wire proof of the guard the GUI's `WireHost` now invokes (it
+/// sends the window its gesture was drawn on). Revert-proof: with the guard removed, the mistagged
+/// write below applies (it names the current window's own panes) and the 0.5 assertion fails.
+#[test]
+fn a_layout_write_tagged_with_the_wrong_window_is_refused_over_the_socket() {
+    let (_host, sock) = spawn_host();
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term host");
+
+    // The current window (boot "0") gets a second pane, so it has a two-pane even split to author
+    // a gesture against, at a known revision.
+    let w0b = spawn_in(&mut conn, "0");
+    let (rev, layout) = read_layout_in(&mut conn, "0");
+    let ids = layout.panes();
+    assert_eq!(ids.len(), 2, "window 0 has two panes: {ids:?}");
+    assert_eq!(
+        ids,
+        vec![sprag_terminal::PaneId(0), sprag_terminal::PaneId(w0b)]
+    );
+
+    // A gesture for THIS window's OWN panes, but TAGGED with a window name that is not current, is
+    // refused — the even split stands, NOT the 0.75 the gesture asked for.
+    let refused = write_layout_tagged(&mut conn, "0", rev, "not-the-current-window", w0b, 0);
+    assert!(
+        (split_ratio(&refused) - 0.5).abs() < f32::EPSILON,
+        "a mistagged write was refused; window 0 kept its even split ({})",
+        split_ratio(&refused),
+    );
+
+    // CONTROL: the SAME gesture tagged with the ACTUAL current window ("0") applies.
+    let (rev2, _) = read_layout_in(&mut conn, "0");
+    let applied = write_layout_tagged(&mut conn, "0", rev2, "0", w0b, 0);
+    assert!(
+        (split_ratio(&applied) - 0.75).abs() < f32::EPSILON,
+        "tagged with the current window, the gesture applied ({})",
+        split_ratio(&applied),
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// Send a `set_layout` (a vertical split of `first | second` at 0.75) tagged with `expected_window`
+/// and `expected_revision`, over the session named `session`; deserialise + install the answer.
+fn write_layout_tagged(
+    conn: &mut HostConn,
+    session: &str,
+    expected_revision: u64,
+    expected_window: &str,
+    first: u64,
+    second: u64,
+) -> sprag_terminal::LayoutTree {
+    let value = conn
+        .call(
+            "scene/invoke",
+            json!({
+                "session": session,
+                "path": mux_action_path(SET_LAYOUT_ACTION),
+                "args": {
+                    "expected_revision": expected_revision,
+                    "expected_window": expected_window,
+                    "tree": { "root": { "split": {
+                        "dir": "vertical", "ratio": 0.75,
+                        "first": { "leaf": first }, "second": { "leaf": second },
+                    } } },
+                },
+            }),
+        )
+        .expect("a set_layout write answers");
+    let snapshot: sprag_terminal::LayoutSnapshot =
+        serde_json::from_value(value).expect("the write answers with a snapshot");
+    let mut tree = sprag_terminal::LayoutTree::new();
+    tree.set_from_wire(snapshot.tree)
+        .expect("a served arrangement is well-formed");
+    tree
+}
+
+/// The root split's ratio, panicking if the arrangement is not a split.
+fn split_ratio(tree: &sprag_terminal::LayoutTree) -> f32 {
+    match tree.root() {
+        Some(sprag_terminal::LayoutNode::Split { ratio, .. }) => *ratio,
+        other => panic!("expected a split at the root, got {other:?}"),
+    }
 }
 
 /// Read the current arrangement off the wire, exactly as a display client does: query the

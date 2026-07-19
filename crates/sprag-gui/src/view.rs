@@ -13,7 +13,7 @@ use crate::split::{
 use crate::terminal::{TerminalView, pane_index_of, pane_tag, use_terminal};
 use pinion_core::external::OUTER_DOCK_ZONE_TAG;
 use pinion_core::scene::ContainerNode;
-use pinion_core::style::{BoxStyle, LayoutStyle, Size, SizeValue};
+use pinion_core::style::{BoxStyle, FlexDirection, LayoutStyle, Size, SizeValue};
 use pinion_core::theme::{ColorRole, Theme, use_theme};
 use pinion_core::{Frame, Scene};
 use pinion_shell::{
@@ -209,7 +209,10 @@ fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
         },
         None => content,
     };
-    compose(content, theme)
+    // The window TAB STRIP (tmux "windows") above the pane area — main window only, since
+    // `compose` is reached only from here. It reads the window list off the SlotView mirror.
+    let strip = crate::wtabs::view_window_strip(&tv.slots, theme);
+    compose(strip, content, theme)
 }
 
 /// Build ONE pane's scene from its live screen + per-pane `ScrollState` + IME
@@ -325,13 +328,34 @@ fn dim_inactive(pane: Scene) -> Scene {
 /// cannot forget it (the R55 undock bug was exactly a forgotten fill). The fill only
 /// sets `size` and is idempotent. Pure composition; the unit test exercises it
 /// without a PTY.
-fn compose(content: Scene, theme: &Theme) -> Scene {
+fn compose(strip: Scene, content: Scene, theme: &Theme) -> Scene {
     Scene::Container(
-        ContainerNode::new(vec![fill_definite(content)])
+        ContainerNode::new(vec![strip, fill_remaining(content)])
             .with_tag(ROOT_TAG)
             .with_style(BoxStyle::filled(theme.resolve(ColorRole::Surface)))
-            .with_layout(LayoutStyle::new().with_size(fill_size())),
+            .with_layout(
+                LayoutStyle::new()
+                    .flex(FlexDirection::Column)
+                    .with_size(fill_size()),
+            ),
     )
+}
+
+/// The main content BELOW the tab strip in the surface-root Column: it must take the height LEFT
+/// by the fixed-height strip, so it GROWS to fill (`flex_grow`) and may shrink below its intrinsic
+/// size (`min-height: 0`) — NOT the `Percent(100)` height [`fill_definite`] gives, which beside a
+/// fixed strip would over-constrain the Column (strip + 100% > 100%). The cross axis still fills
+/// (width `Percent(100)`), and `flex_grow` still hands the pane grid a measured rect, so the R1012
+/// reflow fires exactly as it did under `fill_definite`.
+fn fill_remaining(scene: Scene) -> Scene {
+    match scene {
+        Scene::Container(c) => Scene::Container(c.map_layout(|l| {
+            l.with_flex_grow(1.0)
+                .with_size(Size::auto().with_width(SizeValue::Percent(100)))
+                .with_min_size(Size::auto().with_height(SizeValue::Px(0)))
+        })),
+        other => other,
+    }
 }
 
 /// Give a Container a definite `Percent(100)` size (via [`fill_size`]) so a sizeless
@@ -400,20 +424,26 @@ mod tests {
         let owner = Owner::new();
         let scene = owner.run(|| {
             let theme = use_theme(THEME_TAG).theme_animated();
-            // A stand-in grid (the real one is the host's
-            // pane_view_scene_from_cells, tested in sprag-host) — compose only
-            // owns the root wrapping.
+            // Stand-in strip + grid (the real ones are `wtabs::view_window_strip` and the host's
+            // pane_view_scene_from_cells, tested elsewhere) — compose only owns the root wrapping.
+            let strip = Scene::Container(ContainerNode::new(Vec::new()).with_tag("strip_stub"));
             let grid = Scene::Container(ContainerNode::new(Vec::new()).with_tag("grid_stub"));
-            compose(grid, &theme)
+            compose(strip, grid, &theme)
         });
         match scene {
             Scene::Container(ref root) => {
                 assert_eq!(root.tag.as_deref(), Some(ROOT_TAG));
                 assert_eq!(root.layout.size.width, SizeValue::Percent(100));
                 assert_eq!(root.layout.size.height, SizeValue::Percent(100));
+                assert_eq!(
+                    root.layout.flex_direction,
+                    FlexDirection::Column,
+                    "the strip stacks above the content",
+                );
             }
             other => unreachable!("compose returns a Container, got {other:?}"),
         }
+        assert!(scene.contains_tag("strip_stub"), "the tab strip is mounted");
         assert!(scene.contains_tag("grid_stub"), "the grid is mounted");
     }
 }

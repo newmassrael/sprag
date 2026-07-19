@@ -74,13 +74,14 @@ use std::time::Duration;
 use pinion_core::{GridBuffer, QuitSink};
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    FULL_TEXT_SLOT, KEY_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION, PANES_SLOT, RESIZE_ACTION,
-    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, cells_slot_at,
+    FULL_TEXT_SLOT, KEY_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION,
+    NEW_WINDOW_ACTION, PANES_SLOT, RESIZE_ACTION, SELECT_WINDOW_ACTION, SET_FLOATING_ACTION,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
 };
 use sprag_host::{CellFrame, HostClient, PaneScrollFacts, mux_action_path, pane_input_path};
 use sprag_input::Modifiers;
 use sprag_rpc::{HostConn, runtime_path};
-use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId};
+use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId, WindowInfo};
 
 /// How long to wait for a just-spawned daemon's socket to accept — covers its bind race.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -127,42 +128,72 @@ fn lock_cache(cache: &Mutex<Vec<WirePane>>) -> MutexGuard<'_, Vec<WirePane>> {
     cache.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The host's current arrangement, mirrored. Shared between the UI thread (which projects
-/// it, and replaces it with the answer to its own writes) and the poll thread (which
-/// re-reads it whenever the host says the scene moved), under one lock.
+/// The host arrangement this client PROJECTS, tagged with the WINDOW it belongs to.
 ///
-/// Mirrored rather than fetched on demand for the same reason the pane frames are: the
-/// paint path must never make a socket call. A client reads this every frame to notice its
-/// projection is stale, so a round trip there would put the wire on the UI thread's hot
-/// path — and a client whose arrangement is a projection reads it a great deal.
-type LayoutMirror = Arc<Mutex<LayoutSnapshot>>;
+/// Bundling the window NAME with the snapshot is what makes a cross-window SWITCH
+/// distinguishable from a within-window UPDATE. The per-window `layout_revision` is monotonic
+/// only WITHIN a window, so switching to a window whose revision happens to be LOWER must RESET
+/// the mirror — NOT be dropped by [`store_layout`]'s staleness guard (which exists to stop a
+/// racing poll read from clobbering a UI write on the SAME window — the R154 lost-layout scar).
+/// Without this the client would keep projecting the OLD window's tree over the NEW window's
+/// panes (whose ids the stale tree does not name), collapsing the dock to nothing. The window
+/// tag also lets a layout WRITE name the window its gesture was drawn on (bound d — see
+/// [`WireHost::set_layout`]).
+#[derive(Default)]
+struct Mirrored {
+    /// The window the `layout` belongs to (its `windows`-slot name).
+    window: String,
+    layout: LayoutSnapshot,
+}
+
+/// The host's current arrangement + which window it is, mirrored. Shared between the UI thread
+/// (which projects it, replaces it with its own writes' answers, and RESETS it on a window
+/// switch) and the poll thread (which re-reads it whenever the host says the scene moved), under
+/// one lock.
+///
+/// Mirrored rather than fetched on demand for the same reason the pane frames are: the paint
+/// path must never make a socket call. A client reads this every frame to notice its projection
+/// is stale, so a round trip there would put the wire on the UI thread's hot path.
+type LayoutMirror = Arc<Mutex<Mirrored>>;
 
 /// Lock the mirrored arrangement, poison-tolerant (see [`lock_cache`] for the discipline).
-fn lock_layout(layout: &Mutex<LayoutSnapshot>) -> MutexGuard<'_, LayoutSnapshot> {
+fn lock_layout(layout: &Mutex<Mirrored>) -> MutexGuard<'_, Mirrored> {
     layout.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Store `snapshot` in the mirror unless it is OLDER than what is already there — the ONE
-/// place the mirror is written, shared by the poll thread and the UI thread's writes.
+/// Store `snapshot` (the arrangement of the window named `current`) in the mirror — the ONE place
+/// it is written, shared by the poll thread, the UI thread's writes, and the switch refresh.
 ///
-/// The revision is monotonic per window, so an older snapshot is stale by definition. Two
-/// threads race here: the poll thread reads the layout OFF the lock and stores it after, so
-/// its read can be overtaken by a UI-thread write that lands first. Storing unconditionally
-/// let the mirror move BACKWARD — the client then saw a revision it had already passed,
-/// re-projected the pre-gesture tree, and visibly snapped the user's just-settled divider
-/// back until an unrelated later bump healed it.
-fn store_layout(layout: &Mutex<LayoutSnapshot>, snapshot: LayoutSnapshot) {
+/// A store for a DIFFERENT window than the mirror holds is a SWITCH: reset unconditionally,
+/// because the incoming per-window revision does not compare with the outgoing window's. A store
+/// for the SAME window is revision-GUARDED: two threads race here (the poll reads the layout off
+/// the lock and stores it after, so a UI-thread write can land first), and storing an older
+/// same-window revision would move the mirror BACKWARD — the client would re-project a pre-gesture
+/// tree and visibly snap the user's just-settled divider back until a later bump healed it (R154).
+fn store_layout(layout: &Mutex<Mirrored>, current: &str, snapshot: LayoutSnapshot) {
     let mut mirror = lock_layout(layout);
-    if snapshot.revision >= mirror.revision {
-        *mirror = snapshot;
+    if mirror.window != current {
+        mirror.window = current.to_owned();
+        mirror.layout = snapshot;
+    } else if snapshot.revision >= mirror.layout.revision {
+        mirror.layout = snapshot;
     } else {
         tracing::trace!(
             target: "sprag_gui::wire",
             stale = snapshot.revision,
-            held = mirror.revision,
-            "dropped a layout read overtaken by a newer one",
+            held = mirror.layout.revision,
+            "dropped a same-window layout read overtaken by a newer one",
         );
     }
+}
+
+/// The name of the current window in `list`, or `None` if none is marked current (an empty or
+/// malformed list). The SSOT for "which window this client is on", read by the boot, the poll,
+/// and the switch refresh to tag the layout mirror.
+fn current_window_name(list: &[WindowInfo]) -> Option<String> {
+    list.iter()
+        .find(|window| window.current)
+        .map(|window| window.name.clone())
 }
 
 /// Read the host's arrangement off the wire — the ONE place the `layout` slot is queried,
@@ -171,6 +202,36 @@ fn query_layout(conn: &mut HostConn) -> io::Result<LayoutSnapshot> {
     let value = conn.call(
         "scene/query",
         json!({ "path": mux_action_path(LAYOUT_SLOT) }),
+    )?;
+    serde_json::from_value(value).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+/// The scoped session's window LIST, mirrored — what a tabbed client draws. Shared between the
+/// UI thread (which reads it, and refreshes it right after its own window write for immediate
+/// feedback) and the poll thread (which re-reads it whenever the scene moves), under one lock.
+/// Mirrored, not fetched on demand, for the same reason the layout is: the paint path must make
+/// no socket call.
+type WindowsMirror = Arc<Mutex<Vec<WindowInfo>>>;
+
+/// Lock the mirrored window list, poison-tolerant (see [`lock_cache`] for the discipline).
+fn lock_windows(windows: &Mutex<Vec<WindowInfo>>) -> MutexGuard<'_, Vec<WindowInfo>> {
+    windows.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Replace the mirrored window list — the ONE place it is written, shared by the poll thread and
+/// a window write's own follow-up read. Unconditional (unlike [`store_layout`]): the list carries
+/// no revision, so there is nothing to compare, and any brief backward move heals on the next
+/// wake — the tab set is not a live gesture the way a dragged divider is.
+fn store_windows(windows: &Mutex<Vec<WindowInfo>>, list: Vec<WindowInfo>) {
+    *lock_windows(windows) = list;
+}
+
+/// Read the scoped session's window list off the wire — the ONE place the `windows` slot is
+/// queried, shared by the boot read and the poll thread's refresh.
+fn query_windows(conn: &mut HostConn) -> io::Result<Vec<WindowInfo>> {
+    let value = conn.call(
+        "scene/query",
+        json!({ "path": mux_action_path(WINDOWS_SLOT) }),
     )?;
     serde_json::from_value(value).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
@@ -186,6 +247,10 @@ pub(crate) struct WireHost {
     /// The poll thread re-reads it on every scene change; a write on the UI thread replaces
     /// it with the host's canonical answer.
     layout: LayoutMirror,
+    /// The scoped session's window list, mirrored ([`WindowsMirror`]) — what a tabbed client
+    /// draws. The poll thread re-reads it on every scene change; a window write on the UI thread
+    /// refreshes it right after, so the tab strip updates without waiting a poll wake.
+    windows: WindowsMirror,
     /// The UI thread's request connection (reads / input / resize). `RefCell`, not
     /// `Mutex`: `WireHost` is UI-thread-only (see the module docs), and the poll thread
     /// owns a SEPARATE connection.
@@ -270,7 +335,17 @@ impl WireHost {
         // projection of it, so failing to read it means there is nothing honest to paint.
         // Failing the attach says exactly that, where a silent empty tree would leave a
         // blank window over live PTYs and blame nothing.
-        let layout: LayoutMirror = Arc::new(Mutex::new(query_layout(&mut conn)?));
+        // The window list is booted the same way and for the same reason (a tabbed client draws
+        // it and must never fetch it from the paint path) — and FIRST, because it names WHICH
+        // window the layout mirror reflects: that tag is what makes a later switch a RESET rather
+        // than a dropped-as-stale read (see [`Mirrored`]).
+        let window_list = query_windows(&mut conn)?;
+        let current = current_window_name(&window_list).unwrap_or_default();
+        let layout: LayoutMirror = Arc::new(Mutex::new(Mirrored {
+            window: current,
+            layout: query_layout(&mut conn)?,
+        }));
+        let windows: WindowsMirror = Arc::new(Mutex::new(window_list));
 
         // The poll thread's own connection — a parked `scene/waitFor` on it never
         // blocks the request connection above (separate host handler threads). Scoped to the
@@ -284,6 +359,7 @@ impl WireHost {
             poll_conn,
             Arc::clone(&cache),
             Arc::clone(&layout),
+            Arc::clone(&windows),
             on_change,
             quit,
             Arc::clone(&stop),
@@ -293,6 +369,7 @@ impl WireHost {
         Ok(Self {
             cache,
             layout,
+            windows,
             conn: RefCell::new(conn),
             stop,
             poll_shutdown,
@@ -315,7 +392,11 @@ impl WireHost {
             .and_then(|value| serde_json::from_value::<LayoutSnapshot>(value).ok())
         {
             Some(snapshot) => {
-                store_layout(&self.layout, snapshot.clone());
+                // A write is on the window this client is already showing — store the answer
+                // tagged with THAT window (the mirror's own), so it is revision-guarded (the
+                // answer's higher revision lands), not treated as a switch.
+                let current = lock_layout(&self.layout).window.clone();
+                store_layout(&self.layout, &current, snapshot.clone());
                 snapshot
             }
             None => self.layout(),
@@ -352,6 +433,38 @@ impl WireHost {
             .find(|pane| pane.id == id)
             .map(|pane| pane.frame.cells.clone())
             .unwrap_or_else(|| GridBuffer::new(1, 1))
+    }
+
+    /// Re-read this client's WHOLE view — windows, panes, layout — on the UI-thread connection and
+    /// adopt it, the immediate-feedback follow-up to this client's OWN window op (select / new /
+    /// kill window), which changes WHICH window is current.
+    ///
+    /// All three together, because a window op switches the current window and so the panes AND
+    /// the arrangement, not just the tab set: refreshing only the windows list would leave the
+    /// dock projecting the OLD window until the next poll wake. Windows FIRST, so the current
+    /// window names what the layout store is tagged with — a switch RESETS the layout mirror
+    /// (the new window's revision does not compare with the old's; see [`store_layout`]). The
+    /// poll thread also re-reads on the revision bump this op caused; this just spares the view a
+    /// wake's lag and keeps the windows / panes / layout mirrors consistent for the next write.
+    fn refresh_view(&self) {
+        let mut conn = self.conn.borrow_mut();
+        let current = match query_windows(&mut conn) {
+            Ok(list) => {
+                let current = current_window_name(&list).unwrap_or_default();
+                store_windows(&self.windows, list);
+                current
+            }
+            Err(error) => {
+                tracing::debug!(target: "sprag_gui::wire", %error, "refresh_view: windows re-read failed");
+                return;
+            }
+        };
+        if let Ok(seeds) = query_panes(&mut conn) {
+            refresh_to_set(&mut conn, &self.cache, &seeds);
+        }
+        if let Ok(snapshot) = query_layout(&mut conn) {
+            store_layout(&self.layout, &current, snapshot);
+        }
     }
 }
 
@@ -393,14 +506,24 @@ impl HostClient for WireHost {
     /// "the host did not answer" and "this window tiles nothing" are opposite facts that
     /// must never arrive as the same value.
     fn layout(&self) -> LayoutSnapshot {
-        lock_layout(&self.layout).clone()
+        lock_layout(&self.layout).layout.clone()
     }
 
     fn set_layout(&self, tree: LayoutWire, expected: u64) -> LayoutSnapshot {
+        // Name the WINDOW this gesture was drawn on — the one the mirror (and so the client)
+        // currently projects. If the host's current window has since switched out of band
+        // (another client attached to the same session), `scope.window()` won't match and the
+        // host REFUSES the write rather than mis-applying this window's tree to that one (bound
+        // d — the belt to the revision compare-and-set's suspenders).
+        let expected_window = lock_layout(&self.layout).window.clone();
         self.write_layout(
             json!({
                 "path": mux_action_path(SET_LAYOUT_ACTION),
-                "args": { "tree": tree, "expected_revision": expected },
+                "args": {
+                    "tree": tree,
+                    "expected_revision": expected,
+                    "expected_window": expected_window,
+                },
             }),
             "set_layout",
         )
@@ -414,6 +537,48 @@ impl HostClient for WireHost {
             }),
             "set_floating",
         )
+    }
+
+    /// The mirrored window list — a lock and a clone, never a socket call, so the paint path can
+    /// draw the tab strip every frame (see [`WindowsMirror`]).
+    fn windows(&self) -> Vec<WindowInfo> {
+        lock_windows(&self.windows).clone()
+    }
+
+    fn select_window(&self, name: &str) {
+        let params = invoke(
+            &mux_action_path(SELECT_WINDOW_ACTION),
+            json!({ "window": name }),
+        );
+        if self
+            .request("scene/invoke", params, "select_window")
+            .is_some()
+        {
+            self.refresh_view();
+        }
+    }
+
+    fn new_window(&self) -> String {
+        let params = invoke(&mux_action_path(NEW_WINDOW_ACTION), json!({}));
+        let name = self
+            .request("scene/invoke", params, "new_window")
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_default();
+        self.refresh_view();
+        name
+    }
+
+    fn kill_window(&self, name: &str) {
+        let params = invoke(
+            &mux_action_path(KILL_WINDOW_ACTION),
+            json!({ "window": name }),
+        );
+        if self
+            .request("scene/invoke", params, "kill_window")
+            .is_some()
+        {
+            self.refresh_view();
+        }
     }
 
     fn pane_scroll_facts(&self, id: PaneId) -> PaneScrollFacts {
@@ -839,10 +1004,17 @@ fn merge_panes(
 ///
 /// Fails if the poll thread cannot be spawned (matching `spawn_or_attach`'s contract
 /// rather than panicking inside it).
+// The poll thread's inputs: its own connection, the three shared mirrors it refreshes (cache /
+// layout / windows), the repaint + quit sinks, the stop flag, and the subscribe baseline. One
+// over clippy's default limit after the windows mirror joined the set — bundling the three
+// `Arc<Mutex<_>>` mirrors into a struct would ripple through every `WireHost` method that reads
+// one, a churn out of proportion to this seam.
+#[allow(clippy::too_many_arguments)]
 fn spawn_poll(
     mut conn: HostConn,
     cache: Cache,
     layout: LayoutMirror,
+    windows: WindowsMirror,
     on_change: Box<dyn Fn() + Send>,
     quit: Arc<dyn QuitSink>,
     stop: Arc<AtomicBool>,
@@ -870,11 +1042,37 @@ fn spawn_poll(
                     break;
                 }
                 since = response["revision"].as_u64().unwrap_or(since);
-                // Re-query the live pane set each wake so a host-side spawn/close is MIRRORED
-                // (cache add/remove), not just existing panes refreshed. A DEFINITIVE failure
-                // (our session was killed) detaches at once — no stale repaint first; a transient
-                // one refreshes the known set instead so liveness holds (the change is caught on
-                // a later wake).
+                // Re-read the window list FIRST each wake, so a new / killed / renamed / selected
+                // window (this client's or another attached one's) reaches the tab strip — AND so
+                // the current window is known before the layout store, which it tags: a switch
+                // (this session's current window moved, e.g. another client's select_window) RESETS
+                // the layout mirror rather than dropping the new window's read as stale (see
+                // [`store_layout`]). A definitive failure detaches (as below); a transient one keeps
+                // the last-known list and tags the layout store with the mirror's OWN window (a
+                // hiccup is not a switch), so that store stays revision-guarded.
+                let current: String = match query_windows(&mut conn) {
+                    Ok(list) => {
+                        let current = current_window_name(&list).unwrap_or_default();
+                        store_windows(&windows, list);
+                        current
+                    }
+                    Err(error) => {
+                        if let Some(reason) = detach_reason(&error) {
+                            request_detach(&quit, stop.load(Ordering::Relaxed), reason, &error);
+                            break;
+                        }
+                        tracing::debug!(
+                            target: "sprag_gui::wire",
+                            %error,
+                            "windows re-read failed this wake; keeping the last-known list",
+                        );
+                        lock_layout(&layout).window.clone()
+                    }
+                };
+                // Re-query the live pane set so a host-side spawn/close is MIRRORED (cache
+                // add/remove), not just existing panes refreshed. A DEFINITIVE failure (our session
+                // was killed) detaches at once — no stale repaint first; a transient one refreshes
+                // the known set instead so liveness holds (the change is caught on a later wake).
                 match query_panes(&mut conn) {
                     Ok(seeds) => refresh_to_set(&mut conn, &cache, &seeds),
                     Err(error) => {
@@ -906,12 +1104,12 @@ fn spawn_poll(
                     }
                 }
                 // Re-read the arrangement each wake too, so a host-side change — another
-                // attached client's gesture, a plugin's spawn, a float — reaches this
-                // client's projection. A definitive failure detaches (as above); on a transient
-                // one the last-known arrangement stands (a hiccup means "no news", never "your
-                // layout is gone").
+                // attached client's gesture, a plugin's spawn, a float, a WINDOW SWITCH — reaches
+                // this client's projection. Tagged with `current`, so a switch resets the mirror.
+                // A definitive failure detaches (as above); on a transient one the last-known
+                // arrangement stands (a hiccup means "no news", never "your layout is gone").
                 match query_layout(&mut conn) {
-                    Ok(snapshot) => store_layout(&layout, snapshot),
+                    Ok(snapshot) => store_layout(&layout, &current, snapshot),
                     Err(error) => {
                         if let Some(reason) = detach_reason(&error) {
                             request_detach(&quit, stop.load(Ordering::Relaxed), reason, &error);
@@ -1034,7 +1232,8 @@ mod tests {
         let poll = spawn_poll(
             conn,
             Arc::new(Mutex::new(Vec::new())),
-            Arc::new(Mutex::new(LayoutSnapshot::default())),
+            Arc::new(Mutex::new(Mirrored::default())),
+            Arc::new(Mutex::new(Vec::new())),
             Box::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
             Arc::clone(&stop),
@@ -1109,7 +1308,8 @@ mod tests {
         let poll = spawn_poll(
             conn,
             Arc::new(Mutex::new(Vec::new())),
-            Arc::new(Mutex::new(LayoutSnapshot::default())),
+            Arc::new(Mutex::new(Mirrored::default())),
+            Arc::new(Mutex::new(Vec::new())),
             Box::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
             Arc::clone(&stop),
@@ -1187,7 +1387,8 @@ mod tests {
         let poll = spawn_poll(
             conn,
             Arc::new(Mutex::new(Vec::new())),
-            Arc::new(Mutex::new(LayoutSnapshot::default())),
+            Arc::new(Mutex::new(Mirrored::default())),
+            Arc::new(Mutex::new(Vec::new())),
             on_change,
             Arc::clone(&quit) as Arc<dyn QuitSink>,
             Arc::clone(&stop),
@@ -1233,7 +1434,8 @@ mod tests {
         let poll = spawn_poll(
             conn,
             Arc::new(Mutex::new(Vec::new())),
-            Arc::new(Mutex::new(LayoutSnapshot::default())),
+            Arc::new(Mutex::new(Mirrored::default())),
+            Arc::new(Mutex::new(Vec::new())),
             Box::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
             Arc::clone(&stop),
@@ -1292,6 +1494,54 @@ mod tests {
         let params = invoke(&pane_input_path(0, KEY_ACTION), json!({ "key": "a" }));
         assert_eq!(params["path"], "/pane_0/sprag_input/external/key");
         assert_eq!(params["args"]["key"], "a");
+    }
+
+    /// The layout mirror is WINDOW-AWARE: a store for a DIFFERENT window RESETS unconditionally
+    /// (the per-window revision does not compare across windows), while a store for the SAME window
+    /// is revision-GUARDED (an older read overtaken by a newer write is dropped — the R154 scar).
+    ///
+    /// REVERT-PROOF of the fix: if `store_layout` guarded across windows too (the pre-fix
+    /// per-window-only assumption), the switch to a LOWER-revision window below would be dropped as
+    /// "stale" and the mirror would keep projecting the old window's tree over the new window's
+    /// panes — a broken dock. The `revision == 3` and `window == "1"` assertions catch exactly that.
+    #[test]
+    fn the_layout_mirror_resets_on_a_window_switch_but_guards_within_a_window() {
+        let mirror: LayoutMirror = Arc::new(Mutex::new(Mirrored::default()));
+        let snap = |rev| LayoutSnapshot {
+            revision: rev,
+            ..Default::default()
+        };
+
+        // Boot window "0" at revision 5.
+        store_layout(&mirror, "0", snap(5));
+        assert_eq!(lock_layout(&mirror).layout.revision, 5);
+
+        // Within window "0": a LOWER revision (a stale poll read overtaken by a UI write) is
+        // dropped — the mirror must not move backward on the same window.
+        store_layout(&mirror, "0", snap(3));
+        assert_eq!(
+            lock_layout(&mirror).layout.revision,
+            5,
+            "same window: an older read is dropped (R154)",
+        );
+
+        // A SWITCH to window "1" whose revision is LOWER (3) RESETS the mirror — NOT dropped as
+        // stale, because the per-window revision does not compare across windows.
+        store_layout(&mirror, "1", snap(3));
+        assert_eq!(
+            lock_layout(&mirror).window,
+            "1",
+            "the mirror moved to the new window"
+        );
+        assert_eq!(
+            lock_layout(&mirror).layout.revision,
+            3,
+            "a switch resets the mirror even to a lower revision",
+        );
+
+        // Within window "1": a higher revision lands as usual.
+        store_layout(&mirror, "1", snap(7));
+        assert_eq!(lock_layout(&mirror).layout.revision, 7);
     }
 
     /// A cell frame `n` cols wide, so a test can tell frames apart by `cells.cols()`.

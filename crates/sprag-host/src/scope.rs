@@ -7,28 +7,24 @@
 //! proof: constructing one requires the session to have resolved, so nothing downstream has
 //! to re-ask, re-check, or decide what to do when the answer is no.
 //!
-//! ## Resolve once — for the POOL. The window is re-resolved by name, and that is honest.
+//! ## Resolve once — the POOL and the WINDOW IDENTITY together.
 //!
 //! The scene assembly and the mux control external both need the scope, and both used to
 //! resolve "the current window" for themselves. Two independent resolutions of one question
 //! is the second-authority pattern this arc keeps flagging: they agree only as long as
-//! nothing moves between them. Resolving here, once, and handing the SAME pane-pool handle to
-//! both makes THAT agreement structural — the pool is an `Arc`, so it can be carried.
+//! nothing moves between them. Resolving here, ONCE, closes that: this reads the scoped
+//! session's current window — its NAME and its pool — under one registry lock, off the same
+//! [`Window`](sprag_terminal::Window), so the two cannot describe different windows.
 //!
-//! The WINDOW is a different story, and the honest account matters. A
-//! [`Window`](sprag_terminal::Window) owns the
-//! layout authority (its `LayoutTree`, floats, revision) and is an inline field of its
-//! session, not behind an `Arc` — so it cannot be cloned out and carried across the registry
-//! lock's release. The layout paths therefore re-resolve it BY NAME under the registry lock
-//! at the moment of use ([`SessionRegistry::window_mut`]). That is a second resolution, and
-//! today it agrees with the carried pool only because two invariants hold: a session has
-//! exactly ONE window, and dispatch is single-threaded, so nothing switches the current
-//! window between a request's resolve and its use. **This is precisely the "agree only as
-//! long as nothing moves" shape — not yet exploitable, but real.** When window-switching
-//! lands, the scope must carry the window's identity (name/index) too and the layout paths
-//! must resolve pool AND window under one lock, or a request could read one window's panes
-//! and reconcile them against another's tree. The pool half is structural now; the window
-//! half is a bound, not a done thing.
+//! The pool is an `Arc`, so it is CARRIED down. The window itself is an inline field of its
+//! session (only its inner `Workspace` is `Arc`'d), so it cannot be — the layout paths
+//! re-resolve it, but now BY THE NAME THIS SCOPE PINNED
+//! ([`SessionRegistry::window_mut`], name-addressed on both dimensions), not as "whichever is
+//! current at the moment of use". So a request acts on the window it was ASSEMBLED for even if
+//! the current window moved between its resolve and its use — the window-switch bound this
+//! module used to carry (a request reading one window's panes and reconciling them against
+//! another's tree) is now closed BY CONSTRUCTION, not by the single-window / single-thread
+//! accident it rested on before window-switching existed.
 //!
 //! ## The failure it exists to prevent
 //!
@@ -43,7 +39,7 @@ use std::sync::{Arc, Mutex};
 
 use pinion_rpc::Request;
 use serde_json::Value;
-use sprag_terminal::{SessionRegistry, Workspace};
+use sprag_terminal::{Session, SessionRegistry, Workspace};
 
 use crate::external::lock;
 use crate::wire::SESSION_PARAM;
@@ -75,14 +71,20 @@ impl fmt::Display for ScopeError {
 
 impl std::error::Error for ScopeError {}
 
-/// The one session a request acts on: its name, and the pane pool of the window that session
-/// is currently showing.
+/// The one session-and-window a request acts on: the session name, the NAME of the window that
+/// session is currently showing, and that window's pane pool.
 ///
-/// Cheap to clone (a name and a handle), because the scene assembly and the control external
+/// The window name and the pool are read off the SAME [`Window`](sprag_terminal::Window) at
+/// resolve time, so they cannot describe different windows — which is what lets the layout
+/// paths re-resolve the window by [`window`](Self::window) rather than as "the current window",
+/// and act on the one the request was assembled for (see the module docs).
+///
+/// Cheap to clone (two names and a handle), because the scene assembly and the control external
 /// both hold the SAME resolved answer rather than each deriving one.
 #[derive(Clone)]
 pub struct SessionScope {
     session: String,
+    window: String,
     workspace: Arc<Mutex<Workspace>>,
 }
 
@@ -123,13 +125,8 @@ impl SessionScope {
             Some(Value::String(name)) => name.clone(),
             Some(_) => return Err(ScopeError::NotAString),
         };
-        let workspace = registry
-            .workspace_of(&named)
-            .ok_or_else(|| ScopeError::Unknown(named.clone()))?;
-        Ok(Self {
-            session: named,
-            workspace,
-        })
+        let session = registry.session(&named).ok_or(ScopeError::Unknown(named))?;
+        Ok(Self::of_session(session))
     }
 
     /// The default session's scope, for a caller with no request to name one: the in-process
@@ -143,15 +140,23 @@ impl SessionScope {
         Self::of_default(&lock(registry))
     }
 
-    /// The default session's scope, read straight off the registry — the ONE construction of
-    /// it. Total without a fallible lookup: [`SessionRegistry::default_session`] hands back
-    /// the session itself, so its pool is a borrow away and there is no name to fail to
-    /// resolve.
+    /// The default session's scope, read straight off the registry. Total without a fallible
+    /// lookup: [`SessionRegistry::default_session`] hands back the session itself, so there is no
+    /// name to fail to resolve.
     fn of_default(registry: &SessionRegistry) -> Self {
-        let default = registry.default_session();
+        Self::of_session(registry.default_session())
+    }
+
+    /// The scope of `session`'s CURRENT window — the ONE construction of a scope, reading the
+    /// window's NAME and its pool off the SAME [`Window`](sprag_terminal::Window) so they cannot
+    /// come apart. Both [`resolve`](Self::resolve) (a named session) and
+    /// [`of_default`](Self::of_default) go through it.
+    fn of_session(session: &Session) -> Self {
+        let window = session.current_window();
         Self {
-            session: default.name().to_owned(),
-            workspace: Arc::clone(default.current_window().workspace()),
+            session: session.name().to_owned(),
+            window: window.name().to_owned(),
+            workspace: Arc::clone(window.workspace()),
         }
     }
 
@@ -160,6 +165,14 @@ impl SessionScope {
     #[must_use]
     pub fn session(&self) -> &str {
         &self.session
+    }
+
+    /// The NAME of the window the scoped session was showing when this request resolved — how
+    /// the layout paths address the window ([`SessionRegistry::window_mut`]), so a request acts
+    /// on the window it was ASSEMBLED for even if the current window has since moved.
+    #[must_use]
+    pub fn window(&self) -> &str {
+        &self.window
     }
 
     /// The pane pool of the window the scoped session is showing — what the scene assembly
@@ -174,6 +187,7 @@ impl fmt::Debug for SessionScope {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SessionScope")
             .field("session", &self.session)
+            .field("window", &self.window)
             .finish_non_exhaustive()
     }
 }
@@ -253,6 +267,42 @@ mod tests {
                 Err(ScopeError::Unknown(name)) if name == "ghost"
             ),
             "a name no session carries is refused as Unknown, carrying the name asked for",
+        );
+    }
+
+    /// The closure of the window-switch bound: the scope pins the session's CURRENT window —
+    /// its NAME and its pool, read off the SAME window — so they cannot describe different
+    /// windows, and a scope resolved after a switch names the NEW current window and carries
+    /// ITS pool, never a mix of the two.
+    #[test]
+    fn the_scope_pins_the_current_windows_name_and_its_pool_together() {
+        let reg = registry();
+        let default = lock(&reg).default_session().name().to_owned();
+        // A second window, which `new_window` also makes current.
+        lock(&reg).new_window(&default, Some("win1")).unwrap();
+
+        let scope = SessionScope::resolve(&reg, &request(r#"{"path":""}"#)).expect("the default");
+        assert_eq!(scope.session(), default);
+        assert_eq!(scope.window(), "win1", "the scope names the current window");
+        let win1_pool = lock(&reg).workspace_of(&default).unwrap();
+        assert!(
+            Arc::ptr_eq(scope.workspace(), &win1_pool),
+            "and carries THAT window's pool, off the same Window",
+        );
+
+        // Switch the current window back to "0": a fresh scope names "0" and carries "0"'s pool,
+        // not the window it was switched away from.
+        lock(&reg).select_window(&default, "0").unwrap();
+        let scope0 = SessionScope::resolve(&reg, &request(r#"{"path":""}"#)).expect("the default");
+        assert_eq!(scope0.window(), "0");
+        let pool0 = lock(&reg).workspace_of(&default).unwrap();
+        assert!(
+            Arc::ptr_eq(scope0.workspace(), &pool0),
+            "name and pool both followed"
+        );
+        assert!(
+            !Arc::ptr_eq(scope0.workspace(), &win1_pool),
+            "the pool is the current window's, never the switched-away one's",
         );
     }
 }

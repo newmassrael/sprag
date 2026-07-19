@@ -50,7 +50,7 @@ use pinion_core::GridBuffer;
 use sprag_input::Modifiers;
 use sprag_terminal::{
     CommandBuilder, LayoutSnapshot, LayoutWire, Pane, PaneId, PanePtyError, PanePtyHandle,
-    SessionRegistry, Workspace,
+    SessionRegistry, WindowInfo, Workspace,
 };
 use sprag_vt::Screen;
 
@@ -207,6 +207,29 @@ pub trait HostClient {
     /// asked anyway learns the truth rather than being trusted to have checked first.
     fn set_floating(&self, id: PaneId, floating: bool) -> LayoutSnapshot;
 
+    /// The scoped session's windows, in order — each window's name and whether it is CURRENT
+    /// (tmux "windows"). The list a tabbed client draws; it re-reads when the scene revision
+    /// moves (a new / killed / renamed / selected window bumps it).
+    ///
+    /// **Scope note (extended):** the window LIST + the three window WRITES below join `layout`
+    /// and its writes as window-level members of an otherwise pane-addressed trait. They live
+    /// here for the same reason ([`layout`](Self::layout)'s note): both impls and the client's one
+    /// `Box<dyn HostClient>` already exist. A future extraction of this whole group into a
+    /// dedicated window/mux client trait is tracked, not done — so this increment stays focused.
+    fn windows(&self) -> Vec<WindowInfo>;
+
+    /// Make the window named `name` the scoped session's current window (tmux `select-window`).
+    /// Every attached client's next read then projects that window. A no-op for an unknown name.
+    fn select_window(&self, name: &str);
+
+    /// Create a window in the scoped session, born with a shell, and select it (tmux
+    /// `new-window`), returning its name.
+    fn new_window(&self) -> String;
+
+    /// Kill the window named `name` of the scoped session (tmux `kill-window`); the session's
+    /// LAST window ends the session. A no-op for an unknown name.
+    fn kill_window(&self, name: &str);
+
     /// Pane `id`'s child-reported window TITLE (`OSC 0` / `OSC 2`), or `None` if the
     /// child never set one (or `id` is absent).
     ///
@@ -288,9 +311,11 @@ impl Host {
     }
 
     /// This arm's scope: the default session (see [`workspace`](Self::workspace)). Total: this
-    /// in-process arm is single-session and cannot reach `kill_session` (a wire action), so its
-    /// registry never shrinks — the daemon's can, but it resolves scopes over the fallible wire
-    /// path, not through here.
+    /// in-process arm is SINGLE-session, so its registry never shrinks below one. Its only removal
+    /// path is [`kill_window`](HostClient::kill_window) on the last window, which escalates to
+    /// `kill_session`; but for the last session that DRAINS rather than removes, keeping
+    /// `default_session` total. (The daemon's registry can shrink via a non-last `kill_session`,
+    /// but that resolves scopes over the fallible wire path, not through here.)
     fn scope(&self) -> SessionScope {
         SessionScope::unscoped(&self.registry)
     }
@@ -360,7 +385,7 @@ pub(crate) fn reconciled_layout(
         .map(Pane::id)
         .collect();
     let mut registry = lock(registry);
-    let window = registry.window_mut(scope.session())?;
+    let window = registry.window_mut(scope.session(), scope.window())?;
     let tree = LayoutWire::from(window.reconcile_layout(&panes));
     let mut floating: Vec<PaneId> = window.floating().iter().copied().collect();
     floating.sort_unstable(); // a HashSet's order is arbitrary; the wire must be stable or
@@ -388,8 +413,28 @@ pub(crate) fn set_layout(
     scope: &SessionScope,
     tree: LayoutWire,
     expected: u64,
+    expected_window: Option<&str>,
 ) -> Option<LayoutSnapshot> {
-    match lock(registry).window_mut(scope.session()) {
+    // A gesture authored against a window the client has since switched away from is stale in
+    // exactly the way a stale revision is (the per-window-revision bound): the scope resolves to
+    // the session's CURRENT window, so if the client names the window it drew on and that is no
+    // longer current, the write is REFUSED rather than mis-applied to whatever is current now.
+    // The revision compare-and-set alone could pass on a cross-window revision collision; naming
+    // the window is the belt to its suspenders. `None` skips the check — a caller with no window
+    // to be stale against (the in-process arm, which is single-client).
+    if let Some(expected_window) = expected_window
+        && expected_window != scope.window()
+    {
+        tracing::warn!(
+            target: "sprag_host",
+            session = scope.session(),
+            expected_window,
+            current_window = scope.window(),
+            "a client's arrangement targeted a window that is no longer current; keeping the one in force",
+        );
+        return reconciled_layout(registry, scope);
+    }
+    match lock(registry).window_mut(scope.session(), scope.window()) {
         Some(window) => {
             if let Err(error) = window.set_layout(tree, Some(expected)) {
                 tracing::warn!(
@@ -422,7 +467,7 @@ pub(crate) fn set_floating(
         .map(Pane::id)
         .collect();
     if !lock(registry)
-        .window_mut(scope.session())?
+        .window_mut(scope.session(), scope.window())?
         .set_floating(id, floating, &panes)
     {
         tracing::debug!(
@@ -511,11 +556,55 @@ impl HostClient for Host {
     }
 
     fn set_layout(&self, tree: LayoutWire, expected: u64) -> LayoutSnapshot {
-        set_layout(&self.registry, &self.scope(), tree, expected).expect(DEFAULT_ALWAYS_RESOLVES)
+        // No window to be stale against — the in-process arm is single-client, always current.
+        set_layout(&self.registry, &self.scope(), tree, expected, None)
+            .expect(DEFAULT_ALWAYS_RESOLVES)
     }
 
     fn set_floating(&self, id: PaneId, floating: bool) -> LayoutSnapshot {
         set_floating(&self.registry, &self.scope(), id, floating).expect(DEFAULT_ALWAYS_RESOLVES)
+    }
+
+    /// The DEFAULT session's windows (this arm scopes there; see [`Host::workspace`]). Total: the
+    /// default always resolves.
+    fn windows(&self) -> Vec<WindowInfo> {
+        lock(&self.registry).default_session().window_infos()
+    }
+
+    /// Select a window of the default session; an unknown name is a no-op (logged by the registry
+    /// through the `Result` this arm discards — the in-process caller has no wire to refuse on).
+    fn select_window(&self, name: &str) {
+        let mut registry = lock(&self.registry);
+        let session = registry.default_session().name().to_owned();
+        let _ = registry.select_window(&session, name);
+    }
+
+    /// Create + select a window in the default session, birthing a shell into it — the in-process
+    /// arm's OWN spawn path (no wake / reaper hooks; the daemon births at its `WorkspaceExternal`).
+    /// `self.workspace()` is the new window's pool because `new_window` selected it.
+    fn new_window(&self) -> String {
+        let created = {
+            let mut registry = lock(&self.registry);
+            let session = registry.default_session().name().to_owned();
+            registry.new_window(&session, None)
+        };
+        let Ok(name) = created else {
+            // The default session always resolves and the allocated name is free by construction,
+            // so an in-process create cannot fail — but never panic on the arm that unwraps least.
+            return String::new();
+        };
+        let (command, label) = sprag_terminal::default_shell_command();
+        let (cols, rows) = lock(&self.workspace()).default_size();
+        let _ = self.spawn(command, label, cols, rows, None, None);
+        name
+    }
+
+    /// Kill a window of the default session; the last window ends the session. An unknown name is a
+    /// no-op. The in-process arm has no daemon to exit, so the reaped panes just drop here —
+    /// OFF the registry lock (the outcome is bound after the lock guard falls at the `;`).
+    fn kill_window(&self, name: &str) {
+        let session = lock(&self.registry).default_session().name().to_owned();
+        let _outcome = lock(&self.registry).kill_window(&session, name);
     }
 }
 

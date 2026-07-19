@@ -150,6 +150,107 @@ fn the_cli_kill_server_ends_the_daemon() {
     );
 }
 
+/// The window subcommands drive the SCOPED mux window actions over the socket: list, create +
+/// select, select, rename, and kill a window — each `-t SESSION`.
+#[test]
+fn the_cli_manages_windows_over_the_socket() {
+    let (_host, sock) = spawn_host();
+
+    // windows -t 0: the boot session has one window "0", current.
+    let run = sprag(&sock, &["windows", "-t", "0"]);
+    assert!(run.ok, "windows succeeded: {}", run.stderr);
+    assert!(
+        run.stdout.contains("0 (current)"),
+        "one boot window, current: {}",
+        run.stdout,
+    );
+
+    // new-window -t 0 logs: creates + selects it, printing its name.
+    let run = sprag(&sock, &["new-window", "-t", "0", "logs"]);
+    assert!(run.ok, "new-window succeeded: {}", run.stderr);
+    assert_eq!(
+        run.stdout.trim(),
+        "logs",
+        "new-window prints the created name"
+    );
+    let run = sprag(&sock, &["windows", "-t", "0"]);
+    assert!(
+        run.stdout.contains("logs (current)"),
+        "the new window is listed and current: {}",
+        run.stdout,
+    );
+
+    // select-window -t 0 0: moves current back to "0".
+    assert!(sprag(&sock, &["select-window", "-t", "0", "0"]).ok);
+    assert!(
+        sprag(&sock, &["windows", "-t", "0"])
+            .stdout
+            .contains("0 (current)"),
+        "the current window moved back to 0",
+    );
+
+    // rename-window -t 0 main: renames the CURRENT window ("0") to "main".
+    assert!(sprag(&sock, &["rename-window", "-t", "0", "main"]).ok);
+    let run = sprag(&sock, &["windows", "-t", "0"]);
+    assert!(
+        run.stdout.contains("main (current)"),
+        "the current window was renamed: {}",
+        run.stdout,
+    );
+
+    // kill-window -t 0 logs: removes a non-last window.
+    assert!(sprag(&sock, &["kill-window", "-t", "0", "logs"]).ok);
+    assert!(
+        !sprag(&sock, &["windows", "-t", "0"])
+            .stdout
+            .contains("logs"),
+        "the killed window is gone",
+    );
+
+    // An unknown session is a clean pre-flight error; a missing -t is an argument error.
+    let ghost = sprag(&sock, &["windows", "-t", "ghost"]);
+    assert!(!ghost.ok, "windows on a ghost session fails");
+    assert!(
+        ghost.stderr.contains("no session named"),
+        "clean error: {}",
+        ghost.stderr,
+    );
+    let noarg = sprag(&sock, &["windows"]);
+    assert!(!noarg.ok, "windows without -t fails");
+    assert!(
+        noarg.stderr.contains("target session is required"),
+        "arg error: {}",
+        noarg.stderr,
+    );
+}
+
+/// Killing a session's LAST window ends the SESSION (tmux) — driven over the CLI: `kill-window`
+/// with no target kills the current (only) window, and the session is then gone.
+#[test]
+fn the_cli_kill_window_on_the_last_window_ends_the_session() {
+    let (_host, sock) = spawn_host();
+    assert!(sprag(&sock, &["new", "work"]).ok, "created a session");
+
+    // kill-window with no window ⇒ the current (and only) one; its removal ends the session.
+    let run = sprag(&sock, &["kill-window", "-t", "work"]);
+    assert!(
+        run.ok,
+        "kill-window on the last window succeeded: {}",
+        run.stderr
+    );
+
+    let ls = sprag(&sock, &["ls"]);
+    assert!(
+        !ls.stdout.contains("work"),
+        "the session went with its last window: {}",
+        ls.stdout,
+    );
+    assert!(
+        ls.stdout.contains("0:"),
+        "the default survives (work was not the last session)",
+    );
+}
+
 /// `attach` PRE-FLIGHTS (does the session exist?) over the same connect-only path, then launches
 /// the GUI scoped to that session and pinned to THIS daemon's socket. `/usr/bin/env` stands in for
 /// the real GUI window (prints its env, exits 0), so the launch + env propagation are provable
