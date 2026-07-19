@@ -47,32 +47,32 @@ repository = "https://github.com/newmassrael/sprag"
 # so the single shared SCE instance is preserved (see the SCE block). `package=` is
 # omitted (dep key == crate name; pinion crates are workspace members of the repo).
 # (DESIGN.md §5's "path deps — unpublished" rationale is superseded here by PR-22.)
-pinion-core = { git = "https://github.com/newmassrael/pinion.git", rev = "b6670aa6ef291048c20768ac68650456e25604c0" }
-pinion-a11y = { git = "https://github.com/newmassrael/pinion.git", rev = "b6670aa6ef291048c20768ac68650456e25604c0" }
-pinion-shell = { git = "https://github.com/newmassrael/pinion.git", rev = "b6670aa6ef291048c20768ac68650456e25604c0" }
+pinion-core = { git = "https://github.com/newmassrael/pinion.git", rev = "fc5f47ac9167ab6ceca984b534ff16f432ca761d" }
+pinion-a11y = { git = "https://github.com/newmassrael/pinion.git", rev = "fc5f47ac9167ab6ceca984b534ff16f432ca761d" }
+pinion-shell = { git = "https://github.com/newmassrael/pinion.git", rev = "fc5f47ac9167ab6ceca984b534ff16f432ca761d" }
 # pinion-runtime: the shell's input/focus runtime. sprag-gui uses it only as a
 # DEV-dependency, for `PointerId` in the end-to-end click-to-focus test (the
 # shell's pointer methods take it); not a runtime dependency of any sprag crate.
-pinion-runtime = { git = "https://github.com/newmassrael/pinion.git", rev = "b6670aa6ef291048c20768ac68650456e25604c0" }
+pinion-runtime = { git = "https://github.com/newmassrael/pinion.git", rev = "fc5f47ac9167ab6ceca984b534ff16f432ca761d" }
 # Backend-agnostic widget paint helpers (GPU-free; deps core/text/a11y, already
 # under pinion-shell). sprag-gui uses `view_splitter` + `SplitterExternal` for
 # the draggable pane dividers (R38).
-pinion-widget-paint = { git = "https://github.com/newmassrael/pinion.git", rev = "b6670aa6ef291048c20768ac68650456e25604c0" }
+pinion-widget-paint = { git = "https://github.com/newmassrael/pinion.git", rev = "fc5f47ac9167ab6ceca984b534ff16f432ca761d" }
 # Platform clipboard bridge (arboard: X11 PRIMARY/CLIPBOARD, Wayland, mac, Win).
 # sprag-gui uses `use_app_clipboard` for mouse-select copy + paste (R139).
-pinion-platform-clipboard = { git = "https://github.com/newmassrael/pinion.git", rev = "b6670aa6ef291048c20768ac68650456e25604c0" }
-pinion-forge = { git = "https://github.com/newmassrael/pinion.git", rev = "b6670aa6ef291048c20768ac68650456e25604c0" }
+pinion-platform-clipboard = { git = "https://github.com/newmassrael/pinion.git", rev = "fc5f47ac9167ab6ceca984b534ff16f432ca761d" }
+pinion-forge = { git = "https://github.com/newmassrael/pinion.git", rev = "fc5f47ac9167ab6ceca984b534ff16f432ca761d" }
 # pinion-rpc: the scene-as-data introspection wire (snapshot.rs) + dispatch.
 # Confined to sprag-host (the RPC server layer) so the producer/projection
 # crates stay free of its heavy transitive deps (DESIGN.md §3/§5: the data
 # path needs no display).
-pinion-rpc = { git = "https://github.com/newmassrael/pinion.git", rev = "b6670aa6ef291048c20768ac68650456e25604c0" }
+pinion-rpc = { git = "https://github.com/newmassrael/pinion.git", rev = "fc5f47ac9167ab6ceca984b534ff16f432ca761d" }
 # pinion-rpc-transport (PR-47/R1263): the reusable Unix-socket adapter over
 # pinion's winit-free RpcIngress seam. sprag-gui mounts it via the shell's
 # `on_rpc_ingress` hook so the RPC endpoint is a fixed-path socket (always
 # there, execution-independent) instead of the process's stdin. Depends only
 # on the seam, so it stays free of the shell's GPU deps.
-pinion-rpc-transport = { git = "https://github.com/newmassrael/pinion.git", rev = "b6670aa6ef291048c20768ac68650456e25604c0" }
+pinion-rpc-transport = { git = "https://github.com/newmassrael/pinion.git", rev = "fc5f47ac9167ab6ceca984b534ff16f432ca761d" }
 
 # VT toolkit (DESIGN.md §4): termwiz is the embedded verified escape
 # parser + cell/color/input primitives. The emulator state machine is
@@ -125,8 +125,8 @@ vello = "0.9"
 # change the rev HERE and in pinion's workspace deps to the SAME value.
 # sce-build is a build-dependency (build.rs codegen); the runtime carries the
 # generated state machine. default-features off keeps http-send out.
-sce-build = { git = "https://github.com/newmassrael/scxml-core-engine.git", rev = "82022849062bd9275d967fe746c4069ded1131c4" }
-sce-rust-runtime = { git = "https://github.com/newmassrael/scxml-core-engine.git", rev = "82022849062bd9275d967fe746c4069ded1131c4", default-features = false }
+sce-build = { git = "https://github.com/newmassrael/scxml-core-engine.git", rev = "9a0a650c2c4c4ce484dd2084deeb2ed8caffaccc" }
+sce-rust-runtime = { git = "https://github.com/newmassrael/scxml-core-engine.git", rev = "9a0a650c2c4c4ce484dd2084deeb2ed8caffaccc", default-features = false }
 
 # Internal crates.
 sprag-vt = { path = "crates/sprag-vt", version = "0.0.1" }
