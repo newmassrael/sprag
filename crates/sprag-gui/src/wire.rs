@@ -798,22 +798,18 @@ fn merge_panes(
 /// scene revision on a set change too, so a spawn/close wakes this parked `waitFor` just
 /// like output does.
 ///
-/// Exits ONLY when `stop` is set (Drop cancels the parked read via a shutdown handle) or
-/// the parked `scene/waitFor` itself errors (the host connection was lost). The two are
-/// told apart by `stop`: a stop-initiated error is our own graceful teardown and is
-/// silent, but an error while `stop` is CLEAR is a definitive host-gone (the daemon
-/// exited under a detached client), which asks the shell to quit via `quit` — the GUI
-/// would otherwise sit frozen over dead content. A pane-list re-query failing a single
-/// wake is NOT fatal — it falls back to refreshing the current cache ids (a cache-derived
-/// seed snapshot through the same [`refresh_to_set`] path, so no adds/removes) and the set
-/// change is picked up on a later wake.
-///
-/// **Bound:** quit is triggered by the SOCKET dying, not by this client's SESSION emptying.
-/// With one daemon holding many sessions, a client whose own session loses its last pane
-/// while OTHER sessions keep the daemon alive keeps a live socket, so it shows an empty window
-/// instead of detaching the way tmux does when a session is destroyed. Closing that gap is
-/// session-close's job (a later increment): the host must tell a client its session is gone,
-/// which needs the session-lifecycle events that increment introduces.
+/// Exits ONLY when `stop` is set (Drop cancels the parked read via a shutdown handle) or a
+/// request fails DEFINITIVELY ([`detach_reason`]). A stop-initiated error is our own graceful
+/// teardown and is silent; a definitive failure while `stop` is CLEAR detaches the client
+/// (asks the shell to quit via `quit`) — the tmux rule that a client leaves when it can no
+/// longer serve its session. There are two such failures, told apart only for the log: the
+/// HOST exited (the socket closed — also how a killed LAST session ends, the whole daemon
+/// going), or THIS client's SESSION was killed while the daemon serves on for others (a scoped
+/// request is refused). The session-kill case is caught on the RE-QUERY, so the client detaches
+/// at once rather than repainting one stale frame first. A TRANSIENT hiccup is not fatal — the
+/// long-poll re-parks and a pane-list re-query falls back to refreshing the known cache ids
+/// (through the same [`refresh_to_set`] path, no adds/removes), the change picked up on a later
+/// wake.
 ///
 /// # Errors
 ///
@@ -834,29 +830,34 @@ fn spawn_poll(
             while !stop.load(Ordering::Relaxed) {
                 let response = match conn.call("scene/waitFor", json!({ "since": since })) {
                     Ok(value) => value,
-                    Err(error) => {
-                        // Distinguish OUR teardown from the host's death: a stop-initiated
-                        // error is the graceful Drop that shut this socket down, and quitting
-                        // then would be redundant at best. An error while stop is CLEAR means
-                        // the daemon went away under us — end the client (tmux detach).
-                        if !stop.load(Ordering::Relaxed) {
-                            tracing::warn!(target: "sprag_gui::wire", %error, "host gone; requesting client exit");
-                            quit.request_quit();
+                    Err(error) => match detach_reason(&error) {
+                        // A DEFINITIVE end (host gone or our session killed) — detach, unless
+                        // WE initiated the teardown (a stop-initiated error is the graceful Drop
+                        // that shut this socket down, and quitting then would be redundant).
+                        Some(reason) => {
+                            request_detach(&quit, stop.load(Ordering::Relaxed), reason, &error);
+                            break;
                         }
-                        break;
-                    }
+                        // A transient hiccup — re-park the long-poll rather than end the client.
+                        None => continue,
+                    },
                 };
                 if stop.load(Ordering::Relaxed) {
                     break;
                 }
                 since = response["revision"].as_u64().unwrap_or(since);
-                // Re-query the live pane set each wake so a host-side spawn/close is
-                // MIRRORED (cache add/remove), not just existing panes refreshed. On a
-                // transient query failure, refresh the known set instead so liveness holds
-                // (the set change is caught on a later wake).
+                // Re-query the live pane set each wake so a host-side spawn/close is MIRRORED
+                // (cache add/remove), not just existing panes refreshed. A DEFINITIVE failure
+                // (our session was killed) detaches at once — no stale repaint first; a transient
+                // one refreshes the known set instead so liveness holds (the change is caught on
+                // a later wake).
                 match query_panes(&mut conn) {
                     Ok(seeds) => refresh_to_set(&mut conn, &cache, &seeds),
                     Err(error) => {
+                        if let Some(reason) = detach_reason(&error) {
+                            request_detach(&quit, stop.load(Ordering::Relaxed), reason, &error);
+                            break;
+                        }
                         tracing::debug!(
                             target: "sprag_gui::wire",
                             %error,
@@ -882,19 +883,60 @@ fn spawn_poll(
                 }
                 // Re-read the arrangement each wake too, so a host-side change — another
                 // attached client's gesture, a plugin's spawn, a float — reaches this
-                // client's projection. On a transient failure the last-known arrangement
-                // stands (a hiccup means "no news", never "your layout is gone").
+                // client's projection. A definitive failure detaches (as above); on a transient
+                // one the last-known arrangement stands (a hiccup means "no news", never "your
+                // layout is gone").
                 match query_layout(&mut conn) {
                     Ok(snapshot) => store_layout(&layout, snapshot),
-                    Err(error) => tracing::debug!(
-                        target: "sprag_gui::wire",
-                        %error,
-                        "layout re-read failed this wake; keeping the last-known arrangement",
-                    ),
+                    Err(error) => {
+                        if let Some(reason) = detach_reason(&error) {
+                            request_detach(&quit, stop.load(Ordering::Relaxed), reason, &error);
+                            break;
+                        }
+                        tracing::debug!(
+                            target: "sprag_gui::wire",
+                            %error,
+                            "layout re-read failed this wake; keeping the last-known arrangement",
+                        );
+                    }
                 }
                 on_change();
             }
         })
+}
+
+/// Why a poll-thread request failed, if the failure is DEFINITIVE and the client should detach
+/// — `None` only for a genuinely transient hiccup to tolerate (re-park / keep the last frame).
+///
+/// Definitiveness is the DEFAULT: a broken pipe, a reset, an EOF — any dead connection — ends
+/// this client, tmux's rule that a client leaves when it can no longer serve its session. Only
+/// the handful of retryable kinds are tolerated; classifying a dead-socket write error
+/// (`BrokenPipe`) as transient would spin the long-poll forever, never detaching. The message
+/// separates the two REPORTABLE causes:
+/// * [`Other`](io::ErrorKind::Other) — [`HostConn::call`] maps a JSON-RPC error object to this;
+///   for a client that scopes every request to its session, the only such refusal is that
+///   session being killed while the daemon lives on for other sessions.
+/// * everything else definitive — the host socket is gone (the daemon exited, or a killed LAST
+///   session took the whole daemon with it).
+fn detach_reason(error: &io::Error) -> Option<&'static str> {
+    match error.kind() {
+        // Retryable: a signal interrupted the syscall, a non-blocking op would block, or a read
+        // timed out. Re-park and try again; the connection itself is fine.
+        io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => None,
+        // A refusal the host actually answered with — for a scoped client, its session is gone.
+        io::ErrorKind::Other => Some("this client's session was closed"),
+        // Any other error means the connection is dead — the host is gone.
+        _ => Some("the host exited"),
+    }
+}
+
+/// Ask the shell to end — the tmux detach — unless WE initiated the teardown (`stopped`), in
+/// which case the error is our own graceful `Drop` and quitting would be redundant.
+fn request_detach(quit: &Arc<dyn QuitSink>, stopped: bool, reason: &str, error: &io::Error) {
+    if !stopped {
+        tracing::info!(target: "sprag_gui::wire", %error, "{reason}; requesting client exit");
+        quit.request_quit();
+    }
 }
 
 #[cfg(test)]
@@ -977,6 +1019,87 @@ mod tests {
             quit.0.load(Ordering::SeqCst),
             1,
             "a host that vanished under us must ask the client to exit exactly once",
+        );
+    }
+
+    /// A connected [`HostConn`] whose server REFUSES every request with a JSON-RPC `-32602` —
+    /// the wire condition a client meets when its SESSION is killed while the daemon serves on
+    /// for others (`HostConn::call` maps the error object to [`io::ErrorKind::Other`], which
+    /// [`detach_reason`] reads as "session gone"). It counts the requests it received and stops
+    /// answering after two, so a client that FAILS to detach terminates the test (via EOF) rather
+    /// than spinning forever. The count is what proves the client left on the FIRST refusal.
+    fn a_session_killed_host_conn(
+        tag: &str,
+    ) -> (HostConn, JoinHandle<()>, SockGuard, Arc<AtomicUsize>) {
+        use std::io::Write;
+        let path = sock_path(tag);
+        let listener = UnixListener::bind(&path).expect("bind the throwaway host socket");
+        let conn = HostConn::connect(&path, Duration::from_secs(2)).expect("connect to it");
+        let seen = Arc::new(AtomicUsize::new(0));
+        let seen_srv = Arc::clone(&seen);
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept the client");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone the stream"));
+            let mut writer = stream;
+            let mut line = String::new();
+            // Refuse up to two requests with the same `-32602` the host raises for a scope naming
+            // a killed session; stop after two so a non-detaching client hits EOF and the test
+            // ends instead of the server answering a spin forever.
+            while seen_srv.load(Ordering::SeqCst) < 2
+                && reader.read_line(&mut line).is_ok_and(|n| n > 0)
+            {
+                seen_srv.fetch_add(1, Ordering::SeqCst);
+                let request: Value = serde_json::from_str(line.trim()).unwrap_or(Value::Null);
+                let reply = json!({
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "error": { "code": -32602, "message": "no session named \"1\"" },
+                });
+                let _ = writeln!(writer, "{reply}");
+                let _ = writer.flush();
+                line.clear();
+            }
+        });
+        (conn, server, SockGuard(path), seen)
+    }
+
+    /// The other definitive detach: a client whose SESSION was killed (the daemon still serves
+    /// other sessions) meets a scoped-request REFUSAL, and leaves at once — tmux's "the session
+    /// is gone, so the client detaches". Distinct from a dead host (which closes the socket);
+    /// here the socket is alive and answers with an ERROR, and [`detach_reason`] tells them apart.
+    ///
+    /// The `seen == 1` assertion is what makes this NON-VACUOUS: it proves the client detached on
+    /// the FIRST refusal, not after re-polling. REVERT-PROOF: change `detach_reason`'s `Other`
+    /// arm to `None` and the client tolerates the refusal, re-polls (seen becomes 2), then
+    /// detaches only on the EOF that follows — so `quit` still reads 1 (masking the defect) but
+    /// `seen` reads 2 and this fails.
+    #[test]
+    fn a_killed_session_asks_the_shell_to_quit_on_the_first_refusal() {
+        let (conn, server, _guard, seen) = a_session_killed_host_conn("killed");
+        let quit = Arc::new(RecordingQuit::default());
+        let stop = Arc::new(AtomicBool::new(false)); // NOT our teardown: the session was killed
+        let poll = spawn_poll(
+            conn,
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(LayoutSnapshot::default())),
+            Box::new(|| {}),
+            Arc::clone(&quit) as Arc<dyn QuitSink>,
+            Arc::clone(&stop),
+            0,
+        )
+        .expect("spawn the poll thread");
+        poll.join().expect("the poll thread exited");
+        server.join().expect("the server thread exited");
+
+        assert_eq!(
+            quit.0.load(Ordering::SeqCst),
+            1,
+            "a client whose session was killed must detach exactly once",
+        );
+        assert_eq!(
+            seen.load(Ordering::SeqCst),
+            1,
+            "and it must leave on the FIRST refusal, not repaint stale and re-poll",
         );
     }
 
