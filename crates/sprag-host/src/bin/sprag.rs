@@ -89,6 +89,16 @@ fn print_usage() {
 /// discovery of `sprag-term`.
 const GUI_BIN_ENV: &str = "SPRAG_GUI_BIN";
 
+/// Delete the durability snapshot for the daemon on this socket — so an EXPLICIT end-the-daemon
+/// command (kill-server, or a kill that ends the last session / window) does not leave a session
+/// the next daemon would resurrect. A NATURAL last-pane exit keeps the snapshot (a transient
+/// program exit retries next boot); only this explicit CLI path clears it. Best-effort: a missing
+/// file is fine, and this runs once the daemon is ending (its save loop dies with it), so it does
+/// not race a live save.
+fn clear_snapshot() {
+    let _ = std::fs::remove_file(sprag_host::snapshot_path(&socket_path(HOST_SOCKET)));
+}
+
 /// Connect to the running daemon, mapping a refused connection to a clear "no server" message
 /// rather than a raw errno — a management command needs the daemon to already exist.
 fn connect() -> io::Result<HostConn> {
@@ -239,8 +249,10 @@ fn kill_session(name: Option<String>) -> io::Result<()> {
         }
         // Killing the LAST session ends the daemon; its reply can be cut off by the exit at any
         // point — an EOF on the read, or a broken pipe / reset on the next write. Any of those
-        // means the server stopped, which is success, not failure.
+        // means the server stopped, which is success, not failure. Ending the daemon this way is
+        // explicit, so clear the snapshot (no resurrect next launch).
         Err(error) if server_gone(&error) => {
+            clear_snapshot();
             println!("killed {name} (server ended)");
             Ok(())
         }
@@ -280,6 +292,8 @@ fn kill_server() -> io::Result<()> {
             Err(error) => return Err(error),
         }
     }
+    // An explicit kill-server ends everything, so clear the snapshot — no resurrect next launch.
+    clear_snapshot();
     println!("server stopped");
     Ok(())
 }
@@ -477,8 +491,10 @@ fn kill_window(args: Vec<String>) -> io::Result<()> {
             Ok(())
         }
         // Killing the LAST window ends the session, and the last session ends the daemon: the reply
-        // can be severed by the exit (EOF / broken pipe / reset), which is success.
+        // can be severed by the exit (EOF / broken pipe / reset), which is success. Ending the
+        // daemon this way is explicit, so clear the snapshot (no resurrect next launch).
         Err(error) if server_gone(&error) => {
+            clear_snapshot();
             println!("killed {target} (server ended)");
             Ok(())
         }

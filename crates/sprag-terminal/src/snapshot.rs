@@ -119,8 +119,13 @@ pub struct PaneSnapshot {
     /// The full argv the pane was launched with (`[program, args…]`) — what an EXACT-COMMAND
     /// restore re-runs for an allowlisted program (`Host::restore`), else it falls back to a shell.
     /// `#[serde(default)]` so a pre-argv (slice-1) snapshot still loads — an empty argv simply
-    /// restores a shell, the slice-1 behaviour. Env is deliberately NOT here: a restored command
-    /// inherits the DAEMON's environment (where API keys live), so no secret is written to disk.
+    /// restores a shell, the slice-1 behaviour.
+    ///
+    /// The ENVIRONMENT is deliberately NOT persisted: a restored command inherits the DAEMON's env
+    /// (where API keys live), so an env-borne secret never reaches disk. The argv, HOWEVER, IS on
+    /// disk — a secret passed as a FLAG (`mysql -pSECRET`) lands here, which is why the snapshot
+    /// file is written owner-only (0600, `save_snapshot`). Prefer env / config files over
+    /// command-line secrets.
     #[serde(default)]
     pub argv: Vec<String>,
     /// The pane's size, so the restored shell opens at the same dimensions.
@@ -278,10 +283,10 @@ pub struct PaneRestore {
     pub id: PaneId,
     /// Where to spawn; `None` falls back to the daemon's cwd.
     pub cwd: Option<PathBuf>,
-    /// What was launched (a display name).
-    pub command_label: String,
     /// The full argv (`[program, args…]`) — re-run exactly for an allowlisted program, else a
-    /// shell in the cwd. Empty (a pre-argv snapshot) restores a shell.
+    /// shell in the cwd. Empty (a pre-argv snapshot) restores a shell. The restored pane's display
+    /// label is DERIVED from what actually re-ran (`restore_command`), so the recorded
+    /// `command_label` is not carried into the plan.
     pub argv: Vec<String>,
     /// The size to open at.
     pub cols: u16,
@@ -416,11 +421,10 @@ mod tests {
             .iter()
             .find(|p| p.session == "work")
             .expect("work's pane is in the plan");
-        assert_eq!(work_pane.command_label, "claude");
         assert_eq!(
             work_pane.argv,
             vec!["/bin/sh", "-c", "cat"],
-            "the full launch argv survives — what an exact-command restore re-runs",
+            "the full launch argv survives into the plan — what an exact-command restore re-runs",
         );
         assert_eq!((work_pane.cols, work_pane.rows), (100, 30));
         assert_eq!(
@@ -608,6 +612,42 @@ mod tests {
             SessionRegistry::from_snapshot(snap),
             Err(SnapshotError::Malformed(_)),
         ));
+    }
+
+    /// THE upgrade-safety claim: a slice-1 snapshot JSON — a pane with NO `argv` field — still
+    /// deserializes (`#[serde(default)]` fills it empty) and restores, so upgrading sprag never
+    /// rejects a user's saved state. An empty argv carries into the plan and restores as a shell.
+    #[test]
+    fn a_pre_argv_snapshot_still_loads_and_restores_as_a_shell() {
+        let json = r#"{
+            "version": 1,
+            "next_id": 1,
+            "default_size": [80, 24],
+            "sessions": [{
+                "name": "0",
+                "current_window": "0",
+                "windows": [{
+                    "name": "0",
+                    "layout": {"root": null},
+                    "floating": [],
+                    "panes": [
+                        {"id": 0, "cwd": null, "command_label": "sh", "cols": 80, "rows": 24}
+                    ]
+                }]
+            }]
+        }"#;
+        let snap: Snapshot = serde_json::from_str(json).expect("a pre-argv snapshot deserializes");
+        assert_eq!(
+            snap.sessions[0].windows[0].panes[0].argv,
+            Vec::<String>::new(),
+            "a missing argv defaults to empty — the serde-default upgrade safety",
+        );
+        let (_registry, plan) = SessionRegistry::from_snapshot(snap).expect("it restores");
+        assert_eq!(plan.panes.len(), 1);
+        assert!(
+            plan.panes[0].argv.is_empty(),
+            "the empty argv carries into the plan, so the pane restores as a shell",
+        );
     }
 
     /// A stored layout that is not well-formed (here: the same pane twice) is refused as

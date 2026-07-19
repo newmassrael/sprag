@@ -298,11 +298,17 @@ impl Host {
     /// restore half of the cmux-parity ring (`sprag-terminal::snapshot`).
     ///
     /// Replaces the empty boot registry with the snapshot's SHAPE (sessions, windows, layout
-    /// trees, float sets, the seeded id counter), then re-spawns every recorded pane as a fresh
-    /// shell IN ITS RECORDED CWD, under its OLD id so the trees resolve, with the daemon's own
-    /// `on_dirty` / `on_exit` hooks — the D4 birth-at-host seam: a restored pane must feed the
-    /// reaper exactly like a boot pane. The `Arc<Mutex<SessionRegistry>>` IDENTITY is preserved
-    /// (only its contents swap), so the reaper wired to it BEFORE this call stays valid.
+    /// trees, float sets, the seeded id counter), then re-spawns every recorded pane IN ITS
+    /// RECORDED CWD, under its OLD id so the trees resolve, with the daemon's own `on_dirty` /
+    /// `on_exit` hooks — the D4 birth-at-host seam: a restored pane must feed the reaper exactly
+    /// like a boot pane. The `Arc<Mutex<SessionRegistry>>` IDENTITY is preserved (only its contents
+    /// swap), so the reaper wired to it BEFORE this call stays valid.
+    ///
+    /// `allowlist` decides what each pane re-runs (`crate::restore_command`): a recorded
+    /// NON-shell program whose basename is in it re-runs EXACTLY; a shell, a non-allowlisted
+    /// program, or a cwd-less/argv-less pane restores a plain shell in the cwd. Injected (not read
+    /// from the environment here) so the caller owns the policy and a test is hermetic; the daemon
+    /// passes [`crate::restore_allowlist`].
     ///
     /// Hooks are FACTORIES — a fresh `Box` per pane (a `Box<dyn Fn>` cannot be reused) — so the
     /// daemon passes `|| Some(bump_on_dirty(&revision))` and
@@ -321,6 +327,7 @@ impl Host {
     pub fn restore(
         &self,
         snapshot: Snapshot,
+        allowlist: &std::collections::HashSet<String>,
         mut on_dirty: impl FnMut() -> Option<Box<dyn Fn() + Send>>,
         mut on_exit: impl FnMut() -> Option<Box<dyn Fn() + Send>>,
     ) -> Result<usize, SnapshotError> {
@@ -329,9 +336,6 @@ impl Host {
         // Swap the CONTENTS, preserving the Arc the reaper already holds a clone of.
         *lock(&self.registry) = registry;
 
-        // Resolve the exact-command allowlist ONCE (it reads the environment) — which recorded
-        // programs re-run exactly vs. fall back to a shell.
-        let allowlist = crate::restore_allowlist();
         let mut restored = 0usize;
         for pane in plan.panes {
             // Resolve the target window's pool (cloned Arc), then release the registry lock before
@@ -345,7 +349,7 @@ impl Host {
             // Re-run the exact command for an allowlisted program, else a shell in the cwd (a
             // shell / non-allowlisted / cwd-less pane). Env is re-derived from the daemon, not disk.
             let (command, label) =
-                crate::restore_command(&pane.argv, pane.cwd.as_deref(), &allowlist);
+                crate::restore_command(&pane.argv, pane.cwd.as_deref(), allowlist);
             match lock(&pool).spawn_with_dirty_id(
                 pane.id,
                 command,
@@ -756,7 +760,7 @@ mod tests {
         // A FRESH host restores it, as a daemon boot would (no hooks needed for the mechanism).
         let restored = Host::new((80, 24));
         let n = restored
-            .restore(snap, || None, || None)
+            .restore(snap, &std::collections::HashSet::new(), || None, || None)
             .expect("a valid snapshot restores");
         assert_eq!(n, 3, "all three panes came back");
 
@@ -825,7 +829,7 @@ mod tests {
 
         let host = Host::new((80, 24));
         let n = host
-            .restore(snap, || None, || None)
+            .restore(snap, &std::collections::HashSet::new(), || None, || None)
             .expect("a valid snapshot restores");
         assert_eq!(n, 2, "both the cwd and the cwd-less pane re-spawned");
         let ids = host.pane_ids();
@@ -839,6 +843,53 @@ mod tests {
         assert!(
             window.floating().contains(&PaneId(1)),
             "the floated pane restored as floated, not tiled",
+        );
+    }
+
+    /// The exact-command path through `Host::restore` end to end: a pane whose argv is an
+    /// ALLOWLISTED non-shell program (`cat`, long-lived on a PTY) comes back RE-RUNNING that
+    /// program — its `command_label` is `cat`, not a shell. The allowlist is passed explicitly
+    /// (hermetic — no env), so this is the only test that drives the re-run wiring live.
+    #[test]
+    fn restore_reruns_an_allowlisted_program_end_to_end() {
+        use sprag_terminal::{PaneSnapshot, SessionSnapshot, WindowSnapshot};
+
+        let allow: std::collections::HashSet<String> = ["cat".to_owned()].into_iter().collect();
+        let snap = Snapshot {
+            version: sprag_terminal::SNAPSHOT_VERSION,
+            next_id: 1,
+            default_size: (80, 24),
+            sessions: vec![SessionSnapshot {
+                name: "0".to_owned(),
+                current_window: "0".to_owned(),
+                windows: vec![WindowSnapshot {
+                    name: "0".to_owned(),
+                    layout: LayoutWire::default(),
+                    floating: vec![],
+                    panes: vec![PaneSnapshot {
+                        id: PaneId(0),
+                        cwd: None,
+                        command_label: "cat".to_owned(),
+                        argv: vec!["cat".to_owned()], // allowlisted -> re-run exactly
+                        cols: 80,
+                        rows: 24,
+                    }],
+                }],
+            }],
+        };
+
+        let host = Host::new((80, 24));
+        assert_eq!(
+            host.restore(snap, &allow, || None, || None)
+                .expect("restores"),
+            1,
+        );
+        let ws = host.workspace();
+        let pool = lock(&ws);
+        assert_eq!(
+            pool.pane(PaneId(0)).unwrap().command_label(),
+            "cat",
+            "the allowlisted program re-ran exactly, not a shell fallback",
         );
     }
 

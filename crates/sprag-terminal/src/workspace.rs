@@ -67,7 +67,9 @@ pub struct Pane {
     /// The full launch command (`[program, args…]`), captured from the [`CommandBuilder`] at
     /// spawn. What an exact-command restore re-runs for an allowlisted program (else it falls
     /// back to a shell). Distinct from [`command_label`](Self::command_label), which is just the
-    /// program name for display. Empty only for a pane whose snapshot predates argv capture.
+    /// program name for display. A live pane always has one (every spawn captures it); a pane
+    /// restored from a pre-argv snapshot re-runs a shell, so it comes back with the shell's argv,
+    /// never empty.
     argv: Vec<String>,
 }
 
@@ -389,9 +391,11 @@ impl Workspace {
 }
 
 /// The argv of a [`CommandBuilder`] as owned strings (`[program, args…]`) — read at spawn so a
-/// pane remembers what to re-run on restore. Lossy on a non-UTF-8 arg (which an exec'd program
-/// path effectively never is); the fidelity that matters — the program and its flags — is
-/// preserved.
+/// pane remembers what to re-run on restore. `to_string_lossy`, so a non-UTF-8 ARGUMENT (a
+/// filename in a legacy encoding, say) is mojibake'd and an exact restore would open the wrong
+/// path; the program name and ASCII flags — the common case — are exact. A faithful `OsString`
+/// argv does not round-trip cleanly through the JSON snapshot, so the lossy `String` is the
+/// deliberate trade-off.
 fn argv_of(command: &CommandBuilder) -> Vec<String> {
     command
         .get_argv()

@@ -13,7 +13,10 @@
 //! identity so two daemons on two sockets (tmux's per-socket-server model) keep two snapshots.
 
 use std::collections::HashSet;
-use std::io;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Write};
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -42,9 +45,15 @@ pub fn snapshot_path(socket: &Path) -> PathBuf {
     state_dir.join("sprag").join(format!("{key}.snapshot.json"))
 }
 
-/// Write `snapshot` to `path` ATOMICALLY: serialize to a sibling temp, then rename it over the
-/// target. A crash mid-write leaves the temp (harmless) or the previous good snapshot, never a
-/// half-written file a restore would choke on. Creates the parent dir if absent.
+/// Write `snapshot` to `path` ATOMICALLY and OWNER-PRIVATE: serialize to a sibling temp created
+/// mode 0600, fsync it, then rename it over the target. A crash mid-write leaves the temp
+/// (harmless) or the previous good snapshot, never a half-written file a restore would choke on.
+/// Creates the parent dir if absent and tightens it to 0700.
+///
+/// The 0600/0700 hardening matters because the snapshot now stores each pane's full argv, which can
+/// carry a credential passed as a flag (`mysql -pSECRET`, `curl -H 'Authorization: …'`). The file
+/// must never be world-readable; creating the temp 0600 from the start (not chmod-after-write)
+/// leaves no readable window.
 ///
 /// # Errors
 ///
@@ -53,6 +62,7 @@ pub fn snapshot_path(socket: &Path) -> PathBuf {
 pub fn save_snapshot(path: &Path, snapshot: &Snapshot) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
+        harden_dir(parent);
     }
     let json = serde_json::to_vec_pretty(snapshot).map_err(io::Error::other)?;
     // A per-target temp in the SAME directory, so the rename is atomic (same filesystem). One
@@ -60,9 +70,31 @@ pub fn save_snapshot(path: &Path, snapshot: &Snapshot) -> io::Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
-    std::fs::write(&tmp, &json)?;
+    let mut file = private_create(&tmp)?;
+    file.write_all(&json)?;
+    file.sync_all()?; // durable before the rename, so a power loss can't strand an empty file
+    drop(file);
     std::fs::rename(&tmp, path)
 }
+
+/// Create `path` for writing, truncated, OWNER-read/write only (0600) where the OS supports it —
+/// so the argv-bearing snapshot temp is never briefly world-readable.
+fn private_create(path: &Path) -> io::Result<File> {
+    let mut opts = OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    opts.mode(0o600);
+    opts.open(path)
+}
+
+/// Best-effort tighten `dir` to owner-only (0700) — the snapshot's argv can carry secrets.
+#[cfg(unix)]
+fn harden_dir(dir: &Path) {
+    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+}
+
+#[cfg(not(unix))]
+fn harden_dir(_dir: &Path) {}
 
 /// Read the snapshot at `path`, or `None` if there is none to restore — the FAIL-SAFE load.
 ///
@@ -105,24 +137,29 @@ pub fn save_if_changed(
     Ok(true)
 }
 
-/// The default set of program BASENAMES an exact-command restore re-runs — safe-to-rerun
-/// interactive programs (re-running has no side effect beyond opening the same view). Editors,
-/// pagers/monitors, remote sessions, and AI agents (sprag's focus — the cmux "agents come back").
+/// The default set of program BASENAMES an exact-command restore re-runs — interactive programs
+/// whose RELAUNCH is commonly desirable: editors, pagers/monitors, and AI agents (sprag's focus,
+/// the cmux "agents come back").
 ///
-/// Deliberately NO build tools, package managers, or one-shots: re-running `cargo build` or
-/// `rm -rf` on every reboot is the anti-pattern tmux-resurrect walked back. And NO shells — a
-/// shell is handled separately (a plain shell in the cwd), never re-run with its recorded argv,
-/// so a `bash -c '<destructive>'` cannot be re-executed.
+/// This gates the PROGRAM, not its whole argv. A restore re-runs the pane's exact recorded argv, so
+/// an allowlisted program that carries a side-effecting argument re-runs that too: `vim -c '<ex>'`,
+/// `emacs --eval '<elisp>'`. "Safe to relaunch" means "the operator accepts re-running this
+/// program's invocation," NOT "this can have no effect." Deliberately EXCLUDED from the default:
+/// shells (handled separately — `<shell> -c '<cmd>'` is NEVER re-run, see [`SHELLS`]); build tools /
+/// package managers / one-shots (`cargo build`, `rm` — the anti-pattern tmux-resurrect walked back);
+/// and `ssh`/`mosh`, which would re-run any REMOTE command in their argv (`ssh host 'systemctl
+/// restart …'`) — opt in via `SPRAG_RESTORE_PROGRAMS` if you accept that.
 const DEFAULT_RESTORE_PROGRAMS: &[&str] = &[
     "vi", "vim", "nvim", "emacs", "nano", "helix", "hx", "kak", // editors
-    "less", "more", "man", "tail", "top", "htop", "btop", // pagers / monitors
-    "ssh", "mosh",   // remote sessions
+    "less", "more", "man", "tail", "top", "htop", "btop",   // pagers / monitors
     "claude", // AI agents
 ];
 
-/// Shell basenames a restore NEVER re-runs with their recorded argv — it opens a plain shell in
-/// the cwd instead. This is a structural safety backstop: even if a user adds a shell to the
-/// allowlist, `<shell> -c '<anything>'` is never re-executed on a reboot.
+/// Shell basenames a restore NEVER re-runs with their recorded argv — it opens a plain shell in the
+/// cwd instead. A structural safety backstop: even if a user adds a shell to the allowlist,
+/// `<shell> -c '<anything>'` is never re-executed on a reboot. NOT a complete defence against a user
+/// allowlisting some OTHER interpreter/wrapper (`python -c`, `env`, `xargs`, `watch`) — the override
+/// is a trust boundary the operator owns; this covers the common shells only.
 const SHELLS: &[&str] = &[
     "sh", "bash", "zsh", "fish", "dash", "ash", "ksh", "tcsh", "csh",
 ];
@@ -133,14 +170,22 @@ const SHELLS: &[&str] = &[
 /// operator can set to opt out.
 #[must_use]
 pub fn restore_allowlist() -> HashSet<String> {
-    match std::env::var("SPRAG_RESTORE_PROGRAMS") {
-        Ok(list) => list
+    parse_allowlist(std::env::var("SPRAG_RESTORE_PROGRAMS").ok().as_deref())
+}
+
+/// Parse the allowlist from a raw `SPRAG_RESTORE_PROGRAMS` value: `Some(list)` is comma-separated
+/// basenames (trimmed, empties dropped — so an all-empty value disables exact restore entirely),
+/// `None` is the built-in [`DEFAULT_RESTORE_PROGRAMS`]. Split out from the env read so the parse is
+/// tested WITHOUT mutating the process environment, which would race any concurrent `getenv`.
+fn parse_allowlist(raw: Option<&str>) -> HashSet<String> {
+    match raw {
+        Some(list) => list
             .split(',')
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_owned)
             .collect(),
-        Err(_) => DEFAULT_RESTORE_PROGRAMS
+        None => DEFAULT_RESTORE_PROGRAMS
             .iter()
             .map(|s| (*s).to_owned())
             .collect(),
@@ -310,7 +355,7 @@ mod tests {
     /// by basename), in the recorded cwd — the cmux "agents come back" payoff.
     #[test]
     fn restore_command_reruns_an_allowlisted_program_exactly() {
-        let allow = restore_allowlist(); // default includes vim
+        let allow = parse_allowlist(None); // the default includes vim; no env read (hermetic)
         let argv = vec!["/usr/bin/vim".to_owned(), "notes.txt".to_owned()];
         let (command, label) = restore_command(&argv, Some(Path::new("/tmp")), &allow);
         assert_eq!(label, "/usr/bin/vim");
@@ -345,9 +390,10 @@ mod tests {
     }
 
     /// A non-allowlisted program (a build, a one-shot) falls back to a plain shell — never re-run.
+    /// A non-allowlisted program (a build, a one-shot) falls back to a plain shell — never re-run.
     #[test]
     fn restore_command_falls_back_to_a_shell_for_a_non_allowlisted_program() {
-        let allow = restore_allowlist(); // default: cargo is NOT in it
+        let allow = parse_allowlist(None); // default: cargo is NOT in it
         let argv = vec!["cargo".to_owned(), "build".to_owned()];
         let (command, _) = restore_command(&argv, None, &allow);
         assert!(
@@ -356,40 +402,40 @@ mod tests {
         );
     }
 
-    /// An empty argv (a pre-argv slice-1 snapshot) restores a shell in the cwd.
+    /// An empty argv (a pre-argv slice-1 snapshot) restores an actual SHELL in the cwd — the
+    /// program's basename is one of the known shells, not just "some non-empty argv".
     #[test]
     fn restore_command_restores_a_shell_for_empty_argv() {
-        let allow = restore_allowlist();
+        let allow = parse_allowlist(None);
         let (command, _) = restore_command(&[], Some(Path::new("/tmp")), &allow);
-        assert!(!argv_of(&command).is_empty(), "a shell has an argv");
+        let argv = argv_of(&command);
+        let base = argv
+            .first()
+            .and_then(|p| Path::new(p).file_name())
+            .and_then(|n| n.to_str());
+        assert!(
+            base.is_some_and(|b| SHELLS.contains(&b)),
+            "a shell fallback runs a shell ({argv:?}), not an arbitrary program",
+        );
         assert_eq!(cwd_of(&command).as_deref(), Some("/tmp"));
     }
 
-    /// `SPRAG_RESTORE_PROGRAMS` REPLACES the default allowlist; an empty value disables exact
-    /// restore entirely (every pane comes back as a shell).
+    /// The pure parser: an explicit value REPLACES the default (trimmed), an empty value disables
+    /// exact restore entirely, `None` is the default. Tested WITHOUT touching the process env, so
+    /// there is no `set_var`/`getenv` race with a concurrent sibling test.
     #[test]
-    fn the_allowlist_honors_the_env_override() {
-        let prior = std::env::var_os("SPRAG_RESTORE_PROGRAMS");
-        // SAFETY: single-threaded test.
-        unsafe { std::env::set_var("SPRAG_RESTORE_PROGRAMS", "vim, mycli ,ssh") };
-        let allow = restore_allowlist();
+    fn parse_allowlist_replaces_the_default_and_empty_disables() {
+        let allow = parse_allowlist(Some("vim, mycli ,ssh"));
         assert!(allow.contains("vim") && allow.contains("mycli") && allow.contains("ssh"));
         assert!(
             !allow.contains("claude"),
-            "the override REPLACES the default"
+            "an explicit value REPLACES the default"
         );
-
-        unsafe { std::env::set_var("SPRAG_RESTORE_PROGRAMS", "") };
         assert!(
-            restore_allowlist().is_empty(),
-            "an empty override disables exact restore (all panes -> shells)",
+            parse_allowlist(Some("")).is_empty(),
+            "an empty value disables exact restore (all panes -> shells)",
         );
-        unsafe {
-            match prior {
-                Some(v) => std::env::set_var("SPRAG_RESTORE_PROGRAMS", v),
-                None => std::env::remove_var("SPRAG_RESTORE_PROGRAMS"),
-            }
-        }
+        assert!(parse_allowlist(None).contains("vim"), "None is the default");
     }
 
     /// A missing file and a corrupt file both load as `None` — the fail-safe that boots the daemon

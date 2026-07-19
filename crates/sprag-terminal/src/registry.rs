@@ -701,7 +701,6 @@ impl SessionRegistry {
                         window: w.name.clone(),
                         id: p.id,
                         cwd: p.cwd.clone(),
-                        command_label: p.command_label.clone(),
                         argv: p.argv.clone(),
                         cols: p.cols,
                         rows: p.rows,

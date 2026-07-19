@@ -35,15 +35,16 @@
 //! pane — every pane belongs to a client's session, and one nobody attached to would be unseen
 //! and would pin the self-cleaning count above zero forever. Instead it RESTORES its durability
 //! snapshot if one survived a reboot (the `durability` ring — sessions, windows, layout and pane
-//! working directories rebuilt, each pane re-spawned as a shell in its cwd), else boots empty. A
-//! DELIBERATE clean exit (all panes closed, or `kill-server`) clears that snapshot, so the next
-//! daemon does not resurrect a session the user closed — only an unclean death (reboot / crash)
-//! leaves it to restore. Standalone mode (no `--daemon`) never persists and is unchanged.
+//! working directories rebuilt, each pane re-running its recorded command — an allowlisted program
+//! — or a shell in its cwd), else boots empty. A natural last-pane exit KEEPS the snapshot (so a
+//! transient program exit retries next boot); only an explicit `sprag kill-server` clears it
+//! (CLI-side). Standalone mode (no `--daemon`) never persists and is unchanged.
 
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
@@ -100,8 +101,7 @@ fn main() -> io::Result<()> {
     // BEFORE the spawn so the bumper and HostState share the one token.
     let revision = Arc::new(SceneRevision::new());
     let host = Host::new((args.cols, args.rows));
-    // The persistent snapshot path, resolved before the reaper so the reaper's clean-exit action
-    // can invalidate it. Used only in the daemon arms below.
+    // The persistent snapshot path, used only in the daemon arms below.
     let snap_path = snapshot_path(&sock);
     // Self-cleaning lifetime: when the LAST live pane across all sessions exits, the daemon has
     // nothing left to serve, so it ends — the tmux convention. `spawn_reaper` owns a dedicated
@@ -110,27 +110,23 @@ fn main() -> io::Result<()> {
     // pane's `on_exit` feeds. The exit action is INJECTED here (the library names neither exit
     // nor SIGTERM): it raises SIGTERM, so BOTH shutdown edges (an operator's Ctrl-C and the
     // last pane dying) funnel through the ONE `install_shutdown` routine that cancels + joins
-    // in-flight plugin runs. A daemon with no panes has no hook and cannot exit before its
-    // first pane; raising before the handler is installed (an instant-exit boot command) falls
-    // back to SIGTERM's default terminate, harmless since no run is in flight before boot.
+    // in-flight plugin runs.
     //
-    // On a DAEMON, this exit action also INVALIDATES the snapshot. Reaching it means every pane
-    // voluntarily exited (the user closed them, or `kill-server` drained them) — a deliberate
-    // close, so the next daemon must NOT resurrect the session. A REBOOT never reaches here: an
-    // interactive shell IGNORES SIGTERM, so a reboot's SIGTERM hits the daemon's own
-    // `install_shutdown` (which leaves the snapshot for restore), not this reaper. (The lone
-    // residual: a last pane running a foreground program that terminates ON SIGTERM, during a
-    // reboot, racing the daemon's own handler — rare; the common interactive-shell case is safe.)
-    let reaper_snap = if args.daemon {
-        Some(snap_path.clone())
-    } else {
-        None
-    };
+    // The reaper does NOT invalidate the snapshot. A last-pane exit is AMBIGUOUS — it may be a
+    // deliberate close OR a re-run program that just exited (a restored `ssh` whose network was
+    // not up yet at boot). Deleting on it would let a TRANSIENT exit destroy the very session the
+    // ring exists to preserve. So a natural exit KEEPS the snapshot (the next daemon retries), and
+    // only an EXPLICIT `sprag kill-server` (or kill of the last window/session) clears it —
+    // CLI-side, where the intent to end everything is unambiguous. The reaper also does NOT exit
+    // while a restore is IN FLIGHT (`restoring`): a re-run program that exits fast must not kill
+    // the daemon mid-loop, before the rest of the session is re-spawned.
+    let restoring = Arc::new(AtomicBool::new(false));
+    let reaper_restoring = Arc::clone(&restoring);
     let on_pane_exit = spawn_reaper(
         Arc::clone(host.registry()),
         Arc::new(move || {
-            if let Some(path) = &reaper_snap {
-                clear_snapshot(path);
+            if reaper_restoring.load(Ordering::Acquire) {
+                return; // a restore is spawning panes — a mid-loop exit must not end the daemon
             }
             let _ = signal_hook::low_level::raise(SIGTERM);
         }),
@@ -138,18 +134,24 @@ fn main() -> io::Result<()> {
     // A daemon RESTORES its last durable snapshot if one survived the reboot, else boots EMPTY:
     // every pane belongs to a client's session, so an un-restored boot pane would be a shell nobody
     // sees AND would pin the self-cleaning live count above zero for the daemon's life. Restore
-    // re-spawns each recorded pane's shell in its cwd with the SAME reaper/repaint hooks a boot pane
-    // gets (the D4 birth-at-host seam), so a restored pane feeds the reaper identically. A corrupt
-    // or absent snapshot leaves the registry empty — the pre-durability behaviour. Standalone still
-    // boots its one pane (the `sprag-term -- cmd` contract + the `wire_client` tests rely on it) and
-    // never persists.
+    // re-runs each recorded pane's command (an allowlisted program) or a shell in its cwd, with the
+    // SAME reaper/repaint hooks a boot pane gets (the D4 birth-at-host seam). A corrupt or absent
+    // snapshot leaves the registry empty — the pre-durability behaviour. Standalone still boots its
+    // one pane (the `sprag-term -- cmd` contract + the `wire_client` tests rely on it) and never
+    // persists.
     if args.daemon {
         if let Some(snapshot) = load_snapshot(&snap_path) {
-            match host.restore(
+            // Gate the reaper across the restore loop, then run it with the exact-command allowlist
+            // (read once from the environment here, injected so the host does not touch it).
+            restoring.store(true, Ordering::Release);
+            let outcome = host.restore(
                 snapshot,
+                &sprag_host::restore_allowlist(),
                 || Some(bump_on_dirty(&revision)),
                 || Some(pane_exit_hook(&on_pane_exit)),
-            ) {
+            );
+            restoring.store(false, Ordering::Release);
+            match outcome {
                 Ok(n) => tracing::info!(
                     target: "sprag_host::durability",
                     "restored {n} pane(s) from {}",
@@ -250,27 +252,6 @@ fn spawn_snapshot_saver(registry: Arc<Mutex<SessionRegistry>>, path: PathBuf) {
             }
         }
     });
-}
-
-/// Delete the durability snapshot on a DELIBERATE clean exit (every pane voluntarily gone, or a
-/// `kill-server` drain), so the NEXT daemon does not resurrect a session the user closed. A reboot
-/// never calls this (an interactive shell ignores SIGTERM, so a reboot's SIGTERM reaches the
-/// daemon's `install_shutdown`, not the reaper). A missing file is fine (nothing was saved yet);
-/// a real error is logged, not fatal.
-fn clear_snapshot(path: &Path) {
-    match std::fs::remove_file(path) {
-        Ok(()) => tracing::info!(
-            target: "sprag_host::durability",
-            "cleared snapshot on clean exit: {}",
-            path.display()
-        ),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => tracing::warn!(
-            target: "sprag_host::durability",
-            "could not clear snapshot {}: {e}",
-            path.display()
-        ),
-    }
 }
 
 /// Install SIGINT/SIGTERM graceful shutdown: on the first such signal, cancel
