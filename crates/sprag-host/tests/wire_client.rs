@@ -563,7 +563,8 @@ fn two_sessions_under_one_daemon_are_independent_over_the_real_socket() {
         "the default's boot pane"
     );
 
-    // Create a second session by name, over the wire.
+    // Create a second session by name, over the wire. It is BORN with one pane (tmux's
+    // new-session) — landed in `work`, not the default.
     let created = conn
         .call(
             "scene/invoke",
@@ -574,15 +575,27 @@ fn two_sessions_under_one_daemon_are_independent_over_the_real_socket() {
         created, "work",
         "the answer is the name to scope with: {created}"
     );
+    let born = pane_ids_in(&mut conn, "work");
+    assert_eq!(
+        born.len(),
+        1,
+        "work is born with its shell, never empty: {born:?}",
+    );
+    let birth = born[0];
+    assert_eq!(
+        pane_ids_in(&mut conn, "0"),
+        vec![0],
+        "...and the birth pane landed in work, not the default",
+    );
 
-    // Spawn two panes into `work`. Ids come from ONE registry-wide counter, so they are 1 and
-    // 2 — distinct from the default's 0, which is what lets the sets be told apart.
-    let w1 = spawn_in(&mut conn, "work");
-    let w2 = spawn_in(&mut conn, "work");
+    // Spawn a second pane into `work`. Ids come from ONE registry-wide counter, so the birth
+    // pane and this spawn are both distinct from the default's 0 — which is what lets the sets
+    // be told apart.
+    let w = spawn_in(&mut conn, "work");
     assert_eq!(
         pane_ids_in(&mut conn, "work"),
-        vec![w1, w2],
-        "work holds exactly what was spawned into it",
+        vec![birth, w],
+        "work holds its birth pane and the one spawned into it",
     );
     assert_eq!(
         pane_ids_in(&mut conn, "0"),
@@ -600,8 +613,8 @@ fn two_sessions_under_one_daemon_are_independent_over_the_real_socket() {
             "args": { "expected_revision": rev, "tree": { "root": { "split": {
                 "dir": "vertical",
                 "ratio": 0.8,
-                "first": { "leaf": w1 },
-                "second": { "leaf": w2 },
+                "first": { "leaf": birth },
+                "second": { "leaf": w },
             } } } },
         }),
     )
@@ -627,16 +640,16 @@ fn two_sessions_under_one_daemon_are_independent_over_the_real_socket() {
         "the default session's arrangement was never touched by work's gesture",
     );
 
-    // Closing work's pane leaves the default's set alone — lifecycle is scoped too.
+    // Closing work's spawned pane leaves the default's set alone — lifecycle is scoped too.
     conn.call(
         "scene/invoke",
-        json!({ "session": "work", "path": mux_action_path(CLOSE_ACTION), "args": { "id": w2 } }),
+        json!({ "session": "work", "path": mux_action_path(CLOSE_ACTION), "args": { "id": w } }),
     )
     .expect("close in work answers");
     assert_eq!(
         pane_ids_in(&mut conn, "work"),
-        vec![w1],
-        "work lost its pane"
+        vec![birth],
+        "work lost its spawned pane, keeping its birth pane",
     );
     assert_eq!(
         pane_ids_in(&mut conn, "0"),

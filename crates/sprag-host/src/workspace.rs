@@ -13,7 +13,8 @@
 //! * `resize {id, cols, rows}` → resizes a pane's PTY + emulator.
 //! * `set_layout {tree}` → installs a client's settled arrangement, returns the canonical one.
 //! * `set_floating {id, floating}` → takes a pane out of the tiling / puts it back.
-//! * `new_session {name?}` → creates a session (absent name → lowest free), returns its name.
+//! * `new_session {name?, cmd?, cols?, rows?}` → creates a session BORN with one pane (absent
+//!   name → lowest free; `cmd`/`cols`/`rows` shape the birth pane), returns its name.
 //! * `kill_session {name}` → kills a session; the last one ends the daemon (tmux kill-session).
 //!
 //! Read channel (`scene/query`):
@@ -59,7 +60,7 @@ use pinion_core::external::{
 };
 use serde_json::{Map, Value};
 use sprag_terminal::{
-    CommandBuilder, KillOutcome, LayoutSnapshot, LayoutWire, SessionRegistry, Workspace,
+    CommandBuilder, KillOutcome, LayoutSnapshot, LayoutWire, PaneId, SessionRegistry, Workspace,
 };
 
 use crate::bump_on_dirty;
@@ -111,6 +112,17 @@ pub struct WorkspaceExternal {
     on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
+/// A VALIDATED pane-spawn request — the command, its label, and any explicit dims. Produced by
+/// [`WorkspaceExternal::parse_spawn`] from the wire args, so a MALFORMED request is rejected
+/// (`TypeMismatch`) before any pane — or session — is built. `cols`/`rows` left `None` take the
+/// target pool's default size at spawn.
+struct SpawnSpec {
+    command: CommandBuilder,
+    label: String,
+    cols: Option<u16>,
+    rows: Option<u16>,
+}
+
 impl WorkspaceExternal {
     /// Build the control surface over the shared mux registry, the session it is scoped to,
     /// the shared scene-version token, and the daemon's `on_pane_exit` death-signal (`None` off
@@ -137,9 +149,58 @@ impl WorkspaceExternal {
         self.scope.workspace()
     }
 
-    /// `spawn` action: create a pane and return its id. `cmd` (an argv
-    /// array) defaults to `$SHELL`; `cols`/`rows` default to the
-    /// workspace's default size.
+    /// Parse + VALIDATE the `{cmd?, cols?, rows?}` spawn spec — the REQUEST-validation half of a
+    /// spawn, pool-free so it runs before anything is built. A malformed field (`cmd` present but
+    /// not an array, a non-`u16` `cols`/`rows`) is a `TypeMismatch` HERE, the same refusal the
+    /// `spawn` action and `new_session`'s own `name` field give a type error — so a `new_session`
+    /// can reject a malformed birth spec before it creates the session. `cmd` (an argv array)
+    /// defaults to `$SHELL`; `cols`/`rows` left `None` take the pool's default size at spawn.
+    fn parse_spawn(map: &Map<String, Value>) -> Result<SpawnSpec, InvokeError> {
+        let (command, label) = match map.get("cmd") {
+            None => sprag_terminal::default_shell_command(),
+            Some(Value::Array(argv)) => build_command(argv)?,
+            Some(_) => return Err(InvokeError::TypeMismatch),
+        };
+        Ok(SpawnSpec {
+            command,
+            label,
+            cols: opt_dim(map, "cols")?,
+            rows: opt_dim(map, "rows")?,
+        })
+    }
+
+    /// Fork/exec a validated [`SpawnSpec`] into `pool` — the RUNTIME half, shared by the `spawn`
+    /// action and a [`new_session`](Self::new_session)'s birth pane.
+    ///
+    /// Wired WITH the change-notification hook (so this pane's output bumps the SAME revision the
+    /// boot pane's does — a client's `scene/waitFor` wakes on it exactly as on the boot pane) and,
+    /// under a daemon, the `on_pane_exit` death-signal (so THIS pane's death feeds the reaper). A
+    /// fork/exec failure is `Rejected` — a WELL-FORMED request the OS could not honor (a broken
+    /// `$SHELL`, an argv it cannot `exec`), DISTINCT from the malformed request [`parse_spawn`]
+    /// already rejected. Does NOT bump the revision — the caller signals its set change once (a
+    /// plain `spawn`, or the create that births this pane), so the two never double-bump or drift.
+    fn spawn_parsed(
+        &self,
+        pool: &Arc<Mutex<Workspace>>,
+        spec: SpawnSpec,
+    ) -> Result<PaneId, InvokeError> {
+        let on_exit = self.on_pane_exit.as_ref().map(crate::pane_exit_hook);
+        let mut workspace = lock(pool);
+        let (default_cols, default_rows) = workspace.default_size();
+        workspace
+            .spawn_with_dirty(
+                spec.command,
+                spec.label,
+                spec.cols.unwrap_or(default_cols),
+                spec.rows.unwrap_or(default_rows),
+                Some(bump_on_dirty(&self.revision)),
+                on_exit,
+            )
+            .map_err(|_| InvokeError::Rejected)
+    }
+
+    /// `spawn` action: create a pane in THIS request's session and return its id. `cmd` (an argv
+    /// array) defaults to `$SHELL`; `cols`/`rows` default to the workspace's default size.
     fn spawn(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let empty = Map::new();
         let map = match args {
@@ -147,37 +208,10 @@ impl WorkspaceExternal {
             IntrospectValue::Null => &empty,
             _ => return Err(InvokeError::TypeMismatch),
         };
-        let (command, label) = match map.get("cmd") {
-            None => sprag_terminal::default_shell_command(),
-            Some(Value::Array(argv)) => build_command(argv)?,
-            Some(_) => return Err(InvokeError::TypeMismatch),
-        };
-        // Spawn WITH the change-notification hook (not the plain `spawn`), so this
-        // pane's output bumps the SAME revision the boot pane's does — a client's
-        // `scene/waitFor` then wakes on a mux-spawned pane exactly as it does on the
-        // boot pane. Under a daemon it also carries the death-signal, so THIS pane's death
-        // feeds the reaper. The lock is scoped so the set-change bump below fires without it.
-        let on_exit = self.on_pane_exit.as_ref().map(crate::pane_exit_hook);
-        let id = {
-            let pool = self.workspace();
-            let mut workspace = lock(pool);
-            let (default_cols, default_rows) = workspace.default_size();
-            let cols = opt_dim(map, "cols")?.unwrap_or(default_cols);
-            let rows = opt_dim(map, "rows")?.unwrap_or(default_rows);
-            workspace
-                .spawn_with_dirty(
-                    command,
-                    label,
-                    cols,
-                    rows,
-                    Some(bump_on_dirty(&self.revision)),
-                    on_exit,
-                )
-                .map_err(|_| InvokeError::Rejected)?
-        };
-        // A NEW pane changed the set: wake parked waiters now, before its first
-        // output, so a mirror learns the pane exists immediately (the pane-set
-        // change-notification, distinct from the per-pane output bump above).
+        let id = self.spawn_parsed(self.workspace(), Self::parse_spawn(map)?)?;
+        // A NEW pane changed the set: wake parked waiters now, before its first output, so a
+        // mirror learns the pane exists immediately (the pane-set change-notification, distinct
+        // from the per-pane output bump the hook fires).
         self.revision.bump();
         Ok(IntrospectValue::Int(
             i64::try_from(id.0).unwrap_or(i64::MAX),
@@ -263,36 +297,85 @@ impl WorkspaceExternal {
         layout_value(snapshot).ok_or(InvokeError::Rejected)
     }
 
-    /// `new_session {name?}` action: create a session, answering with its name.
+    /// `new_session {name?, cmd?, cols?, rows?}` action: create a session BORN WITH A SHELL,
+    /// answering with its name.
     ///
     /// `name` mirrors the `session` scope param's own three-way shape: ABSENT asks the
     /// registry to allocate the lowest free name (tmux's `new-session` with no `-s`), a STRING
     /// names it, and a NON-STRING is a malformed request — rejected, never silently allocated,
-    /// which would be the same alias smell the scope param refuses in its type-error corner.
+    /// which would be the same alias smell the scope param refuses in its type-error corner. The
+    /// `cmd`/`cols`/`rows` birth spec is validated the SAME way, before the session is created
+    /// ([`parse_spawn`](Self::parse_spawn)): a malformed one is rejected with nothing built.
     ///
-    /// Creating is not attaching, and nothing here changes what any other client sees: the
-    /// new session starts empty, and every client's scope is either its own name or the default
-    /// (which a `kill_session` of the current default re-points, but a `new_session` never
-    /// moves). The answer is the name — indispensable for the allocated case (the
-    /// caller did not choose it) — so a caller can scope its next request with what it just
-    /// made, without a round trip to [`SESSIONS_SLOT`] to confirm.
+    /// On the happy path a session is born with one pane — tmux's `new-session`, where creating a
+    /// session always spawns its first window's pane — so it is not empty. `cmd`/`cols`/`rows`
+    /// shape that birth pane, mirroring tmux's `new-session -x -y [command]`: the GUI passes its
+    /// own first pane so a client's configured layout tops up from it without a default-shell
+    /// mismatch; the CLI passes nothing and gets the default `$SHELL` at the pool's default size.
+    /// Putting the spawn HERE (the server-side command handler, sprag's `cmd-new-session`) rather
+    /// than in each caller keeps "a session has a shell" an invariant at the authority, not a
+    /// convention every caller must remember — and it is here, not in the pinion-free registry,
+    /// because the pane's death-signal ([`on_pane_exit`]) is a daemon-lifetime concern the
+    /// registry does not carry. A RUNTIME fork/exec failure is the one case that still leaves the
+    /// session empty (see the birth site below) — best-effort, not an absolute invariant.
+    ///
+    /// Creating is not attaching, and nothing here changes what any other client sees: every
+    /// client's scope is either its own name or the default (which a `kill_session` of the current
+    /// default re-points, but a `new_session` never moves). The answer is the name — indispensable
+    /// for the allocated case (the caller did not choose it) — so a caller can scope its next
+    /// request with what it just made, without a round trip to [`SESSIONS_SLOT`] to confirm.
+    ///
+    /// [`on_pane_exit`]: Self::on_pane_exit
     fn new_session(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
-        let name = match as_object(args)?.get("name") {
+        let map = as_object(args)?;
+        let name = match map.get("name") {
             None => None,
             Some(Value::String(name)) => Some(name.as_str()),
             Some(_) => return Err(InvokeError::TypeMismatch),
         };
-        let allocated = match lock(&self.registry).new_session(name) {
-            Ok(allocated) => allocated,
-            Err(error) => {
+        // VALIDATE the birth spec BEFORE creating anything, so a malformed `cmd`/`cols`/`rows` is
+        // rejected with no session built — uniform with the `spawn` action and with `name` above.
+        // Only a RUNTIME fork/exec failure (the birth site below) is tolerated non-fatally.
+        let spec = Self::parse_spawn(map)?;
+        // Create the empty session shell under the registry authority, then clone its pool Arc OUT
+        // (via `workspace_of`, the one helper for exactly this) so the birth pane spawns OFF the
+        // registry lock — the established registry->workspace order, never nested across a
+        // fork/exec that would otherwise stall every other request on the registry lock. This
+        // narrows the once-a-round-trip empty-session window to two in-handler lock ops. The
+        // residual — an unrelated last pane dying between them, self-exiting the daemon under a
+        // just-connecting client — is the INHERENT "zero live panes ⇒ exit" race: fail-safe (no
+        // corruption — the birth pane either wins the pool lock and the daemon survives, or the
+        // daemon SIGTERMs and this call returns `UnexpectedEof`). It is NOT recovered here: the
+        // joining client's boot fails hard, and only a fresh relaunch's connect-or-spawn brings up
+        // the next daemon. It closes fully once a just-created session can pin liveness (increment).
+        let (allocated, pool) = {
+            let mut registry = lock(&self.registry);
+            let allocated = registry.new_session(name).map_err(|error| {
                 tracing::debug!(target: "sprag_host", %error, "refused to create a session");
                 // A taken name is the client's mistake, not a malformed request: it is
                 // well-formed and simply cannot be honored.
-                return Err(InvokeError::Rejected);
-            }
+                InvokeError::Rejected
+            })?;
+            let pool = registry
+                .workspace_of(&allocated)
+                .expect("the session just created resolves");
+            (allocated, pool)
         };
-        // The session SET changed, so a client watching the surface learns of it the way it
-        // learns of a pane-set change — by being woken, not by polling.
+        // Birth the pane. Only a RUNTIME fork/exec failure reaches here (a broken `$SHELL`, an argv
+        // the OS cannot `exec`) — the malformed request was already rejected above. It is logged,
+        // not fatal: the session still exists as a valid attach target, merely empty until a pane
+        // is added, so "a well-formed create with a free name succeeds" stays total rather than
+        // orphaning a half-created session behind an error.
+        if let Err(error) = self.spawn_parsed(&pool, spec) {
+            tracing::warn!(
+                target: "sprag_host",
+                ?error,
+                session = %allocated,
+                "the birth pane could not spawn; the session was created empty",
+            );
+        }
+        // The session SET changed AND (on success) it now holds a live pane: wake a client
+        // watching the surface once, the way it learns of any pane-set change.
         self.revision.bump();
         Ok(IntrospectValue::Json(Value::String(allocated)))
     }
@@ -1198,6 +1281,142 @@ mod tests {
             lock(&reg).sessions().len(),
             3,
             "the boot session, plus 1 and 2"
+        );
+    }
+
+    /// tmux's `new-session`: a created session is BORN with one pane — never empty — and the
+    /// birth pane takes the request's `cmd`/`cols`/`rows` (tmux's `new-session -x -y command`),
+    /// so a client's first pane is exactly what it asked for. The DEFAULT session is untouched: a
+    /// create births a pane in the NEW session, never the default (the daemon's empty anchor).
+    #[test]
+    fn a_new_session_is_born_with_a_shell() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        assert_eq!(
+            ext.invoke(
+                NEW_SESSION_ACTION,
+                IntrospectValue::Json(
+                    json!({"name": "work", "cmd": ["cat"], "cols": 40, "rows": 12})
+                ),
+            ),
+            Ok(IntrospectValue::Json(Value::String("work".to_owned()))),
+        );
+        assert_eq!(
+            lock(&pool_of(&reg, "work")).panes().len(),
+            1,
+            "a session is born with exactly one pane (tmux new-session), never empty",
+        );
+        // The birth pane runs the request's cmd at its size — the caller's first pane, exact.
+        let (work, _w) = scoped_control(&reg, scope_of(&reg, "work"));
+        assert_eq!(
+            work.query(PANES_SLOT),
+            Some(IntrospectValue::Json(json!([
+                {"id": 0, "cols": 40, "rows": 12, "command": "cat", "title": null}
+            ]))),
+            "the birth pane runs the request's cmd at its size",
+        );
+        assert!(
+            lock(&pool(&reg)).panes().is_empty(),
+            "the default session is untouched — a create births a pane in the NEW session",
+        );
+    }
+
+    /// A session born via `new_session` feeds the reaper when its birth pane dies — the guard
+    /// that the birth pane is HOOKED with the death-signal. This is WHY the birth spawn lives at
+    /// the host layer (which carries [`on_pane_exit`](WorkspaceExternal::on_pane_exit)) and NOT
+    /// in the pinion-free registry: a registry-side birth would be the unhooked-pane category
+    /// R160/R161 closed, leaving a daemon lingering over a dead session. Driven through the real
+    /// action, so a refactor that moved the spawn off the hooked path would fail here.
+    #[test]
+    fn a_new_session_born_pane_feeds_the_reaper() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::{Duration, Instant};
+
+        let reg = registry();
+        let fired = Arc::new(AtomicUsize::new(0));
+        let f = Arc::clone(&fired);
+        let on_empty: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            f.fetch_add(1, Ordering::SeqCst);
+        });
+        let signal = crate::spawn_reaper(Arc::clone(&reg), on_empty);
+        let mut ext = WorkspaceExternal::new(
+            Arc::clone(&reg),
+            SessionScope::unscoped(&reg),
+            Arc::new(SceneRevision::new()),
+            Some(signal),
+        );
+        // The birth pane EXITS immediately and is the only pane in the registry (the default "0"
+        // is empty), so its death must self-clean the daemon — which happens ONLY if the pane
+        // fed the reaper.
+        ext.invoke(
+            NEW_SESSION_ACTION,
+            IntrospectValue::Json(json!({"cmd": ["true"]})),
+        )
+        .expect("new_session births a pane");
+        let start = Instant::now();
+        while fired.load(Ordering::SeqCst) == 0 && start.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            1,
+            "the birth pane's death self-cleans the daemon, proving it was hooked — a \
+             registry-side birth would feed no reaper and leave a lingering daemon",
+        );
+    }
+
+    /// A MALFORMED birth spec is rejected BEFORE the session is created — uniform with the `spawn`
+    /// action and with a bad `name`. Birthing at this authority buys uniform validation; a `cmd`
+    /// that is not an array, or a non-`u16` `cols`/`rows`, must not slip through as a silently
+    /// empty session reported as success.
+    #[test]
+    fn new_session_rejects_a_malformed_birth_spec_and_creates_nothing() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        for bad in [
+            json!({"cmd": 42}),
+            json!({"name": "work", "cmd": "cat"}),
+            json!({"cols": 0}),
+        ] {
+            assert_eq!(
+                ext.invoke(NEW_SESSION_ACTION, IntrospectValue::Json(bad.clone())),
+                Err(InvokeError::TypeMismatch),
+                "a malformed birth spec is a type error, not a silent empty session: {bad}",
+            );
+        }
+        assert_eq!(
+            lock(&reg).sessions().len(),
+            1,
+            "every rejected create built nothing — only the boot session remains",
+        );
+    }
+
+    /// A RUNTIME birth failure (an argv the OS cannot `exec`) is non-fatal: the session is still
+    /// created (a valid attach target, merely empty) and answered with its name — so "a well-formed
+    /// create with a free name succeeds" stays total. This is the ONE case a created session is
+    /// empty, distinct from a malformed request (which creates nothing — the guard above).
+    #[test]
+    fn a_new_session_whose_birth_pane_cannot_exec_is_created_empty() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        assert_eq!(
+            ext.invoke(
+                NEW_SESSION_ACTION,
+                IntrospectValue::Json(json!({
+                    "name": "work",
+                    "cmd": ["/nonexistent/definitely-not-a-real-binary"],
+                })),
+            ),
+            Ok(IntrospectValue::Json(Value::String("work".to_owned()))),
+            "a well-formed create with a free name succeeds even when the birth pane cannot exec",
+        );
+        assert!(
+            lock(&reg).session("work").is_some(),
+            "the session exists as a valid attach target",
+        );
+        assert!(
+            lock(&pool_of(&reg, "work")).panes().is_empty(),
+            "...but it is empty: the birth pane's exec failed, non-fatally",
         );
     }
 

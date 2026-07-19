@@ -155,13 +155,18 @@ pub use sprag_rpc::SESSION_PARAM;
 /// must guess at, and the whole point of the scene-as-data surface is that a peer ASKS.
 pub const SESSIONS_SLOT: &str = "sessions";
 
-/// The mux control external invoke action that creates a session (`{name}`), returning its
-/// name.
+/// The mux control external invoke action that creates a session BORN WITH A SHELL
+/// (`{name?, cmd?, cols?, rows?}`), returning its name.
 ///
-/// An ACTION, not an `intervene` slot: it is not a plain assignment — the name must be free
-/// (a name is an ADDRESS, so a duplicate would make one ambiguous) and the create is
-/// refusable. Creating is deliberately NOT attaching: it changes no other client's scope,
-/// because nothing can — the default is immutable and every other client names its own.
+/// Creating one spawns its first pane, mirroring tmux's `new-session -x -y [command]`
+/// (`cmd`/`cols`/`rows` shape that pane; absent → `$SHELL` at the pool's default size), so on the
+/// happy path a session is not empty (only a runtime fork/exec failure leaves it so). A malformed
+/// birth spec is rejected before the session is created, the same as a bad `name`. An ACTION, not
+/// an `intervene` slot: it is not a plain assignment — the
+/// name must be free (a name is an ADDRESS, so a duplicate would make one ambiguous) and the
+/// create is refusable. Creating is deliberately NOT attaching: it changes no other client's
+/// scope, because nothing can — a `new_session` never moves the default, and every other client
+/// names its own.
 pub const NEW_SESSION_ACTION: &str = "new_session";
 
 /// The mux control external invoke action that kills a session (`{name}`) — tmux

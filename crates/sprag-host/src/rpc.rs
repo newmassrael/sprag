@@ -1352,8 +1352,8 @@ mod tests {
         );
     }
 
-    /// A second session over the REAL dispatch: created by name, then addressed by it — and
-    /// what it holds is its own.
+    /// A second session over the REAL dispatch: created by name (BORN with its own shell), then
+    /// addressed by it — and what it holds is its own.
     #[test]
     fn a_named_session_is_addressable_and_holds_its_own_panes() {
         let state = host_with("cat", 20, 4);
@@ -1363,8 +1363,10 @@ mod tests {
         );
         assert_eq!(created["result"], "work", "{created}");
 
-        // Spawn into `work` by naming it. The default already holds the boot pane, so a
-        // surface that ignored the scope would answer 2 here, not 1.
+        // `work` is born with one pane (its birth shell), landed in IT — not the default. Then a
+        // `cat`, spawned by NAMING `work`, joins it. A surface that ignored the scope would put
+        // both the birth pane and this spawn in the DEFAULT — leaving work at 0 and the default
+        // at 3 — so work == 2 and default == 1 proves the scope routed each to `work` alone.
         let spawned = serve_one(
             &state,
             r#"{"jsonrpc":"2.0","id":2,"method":"scene/invoke","params":{"session":"work","path":"/sprag_mux/external/spawn","args":{"cmd":["cat"]}}}"#,
@@ -1380,7 +1382,11 @@ mod tests {
                 .map(Vec::len)
                 .expect("the panes slot answers with an array")
         };
-        assert_eq!(panes("work"), 1, "work holds only what was spawned into it");
+        assert_eq!(
+            panes("work"),
+            2,
+            "work holds its birth pane plus the one spawned into it"
+        );
         assert_eq!(panes("0"), 1, "the default still holds only its boot pane");
     }
 

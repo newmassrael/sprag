@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! sprag ls                 list every session
-//! sprag new [name]         create a session (absent name -> the lowest free), print its name
+//! sprag new [name]         create a session with a shell (absent name -> the lowest free), print its name
 //! sprag kill-session NAME   kill a session (the last one ends the daemon)
 //! sprag kill-server        kill every session, ending the daemon
 //! ```
@@ -90,8 +90,9 @@ fn ls() -> io::Result<()> {
     Ok(())
 }
 
-/// `new [name]`: create a session (the registry allocates the lowest free name when none is
-/// given) and print the name it got — the string to scope a client to.
+/// `new [name]`: create a session — born with a shell, tmux's `new-session -d` (the registry
+/// allocates the lowest free name when none is given) — and print the name it got, the string to
+/// scope a client to. The CLI passes no `cmd`/size, so the birth pane runs the default `$SHELL`.
 fn new(name: Option<String>) -> io::Result<()> {
     let mut conn = connect()?;
     let args = match &name {

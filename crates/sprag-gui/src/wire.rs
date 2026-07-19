@@ -251,7 +251,13 @@ impl WireHost {
         // ALLOCATES a fresh one (spawn our own panes) — the "each launch is its own session"
         // model. `boot_panes` branches on `created`, replacing the old "did we spawn the host"
         // key with "did we create the session".
-        let (session, created) = resolve_session(&mut conn)?;
+        // Read the requested-session env HERE (not inside `resolve_session`, which stays a pure
+        // decision over its inputs): [`SESSION_ENV`] names a session to ATTACH to, absent creates.
+        let requested = std::env::var_os(SESSION_ENV)
+            .filter(|name| !name.is_empty())
+            .map(|name| name.to_string_lossy().into_owned());
+        let (session, created) =
+            resolve_session(&mut conn, requested.as_deref(), argv.as_deref(), cols, rows)?;
         conn.scope_to(session.clone());
         let seeds = boot_panes(&mut conn, argv.as_deref(), cols, rows, n_panes, created)?;
 
@@ -609,31 +615,46 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
 
 /// Resolve WHICH session this client acts on, over `conn` (before it is scoped).
 ///
+/// `requested` is the caller's [`SESSION_ENV`] (resolved by `spawn_or_attach` so this function
+/// stays a pure, testable decision over its inputs, not a reader of process-global env).
 /// Returns the session name and whether this client CREATED it:
-/// * [`SESSION_ENV`] names one → ATTACH (`created = false`): the session must already exist
+/// * `requested` names one → ATTACH (`created = false`): the session must already exist
 ///   on the reached host; its live panes are adopted (tmux reattach). A name no session
 ///   carries makes the first scoped read fail, which fails the boot honestly rather than
-///   silently opening an empty window.
-/// * absent → ALLOCATE a fresh session (`created = true`) via the registry's own auto-naming
+///   silently opening an empty window. NO `new_session` is sent — attach never births a pane.
+/// * `None` → ALLOCATE a fresh session (`created = true`) via the registry's own auto-naming
 ///   ([`NEW_SESSION_ACTION`] with no name), so two clients never invent one name and race.
 ///   This call is deliberately made BEFORE the connection is scoped — creating a session is a
 ///   registry-wide act, not one scoped to a session that does not exist yet.
 ///
-/// **Bound (allocate path, joining an existing daemon):** the freshly-allocated session is
-/// empty until [`boot_panes`] spawns its first pane one round trip later, and the daemon's
-/// self-cleaning counts an empty session as having no live panes. So if the daemon's last
-/// OTHER pane exits in that create→spawn window, the daemon can self-exit and this boot fails
-/// with `UnexpectedEof` — an honest error, never corruption, and unreachable for the FIRST
-/// client of a fresh daemon (no pane exists to die). It resolves when session-close semantics
-/// let a just-created session pin liveness (a later increment); until then the window is one
-/// RPC wide, so the spawn follows the allocate promptly.
-fn resolve_session(conn: &mut HostConn) -> io::Result<(String, bool)> {
-    if let Some(name) = std::env::var_os(SESSION_ENV).filter(|name| !name.is_empty()) {
-        return Ok((name.to_string_lossy().into_owned(), false));
+/// The allocate call passes THIS client's first pane (`cols`/`rows`/`argv`) to `new_session`,
+/// which births the session with exactly that pane — tmux's `new-session -x -y [command]`. So
+/// [`boot_panes`] tops up from a pane that already matches the configured layout (no default-shell
+/// first pane to reconcile). This narrows the old create→spawn window (a fresh session with no
+/// live pane for one whole RPC, vulnerable to the daemon self-cleaning out from under it): the
+/// birth pane makes the session live before `new_session` even answers, so from this client's
+/// vantage it is never observably empty. A narrower in-handler race survives host-side (an
+/// unrelated last pane dying between the create and the birth spawn) — inherent, fail-safe, and
+/// documented at [`new_session`]'s birth site; it is not fully eliminated here.
+///
+/// [`new_session`]: sprag_host::wire::NEW_SESSION_ACTION
+fn resolve_session(
+    conn: &mut HostConn,
+    requested: Option<&str>,
+    argv: Option<&[String]>,
+    cols: u16,
+    rows: u16,
+) -> io::Result<(String, bool)> {
+    if let Some(name) = requested {
+        return Ok((name.to_owned(), false));
+    }
+    let mut args = json!({ "cols": cols, "rows": rows });
+    if let Some(argv) = argv {
+        args["cmd"] = json!(argv);
     }
     let answer = conn.call(
         "scene/invoke",
-        invoke(&mux_action_path(NEW_SESSION_ACTION), json!({})),
+        invoke(&mux_action_path(NEW_SESSION_ACTION), args),
     )?;
     let name = answer
         .as_str()
@@ -650,8 +671,11 @@ fn resolve_session(conn: &mut HostConn) -> io::Result<(String, bool)> {
 ///   session's live panes as-is — the tmux-attach semantics (no spawn / truncate to a
 ///   GUI-chosen count).
 /// * **Created** (`created == true` — the GUI allocated a fresh session) ensures exactly
-///   `n_panes` (the GUI is the operator asking for its configured layout), spawning extras
-///   running `argv` at `cols x rows` to reach it, then takes the first `n_panes`.
+///   `n_panes` (the GUI is the operator asking for its configured layout). The session is born
+///   with one pane ([`resolve_session`] passed its `cols`/`rows`/`argv` to `new_session`), so
+///   this tops up FROM that birth pane — spawning `n_panes - 1` more running `argv` at
+///   `cols x rows` — then takes the first `n_panes`. (If the birth pane failed to spawn, the
+///   count starts at 0 and this still reaches `n_panes`, so it doubles as the recovery path.)
 fn boot_panes(
     conn: &mut HostConn,
     argv: Option<&[String]>,
@@ -1427,6 +1451,95 @@ mod tests {
         assert_eq!(
             merged[1].title, None,
             "a cleared title clears the mirror too (host is authoritative both ways)",
+        );
+    }
+
+    /// A connected [`HostConn`] whose server RECORDS every request it receives and answers each
+    /// with `reply` as the JSON-RPC `result` — used to prove what [`resolve_session`] sends over
+    /// the wire (and, on the attach path, that it sends NOTHING). Reads until the client hangs up.
+    fn a_recording_host_conn(
+        tag: &str,
+        reply: &'static str,
+    ) -> (HostConn, JoinHandle<()>, SockGuard, Arc<Mutex<Vec<Value>>>) {
+        use std::io::Write;
+        let path = sock_path(tag);
+        let listener = UnixListener::bind(&path).expect("bind the throwaway host socket");
+        let conn = HostConn::connect(&path, Duration::from_secs(2)).expect("connect to it");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_srv = Arc::clone(&seen);
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept the client");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone the stream"));
+            let mut writer = stream;
+            let mut line = String::new();
+            while reader.read_line(&mut line).is_ok_and(|n| n > 0) {
+                let request: Value = serde_json::from_str(line.trim()).unwrap_or(Value::Null);
+                let id = request["id"].clone();
+                seen_srv.lock().expect("record lock").push(request);
+                let response = json!({ "jsonrpc": "2.0", "id": id, "result": reply });
+                let _ = writeln!(writer, "{response}");
+                let _ = writer.flush();
+                line.clear();
+            }
+        });
+        (conn, server, SockGuard(path), seen)
+    }
+
+    /// The CREATE path of [`resolve_session`]: with no requested session it sends ONE
+    /// `new_session` carrying THIS client's first pane (`cmd`/`cols`/`rows` — tmux's
+    /// `new-session -x -y command`), so the birth pane matches and [`boot_panes`] tops up from it.
+    /// Proves the GUI actually EMITS the birth spec, which the host-side test can only prove it
+    /// accepts.
+    #[test]
+    fn resolve_session_creates_with_the_clients_first_pane() {
+        let (mut conn, server, _guard, seen) = a_recording_host_conn("create", "7");
+        let argv = ["vim".to_owned(), "README".to_owned()];
+        let (name, created) = resolve_session(&mut conn, None, Some(&argv), 100, 40)
+            .expect("resolve_session creates");
+        drop(conn); // let the server thread see EOF and exit
+        server.join().expect("server thread exited");
+
+        assert_eq!(
+            (name.as_str(), created),
+            ("7", true),
+            "it adopts the allocated name",
+        );
+        let seen = seen.lock().expect("record lock");
+        assert_eq!(seen.len(), 1, "exactly one request — the create — was sent");
+        let req = &seen[0];
+        assert_eq!(req["method"], "scene/invoke");
+        assert_eq!(
+            req["params"]["path"],
+            json!(mux_action_path(NEW_SESSION_ACTION)),
+        );
+        assert_eq!(
+            req["params"]["args"],
+            json!({ "cols": 100, "rows": 40, "cmd": ["vim", "README"] }),
+            "the birth spec carries this client's first pane",
+        );
+    }
+
+    /// The ATTACH path of [`resolve_session`]: a requested session name returns
+    /// `(name, created=false)` and sends NOTHING — attach adopts an existing session's live panes
+    /// and must NEVER birth a pane (the tmux distinction reattach rests on). REVERT-PROOF: delete
+    /// the `if let Some(name) = requested` early return and this fails (a `new_session` is sent,
+    /// so `seen` is non-empty).
+    #[test]
+    fn resolve_session_attaches_without_sending_new_session() {
+        let (mut conn, server, _guard, seen) = a_recording_host_conn("attach", "unused");
+        let (name, created) = resolve_session(&mut conn, Some("mysession"), None, 80, 24)
+            .expect("resolve_session attaches");
+        drop(conn);
+        server.join().expect("server thread exited");
+
+        assert_eq!(
+            (name.as_str(), created),
+            ("mysession", false),
+            "attach adopts the named session",
+        );
+        assert!(
+            seen.lock().expect("record lock").is_empty(),
+            "attach sends no new_session — it must never birth a pane",
         );
     }
 }
