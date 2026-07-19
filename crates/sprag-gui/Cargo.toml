@@ -42,9 +42,6 @@ pinion-platform-clipboard = { workspace = true }
 # the reusable socket adapter + signal-hook are transitive through here. R115c
 # also uses its HostConn client + runtime_path (the WireHost wire client).
 sprag-rpc = { workspace = true }
-# R115c: PR_SET_PDEATHSIG on a GUI-spawned sprag-term child, so an ungraceful
-# GUI exit reaps the host (kill-on-Drop covers graceful teardown).
-libc = { workspace = true }
 # Pinned to pinion-shell's vello so the forge renderer macro output type-checks.
 vello = { workspace = true }
 # Build the {key, ctrl, ...} args for the pane External's invoke("key", ...)

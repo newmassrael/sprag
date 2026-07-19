@@ -11,10 +11,12 @@
 //!
 //! ## What runs where
 //!
-//! * A `sprag-term` host owns the `Workspace` + PTYs. The GUI either SPAWNS one as a
-//!   child (the default — a per-instance socket, reaped on exit / GUI death) or
-//!   ATTACHES to one an operator launched (`SPRAG_GUI_HOST_SOCK=<path>`). The
-//!   tmux/mosh split: server owns the terminals, client draws them.
+//! * A `sprag-term` DAEMON owns the `Workspace` + PTYs. The GUI CONNECT-OR-SPAWNS it on the
+//!   well-known socket: join the one already running, or spawn a detached `--daemon` (which
+//!   the GUI does NOT own — no kill, no `PR_SET_PDEATHSIG`) and connect. Closing the GUI
+//!   leaves the daemon and the user's shells running; a fresh GUI reattaches. The tmux/mosh
+//!   split, now with tmux's detach: the server outlives the client. `SPRAG_GUI_HOST_SOCK`
+//!   overrides the socket path (a test, or an operator-run host).
 //! * The GUI reads each pane's cells + input over the wire. Two connections avoid
 //!   head-of-line blocking: a background POLL connection parks on the async
 //!   `scene/waitFor` change-notification, and a REQUEST connection serves the UI
@@ -27,13 +29,8 @@
 //! ([`HostConn::scope_to`]), so every request names it and none can leak into another. Naming
 //! a session ([`SESSION_ENV`]) ATTACHES to it (adopt its live panes — the tmux reattach);
 //! naming none ALLOCATES a fresh session and spawns this client's panes into it, so two GUIs
-//! against one host never mirror the same session.
-//!
-//! **Transient bound (until the daemon flip):** a self-spawned host still boots one pane in
-//! its default session (`sprag-term`'s standalone behaviour), which a client that allocates
-//! its OWN session never shows — an invisible stray shell, reaped when the per-client host
-//! dies with the GUI. It vanishes once the host boots empty (`--daemon`) and the client
-//! connect-or-spawns one shared daemon instead of its own; both are later commits in this arc.
+//! against one host never mirror the same session. A spawned daemon boots EMPTY (`--daemon`),
+//! so there is no stray default-session pane — every pane lives in some client's session.
 //!
 //! ## The repaint loop (producer-authoritative, off-thread — R999 / R1270)
 //!
@@ -67,9 +64,8 @@ use std::cell::RefCell;
 use std::io;
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
-use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
@@ -86,11 +82,11 @@ use sprag_input::Modifiers;
 use sprag_rpc::{HostConn, runtime_path};
 use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId};
 
-/// How long to wait for the host socket to accept — covers the child's bind race.
+/// How long to wait for a just-spawned daemon's socket to accept — covers its bind race.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Env override: attach to an already-running host at this socket path instead of
-/// spawning a child (the tmux-attach mode).
+/// Env override: the host socket path to connect-or-spawn on, instead of the well-known
+/// `sprag-host.sock` (a test's private socket, or an operator-run host).
 const HOST_SOCK_ENV: &str = "SPRAG_GUI_HOST_SOCK";
 /// Env override: the `sprag-term` binary to spawn (else the sibling of the GUI exe,
 /// else `sprag-term` on `PATH`).
@@ -179,34 +175,8 @@ fn query_layout(conn: &mut HostConn) -> io::Result<LayoutSnapshot> {
     serde_json::from_value(value).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
-/// Kills + reaps a spawned host child if [`spawn_or_attach`](WireHost::spawn_or_attach)
-/// fails after the spawn — `std::process::Child`'s own `Drop` neither kills nor waits,
-/// so an error `?`-returned after `spawn_host` would otherwise leak the child until GUI
-/// exit. Disarmed with [`disarm`](Self::disarm) once boot succeeds (the child moves into
-/// the live `WireHost`). Holds `None` in attach mode (nothing to reap).
-struct ChildGuard(Option<Child>);
-
-impl ChildGuard {
-    /// Take the child out, disarming the guard — called on boot success so the reap
-    /// does NOT run (the child is now owned by the live `WireHost`).
-    fn disarm(mut self) -> Option<Child> {
-        self.0.take()
-    }
-}
-
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.0.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-}
-
 /// The GUI's wire client of a `sprag-term` host. See the module docs.
 pub(crate) struct WireHost {
-    /// The spawned host child (`None` when attached to an operator-run host).
-    child: Option<Child>,
     /// The pane data cache ([`Cache`]) in host order: identity + live frame + tracked
     /// dims per pane. The UI thread reads it under a brief lock; the poll thread refreshes
     /// each pane's frame under the same lock. Addressed by [`PaneId`] — the GUI's
@@ -223,18 +193,19 @@ pub(crate) struct WireHost {
     /// Set on Drop to stop the poll loop.
     stop: Arc<AtomicBool>,
     /// A shutdown handle onto the poll connection: Drop calls `shutdown(Both)` on it to
-    /// cancel the poll thread's parked `scene/waitFor` read so the join is deterministic
-    /// in BOTH spawn and attach modes (in attach mode there is no child kill to close the
-    /// socket for us).
+    /// cancel the poll thread's parked `scene/waitFor` read so the join is deterministic.
+    /// The host is a daemon we never kill, so this is the ONLY thing that unblocks the parked
+    /// read on teardown — there is no child-exit to close the socket for us.
     poll_shutdown: UnixStream,
     /// The background change-notification -> repaint thread, joined on Drop.
     poll: Option<JoinHandle<()>>,
 }
 
 impl WireHost {
-    /// Spawn (or attach to) a `sprag-term` host and boot `n_panes` panes running
-    /// `argv` (`None` = the host's default `$SHELL`), each at `cols x rows`, then
-    /// start the background change-notification -> `on_change` repaint poll.
+    /// Connect-or-spawn a `sprag-term` daemon, resolve this client's session, and boot
+    /// `n_panes` panes running `argv` (`None` = the host's default `$SHELL`) at `cols x rows`
+    /// into it (or adopt an attached session's panes), then start the background
+    /// change-notification -> `on_change` repaint poll.
     ///
     /// `quit` is the shell's [`QuitSink`]: when the poll thread's parked
     /// `scene/waitFor` returns an error while the host is NOT being torn down by us
@@ -244,9 +215,9 @@ impl WireHost {
     ///
     /// # Errors
     ///
-    /// Any failure to spawn the child, connect to its socket within
-    /// [`CONNECT_TIMEOUT`], or boot the panes over RPC. A spawned child is reaped on
-    /// any such failure ([`ChildGuard`]).
+    /// Any failure to spawn the daemon, connect to its socket within [`CONNECT_TIMEOUT`], or
+    /// resolve the session / boot the panes over RPC. The daemon is NOT reaped on failure —
+    /// it is a detached process this GUI does not own.
     pub(crate) fn spawn_or_attach(
         argv: Option<Vec<String>>,
         cols: u16,
@@ -255,25 +226,24 @@ impl WireHost {
         on_change: Box<dyn Fn() + Send>,
         quit: Arc<dyn QuitSink>,
     ) -> io::Result<Self> {
-        let (child, sock) = match std::env::var_os(HOST_SOCK_ENV) {
-            Some(path) => {
-                tracing::info!(target: "sprag_gui::wire", path = ?path, "attaching to a running host");
-                (None, PathBuf::from(path))
+        // Connect-or-spawn on the well-known socket. A daemon there outlives every client, so
+        // first try to JOIN one; only if none answers do we spawn a detached `--daemon` and
+        // connect through the bind-race retry. We do NOT own its lifetime — no kill, no
+        // PDEATHSIG — which is the whole point: the session survives this GUI. A spawn RACE is
+        // safe, because the daemon's single-instance flock leaves exactly one alive and every
+        // client connects to it.
+        let sock = host_socket();
+        let mut conn = match HostConn::connect(&sock, Duration::ZERO) {
+            Ok(conn) => {
+                tracing::info!(target: "sprag_gui::wire", path = %sock.display(), "joined a running host");
+                conn
             }
-            None => {
-                let sock = runtime_path(&format!("sprag-gui-host-{}.sock", std::process::id()));
-                // Clear a stale socket file from a previous same-pid run (self-heal).
-                let _ = std::fs::remove_file(&sock);
-                let child = spawn_host(argv.as_deref(), cols, rows, &sock)?;
-                tracing::info!(target: "sprag_gui::wire", path = %sock.display(), pid = child.id(), "spawned host child");
-                (Some(child), sock)
+            Err(_) => {
+                spawn_daemon(&sock)?;
+                tracing::info!(target: "sprag_gui::wire", path = %sock.display(), "spawned a daemon host");
+                HostConn::connect(&sock, CONNECT_TIMEOUT)?
             }
         };
-        // Reap the spawned child on any boot error below (PR_SET_PDEATHSIG only covers
-        // GUI-process death, not an error return here). Disarmed on success.
-        let guard = ChildGuard(child);
-
-        let mut conn = HostConn::connect(&sock, CONNECT_TIMEOUT)?;
 
         // Resolve WHICH session this client acts on before booting panes, and scope every
         // request to it (both this connection and the poll one below), so a request can never
@@ -315,7 +285,6 @@ impl WireHost {
         )?;
 
         Ok(Self {
-            child: guard.disarm(),
             cache,
             layout,
             conn: RefCell::new(conn),
@@ -526,16 +495,12 @@ impl Drop for WireHost {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         // Cancel the poll thread's parked `scene/waitFor` read so the join below is
-        // deterministic in BOTH modes (attach mode has no child kill to close the
-        // socket). All stream clones name one OS socket, so this reaches the reader.
+        // deterministic. All stream clones name one OS socket, so this reaches the reader.
         let _ = self.poll_shutdown.shutdown(Shutdown::Both);
-        // Reap a spawned child (SIGKILL closes its PTY masters -> the pane shells get
-        // SIGHUP, and its sockets close). PR_SET_PDEATHSIG covers an ungraceful GUI
-        // exit; this is the graceful path.
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        // The host is a DAEMON we do not own — closing this client leaves it (and the user's
+        // shells) running, which is the whole detach/reattach point. So there is nothing to
+        // kill here; we only tear down OUR connections and poll thread. When the last live pane
+        // across every session finally exits, the daemon self-cleans (its own reaper).
         if let Some(handle) = self.poll.take() {
             let _ = handle.join();
         }
@@ -568,41 +533,37 @@ fn host_bin() -> PathBuf {
     PathBuf::from("sprag-term")
 }
 
-/// Spawn a `sprag-term` child bound to `sock`, its initial pane running `argv`
-/// (`None` = the host's default `$SHELL`) at `cols x rows`. `PR_SET_PDEATHSIG`
-/// reaps it if the GUI dies ungracefully. stdout/stderr are inherited (the host's
-/// tracing shows beside the GUI's); stdin is null (the socket is the transport, so
-/// the host's stdin reader ends at once and only the socket keeps it alive).
-fn spawn_host(
-    argv: Option<&[String]>,
-    cols: u16,
-    rows: u16,
-    sock: &std::path::Path,
-) -> io::Result<Child> {
-    let mut command = Command::new(host_bin());
-    command.arg("--size").arg(format!("{cols}x{rows}"));
-    if let Some(argv) = argv {
-        command.arg("--");
-        command.args(argv);
+/// The host socket the GUI connects to: `SPRAG_GUI_HOST_SOCK` if set (a test or an
+/// operator-run host), else the WELL-KNOWN `sprag-host.sock` under the runtime dir — the same
+/// default a spawned `sprag-term --daemon` binds, so a spawner and its daemon agree with no
+/// per-instance keying. One endpoint, whether we join an existing daemon or spawn one.
+fn host_socket() -> PathBuf {
+    match std::env::var_os(HOST_SOCK_ENV) {
+        Some(path) => PathBuf::from(path),
+        None => runtime_path("sprag-host.sock"),
     }
-    command
+}
+
+/// Spawn a detached `sprag-term --daemon` bound to `sock`.
+///
+/// The daemon self-daemonizes: the process we spawn here is a short-lived intermediate that
+/// forks the real daemon and exits, so we WAIT on it (reaping the intermediate, not a zombie)
+/// and never track the daemon — it is reparented to init and outlives us by design. Its own
+/// stdio is redirected to a log after the fork, so the pipes we hand it only cover the
+/// pre-fork instant (no output there); we null them. It boots EMPTY (`--daemon`) — this
+/// client's panes are spawned into its own session afterwards, not by the daemon's boot.
+fn spawn_daemon(sock: &Path) -> io::Result<()> {
+    let mut intermediate = Command::new(host_bin())
+        .arg("--daemon")
         .env("SPRAG_HOST_RPC_SOCK", sock)
         .env("SPRAG_HOST_RPC", "1")
-        .stdin(Stdio::null());
-    // SAFETY: `pre_exec` runs in the forked child before exec; `prctl` is
-    // async-signal-safe. PR_SET_PDEATHSIG(SIGKILL) makes the kernel kill the child
-    // when the SPAWNING THREAD dies. The GUI spawns this on its long-lived
-    // winit/main thread (use_terminal boot), so "spawning-thread death" == GUI
-    // process exit — the crash-safety net over kill-on-Drop.
-    unsafe {
-        command.pre_exec(|| {
-            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    command.spawn()
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    // The intermediate exits the instant it has forked the daemon, so this returns at once.
+    let _ = intermediate.wait();
+    Ok(())
 }
 
 /// A host pane as the pane-list query reports it, before its frame is fetched.
