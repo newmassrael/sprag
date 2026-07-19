@@ -37,19 +37,21 @@
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::unix::io::AsRawFd;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
+use std::time::Duration;
 
 use pinion_core::SceneRevision;
 use signal_hook::consts::{SIGINT, SIGTERM};
 use sprag_host::{
-    FrameIngress, Host, HostState, RunRegistry, bump_on_dirty, dispatch_frames, pane_exit_hook,
-    spawn_reaper, stdin_frames,
+    FrameIngress, Host, HostState, RunRegistry, bump_on_dirty, dispatch_frames, load_snapshot,
+    pane_exit_hook, save_snapshot, snapshot_path, spawn_reaper, stdin_frames,
 };
 use sprag_rpc::HOST_SOCKET;
-use sprag_terminal::CommandBuilder;
+use sprag_terminal::{CommandBuilder, SessionRegistry, Snapshot};
+use tracing_subscriber::{EnvFilter, fmt};
 
 fn main() -> io::Result<()> {
     let args = parse_args();
@@ -77,6 +79,12 @@ fn main() -> io::Result<()> {
         None
     };
 
+    // The daemon's tracing subscriber, installed AFTER daemonize so its output lands in the
+    // endpoint's log (stderr is redirected there). Quiet by default (`warn`), with the durability
+    // ring at `info` so an operator sees "restored N panes" without opting in; override via
+    // `SPRAG_LOG` (RUST_LOG syntax). Stderr, never stdout — stdout carries the stdin/stdout wire.
+    init_tracing();
+
     // The one Workspace owner (shared with the GUI as a code component): boot the
     // initial pane through it, then wrap it in HostState to serve the RPC surface.
     //
@@ -102,12 +110,37 @@ fn main() -> io::Result<()> {
             let _ = signal_hook::low_level::raise(SIGTERM);
         }),
     );
-    // A daemon boots EMPTY: every pane belongs to a client's session, so a boot pane would be
-    // a shell nobody sees AND would pin the self-cleaning live count above zero for the daemon's
-    // life. Client-spawned panes still feed the reaper (`HostState` carries `on_pane_exit` into
-    // the mux control surface). Standalone still boots its one pane — the `sprag-term -- cmd`
-    // contract and the `wire_client` integration tests both rely on it.
-    if !args.daemon {
+    // A daemon RESTORES its last durable snapshot if one survived the reboot, else boots EMPTY:
+    // every pane belongs to a client's session, so an un-restored boot pane would be a shell nobody
+    // sees AND would pin the self-cleaning live count above zero for the daemon's life. Restore
+    // re-spawns each recorded pane's shell in its cwd with the SAME reaper/repaint hooks a boot pane
+    // gets (the D4 birth-at-host seam), so a restored pane feeds the reaper identically. A corrupt
+    // or absent snapshot leaves the registry empty — the pre-durability behaviour. Standalone still
+    // boots its one pane (the `sprag-term -- cmd` contract + the `wire_client` tests rely on it) and
+    // never persists.
+    let snap_path = snapshot_path(&sock);
+    if args.daemon {
+        if let Some(snapshot) = load_snapshot(&snap_path) {
+            match host.restore(
+                snapshot,
+                || Some(bump_on_dirty(&revision)),
+                || Some(pane_exit_hook(&on_pane_exit)),
+            ) {
+                Ok(n) => tracing::info!(
+                    target: "sprag_host::durability",
+                    "restored {n} pane(s) from {}",
+                    snap_path.display()
+                ),
+                Err(e) => tracing::warn!(
+                    target: "sprag_host::durability",
+                    "snapshot at {} is unusable ({e}); booting empty",
+                    snap_path.display()
+                ),
+            }
+        }
+        // The durability save loop: persist the live shape so the NEXT daemon can rebuild it.
+        spawn_snapshot_saver(Arc::clone(host.registry()), snap_path);
+    } else {
         host.spawn(
             args.command,
             args.label,
@@ -141,6 +174,61 @@ fn main() -> io::Result<()> {
     drop(tx);
     dispatch_frames(&state, rx);
     Ok(())
+}
+
+/// Install the daemon's global `tracing` subscriber — the same env-filtered, stderr, first-wins
+/// (`try_init`) shape the GUI uses, so the library's events (the durability ring, and anything the
+/// host emits) reach the daemon's log without ad-hoc `eprintln`.
+///
+/// Default filter `warn,sprag_host::durability=info`: quiet everywhere, except the durability ring
+/// narrates its restore/save at `info` so an operator sees the reboot payoff by default. Override
+/// with `SPRAG_LOG` (RUST_LOG syntax, e.g. `SPRAG_LOG=sprag_host=debug`). Stderr only — stdout
+/// carries the JSON-RPC wire.
+fn init_tracing() {
+    let filter = EnvFilter::try_from_env("SPRAG_LOG")
+        .unwrap_or_else(|_| EnvFilter::new("warn,sprag_host::durability=info"));
+    let _ = fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .with_timer(fmt::time::uptime())
+        .try_init();
+}
+
+/// How often the daemon re-snapshots its live shape to disk — the loss window a hard reboot can
+/// cost. Small enough that a layout change or a `cd` is captured promptly, large enough that the
+/// background snapshot is negligible; a save only WRITES when the shape changed, so an idle daemon
+/// does no disk I/O.
+const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Spawn the durability save loop (daemon only): every [`SNAPSHOT_INTERVAL`], project the registry
+/// to a [`Snapshot`] and write it ATOMICALLY — but only when it differs from the last one saved, so
+/// an idle daemon rewrites nothing. This is the cmux-parity ring: a reboot ends the daemon and every
+/// PTY, but the snapshot on disk lets the NEXT daemon rebuild the sessions, windows, layout and
+/// working directories a live PTY could never carry across.
+///
+/// The `snapshot` projection takes the registry then each workspace lock SEQUENTIALLY (never
+/// nested), so this background thread never contends with dispatch beyond a brief membership read.
+/// A transient save error is logged and retried next tick (`last` is left unchanged), so a full disk
+/// or a momentary permission glitch does not silently stop persistence.
+fn spawn_snapshot_saver(registry: Arc<Mutex<SessionRegistry>>, path: PathBuf) {
+    thread::spawn(move || {
+        let mut last: Option<Snapshot> = None;
+        loop {
+            thread::sleep(SNAPSHOT_INTERVAL);
+            let snap = sprag_terminal::snapshot(&registry);
+            if last.as_ref() == Some(&snap) {
+                continue; // nothing changed since the last save — no redundant write
+            }
+            match save_snapshot(&path, &snap) {
+                Ok(()) => last = Some(snap),
+                Err(e) => tracing::warn!(
+                    target: "sprag_host::durability",
+                    "snapshot save to {} failed: {e}",
+                    path.display()
+                ),
+            }
+        }
+    });
 }
 
 /// Install SIGINT/SIGTERM graceful shutdown: on the first such signal, cancel

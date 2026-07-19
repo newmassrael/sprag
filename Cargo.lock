@@ -3641,6 +3641,7 @@ dependencies = [
  "sprag-terminal",
  "sprag-vt",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

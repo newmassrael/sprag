@@ -33,8 +33,12 @@ signal-hook = { workspace = true }
 # advisory flock in the server binary. Unix-only, matching the rest of the host.
 libc = { workspace = true }
 # Production logging facade (level/target control). The library emits events; the
-# frontend (GUI, or a future sprag-term subscriber) installs the subscriber.
+# frontend (GUI) and now the `sprag-term` daemon install the subscriber.
 tracing = { workspace = true }
+# The daemon's subscriber (env-filtered by SPRAG_LOG). The library stays
+# subscriber-free — only the `sprag-term` binary installs one, so the durability
+# ring's restore/save events reach the daemon's log.
+tracing-subscriber = { workspace = true }
 # Building the read-only method-gate error response.
 serde_json = { workspace = true }
 # serde derive for the wire DTOs (PaneScrollFacts + the pane cells-frame). The
