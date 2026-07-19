@@ -29,8 +29,10 @@
 //! ([`HostConn::scope_to`]), so every request names it and none can leak into another. Naming
 //! a session ([`SESSION_ENV`]) ATTACHES to it (adopt its live panes — the tmux reattach);
 //! naming none ALLOCATES a fresh session and spawns this client's panes into it, so two GUIs
-//! against one host never mirror the same session. A spawned daemon boots EMPTY (`--daemon`),
-//! so there is no stray default-session pane — every pane lives in some client's session.
+//! against one host never mirror the same session. A spawned daemon boots with no STRAY pane
+//! (`--daemon`) — every pane lives in some client's session; it may RESTORE prior sessions from
+//! its durability snapshot after a reboot, but those are named sessions a client attaches to, not
+//! a default-session pane that would leak into this client.
 //!
 //! ## The repaint loop (producer-authoritative, off-thread — R999 / R1270)
 //!
@@ -721,8 +723,9 @@ fn host_socket() -> PathBuf {
 /// forks the real daemon and exits, so we WAIT on it (reaping the intermediate, not a zombie)
 /// and never track the daemon — it is reparented to init and outlives us by design. Its own
 /// stdio is redirected to a log after the fork, so the pipes we hand it only cover the
-/// pre-fork instant (no output there); we null them. It boots EMPTY (`--daemon`) — this
-/// client's panes are spawned into its own session afterwards, not by the daemon's boot.
+/// pre-fork instant (no output there); we null them. It boots with no STRAY pane (`--daemon`) —
+/// this client's panes are spawned into its own session afterwards; any sessions it RESTORES from
+/// a durability snapshot are named sessions a client attaches to, never a boot pane of ours.
 fn spawn_daemon(sock: &Path) -> io::Result<()> {
     let mut intermediate = Command::new(host_bin())
         .arg("--daemon")

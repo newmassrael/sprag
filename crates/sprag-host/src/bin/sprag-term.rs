@@ -1,7 +1,8 @@
 //! `sprag-term` — the headless terminal-multiplexer RPC server (GPU-free).
 //!
 //! Starts a workspace — with one initial pane (a shell, or the command after
-//! `--`) on a pseudoterminal, or EMPTY as a `--daemon` (see below) — and serves
+//! `--`) on a pseudoterminal, or, as a `--daemon`, RESTORED from its last durability
+//! snapshot (else empty; see below) — and serves
 //! pinion's scene-as-data wire -- panes +
 //! the `/sprag_mux` control surface + the `/sprag_plugins` platform -- over two
 //! transports at once (DESIGN.md §1/§3): the process stdin/stdout (one
@@ -30,9 +31,14 @@
 //! daemon reparents to init; `setsid` drops the controlling terminal), redirects stdio to the
 //! endpoint's log (`<socket>.log`), and holds a single-instance advisory `flock` on
 //! `<socket>.lock` so a race to spawn one leaves exactly one alive. The lock and log derive
-//! from the endpoint path, so an overridden socket keeps its own pair. It boots with NO pane —
-//! every pane belongs to a client's session, and a stray boot pane would both be unseen and
-//! pin the self-cleaning count above zero forever. Standalone mode (no `--daemon`) is unchanged.
+//! from the endpoint path, so an overridden socket keeps its own pair. It never boots a STRAY
+//! pane — every pane belongs to a client's session, and one nobody attached to would be unseen
+//! and would pin the self-cleaning count above zero forever. Instead it RESTORES its durability
+//! snapshot if one survived a reboot (the `durability` ring — sessions, windows, layout and pane
+//! working directories rebuilt, each pane re-spawned as a shell in its cwd), else boots empty. A
+//! DELIBERATE clean exit (all panes closed, or `kill-server`) clears that snapshot, so the next
+//! daemon does not resurrect a session the user closed — only an unclean death (reboot / crash)
+//! leaves it to restore. Standalone mode (no `--daemon`) never persists and is unchanged.
 
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -47,7 +53,7 @@ use pinion_core::SceneRevision;
 use signal_hook::consts::{SIGINT, SIGTERM};
 use sprag_host::{
     FrameIngress, Host, HostState, RunRegistry, bump_on_dirty, dispatch_frames, load_snapshot,
-    pane_exit_hook, save_snapshot, snapshot_path, spawn_reaper, stdin_frames,
+    pane_exit_hook, save_if_changed, snapshot_path, spawn_reaper, stdin_frames,
 };
 use sprag_rpc::HOST_SOCKET;
 use sprag_terminal::{CommandBuilder, SessionRegistry, Snapshot};
@@ -94,6 +100,9 @@ fn main() -> io::Result<()> {
     // BEFORE the spawn so the bumper and HostState share the one token.
     let revision = Arc::new(SceneRevision::new());
     let host = Host::new((args.cols, args.rows));
+    // The persistent snapshot path, resolved before the reaper so the reaper's clean-exit action
+    // can invalidate it. Used only in the daemon arms below.
+    let snap_path = snapshot_path(&sock);
     // Self-cleaning lifetime: when the LAST live pane across all sessions exits, the daemon has
     // nothing left to serve, so it ends — the tmux convention. `spawn_reaper` owns a dedicated
     // thread that runs the liveness scan OFF the PTY reader threads (so a pane Drop that joins
@@ -104,9 +113,25 @@ fn main() -> io::Result<()> {
     // in-flight plugin runs. A daemon with no panes has no hook and cannot exit before its
     // first pane; raising before the handler is installed (an instant-exit boot command) falls
     // back to SIGTERM's default terminate, harmless since no run is in flight before boot.
+    //
+    // On a DAEMON, this exit action also INVALIDATES the snapshot. Reaching it means every pane
+    // voluntarily exited (the user closed them, or `kill-server` drained them) — a deliberate
+    // close, so the next daemon must NOT resurrect the session. A REBOOT never reaches here: an
+    // interactive shell IGNORES SIGTERM, so a reboot's SIGTERM hits the daemon's own
+    // `install_shutdown` (which leaves the snapshot for restore), not this reaper. (The lone
+    // residual: a last pane running a foreground program that terminates ON SIGTERM, during a
+    // reboot, racing the daemon's own handler — rare; the common interactive-shell case is safe.)
+    let reaper_snap = if args.daemon {
+        Some(snap_path.clone())
+    } else {
+        None
+    };
     let on_pane_exit = spawn_reaper(
         Arc::clone(host.registry()),
-        Arc::new(|| {
+        Arc::new(move || {
+            if let Some(path) = &reaper_snap {
+                clear_snapshot(path);
+            }
             let _ = signal_hook::low_level::raise(SIGTERM);
         }),
     );
@@ -118,7 +143,6 @@ fn main() -> io::Result<()> {
     // or absent snapshot leaves the registry empty — the pre-durability behaviour. Standalone still
     // boots its one pane (the `sprag-term -- cmd` contract + the `wire_client` tests rely on it) and
     // never persists.
-    let snap_path = snapshot_path(&sock);
     if args.daemon {
         if let Some(snapshot) = load_snapshot(&snap_path) {
             match host.restore(
@@ -212,23 +236,41 @@ const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(5);
 /// or a momentary permission glitch does not silently stop persistence.
 fn spawn_snapshot_saver(registry: Arc<Mutex<SessionRegistry>>, path: PathBuf) {
     thread::spawn(move || {
+        // `save_if_changed` owns the write-if-changed dedup (tested in `durability`); the loop is
+        // just it on a timer, carrying the last-saved snapshot between ticks.
         let mut last: Option<Snapshot> = None;
         loop {
             thread::sleep(SNAPSHOT_INTERVAL);
-            let snap = sprag_terminal::snapshot(&registry);
-            if last.as_ref() == Some(&snap) {
-                continue; // nothing changed since the last save — no redundant write
-            }
-            match save_snapshot(&path, &snap) {
-                Ok(()) => last = Some(snap),
-                Err(e) => tracing::warn!(
+            if let Err(e) = save_if_changed(&path, &registry, &mut last) {
+                tracing::warn!(
                     target: "sprag_host::durability",
                     "snapshot save to {} failed: {e}",
                     path.display()
-                ),
+                );
             }
         }
     });
+}
+
+/// Delete the durability snapshot on a DELIBERATE clean exit (every pane voluntarily gone, or a
+/// `kill-server` drain), so the NEXT daemon does not resurrect a session the user closed. A reboot
+/// never calls this (an interactive shell ignores SIGTERM, so a reboot's SIGTERM reaches the
+/// daemon's `install_shutdown`, not the reaper). A missing file is fine (nothing was saved yet);
+/// a real error is logged, not fatal.
+fn clear_snapshot(path: &Path) {
+    match std::fs::remove_file(path) {
+        Ok(()) => tracing::info!(
+            target: "sprag_host::durability",
+            "cleared snapshot on clean exit: {}",
+            path.display()
+        ),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => tracing::warn!(
+            target: "sprag_host::durability",
+            "could not clear snapshot {}: {e}",
+            path.display()
+        ),
+    }
 }
 
 /// Install SIGINT/SIGTERM graceful shutdown: on the first such signal, cancel

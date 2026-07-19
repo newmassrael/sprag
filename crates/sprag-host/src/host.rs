@@ -779,6 +779,64 @@ mod tests {
         );
     }
 
+    /// Restore honors a FLOATED pane (comes back in the float set, not the tiling) and a pane with
+    /// NO recorded cwd (re-spawns anyway, falling back to the daemon's cwd). Driven from a
+    /// hand-authored snapshot so both are exercised through the real `restore` path — the
+    /// registry-level round-trip has a float but never re-spawns it here.
+    #[test]
+    fn restore_honors_a_floated_pane_and_a_cwdless_pane() {
+        use sprag_terminal::{PaneSnapshot, SessionSnapshot, WindowSnapshot};
+
+        let snap = Snapshot {
+            version: sprag_terminal::SNAPSHOT_VERSION,
+            next_id: 2,
+            default_size: (80, 24),
+            sessions: vec![SessionSnapshot {
+                name: "0".to_owned(),
+                current_window: "0".to_owned(),
+                windows: vec![WindowSnapshot {
+                    name: "0".to_owned(),
+                    layout: LayoutWire::default(), // pane 0 gets appended by the first reconcile
+                    floating: vec![PaneId(1)],
+                    panes: vec![
+                        PaneSnapshot {
+                            id: PaneId(0),
+                            cwd: Some("/tmp".into()),
+                            command_label: "sh".to_owned(),
+                            cols: 80,
+                            rows: 24,
+                        },
+                        PaneSnapshot {
+                            id: PaneId(1),
+                            cwd: None, // no recorded cwd -> falls back to the daemon's
+                            command_label: "sh".to_owned(),
+                            cols: 80,
+                            rows: 24,
+                        },
+                    ],
+                }],
+            }],
+        };
+
+        let host = Host::new((80, 24));
+        let n = host
+            .restore(snap, || None, || None)
+            .expect("a valid snapshot restores");
+        assert_eq!(n, 2, "both the cwd and the cwd-less pane re-spawned");
+        let ids = host.pane_ids();
+        assert!(
+            ids.contains(&PaneId(0)) && ids.contains(&PaneId(1)),
+            "both panes are live: {ids:?}",
+        );
+        // Pane 1 came back FLOATED — the window's float set holds it.
+        let registry = lock(host.registry());
+        let window = registry.session("0").unwrap().current_window();
+        assert!(
+            window.floating().contains(&PaneId(1)),
+            "the floated pane restored as floated, not tiled",
+        );
+    }
+
     #[test]
     fn send_text_reaches_the_pane_pty() {
         use std::time::{Duration, Instant};

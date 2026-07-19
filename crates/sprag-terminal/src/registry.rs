@@ -659,6 +659,13 @@ impl SessionRegistry {
         let mut sessions = Vec::with_capacity(snapshot.sessions.len());
         let mut plan = Vec::new();
         let mut seen_sessions = HashSet::new();
+        // A PaneId is unique across the WHOLE registry (the load-bearing invariant), so a snapshot
+        // with two panes claiming one id is malformed. sprag's own writer cannot produce this
+        // (`snapshot()` reads ids unique by construction), but a hand-edited state file could — and
+        // `spawn_with_dirty_id` would push both, leaving two live panes sharing an id that
+        // id-addressed reads then resolve ambiguously. Reject it so the fail-safe holds: a corrupt
+        // snapshot boots EMPTY, never into an id-colliding registry.
+        let mut seen_panes = HashSet::new();
         for s in snapshot.sessions {
             if !seen_sessions.insert(s.name.clone()) {
                 return Err(SnapshotError::Malformed(format!(
@@ -683,6 +690,12 @@ impl SessionRegistry {
                 }
                 // Record the panes to re-spawn before the window's fields are moved into it.
                 for p in &w.panes {
+                    if !seen_panes.insert(p.id) {
+                        return Err(SnapshotError::Malformed(format!(
+                            "pane id {} appears twice",
+                            p.id
+                        )));
+                    }
                     plan.push(PaneRestore {
                         session: s.name.clone(),
                         window: w.name.clone(),

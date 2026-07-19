@@ -295,10 +295,17 @@ pub(crate) fn pane_snapshot(pane: &Pane) -> PaneSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CommandBuilder, SessionRegistry};
+    use crate::SessionRegistry;
+
+    // The live-pane helpers below (real PTYs, cwd via /proc) are used only by the Linux-gated
+    // round-trip test; gate them too so a non-Linux build under `-D warnings` sees no dead code.
+    #[cfg(target_os = "linux")]
+    use crate::CommandBuilder;
+    #[cfg(target_os = "linux")]
     use std::path::Path;
 
     /// A long-lived `cat` child in `dir`, so a spawned pane's PTY (and its cwd) stay open.
+    #[cfg(target_os = "linux")]
     fn cmd_in(dir: &Path) -> CommandBuilder {
         let mut c = CommandBuilder::new("/bin/sh");
         c.arg("-c");
@@ -308,12 +315,14 @@ mod tests {
         c
     }
 
+    #[cfg(target_os = "linux")]
     fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         m.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Reconcile the named window's arrangement against its live pane set, so the tree the
     /// snapshot captures reflects the panes (the live path reconciles on read).
+    #[cfg(target_os = "linux")]
     fn reconcile(reg: &Arc<Mutex<SessionRegistry>>, session: &str, window: &str) {
         let pool = lock(reg).window_workspace(session, window).unwrap();
         let panes: Vec<PaneId> = lock(&pool).panes().iter().map(Pane::id).collect();
@@ -331,7 +340,9 @@ mod tests {
     #[test]
     fn a_registry_round_trips_through_a_snapshot() {
         let dir = std::env::temp_dir();
-        let reg = Arc::new(Mutex::new(SessionRegistry::new((80, 24))));
+        // A DISTINCTIVE default size (not the 80x24 the panes spawn at), so restoring it is
+        // verifiable independently of the per-pane sizes below.
+        let reg = Arc::new(Mutex::new(SessionRegistry::new((77, 21))));
 
         // The default session "0" / window "0": three tiled panes (ids 0,1,2), then float the
         // middle so it leaves the tiling — the float set is session state that must survive.
@@ -415,6 +426,13 @@ mod tests {
             PaneId(4),
             "the counter resumed above the restored ids"
         );
+        // The default size rode along too — a dimension-less spawn adopts the pre-reboot default,
+        // not a hardcoded fallback.
+        assert_eq!(
+            lock(&pool).default_size(),
+            (77, 21),
+            "the pre-reboot default size was restored",
+        );
     }
 
     /// A snapshot whose version this build does not understand is REFUSED — the daemon boots
@@ -481,5 +499,123 @@ mod tests {
             SessionRegistry::from_snapshot(snap),
             Err(SnapshotError::Malformed(_)),
         ));
+    }
+
+    /// An empty window named `name` with the given panes — for building malformed snapshots.
+    fn win(name: &str, panes: Vec<PaneSnapshot>) -> WindowSnapshot {
+        WindowSnapshot {
+            name: name.to_owned(),
+            layout: LayoutWire::default(),
+            floating: vec![],
+            panes,
+        }
+    }
+
+    /// A one-pane restore fact, for populating a window.
+    fn pane(id: u64) -> PaneSnapshot {
+        PaneSnapshot {
+            id: PaneId(id),
+            cwd: None,
+            command_label: "sh".to_owned(),
+            cols: 80,
+            rows: 24,
+        }
+    }
+
+    /// A snapshot of one session over the given windows — the malformed-shape fixture.
+    fn snap_of(current: &str, windows: Vec<WindowSnapshot>) -> Snapshot {
+        Snapshot {
+            version: SNAPSHOT_VERSION,
+            next_id: 9,
+            default_size: (80, 24),
+            sessions: vec![SessionSnapshot {
+                name: "0".to_owned(),
+                current_window: current.to_owned(),
+                windows,
+            }],
+        }
+    }
+
+    /// A session with two windows sharing a name is refused — a window name is an address, so a
+    /// duplicate would make it ambiguous.
+    #[test]
+    fn a_duplicate_window_name_is_refused() {
+        let snap = snap_of("0", vec![win("0", vec![]), win("0", vec![])]);
+        assert!(matches!(
+            SessionRegistry::from_snapshot(snap),
+            Err(SnapshotError::Malformed(_)),
+        ));
+    }
+
+    /// Two sessions sharing a name is refused (the session-level address analogue).
+    #[test]
+    fn a_duplicate_session_name_is_refused() {
+        let mut snap = snap_of("0", vec![win("0", vec![])]);
+        snap.sessions.push(SessionSnapshot {
+            name: "0".to_owned(),
+            current_window: "0".to_owned(),
+            windows: vec![win("0", vec![])],
+        });
+        assert!(matches!(
+            SessionRegistry::from_snapshot(snap),
+            Err(SnapshotError::Malformed(_)),
+        ));
+    }
+
+    /// A session with no windows is refused — a session always has at least one, which is what
+    /// makes its current-window total.
+    #[test]
+    fn a_session_with_no_windows_is_refused() {
+        let snap = snap_of("0", vec![]);
+        assert!(matches!(
+            SessionRegistry::from_snapshot(snap),
+            Err(SnapshotError::Malformed(_)),
+        ));
+    }
+
+    /// Two panes claiming one id is refused — the global-unique-PaneId invariant. A hand-edited
+    /// state file is the only way to reach it (sprag's writer mints unique ids), and without this
+    /// check `spawn_with_dirty_id` would push both, leaving id-addressed reads ambiguous.
+    #[test]
+    fn a_duplicate_pane_id_is_refused() {
+        let snap = snap_of("0", vec![win("0", vec![pane(5), pane(5)])]);
+        assert!(
+            matches!(
+                SessionRegistry::from_snapshot(snap),
+                Err(SnapshotError::Malformed(_)),
+            ),
+            "a snapshot with two panes at id 5 must boot empty, not id-collide",
+        );
+        // …and across DIFFERENT windows, since ids are registry-global, not per-window.
+        let snap = snap_of("0", vec![win("0", vec![pane(3)]), win("1", vec![pane(3)])]);
+        assert!(matches!(
+            SessionRegistry::from_snapshot(snap),
+            Err(SnapshotError::Malformed(_)),
+        ));
+    }
+
+    /// A stored layout that is not well-formed (here: the same pane twice) is refused as
+    /// `SnapshotError::Layout` — the `set_from_wire` validation riding out through `Window::restore`.
+    #[test]
+    fn a_malformed_stored_layout_is_refused() {
+        let mut window = win("0", vec![pane(0), pane(1)]);
+        // A tree with pane 0 in two leaves — set_from_wire rejects it as DuplicatePane.
+        window.layout = LayoutWire {
+            root: Some(crate::LayoutNodeWire::Split {
+                id: None,
+                dir: crate::SplitDir::Horizontal,
+                ratio: 0.5,
+                first: Box::new(crate::LayoutNodeWire::Leaf(PaneId(0))),
+                second: Box::new(crate::LayoutNodeWire::Leaf(PaneId(0))),
+            }),
+        };
+        let snap = snap_of("0", vec![window]);
+        assert!(
+            matches!(
+                SessionRegistry::from_snapshot(snap),
+                Err(SnapshotError::Layout(_)),
+            ),
+            "a corrupt stored arrangement boots empty via the Layout error, not a bad tree",
+        );
     }
 }

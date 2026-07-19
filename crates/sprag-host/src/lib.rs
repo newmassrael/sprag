@@ -57,7 +57,7 @@ pub mod scope;
 pub mod wire;
 pub mod workspace;
 
-pub use durability::{load_snapshot, save_snapshot, snapshot_path};
+pub use durability::{load_snapshot, save_if_changed, save_snapshot, snapshot_path};
 pub use host::{Host, HostClient, PaneScrollFacts};
 pub use pane::{CellFrame, SpragPaneExternal, send_key, send_text};
 pub use plugins::PluginsExternal;
