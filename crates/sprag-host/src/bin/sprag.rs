@@ -5,7 +5,8 @@
 //! sprag new [name]         create a session with a shell (absent name -> the lowest free), print its name
 //! sprag attach NAME        open a sprag-gui window attached to a session (tmux attach-session)
 //! sprag kill-session NAME   kill a session (the last one ends the daemon)
-//! sprag kill-server        kill every session, ending the daemon
+//! sprag kill-server [--purge]  kill every session, ending the daemon; --purge also deletes the
+//!                              durability snapshot (destroy the saved workspace, start fresh)
 //!
 //! sprag windows -t SESSION                list a session's windows (name, and which is current)
 //! sprag new-window -t SESSION [name]      create + select a window, born with a shell; print its name
@@ -58,7 +59,7 @@ fn run() -> io::Result<()> {
         Some("new") => new(args.next()),
         Some("attach") => attach(args.next()),
         Some("kill-session") => kill_session(args.next()),
-        Some("kill-server") => kill_server(),
+        Some("kill-server") => kill_server(args.collect()),
         Some("windows") => windows(args.collect()),
         Some("new-window") => new_window(args.collect()),
         Some("select-window") => select_window(args.collect()),
@@ -78,7 +79,7 @@ fn run() -> io::Result<()> {
 
 fn print_usage() {
     eprintln!(
-        "usage: sprag <ls | new [name] | attach NAME | kill-session NAME | kill-server>\n\
+        "usage: sprag <ls | new [name] | attach NAME | kill-session NAME | kill-server [--purge]>\n\
          \x20      sprag <windows | new-window [name] | select-window NAME\n\
          \x20             | rename-window [window] NAME | kill-window [window]> -t SESSION"
     );
@@ -89,12 +90,12 @@ fn print_usage() {
 /// discovery of `sprag-term`.
 const GUI_BIN_ENV: &str = "SPRAG_GUI_BIN";
 
-/// Delete the durability snapshot for the daemon on this socket — so an EXPLICIT end-the-daemon
-/// command (kill-server, or a kill that ends the last session / window) does not leave a session
-/// the next daemon would resurrect. A NATURAL last-pane exit keeps the snapshot (a transient
-/// program exit retries next boot); only this explicit CLI path clears it. Best-effort: a missing
-/// file is fine, and this runs once the daemon is ending (its save loop dies with it), so it does
-/// not race a live save.
+/// Delete the durability snapshot for the daemon on this socket — the EXPLICIT "start fresh",
+/// reached ONLY by `kill-server --purge`. The daemon lifecycle otherwise PRESERVES the snapshot: a
+/// reboot, a crash, a natural close, and a plain `kill-server` all leave it, so the workspace comes
+/// back next launch (the cmux-durable model). `--purge` is the one way to destroy the saved
+/// workspace. Best-effort — a missing file is fine, and it runs as the daemon is ending (its save
+/// loop dies with it), so it does not race a live save.
 fn clear_snapshot() {
     let _ = std::fs::remove_file(sprag_host::snapshot_path(&socket_path(HOST_SOCKET)));
 }
@@ -249,10 +250,9 @@ fn kill_session(name: Option<String>) -> io::Result<()> {
         }
         // Killing the LAST session ends the daemon; its reply can be cut off by the exit at any
         // point — an EOF on the read, or a broken pipe / reset on the next write. Any of those
-        // means the server stopped, which is success, not failure. Ending the daemon this way is
-        // explicit, so clear the snapshot (no resurrect next launch).
+        // means the server stopped, which is success, not failure. The snapshot is PRESERVED (the
+        // durable default) — use `kill-server --purge` to destroy the saved workspace.
         Err(error) if server_gone(&error) => {
-            clear_snapshot();
             println!("killed {name} (server ended)");
             Ok(())
         }
@@ -267,11 +267,23 @@ fn kill_session(name: Option<String>) -> io::Result<()> {
     }
 }
 
-/// `kill-server`: kill every session, which ends the daemon (the last kill drains its session
-/// and exits). Reuses [`KILL_SESSION_ACTION`] over one connection rather than a bespoke action —
-/// the last kill is what stops the server, so an EOF partway through is the daemon exiting under
-/// us, i.e. done.
-fn kill_server() -> io::Result<()> {
+/// `kill-server [--purge]`: kill every session, which ends the daemon (the last kill drains its
+/// session and exits). Reuses [`KILL_SESSION_ACTION`] over one connection rather than a bespoke
+/// action — the last kill is what stops the server, so an EOF partway through is the daemon exiting
+/// under us, i.e. done.
+///
+/// By DEFAULT the durability snapshot is PRESERVED: stopping the daemon does not destroy the saved
+/// workspace, so the next launch restores it (the cmux-durable model — your workspace persists).
+/// `--purge` additionally DELETES the snapshot: the explicit "start fresh", the one way to destroy
+/// the saved workspace.
+fn kill_server(args: Vec<String>) -> io::Result<()> {
+    let purge = args.iter().any(|a| a == "--purge");
+    if let Some(other) = args.iter().find(|a| *a != "--purge") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("kill-server: unexpected argument {other:?} (only --purge is accepted)"),
+        ));
+    }
     let mut conn = connect()?;
     let sessions = conn.call(
         "scene/query",
@@ -292,9 +304,12 @@ fn kill_server() -> io::Result<()> {
             Err(error) => return Err(error),
         }
     }
-    // An explicit kill-server ends everything, so clear the snapshot — no resurrect next launch.
-    clear_snapshot();
-    println!("server stopped");
+    if purge {
+        clear_snapshot();
+        println!("server stopped (workspace purged)");
+    } else {
+        println!("server stopped");
+    }
     Ok(())
 }
 
@@ -491,10 +506,9 @@ fn kill_window(args: Vec<String>) -> io::Result<()> {
             Ok(())
         }
         // Killing the LAST window ends the session, and the last session ends the daemon: the reply
-        // can be severed by the exit (EOF / broken pipe / reset), which is success. Ending the
-        // daemon this way is explicit, so clear the snapshot (no resurrect next launch).
+        // can be severed by the exit (EOF / broken pipe / reset), which is success. The snapshot is
+        // PRESERVED (the durable default) — use `kill-server --purge` to destroy the saved workspace.
         Err(error) if server_gone(&error) => {
-            clear_snapshot();
             println!("killed {target} (server ended)");
             Ok(())
         }

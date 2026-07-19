@@ -150,6 +150,50 @@ fn the_cli_kill_server_ends_the_daemon() {
     );
 }
 
+/// `kill-server --purge` also ends the daemon and confirms the workspace was purged. (The snapshot
+/// deletion itself needs a `--daemon` with a persistent state dir — it is smoke-tested; here we
+/// prove the flag is accepted and the end-the-daemon path still works.)
+#[test]
+fn the_cli_kill_server_purge_ends_the_daemon() {
+    let (_host, sock) = spawn_host();
+    assert!(sprag(&sock, &["ls"]).ok, "server up before kill-server");
+
+    let run = sprag(&sock, &["kill-server", "--purge"]);
+    assert!(run.ok, "kill-server --purge succeeded: {}", run.stderr);
+    assert!(
+        run.stdout.contains("purged"),
+        "kill-server --purge confirms the purge: {}",
+        run.stdout,
+    );
+    let gone = (0..40).any(|_| {
+        if sprag(&sock, &["ls"]).ok {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            false
+        } else {
+            true
+        }
+    });
+    assert!(gone, "kill-server --purge ended the daemon");
+}
+
+/// An unknown `kill-server` argument is refused BEFORE any kill, so a typo cannot end the daemon —
+/// the server is still reachable afterwards.
+#[test]
+fn kill_server_refuses_an_unknown_arg() {
+    let (_host, sock) = spawn_host();
+    let run = sprag(&sock, &["kill-server", "--force"]);
+    assert!(!run.ok, "an unknown kill-server arg is refused");
+    assert!(
+        run.stderr.contains("--purge"),
+        "the error names the only accepted flag: {}",
+        run.stderr,
+    );
+    assert!(
+        sprag(&sock, &["ls"]).ok,
+        "the refused kill-server did NOT end the daemon",
+    );
+}
+
 /// The window subcommands drive the SCOPED mux window actions over the socket: list, create +
 /// select, select, rename, and kill a window — each `-t SESSION`.
 #[test]

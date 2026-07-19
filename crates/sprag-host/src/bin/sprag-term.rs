@@ -37,8 +37,10 @@
 //! snapshot if one survived a reboot (the `durability` ring — sessions, windows, layout and pane
 //! working directories rebuilt, each pane re-running its recorded command — an allowlisted program
 //! — or a shell in its cwd), else boots empty. A natural last-pane exit KEEPS the snapshot (so a
-//! transient program exit retries next boot); only an explicit `sprag kill-server` clears it
-//! (CLI-side). Standalone mode (no `--daemon`) never persists and is unchanged.
+//! transient program exit retries next boot). The daemon lifecycle otherwise PRESERVES the
+//! snapshot — a reboot, a crash, a natural close, and a plain `kill-server` all leave it, so the
+//! workspace comes back; only `sprag kill-server --purge` destroys the saved workspace (CLI-side).
+//! Standalone mode (no `--daemon`) never persists and is unchanged.
 
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -115,9 +117,9 @@ fn main() -> io::Result<()> {
     // The reaper does NOT invalidate the snapshot. A last-pane exit is AMBIGUOUS — it may be a
     // deliberate close OR a re-run program that just exited (a restored `ssh` whose network was
     // not up yet at boot). Deleting on it would let a TRANSIENT exit destroy the very session the
-    // ring exists to preserve. So a natural exit KEEPS the snapshot (the next daemon retries), and
-    // only an EXPLICIT `sprag kill-server` (or kill of the last window/session) clears it —
-    // CLI-side, where the intent to end everything is unambiguous. The reaper also does NOT exit
+    // ring exists to preserve. So the daemon lifecycle PRESERVES the snapshot (the next daemon
+    // restores it — the cmux-durable model); only an explicit `sprag kill-server --purge` destroys
+    // the saved workspace (CLI-side). The reaper also does NOT exit
     // while a restore is IN FLIGHT (`restoring`): a re-run program that exits fast must not kill
     // the daemon mid-loop, before the rest of the session is re-spawned.
     let restoring = Arc::new(AtomicBool::new(false));
