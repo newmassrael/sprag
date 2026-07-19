@@ -65,7 +65,8 @@ pub fn save_snapshot(path: &Path, snapshot: &Snapshot) -> io::Result<()> {
 /// `None` for a missing file (first boot, or nothing saved yet) AND for an unreadable or
 /// unparseable one (a truncated write from a crash, a foreign file). Either way the daemon boots
 /// EMPTY rather than propagating an error: a bad snapshot must never brick the daemon. Version
-/// mismatch is NOT rejected here — that is [`SessionRegistry::from_snapshot`] 's job, so an
+/// mismatch is NOT rejected here — that is
+/// [`SessionRegistry::from_snapshot`](sprag_terminal::SessionRegistry::from_snapshot)'s job, so an
 /// operator sees a specific "unsupported version" log rather than a silent empty boot.
 #[must_use]
 pub fn load_snapshot(path: &Path) -> Option<Snapshot> {

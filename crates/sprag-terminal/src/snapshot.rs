@@ -8,8 +8,8 @@
 //!
 //! ## What it is — a PROJECTION, not a second authority
 //!
-//! A [`Snapshot`] is to a [`SessionRegistry`](crate::SessionRegistry) what
-//! [`LayoutWire`](crate::LayoutWire) is to a [`LayoutTree`](crate::LayoutTree): a serde DTO
+//! A [`Snapshot`] is to a [`SessionRegistry`] what
+//! [`LayoutWire`] is to a [`LayoutTree`](crate::LayoutTree): a serde DTO
 //! captured FROM the one live authority and restored back INTO a fresh one. It never becomes a
 //! parallel source of truth — [`snapshot`] reads the registry, `from_snapshot` rebuilds a
 //! registry, and the file on disk is overwritten by the next save. The registry stays the SSOT.
@@ -17,7 +17,8 @@
 //! ## What survives, and what cannot
 //!
 //! The SHAPE survives: sessions (their order IS the default), each session's windows and which
-//! is current, each window's [`LayoutTree`] arrangement, its float set, and — per pane — its id,
+//! is current, each window's [`LayoutTree`](crate::LayoutTree) arrangement, its float set, and —
+//! per pane — its id,
 //! working directory, launch label and size. The global pane-id high-water mark rides too, so a
 //! restore never reissues a retired id.
 //!
@@ -48,7 +49,7 @@ use crate::workspace::{Pane, PaneId};
 /// falls back to an EMPTY boot rather than crashing on a format it cannot parse.
 pub const SNAPSHOT_VERSION: u32 = 1;
 
-/// The whole durable shape of a [`SessionRegistry`](crate::SessionRegistry), serialized.
+/// The whole durable shape of a [`SessionRegistry`], serialized.
 ///
 /// Produced by [`snapshot`] and consumed by
 /// [`SessionRegistry::from_snapshot`](crate::SessionRegistry::from_snapshot). Versioned JSON:

@@ -164,7 +164,8 @@ impl Workspace {
 
     /// The next id this pool's shared counter would mint — the global high-water mark, for a
     /// durability snapshot to store so a restore never reissues a retired id
-    /// ([`with_seeded_counter`](Self::with_seeded_counter)). A HINT, not a reservation: reading
+    /// (see [`SessionRegistry::from_snapshot`](crate::SessionRegistry::from_snapshot)). A HINT, not
+    /// a reservation: reading
     /// it takes no id, and `Relaxed` matches the mint path (the value only advances, and a
     /// best-effort snapshot needs no synchronization with it).
     #[must_use]
