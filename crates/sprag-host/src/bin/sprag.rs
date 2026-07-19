@@ -21,15 +21,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use sprag_host::mux_action_path;
 use sprag_host::wire::{KILL_SESSION_ACTION, NEW_SESSION_ACTION, SESSIONS_SLOT};
-use sprag_rpc::{HostConn, SocketOpts, socket_path};
-
-/// The daemon endpoint the CLI drives — the SAME policy `sprag-term` binds and the GUI joins,
-/// so all three agree on where the socket is with no third spelling.
-const HOST_SOCKET: SocketOpts = SocketOpts {
-    socket_name: sprag_rpc::HOST_SOCKET_NAME,
-    path_env: "SPRAG_HOST_RPC_SOCK",
-    enable_env: "SPRAG_HOST_RPC",
-};
+use sprag_rpc::{HOST_SOCKET, HostConn, socket_path};
 
 /// A management command is talking to an already-running daemon, so the socket either accepts
 /// at once or there is nothing to manage — no spawn-race retry to wait out.
@@ -109,13 +101,25 @@ fn new(name: Option<String>) -> io::Result<()> {
     let answer = conn.call(
         "scene/invoke",
         json!({ "path": mux_action_path(NEW_SESSION_ACTION), "args": args }),
-    )?;
-    match answer.as_str() {
-        Some(name) => {
-            println!("{name}");
-            Ok(())
+    );
+    match answer {
+        Ok(answer) => match answer.as_str() {
+            Some(created) => {
+                println!("{created}");
+                Ok(())
+            }
+            None => Err(io::Error::other("new did not answer with a name")),
+        },
+        // The host answers a refused create with a JSON-RPC error (`Other`); the only refusal for
+        // an explicitly-named create is a duplicate — say so cleanly, mirroring kill-session.
+        Err(error) if error.kind() == io::ErrorKind::Other => {
+            let named = name.as_deref().unwrap_or_default();
+            Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("a session named {named:?} already exists"),
+            ))
         }
-        None => Err(io::Error::other("new did not answer with a name")),
+        Err(error) => Err(error),
     }
 }
 
@@ -134,7 +138,10 @@ fn kill_session(name: Option<String>) -> io::Result<()> {
             println!("killed {name}");
             Ok(())
         }
-        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
+        // Killing the LAST session ends the daemon; its reply can be cut off by the exit at any
+        // point — an EOF on the read, or a broken pipe / reset on the next write. Any of those
+        // means the server stopped, which is success, not failure.
+        Err(error) if server_gone(&error) => {
             println!("killed {name} (server ended)");
             Ok(())
         }
@@ -168,13 +175,25 @@ fn kill_server() -> io::Result<()> {
     for name in &names {
         match kill_one(&mut conn, name) {
             Ok(()) => {}
-            // The last kill ended the daemon; the connection is gone, and so is the server.
-            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
+            // The last kill ended the daemon; the connection is gone (an EOF, or a broken pipe /
+            // reset if the exit raced our next write), and so is the server — done, not an error.
+            Err(error) if server_gone(&error) => break,
             Err(error) => return Err(error),
         }
     }
     println!("server stopped");
     Ok(())
+}
+
+/// Whether an error means the DAEMON is gone (not a request-level refusal) — the same
+/// dead-connection classification the GUI's poll thread (`detach_reason`) makes. Killing the
+/// last session ends the daemon, and its reply can be severed at any point: an EOF on the read,
+/// or a broken pipe / reset if the exit races the next write.
+fn server_gone(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::UnexpectedEof | io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+    )
 }
 
 /// Issue one `kill_session {name}` — the shared call behind both kill commands.

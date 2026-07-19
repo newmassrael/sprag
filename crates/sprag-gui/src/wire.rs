@@ -921,7 +921,11 @@ fn spawn_poll(
 fn detach_reason(error: &io::Error) -> Option<&'static str> {
     match error.kind() {
         // Retryable: a signal interrupted the syscall, a non-blocking op would block, or a read
-        // timed out. Re-park and try again; the connection itself is fine.
+        // timed out. Re-park and try again; the connection itself is fine. This arm is a
+        // DEFENSIVE guard, not a live path today: [`HostConn`] is a blocking socket with no read
+        // timeout, so `WouldBlock`/`TimedOut` never arise and `Interrupted` is absorbed inside
+        // `read_line`'s retry — every error the poll actually meets is definitive. It stays so a
+        // future non-blocking connection re-parks a hiccup rather than detaching on it.
         io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => None,
         // A refusal the host actually answered with — for a scoped client, its session is gone.
         io::ErrorKind::Other => Some("this client's session was closed"),
@@ -995,7 +999,7 @@ mod tests {
     /// over a REAL closed socket (no `sprag-term`, no global env, no `WireHost` env branch), so
     /// it exercises the actual `spawn_poll` error arm rather than a stand-in.
     ///
-    /// REVERT-PROOF: delete the `quit.request_quit()` call in the error arm and this reads 0 —
+    /// REVERT-PROOF: delete the `quit.request_quit()` call in `request_detach` and this reads 0 —
     /// the guard is not vacuous, it pins the one line that turns a dead daemon into a client
     /// that exits instead of a window frozen over dead content.
     #[test]
@@ -1103,6 +1107,84 @@ mod tests {
         );
     }
 
+    /// A connected [`HostConn`] whose server answers the FIRST request `Ok` (a revision bump —
+    /// what the kill's own bump does to wake a parked poll) and then REFUSES every later request
+    /// with `-32602`. It never closes; the client's own detach ends it.
+    fn a_wake_then_refuse_host_conn(tag: &str) -> (HostConn, JoinHandle<()>, SockGuard) {
+        use std::io::Write;
+        let path = sock_path(tag);
+        let listener = UnixListener::bind(&path).expect("bind the throwaway host socket");
+        let conn = HostConn::connect(&path, Duration::from_secs(2)).expect("connect to it");
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept the client");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone the stream"));
+            let mut writer = stream;
+            let mut line = String::new();
+            let mut first = true;
+            while reader.read_line(&mut line).is_ok_and(|n| n > 0) {
+                let request: Value = serde_json::from_str(line.trim()).unwrap_or(Value::Null);
+                let reply = if std::mem::take(&mut first) {
+                    // The kill bumped the shared revision; the parked waitFor wakes Ok.
+                    json!({ "jsonrpc": "2.0", "id": request["id"], "result": { "revision": 1 } })
+                } else {
+                    // Every scoped request after that names the killed session → refused.
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": request["id"],
+                        "error": { "code": -32602, "message": "no session named \"1\"" },
+                    })
+                };
+                let _ = writeln!(writer, "{reply}");
+                let _ = writer.flush();
+                line.clear();
+            }
+        });
+        (conn, server, SockGuard(path))
+    }
+
+    /// The DOCUMENTED production sequence for a killed NON-last session: the kill bumps the shared
+    /// revision, so the parked `waitFor` wakes `Ok`, and the refusal lands on the RE-QUERY —
+    /// where the client detaches BEFORE repainting one stale frame. The `on_change` counter is
+    /// the non-vacuous check: a detach that fell through to `on_change` would repaint the dead
+    /// layout once. REVERT-PROOF: delete the `detach_reason` `break` from BOTH re-query arms and
+    /// `repaints` reads 1 (the client repaints stale, then detaches on the next waitFor's refusal).
+    #[test]
+    fn a_killed_session_detaches_on_the_re_query_without_a_stale_repaint() {
+        let (conn, server, _guard) = a_wake_then_refuse_host_conn("requery");
+        let quit = Arc::new(RecordingQuit::default());
+        let repaints = Arc::new(AtomicUsize::new(0));
+        let on_change: Box<dyn Fn() + Send> = {
+            let repaints = Arc::clone(&repaints);
+            Box::new(move || {
+                repaints.fetch_add(1, Ordering::SeqCst);
+            })
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let poll = spawn_poll(
+            conn,
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(LayoutSnapshot::default())),
+            on_change,
+            Arc::clone(&quit) as Arc<dyn QuitSink>,
+            Arc::clone(&stop),
+            0,
+        )
+        .expect("spawn the poll thread");
+        poll.join().expect("the poll thread exited");
+        server.join().expect("the server thread exited");
+
+        assert_eq!(
+            quit.0.load(Ordering::SeqCst),
+            1,
+            "the re-query refusal detaches the client",
+        );
+        assert_eq!(
+            repaints.load(Ordering::SeqCst),
+            0,
+            "and it detaches BEFORE repainting a stale frame",
+        );
+    }
+
     /// The other half, and NOT vacuously: when WE are the one tearing down, the socket error
     /// must NOT quit — even though the poll thread was already RUNNING (past its `while !stop`
     /// entry guard) when `stop` flipped. This is the real `Drop` race: the thread is parked in
@@ -1111,8 +1193,9 @@ mod tests {
     /// guard it claimed to protect was never reached — it passed even with `request_quit`
     /// hoisted out of that guard. This drives the thread INTO the parked read first.
     ///
-    /// REVERT-PROOF: hoist `quit.request_quit()` out of the error arm's `if !stop` and this
-    /// reads 1 — proving it exercises that exact guard, which the preset-`true` version did not.
+    /// REVERT-PROOF: drop the `if !stopped` guard in `request_detach` (so it quits regardless)
+    /// and this reads 1 — proving it exercises that exact guard, which the preset-`true` version
+    /// did not.
     #[test]
     fn our_own_teardown_does_not_ask_the_shell_to_quit() {
         let path = sock_path("teardown");

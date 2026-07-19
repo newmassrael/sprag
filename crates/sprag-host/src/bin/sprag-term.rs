@@ -48,16 +48,8 @@ use sprag_host::{
     FrameIngress, Host, HostState, RunRegistry, bump_on_dirty, dispatch_frames, pane_exit_hook,
     spawn_reaper, stdin_frames,
 };
-use sprag_rpc::SocketOpts;
+use sprag_rpc::HOST_SOCKET;
 use sprag_terminal::CommandBuilder;
-
-/// The headless host endpoint policy: `$XDG_RUNTIME_DIR/sprag-host.sock`
-/// (override `SPRAG_HOST_RPC_SOCK`), enabled unless `SPRAG_HOST_RPC` is falsey.
-const HOST_SOCKET: SocketOpts = SocketOpts {
-    socket_name: sprag_rpc::HOST_SOCKET_NAME,
-    path_env: "SPRAG_HOST_RPC_SOCK",
-    enable_env: "SPRAG_HOST_RPC",
-};
 
 fn main() -> io::Result<()> {
     let args = parse_args();

@@ -43,7 +43,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::PaneId;
 use crate::layout::{FloatHome, LayoutError, LayoutTree, LayoutWire};
-use crate::workspace::Workspace;
+use crate::workspace::{Pane, Workspace};
 
 /// One window: a named layout unit owning a pane pool, how its tiled panes are ARRANGED,
 /// and which of them a client has FLOATED out of the tiling.
@@ -318,17 +318,23 @@ impl std::fmt::Display for SessionError {
 
 impl std::error::Error for SessionError {}
 
-/// What a [`kill_session`](SessionRegistry::kill_session) did.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// What a [`kill_session`](SessionRegistry::kill_session) did — carrying the reaped owners so the
+/// CALLER drops them (running each pane's blocking [`PanePty`](crate::PanePty) `Drop`: kill,
+/// wait, join the reader) OUTSIDE the registry lock. That is the discipline the `close` action
+/// keeps; holding it here keeps the same "no blocking pane teardown under a scene lock" shape
+/// rather than re-introducing the one `close` pays to avoid.
 pub enum KillOutcome {
-    /// A non-last session was removed; the registry still holds at least one, so the daemon
-    /// keeps serving.
-    Removed,
-    /// The LAST session was killed — its panes were drained and the caller must EXIT the daemon
-    /// (tmux's "killing the last session ends the server"). The empty session shell is kept in
-    /// the registry so [`default_session`](SessionRegistry::default_session) stays total for the
-    /// brief window before the process actually dies.
-    KilledServer,
+    /// A non-last session was removed. The daemon keeps serving IFF a surviving session still
+    /// holds a live pane; if the removed one held the LAST live pane and the survivors are empty,
+    /// the reaper finds none and exits the daemon (the owner's "zero live panes ⇒ exit" policy,
+    /// unchanged by this path). So this is a removal, not an unconditional "the server stays up" —
+    /// liveness decides the rest. The removed [`Session`] rides here to be dropped off-lock.
+    Removed(Session),
+    /// The LAST session was killed: its panes were DRAINED (they ride here to drop off-lock) and
+    /// the caller must EXIT the daemon (tmux's "killing the last session ends the server"). The
+    /// empty session shell is kept so [`default_session`](SessionRegistry::default_session) stays
+    /// total for the brief window before the process actually dies.
+    KilledServer(Vec<Pane>),
 }
 
 /// One session: a named attach unit owning an ordered, non-empty set of [`Window`]s
@@ -374,12 +380,17 @@ impl Session {
         &self.windows[self.current_window]
     }
 
-    /// Close every pane in every window — used when the LAST session is killed
+    /// Remove every pane from every window and RETURN them — used when the LAST session is killed
     /// ([`SessionRegistry::kill_session`]), so no live pane keeps the daemon alive, WITHOUT
-    /// removing the session (which would empty the registry and unresolve the default). Closing
-    /// each pane drops its [`PanePty`](crate::PanePty), which SIGHUPs the child and fires its
-    /// `on_exit` — so the reaper is nudged to re-check and finds the daemon idle.
-    fn drain_panes(&mut self) {
+    /// removing the session (which would empty the registry and unresolve the default).
+    ///
+    /// The panes are RETURNED, not dropped here, so the caller runs each pane's blocking
+    /// `PanePty::Drop` (kill / wait / join the reader) OFF the registry lock. Closing removes each
+    /// pane from the pool first, so the session already counts as idle (empty pool) before the
+    /// returned panes are dropped — and each drop then SIGHUPs the child and fires its `on_exit`,
+    /// nudging the reaper.
+    fn drain_panes(&mut self) -> Vec<Pane> {
+        let mut reaped = Vec::new();
         for window in &self.windows {
             let mut pool = window
                 .workspace()
@@ -387,12 +398,10 @@ impl Session {
                 .unwrap_or_else(PoisonError::into_inner);
             let ids: Vec<PaneId> = pool.panes().iter().map(|pane| pane.id()).collect();
             for id in ids {
-                // Dropping the removed pane IS the reap: its `PanePty::Drop` SIGHUPs the child
-                // and closes the PTY. Explicit `drop` so the intent — and the `#[must_use]` — is
-                // honored rather than relying on the statement-end temporary drop.
-                drop(pool.close(id));
+                reaped.extend(pool.close(id));
             }
         }
+        reaped
     }
 }
 
@@ -417,14 +426,16 @@ impl Session {
 /// artifact. tmux's server has no such thing: each CLIENT is attached to a session, and
 /// `switch-client` changes THAT client's attachment, not a server-wide global. Under an
 /// out-of-band `session` scope param a client says which session each request is about, so
-/// switching is purely a client-side change — it sends a different name. A server-side
-/// mutator's only remaining job would be to move the default OUT FROM UNDER every other
-/// attached client, which is the hazard [`new_session`](Self::new_session) already refuses
-/// to create. So the only scope that is not named by the caller is
-/// [`default_session`](Self::default_session), and nothing can move it.
+/// switching is purely a client-side change — it sends a different name. The default (the only
+/// scope not named by the caller) is `sessions[0]`, and it is no longer immutable:
+/// [`kill_session`](Self::kill_session) can remove the first session, which re-points the
+/// default at the next one. That is the honest consequence of a removal path, not a maintained
+/// pointer — the list order IS the default (see [`default_session`](Self::default_session)).
 pub struct SessionRegistry {
-    /// Never empty: [`new`](Self::new) seeds one, and no removal path exists — which is
-    /// what makes [`default_session`](Self::default_session) total.
+    /// Never EMPTY, though it can shrink: [`new`](Self::new) seeds one, and
+    /// [`kill_session`](Self::kill_session) removes a non-last session but DRAINS (rather than
+    /// removes) the last — so at least one always remains, which is what makes
+    /// [`default_session`](Self::default_session) total.
     sessions: Vec<Session>,
 }
 
@@ -540,6 +551,10 @@ impl SessionRegistry {
     /// requests would leave the unscoped path unresolvable, and the daemon is about to exit
     /// anyway, so the emptied shell simply outlives the last request by the width of a shutdown.
     ///
+    /// Both arms hand the reaped owners BACK in the [`KillOutcome`] so the caller drops them off
+    /// the registry lock, rather than running their blocking `PanePty::Drop` (kill / wait / join)
+    /// under it — the same discipline the `close` action keeps.
+    ///
     /// # Errors
     ///
     /// [`SessionError::Unknown`] if no session carries `name`.
@@ -552,13 +567,11 @@ impl SessionRegistry {
         if self.sessions.len() == 1 {
             // The last session: drain it (no live pane remains, so the reaper exits the daemon)
             // but keep the shell so `default_session` stays total until the process dies.
-            self.sessions[idx].drain_panes();
-            return Ok(KillOutcome::KilledServer);
+            return Ok(KillOutcome::KilledServer(self.sessions[idx].drain_panes()));
         }
-        // Removing the session drops its windows -> workspaces -> panes; each PanePty::Drop
-        // SIGHUPs its child and fires `on_exit`, so the reaper is nudged with no extra signal.
-        self.sessions.remove(idx);
-        Ok(KillOutcome::Removed)
+        // Removing the session takes its windows -> workspaces -> panes out of the registry; the
+        // returned Session carries them so the caller drops it (SIGHUP + reader join) off-lock.
+        Ok(KillOutcome::Removed(self.sessions.remove(idx)))
     }
 
     /// The session an UNSCOPED request acts on — the first in the list.
@@ -939,7 +952,10 @@ mod tests {
         assert_eq!(reg.default_session().name(), "0");
 
         // A non-default session: removed, the default unchanged.
-        assert_eq!(reg.kill_session("work").unwrap(), KillOutcome::Removed);
+        assert!(matches!(
+            reg.kill_session("work").unwrap(),
+            KillOutcome::Removed(_)
+        ));
         assert!(reg.session("work").is_none());
         assert_eq!(reg.sessions().len(), 2);
         assert_eq!(
@@ -949,7 +965,10 @@ mod tests {
         );
 
         // The DEFAULT session: the next becomes the default.
-        assert_eq!(reg.kill_session("0").unwrap(), KillOutcome::Removed);
+        assert!(matches!(
+            reg.kill_session("0").unwrap(),
+            KillOutcome::Removed(_)
+        ));
         assert!(reg.session("0").is_none());
         assert_eq!(
             reg.default_session().name(),
@@ -963,9 +982,9 @@ mod tests {
     fn kill_session_refuses_an_unknown_name() {
         let mut reg = SessionRegistry::new((80, 24));
         reg.new_session(Some("work")).unwrap();
-        assert_eq!(
-            reg.kill_session("ghost").unwrap_err(),
-            SessionError::Unknown("ghost".to_owned()),
+        assert!(
+            matches!(reg.kill_session("ghost"), Err(SessionError::Unknown(name)) if name == "ghost"),
+            "an unknown name is refused as Unknown, carrying the name asked for",
         );
         assert_eq!(reg.sessions().len(), 2, "the refused kill removed nothing");
         assert!(reg.session("work").is_some());
@@ -983,7 +1002,10 @@ mod tests {
         assert_eq!(lock(&ws).panes().len(), 2);
 
         let name = default_name(&reg);
-        assert_eq!(reg.kill_session(&name).unwrap(), KillOutcome::KilledServer);
+        assert!(matches!(
+            reg.kill_session(&name).unwrap(),
+            KillOutcome::KilledServer(_)
+        ));
 
         assert_eq!(reg.sessions().len(), 1, "the last session is NOT removed");
         assert_eq!(

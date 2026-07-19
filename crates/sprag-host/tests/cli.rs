@@ -41,17 +41,25 @@ fn spawn_host() -> (HostChild, PathBuf) {
     (HostChild(child, sock.clone()), sock)
 }
 
-/// Run the `sprag` CLI against `sock`, returning its stdout and whether it exited 0.
-fn sprag(sock: &Path, args: &[&str]) -> (String, bool) {
+/// The result of running the `sprag` CLI: its stdout, its stderr, and whether it exited 0.
+struct CliRun {
+    stdout: String,
+    stderr: String,
+    ok: bool,
+}
+
+/// Run the `sprag` CLI against `sock`.
+fn sprag(sock: &Path, args: &[&str]) -> CliRun {
     let output = Command::new(env!("CARGO_BIN_EXE_sprag"))
         .args(args)
         .env("SPRAG_HOST_RPC_SOCK", sock)
         .output()
         .expect("run the sprag CLI");
-    (
-        String::from_utf8_lossy(&output.stdout).into_owned(),
-        output.status.success(),
-    )
+    CliRun {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        ok: output.status.success(),
+    }
 }
 
 #[test]
@@ -60,37 +68,76 @@ fn the_cli_lists_creates_and_kills_sessions_over_the_socket() {
 
     // ls: the boot session "0" is the one an unscoped request lands in. (The CLI's own connect
     // window absorbs the host's bind race.)
-    let (out, ok) = sprag(&sock, &["ls"]);
-    assert!(ok, "ls succeeded: {out}");
+    let run = sprag(&sock, &["ls"]);
+    assert!(run.ok, "ls succeeded: {}", run.stderr);
     assert!(
-        out.contains("0:") && out.contains("(default)"),
-        "ls shows the boot session as the default: {out}",
+        run.stdout.contains("0:") && run.stdout.contains("(default)"),
+        "ls shows the boot session as the default: {}",
+        run.stdout,
     );
 
     // new work: creates it and prints the name a client would scope to.
-    let (out, ok) = sprag(&sock, &["new", "work"]);
-    assert!(ok, "new succeeded: {out}");
-    assert_eq!(out.trim(), "work", "new prints the created name: {out}");
+    let run = sprag(&sock, &["new", "work"]);
+    assert!(run.ok, "new succeeded: {}", run.stderr);
+    assert_eq!(run.stdout.trim(), "work", "new prints the created name");
 
     // ls now lists it, and "0" is still the default.
-    let (out, _) = sprag(&sock, &["ls"]);
-    assert!(out.contains("work"), "ls shows the created session: {out}");
-    assert!(out.contains("(default)"), "the default is unmoved: {out}");
+    let run = sprag(&sock, &["ls"]);
+    assert!(run.stdout.contains("work"), "ls shows it: {}", run.stdout);
+    assert!(run.stdout.contains("(default)"), "default unmoved");
 
     // kill-session work: a non-last kill removes it.
-    let (out, ok) = sprag(&sock, &["kill-session", "work"]);
-    assert!(ok, "kill-session succeeded: {out}");
-    assert!(out.contains("killed work"), "kill-session confirms: {out}");
+    let run = sprag(&sock, &["kill-session", "work"]);
+    assert!(run.ok, "kill-session succeeded: {}", run.stderr);
+    assert!(run.stdout.contains("killed work"), "kill-session confirms");
 
     // ...and it is gone, while the default survives (it was not the last).
-    let (out, _) = sprag(&sock, &["ls"]);
-    assert!(!out.contains("work"), "the killed session is gone: {out}");
+    let run = sprag(&sock, &["ls"]);
+    assert!(!run.stdout.contains("work"), "the killed session is gone");
     assert!(
-        out.contains("0:"),
-        "a non-last kill leaves the default: {out}"
+        run.stdout.contains("0:"),
+        "a non-last kill leaves the default"
     );
 
-    // Killing an unknown session fails cleanly (non-zero exit, no raw wire error).
-    let (_out, ok) = sprag(&sock, &["kill-session", "ghost"]);
-    assert!(!ok, "killing an unknown session fails");
+    // Killing an unknown session fails cleanly — non-zero exit AND a clean message, not the raw
+    // wire error the mapping at `sprag.rs` replaces.
+    let run = sprag(&sock, &["kill-session", "ghost"]);
+    assert!(!run.ok, "killing an unknown session fails");
+    assert!(
+        run.stderr.contains("no session named") && !run.stderr.contains("host rpc error"),
+        "the refusal is a clean message, not the raw wire error: {}",
+        run.stderr,
+    );
+}
+
+/// `kill-server` ends the daemon: it succeeds, and a follow-up command then finds no server.
+#[test]
+fn the_cli_kill_server_ends_the_daemon() {
+    let (_host, sock) = spawn_host();
+
+    // The server is up.
+    assert!(sprag(&sock, &["ls"]).ok, "server up before kill-server");
+
+    // kill-server stops it.
+    let run = sprag(&sock, &["kill-server"]);
+    assert!(run.ok, "kill-server succeeded: {}", run.stderr);
+    assert!(
+        run.stdout.contains("server stopped"),
+        "kill-server confirms"
+    );
+
+    // The daemon exits asynchronously after the last kill's reply, so poll `ls` until it can no
+    // longer reach a server (a bounded wait, not a fixed sleep — the "a flake is a bug" rule).
+    let gone = (0..40).any(|_| {
+        if sprag(&sock, &["ls"]).ok {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            false
+        } else {
+            true
+        }
+    });
+    assert!(
+        gone,
+        "kill-server ended the daemon: ls no longer finds a server"
+    );
 }

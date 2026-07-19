@@ -35,6 +35,18 @@ pub use client::{HostConn, SESSION_PARAM};
 /// default both sides fall back to.
 pub const HOST_SOCKET_NAME: &str = "sprag-host.sock";
 
+/// The headless host's endpoint POLICY: the well-known [`HOST_SOCKET_NAME`] socket, overridable
+/// by `SPRAG_HOST_RPC_SOCK`, enabled unless `SPRAG_HOST_RPC` is falsey. Defined here so the
+/// daemon that BINDS it (`sprag-term`) and every client that DRIVES it over the same env vars
+/// (the `sprag` CLI) share ONE `SocketOpts`, not a re-spelled copy each. (`sprag-gui` uses its
+/// own override env `SPRAG_GUI_HOST_SOCK`, so it resolves the path itself rather than this
+/// policy.)
+pub const HOST_SOCKET: SocketOpts = SocketOpts {
+    socket_name: HOST_SOCKET_NAME,
+    path_env: "SPRAG_HOST_RPC_SOCK",
+    enable_env: "SPRAG_HOST_RPC",
+};
+
 /// A frontend's socket policy: the endpoint's default file name plus the env
 /// vars that override its path and its boot state. The *mechanism* (bind,
 /// control, lifetime) is shared; only these names differ per frontend, so the

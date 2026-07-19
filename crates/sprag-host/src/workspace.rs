@@ -271,8 +271,9 @@ impl WorkspaceExternal {
     /// which would be the same alias smell the scope param refuses in its type-error corner.
     ///
     /// Creating is not attaching, and nothing here changes what any other client sees: the
-    /// new session starts empty, and every client's scope is either its own name or the
-    /// immutable default. The answer is the name — indispensable for the allocated case (the
+    /// new session starts empty, and every client's scope is either its own name or the default
+    /// (which a `kill_session` of the current default re-points, but a `new_session` never
+    /// moves). The answer is the name — indispensable for the allocated case (the
     /// caller did not choose it) — so a caller can scope its next request with what it just
     /// made, without a round trip to [`SESSIONS_SLOT`] to confirm.
     fn new_session(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
@@ -312,14 +313,22 @@ impl WorkspaceExternal {
             .get("name")
             .and_then(Value::as_str)
             .ok_or(InvokeError::TypeMismatch)?;
-        match lock(&self.registry).kill_session(name) {
-            Ok(KillOutcome::Removed) => {
+        // Remove/drain UNDER the lock, then RELEASE it before dropping the reaped owners: binding
+        // `outcome` here means the lock guard falls at the `;`, so the removed session / drained
+        // panes ride in `outcome` and their blocking `Drop` (kill / wait / join the reader) runs
+        // OFF the lock — the `close` action's discipline.
+        let outcome = lock(&self.registry).kill_session(name);
+        match outcome {
+            Ok(KillOutcome::Removed(_removed)) => {
+                // A set change — wake a client watching the sessions list. `_removed` drops here,
+                // off-lock, tearing its panes down.
                 self.revision.bump();
             }
-            Ok(KillOutcome::KilledServer) => {
+            Ok(KillOutcome::KilledServer(_drained)) => {
                 // Nudge the reaper to re-check liveness (the drained session leaves none) so it
                 // exits through the SIGTERM funnel. An empty last session drains nothing, so
-                // this signal — not a pane's Drop — is what triggers the check there.
+                // this signal — not a pane's Drop — is what triggers the check there. `_drained`
+                // (any panes the last session held) drops off-lock right after.
                 if let Some(on_pane_exit) = &self.on_pane_exit {
                     on_pane_exit();
                 }

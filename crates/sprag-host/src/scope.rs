@@ -100,12 +100,14 @@ impl SessionScope {
     /// needs no second lookup and has no absent case to invent an answer for.
     ///
     /// Scope resolution gates EVERY method, including the registry-WIDE ones
-    /// (`new_session`, `sessions`) — a scoped connection carries its `session` on all of them.
-    /// Harmless today (sessions have no removal path, and a client creates its session on an
-    /// UNSCOPED connection before scoping), but when session-close lands a client scoped to a
-    /// just-killed session could not even LIST sessions or CREATE a replacement over that
-    /// connection until it re-scopes. That increment must let a registry-wide method bypass the
-    /// gate, or hand the client a way to clear its scope.
+    /// (`new_session`, `sessions`, `kill_session`) — a scoped connection carries its `session` on
+    /// all of them. So a client scoped to a session that is then KILLED gets a refusal on its
+    /// very next request, including a would-be `sessions`/`new_session`. That is not a gap but the
+    /// DETACH signal: the client's poll thread reads the refusal and ends the client (tmux's "the
+    /// session is gone, so the client leaves" — see `sprag-gui`'s `detach_reason`), rather than
+    /// lingering to list or re-create over a dead scope. A client creates its FIRST session on an
+    /// UNSCOPED connection before scoping, so the create path is never gated on a session that
+    /// does not exist yet.
     ///
     /// # Errors
     ///
