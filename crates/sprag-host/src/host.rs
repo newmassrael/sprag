@@ -50,7 +50,7 @@ use pinion_core::GridBuffer;
 use sprag_input::Modifiers;
 use sprag_terminal::{
     CommandBuilder, LayoutSnapshot, LayoutWire, Pane, PaneId, PanePtyError, PanePtyHandle,
-    SessionRegistry, Snapshot, SnapshotError, WindowInfo, Workspace,
+    SessionInfo, SessionRegistry, Snapshot, SnapshotError, WindowInfo, Workspace,
 };
 use sprag_vt::Screen;
 
@@ -229,6 +229,41 @@ pub trait HostClient {
     /// Kill the window named `name` of the scoped session (tmux `kill-window`); the session's
     /// LAST window ends the session. A no-op for an unknown name.
     fn kill_window(&self, name: &str);
+
+    /// Every session on the host — registry-WIDE, NOT scoped to this client's own: each session's
+    /// name, window count, and whether it is the registry default. The list a session-switcher
+    /// sidebar draws; a client re-reads it when the scene revision moves (a new / killed session
+    /// bumps it, just like a window change does the window list).
+    ///
+    /// **Scope note (extended, again):** a SESSION-level member of an otherwise pane-addressed
+    /// trait, joining `layout` / `windows` and their writes here for the same reason (both impls
+    /// and the client's one `Box<dyn HostClient>` already exist). The window+session group has now
+    /// grown enough that its extraction into a dedicated mux/window/session client trait is the
+    /// natural next refactor — tracked, still deliberately NOT done, so this increment stays the
+    /// focused feature it set out to be.
+    fn sessions(&self) -> Vec<SessionInfo>;
+
+    /// The name of the session THIS client is currently attached to — a CLIENT-LOCAL fact. The
+    /// wire carries no "attached" marker ([`sessions`](Self::sessions)'s `default` answers a
+    /// DIFFERENT question — where an unscoped request lands), so a switcher reads this to highlight
+    /// its own row.
+    fn current_session(&self) -> String;
+
+    /// Attach this client to the session named `name` IN PLACE — tmux `switch-client -t`: re-point
+    /// every read at that session and adopt its live panes + windows + arrangement, WITHOUT
+    /// relaunching the client. A no-op for the already-current session; a switch to a session that
+    /// cannot be attached leaves the client on the one it was already showing (never a blank
+    /// window over a failed switch).
+    ///
+    /// This is fundamentally a CLIENT operation (it re-points this client's projection, changing no
+    /// host state), unlike the window writes above — so the in-process arm, which renders the
+    /// default session directly with no re-pointable projection, implements it as a documented
+    /// no-op; the wire client carries the real switch.
+    fn switch_session(&self, name: &str);
+
+    /// Create a fresh session on the host (born with a shell, tmux `new-session`) and switch this
+    /// client to it, returning its name. The "+" of a session sidebar.
+    fn new_session(&self) -> String;
 
     /// Pane `id`'s child-reported window TITLE (`OSC 0` / `OSC 2`), or `None` if the
     /// child never set one (or `id` is absent).
@@ -682,6 +717,33 @@ impl HostClient for Host {
     fn kill_window(&self, name: &str) {
         let session = lock(&self.registry).default_session().name().to_owned();
         let _outcome = lock(&self.registry).kill_window(&session, name);
+    }
+
+    /// Every session in the registry — the SAME registry-wide list the wire `sessions` slot serves
+    /// (both built by [`SessionRegistry::session_infos`], the ONE builder), marking the default.
+    /// Not narrowed to the default even though this arm only renders that one: the list's whole
+    /// purpose is to enumerate the scopes a switcher could name.
+    fn sessions(&self) -> Vec<SessionInfo> {
+        lock(&self.registry).session_infos()
+    }
+
+    /// The in-process arm renders the DEFAULT session (see [`Host::workspace`]), so that is the
+    /// session it is "attached" to.
+    fn current_session(&self) -> String {
+        lock(&self.registry).default_session().name().to_owned()
+    }
+
+    /// No-op: the in-process debug host renders the default session directly and has no
+    /// re-pointable client projection to switch (see the trait method's note). Switching sessions
+    /// is a wire-client capability; a test / debug in-process host stays on its default.
+    fn switch_session(&self, _name: &str) {}
+
+    /// No-op returning the current (default) session: the in-process debug host cannot show a
+    /// freshly-created session (it renders only the default — see
+    /// [`switch_session`](HostClient::switch_session)), so creating one it could never display
+    /// would be a lie. Session creation is exercised through the wire client.
+    fn new_session(&self) -> String {
+        self.current_session()
     }
 }
 

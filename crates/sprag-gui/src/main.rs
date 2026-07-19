@@ -204,6 +204,7 @@ mod scrollbar;
 mod selection;
 mod slotview;
 mod split;
+mod stabs;
 mod terminal;
 mod view;
 mod wire;
@@ -495,6 +496,10 @@ impl WidgetCore for TerminalViewer {
         // context menu and splitters). Their clicks route through `update` to `SlotView` window
         // actions (select / new / kill window).
         externals.extend(wtabs::create_window_externals());
+        // The session sidebar's buttons: one `ButtonExternal` per possible row plus "+", all at
+        // fixed tags (pinion R689 preserves them across this per-frame rebuild). Their clicks route
+        // through `update` to `SlotView` session actions (switch / new session).
+        externals.extend(stabs::create_session_externals());
         externals
     }
 
@@ -776,6 +781,11 @@ impl WidgetCore for TerminalViewer {
         // action (select / new / kill window). Handled first, like the context menu — these are
         // not pane tags, so the panel routing below would drop them.
         if wtabs::handle_window_intent(intent, &use_terminal().slots) {
+            return Vec::new();
+        }
+        // The session sidebar: a row / "+" button click routes to a `SlotView` session action
+        // (switch / new session). Same as the window strip — not a pane tag.
+        if stabs::handle_session_intent(intent, &use_terminal().slots) {
             return Vec::new();
         }
         let Some((panel, event)) = intent.tag_str().rsplit_once('.') else {
@@ -1438,6 +1448,22 @@ mod tests {
             content_rows < full_rows,
             "the chrome strip + tab strip + dock header subtract rows"
         );
+        // The session sidebar (tmux sessions / cmux workspaces) takes a fixed band down the LEFT,
+        // so the pane AREA width is the window minus the sidebar — derive the expected full-area
+        // cols through the same winsize SSOT against the reduced width (the horizontal analogue of
+        // `content_rows`). Each of the two horizontally-split panes then fills ~half of THAT.
+        let sidebar_px = crate::stabs::SIDEBAR_WIDTH;
+        let area_cols = crate::terminal::grid_dims((WINDOW_W - sidebar_px, WINDOW_H), metric).0;
+        let area_half = area_cols / 2;
+        let full_half = full_cols / 2;
+        // Test SENSITIVITY precondition: the sidebar must be wide enough that half-the-reduced-area
+        // is meaningfully below half-the-full-window, or the per-pane bound below could not tell a
+        // sidebar-narrowed pane from a full-window one. (With SIDEBAR_WIDTH=180 the two halves are
+        // ~10 cols apart, so the `area_half + 1` upper bound sits well under `full_half`.)
+        assert!(
+            area_half + 1 < full_half,
+            "SIDEBAR_WIDTH must narrow a pane by several cols for this test to discriminate",
+        );
 
         assert_eq!(
             dims.len(),
@@ -1445,18 +1471,19 @@ mod tests {
             "two tiled pane grids are painted, got {dims:?}"
         );
         for (cols, rows) in &dims {
-            // Horizontal split: each pane fills the window height BELOW its 28px dock
-            // header (the header is the only vertical chrome a horizontal split adds)...
+            // Horizontal split: each pane fills the window height BELOW its 28px dock header...
             assert_eq!(
                 *rows, content_rows,
                 "pane fills the window height below the dock header"
             );
-            // ...but is reflowed to roughly half the width — strictly narrower
-            // than a full-window pane (the per-pane R1012 reflow shrank it from
-            // its full-window boot size), same-frame.
+            // ...and its WIDTH is ~half the SIDEBAR-REDUCED area, NOT half the full window. This is
+            // the revert-proof check: with the sidebar removed / zero-width / an overlay, each pane
+            // would reflow to ~`full_half` (well above `area_half + 1`), which this REJECTS — so a
+            // sidebar that failed to narrow the pane area fails the test.
             assert!(
-                *cols < full_cols && *cols >= full_cols / 2 - 3,
-                "pane reflowed to ~half ({cols} cols vs full {full_cols})",
+                (area_half - 3..=area_half + 1).contains(cols),
+                "pane reflowed to ~half the sidebar-reduced width ({cols}); \
+                 half the FULL window would be ~{full_half}, which this rejects",
             );
         }
         // The even split makes the two panes within one cell of each other.

@@ -209,10 +209,12 @@ fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
         },
         None => content,
     };
-    // The window TAB STRIP (tmux "windows") above the pane area — main window only, since
-    // `compose` is reached only from here. It reads the window list off the SlotView mirror.
+    // The window TAB STRIP (tmux "windows") above the pane area + the session SIDEBAR (tmux
+    // sessions / cmux workspaces) down the left — main window only, since `compose` is reached only
+    // from here. Both read off the SlotView mirror (no socket call on the paint path).
     let strip = crate::wtabs::view_window_strip(&tv.slots, theme);
-    compose(strip, content, theme)
+    let sidebar = crate::stabs::view_session_sidebar(&tv.slots, theme);
+    compose(sidebar, strip, content, theme)
 }
 
 /// Build ONE pane's scene from its live screen + per-pane `ScrollState` + IME
@@ -316,26 +318,39 @@ fn dim_inactive(pane: Scene) -> Scene {
     }
 }
 
-/// Wrap the workspace `content` in the surface-filled paint root (tagged
-/// [`ROOT_TAG`]) that fills the window, so the tiling fills it and each pane's rect
-/// derives from its split share (§3, per-pane via R1012). The surface shows through
-/// the inter-pane divider gap.
+/// Wrap the workspace `content` in the surface-filled paint root (tagged [`ROOT_TAG`]) that fills
+/// the window. The root is a ROW: the session `sidebar` down the left (a fixed-width band), and to
+/// its right a COLUMN of the window tab `strip` above the tiled `content` — so the panes fill the
+/// window MINUS the sidebar width and the strip height, and each pane's rect derives from its split
+/// share (§3, per-pane via R1012). The surface shows through the inter-pane divider gap.
 ///
-/// `compose` owns the "content must carry a definite extent" invariant: it applies
-/// [`fill_definite`] to `content` so a sizeless flex child can't collapse its main
-/// axis to intrinsic (the cross axis still stretches). This is the SINGLE
-/// enforcement point — every paint path funnels through `compose`, so a caller
-/// cannot forget it (the R55 undock bug was exactly a forgotten fill). The fill only
-/// sets `size` and is idempotent. Pure composition; the unit test exercises it
-/// without a PTY.
-fn compose(strip: Scene, content: Scene, theme: &Theme) -> Scene {
+/// `compose` owns the "content must carry a definite extent" invariant: [`fill_remaining`] lets the
+/// content take the height the fixed strip leaves while still handing the pane grid a measured rect
+/// (so the R1012 reflow fires), and the content COLUMN takes the width the fixed sidebar leaves
+/// (`flex_grow` + `min-width: 0`). This is the SINGLE enforcement point — every paint path funnels
+/// through `compose`, so a caller cannot forget it (the R55 undock bug was exactly a forgotten
+/// fill). Pure composition; the unit test exercises it without a PTY.
+fn compose(sidebar: Scene, strip: Scene, content: Scene, theme: &Theme) -> Scene {
+    // The content COLUMN (tab strip above the tiled panes), filling the width the sidebar leaves:
+    // `flex_grow` takes the remaining main-axis (Row) width, `min-width: 0` lets it shrink below
+    // intrinsic, and `height: 100%` fills the Row's cross axis.
+    let column = Scene::Container(
+        ContainerNode::new(vec![strip, fill_remaining(content)]).with_layout(
+            LayoutStyle::new()
+                .flex(FlexDirection::Column)
+                .with_flex_grow(1.0)
+                .with_min_size(Size::auto().with_width(SizeValue::Px(0)))
+                .with_size(Size::auto().with_height(SizeValue::Percent(100))),
+        ),
+    );
+    // The surface-filled paint root: the fixed-width sidebar beside the content column.
     Scene::Container(
-        ContainerNode::new(vec![strip, fill_remaining(content)])
+        ContainerNode::new(vec![sidebar, column])
             .with_tag(ROOT_TAG)
             .with_style(BoxStyle::filled(theme.resolve(ColorRole::Surface)))
             .with_layout(
                 LayoutStyle::new()
-                    .flex(FlexDirection::Column)
+                    .flex(FlexDirection::Row)
                     .with_size(fill_size()),
             ),
     )
@@ -424,26 +439,67 @@ mod tests {
         let owner = Owner::new();
         let scene = owner.run(|| {
             let theme = use_theme(THEME_TAG).theme_animated();
-            // Stand-in strip + grid (the real ones are `wtabs::view_window_strip` and the host's
-            // pane_view_scene_from_cells, tested elsewhere) — compose only owns the root wrapping.
+            // Stand-in sidebar + strip + grid (the real ones are `stabs::view_session_sidebar`,
+            // `wtabs::view_window_strip` and the host's pane_view_scene_from_cells, tested
+            // elsewhere) — compose only owns the root wrapping: the sidebar beside a
+            // strip-over-content column.
+            let sidebar = Scene::Container(ContainerNode::new(Vec::new()).with_tag("sidebar_stub"));
             let strip = Scene::Container(ContainerNode::new(Vec::new()).with_tag("strip_stub"));
             let grid = Scene::Container(ContainerNode::new(Vec::new()).with_tag("grid_stub"));
-            compose(strip, grid, &theme)
+            compose(sidebar, strip, grid, &theme)
         });
-        match scene {
-            Scene::Container(ref root) => {
-                assert_eq!(root.tag.as_deref(), Some(ROOT_TAG));
-                assert_eq!(root.layout.size.width, SizeValue::Percent(100));
-                assert_eq!(root.layout.size.height, SizeValue::Percent(100));
-                assert_eq!(
-                    root.layout.flex_direction,
-                    FlexDirection::Column,
-                    "the strip stacks above the content",
-                );
-            }
-            other => unreachable!("compose returns a Container, got {other:?}"),
-        }
-        assert!(scene.contains_tag("strip_stub"), "the tab strip is mounted");
-        assert!(scene.contains_tag("grid_stub"), "the grid is mounted");
+        // Assert the STRUCTURE, not just "all three tags appear somewhere" (which a flat
+        // `Row[sidebar, strip, content]` — strip beside content, a broken layout — would also
+        // satisfy, since `contains_tag` is recursive). The root must be a Row of exactly
+        // [sidebar, column], and that column a Column of [strip, content]: so the sidebar is a
+        // DIRECT child (beside), and the strip stacks ABOVE the content inside the column.
+        let Scene::Container(ref root) = scene else {
+            unreachable!("compose returns a Container, got {scene:?}");
+        };
+        assert_eq!(root.tag.as_deref(), Some(ROOT_TAG));
+        assert_eq!(root.layout.size.width, SizeValue::Percent(100));
+        assert_eq!(root.layout.size.height, SizeValue::Percent(100));
+        assert_eq!(
+            root.layout.flex_direction,
+            FlexDirection::Row,
+            "the sidebar sits beside the content column",
+        );
+        assert_eq!(root.children.len(), 2, "root = [sidebar, content column]");
+        let Scene::Container(ref sidebar) = root.children[0] else {
+            unreachable!("the sidebar is the root's first child");
+        };
+        assert_eq!(
+            sidebar.tag.as_deref(),
+            Some("sidebar_stub"),
+            "the sidebar is a DIRECT child of the Row (beside the content), not nested in the column",
+        );
+        let Scene::Container(ref column) = root.children[1] else {
+            unreachable!("the content column is the root's second child");
+        };
+        assert_eq!(
+            column.layout.flex_direction,
+            FlexDirection::Column,
+            "the content column stacks its children vertically",
+        );
+        // The strip stacks ABOVE the content INSIDE the column (order proves "above", not "beside").
+        assert_eq!(
+            column.children.len(),
+            2,
+            "content column = [strip, content]"
+        );
+        let child_tag = |i: usize| match &column.children[i] {
+            Scene::Container(c) => c.tag.as_deref(),
+            _ => None,
+        };
+        assert_eq!(
+            child_tag(0),
+            Some("strip_stub"),
+            "the tab strip is the FIRST child of the column (stacks above the content)",
+        );
+        assert_eq!(
+            child_tag(1),
+            Some("grid_stub"),
+            "the content is the second child of the column (below the strip)",
+        );
     }
 }

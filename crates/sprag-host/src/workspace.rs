@@ -60,7 +60,7 @@ use pinion_core::external::{
 };
 use serde_json::{Map, Value};
 use sprag_terminal::{
-    CommandBuilder, KillOutcome, LayoutSnapshot, LayoutWire, PaneId, SessionRegistry,
+    CommandBuilder, KillOutcome, LayoutSnapshot, LayoutWire, PaneId, SessionInfo, SessionRegistry,
     WindowKillOutcome, Workspace,
 };
 
@@ -630,22 +630,20 @@ impl ExternalIntrospect for WorkspaceExternal {
             // one slot whose subject is the set of scopes, so scoping it to the caller's own
             // session would answer a question nobody asked.
             SESSIONS_SLOT => {
-                let registry = lock(&self.registry);
-                let default = registry.default_session().name();
-                let entries = registry
-                    .sessions()
-                    .iter()
-                    .map(|session| {
-                        serde_json::json!({
-                            "name": session.name(),
-                            "windows": session.windows().len(),
-                            // Not "is it current" — nothing is current. This says where an
-                            // unscoped request goes, which is the only unnamed scope there is.
-                            "default": session.name() == default,
-                        })
-                    })
-                    .collect();
-                Some(IntrospectValue::Json(Value::Array(entries)))
+                // One `SessionInfo` builder ([`SessionRegistry::session_infos`]) shared with the
+                // in-process arm, serialised here the way `windows` serialises its `WindowInfo`s —
+                // so neither the shape NOR what `windows`/`default` mean can drift between the wire
+                // path and the in-process one. (The prior inline `json!` produced the same object;
+                // this names the shape and the builder.) `default` says where an UNSCOPED request
+                // lands — not "is it current", nothing is current here.
+                let infos: Vec<SessionInfo> = lock(&self.registry).session_infos();
+                match serde_json::to_value(&infos) {
+                    Ok(json) => Some(IntrospectValue::Json(json)),
+                    Err(error) => {
+                        tracing::error!(target: "sprag_host", %error, "sessions failed to serialise");
+                        None
+                    }
+                }
             }
             // The SCOPED session's windows — each window's name and whether it is the CURRENT
             // one — how a tabbed client learns which tabs to draw and which is active. Scoped

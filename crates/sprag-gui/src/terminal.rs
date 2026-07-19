@@ -11,6 +11,7 @@ use pinion_core::{use_quit_sink, use_repaint_sink};
 use sprag_host::{Host, HostClient};
 use sprag_terminal::CommandBuilder;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// Default glyph size (logical px) — the font-size SSOT the cell is measured
 /// from. `SPRAG_GUI_FONT=<px>` overrides it live (larger ⇒ bigger).
@@ -307,7 +308,7 @@ pub(crate) fn use_terminal() -> Rc<TerminalView> {
                     cols,
                     rows,
                     pane_count(),
-                    Box::new(move || sink.request_repaint()),
+                    Arc::new(move || sink.request_repaint()),
                     quit,
                 )
                 .expect("boot the sprag-term wire host"),

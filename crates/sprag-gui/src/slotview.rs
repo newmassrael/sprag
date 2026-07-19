@@ -32,7 +32,7 @@ use std::collections::HashSet;
 use pinion_core::GridBuffer;
 use sprag_host::{HostClient, PaneScrollFacts};
 use sprag_input::Modifiers;
-use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId, WindowInfo};
+use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId, SessionInfo, WindowInfo};
 
 use crate::terminal::MAX_PANES;
 
@@ -192,6 +192,30 @@ impl SlotView {
     /// session's last window ends the session.
     pub(crate) fn kill_window(&self, name: &str) {
         self.host.kill_window(name);
+    }
+
+    /// Every session on the host (registry-wide) — the list the session sidebar draws. NOT
+    /// slot-mapped: sessions are not pane-addressed, so this passes straight through (the reducer
+    /// addresses sessions by NAME, like it does windows).
+    pub(crate) fn sessions(&self) -> Vec<SessionInfo> {
+        self.host.sessions()
+    }
+
+    /// The session this client is attached to — for the sidebar's current-row highlight.
+    pub(crate) fn current_session(&self) -> String {
+        self.host.current_session()
+    }
+
+    /// Switch this client to the session named `name` in place (tmux `switch-client`) — a sidebar
+    /// row click.
+    pub(crate) fn switch_session(&self, name: &str) {
+        self.host.switch_session(name);
+    }
+
+    /// Create a fresh session and switch to it (tmux `new-session`), returning its name — the "+"
+    /// of the session sidebar.
+    pub(crate) fn new_session(&self) -> String {
+        self.host.new_session()
     }
 
     /// Slot `slot`'s cell DATA at `offset_lines` (a `1x1` placeholder for a hole).
@@ -423,7 +447,7 @@ mod tests {
         fn pane_title(&self, id: PaneId) -> Option<String> {
             self.titles.get(&id).cloned()
         }
-        /// Inert: these tests drive the pane slot map, not the window surface.
+        /// Inert: these tests drive the pane slot map, not the window / session surface.
         fn windows(&self) -> Vec<WindowInfo> {
             Vec::new()
         }
@@ -432,6 +456,16 @@ mod tests {
             String::new()
         }
         fn kill_window(&self, _name: &str) {}
+        fn sessions(&self) -> Vec<SessionInfo> {
+            Vec::new()
+        }
+        fn current_session(&self) -> String {
+            String::new()
+        }
+        fn switch_session(&self, _name: &str) {}
+        fn new_session(&self) -> String {
+            String::new()
+        }
     }
 
     fn view_over(ids: &std::rc::Rc<RefCell<Vec<PaneId>>>) -> SlotView {

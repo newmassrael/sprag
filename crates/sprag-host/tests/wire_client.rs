@@ -697,6 +697,78 @@ fn two_sessions_under_one_daemon_are_independent_over_the_real_socket() {
     let _ = std::fs::remove_file(&sock);
 }
 
+/// Re-scoping ONE persistent connection from session to session — the wire MECHANISM the GUI's
+/// `WireHost::switch_session` rests on for its REQUEST connection. `HostConn::scope_to` makes the
+/// session sticky, so after a re-scope every unscoped read serves the NEW session's panes, and
+/// re-scoping back serves the first again. Distinct from
+/// [`two_sessions_under_one_daemon_are_independent_over_the_real_socket`], which scopes each read
+/// per-request; this proves the STICKY re-point a switch relies on. Each claim is paired with its
+/// complement (the OTHER session's set), so a daemon that ignored the re-scope fails the pair.
+///
+/// SCOPE OF THIS TEST: only the `scope_to` primitive over the real socket — NOT `WireHost`'s
+/// orchestration around it (poll-thread teardown + respawn, the transactional mirror re-boot, the
+/// fallback-to-previous). Those live in `sprag-gui` (a bin crate; `WireHost` is `pub(crate)`) and
+/// need a real `sprag-term`, which isn't reachable from here — so, as with the other `WireHost`
+/// methods, they are proven by the live pixel smoke (session sidebar: switch A→B→A, a marker
+/// returns; "+" creates + switches), not a unit test.
+#[test]
+fn re_scoping_one_connection_switches_which_session_it_serves_over_the_real_socket() {
+    let (_host, sock) = spawn_host();
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term host");
+
+    // The daemon boots session "0" holding its boot pane (id 0). Create "work", born with its own
+    // pane — a DISTINCT id from one registry-wide counter, which is what lets the two sets be told
+    // apart after a switch.
+    let created = conn
+        .call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(NEW_SESSION_ACTION), "args": { "name": "work" } }),
+        )
+        .expect("new_session answers");
+    assert_eq!(created, "work", "the answer is the name to scope with");
+    let work_set = pane_ids_in(&mut conn, "work");
+    assert_eq!(
+        work_set.len(),
+        1,
+        "work is born with one pane: {work_set:?}"
+    );
+    assert_ne!(work_set, vec![0], "...distinct from the default's pane 0");
+
+    // STICK the connection to "0" (scope_to) and read WITHOUT a per-request session — the sticky
+    // scope answers. It serves the default's pane.
+    conn.scope_to("0".to_owned());
+    assert_eq!(
+        pane_ids(&mut conn),
+        vec![0],
+        "scoped to 0 -> the default's pane"
+    );
+
+    // Re-scope the SAME connection to "work" (the switch). The same unscoped read now serves work's
+    // pane, not the default's — exactly switch_session's request-conn re-point.
+    conn.scope_to("work".to_owned());
+    assert_eq!(
+        pane_ids(&mut conn),
+        work_set,
+        "re-scoped to work -> work's pane"
+    );
+    assert_ne!(
+        pane_ids(&mut conn),
+        vec![0],
+        "...and no longer the default's"
+    );
+
+    // The switch is reversible: re-scope back to "0" and the default is intact.
+    conn.scope_to("0".to_owned());
+    assert_eq!(
+        pane_ids(&mut conn),
+        vec![0],
+        "switched back -> the default again"
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
 /// Two WINDOWS in ONE session are independent, over a REAL socket — the tmux "windows" shape.
 ///
 /// A `new_window` is born with its own shell and BECOMES current, so the session's reads answer

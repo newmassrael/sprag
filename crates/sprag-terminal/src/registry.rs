@@ -414,6 +414,26 @@ pub struct WindowInfo {
     pub current: bool,
 }
 
+/// A session's public identity for a display client — the registry-WIDE mux `sessions` slot and a
+/// session-switcher sidebar that draws from it: the session's NAME (its attach address), its
+/// window COUNT, and whether it is the registry DEFAULT (where an unscoped request lands).
+///
+/// The `default` flag is NOT "is this the client's attached session" — nothing is attached at this
+/// layer; a switcher highlights its OWN session via a client-local fact (`sprag_host`'s
+/// `HostClient::current_session`) that the wire never carries. Like [`WindowInfo`], it is a view
+/// over the registry, not part of it: built on demand, serialised over the wire, and returned by
+/// the session read — one shape the wire slot, a client's mirror, and the in-process arm all
+/// speak, so none can drift.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SessionInfo {
+    /// The session's display name — the address a client names to attach / switch.
+    pub name: String,
+    /// How many windows the session holds.
+    pub windows: usize,
+    /// Whether this is the registry default (where an unscoped request lands).
+    pub default: bool,
+}
+
 /// One session: a named attach unit owning an ordered, non-empty set of [`Window`]s
 /// with exactly one current window.
 ///
@@ -732,6 +752,22 @@ impl SessionRegistry {
     #[must_use]
     pub fn sessions(&self) -> &[Session] {
         &self.sessions
+    }
+
+    /// A [`SessionInfo`] for every session, in creation order — the registry-wide list a switcher
+    /// draws, marking the DEFAULT (where an unscoped request lands). The ONE builder, so the wire
+    /// `sessions` slot and the in-process arm cannot drift in what `windows`/`default` mean.
+    #[must_use]
+    pub fn session_infos(&self) -> Vec<SessionInfo> {
+        let default = self.default_session().name();
+        self.sessions
+            .iter()
+            .map(|session| SessionInfo {
+                name: session.name().to_owned(),
+                windows: session.windows().len(),
+                default: session.name() == default,
+            })
+            .collect()
     }
 
     /// Resolve a session by NAME. `None` if no session carries it.

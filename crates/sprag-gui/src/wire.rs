@@ -28,8 +28,11 @@
 //! its session ([`resolve_session`]) and scopes BOTH connections to it
 //! ([`HostConn::scope_to`]), so every request names it and none can leak into another. Naming
 //! a session ([`SESSION_ENV`]) ATTACHES to it (adopt its live panes — the tmux reattach);
-//! naming none ALLOCATES a fresh session and spawns this client's panes into it, so two GUIs
-//! against one host never mirror the same session. A spawned daemon boots with no STRAY pane
+//! naming none ALLOCATES a fresh session and spawns this client's panes into it, so by DEFAULT two
+//! GUIs against one host start on different sessions. (A running client can later
+//! [`switch_session`](WireHost::switch_session) to any session — the session sidebar — so two
+//! clients CAN come to mirror one session; the host serves that fine, tmux-style multi-attach.) A
+//! spawned daemon boots with no STRAY pane
 //! (`--daemon`) — every pane lives in some client's session; it may RESTORE prior sessions from
 //! its durability snapshot after a reboot, but those are named sessions a client attaches to, not
 //! a default-session pane that would leak into this client.
@@ -77,13 +80,13 @@ use pinion_core::{GridBuffer, QuitSink};
 use serde_json::{Value, json};
 use sprag_host::wire::{
     FULL_TEXT_SLOT, KEY_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION,
-    NEW_WINDOW_ACTION, PANES_SLOT, RESIZE_ACTION, SELECT_WINDOW_ACTION, SET_FLOATING_ACTION,
-    SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
+    NEW_WINDOW_ACTION, PANES_SLOT, RESIZE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
+    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
 };
 use sprag_host::{CellFrame, HostClient, PaneScrollFacts, mux_action_path, pane_input_path};
 use sprag_input::Modifiers;
 use sprag_rpc::{HostConn, runtime_path};
-use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId, WindowInfo};
+use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId, SessionInfo, WindowInfo};
 
 /// How long to wait for a just-spawned daemon's socket to accept — covers its bind race.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -95,9 +98,10 @@ const HOST_SOCK_ENV: &str = "SPRAG_GUI_HOST_SOCK";
 /// else `sprag-term` on `PATH`).
 const HOST_BIN_ENV: &str = "SPRAG_GUI_HOST_BIN";
 /// Env: the SESSION to attach to (adopt its live panes) — the reattach gesture. Absent, the
-/// client allocates a fresh session and spawns its own panes into it, so two GUIs never
-/// mirror one session (the owner's several-windows workflow). A `sprag attach` CLI is a later
-/// increment; env is the established GUI-config channel (`SPRAG_GUI_PANES`/`_HOST_SOCK`/…).
+/// client allocates a fresh session and spawns its own panes into it, so by DEFAULT each launch
+/// starts on its own session (the owner's several-windows workflow) — though a running client can
+/// [`switch_session`](WireHost::switch_session) to any other from the sidebar. `sprag attach` sets
+/// this env; it is the established GUI-config channel (`SPRAG_GUI_PANES`/`_HOST_SOCK`/…).
 const SESSION_ENV: &str = "SPRAG_GUI_SESSION";
 
 /// One pane the wire client mirrors, in HOST order (no holes — "slots" and their holes
@@ -238,6 +242,37 @@ fn query_windows(conn: &mut HostConn) -> io::Result<Vec<WindowInfo>> {
     serde_json::from_value(value).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
+/// Every session on the host, mirrored — what a session SWITCHER draws (a vertical rail of every
+/// session, the current one highlighted). Registry-WIDE, not scoped: it is the `sessions` slot,
+/// whose subject is the SET of sessions, so it is read the same over any client's scoped conn.
+/// Shared between the UI thread (which reads it to paint the sidebar) and the poll thread (which
+/// re-reads it whenever the scene moves — a new / killed session bumps the revision), under one
+/// lock. Mirrored, not fetched on demand, for the same reason the windows list is: the paint path
+/// must make no socket call.
+type SessionsMirror = Arc<Mutex<Vec<SessionInfo>>>;
+
+/// Lock the mirrored session list, poison-tolerant (see [`lock_cache`] for the discipline).
+fn lock_sessions(sessions: &Mutex<Vec<SessionInfo>>) -> MutexGuard<'_, Vec<SessionInfo>> {
+    sessions.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Replace the mirrored session list — the ONE place it is written, shared by the poll thread and
+/// a switch's own re-boot. Unconditional (like [`store_windows`]): the list carries no revision,
+/// so any brief backward move heals on the next wake.
+fn store_sessions(sessions: &Mutex<Vec<SessionInfo>>, list: Vec<SessionInfo>) {
+    *lock_sessions(sessions) = list;
+}
+
+/// Read every session off the wire (the registry-wide `sessions` slot) — the ONE place it is
+/// queried, shared by the boot read, the poll thread's refresh, and a switch's re-boot.
+fn query_sessions(conn: &mut HostConn) -> io::Result<Vec<SessionInfo>> {
+    let value = conn.call(
+        "scene/query",
+        json!({ "path": mux_action_path(SESSIONS_SLOT) }),
+    )?;
+    serde_json::from_value(value).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
 /// The GUI's wire client of a `sprag-term` host. See the module docs.
 pub(crate) struct WireHost {
     /// The pane data cache ([`Cache`]) in host order: identity + live frame + tracked
@@ -253,19 +288,75 @@ pub(crate) struct WireHost {
     /// draws. The poll thread re-reads it on every scene change; a window write on the UI thread
     /// refreshes it right after, so the tab strip updates without waiting a poll wake.
     windows: WindowsMirror,
+    /// EVERY session on the host, mirrored ([`SessionsMirror`]) — what a session switcher draws.
+    /// Registry-wide (not this client's own scope); the poll thread re-reads it on every scene
+    /// change, and a session switch / create re-boots it for immediate feedback.
+    sessions: SessionsMirror,
     /// The UI thread's request connection (reads / input / resize). `RefCell`, not
     /// `Mutex`: `WireHost` is UI-thread-only (see the module docs), and the poll thread
-    /// owns a SEPARATE connection.
+    /// owns a SEPARATE connection. A session SWITCH re-scopes this connection in place.
     conn: RefCell<HostConn>,
-    /// Set on Drop to stop the poll loop.
+    /// The session this client is CURRENTLY attached to — a client-local fact (the wire carries no
+    /// "attached" marker). Read to highlight the switcher's current row and to no-op a switch to
+    /// the same session; re-pointed by [`switch_session`](WireHost::switch_session). `RefCell`
+    /// because `WireHost` is UI-thread-only.
+    session: RefCell<String>,
+    /// The host socket this client connect-or-spawned on — kept so a session switch can open a
+    /// FRESH poll connection to the same daemon (the request conn is re-scoped in place; the poll
+    /// thread is torn down and a new one spawned on a new connection).
+    sock: PathBuf,
+    /// The pane grid `(cols, rows)` this client booted at — the birth size a sidebar "+" gives a
+    /// new session (it reflows to this window on first paint, like every boot pane).
+    boot_dims: (u16, u16),
+    /// The repaint sink, kept as a reusable `Arc` so a session switch can hand a FRESH poll thread
+    /// the same `on_change` (a `Box<dyn Fn>` could only be moved into the first thread). Send+Sync
+    /// because the underlying [`RepaintSink`](pinion_core::RepaintSink) is, so it is shared across
+    /// each poll incarnation (only one runs at a time — the old is joined before the new spawns).
+    on_change: Arc<dyn Fn() + Send + Sync>,
+    /// The shell's quit edge, kept for the same reason as [`Self::on_change`]: each poll thread
+    /// (boot's and every switch's) is handed a clone so a dead daemon ends the client.
+    quit: Arc<dyn QuitSink>,
+    /// The running poll thread + its cancellation handles, as ONE swappable unit: a session switch
+    /// stops-and-joins the current thread, then installs a fresh one scoped to the new session.
+    /// `RefCell` (UI-thread-only) so a `&self` switch can replace it; `Option` is the between-state
+    /// (`None` only transiently mid-swap and after Drop).
+    poll: RefCell<Option<PollThread>>,
+}
+
+/// The background change-notification -> repaint poll thread and the two handles that stop it —
+/// swapped as a unit when this client switches sessions (the new session needs a poll scoped to
+/// IT), and torn down on Drop. Bundling the three means a switch and the Drop share one stop path
+/// ([`PollThread::stop`]), so neither can forget the shutdown-then-join order.
+struct PollThread {
+    /// Set to stop the poll loop (its `while !stop` guard + the post-`waitFor` re-check).
     stop: Arc<AtomicBool>,
-    /// A shutdown handle onto the poll connection: Drop calls `shutdown(Both)` on it to
-    /// cancel the poll thread's parked `scene/waitFor` read so the join is deterministic.
-    /// The host is a daemon we never kill, so this is the ONLY thing that unblocks the parked
-    /// read on teardown — there is no child-exit to close the socket for us.
-    poll_shutdown: UnixStream,
-    /// The background change-notification -> repaint thread, joined on Drop.
-    poll: Option<JoinHandle<()>>,
+    /// A shutdown handle onto the poll connection: `shutdown(Both)` cancels the thread's parked
+    /// `scene/waitFor` so the join is deterministic. The host is a daemon we never kill, so this is
+    /// the ONLY thing that unblocks the parked read on teardown.
+    shutdown: UnixStream,
+    /// The thread handle, joined by [`stop`](Self::stop) (taken once).
+    handle: Option<JoinHandle<()>>,
+}
+
+impl PollThread {
+    /// Stop the poll thread and join it: flag `stop`, cancel its parked read, then join. Ordered
+    /// so the parked `waitFor` is unblocked BEFORE the join, never a deadlock. Idempotent — the
+    /// handle is taken once, so a second call (Drop after a switch already stopped it) is a no-op.
+    ///
+    /// The `stop` store is `Release` and the poll thread's loads are `Acquire` (not `Relaxed`)
+    /// because this runs from a LIVE `switch_session`, not only Drop: the shutdown wakes the poll
+    /// thread's `waitFor` with an error, and its error arm calls `request_detach`, which asks the
+    /// shell to QUIT unless it observes `stop == true`. A stale `false` there would exit the whole
+    /// GUI mid-switch. (In Drop a stale read was harmless — already quitting — which is why the
+    /// pre-switch code got away with `Relaxed`.) `Release`/`Acquire` documents the ordering the
+    /// store-before-`shutdown` / read-error-before-load chain already relies on.
+    fn stop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        let _ = self.shutdown.shutdown(Shutdown::Both);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
 }
 
 impl WireHost {
@@ -278,7 +369,8 @@ impl WireHost {
     /// `scene/waitFor` returns an error while the host is NOT being torn down by us
     /// (a definitive host-gone, the daemon exited under a detached client), it asks
     /// the shell to end — the tmux convention that a client detaches when its server
-    /// dies. It rides here as a `Send` handle exactly as `on_change` does.
+    /// dies. Both `on_change` and `quit` are kept as shared `Arc` handles so each poll
+    /// incarnation a session SWITCH spawns is handed the same pair.
     ///
     /// # Errors
     ///
@@ -290,7 +382,7 @@ impl WireHost {
         cols: u16,
         rows: u16,
         n_panes: usize,
-        on_change: Box<dyn Fn() + Send>,
+        on_change: Arc<dyn Fn() + Send + Sync>,
         quit: Arc<dyn QuitSink>,
     ) -> io::Result<Self> {
         // Connect-or-spawn on the well-known socket. A daemon there outlives every client, so
@@ -348,35 +440,129 @@ impl WireHost {
             layout: query_layout(&mut conn)?,
         }));
         let windows: WindowsMirror = Arc::new(Mutex::new(window_list));
+        // EVERY session, mirrored for the switcher sidebar — booted like the window list and for the
+        // same reason (a switcher draws it and must never fetch it from the paint path).
+        let sessions: SessionsMirror = Arc::new(Mutex::new(query_sessions(&mut conn)?));
 
-        // The poll thread's own connection — a parked `scene/waitFor` on it never
-        // blocks the request connection above (separate host handler threads). Scoped to the
-        // SAME session, so its `waitFor`/`revision`/re-queries watch the client's own session
-        // and never another's.
-        let mut poll_conn = HostConn::connect(&sock, CONNECT_TIMEOUT)?;
-        poll_conn.scope_to(session);
-        let poll_shutdown = poll_conn.shutdown_handle()?;
-        let stop = Arc::new(AtomicBool::new(false));
-        let poll = spawn_poll(
-            poll_conn,
-            Arc::clone(&cache),
-            Arc::clone(&layout),
-            Arc::clone(&windows),
-            on_change,
-            quit,
-            Arc::clone(&stop),
-            since0,
-        )?;
-
-        Ok(Self {
+        // Construct the client with NO poll thread yet, then spawn the initial one through the SAME
+        // path a session switch re-spawns through ([`spawn_poll_for`]) — one poll-spawn SSOT for
+        // boot and switch, so neither can drift from the other.
+        let host = Self {
             cache,
             layout,
             windows,
+            sessions,
             conn: RefCell::new(conn),
+            session: RefCell::new(session.clone()),
+            sock: sock.clone(),
+            boot_dims: (cols, rows),
+            on_change,
+            quit,
+            poll: RefCell::new(None),
+        };
+        // The poll thread's own connection — a parked `scene/waitFor` on it never blocks the
+        // request connection above (separate host handler threads). Scoped to the SAME session, so
+        // its `waitFor`/`revision`/re-queries watch the client's own session and never another's.
+        let mut poll_conn = HostConn::connect(&sock, CONNECT_TIMEOUT)?;
+        poll_conn.scope_to(session);
+        host.spawn_poll_for(poll_conn, since0)?;
+        Ok(host)
+    }
+
+    /// Install a fresh poll thread on `poll_conn` (already scoped to the target session), watching
+    /// from scene revision `since0` — the ONE poll-spawn site, shared by boot and every session
+    /// switch. It hands the thread the shared mirrors + the kept `on_change`/`quit` and stores its
+    /// stop/shutdown/handle as the swappable [`PollThread`]. Any previous `PollThread` MUST already
+    /// be stopped (boot has none; a switch stops-and-joins the old one first).
+    ///
+    /// # Errors
+    /// Fails if the poll thread cannot be spawned or its shutdown handle taken.
+    fn spawn_poll_for(&self, poll_conn: HostConn, since0: u64) -> io::Result<()> {
+        let shutdown = poll_conn.shutdown_handle()?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let handle = spawn_poll(
+            poll_conn,
+            Arc::clone(&self.cache),
+            Arc::clone(&self.layout),
+            Arc::clone(&self.windows),
+            Arc::clone(&self.sessions),
+            Arc::clone(&self.on_change),
+            Arc::clone(&self.quit),
+            Arc::clone(&stop),
+            since0,
+        )?;
+        *self.poll.borrow_mut() = Some(PollThread {
             stop,
-            poll_shutdown,
-            poll: Some(poll),
-        })
+            shutdown,
+            handle: Some(handle),
+        });
+        Ok(())
+    }
+
+    /// Re-point this client at the session named `session` IN PLACE (tmux `switch-client`): re-scope
+    /// the request connection, read the target's WHOLE view (windows, layout, panes + frames,
+    /// sessions) + a fresh poll baseline over it, then — only if EVERY read succeeds — swap the
+    /// mirror CONTENTS (same `Arc`s, so the paint path and the new poll thread keep sharing them),
+    /// set the current session, and start a fresh poll scoped to it. The caller MUST have stopped
+    /// the previous poll thread first, so nothing refreshes a mirror out from under the swap.
+    ///
+    /// Ordering vs failure: every READ and the poll-CONNECT happen BEFORE any mirror is written, so
+    /// the COMMON failure (the target session is gone, or the daemon won't give a poll connection)
+    /// leaves the mirrors untouched. Only the poll-thread START runs after the commit; if THAT rare
+    /// step fails the mirrors are already swapped to the target — but the caller
+    /// ([`switch_session`](HostClient::switch_session)) recovers by re-attaching to the PREVIOUS
+    /// session, which re-reads from the host and never trusts the possibly-swapped mirrors, so the
+    /// end state is coherent on either path. (So: reads-then-commit, not a strict all-or-nothing
+    /// transaction — the recovery is what makes a post-commit failure safe.)
+    ///
+    /// # Errors
+    /// Any read / connect against the target failing — the session is gone or the daemon will not
+    /// give a poll connection — or, rarely, the poll thread failing to spawn after the commit.
+    fn attach_in_place(&self, session: &str) -> io::Result<()> {
+        // Re-scope the request conn and gather the FULL view + poll baseline over it, all inside one
+        // borrow and BEFORE mutating any mirror (so a failed read is a clean abort). Order mirrors
+        // boot: revision baseline first (subscribe-then-snapshot), then the frames, then windows /
+        // layout / sessions.
+        let (fetched, seeds, window_list, current, layout_snapshot, session_list, since0) = {
+            let mut conn = self.conn.borrow_mut();
+            conn.scope_to(session.to_owned());
+            let since0 = read_revision(&mut conn)?;
+            let seeds = query_panes(&mut conn)?;
+            let fetched = fetch_frames(&mut conn, &seeds);
+            let window_list = query_windows(&mut conn)?;
+            let current = current_window_name(&window_list).unwrap_or_default();
+            let layout_snapshot = query_layout(&mut conn)?;
+            let session_list = query_sessions(&mut conn)?;
+            (
+                fetched,
+                seeds,
+                window_list,
+                current,
+                layout_snapshot,
+                session_list,
+                since0,
+            )
+        };
+        // A fresh poll connection scoped to the target (its own host handler thread) — connected
+        // BEFORE the commit so a daemon that will not answer aborts the switch rather than leaving
+        // the client with mirrors swapped but no live updates.
+        let mut poll_conn = HostConn::connect(&self.sock, CONNECT_TIMEOUT)?;
+        poll_conn.scope_to(session.to_owned());
+
+        // COMMIT: swap every mirror's CONTENTS (the `Arc`s themselves stay — shared with the paint
+        // path and the poll thread), set the attached session, then start the poll. `merge_panes`
+        // with an empty `existing` is the boot case (all newcomers, each taking its fetched frame).
+        *lock_cache(&self.cache) = merge_panes(&[], &seeds, &fetched);
+        *lock_layout(&self.layout) = Mirrored {
+            window: current,
+            layout: layout_snapshot,
+        };
+        store_windows(&self.windows, window_list);
+        store_sessions(&self.sessions, session_list);
+        *self.session.borrow_mut() = session.to_owned();
+        self.spawn_poll_for(poll_conn, since0)?;
+        (self.on_change)(); // repaint the just-attached session at once, no poll-wake lag
+        Ok(())
     }
 
     /// Send an arrangement write and adopt the host's canonical answer — the ONE place this
@@ -583,6 +769,87 @@ impl HostClient for WireHost {
         }
     }
 
+    /// The mirrored session list — a lock and a clone, never a socket call, so the paint path can
+    /// draw the switcher every frame (see [`SessionsMirror`]).
+    fn sessions(&self) -> Vec<SessionInfo> {
+        lock_sessions(&self.sessions).clone()
+    }
+
+    /// The session this client is attached to — a client-local fact (the wire carries no
+    /// "attached" marker), re-pointed by [`switch_session`](HostClient::switch_session).
+    fn current_session(&self) -> String {
+        self.session.borrow().clone()
+    }
+
+    /// Switch this client to the session named `name` IN PLACE (tmux `switch-client`): stop the
+    /// running poll thread — joined FIRST, so it can never refresh a mirror out from under the swap
+    /// — then re-attach to `name` ([`attach_in_place`](WireHost::attach_in_place)). A no-op for the
+    /// already-current session. On failure, fall back to the session we were on so the window keeps
+    /// serving; if THAT is gone too (killed while we tried to switch), detach — the tmux rule when a
+    /// client can serve no session.
+    ///
+    /// TRACKED BOUND (responsiveness): this runs SYNCHRONOUSLY on the UI thread (the reducer) and
+    /// does a thread join plus several blocking RPCs (connect + a read per pane), and `HostConn` has
+    /// no read timeout — so a daemon that accepts but never answers freezes the GUI for the duration.
+    /// A per-click gesture, not a per-frame path, and the daemon is local; the broader fix (a
+    /// `HostConn` read deadline) is a `WireHost`-wide concern, not this seam's.
+    fn switch_session(&self, name: &str) {
+        if name == self.session.borrow().as_str() {
+            return;
+        }
+        let previous = self.session.borrow().clone();
+        // Tear the current poll thread down BEFORE re-pointing anything: joined first, it cannot
+        // race the mirror swap. `spawn_poll_for` (inside `attach_in_place`) installs the replacement.
+        // Bind `take()` to a local FIRST so the `self.poll` borrow is released before the blocking
+        // `stop()`/join: a `borrow_mut()` temporary inside the `if let` would live across the whole
+        // body. Sound today (the joined thread never re-borrows `self.poll`), but this removes a
+        // needless `already borrowed` hazard should a future join path touch it.
+        let running = self.poll.borrow_mut().take();
+        if let Some(mut poll) = running {
+            poll.stop();
+        }
+        if let Err(error) = self.attach_in_place(name) {
+            tracing::warn!(
+                target: "sprag_gui::wire",
+                session = name,
+                %error,
+                "session switch failed; staying on the previous session",
+            );
+            if let Err(error) = self.attach_in_place(&previous) {
+                tracing::error!(
+                    target: "sprag_gui::wire",
+                    %error,
+                    "could not re-attach to the previous session either; detaching",
+                );
+                self.quit.request_quit();
+            }
+        }
+    }
+
+    /// Create a fresh session on the host (born with a shell at the boot size — it reflows to this
+    /// window on first paint) and switch to it, returning its name. NO argv: a sidebar "+" carries
+    /// no command, so the session births the host's default `$SHELL`. On a create failure the
+    /// client stays put (the current session name is returned).
+    fn new_session(&self) -> String {
+        let (cols, rows) = self.boot_dims;
+        let created = self.request(
+            "scene/invoke",
+            invoke(
+                &mux_action_path(NEW_SESSION_ACTION),
+                json!({ "cols": cols, "rows": rows }),
+            ),
+            "new_session",
+        );
+        match created.as_ref().and_then(Value::as_str) {
+            Some(name) => {
+                let name = name.to_owned();
+                self.switch_session(&name);
+                name
+            }
+            None => self.current_session(),
+        }
+    }
+
     fn pane_scroll_facts(&self, id: PaneId) -> PaneScrollFacts {
         self.lock_cache()
             .iter()
@@ -666,16 +933,20 @@ impl HostClient for WireHost {
 
 impl Drop for WireHost {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        // Cancel the poll thread's parked `scene/waitFor` read so the join below is
-        // deterministic. All stream clones name one OS socket, so this reaches the reader.
-        let _ = self.poll_shutdown.shutdown(Shutdown::Both);
         // The host is a DAEMON we do not own — closing this client leaves it (and the user's
-        // shells) running, which is the whole detach/reattach point. So there is nothing to
-        // kill here; we only tear down OUR connections and poll thread. When the last live pane
-        // across every session finally exits, the daemon self-cleans (its own reaper).
-        if let Some(handle) = self.poll.take() {
-            let _ = handle.join();
+        // shells) running, which is the whole detach/reattach point. So there is nothing to kill
+        // here; we only stop OUR poll thread. [`PollThread::stop`] flags `stop`, cancels the parked
+        // `scene/waitFor` read (so the join is deterministic — the daemon never closes the socket
+        // for us), and joins. A `None` means the client never finished booting, or a switch is
+        // mid-swap (unreachable — Drop and switch are both the one UI thread). When the last live
+        // pane across every session finally exits, the daemon self-cleans (its own reaper).
+        // Bind `take()` to a local FIRST so the `self.poll` borrow is released before the blocking
+        // `stop()`/join: a `borrow_mut()` temporary inside the `if let` would live across the whole
+        // body. Sound today (the joined thread never re-borrows `self.poll`), but this removes a
+        // needless `already borrowed` hazard should a future join path touch it.
+        let running = self.poll.borrow_mut().take();
+        if let Some(mut poll) = running {
+            poll.stop();
         }
     }
 }
@@ -1007,18 +1278,19 @@ fn merge_panes(
 ///
 /// Fails if the poll thread cannot be spawned (matching `spawn_or_attach`'s contract
 /// rather than panicking inside it).
-// The poll thread's inputs: its own connection, the three shared mirrors it refreshes (cache /
-// layout / windows), the repaint + quit sinks, the stop flag, and the subscribe baseline. One
-// over clippy's default limit after the windows mirror joined the set — bundling the three
-// `Arc<Mutex<_>>` mirrors into a struct would ripple through every `WireHost` method that reads
-// one, a churn out of proportion to this seam.
+// The poll thread's inputs: its own connection, the FOUR shared mirrors it refreshes (cache /
+// layout / windows / sessions), the repaint + quit sinks, the stop flag, and the subscribe
+// baseline. Well over clippy's default limit — bundling the four `Arc<Mutex<_>>` mirrors into a
+// struct would ripple through every `WireHost` method that reads one, a churn out of proportion to
+// this seam.
 #[allow(clippy::too_many_arguments)]
 fn spawn_poll(
     mut conn: HostConn,
     cache: Cache,
     layout: LayoutMirror,
     windows: WindowsMirror,
-    on_change: Box<dyn Fn() + Send>,
+    sessions: SessionsMirror,
+    on_change: Arc<dyn Fn() + Send + Sync>,
     quit: Arc<dyn QuitSink>,
     stop: Arc<AtomicBool>,
     mut since: u64,
@@ -1026,7 +1298,7 @@ fn spawn_poll(
     std::thread::Builder::new()
         .name("sprag-gui-wire-poll".to_owned())
         .spawn(move || {
-            while !stop.load(Ordering::Relaxed) {
+            while !stop.load(Ordering::Acquire) {
                 let response = match conn.call("scene/waitFor", json!({ "since": since })) {
                     Ok(value) => value,
                     Err(error) => match detach_reason(&error) {
@@ -1034,14 +1306,14 @@ fn spawn_poll(
                         // WE initiated the teardown (a stop-initiated error is the graceful Drop
                         // that shut this socket down, and quitting then would be redundant).
                         Some(reason) => {
-                            request_detach(&quit, stop.load(Ordering::Relaxed), reason, &error);
+                            request_detach(&quit, stop.load(Ordering::Acquire), reason, &error);
                             break;
                         }
                         // A transient hiccup — re-park the long-poll rather than end the client.
                         None => continue,
                     },
                 };
-                if stop.load(Ordering::Relaxed) {
+                if stop.load(Ordering::Acquire) {
                     break;
                 }
                 since = response["revision"].as_u64().unwrap_or(since);
@@ -1061,7 +1333,7 @@ fn spawn_poll(
                     }
                     Err(error) => {
                         if let Some(reason) = detach_reason(&error) {
-                            request_detach(&quit, stop.load(Ordering::Relaxed), reason, &error);
+                            request_detach(&quit, stop.load(Ordering::Acquire), reason, &error);
                             break;
                         }
                         tracing::debug!(
@@ -1080,7 +1352,7 @@ fn spawn_poll(
                     Ok(seeds) => refresh_to_set(&mut conn, &cache, &seeds),
                     Err(error) => {
                         if let Some(reason) = detach_reason(&error) {
-                            request_detach(&quit, stop.load(Ordering::Relaxed), reason, &error);
+                            request_detach(&quit, stop.load(Ordering::Acquire), reason, &error);
                             break;
                         }
                         tracing::debug!(
@@ -1115,7 +1387,7 @@ fn spawn_poll(
                     Ok(snapshot) => store_layout(&layout, &current, snapshot),
                     Err(error) => {
                         if let Some(reason) = detach_reason(&error) {
-                            request_detach(&quit, stop.load(Ordering::Relaxed), reason, &error);
+                            request_detach(&quit, stop.load(Ordering::Acquire), reason, &error);
                             break;
                         }
                         tracing::debug!(
@@ -1124,6 +1396,18 @@ fn spawn_poll(
                             "layout re-read failed this wake; keeping the last-known arrangement",
                         );
                     }
+                }
+                // Re-read EVERY session each wake so a session created / killed anywhere on the host
+                // (this client's `new_session`, another client's, the `sprag` CLI) reaches the
+                // switcher sidebar. Registry-wide, so it does not detach on a scope refusal the way
+                // the scoped reads above do — a transient failure just keeps the last-known list.
+                match query_sessions(&mut conn) {
+                    Ok(list) => store_sessions(&sessions, list),
+                    Err(error) => tracing::debug!(
+                        target: "sprag_gui::wire",
+                        %error,
+                        "sessions re-read failed this wake; keeping the last-known list",
+                    ),
                 }
                 on_change();
             }
@@ -1237,7 +1521,8 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Mirrored::default())),
             Arc::new(Mutex::new(Vec::new())),
-            Box::new(|| {}),
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
             Arc::clone(&stop),
             0,
@@ -1313,7 +1598,8 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Mirrored::default())),
             Arc::new(Mutex::new(Vec::new())),
-            Box::new(|| {}),
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
             Arc::clone(&stop),
             0,
@@ -1380,9 +1666,9 @@ mod tests {
         let (conn, server, _guard) = a_wake_then_refuse_host_conn("requery");
         let quit = Arc::new(RecordingQuit::default());
         let repaints = Arc::new(AtomicUsize::new(0));
-        let on_change: Box<dyn Fn() + Send> = {
+        let on_change: Arc<dyn Fn() + Send + Sync> = {
             let repaints = Arc::clone(&repaints);
-            Box::new(move || {
+            Arc::new(move || {
                 repaints.fetch_add(1, Ordering::SeqCst);
             })
         };
@@ -1391,6 +1677,7 @@ mod tests {
             conn,
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Mirrored::default())),
+            Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
             on_change,
             Arc::clone(&quit) as Arc<dyn QuitSink>,
@@ -1439,7 +1726,8 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Mirrored::default())),
             Arc::new(Mutex::new(Vec::new())),
-            Box::new(|| {}),
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
             Arc::clone(&stop),
             0,
@@ -1456,7 +1744,7 @@ mod tests {
 
         // Now WE tear down, in Drop's order: set stop, THEN close the socket. The blocked read
         // returns EOF, the error arm sees stop=true, and must NOT quit.
-        stop.store(true, Ordering::Relaxed);
+        stop.store(true, Ordering::Release);
         drop(reader);
         drop(server);
         poll.join().expect("the poll thread exited");
