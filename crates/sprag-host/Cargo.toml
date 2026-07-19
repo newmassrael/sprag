@@ -29,6 +29,9 @@ pinion-rpc = { workspace = true }
 sprag-rpc = { workspace = true }
 # SIGINT/SIGTERM graceful shutdown in the server binary (cancel+join runs).
 signal-hook = { workspace = true }
+# `--daemon` self-daemonize (fork/setsid), stdio redirect, and the single-instance
+# advisory flock in the server binary. Unix-only, matching the rest of the host.
+libc = { workspace = true }
 # Production logging facade (level/target control). The library emits events; the
 # frontend (GUI, or a future sprag-term subscriber) installs the subscriber.
 tracing = { workspace = true }

@@ -1,7 +1,8 @@
 //! `sprag-term` — the headless terminal-multiplexer RPC server (GPU-free).
 //!
-//! Starts a workspace with one initial pane (a shell, or the command after
-//! `--`) on a pseudoterminal and serves pinion's scene-as-data wire -- panes +
+//! Starts a workspace — with one initial pane (a shell, or the command after
+//! `--`) on a pseudoterminal, or EMPTY as a `--daemon` (see below) — and serves
+//! pinion's scene-as-data wire -- panes +
 //! the `/sprag_mux` control surface + the `/sprag_plugins` platform -- over two
 //! transports at once (DESIGN.md §1/§3): the process stdin/stdout (one
 //! JSON-RPC request per line) AND an always-on Unix domain socket. The socket
@@ -10,7 +11,7 @@
 //! owner, so they share a single consistent workspace view.
 //!
 //! ```text
-//! sprag-term [--size COLSxROWS] [-- <program> [args...]]
+//! sprag-term [--daemon] [--size COLSxROWS] [-- <program> [args...]]
 //! ```
 //!
 //! With no command the initial pane runs `$SHELL` (else `/bin/sh`). Socket
@@ -21,8 +22,21 @@
 //! to serve ends). Both edges funnel through ONE shutdown routine that cancels +
 //! joins in-flight plugin runs (the last-pane edge raises SIGTERM into it), so
 //! neither abandons a run. Not until stdin EOF.
+//!
+//! ## `--daemon`
+//!
+//! `--daemon` boots the long-lived multiplexer a GUI connect-or-spawns: it self-daemonizes
+//! (fork, the parent exits so the spawner reaps a short-lived intermediate and the real
+//! daemon reparents to init; `setsid` drops the controlling terminal), redirects stdio to
+//! `$XDG_RUNTIME_DIR/sprag-host.log`, and holds a single-instance advisory `flock` so a race
+//! to spawn one leaves exactly one alive. It boots with NO pane — every pane belongs to a
+//! client's session, and a stray boot pane would both be unseen and pin the self-cleaning
+//! count above zero forever. Standalone mode (no `--daemon`) is unchanged.
 
+use std::fs::{File, OpenOptions};
 use std::io;
+use std::os::unix::io::AsRawFd;
+use std::path::Path;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
@@ -45,7 +59,23 @@ const HOST_SOCKET: SocketOpts = SocketOpts {
 };
 
 fn main() -> io::Result<()> {
-    let (cols, rows, command, label) = parse_args();
+    let args = parse_args();
+
+    // A daemon self-daemonizes as the FIRST act of `main`, before any thread exists
+    // (fork duplicates only the calling thread, so a fork after `spawn_reaper`/`mount` would
+    // leave the child missing them mid-lock), then holds a single-instance lock for the whole
+    // run. If another daemon already owns it, exit quietly — its socket is the one to use.
+    // Standalone mode is untouched: no fork, stdio kept, one boot pane.
+    let _instance = if args.daemon {
+        daemonize()?;
+        match acquire_single_instance()? {
+            Some(lock) => Some(lock),
+            None => return Ok(()),
+        }
+    } else {
+        None
+    };
+
     // The one Workspace owner (shared with the GUI as a code component): boot the
     // initial pane through it, then wrap it in HostState to serve the RPC surface.
     //
@@ -54,7 +84,7 @@ fn main() -> io::Result<()> {
     // client long-polls instead of busy-polling snapshots). The revision is created
     // BEFORE the spawn so the bumper and HostState share the one token.
     let revision = Arc::new(SceneRevision::new());
-    let host = Host::new((cols, rows));
+    let host = Host::new((args.cols, args.rows));
     // Self-cleaning lifetime: when the LAST live pane across all sessions exits, the daemon has
     // nothing left to serve, so it ends — the tmux convention. `spawn_reaper` owns a dedicated
     // thread that runs the liveness scan OFF the PTY reader threads (so a pane Drop that joins
@@ -71,15 +101,22 @@ fn main() -> io::Result<()> {
             let _ = signal_hook::low_level::raise(SIGTERM);
         }),
     );
-    host.spawn(
-        command,
-        label,
-        cols,
-        rows,
-        Some(bump_on_dirty(&revision)),
-        Some(pane_exit_hook(&on_pane_exit)),
-    )
-    .map_err(io::Error::other)?;
+    // A daemon boots EMPTY: every pane belongs to a client's session, so a boot pane would be
+    // a shell nobody sees AND would pin the self-cleaning live count above zero for the daemon's
+    // life. Client-spawned panes still feed the reaper (`HostState` carries `on_pane_exit` into
+    // the mux control surface). Standalone still boots its one pane — the `sprag-term -- cmd`
+    // contract and the `wire_client` integration tests both rely on it.
+    if !args.daemon {
+        host.spawn(
+            args.command,
+            args.label,
+            args.cols,
+            args.rows,
+            Some(bump_on_dirty(&revision)),
+            Some(pane_exit_hook(&on_pane_exit)),
+        )
+        .map_err(io::Error::other)?;
+    }
     let state = HostState::new(host, revision, Some(on_pane_exit));
 
     // One dispatch owner (this thread) serialises all dispatch; the always-on
@@ -125,16 +162,30 @@ fn install_shutdown(runs: Arc<Mutex<RunRegistry>>) {
     });
 }
 
-/// Parse `[--size COLSxROWS]` then an optional command (after `--`, or the
+/// The parsed command line.
+struct BootArgs {
+    cols: u16,
+    rows: u16,
+    /// The initial pane's command + its display label — used only in standalone mode; a
+    /// daemon boots no pane and never reads them.
+    command: CommandBuilder,
+    label: String,
+    /// `--daemon`: self-daemonize, boot empty, single-instance (see the module docs).
+    daemon: bool,
+}
+
+/// Parse `[--daemon]` and `[--size COLSxROWS]` then an optional command (after `--`, or the
 /// first bare argument). Falls back to `$SHELL` at 80x24.
-fn parse_args() -> (u16, u16, CommandBuilder, String) {
+fn parse_args() -> BootArgs {
     let mut cols: u16 = 80;
     let mut rows: u16 = 24;
+    let mut daemon = false;
     let mut args = std::env::args().skip(1);
     let mut command: Option<(CommandBuilder, String)> = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--daemon" => daemon = true,
             "--size" => {
                 if let Some((w, h)) = args.next().as_deref().and_then(parse_size) {
                     cols = w;
@@ -155,11 +206,123 @@ fn parse_args() -> (u16, u16, CommandBuilder, String) {
     }
 
     let (command, label) = command.unwrap_or_else(sprag_terminal::default_shell_command);
-    (cols, rows, command, label)
+    BootArgs {
+        cols,
+        rows,
+        command,
+        label,
+        daemon,
+    }
+}
+
+/// Self-daemonize: `fork`, the PARENT exits (so a spawner reaps a short-lived intermediate and
+/// the real daemon reparents to init — no `PR_SET_PDEATHSIG`, no zombie), then the CHILD
+/// starts a new session (`setsid`, dropping any controlling terminal) and redirects its stdio.
+///
+/// MUST be the first act of `main`: `fork` duplicates only the calling thread, so forking after
+/// a thread is spawned would leave the child missing it, possibly mid-lock.
+fn daemonize() -> io::Result<()> {
+    // SAFETY: called before any thread is spawned, so the child is single-threaded; between
+    // fork and re-entering normal code it only calls async-signal-safe `setsid`/`dup2` (in
+    // `redirect_stdio`) or exits.
+    match unsafe { libc::fork() } {
+        -1 => return Err(io::Error::last_os_error()),
+        0 => {}                     // child: become the daemon
+        _ => std::process::exit(0), // parent: hand off and go
+    }
+    if unsafe { libc::setsid() } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    redirect_stdio()
+}
+
+/// Point stdin at `/dev/null` and stdout+stderr at `$XDG_RUNTIME_DIR/sprag-host.log` — a
+/// detached daemon has no terminal to inherit, and its `tracing`/panic output must land
+/// somewhere an operator can read rather than vanish.
+fn redirect_stdio() -> io::Result<()> {
+    let log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(sprag_rpc::runtime_path("sprag-host.log"))?;
+    let devnull = OpenOptions::new().read(true).open("/dev/null")?;
+    // dup2 the targets onto the standard fds; the source handles close on scope exit, leaving
+    // 0/1/2 as independent duplicates pointing at the log / null.
+    for (src, dst) in [
+        (devnull.as_raw_fd(), 0),
+        (log.as_raw_fd(), 1),
+        (log.as_raw_fd(), 2),
+    ] {
+        if unsafe { libc::dup2(src, dst) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// Take the daemon's single-instance lock (`$XDG_RUNTIME_DIR/sprag-host.lock`).
+fn acquire_single_instance() -> io::Result<Option<File>> {
+    flock_guard(&sprag_rpc::runtime_path("sprag-host.lock"))
+}
+
+/// A non-blocking exclusive advisory `flock` on `path`: `Some(file)` when taken (held for as
+/// long as the returned handle lives — dropping it releases the lock), `None` when another
+/// holder already owns it.
+///
+/// Acquired BEFORE `mount`, so two daemons racing connect-or-spawn cannot both bind the
+/// socket: the loser sees the lock held and exits before touching it. The guard lives here,
+/// in the daemon's boot, and not in the transport — pinion's `serve` removes the socket path
+/// before binding, so an unguarded second bind would silently orphan the winner's clients.
+fn flock_guard(path: &Path) -> io::Result<Option<File>> {
+    // The lock file is a rendezvous, not storage: create it if absent, never truncate it
+    // (its contents are irrelevant — the advisory lock, not the bytes, is the signal).
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(path)?;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        return Ok(Some(file));
+    }
+    let error = io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::EWOULDBLOCK) => Ok(None),
+        _ => Err(error),
+    }
 }
 
 /// Parse a `COLSxROWS` size specifier.
 fn parse_size(spec: &str) -> Option<(u16, u16)> {
     let (w, h) = spec.split_once('x')?;
     Some((w.parse().ok()?, h.parse().ok()?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The single-instance lock admits exactly one holder, and releasing it lets the next in —
+    /// the mechanism that makes a connect-or-spawn RACE leave exactly one daemon alive. Proven
+    /// without forking: two separate opens of one path are independent flock holders even
+    /// within a process, so the second is refused while the first lives.
+    #[test]
+    fn the_single_instance_lock_admits_one_holder_at_a_time() {
+        let path =
+            std::env::temp_dir().join(format!("sprag-host-flock-test-{}.lock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let first = flock_guard(&path)
+            .expect("io ok")
+            .expect("the lock is free, so it is taken");
+        assert!(
+            flock_guard(&path).expect("io ok").is_none(),
+            "a second holder is refused while the first lives",
+        );
+
+        drop(first);
+        let third = flock_guard(&path)
+            .expect("io ok")
+            .expect("released, so the next daemon takes it");
+        drop(third);
+        let _ = std::fs::remove_file(&path);
+    }
 }
