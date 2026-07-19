@@ -17,6 +17,7 @@ pub mod command;
 pub mod layout;
 pub mod pane_pty;
 pub mod registry;
+pub mod snapshot;
 pub mod workspace;
 
 pub use command::{command_from_parts, default_shell_command};
@@ -27,5 +28,9 @@ pub use layout::{
 pub use pane_pty::{CommandBuilder, PanePty, PanePtyError, PanePtyHandle, RawOutput};
 pub use registry::{
     KillOutcome, Session, SessionError, SessionRegistry, Window, WindowInfo, WindowKillOutcome,
+};
+pub use snapshot::{
+    PaneRestore, PaneSnapshot, RestorePlan, SNAPSHOT_VERSION, SessionSnapshot, Snapshot,
+    SnapshotError, WindowSnapshot, snapshot,
 };
 pub use workspace::{Pane, PaneId, PaneInfo, Workspace};

@@ -1,0 +1,484 @@
+//! The durability snapshot — sprag's cmux-parity ring.
+//!
+//! tmux's daemon keeps a session's live processes alive across a client DETACH, but nothing
+//! across a REBOOT: the daemon dies, every PTY with it. cmux's parity claim is the orthogonal
+//! one — the layout, working directories and agent panels come back after the machine restarts,
+//! with no daemon at all — because the *logical shape* is serialized to disk. A live PTY cannot
+//! cross a reboot; a layout can. This module is that serialization.
+//!
+//! ## What it is — a PROJECTION, not a second authority
+//!
+//! A [`Snapshot`] is to a [`SessionRegistry`](crate::SessionRegistry) what
+//! [`LayoutWire`](crate::LayoutWire) is to a [`LayoutTree`](crate::LayoutTree): a serde DTO
+//! captured FROM the one live authority and restored back INTO a fresh one. It never becomes a
+//! parallel source of truth — [`snapshot`] reads the registry, `from_snapshot` rebuilds a
+//! registry, and the file on disk is overwritten by the next save. The registry stays the SSOT.
+//!
+//! ## What survives, and what cannot
+//!
+//! The SHAPE survives: sessions (their order IS the default), each session's windows and which
+//! is current, each window's [`LayoutTree`] arrangement, its float set, and — per pane — its id,
+//! working directory, launch label and size. The global pane-id high-water mark rides too, so a
+//! restore never reissues a retired id.
+//!
+//! A live PTY, its child process, its scrollback and a running agent's in-memory state do NOT —
+//! a reboot ends them. On restore each pane re-spawns a fresh shell IN ITS RECORDED CWD (slice 1;
+//! re-running the exact command is a later, allowlisted increment), which is the honest cmux
+//! analogue: the pane and its directory come back, and an agent resumes its own state through its
+//! own tool. The snapshot carries `command_label` for display and for that future increment.
+//!
+//! ## Homes are not persisted (a documented bound)
+//!
+//! A window's [`FloatHome`](crate::layout::FloatHome) sidecar — where a floated pane docks back —
+//! is a non-authoritative memo with a defined graceful fallback (dock back at the END). It is
+//! deliberately left out of the snapshot in slice 1: the pane's FLOAT membership survives, so the
+//! user's choice to float it does; only the exact dock-back slot degrades to an append after a
+//! reboot, which is the same "a home is a memo, not a promise" fallback the live path already
+//! honors.
+
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, PoisonError};
+
+use crate::layout::LayoutWire;
+use crate::registry::SessionRegistry;
+use crate::workspace::{Pane, PaneId};
+
+/// The on-disk snapshot format version. Bumped when the shape changes incompatibly; a loader
+/// that reads a version it does not understand refuses (`SnapshotError::Version`) and the daemon
+/// falls back to an EMPTY boot rather than crashing on a format it cannot parse.
+pub const SNAPSHOT_VERSION: u32 = 1;
+
+/// The whole durable shape of a [`SessionRegistry`](crate::SessionRegistry), serialized.
+///
+/// Produced by [`snapshot`] and consumed by
+/// [`SessionRegistry::from_snapshot`](crate::SessionRegistry::from_snapshot). Versioned JSON:
+/// the format is human-inspectable (a user can read their saved layout) and forward-migratable
+/// (`version` gates the loader).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Snapshot {
+    /// The format version — [`SNAPSHOT_VERSION`] at write time; checked on restore.
+    pub version: u32,
+    /// The global pane-id high-water mark (the next id the counter would mint). Stored rather
+    /// than derived from the restored ids, so a retired id whose pane did NOT come back — a gap
+    /// at the top of the range — is still never reissued (see
+    /// [`Workspace::with_seeded_counter`](crate::Workspace)).
+    pub next_id: u64,
+    /// The default `(cols, rows)` a dimension-less spawn adopts, so a restored registry mints
+    /// panes at the same default the pre-reboot one did.
+    pub default_size: (u16, u16),
+    /// Every session, in order — the order IS the default-session order a restore restores.
+    pub sessions: Vec<SessionSnapshot>,
+}
+
+/// One session's durable shape: its name, its windows in order, and which window is current
+/// (BY NAME, the addressing scheme the registry uses — an index would be fragile to a reorder).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SessionSnapshot {
+    /// The session's name (its address).
+    pub name: String,
+    /// The name of the current window — the one an attached client views. Restored via
+    /// [`Session::select_window`](crate::Session); must name one of `windows`.
+    pub current_window: String,
+    /// The session's windows, in creation order.
+    pub windows: Vec<WindowSnapshot>,
+}
+
+/// One window's durable shape: its name, how its tiled panes are arranged, which panes are
+/// floated out, and the per-pane facts a restore re-spawns from.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WindowSnapshot {
+    /// The window's name (a tab label / address).
+    pub name: String,
+    /// How the TILED panes are arranged — the `LayoutWire` the live window would serve.
+    pub layout: LayoutWire,
+    /// The panes floated OUT of the tiling. Restored as float membership; WHERE each floating
+    /// window sits on screen is the client's (pixels), lost across a reboot and re-placed by the
+    /// window manager — exactly as a detach/reattach already treats floats.
+    pub floating: Vec<PaneId>,
+    /// Every pane in the window's pool, in spawn order — the membership authority. A pane in
+    /// neither `layout` nor `floating` (spawned but not yet reconciled) still comes back and is
+    /// appended by the first post-restore reconcile.
+    pub panes: Vec<PaneSnapshot>,
+}
+
+/// One pane's restore facts: enough to re-spawn a shell where the pane was and address it by its
+/// old id. NOT the live PTY — that dies with the reboot.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PaneSnapshot {
+    /// The pane's registry-global id — restored EXACTLY, because the layout tree, float set and
+    /// homes all reference the pane by it (see
+    /// [`spawn_with_dirty_id`](crate::Workspace::spawn_with_dirty_id)).
+    pub id: PaneId,
+    /// The child's working directory at snapshot time, where the restored shell re-spawns.
+    /// `None` when it could not be read (the child had exited, or a non-Linux host) — the
+    /// restored shell then falls back to the daemon's own cwd.
+    pub cwd: Option<PathBuf>,
+    /// What was LAUNCHED in the pane (its introspection label) — kept for display continuity and
+    /// for the later exact-command-restore increment. Slice 1 re-spawns a shell regardless.
+    pub command_label: String,
+    /// The pane's size, so the restored shell opens at the same dimensions.
+    pub cols: u16,
+    pub rows: u16,
+}
+
+/// Capture the registry's whole durable shape as a serializable [`Snapshot`].
+///
+/// Reads each pane's LIVE cwd and size, so it must lock each window's
+/// [`Workspace`](crate::Workspace) — but NEVER while holding the registry lock. The host holds
+/// the workspace lock then the registry lock everywhere (see
+/// `reconciled_layout`), so taking them the other way round here would be the one nesting that
+/// could deadlock. So this captures the structure and a HANDLE to each pool under a brief
+/// registry lock, releases it, then reads the panes with each pool's own lock — the two locks
+/// taken sequentially, never nested, matching the discipline the rest of the host keeps.
+#[must_use]
+pub fn snapshot(registry: &Arc<Mutex<SessionRegistry>>) -> Snapshot {
+    /// A window captured under the registry lock, its pool held only as a handle to read later.
+    struct WinSkel {
+        name: String,
+        layout: LayoutWire,
+        floating: Vec<PaneId>,
+        pool: Arc<Mutex<crate::workspace::Workspace>>,
+    }
+    struct SessSkel {
+        name: String,
+        current_window: String,
+        windows: Vec<WinSkel>,
+    }
+
+    // Phase 1 — registry lock ONLY. No workspace lock is taken here; the pools are cloned out as
+    // Arcs and read in phase 2 with the registry lock released.
+    let sessions_skel: Vec<SessSkel> = {
+        let reg = registry.lock().unwrap_or_else(PoisonError::into_inner);
+        reg.sessions()
+            .iter()
+            .map(|s| SessSkel {
+                name: s.name().to_owned(),
+                current_window: s.current_window().name().to_owned(),
+                windows: s
+                    .windows()
+                    .iter()
+                    .map(|w| {
+                        let mut floating: Vec<PaneId> = w.floating().iter().copied().collect();
+                        floating.sort(); // a stable serialization order
+                        WinSkel {
+                            name: w.name().to_owned(),
+                            layout: LayoutWire::from(w.layout()),
+                            floating,
+                            pool: Arc::clone(w.workspace()),
+                        }
+                    })
+                    .collect(),
+            })
+            .collect()
+    };
+
+    // The global counter + default size are shared across every pool, so read them from the
+    // first one (the registry is never empty; both fall back to harmless defaults if it were).
+    let (next_id, default_size) = sessions_skel
+        .first()
+        .and_then(|s| s.windows.first())
+        .map(|w| {
+            let pool = w.pool.lock().unwrap_or_else(PoisonError::into_inner);
+            (pool.next_id_hint(), pool.default_size())
+        })
+        .unwrap_or((0, (80, 24)));
+
+    // Phase 2 — registry lock released. Each pool read under its OWN lock, never nested.
+    let sessions = sessions_skel
+        .into_iter()
+        .map(|s| SessionSnapshot {
+            name: s.name,
+            current_window: s.current_window,
+            windows: s
+                .windows
+                .into_iter()
+                .map(|w| {
+                    let pool = w.pool.lock().unwrap_or_else(PoisonError::into_inner);
+                    let panes = pool.panes().iter().map(pane_snapshot).collect();
+                    WindowSnapshot {
+                        name: w.name,
+                        layout: w.layout,
+                        floating: w.floating,
+                        panes,
+                    }
+                })
+                .collect(),
+        })
+        .collect();
+
+    Snapshot {
+        version: SNAPSHOT_VERSION,
+        next_id,
+        default_size,
+        sessions,
+    }
+}
+
+/// Why restoring a [`Snapshot`] was refused. Every case is a reason the daemon falls back to an
+/// EMPTY boot rather than a corrupt one — a bad snapshot must never brick the daemon.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SnapshotError {
+    /// The snapshot's `version` is not one this build understands ([`SNAPSHOT_VERSION`]).
+    Version { found: u32, expected: u32 },
+    /// The shape is malformed: no sessions, a session with no windows, a `current_window` that
+    /// names no window, or a duplicate session/window name. The message says which.
+    Malformed(String),
+    /// A window's stored arrangement is not a well-formed layout — the underlying
+    /// [`LayoutError`](crate::LayoutError), rendered.
+    Layout(String),
+}
+
+impl std::fmt::Display for SnapshotError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Version { found, expected } => {
+                write!(
+                    f,
+                    "snapshot version {found} is not the supported {expected}"
+                )
+            }
+            Self::Malformed(why) => write!(f, "malformed snapshot: {why}"),
+            Self::Layout(why) => write!(f, "snapshot layout is not well-formed: {why}"),
+        }
+    }
+}
+
+impl std::error::Error for SnapshotError {}
+
+/// The panes a restore must (re-)spawn, produced alongside the rebuilt registry by
+/// [`SessionRegistry::from_snapshot`](crate::SessionRegistry::from_snapshot).
+///
+/// The registry is rebuilt PANE-FREE (its sessions, windows, layout trees and float sets are all
+/// in place, but the pools are empty): a pane must be born at the HOST so it carries the daemon's
+/// death-signal (the D4 seam — this pinion-free crate holds no such hook). Each entry names where
+/// the host spawns the pane and the facts to spawn it with.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RestorePlan {
+    /// Every pane to re-spawn, in the order it was recorded.
+    pub panes: Vec<PaneRestore>,
+}
+
+/// One pane the host must re-spawn on restore: which window it belongs to, its old id, and where
+/// and how big to spawn its shell.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PaneRestore {
+    /// The session that owns the pane's window.
+    pub session: String,
+    /// The window the pane docks into.
+    pub window: String,
+    /// The id to spawn it under (the layout references it by this — see
+    /// [`spawn_with_dirty_id`](crate::Workspace::spawn_with_dirty_id)).
+    pub id: PaneId,
+    /// Where to spawn the shell; `None` falls back to the daemon's cwd.
+    pub cwd: Option<PathBuf>,
+    /// What was launched (kept for display / the future exact-command increment).
+    pub command_label: String,
+    /// The size to open the shell at.
+    pub cols: u16,
+    pub rows: u16,
+}
+
+/// The single-pane view a [`Pane`] exposes for a snapshot, so tests and the registry share one
+/// reading of a live pane. (`Pane` itself stays free of snapshot types — this is the boundary.)
+pub(crate) fn pane_snapshot(pane: &Pane) -> PaneSnapshot {
+    let (cols, rows) = pane.pty().dimensions();
+    PaneSnapshot {
+        id: pane.id(),
+        cwd: pane.pty().cwd(),
+        command_label: pane.command_label().to_owned(),
+        cols,
+        rows,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{CommandBuilder, SessionRegistry};
+    use std::path::Path;
+
+    /// A long-lived `cat` child in `dir`, so a spawned pane's PTY (and its cwd) stay open.
+    fn cmd_in(dir: &Path) -> CommandBuilder {
+        let mut c = CommandBuilder::new("/bin/sh");
+        c.arg("-c");
+        c.arg("cat");
+        c.cwd(dir);
+        c.env("TERM", "dumb");
+        c
+    }
+
+    fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+        m.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Reconcile the named window's arrangement against its live pane set, so the tree the
+    /// snapshot captures reflects the panes (the live path reconciles on read).
+    fn reconcile(reg: &Arc<Mutex<SessionRegistry>>, session: &str, window: &str) {
+        let pool = lock(reg).window_workspace(session, window).unwrap();
+        let panes: Vec<PaneId> = lock(&pool).panes().iter().map(Pane::id).collect();
+        lock(reg)
+            .window_mut(session, window)
+            .unwrap()
+            .reconcile_layout(&panes);
+    }
+
+    /// THE load-bearing durability claim: a live registry's whole shape — two sessions, the
+    /// windows, which is current, the tiled arrangement, a floated pane, and every pane's cwd —
+    /// serializes to JSON and rebuilds a structurally identical registry plus a plan naming each
+    /// pane to re-spawn under its OLD id. A dropped field would restore a DIFFERENT desktop.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_registry_round_trips_through_a_snapshot() {
+        let dir = std::env::temp_dir();
+        let reg = Arc::new(Mutex::new(SessionRegistry::new((80, 24))));
+
+        // The default session "0" / window "0": three tiled panes (ids 0,1,2), then float the
+        // middle so it leaves the tiling — the float set is session state that must survive.
+        let default_pool = lock(&reg).workspace_of("0").unwrap();
+        let ids: Vec<PaneId> = (0..3)
+            .map(|_| {
+                lock(&default_pool)
+                    .spawn(cmd_in(&dir), "sh".to_owned(), 80, 24)
+                    .unwrap()
+            })
+            .collect();
+        reconcile(&reg, "0", "0");
+        let panes: Vec<PaneId> = lock(&default_pool).panes().iter().map(Pane::id).collect();
+        lock(&reg)
+            .window_mut("0", "0")
+            .unwrap()
+            .set_floating(ids[1], true, &panes);
+        reconcile(&reg, "0", "0");
+
+        // A second session "work" with one pane of its own — a real independent attach unit.
+        lock(&reg).new_session(Some("work")).unwrap();
+        let work_pool = lock(&reg).workspace_of("work").unwrap();
+        lock(&work_pool)
+            .spawn(cmd_in(&dir), "claude".to_owned(), 100, 30)
+            .unwrap();
+        reconcile(&reg, "work", "0");
+
+        let snap = snapshot(&reg);
+        assert_eq!(snap.version, SNAPSHOT_VERSION);
+        assert_eq!(snap.next_id, 4, "four panes minted across both sessions");
+
+        // JSON is lossless — a dropped field here restores a different layout.
+        let json = serde_json::to_string(&snap).expect("a snapshot serializes");
+        let back: Snapshot = serde_json::from_str(&json).expect("and round-trips");
+        assert_eq!(back, snap, "serde is lossless for the whole shape");
+
+        let (restored, plan) = SessionRegistry::from_snapshot(back).expect("a valid snapshot");
+
+        // The session structure came back: order (the default), names, current window.
+        assert_eq!(restored.sessions().len(), 2);
+        assert_eq!(restored.default_session().name(), "0");
+        assert_eq!(
+            restored.session("work").unwrap().current_window().name(),
+            "0"
+        );
+
+        // The default window's tiling is back with the floated pane OUT of it (0 and 2 tiled),
+        // and pane 1 in the float set.
+        let win = restored.session("0").unwrap().current_window();
+        assert_eq!(
+            win.layout().panes(),
+            vec![ids[0], ids[2]],
+            "the tiling survived"
+        );
+        assert!(win.floating().contains(&ids[1]), "the float survived");
+
+        // The plan names every pane to re-spawn, under its old id and with its cwd.
+        assert_eq!(plan.panes.len(), 4, "three in session 0, one in work");
+        let work_pane = plan
+            .panes
+            .iter()
+            .find(|p| p.session == "work")
+            .expect("work's pane is in the plan");
+        assert_eq!(work_pane.command_label, "claude");
+        assert_eq!((work_pane.cols, work_pane.rows), (100, 30));
+        assert_eq!(
+            work_pane.cwd.as_deref().and_then(|c| c.canonicalize().ok()),
+            dir.canonicalize().ok(),
+            "the restored pane re-spawns in the recorded directory",
+        );
+
+        // next_id preserved: a fresh spawn on the RESTORED registry mints above every old id,
+        // never reissuing one — the invariant that must hold across a reboot too.
+        let restored = Arc::new(Mutex::new(restored));
+        let pool = lock(&restored).workspace_of("0").unwrap();
+        let fresh = lock(&pool)
+            .spawn(cmd_in(&dir), "sh".to_owned(), 80, 24)
+            .unwrap();
+        assert_eq!(
+            fresh,
+            PaneId(4),
+            "the counter resumed above the restored ids"
+        );
+    }
+
+    /// A snapshot whose version this build does not understand is REFUSED — the daemon boots
+    /// empty rather than parsing a format it cannot.
+    #[test]
+    fn an_unknown_version_is_refused() {
+        let snap = Snapshot {
+            version: SNAPSHOT_VERSION + 99,
+            next_id: 0,
+            default_size: (80, 24),
+            sessions: vec![SessionSnapshot {
+                name: "0".to_owned(),
+                current_window: "0".to_owned(),
+                windows: vec![WindowSnapshot {
+                    name: "0".to_owned(),
+                    layout: LayoutWire::default(),
+                    floating: vec![],
+                    panes: vec![],
+                }],
+            }],
+        };
+        assert!(matches!(
+            SessionRegistry::from_snapshot(snap),
+            Err(SnapshotError::Version { .. }),
+        ));
+    }
+
+    /// A malformed shape (here: a `current_window` that names no window) is refused with a
+    /// message, not restored into a registry whose current-window pointer would be invalid.
+    #[test]
+    fn a_current_window_that_names_nothing_is_refused() {
+        let snap = Snapshot {
+            version: SNAPSHOT_VERSION,
+            next_id: 0,
+            default_size: (80, 24),
+            sessions: vec![SessionSnapshot {
+                name: "0".to_owned(),
+                current_window: "ghost".to_owned(), // no such window
+                windows: vec![WindowSnapshot {
+                    name: "0".to_owned(),
+                    layout: LayoutWire::default(),
+                    floating: vec![],
+                    panes: vec![],
+                }],
+            }],
+        };
+        assert!(matches!(
+            SessionRegistry::from_snapshot(snap),
+            Err(SnapshotError::Malformed(_)),
+        ));
+    }
+
+    /// An empty session list is refused — a registry is never empty, so restoring one would
+    /// unresolve the default session.
+    #[test]
+    fn an_empty_snapshot_is_refused() {
+        let snap = Snapshot {
+            version: SNAPSHOT_VERSION,
+            next_id: 0,
+            default_size: (80, 24),
+            sessions: vec![],
+        };
+        assert!(matches!(
+            SessionRegistry::from_snapshot(snap),
+            Err(SnapshotError::Malformed(_)),
+        ));
+    }
+}

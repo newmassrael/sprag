@@ -43,6 +43,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::PaneId;
 use crate::layout::{FloatHome, LayoutError, LayoutTree, LayoutWire};
+use crate::snapshot::{PaneRestore, RestorePlan, SNAPSHOT_VERSION, Snapshot, SnapshotError};
 use crate::workspace::{Pane, Workspace};
 
 /// One window: a named layout unit owning a pane pool, how its tiled panes are ARRANGED,
@@ -98,6 +99,35 @@ impl Window {
             homes: HashMap::new(),
             layout_revision: 0,
         }
+    }
+
+    /// Rebuild a window from a durability snapshot: an empty `pool`, the recorded arrangement
+    /// installed, and the recorded float set.
+    ///
+    /// The arrangement goes through the SAME [`LayoutTree::set_from_wire`] a client write does, so
+    /// a corrupt stored tree is REFUSED here (its [`LayoutError`] rides out) and the daemon falls
+    /// back to an empty boot rather than serving a malformed layout. Panes are NOT restored here:
+    /// they are re-spawned at the host into `pool` under their old ids (the D4 birth seam), and the
+    /// arrangement already names them by id — the first [`reconcile_layout`](Self::reconcile_layout)
+    /// heals any that failed to come back. `homes` starts empty (not persisted; see the snapshot
+    /// module docs) and `layout_revision` at 0 — a restored window is NEW, and every pre-reboot
+    /// client that held a revision is gone.
+    fn restore(
+        name: &str,
+        pool: Workspace,
+        layout: LayoutWire,
+        floating: Vec<PaneId>,
+    ) -> Result<Self, LayoutError> {
+        let mut tree = LayoutTree::new();
+        tree.set_from_wire(layout)?;
+        Ok(Self {
+            name: name.to_owned(),
+            workspace: Arc::new(Mutex::new(pool)),
+            layout: tree,
+            floating: floating.into_iter().collect(),
+            homes: HashMap::new(),
+            layout_revision: 0,
+        })
     }
 
     /// The window's display name (default `"0"`, `"1"`, …; renamable via
@@ -594,6 +624,97 @@ impl SessionRegistry {
         }
     }
 
+    /// Rebuild a registry's STRUCTURE from a durability [`Snapshot`], returning it paired with the
+    /// [`RestorePlan`] of panes the caller must re-spawn.
+    ///
+    /// Pinion-free and PANE-FREE: the sessions, windows, layout trees, float sets and the seeded
+    /// id counter are all rebuilt here, but the pools are EMPTY — a pane is born at the HOST so it
+    /// carries the daemon's death-signal (the D4 seam this crate does not hold). The plan names,
+    /// per pane, the window it docks into and the facts to spawn its shell with; the host spawns
+    /// each under its old id ([`Workspace::spawn_with_dirty_id`](crate::Workspace)) so the trees,
+    /// already referencing those ids, resolve, and the first reconcile heals any that fail to spawn.
+    ///
+    /// Every pool shares ONE id counter seeded to the snapshot's high-water mark, so a restore
+    /// never reissues a retired id — even a gap left by a pane closed pre-reboot.
+    ///
+    /// # Errors
+    ///
+    /// [`SnapshotError`] — and the caller boots EMPTY rather than corrupt — if the version is
+    /// unsupported, the shape is malformed (no sessions, a session with no windows, a
+    /// `current_window` naming no window, or a duplicate session/window name), or a stored layout
+    /// is not well-formed. A bad snapshot never bricks the daemon.
+    pub fn from_snapshot(snapshot: Snapshot) -> Result<(Self, RestorePlan), SnapshotError> {
+        if snapshot.version != SNAPSHOT_VERSION {
+            return Err(SnapshotError::Version {
+                found: snapshot.version,
+                expected: SNAPSHOT_VERSION,
+            });
+        }
+        if snapshot.sessions.is_empty() {
+            return Err(SnapshotError::Malformed("no sessions".to_owned()));
+        }
+        // One counter for the whole registry, seeded to the stored mark; every window's pool
+        // siblings off this seed (which is itself only a counter holder — never a live pool).
+        let seed = Workspace::with_seeded_counter(snapshot.default_size, snapshot.next_id);
+        let mut sessions = Vec::with_capacity(snapshot.sessions.len());
+        let mut plan = Vec::new();
+        let mut seen_sessions = HashSet::new();
+        for s in snapshot.sessions {
+            if !seen_sessions.insert(s.name.clone()) {
+                return Err(SnapshotError::Malformed(format!(
+                    "duplicate session {:?}",
+                    s.name
+                )));
+            }
+            if s.windows.is_empty() {
+                return Err(SnapshotError::Malformed(format!(
+                    "session {:?} has no windows",
+                    s.name
+                )));
+            }
+            let mut windows = Vec::with_capacity(s.windows.len());
+            let mut seen_windows = HashSet::new();
+            for w in s.windows {
+                if !seen_windows.insert(w.name.clone()) {
+                    return Err(SnapshotError::Malformed(format!(
+                        "session {:?} has duplicate window {:?}",
+                        s.name, w.name
+                    )));
+                }
+                // Record the panes to re-spawn before the window's fields are moved into it.
+                for p in &w.panes {
+                    plan.push(PaneRestore {
+                        session: s.name.clone(),
+                        window: w.name.clone(),
+                        id: p.id,
+                        cwd: p.cwd.clone(),
+                        command_label: p.command_label.clone(),
+                        cols: p.cols,
+                        rows: p.rows,
+                    });
+                }
+                let window = Window::restore(&w.name, seed.sibling(), w.layout, w.floating)
+                    .map_err(|e| SnapshotError::Layout(e.to_string()))?;
+                windows.push(window);
+            }
+            let current_window = windows
+                .iter()
+                .position(|win| win.name == s.current_window)
+                .ok_or_else(|| {
+                    SnapshotError::Malformed(format!(
+                        "session {:?} current window {:?} names no window",
+                        s.name, s.current_window
+                    ))
+                })?;
+            sessions.push(Session {
+                name: s.name,
+                windows,
+                current_window,
+            });
+        }
+        Ok((Self { sessions }, RestorePlan { panes: plan }))
+    }
+
     /// All sessions, in creation order.
     #[must_use]
     pub fn sessions(&self) -> &[Session] {
@@ -870,6 +991,23 @@ impl SessionRegistry {
     pub fn workspace_of(&self, session: &str) -> Option<Arc<Mutex<Workspace>>> {
         self.session(session)
             .map(|s| Arc::clone(s.current_window().workspace()))
+    }
+
+    /// The pane pool of a SPECIFIC window, by session AND window name — cloned so the registry
+    /// lock releases before a workspace lock is taken. `None` if no session carries the session
+    /// name or no window of it carries the window name.
+    ///
+    /// Unlike [`workspace_of`](Self::workspace_of) (which resolves the CURRENT window), this
+    /// addresses an arbitrary window — how a restore re-spawns each recorded pane into the exact
+    /// window it belonged to, current or not.
+    #[must_use]
+    pub fn window_workspace(&self, session: &str, window: &str) -> Option<Arc<Mutex<Workspace>>> {
+        let session = self.sessions.iter().find(|s| s.name == session)?;
+        session
+            .windows
+            .iter()
+            .find(|w| w.name == window)
+            .map(|w| Arc::clone(w.workspace()))
     }
 }
 

@@ -162,6 +162,32 @@ impl Workspace {
         self.default_size
     }
 
+    /// The next id this pool's shared counter would mint — the global high-water mark, for a
+    /// durability snapshot to store so a restore never reissues a retired id
+    /// ([`with_seeded_counter`](Self::with_seeded_counter)). A HINT, not a reservation: reading
+    /// it takes no id, and `Relaxed` matches the mint path (the value only advances, and a
+    /// best-effort snapshot needs no synchronization with it).
+    #[must_use]
+    pub fn next_id_hint(&self) -> u64 {
+        self.next_id.load(Ordering::Relaxed)
+    }
+
+    /// A new, empty workspace whose shared id counter STARTS at `next` — so its first mint is
+    /// `next`, not 0.
+    ///
+    /// How a restore rebuilds the pane pool without reissuing an id the pre-reboot session had
+    /// already minted ([`SessionRegistry::from_snapshot`](crate::SessionRegistry::from_snapshot)).
+    /// Seeding to the stored high-water mark — rather than deriving it from the restored ids —
+    /// is what preserves the never-reused invariant across the gap a top-of-range close leaves:
+    /// pane 5 minted then closed pre-reboot leaves live ids `{0,1,2}`, and a counter derived from
+    /// those would reissue 3, 4, 5. `pub(crate)`: seeding a counter is a restore concern of this
+    /// crate's registry, not a knob for arbitrary callers (same reason
+    /// [`with_id_source`](Self::with_id_source) is private).
+    #[must_use]
+    pub(crate) fn with_seeded_counter(default_size: (u16, u16), next: u64) -> Self {
+        Self::with_id_source(default_size, Arc::new(AtomicU64::new(next)))
+    }
+
     /// A new, empty pool minting from THIS one's id counter and inheriting its default size —
     /// how a [`SessionRegistry`](crate::SessionRegistry) adds a window or a session.
     ///
@@ -232,6 +258,47 @@ impl Workspace {
             command_label: label,
         });
         Ok(id)
+    }
+
+    /// Spawn `command` on a fresh `cols x rows` pane at a CALLER-GIVEN `id`, rather than a
+    /// freshly minted one — the restore primitive.
+    ///
+    /// A [`SessionRegistry`](crate::SessionRegistry) restore re-spawns each pane the pre-reboot
+    /// session held, and the arrangement ([`LayoutTree`](crate::LayoutTree)), float set, and
+    /// homes all reference those panes by id — so a restored pane MUST come back under its old
+    /// id or the tree would point at nothing. The id is reserved as it is used
+    /// (`next_id = max(next_id, id + 1)`), so a later mint can never reissue it: the never-reused
+    /// invariant holds across a restore, not only within one process's monotonic minting.
+    ///
+    /// The caller owns uniqueness — restore draws ids from a snapshot where they are unique by
+    /// construction. Unlike [`spawn`](Self::spawn) there is no id to return (the caller chose it).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PanePtyError`] if the pseudoterminal or child cannot be started; on failure no
+    /// pane is added.
+    pub fn spawn_with_dirty_id(
+        &mut self,
+        id: PaneId,
+        command: CommandBuilder,
+        label: String,
+        size: (u16, u16),
+        on_dirty: Option<Box<dyn Fn() + Send>>,
+        on_exit: Option<Box<dyn Fn() + Send>>,
+    ) -> Result<(), PanePtyError> {
+        let (cols, rows) = size;
+        let pty = PanePty::spawn_with_dirty(command, cols, rows, on_dirty, on_exit)?;
+        // Reserve the id above the counter so a future mint cannot reissue it (saturating so a
+        // pathological u64::MAX id cannot wrap the reservation back to 0). Relaxed matches the
+        // mint path: ids need only uniqueness + monotonicity, not synchronization.
+        self.next_id
+            .fetch_max(id.0.saturating_add(1), Ordering::Relaxed);
+        self.panes.push(Pane {
+            id,
+            pty,
+            command_label: label,
+        });
+        Ok(())
     }
 
     /// Remove the pane with `id`, **returning it** so the caller drops it —
@@ -335,6 +402,36 @@ mod tests {
         // The freed id is not reclaimed by the next spawn.
         let c = ws.spawn(cmd(), "sh".to_string(), 80, 24).unwrap();
         assert_eq!(c, PaneId(2));
+    }
+
+    #[test]
+    fn spawn_with_id_uses_the_given_id_and_reserves_it_against_reuse() {
+        let mut ws = Workspace::new((80, 24));
+        // Restore two panes OUT of monotonic order, leaving a gap at the top (id 5 is the
+        // high-water mark; 3 and 4 were minted then closed pre-reboot and did not come back).
+        ws.spawn_with_dirty_id(PaneId(5), cmd(), "sh".into(), (80, 24), None, None)
+            .unwrap();
+        ws.spawn_with_dirty_id(PaneId(1), cmd(), "sh".into(), (80, 24), None, None)
+            .unwrap();
+        assert!(ws.pane(PaneId(5)).is_some());
+        assert!(ws.pane(PaneId(1)).is_some());
+        // A fresh mint goes ABOVE the highest reserved id — it never reissues 5.
+        let next = ws.spawn(cmd(), "sh".into(), 80, 24).unwrap();
+        assert_eq!(
+            next,
+            PaneId(6),
+            "the counter was reserved above the restored ids"
+        );
+    }
+
+    #[test]
+    fn a_seeded_counter_starts_minting_at_the_seed() {
+        // A restore seeds the counter to the pre-reboot high-water mark, so a retired id whose
+        // pane did NOT come back (a gap at the very top) is still never reissued — deriving the
+        // counter from the restored panes alone could not know it existed.
+        let mut ws = Workspace::with_seeded_counter((80, 24), 6);
+        assert_eq!(ws.spawn(cmd(), "sh".into(), 80, 24).unwrap(), PaneId(6));
+        assert_eq!(ws.spawn(cmd(), "sh".into(), 80, 24).unwrap(), PaneId(7));
     }
 
     #[test]
