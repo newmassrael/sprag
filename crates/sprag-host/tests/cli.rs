@@ -5,6 +5,10 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+use serde_json::json;
+use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn};
 
 /// Reaps the spawned host process and its socket file on drop — including on a panicked
 /// assertion, so a failed run leaks neither.
@@ -353,4 +357,111 @@ fn the_cli_attach_preflights_then_launches_the_gui_scoped_to_the_session() {
         "the gui is pinned to THIS daemon's socket, not a default: {}",
         ok.stdout,
     );
+}
+
+/// `list-clients` + the `ls` attached count, END TO END over the real socket (R-PR67): the CLI
+/// reads the daemon's live per-client attachment state, so this pins the CLI's parse + wire read +
+/// formatting against a REAL attached client — not a mocked slot.
+///
+/// The test itself opens a `HostConn`, announces a client id (`client/hello`) and attaches to the
+/// default session (`client/attach`), then holds that connection open across the CLI runs. While
+/// it is held: `sprag ls` shows `(1 attached)` on that session, `sprag list-clients` lists the
+/// client -> session line, and `-t` filters by session (a match keeps it, an unknown session is a
+/// clean pre-flight error). When the connection DROPS, the daemon releases the attachment
+/// (`on_disconnect`, crash-safe), and `list-clients` empties + `ls` loses the badge — polled,
+/// because the release is delivered asynchronously on the daemon's reader thread.
+#[test]
+fn the_cli_lists_attached_clients_and_shows_the_attached_count() {
+    let (_host, sock) = spawn_host();
+
+    // With no attached client, list-clients is empty (exit 0) and ls carries no badge.
+    let empty = sprag(&sock, &["list-clients"]);
+    assert!(
+        empty.ok,
+        "list-clients with no clients succeeds: {}",
+        empty.stderr
+    );
+    assert!(
+        empty.stdout.trim().is_empty(),
+        "no clients ⇒ no lines: {:?}",
+        empty.stdout,
+    );
+    assert!(
+        !sprag(&sock, &["ls"]).stdout.contains("attached"),
+        "an unviewed session shows no attached badge",
+    );
+
+    {
+        // Attach a real client to the default session "0" and HOLD the connection open.
+        let mut attacher =
+            HostConn::connect(&sock, Duration::from_secs(5)).expect("attacher connects");
+        attacher
+            .call(
+                CLIENT_HELLO_METHOD,
+                json!({ CLIENT_PARAM: "cli-test-client" }),
+            )
+            .expect("client/hello accepted");
+        attacher
+            .call(CLIENT_ATTACH_METHOD, json!({}))
+            .expect("client/attach accepted");
+
+        // The attach is delivered on the daemon's dispatch thread; poll the CLI until it shows.
+        assert!(
+            wait_for(Duration::from_secs(5), || {
+                sprag(&sock, &["list-clients"])
+                    .stdout
+                    .contains("cli-test-client: 0")
+            }),
+            "list-clients lists the attached client and its session",
+        );
+
+        let ls = sprag(&sock, &["ls"]);
+        assert!(
+            ls.stdout.contains("(1 attached)"),
+            "ls shows the attached count on the viewed session: {}",
+            ls.stdout,
+        );
+
+        // -t filters by session: the default "0" keeps the client...
+        let matched = sprag(&sock, &["list-clients", "-t", "0"]);
+        assert!(matched.ok, "list-clients -t 0 succeeds: {}", matched.stderr);
+        assert!(
+            matched.stdout.contains("cli-test-client: 0"),
+            "the client attached to 0 survives the -t 0 filter: {}",
+            matched.stdout,
+        );
+        // ...and an unknown session is a clean pre-flight error, not an empty success.
+        let unknown = sprag(&sock, &["list-clients", "-t", "ghost"]);
+        assert!(!unknown.ok, "list-clients -t <missing> fails");
+        assert!(
+            unknown.stderr.contains("no session named"),
+            "a clean pre-flight error: {}",
+            unknown.stderr,
+        );
+
+        // attacher drops here: its socket closes with no explicit detach.
+    }
+
+    // The released attachment must empty the listing and drop the badge (crash-safe on_disconnect).
+    assert!(
+        wait_for(Duration::from_secs(5), || {
+            sprag(&sock, &["list-clients"]).stdout.trim().is_empty()
+                && !sprag(&sock, &["ls"]).stdout.contains("attached")
+        }),
+        "closing the connection releases the attachment, not leaks it",
+    );
+}
+
+/// Poll `predicate` until it holds or `timeout` elapses. The CLI's per-client attachment reads
+/// depend on the daemon's async `on_disconnect`, so a populated/emptied assertion is polled, not
+/// asserted once.
+fn wait_for(timeout: Duration, mut predicate: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if predicate() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    predicate()
 }

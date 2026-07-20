@@ -31,11 +31,24 @@
 //! onto the same FIFO as frames), so no lock orders against pinion's transport threads.
 
 use pinion_rpc::ConnId;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// An opaque, client-minted lifecycle token shared by every connection of one logical client.
 /// Not identity (says nothing about who the peer is), only "these connections are one client".
 pub type ClientId = String;
+
+/// One attached client, for the `clients` wire slot (tmux `list-clients`): the opaque client id
+/// and the session it is currently viewing. The daemon's honest analog of tmux's `struct client`
+/// row — sprag has no tty/size/activity to report (a `sprag-gui` window is not a terminal the
+/// daemon owns), so this carries only what the [`AttachmentRegistry`] actually knows.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct ClientInfo {
+    /// The opaque, client-minted id (e.g. a `sprag-gui` window's `gui-{pid}-{nanos}`).
+    pub client: ClientId,
+    /// The session this client is attached to (tmux `client -> session`).
+    pub session: String,
+}
 
 /// What an [`attach`](AttachmentRegistry::attach) did, so the caller knows whether the per-session
 /// counts moved (and the scene must be bumped so other clients' long-polls re-read the badge).
@@ -107,6 +120,30 @@ impl AttachmentRegistry {
             .values()
             .filter(|s| s.as_str() == session)
             .count()
+    }
+
+    /// Every currently-attached client and the session it views — the `clients` wire slot behind
+    /// the `sprag list-clients` CLI (tmux `list-clients`). Only clients that have ATTACHED appear
+    /// (a hello-only connection is present but views nothing), which is exactly tmux's rule that a
+    /// client is listed once it is attached to a session. Sorted by (client, session) so the wire
+    /// order is deterministic — a `HashMap`'s iteration order is not, and a CLI listing that
+    /// reshuffles between reads would be noise.
+    #[must_use]
+    pub fn clients(&self) -> Vec<ClientInfo> {
+        let mut clients: Vec<ClientInfo> = self
+            .client_session
+            .iter()
+            .map(|(client, session)| ClientInfo {
+                client: client.clone(),
+                session: session.clone(),
+            })
+            .collect();
+        clients.sort_by(|a, b| {
+            a.client
+                .cmp(&b.client)
+                .then_with(|| a.session.cmp(&b.session))
+        });
+        clients
     }
 }
 
@@ -239,6 +276,49 @@ mod tests {
         assert!(
             reg.disconnect(c).is_none(),
             "a connection that never attached releases no count"
+        );
+    }
+
+    #[test]
+    fn clients_lists_each_attached_client_with_its_session() {
+        let mut reg = AttachmentRegistry::default();
+        let a = conn(1);
+        let b = conn(2);
+        let hello_only = conn(3);
+        reg.hello(a, "client-b".to_owned());
+        reg.hello(b, "client-a".to_owned());
+        reg.hello(hello_only, "client-c".to_owned());
+        reg.attach(a, "work".to_owned());
+        reg.attach(b, "home".to_owned());
+        // client-c said hello but never attached: it views nothing, so it is NOT listed.
+        let clients = reg.clients();
+        assert_eq!(
+            clients,
+            vec![
+                ClientInfo {
+                    client: "client-a".to_owned(),
+                    session: "home".to_owned(),
+                },
+                ClientInfo {
+                    client: "client-b".to_owned(),
+                    session: "work".to_owned(),
+                },
+            ],
+            "attached clients only, sorted by client id"
+        );
+    }
+
+    #[test]
+    fn clients_drops_a_client_when_its_last_connection_closes() {
+        let mut reg = AttachmentRegistry::default();
+        let c = conn(1);
+        reg.hello(c, "gui".to_owned());
+        reg.attach(c, "work".to_owned());
+        assert_eq!(reg.clients().len(), 1, "the attached client is listed");
+        reg.disconnect(c);
+        assert!(
+            reg.clients().is_empty(),
+            "the released client leaves the listing"
         );
     }
 }

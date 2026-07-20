@@ -16,9 +16,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    CLOSE_ACTION, FULL_TEXT_SLOT, KILL_SESSION_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION,
-    NEW_WINDOW_ACTION, PANES_SLOT, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION,
-    SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
+    CLIENTS_SLOT, CLOSE_ACTION, FULL_TEXT_SLOT, KILL_SESSION_ACTION, LAYOUT_SLOT,
+    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
+    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
 };
 use sprag_host::{mux_action_path, pane_input_path};
 use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn};
@@ -866,6 +866,78 @@ fn client_attachment_is_counted_and_released_on_disconnect_over_the_real_socket(
     );
 
     let _ = std::fs::remove_file(&sock);
+}
+
+/// The `clients` slot (tmux `list-clients`, behind `sprag list-clients`) over the REAL socket: it
+/// lists one `{client, session}` row per ATTACHED client, and releases it when the connection
+/// closes — the same crash-safe lifecycle as the `attached` count, read as a per-client list.
+///
+/// This pins the slot's WIRE SHAPE (`[{client, session}]`) directly, independent of the CLI that
+/// consumes it: an OBSERVER connection (never attached) reads the slot throughout, so it sees
+/// exactly the attacher's row and its own absence proves a bare connection is not listed.
+#[test]
+fn the_clients_slot_lists_attached_clients_and_releases_them_over_the_real_socket() {
+    let (_host, sock) = spawn_host();
+
+    let mut observer =
+        HostConn::connect(&sock, Duration::from_secs(5)).expect("observer connects to the host");
+    let session = session_names(&mut observer)
+        .into_iter()
+        .next()
+        .expect("the daemon boots with its default session");
+    assert!(
+        clients_of(&mut observer).is_empty(),
+        "no client has attached yet, so the clients slot is empty",
+    );
+
+    {
+        let mut attacher = HostConn::connect(&sock, Duration::from_secs(5))
+            .expect("attacher connects to the host");
+        attacher
+            .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "wire-client" }))
+            .expect("client/hello is accepted");
+        attacher
+            .call(CLIENT_ATTACH_METHOD, json!({}))
+            .expect("client/attach is accepted");
+
+        assert!(
+            wait_until(Duration::from_secs(5), || {
+                clients_of(&mut observer) == vec![("wire-client".to_owned(), session.clone())]
+            }),
+            "the slot lists the attached client and the session it views",
+        );
+        // attacher drops here: its socket closes with no detach sent.
+    }
+
+    assert!(
+        wait_until(Duration::from_secs(5), || clients_of(&mut observer)
+            .is_empty()),
+        "the closed connection's client leaves the slot (on_disconnect), not leaks",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// The `clients` slot as `(client, session)` pairs — the wire shape `sprag list-clients` parses.
+fn clients_of(conn: &mut HostConn) -> Vec<(String, String)> {
+    conn.call(
+        "scene/query",
+        json!({ "path": mux_action_path(CLIENTS_SLOT) }),
+    )
+    .ok()
+    .and_then(|v| {
+        v.as_array().map(|arr| {
+            arr.iter()
+                .filter_map(|c| {
+                    Some((
+                        c["client"].as_str()?.to_owned(),
+                        c["session"].as_str()?.to_owned(),
+                    ))
+                })
+                .collect()
+        })
+    })
+    .unwrap_or_default()
 }
 
 /// Re-scoping ONE persistent connection from session to session — the wire MECHANISM the GUI's

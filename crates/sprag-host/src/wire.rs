@@ -165,6 +165,15 @@ pub use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM};
 /// must guess at, and the whole point of the scene-as-data surface is that a peer ASKS.
 pub const SESSIONS_SLOT: &str = "sessions";
 
+/// The mux control external query slot: every currently-ATTACHED client and the session it is
+/// viewing (`[{client, session}]`) — tmux `list-clients`, behind the `sprag list-clients` CLI.
+///
+/// Registry-WIDE like [`SESSIONS_SLOT`] (its subject is the set of clients, not any one session),
+/// and filled HOST-side from the dispatch layer's [`crate::AttachmentRegistry`] — the same
+/// per-client state that fills each [`SESSIONS_SLOT`] row's `attached` count. Empty off a daemon
+/// that tracks no wire clients (a GUI's in-process host), so it degrades to "no clients".
+pub const CLIENTS_SLOT: &str = "clients";
+
 /// The mux control external invoke action that creates a session BORN WITH A SHELL
 /// (`{name?, cmd?, cols?, rows?}`), returning its name.
 ///

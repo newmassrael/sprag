@@ -71,9 +71,10 @@ use crate::scope::SessionScope;
 // The mux control action names + query slots are the shared wire ABI vocabulary
 // ([`crate::wire`]) — the SAME consts a client addresses for pane lifecycle.
 use crate::wire::{
-    CLOSE_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION,
-    NEW_WINDOW_ACTION, PANES_SLOT, RENAME_WINDOW_ACTION, RESIZE_ACTION, SELECT_WINDOW_ACTION,
-    SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, WINDOWS_SLOT,
+    CLIENTS_SLOT, CLOSE_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
+    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, RENAME_WINDOW_ACTION, RESIZE_ACTION,
+    SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION,
+    WINDOWS_SLOT,
 };
 
 /// The mux-management engine `External`: a control surface over the shared
@@ -599,6 +600,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                     SchemaField::new(PANES_SLOT, "list"),
                     SchemaField::new(LAYOUT_SLOT, "tree"),
                     SchemaField::new(SESSIONS_SLOT, "list"),
+                    SchemaField::new(CLIENTS_SLOT, "list"),
                     SchemaField::new(WINDOWS_SLOT, "list"),
                 ]
             },
@@ -662,6 +664,24 @@ impl ExternalIntrospect for WorkspaceExternal {
                     Ok(json) => Some(IntrospectValue::Json(json)),
                     Err(error) => {
                         tracing::error!(target: "sprag_host", %error, "sessions failed to serialise");
+                        None
+                    }
+                }
+            }
+            // Every currently-attached client and the session it views — tmux `list-clients`.
+            // Registry-WIDE like `sessions` (its subject is the set of clients), and filled from
+            // the SAME dispatch-layer attachment map that fills each session's `attached` count.
+            // `None` off a daemon (no wire clients) serialises to an empty list — an honest "no
+            // clients", the same additive story as an unattached session's absent `attached`.
+            CLIENTS_SLOT => {
+                let clients = match &self.attachments {
+                    Some(attachments) => lock(attachments).clients(),
+                    None => Vec::new(),
+                };
+                match serde_json::to_value(&clients) {
+                    Ok(json) => Some(IntrospectValue::Json(json)),
+                    Err(error) => {
+                        tracing::error!(target: "sprag_host", %error, "clients failed to serialise");
                         None
                     }
                 }

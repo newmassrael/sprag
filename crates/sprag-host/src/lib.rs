@@ -58,7 +58,7 @@ pub mod scope;
 pub mod wire;
 pub mod workspace;
 
-pub use attach::{AttachOutcome, AttachmentRegistry, ClientId};
+pub use attach::{AttachOutcome, AttachmentRegistry, ClientId, ClientInfo};
 pub use durability::{
     load_snapshot, restore_allowlist, restore_command, save_if_changed, save_snapshot,
     snapshot_path,

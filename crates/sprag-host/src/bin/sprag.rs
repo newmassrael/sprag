@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! sprag ls                 list every session
+//! sprag list-clients [-t SESSION]  list attached clients and the session each views (tmux list-clients)
 //! sprag new [name]         create a session with a shell (absent name -> the lowest free), print its name
 //! sprag attach NAME        open a sprag-gui window attached to a session (tmux attach-session)
 //! sprag kill-session NAME   kill a session (the last one ends the daemon)
@@ -36,7 +37,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use sprag_host::mux_action_path;
 use sprag_host::wire::{
-    KILL_SESSION_ACTION, KILL_WINDOW_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION,
+    CLIENTS_SLOT, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION,
     RENAME_WINDOW_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, WINDOWS_SLOT,
 };
 use sprag_rpc::{HOST_SOCKET, HostConn, socket_path};
@@ -56,6 +57,7 @@ fn run() -> io::Result<()> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         Some("ls") => ls(),
+        Some("list-clients") => list_clients(args.collect()),
         Some("new") => new(args.next()),
         Some("attach") => attach(args.next()),
         Some("kill-session") => kill_session(args.next()),
@@ -79,7 +81,8 @@ fn run() -> io::Result<()> {
 
 fn print_usage() {
     eprintln!(
-        "usage: sprag <ls | new [name] | attach NAME | kill-session NAME | kill-server [--purge]>\n\
+        "usage: sprag <ls | list-clients [-t SESSION] | new [name] | attach NAME\n\
+         \x20             | kill-session NAME | kill-server [--purge]>\n\
          \x20      sprag <windows | new-window [name] | select-window NAME\n\
          \x20             | rename-window [window] NAME | kill-window [window]> -t SESSION"
     );
@@ -113,9 +116,9 @@ fn connect() -> io::Result<HostConn> {
 }
 
 /// `ls`: one line per session — its name, its window count, which one an unscoped request lands
-/// in, and (where known) its current working directory, git branch, and the TCP ports it is
-/// listening on. The GUI sidebar shows only the cwd's basename to fit the rail; the FULL path is
-/// here, from the same `sessions` slot read.
+/// in, how many clients are attached (viewing) it, and (where known) its current working
+/// directory, git branch, and the TCP ports it is listening on. The GUI sidebar shows only the
+/// cwd's basename to fit the rail; the FULL path is here, from the same `sessions` slot read.
 fn ls() -> io::Result<()> {
     let mut conn = connect()?;
     let sessions = conn.call(
@@ -154,9 +157,72 @@ fn ls() -> io::Result<()> {
         } else {
             format!("  {ports}")
         };
-        println!("{name}: {windows} window(s){marker}{suffix}{ports_suffix}");
+        // attached is Slice's live viewer count (R-PR67): absent (older daemon) or 0 (nobody
+        // viewing) it falls away, degrading the line to the pre-attachment form. It is
+        // `skip_serializing_if`-elided at 0, so `unwrap_or(0)` restores the honest count.
+        let attached = session["attached"].as_u64().unwrap_or(0);
+        let attached_suffix = if attached == 0 {
+            String::new()
+        } else {
+            format!("  ({attached} attached)")
+        };
+        println!("{name}: {windows} window(s){marker}{attached_suffix}{suffix}{ports_suffix}");
     }
     Ok(())
+}
+
+/// `list-clients [-t SESSION]`: one line per ATTACHED client — its opaque id and the session it
+/// is viewing — tmux `list-clients`. With `-t SESSION`, only clients attached to that session (the
+/// session is pre-flighted so a typo is a clean error, like the window commands). The client id is
+/// what a `sprag-gui` window mints (`gui-{pid}-{nanos}`); the daemon has no tty/size to report, so
+/// the line is `client -> session`, the honest subset tmux's `struct client` row reduces to here.
+fn list_clients(args: Vec<String>) -> io::Result<()> {
+    let filter = optional_target(args, "list-clients")?;
+    let mut conn = connect()?;
+    if let Some(session) = &filter {
+        require_session(&mut conn, session)?;
+    }
+    let clients = conn.call(
+        "scene/query",
+        json!({ "path": mux_action_path(CLIENTS_SLOT) }),
+    )?;
+    for client in clients.as_array().into_iter().flatten() {
+        let id = client["client"].as_str().unwrap_or("?");
+        let session = client["session"].as_str().unwrap_or("?");
+        if filter.as_deref().is_some_and(|want| want != session) {
+            continue;
+        }
+        println!("{id}: {session}");
+    }
+    Ok(())
+}
+
+/// Parse an OPTIONAL `-t SESSION` filter (unlike the window commands' required target). Any
+/// non-flag positional is unexpected — `list-clients` takes only the optional target.
+fn optional_target(args: Vec<String>, command: &str) -> io::Result<Option<String>> {
+    let mut session = None;
+    let mut it = args.into_iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "-t" | "--target" => {
+                session = Some(it.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("{command}: -t needs a session name"),
+                    )
+                })?);
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "{command}: unexpected argument {other:?} (only -t SESSION is accepted)"
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(session)
 }
 
 /// `new [name]`: create a session — born with a shell, tmux's `new-session -d` (the registry
