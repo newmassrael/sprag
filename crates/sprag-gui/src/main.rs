@@ -194,6 +194,7 @@
 //! bottom) — a v1 limit.
 
 mod a11y;
+mod attention;
 mod ctxmenu;
 mod diag;
 mod dock;
@@ -283,6 +284,7 @@ fn reset_freed_slot(slot: usize) {
     scrollbar::reset_pane_scroll(slot);
     input::reset_pane_preedit(slot);
     selection::reset_pane_selection(slot);
+    attention::reset_pane_ack(slot);
 }
 
 struct TerminalViewer;
@@ -673,6 +675,10 @@ impl WidgetCore for TerminalViewer {
         let focused_pane = pinion_core::focus_state::focused()
             .as_deref()
             .and_then(pane_index_of);
+        // (4b) ACK the focused pane's attention notification (R-PR67 follow-on): viewing a pane
+        // clears its "wants attention" marker. Runs BEFORE `sync_main_title` so the focused pane's
+        // OS title never flashes the marker the instant a notification lands on the pane in view.
+        attention::ack_focused(&terminal.slots, focused_pane);
         dock::sync_main_title(focused_pane);
         // (5) (R175) Auto-disarm a pending session kill whose captured session has VANISHED from the
         // live list (killed out of band while the `kill '<name>'?` strip was up), so the confirmation

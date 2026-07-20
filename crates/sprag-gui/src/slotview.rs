@@ -30,7 +30,7 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 
 use pinion_core::GridBuffer;
-use sprag_host::{HostClient, PaneScrollFacts};
+use sprag_host::{HostClient, PaneNotification, PaneScrollFacts};
 use sprag_input::Modifiers;
 use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId, SessionInfo, WindowInfo};
 
@@ -305,6 +305,14 @@ impl SlotView {
     pub(crate) fn pane_title(&self, slot: usize) -> Option<String> {
         self.id(slot).and_then(|id| self.host.pane_title(id))
     }
+
+    /// Slot `slot`'s most recent attention notification (`OSC 9` / `OSC 777;notify` / `OSC 99`),
+    /// `None` for a hole or a pane that raised none. A DISPLAY signal — the GUI's per-pane
+    /// attention marker reads its [`seq`](PaneNotification::seq) against the acked one (see
+    /// [`crate::attention`]).
+    pub(crate) fn pane_notification(&self, slot: usize) -> Option<PaneNotification> {
+        self.id(slot).and_then(|id| self.host.pane_notification(id))
+    }
 }
 
 /// The PURE slot-allocation plan behind [`SlotView::reconcile`] (so the allocator is
@@ -356,6 +364,7 @@ fn plan_slots(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pinion_core::reactive::Owner;
 
     fn pid(n: u64) -> PaneId {
         PaneId(n)
@@ -424,6 +433,12 @@ mod tests {
         ids: std::rc::Rc<RefCell<Vec<PaneId>>>,
         /// Per-pane-id OSC title, for the `pane_title` / display-title tests.
         titles: std::collections::HashMap<PaneId, String>,
+        /// Per-pane-id attention notification (STATIC), for a fixed-notification test.
+        notifications: std::collections::HashMap<PaneId, PaneNotification>,
+        /// A SHARED, mutable notification map the test still holds after construction, so it can
+        /// raise a NEW notification mid-run (the live-mirror `seq`-grows case). Takes precedence
+        /// over `notifications` when present.
+        notes: Option<std::rc::Rc<RefCell<std::collections::HashMap<PaneId, PaneNotification>>>>,
     }
 
     impl HostClient for FakeHost {
@@ -469,6 +484,12 @@ mod tests {
         fn pane_title(&self, id: PaneId) -> Option<String> {
             self.titles.get(&id).cloned()
         }
+        fn pane_notification(&self, id: PaneId) -> Option<PaneNotification> {
+            match &self.notes {
+                Some(notes) => notes.borrow().get(&id).cloned(),
+                None => self.notifications.get(&id).cloned(),
+            }
+        }
         /// Inert: these tests drive the pane slot map, not the window / session surface.
         fn windows(&self) -> Vec<WindowInfo> {
             Vec::new()
@@ -495,6 +516,8 @@ mod tests {
         SlotView::new(Box::new(FakeHost {
             ids: std::rc::Rc::clone(ids),
             titles: std::collections::HashMap::new(),
+            notifications: std::collections::HashMap::new(),
+            notes: None,
         }))
     }
 
@@ -512,16 +535,94 @@ mod tests {
             ]
             .into_iter()
             .collect(),
+            notifications: std::collections::HashMap::new(),
+            notes: None,
         }));
 
-        // Slot 0's child set a title -> it is displayed.
-        assert_eq!(crate::view::pane_display_title(&view, 0), "vim README");
-        // Slot 1's child set a blank one -> fall back, never an empty header.
-        assert_eq!(crate::view::pane_display_title(&view, 1), "terminal-1");
-        // Slot 2's child set none -> the stable panel id.
-        assert_eq!(crate::view::pane_display_title(&view, 2), "terminal-2");
-        // A hole (no pane) still yields its stable panel id, never a panic.
-        assert_eq!(crate::view::pane_display_title(&view, 7), "terminal-7");
+        // `pane_display_title` reads the per-slot attention-ack Signal, so it runs in an Owner
+        // scope (as every paint / reconcile caller does); no notification ⇒ no marker prefix.
+        Owner::new().run(|| {
+            // Slot 0's child set a title -> it is displayed.
+            assert_eq!(crate::view::pane_display_title(&view, 0), "vim README");
+            // Slot 1's child set a blank one -> fall back, never an empty header.
+            assert_eq!(crate::view::pane_display_title(&view, 1), "terminal-1");
+            // Slot 2's child set none -> the stable panel id.
+            assert_eq!(crate::view::pane_display_title(&view, 2), "terminal-2");
+            // A hole (no pane) still yields its stable panel id, never a panic.
+            assert_eq!(crate::view::pane_display_title(&view, 7), "terminal-7");
+        });
+    }
+
+    /// The attention feature end to end through its real consumer ([`crate::view::pane_display_title`]):
+    /// a pane whose child raised a notification wears the marker until it is VIEWED, and a fresh
+    /// notification (a higher `seq`) re-arms it. REVERT-PROOF: a pane with no notification never
+    /// wears the marker, and the ack clears it — so neither half is unconditional. The notes map is
+    /// an `Rc<RefCell<..>>` the test still holds after the host takes its clone, so a new
+    /// notification can be raised MID-run (the live-mirror case, `seq` growing under the client).
+    #[test]
+    fn an_unseen_notification_marks_the_title_until_the_pane_is_viewed() {
+        use crate::attention::{ATTENTION_MARKER, ack_focused, reset_pane_ack};
+
+        let ids = std::rc::Rc::new(RefCell::new(vec![pid(10), pid(11)]));
+        let notes = std::rc::Rc::new(RefCell::new(
+            [(pid(10), note(1, "build done"))]
+                .into_iter()
+                .collect::<std::collections::HashMap<PaneId, PaneNotification>>(),
+        ));
+        let view = SlotView::new(Box::new(FakeHost {
+            ids: std::rc::Rc::clone(&ids),
+            titles: std::collections::HashMap::new(),
+            notifications: std::collections::HashMap::new(),
+            notes: Some(std::rc::Rc::clone(&notes)),
+        }));
+
+        Owner::new().run(|| {
+            let title = |i| crate::view::pane_display_title(&view, i);
+            // Slot 0 raised a notification (seq 1), unviewed ⇒ the marker leads its title.
+            assert!(
+                title(0).starts_with(ATTENTION_MARKER),
+                "unseen ⇒ marked: {}",
+                title(0)
+            );
+            // Slot 1 raised none ⇒ never marked.
+            assert!(
+                !title(1).starts_with(ATTENTION_MARKER),
+                "no notification ⇒ no marker"
+            );
+
+            // VIEWING slot 0 (it is focused) acks its seq ⇒ the marker clears.
+            ack_focused(&view, Some(0));
+            assert!(
+                !title(0).starts_with(ATTENTION_MARKER),
+                "viewed ⇒ cleared: {}",
+                title(0)
+            );
+
+            // A NEW notification (seq 2) past the acked seq re-arms the marker.
+            notes.borrow_mut().insert(pid(10), note(2, "tests passed"));
+            assert!(
+                title(0).starts_with(ATTENTION_MARKER),
+                "a newer seq re-arms it"
+            );
+
+            // Resetting the ack (slot reuse) re-arms it from zero too.
+            ack_focused(&view, Some(0));
+            assert!(!title(0).starts_with(ATTENTION_MARKER));
+            reset_pane_ack(0);
+            assert!(
+                title(0).starts_with(ATTENTION_MARKER),
+                "a reset ack re-shows a live notification"
+            );
+        });
+    }
+
+    /// A [`PaneNotification`] with `seq` and a body, for the attention tests.
+    fn note(seq: u64, body: &str) -> PaneNotification {
+        PaneNotification {
+            title: None,
+            body: body.to_owned(),
+            seq,
+        }
     }
 
     #[test]

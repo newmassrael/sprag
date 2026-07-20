@@ -84,7 +84,9 @@ use sprag_host::wire::{
     SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT,
     cells_slot_at,
 };
-use sprag_host::{CellFrame, HostClient, PaneScrollFacts, mux_action_path, pane_input_path};
+use sprag_host::{
+    CellFrame, HostClient, PaneNotification, PaneScrollFacts, mux_action_path, pane_input_path,
+};
 use sprag_input::Modifiers;
 use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn, runtime_path};
 use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId, SessionInfo, WindowInfo};
@@ -127,6 +129,10 @@ struct WirePane {
     /// Host-authoritative like [`Self::label`] (re-read on every poll re-query, since a
     /// shell rewrites it each prompt). A DISPLAY name only — never identity.
     title: Option<String>,
+    /// The pane's most recent attention notification (`OSC 9` / `OSC 777;notify` / `OSC 99`),
+    /// or `None`. Host-authoritative + dynamic like [`Self::title`] — re-adopted every wake, so
+    /// its `seq` grows as the child raises more (the GUI's attention badge reads it).
+    notification: Option<PaneNotification>,
     frame: CellFrame,
     /// The GUI's tracked grid `(cols, rows)`: seeded from the host at boot, advanced only
     /// when a `resize` RPC SUCCEEDS (so the reflow no-op guard reads it with no
@@ -1349,6 +1355,15 @@ impl HostClient for WireHost {
             .find(|pane| pane.id == id)
             .and_then(|pane| pane.title.clone())
     }
+
+    /// Served from the same poll-refreshed mirror as [`Self::pane_title`], re-adopted each wake,
+    /// so the `seq` reflects the host's latest.
+    fn pane_notification(&self, id: PaneId) -> Option<PaneNotification> {
+        self.lock_cache()
+            .iter()
+            .find(|pane| pane.id == id)
+            .and_then(|pane| pane.notification.clone())
+    }
 }
 
 impl Drop for WireHost {
@@ -1438,6 +1453,9 @@ struct PaneSeed {
     /// The child's live OSC window title, `None` if it has set none (the wire sends
     /// `null`).
     title: Option<String>,
+    /// The pane's most recent attention notification, `None` when the wire omits the key
+    /// (the child raised none — the additive `skip`-when-absent shape).
+    notification: Option<PaneNotification>,
     dims: (u16, u16),
 }
 
@@ -1460,16 +1478,38 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
             let label = pane["command"].as_str().unwrap_or_default().to_owned();
             // `null` (child set no title) and a missing key both mean "no title".
             let title = pane["title"].as_str().map(str::to_owned);
+            let notification = parse_notification(&pane["notification"]);
             let cols = u16::try_from(pane["cols"].as_u64().unwrap_or(1)).unwrap_or(1);
             let rows = u16::try_from(pane["rows"].as_u64().unwrap_or(1)).unwrap_or(1);
             Ok(PaneSeed {
                 id: PaneId(id),
                 label,
                 title,
+                notification,
                 dims: (cols, rows),
             })
         })
         .collect()
+}
+
+/// Parse a pane's `notification` wire value (`{title, body, seq}`, or absent/`null`) into a
+/// [`PaneNotification`]. A missing key or a non-object is `None` (the additive shape: a pane that
+/// raised none, or an older daemon that never sends it). A malformed `seq` clamps to `0` so a
+/// present-but-garbled object never claims to be a fresh notification.
+fn parse_notification(value: &Value) -> Option<PaneNotification> {
+    let object = value.as_object()?;
+    Some(PaneNotification {
+        title: object
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        body: object
+            .get("body")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        seq: object.get("seq").and_then(Value::as_u64).unwrap_or(0),
+    })
 }
 
 /// Resolve WHICH session this client acts on, over `conn` (before it is scoped).
@@ -1667,6 +1707,9 @@ fn merge_panes(
             id: seed.id,
             label: seed.label.clone(), // host-authoritative — always the query's label
             title: seed.title.clone(), // host-authoritative + dynamic — re-adopt every wake
+            // host-authoritative + dynamic like the title: re-adopt the query's, so the seq
+            // grows as the child raises more (and clears to None if the host ever drops it).
+            notification: seed.notification.clone(),
             frame,
             dims: prior.map_or(seed.dims, |pane| pane.dims), // GUI-authoritative — keep tracked
         });
@@ -1814,6 +1857,9 @@ fn spawn_poll(
                                 // Re-query failed, so the host's current title is unknown —
                                 // KEEP the last-known one rather than blanking the display.
                                 title: pane.title.clone(),
+                                // Likewise keep the last-known notification (and its seq) rather
+                                // than dropping the attention badge on a transient query miss.
+                                notification: pane.notification.clone(),
                                 dims: pane.dims,
                             })
                             .collect();
@@ -2827,6 +2873,7 @@ mod tests {
                 id: PaneId(10),
                 label: "bash".to_owned(),
                 title: None,
+                notification: None,
                 frame: frame(3),
                 dims: (80, 24),
             },
@@ -2834,6 +2881,7 @@ mod tests {
                 id: PaneId(11),
                 label: "cat".to_owned(),
                 title: None,
+                notification: None,
                 frame: frame(3),
                 dims: (40, 12),
             },
@@ -2846,18 +2894,21 @@ mod tests {
                 id: PaneId(10),
                 label: "bash-relabeled".to_owned(),
                 title: None,
+                notification: None,
                 dims: (100, 30),
             },
             PaneSeed {
                 id: PaneId(12),
                 label: "vim".to_owned(),
                 title: None,
+                notification: None,
                 dims: (80, 24),
             },
             PaneSeed {
                 id: PaneId(13),
                 label: "top".to_owned(),
                 title: None,
+                notification: None,
                 dims: (80, 24),
             },
         ];
@@ -2899,6 +2950,7 @@ mod tests {
             id: PaneId(10),
             label: "bash".to_owned(),
             title: None,
+            notification: None,
             frame: frame(3),
             dims: (80, 24),
         }];
@@ -2906,6 +2958,7 @@ mod tests {
             id: PaneId(10),
             label: "bash".to_owned(),
             title: None,
+            notification: None,
             dims: (80, 24),
         }];
         let merged = merge_panes(&existing, &seeds, &[]); // fetch missed this wake
@@ -2928,6 +2981,7 @@ mod tests {
                 id: PaneId(10),
                 label: "bash".to_owned(),
                 title: Some("stale: vim README".to_owned()),
+                notification: None,
                 frame: frame(3),
                 dims: (80, 24),
             },
@@ -2935,6 +2989,7 @@ mod tests {
                 id: PaneId(11),
                 label: "bash".to_owned(),
                 title: Some("about to be cleared".to_owned()),
+                notification: None,
                 frame: frame(3),
                 dims: (80, 24),
             },
@@ -2944,12 +2999,14 @@ mod tests {
                 id: PaneId(10),
                 label: "bash".to_owned(),
                 title: Some("coin@host:~".to_owned()), // child retitled at the new prompt
+                notification: None,
                 dims: (80, 24),
             },
             PaneSeed {
                 id: PaneId(11),
                 label: "bash".to_owned(),
                 title: None, // child cleared its title
+                notification: None,
                 dims: (80, 24),
             },
         ];
@@ -2966,6 +3023,39 @@ mod tests {
             merged[1].title, None,
             "a cleared title clears the mirror too (host is authoritative both ways)",
         );
+    }
+
+    /// [`parse_notification`] maps the `panes` slot's `notification` object to a
+    /// [`PaneNotification`], degrading safely: an absent key / `null` / non-object is `None`
+    /// (the additive shape — a pane that raised none, or an older daemon), and a garbled `seq`
+    /// clamps to `0` so a present-but-broken object never claims to be a fresh notification.
+    #[test]
+    fn parse_notification_maps_the_wire_object_and_degrades_safely() {
+        // A full object.
+        let n = parse_notification(&json!({ "title": "Build", "body": "done", "seq": 3 }))
+            .expect("a well-formed object parses");
+        assert_eq!(n.title.as_deref(), Some("Build"));
+        assert_eq!(n.body, "done");
+        assert_eq!(n.seq, 3);
+
+        // A body-only (OSC 9) shape: title null.
+        let n = parse_notification(&json!({ "title": null, "body": "ping", "seq": 1 }))
+            .expect("a body-only object parses");
+        assert_eq!(n.title, None);
+        assert_eq!(n.body, "ping");
+
+        // Absent / null / non-object ⇒ None (the additive "no notification" shape).
+        assert!(parse_notification(&Value::Null).is_none(), "null ⇒ None");
+        assert!(
+            parse_notification(&json!("nope")).is_none(),
+            "a string ⇒ None"
+        );
+
+        // A garbled seq clamps to 0 rather than inheriting a stale-looking number.
+        let n = parse_notification(&json!({ "body": "x", "seq": "oops" }))
+            .expect("a present object still parses");
+        assert_eq!(n.seq, 0, "a non-numeric seq clamps to 0");
+        assert_eq!(n.title, None, "an absent title is None");
     }
 
     /// A connected [`HostConn`] whose server RECORDS every request it receives and answers each

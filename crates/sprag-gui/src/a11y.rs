@@ -77,6 +77,7 @@ fn pane_node(terminal: &TerminalView, i: usize, focused: Option<&str>) -> Access
         &terminal.slots.pane_command_label(i),
         text,
         focused == Some(pane_tag(i)),
+        crate::attention::pane_has_unseen_attention(&terminal.slots, i),
     )
 }
 
@@ -101,9 +102,18 @@ fn terminal_a11y_node(
     command_label: &str,
     text: String,
     focused: bool,
+    attention: bool,
 ) -> AccessNode {
+    // Announce an unseen attention notification as SPOKEN words in the name — never the "●"
+    // display glyph, which a screen reader would read as "black circle". The AT thus hears
+    // "Attention — Terminal: bash" for a pane that raised one this client has not viewed.
+    let name = if attention {
+        format!("Attention \u{2014} Terminal: {command_label}")
+    } else {
+        format!("Terminal: {command_label}")
+    };
     AccessNode::new(tag, AriaRole::Group)
-        .with_name(format!("Terminal: {command_label}"))
+        .with_name(name)
         .with_value(AccessValue::Text(text))
         .with_focused(focused)
 }
@@ -115,7 +125,13 @@ mod tests {
 
     #[test]
     fn terminal_a11y_node_exposes_tag_role_name_value_and_focus() {
-        let node = terminal_a11y_node(pane_tag(1), "bash", "line one\nline two".to_owned(), true);
+        let node = terminal_a11y_node(
+            pane_tag(1),
+            "bash",
+            "line one\nline two".to_owned(),
+            true,
+            false,
+        );
         assert_eq!(
             node.tag,
             pane_tag(1),
@@ -130,9 +146,28 @@ mod tests {
         assert!(node.state.focused, "focused state flows through");
         // Unfocused: the AT focus follows the focus manager.
         assert!(
-            !terminal_a11y_node(pane_tag(0), "sh", String::new(), false)
+            !terminal_a11y_node(pane_tag(0), "sh", String::new(), false, false)
                 .state
                 .focused
+        );
+    }
+
+    /// An unseen attention notification is announced as SPOKEN words in the accessible name
+    /// (never the "●" glyph, which a screen reader would read literally). REVERT-PROOF: the
+    /// non-attention node keeps the plain name, so the prefix is not unconditional.
+    #[test]
+    fn an_unseen_attention_pane_announces_it_in_the_accessible_name() {
+        let attention = terminal_a11y_node(pane_tag(1), "bash", String::new(), false, true);
+        assert_eq!(
+            attention.name.as_deref(),
+            Some("Attention \u{2014} Terminal: bash"),
+            "spoken words, not a glyph",
+        );
+        let calm = terminal_a11y_node(pane_tag(1), "bash", String::new(), false, false);
+        assert_eq!(
+            calm.name.as_deref(),
+            Some("Terminal: bash"),
+            "no attention ⇒ the plain name",
         );
     }
 

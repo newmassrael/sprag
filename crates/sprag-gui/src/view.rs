@@ -4,6 +4,7 @@
 //! here. See the crate-root module docs.
 
 use crate::ROOT_TAG;
+use crate::attention;
 use crate::dock::pane_window_index;
 use crate::input::use_preedit;
 use crate::slotview::SlotView;
@@ -44,10 +45,19 @@ const THEME_TAG: &str = "app";
 /// never derives from this: a child sets its title freely and rewrites it on every prompt,
 /// so deriving identity from it would let a pane rename its own address (R70).
 pub(crate) fn pane_display_title(slots: &SlotView, i: usize) -> String {
-    slots
+    let title = slots
         .pane_title(i)
         .filter(|title| !title.trim().is_empty())
-        .unwrap_or_else(|| panel_id(i))
+        .unwrap_or_else(|| panel_id(i));
+    // Prefix the attention marker (R-PR67 follow-on) when the pane's child raised a notification
+    // this client has not yet VIEWED — the tmux bell flag, shown on every title surface (tab,
+    // dock header, floater, taskbar) so an unattended pane is visible without opening it. The
+    // focused pane is acked before this runs, so it never wears its own marker.
+    if attention::pane_has_unseen_attention(slots, i) {
+        format!("{}{title}", attention::ATTENTION_MARKER)
+    } else {
+        title
+    }
 }
 
 /// view-fn (§6.3): per-window paint. The **main** window tiles the DOCKED panes

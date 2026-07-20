@@ -91,6 +91,23 @@ impl PaneScrollFacts {
     }
 }
 
+/// A pane's most recent ATTENTION notification (`OSC 9` / `OSC 777;notify` / `OSC 99`), as a
+/// display client reads it off [`HostClient::pane_notification`] — the payload plus the monotonic
+/// `seq` that lets a client tell a NEW one from a re-read of the same latched notification (the
+/// "unseen attention" badge is this `seq` past the last a viewer acknowledged). A DISPLAY signal,
+/// never identity — the child raises it freely, exactly like the window title.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct PaneNotification {
+    /// The notification's short heading, or `None` when the source carried only a body
+    /// (`OSC 9`).
+    pub title: Option<String>,
+    /// The notification's message text (may be empty for a kitty title-only chunk).
+    pub body: String,
+    /// The monotonic count of notifications this pane's child has raised — always `>= 1` here
+    /// (this type exists only when there IS a notification).
+    pub seq: u64,
+}
+
 /// The typed client protocol a display client reaches the host's panes through —
 /// the topology-B wire contract expressed as a trait, with two impls:
 ///
@@ -306,6 +323,16 @@ pub trait HostClient {
     /// Distinct from `pane_command_label`, which names what was LAUNCHED and never
     /// changes — conflating the two would silently rewrite the a11y node name too.
     fn pane_title(&self, id: PaneId) -> Option<String>;
+
+    /// The pane's most recent attention [`PaneNotification`] (`OSC 9` / `OSC 777;notify` /
+    /// `OSC 99`), or `None` if it raised none. Like [`pane_title`](Self::pane_title) this is
+    /// LIVE, CHILD-CONTROLLED display state — a display client surfaces it as "this pane wants
+    /// attention" and detects a NEW one via the [`seq`](PaneNotification::seq) growing past the
+    /// last it acknowledged. An absent pane and a pane that raised nothing both flatten to
+    /// `None`. Defaulted to `None` so an older [`HostClient`] impl need not implement it.
+    fn pane_notification(&self, _id: PaneId) -> Option<PaneNotification> {
+        None
+    }
 }
 
 /// The owner of the session / window tree (a [`SessionRegistry`]), and the
@@ -694,6 +721,20 @@ impl HostClient for Host {
     /// "no title to display", and a caller that must distinguish them has `pane_ids`.
     fn pane_title(&self, id: PaneId) -> Option<String> {
         self.with_pane_id(id, Pane::title).flatten()
+    }
+
+    /// The pane's live attention notification, read off the emulator under the workspace
+    /// lock (like [`Self::pane_title`]) and shaped into a [`PaneNotification`]. Flattens
+    /// "absent pane" and "raised nothing" to `None`.
+    fn pane_notification(&self, id: PaneId) -> Option<PaneNotification> {
+        self.with_pane_id(id, Pane::notification)
+            .and_then(|(note, seq)| {
+                note.map(|n| PaneNotification {
+                    title: n.title,
+                    body: n.body,
+                    seq,
+                })
+            })
     }
 
     /// The DEFAULT session's window (see [`Host::workspace`]).
