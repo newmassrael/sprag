@@ -107,8 +107,10 @@ const SESSION_ENV: &str = "SPRAG_GUI_SESSION";
 
 /// Env: how this client reacts when its OWN attached session is DESTROYED — the tmux
 /// `detach-on-destroy` session option. `on` (or unset / an unrecognized value) DETACHES this client
-/// (the shipped default, and tmux's own); `next` / `previous` SWITCH it to a neighbouring session
-/// instead (tmux's switch-to-next), detaching only when there is no other session to move to. Read
+/// (the shipped default, and tmux's own); `off` / `next` / `previous` SWITCH it to a neighbouring
+/// session instead (tmux's switch-to-next), detaching only when there is no other session to move
+/// to; `no-detached` switches only to a session NO OTHER client is viewing, detaching rather than
+/// pile a second client onto one another client already holds. Read
 /// ONCE at boot (the codebase's config convention, alongside [`SESSION_ENV`]) into a
 /// [`DetachOnDestroy`] held on the [`WireHost`]; a future runtime `set-option` would write the SAME
 /// enum, so the policy — not this env — is the durable seam.
@@ -334,6 +336,15 @@ enum DetachOnDestroy {
     /// neighbour when no visited session survives, so it still SWITCHES whenever any other session
     /// exists; detaches only when this is the last session.
     Off,
+    /// tmux `no-detached`: switch to the most-recently-used OTHER session that NO OTHER client is
+    /// attached to, so two clients never pile onto one session; DETACH when every other session is
+    /// already being viewed by another client (or this is the last session). The [`Off`](Self::Off)
+    /// cousin that RESPECTS other clients — where `off` switches to any surviving session,
+    /// `no-detached` refuses an occupied one and leaves instead. Needs the per-session viewer count
+    /// ([`SessionInfo::attached`], R-PR67); the switching client is never on the candidate sessions
+    /// (one client attaches one session), so a candidate's non-zero count is always ANOTHER client —
+    /// self-exclusion is automatic, no `client_id` needed at this seam.
+    NoDetached,
     /// tmux `next`: switch to the NEXT session in list order (wrapping), detaching only if this is
     /// the last session.
     Next,
@@ -343,9 +354,13 @@ enum DetachOnDestroy {
 }
 
 impl DetachOnDestroy {
-    /// Whether this policy SWITCHES to another session rather than detaching — every variant EXCEPT
-    /// [`Detach`](Self::Detach). The one predicate both destroy triggers gate on, so a policy added
-    /// later is a switch policy everywhere at once (the poll thread's out-of-band arm and the sidebar
+    /// Whether this policy DEFERS the destroy decision to [`destroy_successor`] rather than detaching
+    /// immediately on the poll thread — every variant EXCEPT [`Detach`](Self::Detach). For the switch
+    /// policies it resolves to a switch; for [`NoDetached`](Self::NoDetached) it resolves to a switch
+    /// OR, when every other session is occupied, a detach — so the poll thread must defer to the UI
+    /// reconcile (which runs [`destroy_successor`] against the freshest mirror) either way, never
+    /// pre-empt it with its own detach. The one predicate both destroy triggers gate on, so a policy
+    /// added later is deferred everywhere at once (the poll thread's out-of-band arm and the sidebar
     /// kill) and cannot be forgotten in one place — the bug a variant list invites.
     fn is_switch(self) -> bool {
         !matches!(self, DetachOnDestroy::Detach)
@@ -363,6 +378,7 @@ fn parse_detach_on_destroy(raw: Option<&str>) -> DetachOnDestroy {
         .as_deref()
     {
         Some("off") => DetachOnDestroy::Off,
+        Some("no-detached") => DetachOnDestroy::NoDetached,
         Some("next") => DetachOnDestroy::Next,
         Some("previous") => DetachOnDestroy::Previous,
         _ => DetachOnDestroy::Detach,
@@ -400,6 +416,38 @@ fn mru_live_other(mru: &[String], list: &[SessionInfo], current: &str) -> Option
         .map(|name| name.to_string())
 }
 
+/// The session tmux `no-detached` switches to when `killed` is destroyed: the most-recent OTHER
+/// session that NO OTHER client is attached to ([`SessionInfo::attached`] `== 0`), or the first such
+/// session in list order when this client's `mru` history offers none, or `None` to DETACH when
+/// every other session is occupied by another client (or `killed` is the last session). The
+/// `attached == 0` filter is the whole difference from [`DetachOnDestroy::Off`]: `off` switches to
+/// any surviving session, `no-detached` refuses one another client is already viewing and leaves
+/// instead — so a destroyed shared workspace never dumps its client onto a colleague's session. The
+/// switching client is attached to `killed`, never to a candidate (one client, one session), so a
+/// candidate's non-zero count is always ANOTHER client — the count needs no self-exclusion here.
+///
+/// The counts are as fresh as this client's last sessions poll (the [`SessionsMirror`] the poll
+/// refreshes on each attach/detach revision bump); a client that joined an otherwise-free candidate
+/// in the beat between that poll and this destroy is not yet reflected, so two clients could
+/// MOMENTARILY share — a bounded staleness the daemon's next poll corrects, not a lasting split.
+fn no_detached_successor(list: &[SessionInfo], killed: &str, mru: &[String]) -> Option<String> {
+    let is_free_other = |name: &str| -> bool {
+        name != killed
+            && list
+                .iter()
+                .any(|session| session.name == name && session.attached == 0)
+    };
+    // MRU-preferred (tmux picks the newest DETACHED session; sprag's client-local analog is visit
+    // recency), skipping any visited session another client has since joined.
+    if let Some(name) = mru.iter().find(|visited| is_free_other(visited.as_str())) {
+        return Some(name.clone());
+    }
+    // No visited session qualifies — the first UNATTACHED other session in list (creation) order.
+    list.iter()
+        .find(|session| session.name != killed && session.attached == 0)
+        .map(|session| session.name.clone())
+}
+
 fn destroy_successor(
     policy: DetachOnDestroy,
     list: &[SessionInfo],
@@ -417,6 +465,9 @@ fn destroy_successor(
             // SWITCHES whenever another session exists (detaching only when `killed` is the last).
             1
         }
+        // `no-detached` never falls through to a blind list neighbour (which could be occupied) — it
+        // picks only an UNATTACHED session or detaches, fully resolved by its own helper.
+        DetachOnDestroy::NoDetached => return no_detached_successor(list, killed, mru),
         DetachOnDestroy::Next => 1,
         DetachOnDestroy::Previous => -1,
     };
@@ -1935,11 +1986,13 @@ mod tests {
     }
 
     /// The policy env parses to the tmux values, DEFAULTING to detach for anything unrecognized —
-    /// so a client only ever switches away on an EXPLICIT `off`/`next`/`previous`, never on a typo or
-    /// an unset env. REVERT-PROOF: drop the trim/lowercase and `"  NEXT "` stops matching; map the
-    /// wildcard to `Next` and the `"on"`/unset/bogus cases start switching.
+    /// so a client only ever switches away on an EXPLICIT `off`/`no-detached`/`next`/`previous`,
+    /// never on a typo or an unset env. REVERT-PROOF: drop the trim/lowercase and `"  NEXT "` stops
+    /// matching; map the wildcard to `Next` and the `"on"`/unset/bogus cases start switching; the
+    /// hyphenless `"nodetached"` proves the match is EXACT (a near-miss detaches, never silently
+    /// picks a switch policy).
     #[test]
-    fn the_detach_policy_env_defaults_to_detach_and_reads_off_next_previous() {
+    fn the_detach_policy_env_defaults_to_detach_and_reads_off_no_detached_next_previous() {
         assert_eq!(parse_detach_on_destroy(None), DetachOnDestroy::Detach);
         assert_eq!(parse_detach_on_destroy(Some("on")), DetachOnDestroy::Detach);
         assert_eq!(parse_detach_on_destroy(Some("")), DetachOnDestroy::Detach);
@@ -1949,6 +2002,19 @@ mod tests {
         );
         assert_eq!(parse_detach_on_destroy(Some("off")), DetachOnDestroy::Off);
         assert_eq!(parse_detach_on_destroy(Some(" OFF ")), DetachOnDestroy::Off);
+        assert_eq!(
+            parse_detach_on_destroy(Some("no-detached")),
+            DetachOnDestroy::NoDetached
+        );
+        assert_eq!(
+            parse_detach_on_destroy(Some(" No-Detached ")),
+            DetachOnDestroy::NoDetached
+        );
+        // A near-miss (hyphen dropped) is NOT no-detached — it falls to the safe detach default.
+        assert_eq!(
+            parse_detach_on_destroy(Some("nodetached")),
+            DetachOnDestroy::Detach
+        );
         assert_eq!(parse_detach_on_destroy(Some("next")), DetachOnDestroy::Next);
         assert_eq!(
             parse_detach_on_destroy(Some("  NEXT ")),
@@ -2044,6 +2110,103 @@ mod tests {
             ),
             None,
             "off detaches only when there is no other session",
+        );
+    }
+
+    /// A session list carrying explicit per-session viewer counts — the extra fact `no-detached`
+    /// reads over the name-only [`session_list`].
+    fn attached_list(entries: &[(&str, usize)]) -> Vec<SessionInfo> {
+        entries
+            .iter()
+            .map(|(name, attached)| SessionInfo {
+                name: (*name).to_owned(),
+                windows: 1,
+                default: false,
+                cwd: None,
+                branch: None,
+                ports: Vec::new(),
+                attached: *attached,
+            })
+            .collect()
+    }
+
+    /// `no-detached` switches ONLY to a session no other client is on (`attached == 0`),
+    /// MRU-preferred, and DETACHES rather than pile onto an occupied one — the whole point that
+    /// distinguishes it from `off`. REVERT-PROOF: drop the `attached == 0` filter and it degrades to
+    /// `off` (the all-watched row switches to "b" instead of detaching, and the occupied "b" is no
+    /// longer skipped); drop the MRU preference and the two-free row takes the list-order "b" not the
+    /// most-recent "c"; drop the list-order fallback and the empty-MRU row wrongly detaches. The
+    /// paired `off` assertions in the SAME worlds pin that only `no-detached` consults the count.
+    #[test]
+    fn destroy_successor_no_detached_switches_only_to_a_free_session_else_detaches() {
+        let mru = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+        // killed "a"; "b" held by another client, "c" free. MRU walks a (killed) → b (occupied,
+        // skipped) → c (free, picked) — the count overrides the more-recent-but-occupied "b".
+        let one_free = attached_list(&[("a", 1), ("b", 1), ("c", 0)]);
+        assert_eq!(
+            destroy_successor(
+                DetachOnDestroy::NoDetached,
+                &one_free,
+                "a",
+                &mru(&["a", "b", "c"])
+            )
+            .as_deref(),
+            Some("c"),
+            "no-detached skips the session another client is on and takes the free one",
+        );
+        // No MRU hint → still finds the free session by scanning list order.
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::NoDetached, &one_free, "a", &[]).as_deref(),
+            Some("c"),
+            "no-detached falls back to the first free session in list order",
+        );
+        // Every OTHER session is watched by another client → DETACH (never share).
+        let all_watched = attached_list(&[("a", 1), ("b", 2), ("c", 1)]);
+        assert_eq!(
+            destroy_successor(
+                DetachOnDestroy::NoDetached,
+                &all_watched,
+                "a",
+                &mru(&["a", "b", "c"])
+            ),
+            None,
+            "no-detached leaves rather than pile onto an occupied session",
+        );
+        // Contrast in the SAME world: `off` ignores the counts and switches onto the occupied "b".
+        assert_eq!(
+            destroy_successor(
+                DetachOnDestroy::Off,
+                &all_watched,
+                "a",
+                &mru(&["a", "b", "c"])
+            )
+            .as_deref(),
+            Some("b"),
+            "off ignores viewer counts; only no-detached respects them",
+        );
+        // Two free sessions → the most-recent (MRU) free one wins over the list-order-earlier free.
+        let two_free = attached_list(&[("a", 1), ("b", 0), ("c", 0)]);
+        assert_eq!(
+            destroy_successor(
+                DetachOnDestroy::NoDetached,
+                &two_free,
+                "a",
+                &mru(&["a", "c", "b"])
+            )
+            .as_deref(),
+            Some("c"),
+            "the most-recent free session wins over the list-order-earlier free one",
+        );
+        // The last session → detach.
+        assert_eq!(
+            destroy_successor(
+                DetachOnDestroy::NoDetached,
+                &attached_list(&[("only", 0)]),
+                "only",
+                &[]
+            ),
+            None,
+            "no-detached detaches when there is no other session",
         );
     }
 
