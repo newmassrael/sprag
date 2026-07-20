@@ -666,6 +666,12 @@ impl WidgetCore for TerminalViewer {
             .as_deref()
             .and_then(pane_index_of);
         dock::sync_main_title(focused_pane);
+        // (5) (R175) Auto-disarm a pending session kill whose captured session has VANISHED from the
+        // live list (killed out of band while the `kill '<name>'?` strip was up), so the confirmation
+        // strip cannot linger on a session that no longer exists. Like (2)/(3) above, this reconciles
+        // an off-thread-producer fact (the session mirror the wire poll updates) into a UI-thread
+        // `Signal` BEFORE the pure view runs.
+        stabs::reconcile_pending_kill(&terminal.slots);
     }
 
     /// Mouse-wheel / touchpad two-finger scroll over a pane scrolls its scrollback

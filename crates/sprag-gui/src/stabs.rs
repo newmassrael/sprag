@@ -8,12 +8,14 @@
 //! The kill is DELIBERATELY TWO-STEP: the "×" only captures the session NAME
 //! ([`use_pending_kill`]) and the confirm acts on that captured name, so a REORDERING of the list
 //! between paint and confirm cannot redirect the kill onto a different row — it kills what the prompt
-//! NAMES, not a re-resolved row index. Two inherent residuals remain, both narrow and pre-existing to
-//! the sidebar's name-addressing (there is no stable session id on the wire): (1) NAME REUSE — if the
-//! captured session is killed and a NEW one takes its name before the confirm, the confirm hits the
-//! new bearer of that name (the prompt cannot tell them apart); (2) a captured session that simply
-//! VANISHES leaves a stale prompt, whose confirm is then a benign host no-op and which any next
-//! action clears.
+//! NAMES, not a re-resolved row index. A captured session that VANISHES from the live list (killed
+//! out of band — another client, the `sprag` CLI, or its own last pane exiting — while the prompt is
+//! up) is AUTO-DISARMED by the pre-view reconcile ([`reconcile_pending_kill`]), so the confirmation
+//! strip cannot linger on a session that no longer exists. One inherent residual remains, narrow and
+//! pre-existing to the sidebar's name-addressing (there is no stable session id on the wire): NAME
+//! REUSE — if the captured session is killed and a NEW one takes its name before the confirm, the
+//! name still reads as live (so the reconcile does NOT disarm it) and the confirm hits the new bearer
+//! of that name (the prompt cannot tell them apart).
 //!
 //! The orthogonal axis to [`wtabs`](crate::wtabs): that draws the current SESSION's windows across
 //! the top; this draws every SESSION down the side. Together they mirror tmux's sessions ⊃ windows
@@ -77,6 +79,36 @@ fn use_pending_kill() -> Signal<Option<String>> {
         .cache(PENDING_KILL_KEY, || Signal::new(None))
         .as_ref()
         .clone()
+}
+
+/// AUTO-DISARM the pending kill when the captured session has VANISHED from the live session list —
+/// killed out of band (another client, the `sprag` CLI, or its own last pane exiting) while the
+/// `kill '<name>'?` strip was up. Without this the strip would linger on a session that no longer
+/// exists (its confirm then a benign host no-op), the stale-strip residual the two-step flow
+/// otherwise leaves open.
+///
+/// Runs from [`reconcile_frame`](crate::TerminalViewer) — pinion R1047's pre-view binding-reconcile
+/// hook, the SANCTIONED non-view-fn place to WRITE a `Signal` from off-thread-producer facts, exactly
+/// like the scrollback-depth reconcile ([`scrollbar::reconcile_scroll`](crate::scrollbar::reconcile_scroll)):
+/// the session list lives in the host mirror with no `Signal` for an `Effect` to subscribe (the wire
+/// poll thread updates it then repaints), so membership is reconciled here every frame, BEFORE the
+/// pure view runs — the view then reads an already-consistent capture and never has to write. The
+/// [`set`](Signal::set) EQUALITY-SKIPS (`None` over `None` is inert), so once disarmed this is a
+/// no-op and there is no repaint loop; the common no-kill-pending case reads the signal and returns
+/// without touching the host.
+///
+/// Membership is BY NAME (the only session identity on the wire). Only a genuine VANISH disarms: a
+/// still-present name is left armed, INCLUDING the inherent name-reuse case (the captured session
+/// killed and a NEW one taking its name before this runs) — that residual is unchanged; this closes
+/// only the stale-strip-on-a-gone-session one.
+pub(crate) fn reconcile_pending_kill(slots: &SlotView) {
+    let pending = use_pending_kill();
+    if let Some(name) = pending.get() {
+        let still_live = slots.sessions().iter().any(|session| session.name == name);
+        if !still_live {
+            pending.set(None);
+        }
+    }
 }
 
 /// The fixed cap on session rows the rail can route. The per-row [`ButtonExternal`]s are registered
@@ -432,9 +464,11 @@ pub(crate) fn handle_session_intent(intent: &Intent, slots: &SlotView) -> bool {
     if who == CONFIRM_KILL_TAG {
         // CONFIRM: kill the CAPTURED name (never a re-resolved index), then disarm. Killing THIS
         // client's own attached session detaches it; killing another drops that row from the rail
-        // ([`SlotView::kill_session`] -> [`WireHost::kill_session`](crate::wire)). If the captured
-        // session was already killed out of band while the prompt was up, `kill_session` of a gone
-        // name is a benign host-side no-op.
+        // ([`SlotView::kill_session`] -> [`WireHost::kill_session`](crate::wire)). A session killed
+        // out of band while the prompt was up is normally AUTO-DISARMED before the next frame
+        // ([`reconcile_pending_kill`]) so the strip is already gone; a confirm click landing in the
+        // SAME frame as the vanish (before the reconcile) still targets the gone name, which
+        // `kill_session` treats as a benign host-side no-op.
         let pending = use_pending_kill();
         if let Some(name) = pending.get() {
             slots.kill_session(&name);
@@ -797,6 +831,45 @@ mod tests {
                 "a new-session superseded the pending kill",
             );
             assert!(killed.borrow().is_empty(), "superseding never kills");
+        });
+    }
+
+    /// AUTO-DISARM: a pending kill whose captured session VANISHES from the live list (killed out of
+    /// band while the `kill '<name>'?` strip was up) is cleared by the pre-view reconcile, so the
+    /// strip cannot linger on a session that no longer exists — while a capture that is STILL LIVE
+    /// stays armed. REVERT-PROOF in BOTH directions: a reconcile that never disarmed would leave the
+    /// vanished capture pending (the second half fails); one that disarmed unconditionally would drop
+    /// the still-live capture (the first half fails).
+    #[test]
+    fn a_vanished_captured_session_auto_disarms_the_pending_kill() {
+        let owner = Owner::new();
+        owner.run(|| {
+            let (slots, _switched, _created, killed, list) =
+                recording_slots(&["0", "work", "work2"]);
+
+            // Arm a kill of "work"; it is captured by NAME.
+            assert!(handle_session_intent(&click(&kill_tag(1)), &slots));
+            assert_eq!(use_pending_kill().get(), Some("work".to_owned()));
+
+            // STILL LIVE: the reconcile leaves an armed-and-present capture untouched.
+            reconcile_pending_kill(&slots);
+            assert_eq!(
+                use_pending_kill().get(),
+                Some("work".to_owned()),
+                "a still-live captured session stays armed",
+            );
+
+            // "work" is killed OUT OF BAND (another client / the CLI): it leaves the live list.
+            *list.borrow_mut() = vec!["0".to_owned(), "work2".to_owned()];
+
+            // VANISHED: the reconcile auto-disarms the now-stale capture, killing nothing.
+            reconcile_pending_kill(&slots);
+            assert_eq!(
+                use_pending_kill().get(),
+                None,
+                "the vanished captured session auto-disarmed",
+            );
+            assert!(killed.borrow().is_empty(), "auto-disarm never kills");
         });
     }
 
