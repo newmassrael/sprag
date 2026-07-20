@@ -48,6 +48,18 @@ pub struct Emulator {
     saved_main: Option<Screen>,
     cols: u16,
     rows: u16,
+    /// The DECSTBM scroll region as an INCLUSIVE, 0-based row range
+    /// `[scroll_top, scroll_bottom]`, defaulting to `[0, rows - 1]` = the whole screen.
+    /// A line feed / IND at `scroll_bottom` scrolls the region up (its top line leaving);
+    /// a reverse index (RI) at `scroll_top` scrolls it down; IL/DL/SU/SD act within it;
+    /// rows outside the region stay put — the `less` / `vim` / tmux-status-bar split-region
+    /// idiom. Reset to the full screen on resize and on every alt-screen transition (the
+    /// region is screen-relative, and a fullscreen app sets its own after entering the alt
+    /// screen). Origin mode (DECOM) is not modeled, so a DECSTBM homes the cursor to the
+    /// SCREEN top-left, not the region's top — a documented bound consistent with the rest
+    /// of the skeleton.
+    scroll_top: u16,
+    scroll_bottom: u16,
     // Cursor + pen state the screen does not itself track.
     col: u16,
     row: u16,
@@ -130,6 +142,8 @@ impl Emulator {
             saved_main: None,
             cols: cols.max(1),
             rows: rows.max(1),
+            scroll_top: 0,
+            scroll_bottom: rows.max(1) - 1,
             col: 0,
             row: 0,
             cursor_visible: true,
@@ -167,17 +181,68 @@ impl Emulator {
         }
     }
 
-    /// The two-byte `ESC <final>` sequences in the subset: DECSC (`ESC 7`) saves the cursor + pen,
-    /// DECRC (`ESC 8`) restores them — the same save/restore the `CSI s` / `CSI u` forms drive
-    /// ([`cursor_op`](Self::cursor_op)). Every other ESC (charset selection, RI/IND, keypad modes)
-    /// is out of the subset and dropped.
+    /// The two-byte `ESC <final>` sequences in the subset:
+    ///
+    /// * DECSC (`ESC 7`) / DECRC (`ESC 8`) save and restore the cursor + pen — the same
+    ///   save/restore the `CSI s` / `CSI u` forms drive ([`cursor_op`](Self::cursor_op)).
+    /// * IND (`ESC D`, index) moves the cursor down one line, scrolling the region up at
+    ///   the bottom margin — identical to a bare line feed ([`line_feed`](Self::line_feed)),
+    ///   minus the carriage return.
+    /// * RI (`ESC M`, reverse index) is the mirror: up one line, scrolling the region DOWN
+    ///   at the top margin ([`reverse_index`](Self::reverse_index)).
+    ///
+    /// Every other ESC (charset selection, NEL, keypad modes) is out of the subset and
+    /// dropped.
     fn esc(&mut self, esc: Esc) {
         if let Esc::Code(code) = esc {
             match code {
                 EscCode::DecSaveCursorPosition => self.save_cursor(),
                 EscCode::DecRestoreCursorPosition => self.restore_cursor(),
+                EscCode::Index => self.line_feed(),
+                EscCode::ReverseIndex => self.reverse_index(),
                 _ => {}
             }
+        }
+    }
+
+    /// RI (reverse index, `ESC M`): move the cursor UP one line. At the top margin this
+    /// scrolls the region DOWN by one (a blank line opens at the top margin, the cursor
+    /// stays put) — the mirror of a line feed at the bottom margin. Above the region (a
+    /// cursor parked over a fixed header) it just steps up, stopping at the screen top.
+    fn reverse_index(&mut self) {
+        if self.row == self.scroll_top {
+            let g = self.next_gen();
+            self.screen
+                .scroll_region_down(self.scroll_top, self.scroll_bottom, 1, g);
+        } else if self.row > 0 {
+            self.row -= 1;
+        }
+    }
+
+    /// Reset the DECSTBM scroll region to the whole screen. The region is screen-relative,
+    /// so a resize or an alt-screen transition (a fresh buffer) starts it at the full
+    /// extent; an app that wants a sub-region sets one with DECSTBM afterwards.
+    fn reset_scroll_region(&mut self) {
+        self.scroll_top = 0;
+        self.scroll_bottom = self.rows.saturating_sub(1);
+    }
+
+    /// DECSTBM (`CSI Pt ; Pb r`): set the scroll region to the inclusive, 0-based rows
+    /// `[top, bottom]`. termwiz supplies defaults for omitted parameters (top 1, bottom the
+    /// last row) as 1-based `OneBased`; the caller passes them already 0-based, `bottom`
+    /// clamped here to the last row (termwiz's "big default" is `u32::MAX - 1`). A region
+    /// needs at least two lines: an invalid one (`top >= bottom`) is IGNORED, leaving the
+    /// margins and cursor unchanged (the VT100 rule). On a valid set the cursor homes to
+    /// the screen top-left (origin mode is not modeled — see the field doc).
+    fn set_scroll_region(&mut self, top: u32, bottom: u32) {
+        let max_row = self.rows.saturating_sub(1);
+        let top = u16::try_from(top).unwrap_or(u16::MAX).min(max_row);
+        let bottom = u16::try_from(bottom).unwrap_or(u16::MAX).min(max_row);
+        if top < bottom {
+            self.scroll_top = top;
+            self.scroll_bottom = bottom;
+            self.row = 0;
+            self.col = 0;
         }
     }
 
@@ -375,6 +440,11 @@ impl Emulator {
             // DECSCUSR — the cursor SHAPE (block / underline / bar); blink is not modeled, so the
             // steady and blinking variants of each shape map to the same shape.
             CsiCursor::CursorStyle(style) => self.cursor_shape = cursor_shape_of(style),
+            // DECSTBM — set the top/bottom scroll margins (`SetLeftAndRightMargins`, DECSLRM,
+            // stays out of the subset).
+            CsiCursor::SetTopAndBottomMargins { top, bottom } => {
+                self.set_scroll_region(top.as_zero_based(), bottom.as_zero_based());
+            }
             _ => {}
         }
     }
@@ -464,9 +534,58 @@ impl Emulator {
                     self.print_str(&repeated);
                 }
             }
-            // InsertLine/DeleteLine/ScrollUp/ScrollDown need the scroll-region model (DECSTBM),
-            // deferred as one coherent slice — see the VT audit. Dropped until then.
-            _ => {}
+            // IL — insert n blank lines at the cursor, within the scroll region: rows from
+            // the cursor down to the bottom margin shift down, the tail falling past the
+            // margin. A no-op when the cursor is outside the region (the VT100 rule). The
+            // active position moves to the line home (column 0) per ECMA-48.
+            Edit::InsertLine(n) => {
+                if self.row >= self.scroll_top && self.row <= self.scroll_bottom {
+                    let g = self.next_gen();
+                    self.screen
+                        .scroll_region_down(self.row, self.scroll_bottom, clamp_count(n), g);
+                    self.col = 0;
+                }
+            }
+            // DL — delete n lines at the cursor, within the scroll region: rows below shift
+            // up to the cursor, blanks opening at the bottom margin. A no-op outside the
+            // region; column homes to 0. DL is an EDIT, so it never feeds the scrollback —
+            // even a DL at row 0 removes the line rather than scrolling it off the top.
+            Edit::DeleteLine(n) => {
+                if self.row >= self.scroll_top && self.row <= self.scroll_bottom {
+                    let g = self.next_gen();
+                    self.screen.scroll_region_up(
+                        self.row,
+                        self.scroll_bottom,
+                        clamp_count(n),
+                        false, // an edit, not an output-flow scroll: no scrollback
+                        g,
+                    );
+                    self.col = 0;
+                }
+            }
+            // SU — scroll the region up n lines (data moves up); the cursor does not move.
+            // An output-flow scroll, so a top-anchored region feeds the scrollback.
+            Edit::ScrollUp(n) => {
+                let g = self.next_gen();
+                self.screen.scroll_region_up(
+                    self.scroll_top,
+                    self.scroll_bottom,
+                    clamp_count(n),
+                    true,
+                    g,
+                );
+            }
+            // SD — scroll the region down n lines (data moves down); the cursor does not
+            // move. A down scroll discards the bottom line, never the top, so no scrollback.
+            Edit::ScrollDown(n) => {
+                let g = self.next_gen();
+                self.screen.scroll_region_down(
+                    self.scroll_top,
+                    self.scroll_bottom,
+                    clamp_count(n),
+                    g,
+                );
+            }
         }
     }
 
@@ -504,6 +623,8 @@ impl Emulator {
             self.saved_main = Some(main);
             self.col = 0;
             self.row = 0;
+            // The alt screen is a fresh buffer; it starts with the full-screen region.
+            self.reset_scroll_region();
         }
     }
 
@@ -513,6 +634,9 @@ impl Emulator {
             let cur = self.screen.cursor();
             self.col = cur.col.min(self.cols.saturating_sub(1));
             self.row = cur.row.min(self.rows.saturating_sub(1));
+            // DECSTBM is not part of the saved cursor state; the restored main screen
+            // resumes with the full-screen region (a well-behaved app reset it on exit).
+            self.reset_scroll_region();
         }
     }
 
@@ -571,11 +695,17 @@ impl Emulator {
         }
     }
 
+    /// Move the cursor down one line (IND / the LF part of a line feed). At the bottom
+    /// margin this scrolls the scroll region up by one — for the default full-screen region
+    /// that is the ordinary "output flows off the top into scrollback" scroll. Below the
+    /// bottom margin (a cursor parked over a fixed footer) it advances until the last row,
+    /// then stops; it never scrolls a region it is not the bottom of.
     fn line_feed(&mut self) {
-        if self.row + 1 >= self.rows {
+        if self.row == self.scroll_bottom {
             let g = self.next_gen();
-            self.screen.scroll_up(g);
-        } else {
+            self.screen
+                .scroll_region_up(self.scroll_top, self.scroll_bottom, 1, true, g);
+        } else if self.row + 1 < self.rows {
             self.row += 1;
         }
     }
@@ -623,6 +753,9 @@ impl VtPort for Emulator {
         }
         self.cols = cols;
         self.rows = rows;
+        // The scroll region was defined against the old geometry; a resize returns it to
+        // the full new screen (apps re-issue DECSTBM if they still want a sub-region).
+        self.reset_scroll_region();
         // The next batch of bytes is the line editor's `SIGWINCH` redraw; apply the
         // soft-wrap / erase reinterpretations to it (see `in_resize_redraw`). Only
         // the MAIN screen runs a line editor; a fullscreen app owns the alt screen.
@@ -1402,5 +1535,273 @@ mod tests {
         // The alt screen is NOT reflowed (verbatim) — a fullscreen app owns its
         // layout. The verbatim copy truncates to the new width, no rejoin.
         assert_eq!(row(&em, 0), "abcd", "alt screen truncated, not rewrapped");
+    }
+
+    // ----- scroll-region slice (DECSTBM + IL/DL/SU/SD + RI/IND) -----
+
+    /// DECSTBM (`CSI Pt;Pb r`) confines a line feed's scroll to the margins: a line feed at
+    /// the bottom margin scrolls only the region, leaving the rows above and below fixed.
+    /// It also homes the cursor when the region is set.
+    #[test]
+    fn scroll_region_confines_the_line_feed_to_the_margins() {
+        let mut em = Emulator::new(4, 6);
+        em.advance(b"0\r\n1\r\n2\r\n3\r\n4\r\n5"); // rows 0..5 labelled
+        em.advance(b"\x1b[2;4r"); // region 1-based [2,4] = 0-based [1,3]
+        assert_eq!(
+            (em.screen().cursor().col, em.screen().cursor().row),
+            (0, 0),
+            "DECSTBM homes the cursor",
+        );
+        em.advance(b"\x1b[4;1H\n"); // to the bottom margin (row 3), then a line feed
+        assert_eq!(
+            em.screen().row_text(0),
+            "0",
+            "the row above the region is fixed"
+        );
+        assert_eq!(em.screen().row_text(1), "2", "the region scrolled up");
+        assert_eq!(em.screen().row_text(2), "3");
+        assert_eq!(
+            em.screen().row_text(3),
+            "",
+            "the bottom margin row is blank"
+        );
+        assert_eq!(
+            em.screen().row_text(4),
+            "4",
+            "the rows below the region are fixed"
+        );
+        assert_eq!(em.screen().row_text(5), "5");
+    }
+
+    /// RI (`ESC M`) at the top margin scrolls the region DOWN (a blank opens at the top);
+    /// IND (`ESC D`) at the bottom margin scrolls it UP. Both keep the cursor at the margin.
+    #[test]
+    fn reverse_index_and_index_scroll_the_region_at_its_margins() {
+        let mut em = Emulator::new(4, 5);
+        em.advance(b"0\r\n1\r\n2\r\n3\r\n4");
+        em.advance(b"\x1b[2;4r"); // region 0-based [1,3]
+        em.advance(b"\x1b[2;1H\x1bM"); // to the top margin (row 1), then RI
+        assert_eq!(
+            em.screen().row_text(1),
+            "",
+            "RI opened a blank at the top margin"
+        );
+        assert_eq!(em.screen().row_text(2), "1");
+        assert_eq!(em.screen().row_text(3), "2");
+        assert_eq!(em.screen().row_text(0), "0", "outside the region is fixed");
+        assert_eq!(em.screen().row_text(4), "4");
+        assert_eq!(em.screen().cursor().row, 1, "RI stays at the top margin");
+        em.advance(b"\x1b[4;1H\x1bD"); // to the bottom margin (row 3), then IND
+        assert_eq!(
+            em.screen().row_text(1),
+            "1",
+            "IND scrolled the region back up"
+        );
+        assert_eq!(em.screen().row_text(2), "2");
+        assert_eq!(em.screen().row_text(3), "");
+        assert_eq!(
+            em.screen().cursor().row,
+            3,
+            "IND stays at the bottom margin"
+        );
+    }
+
+    /// Away from a margin, IND / RI just move the cursor — they do NOT scroll. (Revert
+    /// proof for the margin condition: without it, these would scroll and mangle contents.)
+    #[test]
+    fn index_and_reverse_index_move_without_scrolling_off_the_margins() {
+        let mut em = Emulator::new(4, 5);
+        em.advance(b"0\r\n1\r\n2\r\n3\r\n4");
+        em.advance(b"\x1b[2;4r"); // region [1,3]
+        em.advance(b"\x1b[2;1H\x1bD"); // top margin -> IND -> down one, no scroll
+        assert_eq!(em.screen().cursor().row, 2);
+        assert_eq!(
+            em.screen().row_text(1),
+            "1",
+            "no scroll: the region is unchanged"
+        );
+        assert_eq!(em.screen().row_text(2), "2");
+        em.advance(b"\x1b[4;1H\x1bM"); // bottom margin -> RI -> up one, no scroll
+        assert_eq!(em.screen().cursor().row, 2);
+        assert_eq!(
+            em.screen().row_text(3),
+            "3",
+            "no scroll: the region is unchanged"
+        );
+    }
+
+    /// IL (`CSI L`) opens blank lines and DL (`CSI M`) removes them, both bounded by the
+    /// scroll region and homing the cursor column (ECMA-48). Rows outside the region (a
+    /// fixed footer here) never move.
+    #[test]
+    fn insert_and_delete_line_are_region_bounded_and_home_the_column() {
+        let mut em = Emulator::new(4, 5);
+        em.advance(b"0\r\n1\r\n2\r\n3\r\n4"); // rows 0..4
+        em.advance(b"\x1b[1;4r"); // region 0-based [0,3]; row 4 is the fixed footer
+        em.advance(b"\x1b[2;3H\x1b[L"); // to row 1 col 2, then IL 1
+        assert_eq!(em.screen().cursor().col, 0, "IL homes the column");
+        assert_eq!(em.screen().row_text(0), "0", "above the insert is fixed");
+        assert_eq!(
+            em.screen().row_text(1),
+            "",
+            "a blank line opened at the cursor"
+        );
+        assert_eq!(em.screen().row_text(2), "1");
+        assert_eq!(
+            em.screen().row_text(3),
+            "2",
+            "the line at the bottom margin fell off"
+        );
+        assert_eq!(
+            em.screen().row_text(4),
+            "4",
+            "the footer below the region is fixed"
+        );
+        em.advance(b"\x1b[2;3H\x1b[M"); // to row 1 col 2, then DL 1
+        assert_eq!(em.screen().cursor().col, 0, "DL homes the column");
+        assert_eq!(
+            em.screen().row_text(1),
+            "1",
+            "the blank was removed, rows moved up"
+        );
+        assert_eq!(em.screen().row_text(2), "2");
+        assert_eq!(
+            em.screen().row_text(3),
+            "",
+            "a blank opened at the bottom margin"
+        );
+        assert_eq!(em.screen().row_text(4), "4", "the footer stays fixed");
+    }
+
+    /// SU (`CSI S`) and SD (`CSI T`) scroll the region by n without moving the cursor.
+    #[test]
+    fn scroll_up_and_scroll_down_move_the_region_by_n() {
+        let mut em = Emulator::new(4, 5);
+        em.advance(b"0\r\n1\r\n2\r\n3\r\n4");
+        em.advance(b"\x1b[2;4r"); // region [1,3]
+        em.advance(b"\x1b[2S"); // SU 2
+        assert_eq!(
+            em.screen().row_text(1),
+            "3",
+            "the region scrolled up by two"
+        );
+        assert_eq!(em.screen().row_text(2), "");
+        assert_eq!(em.screen().row_text(3), "");
+        assert_eq!(em.screen().row_text(0), "0", "outside the region is fixed");
+        assert_eq!(em.screen().row_text(4), "4");
+        em.advance(b"\x1b[T"); // SD 1
+        assert_eq!(
+            em.screen().row_text(1),
+            "",
+            "SD opened a blank at the top margin"
+        );
+        assert_eq!(em.screen().row_text(2), "3");
+    }
+
+    /// The scrollback rule: only an output-flow scroll of a TOP-ANCHORED region reaches
+    /// the scrollback. A mid-screen region does not (interior lines), and DL never does
+    /// (an edit, not a scroll) — even at row 0 of a top-anchored region.
+    #[test]
+    fn only_a_top_anchored_output_scroll_feeds_the_scrollback() {
+        let mut mid = Emulator::new(4, 5);
+        mid.advance(b"0\r\n1\r\n2\r\n3\r\n4");
+        mid.advance(b"\x1b[2;4r\x1b[S"); // mid-screen region [1,3], SU 1
+        assert_eq!(
+            mid.screen().scrollback_len(),
+            0,
+            "a mid-screen region scroll is not history",
+        );
+
+        let mut top = Emulator::new(4, 5);
+        top.advance(b"0\r\n1\r\n2\r\n3\r\n4");
+        top.advance(b"\x1b[1;4r\x1b[S"); // top-anchored region [0,3], SU 1
+        assert_eq!(
+            top.screen().scrollback_rows().collect::<Vec<_>>(),
+            ["0"],
+            "a top-anchored output scroll is history",
+        );
+
+        let mut del = Emulator::new(4, 5);
+        del.advance(b"0\r\n1\r\n2\r\n3\r\n4");
+        del.advance(b"\x1b[1;4r\x1b[1;1H\x1b[M"); // top-anchored region, home, DL 1
+        assert_eq!(
+            del.screen().scrollback_len(),
+            0,
+            "DL removes a line; it is not scrolled into history",
+        );
+    }
+
+    /// An invalid DECSTBM (`top >= bottom`) is ignored — the margins and the cursor are
+    /// left untouched (the region stays full-screen).
+    #[test]
+    fn an_invalid_scroll_region_is_ignored() {
+        let mut em = Emulator::new(4, 5);
+        em.advance(b"0\r\n1\r\n2\r\n3\r\n4");
+        em.advance(b"\x1b[3;3H"); // move the cursor off home (row 2 col 2)
+        em.advance(b"\x1b[4;2r"); // top 4 >= bottom 2: invalid
+        assert_eq!(
+            (em.screen().cursor().col, em.screen().cursor().row),
+            (2, 2),
+            "an invalid DECSTBM does not home the cursor",
+        );
+        em.advance(b"\x1b[5;1H\n"); // last row, line feed
+        assert_eq!(
+            em.screen().scrollback_rows().collect::<Vec<_>>(),
+            ["0"],
+            "the region is still full-screen, so the whole screen scrolled",
+        );
+    }
+
+    /// A resize returns the scroll region to the full screen: a line feed at the LAST row
+    /// then scrolls the whole screen (a stale sub-region would not scroll from there).
+    #[test]
+    fn a_resize_resets_the_scroll_region_to_full_screen() {
+        let mut em = Emulator::new(4, 5);
+        em.advance(b"\x1b[2;3r"); // set a sub-region [1,2]
+        em.resize(4, 5); // resets the region
+        em.advance(b"0\r\n1\r\n2\r\n3\r\n4"); // fills rows 0..4
+        em.advance(b"\n"); // LF at the last row -> whole-screen scroll iff region is full
+        assert_eq!(
+            em.screen().row_text(0),
+            "1",
+            "the screen scrolled as a whole"
+        );
+        assert_eq!(em.screen().scrollback_rows().next().as_deref(), Some("0"));
+    }
+
+    /// IL / DL are no-ops when the cursor is outside the scroll region (the VT100 rule).
+    #[test]
+    fn insert_and_delete_line_outside_the_region_do_nothing() {
+        let mut em = Emulator::new(4, 5);
+        em.advance(b"0\r\n1\r\n2\r\n3\r\n4");
+        em.advance(b"\x1b[2;3r"); // region [1,2]; rows 0, 3, 4 are outside
+        em.advance(b"\x1b[5;1H\x1b[L\x1b[M"); // cursor to row 4 (outside), IL then DL
+        for (r, want) in [(0u16, "0"), (1, "1"), (2, "2"), (3, "3"), (4, "4")] {
+            assert_eq!(
+                em.screen().row_text(r),
+                want,
+                "IL/DL outside the region changed nothing",
+            );
+        }
+    }
+
+    /// The real split-region idiom: a scrolling area above a fixed footer. Output flows and
+    /// scrolls within the region; the footer never moves; the line that leaves a
+    /// top-anchored region becomes scrollback.
+    #[test]
+    fn output_flows_within_the_region_leaving_a_footer_fixed() {
+        let mut em = Emulator::new(6, 4);
+        em.advance(b"\x1b[4;1Hstatus"); // paint a footer on the last row (row 3)
+        em.advance(b"\x1b[1;3r"); // rows 0..2 scroll; row 3 is fixed
+        em.advance(b"\x1b[1;1Haaa\r\nbbb\r\nccc\r\nddd"); // 4 lines into a 3-row region
+        assert_eq!(em.screen().row_text(0), "bbb", "the region scrolled");
+        assert_eq!(em.screen().row_text(1), "ccc");
+        assert_eq!(em.screen().row_text(2), "ddd");
+        assert_eq!(em.screen().row_text(3), "status", "the footer never moved");
+        assert_eq!(
+            em.screen().scrollback_rows().next().as_deref(),
+            Some("aaa"),
+            "the line that scrolled off the top-anchored region is history",
+        );
     }
 }

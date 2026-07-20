@@ -324,7 +324,7 @@ impl Screen {
     /// A row's cells (`0..cols`, oldest-left), cloned. The row-to-cells mapping
     /// the scrollback push captures so scrolled-off history keeps its styling.
     /// Internal (`pub(crate)`): the cross-crate grid reads `scrollback_cells`, not
-    /// live rows; only `row_text` + `scroll_up` use this.
+    /// live rows; only `row_text` + the region-scroll scrollback capture use this.
     #[must_use]
     pub(crate) fn row_cells(&self, row: u16) -> Vec<Cell> {
         (0..self.cols)
@@ -694,32 +694,111 @@ impl Screen {
         self.scrollback.clear();
     }
 
-    /// Scroll the whole screen up by one row; the bottom row becomes blank.
-    /// All rows are marked damaged at `generation`.
-    pub(crate) fn scroll_up(&mut self, generation: u64) {
-        if self.rows == 0 {
+    /// Scroll rows `[top, bottom]` (inclusive) UP by `n`: the `n` rows leaving the top of
+    /// the region are discarded (or retained as scrollback, see below) and the `n` rows
+    /// vacated at the bottom become blank. Rows above `top` and below `bottom` are
+    /// untouched. This is the scroll-region primitive behind IND / a line feed at the
+    /// bottom margin, SU (`CSI S`), and DL (`CSI M`) — see [`crate::emulator`]. With the
+    /// default full-screen region (`top == 0`, `bottom == rows - 1`, `n == 1`) it is the
+    /// ordinary "output flows off the top" scroll.
+    ///
+    /// The rows leaving the top are pushed to the bounded scrollback FIFO — as STYLED
+    /// cells, so history paints in its original colors — only when `to_scrollback` is set
+    /// AND the region is anchored at the screen top (`top == 0`) on the MAIN screen. That
+    /// is history genuinely leaving the top of the screen. `to_scrollback` is `true` for
+    /// output-flow scrolls (a line feed at the bottom margin, SU) and `false` for the DL
+    /// edit, which REMOVES lines rather than scrolling output away — so a DL at row 0 does
+    /// not pollute the scrollback. A mid-screen region (`top > 0`) never reaches the
+    /// scrollback regardless (those lines are interior, not off the top). Every row the op
+    /// moves or blanks is damaged at `generation`.
+    ///
+    /// Soft-wrap continuation flags ([`Self::wrapped`]) move in lockstep with the rows;
+    /// blanked rows drop their flag. A logical line soft-wrapped ACROSS a region boundary
+    /// is a documented bound: scroll regions and reflow do not compose cleanly, and
+    /// region-using apps position explicitly rather than relying on autowrap.
+    pub(crate) fn scroll_region_up(
+        &mut self,
+        top: u16,
+        bottom: u16,
+        n: u16,
+        to_scrollback: bool,
+        generation: u64,
+    ) {
+        if self.rows == 0 || self.cols == 0 {
             return;
         }
-        // Retain the evicted top row's text (MAIN screen only — the alternate
-        // screen has no scrollback). Captured before the drain, bounded FIFO.
-        if self.kind == ScreenKind::Main && self.cols > 0 {
-            // Retain the evicted row's STYLED cells (not flattened text) so
-            // scrolled-back history keeps its colors.
-            self.scrollback.push_back(self.row_cells(0));
+        let bottom = bottom.min(self.rows - 1);
+        if top > bottom {
+            return;
+        }
+        let height = bottom - top + 1;
+        let n = n.min(height); // scrolling by >= the region height blanks it whole
+        if n == 0 {
+            return;
+        }
+        // Retain the rows leaving the top (`[top, top+n)`) as history, oldest first, only
+        // for an output-flow scroll of a top-anchored region on the main screen.
+        if to_scrollback && top == 0 && self.kind == ScreenKind::Main {
+            for r in 0..n {
+                self.scrollback.push_back(self.row_cells(r));
+            }
             while self.scrollback.len() > SCROLLBACK_CAP {
                 self.scrollback.pop_front();
             }
         }
         let cols = self.cols as usize;
-        self.cells.drain(0..cols);
-        self.cells
-            .extend(std::iter::repeat_with(Cell::blank).take(cols));
-        // Shift the wrap flags up in lockstep with the rows; the new bottom row
-        // is blank (not a continuation). (`rows > 0` is guaranteed above.)
-        self.wrapped.remove(0);
-        self.wrapped.push(false);
-        for g in &mut self.generations {
-            *g = generation;
+        let shift = height - n; // rows that survive and move up by `n`
+        // Shift up: move each surviving row `n` positions toward the top. Walk top->bottom
+        // so a source row is read before a later iteration overwrites it.
+        for i in 0..shift {
+            let (dst, src) = ((top + i) as usize, (top + i + n) as usize);
+            for c in 0..cols {
+                self.cells[dst * cols + c] = self.cells[src * cols + c].clone();
+            }
+            self.wrapped[dst] = self.wrapped[src];
+            self.generations[dst] = generation;
+        }
+        // Blank the `n` rows vacated at the bottom of the region.
+        for i in 0..n {
+            self.clear_row(top + shift + i, generation);
+        }
+    }
+
+    /// Scroll rows `[top, bottom]` (inclusive) DOWN by `n`: the `n` rows leaving the bottom
+    /// of the region are discarded and the `n` rows vacated at the top become blank. Rows
+    /// above `top` and below `bottom` are untouched. The mirror of [`Self::scroll_region_up`]
+    /// behind RI / a reverse index at the top margin, SD (`CSI T`), and IL (`CSI L`). A
+    /// down scroll never reaches the scrollback — it discards the bottom, not the top.
+    /// Soft-wrap flags move with the rows; blanked top rows drop theirs. Every moved or
+    /// blanked row is damaged at `generation`.
+    pub(crate) fn scroll_region_down(&mut self, top: u16, bottom: u16, n: u16, generation: u64) {
+        if self.rows == 0 || self.cols == 0 {
+            return;
+        }
+        let bottom = bottom.min(self.rows - 1);
+        if top > bottom {
+            return;
+        }
+        let height = bottom - top + 1;
+        let n = n.min(height);
+        if n == 0 {
+            return;
+        }
+        let cols = self.cols as usize;
+        let shift = height - n; // rows that survive and move down by `n`
+        // Shift down: move each surviving row `n` positions toward the bottom. Walk
+        // bottom->top so a source row is read before a later iteration overwrites it.
+        for i in 0..shift {
+            let (dst, src) = ((bottom - i) as usize, (bottom - n - i) as usize);
+            for c in 0..cols {
+                self.cells[dst * cols + c] = self.cells[src * cols + c].clone();
+            }
+            self.wrapped[dst] = self.wrapped[src];
+            self.generations[dst] = generation;
+        }
+        // Blank the `n` rows vacated at the top of the region.
+        for i in 0..n {
+            self.clear_row(top + i, generation);
         }
     }
 }
@@ -770,7 +849,7 @@ mod tests {
     use super::*;
     use crate::emulator::Emulator;
 
-    /// Drive scrollback through the real path (advance -> line_feed -> scroll_up).
+    /// Drive scrollback through the real path (advance -> line_feed -> scroll_region_up).
     fn em(cols: u16, rows: u16, bytes: &str) -> Emulator {
         let mut e = Emulator::new(cols, rows);
         e.advance(bytes.as_bytes());

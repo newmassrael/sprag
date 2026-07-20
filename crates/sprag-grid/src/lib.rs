@@ -233,7 +233,7 @@ fn preedit_cell(ch: char) -> TermCell {
 /// preserving fg/bg/attrs — so scrollback paints in its original colors, not flat
 /// plain text. Wide heads expand into pinion's head + trailer pair (the same shape
 /// [`project_row`] gives the live grid). Both scrollback push paths store a row as
-/// head+trailer pairs (`scroll_up` copies the live grid row; `reflowed` Pass 2
+/// head+trailer pairs (`scroll_region_up` copies the live grid row; `reflowed` Pass 2
 /// regenerates the trailer via `Cell::trailer_for`), so a stored `Width::Trailer`
 /// is REDUNDANT — its head already emitted the pair — and is skipped here. The one
 /// trailerless input is the degenerate `cols == 1` lone wide head (the emulator
