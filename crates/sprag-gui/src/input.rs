@@ -213,8 +213,10 @@ fn session_chord(key: &str, modifiers: Modifiers) -> Option<SessionChord> {
 /// The session to switch to when cycling from `current` by one step over `names` (the sidebar's
 /// session list, in order), wrapping — `forward` to the NEXT, else the PREVIOUS. `None` when
 /// `current` is not in `names` (nothing to anchor on). A single-session list yields `current` itself,
-/// which `switch_session` no-ops. Pure.
-fn session_neighbour(names: &[String], current: &str, forward: bool) -> Option<String> {
+/// which `switch_session` no-ops. Pure. Shared with the sidebar keyboard cursor
+/// ([`crate::stabs::handle_sidebar_key`]) so the `Ctrl+Shift+PageUp/Down` chord and the in-rail
+/// `↑`/`↓` rove over the SAME wrapping list order.
+pub(crate) fn session_neighbour(names: &[String], current: &str, forward: bool) -> Option<String> {
     let here = names.iter().position(|name| name == current)?;
     let len = names.len();
     let step = if forward { 1 } else { len - 1 }; // len - 1 == -1 modulo len
@@ -264,6 +266,13 @@ pub(crate) fn route_key(
     let Some(tag) = focused else {
         return false;
     };
+    // The session rail (R179): with the sidebar focused — its `tablist` (the list's single Tab
+    // stop) or a footer button — route the key to the sidebar keyboard model (rove the cursor /
+    // switch / arm-kill / confirm), NOT the pane PTY. Checked BEFORE the pane focus gate below,
+    // which drops a non-pane focus to `false`. The `sprag` CLI's session control is unaffected.
+    if crate::stabs::is_sidebar_focus(tag) {
+        return crate::stabs::handle_sidebar_key(tag, key, repeat, &use_terminal().slots);
+    }
     let Some(active) = pane_index_of(tag) else {
         return false;
     };

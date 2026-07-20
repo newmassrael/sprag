@@ -33,21 +33,46 @@
 //! documents: a [`ButtonExternal`] fires on EVERY press, so a click always reaches the host, while
 //! a fire-only-on-change selector would silence a re-click on the already-selected row — and the
 //! attached session can move out of band (another client, the `sprag` CLI creating one).
+//!
+//! ## Keyboard + a11y (R179)
+//!
+//! The rail is a WAI-ARIA `tablist` of session `tab`s laid OVER the mouse rows above (no per-row
+//! external rewrite): the session-list sub-container ([`SESSION_TABLIST_TAG`]) is the list's SINGLE
+//! keyboard Tab stop, and a client-local roving CURSOR ([`use_session_cursor`]) — the
+//! `aria-activedescendant` — moves within it. [`handle_sidebar_key`] owns the model: `↑`/`↓` /
+//! `Home` / `End` rove the cursor, `Enter` / `Space` SWITCH to it, `Delete` ARMs a kill, and while a
+//! kill is pending `Enter` CONFIRMs / `Escape` CANCELs. Every activation reuses
+//! [`handle_session_intent`] by synthesising the same `{tag}.click` intent a mouse press produces,
+//! so pointer, keyboard, and AT (a screen-reader Click lowers to `apply_key("Enter")`) share ONE
+//! routing SSOT. The "+" footer is a separate focusable `button` Tab stop.
+//! [`route_key`](crate::input::route_key) dispatches here — before its pane focus gate — for a tag
+//! [`is_sidebar_focus`] recognises; the a11y tree is [`session_sidebar_access_nodes`]. (Pre-R179 the
+//! rail was mouse-first — its keyboard analog was the `sprag` CLI + the `Ctrl+Shift` session chords.)
 
+use pinion_a11y::{AccessNode, AriaRole};
+use pinion_core::external::IntrospectValue;
 use pinion_core::reactive::{Owner, Signal};
 use pinion_core::scene::{ContainerNode, Rect, TextNode};
 use pinion_core::style::{
-    AlignItems, BoxStyle, FlexDirection, JustifyContent, LayoutStyle, Size, SizeValue, TextStyle,
+    AlignItems, Border, BoxStyle, FlexDirection, JustifyContent, LayoutStyle, Size, SizeValue,
+    TextStyle,
 };
 use pinion_core::theme::{ColorRole, Theme};
 use pinion_core::widget_core::ExtraExternal;
 use pinion_core::widgets::button::ButtonExternal;
 use pinion_core::{Color, Intent, Scene};
+use std::borrow::Cow;
 
 use crate::slotview::SlotView;
 
-/// The sidebar container tag (the Column of session rows + the "+" action).
+/// The sidebar container tag (the Column of the session TABLIST + the "+" / confirm footer).
 const SESSION_RAIL_TAG: &str = "sprag_gui.srail";
+/// The session TABLIST tag — the Column holding the session rows, marked `with_focusable(true)` so
+/// the WHOLE list is a SINGLE keyboard Tab stop (the WAI-ARIA `tablist` roving-tabindex model:
+/// `↑`/`↓` move a cursor between sessions, `Enter` switches, `Delete` arms a kill — see
+/// [`handle_sidebar_key`]). Distinct from [`SESSION_RAIL_TAG`] (the whole rail, which also holds the
+/// separately-focusable "+" footer) so Tab lands on the list ONCE, not on every row.
+const SESSION_TABLIST_TAG: &str = "sprag_gui.stablist";
 /// The "+" (new session) button tag.
 const NEW_SESSION_TAG: &str = "sprag_gui.snew";
 /// The per-row SWITCH tag prefix; row `i`'s body (a click switches this client to it) is tagged
@@ -64,6 +89,8 @@ const CONFIRM_KILL_TAG: &str = "sprag_gui.skillok";
 const CANCEL_KILL_TAG: &str = "sprag_gui.skillno";
 /// [`Owner::cache`] key for the [`use_pending_kill`] capture.
 const PENDING_KILL_KEY: &str = "sprag_gui.stab.pending_kill";
+/// [`Owner::cache`] key for the [`use_session_cursor`] keyboard cursor.
+const SESSION_CURSOR_KEY: &str = "sprag_gui.stab.cursor";
 /// The event a [`ButtonExternal`] emits on activation — pinion scopes it as `{tag}.click`.
 const CLICK_EVENT: &str = "click";
 
@@ -109,6 +136,226 @@ pub(crate) fn reconcile_pending_kill(slots: &SlotView) {
             pending.set(None);
         }
     }
+}
+
+/// The session NAME the keyboard cursor rests on within the [`SESSION_TABLIST_TAG`] tablist —
+/// client-local ([`Owner::cache`], the [`use_pending_kill`] pattern), `None` before any keyboard
+/// navigation. `↑`/`↓`/`Home`/`End` write it; the paint reads it (subscribing, so a move repaints
+/// the cursor ring) — but ONLY the resolved index is authoritative ([`resolve_cursor_index`]): a
+/// name that no longer exists falls back to the attached session, so a cursor whose session was
+/// killed out of band needs no reconcile pass. Distinct from [`use_pending_kill`]: the cursor is
+/// where the NEXT action lands; the pending kill is an already-armed one awaiting confirmation.
+fn use_session_cursor() -> Signal<Option<String>> {
+    Owner::current()
+        .expect("use_session_cursor() requires an active Owner scope")
+        .cache(SESSION_CURSOR_KEY, || Signal::new(None))
+        .as_ref()
+        .clone()
+}
+
+/// The row index the keyboard cursor resolves to: the remembered [`use_session_cursor`] name when it
+/// is still a LIVE session, else the ATTACHED session, else the first row. `None` only when there
+/// are no sessions. Falling back to the attached session (rather than reconciling the signal) means
+/// a cursor whose session was killed out of band snaps to a live row on the very next read, with no
+/// separate reconcile hook. Pure / unit-testable.
+fn resolve_cursor_index(names: &[String], cursor: Option<&str>, attached: &str) -> Option<usize> {
+    if names.is_empty() {
+        return None;
+    }
+    if let Some(cursor) = cursor
+        && let Some(idx) = names.iter().position(|name| name == cursor)
+    {
+        return Some(idx);
+    }
+    names.iter().position(|name| name == attached).or(Some(0))
+}
+
+/// Whether `tag` is one of the session rail's KEYBOARD-focusable tags — the session tablist (the
+/// list's single Tab stop) or one of its footer buttons ("+", or the transient kill confirm /
+/// cancel). [`route_key`](crate::input::route_key) consults this BEFORE the pane focus gate so a
+/// key delivered while the rail owns focus routes to [`handle_sidebar_key`] instead of the PTY.
+/// The confirm / cancel tags are included for the AT activation path (a screen-reader Click lowers
+/// to `apply_key(tag, "Enter")` with that tag focused) even though they are not Tab stops — the
+/// keyboard reaches them via the tablist's `Enter` / `Escape` while a kill is pending.
+pub(crate) fn is_sidebar_focus(tag: &str) -> bool {
+    matches!(
+        tag,
+        SESSION_TABLIST_TAG | NEW_SESSION_TAG | CONFIRM_KILL_TAG | CANCEL_KILL_TAG
+    )
+}
+
+/// The scoped `{tag}.click` intent a mouse press on `tag` produces — synthesised so a keyboard /
+/// AT activation runs the SAME [`handle_session_intent`] routing (switch / arm-kill / confirm /
+/// cancel / new) a click does, rather than duplicating that decision. ONE activation SSOT for
+/// pointer, keyboard, and AT.
+fn synth_click(tag: &str) -> Intent {
+    Intent {
+        tag: Cow::Owned(format!("{tag}.{CLICK_EVENT}")),
+        payload: IntrospectValue::Null,
+    }
+}
+
+/// The session rail's KEYBOARD model, dispatched from [`route_key`](crate::input::route_key) when
+/// the rail owns focus (`focused` is one of [`is_sidebar_focus`]'s tags). Returns whether the key
+/// was consumed.
+///
+/// The tablist ([`SESSION_TABLIST_TAG`]) is a SINGLE Tab stop with a roving cursor
+/// ([`use_session_cursor`]) — the WAI-ARIA `tablist` model:
+/// - `↑`/`↓` (and `Home`/`End`) move the cursor between sessions (continuous — a held arrow keeps
+///   roving); the paint repaints the cursor ring.
+/// - `Enter`/`Space` SWITCH this client to the cursor session; `Delete`/`Backspace` ARM a kill of
+///   it (both DISCRETE — one action per press, so a held key does not re-fire). Both reuse
+///   [`handle_session_intent`] via [`synth_click`], so keyboard and mouse share one routing SSOT.
+/// - While a kill is PENDING the tablist is modal-ish: `Enter`/`Space` CONFIRM, `Escape` CANCELs,
+///   and every other key is swallowed so navigation cannot run under the confirmation prompt.
+///
+/// The footer buttons ("+" / kill confirm / cancel) activate on `Enter`/`Space` — the plain-button
+/// path that also serves the AT `Click → apply_key("Enter")` activation for the confirm / cancel
+/// (which are not Tab stops but are AT-reachable).
+pub(crate) fn handle_sidebar_key(focused: &str, key: &str, repeat: bool, slots: &SlotView) -> bool {
+    // The footer buttons ("+", or the transient confirm / cancel): a plain button activates on
+    // Enter / Space. This also serves the AT activation path (Click lowers to apply_key("Enter")
+    // with the button's tag focused), so it must run for a tag that is not a keyboard Tab stop.
+    if matches!(
+        focused,
+        NEW_SESSION_TAG | CONFIRM_KILL_TAG | CANCEL_KILL_TAG
+    ) {
+        if !repeat && matches!(key, "Enter" | "Space") {
+            return handle_session_intent(&synth_click(focused), slots);
+        }
+        return false;
+    }
+    if focused != SESSION_TABLIST_TAG {
+        return false;
+    }
+    // While a kill is PENDING the confirmation prompt owns the tablist: Enter confirms, Escape
+    // cancels, every other key is swallowed so a stray arrow / Delete cannot run under the prompt.
+    if use_pending_kill().get().is_some() {
+        if !repeat {
+            match key {
+                "Enter" | "Space" => {
+                    handle_session_intent(&synth_click(CONFIRM_KILL_TAG), slots);
+                }
+                "Escape" => {
+                    handle_session_intent(&synth_click(CANCEL_KILL_TAG), slots);
+                }
+                _ => {}
+            }
+        }
+        return true;
+    }
+    let names: Vec<String> = slots.sessions().into_iter().map(|info| info.name).collect();
+    let attached = slots.current_session();
+    let Some(idx) = resolve_cursor_index(&names, use_session_cursor().get().as_deref(), &attached)
+    else {
+        // No sessions to navigate — swallow so the key does not leak past the PTY-less rail.
+        return true;
+    };
+    // Navigation is CONTINUOUS (a held arrow keeps roving), so it runs on auto-repeat too.
+    let moved = match key {
+        "ArrowDown" => crate::input::session_neighbour(&names, &names[idx], true),
+        "ArrowUp" => crate::input::session_neighbour(&names, &names[idx], false),
+        "Home" => names.first().cloned(),
+        "End" => names.last().cloned(),
+        _ => None,
+    };
+    if let Some(target) = moved {
+        use_session_cursor().set(Some(target));
+        return true;
+    }
+    // Activation is DISCRETE (one per press): drop the OS auto-repeat re-send so a held Enter does
+    // not re-switch and a held Delete does not re-arm.
+    if repeat {
+        return matches!(key, "Enter" | "Space" | "Delete" | "Backspace");
+    }
+    match key {
+        "Enter" | "Space" => {
+            handle_session_intent(&synth_click(&row_tag(idx)), slots);
+            true
+        }
+        "Delete" | "Backspace" => {
+            handle_session_intent(&synth_click(&kill_tag(idx)), slots);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// The rail's accessible tree (main window only): a WAI-ARIA `tablist` of session `tab`s — each
+/// carrying `aria-selected` (the attached session), the `posinset` / `setsize` "tab N of M" axes,
+/// and — while the tablist owns focus — `aria-activedescendant` on the cursor row
+/// ([`AccessNode::with_focused`]) — followed by the footer's `button`s ("+", or the transient kill
+/// confirm / cancel). Mirrors the `radiogroup` builder's `[parent, ...children]` flat-list shape
+/// ([`pinion_a11y::radiogroup_radio_nodes`]); the bounds are left `None` for the shell to resolve
+/// from each tag's painted rect (the [`access_nodes_for_window`](crate::a11y) discipline). Empty
+/// when there are no sessions (no rail is painted then either).
+pub(crate) fn session_sidebar_access_nodes(
+    slots: &SlotView,
+    focused: Option<&str>,
+) -> Vec<AccessNode> {
+    let sessions = slots.sessions();
+    if sessions.is_empty() {
+        return Vec::new();
+    }
+    let attached = slots.current_session();
+    let count = sessions.len().min(MAX_SESSION_TABS);
+    // The cursor's activedescendant only matters while the tablist actually owns focus.
+    let cursor_idx = if focused == Some(SESSION_TABLIST_TAG) {
+        let names: Vec<String> = sessions.iter().map(|info| info.name.clone()).collect();
+        resolve_cursor_index(&names, use_session_cursor().get().as_deref(), &attached)
+    } else {
+        None
+    };
+    let mut nodes: Vec<AccessNode> = Vec::with_capacity(count + 2);
+    let mut tablist = AccessNode::new(SESSION_TABLIST_TAG, AriaRole::TabList).with_name("Sessions");
+    for i in 0..count {
+        tablist = tablist.with_child(row_tag(i));
+    }
+    nodes.push(tablist);
+    for (i, session) in sessions.iter().enumerate().take(MAX_SESSION_TABS) {
+        nodes.push(
+            AccessNode::new(row_tag(i), AriaRole::Tab)
+                .with_name(sidebar_access_name(session))
+                .with_selected(session.name == attached)
+                .with_set_position(i, count)
+                .with_focused(cursor_idx == Some(i)),
+        );
+    }
+    // The footer: the "+" new-session button when idle, else the confirmation strip's actions.
+    match use_pending_kill().get() {
+        None => {
+            nodes.push(AccessNode::new(NEW_SESSION_TAG, AriaRole::Button).with_name("New session"))
+        }
+        Some(name) => {
+            nodes.push(
+                AccessNode::new(CONFIRM_KILL_TAG, AriaRole::Button)
+                    .with_name(format!("Confirm kill session {name}")),
+            );
+            nodes.push(AccessNode::new(CANCEL_KILL_TAG, AriaRole::Button).with_name("Cancel kill"));
+        }
+    }
+    nodes
+}
+
+/// A session tab's spoken accessible name — the same facts the row PAINTS, phrased for a screen
+/// reader: `"work, 2 windows, sprag, main"` (name, window count, cwd basename, git branch). The
+/// listening ports are display-only glanceable state, omitted from the announced name.
+fn sidebar_access_name(session: &sprag_terminal::SessionInfo) -> String {
+    let mut name = format!(
+        "{}, {} window{}",
+        session.name,
+        session.windows,
+        if session.windows == 1 { "" } else { "s" }
+    );
+    if let Some(dir) = session.cwd.as_deref().and_then(basename) {
+        name.push_str(", ");
+        name.push_str(dir);
+    }
+    if let Some(branch) = session.branch.as_deref() {
+        name.push_str(", ");
+        name.push_str(branch);
+    }
+    name
 }
 
 /// The fixed cap on session rows the rail can route. The per-row [`ButtonExternal`]s are registered
@@ -176,28 +423,56 @@ pub(crate) fn create_session_externals() -> Vec<ExtraExternal> {
 pub(crate) fn view_session_sidebar(slots: &SlotView, theme: &Theme) -> Scene {
     let sessions = slots.sessions();
     let current = slots.current_session();
-    let mut children: Vec<Scene> = Vec::with_capacity(sessions.len() + 1);
+    // The keyboard cursor's row — highlighted ONLY while the tablist actually owns focus (so the
+    // ring appears on Tab-in and clears on Tab-out). Reading both signals subscribes the paint, so
+    // a cursor move (`↑`/`↓`) or a focus change repaints; `None` (no ring) when the rail is not
+    // focused. The resolved index self-heals a stale cursor to the attached row
+    // ([`resolve_cursor_index`]).
+    let names: Vec<String> = sessions.iter().map(|info| info.name.clone()).collect();
+    let cursor_name = use_session_cursor().get();
+    let tablist_focused =
+        pinion_core::focus_state::focused().as_deref() == Some(SESSION_TABLIST_TAG);
+    let cursor_idx = if tablist_focused {
+        resolve_cursor_index(&names, cursor_name.as_deref(), &current)
+    } else {
+        None
+    };
+    let mut rows: Vec<Scene> = Vec::with_capacity(sessions.len());
     for (i, session) in sessions.iter().enumerate().take(MAX_SESSION_TABS) {
-        let attached = session.name == current;
-        children.push(row_node(
+        rows.push(row_node(
             i,
             &session.name,
             session.windows,
-            attached,
+            session.name == current,
+            cursor_idx == Some(i),
             session.cwd.as_deref(),
             session.branch.as_deref(),
             &session.ports,
             theme,
         ));
     }
+    // The rows are wrapped in a SINGLE focusable container (the WAI-ARIA `tablist`): Tab lands on
+    // the list ONCE and `↑`/`↓` rove WITHIN it ([`handle_sidebar_key`]), rather than making every
+    // row its own Tab stop. Focusable only when non-empty, so an empty rail is never a focus trap.
+    let tablist = Scene::Container(
+        ContainerNode::new(rows)
+            .with_tag(SESSION_TABLIST_TAG)
+            .with_layout(
+                LayoutStyle::new()
+                    .flex(FlexDirection::Column)
+                    .with_align_items(AlignItems::Stretch)
+                    .with_justify(JustifyContent::Start)
+                    .with_focusable(!sessions.is_empty()),
+            ),
+    );
     // The footer: the "Kill '<name>'?" confirmation while a kill is pending (it displays the
     // CAPTURED name — the confirm acts on it, not a row index), else the "+" new-session button.
-    match use_pending_kill().get() {
-        Some(name) => children.push(confirm_kill_node(&name, theme)),
-        None => children.push(new_session_node(theme)),
-    }
+    let footer = match use_pending_kill().get() {
+        Some(name) => confirm_kill_node(&name, theme),
+        None => new_session_node(theme),
+    };
     Scene::Container(
-        ContainerNode::new(children)
+        ContainerNode::new(vec![tablist, footer])
             .with_tag(SESSION_RAIL_TAG)
             .with_style(BoxStyle::filled(theme.resolve(ColorRole::SurfaceContainer)))
             .with_layout(
@@ -212,10 +487,12 @@ pub(crate) fn view_session_sidebar(slots: &SlotView, theme: &Theme) -> Scene {
 
 /// One session row: a SWITCH body (the session's NAME + window count on the first line, a muted
 /// SUBTITLE — cwd basename + git branch + listening ports, [`subtitle`] — on the second) and a "×"
-/// KILL target on the right edge — highlighted when it is the ATTACHED session. Two hit-targets in
-/// one row: the flex-grown body is tagged so a click SWITCHES this client to row `i`'s session; the
-/// fixed-width "×" is tagged so a click ARMS a kill of it — captured by NAME and confirmed via the
-/// footer's `kill '<name>'?` prompt (see [`handle_session_intent`]), never an immediate kill.
+/// KILL target on the right edge — filled when it is the ATTACHED session, and outlined with an
+/// accent border when it is the keyboard CURSOR row (`is_cursor`, set only while the tablist owns
+/// focus — see [`handle_sidebar_key`]). Two hit-targets in one row: the flex-grown body is tagged
+/// so a click SWITCHES this client to row `i`'s session; the fixed-width "×" is tagged so a click
+/// ARMS a kill of it — captured by NAME and confirmed via the footer's `kill '<name>'?` prompt (see
+/// [`handle_session_intent`]), never an immediate kill.
 ///
 /// `cwd` / `branch` (Slice 2) / `ports` (Slice 3) are host-derived facts carried on the
 /// [`SessionInfo`](sprag_terminal::SessionInfo): the client only displays them, never reads a path,
@@ -226,6 +503,7 @@ fn row_node(
     name: &str,
     windows: usize,
     attached: bool,
+    is_cursor: bool,
     cwd: Option<&str>,
     branch: Option<&str>,
     ports: &[u16],
@@ -290,10 +568,16 @@ fn row_node(
         ),
     );
     // The outer row carries the highlight fill + fixed height; the two children stretch to fill it
-    // (Stretch) so the whole band is hit-testable — the body switch left, the "×" kill right.
+    // (Stretch) so the whole band is hit-testable — the body switch left, the "×" kill right. The
+    // keyboard cursor row adds an accent OUTLINE (orthogonal to the attached FILL, so the cursor
+    // can rest on a non-attached row while the attached one stays filled).
+    let mut box_style = BoxStyle::filled(fill);
+    if is_cursor {
+        box_style = box_style.with_border(Border::new(theme.resolve(ColorRole::Accent), 2));
+    }
     Scene::Container(
         ContainerNode::new(vec![body, kill])
-            .with_style(BoxStyle::filled(fill))
+            .with_style(box_style)
             .with_layout(
                 LayoutStyle::new()
                     .flex(FlexDirection::Row)
@@ -419,16 +703,16 @@ fn basename(path: &str) -> Option<&str> {
     path.rsplit('/').find(|component| !component.is_empty())
 }
 
-/// A tagged, clickable cell wrapping `content` over `fill`, hit-tested by `tag` (the pinion input
-/// router drives the [`ButtonExternal`] registered at that tag on a press — mouse hit-testing is by
-/// tag + rect, independent of keyboard focus). Now used only for the "+" new-session action; a row's
-/// two hit-targets (switch body + "×" kill) are built inline by [`row_node`], which needs the
-/// flex-grow split `clickable`'s single container does not express.
+/// A tagged, focusable, clickable cell wrapping `content` over `fill`, hit-tested by `tag` (the
+/// pinion input router drives the [`ButtonExternal`] registered at that tag on a press — mouse
+/// hit-testing is by tag + rect, independent of keyboard focus). Now used only for the "+"
+/// new-session action; a row's two hit-targets (switch body + "×" kill) are built inline by
+/// [`row_node`], which needs the flex-grow split `clickable`'s single container does not express.
 ///
-/// NOT `with_focusable`: the rail is mouse-first for v1 (like the window tab strip and the context
-/// menu, which also defer keyboard nav), so a click still routes but the cell does not enter the pane
-/// Tab-order. Keyboard / a11y for the rail is a tracked follow-up; the `sprag` CLI covers keyboard
-/// session switching in the meantime.
+/// `with_focusable(true)` (R179): the "+" is a keyboard Tab stop of its own — a WAI-ARIA `button`
+/// beside the session `tablist` — so `Tab` reaches it and `Enter` / `Space` creates a session
+/// ([`handle_sidebar_key`]). (Pre-R179 the whole rail was mouse-first; the `sprag` CLI covered
+/// keyboard session control in the meantime.)
 fn clickable(tag: String, content: Scene, fill: Color) -> Scene {
     Scene::Container(
         ContainerNode::new(vec![content])
@@ -440,7 +724,8 @@ fn clickable(tag: String, content: Scene, fill: Color) -> Scene {
                     .with_align_items(AlignItems::Center)
                     .with_justify(JustifyContent::Start)
                     .with_padding(Rect::new(12, 0, 12, 0))
-                    .with_size(Size::auto().with_height(SizeValue::Px(ROW_HEIGHT))),
+                    .with_size(Size::auto().with_height(SizeValue::Px(ROW_HEIGHT)))
+                    .with_focusable(true),
             ),
     )
 }
@@ -964,6 +1249,7 @@ mod tests {
             "work",
             2,
             false,
+            false,
             Some("/home/coin/sprag"),
             Some("main"),
             &[3000],
@@ -1023,5 +1309,339 @@ mod tests {
         assert_eq!(ports_label(&[3000]), ":3000");
         assert_eq!(ports_label(&[3000, 8080]), ":3000 :8080");
         assert_eq!(ports_label(&[]), "");
+    }
+
+    // ── R179 keyboard / a11y ──────────────────────────────────────────────────────────────────
+
+    /// The keyboard cursor resolves to the remembered name when live, else the ATTACHED session,
+    /// else the first row — `None` only when there are no sessions.
+    #[test]
+    fn resolve_cursor_index_prefers_the_cursor_then_the_attached_then_first() {
+        let names: Vec<String> = ["a", "b", "c"].iter().map(|s| (*s).to_owned()).collect();
+        // A live remembered cursor wins.
+        assert_eq!(resolve_cursor_index(&names, Some("b"), "a"), Some(1));
+        // A stale cursor (its session gone) falls back to the attached session.
+        assert_eq!(resolve_cursor_index(&names, Some("gone"), "c"), Some(2));
+        // No cursor yet -> the attached session.
+        assert_eq!(resolve_cursor_index(&names, None, "a"), Some(0));
+        // Neither cursor nor attached present -> the first row (never a dead index).
+        assert_eq!(resolve_cursor_index(&names, None, "gone"), Some(0));
+        // No sessions -> nothing to rest on.
+        assert_eq!(resolve_cursor_index(&[], Some("a"), "a"), None);
+    }
+
+    /// Only the rail's KEYBOARD-focus tags (the tablist + the footer buttons) are sidebar focus —
+    /// NOT a per-row switch/kill tag (the rows are reached by roving the tablist cursor, not Tab)
+    /// nor a pane. REVERT-PROOF: adding a row tag here would make Tab land on every row.
+    #[test]
+    fn is_sidebar_focus_matches_the_rail_tags_only() {
+        assert!(is_sidebar_focus(SESSION_TABLIST_TAG));
+        assert!(is_sidebar_focus(NEW_SESSION_TAG));
+        assert!(is_sidebar_focus(CONFIRM_KILL_TAG));
+        assert!(is_sidebar_focus(CANCEL_KILL_TAG));
+        assert!(
+            !is_sidebar_focus(&row_tag(0)),
+            "a row body is not its own Tab stop"
+        );
+        assert!(
+            !is_sidebar_focus(&kill_tag(0)),
+            "an × is not its own Tab stop"
+        );
+        assert!(
+            !is_sidebar_focus("sprag_gui.pane.0"),
+            "a pane is not a rail focus"
+        );
+    }
+
+    /// `↑`/`↓`/`Home`/`End` on the focused tablist rove the keyboard cursor over the session list
+    /// (wrapping), and `Enter` switches to the cursor session — reusing [`handle_session_intent`]
+    /// (so keyboard and mouse share the one routing SSOT). REVERT-PROOF: a rove that ignored the key
+    /// leaves the cursor put; an Enter that did not switch leaves `switched` empty.
+    #[test]
+    fn sidebar_arrows_rove_the_cursor_and_enter_switches() {
+        Owner::new().run(|| {
+            let (slots, switched, _created, _killed, _list) =
+                recording_slots(&["0", "work", "play"]);
+            // Cursor starts unset -> resolves to the first row ("0"). Down -> "work".
+            assert!(handle_sidebar_key(
+                SESSION_TABLIST_TAG,
+                "ArrowDown",
+                false,
+                &slots
+            ));
+            assert_eq!(use_session_cursor().get().as_deref(), Some("work"));
+            // Down -> "play", then Down WRAPS forward to "0".
+            assert!(handle_sidebar_key(
+                SESSION_TABLIST_TAG,
+                "ArrowDown",
+                false,
+                &slots
+            ));
+            assert_eq!(use_session_cursor().get().as_deref(), Some("play"));
+            assert!(handle_sidebar_key(
+                SESSION_TABLIST_TAG,
+                "ArrowDown",
+                false,
+                &slots
+            ));
+            assert_eq!(
+                use_session_cursor().get().as_deref(),
+                Some("0"),
+                "wraps forward"
+            );
+            // Up WRAPS backward to "play".
+            assert!(handle_sidebar_key(
+                SESSION_TABLIST_TAG,
+                "ArrowUp",
+                false,
+                &slots
+            ));
+            assert_eq!(
+                use_session_cursor().get().as_deref(),
+                Some("play"),
+                "wraps backward"
+            );
+            // Home -> first, End -> last.
+            assert!(handle_sidebar_key(
+                SESSION_TABLIST_TAG,
+                "Home",
+                false,
+                &slots
+            ));
+            assert_eq!(use_session_cursor().get().as_deref(), Some("0"));
+            assert!(handle_sidebar_key(
+                SESSION_TABLIST_TAG,
+                "End",
+                false,
+                &slots
+            ));
+            assert_eq!(use_session_cursor().get().as_deref(), Some("play"));
+            // Enter switches to the cursor session by NAME.
+            assert!(handle_sidebar_key(
+                SESSION_TABLIST_TAG,
+                "Enter",
+                false,
+                &slots
+            ));
+            assert_eq!(*switched.borrow(), vec!["play".to_owned()]);
+        });
+    }
+
+    /// `Delete` on the focused tablist ARMS a kill of the cursor session (nothing killed yet); while
+    /// pending the tablist is modal — `Enter` CONFIRMS, `Escape` CANCELs, navigation is frozen.
+    /// REVERT-PROOF: a Delete that killed immediately makes `killed` non-empty before the confirm;
+    /// an Escape that killed, or an Enter that did not, flips the exact-match assertions.
+    #[test]
+    fn sidebar_delete_arms_and_enter_confirms_escape_cancels() {
+        Owner::new().run(|| {
+            let (slots, _switched, _created, killed, _list) =
+                recording_slots(&["0", "work", "play"]);
+            use_session_cursor().set(Some("work".to_owned()));
+            // Delete ARMS a kill of the cursor session — but kills nothing yet.
+            assert!(handle_sidebar_key(
+                SESSION_TABLIST_TAG,
+                "Delete",
+                false,
+                &slots
+            ));
+            assert_eq!(use_pending_kill().get().as_deref(), Some("work"));
+            assert!(killed.borrow().is_empty(), "arming kills nothing");
+            // Navigation is FROZEN under the prompt (the arrow is swallowed, the cursor stays put).
+            assert!(handle_sidebar_key(
+                SESSION_TABLIST_TAG,
+                "ArrowDown",
+                false,
+                &slots
+            ));
+            assert_eq!(
+                use_session_cursor().get().as_deref(),
+                Some("work"),
+                "nav frozen while pending"
+            );
+            // Enter CONFIRMS -> kills the captured name and disarms.
+            assert!(handle_sidebar_key(
+                SESSION_TABLIST_TAG,
+                "Enter",
+                false,
+                &slots
+            ));
+            assert_eq!(*killed.borrow(), vec!["work".to_owned()]);
+            assert_eq!(use_pending_kill().get(), None, "confirm disarmed");
+            // Arm again, then Escape CANCELs (kills nothing more).
+            use_session_cursor().set(Some("0".to_owned()));
+            assert!(handle_sidebar_key(
+                SESSION_TABLIST_TAG,
+                "Delete",
+                false,
+                &slots
+            ));
+            assert_eq!(use_pending_kill().get().as_deref(), Some("0"));
+            assert!(handle_sidebar_key(
+                SESSION_TABLIST_TAG,
+                "Escape",
+                false,
+                &slots
+            ));
+            assert_eq!(use_pending_kill().get(), None, "escape disarmed");
+            assert_eq!(
+                *killed.borrow(),
+                vec!["work".to_owned()],
+                "cancel killed nothing more"
+            );
+        });
+    }
+
+    /// The footer buttons activate on `Enter` — the "+" creates a session, and (for the AT
+    /// activation path, which lowers a Click to `apply_key("Enter")` with the button's tag focused)
+    /// the confirm / cancel commit / disarm a pending kill.
+    #[test]
+    fn sidebar_footer_buttons_activate_on_enter() {
+        Owner::new().run(|| {
+            let (slots, _switched, created, killed, _list) = recording_slots(&["0", "work"]);
+            // "+" creates.
+            assert!(handle_sidebar_key(NEW_SESSION_TAG, "Enter", false, &slots));
+            assert_eq!(*created.borrow(), 1);
+            // Confirm button kills the pending capture.
+            use_pending_kill().set(Some("work".to_owned()));
+            assert!(handle_sidebar_key(CONFIRM_KILL_TAG, "Enter", false, &slots));
+            assert_eq!(*killed.borrow(), vec!["work".to_owned()]);
+            // Cancel button disarms.
+            use_pending_kill().set(Some("0".to_owned()));
+            assert!(handle_sidebar_key(CANCEL_KILL_TAG, "Enter", false, &slots));
+            assert_eq!(use_pending_kill().get(), None);
+        });
+    }
+
+    /// Activation keys are DISCRETE (a held Enter/Delete does not re-fire) while navigation is
+    /// CONTINUOUS (a held arrow keeps roving) — the discrete-chord contract the window / session
+    /// chords already carry. REVERT-PROOF: dropping the repeat guard makes a held Enter switch.
+    #[test]
+    fn sidebar_activation_drops_auto_repeat_but_arrows_repeat() {
+        Owner::new().run(|| {
+            let (slots, switched, _created, _killed, _list) =
+                recording_slots(&["0", "work", "play"]);
+            use_session_cursor().set(Some("0".to_owned()));
+            // A held (auto-repeat) Enter is consumed but does NOT re-switch.
+            assert!(handle_sidebar_key(
+                SESSION_TABLIST_TAG,
+                "Enter",
+                true,
+                &slots
+            ));
+            assert!(switched.borrow().is_empty(), "a held Enter does not switch");
+            // A held Delete does NOT arm.
+            assert!(handle_sidebar_key(
+                SESSION_TABLIST_TAG,
+                "Delete",
+                true,
+                &slots
+            ));
+            assert!(
+                use_pending_kill().get().is_none(),
+                "a held Delete does not arm"
+            );
+            // A held arrow keeps roving (continuous).
+            assert!(handle_sidebar_key(
+                SESSION_TABLIST_TAG,
+                "ArrowDown",
+                true,
+                &slots
+            ));
+            assert_eq!(
+                use_session_cursor().get().as_deref(),
+                Some("work"),
+                "held arrow roves"
+            );
+            // The leading press (repeat = false) switches.
+            assert!(handle_sidebar_key(
+                SESSION_TABLIST_TAG,
+                "Enter",
+                false,
+                &slots
+            ));
+            assert_eq!(*switched.borrow(), vec!["work".to_owned()]);
+        });
+    }
+
+    /// The rail's a11y tree is a `tablist` of session `tab`s (posinset/setsize, the attached one
+    /// `aria-selected`) followed by the "+" `button`; while the tablist owns focus the cursor tab is
+    /// the `aria-activedescendant` ([`AccessNode::with_focused`]), and NONE is when it does not.
+    /// REVERT-PROOF: a builder that dropped the cursor's focused flag, mis-set the roles, or omitted
+    /// the activedescendant when unfocused flips these assertions.
+    #[test]
+    fn session_sidebar_access_nodes_expose_a_tablist_of_tabs() {
+        Owner::new().run(|| {
+            let (slots, ..) = recording_slots(&["0", "work", "play"]);
+            // Tablist focused: [TabList, Tab, Tab, Tab, Button("+")].
+            let nodes = session_sidebar_access_nodes(&slots, Some(SESSION_TABLIST_TAG));
+            assert_eq!(nodes.len(), 5);
+            assert_eq!(nodes[0].role, AriaRole::TabList);
+            assert_eq!(
+                nodes[0].children.len(),
+                3,
+                "the tablist references every session tab"
+            );
+            assert!(nodes[1..4].iter().all(|n| n.role == AriaRole::Tab));
+            assert_eq!(nodes[1].position_in_set, Some(1), "tab N of M posinset");
+            assert_eq!(nodes[1].size_of_set, Some(3));
+            assert_eq!(
+                nodes[1].selected,
+                Some(false),
+                "no tab is attached in this fixture"
+            );
+            assert_eq!(
+                nodes[4].role,
+                AriaRole::Button,
+                "the footer is the '+' button"
+            );
+            assert_eq!(nodes[4].tag, NEW_SESSION_TAG);
+            // Cursor unset -> resolves to the first tab, which is the activedescendant.
+            assert!(
+                nodes[1].state.focused,
+                "the cursor tab is the activedescendant"
+            );
+            assert!(!nodes[2].state.focused);
+            // Moving the cursor moves the activedescendant.
+            use_session_cursor().set(Some("play".to_owned()));
+            let nodes = session_sidebar_access_nodes(&slots, Some(SESSION_TABLIST_TAG));
+            assert!(
+                nodes[3].state.focused,
+                "the activedescendant follows the cursor"
+            );
+            assert!(!nodes[1].state.focused);
+            // With the tablist UNFOCUSED there is no activedescendant (nor a cursor ring in paint).
+            let unfocused = session_sidebar_access_nodes(&slots, Some("sprag_gui.pane.0"));
+            assert!(
+                unfocused[1..4].iter().all(|n| !n.state.focused),
+                "no activedescendant while unfocused",
+            );
+            // A pending kill swaps the footer "+" for the confirm / cancel buttons.
+            use_pending_kill().set(Some("work".to_owned()));
+            let pending = session_sidebar_access_nodes(&slots, Some(SESSION_TABLIST_TAG));
+            assert!(
+                pending
+                    .iter()
+                    .any(|n| n.tag == CONFIRM_KILL_TAG && n.role == AriaRole::Button)
+            );
+            assert!(pending.iter().any(|n| n.tag == CANCEL_KILL_TAG));
+            assert!(
+                pending.iter().all(|n| n.tag != NEW_SESSION_TAG),
+                "no '+' while pending"
+            );
+        });
+    }
+
+    /// The keyboard-CURSOR row carries an accent OUTLINE; a non-cursor row does not — the paint
+    /// witness the synthetic-key reducer tests cannot see. REVERT-PROOF: drop the `with_border` in
+    /// [`row_node`] and the cursor half fails; add it unconditionally and the plain half fails.
+    #[test]
+    fn a_cursor_row_is_outlined_a_plain_row_is_not() {
+        let theme = Theme::default();
+        let is_outlined =
+            |scene: &Scene| matches!(scene, Scene::Container(c) if c.style.border.is_some());
+        let cursor = row_node(0, "work", 1, false, true, None, None, &[], &theme);
+        let plain = row_node(0, "work", 1, false, false, None, None, &[], &theme);
+        assert!(is_outlined(&cursor), "the cursor row is outlined");
+        assert!(!is_outlined(&plain), "a non-cursor row is not outlined");
     }
 }

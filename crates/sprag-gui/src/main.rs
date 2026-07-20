@@ -1618,11 +1618,13 @@ mod tests {
     /// R1020 §5.39 scene-derived focus: the REAL viewer's paint scene marks every
     /// tiled pane Container `with_focusable(true)`, so the shell's per-frame
     /// [`Scene::collect_focusable_tags`](pinion_core::Scene::collect_focusable_tags)
-    /// walk enumerates both pane tags as Tab stops — and ONLY those (the surface
-    /// root and the splitter handle are not focus stops). This is the contract that
-    /// replaced the removed binding-side `focusable_tags()`; a regression here would
-    /// drop focus to `None` every frame (no focus ring, dead keyboard input), so it
-    /// is pinned end-to-end through the live paint path.
+    /// walk enumerates both pane tags as Tab stops. Since R179 the session sidebar
+    /// adds exactly TWO more: the session `tablist` (one Tab stop for the whole list,
+    /// roving inside) and the "+" new-session button — but NOT the surface root, the
+    /// divider handle, or the individual rows. This is the contract that replaced the
+    /// removed binding-side `focusable_tags()`; a regression here would drop focus to
+    /// `None` every frame (no focus ring, dead keyboard input), so it is pinned
+    /// end-to-end through the live paint path.
     #[test]
     fn panes_are_scene_derived_focus_stops() {
         let mut core = ShellCore::<TerminalViewer>::new();
@@ -1636,12 +1638,24 @@ mod tests {
             focusable.iter().any(|t| t == pane_tag(1)),
             "pane 1 is a scene-derived Tab stop, got {focusable:?}",
         );
-        // Exactly the two panes — the surface root and the divider handle are not
-        // focus stops (no `with_focusable`), so they never enter the Tab order.
+        // The session rail contributes EXACTLY two Tab stops (R179): the session
+        // tablist (the list's single stop — arrows rove within) and the "+" footer.
+        // The individual rows / the "×" kills are NOT stops (arrows reach them, not
+        // Tab), and neither confirm/cancel is painted at boot.
+        let rail_stops = focusable
+            .iter()
+            .filter(|t| crate::stabs::is_sidebar_focus(t))
+            .count();
+        assert_eq!(
+            rail_stops, 2,
+            "the session tablist + the '+' are the rail's two Tab stops, got {focusable:?}",
+        );
+        // Exactly the two panes plus those two rail stops — the surface root and the
+        // divider handle are not focus stops (no `with_focusable`).
         assert_eq!(
             focusable.len(),
-            2,
-            "only the two panes are focusable, got {focusable:?}",
+            4,
+            "two panes + the tablist + the '+', got {focusable:?}",
         );
         assert!(
             !focusable.iter().any(|t| t == ROOT_TAG),

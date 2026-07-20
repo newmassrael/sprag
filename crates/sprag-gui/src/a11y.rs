@@ -27,27 +27,39 @@ impl WidgetA11y for TerminalViewer {
     }
 }
 
-/// Per-window accessible nodes: the **main** window advertises the DOCKED panes (a
-/// floated pane is announced by its own undock window, not here); an **undock**
-/// window (`pane-{i}`) advertises only pane i. So a sibling window's AT tree never
-/// carries ghost pane nodes (the per-window-host discipline). Runs in the root
-/// Owner scope (the shell calls it there). Called from
+/// Per-window accessible nodes: the **main** window advertises the session SIDEBAR (the WAI-ARIA
+/// `tablist` of sessions, R179 — [`crate::stabs::session_sidebar_access_nodes`]) THEN the DOCKED
+/// panes (a floated pane is announced by its own undock window, not here); an **undock** window
+/// (`pane-{i}`) advertises only pane i (no sidebar — it paints none). So a sibling window's AT tree
+/// never carries ghost pane / sidebar nodes (the per-window-host discipline). Runs in the root Owner
+/// scope (the shell calls it there). Called from
 /// [`WidgetView::access_node_for_window`](crate::TerminalViewer).
 pub(crate) fn access_nodes_for_window(window_id: &str, focused: Option<&str>) -> Vec<AccessNode> {
     let terminal = use_terminal();
-    match crate::dock::pane_window_index(window_id) {
-        // An undock window: just its one pane (if still present).
-        Some(i) if terminal.slots.is_pane_occupied(i) => vec![pane_node(&terminal, i, focused)],
-        // The main window (or any non-pane id): the docked panes only. Read the
-        // docked set from the dock split-tree ([`crate::split::docked_pane_indices`])
-        // — the SAME authority `view_main` paints from — so a11y and the paint can
-        // never announce/show a different set (pre-R61 this read the windows signal's
-        // float state, a second source for the same fact).
-        _ => crate::split::docked_pane_indices()
+    // The DOCKED pane nodes — the set the main window tiles, and the defensive fallback for a stale
+    // undock id. Read the docked set from the dock split-tree ([`crate::split::docked_pane_indices`])
+    // — the SAME authority `view_main` paints from — so a11y and the paint can never announce/show a
+    // different set (pre-R61 this read the windows signal's float state, a second source).
+    let docked_panes = || {
+        crate::split::docked_pane_indices()
             .into_iter()
             .filter(|&i| terminal.slots.is_pane_occupied(i))
             .map(|i| pane_node(&terminal, i, focused))
-            .collect(),
+            .collect::<Vec<AccessNode>>()
+    };
+    match crate::dock::pane_window_index(window_id) {
+        // An undock window: just its one pane (if still present).
+        Some(i) if terminal.slots.is_pane_occupied(i) => vec![pane_node(&terminal, i, focused)],
+        // A stale undock id (its pane is gone): the docked set defensively — but NO sidebar, this is
+        // not the main window.
+        Some(_) => docked_panes(),
+        // The MAIN window: the session sidebar (main-window-only, since the rail paints only there)
+        // FIRST, then the docked panes.
+        None => {
+            let mut nodes = crate::stabs::session_sidebar_access_nodes(&terminal.slots, focused);
+            nodes.extend(docked_panes());
+            nodes
+        }
     }
 }
 
@@ -153,9 +165,9 @@ mod tests {
         );
     }
 
-    /// `access_nodes_for_window` partitions by window: the main window advertises
-    /// only the docked panes (a floated pane drops out); an undock window
-    /// advertises exactly its one pane — no cross-window ghost nodes.
+    /// `access_nodes_for_window` partitions by window: the main window advertises the session
+    /// SIDEBAR (the R179 `tablist`) alongside the docked PANES (a floated pane drops out); an undock
+    /// window advertises exactly its one pane, with NO sidebar — no cross-window ghost nodes.
     #[test]
     fn access_nodes_partition_by_window() {
         let owner = Owner::new();
@@ -164,23 +176,46 @@ mod tests {
             // "docked" IS that projection, so a test that skips it advertises nothing.
             crate::split::sync_layout(&use_terminal().slots);
             let n = use_terminal().slots.occupied_slots().len();
+            // Count only the PANE nodes — the sidebar's tablist / tab / button nodes ride alongside
+            // on the main window (R179), asserted separately.
+            let main_pane_nodes = || {
+                access_nodes_for_window(crate::dock::MAIN_WINDOW_ID, None)
+                    .into_iter()
+                    .filter(|node| crate::terminal::pane_index_of(&node.tag).is_some())
+                    .collect::<Vec<_>>()
+            };
             // Boot: all docked -> main advertises every pane.
-            assert_eq!(
-                access_nodes_for_window(crate::dock::MAIN_WINDOW_ID, None).len(),
-                n
+            assert_eq!(main_pane_nodes().len(), n);
+            // ...and the session sidebar rides alongside — a `tablist` — on the MAIN window only.
+            assert!(
+                access_nodes_for_window(crate::dock::MAIN_WINDOW_ID, None)
+                    .iter()
+                    .any(|node| node.role == AriaRole::TabList),
+                "the main window advertises the session tablist",
             );
 
-            // Undock pane 1: main drops it; the undock window advertises only it.
+            // Undock pane 1: main drops it; the undock window advertises only it (no sidebar).
             crate::dock::toggle_pane_floating(1);
-            let main = access_nodes_for_window(crate::dock::MAIN_WINDOW_ID, None);
-            assert_eq!(main.len(), n - 1, "main drops the floated pane");
+            assert_eq!(
+                main_pane_nodes().len(),
+                n - 1,
+                "main drops the floated pane"
+            );
             assert!(
-                main.iter().all(|node| node.tag != pane_tag(1)),
+                main_pane_nodes().iter().all(|node| node.tag != pane_tag(1)),
                 "no floated-pane node in main"
             );
             let undock = access_nodes_for_window(&crate::dock::pane_window_id(1), None);
-            assert_eq!(undock.len(), 1, "the undock window advertises one pane");
+            assert_eq!(
+                undock.len(),
+                1,
+                "the undock window advertises one pane, no rail"
+            );
             assert_eq!(undock[0].tag, pane_tag(1), "exactly pane 1");
+            assert!(
+                undock.iter().all(|node| node.role != AriaRole::TabList),
+                "an undock window carries no session tablist",
+            );
         });
     }
 }
