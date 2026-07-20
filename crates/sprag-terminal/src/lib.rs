@@ -18,6 +18,9 @@ pub mod command;
 mod git;
 pub mod layout;
 pub mod pane_pty;
+/// Discovering the TCP ports a session's process subtree is listening on — a session-sidebar
+/// display fact (crate-internal).
+mod ports;
 pub mod registry;
 pub mod snapshot;
 pub mod workspace;

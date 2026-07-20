@@ -323,8 +323,15 @@ impl PanePty {
         self.with_screen(Screen::clone)
     }
 
-    /// The OS process id of the child on this pty's slave, or `None` once it has been
-    /// reaped (the id is unavailable after the child is gone).
+    /// The OS process id of the child on this pty's slave.
+    ///
+    /// The current backend (portable-pty over [`std::process::Child`]) reports the id for the whole
+    /// lifetime of this `PanePty` — it does NOT clear when the child exits — so a `Some` here is NOT
+    /// proof the child is still alive; a caller wanting liveness must consult
+    /// [`is_eof`](Self::is_eof). `None` is only the trait's allowance for a backend that cannot
+    /// report an id. Consumers that read a pid to inspect `/proc` (cwd, listening ports) rely on
+    /// only ever being handed a pid whose child is unreaped — see the note on the registry's
+    /// `window_pids`.
     #[must_use]
     pub fn pid(&self) -> Option<u32> {
         self.child.process_id()

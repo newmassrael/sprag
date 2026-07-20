@@ -113,8 +113,9 @@ fn connect() -> io::Result<HostConn> {
 }
 
 /// `ls`: one line per session — its name, its window count, which one an unscoped request lands
-/// in, and (where known) its current working directory and git branch. The GUI sidebar shows only
-/// the cwd's basename to fit the rail; the FULL path is here, from the same `sessions` slot read.
+/// in, and (where known) its current working directory, git branch, and the TCP ports it is
+/// listening on. The GUI sidebar shows only the cwd's basename to fit the rail; the FULL path is
+/// here, from the same `sessions` slot read.
 fn ls() -> io::Result<()> {
     let mut conn = connect()?;
     let sessions = conn.call(
@@ -138,7 +139,22 @@ fn ls() -> io::Result<()> {
             (cwd, None) => format!("  {cwd}"),
             (cwd, Some(branch)) => format!("  {cwd} [{branch}]"),
         };
-        println!("{name}: {windows} window(s){marker}{suffix}");
+        // ports is Slice 3's live field — a `:3000 :8080` badge; absent (older daemon) or empty
+        // (serving nothing) it falls away, degrading the line to the pre-Slice-3 form.
+        let ports = session["ports"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_u64)
+            .map(|port| format!(":{port}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let ports_suffix = if ports.is_empty() {
+            String::new()
+        } else {
+            format!("  {ports}")
+        };
+        println!("{name}: {windows} window(s){marker}{suffix}{ports_suffix}");
     }
     Ok(())
 }

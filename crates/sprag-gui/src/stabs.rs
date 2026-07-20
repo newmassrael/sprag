@@ -95,6 +95,7 @@ pub(crate) fn view_session_sidebar(slots: &SlotView, theme: &Theme) -> Scene {
             attached,
             session.cwd.as_deref(),
             session.branch.as_deref(),
+            &session.ports,
             theme,
         ));
     }
@@ -114,11 +115,12 @@ pub(crate) fn view_session_sidebar(slots: &SlotView, theme: &Theme) -> Scene {
 }
 
 /// One clickable session row: the session's NAME and window count on the first line, and a muted
-/// SUBTITLE (its cwd basename + git branch, [`subtitle`]) on the second — highlighted when it is
-/// the ATTACHED session. Tagged so a click routes to row `i`'s [`ButtonExternal`].
+/// SUBTITLE (its cwd basename + git branch + listening ports, [`subtitle`]) on the second —
+/// highlighted when it is the ATTACHED session. Tagged so a click routes to row `i`'s [`ButtonExternal`].
 ///
-/// `cwd` / `branch` are host-derived facts carried on the [`SessionInfo`](sprag_terminal::SessionInfo)
-/// (Slice 2): the client only displays them, never reads a path or runs git itself.
+/// `cwd` / `branch` (Slice 2) / `ports` (Slice 3) are host-derived facts carried on the
+/// [`SessionInfo`](sprag_terminal::SessionInfo): the client only displays them, never reads a path,
+/// runs git, or scans `/proc` itself.
 #[allow(clippy::too_many_arguments)]
 fn row_node(
     i: usize,
@@ -127,6 +129,7 @@ fn row_node(
     attached: bool,
     cwd: Option<&str>,
     branch: Option<&str>,
+    ports: &[u16],
     theme: &Theme,
 ) -> Scene {
     let (fill, fg) = if attached {
@@ -139,7 +142,7 @@ fn row_node(
     };
     // "name  ·  Nw" — the session name with its window count, the same facts `sprag ls` prints.
     let mut lines = vec![text_line(&format!("{name}  ·  {windows}w"), 13, fg)];
-    let subtitle = subtitle(cwd, branch);
+    let subtitle = subtitle(cwd, branch, ports);
     if !subtitle.is_empty() {
         lines.push(text_line(
             &subtitle,
@@ -179,17 +182,33 @@ fn text_line(label: &str, px: u32, fg: Color) -> Scene {
     ))
 }
 
-/// The muted second line of a session row: the cwd's BASENAME and the git BRANCH joined with a
-/// middle dot — where the session is working, at a glance. The basename (not the full path) keeps
-/// it inside the narrow rail; the full path is a `sprag ls` away. Empty when neither is known, so
-/// the caller omits the line rather than drawing a blank one.
-fn subtitle(cwd: Option<&str>, branch: Option<&str>) -> String {
-    match (cwd.and_then(basename), branch) {
-        (Some(dir), Some(branch)) => format!("{dir} · {branch}"),
-        (Some(dir), None) => dir.to_owned(),
-        (None, Some(branch)) => branch.to_owned(),
-        (None, None) => String::new(),
+/// The muted second line of a session row: the cwd's BASENAME, the git BRANCH, and the listening
+/// PORTS, joined with a middle dot — where the session is working and what it is serving, at a
+/// glance. The basename (not the full path) keeps it inside the narrow rail; the full path is a
+/// `sprag ls` away. Any segment that is unknown/empty is dropped (no stray separators); empty when
+/// all three are, so the caller omits the line rather than drawing a blank one.
+fn subtitle(cwd: Option<&str>, branch: Option<&str>, ports: &[u16]) -> String {
+    let mut segments: Vec<String> = Vec::new();
+    if let Some(dir) = cwd.and_then(basename) {
+        segments.push(dir.to_owned());
     }
+    if let Some(branch) = branch {
+        segments.push(branch.to_owned());
+    }
+    if !ports.is_empty() {
+        segments.push(ports_label(ports));
+    }
+    segments.join(" · ")
+}
+
+/// The listening ports as a compact `:3000 :8080` badge — space-separated, each colon-prefixed the
+/// way cmux shows a served port. Empty for no ports (the [`subtitle`] then drops the segment).
+fn ports_label(ports: &[u16]) -> String {
+    ports
+        .iter()
+        .map(|port| format!(":{port}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The last non-empty path component of `path`, for display — `/home/coin/sprag` -> `sprag`.
@@ -293,6 +312,7 @@ mod tests {
                     default: false,
                     cwd: None,
                     branch: None,
+                    ports: Vec::new(),
                 })
                 .collect()
         }
@@ -422,19 +442,32 @@ mod tests {
     }
 
     #[test]
-    fn the_subtitle_joins_the_cwd_basename_and_branch() {
-        // Both present: "basename · branch" (the classic prompt shape).
+    fn the_subtitle_joins_the_cwd_basename_branch_and_ports() {
+        // All three present: "basename · branch · :ports" (the classic prompt shape + what it serves).
         assert_eq!(
-            subtitle(Some("/home/coin/sprag"), Some("main")),
+            subtitle(Some("/home/coin/sprag"), Some("main"), &[3000, 8080]),
+            "sprag · main · :3000 :8080"
+        );
+        // cwd + branch, no ports: the pre-Slice-3 shape (no trailing separator).
+        assert_eq!(
+            subtitle(Some("/home/coin/sprag"), Some("main"), &[]),
             "sprag · main"
         );
-        // Only one present: just that one, no stray separator.
-        assert_eq!(subtitle(Some("/home/coin/sprag"), None), "sprag");
-        assert_eq!(subtitle(None, Some("main")), "main");
-        // Neither: empty, so the caller omits the second line entirely.
-        assert_eq!(subtitle(None, None), "");
+        // Only one segment present: just that one, no stray separator.
+        assert_eq!(subtitle(Some("/home/coin/sprag"), None, &[]), "sprag");
+        assert_eq!(subtitle(None, Some("main"), &[]), "main");
+        assert_eq!(subtitle(None, None, &[3000]), ":3000");
+        // None at all: empty, so the caller omits the second line entirely.
+        assert_eq!(subtitle(None, None, &[]), "");
         // basename takes the last NON-EMPTY component (a trailing slash is ignored); `/` has none.
-        assert_eq!(subtitle(Some("/var/log/"), None), "log");
+        assert_eq!(subtitle(Some("/var/log/"), None, &[]), "log");
         assert_eq!(basename("/"), None);
+    }
+
+    #[test]
+    fn ports_label_is_a_compact_colon_prefixed_badge() {
+        assert_eq!(ports_label(&[3000]), ":3000");
+        assert_eq!(ports_label(&[3000, 8080]), ":3000 :8080");
+        assert_eq!(ports_label(&[]), "");
     }
 }

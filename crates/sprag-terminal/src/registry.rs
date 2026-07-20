@@ -427,10 +427,11 @@ pub struct WindowInfo {
 ///
 /// The structural fields ([`name`](Self::name) / [`windows`](Self::windows) /
 /// [`default`](Self::default)) come from [`SessionRegistry::session_infos`], read under the registry
-/// lock alone. The LIVE fields ([`cwd`](Self::cwd) / [`branch`](Self::branch)) are filled ONLY by
-/// [`SessionRegistry::session_infos_live`], which reads a pane's cwd (a workspace lock) and the filesystem (git)
-/// OFF the registry lock — the structural builder leaves them `None`. `#[serde(default)]` on both
-/// keeps an older peer (a `sprag ls` from a build without these fields) able to read a newer daemon.
+/// lock alone. The LIVE fields ([`cwd`](Self::cwd) / [`branch`](Self::branch) / [`ports`](Self::ports))
+/// are filled ONLY by [`SessionRegistry::session_infos_live`], which reads panes' cwd + pids
+/// (workspace locks) and the filesystem (git and `/proc`) OFF the registry lock — the structural
+/// builder leaves them empty. `#[serde(default)]` on each keeps an older peer (a `sprag ls` from a
+/// build without these fields) able to read a newer daemon.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionInfo {
     /// The session's display name — the address a client names to attach / switch.
@@ -455,6 +456,18 @@ pub struct SessionInfo {
     /// from the live cwd, so a display client carries only the resulting string.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+    /// The distinct TCP ports any process in this session is LISTENING on, ascending — the cmux
+    /// "what's this workspace serving" fact (a dev server on `:3000`). Derived HOST-side by
+    /// [`SessionRegistry::session_infos_live`] by walking EVERY pane's process subtree across ALL
+    /// this session's windows (a server usually runs in a different pane than the one whose cwd is
+    /// shown), so a display client carries only the port numbers, never the `/proc` scan.
+    ///
+    /// Empty when the session serves nothing or the platform exposes no `/proc` (non-Linux). Like
+    /// [`cwd`](Self::cwd) / [`branch`](Self::branch) it is TRULY additive:
+    /// `skip_serializing_if = "Vec::is_empty"` keeps a serving-nothing session at the exact
+    /// pre-Slice-3 shape, and `#[serde(default)]` reads a peer that omits it back as empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ports: Vec<u16>,
 }
 
 /// One session: a named attach unit owning an ordered, non-empty set of [`Window`]s
@@ -782,10 +795,11 @@ impl SessionRegistry {
     /// structural fields, so the wire `sessions` slot and the in-process arm cannot drift in what
     /// `name`/`windows`/`default` mean.
     ///
-    /// The LIVE fields ([`cwd`](SessionInfo::cwd) / [`branch`](SessionInfo::branch)) are left
-    /// `None` here: filling them reads a pane's cwd (a workspace lock) and the filesystem, which
-    /// must NOT happen under the registry lock this runs beneath (the module's registry-then-
-    /// workspace, never-nested discipline). [`SessionRegistry::session_infos_live`] adds them off the lock.
+    /// The LIVE fields ([`cwd`](SessionInfo::cwd) / [`branch`](SessionInfo::branch) /
+    /// [`ports`](SessionInfo::ports)) are left empty here: filling them reads panes' cwd + pids (a
+    /// workspace lock) and the filesystem (`/proc`, git), which must NOT happen under the registry
+    /// lock this runs beneath (the module's registry-then-workspace, never-nested discipline).
+    /// [`SessionRegistry::session_infos_live`] adds them off the lock.
     #[must_use]
     pub fn session_infos(&self) -> Vec<SessionInfo> {
         let default = self.default_session().name();
@@ -797,54 +811,114 @@ impl SessionRegistry {
                 default: session.name() == default,
                 cwd: None,
                 branch: None,
+                ports: Vec::new(),
             })
             .collect()
     }
 
     /// The [`session_infos`](Self::session_infos) list ENRICHED with each session's live
-    /// [`cwd`](SessionInfo::cwd) and git [`branch`](SessionInfo::branch) — what the session sidebar
-    /// (and `sprag ls`) shows. The registry-wide read the wire `sessions` slot and the in-process
-    /// arm both call, so the enriched shape cannot drift between them.
+    /// [`cwd`](SessionInfo::cwd), git [`branch`](SessionInfo::branch), and listening
+    /// [`ports`](SessionInfo::ports) — what the session sidebar (and `sprag ls`) shows. The
+    /// registry-wide read the wire `sessions` slot and the in-process arm both call, so the enriched
+    /// shape cannot drift between them.
     ///
     /// TWO-PHASE, exactly like [`snapshot`](crate::snapshot::snapshot), so the registry lock and a
     /// workspace lock are held SEQUENTIALLY, never nested (the module's registry-then-workspace
     /// discipline):
-    ///  1. under the registry lock: the structural infos, plus each session's current-window pool
-    ///     `Arc` cloned out in the SAME pass — so the two Vecs share the session order;
-    ///  2. lock RELEASED — each pool locked on its own to read its FIRST pane's live cwd;
-    ///  3. no lock — the git branch derived from that cwd (filesystem reads).
+    ///  1. under the registry lock: the structural infos, plus (in the SAME pass, so every Vec
+    ///     shares the session order) each session's current-window pool `Arc` (for cwd) AND all its
+    ///     windows' pool `Arc`s (for ports);
+    ///  2. lock RELEASED — the current pool locked on its own for its FIRST pane's live cwd, and
+    ///     every window pool locked on its own (`window_pids`) for its panes' child pids;
+    ///  3. no lock — the git branch derived from the cwd (filesystem), and the listening ports from
+    ///     the pids via ONE shared `/proc` scan (`ProcScan`, built once, so the cost is a single
+    ///     `/proc` pass for the whole list, not one per session).
     ///
-    /// The representative fact per session is the current window's FIRST pane: sprag has no
-    /// active-pane concept yet, so the oldest pane of the window a client would see on attach is the
-    /// honest, stable choice. A session whose current window holds no pane carries `None` for both.
+    /// cwd/branch use the current window's FIRST pane: sprag has no active-pane concept yet, so the
+    /// oldest pane of the window a client would see on attach is the honest, stable representative;
+    /// a session whose current window holds no pane carries neither. Ports span ALL panes of ALL the
+    /// session's windows — a listening server usually runs in a different pane than the one whose cwd
+    /// is shown, so the honest "what is this session serving" answer aggregates the whole session; a
+    /// session serving nothing carries an empty list.
     #[must_use]
     pub fn session_infos_live(registry: &Arc<Mutex<Self>>) -> Vec<SessionInfo> {
-        // Phase 1 — registry lock ONLY: the structural infos and each session's current-window pool
-        // Arc, in ONE pass so `infos[i]` and `pools[i]` name the same session.
-        let (mut infos, pools): (Vec<SessionInfo>, Vec<Arc<Mutex<Workspace>>>) = {
+        // Phase 1 — registry lock ONLY: the structural infos, each session's current-window pool
+        // (for cwd) and ALL its windows' pools (for ports), in ONE pass so entry `i` of every Vec
+        // names the same session.
+        let (mut infos, current_pools, window_pools) = {
             let reg = registry.lock().unwrap_or_else(PoisonError::into_inner);
             let infos = reg.session_infos();
-            let pools = reg
-                .sessions
-                .iter()
-                .map(|session| Arc::clone(session.current_window().workspace()))
-                .collect();
-            (infos, pools)
+            let mut current = Vec::with_capacity(infos.len());
+            let mut windows = Vec::with_capacity(infos.len());
+            for session in &reg.sessions {
+                current.push(Arc::clone(session.current_window().workspace()));
+                windows.push(
+                    session
+                        .windows()
+                        .iter()
+                        .map(|window| Arc::clone(window.workspace()))
+                        .collect::<Vec<_>>(),
+                );
+            }
+            (infos, current, windows)
         };
 
-        // Phase 2 (each pool under its OWN lock, never nested with the registry) + phase 3 (git
-        // derivation off every lock).
-        for (info, pool) in infos.iter_mut().zip(pools) {
-            let cwd = {
+        // Phase 2 (each pool under its OWN lock, never nested with the registry): the current
+        // window's first-pane cwd, and every pane's child pid across all the session's windows.
+        let cwds: Vec<_> = current_pools
+            .iter()
+            .map(|pool| {
                 let pool = pool.lock().unwrap_or_else(PoisonError::into_inner);
                 pool.panes().first().and_then(|pane| pane.pty().cwd())
-            };
+            })
+            .collect();
+        let pids: Vec<Vec<u32>> = window_pools
+            .iter()
+            .map(|pools| Self::window_pids(pools))
+            .collect();
+
+        // Phase 3 (no lock): the git branch from each cwd, and the listening ports from each
+        // session's pids via ONE shared `/proc` scan (one pass for the whole list) — but ONLY when
+        // some session actually holds a live pane. An idle daemon (just the empty anchor) then pays
+        // no `/proc` walk on a `sprag ls` or a GUI poll; an empty scan reports no ports anyway.
+        let scan = if pids.iter().any(|session| !session.is_empty()) {
+            crate::ports::ProcScan::scan()
+        } else {
+            crate::ports::ProcScan::default()
+        };
+        for ((info, cwd), pids) in infos.iter_mut().zip(cwds).zip(pids) {
             if let Some(cwd) = cwd {
                 info.branch = crate::git::branch(&cwd);
                 info.cwd = Some(cwd.to_string_lossy().into_owned());
             }
+            info.ports = scan.listening_ports(&pids);
         }
         infos
+    }
+
+    /// The child pids of every pane across `pools` (a session's windows), each pool locked on its
+    /// OWN — never nested with the registry lock (the module's registry-then-workspace discipline;
+    /// [`session_infos_live`](Self::session_infos_live) runs this only after releasing it). These are
+    /// the roots [`ProcScan::listening_ports`](crate::ports::ProcScan::listening_ports) walks: a
+    /// session's listening servers live in the pane process subtrees, not the pane pids themselves.
+    ///
+    /// Only pids of STILL-POOLED panes are read here, and a pane's child is reaped only in
+    /// [`PanePty`](crate::pane_pty::PanePty)'s `Drop`, which runs AFTER `close` removes the pane from
+    /// its pool — so every pid returned belongs to a child that has not yet been waited. Its pid is
+    /// therefore live or a zombie, never recycled to an unrelated process, and the `/proc` fd walk
+    /// cannot stray into a foreign process's sockets. (A future in-place reap of a still-pooled pane
+    /// would break that and must gate `pid()` on liveness — see [`PanePty::pid`](crate::pane_pty::PanePty::pid).)
+    fn window_pids(pools: &[Arc<Mutex<Workspace>>]) -> Vec<u32> {
+        pools
+            .iter()
+            .flat_map(|pool| {
+                let pool = pool.lock().unwrap_or_else(PoisonError::into_inner);
+                pool.panes()
+                    .iter()
+                    .filter_map(|pane| pane.pty().pid())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
     }
 
     /// Resolve a session by NAME. `None` if no session carries it.
@@ -1269,6 +1343,52 @@ mod tests {
             .expect("the plain session");
         assert_eq!(plain_info.branch, None, "a non-repo pane reports no branch");
         assert!(plain_info.cwd.is_some(), "but its cwd is still reported");
+        // A cat pane serves nothing, so ports comes back empty. This only proves the live builder
+        // runs the real `/proc` path for a real session without panicking (empty in, empty out); the
+        // POSITIVE attribution + descendant-walk proof lives in `ports.rs`
+        // (`a_real_listener_is_attributed_only_to_the_pid_that_holds_it`,
+        // `read_children_map_links_a_real_child_into_our_subtree`).
+        assert!(def_info.ports.is_empty(), "a cat pane listens on no ports");
+    }
+
+    /// [`SessionRegistry::window_pids`] gathers the child pid of every pane across every window pool
+    /// it is GIVEN — the roots the `/proc` scan walks. REVERT-PROOF for the helper: given both
+    /// windows' pools it finds two pids, given only the first window's it finds one. (That
+    /// [`session_infos_live`](SessionRegistry::session_infos_live) feeds it ALL a session's window
+    /// pools — the all-windows port scope — is a separate fact, visible in its phase-1 loop over
+    /// `session.windows()`; this test covers only the helper.)
+    #[test]
+    fn window_pids_gathers_every_pane_across_all_windows() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        reg.new_window(&default, None).unwrap(); // a second window in the default session
+        let pools: Vec<_> = reg
+            .default_session()
+            .windows()
+            .iter()
+            .map(|w| Arc::clone(w.workspace()))
+            .collect();
+        assert_eq!(pools.len(), 2, "the default session now has two windows");
+        for pool in &pools {
+            lock(pool).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
+        }
+
+        let all = SessionRegistry::window_pids(&pools);
+        assert_eq!(
+            all.len(),
+            2,
+            "one live child pid per pane, across BOTH windows"
+        );
+        let first_only = SessionRegistry::window_pids(&pools[..1]);
+        assert_eq!(
+            first_only.len(),
+            1,
+            "the current window alone would find only its own pane's pid",
+        );
+        assert!(
+            all.contains(&first_only[0]),
+            "the wider scope is a superset"
+        );
     }
 
     #[test]
