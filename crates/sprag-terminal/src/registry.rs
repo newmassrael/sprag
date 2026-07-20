@@ -424,6 +424,13 @@ pub struct WindowInfo {
 /// over the registry, not part of it: built on demand, serialised over the wire, and returned by
 /// the session read — one shape the wire slot, a client's mirror, and the in-process arm all
 /// speak, so none can drift.
+///
+/// The structural fields ([`name`](Self::name) / [`windows`](Self::windows) /
+/// [`default`](Self::default)) come from [`SessionRegistry::session_infos`], read under the registry
+/// lock alone. The LIVE fields ([`cwd`](Self::cwd) / [`branch`](Self::branch)) are filled ONLY by
+/// [`SessionRegistry::session_infos_live`], which reads a pane's cwd (a workspace lock) and the filesystem (git)
+/// OFF the registry lock — the structural builder leaves them `None`. `#[serde(default)]` on both
+/// keeps an older peer (a `sprag ls` from a build without these fields) able to read a newer daemon.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionInfo {
     /// The session's display name — the address a client names to attach / switch.
@@ -432,6 +439,22 @@ pub struct SessionInfo {
     pub windows: usize,
     /// Whether this is the registry default (where an unscoped request lands).
     pub default: bool,
+    /// The session's current window's FIRST pane's live working directory, in display form
+    /// (lossy), or `None` when that pane is gone or the platform exposes no `/proc`. Where the
+    /// session is working, for the switcher to show; the wire carries the string, not the path
+    /// logic. Filled only by [`SessionRegistry::session_infos_live`].
+    ///
+    /// `skip_serializing_if` keeps the addition TRULY additive: an empty session (no pane, no cwd)
+    /// serialises to the exact pre-Slice-2 shape, and `#[serde(default)]` reads a peer that omits
+    /// it back as `None` — so the two enrichment fields never change what a session-less list looks
+    /// like on the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// The git branch checked out at [`cwd`](Self::cwd) (or a short `(sha)` for a detached HEAD),
+    /// `None` outside a work tree. Derived HOST-side by [`SessionRegistry::session_infos_live`]
+    /// from the live cwd, so a display client carries only the resulting string.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
 }
 
 /// One session: a named attach unit owning an ordered, non-empty set of [`Window`]s
@@ -754,9 +777,15 @@ impl SessionRegistry {
         &self.sessions
     }
 
-    /// A [`SessionInfo`] for every session, in creation order — the registry-wide list a switcher
-    /// draws, marking the DEFAULT (where an unscoped request lands). The ONE builder, so the wire
-    /// `sessions` slot and the in-process arm cannot drift in what `windows`/`default` mean.
+    /// A [`SessionInfo`] for every session, in creation order — the STRUCTURAL list a switcher
+    /// draws, marking the DEFAULT (where an unscoped request lands). The ONE builder for the
+    /// structural fields, so the wire `sessions` slot and the in-process arm cannot drift in what
+    /// `name`/`windows`/`default` mean.
+    ///
+    /// The LIVE fields ([`cwd`](SessionInfo::cwd) / [`branch`](SessionInfo::branch)) are left
+    /// `None` here: filling them reads a pane's cwd (a workspace lock) and the filesystem, which
+    /// must NOT happen under the registry lock this runs beneath (the module's registry-then-
+    /// workspace, never-nested discipline). [`SessionRegistry::session_infos_live`] adds them off the lock.
     #[must_use]
     pub fn session_infos(&self) -> Vec<SessionInfo> {
         let default = self.default_session().name();
@@ -766,8 +795,56 @@ impl SessionRegistry {
                 name: session.name().to_owned(),
                 windows: session.windows().len(),
                 default: session.name() == default,
+                cwd: None,
+                branch: None,
             })
             .collect()
+    }
+
+    /// The [`session_infos`](Self::session_infos) list ENRICHED with each session's live
+    /// [`cwd`](SessionInfo::cwd) and git [`branch`](SessionInfo::branch) — what the session sidebar
+    /// (and `sprag ls`) shows. The registry-wide read the wire `sessions` slot and the in-process
+    /// arm both call, so the enriched shape cannot drift between them.
+    ///
+    /// TWO-PHASE, exactly like [`snapshot`](crate::snapshot::snapshot), so the registry lock and a
+    /// workspace lock are held SEQUENTIALLY, never nested (the module's registry-then-workspace
+    /// discipline):
+    ///  1. under the registry lock: the structural infos, plus each session's current-window pool
+    ///     `Arc` cloned out in the SAME pass — so the two Vecs share the session order;
+    ///  2. lock RELEASED — each pool locked on its own to read its FIRST pane's live cwd;
+    ///  3. no lock — the git branch derived from that cwd (filesystem reads).
+    ///
+    /// The representative fact per session is the current window's FIRST pane: sprag has no
+    /// active-pane concept yet, so the oldest pane of the window a client would see on attach is the
+    /// honest, stable choice. A session whose current window holds no pane carries `None` for both.
+    #[must_use]
+    pub fn session_infos_live(registry: &Arc<Mutex<Self>>) -> Vec<SessionInfo> {
+        // Phase 1 — registry lock ONLY: the structural infos and each session's current-window pool
+        // Arc, in ONE pass so `infos[i]` and `pools[i]` name the same session.
+        let (mut infos, pools): (Vec<SessionInfo>, Vec<Arc<Mutex<Workspace>>>) = {
+            let reg = registry.lock().unwrap_or_else(PoisonError::into_inner);
+            let infos = reg.session_infos();
+            let pools = reg
+                .sessions
+                .iter()
+                .map(|session| Arc::clone(session.current_window().workspace()))
+                .collect();
+            (infos, pools)
+        };
+
+        // Phase 2 (each pool under its OWN lock, never nested with the registry) + phase 3 (git
+        // derivation off every lock).
+        for (info, pool) in infos.iter_mut().zip(pools) {
+            let cwd = {
+                let pool = pool.lock().unwrap_or_else(PoisonError::into_inner);
+                pool.panes().first().and_then(|pane| pane.pty().cwd())
+            };
+            if let Some(cwd) = cwd {
+                info.branch = crate::git::branch(&cwd);
+                info.cwd = Some(cwd.to_string_lossy().into_owned());
+            }
+        }
+        infos
     }
 
     /// Resolve a session by NAME. `None` if no session carries it.
@@ -1098,6 +1175,100 @@ mod tests {
         let window = reg.default_session().current_window().name().to_owned();
         reg.window_mut(&name, &window)
             .expect("the default session always resolves")
+    }
+
+    /// A long-lived `cat` child in `dir` — so a spawned pane's PTY (and its `/proc` cwd) stay open
+    /// across the [`SessionRegistry::session_infos_live`] read. Linux-only (cwd via `/proc`).
+    #[cfg(target_os = "linux")]
+    fn cmd_in(dir: &std::path::Path) -> CommandBuilder {
+        let mut c = CommandBuilder::new("/bin/sh");
+        c.arg("-c");
+        c.arg("cat");
+        c.cwd(dir);
+        c.env("TERM", "dumb");
+        c
+    }
+
+    /// A unique temp directory removed on drop — the test leaves nothing behind even if it panics.
+    #[cfg(target_os = "linux")]
+    struct TmpDir(std::path::PathBuf);
+
+    #[cfg(target_os = "linux")]
+    impl TmpDir {
+        fn new(tag: &str) -> Self {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static N: AtomicU32 = AtomicU32::new(0);
+            let n = N.fetch_add(1, Ordering::Relaxed);
+            let d =
+                std::env::temp_dir().join(format!("sprag-sinfo-{tag}-{}-{n}", std::process::id()));
+            std::fs::create_dir_all(&d).expect("create temp dir");
+            Self(d)
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// `session_infos_live` carries EACH session's own live cwd and git branch, derived host-side
+    /// from the current window's first pane. A pane in a (fake) repo reports its branch; a pane in a
+    /// plain dir reports a cwd but no branch — proving the derivation is per-session, not global.
+    /// Linux-only: the cwd comes from `/proc/<pid>/cwd`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn session_infos_live_carries_each_sessions_cwd_and_branch() {
+        // A FAKE repo: `git::branch` reads `.git/HEAD`, so no real `git` is needed.
+        let repo = TmpDir::new("repo");
+        std::fs::create_dir_all(repo.0.join(".git")).unwrap();
+        std::fs::write(repo.0.join(".git/HEAD"), "ref: refs/heads/slice2\n").unwrap();
+        let plain = TmpDir::new("plain");
+
+        let reg = Arc::new(Mutex::new(SessionRegistry::new((80, 24))));
+        let (def_pool, plain_pool) = {
+            let mut r = reg.lock().unwrap_or_else(PoisonError::into_inner);
+            let default = r.default_session().name().to_owned();
+            r.new_session(Some("plain")).unwrap();
+            (
+                r.workspace_of(&default).unwrap(),
+                r.workspace_of("plain").unwrap(),
+            )
+        };
+        lock(&def_pool)
+            .spawn(cmd_in(&repo.0), "sh".to_owned(), 80, 24)
+            .unwrap();
+        lock(&plain_pool)
+            .spawn(cmd_in(&plain.0), "sh".to_owned(), 80, 24)
+            .unwrap();
+
+        let infos = SessionRegistry::session_infos_live(&reg);
+
+        let def_info = infos
+            .iter()
+            .find(|i| i.default)
+            .expect("the default session");
+        assert_eq!(
+            def_info.branch.as_deref(),
+            Some("slice2"),
+            "the default session's branch came from its pane's repo",
+        );
+        assert_eq!(
+            def_info
+                .cwd
+                .as_deref()
+                .map(|c| std::path::Path::new(c).canonicalize().ok()),
+            Some(repo.0.canonicalize().ok()),
+            "and its cwd is the repo it spawned in",
+        );
+
+        let plain_info = infos
+            .iter()
+            .find(|i| i.name == "plain")
+            .expect("the plain session");
+        assert_eq!(plain_info.branch, None, "a non-repo pane reports no branch");
+        assert!(plain_info.cwd.is_some(), "but its cwd is still reported");
     }
 
     #[test]

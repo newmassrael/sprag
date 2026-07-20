@@ -51,8 +51,9 @@ pub(crate) const MAX_SESSION_TABS: usize = 16;
 /// panes reflow to the window width minus this, like the tab strip takes a band off the height).
 pub(crate) const SIDEBAR_WIDTH: u32 = 180;
 
-/// One row's height in logical pixels.
-const ROW_HEIGHT: u32 = 30;
+/// One row's height in logical pixels — tall enough for two lines: the session name and a muted
+/// subtitle (its cwd basename + git branch).
+const ROW_HEIGHT: u32 = 44;
 
 /// The row-button tag for row `i`.
 fn row_tag(i: usize) -> String {
@@ -87,7 +88,15 @@ pub(crate) fn view_session_sidebar(slots: &SlotView, theme: &Theme) -> Scene {
     let mut children: Vec<Scene> = Vec::with_capacity(sessions.len() + 1);
     for (i, session) in sessions.iter().enumerate().take(MAX_SESSION_TABS) {
         let attached = session.name == current;
-        children.push(row_node(i, &session.name, session.windows, attached, theme));
+        children.push(row_node(
+            i,
+            &session.name,
+            session.windows,
+            attached,
+            session.cwd.as_deref(),
+            session.branch.as_deref(),
+            theme,
+        ));
     }
     children.push(new_session_node(theme));
     Scene::Container(
@@ -104,9 +113,22 @@ pub(crate) fn view_session_sidebar(slots: &SlotView, theme: &Theme) -> Scene {
     )
 }
 
-/// One clickable session row: the session's name and window count, highlighted when it is the
-/// ATTACHED session. Tagged so a click routes to row `i`'s [`ButtonExternal`].
-fn row_node(i: usize, name: &str, windows: usize, attached: bool, theme: &Theme) -> Scene {
+/// One clickable session row: the session's NAME and window count on the first line, and a muted
+/// SUBTITLE (its cwd basename + git branch, [`subtitle`]) on the second — highlighted when it is
+/// the ATTACHED session. Tagged so a click routes to row `i`'s [`ButtonExternal`].
+///
+/// `cwd` / `branch` are host-derived facts carried on the [`SessionInfo`](sprag_terminal::SessionInfo)
+/// (Slice 2): the client only displays them, never reads a path or runs git itself.
+#[allow(clippy::too_many_arguments)]
+fn row_node(
+    i: usize,
+    name: &str,
+    windows: usize,
+    attached: bool,
+    cwd: Option<&str>,
+    branch: Option<&str>,
+    theme: &Theme,
+) -> Scene {
     let (fill, fg) = if attached {
         (
             theme.resolve(ColorRole::SurfaceContainerHighest),
@@ -116,37 +138,77 @@ fn row_node(i: usize, name: &str, windows: usize, attached: bool, theme: &Theme)
         (Color::TRANSPARENT, theme.resolve(ColorRole::OnSurface))
     };
     // "name  ·  Nw" — the session name with its window count, the same facts `sprag ls` prints.
-    let label = format!("{name}  ·  {windows}w");
-    clickable(row_tag(i), &label, fill, fg)
+    let mut lines = vec![text_line(&format!("{name}  ·  {windows}w"), 13, fg)];
+    let subtitle = subtitle(cwd, branch);
+    if !subtitle.is_empty() {
+        lines.push(text_line(
+            &subtitle,
+            11,
+            theme.resolve(ColorRole::OnSurfaceMuted),
+        ));
+    }
+    // The two lines stacked vertically; the outer clickable container keeps the tag + row height.
+    let content = Scene::Container(
+        ContainerNode::new(lines).with_layout(
+            LayoutStyle::new()
+                .flex(FlexDirection::Column)
+                .with_align_items(AlignItems::Start)
+                .with_justify(JustifyContent::Center),
+        ),
+    );
+    clickable(row_tag(i), content, fill)
 }
 
 /// The "+" new-session row at the bottom of the rail, tagged so its click routes to its
 /// [`ButtonExternal`].
 fn new_session_node(theme: &Theme) -> Scene {
-    clickable(
-        NEW_SESSION_TAG.to_owned(),
+    let label = text_line(
         "+  new session",
-        Color::TRANSPARENT,
+        13,
         theme.resolve(ColorRole::OnSurfaceMuted),
-    )
+    );
+    clickable(NEW_SESSION_TAG.to_owned(), label, Color::TRANSPARENT)
 }
 
-/// A tagged, clickable row: a left-aligned `label` over `fill`, hit-tested by `tag` (the pinion
-/// input router drives the [`ButtonExternal`] registered at that tag on a press — mouse
-/// hit-testing is by tag + rect, independent of keyboard focus).
+/// A single left-aligned text line at `px` logical size in `fg` — a row's title or subtitle.
+fn text_line(label: &str, px: u32, fg: Color) -> Scene {
+    Scene::Text(TextNode::styled(
+        label.to_owned(),
+        Rect::default(),
+        TextStyle::new().with_size_px(px).with_fg(fg),
+    ))
+}
+
+/// The muted second line of a session row: the cwd's BASENAME and the git BRANCH joined with a
+/// middle dot — where the session is working, at a glance. The basename (not the full path) keeps
+/// it inside the narrow rail; the full path is a `sprag ls` away. Empty when neither is known, so
+/// the caller omits the line rather than drawing a blank one.
+fn subtitle(cwd: Option<&str>, branch: Option<&str>) -> String {
+    match (cwd.and_then(basename), branch) {
+        (Some(dir), Some(branch)) => format!("{dir} · {branch}"),
+        (Some(dir), None) => dir.to_owned(),
+        (None, Some(branch)) => branch.to_owned(),
+        (None, None) => String::new(),
+    }
+}
+
+/// The last non-empty path component of `path`, for display — `/home/coin/sprag` -> `sprag`.
+/// `None` for a path with no named component (e.g. `/`).
+fn basename(path: &str) -> Option<&str> {
+    path.rsplit('/').find(|component| !component.is_empty())
+}
+
+/// A tagged, clickable row wrapping `content` over `fill`, hit-tested by `tag` (the pinion input
+/// router drives the [`ButtonExternal`] registered at that tag on a press — mouse hit-testing is by
+/// tag + rect, independent of keyboard focus).
 ///
 /// NOT `with_focusable`: the rail is mouse-first for v1 (like the window tab strip and the context
 /// menu, which also defer keyboard nav), so a click still routes but the rows do not enter the pane
 /// Tab-order. Keyboard / a11y for the rail is a tracked follow-up; the `sprag` CLI covers keyboard
 /// session switching in the meantime.
-fn clickable(tag: String, label: &str, fill: Color, fg: Color) -> Scene {
-    let text = Scene::Text(TextNode::styled(
-        label.to_owned(),
-        Rect::default(),
-        TextStyle::new().with_size_px(13).with_fg(fg),
-    ));
+fn clickable(tag: String, content: Scene, fill: Color) -> Scene {
     Scene::Container(
-        ContainerNode::new(vec![text])
+        ContainerNode::new(vec![content])
             .with_tag(tag)
             .with_style(BoxStyle::filled(fill))
             .with_layout(
@@ -229,6 +291,8 @@ mod tests {
                     name: name.clone(),
                     windows: 1,
                     default: false,
+                    cwd: None,
+                    branch: None,
                 })
                 .collect()
         }
@@ -355,5 +419,22 @@ mod tests {
     fn one_button_external_is_registered_per_row_plus_the_new_action() {
         // The rail routes at most MAX_SESSION_TABS rows plus "+", each its own external.
         assert_eq!(create_session_externals().len(), MAX_SESSION_TABS + 1);
+    }
+
+    #[test]
+    fn the_subtitle_joins_the_cwd_basename_and_branch() {
+        // Both present: "basename · branch" (the classic prompt shape).
+        assert_eq!(
+            subtitle(Some("/home/coin/sprag"), Some("main")),
+            "sprag · main"
+        );
+        // Only one present: just that one, no stray separator.
+        assert_eq!(subtitle(Some("/home/coin/sprag"), None), "sprag");
+        assert_eq!(subtitle(None, Some("main")), "main");
+        // Neither: empty, so the caller omits the second line entirely.
+        assert_eq!(subtitle(None, None), "");
+        // basename takes the last NON-EMPTY component (a trailing slash is ignored); `/` has none.
+        assert_eq!(subtitle(Some("/var/log/"), None), "log");
+        assert_eq!(basename("/"), None);
     }
 }

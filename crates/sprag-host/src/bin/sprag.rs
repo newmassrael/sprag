@@ -112,8 +112,9 @@ fn connect() -> io::Result<HostConn> {
     })
 }
 
-/// `ls`: one line per session — its name, its window count, and which one an unscoped request
-/// lands in.
+/// `ls`: one line per session — its name, its window count, which one an unscoped request lands
+/// in, and (where known) its current working directory and git branch. The GUI sidebar shows only
+/// the cwd's basename to fit the rail; the FULL path is here, from the same `sessions` slot read.
 fn ls() -> io::Result<()> {
     let mut conn = connect()?;
     let sessions = conn.call(
@@ -128,7 +129,16 @@ fn ls() -> io::Result<()> {
         } else {
             ""
         };
-        println!("{name}: {windows} window(s){marker}");
+        // cwd + branch are Slice 2's live fields — absent (older daemon) or null (no pane / no
+        // repo) just fall away, so the line degrades to the pre-Slice-2 form.
+        let cwd = session["cwd"].as_str().unwrap_or("");
+        let suffix = match (cwd, session["branch"].as_str()) {
+            ("", None) => String::new(),
+            ("", Some(branch)) => format!("  [{branch}]"),
+            (cwd, None) => format!("  {cwd}"),
+            (cwd, Some(branch)) => format!("  {cwd} [{branch}]"),
+        };
+        println!("{name}: {windows} window(s){marker}{suffix}");
     }
     Ok(())
 }

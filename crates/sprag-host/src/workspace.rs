@@ -630,13 +630,14 @@ impl ExternalIntrospect for WorkspaceExternal {
             // one slot whose subject is the set of scopes, so scoping it to the caller's own
             // session would answer a question nobody asked.
             SESSIONS_SLOT => {
-                // One `SessionInfo` builder ([`SessionRegistry::session_infos`]) shared with the
+                // One ENRICHED builder ([`SessionRegistry::session_infos_live`]) shared with the
                 // in-process arm, serialised here the way `windows` serialises its `WindowInfo`s —
-                // so neither the shape NOR what `windows`/`default` mean can drift between the wire
-                // path and the in-process one. (The prior inline `json!` produced the same object;
-                // this names the shape and the builder.) `default` says where an UNSCOPED request
-                // lands — not "is it current", nothing is current here.
-                let infos: Vec<SessionInfo> = lock(&self.registry).session_infos();
+                // so neither the shape NOR what `windows`/`default`/`cwd`/`branch` mean can drift
+                // between the wire path and the in-process one. `_live` is two-phase (registry then
+                // workspace lock, never nested) so reading each session's cwd + git branch stays off
+                // the registry lock. `default` says where an UNSCOPED request lands — not "is it
+                // current", nothing is current here.
+                let infos: Vec<SessionInfo> = SessionRegistry::session_infos_live(&self.registry);
                 match serde_json::to_value(&infos) {
                     Ok(json) => Some(IntrospectValue::Json(json)),
                     Err(error) => {
@@ -1325,13 +1326,30 @@ mod tests {
     /// ASKING rather than by guessing — and learns where an unscoped request lands.
     #[test]
     fn the_sessions_slot_lists_every_session_and_names_the_default() {
+        // Compare only the STRUCTURAL discovery fields — a session's live cwd / git branch (Slice 2)
+        // depend on where the birth pane happens to run and on the host's git state, which is
+        // orthogonal to what this slot promises (which sessions exist, and which is the default).
+        let structural = |value: Option<IntrospectValue>| -> Vec<(String, u64, bool)> {
+            let Some(IntrospectValue::Json(Value::Array(items))) = value else {
+                panic!("the sessions slot answers with a JSON array");
+            };
+            items
+                .iter()
+                .map(|s| {
+                    (
+                        s["name"].as_str().unwrap().to_owned(),
+                        s["windows"].as_u64().unwrap(),
+                        s["default"].as_bool().unwrap(),
+                    )
+                })
+                .collect()
+        };
+
         let reg = registry();
         let (mut ext, _rev) = control(&reg);
         assert_eq!(
-            ext.query(SESSIONS_SLOT),
-            Some(IntrospectValue::Json(
-                json!([{"name": "0", "windows": 1, "default": true}])
-            )),
+            structural(ext.query(SESSIONS_SLOT)),
+            vec![("0".to_owned(), 1, true)],
             "at boot: one session, and it is where an unscoped request goes",
         );
 
@@ -1341,11 +1359,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            ext.query(SESSIONS_SLOT),
-            Some(IntrospectValue::Json(json!([
-                {"name": "0", "windows": 1, "default": true},
-                {"name": "work", "windows": 1, "default": false},
-            ]))),
+            structural(ext.query(SESSIONS_SLOT)),
+            vec![("0".to_owned(), 1, true), ("work".to_owned(), 1, false)],
             "the new session is listed, and creating it moved the default for nobody",
         );
 

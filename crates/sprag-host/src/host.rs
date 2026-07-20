@@ -720,11 +720,12 @@ impl HostClient for Host {
     }
 
     /// Every session in the registry — the SAME registry-wide list the wire `sessions` slot serves
-    /// (both built by [`SessionRegistry::session_infos`], the ONE builder), marking the default.
-    /// Not narrowed to the default even though this arm only renders that one: the list's whole
-    /// purpose is to enumerate the scopes a switcher could name.
+    /// (both built by [`SessionRegistry::session_infos_live`], the ONE enriched builder), marking
+    /// the default and carrying each session's live cwd + git branch. Not narrowed to the default
+    /// even though this arm only renders that one: the list's whole purpose is to enumerate the
+    /// scopes a switcher could name.
     fn sessions(&self) -> Vec<SessionInfo> {
-        lock(&self.registry).session_infos()
+        SessionRegistry::session_infos_live(&self.registry)
     }
 
     /// The in-process arm renders the DEFAULT session (see [`Host::workspace`]), so that is the
