@@ -30,7 +30,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use sprag_vt::Notification;
+use sprag_vt::{Notification, ShellState};
 
 use crate::pane_pty::{CommandBuilder, PanePty, PanePtyError, PanePtyHandle};
 
@@ -130,6 +130,14 @@ impl Pane {
         self.pty.bell_seq()
     }
 
+    /// The pane's shell-integration state (OSC 133) + last command exit status, read LIVE from the
+    /// emulator's screen marks. Surfaced so a monitor / an AI sibling knows whether the shell is
+    /// idle at a prompt or running a command, and how the last one exited.
+    #[must_use]
+    pub fn shell(&self) -> (ShellState, Option<i32>) {
+        self.pty.shell()
+    }
+
     /// A cloneable I/O handle onto this pane's pseudoterminal.
     #[must_use]
     pub fn handle(&self) -> PanePtyHandle {
@@ -161,6 +169,12 @@ pub struct PaneInfo {
     /// desktop toast — it carries no text) so the two attention sources stay individually
     /// addressable; a viewer's "unseen attention" combines both. See [`sprag_vt::VtPort::bell_seq`].
     pub bell_seq: u64,
+    /// The pane's shell-integration state (OSC 133), `Unknown` without integration. Derived from
+    /// the screen's prompt marks — the "idle at a prompt vs running a command" summary.
+    pub shell_state: ShellState,
+    /// The last finished command's exit status (OSC 133 `D`), `None` when none has finished with a
+    /// reported status. Pair with [`Self::shell_state`] to tell "no command ran" from "unreported".
+    pub last_exit_status: Option<i32>,
 }
 
 /// The multiplexer's pane pool: a set of live panes, a monotonic id
@@ -412,6 +426,7 @@ impl Workspace {
             .map(|p| {
                 let (cols, rows) = p.pty.dimensions();
                 let (notification, notification_seq) = p.notification();
+                let (shell_state, last_exit_status) = p.shell();
                 PaneInfo {
                     id: p.id.0,
                     cols,
@@ -421,6 +436,8 @@ impl Workspace {
                     notification,
                     notification_seq,
                     bell_seq: p.bell_seq(),
+                    shell_state,
+                    last_exit_status,
                 }
             })
             .collect()

@@ -644,6 +644,17 @@ impl ExternalIntrospect for WorkspaceExternal {
                         if p.bell_seq > 0 {
                             entry["bell_seq"] = serde_json::json!(p.bell_seq);
                         }
+                        // Shell-integration (OSC 133) summary: the idle/running state and the last
+                        // command's exit status. ADDITIVE — the state key is present only when the
+                        // child emitted a mark (`wire_str` returns `None` for `Unknown`), and the
+                        // exit status only when a command finished with one, so a pane without
+                        // shell integration is byte-identical to the pre-OSC133 wire shape.
+                        if let Some(shell) = p.shell_state.wire_str() {
+                            entry["shell"] = serde_json::json!(shell);
+                        }
+                        if let Some(status) = p.last_exit_status {
+                            entry["exit_status"] = serde_json::json!(status);
+                        }
                         entry
                     })
                     .collect();

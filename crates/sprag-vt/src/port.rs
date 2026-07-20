@@ -213,6 +213,75 @@ pub struct Notification {
     pub body: String,
 }
 
+/// A shell-integration (OSC 133 / FinalTerm) boundary mark attached to a row: the point at
+/// which a shell prompt, a command's output, or a finished command begins. These are the
+/// `A`/`C`/`D` semantic markers a shell with integration configured emits, and they are what
+/// enables jump-to-prompt navigation and command-boundary extraction (the modern-terminal
+/// feature — Ghostty / wezterm / iTerm2; tmux only passes OSC 133 through).
+///
+/// A mark is attached to the ROW its OSC arrived on (row granularity — the useful grain for
+/// jump-to-prompt and for slicing a command's output). It MOVES with that row: through scrolling
+/// (a marked row that scrolls off the top carries its mark into the scrollback as a
+/// `ScrollbackLine`) and through reflow (which re-attaches it to its logical line's first physical
+/// row). At most one mark per row — the marks fall on line boundaries and rarely collide; if two
+/// land on one row the later wins (a documented bound).
+///
+/// `B` (OSC 133 ; B, end-of-prompt / start-of-input) is not its own row mark: at row granularity
+/// the user's input sits on the [`Prompt`](PromptMark::Prompt) row, so the command text is the
+/// rows from the prompt up to the [`Output`](PromptMark::Output) row, and the output is the rows
+/// from there to the [`CommandEnd`](PromptMark::CommandEnd) row.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PromptMark {
+    /// `OSC 133 ; A` — a shell prompt starts on this row (the jump-to-prompt target).
+    Prompt,
+    /// `OSC 133 ; C` — the command was executed; its output starts on this row.
+    Output,
+    /// `OSC 133 ; D [; exit]` — the command finished on this row, carrying its exit status when
+    /// the shell reported one (`None` when it emitted a bare `D`).
+    CommandEnd(Option<i32>),
+}
+
+/// A pane's shell-integration activity state, DERIVED from its most recent [`PromptMark`] — the
+/// cheap "is this shell idle at a prompt, or running a command?" summary a monitor surfaces (the
+/// multiplexer / an AI watching a sibling pane). The marks are the source of truth; this is a
+/// projection of them, so there is one store, not a latched duplicate that could drift.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ShellState {
+    /// No OSC 133 mark seen — either no shell integration, or nothing has happened yet.
+    #[default]
+    Unknown,
+    /// Idle at a prompt (the last mark was a prompt start or a finished command).
+    AtPrompt,
+    /// A command is executing — its output is flowing (the last mark was an output start with no
+    /// finish yet).
+    Running,
+}
+
+impl ShellState {
+    /// The wire / display token for a KNOWN state (`"at_prompt"` or `"running"`), or `None` for
+    /// [`Unknown`](ShellState::Unknown). The single source of the wire vocabulary — a serializer
+    /// omits the key when this is `None`, so a pane without shell integration keeps the pre-OSC133
+    /// wire shape (additive).
+    #[must_use]
+    pub fn wire_str(self) -> Option<&'static str> {
+        match self {
+            Self::Unknown => None,
+            Self::AtPrompt => Some("at_prompt"),
+            Self::Running => Some("running"),
+        }
+    }
+}
+
+/// One scrolled-off line: its STYLED cells plus any shell-integration [`PromptMark`] the row
+/// carried. Bundling the mark WITH its cells (rather than a parallel deque) makes the two
+/// impossible to desync as lines are pushed, popped at the [`SCROLLBACK_CAP`], reflowed, or
+/// cloned on resize — the single-source-of-truth shape for scrollback history.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(crate) struct ScrollbackLine {
+    pub(crate) cells: Vec<Cell>,
+    pub(crate) mark: Option<PromptMark>,
+}
+
 /// A queryable terminal screen: a `cols x rows` grid of cells plus the
 /// cursor, screen kind, and per-row damage generations.
 ///
@@ -236,8 +305,10 @@ pub struct Screen {
     /// path derives strings from these cells ([`Screen::scrollback_rows`] /
     /// [`Screen::full_text`]), so there is one source; the grid projection reads
     /// the cells ([`Screen::scrollback_cells`]). Lines are reflowed on resize
-    /// (the reflow rejoins/rewraps these cells).
-    scrollback: VecDeque<Vec<Cell>>,
+    /// (the reflow rejoins/rewraps these cells). Each line also carries any
+    /// shell-integration [`PromptMark`] its row held (bundled in [`ScrollbackLine`] so the mark
+    /// cannot desync from its cells), so a prompt that scrolls into history stays a jump target.
+    scrollback: VecDeque<ScrollbackLine>,
     /// Per-row soft-wrap continuation flag (the DEC `LINE_WRAPPED` attribute):
     /// `wrapped[r] == true` means row `r`'s logical line CONTINUES onto row
     /// `r + 1`, so a reflow ([`Self::reflowed`]) joins them into one logical line
@@ -255,6 +326,13 @@ pub struct Screen {
     /// collapse on widen, and that `CR LF` is context-only-distinguishable from a
     /// hard newline (it lands mid-row), so the emulator owns that one decision.
     wrapped: Vec<bool>,
+    /// Per-row shell-integration boundary mark (OSC 133 `A`/`C`/`D`), `None` on an unmarked row.
+    /// Parallel to the visible rows exactly like [`Self::generations`] / [`Self::wrapped`]: the
+    /// emulator sets a row's mark when the child emits the OSC, and it moves in lockstep with the
+    /// row through scrolling ([`Self::scroll_region_up`] carries an evicted mark into the
+    /// scrollback), erasing ([`Self::clear_row`] drops it), and reflow ([`Self::reflowed`]
+    /// re-attaches it to the logical line's first physical row). See [`PromptMark`].
+    marks: Vec<Option<PromptMark>>,
 }
 
 impl Screen {
@@ -271,6 +349,7 @@ impl Screen {
             generations: vec![0; rows as usize],
             scrollback: VecDeque::new(),
             wrapped: vec![false; rows as usize],
+            marks: vec![None; rows as usize],
         }
     }
 
@@ -345,13 +424,74 @@ impl Screen {
     /// beyond the visible grid, for full-output capture. Derived from the stored
     /// styled cells via `cells_text` (the capture path keeps one notion of text).
     pub fn scrollback_rows(&self) -> impl Iterator<Item = String> + '_ {
-        self.scrollback.iter().map(|cells| cells_text(cells))
+        self.scrollback.iter().map(|line| cells_text(&line.cells))
     }
 
     /// The scrolled-off lines as STYLED CELLS (oldest first) — the rendering view
     /// the grid projection reads so scrollback paints with its original fg/bg/attrs.
     pub fn scrollback_cells(&self) -> impl Iterator<Item = &[Cell]> + '_ {
-        self.scrollback.iter().map(Vec::as_slice)
+        self.scrollback.iter().map(|line| line.cells.as_slice())
+    }
+
+    /// The shell-integration [`PromptMark`] of visible row `row`, or `None` (unmarked / out of
+    /// bounds). The jump-to-prompt / command-boundary reader — pairs with [`Self::scrollback_mark`]
+    /// for the history rows.
+    #[must_use]
+    pub fn mark(&self, row: u16) -> Option<PromptMark> {
+        self.marks.get(row as usize).copied().flatten()
+    }
+
+    /// The shell-integration [`PromptMark`] of scrolled-off line `index` (0 = oldest), or `None`.
+    #[must_use]
+    pub fn scrollback_mark(&self, index: usize) -> Option<PromptMark> {
+        self.scrollback.get(index).and_then(|line| line.mark)
+    }
+
+    /// The MOST RECENT shell-integration mark in stream order (visible rows scanned bottom-up,
+    /// then scrollback newest-first), or `None` if the child has emitted none. The basis of
+    /// [`Self::shell_state`]. Bounded: it early-exits at the first mark found.
+    fn last_mark(&self) -> Option<PromptMark> {
+        (0..self.rows)
+            .rev()
+            .find_map(|r| self.marks[r as usize])
+            .or_else(|| self.scrollback.iter().rev().find_map(|line| line.mark))
+    }
+
+    /// The pane's shell-integration [`ShellState`], DERIVED from its most recent mark: an output
+    /// start with no finish yet means a command is Running; a prompt start or a finished command
+    /// means idle AtPrompt; no marks means Unknown.
+    #[must_use]
+    pub fn shell_state(&self) -> ShellState {
+        match self.last_mark() {
+            Some(PromptMark::Output) => ShellState::Running,
+            Some(PromptMark::Prompt | PromptMark::CommandEnd(_)) => ShellState::AtPrompt,
+            None => ShellState::Unknown,
+        }
+    }
+
+    /// The exit status of the LAST finished command (the most recent [`PromptMark::CommandEnd`]
+    /// that carried one), or `None` when no command has finished with a reported status. Scans
+    /// visible rows bottom-up then scrollback newest-first for the boundary. A bare `OSC 133 ; D`
+    /// (finished, no status) also yields `None` — pair with [`Self::shell_state`] to tell "no
+    /// command ran" from "ran, status unreported".
+    #[must_use]
+    pub fn last_exit_status(&self) -> Option<i32> {
+        (0..self.rows)
+            .rev()
+            .find_map(|r| match self.marks[r as usize] {
+                Some(PromptMark::CommandEnd(status)) => Some(status),
+                _ => None,
+            })
+            .or_else(|| {
+                self.scrollback
+                    .iter()
+                    .rev()
+                    .find_map(|line| match line.mark {
+                        Some(PromptMark::CommandEnd(status)) => Some(status),
+                        _ => None,
+                    })
+            })
+            .flatten()
     }
 
     /// How many scrolled-off lines are retained.
@@ -394,6 +534,15 @@ impl Screen {
         }
     }
 
+    /// Attach (or clear) a shell-integration [`PromptMark`] on row `row`. The emulator sets it
+    /// when the child emits `OSC 133 ; A/C/D` on that row; it then travels with the row through
+    /// scrolling and reflow. Out-of-bounds rows are ignored.
+    pub(crate) fn set_mark(&mut self, row: u16, mark: Option<PromptMark>) {
+        if let Some(slot) = self.marks.get_mut(row as usize) {
+            *slot = mark;
+        }
+    }
+
     pub(crate) fn set_kind(&mut self, kind: ScreenKind) {
         self.kind = kind;
     }
@@ -415,8 +564,10 @@ impl Screen {
                 *c = Cell::blank();
             }
             self.generations[row as usize] = generation;
-            // An erased row no longer continues a logical line.
+            // An erased row no longer continues a logical line, and its shell-integration mark
+            // (if any) goes with the content that was cleared.
             self.wrapped[row as usize] = false;
+            self.marks[row as usize] = None;
         }
     }
 
@@ -519,6 +670,7 @@ impl Screen {
             }
             next.generations[r as usize] = self.generations[r as usize];
             next.wrapped[r as usize] = self.wrapped[r as usize];
+            next.marks[r as usize] = self.marks[r as usize];
         }
         next.cursor = self.cursor;
         next.kind = self.kind;
@@ -548,10 +700,19 @@ impl Screen {
         // joining soft-wrapped rows; trim trailing blanks at a hard line end.
         // Track the cursor's (logical line, glyph offset).
         let mut lines: Vec<Vec<Cell>> = Vec::new();
+        // Parallel to `lines`: each logical line's shell-integration mark (its FIRST physical
+        // row's), so the mark survives the rewrap by re-attaching to the re-broken line's head.
+        let mut line_marks: Vec<Option<PromptMark>> = Vec::new();
         let mut cur: Vec<Cell> = Vec::new();
+        let mut cur_mark: Option<PromptMark> = None;
         let (cur_col, cur_row) = (self.cursor.col, self.cursor.row);
         let (mut cursor_line, mut cursor_off, mut cursor_found) = (0usize, 0usize, false);
         for r in 0..self.rows {
+            // A logical line's mark is its FIRST physical row's mark; when `cur` is empty this
+            // row begins a new logical line, so capture its mark (continuation rows keep it).
+            if cur.is_empty() {
+                cur_mark = self.marks[r as usize];
+            }
             let mut glyphs: Vec<Cell> = Vec::new();
             for c in 0..self.cols {
                 if !cursor_found && r == cur_row && c == cur_col {
@@ -580,19 +741,24 @@ impl Screen {
                     cursor_off = cursor_off.min(cur.len());
                 }
                 lines.push(std::mem::take(&mut cur));
+                line_marks.push(cur_mark);
             }
         }
         if !cur.is_empty() {
             lines.push(cur);
+            line_marks.push(cur_mark);
         }
         // Drop trailing EMPTY logical lines (blank padding below the content), so
         // they neither consume rows nor push the content off the top via the
-        // bottom-anchor — but never drop the cursor's line or above.
+        // bottom-anchor — but never drop the cursor's line or above. `line_marks`
+        // is popped in lockstep so it stays parallel to `lines`.
         while lines.len() > cursor_line + 1 && lines.last().is_some_and(Vec::is_empty) {
             lines.pop();
+            line_marks.pop();
         }
         if lines.is_empty() {
             lines.push(Vec::new());
+            line_marks.push(None);
         }
         if !cursor_found {
             cursor_line = lines.len() - 1;
@@ -601,14 +767,17 @@ impl Screen {
         // Pass 2 — re-flow each logical line into the new width (a wide cluster
         // moves whole), recording per-row soft-wrap flags and the cursor's new
         // (col, physical-row).
-        let mut phys: Vec<(Vec<Cell>, bool)> = Vec::new();
+        // Each entry: (cells, soft-wrapped, mark). The mark rides only the FIRST physical row of
+        // a logical line (its head) — where a prompt / output boundary sits.
+        let mut phys: Vec<(Vec<Cell>, bool, Option<PromptMark>)> = Vec::new();
         let mut cursor_phys: Option<(u16, usize)> = None;
         // The first physical row of the cursor's logical line — the row a line
         // editor's resize redraw rewrites from (see the cursor-anchor note below).
         let mut cursor_line_top: usize = 0;
         for (li, line) in lines.iter().enumerate() {
+            let line_top = phys.len(); // the first physical row this logical line will occupy
             if li == cursor_line {
-                cursor_line_top = phys.len();
+                cursor_line_top = line_top;
             }
             let mut buf: Vec<Cell> = Vec::new();
             let mut col: u16 = 0;
@@ -618,7 +787,7 @@ impl Screen {
                 }
                 let w: u16 = if cell.width == Width::Wide { 2 } else { 1 };
                 if col + w > cols {
-                    phys.push((std::mem::take(&mut buf), true)); // soft-wrap break
+                    phys.push((std::mem::take(&mut buf), true, None)); // soft-wrap break
                     col = 0;
                 }
                 buf.push(cell.clone());
@@ -630,7 +799,9 @@ impl Screen {
             if cursor_phys.is_none() && cursor_line == li && cursor_off >= line.len() {
                 cursor_phys = Some((col, phys.len()));
             }
-            phys.push((buf, false)); // hard end of this logical line
+            phys.push((buf, false, None)); // hard end of this logical line
+            // Re-attach the logical line's mark to its head physical row (always pushed above).
+            phys[line_top].2 = line_marks[li];
         }
         // Pass 3 — materialize, bottom-anchored: the bottom `rows` physical rows
         // are visible; any overflow scrolls off the top into scrollback.
@@ -640,18 +811,23 @@ impl Screen {
         let start = total.saturating_sub(keep);
         let mut next = Screen::new(cols, rows);
         next.scrollback = self.scrollback.clone();
-        for (cells, _) in phys.iter().take(start) {
-            // Keep the styled cells (fg/bg/attrs) — scrollback paints in color.
-            next.scrollback.push_back(cells.clone());
+        for (cells, _, mark) in phys.iter().take(start) {
+            // Keep the styled cells (fg/bg/attrs) — scrollback paints in color — and the row's
+            // mark, so a prompt rewrapped into overflow stays a jump target.
+            next.scrollback.push_back(ScrollbackLine {
+                cells: cells.clone(),
+                mark: *mark,
+            });
         }
         while next.scrollback.len() > SCROLLBACK_CAP {
             next.scrollback.pop_front();
         }
-        for (out_r, (cells, wrapped)) in phys[start..].iter().enumerate() {
+        for (out_r, (cells, wrapped, mark)) in phys[start..].iter().enumerate() {
             for (c, cell) in cells.iter().take(ncols).enumerate() {
                 next.cells[out_r * ncols + c] = cell.clone();
             }
             next.wrapped[out_r] = *wrapped;
+            next.marks[out_r] = *mark;
             next.generations[out_r] = generation;
         }
         // Anchor the cursor to the FIRST physical row of its logical line, not the
@@ -740,7 +916,12 @@ impl Screen {
         // for an output-flow scroll of a top-anchored region on the main screen.
         if to_scrollback && top == 0 && self.kind == ScreenKind::Main {
             for r in 0..n {
-                self.scrollback.push_back(self.row_cells(r));
+                // Carry the row's shell-integration mark into history WITH its cells, so a prompt
+                // that scrolls off the top stays a jump target ([`ScrollbackLine`]).
+                self.scrollback.push_back(ScrollbackLine {
+                    cells: self.row_cells(r),
+                    mark: self.marks[r as usize],
+                });
             }
             while self.scrollback.len() > SCROLLBACK_CAP {
                 self.scrollback.pop_front();
@@ -756,6 +937,7 @@ impl Screen {
                 self.cells[dst * cols + c] = self.cells[src * cols + c].clone();
             }
             self.wrapped[dst] = self.wrapped[src];
+            self.marks[dst] = self.marks[src];
             self.generations[dst] = generation;
         }
         // Blank the `n` rows vacated at the bottom of the region.
@@ -794,6 +976,7 @@ impl Screen {
                 self.cells[dst * cols + c] = self.cells[src * cols + c].clone();
             }
             self.wrapped[dst] = self.wrapped[src];
+            self.marks[dst] = self.marks[src];
             self.generations[dst] = generation;
         }
         // Blank the `n` rows vacated at the top of the region.

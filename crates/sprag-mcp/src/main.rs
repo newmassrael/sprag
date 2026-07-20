@@ -314,6 +314,13 @@ struct PaneInfo {
     /// The tmux monitor-bell count (`\a`) the pane's child has rung, `0` if none. Kept SEPARATE
     /// from the notification (a bell carries no text), so an agent sees a bell distinctly.
     bell: u64,
+    /// The pane's shell-integration state (OSC 133): `Some("at_prompt")` / `Some("running")`, or
+    /// `None` without integration — so an agent knows whether the shell is idle or running a
+    /// command (it cannot tell from the pane text alone).
+    shell: Option<String>,
+    /// The last finished command's exit status (OSC 133 `D`), or `None` — lets an agent verify a
+    /// command succeeded without parsing its output.
+    exit_status: Option<i64>,
 }
 
 fn tool_list_panes() -> Result<String, String> {
@@ -340,6 +347,24 @@ fn tool_list_panes() -> Result<String, String> {
         // The tmux monitor-bell count, distinct from a notification (a bell carries no text).
         if pane.bell > 0 {
             out.push_str(&format!("      bell: rang {} time(s)\n", pane.bell));
+        }
+        // Shell-integration (OSC 133) summary: idle at a prompt vs running a command, and the last
+        // command's exit status — what an agent needs to know a sibling's command finished, and
+        // how, without parsing its output.
+        if let Some(shell) = &pane.shell {
+            let state = if shell == "running" {
+                "running a command"
+            } else {
+                "at a prompt"
+            };
+            match pane.exit_status {
+                Some(code) => {
+                    out.push_str(&format!(
+                        "      shell: {state} (last command exit {code})\n"
+                    ));
+                }
+                None => out.push_str(&format!("      shell: {state}\n")),
+            }
         }
     }
     Ok(out)
@@ -473,6 +498,8 @@ fn query_panes() -> Result<Vec<PaneInfo>, String> {
             rows: pane.get("rows").and_then(Value::as_u64).unwrap_or(0),
             notification: pane.get("notification").map(notification_line),
             bell: pane.get("bell_seq").and_then(Value::as_u64).unwrap_or(0),
+            shell: pane.get("shell").and_then(Value::as_str).map(str::to_owned),
+            exit_status: pane.get("exit_status").and_then(Value::as_i64),
         })
         .collect())
 }

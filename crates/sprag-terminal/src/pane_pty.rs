@@ -21,7 +21,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use portable_pty::{Child, PtySize, native_pty_system};
-use sprag_vt::{Emulator, InputModes, Notification, Screen, VtPort};
+use sprag_vt::{Emulator, InputModes, Notification, Screen, ShellState, VtPort};
 
 // Re-exported so callers build commands without depending on portable-pty
 // directly (it is an implementation detail of the PTY seam).
@@ -333,6 +333,15 @@ impl PanePty {
     #[must_use]
     pub fn bell_seq(&self) -> u64 {
         lock(&self.emulator).bell_seq()
+    }
+
+    /// The pane's shell-integration state (OSC 133) + the last finished command's exit status,
+    /// DERIVED from the emulator's screen marks under the lock in ONE take (so the pair is
+    /// consistent). `(ShellState::Unknown, None)` when the child has no shell integration.
+    #[must_use]
+    pub fn shell(&self) -> (ShellState, Option<i32>) {
+        let emu = lock(&self.emulator);
+        (emu.screen().shell_state(), emu.screen().last_exit_status())
     }
 
     /// An owned snapshot of the current screen.

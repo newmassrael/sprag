@@ -17,12 +17,13 @@ use termwiz::escape::csi::{
     CSI, Cursor as CsiCursor, CursorStyle, DecPrivateMode, DecPrivateModeCode, Edit,
     EraseInDisplay, EraseInLine, Mode, Sgr,
 };
+use termwiz::escape::osc::FinalTermSemanticPrompt;
 use termwiz::escape::parser::Parser;
 use termwiz::escape::{Action, ControlCode, Esc, EscCode, OperatingSystemCommand};
 
 use crate::port::{
-    Attrs, Cell, Color, Cursor, CursorShape, InputModes, Notification, Rgb, Screen, ScreenKind,
-    VtPort, Width, char_columns,
+    Attrs, Cell, Color, Cursor, CursorShape, InputModes, Notification, PromptMark, Rgb, Screen,
+    ScreenKind, VtPort, Width, char_columns,
 };
 
 /// The cursor state DECSC (`ESC 7` / `CSI s`) saves and DECRC (`ESC 8` / `CSI u`) restores:
@@ -342,7 +343,59 @@ impl Emulator {
                     self.raise_notification(title.as_deref(), &body);
                 }
             }
+            // OSC 133 (FinalTerm) shell-integration boundary marks — prompt / output / command
+            // end. These drive jump-to-prompt + command-boundary detection (the modern-terminal
+            // feature; tmux only passes them through).
+            OperatingSystemCommand::FinalTermSemanticPrompt(prompt) => {
+                self.shell_integration(prompt);
+            }
             _ => {}
+        }
+    }
+
+    /// Apply one OSC 133 (FinalTerm) semantic-prompt marker, attaching a [`PromptMark`] to the
+    /// cursor's current row where one belongs. `A` (prompt start) and the fresh-line forms do a
+    /// FinalTerm "fresh line" first — a `CR LF` unless already at the left margin — so the mark
+    /// lands on a clean line. `B` (end of prompt / start of input) sets no row mark: at row
+    /// granularity the user's input sits on the prompt row, so the command text is the rows from
+    /// the prompt up to the output start (see [`PromptMark`]).
+    fn shell_integration(&mut self, prompt: &FinalTermSemanticPrompt) {
+        use FinalTermSemanticPrompt as F;
+        match prompt {
+            F::FreshLine => self.fresh_line(),
+            // A — start of a prompt.
+            F::FreshLineAndStartPrompt { .. } | F::StartPrompt(_) => {
+                self.fresh_line();
+                self.screen.set_mark(self.row, Some(PromptMark::Prompt));
+            }
+            // C — the command executed; its output starts here.
+            F::MarkEndOfInputAndStartOfOutput { .. } => {
+                self.screen.set_mark(self.row, Some(PromptMark::Output));
+            }
+            // D — the command finished, with the exit status the shell reported.
+            F::CommandStatus { status, .. } => {
+                self.screen
+                    .set_mark(self.row, Some(PromptMark::CommandEnd(Some(*status))));
+            }
+            // D without a status (bare end-of-command), then a fresh line for the next prompt.
+            F::MarkEndOfCommandWithFreshLine { .. } => {
+                self.screen
+                    .set_mark(self.row, Some(PromptMark::CommandEnd(None)));
+                self.fresh_line();
+            }
+            // B — end of prompt / start of input: no row mark (see the doc above).
+            F::MarkEndOfPromptAndStartOfInputUntilNextMarker
+            | F::MarkEndOfPromptAndStartOfInputUntilEndOfLine => {}
+        }
+    }
+
+    /// A FinalTerm "fresh line": if the cursor is not at the left margin, do the equivalent of a
+    /// `CR LF` (column home + a region-aware line feed); otherwise nothing. Used by the OSC 133
+    /// prompt / command-end markers so a mark lands at the head of a clean line.
+    fn fresh_line(&mut self) {
+        if self.col != 0 {
+            self.col = 0;
+            self.line_feed();
         }
     }
 
@@ -1854,5 +1907,133 @@ mod tests {
             g,
             "a bell stamps no row damage",
         );
+    }
+
+    // ----- OSC 133 (FinalTerm) shell-integration marks -----
+
+    /// A full prompt cycle marks the prompt (A) row, the output (C) row, and the command-end (D)
+    /// row, and the derived [`ShellState`] + last exit status track it. B (input start) sets no
+    /// row mark.
+    #[test]
+    fn osc_133_marks_prompt_output_and_command_end() {
+        use crate::port::ShellState;
+        let mut em = Emulator::new(20, 6);
+        assert_eq!(
+            em.screen().shell_state(),
+            ShellState::Unknown,
+            "no marks yet"
+        );
+        assert_eq!(em.screen().last_exit_status(), None);
+
+        em.advance(b"\x1b]133;A\x07"); // A: prompt start on row 0
+        em.advance(b"$ \x1b]133;B\x07"); // draw the prompt, B: input start (no mark)
+        em.advance(b"ls\r\n"); // command echoed + Enter -> row 1
+        assert_eq!(
+            em.screen().mark(0),
+            Some(PromptMark::Prompt),
+            "row 0 = prompt"
+        );
+        assert_eq!(
+            em.screen().shell_state(),
+            ShellState::AtPrompt,
+            "idle at the prompt / awaiting input",
+        );
+
+        em.advance(b"\x1b]133;C\x07"); // C: output starts on row 1
+        assert_eq!(
+            em.screen().mark(1),
+            Some(PromptMark::Output),
+            "row 1 = output"
+        );
+        assert_eq!(
+            em.screen().shell_state(),
+            ShellState::Running,
+            "a command is running",
+        );
+
+        em.advance(b"hello\r\n"); // output -> row 2
+        em.advance(b"\x1b]133;D;0\x07"); // D: finished, exit 0, row 2
+        assert_eq!(
+            em.screen().mark(2),
+            Some(PromptMark::CommandEnd(Some(0))),
+            "row 2 = command end, exit 0",
+        );
+        assert_eq!(
+            em.screen().shell_state(),
+            ShellState::AtPrompt,
+            "finished -> idle again",
+        );
+        assert_eq!(
+            em.screen().last_exit_status(),
+            Some(0),
+            "the reported exit status"
+        );
+
+        // A second command that FAILS (exit 1) — the newer status wins.
+        em.advance(b"\x1b]133;A\x07"); // next prompt (row 3)
+        em.advance(b"bad\r\n\x1b]133;C\x07\r\n\x1b]133;D;1\x07");
+        assert_eq!(
+            em.screen().last_exit_status(),
+            Some(1),
+            "the most recent command's exit wins",
+        );
+    }
+
+    /// A prompt mark travels WITH its row when that row scrolls off the top into the scrollback —
+    /// so a prompt in history stays a jump target and still feeds the derived state. REVERT-PROOF:
+    /// if the scroll dropped the mark, `scrollback_mark(0)` would be `None`.
+    #[test]
+    fn osc_133_mark_scrolls_into_the_scrollback_with_its_row() {
+        use crate::port::ShellState;
+        let mut em = Emulator::new(8, 2); // 2 visible rows -> a quick scroll
+        em.advance(b"\x1b]133;A\x07a"); // row 0: prompt mark + an 'a'
+        assert_eq!(em.screen().mark(0), Some(PromptMark::Prompt));
+        // Two line feeds push row 0 off the top into the scrollback.
+        em.advance(b"\r\nb\r\nc");
+        assert_eq!(
+            em.screen().scrollback_mark(0),
+            Some(PromptMark::Prompt),
+            "the prompt row's mark scrolled into history with it",
+        );
+        assert_eq!(
+            em.screen().mark(0),
+            None,
+            "the new visible row 0 is unmarked"
+        );
+        assert_eq!(
+            em.screen().shell_state(),
+            ShellState::AtPrompt,
+            "the state still derives from the scrollback mark",
+        );
+    }
+
+    /// A mark follows its LOGICAL line through a reflow: it re-attaches to the re-broken line's
+    /// FIRST physical row, whether the line rejoins (widen) or re-wraps (narrow). REVERT-PROOF: if
+    /// reflow dropped marks, `mark(0)` after a resize would be `None`.
+    #[test]
+    fn osc_133_prompt_mark_follows_its_line_through_reflow() {
+        let mut em = Emulator::new(8, 4);
+        em.advance(b"\x1b]133;A\x07"); // row 0 prompt
+        em.advance(b"0123456789"); // wraps at width 8: row0 "01234567" (mark), row1 "89"
+        assert_eq!(em.screen().mark(0), Some(PromptMark::Prompt));
+        assert!(em.screen().wrapped(0));
+
+        em.resize(16, 4); // widen: the logical line rejoins onto one row
+        assert_eq!(em.screen().row_text(0), "0123456789");
+        assert_eq!(
+            em.screen().mark(0),
+            Some(PromptMark::Prompt),
+            "mark stays on the rejoined line's head",
+        );
+
+        em.resize(4, 6); // narrow: re-break to three rows
+        assert_eq!(em.screen().row_text(0), "0123");
+        assert_eq!(
+            em.screen().mark(0),
+            Some(PromptMark::Prompt),
+            "mark on the re-broken line's head",
+        );
+        assert_eq!(em.screen().mark(1), None, "not on a continuation row");
+        assert_eq!(em.screen().mark(2), None);
     }
 }

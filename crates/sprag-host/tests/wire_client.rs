@@ -1006,6 +1006,52 @@ fn bell_seq_of(conn: &mut HostConn) -> Option<u64> {
     panes.as_array()?.first()?.get("bell_seq")?.as_u64()
 }
 
+/// A CHILD's OSC 133 (FinalTerm) shell-integration cycle reaches the wire `panes` slot as
+/// `{shell, exit_status}` — the deliverable behind the "idle at a prompt vs running a command"
+/// summary an AI sibling reads. The boot pane emits a full cycle (A prompt, C output, D exit 3)
+/// through the REAL pipeline (child stdout -> PTY -> emulator OSC 133 parse -> screen marks ->
+/// derived summary -> panes slot), then sleeps to hold the session open. Polled, since the write
+/// and the reader thread applying it are async.
+#[test]
+fn a_child_osc_133_cycle_reaches_the_panes_slot() {
+    let (_host, sock) = spawn_host_running(&[
+        "sh",
+        "-c",
+        "printf '\\033]133;A\\007$ \\033]133;C\\007out\\033]133;D;3\\007'; sleep 30",
+    ]);
+    let mut conn =
+        HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the spawned host");
+
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            shell_of(&mut conn) == (Some("at_prompt".to_owned()), Some(3))
+        }),
+        "the child's OSC 133 cycle must surface as shell=at_prompt + exit_status=3 on the panes slot",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// The boot pane's `(shell, exit_status)` off the `panes` slot — the wire shape an agent's
+/// idle/running + exit summary reads. Either is `None` when its key is absent (no shell
+/// integration / no finished command).
+fn shell_of(conn: &mut HostConn) -> (Option<String>, Option<i64>) {
+    let panes = match conn.call(
+        "scene/query",
+        json!({ "path": mux_action_path(PANES_SLOT) }),
+    ) {
+        Ok(v) => v,
+        Err(_) => return (None, None),
+    };
+    let Some(pane) = panes.as_array().and_then(|arr| arr.first()) else {
+        return (None, None);
+    };
+    (
+        pane["shell"].as_str().map(str::to_owned),
+        pane["exit_status"].as_i64(),
+    )
+}
+
 /// The `clients` slot as `(client, session)` pairs — the wire shape `sprag list-clients` parses.
 fn clients_of(conn: &mut HostConn) -> Vec<(String, String)> {
     conn.call(
