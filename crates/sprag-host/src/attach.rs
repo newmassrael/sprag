@@ -86,19 +86,17 @@ impl AttachmentRegistry {
     }
 
     /// Release `conn` on close. When it is the LAST live connection of its client, that client is
-    /// gone: its attachment is dropped (the crash-safe `-1`). Returns whether an ATTACHED client
-    /// was released — i.e. whether a per-session count actually fell (so the caller bumps the
-    /// scene). A stray conn (never said hello) or a client with other live connections returns
-    /// `false`.
-    pub fn disconnect(&mut self, conn: ConnId) -> bool {
-        let Some(client) = self.conn_client.remove(&conn) else {
-            return false;
-        };
+    /// gone: its attachment is dropped (the crash-safe `-1`). Returns the SESSION the released
+    /// client was attached to — `Some` exactly when a per-session count fell (so the caller bumps
+    /// the scene and can log which session lost a viewer), `None` for a stray conn (never said
+    /// hello), a client with other live connections, or one that never attached.
+    pub fn disconnect(&mut self, conn: ConnId) -> Option<String> {
+        let client = self.conn_client.remove(&conn)?;
         if self.conn_client.values().any(|c| *c == client) {
             // The client still has another connection open; it stays present and attached.
-            return false;
+            return None;
         }
-        self.client_session.remove(&client).is_some()
+        self.client_session.remove(&client)
     }
 
     /// How many DISTINCT clients are currently attached to `session` — the wire
@@ -190,7 +188,11 @@ mod tests {
         let c = conn(1);
         reg.hello(c, "client-a".to_owned());
         reg.attach(c, "work".to_owned());
-        assert!(reg.disconnect(c), "an attached client was released");
+        assert_eq!(
+            reg.disconnect(c).as_deref(),
+            Some("work"),
+            "releasing the attached client reports its session"
+        );
         assert_eq!(reg.attached_count("work"), 0);
     }
 
@@ -203,11 +205,15 @@ mod tests {
         reg.hello(request, "gui".to_owned());
         reg.attach(request, "work".to_owned());
         assert!(
-            !reg.disconnect(poll),
+            reg.disconnect(poll).is_none(),
             "the client still has its request connection"
         );
         assert_eq!(reg.attached_count("work"), 1, "still one attachment");
-        assert!(reg.disconnect(request), "now the last connection closed");
+        assert_eq!(
+            reg.disconnect(request).as_deref(),
+            Some("work"),
+            "now the last connection closed"
+        );
         assert_eq!(reg.attached_count("work"), 0);
     }
 
@@ -231,7 +237,7 @@ mod tests {
         let c = conn(1);
         reg.hello(c, "client-a".to_owned());
         assert!(
-            !reg.disconnect(c),
+            reg.disconnect(c).is_none(),
             "a connection that never attached releases no count"
         );
     }

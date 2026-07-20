@@ -466,6 +466,11 @@ fn handle_attach(
             format!("{CLIENT_ATTACH_METHOD} requires {CLIENT_HELLO_METHOD} first"),
         ),
         AttachOutcome::Changed => {
+            tracing::info!(
+                target: "sprag_host::attach",
+                session = %scope.session(),
+                "client attached"
+            );
             state.revision().bump();
             lifecycle_ok(request)
         }
@@ -541,7 +546,13 @@ pub fn dispatch_frames(state: &HostState, rx: Receiver<IngressEvent>) {
                 // Release the closed connection's attachment. If that dropped an ATTACHED client
                 // (its last connection), a per-session count fell, so the scene changed — bump the
                 // revision to wake every parked `scene/waitFor` to re-read the badge.
-                if lock(state.attachments()).disconnect(conn) {
+                let released = lock(state.attachments()).disconnect(conn);
+                if let Some(session) = released {
+                    tracing::info!(
+                        target: "sprag_host::attach",
+                        %session,
+                        "client detached (connection closed)"
+                    );
                     state.revision().bump();
                 }
             }

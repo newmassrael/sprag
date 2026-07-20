@@ -86,7 +86,7 @@ use sprag_host::wire::{
 };
 use sprag_host::{CellFrame, HostClient, PaneScrollFacts, mux_action_path, pane_input_path};
 use sprag_input::Modifiers;
-use sprag_rpc::{HostConn, runtime_path};
+use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn, runtime_path};
 use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId, SessionInfo, WindowInfo};
 
 /// How long to wait for a just-spawned daemon's socket to accept — covers its bind race.
@@ -283,6 +283,38 @@ fn query_sessions(conn: &mut HostConn) -> io::Result<Vec<SessionInfo>> {
     serde_json::from_value(value).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
+/// A process-unique CLIENT id for this GUI (R-PR67), shared by its request + poll connections. pid
+/// plus the launch instant is unique across concurrent GUIs and stable for this one's whole life;
+/// it is an opaque lifecycle token the daemon groups a client's connections by, never identity.
+fn new_client_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("gui-{}-{nanos}", std::process::id())
+}
+
+/// Announce `conn`'s CLIENT id to the daemon (`client/hello`, R-PR67) — the group key a client's
+/// several connections share, so the daemon counts one GUI as one attached client, not one per
+/// connection. BEST-EFFORT: attachment drives only the sidebar viewer badge, and a daemon that does
+/// not know the method (older than R-PR67) simply leaves the badge empty, so a failure is logged and
+/// swallowed, never fatal to displaying panes.
+fn send_hello(conn: &mut HostConn, client_id: &str) {
+    if let Err(error) = conn.call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: client_id })) {
+        tracing::debug!(target: "sprag_gui::wire", %error, "client/hello failed; viewer badge disabled");
+    }
+}
+
+/// Declare (or switch — tmux `switch-client`) this client's ATTACHED session to the one `conn` is
+/// scoped to (`client/attach`, R-PR67). The session rides the connection's scope, so no arg is
+/// needed; the daemon attributes the attach to the connection's client via its prior [`send_hello`].
+/// BEST-EFFORT, like [`send_hello`].
+fn send_attach(conn: &mut HostConn) {
+    if let Err(error) = conn.call(CLIENT_ATTACH_METHOD, json!({})) {
+        tracing::debug!(target: "sprag_gui::wire", %error, "client/attach failed; viewer badge disabled");
+    }
+}
+
 /// What this client does when its attached session is DESTROYED — by its own sidebar kill OR out of
 /// band (another client / the `sprag` CLI killing it, its last pane exiting) — the tmux
 /// `detach-on-destroy` policy. The ONE decision "my session is gone, now what": the default
@@ -430,8 +462,14 @@ pub(crate) struct WireHost {
     /// `Mutex`: `WireHost` is UI-thread-only (see the module docs), and the poll thread
     /// owns a SEPARATE connection. A session SWITCH re-scopes this connection in place.
     conn: RefCell<HostConn>,
-    /// The session this client is CURRENTLY attached to — a client-local fact (the wire carries no
-    /// "attached" marker). Read to highlight the switcher's current row and to no-op a switch to
+    /// This GUI's opaque CLIENT id (R-PR67), shared by its request + poll connections so the daemon
+    /// counts one window as ONE attached client, not one per connection. Announced on every
+    /// connection ([`send_hello`]) and used to attach ([`send_attach`]) on boot and each switch;
+    /// minted once per process ([`new_client_id`]). A lifecycle token, not identity.
+    client_id: String,
+    /// The session this client is CURRENTLY attached to — a client-local fact (the wire's
+    /// per-session `attached` COUNT is a different thing: how many clients view each session, not
+    /// which one THIS client is on). Read to highlight the switcher's current row and to no-op a switch to
     /// the same session; re-pointed by [`switch_session`](WireHost::switch_session). `RefCell`
     /// because `WireHost` is UI-thread-only.
     session: RefCell<String>,
@@ -578,6 +616,13 @@ impl WireHost {
         let (session, created) =
             resolve_session(&mut conn, requested.as_deref(), argv.as_deref(), cols, rows)?;
         conn.scope_to(session.clone());
+        // R-PR67: this GUI is one attached CLIENT across its two connections. Announce the shared id
+        // on the request conn and attach it to its session, so the daemon counts this window as a
+        // viewer (the sidebar badge). Done before the `since0` baseline below so the attach's own
+        // scene bump is folded into the baseline, not a spurious first poll wake.
+        let client_id = new_client_id();
+        send_hello(&mut conn, &client_id);
+        send_attach(&mut conn);
         let seeds = boot_panes(&mut conn, argv.as_deref(), cols, rows, n_panes, created)?;
 
         // Subscribe-then-snapshot: read the change-notification baseline BEFORE the
@@ -613,6 +658,7 @@ impl WireHost {
             windows,
             sessions,
             conn: RefCell::new(conn),
+            client_id: client_id.clone(),
             session: RefCell::new(session.clone()),
             sock: sock.clone(),
             boot_dims: (cols, rows),
@@ -628,6 +674,9 @@ impl WireHost {
         // its `waitFor`/`revision`/re-queries watch the client's own session and never another's.
         let mut poll_conn = HostConn::connect(&sock, CONNECT_TIMEOUT)?;
         poll_conn.scope_to(session);
+        // The poll connection is a SECOND connection of the SAME client: announce the same id so the
+        // daemon groups both under one attached client (not two). Only the request conn attaches.
+        send_hello(&mut poll_conn, &client_id);
         host.spawn_poll_for(poll_conn, since0)?;
         Ok(host)
     }
@@ -691,6 +740,12 @@ impl WireHost {
         let (fetched, seeds, window_list, current, layout_snapshot, session_list, since0) = {
             let mut conn = self.conn.borrow_mut();
             conn.scope_to(session.to_owned());
+            // R-PR67: re-attach this client to the session it just switched to (tmux
+            // `switch-client`), moving its viewer count off the old session and onto this one. Before
+            // the `since0` baseline, so the attach's scene bump is in the new poll's baseline rather
+            // than a spurious self-wake. The old poll conn was already stopped by the caller, so its
+            // `on_disconnect` fired; the request conn kept this client present across the switch.
+            send_attach(&mut conn);
             let since0 = read_revision(&mut conn)?;
             let seeds = query_panes(&mut conn)?;
             let fetched = fetch_frames(&mut conn, &seeds);
@@ -713,6 +768,9 @@ impl WireHost {
         // the client with mirrors swapped but no live updates.
         let mut poll_conn = HostConn::connect(&self.sock, CONNECT_TIMEOUT)?;
         poll_conn.scope_to(session.to_owned());
+        // The fresh poll conn is a new connection of the SAME client (the old one was torn down by
+        // the switch): re-announce the shared id so the daemon keeps grouping both under one client.
+        send_hello(&mut poll_conn, &self.client_id);
 
         // COMMIT: swap every mirror's CONTENTS (the `Arc`s themselves stay — shared with the paint
         // path and the poll thread), set the attached session, then start the poll. `merge_panes`

@@ -448,6 +448,7 @@ pub(crate) fn view_session_sidebar(slots: &SlotView, theme: &Theme) -> Scene {
             session.cwd.as_deref(),
             session.branch.as_deref(),
             &session.ports,
+            session.attached,
             theme,
         ));
     }
@@ -507,6 +508,7 @@ fn row_node(
     cwd: Option<&str>,
     branch: Option<&str>,
     ports: &[u16],
+    viewers: usize,
     theme: &Theme,
 ) -> Scene {
     let (fill, fg) = if attached {
@@ -519,7 +521,7 @@ fn row_node(
     };
     // "name  ·  Nw" — the session name with its window count, the same facts `sprag ls` prints.
     let mut lines = vec![text_line(&format!("{name}  ·  {windows}w"), 13, fg)];
-    let subtitle = subtitle(cwd, branch, ports);
+    let subtitle = subtitle(cwd, branch, ports, viewers);
     if !subtitle.is_empty() {
         lines.push(text_line(
             &subtitle,
@@ -673,7 +675,7 @@ fn text_line(label: &str, px: u32, fg: Color) -> Scene {
 /// glance. The basename (not the full path) keeps it inside the narrow rail; the full path is a
 /// `sprag ls` away. Any segment that is unknown/empty is dropped (no stray separators); empty when
 /// all three are, so the caller omits the line rather than drawing a blank one.
-fn subtitle(cwd: Option<&str>, branch: Option<&str>, ports: &[u16]) -> String {
+fn subtitle(cwd: Option<&str>, branch: Option<&str>, ports: &[u16], viewers: usize) -> String {
     let mut segments: Vec<String> = Vec::new();
     if let Some(dir) = cwd.and_then(basename) {
         segments.push(dir.to_owned());
@@ -683,6 +685,12 @@ fn subtitle(cwd: Option<&str>, branch: Option<&str>, ports: &[u16]) -> String {
     }
     if !ports.is_empty() {
         segments.push(ports_label(ports));
+    }
+    // The attached-CLIENT count (R-PR67) — tmux `list-clients` / cmux "N viewing" — shown when at
+    // least one client (possibly this one) is attached; absent at 0, so a session nobody watches
+    // carries no segment. Raw count, self included, like `list-clients`.
+    if viewers > 0 {
+        segments.push(format!("{viewers} viewing"));
     }
     segments.join(" · ")
 }
@@ -1254,6 +1262,7 @@ mod tests {
             Some("/home/coin/sprag"),
             Some("main"),
             &[3000],
+            0,
             &theme,
         );
 
@@ -1286,23 +1295,36 @@ mod tests {
     fn the_subtitle_joins_the_cwd_basename_branch_and_ports() {
         // All three present: "basename · branch · :ports" (the classic prompt shape + what it serves).
         assert_eq!(
-            subtitle(Some("/home/coin/sprag"), Some("main"), &[3000, 8080]),
+            subtitle(Some("/home/coin/sprag"), Some("main"), &[3000, 8080], 0),
             "sprag · main · :3000 :8080"
         );
         // cwd + branch, no ports: the pre-Slice-3 shape (no trailing separator).
         assert_eq!(
-            subtitle(Some("/home/coin/sprag"), Some("main"), &[]),
+            subtitle(Some("/home/coin/sprag"), Some("main"), &[], 0),
             "sprag · main"
         );
         // Only one segment present: just that one, no stray separator.
-        assert_eq!(subtitle(Some("/home/coin/sprag"), None, &[]), "sprag");
-        assert_eq!(subtitle(None, Some("main"), &[]), "main");
-        assert_eq!(subtitle(None, None, &[3000]), ":3000");
+        assert_eq!(subtitle(Some("/home/coin/sprag"), None, &[], 0), "sprag");
+        assert_eq!(subtitle(None, Some("main"), &[], 0), "main");
+        assert_eq!(subtitle(None, None, &[3000], 0), ":3000");
         // None at all: empty, so the caller omits the second line entirely.
-        assert_eq!(subtitle(None, None, &[]), "");
+        assert_eq!(subtitle(None, None, &[], 0), "");
         // basename takes the last NON-EMPTY component (a trailing slash is ignored); `/` has none.
-        assert_eq!(subtitle(Some("/var/log/"), None, &[]), "log");
+        assert_eq!(subtitle(Some("/var/log/"), None, &[], 0), "log");
         assert_eq!(basename("/"), None);
+    }
+
+    #[test]
+    fn the_subtitle_appends_a_viewer_count_when_attached() {
+        // Viewers > 0 add a trailing "N viewing" segment (R-PR67), joined like the others.
+        assert_eq!(subtitle(None, None, &[], 1), "1 viewing");
+        assert_eq!(subtitle(None, None, &[], 2), "2 viewing");
+        assert_eq!(
+            subtitle(Some("/home/coin/sprag"), Some("main"), &[3000], 3),
+            "sprag · main · :3000 · 3 viewing"
+        );
+        // Zero viewers add nothing — a session nobody watches keeps its prior shape.
+        assert_eq!(subtitle(Some("/home/coin/sprag"), None, &[], 0), "sprag");
     }
 
     #[test]
@@ -1640,8 +1662,8 @@ mod tests {
         let theme = Theme::default();
         let is_outlined =
             |scene: &Scene| matches!(scene, Scene::Container(c) if c.style.border.is_some());
-        let cursor = row_node(0, "work", 1, false, true, None, None, &[], &theme);
-        let plain = row_node(0, "work", 1, false, false, None, None, &[], &theme);
+        let cursor = row_node(0, "work", 1, false, true, None, None, &[], 0, &theme);
+        let plain = row_node(0, "work", 1, false, false, None, None, &[], 0, &theme);
         assert!(is_outlined(&cursor), "the cursor row is outlined");
         assert!(!is_outlined(&plain), "a non-cursor row is not outlined");
     }
