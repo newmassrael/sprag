@@ -14,16 +14,29 @@
 use termwiz::cell::{Blink, Intensity, Underline};
 use termwiz::color::ColorSpec;
 use termwiz::escape::csi::{
-    CSI, Cursor as CsiCursor, DecPrivateMode, DecPrivateModeCode, Edit, EraseInDisplay,
-    EraseInLine, Mode, Sgr,
+    CSI, Cursor as CsiCursor, CursorStyle, DecPrivateMode, DecPrivateModeCode, Edit,
+    EraseInDisplay, EraseInLine, Mode, Sgr,
 };
 use termwiz::escape::parser::Parser;
-use termwiz::escape::{Action, ControlCode, OperatingSystemCommand};
+use termwiz::escape::{Action, ControlCode, Esc, EscCode, OperatingSystemCommand};
 
 use crate::port::{
     Attrs, Cell, Color, Cursor, CursorShape, InputModes, Notification, Rgb, Screen, ScreenKind,
     VtPort, Width, char_columns,
 };
+
+/// The cursor state DECSC (`ESC 7` / `CSI s`) saves and DECRC (`ESC 8` / `CSI u`) restores:
+/// position plus the SGR pen and cursor shape. Charset state is out of the emulator's subset, so
+/// it is not part of the save (a documented bound, consistent with the rest of the skeleton).
+#[derive(Clone, Copy)]
+struct SavedCursor {
+    col: u16,
+    row: u16,
+    fg: Color,
+    bg: Color,
+    attrs: Attrs,
+    cursor_shape: CursorShape,
+}
 
 /// A terminal emulator: feed PTY bytes via [`VtPort::advance`], read the
 /// resulting [`Screen`] via [`VtPort::screen`].
@@ -64,6 +77,15 @@ pub struct Emulator {
     /// [`VtPort::notification_seq`]. Bumped once per captured notification so a
     /// consumer can tell a NEW one from a re-read of the same latched payload.
     notification_seq: u64,
+    /// The cursor position + pen saved by DECSC (`ESC 7` / `CSI s`) and restored by DECRC
+    /// (`ESC 8` / `CSI u`), or `None` before any save. Saves the same set a terminal restores —
+    /// position, SGR foreground/background/attributes, and cursor shape — so an app that saves,
+    /// draws in a different pen, then restores comes back exactly where and how it was.
+    saved_cursor: Option<SavedCursor>,
+    /// The last GRAPHIC character printed, for REP (`CSI b` — REPEAT). `None` until one is printed
+    /// or after an action that is not a plain print. Repeat re-emits this, so it tracks exactly
+    /// what a bare `print` would repeat.
+    last_print: Option<char>,
     /// Monotonic damage stamp, bumped on every row-mutating action.
     generation: u64,
     /// `true` between a resize and the next batch of bytes — the window in which a
@@ -119,6 +141,8 @@ impl Emulator {
             title: None,
             notification: None,
             notification_seq: 0,
+            saved_cursor: None,
+            last_print: None,
             generation: 0,
             in_resize_redraw: false,
         }
@@ -137,9 +161,56 @@ impl Emulator {
             Action::Control(code) => self.control(code),
             Action::CSI(csi) => self.csi(csi),
             Action::OperatingSystemCommand(osc) => self.osc(&osc),
-            // Esc, device-control, APC: not part of the skeleton subset.
+            Action::Esc(esc) => self.esc(esc),
+            // Device-control (sixel), APC (Kitty graphics): not part of the subset.
             _ => {}
         }
+    }
+
+    /// The two-byte `ESC <final>` sequences in the subset: DECSC (`ESC 7`) saves the cursor + pen,
+    /// DECRC (`ESC 8`) restores them — the same save/restore the `CSI s` / `CSI u` forms drive
+    /// ([`cursor_op`](Self::cursor_op)). Every other ESC (charset selection, RI/IND, keypad modes)
+    /// is out of the subset and dropped.
+    fn esc(&mut self, esc: Esc) {
+        if let Esc::Code(code) = esc {
+            match code {
+                EscCode::DecSaveCursorPosition => self.save_cursor(),
+                EscCode::DecRestoreCursorPosition => self.restore_cursor(),
+                _ => {}
+            }
+        }
+    }
+
+    /// Save the cursor position + pen (DECSC / `CSI s`).
+    fn save_cursor(&mut self) {
+        self.saved_cursor = Some(SavedCursor {
+            col: self.col,
+            row: self.row,
+            fg: self.fg,
+            bg: self.bg,
+            attrs: self.attrs,
+            cursor_shape: self.cursor_shape,
+        });
+    }
+
+    /// Restore the cursor position + pen saved by DECSC (DECRC / `CSI u`). With no prior save the
+    /// spec homes the cursor and resets the pen — the state a fresh save would hold — so a restore
+    /// is always well-defined.
+    fn restore_cursor(&mut self) {
+        let saved = self.saved_cursor.unwrap_or(SavedCursor {
+            col: 0,
+            row: 0,
+            fg: Color::Default,
+            bg: Color::Default,
+            attrs: Attrs::default(),
+            cursor_shape: CursorShape::Block,
+        });
+        self.col = saved.col.min(self.cols.saturating_sub(1));
+        self.row = saved.row.min(self.rows.saturating_sub(1));
+        self.fg = saved.fg;
+        self.bg = saved.bg;
+        self.attrs = saved.attrs;
+        self.cursor_shape = saved.cursor_shape;
     }
 
     /// Operating-system commands. Two families are in the subset:
@@ -298,6 +369,12 @@ impl Emulator {
                 self.row = self.row.saturating_sub(clamp_count(n));
                 self.col = 0;
             }
+            // DECSC / DECRC in their `CSI s` / `CSI u` spelling (same save/restore as `ESC 7/8`).
+            CsiCursor::SaveCursor => self.save_cursor(),
+            CsiCursor::RestoreCursor => self.restore_cursor(),
+            // DECSCUSR — the cursor SHAPE (block / underline / bar); blink is not modeled, so the
+            // steady and blinking variants of each shape map to the same shape.
+            CsiCursor::CursorStyle(style) => self.cursor_shape = cursor_shape_of(style),
             _ => {}
         }
     }
@@ -361,7 +438,34 @@ impl Emulator {
                     EraseInDisplay::EraseScrollback => self.screen.clear_scrollback(),
                 }
             }
-            // DeleteLine/InsertLine/ScrollUp/Repeat etc.: not in the subset.
+            // ICH — insert n blanks at the cursor, shifting the rest of the row right.
+            Edit::InsertCharacter(n) => {
+                let g = self.next_gen();
+                self.screen
+                    .insert_cells(self.col, self.row, clamp_count(n), g);
+            }
+            // DCH — delete n cells at the cursor, shifting the rest of the row left.
+            Edit::DeleteCharacter(n) => {
+                let g = self.next_gen();
+                self.screen
+                    .delete_cells(self.col, self.row, clamp_count(n), g);
+            }
+            // ECH — blank n cells at the cursor in place (no shift).
+            Edit::EraseCharacter(n) => {
+                let g = self.next_gen();
+                self.screen
+                    .erase_cells(self.col, self.row, clamp_count(n), g);
+            }
+            // REP — reprint the last graphic char n times (a no-op before any print).
+            Edit::Repeat(n) => {
+                if let Some(ch) = self.last_print {
+                    let repeated: String =
+                        std::iter::repeat_n(ch, clamp_count(n) as usize).collect();
+                    self.print_str(&repeated);
+                }
+            }
+            // InsertLine/DeleteLine/ScrollUp/ScrollDown need the scroll-region model (DECSTBM),
+            // deferred as one coherent slice — see the VT audit. Dropped until then.
             _ => {}
         }
     }
@@ -449,6 +553,8 @@ impl Emulator {
             }
             self.screen.set_cell(col, row, head, g);
             self.col += cell_w;
+            // Remember the last graphic char for REP (`CSI b`).
+            self.last_print = Some(ch);
         }
     }
 
@@ -632,6 +738,19 @@ fn clamp_bytes(s: &str, max: usize) -> String {
         end -= 1;
     }
     s[..end].to_owned()
+}
+
+/// Map a termwiz DECSCUSR [`CursorStyle`] to the port's [`CursorShape`]. Blink is not modeled, so
+/// each shape's steady and blinking variants collapse to the same shape; `Default` is a block (the
+/// power-on default).
+fn cursor_shape_of(style: CursorStyle) -> CursorShape {
+    match style {
+        CursorStyle::Default | CursorStyle::BlinkingBlock | CursorStyle::SteadyBlock => {
+            CursorShape::Block
+        }
+        CursorStyle::BlinkingUnderline | CursorStyle::SteadyUnderline => CursorShape::Underline,
+        CursorStyle::BlinkingBar | CursorStyle::SteadyBar => CursorShape::Bar,
+    }
 }
 
 /// Convert a termwiz `ColorSpec` to the port's `Color`.
@@ -932,6 +1051,123 @@ mod tests {
             title.chars().all(|c| c == 'é') && n.body.chars().all(|c| c == 'é'),
             "truncated on a char boundary — no split/replacement char",
         );
+    }
+
+    /// ICH (`CSI @`) inserts blanks at the cursor, shifting the rest of the row right; cells
+    /// pushed past the right margin fall off.
+    #[test]
+    fn insert_character_shifts_the_row_right() {
+        let mut em = Emulator::new(6, 1);
+        em.advance(b"abcd"); // a b c d _ _
+        em.advance(b"\x1b[1G"); // cursor to column 1 (CHA, 1-based)
+        em.advance(b"\x1b[2@"); // ICH 2
+        assert_eq!(cluster(&em, 0, 0), " ");
+        assert_eq!(cluster(&em, 1, 0), " ");
+        assert_eq!(cluster(&em, 2, 0), "a", "the row shifted right by 2");
+        assert_eq!(cluster(&em, 5, 0), "d", "d rode to the right margin");
+    }
+
+    /// DCH (`CSI P`) deletes cells at the cursor, shifting the rest of the row left and blanking
+    /// the vacated tail.
+    #[test]
+    fn delete_character_shifts_the_row_left() {
+        let mut em = Emulator::new(6, 1);
+        em.advance(b"abcdef");
+        em.advance(b"\x1b[1G"); // column 1
+        em.advance(b"\x1b[2P"); // DCH 2
+        assert_eq!(cluster(&em, 0, 0), "c", "the row shifted left by 2");
+        assert_eq!(cluster(&em, 3, 0), "f");
+        assert_eq!(cluster(&em, 4, 0), " ", "the tail is blanked");
+        assert_eq!(cluster(&em, 5, 0), " ");
+    }
+
+    /// ECH (`CSI X`) blanks cells at the cursor IN PLACE — unlike DCH, the cells to the right do
+    /// not move.
+    #[test]
+    fn erase_character_blanks_in_place_without_shifting() {
+        let mut em = Emulator::new(6, 1);
+        em.advance(b"abcdef");
+        em.advance(b"\x1b[3G"); // column 3 (0-based col 2)
+        em.advance(b"\x1b[2X"); // ECH 2
+        assert_eq!(cluster(&em, 1, 0), "b");
+        assert_eq!(cluster(&em, 2, 0), " ", "erased in place");
+        assert_eq!(cluster(&em, 3, 0), " ");
+        assert_eq!(cluster(&em, 4, 0), "e", "cells to the right did NOT shift");
+    }
+
+    /// REP (`CSI b`) reprints the last graphic char n times; it is a no-op before any print.
+    #[test]
+    fn repeat_reprints_the_last_graphic_char() {
+        let mut em = Emulator::new(6, 1);
+        em.advance(b"x"); // print x (cursor now at column 1)
+        em.advance(b"\x1b[3b"); // REP 3
+        for c in 0..4 {
+            assert_eq!(cluster(&em, c, 0), "x", "x plus 3 repeats");
+        }
+        assert_eq!(em.screen().cursor().col, 4);
+
+        // REP before any print does nothing (no last graphic char).
+        let mut fresh = Emulator::new(4, 1);
+        fresh.advance(b"\x1b[3b");
+        assert_eq!(cluster(&fresh, 0, 0), " ");
+        assert_eq!(fresh.screen().cursor().col, 0);
+    }
+
+    /// DECSC / DECRC (`ESC 7` / `ESC 8`) save and restore the cursor POSITION and the SGR PEN, so
+    /// a save-draw-elsewhere-restore round trip returns to the exact spot and colour.
+    #[test]
+    fn decsc_decrc_save_and_restore_the_cursor_and_pen() {
+        let mut em = Emulator::new(10, 3);
+        em.advance(b"\x1b[31mR"); // a RED 'R' at row0 col0 — capture what red maps to
+        let red = em.screen().cell(0, 0).unwrap().fg;
+        assert_ne!(red, Color::Default, "red is a non-default pen");
+
+        em.advance(b"\x1b[2;5H"); // move to row 2 col 5 (0-based row1 col4), pen still red
+        em.advance(b"\x1b7"); // DECSC — save pos + red pen
+        em.advance(b"\x1b[1;1H\x1b[0m"); // home + reset the pen to default
+        em.advance(b"\x1b8"); // DECRC — restore pos + pen
+        em.advance(b"Z"); // print at the restored spot with the restored pen
+
+        let z = em.screen().cell(4, 1).unwrap();
+        assert_eq!(z.cluster, "Z", "restored the saved POSITION (row1 col4)");
+        assert_eq!(
+            z.fg, red,
+            "restored the saved PEN (red), not the reset default"
+        );
+    }
+
+    /// The `CSI s` / `CSI u` spelling of DECSC / DECRC drives the SAME save/restore.
+    #[test]
+    fn csi_s_and_u_save_and_restore_the_cursor() {
+        let mut em = Emulator::new(10, 3);
+        em.advance(b"\x1b[2;5H"); // row1 col4
+        em.advance(b"\x1b[s"); // save
+        em.advance(b"\x1b[1;1H"); // home
+        em.advance(b"\x1b[u"); // restore
+        em.advance(b"Q");
+        assert_eq!(
+            em.screen().cell(4, 1).unwrap().cluster,
+            "Q",
+            "CSI u restored the position"
+        );
+    }
+
+    /// DECSCUSR (`CSI SP q`) sets the cursor SHAPE; blink is not modeled, so each shape's steady
+    /// and blinking codes map to the same shape, and `0`/`1` are the block default.
+    #[test]
+    fn decscusr_sets_the_cursor_shape() {
+        let mut em = Emulator::new(4, 1);
+        assert_eq!(
+            em.screen().cursor().shape,
+            CursorShape::Block,
+            "block by default"
+        );
+        em.advance(b"\x1b[4 q"); // steady underline
+        assert_eq!(em.screen().cursor().shape, CursorShape::Underline);
+        em.advance(b"\x1b[5 q"); // blinking bar
+        assert_eq!(em.screen().cursor().shape, CursorShape::Bar);
+        em.advance(b"\x1b[0 q"); // default -> block
+        assert_eq!(em.screen().cursor().shape, CursorShape::Block);
     }
 
     /// The title survives an alt-screen round trip: it is emulator-level state, not a

@@ -420,6 +420,69 @@ impl Screen {
         }
     }
 
+    /// Insert `n` blank cells at `(col, row)`, shifting the cells from `col` rightward by `n`
+    /// (ICH — INSERT CHARACTER). Cells pushed past the right margin fall off; the opened gap
+    /// `[col, col+n)` becomes blank. Row-local (no scroll region interaction), so it is correct
+    /// regardless of any top/bottom margins. Bumps the row's damage generation; a shift breaks the
+    /// row's soft-wrap continuation (its tail changed), so the wrap flag is cleared.
+    pub(crate) fn insert_cells(&mut self, col: u16, row: u16, n: u16, generation: u64) {
+        if row >= self.rows || col >= self.cols || n == 0 {
+            return;
+        }
+        let base = row as usize * self.cols as usize;
+        let col = col as usize;
+        let cols = self.cols as usize;
+        let n = (n as usize).min(cols - col);
+        // Shift right: move [col, cols-n) to [col+n, cols), walking from the right so a source is
+        // read before it is overwritten.
+        for dst in (col + n..cols).rev() {
+            self.cells[base + dst] = self.cells[base + dst - n].clone();
+        }
+        for cell in &mut self.cells[base + col..base + col + n] {
+            *cell = Cell::blank();
+        }
+        self.generations[row as usize] = generation;
+        self.wrapped[row as usize] = false;
+    }
+
+    /// Delete `n` cells at `(col, row)`, shifting the cells from `col+n` leftward to `col` and
+    /// blanking the `n` cells vacated at the right margin (DCH — DELETE CHARACTER). Row-local, the
+    /// inverse of [`Self::insert_cells`]. Bumps the row's generation and clears its wrap flag.
+    pub(crate) fn delete_cells(&mut self, col: u16, row: u16, n: u16, generation: u64) {
+        if row >= self.rows || col >= self.cols || n == 0 {
+            return;
+        }
+        let base = row as usize * self.cols as usize;
+        let col = col as usize;
+        let cols = self.cols as usize;
+        let n = (n as usize).min(cols - col);
+        // Shift left: move [col+n, cols) to [col, cols-n), walking from the left.
+        for dst in col..cols - n {
+            self.cells[base + dst] = self.cells[base + dst + n].clone();
+        }
+        for cell in &mut self.cells[base + cols - n..base + cols] {
+            *cell = Cell::blank();
+        }
+        self.generations[row as usize] = generation;
+        self.wrapped[row as usize] = false;
+    }
+
+    /// Blank `n` cells at `(col, row)` in place (ECH — ERASE CHARACTER): a bounded erase that,
+    /// unlike [`Self::delete_cells`], shifts nothing — the cells right of the erased run stay put.
+    /// Row-local; bumps the row's generation.
+    pub(crate) fn erase_cells(&mut self, col: u16, row: u16, n: u16, generation: u64) {
+        if row >= self.rows || col >= self.cols || n == 0 {
+            return;
+        }
+        let base = row as usize * self.cols as usize;
+        let start = col as usize;
+        let end = (start + n as usize).min(self.cols as usize);
+        for cell in &mut self.cells[base + start..base + end] {
+            *cell = Cell::blank();
+        }
+        self.generations[row as usize] = generation;
+    }
+
     /// Clear the soft-wrapped CONTINUATION rows of the logical line whose head is
     /// `row` (the rows `row+1..` reached by following the [`Self::wrapped`] chain),
     /// leaving `row` itself untouched. One atomic operation that keeps the
