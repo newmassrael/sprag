@@ -559,18 +559,22 @@ pub(crate) fn set_layout(
         );
         return reconciled_layout(registry, scope);
     }
-    match lock(registry).window_mut(scope.session(), scope.window()) {
-        Some(window) => {
-            if let Err(error) = window.set_layout(tree, Some(expected)) {
-                tracing::warn!(
-                    target: "sprag_host",
-                    %error,
-                    session = scope.session(),
-                    "a client's arrangement was rejected; keeping the one in force",
-                );
-            }
+    {
+        // The guard is bound to a NAMED local (not left an unbound temporary) so the `?`-extracted
+        // `&mut Window` borrows something that outlives the statement, and scoped in this block so it
+        // DROPS before `reconciled_layout` below re-locks the same registry (a std `Mutex` is not
+        // reentrant — holding it across that call would deadlock). A missing window `?`-returns `None`
+        // early, exactly as the prior `None => return None` arm did, skipping `reconciled_layout`.
+        let mut guard = lock(registry);
+        let window = guard.window_mut(scope.session(), scope.window())?;
+        if let Err(error) = window.set_layout(tree, Some(expected)) {
+            tracing::warn!(
+                target: "sprag_host",
+                %error,
+                session = scope.session(),
+                "a client's arrangement was rejected; keeping the one in force",
+            );
         }
-        None => return None,
     }
     reconciled_layout(registry, scope)
 }
