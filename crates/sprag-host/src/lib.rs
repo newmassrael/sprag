@@ -46,6 +46,7 @@
 //! design (not faked to mirror the buffer). A future windowed host fills the
 //! rect via `pinion_runtime::compute_layout`.
 
+pub mod attach;
 pub mod durability;
 mod external;
 pub mod host;
@@ -57,6 +58,7 @@ pub mod scope;
 pub mod wire;
 pub mod workspace;
 
+pub use attach::{AttachOutcome, AttachmentRegistry, ClientId};
 pub use durability::{
     load_snapshot, restore_allowlist, restore_command, save_if_changed, save_snapshot,
     snapshot_path,
@@ -313,6 +315,7 @@ pub fn workspace_scene(
     runs: &Arc<Mutex<RunRegistry>>,
     revision: &Arc<SceneRevision>,
     on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
+    attachments: Option<Arc<Mutex<AttachmentRegistry>>>,
 ) -> Scene {
     // The scoped session's pool, resolved when the scope was (never re-derived here — one
     // question, one answer). The registry lock is not held, so taking the workspace lock
@@ -334,6 +337,7 @@ pub fn workspace_scene(
             scope.clone(),
             Arc::clone(revision),
             on_pane_exit.clone(),
+            attachments,
         )))
         .with_tag(MUX_TAG),
     ));

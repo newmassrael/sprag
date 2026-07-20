@@ -36,6 +36,29 @@ use serde_json::{Value, json};
 /// session, a string → that session, anything else → refused whole).
 pub const SESSION_PARAM: &str = "session";
 
+/// The JSON-RPC method a connection sends ONCE to announce which CLIENT it belongs to
+/// (R-PR67 Stage 1) — `params: { "client": "<opaque client id>" }`.
+///
+/// A single logical client (one `sprag-gui` window) opens SEVERAL connections (its request
+/// stream and its long-poll) to avoid head-of-line blocking; each announces the same client
+/// id so the host groups them into ONE attached client rather than counting the connections.
+/// The id is opaque and client-minted (a lifecycle token, not identity); the host keys its
+/// per-client attachment state on it and releases a client when its LAST connection closes
+/// (via the transport's `on_disconnect`, the crash-safe path). Intercepted host-side before
+/// the generic dispatch core, since it needs the frame's connection id, which no scene
+/// external sees. Defined HERE (the writer) and read by the host, like [`SESSION_PARAM`].
+pub const CLIENT_HELLO_METHOD: &str = "client/hello";
+
+/// The JSON-RPC method a connection sends to declare (or CHANGE — tmux `switch-client`) the
+/// session its client is attached to (R-PR67 Stage 1) — `params: { "session": "<name>" }`,
+/// reusing [`SESSION_PARAM`], so an unknown session is refused by the same scope check every
+/// other request uses. The calling connection must have sent [`CLIENT_HELLO_METHOD`] first;
+/// the host attributes the attachment to that connection's client.
+pub const CLIENT_ATTACH_METHOD: &str = "client/attach";
+
+/// The [`CLIENT_HELLO_METHOD`] params key carrying the opaque client id.
+pub const CLIENT_PARAM: &str = "client";
+
 /// A blocking JSON-RPC connection to a host socket — the client end of the wire.
 ///
 /// One request/response at a time (see the module docs). Construct with

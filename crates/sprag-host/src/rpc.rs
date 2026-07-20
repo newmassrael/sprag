@@ -36,10 +36,12 @@ use pinion_rpc::{
 };
 use sprag_terminal::{SessionRegistry, Workspace};
 
+use crate::attach::{AttachOutcome, AttachmentRegistry};
 use crate::external::lock;
 use crate::host::Host;
 use crate::runs::RunRegistry;
 use crate::scope::{ScopeError, SessionScope};
+use crate::wire::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM};
 
 /// The long-lived host state threaded through the serve loop: the booted [`Host`]
 /// (the single [`SessionRegistry`] owner), the background plugin-run registry, pinion's
@@ -65,6 +67,12 @@ pub struct HostState {
     revision: Arc<SceneRevision>,
     /// Parked async `scene/waitFor` replies, woken off `revision`'s observer.
     waiters: Arc<WaiterRegistry>,
+    /// Per-client session attachment (R-PR67 Stage 1): `conn -> client -> attached session`,
+    /// fed by the `client/hello` + `client/attach` intercepts and the transport's `on_disconnect`
+    /// (all on this one dispatch thread), read when the `sessions` slot is served to fill each
+    /// [`SessionInfo::attached`](sprag_terminal::SessionInfo::attached). Shared into the scene's
+    /// mux control surface per assembly (like `revision`), so the read and the writes see one map.
+    attachments: Arc<Mutex<AttachmentRegistry>>,
     /// The self-cleaning daemon's pane-`on_exit` death-signal hook ([`spawn_reaper`]), threaded
     /// into each mux- AND plugin-spawned pane's `on_exit` (via
     /// [`workspace_scene`](crate::workspace_scene) → the mux + plugin externals) so any pane's
@@ -117,6 +125,7 @@ impl HostState {
             revision,
             waiters,
             on_pane_exit,
+            attachments: Arc::new(Mutex::new(AttachmentRegistry::default())),
         }
     }
 
@@ -152,6 +161,13 @@ impl HostState {
     #[must_use]
     pub fn waiters(&self) -> &WaiterRegistry {
         &self.waiters
+    }
+
+    /// The per-client attachment map (R-PR67 Stage 1), for the scene assembly to read the
+    /// per-session attached count and for the lifecycle intercepts to write it.
+    #[must_use]
+    pub fn attachments(&self) -> &Arc<Mutex<AttachmentRegistry>> {
+        &self.attachments
     }
 }
 
@@ -303,6 +319,7 @@ pub fn handle_request(state: &HostState, request_json: &str) -> Option<String> {
                 &state.runs,
                 &state.revision,
                 state.on_pane_exit(),
+                Some(Arc::clone(state.attachments())),
             );
             let mut ctx = DispatchContext::new(&mut scene, &state.previews, state.revision());
             dispatch(&mut ctx, request_json)
@@ -348,6 +365,7 @@ fn handle_scoped(state: &HostState, scope: &SessionScope, request: Request) -> O
         &state.runs,
         &state.revision,
         state.on_pane_exit(),
+        Some(Arc::clone(state.attachments())),
     );
     let mut ctx = DispatchContext::new(&mut scene, &state.previews, state.revision());
     if SUPPORTED_METHODS.contains(&request.method.as_str()) {
@@ -397,23 +415,98 @@ fn method_not_supported(request: &Request) -> String {
     .to_string()
 }
 
-/// An [`RpcIngress`] that funnels frames from any transport into the host's
-/// single dispatch owner via a channel.
+/// The JSON-RPC success reply for an intercepted client-lifecycle method: `result: true` for a
+/// request, `None` for a notification (no `id` — nobody to answer, and inventing one would break
+/// JSON-RPC), the same id-less choice [`scope_refused`] makes.
+fn lifecycle_ok(request: &Request) -> Option<String> {
+    let id = request.id.clone()?;
+    Some(serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": true }).to_string())
+}
+
+/// The JSON-RPC `-32602 Invalid params` reply for a malformed client-lifecycle request (a missing
+/// client id, an attach with no prior hello). `None` for a notification, like [`lifecycle_ok`].
+fn lifecycle_invalid(request: &Request, message: String) -> Option<String> {
+    let id = request.id.clone()?;
+    Some(
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": { "code": -32602, "message": message },
+        })
+        .to_string(),
+    )
+}
+
+/// `client/hello` — register this connection under the client id its params carry, so the daemon
+/// groups a client's several connections into one attached unit. Identity only: no session, so it
+/// moves no attachment count and needs no scene bump.
+fn handle_hello(state: &HostState, conn: ConnId, request: &Request) -> Option<String> {
+    match request.params.as_ref().and_then(|p| p.get(CLIENT_PARAM)) {
+        Some(serde_json::Value::String(client)) => {
+            lock(state.attachments()).hello(conn, client.clone());
+            lifecycle_ok(request)
+        }
+        _ => lifecycle_invalid(request, format!("params.{CLIENT_PARAM} must be a string")),
+    }
+}
+
+/// `client/attach` — attach (or switch — tmux `switch-client`) this connection's client to the
+/// already-validated `scope` session. A first attach or a switch moves a per-session count, so it
+/// bumps the scene to wake parked `scene/waitFor`s to re-read the badge; an idempotent re-send
+/// does not. An attach with no prior `client/hello` is a protocol error, refused `-32602`.
+fn handle_attach(
+    state: &HostState,
+    conn: ConnId,
+    scope: &SessionScope,
+    request: &Request,
+) -> Option<String> {
+    match lock(state.attachments()).attach(conn, scope.session().to_owned()) {
+        AttachOutcome::NoClient => lifecycle_invalid(
+            request,
+            format!("{CLIENT_ATTACH_METHOD} requires {CLIENT_HELLO_METHOD} first"),
+        ),
+        AttachOutcome::Changed => {
+            state.revision().bump();
+            lifecycle_ok(request)
+        }
+        AttachOutcome::Unchanged => lifecycle_ok(request),
+    }
+}
+
+/// One item on the dispatch owner's FIFO: a frame to dispatch, or a connection-closed signal.
+///
+/// Routing the close signal ([`RpcIngress::on_disconnect`]) onto the SAME channel as frames is
+/// what makes it crash-safe AND correctly ordered. pinion guarantees that, for one connection,
+/// every `submit` of its frames happens-before its `on_disconnect` on the transport's reader
+/// thread; funnelling both through this one queue preserves that order on the dispatch side, so
+/// the owner tears down a connection's attachment strictly AFTER dispatching all of its frames —
+/// never a disconnect racing ahead of the frames it should follow.
+pub enum IngressEvent {
+    /// A JSON-RPC frame to dispatch (from any transport's `submit`).
+    Frame(RpcFrame),
+    /// A connection closed (EOF / reset / crash) — release its per-client attachment.
+    Disconnect(ConnId),
+}
+
+/// An [`RpcIngress`] that funnels frames — and connection-close signals — from any transport into
+/// the host's single dispatch owner via one channel.
 ///
 /// The GUI dispatches on pinion-shell's winit event loop; the headless host
 /// has no event loop, so it owns one dispatch thread ([`dispatch_frames`]) and
 /// every transport -- stdin and the always-on socket -- submits through this
 /// into that one owner. Serialising dispatch this way means a concurrent
 /// socket connection and a stdin line share one consistent [`HostState`] view,
-/// the same single-owner discipline pinion's UI thread gives the GUI.
+/// the same single-owner discipline pinion's UI thread gives the GUI. The close
+/// signal rides the same channel (see [`IngressEvent`]) so it is ordered after the
+/// connection's frames and mutates the shared state on the same one thread.
 pub struct FrameIngress {
-    tx: Sender<RpcFrame>,
+    tx: Sender<IngressEvent>,
 }
 
 impl FrameIngress {
     /// Wrap the sending half of the dispatch owner's channel.
     #[must_use]
-    pub fn new(tx: Sender<RpcFrame>) -> Self {
+    pub fn new(tx: Sender<IngressEvent>) -> Self {
         Self { tx }
     }
 }
@@ -422,19 +515,37 @@ impl RpcIngress for FrameIngress {
     fn submit(&self, frame: RpcFrame) {
         // A closed channel means the dispatch owner has exited; drop the frame
         // (its reply never fires, so the client's connection simply closes).
-        let _ = self.tx.send(frame);
+        let _ = self.tx.send(IngressEvent::Frame(frame));
+    }
+
+    fn on_disconnect(&self, conn: ConnId) {
+        // R-PR67: the transport's per-connection reader ended (EOF / reset / crash). Route the
+        // signal onto the dispatch FIFO so the owner releases this connection's attachment on the
+        // one thread that owns the map, after its frames. A closed channel means the owner has
+        // already exited — nothing to release.
+        let _ = self.tx.send(IngressEvent::Disconnect(conn));
     }
 }
 
-/// The single dispatch owner: pull [`RpcFrame`]s and dispatch each against
-/// `state` through the same [`handle_request`] core, routing the response back
-/// to the frame's originating transport via its reply sink. One thread, so all
-/// dispatch is serialised over the shared [`HostState`]. Runs until every
-/// sender has dropped (the channel closes) -- for a server with an always-on
+/// The single dispatch owner: pull [`IngressEvent`]s and, per frame, dispatch against `state`
+/// through the same [`handle_request`] core (routing the response back to the frame's originating
+/// transport via its reply sink); per connection-close, release that connection's attachment. One
+/// thread, so all dispatch AND attachment mutation is serialised over the shared [`HostState`].
+/// Runs until every sender has dropped (the channel closes) -- for a server with an always-on
 /// socket that is process lifetime.
-pub fn dispatch_frames(state: &HostState, rx: Receiver<RpcFrame>) {
-    for frame in rx {
-        dispatch_one(state, frame);
+pub fn dispatch_frames(state: &HostState, rx: Receiver<IngressEvent>) {
+    for event in rx {
+        match event {
+            IngressEvent::Frame(frame) => dispatch_one(state, frame),
+            IngressEvent::Disconnect(conn) => {
+                // Release the closed connection's attachment. If that dropped an ATTACHED client
+                // (its last connection), a per-session count fell, so the scene changed — bump the
+                // revision to wake every parked `scene/waitFor` to re-read the badge.
+                if lock(state.attachments()).disconnect(conn) {
+                    state.revision().bump();
+                }
+            }
+        }
     }
 }
 
@@ -473,11 +584,25 @@ pub fn dispatch_frames(state: &HostState, rx: Receiver<RpcFrame>) {
 /// is why a scoped waitFor is accepted rather than refused — refusing would force every
 /// client to special-case the one method it scopes uniformly, and buy nothing.
 fn dispatch_one(state: &HostState, frame: RpcFrame) {
-    // A stateless ingress: sprag's dispatch does not (yet) consume the frame's
-    // `conn` (R-PR67 per-connection attribution), so it is dropped here.
-    let RpcFrame { request, reply, .. } = frame;
+    // R-PR67: keep the frame's originating connection id — the client-lifecycle intercepts below
+    // attribute `client/hello` + `client/attach` to it. Every other method ignores it (a stateless
+    // ingress), which is why `conn` never reaches pinion's generic dispatch core.
+    let RpcFrame {
+        conn,
+        request,
+        reply,
+    } = frame;
     match parse_request(&request) {
         Ok(parsed) => {
+            // `client/hello` carries identity, not a session, so it is handled before scope
+            // resolution: it registers this connection's client id (the group key a client's
+            // several connections share) and returns.
+            if parsed.method.as_str() == CLIENT_HELLO_METHOD {
+                if let Some(response) = handle_hello(state, conn, &parsed) {
+                    reply.send(response);
+                }
+                return;
+            }
             let scope = match SessionScope::resolve(state.registry(), &parsed) {
                 Ok(scope) => scope,
                 Err(error) => {
@@ -487,6 +612,15 @@ fn dispatch_one(state: &HostState, frame: RpcFrame) {
                     return;
                 }
             };
+            // `client/attach` declares (or switches — tmux `switch-client`) this connection's
+            // client to the session the scope check above just validated, so an unknown attach
+            // target is refused by the same machinery every other request uses.
+            if parsed.method.as_str() == CLIENT_ATTACH_METHOD {
+                if let Some(response) = handle_attach(state, conn, &scope, &parsed) {
+                    reply.send(response);
+                }
+                return;
+            }
             match try_async_wait_for(&parsed, state.revision(), state.waiters(), reply) {
                 // Parked (or answered immediately) by the registry — nothing more to do.
                 ControlFlow::Break(()) => {}
@@ -512,7 +646,7 @@ fn dispatch_one(state: &HostState, frame: RpcFrame) {
 /// through `tx` into the dispatch owner. Returns when `input` reaches EOF -- the
 /// stdin transport ends, but any other transport (the socket) keeps the server
 /// alive. Blank lines are skipped.
-pub fn stdin_frames(input: impl BufRead, tx: &Sender<RpcFrame>) {
+pub fn stdin_frames(input: impl BufRead, tx: &Sender<IngressEvent>) {
     // The stdin reader is one logical connection, so every frame it produces
     // carries the same, stable id (R-PR67) -- mirroring pinion's built-in
     // stdin transport, which stamps its frames with its own single id.
@@ -532,7 +666,11 @@ pub fn stdin_frames(input: impl BufRead, tx: &Sender<RpcFrame>) {
             }
         });
         if tx
-            .send(RpcFrame::new(conn, request.to_owned(), reply))
+            .send(IngressEvent::Frame(RpcFrame::new(
+                conn,
+                request.to_owned(),
+                reply,
+            )))
             .is_err()
         {
             break;

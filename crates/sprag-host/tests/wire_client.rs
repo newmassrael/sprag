@@ -21,7 +21,7 @@ use sprag_host::wire::{
     SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
 };
 use sprag_host::{mux_action_path, pane_input_path};
-use sprag_rpc::HostConn;
+use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn};
 
 /// Kills + reaps the spawned host on scope exit (including a test panic), so a failed
 /// assertion never leaks a `sprag-term` — and unlinks its socket, so it leaks no file either.
@@ -785,6 +785,87 @@ fn session_names(conn: &mut HostConn) -> Vec<String> {
         })
     })
     .unwrap_or_default()
+}
+
+/// How many clients the daemon reports as ATTACHED to `session`, off the registry-wide `sessions`
+/// slot. An unattached session serialises the field away (`skip_serializing_if`), so its absence
+/// reads back as 0 — the exact additive contract [`SessionInfo::attached`] promises.
+fn attached_of(conn: &mut HostConn, session: &str) -> u64 {
+    conn.call(
+        "scene/query",
+        json!({ "path": mux_action_path(SESSIONS_SLOT) }),
+    )
+    .ok()
+    .and_then(|v| {
+        v.as_array().and_then(|arr| {
+            arr.iter()
+                .find(|s| s["name"].as_str() == Some(session))
+                .map(|s| s["attached"].as_u64().unwrap_or(0))
+        })
+    })
+    .unwrap_or(0)
+}
+
+/// R-PR67 Stage 1 end to end over the REAL socket: a client that announces itself (`client/hello`)
+/// and attaches (`client/attach`) is COUNTED on the session's `attached` badge, and — the
+/// crash-safe property — that count is RELEASED when the client's connection CLOSES, with no
+/// explicit detach. The release rides the transport's `on_disconnect`, so however the client goes
+/// away (here a dropped `HostConn`; in the field a crash) the daemon never leaks the session as
+/// "attached". This is the deliverable that could not be built before pinion R1393 — the whole
+/// motivation of PINION-PR67 — so it is pinned over the real transport, not just the unit registry.
+///
+/// An OBSERVER connection (which never attaches, so never counts) reads the badge throughout, so
+/// the count it sees is the ATTACHER's alone — and its own steady 0 proves that merely connecting
+/// is not attaching. The post-close assertion POLLS, because `on_disconnect` is delivered
+/// asynchronously on the daemon's per-connection reader thread; the bound is generous and the
+/// steady state is exact (0), so it is a fact, not a race.
+#[test]
+fn client_attachment_is_counted_and_released_on_disconnect_over_the_real_socket() {
+    let (_host, sock) = spawn_host();
+
+    // The observer only READS the badge — it never sends client/hello or client/attach.
+    let mut observer =
+        HostConn::connect(&sock, Duration::from_secs(5)).expect("observer connects to the host");
+    let session = session_names(&mut observer)
+        .into_iter()
+        .next()
+        .expect("the daemon boots with its default session");
+    assert_eq!(
+        attached_of(&mut observer, &session),
+        0,
+        "a bare connection is not an attachment",
+    );
+
+    {
+        // The attacher announces a client id, then attaches to the default session (unscoped).
+        let mut attacher = HostConn::connect(&sock, Duration::from_secs(5))
+            .expect("attacher connects to the host");
+        attacher
+            .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "test-client" }))
+            .expect("client/hello is accepted");
+        attacher
+            .call(CLIENT_ATTACH_METHOD, json!({}))
+            .expect("client/attach is accepted");
+
+        assert!(
+            wait_until(Duration::from_secs(5), || attached_of(
+                &mut observer,
+                &session
+            ) == 1),
+            "the attach must show on the badge the observer reads",
+        );
+        // `attacher` drops at the end of this block: its socket closes with no detach sent.
+    }
+
+    assert!(
+        wait_until(Duration::from_secs(5), || attached_of(
+            &mut observer,
+            &session
+        ) == 0),
+        "the closed connection's attachment must be released (on_disconnect), not leaked",
+    );
+
+    let _ = std::fs::remove_file(&sock);
 }
 
 /// Re-scoping ONE persistent connection from session to session — the wire MECHANISM the GUI's

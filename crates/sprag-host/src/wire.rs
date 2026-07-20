@@ -148,6 +148,16 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
 /// the definition.
 pub use sprag_rpc::SESSION_PARAM;
 
+/// The client-lifecycle wire vocabulary (R-PR67 Stage 1), re-exported from the transport client
+/// that WRITES it ([`sprag_rpc`]) so the host that READS it shares ONE spelling — exactly as
+/// [`SESSION_PARAM`] is. [`CLIENT_HELLO_METHOD`] announces a connection's client id
+/// ([`CLIENT_PARAM`]); [`CLIENT_ATTACH_METHOD`] declares/switches that client's attached session
+/// (reusing [`SESSION_PARAM`]). Both are intercepted before the generic dispatch core, since they
+/// act on the frame's connection id, which no scene external sees. The reader's contract lives in
+/// [`crate::rpc`] (the dispatch owner's client-lifecycle intercept); the writer's is on each
+/// `sprag_rpc` const.
+pub use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM};
+
 /// The mux control external query slot: every session's name, plus which one an unscoped
 /// request acts on — how a client discovers what it can address with [`SESSION_PARAM`].
 ///

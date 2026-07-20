@@ -25,7 +25,9 @@ use pinion_rpc::RpcIngress;
 use pinion_rpc_transport::{TransportControl, UnixSocketTransport};
 
 pub mod client;
-pub use client::{HostConn, SESSION_PARAM};
+pub use client::{
+    CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn, SESSION_PARAM,
+};
 
 /// The well-known host socket file name — the endpoint a `sprag-term` daemon binds and a
 /// `sprag-gui` client connect-or-spawns on. Defined here, in the shared transport crate, so

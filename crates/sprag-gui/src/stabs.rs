@@ -856,6 +856,7 @@ mod tests {
                     cwd: None,
                     branch: None,
                     ports: Vec::new(),
+                    attached: 0,
                 })
                 .collect()
         }

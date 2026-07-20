@@ -468,6 +468,25 @@ pub struct SessionInfo {
     /// pre-Slice-3 shape, and `#[serde(default)]` reads a peer that omits it back as empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ports: Vec<u16>,
+    /// How many distinct clients are currently ATTACHED to this session (R-PR67 Stage 1) — the
+    /// tmux `list-clients` / cmux "N viewing this workspace" count. Unlike the other enrichment
+    /// fields this is NOT derived from the registry (a session has no idea who is watching it):
+    /// it lives in the daemon's dispatch layer ([`crate`]-external `AttachmentRegistry`), filled
+    /// in HOST-side when the session list is served, so a session built off the registry alone
+    /// carries `0`. Zero also means "not a daemon" (an in-process host has no wire clients).
+    ///
+    /// TRULY additive like the fields above: `skip_serializing_if` keeps an unattached session at
+    /// its prior wire shape, and `#[serde(default)]` reads a peer that omits it back as `0`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub attached: usize,
+}
+
+/// `skip_serializing_if` predicate for [`SessionInfo::attached`] — a `usize` has no `is_empty`,
+/// so the "omit the default" rule the other enrichment fields get from `Option`/`Vec` is spelled
+/// out here, keeping an unattached session byte-identical to the pre-attachment wire shape.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// One session: a named attach unit owning an ordered, non-empty set of [`Window`]s
@@ -812,6 +831,9 @@ impl SessionRegistry {
                 cwd: None,
                 branch: None,
                 ports: Vec::new(),
+                // The registry has no idea who is watching a session; the daemon fills this in
+                // host-side ([`SessionInfo::attached`]). A registry-only list carries 0.
+                attached: 0,
             })
             .collect()
     }

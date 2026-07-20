@@ -112,6 +112,13 @@ pub struct WorkspaceExternal {
     /// this exact surface without ending its own process. It is registry-FREE (just a channel
     /// send), so it is safe to run from any thread.
     on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// The daemon's per-client attachment map ([`crate::AttachmentRegistry`]), or `None` off a
+    /// daemon (a GUI's in-process host, the unit tests — nothing attaches to those over a wire).
+    /// Read ONLY to fill each [`SessionInfo::attached`](sprag_terminal::SessionInfo::attached)
+    /// when the `sessions` slot is served; this surface never mutates it (the dispatch layer owns
+    /// the writes, off the frame's connection id, which no external sees). `None` leaves every
+    /// `attached` at 0 — an honest "no wire clients here".
+    attachments: Option<Arc<Mutex<crate::AttachmentRegistry>>>,
 }
 
 /// A VALIDATED pane-spawn request — the command, its label, and any explicit dims. Produced by
@@ -135,12 +142,14 @@ impl WorkspaceExternal {
         scope: SessionScope,
         revision: Arc<SceneRevision>,
         on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
+        attachments: Option<Arc<Mutex<crate::AttachmentRegistry>>>,
     ) -> Self {
         Self {
             registry,
             scope,
             revision,
             on_pane_exit,
+            attachments,
         }
     }
 
@@ -637,7 +646,18 @@ impl ExternalIntrospect for WorkspaceExternal {
                 // workspace lock, never nested) so reading each session's cwd + git branch stays off
                 // the registry lock. `default` says where an UNSCOPED request lands — not "is it
                 // current", nothing is current here.
-                let infos: Vec<SessionInfo> = SessionRegistry::session_infos_live(&self.registry);
+                let mut infos: Vec<SessionInfo> =
+                    SessionRegistry::session_infos_live(&self.registry);
+                // Fill the per-session attached count HOST-side: it is dispatch-layer state the
+                // registry cannot know (a session has no idea who is watching it). `None` off a
+                // daemon leaves every `attached` at the structural 0. One brief lock, no nesting
+                // with the registry lock (already released by `session_infos_live`).
+                if let Some(attachments) = &self.attachments {
+                    let attachments = lock(attachments);
+                    for info in &mut infos {
+                        info.attached = attachments.attached_count(&info.name);
+                    }
+                }
                 match serde_json::to_value(&infos) {
                     Ok(json) => Some(IntrospectValue::Json(json)),
                     Err(error) => {
@@ -785,7 +805,7 @@ mod tests {
     ) -> (WorkspaceExternal, Arc<SceneRevision>) {
         let revision = Arc::new(SceneRevision::new());
         (
-            WorkspaceExternal::new(Arc::clone(reg), scope, Arc::clone(&revision), None),
+            WorkspaceExternal::new(Arc::clone(reg), scope, Arc::clone(&revision), None, None),
             revision,
         )
     }
@@ -1522,6 +1542,7 @@ mod tests {
             SessionScope::unscoped(&reg),
             Arc::new(SceneRevision::new()),
             Some(signal),
+            None,
         );
         // The birth pane EXITS immediately and is the only pane in the registry (the default "0"
         // is empty), so its death must self-clean the daemon — which happens ONLY if the pane
@@ -1664,6 +1685,7 @@ mod tests {
             SessionScope::unscoped(&reg),
             Arc::new(SceneRevision::new()),
             Some(signal),
+            None,
         );
 
         assert_eq!(
@@ -1893,6 +1915,7 @@ mod tests {
             SessionScope::unscoped(&reg),
             Arc::new(SceneRevision::new()),
             Some(signal),
+            None,
         );
 
         assert_eq!(
