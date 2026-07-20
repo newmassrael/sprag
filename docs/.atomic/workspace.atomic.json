@@ -4167,6 +4167,64 @@
         "NEXT: sidebar a11y/keyboard (Tab-focus the rail + Enter to switch -- the broader keyboard nav this is a slice of); the no-detached / attachment-tracking front once PINION-PR67 lands; other cmux-parity fronts (OSC 9/99/777 attention notifications, an embedded WebKit browser panel, SSH workspaces, \"Skills\" -- [[parity-target-tmux-and-cmux]]). Update [[detach-reattach-arc]] RESUME."
       ]
     },
+    "R179": {
+      "decision_summary": "R179 = keyboard + a11y for the session sidebar: a WAI-ARIA vertical tablist laid over the existing mouse rows. The session-list sub-container (SESSION_TABLIST_TAG) is the list SINGLE Tab stop; a client-local roving cursor (use_session_cursor = the aria-activedescendant) moves within it. handle_sidebar_key owns the model: arrows / Home / End rove, Enter or Space switch to the cursor session, Delete arms a kill, and while a kill is pending Enter confirms and Escape cancels. Every activation reuses handle_session_intent via a synthesised {tag}.click intent, so pointer, keyboard, and AT (a screen-reader Click lowers to apply_key Enter) share ONE routing SSOT. The + footer is a separate focusable button Tab stop. route_key dispatches to the rail before its pane focus gate for an is_sidebar_focus tag. a11y = a TabList parent + Tab children (aria-selected on the attached session, posinset / setsize, aria-activedescendant on the cursor). Chosen as the most long-term-correct and tmux choose-tree faithful model (not a per-item button toolbar); the rich rows keep their per-row externals via a manual composite over them, not a rewrite onto pinion simple-tab widget. GUI-only, additive. Proven by 8 revert-proof unit tests plus a live headless smoke (focus/set the tablist, scene/key ArrowDown moves the cursor border row 0 to 1, Enter moves the attached fill to row 1 = switched).",
+      "changes_bullets": [
+        "R179 = keyboard + a11y for the session sidebar (WAI-ARIA vertical tablist over the mouse rows)",
+        "rail sub-container SESSION_TABLIST_TAG = the list's SINGLE Tab stop; use_session_cursor roves in it",
+        "handle_sidebar_key: arrows/Home/End rove, Enter switches, Delete arms kill, Enter/Esc confirm",
+        "reuses handle_session_intent via a synth {tag}.click: one activation SSOT for mouse / keyboard / AT",
+        "the '+' is a separate focusable button; route_key dispatches to the rail before the pane focus gate",
+        "a11y: TabList + Tab nodes (aria-selected attached, posinset/setsize, aria-activedescendant cursor)",
+        "manual composite over the rich rows, not a rewrite onto pinion's simple-tab widget; tmux choose-tree"
+      ],
+      "verification_bullets": [
+        "Gate GREEN: fmt --check clean; clippy -D = 0; RUSTDOCFLAGS=-D doc = 0; sprag-gui 153 (145 -> +8)",
+        "host / cli / wire / terminal unchanged (GUI-only, additive)",
+        "8 revert-proof unit tests: resolve_cursor_index, rove wrap both ways, Enter switch, Delete arm",
+        "confirm/cancel, discrete vs continuous repeat, is_sidebar_focus, the a11y tree, cursor border",
+        "panes_are_scene_derived_focus_stops: the rail contributes exactly 2 Tab stops (tablist + '+')",
+        "LIVE headless smoke (Xvfb + Mesa lavapipe, isolated sockets): focus/set the tablist, then scene/key",
+        "ArrowDown moves the cursor border row 0 -> 1; Enter moves the attached fill to row 1 (switched)"
+      ],
+      "impact_refs": [
+        "2",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "owner \"commit, push\": feat(mux) 928c832 + this docs(mnemosyne). Ledger 177 -> 178. Pushing.",
+        "sidebar now: switch/create, cwd+branch, ports, kill/confirm/auto-disarm, detach, keyboard, a11y",
+        "NEXT: no-detached / attachment behind PINION-PR67; OSC notifications, WebKit panel, SSH, Skills"
+      ],
+      "publishable_decision_summary": "R179 = keyboard + a11y for the session sidebar: a WAI-ARIA vertical tablist laid over the existing mouse rows. The session-list sub-container (SESSION_TABLIST_TAG) is the list SINGLE Tab stop; a client-local roving cursor (use_session_cursor = the aria-activedescendant) moves within it. handle_sidebar_key owns the model: arrows / Home / End rove, Enter or Space switch to the cursor session, Delete arms a kill, and while a kill is pending Enter confirms and Escape cancels. Every activation reuses handle_session_intent via a synthesised {tag}.click intent, so pointer, keyboard, and AT (a screen-reader Click lowers to apply_key Enter) share ONE routing SSOT. The + footer is a separate focusable button Tab stop. route_key dispatches to the rail before its pane focus gate for an is_sidebar_focus tag. a11y = a TabList parent + Tab children (aria-selected on the attached session, posinset / setsize, aria-activedescendant on the cursor). Chosen as the most long-term-correct and tmux choose-tree faithful model (not a per-item button toolbar); the rich rows keep their per-row externals via a manual composite over them, not a rewrite onto pinion simple-tab widget. GUI-only, additive. Proven by 8 revert-proof unit tests plus a live headless smoke (focus/set the tablist, scene/key ArrowDown moves the cursor border row 0 to 1, Enter moves the attached fill to row 1 = switched).",
+      "publishable_changes_bullets": [
+        "R179 = keyboard + a11y for the session sidebar (WAI-ARIA vertical tablist over the mouse rows)",
+        "rail sub-container SESSION_TABLIST_TAG = the list's SINGLE Tab stop; use_session_cursor roves in it",
+        "handle_sidebar_key: arrows/Home/End rove, Enter switches, Delete arms kill, Enter/Esc confirm",
+        "reuses handle_session_intent via a synth {tag}.click: one activation SSOT for mouse / keyboard / AT",
+        "the '+' is a separate focusable button; route_key dispatches to the rail before the pane focus gate",
+        "a11y: TabList + Tab nodes (aria-selected attached, posinset/setsize, aria-activedescendant cursor)",
+        "manual composite over the rich rows, not a rewrite onto pinion's simple-tab widget; tmux choose-tree"
+      ],
+      "publishable_verification_bullets": [
+        "Gate GREEN: fmt --check clean; clippy -D = 0; RUSTDOCFLAGS=-D doc = 0; sprag-gui 153 (145 -> +8)",
+        "host / cli / wire / terminal unchanged (GUI-only, additive)",
+        "8 revert-proof unit tests: resolve_cursor_index, rove wrap both ways, Enter switch, Delete arm",
+        "confirm/cancel, discrete vs continuous repeat, is_sidebar_focus, the a11y tree, cursor border",
+        "panes_are_scene_derived_focus_stops: the rail contributes exactly 2 Tab stops (tablist + '+')",
+        "LIVE headless smoke (Xvfb + Mesa lavapipe, isolated sockets): focus/set the tablist, then scene/key",
+        "ArrowDown moves the cursor border row 0 -> 1; Enter moves the attached fill to row 1 (switched)"
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "owner \"commit, push\": feat(mux) 928c832 + this docs(mnemosyne). Ledger 177 -> 178. Pushing.",
+        "sidebar now: switch/create, cwd+branch, ports, kill/confirm/auto-disarm, detach, keyboard, a11y",
+        "NEXT: no-detached / attachment behind PINION-PR67; OSC notifications, WebKit panel, SSH, Skills"
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
