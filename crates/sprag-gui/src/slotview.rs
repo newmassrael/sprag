@@ -218,6 +218,13 @@ impl SlotView {
         self.host.new_session()
     }
 
+    /// Kill the session named `name` (tmux `kill-session`) — a sidebar row's "×" close affordance.
+    /// Killing this client's OWN attached session detaches the client; killing another leaves this
+    /// one serving. NOT slot-mapped: sessions are addressed by NAME, like the other session ops.
+    pub(crate) fn kill_session(&self, name: &str) {
+        self.host.kill_session(name);
+    }
+
     /// Slot `slot`'s cell DATA at `offset_lines` (a `1x1` placeholder for a hole).
     pub(crate) fn pane_cells(&self, slot: usize, offset_lines: usize) -> GridBuffer {
         self.id(slot).map_or_else(
@@ -466,6 +473,7 @@ mod tests {
         fn new_session(&self) -> String {
             String::new()
         }
+        fn kill_session(&self, _name: &str) {}
     }
 
     fn view_over(ids: &std::rc::Rc<RefCell<Vec<PaneId>>>) -> SlotView {

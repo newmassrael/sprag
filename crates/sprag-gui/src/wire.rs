@@ -79,9 +79,10 @@ use std::time::Duration;
 use pinion_core::{GridBuffer, QuitSink};
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    FULL_TEXT_SLOT, KEY_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION,
-    NEW_WINDOW_ACTION, PANES_SLOT, RESIZE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
-    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
+    FULL_TEXT_SLOT, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
+    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, RESIZE_ACTION, SELECT_WINDOW_ACTION,
+    SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT,
+    cells_slot_at,
 };
 use sprag_host::{CellFrame, HostClient, PaneScrollFacts, mux_action_path, pane_input_path};
 use sprag_input::Modifiers;
@@ -654,6 +655,24 @@ impl WireHost {
             store_layout(&self.layout, &current, snapshot);
         }
     }
+
+    /// Re-read every session on the UI-thread connection and store it — the immediate-feedback
+    /// follow-up to this client's OWN kill of ANOTHER session, so the killed row leaves the sidebar
+    /// without waiting a poll wake. Registry-wide (like the poll thread's own sessions re-read), so
+    /// it does NOT detach on a scope refusal the way the scoped window/pane reads do — a transient
+    /// failure just keeps the last-known list, which the poll thread's revision-bump re-read heals.
+    /// Not used for the own-session kill: that detaches, so the sidebar it would refresh is going.
+    fn refresh_sessions(&self) {
+        let mut conn = self.conn.borrow_mut();
+        match query_sessions(&mut conn) {
+            Ok(list) => store_sessions(&self.sessions, list),
+            Err(error) => tracing::debug!(
+                target: "sprag_gui::wire",
+                %error,
+                "refresh_sessions: sessions re-read failed; keeping the last-known list",
+            ),
+        }
+    }
 }
 
 impl HostClient for WireHost {
@@ -847,6 +866,36 @@ impl HostClient for WireHost {
                 name
             }
             None => self.current_session(),
+        }
+    }
+
+    /// Kill the session named `name` on the host (tmux `kill-session`). Two cases, split on whether
+    /// it is THIS client's own attached session:
+    ///
+    /// * **Own session** → DETACH: the session this client was serving is gone, so ask the shell to
+    ///   quit — the immediate form of the tmux rule that a client whose session is destroyed leaves
+    ///   (the poll thread's [`detach_reason`] is the backstop, and the path when another client / the
+    ///   CLI kills this session out of band). We do this whether the invoke's reply came back or was
+    ///   severed: killing the LAST session ends the daemon, so the reply can be cut off (EOF/reset)
+    ///   and is indistinguishable from success here — and either way this client is leaving.
+    /// * **Another session** → keep serving ours; drop the killed row from the sidebar at once with a
+    ///   [`refresh_sessions`](WireHost::refresh_sessions) (the poll thread's revision-bump re-read is
+    ///   the backstop for the same change arriving out of band).
+    ///
+    /// The invoke's answer is intentionally ignored (see the own-session note); a genuine refusal —
+    /// only an unknown name for this action — leaves every session as it was, and the sidebar the
+    /// next re-read paints is unchanged.
+    fn kill_session(&self, name: &str) {
+        let params = invoke(
+            &mux_action_path(KILL_SESSION_ACTION),
+            json!({ "name": name }),
+        );
+        let is_own = name == self.session.borrow().as_str();
+        let _ = self.request("scene/invoke", params, "kill_session");
+        if is_own {
+            self.quit.request_quit();
+        } else {
+            self.refresh_sessions();
         }
     }
 

@@ -265,6 +265,19 @@ pub trait HostClient {
     /// client to it, returning its name. The "+" of a session sidebar.
     fn new_session(&self) -> String;
 
+    /// Kill the session named `name` (tmux `kill-session -t`) — a session sidebar row's close
+    /// affordance. Killing a session OTHER than this client's own removes it and the daemon keeps
+    /// serving the rest. Killing this client's OWN attached session DETACHES the client — the tmux
+    /// rule that a client whose session is destroyed leaves (the wire arm asks the shell to quit at
+    /// once; the poll thread's `detach_reason` is the backstop and the path when ANOTHER client or
+    /// the CLI kills this client's session out of band). Killing the LAST session ends the daemon.
+    /// A no-op for an unknown name.
+    ///
+    /// A CLIENT-adjacent SESSION op, like [`switch_session`](Self::switch_session): the in-process
+    /// arm renders only the default session and owns no client to detach, so it implements this as a
+    /// documented no-op; the wire client carries the real kill + detach.
+    fn kill_session(&self, name: &str);
+
     /// Pane `id`'s child-reported window TITLE (`OSC 0` / `OSC 2`), or `None` if the
     /// child never set one (or `id` is absent).
     ///
@@ -746,6 +759,15 @@ impl HostClient for Host {
     fn new_session(&self) -> String {
         self.current_session()
     }
+
+    /// No-op: the in-process debug host renders only the default session (see
+    /// [`switch_session`](HostClient::switch_session)) and owns no client to detach nor a daemon to
+    /// end. Reaching the registry kill from this single-session arm would still leave
+    /// `default_session` total — the registry DRAINS (never removes) the last session, exactly the
+    /// `DEFAULT_ALWAYS_RESOLVES` invariant — but it would CLOSE that one session's live panes, an
+    /// observable change wrong for an arm meant only to render the default. The kill action is a
+    /// wire-client capability, exercised through the daemon.
+    fn kill_session(&self, _name: &str) {}
 }
 
 /// Why the in-process arm may unwrap a scoped layout read that a wire caller must handle.

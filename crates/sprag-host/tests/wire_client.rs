@@ -16,9 +16,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    CLOSE_ACTION, FULL_TEXT_SLOT, LAYOUT_SLOT, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT,
-    SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION,
-    TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
+    CLOSE_ACTION, FULL_TEXT_SLOT, KILL_SESSION_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION,
+    NEW_WINDOW_ACTION, PANES_SLOT, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
 };
 use sprag_host::{mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
@@ -695,6 +695,96 @@ fn two_sessions_under_one_daemon_are_independent_over_the_real_socket() {
     );
 
     let _ = std::fs::remove_file(&sock);
+}
+
+/// Killing a session over the real socket, the wire MECHANISM the GUI's `WireHost::kill_session`
+/// rests on: a NON-last kill REMOVES that session and the daemon keeps serving the rest, and a read
+/// naming the killed session is REFUSED (an error, not an empty-but-ok set). That refusal is exactly
+/// the `Other` error the GUI's poll-thread `detach_reason` converts into a DETACH — so this proves,
+/// at the wire level, both halves the client relies on: kill-ANOTHER keeps this client serving, and
+/// kill-OWN (a client scoped to the killed session) has its next read refused → the detach.
+///
+/// Each claim is paired with its complement (the survivor's set still answers), so a daemon that
+/// ignored the kill, or one that answered a dead scope with an empty set instead of an error, fails
+/// the pair. REVERT-PROOF: if the kill did not remove the session, `work`'s read would still succeed
+/// and the sessions slot would still list two.
+///
+/// SCOPE (as with [`re_scoping_one_connection_switches_which_session_it_serves_over_the_real_socket`]):
+/// only the wire semantics — NOT `WireHost::kill_session`'s own→`request_quit` / other→
+/// `refresh_sessions` branch, which lives in `sprag-gui` (a bin crate, `WireHost` is `pub(crate)`)
+/// and is covered by the reducer routing test + the live smoke, not reachable from here. The
+/// last-session kill ending the daemon is proven by the CLI/workspace tests, not repeated here.
+#[test]
+fn killing_a_session_over_the_real_socket_refuses_its_reads_and_keeps_the_others() {
+    let (_host, sock) = spawn_host();
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term host");
+
+    // Boot session "0" (pane 0); create a second, "work", born with its own pane.
+    let created = conn
+        .call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(NEW_SESSION_ACTION), "args": { "name": "work" } }),
+        )
+        .expect("new_session answers");
+    assert_eq!(created, "work");
+    assert_eq!(session_names(&mut conn), vec!["0", "work"], "two sessions");
+    assert_eq!(
+        pane_ids_in(&mut conn, "work").len(),
+        1,
+        "work answers a scoped read while it lives",
+    );
+
+    // Kill "work" — a NON-last kill: the daemon keeps serving. The reply comes back Ok (only the
+    // LAST kill severs it), so this is a plain successful call.
+    conn.call(
+        "scene/invoke",
+        json!({ "path": mux_action_path(KILL_SESSION_ACTION), "args": { "name": "work" } }),
+    )
+    .expect("kill_session of a non-last session answers Ok");
+
+    // The killed session's scoped read is now REFUSED (an error) — the detach trigger. NOT merely an
+    // empty set: a client scoped to `work` must be TOLD its session is gone, so it detaches rather
+    // than paint a blank window over nothing.
+    let refused = conn.call(
+        "scene/query",
+        json!({ "session": "work", "path": mux_action_path(PANES_SLOT) }),
+    );
+    assert!(
+        refused.is_err(),
+        "a read of the killed session is refused, not answered empty: {refused:?}",
+    );
+
+    // ...and the daemon kept serving the survivor: only "0" remains, and it still answers.
+    assert_eq!(
+        session_names(&mut conn),
+        vec!["0"],
+        "kill-another dropped only work; the daemon lives on",
+    );
+    assert_eq!(
+        pane_ids_in(&mut conn, "0"),
+        vec![0],
+        "the survivor's boot pane still answers",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// The names of every session on the host, in list order — off the registry-wide `sessions` slot.
+fn session_names(conn: &mut HostConn) -> Vec<String> {
+    conn.call(
+        "scene/query",
+        json!({ "path": mux_action_path(SESSIONS_SLOT) }),
+    )
+    .ok()
+    .and_then(|v| {
+        v.as_array().map(|arr| {
+            arr.iter()
+                .filter_map(|s| s["name"].as_str().map(str::to_owned))
+                .collect()
+        })
+    })
+    .unwrap_or_default()
 }
 
 /// Re-scoping ONE persistent connection from session to session — the wire MECHANISM the GUI's
