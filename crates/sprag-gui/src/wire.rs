@@ -297,12 +297,27 @@ enum DetachOnDestroy {
     /// tmux `on` (default): DETACH — the client leaves (asks the shell to quit).
     #[default]
     Detach,
+    /// tmux `off`: switch to the MOST-RECENTLY-USED other session (this client's visit history), the
+    /// most useful "go back to where I just was" target. Falls back to the [`Next`](Self::Next) list
+    /// neighbour when no visited session survives, so it still SWITCHES whenever any other session
+    /// exists; detaches only when this is the last session.
+    Off,
     /// tmux `next`: switch to the NEXT session in list order (wrapping), detaching only if this is
     /// the last session.
     Next,
     /// tmux `previous`: switch to the PREVIOUS session in list order (wrapping), detaching only if
     /// this is the last session.
     Previous,
+}
+
+impl DetachOnDestroy {
+    /// Whether this policy SWITCHES to another session rather than detaching — every variant EXCEPT
+    /// [`Detach`](Self::Detach). The one predicate both destroy triggers gate on, so a policy added
+    /// later is a switch policy everywhere at once (the poll thread's out-of-band arm and the sidebar
+    /// kill) and cannot be forgotten in one place — the bug a variant list invites.
+    fn is_switch(self) -> bool {
+        !matches!(self, DetachOnDestroy::Detach)
+    }
 }
 
 /// Parse the [`DETACH_ON_DESTROY_ENV`] value into a [`DetachOnDestroy`] — a pure decision over its
@@ -315,6 +330,7 @@ fn parse_detach_on_destroy(raw: Option<&str>) -> DetachOnDestroy {
         .map(|value| value.trim().to_ascii_lowercase())
         .as_deref()
     {
+        Some("off") => DetachOnDestroy::Off,
         Some("next") => DetachOnDestroy::Next,
         Some("previous") => DetachOnDestroy::Previous,
         _ => DetachOnDestroy::Detach,
@@ -322,24 +338,46 @@ fn parse_detach_on_destroy(raw: Option<&str>) -> DetachOnDestroy {
 }
 
 /// The session this client should SWITCH to when its own attached session `killed` is destroyed
-/// under `policy`, or `None` to DETACH instead — the tmux `detach-on-destroy next`/`previous`
+/// under `policy`, or `None` to DETACH instead — the tmux `detach-on-destroy off`/`next`/`previous`
 /// target. `None` whenever the policy is [`Detach`](DetachOnDestroy::Detach), or `killed` is the
 /// only session (nothing to move to), or `killed` is not in `list` (already gone, so no neighbour to
 /// anchor on — a detach is the honest answer).
 ///
-/// The neighbour is by LIST ORDER — the order the sidebar draws it (session creation order, a stable
-/// `Vec`), so `next` moves to the row visually below and `previous` above, WRAPPING at the ends. tmux
-/// orders by session NAME (it has no visible list); sprag has a sidebar, so its visible order is the
-/// more intuitive, honest analog. `killed` is present in `list` when this runs (the successor is
-/// picked BEFORE the kill removes it), and with `len >= 2` the ±1 wrap can never land back on it — so
-/// the returned name is always a DIFFERENT, live session.
+/// `off` walks `mru` — this client's visit history, most-recent-first ([`push_mru`]) — for the
+/// most-recent OTHER session still present in `list`; that is tmux's "switch to the last session"
+/// intent. Because sprag's history is CLIENT-LOCAL (not tmux's global last-activity), a client that
+/// only ever saw `killed` has no MRU other, so `off` FALLS BACK to the `next` list neighbour rather
+/// than detach — "off" means "don't leave if there is somewhere to go", so it detaches only when
+/// `killed` is truly the last session. `next`/`previous` ignore `mru`.
+///
+/// The neighbour (for `next`/`previous`, and `off`'s fallback) is by LIST ORDER — the order the
+/// sidebar draws it (session creation order, a stable `Vec`), so `next` moves to the row visually
+/// below and `previous` above, WRAPPING at the ends. tmux orders by session NAME (it has no visible
+/// list); sprag has a sidebar, so its visible order is the more intuitive, honest analog. `killed` is
+/// present in `list` when this runs (the successor is picked BEFORE the kill removes it), and with
+/// `len >= 2` the ±1 wrap can never land back on it — so the returned name is always a DIFFERENT,
+/// live session.
 fn destroy_successor(
     policy: DetachOnDestroy,
     list: &[SessionInfo],
     killed: &str,
+    mru: &[String],
 ) -> Option<String> {
     let step: isize = match policy {
         DetachOnDestroy::Detach => return None,
+        DetachOnDestroy::Off => {
+            // MRU-preferred: the most-recent OTHER visited session that is still live.
+            for candidate in mru {
+                if candidate.as_str() != killed
+                    && list.iter().any(|session| &session.name == candidate)
+                {
+                    return Some(candidate.clone());
+                }
+            }
+            // No visited session survives — fall back to the `next` list neighbour, so `off` still
+            // SWITCHES whenever another session exists (detaching only when `killed` is the last).
+            1
+        }
         DetachOnDestroy::Next => 1,
         DetachOnDestroy::Previous => -1,
     };
@@ -350,6 +388,16 @@ fn destroy_successor(
     let len = list.len() as isize;
     let neighbour = (here + step).rem_euclid(len) as usize;
     Some(list[neighbour].name.clone())
+}
+
+/// Record `name` as the MOST-RECENTLY-used session in `stack` (most-recent-first, deduplicated):
+/// drop any existing entry, then push to the front. The client-local visit history a
+/// [`DetachOnDestroy::Off`] switch walks ([`destroy_successor`]) to pick the most-recent OTHER live
+/// session — and the natural home for a future "switch to the last session" hotkey (tmux
+/// `switch-client -l`). Bounded by the session count (the dedup keeps at most one entry per session).
+fn push_mru(stack: &mut Vec<String>, name: &str) {
+    stack.retain(|visited| visited != name);
+    stack.insert(0, name.to_owned());
 }
 
 /// The GUI's wire client of a `sprag-term` host. See the module docs.
@@ -403,6 +451,12 @@ pub(crate) struct WireHost {
     /// a stale flag to fire a spurious second switch. Never set under the `Detach` policy — that path
     /// stays the poll thread's own immediate detach, unchanged.
     lost_session: Arc<AtomicBool>,
+    /// This client's session VISIT history, most-recent-first + deduplicated ([`push_mru`]) — the MRU
+    /// stack a [`DetachOnDestroy::Off`] switch walks ([`destroy_successor`]) for the most-recent OTHER
+    /// live session. Seeded with the boot session and pushed on every
+    /// [`attach_in_place`](WireHost::attach_in_place). `RefCell` because `WireHost` is UI-thread-only,
+    /// like [`session`](Self::session).
+    mru: RefCell<Vec<String>>,
     /// The repaint sink, kept as a reusable `Arc` so a session switch can hand a FRESH poll thread
     /// the same `on_change` (a `Box<dyn Fn>` could only be moved into the first thread). Send+Sync
     /// because the underlying [`RepaintSink`](pinion_core::RepaintSink) is, so it is shared across
@@ -557,6 +611,7 @@ impl WireHost {
             boot_dims: (cols, rows),
             detach_on_destroy,
             lost_session: Arc::new(AtomicBool::new(false)),
+            mru: RefCell::new(vec![session.clone()]),
             on_change,
             quit,
             poll: RefCell::new(None),
@@ -663,6 +718,9 @@ impl WireHost {
         store_windows(&self.windows, window_list);
         store_sessions(&self.sessions, session_list);
         *self.session.borrow_mut() = session.to_owned();
+        // Record the just-attached session as most-recently-used, for a `detach-on-destroy off`
+        // switch to walk (the current session lands at the MRU front, its predecessor next).
+        push_mru(&mut self.mru.borrow_mut(), session);
         // A successful attach RESOLVES any "lost session" the poll flagged (the caller joined that
         // poll before this commit, so its flag is now settled): clear it, so a manual switch that
         // pre-empted the reconcile cannot leave a stale flag to fire a spurious second switch.
@@ -1008,7 +1066,14 @@ impl HostClient for WireHost {
         // means detach (the `on` default, or `name` is the last session). A kill of ANOTHER session
         // never switches this client.
         let successor = is_own
-            .then(|| destroy_successor(self.detach_on_destroy, &self.sessions(), name))
+            .then(|| {
+                destroy_successor(
+                    self.detach_on_destroy,
+                    &self.sessions(),
+                    name,
+                    &self.mru.borrow(),
+                )
+            })
             .flatten();
         if let Some(next) = successor {
             // switch-to-next. STOP the poll thread BEFORE the kill so the own-kill switch is
@@ -1062,7 +1127,13 @@ impl HostClient for WireHost {
     fn reconcile_lost_session(&self) {
         if self.lost_session.swap(false, Ordering::AcqRel) {
             let me = self.session.borrow().clone();
-            match destroy_successor(self.detach_on_destroy, &self.sessions(), &me) {
+            let successor = destroy_successor(
+                self.detach_on_destroy,
+                &self.sessions(),
+                &me,
+                &self.mru.borrow(),
+            );
+            match successor {
                 Some(next) => self.switch_session(&next),
                 None => self.quit.request_quit(),
             }
@@ -1736,16 +1807,17 @@ fn handle_poll_error(
         return false; // transient — keep polling
     };
     let stopped = stop.load(Ordering::Acquire);
-    match (end, policy) {
-        (PollEnd::SessionClosed, DetachOnDestroy::Next | DetachOnDestroy::Previous) if !stopped => {
-            // Our session died out of band and a switch policy wants us to MOVE, not leave — but the
-            // switch is a UI-thread operation. Flag it and wake the UI thread; its reconcile owns the
-            // switch. (While `stopped`, this is our own teardown, handled by the detach arm below.)
+    match end {
+        PollEnd::SessionClosed if policy.is_switch() && !stopped => {
+            // Our session died out of band and a switch policy (any but Detach) wants us to MOVE, not
+            // leave — but the switch is a UI-thread operation. Flag it and wake the UI thread; its
+            // reconcile owns the switch. (While `stopped`, this is our own teardown, handled by the
+            // detach arm below.)
             lost_session.store(true, Ordering::Release);
             on_change();
         }
         // HostGone (any policy), or a Detach-policy session close, or our own teardown → detach now.
-        (end, _) => request_detach(quit, stopped, end.reason(), error),
+        _ => request_detach(quit, stopped, end.reason(), error),
     }
     true // definitive — break the loop
 }
@@ -1783,11 +1855,11 @@ mod tests {
     }
 
     /// The policy env parses to the tmux values, DEFAULTING to detach for anything unrecognized —
-    /// so a client only ever switches away on an EXPLICIT `next`/`previous`, never on a typo or an
-    /// unset env. REVERT-PROOF: drop the trim/lowercase and `"  NEXT "` stops matching; map the
+    /// so a client only ever switches away on an EXPLICIT `off`/`next`/`previous`, never on a typo or
+    /// an unset env. REVERT-PROOF: drop the trim/lowercase and `"  NEXT "` stops matching; map the
     /// wildcard to `Next` and the `"on"`/unset/bogus cases start switching.
     #[test]
-    fn the_detach_policy_env_defaults_to_detach_and_reads_next_previous() {
+    fn the_detach_policy_env_defaults_to_detach_and_reads_off_next_previous() {
         assert_eq!(parse_detach_on_destroy(None), DetachOnDestroy::Detach);
         assert_eq!(parse_detach_on_destroy(Some("on")), DetachOnDestroy::Detach);
         assert_eq!(parse_detach_on_destroy(Some("")), DetachOnDestroy::Detach);
@@ -1795,6 +1867,8 @@ mod tests {
             parse_detach_on_destroy(Some("sideways")),
             DetachOnDestroy::Detach
         );
+        assert_eq!(parse_detach_on_destroy(Some("off")), DetachOnDestroy::Off);
+        assert_eq!(parse_detach_on_destroy(Some(" OFF ")), DetachOnDestroy::Off);
         assert_eq!(parse_detach_on_destroy(Some("next")), DetachOnDestroy::Next);
         assert_eq!(
             parse_detach_on_destroy(Some("  NEXT ")),
@@ -1806,42 +1880,109 @@ mod tests {
         );
     }
 
-    /// The switch-to-next target is the LIST NEIGHBOUR (wrapping), or `None` (detach) for the detach
-    /// policy, the last remaining session, or a name already gone from the list. REVERT-PROOF: a step
-    /// of 0 or a missing wrap breaks the neighbour/wrap rows; returning `Some` for the `Detach`,
-    /// single-session, or absent-name cases fails a `None` assertion — each of which would turn a
-    /// safe detach into a wrong switch.
+    /// The `next`/`previous` target is the LIST NEIGHBOUR (wrapping), or `None` (detach) for the
+    /// detach policy, the last remaining session, or a name already gone from the list. `mru` is
+    /// ignored by these policies (passed empty). REVERT-PROOF: a step of 0 or a missing wrap breaks
+    /// the neighbour/wrap rows; returning `Some` for the `Detach`, single-session, or absent-name
+    /// cases fails a `None` assertion — each of which would turn a safe detach into a wrong switch.
     #[test]
-    fn destroy_successor_is_the_wrapping_list_neighbour_or_a_detach() {
+    fn destroy_successor_next_previous_is_the_wrapping_list_neighbour_or_a_detach() {
         let list = session_list(&["a", "b", "c"]);
         // Detach policy never switches.
-        assert_eq!(destroy_successor(DetachOnDestroy::Detach, &list, "b"), None);
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::Detach, &list, "b", &[]),
+            None
+        );
         // Next: the row below, wrapping the last back to the first.
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Next, &list, "a").as_deref(),
+            destroy_successor(DetachOnDestroy::Next, &list, "a", &[]).as_deref(),
             Some("b"),
         );
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Next, &list, "c").as_deref(),
+            destroy_successor(DetachOnDestroy::Next, &list, "c", &[]).as_deref(),
             Some("a"),
         );
         // Previous: the row above, wrapping the first back to the last.
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Previous, &list, "a").as_deref(),
+            destroy_successor(DetachOnDestroy::Previous, &list, "a", &[]).as_deref(),
             Some("c"),
         );
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Previous, &list, "b").as_deref(),
+            destroy_successor(DetachOnDestroy::Previous, &list, "b", &[]).as_deref(),
             Some("a"),
         );
         // Nothing to switch to → detach: the last session, or a name already off the list.
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Next, &session_list(&["only"]), "only"),
+            destroy_successor(DetachOnDestroy::Next, &session_list(&["only"]), "only", &[]),
             None,
         );
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Next, &list, "gone"),
+            destroy_successor(DetachOnDestroy::Next, &list, "gone", &[]),
             None
+        );
+    }
+
+    /// `off` prefers the MOST-RECENT OTHER visited session that is still live, then FALLS BACK to the
+    /// `next` list neighbour when none survives (so it still switches rather than detaching whenever
+    /// another session exists), then detaches only when `killed` is the last session. REVERT-PROOF:
+    /// remove the MRU walk and the first two rows drop to the list neighbour (b, not the MRU pick);
+    /// remove the `1` fallback (e.g. return None) and the "never visited another" row wrongly
+    /// detaches; keep the `len < 2` guard and the last-session row stays a detach.
+    #[test]
+    fn destroy_successor_off_prefers_the_mru_then_falls_back_to_the_neighbour() {
+        let list = session_list(&["a", "b", "c"]);
+        let mru = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+        // MRU front is the current (killed) session; the next entry is the most-recent OTHER — pick
+        // it even though the LIST neighbour of "a" would be "b".
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::Off, &list, "a", &mru(&["a", "c", "b"])).as_deref(),
+            Some("c"),
+            "off takes the most-recent other, not the list neighbour",
+        );
+        // The most-recent other ("c") is dead (not in the list) → skip it, take the next live MRU
+        // entry ("b").
+        let live = session_list(&["a", "b"]);
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::Off, &live, "a", &mru(&["a", "c", "b"])).as_deref(),
+            Some("b"),
+            "a dead MRU entry is skipped",
+        );
+        // Never visited another session (MRU holds only the killed one), but others exist → FALL
+        // BACK to the list neighbour rather than detach.
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::Off, &list, "a", &mru(&["a"])).as_deref(),
+            Some("b"),
+            "off falls back to the neighbour when no visited session survives",
+        );
+        // Truly the last session → detach even under off.
+        assert_eq!(
+            destroy_successor(
+                DetachOnDestroy::Off,
+                &session_list(&["only"]),
+                "only",
+                &mru(&["only"])
+            ),
+            None,
+            "off detaches only when there is no other session",
+        );
+    }
+
+    /// [`push_mru`] keeps a most-recent-first, deduplicated visit stack: a fresh name goes to the
+    /// front; a repeat MOVES to the front (never a duplicate). REVERT-PROOF: drop the `retain` and
+    /// the repeat leaves a duplicate + a stale earlier entry, failing the dedup/order assertions.
+    #[test]
+    fn push_mru_dedups_and_moves_to_front() {
+        let mut stack = Vec::new();
+        push_mru(&mut stack, "a");
+        push_mru(&mut stack, "b");
+        push_mru(&mut stack, "c");
+        assert_eq!(stack, vec!["c", "b", "a"], "most-recent-first");
+        // Re-visiting "a" moves it to the front and leaves no duplicate.
+        push_mru(&mut stack, "a");
+        assert_eq!(
+            stack,
+            vec!["a", "c", "b"],
+            "a repeat moves to front, no dupe"
         );
     }
 
@@ -2092,57 +2233,66 @@ mod tests {
         );
     }
 
-    /// The SWITCH policy's out-of-band trigger: a client whose session is killed while the daemon
-    /// serves on does NOT detach under `next`/`previous` — the poll thread FLAGS the loss and
-    /// repaints, so the UI-thread reconcile can switch-to-next instead. This is what distinguishes
-    /// [`handle_poll_error`]'s switch arm from the default detach.
+    /// EVERY switch policy's out-of-band trigger: a client whose session is killed while the daemon
+    /// serves on does NOT detach under `off`/`next`/`previous` — the poll thread FLAGS the loss and
+    /// repaints, so the UI-thread reconcile can switch instead. This is what distinguishes
+    /// [`handle_poll_error`]'s switch arm (gated on [`DetachOnDestroy::is_switch`]) from the default
+    /// detach — and looping ALL THREE is what pins the invariant: `off` was once missing from a
+    /// hand-listed `Next | Previous` guard and silently detached (a live smoke caught it); the
+    /// `is_switch` predicate + this loop mean a policy added later cannot be forgotten here.
     ///
-    /// REVERT-PROOF: delete the switch arm (so every definitive end calls `request_detach`) and
-    /// `quit` reads 1 while `lost` reads false — the client detaches where it should have switched;
-    /// keep it and the client leaves the poll WITHOUT quitting, flag raised, repaint fired.
+    /// REVERT-PROOF: delete the switch arm (so every definitive end calls `request_detach`) and each
+    /// iteration reads `quit == 1` / `lost == false`; drop a policy from `is_switch` and its row here
+    /// fails. Keep them and the client leaves the poll WITHOUT quitting, flag raised, repaint fired.
     #[test]
-    fn a_switch_policy_flags_a_lost_session_instead_of_detaching() {
-        let (conn, server, _guard, _seen) = a_session_killed_host_conn("switch-lost");
-        let quit = Arc::new(RecordingQuit::default());
-        let lost = Arc::new(AtomicBool::new(false));
-        let repaints = Arc::new(AtomicUsize::new(0));
-        let on_change: Arc<dyn Fn() + Send + Sync> = {
-            let repaints = Arc::clone(&repaints);
-            Arc::new(move || {
-                repaints.fetch_add(1, Ordering::SeqCst);
-            })
-        };
-        let stop = Arc::new(AtomicBool::new(false)); // NOT our teardown: the session was killed
-        let poll = spawn_poll(
-            conn,
-            Arc::new(Mutex::new(Vec::new())),
-            Arc::new(Mutex::new(Mirrored::default())),
-            Arc::new(Mutex::new(Vec::new())),
-            Arc::new(Mutex::new(Vec::new())),
-            on_change,
-            Arc::clone(&quit) as Arc<dyn QuitSink>,
-            DetachOnDestroy::Next,
-            Arc::clone(&lost),
-            Arc::clone(&stop),
-            0,
-        )
-        .expect("spawn the poll thread");
-        poll.join().expect("the poll thread exited");
-        server.join().expect("the server thread exited");
+    fn every_switch_policy_flags_a_lost_session_instead_of_detaching() {
+        for (policy, tag) in [
+            (DetachOnDestroy::Off, "switch-lost-off"),
+            (DetachOnDestroy::Next, "switch-lost-next"),
+            (DetachOnDestroy::Previous, "switch-lost-prev"),
+        ] {
+            let (conn, server, _guard, _seen) = a_session_killed_host_conn(tag);
+            let quit = Arc::new(RecordingQuit::default());
+            let lost = Arc::new(AtomicBool::new(false));
+            let repaints = Arc::new(AtomicUsize::new(0));
+            let on_change: Arc<dyn Fn() + Send + Sync> = {
+                let repaints = Arc::clone(&repaints);
+                Arc::new(move || {
+                    repaints.fetch_add(1, Ordering::SeqCst);
+                })
+            };
+            let stop = Arc::new(AtomicBool::new(false)); // NOT our teardown: the session was killed
+            let poll = spawn_poll(
+                conn,
+                Arc::new(Mutex::new(Vec::new())),
+                Arc::new(Mutex::new(Mirrored::default())),
+                Arc::new(Mutex::new(Vec::new())),
+                Arc::new(Mutex::new(Vec::new())),
+                on_change,
+                Arc::clone(&quit) as Arc<dyn QuitSink>,
+                policy,
+                Arc::clone(&lost),
+                Arc::clone(&stop),
+                0,
+            )
+            .expect("spawn the poll thread");
+            poll.join().expect("the poll thread exited");
+            server.join().expect("the server thread exited");
 
-        assert_eq!(
-            quit.0.load(Ordering::SeqCst),
-            0,
-            "a switch policy must NOT detach on an out-of-band session kill",
-        );
-        assert!(
-            lost.load(Ordering::SeqCst),
-            "it flags the lost session for the UI reconcile to switch-to-next",
-        );
-        assert!(
-            repaints.load(Ordering::SeqCst) >= 1,
-            "and repaints so the UI thread wakes to run that reconcile",
-        );
+            assert_eq!(
+                quit.0.load(Ordering::SeqCst),
+                0,
+                "{policy:?}: a switch policy must NOT detach on an out-of-band session kill",
+            );
+            assert!(
+                lost.load(Ordering::SeqCst),
+                "{policy:?}: it flags the lost session for the UI reconcile to switch",
+            );
+            assert!(
+                repaints.load(Ordering::SeqCst) >= 1,
+                "{policy:?}: and repaints so the UI thread wakes to run that reconcile",
+            );
+        }
     }
 
     /// Under a SWITCH policy, a DEAD HOST (the whole daemon gone, not merely our session) still
