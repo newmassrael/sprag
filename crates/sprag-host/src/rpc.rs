@@ -31,8 +31,8 @@ use std::sync::{Arc, Mutex};
 use pinion_core::SceneRevision;
 use pinion_rpc::preview::PreviewLedger;
 use pinion_rpc::{
-    DispatchContext, Request, RpcError, RpcFrame, RpcIngress, RpcReply, WaiterRegistry, dispatch,
-    dispatch_parsed, parse_request, try_async_wait_for,
+    ConnId, DispatchContext, Request, RpcError, RpcFrame, RpcIngress, RpcReply, WaiterRegistry,
+    dispatch, dispatch_parsed, parse_request, try_async_wait_for,
 };
 use sprag_terminal::{SessionRegistry, Workspace};
 
@@ -473,7 +473,9 @@ pub fn dispatch_frames(state: &HostState, rx: Receiver<RpcFrame>) {
 /// is why a scoped waitFor is accepted rather than refused — refusing would force every
 /// client to special-case the one method it scopes uniformly, and buy nothing.
 fn dispatch_one(state: &HostState, frame: RpcFrame) {
-    let RpcFrame { request, reply } = frame;
+    // A stateless ingress: sprag's dispatch does not (yet) consume the frame's
+    // `conn` (R-PR67 per-connection attribution), so it is dropped here.
+    let RpcFrame { request, reply, .. } = frame;
     match parse_request(&request) {
         Ok(parsed) => {
             let scope = match SessionScope::resolve(state.registry(), &parsed) {
@@ -511,6 +513,10 @@ fn dispatch_one(state: &HostState, frame: RpcFrame) {
 /// stdin transport ends, but any other transport (the socket) keeps the server
 /// alive. Blank lines are skipped.
 pub fn stdin_frames(input: impl BufRead, tx: &Sender<RpcFrame>) {
+    // The stdin reader is one logical connection, so every frame it produces
+    // carries the same, stable id (R-PR67) -- mirroring pinion's built-in
+    // stdin transport, which stamps its frames with its own single id.
+    let conn = ConnId::allocate();
     for line in input.lines() {
         let Ok(text) = line else {
             break;
@@ -525,7 +531,10 @@ pub fn stdin_frames(input: impl BufRead, tx: &Sender<RpcFrame>) {
                 let _ = out.flush();
             }
         });
-        if tx.send(RpcFrame::new(request.to_owned(), reply)).is_err() {
+        if tx
+            .send(RpcFrame::new(conn, request.to_owned(), reply))
+            .is_err()
+        {
             break;
         }
     }
@@ -1265,7 +1274,11 @@ mod tests {
     fn dispatch_recording(state: &HostState, request: &str, sink: &Arc<Mutex<Vec<String>>>) {
         dispatch_one(
             state,
-            RpcFrame::new(request.to_owned(), recording_reply(sink)),
+            RpcFrame::new(
+                ConnId::allocate(),
+                request.to_owned(),
+                recording_reply(sink),
+            ),
         );
     }
 
