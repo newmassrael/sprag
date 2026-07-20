@@ -30,6 +30,8 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use sprag_vt::Notification;
+
 use crate::pane_pty::{CommandBuilder, PanePty, PanePtyError, PanePtyHandle};
 
 /// A stable, monotonic identifier for a pane within a [`Workspace`].
@@ -110,6 +112,16 @@ impl Pane {
         self.pty.title()
     }
 
+    /// The most recent attention notification the child raised (`OSC 9` / `OSC 777;notify`
+    /// / `OSC 99`), or `None`, with its monotonic sequence — read LIVE from the emulator like
+    /// [`Self::title`]. A DISPLAY signal the multiplexer surfaces as "this pane wants
+    /// attention"; a client detects a NEW one via the sequence growing (see
+    /// [`sprag_vt::VtPort::notification`]).
+    #[must_use]
+    pub fn notification(&self) -> (Option<Notification>, u64) {
+        self.pty.notification()
+    }
+
     /// A cloneable I/O handle onto this pane's pseudoterminal.
     #[must_use]
     pub fn handle(&self) -> PanePtyHandle {
@@ -128,6 +140,14 @@ pub struct PaneInfo {
     /// The child's self-reported window title (`OSC 0` / `OSC 2`), `None` until it sets
     /// one. Live and child-controlled, so it is a DISPLAY name only — never identity.
     pub title: Option<String>,
+    /// The most recent attention notification the child raised (`OSC 9` / `OSC 777;notify`
+    /// / `OSC 99`), or `None`. A DISPLAY signal — the multiplexer's "this pane wants
+    /// attention" — never identity, exactly like [`Self::title`].
+    pub notification: Option<Notification>,
+    /// Monotonic count of notifications this pane's child has raised (`0` before the first).
+    /// A client that remembers the value it last saw learns a NEW notification arrived when
+    /// this grows — the payload alone cannot distinguish a re-raise of the same text.
+    pub notification_seq: u64,
 }
 
 /// The multiplexer's pane pool: a set of live panes, a monotonic id
@@ -378,12 +398,15 @@ impl Workspace {
             .iter()
             .map(|p| {
                 let (cols, rows) = p.pty.dimensions();
+                let (notification, notification_seq) = p.notification();
                 PaneInfo {
                     id: p.id.0,
                     cols,
                     rows,
                     command_label: p.command_label.clone(),
                     title: p.title(),
+                    notification,
+                    notification_seq,
                 }
             })
             .collect()

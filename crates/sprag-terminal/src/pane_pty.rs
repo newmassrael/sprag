@@ -21,7 +21,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use portable_pty::{Child, PtySize, native_pty_system};
-use sprag_vt::{Emulator, InputModes, Screen, VtPort};
+use sprag_vt::{Emulator, InputModes, Notification, Screen, VtPort};
 
 // Re-exported so callers build commands without depending on portable-pty
 // directly (it is an implementation detail of the PTY seam).
@@ -315,6 +315,17 @@ impl PanePty {
     #[must_use]
     pub fn title(&self) -> Option<String> {
         lock(&self.emulator).title().map(str::to_owned)
+    }
+
+    /// The most recent attention notification the child raised (`OSC 9` / `OSC 777;notify`
+    /// / `OSC 99`), or `None`, paired with its monotonic sequence — see
+    /// [`VtPort::notification`]. Owned, read out from under the emulator lock in ONE take so
+    /// the payload and its sequence are consistent (a consumer detects a new one via the
+    /// sequence growing, so they must not tear).
+    #[must_use]
+    pub fn notification(&self) -> (Option<Notification>, u64) {
+        let emu = lock(&self.emulator);
+        (emu.notification().cloned(), emu.notification_seq())
     }
 
     /// An owned snapshot of the current screen.

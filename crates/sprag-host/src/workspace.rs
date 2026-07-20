@@ -614,7 +614,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                 let entries = panes
                     .iter()
                     .map(|p| {
-                        serde_json::json!({
+                        let mut entry = serde_json::json!({
                             "id": p.id,
                             "cols": p.cols,
                             "rows": p.rows,
@@ -623,7 +623,20 @@ impl ExternalIntrospect for WorkspaceExternal {
                             // one. A DISPLAY name (a client prefers it over the command
                             // label and falls back); never identity — the child sets it.
                             "title": p.title,
-                        })
+                        });
+                        // The most recent attention notification (OSC 9 / 777;notify / 99),
+                        // with its monotonic `seq`. ADDITIVE: the key is present only when the
+                        // child has raised one, so a pane that never did is byte-identical to
+                        // the pre-notification wire shape. A client detects a NEW one by the
+                        // `seq` growing past the last it acknowledged (the attention badge).
+                        if let Some(note) = &p.notification {
+                            entry["notification"] = serde_json::json!({
+                                "title": note.title,
+                                "body": note.body,
+                                "seq": p.notification_seq,
+                            });
+                        }
+                        entry
                     })
                     .collect();
                 Some(IntrospectValue::Json(Value::Array(entries)))

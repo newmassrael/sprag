@@ -21,8 +21,8 @@ use termwiz::escape::parser::Parser;
 use termwiz::escape::{Action, ControlCode, OperatingSystemCommand};
 
 use crate::port::{
-    Attrs, Cell, Color, Cursor, CursorShape, InputModes, Rgb, Screen, ScreenKind, VtPort, Width,
-    char_columns,
+    Attrs, Cell, Color, Cursor, CursorShape, InputModes, Notification, Rgb, Screen, ScreenKind,
+    VtPort, Width, char_columns,
 };
 
 /// A terminal emulator: feed PTY bytes via [`VtPort::advance`], read the
@@ -54,6 +54,16 @@ pub struct Emulator {
     /// needless cell re-render. The change still reaches consumers because the OSC
     /// bytes arrive as PTY output, which already fires the session's `on_dirty`.
     title: Option<String>,
+    /// The most recent attention notification the child raised (`OSC 9` / `OSC
+    /// 777;notify` / `OSC 99`), or `None`. Latched (last wins), exposed via
+    /// [`VtPort::notification`]. Like [`Self::title`] it deliberately does NOT bump
+    /// [`Self::generation`] — it carries no cells — and reaches consumers because the
+    /// OSC bytes arrive as PTY output, which already fires the session's `on_dirty`.
+    notification: Option<Notification>,
+    /// Monotonic count of notifications raised (`0` before the first), exposed via
+    /// [`VtPort::notification_seq`]. Bumped once per captured notification so a
+    /// consumer can tell a NEW one from a re-read of the same latched payload.
+    notification_seq: u64,
     /// Monotonic damage stamp, bumped on every row-mutating action.
     generation: u64,
     /// `true` between a resize and the next batch of bytes — the window in which a
@@ -107,6 +117,8 @@ impl Emulator {
             attrs: Attrs::default(),
             input_modes: InputModes::default(),
             title: None,
+            notification: None,
+            notification_seq: 0,
             generation: 0,
             in_resize_redraw: false,
         }
@@ -130,18 +142,24 @@ impl Emulator {
         }
     }
 
-    /// Operating-system commands. Only the WINDOW-TITLE family is in the subset:
-    /// `OSC 0` (icon name AND window title) and `OSC 2` (window title), plus termwiz's
-    /// Sun-style `OSC 2` spelling. `OSC 1` sets only the ICON name — not a window
-    /// title — so it is ignored, as is every other OSC (hyperlinks, clipboard,
-    /// colour queries): unhandled sequences are dropped, per the skeleton contract.
+    /// Operating-system commands. Two families are in the subset:
     ///
-    /// The title is CLAMPED to [`MAX_TITLE_BYTES`] ([`clamp_title`]): it is a
-    /// child-controlled string, and the underlying `vtparse` bounds the OSC parameter
-    /// COUNT, not the payload BYTE length — so a hostile/buggy child could otherwise
-    /// buffer an arbitrarily large title that is then stored, re-cloned every poll wake,
-    /// and shipped over the wire uncapped. This mirrors the `RAW_CAPTURE_CAP` bound on the
-    /// sibling child-controlled buffer.
+    /// * the WINDOW-TITLE family — `OSC 0` (icon name AND window title) and `OSC 2`
+    ///   (window title), plus termwiz's Sun-style spelling. `OSC 1` sets only the ICON
+    ///   name — not a window title — so it is ignored.
+    /// * the ATTENTION-NOTIFICATION family — `OSC 9` (iTerm2/xterm `SystemNotification`),
+    ///   `OSC 777;notify;title;body` (urxvt), and `OSC 99` (kitty) — captured as a
+    ///   [`Notification`] the multiplexer surfaces as "this pane wants attention".
+    ///
+    /// Every other OSC (hyperlinks, clipboard, colour queries) is dropped, per the
+    /// skeleton contract.
+    ///
+    /// Child-controlled strings (the title, and each notification field) are CLAMPED
+    /// ([`clamp_title`] / [`MAX_NOTIFICATION_BYTES`]): the underlying `vtparse` bounds
+    /// the OSC parameter COUNT, not the payload BYTE length, so an uncapped store would
+    /// let a hostile/buggy child buffer an arbitrarily large string that is then cloned
+    /// every poll wake and shipped over the wire. This mirrors the `RAW_CAPTURE_CAP`
+    /// bound on the sibling child-controlled buffer.
     fn osc(&mut self, osc: &OperatingSystemCommand) {
         match osc {
             OperatingSystemCommand::SetWindowTitle(t)
@@ -149,8 +167,46 @@ impl Emulator {
             | OperatingSystemCommand::SetIconNameAndWindowTitle(t) => {
                 self.title = Some(clamp_title(t));
             }
+            // OSC 9 — the iTerm2/xterm growl notification: a single message, no title.
+            // (termwiz routes `OSC 9;4;…` ConEmu progress to its own variant, so a
+            // `SystemNotification` reaching here is always a genuine notification.)
+            OperatingSystemCommand::SystemNotification(message) => {
+                self.raise_notification(None, message);
+            }
+            // OSC 777 — urxvt's extension family; `notify` is its desktop notification,
+            // `OSC 777 ; notify ; <title> ; <body>` (body optional). Any other urxvt
+            // extension is ignored.
+            OperatingSystemCommand::RxvtExtension(params) => {
+                if let Some(kind) = params.first()
+                    && kind == "notify"
+                {
+                    let title = params.get(1).map(String::as_str);
+                    let body = params.get(2).map(String::as_str).unwrap_or("");
+                    self.raise_notification(title, body);
+                }
+            }
+            // OSC 99 — kitty's desktop-notification protocol. termwiz does not model it,
+            // so it arrives as `Unspecified` raw params. [`parse_kitty_notification`]
+            // handles the common single-chunk, unencoded case (see its doc for the
+            // bounds); a multi-chunk or base64 payload is left uncaptured, not misparsed.
+            OperatingSystemCommand::Unspecified(params) => {
+                if let Some((title, body)) = parse_kitty_notification(params) {
+                    self.raise_notification(title.as_deref(), &body);
+                }
+            }
             _ => {}
         }
+    }
+
+    /// Latch a captured attention notification (clamping both child-controlled fields)
+    /// and bump the monotonic sequence so a consumer can tell it is new. Shared by every
+    /// notification OSC so the clamp + counter live in ONE place.
+    fn raise_notification(&mut self, title: Option<&str>, body: &str) {
+        self.notification = Some(Notification {
+            title: title.map(|t| clamp_bytes(t, MAX_NOTIFICATION_BYTES)),
+            body: clamp_bytes(body, MAX_NOTIFICATION_BYTES),
+        });
+        self.notification_seq += 1;
     }
 
     fn control(&mut self, code: ControlCode) {
@@ -479,6 +535,72 @@ impl VtPort for Emulator {
     fn title(&self) -> Option<&str> {
         self.title.as_deref()
     }
+
+    fn notification(&self) -> Option<&Notification> {
+        self.notification.as_ref()
+    }
+
+    fn notification_seq(&self) -> u64 {
+        self.notification_seq
+    }
+}
+
+/// Parse a kitty `OSC 99` desktop notification from termwiz's raw `Unspecified` params
+/// (`[b"99", b"<metadata>", b"<payload>", …]`), returning `(title, body)` or `None` when it
+/// is not an `OSC 99` or carries no capturable text.
+///
+/// Kitty's form is `OSC 99 ; <metadata> ; <payload>`, where `<metadata>` is `k=v:k=v` pairs.
+/// This handles the COMMON single-chunk case and reads two keys:
+///
+/// * `p` — payload type: `title` (kitty's default) or `body`; other types (`icon`, `close`,
+///   `buttons`, …) are not text to show, so they are dropped.
+/// * `e` — encoding: `1` means the payload is base64. sprag has no base64 decoder in this
+///   layer, so an encoded payload is dropped rather than shown as gibberish.
+///
+/// BOUNDS (honestly limited, not misrepresented): a MULTI-CHUNK notification (`d=0`, streamed
+/// across several `OSC 99`s) is NOT reassembled — each chunk is read independently, so a body
+/// split across chunks yields only its first piece; `i`/`d`/actions are ignored. These are the
+/// advanced-protocol tail; the single unencoded chunk is what shells and CLIs emit in practice.
+fn parse_kitty_notification(params: &[Vec<u8>]) -> Option<(Option<String>, String)> {
+    // Only OSC 99; anything else in `Unspecified` is some other unhandled OSC.
+    if params.first().map(Vec::as_slice) != Some(b"99".as_slice()) {
+        return None;
+    }
+    let metadata = params.get(1).map(Vec::as_slice).unwrap_or(b"");
+    // The payload is everything after the second `;`; termwiz split it on `;`, so rejoin
+    // (a plain-text payload may itself contain a semicolon).
+    if params.len() < 3 {
+        return None;
+    }
+    let payload_bytes = params[2..].join(&b';');
+    let payload = String::from_utf8_lossy(&payload_bytes);
+
+    let mut payload_type = "title"; // kitty's default when `p` is absent.
+    let mut base64 = false;
+    for pair in metadata.split(|&b| b == b':') {
+        let mut kv = pair.splitn(2, |&b| b == b'=');
+        let key = kv.next().unwrap_or(b"");
+        let value = kv.next().unwrap_or(b"");
+        match key {
+            b"p" => {
+                payload_type = match value {
+                    b"body" => "body",
+                    b"title" => "title",
+                    _ => return None, // icon / close / buttons / … : nothing to display.
+                };
+            }
+            b"e" if value == b"1" => base64 = true,
+            _ => {}
+        }
+    }
+    if base64 {
+        return None; // encoded payload: not decoded in this layer (see the doc bound).
+    }
+    match payload_type {
+        "body" => Some((None, payload.into_owned())),
+        // Default / explicit title: the heading, with no separate body in this chunk.
+        _ => Some((Some(payload.into_owned()), String::new())),
+    }
 }
 
 /// Upper bound on a stored child window title. A title is a single taskbar / titlebar
@@ -487,17 +609,29 @@ impl VtPort for Emulator {
 /// respects a UTF-8 boundary.
 const MAX_TITLE_BYTES: usize = 2048;
 
-/// Clamp a child-set title to [`MAX_TITLE_BYTES`], truncating on a char boundary so the
-/// stored `String` stays valid UTF-8. Most titles are far under the cap and clone as-is.
+/// Upper bound on a stored notification field (title or body). A notification is a short
+/// desktop toast, so the same few-KiB budget as a window title is generous; the cap exists
+/// for the same reason (a child-controlled string stored, cloned per poll wake, and shipped
+/// over the wire must be bounded — see [`Emulator::osc`]).
+const MAX_NOTIFICATION_BYTES: usize = 2048;
+
+/// Clamp a child-set title to [`MAX_TITLE_BYTES`].
 fn clamp_title(t: &str) -> String {
-    if t.len() <= MAX_TITLE_BYTES {
-        return t.to_owned();
+    clamp_bytes(t, MAX_TITLE_BYTES)
+}
+
+/// Clamp a child-controlled `String` to `max` BYTES, truncating on a char boundary so the
+/// stored value stays valid UTF-8. Most values are far under the cap and clone as-is. Shared
+/// by the window title and the notification fields — both are unbounded child input.
+fn clamp_bytes(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_owned();
     }
-    let mut end = MAX_TITLE_BYTES;
-    while end > 0 && !t.is_char_boundary(end) {
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
         end -= 1;
     }
-    t[..end].to_owned()
+    s[..end].to_owned()
 }
 
 /// Convert a termwiz `ColorSpec` to the port's `Color`.
@@ -689,6 +823,114 @@ mod tests {
             em.screen().row_generation(0).unwrap(),
             g0,
             "a title-only OSC leaves row damage untouched",
+        );
+    }
+
+    /// `OSC 9` (iTerm2/xterm) raises a body-only notification and bumps the sequence, so a
+    /// consumer can tell a new one arrived.
+    #[test]
+    fn osc_9_raises_a_body_only_notification() {
+        let mut em = Emulator::new(8, 2);
+        assert_eq!(em.notification(), None, "none until the child raises one");
+        assert_eq!(em.notification_seq(), 0);
+
+        em.advance(b"\x1b]9;build finished\x07");
+        let n = em.notification().expect("notification set");
+        assert_eq!(n.title, None, "OSC 9 carries no title");
+        assert_eq!(n.body, "build finished");
+        assert_eq!(em.notification_seq(), 1, "the sequence bumped once");
+
+        // A second one latches over the first and bumps the sequence again.
+        em.advance(b"\x1b]9;tests passed\x07");
+        assert_eq!(
+            em.notification().unwrap().body,
+            "tests passed",
+            "latest wins"
+        );
+        assert_eq!(em.notification_seq(), 2);
+    }
+
+    /// `OSC 777;notify;<title>;<body>` (urxvt) raises a titled notification; a non-`notify`
+    /// urxvt extension raises nothing (only the notification sub-command is in the subset).
+    #[test]
+    fn osc_777_notify_raises_a_titled_notification() {
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b]777;notify;Build;done in 3s\x07");
+        let n = em.notification().expect("notification set");
+        assert_eq!(n.title.as_deref(), Some("Build"));
+        assert_eq!(n.body, "done in 3s");
+        assert_eq!(em.notification_seq(), 1);
+
+        // A different urxvt extension (not `notify`) is ignored — no new notification.
+        em.advance(b"\x1b]777;something;else\x07");
+        assert_eq!(
+            em.notification_seq(),
+            1,
+            "a non-notify OSC 777 raises nothing",
+        );
+    }
+
+    /// `OSC 99` (kitty): the default single-chunk payload is the TITLE; an explicit
+    /// `p=body` payload is the BODY. The advanced tail (base64 `e=1`, non-text `p`) captures
+    /// nothing rather than misparsing.
+    #[test]
+    fn osc_99_kitty_notification_maps_the_payload_by_type() {
+        let mut em = Emulator::new(8, 2);
+        // No metadata ⇒ kitty's default p=title.
+        em.advance(b"\x1b]99;;Attention needed\x07");
+        let n = em.notification().expect("title notification");
+        assert_eq!(n.title.as_deref(), Some("Attention needed"));
+        assert_eq!(n.body, "", "a title-only chunk has no body");
+        assert_eq!(em.notification_seq(), 1);
+
+        // Explicit p=body.
+        em.advance(b"\x1b]99;p=body;the message\x07");
+        let n = em.notification().expect("body notification");
+        assert_eq!(n.title, None);
+        assert_eq!(n.body, "the message");
+        assert_eq!(em.notification_seq(), 2);
+
+        // A base64-encoded payload is NOT decoded here — it must not be shown as gibberish,
+        // and it must not bump the sequence (nothing was captured).
+        em.advance(b"\x1b]99;e=1;aGk=\x07");
+        assert_eq!(
+            em.notification_seq(),
+            2,
+            "an encoded payload is dropped, not misparsed",
+        );
+        // A non-text payload type (e.g. an icon) captures nothing either.
+        em.advance(b"\x1b]99;p=icon;whatever\x07");
+        assert_eq!(em.notification_seq(), 2, "a non-text p= is ignored");
+    }
+
+    /// A notification carries NO cells, so — like the title — it must not stamp ROW DAMAGE.
+    /// It still reaches consumers because the OSC bytes are PTY output (which fires `on_dirty`).
+    #[test]
+    fn a_notification_does_not_bump_the_damage_generation() {
+        let mut em = Emulator::new(8, 2);
+        let g0 = em.screen().row_generation(0).unwrap();
+        em.advance(b"\x1b]9;ping\x07");
+        assert_eq!(em.notification().unwrap().body, "ping");
+        assert_eq!(
+            em.screen().row_generation(0).unwrap(),
+            g0,
+            "a notification OSC leaves row damage untouched",
+        );
+    }
+
+    /// Both notification fields are child-controlled, so both are CLAMPED like the title —
+    /// on a UTF-8 char boundary, so an oversized payload cannot store an invalid `String`.
+    #[test]
+    fn a_hostile_oversized_notification_is_clamped() {
+        let mut em = Emulator::new(8, 2);
+        let payload = "é".repeat(4000); // 8000 bytes, over the cap
+        em.advance(format!("\x1b]777;notify;{payload};{payload}\x07").as_bytes());
+        let n = em.notification().expect("notification set");
+        let title = n.title.as_deref().expect("titled");
+        assert!(title.len() <= MAX_NOTIFICATION_BYTES && n.body.len() <= MAX_NOTIFICATION_BYTES);
+        assert!(
+            title.chars().all(|c| c == 'é') && n.body.chars().all(|c| c == 'é'),
+            "truncated on a char boundary — no split/replacement char",
         );
     }
 

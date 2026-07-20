@@ -44,13 +44,20 @@ impl Drop for HostChild {
 /// Returns the guard and the path, so a caller never names a socket itself: hand-rolling one
 /// is exactly how three of these tests used to collide (below).
 fn spawn_host() -> (HostChild, PathBuf) {
+    spawn_host_running(&["cat"])
+}
+
+/// Like [`spawn_host`] but the boot pane runs `program [args…]` instead of `cat` — for the tests
+/// that need the child to EMIT something (an OSC notification), not just echo. `sprag-term`'s
+/// `-- <program> [args…]` contract sets the boot command.
+fn spawn_host_running(program_and_args: &[&str]) -> (HostChild, PathBuf) {
     let sock = socket_path();
     let _ = std::fs::remove_file(&sock);
     let child = Command::new(env!("CARGO_BIN_EXE_sprag-term"))
         .arg("--size")
         .arg("40x6")
         .arg("--")
-        .arg("cat")
+        .args(program_and_args)
         .env("SPRAG_HOST_RPC_SOCK", &sock)
         .env("SPRAG_HOST_RPC", "1")
         .stdin(Stdio::null())
@@ -916,6 +923,49 @@ fn the_clients_slot_lists_attached_clients_and_releases_them_over_the_real_socke
     );
 
     let _ = std::fs::remove_file(&sock);
+}
+
+/// An attention notification (`OSC 9`) a CHILD raises reaches the wire `panes` slot as
+/// `{notification: {title, body, seq}}` — the deliverable behind the pane attention badge.
+///
+/// The boot pane runs a shell that emits `OSC 9 ; from-child BEL` once, then sleeps to hold the
+/// session open. The bytes flow through the REAL pipeline (child stdout -> PTY -> emulator OSC
+/// parse -> latched notification -> panes slot), so this pins the whole vertical, not the unit
+/// parse. Polled, because the child's first write and the reader thread applying it are async.
+#[test]
+fn a_child_raised_osc_9_notification_reaches_the_panes_slot() {
+    let (_host, sock) =
+        spawn_host_running(&["sh", "-c", "printf '\\033]9;from-child\\007'; sleep 30"]);
+    let mut conn =
+        HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the spawned host");
+
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            notification_of(&mut conn).is_some_and(|(title, body, seq)| {
+                title.is_none() && body == "from-child" && seq >= 1
+            })
+        }),
+        "the child's OSC 9 must surface on the panes slot as a body-only notification",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// The boot pane's `(title, body, seq)` notification off the `panes` slot, or `None` when it has
+/// none — the wire shape a client's attention badge reads.
+fn notification_of(conn: &mut HostConn) -> Option<(Option<String>, String, u64)> {
+    let panes = conn
+        .call(
+            "scene/query",
+            json!({ "path": mux_action_path(PANES_SLOT) }),
+        )
+        .ok()?;
+    let note = panes.as_array()?.first()?.get("notification")?;
+    Some((
+        note["title"].as_str().map(str::to_owned),
+        note["body"].as_str()?.to_owned(),
+        note["seq"].as_u64()?,
+    ))
 }
 
 /// The `clients` slot as `(client, session)` pairs — the wire shape `sprag list-clients` parses.

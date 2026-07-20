@@ -199,8 +199,10 @@ fn tools_list() -> Value {
             {
                 "name": "list_panes",
                 "description": "List the sibling terminal panes in this sprag window, \
-                    with their 1-based number, host id, size, running command, and live \
-                    window title. Call this first to learn which number is which pane.",
+                    with their 1-based number, host id, size, running command, live \
+                    window title, and the most recent attention notification a pane \
+                    raised (OSC 9 / 777 / 99), if any. Call this first to learn which \
+                    number is which pane.",
                 "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
             },
             {
@@ -305,6 +307,10 @@ struct PaneInfo {
     command: String,
     cols: u64,
     rows: u64,
+    /// The most recent attention notification the pane's child raised (`OSC 9` / `OSC
+    /// 777;notify` / `OSC 99`), as a single display line, or `None` if it raised none — so an
+    /// agent watching sibling panes learns which one wants attention.
+    notification: Option<String>,
 }
 
 fn tool_list_panes() -> Result<String, String> {
@@ -323,6 +329,11 @@ fn tool_list_panes() -> Result<String, String> {
             "  pane {}: id={} {}x{} command={} title={}\n",
             pane.number, pane.id, pane.cols, pane.rows, pane.command, title
         ));
+        // Surface an attention notification on its own indented line, so an agent scanning the
+        // list sees which sibling raised one (OSC 9 / 777;notify / 99).
+        if let Some(note) = &pane.notification {
+            out.push_str(&format!("      notification: {note}\n"));
+        }
     }
     Ok(out)
 }
@@ -453,8 +464,25 @@ fn query_panes() -> Result<Vec<PaneInfo>, String> {
                 .to_owned(),
             cols: pane.get("cols").and_then(Value::as_u64).unwrap_or(0),
             rows: pane.get("rows").and_then(Value::as_u64).unwrap_or(0),
+            notification: pane.get("notification").map(notification_line),
         })
         .collect())
+}
+
+/// Format the panes slot's `notification` object (`{title, body, seq}`) into one display line —
+/// `"title" — body` when both are present, just the body or title otherwise. Missing fields fall
+/// away so a title-only (kitty) or body-only (OSC 9) notification reads cleanly.
+fn notification_line(note: &Value) -> String {
+    let title = note
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let body = note.get("body").and_then(Value::as_str).unwrap_or_default();
+    match (title.is_empty(), body.is_empty()) {
+        (false, false) => format!("{title:?} — {body}"),
+        (false, true) => format!("{title:?}"),
+        _ => body.to_owned(),
+    }
 }
 
 /// One request to the host over a fresh connection, mapping every failure to a

@@ -194,6 +194,25 @@ pub struct InputModes {
     pub application_cursor_keys: bool,
 }
 
+/// A desktop-style ATTENTION notification a child raised out-of-band — an
+/// `OSC 9` (iTerm2/xterm `SystemNotification`), an `OSC 777;notify;…` (urxvt),
+/// or an `OSC 99` (kitty) — captured so the multiplexer can surface "this pane
+/// wants attention" (the tmux bell / cmux "N notifications" analog).
+///
+/// A DISPLAY signal, never identity — a child sets it freely, exactly like the
+/// window [`title`](VtPort::title). Both fields are child-controlled and clamped
+/// (see [`crate::emulator`]). `title` is the short heading (`None` for `OSC 9`,
+/// which carries only a message); `body` is the message text (which may be empty
+/// for a kitty title-only notification).
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Notification {
+    /// The notification's short heading, or `None` when the source carried only a
+    /// message body (`OSC 9`).
+    pub title: Option<String>,
+    /// The notification's message text. May be empty (a kitty title-only chunk).
+    pub body: String,
+}
+
 /// A queryable terminal screen: a `cols x rows` grid of cells plus the
 /// cursor, screen kind, and per-row damage generations.
 ///
@@ -667,6 +686,20 @@ pub trait VtPort {
     /// surface prefers this and falls back to a stable name; pane IDENTITY (tags,
     /// panel ids) never derives from it, since a child controls it freely.
     fn title(&self) -> Option<&str>;
+
+    /// The MOST RECENT attention [`Notification`] the child raised (`OSC 9` / `OSC
+    /// 777;notify` / `OSC 99`), or `None` if it never raised one. LATCHED (last
+    /// value wins) like [`title`](Self::title), so a consumer that wants to detect a
+    /// NEW one pairs it with [`notification_seq`](Self::notification_seq) rather than
+    /// re-reading the payload.
+    fn notification(&self) -> Option<&Notification>;
+
+    /// A monotonic counter bumped once per attention notification raised — `0` before
+    /// the first. A consumer that remembers the last value it saw learns a NEW
+    /// notification arrived when this grows (the payload alone cannot distinguish a
+    /// re-raise of the same text). The multiplexer's "unseen attention" badge is this
+    /// minus the last value a viewer acknowledged.
+    fn notification_seq(&self) -> u64;
 }
 
 #[cfg(test)]
