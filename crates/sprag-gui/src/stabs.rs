@@ -1,8 +1,19 @@
 //! The session SIDEBAR (cmux "workspaces" / tmux sessions): a fixed-width VERTICAL rail down the
 //! left of the window, one row per session of the daemon, the attached one highlighted — click a
 //! row's BODY to SWITCH this client to that session IN PLACE (tmux `switch-client`), or its "×" to
-//! KILL that session (tmux `kill-session`; killing the ATTACHED session detaches this client), plus
-//! a "+" at the bottom (tmux `new-session`).
+//! ARM a kill of that session — confirmed by a `kill '<name>'?` prompt that replaces the "+" footer
+//! (tmux `kill-session`; killing the ATTACHED session detaches this client) — plus a "+" at the
+//! bottom (tmux `new-session`).
+//!
+//! The kill is DELIBERATELY TWO-STEP: the "×" only captures the session NAME
+//! ([`use_pending_kill`]) and the confirm acts on that captured name, so a REORDERING of the list
+//! between paint and confirm cannot redirect the kill onto a different row — it kills what the prompt
+//! NAMES, not a re-resolved row index. Two inherent residuals remain, both narrow and pre-existing to
+//! the sidebar's name-addressing (there is no stable session id on the wire): (1) NAME REUSE — if the
+//! captured session is killed and a NEW one takes its name before the confirm, the confirm hits the
+//! new bearer of that name (the prompt cannot tell them apart); (2) a captured session that simply
+//! VANISHES leaves a stale prompt, whose confirm is then a benign host no-op and which any next
+//! action clears.
 //!
 //! The orthogonal axis to [`wtabs`](crate::wtabs): that draws the current SESSION's windows across
 //! the top; this draws every SESSION down the side. Together they mirror tmux's sessions ⊃ windows
@@ -21,6 +32,7 @@
 //! a fire-only-on-change selector would silence a re-click on the already-selected row — and the
 //! attached session can move out of band (another client, the `sprag` CLI creating one).
 
+use pinion_core::reactive::{Owner, Signal};
 use pinion_core::scene::{ContainerNode, Rect, TextNode};
 use pinion_core::style::{
     AlignItems, BoxStyle, FlexDirection, JustifyContent, LayoutStyle, Size, SizeValue, TextStyle,
@@ -39,12 +51,33 @@ const NEW_SESSION_TAG: &str = "sprag_gui.snew";
 /// The per-row SWITCH tag prefix; row `i`'s body (a click switches this client to it) is tagged
 /// `{ROW_TAG_PREFIX}{i}`.
 const ROW_TAG_PREFIX: &str = "sprag_gui.stab.";
-/// The per-row KILL tag prefix; row `i`'s "×" (a click kills that session) is tagged
-/// `{KILL_TAG_PREFIX}{i}`. Distinct from [`ROW_TAG_PREFIX`] (`stab` vs `skill`) so the reducer
-/// routes a body click to a SWITCH and an "×" click to a KILL, never confusing the two.
+/// The per-row KILL tag prefix; row `i`'s "×" (a click ARMS a kill of that session, awaiting
+/// confirmation) is tagged `{KILL_TAG_PREFIX}{i}`. Distinct from [`ROW_TAG_PREFIX`] (`stab` vs
+/// `skill`) so the reducer routes a body click to a SWITCH and an "×" click to a KILL-arm, never
+/// confusing the two.
 const KILL_TAG_PREFIX: &str = "sprag_gui.skill.";
+/// The "Kill" confirm button tag (shown only while a kill is pending) — CONFIRMS the armed kill.
+const CONFIRM_KILL_TAG: &str = "sprag_gui.skillok";
+/// The "Cancel" button tag (shown only while a kill is pending) — DISARMS the pending kill.
+const CANCEL_KILL_TAG: &str = "sprag_gui.skillno";
+/// [`Owner::cache`] key for the [`use_pending_kill`] capture.
+const PENDING_KILL_KEY: &str = "sprag_gui.stab.pending_kill";
 /// The event a [`ButtonExternal`] emits on activation — pinion scopes it as `{tag}.click`.
 const CLICK_EVENT: &str = "click";
+
+/// The session NAME a kill is PENDING confirmation on — captured at "×"-click time (client-local,
+/// [`Owner::cache`], the [`ctxmenu`](crate::ctxmenu) `use_target_pane` pattern), `None` when no kill
+/// is pending. The confirmation strip DISPLAYS this name and the confirm ACTS on it — never a
+/// re-resolved row index — so a session list that moved out of band between the "×" click and the
+/// confirmation cannot kill the wrong session (the destructive stale-index bound the two-step flow
+/// closes). Reading it in the paint subscribes the sidebar so setting it repaints the strip.
+fn use_pending_kill() -> Signal<Option<String>> {
+    Owner::current()
+        .expect("use_pending_kill() requires an active Owner scope")
+        .cache(PENDING_KILL_KEY, || Signal::new(None))
+        .as_ref()
+        .clone()
+}
 
 /// The fixed cap on session rows the rail can route. The per-row [`ButtonExternal`]s are registered
 /// ONCE at fixed tags `{ROW_TAG_PREFIX}0..CAP` — a count that changed per session would have its
@@ -63,7 +96,7 @@ const ROW_HEIGHT: u32 = 44;
 
 /// The fixed width in logical pixels of a row's "×" kill hit-target, on the right edge of the row.
 /// The switch body flex-grows to fill the rest of the rail, so a click anywhere but the "×"
-/// switches and only the "×" kills.
+/// switches and only the "×" arms a kill (confirmed via the footer prompt).
 const KILL_WIDTH: u32 = 28;
 
 /// The row-SWITCH button tag for row `i` (its body).
@@ -77,11 +110,13 @@ fn kill_tag(i: usize) -> String {
 }
 
 /// The session-rail EXTRA externals: per possible row a SWITCH button (its body) AND a KILL button
-/// (its "×"), plus the "+" new-session action — all at FIXED tags (preserved across the
-/// dynamic-external reconcile by tag, like the window tab strip and the context menu). See the
-/// module docs for why they are per-row buttons.
+/// (its "×"), plus the "+" new-session action and the kill CONFIRM / CANCEL buttons — all at FIXED
+/// tags (preserved across the dynamic-external reconcile by tag, like the window tab strip and the
+/// context menu). The confirm / cancel buttons are registered ALWAYS (fixed tags) but only PAINTED
+/// while a kill is pending, exactly as the context-menu external is always registered and painted
+/// only when open. See the module docs for why they are per-row buttons.
 pub(crate) fn create_session_externals() -> Vec<ExtraExternal> {
-    let mut externals = Vec::with_capacity(2 * MAX_SESSION_TABS + 1);
+    let mut externals = Vec::with_capacity(2 * MAX_SESSION_TABS + 3);
     for i in 0..MAX_SESSION_TABS {
         externals.push(ExtraExternal::new(
             row_tag(i),
@@ -92,17 +127,20 @@ pub(crate) fn create_session_externals() -> Vec<ExtraExternal> {
             Box::new(ButtonExternal::new()),
         ));
     }
-    externals.push(ExtraExternal::new(
-        NEW_SESSION_TAG.to_owned(),
-        Box::new(ButtonExternal::new()),
-    ));
+    for tag in [NEW_SESSION_TAG, CONFIRM_KILL_TAG, CANCEL_KILL_TAG] {
+        externals.push(ExtraExternal::new(
+            tag.to_owned(),
+            Box::new(ButtonExternal::new()),
+        ));
+    }
     externals
 }
 
-/// The session sidebar: a Column of one row per live session (the attached one highlighted)
-/// followed by the "+" new-session button. Reads the session list + current session off the
-/// [`SlotView`] mirror (no socket call — the paint path). Mounted ONLY on the main window (via
-/// [`view::compose`](crate::view)).
+/// The session sidebar: a Column of one row per live session (the attached one highlighted) closed
+/// by either the "+" new-session button OR — while a kill is pending — the kill CONFIRMATION strip.
+/// Reads the session list + current session off the [`SlotView`] mirror and the pending-kill capture
+/// off [`use_pending_kill`] (subscribing the paint, so arming / clearing it repaints) — no socket
+/// call on the paint path. Mounted ONLY on the main window (via [`view::compose`](crate::view)).
 pub(crate) fn view_session_sidebar(slots: &SlotView, theme: &Theme) -> Scene {
     let sessions = slots.sessions();
     let current = slots.current_session();
@@ -120,7 +158,12 @@ pub(crate) fn view_session_sidebar(slots: &SlotView, theme: &Theme) -> Scene {
             theme,
         ));
     }
-    children.push(new_session_node(theme));
+    // The footer: the "Kill '<name>'?" confirmation while a kill is pending (it displays the
+    // CAPTURED name — the confirm acts on it, not a row index), else the "+" new-session button.
+    match use_pending_kill().get() {
+        Some(name) => children.push(confirm_kill_node(&name, theme)),
+        None => children.push(new_session_node(theme)),
+    }
     Scene::Container(
         ContainerNode::new(children)
             .with_tag(SESSION_RAIL_TAG)
@@ -139,7 +182,8 @@ pub(crate) fn view_session_sidebar(slots: &SlotView, theme: &Theme) -> Scene {
 /// SUBTITLE — cwd basename + git branch + listening ports, [`subtitle`] — on the second) and a "×"
 /// KILL target on the right edge — highlighted when it is the ATTACHED session. Two hit-targets in
 /// one row: the flex-grown body is tagged so a click SWITCHES this client to row `i`'s session; the
-/// fixed-width "×" is tagged so a click KILLS it (killing the attached session detaches this client).
+/// fixed-width "×" is tagged so a click ARMS a kill of it — captured by NAME and confirmed via the
+/// footer's `kill '<name>'?` prompt (see [`handle_session_intent`]), never an immediate kill.
 ///
 /// `cwd` / `branch` (Slice 2) / `ports` (Slice 3) are host-derived facts carried on the
 /// [`SessionInfo`](sprag_terminal::SessionInfo): the client only displays them, never reads a path,
@@ -239,6 +283,66 @@ fn new_session_node(theme: &Theme) -> Scene {
     clickable(NEW_SESSION_TAG.to_owned(), label, Color::TRANSPARENT)
 }
 
+/// The kill CONFIRMATION strip shown at the foot of the rail while a kill is pending (in place of
+/// the "+"): a `kill '<name>'?` prompt over a "Kill" confirm button and a "Cancel" button, on an
+/// error-tinted fill so the destructive state reads as destructive. `name` is the CAPTURED session
+/// name (see [`use_pending_kill`]); the confirm button acts on THAT name, so this strip is what makes
+/// the kill immune to a session-list move since the "×" was clicked — it kills what the user READ,
+/// not whatever now sits at the clicked row index.
+fn confirm_kill_node(name: &str, theme: &Theme) -> Scene {
+    let prompt = text_line(
+        &format!("kill '{name}'?"),
+        12,
+        theme.resolve(ColorRole::OnErrorContainer),
+    );
+    let actions = Scene::Container(
+        ContainerNode::new(vec![
+            action_pill(CONFIRM_KILL_TAG, "Kill", theme.resolve(ColorRole::Error)),
+            action_pill(
+                CANCEL_KILL_TAG,
+                "Cancel",
+                theme.resolve(ColorRole::OnErrorContainer),
+            ),
+        ])
+        .with_layout(
+            LayoutStyle::new()
+                .flex(FlexDirection::Row)
+                .with_align_items(AlignItems::Center)
+                .with_justify(JustifyContent::Start),
+        ),
+    );
+    Scene::Container(
+        ContainerNode::new(vec![prompt, actions])
+            .with_style(BoxStyle::filled(theme.resolve(ColorRole::ErrorContainer)))
+            .with_layout(
+                LayoutStyle::new()
+                    .flex(FlexDirection::Column)
+                    .with_align_items(AlignItems::Start)
+                    .with_justify(JustifyContent::Center)
+                    .with_padding(Rect::new(12, 6, 8, 6)),
+            ),
+    )
+}
+
+/// One compact tagged action button for the kill-confirmation strip (its "Kill" / "Cancel"),
+/// content-sized so two fit on the strip's second line — unlike [`clickable`], which forces the full
+/// row height for the rail's full-width buttons. The strip itself is CONTENT-height (a prompt line
+/// over this action row, no fixed height) so it never clips two stacked lines the way a fixed
+/// [`ROW_HEIGHT`] band would.
+fn action_pill(tag: &str, label: &str, fg: Color) -> Scene {
+    Scene::Container(
+        ContainerNode::new(vec![text_line(label, 13, fg)])
+            .with_tag(tag.to_owned())
+            .with_layout(
+                LayoutStyle::new()
+                    .flex(FlexDirection::Row)
+                    .with_align_items(AlignItems::Center)
+                    .with_justify(JustifyContent::Center)
+                    .with_padding(Rect::new(0, 2, 14, 2)),
+            ),
+    )
+}
+
 /// A single left-aligned text line at `px` logical size in `fg` — a row's title or subtitle.
 fn text_line(label: &str, px: u32, fg: Color) -> Scene {
     Scene::Text(TextNode::styled(
@@ -309,9 +413,15 @@ fn clickable(tag: String, content: Scene, fill: Color) -> Scene {
     )
 }
 
-/// Route a drained intent: if it is one of the session rail's button "click"s (a row or the "+"),
-/// run the corresponding session action against `slots` and report handled. Any other intent is
-/// left for the caller's own reducer arms.
+/// Route a drained intent: if it is one of the session rail's button "click"s (a row body, a row
+/// "×", the "+", or the kill confirm / cancel), run the corresponding session action against `slots`
+/// and report handled. Any other intent is left for the caller's own reducer arms.
+///
+/// The KILL is TWO-STEP: an "×" ARMS a kill (captures the session's NAME into [`use_pending_kill`]);
+/// only the "Kill" confirm button actually kills, acting on the CAPTURED name. That is what closes
+/// the destructive stale-index bound — a session list that moves between the "×" and the confirm can
+/// never redirect the kill onto a different session, because the confirm never re-reads the index.
+/// A switch / new-session / cancel supersedes a pending kill (clears it first).
 pub(crate) fn handle_session_intent(intent: &Intent, slots: &SlotView) -> bool {
     let Some((who, event)) = intent.tag_str().rsplit_once('.') else {
         return false;
@@ -319,9 +429,29 @@ pub(crate) fn handle_session_intent(intent: &Intent, slots: &SlotView) -> bool {
     if event != CLICK_EVENT {
         return false;
     }
+    if who == CONFIRM_KILL_TAG {
+        // CONFIRM: kill the CAPTURED name (never a re-resolved index), then disarm. Killing THIS
+        // client's own attached session detaches it; killing another drops that row from the rail
+        // ([`SlotView::kill_session`] -> [`WireHost::kill_session`](crate::wire)). If the captured
+        // session was already killed out of band while the prompt was up, `kill_session` of a gone
+        // name is a benign host-side no-op.
+        let pending = use_pending_kill();
+        if let Some(name) = pending.get() {
+            slots.kill_session(&name);
+        }
+        pending.set(None);
+        return true;
+    }
+    if who == CANCEL_KILL_TAG {
+        // CANCEL: disarm without killing anything.
+        use_pending_kill().set(None);
+        return true;
+    }
     if who == NEW_SESSION_TAG {
         // Create a fresh session and switch to it (the wire client does both; the in-process
-        // debug host no-ops). The returned name is not needed here — the mirror refresh paints it.
+        // debug host no-ops). A different action supersedes a pending kill. The returned name is
+        // not needed here — the mirror refresh paints it.
+        use_pending_kill().set(None);
         let _ = slots.new_session();
         return true;
     }
@@ -330,27 +460,24 @@ pub(crate) fn handle_session_intent(intent: &Intent, slots: &SlotView) -> bool {
         // index is positional (from paint time); re-reading the live list at click time means a
         // list that changed since paint switches to a neighbour or no-ops (`.get(idx)` -> `None`)
         // rather than acting on a stale name — never a panic, never a dead name. `switch_session`
-        // itself no-ops a switch to the already-attached session. Benign and self-healing.
+        // itself no-ops a switch to the already-attached session. Benign and self-healing. A switch
+        // supersedes a pending kill.
+        use_pending_kill().set(None);
         if let Some(session) = slots.sessions().get(idx) {
             slots.switch_session(&session.name);
         }
         return true;
     }
     if let Some(idx) = kill_index(who) {
-        // A row's "×": resolve its index into the CURRENT session list and KILL by NAME — the same
-        // positional-index-resolved-live discipline as the switch arm (a list that moved since paint
-        // kills a neighbour or no-ops, never a panic or a stale name). Killing THIS client's own
-        // attached session detaches it; killing another drops that row from the rail
-        // ([`SlotView::kill_session`] -> [`WireHost::kill_session`](crate::wire)).
-        //
-        // TRACKED BOUND (destructive asymmetry vs the switch arm): if the session list mutates OUT OF
-        // BAND (another client / the `sprag` CLI) between paint and this click, the index resolves to
-        // a NEIGHBOUR — for switch that is benign (correctable), but for KILL it destroys the wrong
-        // session, or flips a "kill another" into a self-detach when the neighbour is the attached
-        // one. The window needs a concurrent registry mutation and is narrow; the durable fix is a
-        // confirmation affordance (tracked follow-up), not a wider index protocol.
+        // A row's "×": ARM a kill — CAPTURE the session's NAME now (resolving the paint-time index
+        // into the live list once, here) and await confirmation; do NOT kill yet. Capturing the NAME
+        // rather than re-resolving the index at confirm time is what closes the destructive
+        // stale-index bound: whatever the user then reads in the "kill '<name>'?" prompt is exactly
+        // what the confirm kills, immune to any list move in between. A stale index resolving to a
+        // neighbour arms THAT neighbour's name (the user sees it in the prompt and can Cancel), never
+        // silently kills the wrong one.
         if let Some(session) = slots.sessions().get(idx) {
-            slots.kill_session(&session.name);
+            use_pending_kill().set(Some(session.name.clone()));
         }
         return true;
     }
@@ -381,17 +508,18 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    /// A [`HostClient`] that serves a fixed session list and RECORDS the session actions the
+    /// A [`HostClient`] that serves a MUTABLE session list and RECORDS the session actions the
     /// reducer invokes — so [`handle_session_intent`]'s dispatch (a row body → `switch_session`, a
-    /// row "×" → `kill_session`, each of that session's NAME; "+" → `new_session`) is unit-tested
-    /// without a daemon. The in-process `Host` cannot stand in here: it no-ops
+    /// row "×" → ARM, the confirm → `kill_session`, "+" → `new_session`, each of the right session's
+    /// NAME) is unit-tested without a daemon. The in-process `Host` cannot stand in here: it no-ops
     /// `switch_session`/`new_session`/`kill_session` (a debug hatch renders only the default
-    /// session), so a recording fake is the only way to observe the routing. The record is behind
-    /// `Rc<RefCell<_>>` so the test still reads it after the host is boxed into the `SlotView` (the
-    /// slotview `FakeHost` shares its ids the same way). Every other method is an inert default; the
-    /// reducer touches only `sessions`/`switch_session`/`kill_session`/`new_session`.
+    /// session), so a recording fake is the only way to observe the routing. `names` is behind an
+    /// `Rc<RefCell<_>>` so a test can MUTATE the list between arming a kill and confirming it (the
+    /// stale-index scenario); the record vecs likewise, so the test still reads them after the host is
+    /// boxed into the `SlotView`. Every other method is an inert default; the reducer touches only
+    /// `sessions`/`switch_session`/`kill_session`/`new_session`.
     struct RecordingHost {
-        names: Vec<String>,
+        names: Rc<RefCell<Vec<String>>>,
         switched: Rc<RefCell<Vec<String>>>,
         created: Rc<RefCell<usize>>,
         killed: Rc<RefCell<Vec<String>>>,
@@ -400,6 +528,7 @@ mod tests {
     impl HostClient for RecordingHost {
         fn sessions(&self) -> Vec<SessionInfo> {
             self.names
+                .borrow()
                 .iter()
                 .map(|name| SessionInfo {
                     name: name.clone(),
@@ -482,47 +611,193 @@ mod tests {
         }
     }
 
-    /// A row BODY click routes to `switch_session`, a row "×" to `kill_session`, each of the session
-    /// at THAT ROW INDEX by name; the "+" routes to `new_session`; a non-rail intent is left
-    /// unhandled. REVERT-PROOF: swap the reducer's `switch_session`/`kill_session`/`new_session`
-    /// calls (or mis-index a row) and these assertions change — the routing is not vacuous, and the
-    /// switch/kill split is proven distinct (row 1's body switches, row 1's "×" kills, same index).
-    #[test]
-    fn a_row_body_switches_and_its_x_kills_that_sessions_name_and_plus_creates_one() {
+    /// A `SlotView` over a fresh `RecordingHost` seeded with `names`, plus handles onto everything the
+    /// reducer records (switched / created / killed) and the mutable name list. The reducer reads /
+    /// writes the pending-kill `Signal`, so callers run the reducer inside an `Owner` scope.
+    #[allow(clippy::type_complexity)]
+    fn recording_slots(
+        names: &[&str],
+    ) -> (
+        crate::slotview::SlotView,
+        Rc<RefCell<Vec<String>>>, // switched
+        Rc<RefCell<usize>>,       // created
+        Rc<RefCell<Vec<String>>>, // killed
+        Rc<RefCell<Vec<String>>>, // the live name list (mutate to move the list mid-flow)
+    ) {
         let switched: Rc<RefCell<Vec<String>>> = Rc::default();
         let created: Rc<RefCell<usize>> = Rc::default();
         let killed: Rc<RefCell<Vec<String>>> = Rc::default();
+        let list: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(
+            names.iter().map(|n| (*n).to_owned()).collect(),
+        ));
         let host = RecordingHost {
-            names: vec!["0".to_owned(), "work".to_owned(), "work2".to_owned()],
+            names: Rc::clone(&list),
             switched: Rc::clone(&switched),
             created: Rc::clone(&created),
             killed: Rc::clone(&killed),
         };
         let slots = crate::slotview::SlotView::new(Box::new(host));
+        (slots, switched, created, killed, list)
+    }
 
-        // A row BODY click resolves its INDEX into the live list and switches by that session's NAME.
-        assert!(handle_session_intent(&click(&row_tag(1)), &slots));
-        assert!(handle_session_intent(&click(&row_tag(2)), &slots));
-        // A row "×" click resolves the SAME way but KILLS — proving the two per-row targets are
-        // routed distinctly (row 1's body switched to 'work'; row 1's "×" kills 'work').
-        assert!(handle_session_intent(&click(&kill_tag(1)), &slots));
-        assert!(handle_session_intent(&click(&kill_tag(0)), &slots));
-        // The "+" creates a session (and the wire client switches to it).
-        assert!(handle_session_intent(&click(NEW_SESSION_TAG), &slots));
-        // A non-rail intent is NOT consumed (left for the caller's other reducer arms).
-        assert!(!handle_session_intent(&click("sprag_gui.pane.0"), &slots));
+    /// A row BODY click switches; a row "×" ARMS a kill (captures the NAME, kills NOTHING yet); the
+    /// "Kill" confirm then kills the captured name; "Cancel" disarms; "+" creates. Each acts on the
+    /// right session's NAME. REVERT-PROOF: an "×" that killed immediately (skipping the confirm)
+    /// would make `killed` non-empty before the confirm click; routing the confirm to the wrong sink,
+    /// or mis-indexing an arm, changes these exact-match assertions.
+    #[test]
+    fn the_x_arms_a_kill_that_only_the_confirm_commits() {
+        let owner = Owner::new();
+        owner.run(|| {
+            let (slots, switched, created, killed, _list) =
+                recording_slots(&["0", "work", "work2"]);
 
-        assert_eq!(
-            *switched.borrow(),
-            vec!["work".to_owned(), "work2".to_owned()],
-            "row 1 -> 'work', row 2 -> 'work2' (index resolved to the session NAME)",
-        );
-        assert_eq!(
-            *killed.borrow(),
-            vec!["work".to_owned(), "0".to_owned()],
-            "row 1's × -> 'work', row 0's × -> '0' (killed by NAME, distinct from switch)",
-        );
-        assert_eq!(*created.borrow(), 1, "the + created one session");
+            // A BODY click switches by NAME.
+            assert!(handle_session_intent(&click(&row_tag(1)), &slots));
+            assert_eq!(*switched.borrow(), vec!["work".to_owned()]);
+
+            // A row "×" ARMS a kill: it captures the NAME but kills nothing yet.
+            assert!(handle_session_intent(&click(&kill_tag(1)), &slots));
+            assert_eq!(
+                use_pending_kill().get(),
+                Some("work".to_owned()),
+                "the × captured the session name, awaiting confirmation",
+            );
+            assert!(killed.borrow().is_empty(), "nothing killed until confirm");
+
+            // The confirm kills the CAPTURED name, then disarms.
+            assert!(handle_session_intent(&click(CONFIRM_KILL_TAG), &slots));
+            assert_eq!(*killed.borrow(), vec!["work".to_owned()]);
+            assert_eq!(use_pending_kill().get(), None, "confirm disarmed");
+
+            // Arm another, then CANCEL: nothing more is killed and the pending clears.
+            assert!(handle_session_intent(&click(&kill_tag(0)), &slots));
+            assert_eq!(use_pending_kill().get(), Some("0".to_owned()));
+            assert!(handle_session_intent(&click(CANCEL_KILL_TAG), &slots));
+            assert_eq!(use_pending_kill().get(), None, "cancel disarmed");
+            assert_eq!(
+                *killed.borrow(),
+                vec!["work".to_owned()],
+                "cancel killed nothing"
+            );
+
+            // The "+" creates a session; a non-rail intent is left for other reducer arms.
+            assert!(handle_session_intent(&click(NEW_SESSION_TAG), &slots));
+            assert_eq!(*created.borrow(), 1);
+            assert!(!handle_session_intent(&click("sprag_gui.pane.0"), &slots));
+        });
+    }
+
+    /// THE BOUND THIS FEATURE CLOSES: if the session list MOVES between the "×" (arm) and the
+    /// confirm, the confirm still kills the session the user READ in the prompt — the CAPTURED name —
+    /// never whatever now sits at the clicked row index. REVERT-PROOF: make the confirm re-resolve the
+    /// index instead of using the captured name and this kills "work" (the new occupant of index 0),
+    /// failing the assertion.
+    #[test]
+    fn a_list_move_between_arm_and_confirm_cannot_redirect_the_kill() {
+        let owner = Owner::new();
+        owner.run(|| {
+            let (slots, _switched, _created, killed, list) =
+                recording_slots(&["0", "work", "work2"]);
+
+            // Arm a kill of row 0 — the session named "0" — capturing that NAME.
+            assert!(handle_session_intent(&click(&kill_tag(0)), &slots));
+            assert_eq!(use_pending_kill().get(), Some("0".to_owned()));
+
+            // The list moves OUT OF BAND (another client killed "0"): index 0 is now "work".
+            *list.borrow_mut() = vec!["work".to_owned(), "work2".to_owned()];
+
+            // Confirm: it kills the CAPTURED "0", NOT "work" (the new index-0 session).
+            assert!(handle_session_intent(&click(CONFIRM_KILL_TAG), &slots));
+            assert_eq!(
+                *killed.borrow(),
+                vec!["0".to_owned()],
+                "the confirm killed the captured name, immune to the list move",
+            );
+        });
+    }
+
+    /// While a kill is pending, the footer paints the confirmation strip (the captured name + the
+    /// CONFIRM / CANCEL buttons) in place of the "+"; with nothing pending it paints the "+".
+    /// REVERT-PROOF: a footer that ignored the pending signal would keep the "+" tag and never carry
+    /// the name, failing both halves.
+    #[test]
+    fn the_footer_shows_the_kill_confirmation_only_while_a_kill_is_pending() {
+        let owner = Owner::new();
+        owner.run(|| {
+            let (slots, ..) = recording_slots(&["0", "work"]);
+            let theme = Theme::default();
+
+            // Nothing pending: the footer is the "+" new-session button, no confirm strip.
+            let idle = view_session_sidebar(&slots, &theme);
+            assert!(
+                find_tagged(&idle, NEW_SESSION_TAG).is_some(),
+                "the + is shown"
+            );
+            assert!(
+                find_tagged(&idle, CONFIRM_KILL_TAG).is_none(),
+                "no confirm strip while idle",
+            );
+
+            // Arm a kill of a SENTINEL name that is NOT any session row ("0"/"work"), so the ONLY
+            // place it can appear in the painted tree is the confirmation PROMPT — arming a real
+            // session name ("work") would also match its own row and make the display assertion
+            // vacuous (it would pass even if the prompt omitted the name).
+            let pending = "sentinel-kill-target";
+            use_pending_kill().set(Some(pending.to_owned()));
+            let armed = view_session_sidebar(&slots, &theme);
+            let confirm =
+                find_tagged(&armed, CONFIRM_KILL_TAG).expect("the Kill confirm button is shown");
+            assert_eq!(subtree_text(confirm), "Kill");
+            assert!(
+                find_tagged(&armed, CANCEL_KILL_TAG).is_some(),
+                "the Cancel button is shown",
+            );
+            assert!(
+                find_tagged(&armed, NEW_SESSION_TAG).is_none(),
+                "the + is replaced while a kill is pending",
+            );
+            // The PROMPT displays the captured name — provable because the sentinel appears in NO
+            // row, so a `confirm_kill_node` that dropped the name would fail this.
+            assert!(
+                subtree_text(&armed).contains(pending),
+                "the confirmation prompt names the captured session",
+            );
+        });
+    }
+
+    /// Arming a kill then SWITCHING (or creating) supersedes it — the pending clears, so the
+    /// confirmation strip cannot linger on a session the user has navigated away from. REVERT-PROOF:
+    /// drop the `use_pending_kill().set(None)` from the switch / new-session arms and the pending
+    /// stays `Some`, failing these assertions.
+    #[test]
+    fn a_switch_or_new_session_supersedes_a_pending_kill() {
+        let owner = Owner::new();
+        owner.run(|| {
+            let (slots, _switched, _created, killed, _list) =
+                recording_slots(&["0", "work", "work2"]);
+
+            // Arm, then SWITCH by clicking another row: the pending clears, nothing is killed.
+            assert!(handle_session_intent(&click(&kill_tag(0)), &slots));
+            assert_eq!(use_pending_kill().get(), Some("0".to_owned()));
+            assert!(handle_session_intent(&click(&row_tag(2)), &slots));
+            assert_eq!(
+                use_pending_kill().get(),
+                None,
+                "a switch superseded the pending kill",
+            );
+
+            // Arm again, then NEW-session: the pending clears again.
+            assert!(handle_session_intent(&click(&kill_tag(1)), &slots));
+            assert_eq!(use_pending_kill().get(), Some("work".to_owned()));
+            assert!(handle_session_intent(&click(NEW_SESSION_TAG), &slots));
+            assert_eq!(
+                use_pending_kill().get(),
+                None,
+                "a new-session superseded the pending kill",
+            );
+            assert!(killed.borrow().is_empty(), "superseding never kills");
+        });
     }
 
     #[test]
@@ -557,13 +832,21 @@ mod tests {
         assert_eq!(kill_index(&row_tag(2)), None);
         assert_eq!(kill_index(&kill_tag(2)), Some(2));
         assert_eq!(row_index(&kill_tag(2)), None);
+        // The footer action tags (kill confirm / cancel) parse as NEITHER a switch nor a kill index
+        // — they are matched by exact `==` arms before the prefix arms, and `skillok`/`skillno` also
+        // fail the `sprag_gui.skill.` prefix (no trailing dot), so a click on them never arms/kills a
+        // row.
+        for tag in [CONFIRM_KILL_TAG, CANCEL_KILL_TAG] {
+            assert_eq!(row_index(tag), None);
+            assert_eq!(kill_index(tag), None);
+        }
     }
 
     #[test]
-    fn one_switch_and_one_kill_button_are_registered_per_row_plus_the_new_action() {
-        // The rail routes at most MAX_SESSION_TABS rows — each a switch AND a kill button — plus
-        // "+", so 2·MAX + 1 externals.
-        assert_eq!(create_session_externals().len(), 2 * MAX_SESSION_TABS + 1);
+    fn per_row_switch_and_kill_buttons_plus_the_new_confirm_and_cancel_actions_are_registered() {
+        // The rail routes at most MAX_SESSION_TABS rows — each a switch AND a kill button — plus the
+        // three footer actions ("+", kill-confirm, kill-cancel), so 2·MAX + 3 externals.
+        assert_eq!(create_session_externals().len(), 2 * MAX_SESSION_TABS + 3);
     }
 
     /// Every `TextNode` content in `scene`'s subtree, space-joined — the visible glyphs under a node,
