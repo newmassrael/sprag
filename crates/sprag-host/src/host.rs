@@ -288,6 +288,13 @@ pub trait HostClient {
     /// and no second client), so the default is a NO-OP; only the wire client overrides it.
     fn reconcile_lost_session(&self) {}
 
+    /// Switch this client to the LAST session — the most-recently-used OTHER session it visited that
+    /// is still live (tmux `switch-client -l`), a keyboard `Ctrl+Shift+L` affordance. A no-op with no
+    /// such session (never switched, or the prior sessions are gone). The in-process arm renders only
+    /// the default session and has no visit history, so the default is a NO-OP; only the wire client
+    /// (which keeps the MRU stack) overrides it.
+    fn switch_to_last_session(&self) {}
+
     /// Pane `id`'s child-reported window TITLE (`OSC 0` / `OSC 2`), or `None` if the
     /// child never set one (or `id` is absent).
     ///

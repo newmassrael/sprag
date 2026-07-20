@@ -124,15 +124,17 @@ impl WindowChord {
 
 /// Recognize a reserved window chord from `key` + `modifiers`, or `None` for a
 /// normal keystroke (which injects). Pure — the chord-decision is separated from
-/// the side-effecting inject path and unit-tested directly. Precedence matches the
-/// historical if-ladder (Ctrl+Page before Shift+Page); `Ctrl+Shift+Enter` is
-/// essentially unbound in TUIs (terminals cannot encode it distinctly), so it
-/// steals no app key.
+/// the side-effecting inject path and unit-tested directly. The page chords take
+/// EXACTLY ONE of Ctrl / Shift (Ctrl-only cycles focus, Shift-only scrolls): `Ctrl+Shift+Page`
+/// belongs to the SESSION chord ([`session_chord`], cycle sessions), so excluding the other
+/// modifier here keeps the two disjoint rather than letting `Ctrl+Shift+Page` shadow the session
+/// cycle. `Ctrl+Shift+Enter` is essentially unbound in TUIs (terminals cannot encode it
+/// distinctly), so it steals no app key.
 fn window_chord(key: &str, modifiers: Modifiers) -> Option<WindowChord> {
     let is_page = matches!(key, "PageUp" | "PageDown");
-    if modifiers.ctrl && is_page {
+    if modifiers.ctrl && !modifiers.shift && is_page {
         Some(WindowChord::CycleFocus)
-    } else if modifiers.shift && is_page {
+    } else if modifiers.shift && !modifiers.ctrl && is_page {
         Some(WindowChord::Scroll)
     } else if modifiers.ctrl && modifiers.shift && key == "Enter" {
         Some(WindowChord::ToggleDock)
@@ -162,6 +164,79 @@ fn clipboard_chord(key: &str, modifiers: Modifiers) -> Option<ClipboardChord> {
         }
     }
     None
+}
+
+/// A reserved chord that switches this CLIENT's SESSION, NOT the focused pane's PTY — `Ctrl+Shift+L`
+/// (the tmux `switch-client -l` "last session"), `Ctrl+Shift+PageUp/Down` (cycle to the previous /
+/// next session in the sidebar's list order). `route_key` recognizes one via [`session_chord`] and
+/// dispatches it before the pane injects.
+#[derive(Debug, PartialEq, Eq)]
+enum SessionChord {
+    /// `Ctrl+Shift+L` — switch to the LAST (most-recently-used other) session.
+    Last,
+    /// `Ctrl+Shift+PageDown` — the NEXT session in list order (wrapping).
+    Next,
+    /// `Ctrl+Shift+PageUp` — the PREVIOUS session in list order (wrapping).
+    Previous,
+}
+
+impl SessionChord {
+    /// A stable, allocation-free name for the diagnostic trace ([`crate::diag`]).
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Last => "SwitchLastSession",
+            Self::Next => "SessionNext",
+            Self::Previous => "SessionPrevious",
+        }
+    }
+}
+
+/// Recognize a session chord, or `None`. All are `Ctrl+Shift` (`Alt` excluded so `Ctrl+Alt+Shift+*`
+/// is not stolen), disjoint from the `Ctrl+Shift` clipboard (`C`/`V`) and dock-toggle (`Enter`)
+/// chords and from the Ctrl-only / Shift-only page chords ([`window_chord`]). `Ctrl+Shift+<letter>`
+/// cannot be encoded distinctly to a PTY (like `Ctrl+Shift+Enter`), so `Ctrl+Shift+L` steals no app
+/// key; `Shift` upper-cases the letter, so match case-insensitively. Pure.
+fn session_chord(key: &str, modifiers: Modifiers) -> Option<SessionChord> {
+    if !(modifiers.ctrl && modifiers.shift && !modifiers.alt) {
+        return None;
+    }
+    if key.eq_ignore_ascii_case("l") {
+        return Some(SessionChord::Last);
+    }
+    match key {
+        "PageDown" => Some(SessionChord::Next),
+        "PageUp" => Some(SessionChord::Previous),
+        _ => None,
+    }
+}
+
+/// The session to switch to when cycling from `current` by one step over `names` (the sidebar's
+/// session list, in order), wrapping — `forward` to the NEXT, else the PREVIOUS. `None` when
+/// `current` is not in `names` (nothing to anchor on). A single-session list yields `current` itself,
+/// which `switch_session` no-ops. Pure.
+fn session_neighbour(names: &[String], current: &str, forward: bool) -> Option<String> {
+    let here = names.iter().position(|name| name == current)?;
+    let len = names.len();
+    let step = if forward { 1 } else { len - 1 }; // len - 1 == -1 modulo len
+    Some(names[(here + step) % len].clone())
+}
+
+/// Cycle this client to the previous / next session in list order — the `Ctrl+Shift+PageUp/Down`
+/// session chord. Reads the live session list + current session off the mirror and switches by NAME
+/// ([`session_neighbour`]); a no-op when alone (the neighbour resolves to `current`, which
+/// `switch_session` short-circuits).
+fn cycle_session(forward: bool) {
+    let slots = &use_terminal().slots;
+    let names: Vec<String> = slots.sessions().into_iter().map(|info| info.name).collect();
+    if let Some(next) = session_neighbour(&names, &slots.current_session(), forward) {
+        slots.switch_session(&next);
+    }
+}
+
+/// Switch to the LAST session — the `Ctrl+Shift+L` chord (tmux `switch-client -l`). Delegates to the
+/// host client, which keeps this client's MRU visit history; a no-op with no last session.
+fn switch_to_last_session() {
+    use_terminal().slots.switch_to_last_session();
 }
 
 /// Route a focused keystroke to the **focused pane's** PTY. The roving-tabindex
@@ -203,6 +278,23 @@ pub(crate) fn route_key(
             ClipboardChord::Paste => {
                 let _ = crate::selection::paste_clipboard(active);
             }
+        }
+        return true;
+    }
+    // Session chords switch this CLIENT's session (not the PTY). Checked BEFORE the window chords so
+    // `Ctrl+Shift+PageUp/Down` reaches session cycling rather than the Ctrl-only tile focus-cycle.
+    // DISCRETE (act once per press): a held chord's OS auto-repeat is dropped, like the focus /
+    // dock-toggle window chords.
+    if let Some(chord) = session_chord(key, modifiers) {
+        if repeat {
+            crate::diag::chord(chord.label(), "drop-repeat", active);
+            return false;
+        }
+        crate::diag::chord(chord.label(), "act", active);
+        match chord {
+            SessionChord::Last => switch_to_last_session(),
+            SessionChord::Next => cycle_session(true),
+            SessionChord::Previous => cycle_session(false),
         }
         return true;
     }
@@ -569,15 +661,83 @@ mod tests {
             window_chord("Enter", ctrl_shift),
             Some(WindowChord::ToggleDock)
         );
-        // Precedence: Ctrl wins over Shift on Page (the historical if-ladder order).
-        assert_eq!(
-            window_chord("PageUp", ctrl_shift),
-            Some(WindowChord::CycleFocus)
-        );
+        // Ctrl+Shift+Page is NOT a window chord — it belongs to the SESSION cycle (`session_chord`);
+        // the page chords here take EXACTLY ONE of Ctrl / Shift, so neither shadows the other.
+        assert_eq!(window_chord("PageUp", ctrl_shift), None);
+        assert_eq!(window_chord("PageDown", ctrl_shift), None);
         // A normal keystroke is not a chord (it injects).
         assert_eq!(window_chord("a", Modifiers::default()), None);
         assert_eq!(window_chord("Enter", Modifiers::default()), None);
         assert_eq!(window_chord("PageUp", Modifiers::default()), None);
+    }
+
+    /// The session chords are `Ctrl+Shift+{L, PageUp, PageDown}`, DISJOINT from the window page
+    /// chords (Ctrl-only / Shift-only), the clipboard chords (Ctrl+Shift+C/V), and the dock toggle
+    /// (Ctrl+Shift+Enter). `Alt` excludes them; `L` is case-insensitive (Shift upper-cases it).
+    #[test]
+    fn session_chord_recognizes_last_and_the_cycle_chords() {
+        let ctrl_shift = Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Modifiers::default()
+        };
+        // Last, and the two cycle directions (PageDown = next, PageUp = previous).
+        assert_eq!(session_chord("l", ctrl_shift), Some(SessionChord::Last));
+        assert_eq!(session_chord("L", ctrl_shift), Some(SessionChord::Last));
+        assert_eq!(
+            session_chord("PageDown", ctrl_shift),
+            Some(SessionChord::Next)
+        );
+        assert_eq!(
+            session_chord("PageUp", ctrl_shift),
+            Some(SessionChord::Previous)
+        );
+        // Disjoint from the OTHER Ctrl+Shift chords (clipboard C/V, dock-toggle Enter) and needs both
+        // Ctrl AND Shift; Alt excludes it.
+        assert_eq!(session_chord("c", ctrl_shift), None);
+        assert_eq!(session_chord("Enter", ctrl_shift), None);
+        assert_eq!(
+            session_chord(
+                "l",
+                Modifiers {
+                    ctrl: true,
+                    ..Modifiers::default()
+                }
+            ),
+            None
+        );
+        assert_eq!(
+            session_chord(
+                "l",
+                Modifiers {
+                    ctrl: true,
+                    shift: true,
+                    alt: true,
+                    ..Modifiers::default()
+                }
+            ),
+            None
+        );
+    }
+
+    /// Session cycling is the wrapping LIST neighbour of the current session — `forward` to the next,
+    /// else the previous; a single-session list yields the current one (a `switch_session` no-op),
+    /// and an unknown current yields `None`.
+    #[test]
+    fn session_neighbour_wraps_the_list_both_ways() {
+        let names = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
+        assert_eq!(session_neighbour(&names, "a", true).as_deref(), Some("b"));
+        assert_eq!(session_neighbour(&names, "c", true).as_deref(), Some("a")); // wrap forward
+        assert_eq!(session_neighbour(&names, "a", false).as_deref(), Some("c")); // wrap backward
+        assert_eq!(session_neighbour(&names, "b", false).as_deref(), Some("a"));
+        // Alone: the neighbour is the current session, which switch_session no-ops.
+        let solo = vec!["only".to_owned()];
+        assert_eq!(
+            session_neighbour(&solo, "only", true).as_deref(),
+            Some("only")
+        );
+        // Current not in the list: nothing to anchor on.
+        assert_eq!(session_neighbour(&names, "gone", true), None);
     }
 
     #[test]

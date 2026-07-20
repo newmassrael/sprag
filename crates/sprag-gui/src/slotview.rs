@@ -233,6 +233,13 @@ impl SlotView {
         self.host.reconcile_lost_session();
     }
 
+    /// Switch to the LAST session — the most-recent OTHER session this client visited that is still
+    /// live (tmux `switch-client -l`), a `Ctrl+Shift+L` keyboard affordance. A no-op for the
+    /// in-process host (no visit history).
+    pub(crate) fn switch_to_last_session(&self) {
+        self.host.switch_to_last_session();
+    }
+
     /// Slot `slot`'s cell DATA at `offset_lines` (a `1x1` placeholder for a hole).
     pub(crate) fn pane_cells(&self, slot: usize, offset_lines: usize) -> GridBuffer {
         self.id(slot).map_or_else(

@@ -357,6 +357,17 @@ fn parse_detach_on_destroy(raw: Option<&str>) -> DetachOnDestroy {
 /// present in `list` when this runs (the successor is picked BEFORE the kill removes it), and with
 /// `len >= 2` the ±1 wrap can never land back on it — so the returned name is always a DIFFERENT,
 /// live session.
+/// The MOST-RECENT session in `mru` (this client's visit history, most-recent-first) that is NOT
+/// `current` and is still present in `list`, or `None` — the tmux "last session" target
+/// (`switch-client -l`) AND the preference a [`DetachOnDestroy::Off`] switch walks. Skips a `mru`
+/// entry that has since died (not in `list`); `None` when the client has visited no other surviving
+/// session (a fresh client that never switched, or all its prior sessions are gone).
+fn mru_live_other(mru: &[String], list: &[SessionInfo], current: &str) -> Option<String> {
+    mru.iter()
+        .find(|name| name.as_str() != current && list.iter().any(|session| session.name == **name))
+        .map(|name| name.to_string())
+}
+
 fn destroy_successor(
     policy: DetachOnDestroy,
     list: &[SessionInfo],
@@ -366,13 +377,9 @@ fn destroy_successor(
     let step: isize = match policy {
         DetachOnDestroy::Detach => return None,
         DetachOnDestroy::Off => {
-            // MRU-preferred: the most-recent OTHER visited session that is still live.
-            for candidate in mru {
-                if candidate.as_str() != killed
-                    && list.iter().any(|session| &session.name == candidate)
-                {
-                    return Some(candidate.clone());
-                }
+            // MRU-preferred: the most-recent OTHER visited session still live.
+            if let Some(last) = mru_live_other(mru, list, killed) {
+                return Some(last);
             }
             // No visited session survives — fall back to the `next` list neighbour, so `off` still
             // SWITCHES whenever another session exists (detaching only when `killed` is the last).
@@ -1137,6 +1144,20 @@ impl HostClient for WireHost {
                 Some(next) => self.switch_session(&next),
                 None => self.quit.request_quit(),
             }
+        }
+    }
+
+    /// Switch to the LAST session — the most-recent OTHER session this client visited that is still
+    /// live (tmux `switch-client -l`), walking the MRU stack ([`mru_live_other`]). A no-op when the
+    /// client has visited no other surviving session (a fresh client that never switched, or all its
+    /// prior sessions are gone) — matching tmux, which also no-ops with no last session.
+    fn switch_to_last_session(&self) {
+        let current = self.session.borrow().clone();
+        // Resolve into a local so the `mru` borrow is released before `switch_session` (which
+        // re-borrows `mru` mutably via `attach_in_place`'s `push_mru`).
+        let last = mru_live_other(&self.mru.borrow(), &self.sessions(), &current);
+        if let Some(last) = last {
+            self.switch_session(&last);
         }
     }
 
@@ -1964,6 +1985,33 @@ mod tests {
             ),
             None,
             "off detaches only when there is no other session",
+        );
+    }
+
+    /// `mru_live_other` — the tmux "last session" pick (and `off`'s MRU preference) — is the
+    /// most-recent OTHER visited session still live, skipping a since-dead entry, `None` when none
+    /// survives (the last-session no-op). REVERT-PROOF: drop the `!= current` guard and it returns
+    /// `current`; drop the liveness filter and it returns a dead session.
+    #[test]
+    fn mru_live_other_is_the_most_recent_live_other_session() {
+        let list = session_list(&["a", "b", "c"]);
+        let mru = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+        // Most-recent OTHER (the MRU front is the current session) that is live.
+        assert_eq!(
+            mru_live_other(&mru(&["a", "c", "b"]), &list, "a").as_deref(),
+            Some("c"),
+        );
+        // The most-recent other ("c") is dead → skip to the next live MRU entry ("b").
+        assert_eq!(
+            mru_live_other(&mru(&["a", "c", "b"]), &session_list(&["a", "b"]), "a").as_deref(),
+            Some("b"),
+        );
+        // Never visited another (only the current session in the MRU) → None (last-session no-op).
+        assert_eq!(mru_live_other(&mru(&["a"]), &list, "a"), None);
+        // Every prior session has since died → None.
+        assert_eq!(
+            mru_live_other(&mru(&["a", "z"]), &session_list(&["a"]), "a"),
+            None,
         );
     }
 
