@@ -267,16 +267,26 @@ pub trait HostClient {
 
     /// Kill the session named `name` (tmux `kill-session -t`) — a session sidebar row's close
     /// affordance. Killing a session OTHER than this client's own removes it and the daemon keeps
-    /// serving the rest. Killing this client's OWN attached session DETACHES the client — the tmux
-    /// rule that a client whose session is destroyed leaves (the wire arm asks the shell to quit at
-    /// once; the poll thread's `detach_reason` is the backstop and the path when ANOTHER client or
-    /// the CLI kills this client's session out of band). Killing the LAST session ends the daemon.
-    /// A no-op for an unknown name.
+    /// serving the rest. Killing this client's OWN attached session ends the session it was serving,
+    /// so the client must leave it: the tmux `detach-on-destroy` policy decides HOW — DETACH (the
+    /// default) or SWITCH to a neighbouring session (`next`/`previous`), detaching only when there is
+    /// no other session to move to. Killing the LAST session ends the daemon. A no-op for an unknown
+    /// name.
     ///
     /// A CLIENT-adjacent SESSION op, like [`switch_session`](Self::switch_session): the in-process
     /// arm renders only the default session and owns no client to detach, so it implements this as a
-    /// documented no-op; the wire client carries the real kill + detach.
+    /// documented no-op; the wire client carries the real kill + detach/switch.
     fn kill_session(&self, name: &str);
+
+    /// Reconcile a session this client lost OUT OF BAND — killed by ANOTHER client or the `sprag`
+    /// CLI while we were attached — against the `detach-on-destroy` policy: switch to a neighbouring
+    /// session or detach. Called every frame from the pre-view reconcile, because the out-of-band
+    /// destroy is detected on the wire client's background poll thread, which cannot itself perform a
+    /// switch (a UI-thread operation) — it flags the condition and this resolves it on the UI thread.
+    ///
+    /// The in-process arm renders one default session it can never lose out of band (it has no daemon
+    /// and no second client), so the default is a NO-OP; only the wire client overrides it.
+    fn reconcile_lost_session(&self) {}
 
     /// Pane `id`'s child-reported window TITLE (`OSC 0` / `OSC 2`), or `None` if the
     /// child never set one (or `id` is absent).

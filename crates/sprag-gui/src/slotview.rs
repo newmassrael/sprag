@@ -225,6 +225,14 @@ impl SlotView {
         self.host.kill_session(name);
     }
 
+    /// Resolve a session lost OUT OF BAND (killed by another client / the CLI) against the
+    /// `detach-on-destroy` policy — switch-to-next or detach. A pre-view reconcile passthrough,
+    /// like [`sessions`](Self::sessions), addressed by no slot: the wire client flags the loss on
+    /// its poll thread and this runs the UI-thread switch. A no-op for the in-process host.
+    pub(crate) fn reconcile_lost_session(&self) {
+        self.host.reconcile_lost_session();
+    }
+
     /// Slot `slot`'s cell DATA at `offset_lines` (a `1x1` placeholder for a hole).
     pub(crate) fn pane_cells(&self, slot: usize, offset_lines: usize) -> GridBuffer {
         self.id(slot).map_or_else(

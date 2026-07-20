@@ -105,6 +105,15 @@ const HOST_BIN_ENV: &str = "SPRAG_GUI_HOST_BIN";
 /// this env; it is the established GUI-config channel (`SPRAG_GUI_PANES`/`_HOST_SOCK`/…).
 const SESSION_ENV: &str = "SPRAG_GUI_SESSION";
 
+/// Env: how this client reacts when its OWN attached session is DESTROYED — the tmux
+/// `detach-on-destroy` session option. `on` (or unset / an unrecognized value) DETACHES this client
+/// (the shipped default, and tmux's own); `next` / `previous` SWITCH it to a neighbouring session
+/// instead (tmux's switch-to-next), detaching only when there is no other session to move to. Read
+/// ONCE at boot (the codebase's config convention, alongside [`SESSION_ENV`]) into a
+/// [`DetachOnDestroy`] held on the [`WireHost`]; a future runtime `set-option` would write the SAME
+/// enum, so the policy — not this env — is the durable seam.
+const DETACH_ON_DESTROY_ENV: &str = "SPRAG_DETACH_ON_DESTROY";
+
 /// One pane the wire client mirrors, in HOST order (no holes — "slots" and their holes
 /// are the GUI `SlotView`'s concern, not this data client's). Holds the pane's host
 /// identity ([`PaneId`] + command label), its live (offset 0) [`CellFrame`] (refreshed
@@ -274,6 +283,75 @@ fn query_sessions(conn: &mut HostConn) -> io::Result<Vec<SessionInfo>> {
     serde_json::from_value(value).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
+/// What this client does when its attached session is DESTROYED — by its own sidebar kill OR out of
+/// band (another client / the `sprag` CLI killing it, its last pane exiting) — the tmux
+/// `detach-on-destroy` policy. The ONE decision "my session is gone, now what": the default
+/// [`Detach`](Self::Detach) reproduces tmux's default (and the pre-policy shipped behavior)
+/// byte-for-byte, so the switch policy is purely additive. Held on the [`WireHost`] and consulted at
+/// BOTH destroy triggers, so the switch-vs-detach DECISION is the same however its session died
+/// (never switch on one trigger and detach on the other). Only the LATENCY differs: the sidebar kill
+/// switches inline, while an out-of-band destroy applies its switch on the next paint (the poll flags
+/// it and the UI-thread reconcile performs it), a beat later.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum DetachOnDestroy {
+    /// tmux `on` (default): DETACH — the client leaves (asks the shell to quit).
+    #[default]
+    Detach,
+    /// tmux `next`: switch to the NEXT session in list order (wrapping), detaching only if this is
+    /// the last session.
+    Next,
+    /// tmux `previous`: switch to the PREVIOUS session in list order (wrapping), detaching only if
+    /// this is the last session.
+    Previous,
+}
+
+/// Parse the [`DETACH_ON_DESTROY_ENV`] value into a [`DetachOnDestroy`] — a pure decision over its
+/// input (the env read stays in [`WireHost::spawn_or_attach`], matching `resolve_session` /
+/// `parse_allowlist`). Whitespace- and case-insensitive; an ABSENT or UNRECOGNIZED value is
+/// [`Detach`](DetachOnDestroy::Detach), the safe tmux default — a typo detaches (what an unset env
+/// does) rather than silently switching a client somewhere it never asked to go.
+fn parse_detach_on_destroy(raw: Option<&str>) -> DetachOnDestroy {
+    match raw
+        .map(|value| value.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("next") => DetachOnDestroy::Next,
+        Some("previous") => DetachOnDestroy::Previous,
+        _ => DetachOnDestroy::Detach,
+    }
+}
+
+/// The session this client should SWITCH to when its own attached session `killed` is destroyed
+/// under `policy`, or `None` to DETACH instead — the tmux `detach-on-destroy next`/`previous`
+/// target. `None` whenever the policy is [`Detach`](DetachOnDestroy::Detach), or `killed` is the
+/// only session (nothing to move to), or `killed` is not in `list` (already gone, so no neighbour to
+/// anchor on — a detach is the honest answer).
+///
+/// The neighbour is by LIST ORDER — the order the sidebar draws it (session creation order, a stable
+/// `Vec`), so `next` moves to the row visually below and `previous` above, WRAPPING at the ends. tmux
+/// orders by session NAME (it has no visible list); sprag has a sidebar, so its visible order is the
+/// more intuitive, honest analog. `killed` is present in `list` when this runs (the successor is
+/// picked BEFORE the kill removes it), and with `len >= 2` the ±1 wrap can never land back on it — so
+/// the returned name is always a DIFFERENT, live session.
+fn destroy_successor(
+    policy: DetachOnDestroy,
+    list: &[SessionInfo],
+    killed: &str,
+) -> Option<String> {
+    let step: isize = match policy {
+        DetachOnDestroy::Detach => return None,
+        DetachOnDestroy::Next => 1,
+        DetachOnDestroy::Previous => -1,
+    };
+    if list.len() < 2 {
+        return None; // only `killed` (or empty): nothing to switch to.
+    }
+    let here = list.iter().position(|session| session.name == killed)? as isize;
+    let len = list.len() as isize;
+    let neighbour = (here + step).rem_euclid(len) as usize;
+    Some(list[neighbour].name.clone())
+}
+
 /// The GUI's wire client of a `sprag-term` host. See the module docs.
 pub(crate) struct WireHost {
     /// The pane data cache ([`Cache`]) in host order: identity + live frame + tracked
@@ -309,6 +387,22 @@ pub(crate) struct WireHost {
     /// The pane grid `(cols, rows)` this client booted at — the birth size a sidebar "+" gives a
     /// new session (it reflows to this window on first paint, like every boot pane).
     boot_dims: (u16, u16),
+    /// How this client reacts when its OWN attached session is destroyed — the tmux
+    /// `detach-on-destroy` policy ([`DetachOnDestroy`]), read once at boot from
+    /// [`DETACH_ON_DESTROY_ENV`]. `Copy`, so a `&self` method reads it with no borrow. Consulted at
+    /// BOTH destroy triggers: [`kill_session`](HostClient::kill_session) (this client's own sidebar
+    /// kill) and [`reconcile_lost_session`](HostClient::reconcile_lost_session) (an out-of-band kill).
+    detach_on_destroy: DetachOnDestroy,
+    /// Set by the poll thread when this client's attached session is destroyed OUT OF BAND under a
+    /// SWITCH policy (another client / the `sprag` CLI killed it): the poll cannot switch (a UI-thread
+    /// op), so it flags this + repaints, and the UI-thread
+    /// [`reconcile_lost_session`](HostClient::reconcile_lost_session) does the switch. Shared
+    /// `Arc<AtomicBool>` (the poll thread is off-thread); swap-cleared by the reconcile and by any
+    /// successful [`attach_in_place`](WireHost::attach_in_place), so a manual switch that pre-empts
+    /// the reconcile can't leave
+    /// a stale flag to fire a spurious second switch. Never set under the `Detach` policy — that path
+    /// stays the poll thread's own immediate detach, unchanged.
+    lost_session: Arc<AtomicBool>,
     /// The repaint sink, kept as a reusable `Arc` so a session switch can hand a FRESH poll thread
     /// the same `on_change` (a `Box<dyn Fn>` could only be moved into the first thread). Send+Sync
     /// because the underlying [`RepaintSink`](pinion_core::RepaintSink) is, so it is shared across
@@ -416,6 +510,10 @@ impl WireHost {
         let requested = std::env::var_os(SESSION_ENV)
             .filter(|name| !name.is_empty())
             .map(|name| name.to_string_lossy().into_owned());
+        // The destroy policy is a boot-time config read here (kept out of the pure helpers, like the
+        // session env above), held on the client so a session kill can consult it with no env re-read.
+        let detach_on_destroy =
+            parse_detach_on_destroy(std::env::var(DETACH_ON_DESTROY_ENV).ok().as_deref());
         let (session, created) =
             resolve_session(&mut conn, requested.as_deref(), argv.as_deref(), cols, rows)?;
         conn.scope_to(session.clone());
@@ -457,6 +555,8 @@ impl WireHost {
             session: RefCell::new(session.clone()),
             sock: sock.clone(),
             boot_dims: (cols, rows),
+            detach_on_destroy,
+            lost_session: Arc::new(AtomicBool::new(false)),
             on_change,
             quit,
             poll: RefCell::new(None),
@@ -489,6 +589,8 @@ impl WireHost {
             Arc::clone(&self.sessions),
             Arc::clone(&self.on_change),
             Arc::clone(&self.quit),
+            self.detach_on_destroy,
+            Arc::clone(&self.lost_session),
             Arc::clone(&stop),
             since0,
         )?;
@@ -561,6 +663,10 @@ impl WireHost {
         store_windows(&self.windows, window_list);
         store_sessions(&self.sessions, session_list);
         *self.session.borrow_mut() = session.to_owned();
+        // A successful attach RESOLVES any "lost session" the poll flagged (the caller joined that
+        // poll before this commit, so its flag is now settled): clear it, so a manual switch that
+        // pre-empted the reconcile cannot leave a stale flag to fire a spurious second switch.
+        self.lost_session.store(false, Ordering::Release);
         self.spawn_poll_for(poll_conn, since0)?;
         (self.on_change)(); // repaint the just-attached session at once, no poll-wake lag
         Ok(())
@@ -869,33 +975,97 @@ impl HostClient for WireHost {
         }
     }
 
-    /// Kill the session named `name` on the host (tmux `kill-session`). Two cases, split on whether
-    /// it is THIS client's own attached session:
+    /// Kill the session named `name` on the host (tmux `kill-session`). Three outcomes, split on
+    /// whether it is THIS client's own attached session and — if so — the
+    /// [`detach_on_destroy`](Self::detach_on_destroy) policy:
     ///
-    /// * **Own session** → DETACH: the session this client was serving is gone, so ask the shell to
-    ///   quit — the immediate form of the tmux rule that a client whose session is destroyed leaves
-    ///   (the poll thread's [`detach_reason`] is the backstop, and the path when another client / the
-    ///   CLI kills this session out of band). We do this whether the invoke's reply came back or was
-    ///   severed: killing the LAST session ends the daemon, so the reply can be cut off (EOF/reset)
-    ///   and is indistinguishable from success here — and either way this client is leaving.
+    /// * **Own session, a successor exists** → SWITCH: under a `next`/`previous` policy, re-point this
+    ///   client at the neighbouring session ([`switch_session`](HostClient::switch_session)) instead
+    ///   of leaving — tmux `detach-on-destroy next`. The successor is picked from the CURRENT list
+    ///   BEFORE the kill (which removes `name`); the kill of a NON-last session leaves the daemon
+    ///   alive, so its reply returns and the following `switch_session`'s scoped reads succeed.
+    /// * **Own session, nothing to switch to** → DETACH: the `on` default, or `name` was the last
+    ///   session — ask the shell to quit, the immediate form of the tmux rule that a client whose
+    ///   session is destroyed leaves (the poll thread's [`detach_reason`] is the backstop and the
+    ///   out-of-band path). We detach whether the reply came back or was severed: killing the LAST
+    ///   session ends the daemon, so the reply can be cut off (EOF/reset), indistinguishable from
+    ///   success here — and either way this client is leaving.
     /// * **Another session** → keep serving ours; drop the killed row from the sidebar at once with a
     ///   [`refresh_sessions`](WireHost::refresh_sessions) (the poll thread's revision-bump re-read is
     ///   the backstop for the same change arriving out of band).
     ///
-    /// The invoke's answer is intentionally ignored (see the own-session note); a genuine refusal —
-    /// only an unknown name for this action — leaves every session as it was, and the sidebar the
-    /// next re-read paints is unchanged.
+    /// The invoke's answer is intentionally ignored (see the detach note); a genuine refusal — only
+    /// an unknown name for this action — leaves every session as it was, and the sidebar the next
+    /// re-read paints is unchanged.
     fn kill_session(&self, name: &str) {
         let params = invoke(
             &mux_action_path(KILL_SESSION_ACTION),
             json!({ "name": name }),
         );
         let is_own = name == self.session.borrow().as_str();
+        // For an OWN kill under a switch policy, pick the successor NOW — BEFORE the kill removes
+        // `name` from the list, so `next`/`previous` resolve against the list the user sees. `None`
+        // means detach (the `on` default, or `name` is the last session). A kill of ANOTHER session
+        // never switches this client.
+        let successor = is_own
+            .then(|| destroy_successor(self.detach_on_destroy, &self.sessions(), name))
+            .flatten();
+        if let Some(next) = successor {
+            // switch-to-next. STOP the poll thread BEFORE the kill so the own-kill switch is
+            // DETERMINISTIC and self-contained. Killing `name` bumps the scene revision, waking the
+            // poll (still scoped to the dying session) into a re-query the host now REFUSES; under a
+            // switch policy its error arm takes the OUT-OF-BAND path — it flags `lost_session` and
+            // repaints (NOT `request_quit`; that is only `HostGone`) — whose reconcile would then
+            // RACE the switch we are about to do (a flag `attach_in_place` would have to clear again).
+            // Joining the poll first means no flag is ever raised for our OWN kill, and no wasted
+            // re-query/repaint on the dead scope. With the poll gone, kill, then switch:
+            // [`switch_session`] attaches to `next` and, if that fails (the successor died in the
+            // gap), falls back to the now-dead `name` and so detaches — the correct end state when
+            // there is nothing left to serve.
+            let running = self.poll.borrow_mut().take();
+            if let Some(mut poll) = running {
+                poll.stop();
+            }
+            let _ = self.request("scene/invoke", params, "kill_session");
+            self.switch_session(&next);
+            return;
+        }
         let _ = self.request("scene/invoke", params, "kill_session");
         if is_own {
+            // Own kill with nothing to switch to → DETACH.
             self.quit.request_quit();
         } else {
+            // Another session killed → keep serving ours; drop the killed row now.
             self.refresh_sessions();
+        }
+    }
+
+    /// Resolve a session lost OUT OF BAND (another client / the `sprag` CLI killed THIS client's
+    /// attached session) under the [`detach_on_destroy`](Self::detach_on_destroy) policy — the second
+    /// destroy trigger, sharing the same switch-vs-detach decision as
+    /// [`kill_session`](HostClient::kill_session)'s own-kill handling. The poll thread cannot switch
+    /// (a UI-thread op), so it sets [`lost_session`](Self::lost_session) + repaints; this runs on the
+    /// UI thread each frame and, when the flag is set, switches-to-next or detaches.
+    ///
+    /// Swap-claim the flag so it fires ONCE. The session mirror still lists the just-lost session —
+    /// the poll broke on the scoped-read refusal BEFORE its next registry-wide sessions re-read — so
+    /// [`destroy_successor`] finds it and returns a live neighbour; `None` (it was the last session,
+    /// or already gone from the mirror) detaches. `switch_session` joins the now-broken poll and
+    /// attaches to the neighbour (whose own commit re-clears the flag).
+    ///
+    /// COVERAGE: the end-to-end switch here and in [`kill_session`](HostClient::kill_session)'s own
+    /// branch is NOT unit-tested — both drive [`switch_session`](HostClient::switch_session) /
+    /// [`request`](Self::request), which need a live daemon. The testable pieces ARE covered (the pure
+    /// [`destroy_successor`] pick and the poll thread's flag+repaint), and
+    /// [`switch_session`](HostClient::switch_session) itself is live-smoke-proven (R170); this is the
+    /// same accepted live-smoke gap the session-sidebar rounds carry.
+    fn reconcile_lost_session(&self) {
+        if self.lost_session.swap(false, Ordering::AcqRel) {
+            let me = self.session.borrow().clone();
+            match destroy_successor(self.detach_on_destroy, &self.sessions(), &me) {
+                Some(next) => self.switch_session(&next),
+                None => self.quit.request_quit(),
+            }
         }
     }
 
@@ -1328,10 +1498,11 @@ fn merge_panes(
 /// Fails if the poll thread cannot be spawned (matching `spawn_or_attach`'s contract
 /// rather than panicking inside it).
 // The poll thread's inputs: its own connection, the FOUR shared mirrors it refreshes (cache /
-// layout / windows / sessions), the repaint + quit sinks, the stop flag, and the subscribe
-// baseline. Well over clippy's default limit — bundling the four `Arc<Mutex<_>>` mirrors into a
-// struct would ripple through every `WireHost` method that reads one, a churn out of proportion to
-// this seam.
+// layout / windows / sessions), the repaint + quit sinks, the destroy `policy` + the `lost_session`
+// flag it raises for an out-of-band session kill under a switch policy, the stop flag, and the
+// subscribe baseline. Well over clippy's default limit — bundling the four `Arc<Mutex<_>>` mirrors
+// into a struct would ripple through every `WireHost` method that reads one, a churn out of
+// proportion to this seam.
 #[allow(clippy::too_many_arguments)]
 fn spawn_poll(
     mut conn: HostConn,
@@ -1341,6 +1512,8 @@ fn spawn_poll(
     sessions: SessionsMirror,
     on_change: Arc<dyn Fn() + Send + Sync>,
     quit: Arc<dyn QuitSink>,
+    policy: DetachOnDestroy,
+    lost_session: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     mut since: u64,
 ) -> io::Result<JoinHandle<()>> {
@@ -1350,17 +1523,24 @@ fn spawn_poll(
             while !stop.load(Ordering::Acquire) {
                 let response = match conn.call("scene/waitFor", json!({ "since": since })) {
                     Ok(value) => value,
-                    Err(error) => match detach_reason(&error) {
-                        // A DEFINITIVE end (host gone or our session killed) — detach, unless
-                        // WE initiated the teardown (a stop-initiated error is the graceful Drop
-                        // that shut this socket down, and quitting then would be redundant).
-                        Some(reason) => {
-                            request_detach(&quit, stop.load(Ordering::Acquire), reason, &error);
+                    Err(error) => {
+                        // A DEFINITIVE end detaches — or, for an out-of-band session kill under a
+                        // switch policy, flags the UI thread to switch-to-next (decided inside
+                        // [`handle_poll_error`]); a transient hiccup re-parks the long-poll rather
+                        // than ending the client. A stop-initiated error is our own graceful Drop,
+                        // which the helper's `stopped` check leaves silent.
+                        if handle_poll_error(
+                            &error,
+                            &stop,
+                            policy,
+                            &lost_session,
+                            &quit,
+                            &on_change,
+                        ) {
                             break;
                         }
-                        // A transient hiccup — re-park the long-poll rather than end the client.
-                        None => continue,
-                    },
+                        continue;
+                    }
                 };
                 if stop.load(Ordering::Acquire) {
                     break;
@@ -1381,8 +1561,14 @@ fn spawn_poll(
                         current
                     }
                     Err(error) => {
-                        if let Some(reason) = detach_reason(&error) {
-                            request_detach(&quit, stop.load(Ordering::Acquire), reason, &error);
+                        if handle_poll_error(
+                            &error,
+                            &stop,
+                            policy,
+                            &lost_session,
+                            &quit,
+                            &on_change,
+                        ) {
                             break;
                         }
                         tracing::debug!(
@@ -1400,8 +1586,14 @@ fn spawn_poll(
                 match query_panes(&mut conn) {
                     Ok(seeds) => refresh_to_set(&mut conn, &cache, &seeds),
                     Err(error) => {
-                        if let Some(reason) = detach_reason(&error) {
-                            request_detach(&quit, stop.load(Ordering::Acquire), reason, &error);
+                        if handle_poll_error(
+                            &error,
+                            &stop,
+                            policy,
+                            &lost_session,
+                            &quit,
+                            &on_change,
+                        ) {
                             break;
                         }
                         tracing::debug!(
@@ -1435,8 +1627,14 @@ fn spawn_poll(
                 match query_layout(&mut conn) {
                     Ok(snapshot) => store_layout(&layout, &current, snapshot),
                     Err(error) => {
-                        if let Some(reason) = detach_reason(&error) {
-                            request_detach(&quit, stop.load(Ordering::Acquire), reason, &error);
+                        if handle_poll_error(
+                            &error,
+                            &stop,
+                            policy,
+                            &lost_session,
+                            &quit,
+                            &on_change,
+                        ) {
                             break;
                         }
                         tracing::debug!(
@@ -1463,33 +1661,93 @@ fn spawn_poll(
         })
 }
 
-/// Why a poll-thread request failed, if the failure is DEFINITIVE and the client should detach
-/// — `None` only for a genuinely transient hiccup to tolerate (re-park / keep the last frame).
+/// A DEFINITIVE poll-thread failure, classified by whether the DAEMON survives it — which is what
+/// decides whether a switch-to-next is even possible when this client's session is destroyed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PollEnd {
+    /// A scoped request the host ANSWERED with a refusal ([`io::ErrorKind::Other`] — [`HostConn::call`]
+    /// maps a JSON-RPC error object to it). For a client that scopes every request to its session,
+    /// the only such refusal is that session being killed while the DAEMON serves on for others — so
+    /// the daemon lives, and under a switch policy this client can move to a neighbour instead of
+    /// leaving.
+    SessionClosed,
+    /// The connection is DEAD — the daemon exited, or a killed LAST session took the whole daemon
+    /// with it. Nothing survives to switch to, so this is always a detach whatever the policy.
+    HostGone,
+}
+
+impl PollEnd {
+    /// The human-readable cause for the detach log line.
+    fn reason(self) -> &'static str {
+        match self {
+            PollEnd::SessionClosed => "this client's session was closed",
+            PollEnd::HostGone => "the host exited",
+        }
+    }
+}
+
+/// Why a poll-thread request failed, if the failure is DEFINITIVE — `None` only for a genuinely
+/// transient hiccup to tolerate (re-park / keep the last frame).
 ///
-/// Definitiveness is the DEFAULT: a broken pipe, a reset, an EOF — any dead connection — ends
-/// this client, tmux's rule that a client leaves when it can no longer serve its session. Only
-/// the handful of retryable kinds are tolerated; classifying a dead-socket write error
-/// (`BrokenPipe`) as transient would spin the long-poll forever, never detaching. The message
-/// separates the two REPORTABLE causes:
-/// * [`Other`](io::ErrorKind::Other) — [`HostConn::call`] maps a JSON-RPC error object to this;
-///   for a client that scopes every request to its session, the only such refusal is that
-///   session being killed while the daemon lives on for other sessions.
-/// * everything else definitive — the host socket is gone (the daemon exited, or a killed LAST
-///   session took the whole daemon with it).
-fn detach_reason(error: &io::Error) -> Option<&'static str> {
+/// Definitiveness is the DEFAULT: a broken pipe, a reset, an EOF — any dead connection — ends this
+/// client's poll, tmux's rule that a client leaves when it can no longer serve its session. Only the
+/// handful of retryable kinds are tolerated; classifying a dead-socket write error (`BrokenPipe`) as
+/// transient would spin the long-poll forever, never ending. The [`PollEnd`] variant separates the
+/// two definitive causes (session-gone vs host-gone), which the caller needs to decide detach-vs-switch.
+fn detach_reason(error: &io::Error) -> Option<PollEnd> {
     match error.kind() {
         // Retryable: a signal interrupted the syscall, a non-blocking op would block, or a read
         // timed out. Re-park and try again; the connection itself is fine. This arm is a
         // DEFENSIVE guard, not a live path today: [`HostConn`] is a blocking socket with no read
         // timeout, so `WouldBlock`/`TimedOut` never arise and `Interrupted` is absorbed inside
         // `read_line`'s retry — every error the poll actually meets is definitive. It stays so a
-        // future non-blocking connection re-parks a hiccup rather than detaching on it.
+        // future non-blocking connection re-parks a hiccup rather than ending on it.
         io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => None,
         // A refusal the host actually answered with — for a scoped client, its session is gone.
-        io::ErrorKind::Other => Some("this client's session was closed"),
+        io::ErrorKind::Other => Some(PollEnd::SessionClosed),
         // Any other error means the connection is dead — the host is gone.
-        _ => Some("the host exited"),
+        _ => Some(PollEnd::HostGone),
     }
+}
+
+/// React to a poll-thread request `error` under the destroy `policy`, returning whether the caller
+/// should BREAK the poll loop (a definitive end) or keep polling (a transient hiccup). The tmux
+/// `detach-on-destroy` split, on the ONE path an out-of-band destroy reaches this client:
+/// * transient ([`detach_reason`] `None`) → keep polling (`false`).
+/// * [`HostGone`](PollEnd::HostGone), or [`SessionClosed`](PollEnd::SessionClosed) under the `Detach`
+///   policy → DETACH now ([`request_detach`], byte-identical to before the policy existed), so the
+///   default path stays the poll thread's own immediate quit — nothing depends on the UI reconcile.
+/// * `SessionClosed` under a SWITCH policy → the daemon lives and we have somewhere to go, but a
+///   switch is a UI-thread op: FLAG [`lost_session`](WireHost::lost_session) and repaint, so the
+///   UI-thread [`reconcile_lost_session`](WireHost::reconcile_lost_session) performs it. Skipped
+///   while WE are tearing down (`stop`) — that is our own graceful teardown, not a lost session, and
+///   falls through to the `request_detach` that then no-ops on `stopped`.
+///
+/// Returns `true` for any definitive end (the loop breaks either way — by a quit or a flagged switch).
+fn handle_poll_error(
+    error: &io::Error,
+    stop: &AtomicBool,
+    policy: DetachOnDestroy,
+    lost_session: &AtomicBool,
+    quit: &Arc<dyn QuitSink>,
+    on_change: &Arc<dyn Fn() + Send + Sync>,
+) -> bool {
+    let Some(end) = detach_reason(error) else {
+        return false; // transient — keep polling
+    };
+    let stopped = stop.load(Ordering::Acquire);
+    match (end, policy) {
+        (PollEnd::SessionClosed, DetachOnDestroy::Next | DetachOnDestroy::Previous) if !stopped => {
+            // Our session died out of band and a switch policy wants us to MOVE, not leave — but the
+            // switch is a UI-thread operation. Flag it and wake the UI thread; its reconcile owns the
+            // switch. (While `stopped`, this is our own teardown, handled by the detach arm below.)
+            lost_session.store(true, Ordering::Release);
+            on_change();
+        }
+        // HostGone (any policy), or a Detach-policy session close, or our own teardown → detach now.
+        (end, _) => request_detach(quit, stopped, end.reason(), error),
+    }
+    true // definitive — break the loop
 }
 
 /// Ask the shell to end — the tmux detach — unless WE initiated the teardown (`stopped`), in
@@ -1507,6 +1765,85 @@ mod tests {
     use std::io::{BufRead, BufReader};
     use std::os::unix::net::UnixListener;
     use std::sync::atomic::AtomicUsize;
+
+    /// A structural session list in creation order, the shape [`destroy_successor`] reads — only the
+    /// name matters to the neighbour pick, so the live fields are empty.
+    fn session_list(names: &[&str]) -> Vec<SessionInfo> {
+        names
+            .iter()
+            .map(|name| SessionInfo {
+                name: (*name).to_owned(),
+                windows: 1,
+                default: false,
+                cwd: None,
+                branch: None,
+                ports: Vec::new(),
+            })
+            .collect()
+    }
+
+    /// The policy env parses to the tmux values, DEFAULTING to detach for anything unrecognized —
+    /// so a client only ever switches away on an EXPLICIT `next`/`previous`, never on a typo or an
+    /// unset env. REVERT-PROOF: drop the trim/lowercase and `"  NEXT "` stops matching; map the
+    /// wildcard to `Next` and the `"on"`/unset/bogus cases start switching.
+    #[test]
+    fn the_detach_policy_env_defaults_to_detach_and_reads_next_previous() {
+        assert_eq!(parse_detach_on_destroy(None), DetachOnDestroy::Detach);
+        assert_eq!(parse_detach_on_destroy(Some("on")), DetachOnDestroy::Detach);
+        assert_eq!(parse_detach_on_destroy(Some("")), DetachOnDestroy::Detach);
+        assert_eq!(
+            parse_detach_on_destroy(Some("sideways")),
+            DetachOnDestroy::Detach
+        );
+        assert_eq!(parse_detach_on_destroy(Some("next")), DetachOnDestroy::Next);
+        assert_eq!(
+            parse_detach_on_destroy(Some("  NEXT ")),
+            DetachOnDestroy::Next
+        );
+        assert_eq!(
+            parse_detach_on_destroy(Some("Previous")),
+            DetachOnDestroy::Previous,
+        );
+    }
+
+    /// The switch-to-next target is the LIST NEIGHBOUR (wrapping), or `None` (detach) for the detach
+    /// policy, the last remaining session, or a name already gone from the list. REVERT-PROOF: a step
+    /// of 0 or a missing wrap breaks the neighbour/wrap rows; returning `Some` for the `Detach`,
+    /// single-session, or absent-name cases fails a `None` assertion — each of which would turn a
+    /// safe detach into a wrong switch.
+    #[test]
+    fn destroy_successor_is_the_wrapping_list_neighbour_or_a_detach() {
+        let list = session_list(&["a", "b", "c"]);
+        // Detach policy never switches.
+        assert_eq!(destroy_successor(DetachOnDestroy::Detach, &list, "b"), None);
+        // Next: the row below, wrapping the last back to the first.
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::Next, &list, "a").as_deref(),
+            Some("b"),
+        );
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::Next, &list, "c").as_deref(),
+            Some("a"),
+        );
+        // Previous: the row above, wrapping the first back to the last.
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::Previous, &list, "a").as_deref(),
+            Some("c"),
+        );
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::Previous, &list, "b").as_deref(),
+            Some("a"),
+        );
+        // Nothing to switch to → detach: the last session, or a name already off the list.
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::Next, &session_list(&["only"]), "only"),
+            None,
+        );
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::Next, &list, "gone"),
+            None
+        );
+    }
 
     /// A [`QuitSink`] that counts requests, so a test can assert the poll thread asked
     /// the shell to end (and did so across the thread boundary).
@@ -1573,6 +1910,8 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
+            DetachOnDestroy::Detach,
+            Arc::new(AtomicBool::new(false)),
             Arc::clone(&stop),
             0,
         )
@@ -1650,6 +1989,8 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
+            DetachOnDestroy::Detach,
+            Arc::new(AtomicBool::new(false)),
             Arc::clone(&stop),
             0,
         )
@@ -1730,6 +2071,8 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             on_change,
             Arc::clone(&quit) as Arc<dyn QuitSink>,
+            DetachOnDestroy::Detach,
+            Arc::new(AtomicBool::new(false)),
             Arc::clone(&stop),
             0,
         )
@@ -1746,6 +2089,165 @@ mod tests {
             repaints.load(Ordering::SeqCst),
             0,
             "and it detaches BEFORE repainting a stale frame",
+        );
+    }
+
+    /// The SWITCH policy's out-of-band trigger: a client whose session is killed while the daemon
+    /// serves on does NOT detach under `next`/`previous` — the poll thread FLAGS the loss and
+    /// repaints, so the UI-thread reconcile can switch-to-next instead. This is what distinguishes
+    /// [`handle_poll_error`]'s switch arm from the default detach.
+    ///
+    /// REVERT-PROOF: delete the switch arm (so every definitive end calls `request_detach`) and
+    /// `quit` reads 1 while `lost` reads false — the client detaches where it should have switched;
+    /// keep it and the client leaves the poll WITHOUT quitting, flag raised, repaint fired.
+    #[test]
+    fn a_switch_policy_flags_a_lost_session_instead_of_detaching() {
+        let (conn, server, _guard, _seen) = a_session_killed_host_conn("switch-lost");
+        let quit = Arc::new(RecordingQuit::default());
+        let lost = Arc::new(AtomicBool::new(false));
+        let repaints = Arc::new(AtomicUsize::new(0));
+        let on_change: Arc<dyn Fn() + Send + Sync> = {
+            let repaints = Arc::clone(&repaints);
+            Arc::new(move || {
+                repaints.fetch_add(1, Ordering::SeqCst);
+            })
+        };
+        let stop = Arc::new(AtomicBool::new(false)); // NOT our teardown: the session was killed
+        let poll = spawn_poll(
+            conn,
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Mirrored::default())),
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Vec::new())),
+            on_change,
+            Arc::clone(&quit) as Arc<dyn QuitSink>,
+            DetachOnDestroy::Next,
+            Arc::clone(&lost),
+            Arc::clone(&stop),
+            0,
+        )
+        .expect("spawn the poll thread");
+        poll.join().expect("the poll thread exited");
+        server.join().expect("the server thread exited");
+
+        assert_eq!(
+            quit.0.load(Ordering::SeqCst),
+            0,
+            "a switch policy must NOT detach on an out-of-band session kill",
+        );
+        assert!(
+            lost.load(Ordering::SeqCst),
+            "it flags the lost session for the UI reconcile to switch-to-next",
+        );
+        assert!(
+            repaints.load(Ordering::SeqCst) >= 1,
+            "and repaints so the UI thread wakes to run that reconcile",
+        );
+    }
+
+    /// Under a SWITCH policy, a DEAD HOST (the whole daemon gone, not merely our session) still
+    /// DETACHES — nothing survives to switch to. Guards the `HostGone` half of [`handle_poll_error`]'s
+    /// catch-all against a regression that widened the switch arm to ANY `Next`/`Previous`.
+    /// REVERT-PROOF: change the switch-arm guard from `(PollEnd::SessionClosed, Next | Previous)` to
+    /// `(_, Next | Previous)` and this reads `quit == 0` / `lost == true` — the client wrongly tries
+    /// to switch off a daemon that is gone.
+    #[test]
+    fn a_switch_policy_still_detaches_when_the_whole_host_is_gone() {
+        let (conn, _listener, _guard) = a_dead_host_conn("switch-hostgone");
+        let quit = Arc::new(RecordingQuit::default());
+        let lost = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false)); // NOT our teardown: the host died
+        let poll = spawn_poll(
+            conn,
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Mirrored::default())),
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(|| {}),
+            Arc::clone(&quit) as Arc<dyn QuitSink>,
+            DetachOnDestroy::Next,
+            Arc::clone(&lost),
+            Arc::clone(&stop),
+            0,
+        )
+        .expect("spawn the poll thread");
+        poll.join().expect("the poll thread exited");
+
+        assert_eq!(
+            quit.0.load(Ordering::SeqCst),
+            1,
+            "a dead HOST detaches even under a switch policy — nothing survives to switch to",
+        );
+        assert!(
+            !lost.load(Ordering::SeqCst),
+            "and it does NOT flag a switch (that is only a session lost while the daemon lives)",
+        );
+    }
+
+    /// Under a SWITCH policy, a session-close refusal that arrives DURING OUR OWN teardown must
+    /// neither flag a switch NOR quit: a graceful Drop / switch teardown is not a lost session. This
+    /// guards the switch arm's `if !stopped` — a distinct guard from the one
+    /// `our_own_teardown_does_not_ask_the_shell_to_quit` covers (`request_detach`'s). Driven the same
+    /// way: the thread is parked in `conn.call` when `stop` flips, then the server answers the parked
+    /// request with the `-32602` a killed-session scope yields. REVERT-PROOF: drop the `if !stopped`
+    /// from the switch arm and this reads `lost == true` (teardown spuriously flags a switch).
+    #[test]
+    fn our_own_teardown_under_a_switch_policy_does_not_flag_a_switch() {
+        use std::io::Write;
+        let path = sock_path("teardown-switch");
+        let listener = UnixListener::bind(&path).expect("bind");
+        let _guard = SockGuard(path.clone());
+        let conn = HostConn::connect(&path, Duration::from_secs(2)).expect("connect");
+        let (server, _) = listener.accept().expect("accept");
+
+        let quit = Arc::new(RecordingQuit::default());
+        let lost = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false)); // FALSE, so the loop enters and parks
+        let poll = spawn_poll(
+            conn,
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Mirrored::default())),
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(|| {}),
+            Arc::clone(&quit) as Arc<dyn QuitSink>,
+            DetachOnDestroy::Next,
+            Arc::clone(&lost),
+            Arc::clone(&stop),
+            0,
+        )
+        .expect("spawn the poll thread");
+
+        // Read the parked `waitFor` request: the thread is now blocked in `conn.call`, exactly where
+        // a teardown finds it.
+        let mut reader = BufReader::new(server.try_clone().expect("clone server"));
+        let mut writer = server;
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("read the request");
+        assert!(line.contains("scene/waitFor"), "the parked request: {line}");
+        let request: Value = serde_json::from_str(line.trim()).unwrap_or(Value::Null);
+
+        // WE tear down (set stop, ordered before the write), THEN answer the parked request with the
+        // killed-session refusal. The thread wakes to a `SessionClosed` error but sees `stopped`, so
+        // under the switch policy it must neither flag nor quit.
+        stop.store(true, Ordering::Release);
+        let reply = json!({
+            "jsonrpc": "2.0",
+            "id": request["id"],
+            "error": { "code": -32602, "message": "no session named \"1\"" },
+        });
+        writeln!(writer, "{reply}").expect("write the refusal");
+        writer.flush().expect("flush the refusal");
+        poll.join().expect("the poll thread exited");
+
+        assert_eq!(
+            quit.0.load(Ordering::SeqCst),
+            0,
+            "a refusal during our own teardown is not a lost session; it must not quit",
+        );
+        assert!(
+            !lost.load(Ordering::SeqCst),
+            "and it must not spuriously flag a switch during teardown",
         );
     }
 
@@ -1778,6 +2280,8 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
+            DetachOnDestroy::Detach,
+            Arc::new(AtomicBool::new(false)),
             Arc::clone(&stop),
             0,
         )

@@ -634,6 +634,14 @@ impl WidgetCore for TerminalViewer {
     /// the R118 rail, so the primary repaints too).
     fn reconcile_frame() {
         let terminal = use_terminal();
+        // (0) (R176) FIRST: resolve a session lost OUT OF BAND under the `detach-on-destroy` policy.
+        // When another client / the `sprag` CLI kills THIS client's attached session, the wire poll
+        // thread (which cannot switch — a UI-thread op) flags it + repaints; here, on the UI thread,
+        // we switch-to-next or detach per the policy. Runs BEFORE the slot reconcile below so a switch
+        // (which swaps the pane cache to the new session) is mapped onto slots THIS frame, not one
+        // frame late over the dead session's now-absent panes. A no-op for the in-process host and
+        // whenever no session was lost.
+        terminal.slots.reconcile_lost_session();
         // (1) Mirror the host's live pane set onto slots, then fold the delta. A slot that
         // FREED drops its floating window and resets its per-slot reactive state; the dock
         // LEAF is not touched here, because the host's arrangement is the one authority on
