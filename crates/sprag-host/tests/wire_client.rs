@@ -968,6 +968,44 @@ fn notification_of(conn: &mut HostConn) -> Option<(Option<String>, String, u64)>
     ))
 }
 
+/// A BELL (`\a`) a CHILD rings reaches the wire `panes` slot as `bell_seq` — the deliverable behind
+/// the tmux monitor-bell attention marker, kept SEPARATE from the notification (a bell carries no
+/// text). The boot pane rings the bell twice, then sleeps to hold the session open; the bytes flow
+/// through the REAL pipeline (child stdout -> PTY -> emulator control parse -> bell_seq -> panes
+/// slot), so this pins the whole vertical, not the unit count. Polled, since the child's write and
+/// the reader thread applying it are async.
+#[test]
+fn a_child_rung_bell_reaches_the_panes_slot() {
+    let (_host, sock) = spawn_host_running(&["sh", "-c", "printf '\\007\\007'; sleep 30"]);
+    let mut conn =
+        HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the spawned host");
+
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            bell_seq_of(&mut conn).is_some_and(|seq| seq >= 2)
+        }),
+        "the child's two bells must surface on the panes slot as bell_seq >= 2",
+    );
+    // A bell is NOT a notification — it carries no text, so the notification key stays absent.
+    assert!(
+        notification_of(&mut conn).is_none(),
+        "a bell must not masquerade as a notification",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// The boot pane's `bell_seq` off the `panes` slot, or `None` when the key is absent (rang none).
+fn bell_seq_of(conn: &mut HostConn) -> Option<u64> {
+    let panes = conn
+        .call(
+            "scene/query",
+            json!({ "path": mux_action_path(PANES_SLOT) }),
+        )
+        .ok()?;
+    panes.as_array()?.first()?.get("bell_seq")?.as_u64()
+}
+
 /// The `clients` slot as `(client, session)` pairs — the wire shape `sprag list-clients` parses.
 fn clients_of(conn: &mut HostConn) -> Vec<(String, String)> {
     conn.call(

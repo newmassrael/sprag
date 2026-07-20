@@ -50,10 +50,18 @@ fn use_pane_ack(slot: usize) -> Signal<u64> {
         .clone()
 }
 
-/// The live notification `seq` of slot `slot` (`0` when it has raised none) — the host-mirror
-/// side of the comparison.
+/// The live ATTENTION `seq` of slot `slot` (`0` when it has raised none) — the host-mirror side of
+/// the comparison. This is the COMBINED count of attention events: the notification `seq` PLUS the
+/// tmux monitor-bell count (`\a`). Both are monotonic, so their sum is too; summing lets the ONE
+/// per-slot ack cover BOTH sources — the marker fires when EITHER advances, and a view acks both at
+/// once. The two stay DISTINCT on the wire (a notification carries text, a bell does not), so a
+/// consumer that must tell them apart reads them separately; the marker only needs "is there
+/// unseen attention". `saturating_add` guards the (unreachable) overflow rather than panicking.
 fn pane_seq(slots: &SlotView, slot: usize) -> u64 {
-    slots.pane_notification(slot).map_or(0, |note| note.seq)
+    slots
+        .pane_notification(slot)
+        .map_or(0, |note| note.seq)
+        .saturating_add(slots.pane_bell_seq(slot))
 }
 
 /// Whether slot `slot` has an UNSEEN attention notification: its live `seq` exceeds the last this

@@ -842,6 +842,16 @@ pub trait VtPort {
     /// re-raise of the same text). The multiplexer's "unseen attention" badge is this
     /// minus the last value a viewer acknowledged.
     fn notification_seq(&self) -> u64;
+
+    /// A monotonic counter bumped once per BELL (`\a`) the child rings — `0` before the first.
+    /// A bell is the tmux `monitor-bell` signal: a text-less "pay attention" ping, kept SEPARATE
+    /// from [`notification_seq`](Self::notification_seq) (a bell is not a desktop toast — it
+    /// carries no text) so the two attention sources stay individually addressable, exactly as
+    /// tmux keeps its bell flag distinct from activity. A viewer's "unseen attention" combines
+    /// both counters (each is monotonic, so their sum is too); a consumer that wants to
+    /// distinguish a bell from a notification reads them apart. Only a BARE bell counts — the
+    /// `\a` that terminates an OSC string is consumed by the parser as part of that OSC.
+    fn bell_seq(&self) -> u64;
 }
 
 #[cfg(test)]

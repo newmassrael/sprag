@@ -122,6 +122,14 @@ impl Pane {
         self.pty.notification()
     }
 
+    /// The monotonic count of BELLs (`\a`) the child has rung — the tmux `monitor-bell` attention
+    /// signal, read LIVE from the emulator. Kept apart from [`Self::notification`] (a bell carries
+    /// no text). See [`sprag_vt::VtPort::bell_seq`].
+    #[must_use]
+    pub fn bell_seq(&self) -> u64 {
+        self.pty.bell_seq()
+    }
+
     /// A cloneable I/O handle onto this pane's pseudoterminal.
     #[must_use]
     pub fn handle(&self) -> PanePtyHandle {
@@ -148,6 +156,11 @@ pub struct PaneInfo {
     /// A client that remembers the value it last saw learns a NEW notification arrived when
     /// this grows — the payload alone cannot distinguish a re-raise of the same text.
     pub notification_seq: u64,
+    /// Monotonic count of BELLs (`\a`) this pane's child has rung (`0` before the first) — the
+    /// tmux `monitor-bell` signal. Kept SEPARATE from [`Self::notification_seq`] (a bell is not a
+    /// desktop toast — it carries no text) so the two attention sources stay individually
+    /// addressable; a viewer's "unseen attention" combines both. See [`sprag_vt::VtPort::bell_seq`].
+    pub bell_seq: u64,
 }
 
 /// The multiplexer's pane pool: a set of live panes, a monotonic id
@@ -407,6 +420,7 @@ impl Workspace {
                     title: p.title(),
                     notification,
                     notification_seq,
+                    bell_seq: p.bell_seq(),
                 }
             })
             .collect()

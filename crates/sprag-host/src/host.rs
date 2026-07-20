@@ -333,6 +333,15 @@ pub trait HostClient {
     fn pane_notification(&self, _id: PaneId) -> Option<PaneNotification> {
         None
     }
+
+    /// The pane's monotonic BELL count (`\a`) — the tmux `monitor-bell` signal, `0` if it has
+    /// rung none (or the pane is absent). LIVE, child-controlled, kept SEPARATE from
+    /// [`pane_notification`](Self::pane_notification) (a bell carries no text) so the two
+    /// attention sources stay individually addressable; a viewer's "unseen attention" combines
+    /// both. Defaulted to `0` so an older [`HostClient`] impl need not implement it.
+    fn pane_bell_seq(&self, _id: PaneId) -> u64 {
+        0
+    }
 }
 
 /// The owner of the session / window tree (a [`SessionRegistry`]), and the
@@ -735,6 +744,12 @@ impl HostClient for Host {
                     seq,
                 })
             })
+    }
+
+    /// The pane's live BELL count, read off the emulator under the workspace lock (like
+    /// [`Self::pane_notification`]). An absent pane flattens to `0`.
+    fn pane_bell_seq(&self, id: PaneId) -> u64 {
+        self.with_pane_id(id, Pane::bell_seq).unwrap_or(0)
     }
 
     /// The DEFAULT session's window (see [`Host::workspace`]).

@@ -89,6 +89,17 @@ pub struct Emulator {
     /// [`VtPort::notification_seq`]. Bumped once per captured notification so a
     /// consumer can tell a NEW one from a re-read of the same latched payload.
     notification_seq: u64,
+    /// Monotonic count of BELLs (`\a`, `ControlCode::Bell`) the child has rung (`0` before the
+    /// first), exposed via [`VtPort::bell_seq`]. A bell is the tmux `monitor-bell` signal — a
+    /// text-less "pay attention" ping, DISTINCT from a [`Notification`] (a desktop toast that
+    /// carries text). It is kept as its own counter, NOT folded into [`Self::notification_seq`],
+    /// so the two attention sources stay individually addressable (as tmux keeps its bell flag
+    /// separate from activity); the multiplexer's attention marker sums them. Like the
+    /// notification seq it does NOT bump [`Self::generation`] — a bell carries no cells — and
+    /// reaches consumers because the byte arrives as PTY output, which fires the session's
+    /// `on_dirty`. NB the `\a` that TERMINATES an OSC string (its `ST`) is consumed by the parser
+    /// as part of the OSC, so only a bare BEL in the stream counts here.
+    bell_seq: u64,
     /// The cursor position + pen saved by DECSC (`ESC 7` / `CSI s`) and restored by DECRC
     /// (`ESC 8` / `CSI u`), or `None` before any save. Saves the same set a terminal restores —
     /// position, SGR foreground/background/attributes, and cursor shape — so an app that saves,
@@ -155,6 +166,7 @@ impl Emulator {
             title: None,
             notification: None,
             notification_seq: 0,
+            bell_seq: 0,
             saved_cursor: None,
             last_print: None,
             generation: 0,
@@ -362,6 +374,9 @@ impl Emulator {
                 let next = ((self.col / 8) + 1) * 8;
                 self.col = next.min(self.cols.saturating_sub(1));
             }
+            // BEL (`\a`) — the tmux monitor-bell attention ping. Count it (a text-less attention
+            // event); it does not touch the grid. See `bell_seq`.
+            ControlCode::Bell => self.bell_seq += 1,
             _ => {}
         }
     }
@@ -781,6 +796,10 @@ impl VtPort for Emulator {
 
     fn notification_seq(&self) -> u64 {
         self.notification_seq
+    }
+
+    fn bell_seq(&self) -> u64 {
+        self.bell_seq
     }
 }
 
@@ -1802,6 +1821,38 @@ mod tests {
             em.screen().scrollback_rows().next().as_deref(),
             Some("aaa"),
             "the line that scrolled off the top-anchored region is history",
+        );
+    }
+
+    // ----- BEL -> attention (tmux monitor-bell) -----
+
+    /// A BARE bell (`\a`) bumps `bell_seq` (the tmux monitor-bell ping); it is kept apart from
+    /// the notification and stamps no row damage. The `\a` that TERMINATES an OSC is that OSC's
+    /// string terminator, consumed by the parser — so it must NOT count as a bell.
+    #[test]
+    fn a_bare_bell_bumps_bell_seq_apart_from_the_notification() {
+        let mut em = Emulator::new(8, 2);
+        assert_eq!(em.bell_seq(), 0, "no bell until one rings");
+
+        em.advance(b"\x07"); // a bare BEL
+        assert_eq!(em.bell_seq(), 1);
+        em.advance(b"a\x07b\x07"); // two more bares, interleaved with prints
+        assert_eq!(em.bell_seq(), 3, "each bare bell counts");
+        assert_eq!(em.notification(), None, "a bell is not a notification");
+
+        // The `\a` terminating an OSC (OSC 2 window title, ST = BEL) is not a bell.
+        em.advance(b"\x1b]2;t\x07");
+        assert_eq!(em.bell_seq(), 3, "an OSC-terminating BEL does not count");
+        assert_eq!(em.title(), Some("t"), "the OSC still applied");
+
+        // A bell carries no cells: a bell-only batch leaves row damage untouched.
+        let g = em.screen().row_generation(0).unwrap();
+        em.advance(b"\x07");
+        assert_eq!(em.bell_seq(), 4);
+        assert_eq!(
+            em.screen().row_generation(0).unwrap(),
+            g,
+            "a bell stamps no row damage",
         );
     }
 }

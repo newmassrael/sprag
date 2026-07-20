@@ -328,6 +328,13 @@ impl PanePty {
         (emu.notification().cloned(), emu.notification_seq())
     }
 
+    /// The monotonic count of BELLs (`\a`) the child has rung — the tmux `monitor-bell` signal,
+    /// kept apart from the notification (a bell carries no text). See [`VtPort::bell_seq`].
+    #[must_use]
+    pub fn bell_seq(&self) -> u64 {
+        lock(&self.emulator).bell_seq()
+    }
+
     /// An owned snapshot of the current screen.
     #[must_use]
     pub fn screen(&self) -> Screen {

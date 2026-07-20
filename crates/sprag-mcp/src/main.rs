@@ -311,6 +311,9 @@ struct PaneInfo {
     /// 777;notify` / `OSC 99`), as a single display line, or `None` if it raised none — so an
     /// agent watching sibling panes learns which one wants attention.
     notification: Option<String>,
+    /// The tmux monitor-bell count (`\a`) the pane's child has rung, `0` if none. Kept SEPARATE
+    /// from the notification (a bell carries no text), so an agent sees a bell distinctly.
+    bell: u64,
 }
 
 fn tool_list_panes() -> Result<String, String> {
@@ -333,6 +336,10 @@ fn tool_list_panes() -> Result<String, String> {
         // list sees which sibling raised one (OSC 9 / 777;notify / 99).
         if let Some(note) = &pane.notification {
             out.push_str(&format!("      notification: {note}\n"));
+        }
+        // The tmux monitor-bell count, distinct from a notification (a bell carries no text).
+        if pane.bell > 0 {
+            out.push_str(&format!("      bell: rang {} time(s)\n", pane.bell));
         }
     }
     Ok(out)
@@ -465,6 +472,7 @@ fn query_panes() -> Result<Vec<PaneInfo>, String> {
             cols: pane.get("cols").and_then(Value::as_u64).unwrap_or(0),
             rows: pane.get("rows").and_then(Value::as_u64).unwrap_or(0),
             notification: pane.get("notification").map(notification_line),
+            bell: pane.get("bell_seq").and_then(Value::as_u64).unwrap_or(0),
         })
         .collect())
 }

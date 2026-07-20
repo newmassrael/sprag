@@ -313,6 +313,13 @@ impl SlotView {
     pub(crate) fn pane_notification(&self, slot: usize) -> Option<PaneNotification> {
         self.id(slot).and_then(|id| self.host.pane_notification(id))
     }
+
+    /// Slot `slot`'s tmux monitor-bell count (`\a`), `0` for a hole or a pane that rang none. A
+    /// DISPLAY signal the attention marker combines with the notification `seq` (see
+    /// [`crate::attention`]) — kept SEPARATE because a bell carries no text.
+    pub(crate) fn pane_bell_seq(&self, slot: usize) -> u64 {
+        self.id(slot).map_or(0, |id| self.host.pane_bell_seq(id))
+    }
 }
 
 /// The PURE slot-allocation plan behind [`SlotView::reconcile`] (so the allocator is
@@ -439,6 +446,8 @@ mod tests {
         /// raise a NEW notification mid-run (the live-mirror `seq`-grows case). Takes precedence
         /// over `notifications` when present.
         notes: Option<std::rc::Rc<RefCell<std::collections::HashMap<PaneId, PaneNotification>>>>,
+        /// Per-pane-id BELL count (tmux monitor-bell), for the bell-drives-the-marker test.
+        bells: std::collections::HashMap<PaneId, u64>,
     }
 
     impl HostClient for FakeHost {
@@ -490,6 +499,9 @@ mod tests {
                 None => self.notifications.get(&id).cloned(),
             }
         }
+        fn pane_bell_seq(&self, id: PaneId) -> u64 {
+            self.bells.get(&id).copied().unwrap_or(0)
+        }
         /// Inert: these tests drive the pane slot map, not the window / session surface.
         fn windows(&self) -> Vec<WindowInfo> {
             Vec::new()
@@ -518,6 +530,7 @@ mod tests {
             titles: std::collections::HashMap::new(),
             notifications: std::collections::HashMap::new(),
             notes: None,
+            bells: std::collections::HashMap::new(),
         }))
     }
 
@@ -537,6 +550,7 @@ mod tests {
             .collect(),
             notifications: std::collections::HashMap::new(),
             notes: None,
+            bells: std::collections::HashMap::new(),
         }));
 
         // `pane_display_title` reads the per-slot attention-ack Signal, so it runs in an Owner
@@ -574,6 +588,7 @@ mod tests {
             titles: std::collections::HashMap::new(),
             notifications: std::collections::HashMap::new(),
             notes: Some(std::rc::Rc::clone(&notes)),
+            bells: std::collections::HashMap::new(),
         }));
 
         Owner::new().run(|| {
@@ -612,6 +627,48 @@ mod tests {
             assert!(
                 title(0).starts_with(ATTENTION_MARKER),
                 "a reset ack re-shows a live notification"
+            );
+        });
+    }
+
+    /// A BELL (`\a`) drives the SAME attention marker as a notification — the combined attention
+    /// `seq` (notification + bell) is what the marker reads. A pane that only rang a bell (NO
+    /// notification) still wears the marker until VIEWED. REVERT-PROOF: if the marker read only
+    /// the notification seq, this pane (notification-less) would never be marked, so the first
+    /// assertion would fail; the ack-clears assertion pins that a bell is view-acknowledged like a
+    /// notification.
+    #[test]
+    fn a_bell_alone_marks_the_title_until_the_pane_is_viewed() {
+        use crate::attention::{ATTENTION_MARKER, ack_focused};
+
+        let ids = std::rc::Rc::new(RefCell::new(vec![pid(10), pid(11)]));
+        let view = SlotView::new(Box::new(FakeHost {
+            ids: std::rc::Rc::clone(&ids),
+            titles: std::collections::HashMap::new(),
+            notifications: std::collections::HashMap::new(), // NO notification on either pane
+            notes: None,
+            bells: [(pid(10), 2u64)].into_iter().collect(), // pane 10 rang the bell twice
+        }));
+
+        Owner::new().run(|| {
+            let title = |i| crate::view::pane_display_title(&view, i);
+            // Slot 0 rang a bell (no notification), unviewed ⇒ the marker leads its title.
+            assert!(
+                title(0).starts_with(ATTENTION_MARKER),
+                "a bell alone marks the title: {}",
+                title(0)
+            );
+            // Slot 1 rang none ⇒ never marked.
+            assert!(
+                !title(1).starts_with(ATTENTION_MARKER),
+                "no bell, no notification ⇒ no marker"
+            );
+            // VIEWING slot 0 acks the combined seq (which includes the bell) ⇒ the marker clears.
+            ack_focused(&view, Some(0));
+            assert!(
+                !title(0).starts_with(ATTENTION_MARKER),
+                "a bell is view-acknowledged like a notification: {}",
+                title(0)
             );
         });
     }

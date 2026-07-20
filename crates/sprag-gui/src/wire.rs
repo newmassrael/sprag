@@ -133,6 +133,10 @@ struct WirePane {
     /// or `None`. Host-authoritative + dynamic like [`Self::title`] — re-adopted every wake, so
     /// its `seq` grows as the child raises more (the GUI's attention badge reads it).
     notification: Option<PaneNotification>,
+    /// The pane's tmux monitor-bell count (`\a`), `0` if none. Host-authoritative + dynamic like
+    /// [`Self::notification`] — re-adopted each wake, kept SEPARATE from it (a bell carries no
+    /// text) so the attention marker can combine the two.
+    bell_seq: u64,
     frame: CellFrame,
     /// The GUI's tracked grid `(cols, rows)`: seeded from the host at boot, advanced only
     /// when a `resize` RPC SUCCEEDS (so the reflow no-op guard reads it with no
@@ -1364,6 +1368,15 @@ impl HostClient for WireHost {
             .find(|pane| pane.id == id)
             .and_then(|pane| pane.notification.clone())
     }
+
+    /// Served from the same poll-refreshed mirror as [`Self::pane_notification`], re-adopted each
+    /// wake, so the bell count reflects the host's latest.
+    fn pane_bell_seq(&self, id: PaneId) -> u64 {
+        self.lock_cache()
+            .iter()
+            .find(|pane| pane.id == id)
+            .map_or(0, |pane| pane.bell_seq)
+    }
 }
 
 impl Drop for WireHost {
@@ -1456,6 +1469,9 @@ struct PaneSeed {
     /// The pane's most recent attention notification, `None` when the wire omits the key
     /// (the child raised none — the additive `skip`-when-absent shape).
     notification: Option<PaneNotification>,
+    /// The pane's tmux monitor-bell count, `0` when the wire omits the key (the child rang none,
+    /// or an older daemon).
+    bell_seq: u64,
     dims: (u16, u16),
 }
 
@@ -1479,6 +1495,7 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
             // `null` (child set no title) and a missing key both mean "no title".
             let title = pane["title"].as_str().map(str::to_owned);
             let notification = parse_notification(&pane["notification"]);
+            let bell_seq = pane["bell_seq"].as_u64().unwrap_or(0);
             let cols = u16::try_from(pane["cols"].as_u64().unwrap_or(1)).unwrap_or(1);
             let rows = u16::try_from(pane["rows"].as_u64().unwrap_or(1)).unwrap_or(1);
             Ok(PaneSeed {
@@ -1486,6 +1503,7 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
                 label,
                 title,
                 notification,
+                bell_seq,
                 dims: (cols, rows),
             })
         })
@@ -1710,6 +1728,7 @@ fn merge_panes(
             // host-authoritative + dynamic like the title: re-adopt the query's, so the seq
             // grows as the child raises more (and clears to None if the host ever drops it).
             notification: seed.notification.clone(),
+            bell_seq: seed.bell_seq, // host-authoritative + dynamic, like the notification
             frame,
             dims: prior.map_or(seed.dims, |pane| pane.dims), // GUI-authoritative — keep tracked
         });
@@ -1860,6 +1879,7 @@ fn spawn_poll(
                                 // Likewise keep the last-known notification (and its seq) rather
                                 // than dropping the attention badge on a transient query miss.
                                 notification: pane.notification.clone(),
+                                bell_seq: pane.bell_seq, // keep the last-known bell count too
                                 dims: pane.dims,
                             })
                             .collect();
@@ -2874,6 +2894,7 @@ mod tests {
                 label: "bash".to_owned(),
                 title: None,
                 notification: None,
+                bell_seq: 0,
                 frame: frame(3),
                 dims: (80, 24),
             },
@@ -2882,6 +2903,7 @@ mod tests {
                 label: "cat".to_owned(),
                 title: None,
                 notification: None,
+                bell_seq: 0,
                 frame: frame(3),
                 dims: (40, 12),
             },
@@ -2895,6 +2917,7 @@ mod tests {
                 label: "bash-relabeled".to_owned(),
                 title: None,
                 notification: None,
+                bell_seq: 0,
                 dims: (100, 30),
             },
             PaneSeed {
@@ -2902,6 +2925,7 @@ mod tests {
                 label: "vim".to_owned(),
                 title: None,
                 notification: None,
+                bell_seq: 0,
                 dims: (80, 24),
             },
             PaneSeed {
@@ -2909,6 +2933,7 @@ mod tests {
                 label: "top".to_owned(),
                 title: None,
                 notification: None,
+                bell_seq: 0,
                 dims: (80, 24),
             },
         ];
@@ -2951,6 +2976,7 @@ mod tests {
             label: "bash".to_owned(),
             title: None,
             notification: None,
+            bell_seq: 0,
             frame: frame(3),
             dims: (80, 24),
         }];
@@ -2959,6 +2985,7 @@ mod tests {
             label: "bash".to_owned(),
             title: None,
             notification: None,
+            bell_seq: 0,
             dims: (80, 24),
         }];
         let merged = merge_panes(&existing, &seeds, &[]); // fetch missed this wake
@@ -2982,6 +3009,7 @@ mod tests {
                 label: "bash".to_owned(),
                 title: Some("stale: vim README".to_owned()),
                 notification: None,
+                bell_seq: 0,
                 frame: frame(3),
                 dims: (80, 24),
             },
@@ -2990,6 +3018,7 @@ mod tests {
                 label: "bash".to_owned(),
                 title: Some("about to be cleared".to_owned()),
                 notification: None,
+                bell_seq: 0,
                 frame: frame(3),
                 dims: (80, 24),
             },
@@ -3000,6 +3029,7 @@ mod tests {
                 label: "bash".to_owned(),
                 title: Some("coin@host:~".to_owned()), // child retitled at the new prompt
                 notification: None,
+                bell_seq: 0,
                 dims: (80, 24),
             },
             PaneSeed {
@@ -3007,6 +3037,7 @@ mod tests {
                 label: "bash".to_owned(),
                 title: None, // child cleared its title
                 notification: None,
+                bell_seq: 0,
                 dims: (80, 24),
             },
         ];

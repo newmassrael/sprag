@@ -636,6 +636,14 @@ impl ExternalIntrospect for WorkspaceExternal {
                                 "seq": p.notification_seq,
                             });
                         }
+                        // The tmux monitor-bell count (`\a`), kept SEPARATE from the
+                        // notification (a bell carries no text). ADDITIVE: present only once the
+                        // child has rung one, so a pane that never did is byte-identical to the
+                        // pre-bell wire shape. A viewer's "unseen attention" combines this with
+                        // the notification `seq`.
+                        if p.bell_seq > 0 {
+                            entry["bell_seq"] = serde_json::json!(p.bell_seq);
+                        }
                         entry
                     })
                     .collect();
