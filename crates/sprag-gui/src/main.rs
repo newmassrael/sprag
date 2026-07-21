@@ -193,6 +193,15 @@
 //! scrolling *during* active output may shift (the offset is relative to the live
 //! bottom) — a v1 limit.
 
+// `sprag-gui` is a binary crate: `cargo doc` always builds it with private items, so
+// the crate-root architecture map above deliberately links to the bin's own internal
+// modules/items (`terminal`, `split`, `dock`, `route_key`, ...) — a navigable map is
+// the point. The `private_intra_doc_links` lint guards LIBRARIES, whose public-API
+// docs publish WITHOUT private items and would ship broken links; a bin has no such
+// published surface, so the lint is a structural false positive here. Allowed at the
+// crate root rather than mangling 40+ correct links into plain code spans.
+#![allow(rustdoc::private_intra_doc_links)]
+
 mod a11y;
 mod attention;
 mod clipboard_osc;
