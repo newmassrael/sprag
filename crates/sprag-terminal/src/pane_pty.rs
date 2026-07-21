@@ -466,7 +466,7 @@ impl PanePty {
     ///
     /// Returns an IO error if the write to the master fails.
     pub fn write(&self, bytes: &[u8]) -> io::Result<()> {
-        write_shared(&self.writer, bytes)
+        write_input(&self.emulator, &self.writer, bytes)
     }
 
     /// A cloneable [`PanePtyHandle`] sharing this pty's emulator and
@@ -588,7 +588,7 @@ impl PanePtyHandle {
     ///
     /// Returns an IO error if the write to the master fails.
     pub fn write(&self, bytes: &[u8]) -> io::Result<()> {
-        write_shared(&self.writer, bytes)
+        write_input(&self.emulator, &self.writer, bytes)
     }
 
     /// Admit ONE client's answer to OSC 52 read query `seq`, writing `reply` to the PTY only if
@@ -654,6 +654,22 @@ fn write_shared(writer: &SharedWriter, bytes: &[u8]) -> io::Result<()> {
     let mut writer = writer.lock().unwrap_or_else(PoisonError::into_inner);
     writer.write_all(bytes)?;
     writer.flush()
+}
+
+/// Write CONSUMER input to the child (a key, a paste, an injected key). First tell the emulator
+/// the user acted ([`VtPort::note_input`]) so the resize-redraw reinterpretation epoch closes
+/// BEFORE the child sees the bytes and responds — the child's echo / redraw / command output is
+/// then emulated with the epoch already closed (no reader-vs-writer race). The emulator lock is
+/// taken only for that flag flip and dropped before the PTY write, never held across it (the same
+/// discipline the reader uses for its response write-back). Automated child replies (device /
+/// clipboard answers) call [`write_shared`] directly and so do NOT end the epoch.
+fn write_input(
+    emulator: &Arc<Mutex<Emulator>>,
+    writer: &SharedWriter,
+    bytes: &[u8],
+) -> io::Result<()> {
+    lock(emulator).note_input();
+    write_shared(writer, bytes)
 }
 
 /// The quiet window the resize coalescer waits for before applying a size. A

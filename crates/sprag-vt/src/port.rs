@@ -1680,6 +1680,17 @@ pub trait VtPort {
     /// Resize the screen to `cols x rows` cells.
     fn resize(&mut self, cols: u16, rows: u16);
 
+    /// Note that the CONSUMER has just sent the child input (a keystroke, a paste, an
+    /// injected key). This ends the resize-redraw reinterpretation epoch (see the emulator's
+    /// `in_resize_redraw`): the user acting — typing at, or submitting from, the prompt — is the
+    /// definitive end of the line editor's `SIGWINCH` redraw, so a submitting `CR LF` and the
+    /// command output after it are hard line breaks again rather than soft wraps. The transport
+    /// calls this on the input path BEFORE writing the bytes to the child, so the child's response
+    /// is always emulated with the epoch already closed (no read-vs-write race). It is a no-op
+    /// when no redraw epoch is open. Automated child replies (device / clipboard answers) do NOT
+    /// call it — they are not the user acting.
+    fn note_input(&mut self);
+
     /// The current authoritative screen.
     fn screen(&self) -> &Screen;
 

@@ -35,7 +35,7 @@ use termwiz::escape::{
 use crate::port::{
     Attrs, Cell, ClipboardQuery, ClipboardTarget, ClipboardTargets, ClipboardWrite, Color, Cursor,
     CursorShape, Hyperlink, Image, InputModes, KittyKeyboardFlags, Notification, PromptMark, Rgb,
-    Screen, ScreenKind, UnderlineStyle, VtPort, Width, char_columns,
+    Screen, ScreenKind, ShellState, UnderlineStyle, VtPort, Width, char_columns,
 };
 
 /// The cursor state DECSC (`ESC 7` / `CSI s`) saves and DECRC (`ESC 8` / `CSI u`) restores:
@@ -183,11 +183,11 @@ pub struct Emulator {
     kitty_chunk: Option<KittyChunk>,
     /// Monotonic damage stamp, bumped on every row-mutating action.
     generation: u64,
-    /// `true` between a resize and the next batch of bytes — the window in which a
-    /// line editor (bash/readline) redraws its wrapped prompt on `SIGWINCH`. Two
-    /// behaviours change in that window so the redraw stays one clean logical line
-    /// that collapses on a later widen — the way a reflowing terminal (vte/
-    /// `gnome-terminal`) handles the same bytes:
+    /// `true` while the line editor (bash/readline) is redrawing its wrapped prompt
+    /// on `SIGWINCH`. Opened by a resize (on the MAIN screen); two behaviours change
+    /// inside it so the redraw stays one clean logical line that collapses on a later
+    /// widen — the way a reflowing terminal (vte/`gnome-terminal`) handles the same
+    /// bytes:
     ///
     /// * an explicit `CR LF` (which readline emits at a width the line exactly
     ///   fills, instead of relying on autowrap) is treated as a SOFT wrap by
@@ -198,20 +198,29 @@ pub struct Emulator {
     ///   wrapped active line, not just the cursor's row, so the stale tail left by
     ///   the prior width does not survive as a growing leftover in the input.
     ///
-    /// Cleared once the redraw batch is applied (see [`VtPort::advance`]).
-    ///
     /// WHY a window and not a purely structural signal: the editor's `CR LF` lands
     /// MID-row (a premature break, columns short of the margin), so it is
     /// byte-for-byte indistinguishable from a genuine newline — only the resize
     /// CONTEXT marks it as a soft wrap. (vte/`gnome-terminal` likewise rely on
     /// context, not a pending-wrap latch, and likewise show the break until widen.)
     ///
-    /// Scope LIMITS (held in practice, honestly bounded): it assumes the editor's
-    /// redraw is the first `advance` batch after the resize and fits in one batch.
-    /// A redraw split across PTY reads, or unrelated output arriving first, would
-    /// fall outside the window. Editor prompt redraws are small (< one read) and
-    /// foreground at the prompt, so this holds for the real cases; widening the
-    /// scope is deferred until a case is observed to need it.
+    /// WHEN it closes (the design that makes a MULTI-BATCH redraw correct — a long
+    /// line reflowed narrow can overflow a single PTY read, so the redraw arrives as
+    /// several `advance` batches):
+    ///
+    /// * while the shell reports (OSC 133) it is AT A PROMPT, the window persists
+    ///   ACROSS batches (see [`VtPort::advance`]) — the redraw is exactly what a
+    ///   resize triggers at a prompt, however many reads it spans;
+    /// * it closes the instant the consumer sends the child input
+    ///   ([`VtPort::note_input`]) — the user typing or submitting is the definitive
+    ///   end of the redraw epoch, so a submitting `CR LF` and the command output that
+    ///   follows are hard breaks again;
+    /// * with NO shell integration (prompt state [`ShellState::Unknown`]) it falls
+    ///   back to the SINGLE-batch close (cleared at the end of the first `advance`) —
+    ///   the previous behaviour, kept because a non-integrated shell cannot be told
+    ///   apart from a foreground command's output, so persisting would wrongly
+    ///   soft-wrap that output. tmux reflows neither and uses no such signal; keying
+    ///   the window off the shell's own prompt state is where sprag does better.
     in_resize_redraw: bool,
 }
 
@@ -1224,9 +1233,15 @@ impl VtPort for Emulator {
         for action in actions {
             self.apply(action);
         }
-        // The line editor's resize redraw arrives as the first batch after a resize;
-        // its soft-wrap / erase reinterpretations (see `in_resize_redraw`) end here.
-        self.in_resize_redraw = false;
+        // The line editor's resize redraw follows a resize (see `in_resize_redraw`). While the
+        // shell reports (OSC 133) it is still AT A PROMPT, the redraw may span several PTY-read
+        // batches, so keep the window open across them; otherwise close it at this batch's end —
+        // a non-integrated shell (Unknown) falls back to the single-batch window, and a shell that
+        // has left the prompt to run a command is producing output, not a redraw. `note_input`
+        // closes it the moment the consumer sends input, so a submitting CR LF stays a hard break.
+        if self.screen.shell_state() != ShellState::AtPrompt {
+            self.in_resize_redraw = false;
+        }
         self.sync_cursor();
     }
 
@@ -1256,6 +1271,14 @@ impl VtPort for Emulator {
         // the MAIN screen runs a line editor; a fullscreen app owns the alt screen.
         self.in_resize_redraw = self.screen.screen_kind() == ScreenKind::Main;
         self.sync_cursor();
+    }
+
+    fn note_input(&mut self) {
+        // The user acted (typed / submitted / pasted): the line editor's resize redraw is over, so
+        // close the reinterpretation window. The transport calls this before writing the bytes to
+        // the child, so the child's echo / prompt / command output is emulated with the epoch
+        // closed — a submitting CR LF is a hard break again. See `in_resize_redraw`.
+        self.in_resize_redraw = false;
     }
 
     fn screen(&self) -> &Screen {
@@ -2291,16 +2314,67 @@ mod tests {
     }
 
     #[test]
-    fn redraw_window_ends_after_the_first_batch() {
-        // The soft-wrap reinterpretation lasts only for the redraw batch; a CR LF in
-        // a later batch is hard again.
+    fn redraw_window_ends_after_the_first_batch_without_shell_integration() {
+        // NON-INTEGRATED shell (no OSC 133, so the prompt state is Unknown): the soft-wrap
+        // reinterpretation falls back to the single batch — a CR LF in a later batch is hard
+        // again, because without shell integration a prompt redraw cannot be told apart from a
+        // foreground command's output, so the window must not persist.
         let mut em = Emulator::new(10, 4);
         em.resize(10, 4);
         em.advance(b"\rAAAA"); // first batch (the redraw) — window closes after it
         em.advance(b"BBBB\r\nCCCC"); // a later batch
         assert!(
             !em.screen().wrapped(0),
-            "the redraw window closed; this CR LF is hard"
+            "with no shell integration the redraw window closes after one batch"
+        );
+    }
+
+    #[test]
+    fn redraw_window_persists_across_batches_while_at_a_prompt() {
+        // With shell integration reporting AT A PROMPT, a redraw that overflows one PTY read (a
+        // long line reflowed narrow) arrives as several batches; the CR LF soft-wrap must persist
+        // across all of them, not close after the first (the multi-batch redraw fix).
+        let mut em = Emulator::new(10, 4);
+        em.advance(b"\x1b]133;A\x1b\\"); // OSC 133 A: the shell is at a prompt
+        em.resize(10, 4); // arms the redraw window
+        em.advance(b"\rAAAA"); // batch 1 of the redraw
+        em.advance(b"\r\nBBBB"); // batch 2 — its CR LF is STILL a soft wrap
+        assert!(
+            em.screen().wrapped(0),
+            "the redraw window persisted past the first batch while at a prompt"
+        );
+    }
+
+    #[test]
+    fn note_input_ends_the_resize_redraw_epoch() {
+        // The user acting (a keystroke / a submit) ends the redraw epoch: the CR LF that submits a
+        // command, and the command output after it, are hard breaks again — not joined onto the
+        // prompt line. Without this, a persisted at-a-prompt window would soft-wrap the submit.
+        let mut em = Emulator::new(10, 4);
+        em.advance(b"\x1b]133;A\x1b\\"); // at a prompt (the window would otherwise persist)
+        em.resize(10, 4);
+        em.advance(b"\rAAAA"); // redraw batch (window persists at a prompt)
+        VtPort::note_input(&mut em); // the user typed / submitted
+        em.advance(b"\r\nBBBB"); // output after the submit — a HARD break now
+        assert!(
+            !em.screen().wrapped(0),
+            "note_input closed the epoch, so this CR LF is a hard break"
+        );
+    }
+
+    #[test]
+    fn a_running_command_does_not_persist_the_redraw_window() {
+        // Resizing while a command is RUNNING (OSC 133 C) must not soft-wrap its output across
+        // batches — only a PROMPT redraw persists. The window falls back to the single batch, so a
+        // later CR LF in the command's output stays a hard break (no foreground-output regression).
+        let mut em = Emulator::new(10, 4);
+        em.advance(b"\x1b]133;C\x1b\\"); // the shell is running a command
+        em.resize(10, 4);
+        em.advance(b"\rAAAA"); // batch 1 — window closes at its end (not at a prompt)
+        em.advance(b"\r\nBBBB"); // batch 2 — hard break
+        assert!(
+            !em.screen().wrapped(0),
+            "a running command's output does not keep the redraw window open"
         );
     }
 
