@@ -1002,6 +1002,10 @@ impl Screen {
             // (if any) goes with the content that was cleared.
             self.wrapped[row as usize] = false;
             self.marks[row as usize] = None;
+            // An inline image anchored on this row goes with the cleared content (R1404 Stage 3):
+            // erase-in-display (ED, which clear_row's the affected rows) drops it, no ghost left.
+            // During a scroll this is a no-op — images shift before the vacated rows are cleared.
+            self.images.retain(|img| img.anchor.1 != row);
         }
     }
 
@@ -1300,8 +1304,13 @@ impl Screen {
             visible: self.cursor.visible,
         };
         next.kind = self.kind;
-        // Inline images survive the rewrap verbatim (data preserved; position-eviction
-        // under scroll / reflow is a later stage) — same as [`Self::resized`].
+        // Inline images survive the rewrap verbatim: the RGBA is preserved and the anchor cell is
+        // carried unchanged. Scroll now repositions an image (Stage 3), but a REFLOW does NOT
+        // re-map the anchor to its rewrapped cell — a width change can leave an image misplaced
+        // until the app redraws. A documented bound: precise reflow-repositioning of an image
+        // (mirroring how a mark re-attaches to a re-broken line) is deferred; verbatim-carry keeps
+        // the image rather than dropping or misrendering it. Same verbatim carry as [`Self::resized`]
+        // (a plain resize, no rewrap, keeps anchors correct).
         next.images = self.images.clone();
         next
     }
@@ -1353,6 +1362,10 @@ impl Screen {
         if n == 0 {
             return;
         }
+        // An image tracks the grid like a cell: its anchor row scrolls up with the region. Do this
+        // FIRST, before the row-clear below blanks the vacated rows (post-shift no image sits there,
+        // so `clear_row`'s own image-drop is a no-op here). See [`Self::shift_images_up`].
+        self.shift_images_up(top, bottom, n);
         // Retain the rows leaving the top (`[top, top+n)`) as history, oldest first, only
         // for an output-flow scroll of a top-anchored region on the main screen.
         if to_scrollback && top == 0 && self.kind == ScreenKind::Main {
@@ -1407,6 +1420,8 @@ impl Screen {
         if n == 0 {
             return;
         }
+        // An image's anchor scrolls down with the region (mirror of [`Self::scroll_region_up`]).
+        self.shift_images_down(top, bottom, n);
         let cols = self.cols as usize;
         let shift = height - n; // rows that survive and move down by `n`
         // Shift down: move each surviving row `n` positions toward the bottom. Walk
@@ -1424,6 +1439,43 @@ impl Screen {
         for i in 0..n {
             self.clear_row(top + i, generation);
         }
+    }
+
+    /// Shift every inline image whose anchor row is in the scrolled region `[top, bottom]` UP by
+    /// `n` — the image tracks its text (a sixel scrolls with the output, R1404 Stage 3). An image
+    /// anchored in the `n` rows leaving the top of the region (`[top, top+n)`) is EVICTED, exactly
+    /// as those rows' cells leave; an image outside the region is untouched. Anchor-granular (an
+    /// image straddling the region boundary tracks by its anchor cell — a documented bound).
+    /// Scrollback-image retention (re-appearing when you scroll back up) is a deferred bound: a
+    /// scrolled-off-the-top image is dropped, not kept.
+    fn shift_images_up(&mut self, top: u16, bottom: u16, n: u16) {
+        self.images.retain_mut(|img| {
+            let r = img.anchor.1;
+            if r < top || r > bottom {
+                true // outside the scrolled region — unmoved
+            } else if r < top + n {
+                false // in the rows leaving the top — evicted
+            } else {
+                img.anchor.1 = r - n;
+                true
+            }
+        });
+    }
+
+    /// Shift every inline image whose anchor row is in `[top, bottom]` DOWN by `n`, evicting one
+    /// that leaves the bottom — the mirror of [`Self::shift_images_up`] (RI / SD / IL).
+    fn shift_images_down(&mut self, top: u16, bottom: u16, n: u16) {
+        self.images.retain_mut(|img| {
+            let r = img.anchor.1;
+            if r < top || r > bottom {
+                true
+            } else if r + n > bottom {
+                false // leaving the bottom of the region — evicted
+            } else {
+                img.anchor.1 = r + n;
+                true
+            }
+        });
     }
 }
 

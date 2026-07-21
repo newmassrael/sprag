@@ -3343,4 +3343,78 @@ mod tests {
             "the image survives the resize/reflow"
         );
     }
+
+    /// A 1x1 RGBA Kitty image APC anchored at the current cursor (Stage-3 lifecycle tests).
+    fn tiny_image_apc() -> String {
+        format!(
+            "\x1b_Ga=T,f=32,s=1,v=1;{}\x1b\\",
+            BASE64.encode([9u8, 9, 9, 255])
+        )
+    }
+
+    /// R1404 Stage 3: an image tracks its text — a line feed that scrolls the screen scrolls the
+    /// image's anchor up with it.
+    #[test]
+    fn image_anchor_scrolls_up_with_a_line_feed() {
+        let mut em = Emulator::new(8, 4);
+        // Anchor on the bottom row (row 3), then a line feed at the bottom scrolls the region up 1.
+        em.advance(format!("\x1b[4;1H{}", tiny_image_apc()).as_bytes());
+        assert_eq!(
+            em.screen().images()[0].anchor,
+            (0, 3),
+            "anchored at the bottom"
+        );
+        em.advance(b"\n");
+        assert_eq!(
+            em.screen().images()[0].anchor,
+            (0, 2),
+            "the image scrolled up one row with the text"
+        );
+    }
+
+    /// R1404 Stage 3: an image scrolled off the TOP of the screen is evicted, not pinned.
+    #[test]
+    fn image_scrolled_off_the_top_is_evicted() {
+        let mut em = Emulator::new(8, 4);
+        // Anchor on the top row (row 0), park the cursor at the bottom, then one line feed scrolls
+        // row 0 off the top of the region.
+        em.advance(format!("{}\x1b[4;1H", tiny_image_apc()).as_bytes());
+        assert_eq!(em.screen().images()[0].anchor, (0, 0));
+        em.advance(b"\n");
+        assert!(
+            em.screen().images().is_empty(),
+            "the image scrolled off the top is gone"
+        );
+    }
+
+    /// R1404 Stage 3: an image is dropped when erase-in-display clears its anchor row (no ghost).
+    #[test]
+    fn image_dropped_when_erase_display_clears_its_row() {
+        let mut em = Emulator::new(8, 4);
+        // Anchor on row 2, then erase-to-end-of-display from row 1 clears rows 1..=3, dropping it.
+        em.advance(format!("\x1b[3;1H{}", tiny_image_apc()).as_bytes());
+        assert_eq!(em.screen().images()[0].anchor, (0, 2));
+        em.advance(b"\x1b[2;1H\x1b[0J"); // cursor row 1, ED0 (to end of display)
+        assert!(
+            em.screen().images().is_empty(),
+            "erase-in-display over the image's row dropped it"
+        );
+    }
+
+    /// R1404 Stage 3: an image OUTSIDE a scroll region is not moved when the region scrolls —
+    /// the region check is load-bearing (a naive whole-screen shift would wrongly move it).
+    #[test]
+    fn image_outside_the_scroll_region_is_unmoved() {
+        let mut em = Emulator::new(8, 4);
+        // Image on the bottom row (row 3), then a scroll region of the top two rows [0,1]; scrolling
+        // that region must leave the row-3 image where it is.
+        em.advance(format!("\x1b[4;1H{}", tiny_image_apc()).as_bytes());
+        em.advance(b"\x1b[1;2r"); // DECSTBM rows 1..=2 (1-indexed) = [0,1]; homes the cursor
+        em.advance(b"\x1b[2;1H\n"); // cursor to the region bottom (row 1), line feed scrolls [0,1]
+        assert_eq!(
+            em.screen().images()[0].anchor,
+            (0, 3),
+            "an image below the scroll region is unmoved"
+        );
+    }
 }
