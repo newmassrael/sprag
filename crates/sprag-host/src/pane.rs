@@ -40,7 +40,7 @@ use pinion_core::external::{
     ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError,
     read_only_or_unknown,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use sprag_input::Modifiers;
 use sprag_terminal::PanePtyHandle;
 use sprag_vt::Screen;
@@ -52,8 +52,8 @@ use crate::host::PaneScrollFacts;
 // vocabulary ([`crate::wire`]) — the SAME consts the wire client addresses, so the
 // two cannot drift.
 use crate::wire::{
-    CELLS_FIELD, CURSOR_KEYS_SLOT, FRAMES_SLOT, FULL_TEXT_SLOT, KEY_ACTION, PANE_SCHEMA,
-    TEXT_ACTION,
+    CELLS_FIELD, CURSOR_KEYS_SLOT, FRAMES_SLOT, FULL_TEXT_SLOT, KEY_ACTION, LAST_COMMAND_SLOT,
+    PANE_SCHEMA, TEXT_ACTION,
 };
 
 /// Encode a W3C `key` + `mods` to PTY bytes (the sprag-owned R2.6 encoder,
@@ -236,6 +236,21 @@ impl ExternalIntrospect for SpragPaneExternal {
             )),
             FULL_TEXT_SLOT => Some(IntrospectValue::Text(
                 self.pty.with_screen(Screen::full_text),
+            )),
+            // The last command sliced from the OSC 133 marks (scrollback + visible). `Null`
+            // (present-but-empty) when no command has run under shell integration — the
+            // agent then falls back to `full_text`, exactly as a malformed `cells.<off>` is
+            // `Null` rather than absent.
+            LAST_COMMAND_SLOT => Some(self.pty.with_screen(Screen::last_command).map_or(
+                IntrospectValue::Null,
+                |cmd| {
+                    IntrospectValue::Json(json!({
+                        "command": cmd.command,
+                        "output": cmd.output,
+                        "exit_status": cmd.exit_status,
+                        "running": cmd.running,
+                    }))
+                },
             )),
             _ => None,
         }

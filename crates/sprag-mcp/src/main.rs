@@ -9,9 +9,9 @@
 //!
 //! It is a [Model Context Protocol](https://modelcontextprotocol.io) **stdio
 //! server**: Claude Code (or any MCP client) spawns it and it speaks newline-delimited
-//! JSON-RPC 2.0 on stdin/stdout. It advertises four self-describing tools —
-//! `list_panes`, `read_pane`, `write_pane`, `send_keys` — so an agent
-//! *immediately* understands "read/write a sibling pane" without reading any sprag
+//! JSON-RPC 2.0 on stdin/stdout. It advertises five self-describing tools —
+//! `list_panes`, `read_pane`, `read_last_command`, `write_pane`, `send_keys` — so an
+//! agent *immediately* understands "read/write a sibling pane" without reading any sprag
 //! source. Each tool call bridges to the host wire via [`sprag_rpc::HostConn`],
 //! addressing panes with the [`sprag_host::wire`] path SSOT.
 //!
@@ -45,7 +45,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use sprag_host::wire::{FULL_TEXT_SLOT, KEY_ACTION, PANES_SLOT, TEXT_ACTION};
+use sprag_host::wire::{FULL_TEXT_SLOT, KEY_ACTION, LAST_COMMAND_SLOT, PANES_SLOT, TEXT_ACTION};
 use sprag_host::{mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
 
@@ -179,14 +179,15 @@ fn handle_initialize(message: &Value) -> Value {
         "serverInfo": { "name": "sprag-mcp", "version": env!("CARGO_PKG_VERSION") },
         "instructions": "You are running inside a pane of a sprag terminal. These \
             tools let you observe and drive the OTHER (sibling) panes as data: read a \
-            pane's on-screen text and scrollback, type text into a pane, or send keys. \
+            pane's on-screen text and scrollback, read just a pane's last command and \
+            its result, type text into a pane, or send keys. \
             Call `list_panes` first to see the pane numbers (1 = first pane). \
             \"pane 2\" means the second pane in that list. If a tool reports it is not \
             inside a sprag terminal, these tools do not apply to this session."
     })
 }
 
-/// The four self-describing tools. Descriptions are written for an agent so a request
+/// The five self-describing tools. Descriptions are written for an agent so a request
 /// like "type xxx into pane 2" maps directly onto the `write_pane` tool.
 fn tools_list() -> Value {
     let pane_arg = json!({
@@ -219,6 +220,22 @@ fn tools_list() -> Value {
                             "description": "If set, return only the last N non-empty-trimmed lines."
                         }
                     },
+                    "required": ["pane"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "read_last_command",
+                "description": "Read just the LAST command a pane's shell ran — its \
+                    command line, its output, and its exit status — sliced at the \
+                    shell's OSC 133 prompt marks, not the whole screen. Prefer this over \
+                    read_pane when you only need the most recent command's result (e.g. \
+                    'did that build pass?'). Reports if the command is still running, \
+                    and falls back with a note if the pane's shell has no OSC 133 \
+                    integration.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "pane": pane_arg },
                     "required": ["pane"],
                     "additionalProperties": false
                 }
@@ -284,6 +301,7 @@ fn handle_tools_call(message: &Value) -> Value {
     let outcome = match name {
         "list_panes" => tool_list_panes(),
         "read_pane" => tool_read_pane(&args),
+        "read_last_command" => tool_read_last_command(&args),
         "write_pane" => tool_write_pane(&args),
         "send_keys" => tool_send_keys(&args),
         other => Err(format!("unknown tool: {other}")),
@@ -384,6 +402,35 @@ fn tool_read_pane(args: &Value) -> Result<String, String> {
         Some(n) => Ok(last_n_lines(&text, n as usize)),
         None => Ok(text),
     }
+}
+
+/// Read the pane's LAST command sliced at its OSC 133 marks — the command line, its output,
+/// and its exit status — rendered as a readable block. A `null` slot means the pane's shell
+/// has no OSC 133 integration; the agent is told to fall back to `read_pane`.
+fn tool_read_last_command(args: &Value) -> Result<String, String> {
+    let id = resolve_pane_id(args)?;
+    let value = host_call(
+        "scene/query",
+        json!({ "path": pane_input_path(id, LAST_COMMAND_SLOT) }),
+    )?;
+    if value.is_null() {
+        return Ok(
+            "No shell-integration command boundaries in this pane (its shell may not \
+             emit OSC 133 marks); use read_pane for the raw screen instead."
+                .to_owned(),
+        );
+    }
+    let command = value.get("command").and_then(Value::as_str).unwrap_or("");
+    let output = value.get("output").and_then(Value::as_str).unwrap_or("");
+    let status = if value.get("running").and_then(Value::as_bool) == Some(true) {
+        "still running".to_owned()
+    } else {
+        match value.get("exit_status").and_then(Value::as_i64) {
+            Some(code) => format!("exit {code}"),
+            None => "finished (exit status not reported)".to_owned(),
+        }
+    };
+    Ok(format!("{command}\n[{status}]\n--- output ---\n{output}"))
 }
 
 fn tool_write_pane(args: &Value) -> Result<String, String> {
@@ -597,7 +644,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tools_list_advertises_the_four_tools_with_object_schemas() {
+    fn tools_list_advertises_the_five_tools_with_object_schemas() {
         let tools = tools_list();
         let names: Vec<&str> = tools["tools"]
             .as_array()
@@ -607,14 +654,20 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            ["list_panes", "read_pane", "write_pane", "send_keys"]
+            [
+                "list_panes",
+                "read_pane",
+                "read_last_command",
+                "write_pane",
+                "send_keys"
+            ]
         );
         for tool in tools["tools"].as_array().unwrap() {
             assert_eq!(tool["inputSchema"]["type"], "object");
             assert!(tool["description"].as_str().unwrap().len() > 10);
         }
         // write_pane requires pane + text (the "type xxx into pane 2" path).
-        let write = tools["tools"].as_array().unwrap()[2].clone();
+        let write = tools["tools"].as_array().unwrap()[3].clone();
         assert_eq!(write["inputSchema"]["required"], json!(["pane", "text"]));
     }
 

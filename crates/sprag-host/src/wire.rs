@@ -91,6 +91,12 @@ pub const FULL_TEXT_SLOT: &str = "full_text";
 /// The pane-input external query slot: the producer's DECCKM (application cursor
 /// keys) mode.
 pub const CURSOR_KEYS_SLOT: &str = "application_cursor_keys";
+/// The pane-input external query slot: the LAST shell command sliced from the pane's OSC 133
+/// marks — a JSON object `{command, output, exit_status, running}`
+/// ([`Screen::last_command`](sprag_vt::Screen::last_command)), or `null` when no command has run
+/// under shell integration (the agent then falls back to [`FULL_TEXT_SLOT`]). The command-scoped
+/// read tmux's whole-pane `capture-pane` cannot express.
+pub const LAST_COMMAND_SLOT: &str = "last_command";
 
 /// The pane-input external's DECLARED SCHEMA — every path it answers, with its type and any
 /// arguments, in `$schema` order. [`SpragPaneExternal`](crate::SpragPaneExternal) publishes
@@ -111,6 +117,7 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     SchemaField::new(FRAMES_SLOT, "int"),
     SchemaField::new(CURSOR_KEYS_SLOT, "bool"),
     SchemaField::new(FULL_TEXT_SLOT, "string"),
+    SchemaField::new(LAST_COMMAND_SLOT, "object"),
 ];
 
 /// The out-of-band request param naming the SESSION a request acts on — `{"session": "work"}`

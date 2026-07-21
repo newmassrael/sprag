@@ -314,6 +314,28 @@ impl ShellState {
     }
 }
 
+/// The last shell command sliced from the OSC 133 [`PromptMark`]s — its line, its output, its
+/// exit status, and whether it is still running. Returned by [`Screen::last_command`]. Serde-free:
+/// the VT layer owns no wire shape; the host projects this to JSON for the `read_last_command` MCP
+/// tool, exactly as it projects [`ShellState`] via [`ShellState::wire_str`].
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct LastCommand {
+    /// The command line: the prompt row(s) from the [`Prompt`](PromptMark::Prompt) up to the
+    /// [`Output`](PromptMark::Output) mark, INCLUDING the shell's prompt string (input-start `B` is
+    /// not a row mark — a documented bound). Empty when integration began after the prompt (an
+    /// `Output` with no preceding `Prompt`).
+    pub command: String,
+    /// The command's output: the rows from [`Output`](PromptMark::Output) to
+    /// [`CommandEnd`](PromptMark::CommandEnd), or to the bottom of the pane while [`running`](Self::running).
+    pub output: String,
+    /// The reported exit status, or `None` for a bare `OSC 133 ; D` (finished, unreported) or while
+    /// still running.
+    pub exit_status: Option<i32>,
+    /// `true` when no [`CommandEnd`](PromptMark::CommandEnd) has arrived after the output start — the
+    /// command is still executing and `output` is what it has printed so far.
+    pub running: bool,
+}
+
 /// One scrolled-off line: its STYLED cells plus any shell-integration [`PromptMark`] the row
 /// carried. Bundling the mark WITH its cells (rather than a parallel deque) makes the two
 /// impossible to desync as lines are pushed, popped at the [`SCROLLBACK_CAP`], reflowed, or
@@ -559,6 +581,70 @@ impl Screen {
             lines.pop();
         }
         lines.join("\n")
+    }
+
+    /// The last shell command — its line, output, and exit status — sliced from the OSC 133
+    /// [`PromptMark`]s across scrollback and the visible grid, or `None` when no command has run
+    /// under shell integration (no [`Output`](PromptMark::Output) mark; the caller then falls back
+    /// to [`Self::full_text`]).
+    ///
+    /// The anchor is the most recent `Output` mark (`C`) — every command that produced output has
+    /// one. The command line is the rows from the [`Prompt`](PromptMark::Prompt) that introduced it
+    /// up to `C`; the output is the rows from `C` to the [`CommandEnd`](PromptMark::CommandEnd) `D`,
+    /// or to the bottom while [`running`](LastCommand::running). This is a capability tmux's
+    /// `capture-pane` lacks — a blind line range cannot slice one command's output; the marks give
+    /// semantic boundaries. Bounded: it scans the retained lines (scrollback cap + visible rows).
+    #[must_use]
+    pub fn last_command(&self) -> Option<LastCommand> {
+        let sb_len = self.scrollback.len();
+        let total = sb_len + self.rows as usize;
+        let mark_at = |i: usize| {
+            if i < sb_len {
+                self.scrollback_mark(i)
+            } else {
+                self.mark((i - sb_len) as u16)
+            }
+        };
+        // The last output start anchors the last command (running or finished).
+        let c = (0..total)
+            .rev()
+            .find(|&i| mark_at(i) == Some(PromptMark::Output))?;
+        // Its end: the first CommandEnd after C; None => the command is still running.
+        let d = (c + 1..total).find(|&i| matches!(mark_at(i), Some(PromptMark::CommandEnd(_))));
+        // The prompt that introduced it: the last Prompt at or before C.
+        let a = (0..=c)
+            .rev()
+            .find(|&i| mark_at(i) == Some(PromptMark::Prompt));
+
+        let text = |range: std::ops::Range<usize>| -> String {
+            let mut lines: Vec<String> = range
+                .map(|i| {
+                    if i < sb_len {
+                        cells_text(&self.scrollback[i].cells)
+                    } else {
+                        self.row_text((i - sb_len) as u16)
+                    }
+                })
+                .collect();
+            while lines.last().is_some_and(String::is_empty) {
+                lines.pop();
+            }
+            lines.join("\n")
+        };
+
+        let exit_status = match d {
+            Some(i) => match mark_at(i) {
+                Some(PromptMark::CommandEnd(status)) => status,
+                _ => None,
+            },
+            None => None,
+        };
+        Some(LastCommand {
+            command: a.map(|a| text(a..c)).unwrap_or_default(),
+            output: text(c..d.unwrap_or(total)),
+            exit_status,
+            running: d.is_none(),
+        })
     }
 
     // --- mutation surface for VT backends (crate-internal) ---

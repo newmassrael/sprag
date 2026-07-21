@@ -2077,6 +2077,60 @@ mod tests {
         );
     }
 
+    /// A finished command slices into its line, its output, and its reported exit.
+    #[test]
+    fn last_command_slices_line_output_and_exit() {
+        let mut em = Emulator::new(20, 6);
+        em.advance(b"\x1b]133;A\x07$ ls\x1b]133;B\x07"); // prompt + typed command, row 0
+        em.advance(b"\r\n\x1b]133;C\x07"); // Enter -> row 1, output starts here
+        em.advance(b"a.txt\r\nb.txt\r\n"); // output rows 1, 2; cursor -> row 3
+        em.advance(b"\x1b]133;D;0\x07"); // finished, exit 0, row 3
+        let cmd = em.screen().last_command().expect("a command ran");
+        assert_eq!(cmd.command, "$ ls", "the prompt row up to output start");
+        assert_eq!(cmd.output, "a.txt\nb.txt", "the rows between C and D");
+        assert_eq!(cmd.exit_status, Some(0));
+        assert!(!cmd.running);
+    }
+
+    /// A command still running (no `D` yet) reports its output-so-far, no exit.
+    #[test]
+    fn last_command_reports_a_running_command_without_exit() {
+        let mut em = Emulator::new(20, 6);
+        em.advance(b"\x1b]133;A\x07$ sleep 9\x1b]133;B\x07\r\n");
+        em.advance(b"\x1b]133;C\x07working...\r\n"); // output starts row 1, still running
+        let cmd = em.screen().last_command().expect("a command is running");
+        assert_eq!(cmd.command, "$ sleep 9");
+        assert_eq!(
+            cmd.output, "working...",
+            "output to the bottom, blanks trimmed"
+        );
+        assert_eq!(cmd.exit_status, None);
+        assert!(cmd.running);
+    }
+
+    /// No output mark (`C`) yet — at a bare prompt, nothing has run — is `None`.
+    #[test]
+    fn last_command_is_none_without_an_output_mark() {
+        let mut em = Emulator::new(20, 3);
+        em.advance(b"\x1b]133;A\x07$ \x1b]133;B\x07"); // a prompt, nothing executed
+        assert!(em.screen().last_command().is_none());
+    }
+
+    /// The anchor is the last OUTPUT start, not the last mark: at a fresh prompt after a
+    /// command finished, `last_command` still returns that finished command.
+    #[test]
+    fn last_command_is_the_finished_command_at_a_fresh_prompt() {
+        let mut em = Emulator::new(20, 8);
+        em.advance(b"\x1b]133;A\x07$ echo hi\x1b]133;B\x07\r\n\x1b]133;C\x07");
+        em.advance(b"hi\r\n\x1b]133;D;0\x07\r\n"); // output row 1, D row 2, then row 3
+        em.advance(b"\x1b]133;A\x07$ \x1b]133;B\x07"); // a NEW prompt on row 3, nothing typed
+        let cmd = em.screen().last_command().expect("the finished command");
+        assert_eq!(cmd.command, "$ echo hi");
+        assert_eq!(cmd.output, "hi");
+        assert_eq!(cmd.exit_status, Some(0));
+        assert!(!cmd.running, "the new prompt does not make it look running");
+    }
+
     /// A prompt mark travels WITH its row when that row scrolls off the top into the scrollback —
     /// so a prompt in history stays a jump target and still feeds the derived state. REVERT-PROOF:
     /// if the scroll dropped the mark, `scrollback_mark(0)` would be `None`.

@@ -1277,6 +1277,29 @@ mod tests {
     }
 
     #[test]
+    fn last_command_query_slices_the_childs_osc_133_cycle() {
+        // A child emitting a full OSC 133 cycle: prompt (A) + typed command, output
+        // start (C), one output line, command end (D) exit 0. The last_command slot
+        // slices it into {command, output, exit_status, running} over the real wire —
+        // the command-scoped read tmux's whole-pane capture cannot express.
+        let state = host_with(
+            r"printf '\033]133;A\007$ echo hi\033]133;B\007\r\n\033]133;C\007hi\r\n\033]133;D;0\007'",
+            20,
+            6,
+        );
+        wait_for_pane0_eof(&state);
+        let resp = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/query","params":{"path":"/pane_0/sprag_input/external/last_command"}}"#,
+        );
+        let cmd = &resp["result"];
+        assert_eq!(cmd["command"], "$ echo hi", "the command line: {resp}");
+        assert_eq!(cmd["output"], "hi", "the sliced output: {resp}");
+        assert_eq!(cmd["exit_status"].as_i64(), Some(0), "{resp}");
+        assert_eq!(cmd["running"], false, "{resp}");
+    }
+
+    #[test]
     fn lists_the_agent_among_available_plugins() {
         let state = host_with("cat", 20, 4);
         let plugins = serve_one(
