@@ -31,9 +31,20 @@ pub fn char_columns(ch: char) -> usize {
     UnicodeWidthStr::width(ch.to_string().as_str())
 }
 
-/// Maximum number of scrolled-off lines [`Screen`] retains (FIFO). Bounds
-/// memory under unbounded output; the oldest line drops past this.
+/// Maximum number of scrolled-off LOGICAL lines [`Screen`] retains (FIFO). A soft-wrapped line
+/// counts ONCE no matter how many physical rows it occupies, so history retention is INDEPENDENT
+/// of the terminal width: narrowing (which multiplies physical rows) never evicts history it would
+/// have kept at the wider size. This is tmux's `history-limit` model — tmux counts logical lines
+/// because it never wraps history — and sprag matches it while ALSO reflowing, which tmux does not.
 pub(crate) const SCROLLBACK_CAP: usize = 1000;
+
+/// A hard ceiling on the PHYSICAL rows scrollback may hold — a memory guard orthogonal to
+/// [`SCROLLBACK_CAP`]. A pathological single logical line (megabytes with no newline) is one
+/// logical line under the logical cap yet many physical rows, so without this it could pin
+/// unbounded memory. Set generously (a large multiple of the logical cap) so it only bites the
+/// runaway case; normal content is bounded by the logical cap well below it. tmux has no such
+/// ceiling — this is where sprag is stricter (tmux-superior on memory safety).
+pub(crate) const SCROLLBACK_PHYSICAL_CAP: usize = SCROLLBACK_CAP * 8;
 
 /// Maximum number of distinct inline [`Image`]s a [`Screen`] retains (FIFO). Bounds memory
 /// against a child that transmits many distinct image ids without clearing; past this the
@@ -519,13 +530,20 @@ pub struct LinkRun {
     pub id: Option<String>,
 }
 
-/// One scrolled-off line: its STYLED cells plus any shell-integration [`PromptMark`] the row
-/// carried. Bundling the mark WITH its cells (rather than a parallel deque) makes the two
-/// impossible to desync as lines are pushed, popped at the [`SCROLLBACK_CAP`], reflowed, or
-/// cloned on resize — the single-source-of-truth shape for scrollback history.
+/// One scrolled-off line: its STYLED cells, the soft-wrap flag it carried, plus any
+/// shell-integration [`PromptMark`] the row held. Bundling all three WITH the cells (rather
+/// than parallel deques) makes them impossible to desync as lines are pushed, popped at the
+/// [`SCROLLBACK_CAP`], reflowed, or cloned on resize — the single-source-of-truth shape for
+/// scrollback history.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct ScrollbackLine {
     pub(crate) cells: Vec<Cell>,
+    /// The row's soft-wrap continuation flag ([`Screen::wrapped`]) when it scrolled off (or was
+    /// rewrapped into) history: `true` means this history line's logical line CONTINUES onto the
+    /// next. Preserved so [`Screen::reflowed`] can rebuild the scrolled-off logical lines and
+    /// rewrap them to a new width — without it a resize could only carry scrollback verbatim (the
+    /// width-stale-history bound this closes).
+    pub(crate) wrapped: bool,
     pub(crate) mark: Option<PromptMark>,
 }
 
@@ -584,10 +602,11 @@ pub struct Screen {
     /// with its original colors, not flattened to plain text. The text capture
     /// path derives strings from these cells ([`Screen::scrollback_rows`] /
     /// [`Screen::full_text`]), so there is one source; the grid projection reads
-    /// the cells ([`Screen::scrollback_cells`]). Lines are reflowed on resize
-    /// (the reflow rejoins/rewraps these cells). Each line also carries any
-    /// shell-integration [`PromptMark`] its row held (bundled in [`ScrollbackLine`] so the mark
-    /// cannot desync from its cells), so a prompt that scrolls into history stays a jump target.
+    /// the cells ([`Screen::scrollback_cells`]). Lines ARE reflowed on resize: [`Self::reflowed`]
+    /// rebuilds the scrolled-off logical lines (via each line's bundled soft-wrap flag) and
+    /// rewraps them to the new width, so history is not frozen at its old margin. Each line also
+    /// carries any shell-integration [`PromptMark`] its row held (all bundled in [`ScrollbackLine`]
+    /// so none can desync from the cells), so a prompt that scrolls into history stays a jump target.
     scrollback: VecDeque<ScrollbackLine>,
     /// Per-row soft-wrap continuation flag (the DEC `LINE_WRAPPED` attribute):
     /// `wrapped[r] == true` means row `r`'s logical line CONTINUES onto row
@@ -622,6 +641,13 @@ pub struct Screen {
     /// re-transmit that replaces an image id is distinguishable from a re-poll of the same content
     /// (R1404 Stage 5 on-demand transport). Bumped on every insert.
     next_image_seq: u64,
+    /// Count of COMPLETE logical lines currently in [`Self::scrollback`] (each ends in a
+    /// non-[`wrapped`](Self::wrapped) row), maintained incrementally so [`Self::trim_scrollback`]
+    /// can enforce [`SCROLLBACK_CAP`] on the hot scroll path in O(1). A cached aggregate of the
+    /// deque; every scrollback mutation routes through [`Self::push_scrollback`] /
+    /// [`Self::trim_scrollback`] / [`Self::clear_scrollback`] so it cannot desync (a debug
+    /// assertion in [`Self::reflowed`] re-checks it against a full recount).
+    scrollback_logical: usize,
 }
 
 impl Screen {
@@ -641,6 +667,7 @@ impl Screen {
             marks: vec![None; rows as usize],
             images: Vec::new(),
             next_image_seq: 0,
+            scrollback_logical: 0,
         }
     }
 
@@ -1136,9 +1163,11 @@ impl Screen {
         }
         next.cursor = self.cursor;
         next.kind = self.kind;
-        // Scrollback is text history, independent of the grid dimensions; carry
-        // it across verbatim (lines are not reflowed to the new width).
+        // This is the reflow FALLBACK (alt screen / degenerate size): scrollback carries across
+        // verbatim, NOT rewrapped. The main-screen path is [`Self::reflowed`], which DOES rewrap
+        // history to the new width; an alt-screen app owns its own layout, so it stays verbatim.
         next.scrollback = self.scrollback.clone();
+        next.scrollback_logical = self.scrollback_logical; // same lines -> same logical count
         // Inline images (Kitty / Sixel) carry across a resize verbatim — a plain
         // resize must NOT drop them (position-eviction under scroll / reflow is a
         // later stage, but the image data survives a re-layout).
@@ -1146,25 +1175,31 @@ impl Screen {
         next
     }
 
-    /// A copy reflowed to `cols x rows`: the visible MAIN screen's LOGICAL lines
-    /// (physical rows joined by the soft-wrap flag, [`Self::wrapped`]) are
-    /// re-broken at the new width, so a resize rewraps cleanly instead of leaving
-    /// a live shell's per-width prompt redraws stacked up (the verbatim
-    /// [`Self::resized`] bug). The alternate screen and degenerate sizes fall back
-    /// to [`Self::resized`] (a fullscreen app owns its own layout). The cursor
-    /// tracks its LOGICAL line across the rewrap but anchors to that line's FIRST
-    /// physical row (its column preserved), so a live line editor's resize redraw
-    /// overwrites in place rather than stacking — see the cursor-anchor note in
-    /// Pass 3. Wide clusters never split across the margin; an overflow on a
-    /// narrower reflow scrolls the top off into scrollback (as styled cells), keeping
-    /// the cursor visible. `gen` is a fresh damage stamp for every (re-laid-out) row.
+    /// A copy reflowed to `cols x rows`: the MAIN screen's LOGICAL lines — the SCROLLBACK
+    /// history AND the visible grid, joined into ONE stream by the soft-wrap flag
+    /// ([`Self::wrapped`]) — are re-broken at the new width, so a resize rewraps cleanly
+    /// instead of leaving a live shell's per-width prompt redraws stacked up (the verbatim
+    /// [`Self::resized`] bug) OR width-stale history frozen at its old margin. Treating
+    /// scrollback + visible as one stream yields two behaviours a verbatim carry cannot:
+    /// narrowing rewraps the scrolled-off history to the new width, and GROWING the height
+    /// reclaims scrolled-off lines back into the visible area (the bottom-anchored materialize
+    /// in Pass 3 pulls history down) — matching xterm/kitty, where tmux reflows neither. The
+    /// alternate screen and degenerate sizes fall back to [`Self::resized`] (a fullscreen app
+    /// owns its own layout; scrollback stays verbatim there). The cursor tracks its LOGICAL line
+    /// across the rewrap but anchors to that line's FIRST physical row (its column preserved),
+    /// so a live line editor's resize redraw overwrites in place rather than stacking — see the
+    /// cursor-anchor note in Pass 3. Wide clusters never split across the margin; overflow above
+    /// the visible window materializes as the new scrollback (as styled cells, wrap + mark
+    /// preserved). `gen` is a fresh damage stamp for every (re-laid-out) visible row.
     pub(crate) fn reflowed(&self, cols: u16, rows: u16, generation: u64) -> Screen {
         if self.kind != ScreenKind::Main || cols == 0 || rows == 0 {
             return self.resized(cols, rows);
         }
         // Pass 1 — reconstruct logical lines from glyph cells (trailers dropped),
-        // joining soft-wrapped rows; trim trailing blanks at a hard line end.
-        // Track the cursor's (logical line, glyph offset).
+        // joining soft-wrapped rows; trim trailing blanks at a hard line end. The
+        // SCROLLBACK history leads the stream, then the visible grid, so a scrolled-off
+        // line rewraps to the new width and a line spanning the boundary rejoins across it.
+        // Track the cursor's (logical line, glyph offset) — the cursor is in the visible part.
         let mut lines: Vec<Vec<Cell>> = Vec::new();
         // Parallel to `lines`: each logical line's shell-integration mark (its FIRST physical
         // row's), so the mark survives the rewrap by re-attaching to the re-broken line's head.
@@ -1173,6 +1208,33 @@ impl Screen {
         let mut cur_mark: Option<PromptMark> = None;
         let (cur_col, cur_row) = (self.cursor.col, self.cursor.row);
         let (mut cursor_line, mut cursor_off, mut cursor_found) = (0usize, 0usize, false);
+        // Scrollback rows first (oldest -> newest), no cursor. A wrapped last scrollback line
+        // leaves `cur` open so the first visible row continues its logical line.
+        for line in &self.scrollback {
+            if cur.is_empty() {
+                cur_mark = line.mark;
+            }
+            let mut glyphs: Vec<Cell> = Vec::new();
+            for cell in &line.cells {
+                if cell.width == Width::Trailer {
+                    continue; // regenerated when the wide head is re-placed
+                }
+                glyphs.push(cell.clone());
+            }
+            if !line.wrapped {
+                while glyphs
+                    .last()
+                    .is_some_and(|c| c.width == Width::Narrow && c.cluster == " ")
+                {
+                    glyphs.pop();
+                }
+            }
+            cur.extend(glyphs);
+            if !line.wrapped {
+                lines.push(std::mem::take(&mut cur));
+                line_marks.push(cur_mark);
+            }
+        }
         for r in 0..self.rows {
             // A logical line's mark is its FIRST physical row's mark; when `cur` is empty this
             // row begins a new logical line, so capture its mark (continuation rows keep it).
@@ -1276,18 +1338,25 @@ impl Screen {
         let total = phys.len();
         let start = total.saturating_sub(keep);
         let mut next = Screen::new(cols, rows);
-        next.scrollback = self.scrollback.clone();
-        for (cells, _, mark) in phys.iter().take(start) {
-            // Keep the styled cells (fg/bg/attrs) — scrollback paints in color — and the row's
-            // mark, so a prompt rewrapped into overflow stays a jump target.
-            next.scrollback.push_back(ScrollbackLine {
+        // The overflow above the visible window BECOMES the new scrollback. It already holds the
+        // old scrollback (rewrapped as part of the unified stream), so do NOT also clone the old
+        // deque — that would double the history. `Screen::new` leaves `next.scrollback` empty.
+        for (cells, wrapped, mark) in phys.iter().take(start) {
+            // Keep the styled cells (fg/bg/attrs) — scrollback paints in color — plus the row's
+            // soft-wrap flag (so a LATER reflow can rewrap it again) and its mark (so a prompt
+            // rewrapped into overflow stays a jump target).
+            next.push_scrollback(ScrollbackLine {
                 cells: cells.clone(),
+                wrapped: *wrapped,
                 mark: *mark,
             });
         }
-        while next.scrollback.len() > SCROLLBACK_CAP {
-            next.scrollback.pop_front();
-        }
+        next.trim_scrollback();
+        debug_assert_eq!(
+            next.scrollback_logical,
+            next.scrollback.iter().filter(|l| !l.wrapped).count(),
+            "scrollback_logical stayed in sync with the deque across the rewrap"
+        );
         for (out_r, (cells, wrapped, mark)) in phys[start..].iter().enumerate() {
             for (c, cell) in cells.iter().take(ncols).enumerate() {
                 next.cells[out_r * ncols + c] = cell.clone();
@@ -1339,9 +1408,49 @@ impl Screen {
         next
     }
 
-    /// Drop all retained scrollback (the child sent `ESC [ 3 J`, ED-3).
+    /// Drop all retained scrollback (the child sent `ESC [ 3 J`, ED-3). The SSOT for clearing
+    /// scrollback, so the logical-line count resets with it.
     pub(crate) fn clear_scrollback(&mut self) {
         self.scrollback.clear();
+        self.scrollback_logical = 0;
+    }
+
+    /// The number of COMPLETE logical lines currently in scrollback — the width-independent unit
+    /// [`SCROLLBACK_CAP`] bounds, unlike the physical row count [`Self::scrollback_len`]. A test
+    /// introspection accessor (no non-test consumer yet); the count's SSOT is the field it reads.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn scrollback_logical_len(&self) -> usize {
+        self.scrollback_logical
+    }
+
+    /// Append one physical row to scrollback, maintaining the logical-line count. The SSOT for
+    /// scrollback GROWTH — every push routes here so the count cannot desync; a row that ENDS a
+    /// logical line (not soft-wrapped) adds one logical line.
+    fn push_scrollback(&mut self, line: ScrollbackLine) {
+        if !line.wrapped {
+            self.scrollback_logical += 1;
+        }
+        self.scrollback.push_back(line);
+    }
+
+    /// Evict the oldest scrollback until it fits BOTH bounds: [`SCROLLBACK_CAP`] LOGICAL lines
+    /// (width-independent retention) AND [`SCROLLBACK_PHYSICAL_CAP`] physical rows (a memory guard
+    /// against a pathological unbroken line). The SSOT for scrollback SHRINK — pops from the front
+    /// (oldest), decrementing the logical count as each line-ending row leaves.
+    fn trim_scrollback(&mut self) {
+        while self.scrollback_logical > SCROLLBACK_CAP
+            || self.scrollback.len() > SCROLLBACK_PHYSICAL_CAP
+        {
+            match self.scrollback.pop_front() {
+                Some(line) => {
+                    if !line.wrapped {
+                        self.scrollback_logical -= 1;
+                    }
+                }
+                None => break,
+            }
+        }
     }
 
     /// Scroll rows `[top, bottom]` (inclusive) UP by `n`: the `n` rows leaving the top of
@@ -1394,16 +1503,18 @@ impl Screen {
         // for an output-flow scroll of a top-anchored region on the main screen.
         if to_scrollback && top == 0 && self.kind == ScreenKind::Main {
             for r in 0..n {
-                // Carry the row's shell-integration mark into history WITH its cells, so a prompt
-                // that scrolls off the top stays a jump target ([`ScrollbackLine`]).
-                self.scrollback.push_back(ScrollbackLine {
+                // Carry the row's shell-integration mark AND its soft-wrap flag into history WITH
+                // its cells, so a prompt that scrolls off the top stays a jump target and a
+                // soft-wrapped line stays one logical line for a later reflow ([`ScrollbackLine`]).
+                // Build the line first (immutable borrows) before the `&mut self` push.
+                let line = ScrollbackLine {
                     cells: self.row_cells(r),
+                    wrapped: self.wrapped[r as usize],
                     mark: self.marks[r as usize],
-                });
+                };
+                self.push_scrollback(line);
             }
-            while self.scrollback.len() > SCROLLBACK_CAP {
-                self.scrollback.pop_front();
-            }
+            self.trim_scrollback();
         }
         let cols = self.cols as usize;
         let shift = height - n; // rows that survive and move up by `n`
@@ -1622,6 +1733,47 @@ mod tests {
     }
 
     #[test]
+    fn scrollback_cap_counts_logical_lines_not_physical_rows() {
+        // The cap is LOGICAL lines (tmux's width-independent model), not physical rows. Fill it,
+        // then narrow so every line wraps to two physical rows: the physical row count doubles PAST
+        // the old physical cap, yet NO logical line is evicted — a physical-row cap would have
+        // halved the retained history the moment the rows doubled.
+        let n = SCROLLBACK_CAP + 5;
+        let input: String = (0..n).map(|i| format!("L{i:07}\r\n")).collect(); // 8 glyphs/line
+        let mut e = em(16, 2, &input); // width 16: each logical line is one physical row
+        assert_eq!(e.screen().scrollback_logical_len(), SCROLLBACK_CAP);
+        e.resize(4, 2); // narrow: each 8-glyph line wraps to two physical rows
+        assert_eq!(
+            e.screen().scrollback_logical_len(),
+            SCROLLBACK_CAP,
+            "narrowing evicted no logical line (width-independent retention)"
+        );
+        assert!(
+            e.screen().scrollback_len() > SCROLLBACK_CAP,
+            "physical rows doubled past the old physical cap, yet history was retained"
+        );
+        e.resize(16, 2); // widen back
+        assert_eq!(
+            e.screen().scrollback_logical_len(),
+            SCROLLBACK_CAP,
+            "the logical count is stable across narrow∘widen"
+        );
+    }
+
+    #[test]
+    fn a_pathological_unbroken_line_is_bounded_by_the_physical_ceiling() {
+        // One logical line of many thousands of glyphs (no newline) autowraps to one physical row
+        // per glyph on a width-1 screen — a SINGLE logical line, so the LOGICAL cap never bounds
+        // it. Only the physical ceiling does, so a runaway line cannot pin unbounded memory.
+        let huge = "a".repeat(SCROLLBACK_PHYSICAL_CAP + 100);
+        let e = em(1, 2, &huge);
+        assert!(
+            e.screen().scrollback_len() <= SCROLLBACK_PHYSICAL_CAP,
+            "the physical ceiling bounds a pathological unbroken line"
+        );
+    }
+
+    #[test]
     fn alt_screen_does_not_accumulate_or_disturb_scrollback() {
         let mut e = em(8, 2, "a\r\nb\r\nc"); // main scrolls: scrollback ["a"]
         assert_eq!(e.screen().scrollback_rows().collect::<Vec<_>>(), ["a"]);
@@ -1639,10 +1791,87 @@ mod tests {
     }
 
     #[test]
-    fn resize_preserves_scrollback() {
-        let mut e = em(8, 2, "a\r\nb\r\nc"); // scrollback ["a"]
-        e.resize(12, 4);
+    fn resize_grow_reclaims_scrollback_into_the_visible_area() {
+        // (8,2): "a" scrolled off, "b"/"c" visible. Growing to 4 rows pulls "a" back down
+        // into view (xterm/kitty reclaim; tmux does not) — scrollback empties, no history lost.
+        let mut e = em(8, 2, "a\r\nb\r\nc");
         assert_eq!(e.screen().scrollback_rows().collect::<Vec<_>>(), ["a"]);
+        e.resize(12, 4);
+        assert_eq!(
+            e.screen().scrollback_len(),
+            0,
+            "the grown height reclaimed the scrolled-off line"
+        );
+        assert_eq!(e.screen().row_text(0), "a", "history pulled back into view");
+        assert_eq!(e.screen().row_text(1), "b");
+        assert_eq!(e.screen().row_text(2), "c");
+        assert_eq!(e.screen().full_text(), "a\nb\nc", "no history lost");
+    }
+
+    #[test]
+    fn narrow_rewraps_a_scrolled_off_logical_line() {
+        // "abcdef" is a 6-glyph logical line that scrolled off at width 8 (one physical row).
+        // Narrowing to width 4 must REWRAP it in history — before this it stayed frozen at the
+        // old margin. "abcdef" re-breaks to "abcd"/"ef" (a soft wrap), then "1" fills scrollback;
+        // "2"/"3" are the visible rows.
+        let mut e = em(8, 2, "abcdef\r\n1\r\n2\r\n3"); // scrollback ["abcdef","1"]
+        assert_eq!(
+            e.screen().scrollback_rows().collect::<Vec<_>>(),
+            ["abcdef", "1"]
+        );
+        e.resize(4, 2);
+        assert_eq!(
+            e.screen().scrollback_rows().collect::<Vec<_>>(),
+            ["abcd", "ef", "1"],
+            "the scrolled-off logical line rewrapped to the narrow width"
+        );
+        assert_eq!(e.screen().row_text(0), "2");
+        assert_eq!(e.screen().row_text(1), "3");
+    }
+
+    #[test]
+    fn scrollback_rewrap_round_trips_via_the_preserved_wrap_flag() {
+        // Narrow (rewraps "abcdef" into "abcd"+"ef" in scrollback, "abcd" flagged soft-wrapped),
+        // then widen back: the logical line REJOINS only because the scrollback wrap flag survived.
+        // Revert-proof for `ScrollbackLine::wrapped`: drop the flag and the rejoined text differs.
+        let mut e = em(8, 2, "abcdef\r\n1\r\n2\r\n3");
+        let original = e.screen().full_text();
+        e.resize(4, 2); // narrow: "abcdef" -> "abcd"(soft-wrap) + "ef" in history
+        e.resize(8, 2); // widen: the soft-wrapped history line must rejoin to "abcdef"
+        assert_eq!(
+            e.screen().full_text(),
+            original,
+            "widen∘narrow restores the history text (scrollback wrap preserved)"
+        );
+        assert_eq!(
+            e.screen().scrollback_rows().collect::<Vec<_>>(),
+            ["abcdef", "1"],
+            "the rewrapped history rejoined into one line"
+        );
+    }
+
+    #[test]
+    fn rewrapped_scrollback_keeps_its_prompt_mark_on_the_line_head() {
+        // A prompt (OSC 133 ;A) on a 6-glyph line scrolls off, then a narrow rewraps it. The mark
+        // must re-attach to the rewrapped line's HEAD ("abcd"), not its continuation ("ef") — so a
+        // scrolled-off prompt stays a jump target across a resize.
+        let mut e = em(8, 2, "\x1b]133;A\x1b\\abcdef\r\n1\r\n2\r\n3");
+        assert_eq!(e.screen().scrollback_mark(0), Some(PromptMark::Prompt));
+        e.resize(4, 2);
+        assert_eq!(
+            e.screen().scrollback_mark(0),
+            Some(PromptMark::Prompt),
+            "the mark rode the rewrap onto the line's first physical row"
+        );
+        assert_eq!(
+            e.screen().scrollback_mark(1),
+            None,
+            "the wrapped continuation row carries no mark"
+        );
+        assert_eq!(
+            e.screen().scrollback_rows().collect::<Vec<_>>(),
+            ["abcd", "ef", "1"]
+        );
     }
 
     #[test]
