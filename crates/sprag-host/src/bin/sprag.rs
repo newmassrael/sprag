@@ -37,8 +37,9 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use sprag_host::mux_action_path;
 use sprag_host::wire::{
-    CLIENTS_SLOT, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION,
-    RENAME_WINDOW_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, WINDOWS_SLOT,
+    BREAK_PANE_ACTION, CLIENTS_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION,
+    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, RENAME_WINDOW_ACTION, SELECT_WINDOW_ACTION,
+    SESSIONS_SLOT, WINDOWS_SLOT,
 };
 use sprag_rpc::{HOST_SOCKET, HostConn, socket_path};
 
@@ -67,6 +68,8 @@ fn run() -> io::Result<()> {
         Some("select-window") => select_window(args.collect()),
         Some("rename-window") => rename_window(args.collect()),
         Some("kill-window") => kill_window(args.collect()),
+        Some("break-pane") => break_pane(args.collect()),
+        Some("join-pane") => join_pane(args.collect()),
         Some("-h" | "--help" | "help") | None => {
             print_usage();
             Ok(())
@@ -84,7 +87,8 @@ fn print_usage() {
         "usage: sprag <ls | list-clients [-t SESSION] | new [name] | attach NAME\n\
          \x20             | kill-session NAME | kill-server [--purge]>\n\
          \x20      sprag <windows | new-window [name] | select-window NAME\n\
-         \x20             | rename-window [window] NAME | kill-window [window]> -t SESSION"
+         \x20             | rename-window [window] NAME | kill-window [window]\n\
+         \x20             | break-pane PANE [name] | join-pane PANE WINDOW> -t SESSION"
     );
 }
 
@@ -635,4 +639,98 @@ fn scoped_window_action(
             error
         }
     })
+}
+
+/// A required positional PANE id — a non-negative integer, how sprag addresses a pane on the wire
+/// (unique across the whole daemon). tmux names a pane `window.index`; sprag's global id is enough.
+fn parse_pane_id(arg: Option<String>, command: &str) -> io::Result<u64> {
+    let raw = arg.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{command} needs a pane id"),
+        )
+    })?;
+    raw.parse::<u64>().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{command}: pane id {raw:?} must be a number"),
+        )
+    })
+}
+
+/// `break-pane -t SESSION PANE [name]`: break the pane with id PANE out of its window into a NEW
+/// window (born current), printing the new window's name. tmux `break-pane` — the pane's source
+/// window is DERIVED from its (registry-unique) id, so only the pane id is named.
+fn break_pane(args: Vec<String>) -> io::Result<()> {
+    let (session, rest) = target_and_rest(args, "break-pane")?;
+    let mut rest = rest.into_iter();
+    let pane = parse_pane_id(rest.next(), "break-pane")?;
+    let name = rest.next();
+    let mut conn = connect()?;
+    require_session(&mut conn, &session)?;
+    let mut action_args = json!({ "pane": pane });
+    if let Some(name) = &name {
+        action_args["name"] = json!(name);
+    }
+    let answer = conn.call(
+        "scene/invoke",
+        json!({ "session": session, "path": mux_action_path(BREAK_PANE_ACTION), "args": action_args }),
+    );
+    match answer {
+        Ok(answer) => match answer.as_str() {
+            Some(created) => {
+                println!("{created}");
+                Ok(())
+            }
+            None => Err(io::Error::other("break-pane did not answer with a name")),
+        },
+        // The refusals (the pane is its window's only one, an explicit name is taken, or no window
+        // holds the pane) surface as `Other`.
+        Err(error) if error.kind() == io::ErrorKind::Other => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "break-pane refused: pane {pane} is its window's only pane, no window holds it, or the name is taken"
+            ),
+        )),
+        Err(error) => Err(error),
+    }
+}
+
+/// `join-pane -t SESSION PANE WINDOW`: move the pane with id PANE into the window named WINDOW,
+/// appending it there. A move that empties the pane's old window closes it. tmux `join-pane`.
+fn join_pane(args: Vec<String>) -> io::Result<()> {
+    let (session, rest) = target_and_rest(args, "join-pane")?;
+    let mut rest = rest.into_iter();
+    let pane = parse_pane_id(rest.next(), "join-pane")?;
+    let window = rest.next().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "join-pane needs a destination window",
+        )
+    })?;
+    let mut conn = connect()?;
+    require_session(&mut conn, &session)?;
+    let answer = conn.call(
+        "scene/invoke",
+        json!({ "session": session, "path": mux_action_path(JOIN_PANE_ACTION), "args": { "pane": pane, "window": window } }),
+    );
+    match answer {
+        Ok(answer) => {
+            if answer["closed_source"].as_bool().unwrap_or(false) {
+                println!("joined pane {pane} into {window} (source window closed)");
+            } else {
+                println!("joined pane {pane} into {window}");
+            }
+            Ok(())
+        }
+        // The refusals (no such destination window, no window holds the pane, or the pane already
+        // lives in the destination) surface as `Other`.
+        Err(error) if error.kind() == io::ErrorKind::Other => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "join-pane refused: no window named {window:?} in session {session:?}, no pane {pane}, or it already lives there"
+            ),
+        )),
+        Err(error) => Err(error),
+    }
 }

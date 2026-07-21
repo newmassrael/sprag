@@ -8,6 +8,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::json;
+use sprag_host::mux_action_path;
+use sprag_host::wire::{PANES_SLOT, SPAWN_ACTION, WINDOWS_SLOT};
 use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn};
 
 /// Reaps the spawned host process and its socket file on drop — including on a panicked
@@ -270,6 +272,113 @@ fn the_cli_manages_windows_over_the_socket() {
         "arg error: {}",
         noarg.stderr,
     );
+}
+
+/// break-pane and join-pane MOVE a pane between windows over the CLI (plus the refusal paths). The
+/// pane set-up (spawn a second pane, read ids) goes over the wire — the CLI has no pane-spawn verb —
+/// while the moves themselves go through the `sprag` binary, so its arg parsing, dispatch, and
+/// output are what is under test; the deep behaviour is the registry + `wire_client` tests' job.
+#[test]
+fn the_cli_breaks_and_joins_panes_over_the_socket() {
+    let (_host, sock) = spawn_host();
+    let mut c = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the host");
+
+    // The boot window "0" has one pane; break-pane on the ONLY pane is refused, cleanly.
+    let refused = sprag(&sock, &["break-pane", "-t", "0", "0"]);
+    assert!(!refused.ok, "breaking the only pane is refused");
+    assert!(
+        refused.stderr.contains("break-pane refused"),
+        "clean refusal: {}",
+        refused.stderr,
+    );
+    // A missing pane id is an argument error.
+    let noarg = sprag(&sock, &["break-pane", "-t", "0"]);
+    assert!(
+        !noarg.ok && noarg.stderr.contains("needs a pane id"),
+        "arg error: {}",
+        noarg.stderr,
+    );
+
+    // Spawn a second pane into window "0" (over the wire) so it has one to break out.
+    let extra = spawn_pane(&mut c);
+    assert_eq!(pane_count(&mut c), 2, "window 0 now has two panes");
+
+    // break-pane PANE: move it out into a NEW window (born current); the new name prints.
+    let broke = sprag(&sock, &["break-pane", "-t", "0", &extra.to_string()]);
+    assert!(broke.ok, "break-pane succeeded: {}", broke.stderr);
+    let new_window = broke.stdout.trim().to_owned();
+    assert!(
+        window_names(&mut c).contains(&new_window),
+        "the new window {new_window:?} exists: {:?}",
+        window_names(&mut c),
+    );
+    assert_eq!(
+        pane_count(&mut c),
+        1,
+        "the new (current) window holds only the moved pane",
+    );
+
+    // join-pane PANE WINDOW: move it back into "0"; the emptied source (the new window) closes.
+    let joined = sprag(&sock, &["join-pane", "-t", "0", &extra.to_string(), "0"]);
+    assert!(joined.ok, "join-pane succeeded: {}", joined.stderr);
+    assert!(
+        joined.stdout.contains("source window closed"),
+        "the emptied source closed: {}",
+        joined.stdout,
+    );
+    assert!(
+        !window_names(&mut c).contains(&new_window),
+        "the emptied source window is gone: {:?}",
+        window_names(&mut c),
+    );
+    assert_eq!(pane_count(&mut c), 2, "both panes back in window 0");
+
+    // join-pane to a non-existent window is a clean refusal.
+    let ghost = sprag(&sock, &["join-pane", "-t", "0", &extra.to_string(), "nope"]);
+    assert!(
+        !ghost.ok && ghost.stderr.contains("join-pane refused"),
+        "clean refusal: {}",
+        ghost.stderr,
+    );
+}
+
+/// Spawn a `cat` pane into the current window of session "0" over the wire, returning its id.
+fn spawn_pane(conn: &mut HostConn) -> u64 {
+    conn.call(
+        "scene/invoke",
+        json!({ "session": "0", "path": mux_action_path(SPAWN_ACTION), "args": { "cmd": ["cat"] } }),
+    )
+    .expect("spawn a pane")
+    .as_u64()
+    .expect("spawn returns the pane id")
+}
+
+/// How many panes the current window of session "0" holds, over the mux `panes` slot.
+fn pane_count(conn: &mut HostConn) -> usize {
+    conn.call(
+        "scene/query",
+        json!({ "session": "0", "path": mux_action_path(PANES_SLOT) }),
+    )
+    .ok()
+    .and_then(|v| v.as_array().map(Vec::len))
+    .unwrap_or(0)
+}
+
+/// The window names of session "0", over the mux `windows` slot.
+fn window_names(conn: &mut HostConn) -> Vec<String> {
+    conn.call(
+        "scene/query",
+        json!({ "session": "0", "path": mux_action_path(WINDOWS_SLOT) }),
+    )
+    .ok()
+    .and_then(|v| {
+        v.as_array().map(|arr| {
+            arr.iter()
+                .filter_map(|w| w["name"].as_str().map(str::to_owned))
+                .collect()
+        })
+    })
+    .unwrap_or_default()
 }
 
 /// Killing a session's LAST window ends the SESSION (tmux) — driven over the CLI: `kill-window`
