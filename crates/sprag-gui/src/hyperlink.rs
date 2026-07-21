@@ -46,7 +46,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::rc::Rc;
 
 use pinion_core::GridBuffer;
@@ -381,6 +381,19 @@ pub(crate) fn open_uri(uri: &str) {
         tracing::warn!(target: "sprag_gui::hyperlink", uri, "refusing a disallowed-scheme link");
         return;
     }
+    open_allowed(uri);
+}
+
+/// Hand an ALREADY scheme-checked `uri` to the platform handler — the opener seam.
+/// Split from [`open_uri`] so a unit test can intercept it: the `#[cfg(test)]` twin
+/// below records the URI instead of spawning, letting the reconcile's
+/// open-exactly-once contract be verified WITHOUT an OS side effect. Spawning
+/// `xdg-open` under test would pop the desktop's `mailto`/`http` handler (e.g. a mail
+/// client window) on every run — the DI seam keeps the effect out of the test path.
+#[cfg(not(test))]
+fn open_allowed(uri: &str) {
+    use std::process::Stdio;
+
     match open_command(uri)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -426,6 +439,55 @@ fn open_command(uri: &str) -> Command {
         let mut cmd = Command::new("xdg-open");
         cmd.arg(uri);
         cmd
+    }
+}
+
+// Test opener seam: under `#[cfg(test)]`, `open_allowed` records the URIs it is handed
+// here instead of spawning the platform handler, so the reconcile's open-exactly-once
+// contract is asserted with NO OS side effect. `None` = no recorder installed; an open
+// in that state PANICS (fail-fast) so no test can silently spawn `xdg-open`.
+// Thread-local, so parallel tests never contaminate each other.
+#[cfg(test)]
+thread_local! {
+    static OPENER: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+}
+
+/// The `#[cfg(test)]` twin of [`open_allowed`]: record the URI for assertion rather
+/// than spawn. Panics if no [`RecordedOpener`] is installed — a test reaching a real
+/// open path without intercepting it is a bug to surface, not a silent OS launch.
+#[cfg(test)]
+fn open_allowed(uri: &str) {
+    OPENER.with(|slot| match slot.borrow_mut().as_mut() {
+        Some(recorded) => recorded.push(uri.to_owned()),
+        None => panic!(
+            "open_uri({uri:?}) reached the opener with no RecordedOpener installed — \
+             a test would have spawned the platform handler; install RecordedOpener::install()"
+        ),
+    });
+}
+
+/// RAII installer for the test opener recorder: `install()` swaps the thread-local
+/// opener to a fresh recording buffer, `opened()` reads what the reconcile handed it,
+/// and drop uninstalls so a later test on the same (pooled) thread starts clean.
+#[cfg(test)]
+struct RecordedOpener;
+
+#[cfg(test)]
+impl RecordedOpener {
+    fn install() -> Self {
+        OPENER.with(|slot| *slot.borrow_mut() = Some(Vec::new()));
+        Self
+    }
+
+    fn opened(&self) -> Vec<String> {
+        OPENER.with(|slot| slot.borrow().clone().unwrap_or_default())
+    }
+}
+
+#[cfg(test)]
+impl Drop for RecordedOpener {
+    fn drop(&mut self) {
+        OPENER.with(|slot| *slot.borrow_mut() = None);
     }
 }
 
@@ -519,16 +581,33 @@ mod tests {
         });
     }
 
+    /// The reconcile drains a click-activated URI to the opener EXACTLY ONCE and clears
+    /// it — asserted against the recording opener seam so the test never spawns the
+    /// platform handler (`xdg-open mailto:…` would pop the desktop mail client). This
+    /// is the contract the old spawn-through test could not check without an OS effect.
     #[test]
-    fn reconcile_drains_and_clears_the_activation() {
+    fn reconcile_drains_opens_once_and_clears() {
         Owner::new().run(|| {
+            let opener = RecordedOpener::install();
             let state = use_pane_hover(2);
             *state.activated.borrow_mut() = Some("mailto:x@example.com".to_owned());
             let empty = GridBuffer::new(1, 1);
-            reconcile_pane_hyperlinks(2, &empty); // drains (opens) + clears
+            reconcile_pane_hyperlinks(2, &empty); // drains -> recorder (no spawn) + clears
+            assert_eq!(
+                opener.opened(),
+                vec!["mailto:x@example.com".to_owned()],
+                "the drained URI reached the opener exactly once"
+            );
             assert!(
                 state.activated.borrow().is_none(),
-                "the activation was drained"
+                "the activation was cleared after draining"
+            );
+            // A second reconcile with nothing activated opens nothing more.
+            reconcile_pane_hyperlinks(2, &empty);
+            assert_eq!(
+                opener.opened().len(),
+                1,
+                "no re-open without a fresh activation"
             );
         });
     }
