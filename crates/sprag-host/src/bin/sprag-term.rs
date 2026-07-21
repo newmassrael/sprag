@@ -42,6 +42,12 @@
 //! workspace comes back; only `sprag kill-server --purge` destroys the saved workspace (CLI-side).
 //! Standalone mode (no `--daemon`) never persists and is unchanged.
 
+// A binary crate: `cargo doc` builds it with private items and its crate-root doc links to the
+// bin's own internals. `private_intra_doc_links` guards LIBRARY public-API docs (which publish
+// without private items); a bin has no such surface, so the lint is a structural false positive
+// here (mirrors `sprag-gui`) — declared crate-wide so a future internal link cannot re-break it.
+#![allow(rustdoc::private_intra_doc_links)]
+
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::unix::io::AsRawFd;

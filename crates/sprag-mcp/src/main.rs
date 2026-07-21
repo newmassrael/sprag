@@ -41,6 +41,12 @@
 //! and dropped. stdout carries ONLY protocol JSON — all diagnostics go to stderr via
 //! `tracing` (env `SPRAG_LOG`, default `warn`).
 
+// A binary crate: `cargo doc` builds it with private items, and the crate-root doc above links
+// to the bin's own internals (e.g. [`host_sock`]) as a navigable map. `private_intra_doc_links`
+// guards LIBRARY public-API docs, which publish without private items; a bin has no such
+// surface, so the lint is a structural false positive here (mirrors `sprag-gui`).
+#![allow(rustdoc::private_intra_doc_links)]
+
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::time::Duration;

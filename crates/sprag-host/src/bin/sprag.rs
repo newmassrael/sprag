@@ -30,6 +30,12 @@
 //! process — `sprag-gui` scoped to the session — but its PRE-FLIGHT (does the session exist?)
 //! is the same connect-only check, so a typo is a clean error, not a window that flashes and dies.
 
+// A binary crate: `cargo doc` builds it with private items, and the crate-root doc above links
+// to the bin's own internals (e.g. [`attach`]) as a navigable map. `private_intra_doc_links`
+// guards LIBRARY public-API docs, which publish without private items; a bin has no such
+// surface, so the lint is a structural false positive here (mirrors `sprag-gui`).
+#![allow(rustdoc::private_intra_doc_links)]
+
 use std::io;
 use std::path::PathBuf;
 use std::time::Duration;
