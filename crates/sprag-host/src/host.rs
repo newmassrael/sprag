@@ -286,6 +286,27 @@ pub trait HostClient {
     /// LAST window ends the session. A no-op for an unknown name.
     fn kill_window(&self, name: &str);
 
+    /// Break the pane `id` out of its window into a NEW window of the scoped session (tmux
+    /// `break-pane`), returning the new window's name — or `None` if the move was refused (the
+    /// pane's window has only that pane, an explicit `name` is already taken, or no window holds
+    /// `id`). The pane is MOVED whole (no re-spawn); the new window is selected.
+    ///
+    /// Defaulted to `None` — a display client that never breaks panes (and the test doubles) need
+    /// not implement it; the in-process [`Host`] and the wire client override it.
+    fn break_pane(&self, id: PaneId, name: Option<&str>) -> Option<String> {
+        let _ = (id, name);
+        None
+    }
+
+    /// Move the pane `id` into the window named `dst` of the scoped session (tmux `join-pane`),
+    /// returning whether the source window was CLOSED (a join that emptied it) — or `None` if the
+    /// move was refused (`id` already lives in `dst`, no window holds `id`, or `dst` names no
+    /// window). Defaulted to `None`, like [`break_pane`](Self::break_pane).
+    fn join_pane(&self, id: PaneId, dst: &str) -> Option<bool> {
+        let _ = (id, dst);
+        None
+    }
+
     /// Every session on the host — registry-WIDE, NOT scoped to this client's own: each session's
     /// name, window count, and whether it is the registry default. The list a session-switcher
     /// sidebar draws; a client re-reads it when the scene revision moves (a new / killed session
@@ -984,6 +1005,23 @@ impl HostClient for Host {
     fn kill_window(&self, name: &str) {
         let session = lock(&self.registry).default_session().name().to_owned();
         let _outcome = lock(&self.registry).kill_window(&session, name);
+    }
+
+    /// Break the pane `id` out into a new window of the default session (tmux `break-pane`). The
+    /// pane is MOVED (already spawned — no birth here, unlike [`new_window`](Self::new_window)) and
+    /// the new window selected. `None` if the move was refused.
+    fn break_pane(&self, id: PaneId, name: Option<&str>) -> Option<String> {
+        let mut registry = lock(&self.registry);
+        let session = registry.default_session().name().to_owned();
+        registry.break_pane(&session, id, name).ok()
+    }
+
+    /// Move the pane `id` into the window named `dst` of the default session (tmux `join-pane`),
+    /// returning whether the emptied source window was closed. `None` if refused.
+    fn join_pane(&self, id: PaneId, dst: &str) -> Option<bool> {
+        let mut registry = lock(&self.registry);
+        let session = registry.default_session().name().to_owned();
+        registry.join_pane(&session, id, dst).ok()
     }
 
     /// Every session in the registry — the SAME registry-wide list the wire `sessions` slot serves

@@ -16,9 +16,10 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    CLIENTS_SLOT, CLOSE_ACTION, FULL_TEXT_SLOT, KILL_SESSION_ACTION, LAYOUT_SLOT, LINKS_SLOT,
-    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
-    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
+    BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, FULL_TEXT_SLOT, JOIN_PANE_ACTION,
+    KILL_SESSION_ACTION, LAYOUT_SLOT, LINKS_SLOT, NEW_SESSION_ACTION, NEW_WINDOW_ACTION,
+    PANES_SLOT, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
+    SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
 };
 use sprag_host::{mux_action_path, pane_input_path};
 use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn};
@@ -1305,6 +1306,88 @@ fn two_windows_in_one_session_are_independent_over_the_real_socket() {
         pane_ids_in(&mut conn, "0"),
         vec![birth],
         "...and window 1 is untouched by the spawn into window 0 — the two do not merge",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// `break-pane` and `join-pane` MOVE a pane between windows over the REAL socket — the tmux
+/// pane-migration shape. The pane keeps its id across the move (relocated, not re-spawned), break
+/// births a new SELECTED window, and a join that empties the source CLOSES it. Every claim is
+/// paired with its complement (the source loses exactly what the destination gains), so a daemon
+/// that dropped, duplicated, or mis-scoped a pane fails a half.
+#[test]
+fn break_and_join_move_a_pane_between_windows_over_the_real_socket() {
+    let (_host, sock) = spawn_host();
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term host");
+
+    // Window "0" boots with pane 0; add a second pane so window 0 has one to break out.
+    let extra = spawn_in(&mut conn, "0");
+    assert_eq!(
+        pane_ids_in(&mut conn, "0"),
+        vec![0, extra],
+        "two panes in window 0"
+    );
+
+    // break-pane: move `extra` out into a NEW window, born current, KEEPING its id.
+    let broke = conn
+        .call(
+            "scene/invoke",
+            json!({
+                "session": "0",
+                "path": mux_action_path(BREAK_PANE_ACTION),
+                "args": { "pane": extra },
+            }),
+        )
+        .expect("break_pane answers")
+        .as_str()
+        .expect("break_pane returns the new window's name")
+        .to_owned();
+    assert_eq!(broke, "1", "the new window's lowest free name");
+    assert_eq!(
+        windows_in(&mut conn, "0"),
+        vec![("0".to_owned(), false), ("1".to_owned(), true)],
+        "two windows now, the broken-out one current",
+    );
+    assert_eq!(
+        pane_ids_in(&mut conn, "0"),
+        vec![extra],
+        "the new (current) window holds the moved pane — same id, not a re-spawn",
+    );
+    select_window(&mut conn, "0", "0");
+    assert_eq!(
+        pane_ids_in(&mut conn, "0"),
+        vec![0],
+        "the source window kept only its boot pane",
+    );
+
+    // join-pane: move pane 0 into window "1" — the source ("0", derived from the pane id) empties
+    // and CLOSES. The wire names only the destination.
+    let joined = conn
+        .call(
+            "scene/invoke",
+            json!({
+                "session": "0",
+                "path": mux_action_path(JOIN_PANE_ACTION),
+                "args": { "pane": 0, "window": "1" },
+            }),
+        )
+        .expect("join_pane answers");
+    assert_eq!(
+        joined["closed_source"].as_bool(),
+        Some(true),
+        "the emptied source window was closed",
+    );
+    assert_eq!(
+        windows_in(&mut conn, "0"),
+        vec![("1".to_owned(), true)],
+        "only the survivor window remains, and it is current",
+    );
+    assert_eq!(
+        pane_ids_in(&mut conn, "0"),
+        vec![extra, 0],
+        "both panes now live in window 1 (the joined one appended)",
     );
 
     let _ = std::fs::remove_file(&sock);

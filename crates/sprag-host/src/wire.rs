@@ -323,6 +323,24 @@ pub const RENAME_WINDOW_ACTION: &str = "rename_window";
 /// session is gone".
 pub const KILL_WINDOW_ACTION: &str = "kill_window";
 
+/// The mux control external invoke action that BREAKS a pane out of its window into a new window
+/// of the SCOPED session, born current, and returns its name (`{pane, name?}`) — tmux `break-pane`.
+///
+/// `pane` is the id of the pane to move; its source window is DERIVED (a [`PaneId`](sprag_terminal::PaneId)
+/// is registry-unique, so the window that holds it is unambiguous — the caller never names the
+/// source). `name` absent ⇒ the lowest free integer window name. Refused (`Rejected`) if the pane's
+/// window tiles only that one pane, if an explicit `name` is taken, or if no window holds `pane`.
+pub const BREAK_PANE_ACTION: &str = "break_pane";
+
+/// The mux control external invoke action that JOINS a pane into another window of the SCOPED
+/// session (`{pane, window}`) — tmux `join-pane`. Answers `{closed_source: bool}`.
+///
+/// `pane` is the id of the pane to move (its source window is DERIVED); `window` is the DESTINATION
+/// window's name. The pane appends as a new tiled leaf; a join that empties the source window
+/// closes it (`closed_source: true`). Refused (`Rejected`) if `pane` already lives in `window`, if
+/// no window holds `pane`, or if `window` names no window.
+pub const JOIN_PANE_ACTION: &str = "join_pane";
+
 /// The container tag of the pane with host id `pane_id` — the `pane_<id>` node the
 /// per-pane data grid + input external live under (the head of a pane-addressed
 /// wire path). The ONE place this tag is formatted, shared by the scene assembly

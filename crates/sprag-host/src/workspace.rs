@@ -71,10 +71,10 @@ use crate::scope::SessionScope;
 // The mux control action names + query slots are the shared wire ABI vocabulary
 // ([`crate::wire`]) — the SAME consts a client addresses for pane lifecycle.
 use crate::wire::{
-    CLIENTS_SLOT, CLOSE_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
-    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, RENAME_WINDOW_ACTION, RESIZE_ACTION,
-    SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION,
-    WINDOWS_SLOT,
+    BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, JOIN_PANE_ACTION, KILL_SESSION_ACTION,
+    KILL_WINDOW_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT,
+    RENAME_WINDOW_ACTION, RESIZE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, WINDOWS_SLOT,
 };
 
 /// The mux-management engine `External`: a control surface over the shared
@@ -571,6 +571,60 @@ impl WorkspaceExternal {
         }
         Ok(IntrospectValue::Json(Value::Null))
     }
+
+    /// `break_pane {pane, name?}` action: move a pane out of its window into a NEW window of THIS
+    /// request's session (born current), and answer with the new window's name — tmux `break-pane`.
+    ///
+    /// The pane's SOURCE window is derived from its id in the registry (a `PaneId` is unique across
+    /// the registry), so the wire carries only the pane and an optional new-window name. The move
+    /// is whole (no re-spawn) and runs under the registry lock; nothing blocks (a break drops no
+    /// pane). Every client watching the windows list wakes on the revision bump.
+    fn break_pane(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let map = as_object(args)?;
+        let pane = require_pane_id(map, "pane")?;
+        let name = match map.get("name") {
+            None => None,
+            Some(Value::String(name)) => Some(name.as_str()),
+            Some(_) => return Err(InvokeError::TypeMismatch),
+        };
+        let created = lock(&self.registry)
+            .break_pane(self.scope.session(), pane, name)
+            .map_err(|error| {
+                tracing::debug!(target: "sprag_host", %error, "refused to break a pane out");
+                // A rejection is well-formed but cannot be honored (last pane, taken name, no such
+                // pane) — the same shape a refused window op reports.
+                InvokeError::Rejected
+            })?;
+        self.revision.bump();
+        Ok(IntrospectValue::Json(Value::String(created)))
+    }
+
+    /// `join_pane {pane, window}` action: move a pane into another window of THIS request's session,
+    /// appending it as a tiled leaf — tmux `join-pane`. Answers `{closed_source}` (whether the join
+    /// emptied and closed the pane's old window).
+    ///
+    /// The pane's SOURCE window is derived from its id; the wire carries the pane and the
+    /// DESTINATION window's name. Whole move, under the registry lock; the revision bump wakes every
+    /// client (a closed source window drops out of their windows list on the next read).
+    fn join_pane(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let map = as_object(args)?;
+        let pane = require_pane_id(map, "pane")?;
+        let dst = map
+            .get("window")
+            .and_then(Value::as_str)
+            .ok_or(InvokeError::TypeMismatch)?
+            .to_owned();
+        let closed = lock(&self.registry)
+            .join_pane(self.scope.session(), pane, &dst)
+            .map_err(|error| {
+                tracing::debug!(target: "sprag_host", %error, "refused to join a pane");
+                InvokeError::Rejected
+            })?;
+        self.revision.bump();
+        Ok(IntrospectValue::Json(
+            serde_json::json!({ "closed_source": closed }),
+        ))
+    }
 }
 
 impl fmt::Debug for WorkspaceExternal {
@@ -597,6 +651,8 @@ impl ExternalIntrospect for WorkspaceExternal {
                     SchemaField::new(SELECT_WINDOW_ACTION, "action"),
                     SchemaField::new(RENAME_WINDOW_ACTION, "action"),
                     SchemaField::new(KILL_WINDOW_ACTION, "action"),
+                    SchemaField::new(BREAK_PANE_ACTION, "action"),
+                    SchemaField::new(JOIN_PANE_ACTION, "action"),
                     SchemaField::new(PANES_SLOT, "list"),
                     SchemaField::new(LAYOUT_SLOT, "tree"),
                     SchemaField::new(SESSIONS_SLOT, "list"),
@@ -805,6 +861,8 @@ impl ExternalIntrospect for WorkspaceExternal {
             SELECT_WINDOW_ACTION => self.select_window(&args),
             RENAME_WINDOW_ACTION => self.rename_window(&args),
             KILL_WINDOW_ACTION => self.kill_window(&args),
+            BREAK_PANE_ACTION => self.break_pane(&args),
+            JOIN_PANE_ACTION => self.join_pane(&args),
             _ => Err(InvokeError::UnknownPath),
         }
     }
