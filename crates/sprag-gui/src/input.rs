@@ -66,6 +66,46 @@ fn scroll_view(pane: usize, key: &str) {
     scroll.scroll_by(0, page_delta(key, page));
 }
 
+/// The scroll `offset_y` to jump to for a prompt jump, or `None` for a no-op (no prompt in
+/// that direction). `positions` are the OSC 133 prompt logical line indices (from the oldest
+/// line, ascending — the `Screen::prompt_positions` shape);
+/// `current` is the view's top line (the current `offset_y`); `max` is the scrollable bound
+/// (`scrollback_len`). `ArrowUp` finds the nearest prompt ABOVE the top (largest position
+/// `< current`), `ArrowDown` the nearest BELOW (smallest `> current`), clamped to `[0, max]`
+/// — a prompt still in the visible grid (index `> max`) resolves to the live bottom. Pure, so
+/// the jump math is unit-tested without a host.
+fn jump_target(positions: &[usize], current: i32, max: i32, key: &str) -> Option<i32> {
+    let current = usize::try_from(current.max(0)).unwrap_or(0);
+    let max = usize::try_from(max.max(0)).unwrap_or(0);
+    let target = match key {
+        "ArrowUp" => *positions.iter().rev().find(|&&p| p < current)?,
+        "ArrowDown" => *positions.iter().find(|&&p| p > current)?,
+        _ => return None,
+    };
+    let clamped = target.min(max);
+    // A jump that would not move the view is a no-op: the only prompt "below" is already
+    // in the visible grid, so it clamps to the live bottom the view already sits on.
+    if clamped == current {
+        return None;
+    }
+    i32::try_from(clamped).ok()
+}
+
+/// Jump pane `pane`'s scroll view to the previous / next OSC 133 shell prompt
+/// (`Ctrl+Shift+ArrowUp/Down`). Reads the prompt positions ON DEMAND (a keypress, never per
+/// frame) and moves the row-unit [`ScrollState`](crate::scrollbar::use_pane_scroll) to the
+/// target — a no-op when the shell emits no marks or there is no prompt in that direction.
+fn scroll_to_prompt(pane: usize, key: &str) {
+    let positions = use_terminal().slots.pane_prompt_positions(pane);
+    if positions.is_empty() {
+        return;
+    }
+    let scroll = crate::scrollbar::use_pane_scroll(pane);
+    if let Some(target) = jump_target(&positions, scroll.offset_y(), scroll.max().1, key) {
+        scroll.scroll_to(0, target);
+    }
+}
+
 /// The slot to focus after a `Ctrl+PageUp` (previous) / `Ctrl+PageDown` (next) from
 /// `active`, wrapping over the `occupied` display slots. Cycles over the OCCUPIED set
 /// (skipping any hole a closed pane left — Round 2b), not a contiguous `0..count`; at
@@ -109,6 +149,9 @@ enum WindowChord {
     Scroll,
     /// `Ctrl+Shift+Enter` — toggle the focused pane's dock state.
     ToggleDock,
+    /// `Ctrl+Shift+ArrowUp/Down` — jump the focused pane's scroll view to the previous /
+    /// next OSC 133 shell prompt (the `key` carries the direction at dispatch).
+    JumpPrompt,
 }
 
 impl WindowChord {
@@ -118,6 +161,7 @@ impl WindowChord {
             Self::CycleFocus => "CycleFocus",
             Self::Scroll => "Scroll",
             Self::ToggleDock => "ToggleDock",
+            Self::JumpPrompt => "JumpPrompt",
         }
     }
 }
@@ -138,6 +182,11 @@ fn window_chord(key: &str, modifiers: Modifiers) -> Option<WindowChord> {
         Some(WindowChord::Scroll)
     } else if modifiers.ctrl && modifiers.shift && key == "Enter" {
         Some(WindowChord::ToggleDock)
+    } else if modifiers.ctrl && modifiers.shift && matches!(key, "ArrowUp" | "ArrowDown") {
+        // Ctrl+Shift+Arrow is in sprag's reserved GUI-chord space (Ctrl+Shift+Enter dock,
+        // Ctrl+Shift+C/V clipboard, Ctrl+Shift+Page sessions); jump-to-prompt joins it. The
+        // session Page chord takes Page, so the arrows do not shadow it.
+        Some(WindowChord::JumpPrompt)
     } else {
         None
     }
@@ -328,6 +377,7 @@ pub(crate) fn route_key(
                 // strand focus).
                 pinion_core::focus_request::request(pane_tag(active));
             }
+            WindowChord::JumpPrompt => scroll_to_prompt(active, key),
         }
         return true;
     }
@@ -670,6 +720,19 @@ mod tests {
             window_chord("Enter", ctrl_shift),
             Some(WindowChord::ToggleDock)
         );
+        // Ctrl+Shift+Arrow jumps between prompts (jump-to-prompt); it shares the reserved
+        // Ctrl+Shift space with the dock/clipboard/session chords but takes the arrows.
+        assert_eq!(
+            window_chord("ArrowUp", ctrl_shift),
+            Some(WindowChord::JumpPrompt)
+        );
+        assert_eq!(
+            window_chord("ArrowDown", ctrl_shift),
+            Some(WindowChord::JumpPrompt)
+        );
+        // An arrow WITHOUT both modifiers injects (Shift+Arrow selects, Ctrl+Arrow word-moves).
+        assert_eq!(window_chord("ArrowUp", ctrl), None);
+        assert_eq!(window_chord("ArrowUp", shift), None);
         // Ctrl+Shift+Page is NOT a window chord — it belongs to the SESSION cycle (`session_chord`);
         // the page chords here take EXACTLY ONE of Ctrl / Shift, so neither shadows the other.
         assert_eq!(window_chord("PageUp", ctrl_shift), None);
@@ -678,6 +741,29 @@ mod tests {
         assert_eq!(window_chord("a", Modifiers::default()), None);
         assert_eq!(window_chord("Enter", Modifiers::default()), None);
         assert_eq!(window_chord("PageUp", Modifiers::default()), None);
+    }
+
+    /// The pure jump-to-prompt math: `ArrowUp` finds the nearest prompt above the view top,
+    /// `ArrowDown` the nearest below, each clamped to `[0, max]` (a prompt still in the
+    /// visible grid resolves to the live bottom), `None` when there is none that way.
+    #[test]
+    fn jump_target_walks_prompts_from_the_view_top() {
+        // Prompts at logical lines 2, 5, 9; scrollable bound (scrollback_len) = 7, so the
+        // prompt at 9 is in the visible grid and resolves to the live bottom (7).
+        let positions = [2usize, 5, 9];
+        let max = 7;
+        // From the live bottom (7): up jumps to 5 (nearest above), down finds nothing new.
+        assert_eq!(jump_target(&positions, 7, max, "ArrowUp"), Some(5));
+        assert_eq!(jump_target(&positions, 7, max, "ArrowDown"), None);
+        // From line 5: up jumps to 2, down jumps to 9-clamped-to-7 (the live view).
+        assert_eq!(jump_target(&positions, 5, max, "ArrowUp"), Some(2));
+        assert_eq!(jump_target(&positions, 5, max, "ArrowDown"), Some(7));
+        // From the oldest (0): nothing above; down jumps to the first prompt (2).
+        assert_eq!(jump_target(&positions, 0, max, "ArrowUp"), None);
+        assert_eq!(jump_target(&positions, 0, max, "ArrowDown"), Some(2));
+        // No prompts, or a non-arrow key: a no-op.
+        assert_eq!(jump_target(&[], 3, max, "ArrowUp"), None);
+        assert_eq!(jump_target(&positions, 5, max, "Enter"), None);
     }
 
     /// The session chords are `Ctrl+Shift+{L, PageUp, PageDown}`, DISJOINT from the window page

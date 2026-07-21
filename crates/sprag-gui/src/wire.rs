@@ -80,9 +80,9 @@ use pinion_core::{GridBuffer, QuitSink};
 use serde_json::{Value, json};
 use sprag_host::wire::{
     FULL_TEXT_SLOT, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
-    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, RESIZE_ACTION, SELECT_WINDOW_ACTION,
-    SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT,
-    cells_slot_at,
+    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PROMPT_MARKS_SLOT, RESIZE_ACTION,
+    SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION,
+    TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
 };
 use sprag_host::{
     CellFrame, HostClient, PaneNotification, PaneScrollFacts, mux_action_path, pane_input_path,
@@ -1339,6 +1339,21 @@ impl HostClient for WireHost {
         let params = json!({ "path": pane_input_path(id.0, FULL_TEXT_SLOT) });
         self.request("scene/query", params, "pane_full_text")
             .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_default()
+    }
+
+    fn pane_prompt_positions(&self, id: PaneId) -> Vec<usize> {
+        // On demand (a jump-to-prompt keypress), not per frame — so it does not ride the
+        // cached cells frame. The host serves a JSON array of logical line indices.
+        let params = json!({ "path": pane_input_path(id.0, PROMPT_MARKS_SLOT) });
+        self.request("scene/query", params, "pane_prompt_positions")
+            .and_then(|value| {
+                value.as_array().map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| usize::try_from(v.as_u64()?).ok())
+                        .collect()
+                })
+            })
             .unwrap_or_default()
     }
 

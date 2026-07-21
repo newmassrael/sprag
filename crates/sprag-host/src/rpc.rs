@@ -1300,6 +1300,28 @@ mod tests {
     }
 
     #[test]
+    fn prompt_marks_query_lists_the_childs_prompt_positions() {
+        // Two prompt cycles from the child; the prompt_marks slot lists the logical row
+        // index of each prompt-start (0 and 3) over the real wire — the jump-to-prompt
+        // targets a display client scrolls to.
+        let state = host_with(
+            r"printf '\033]133;A\007$ a\033]133;B\007\r\n\033]133;C\007a\r\n\033]133;D;0\007\r\n\033]133;A\007$ b\033]133;B\007\r\n\033]133;C\007b\r\n\033]133;D;0\007'",
+            20,
+            8,
+        );
+        wait_for_pane0_eof(&state);
+        let resp = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/query","params":{"path":"/pane_0/sprag_input/external/prompt_marks"}}"#,
+        );
+        assert_eq!(
+            resp["result"],
+            serde_json::json!([0, 3]),
+            "prompt rows over RPC: {resp}"
+        );
+    }
+
+    #[test]
     fn lists_the_agent_among_available_plugins() {
         let state = host_with("cat", 20, 4);
         let plugins = serve_one(

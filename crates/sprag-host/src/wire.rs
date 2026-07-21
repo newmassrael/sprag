@@ -97,6 +97,11 @@ pub const CURSOR_KEYS_SLOT: &str = "application_cursor_keys";
 /// under shell integration (the agent then falls back to [`FULL_TEXT_SLOT`]). The command-scoped
 /// read tmux's whole-pane `capture-pane` cannot express.
 pub const LAST_COMMAND_SLOT: &str = "last_command";
+/// The pane-input external query slot: the OSC 133 prompt-mark positions
+/// ([`Screen::prompt_positions`](sprag_vt::Screen::prompt_positions)) — a JSON array of logical
+/// line indices (from the oldest retained line, the scroll `offset_y` unit) a display client's
+/// jump-to-prompt scrolls to. Read ON DEMAND (a keyboard jump), never per frame.
+pub const PROMPT_MARKS_SLOT: &str = "prompt_marks";
 
 /// The pane-input external's DECLARED SCHEMA — every path it answers, with its type and any
 /// arguments, in `$schema` order. [`SpragPaneExternal`](crate::SpragPaneExternal) publishes
@@ -118,6 +123,7 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     SchemaField::new(CURSOR_KEYS_SLOT, "bool"),
     SchemaField::new(FULL_TEXT_SLOT, "string"),
     SchemaField::new(LAST_COMMAND_SLOT, "object"),
+    SchemaField::new(PROMPT_MARKS_SLOT, "array"),
 ];
 
 /// The out-of-band request param naming the SESSION a request acts on — `{"session": "work"}`

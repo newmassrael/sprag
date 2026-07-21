@@ -893,6 +893,9 @@ mod tests {
                 visible_rows: 1,
             }
         }
+        fn pane_prompt_positions(&self, _id: PaneId) -> Vec<usize> {
+            Vec::new()
+        }
         fn pane_grid_size(&self, _id: PaneId) -> (u16, u16) {
             (1, 1)
         }

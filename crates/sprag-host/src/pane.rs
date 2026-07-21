@@ -53,7 +53,7 @@ use crate::host::PaneScrollFacts;
 // two cannot drift.
 use crate::wire::{
     CELLS_FIELD, CURSOR_KEYS_SLOT, FRAMES_SLOT, FULL_TEXT_SLOT, KEY_ACTION, LAST_COMMAND_SLOT,
-    PANE_SCHEMA, TEXT_ACTION,
+    PANE_SCHEMA, PROMPT_MARKS_SLOT, TEXT_ACTION,
 };
 
 /// Encode a W3C `key` + `mods` to PTY bytes (the sprag-owned R2.6 encoder,
@@ -252,6 +252,11 @@ impl ExternalIntrospect for SpragPaneExternal {
                     }))
                 },
             )),
+            // The OSC 133 prompt positions (logical indices from the oldest line) a
+            // jump-to-prompt scrolls to — a JSON array, read on demand not per frame.
+            PROMPT_MARKS_SLOT => Some(IntrospectValue::Json(json!(
+                self.pty.with_screen(|screen| screen.prompt_positions())
+            ))),
             _ => None,
         }
     }

@@ -259,6 +259,13 @@ impl SlotView {
         )
     }
 
+    /// Slot `slot`'s OSC 133 prompt-mark positions (the jump-to-prompt targets), empty for a
+    /// hole. On demand (a keyboard jump), never per frame.
+    pub(crate) fn pane_prompt_positions(&self, slot: usize) -> Vec<usize> {
+        self.id(slot)
+            .map_or_else(Vec::new, |id| self.host.pane_prompt_positions(id))
+    }
+
     /// Slot `slot`'s grid `(cols, rows)` (`(1, 1)` for a hole).
     pub(crate) fn pane_grid_size(&self, slot: usize) -> (u16, u16) {
         self.id(slot)
@@ -473,6 +480,9 @@ mod tests {
                 scrollback_len: 0,
                 visible_rows: 1,
             }
+        }
+        fn pane_prompt_positions(&self, _id: PaneId) -> Vec<usize> {
+            Vec::new()
         }
         fn pane_grid_size(&self, _id: PaneId) -> (u16, u16) {
             (1, 1)

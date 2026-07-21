@@ -647,6 +647,28 @@ impl Screen {
         })
     }
 
+    /// The logical line indices (from the OLDEST retained line, `0`) of every OSC 133
+    /// prompt-start ([`PromptMark::Prompt`]) mark — oldest first, across scrollback then the
+    /// visible grid. These are the jump-to-prompt targets: a display client's scroll `offset_y`
+    /// IS the view's top logical line (rows from the oldest), so jumping the view to prompt `L`
+    /// is `scroll_to(L)`. Empty without shell integration. Bounded (scrollback cap + rows).
+    #[must_use]
+    pub fn prompt_positions(&self) -> Vec<usize> {
+        let sb_len = self.scrollback.len();
+        let mut out = Vec::new();
+        for (i, line) in self.scrollback.iter().enumerate() {
+            if line.mark == Some(PromptMark::Prompt) {
+                out.push(i);
+            }
+        }
+        for r in 0..self.rows {
+            if self.mark(r) == Some(PromptMark::Prompt) {
+                out.push(sb_len + r as usize);
+            }
+        }
+        out
+    }
+
     // --- mutation surface for VT backends (crate-internal) ---
 
     pub(crate) fn set_cursor(&mut self, cursor: Cursor) {

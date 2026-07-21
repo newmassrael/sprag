@@ -2116,6 +2116,36 @@ mod tests {
         assert!(em.screen().last_command().is_none());
     }
 
+    /// `prompt_positions` lists the logical row index of every prompt-start mark, oldest
+    /// first — the jump-to-prompt targets.
+    #[test]
+    fn prompt_positions_lists_the_prompt_rows() {
+        let mut em = Emulator::new(20, 8);
+        em.advance(
+            b"\x1b]133;A\x07$ echo a\x1b]133;B\x07\r\n\x1b]133;C\x07a\r\n\x1b]133;D;0\x07\r\n",
+        );
+        em.advance(b"\x1b]133;A\x07$ echo b\x1b]133;B\x07\r\n\x1b]133;C\x07b\r\n\x1b]133;D;0\x07");
+        assert_eq!(
+            em.screen().prompt_positions(),
+            vec![0, 3],
+            "prompts on rows 0 and 3"
+        );
+    }
+
+    /// A prompt that scrolled off the top is still listed — at its scrollback index (0 =
+    /// oldest), so jump-to-prompt spans history.
+    #[test]
+    fn prompt_positions_span_scrollback() {
+        let mut em = Emulator::new(20, 3);
+        em.advance(b"\x1b]133;A\x07$ x\x1b]133;B\x07\r\n\x1b]133;C\x07");
+        em.advance(b"1\r\n2\r\n3\r\n4\r\n"); // scroll the A-marked row 0 into scrollback
+        assert_eq!(
+            em.screen().prompt_positions(),
+            vec![0],
+            "the one prompt, now the oldest scrollback line"
+        );
+    }
+
     /// The anchor is the last OUTPUT start, not the last mark: at a fresh prompt after a
     /// command finished, `last_command` still returns that finished command.
     #[test]

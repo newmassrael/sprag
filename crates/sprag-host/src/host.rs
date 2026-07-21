@@ -153,6 +153,14 @@ pub trait HostClient {
     /// visible rows. A zero-depth / one-row default if `id` is absent.
     fn pane_scroll_facts(&self, id: PaneId) -> PaneScrollFacts;
 
+    /// Pane `id`'s OSC 133 prompt-mark positions
+    /// ([`prompt_positions`](sprag_vt::Screen::prompt_positions)) — the logical line indices
+    /// (from the oldest retained line, the scroll `offset_y` unit) a jump-to-prompt scrolls to.
+    /// Queried ON DEMAND (a keyboard jump), NOT per frame, so it never rides the hot
+    /// [`pane_cells`](HostClient::pane_cells) path. Empty if `id` is absent or the shell emits no
+    /// OSC 133 marks.
+    fn pane_prompt_positions(&self, id: PaneId) -> Vec<usize>;
+
     /// Pane `id`'s current grid `(cols, rows)` — the emulator screen size, which tracks
     /// the last reflow target (the reflow no-op guard + an undock window's intrinsic
     /// open size read it). `(1, 1)` if `id` is absent.
@@ -681,6 +689,13 @@ impl HostClient for Host {
             scrollback_len: 0,
             visible_rows: 1,
         })
+    }
+
+    fn pane_prompt_positions(&self, id: PaneId) -> Vec<usize> {
+        self.with_pane_id(id, |pane| {
+            pane.pty().with_screen(|screen| screen.prompt_positions())
+        })
+        .unwrap_or_default()
     }
 
     fn pane_grid_size(&self, id: PaneId) -> (u16, u16) {
