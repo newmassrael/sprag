@@ -197,6 +197,20 @@ impl SlotView {
         self.host.kill_window(name);
     }
 
+    /// Break slot `slot`'s pane out into a NEW window (tmux `break-pane`), returning the new
+    /// window's name — `None` for a hole, or when the daemon refuses (the pane is its window's
+    /// only one). Slot-mapped: the reducer knows the pane the user acted on by its slot, and the
+    /// host addresses it by [`PaneId`].
+    pub(crate) fn break_pane(&self, slot: usize, name: Option<&str>) -> Option<String> {
+        self.host.break_pane(self.id(slot)?, name)
+    }
+
+    /// Move slot `slot`'s pane into the window named `dst` (tmux `join-pane`), returning whether the
+    /// source window was closed — `None` for a hole or a refusal.
+    pub(crate) fn join_pane(&self, slot: usize, dst: &str) -> Option<bool> {
+        self.host.join_pane(self.id(slot)?, dst)
+    }
+
     /// Every session on the host (registry-wide) — the list the session sidebar draws. NOT
     /// slot-mapped: sessions are not pane-addressed, so this passes straight through (the reducer
     /// addresses sessions by NAME, like it does windows).

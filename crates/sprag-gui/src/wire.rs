@@ -81,10 +81,11 @@ use base64::engine::general_purpose::STANDARD;
 use pinion_core::{GridBuffer, QuitSink};
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT, FULL_TEXT_SLOT, KEY_ACTION, KILL_SESSION_ACTION,
-    KILL_WINDOW_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT,
-    PROMPT_MARKS_SLOT, RESIZE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION,
-    SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
+    BREAK_PANE_ACTION, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT, FULL_TEXT_SLOT,
+    JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
+    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PROMPT_MARKS_SLOT, RESIZE_ACTION,
+    SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION,
+    TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
 };
 use sprag_host::{
     CellFrame, HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneNotification,
@@ -1091,6 +1092,40 @@ impl HostClient for WireHost {
         {
             self.refresh_view();
         }
+    }
+
+    /// Break the pane `id` out into a new window (tmux `break-pane`) over the wire, returning the
+    /// new window's name — or `None` if the daemon refused. The scoped session rides the connection,
+    /// so the args carry only the pane and an optional name.
+    fn break_pane(&self, id: PaneId, name: Option<&str>) -> Option<String> {
+        let mut args = json!({ "pane": id.0 });
+        if let Some(name) = name {
+            args["name"] = json!(name);
+        }
+        let params = invoke(&mux_action_path(BREAK_PANE_ACTION), args);
+        let created = self
+            .request("scene/invoke", params, "break_pane")
+            .and_then(|value| value.as_str().map(str::to_owned));
+        if created.is_some() {
+            self.refresh_view();
+        }
+        created
+    }
+
+    /// Move the pane `id` into the window named `dst` (tmux `join-pane`) over the wire, returning
+    /// whether the source window was closed — or `None` if the daemon refused.
+    fn join_pane(&self, id: PaneId, dst: &str) -> Option<bool> {
+        let params = invoke(
+            &mux_action_path(JOIN_PANE_ACTION),
+            json!({ "pane": id.0, "window": dst }),
+        );
+        let answer = self
+            .request("scene/invoke", params, "join_pane")
+            .and_then(|value| value.get("closed_source").and_then(Value::as_bool));
+        if answer.is_some() {
+            self.refresh_view();
+        }
+        answer
     }
 
     /// The mirrored session list — a lock and a clone, never a socket call, so the paint path can
