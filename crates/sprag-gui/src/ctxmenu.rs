@@ -316,6 +316,37 @@ fn focused_pane() -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal::{seed_terminal, use_terminal};
+    use sprag_host::Host;
+    use sprag_terminal::CommandBuilder;
+
+    /// A long-lived `cat` pane (holds its PTY open across the reducer drive), matching the
+    /// deterministic pane the input-routing tests seed.
+    fn cat() -> CommandBuilder {
+        let mut c = CommandBuilder::new("/bin/sh");
+        c.arg("-c");
+        c.arg("cat");
+        c.env("TERM", "dumb");
+        c
+    }
+
+    /// The exact `"command"` intent the [`ContextMenuExternal`] emits when the row at `index` is
+    /// activated (pinion prefixes the emitting external's tag, so it arrives as
+    /// [`COMMAND_INTENT_TAG`]). Constructing it here drives [`handle_command`] the way a live menu
+    /// click does, without the shell / pointer round-trip.
+    fn command_intent(index: usize) -> Intent {
+        Intent::new_static(COMMAND_INTENT_TAG, IntrospectValue::Text(index.to_string()))
+    }
+
+    /// The row index of `action` in the CAPTURED action list (the same list [`overlay`] paints and
+    /// [`run_item`] resolves against), so a test names the row by MEANING, not a hard-coded offset.
+    fn row_of(action: &MenuAction) -> usize {
+        menu_actions()
+            .get()
+            .iter()
+            .position(|a| a == action)
+            .expect("the action list offers this row")
+    }
 
     #[test]
     fn command_index_parses_the_text_payload() {
@@ -356,5 +387,91 @@ mod tests {
             FIXED_ACTION_COUNT, 4,
             "Copy / Paste / Select all / Break out"
         );
+    }
+
+    /// The `Break out` row drives a real `break-pane` end to end: activating it routes the menu
+    /// command through [`handle_command`] -> [`run_item`] -> [`SlotView::break_pane`] into the host,
+    /// which MOVES the target pane into a new window. Seeds an in-process two-pane / one-window host
+    /// (the [`seed_terminal`] seam the input-routing tests use), so the reducer wiring the live GUI
+    /// smoke exercises is pinned WITHOUT the shell / Xvfb. REVERT-PROOF: neutering the `BreakOut`
+    /// arm of [`run_item`] leaves the window count at one and this fails.
+    #[test]
+    fn the_break_out_command_moves_the_target_pane_into_a_new_window() {
+        let host = Host::new((40, 6));
+        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+            .unwrap();
+        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+            .unwrap();
+        Owner::new().run(|| {
+            seed_terminal(host); // use_terminal() now returns these two cat panes
+            let tv = use_terminal();
+            // Two panes boot into one window's two slots.
+            assert_eq!(tv.slots.occupied_slots(), vec![0, 1]);
+            assert_eq!(tv.slots.windows().len(), 1, "both panes share one window");
+            // Mirror `open_at`: capture the target pane AND the action list the reducer reads.
+            use_target_pane().set(Some(0));
+            menu_actions().set(build_actions());
+            assert!(
+                handle_command(&command_intent(row_of(&MenuAction::BreakOut))),
+                "the menu command is handled"
+            );
+            assert_eq!(
+                tv.slots.windows().len(),
+                2,
+                "the target pane broke out into a new window"
+            );
+        });
+    }
+
+    /// The `Move to <window>` row drives a real `join-pane` end to end: with a second window present,
+    /// [`build_actions`] offers a join target, and activating it routes through [`handle_command`] ->
+    /// [`run_item`] -> [`SlotView::join_pane`], MOVING the pane into the named window and closing the
+    /// emptied source. The second window is set up by breaking the pane out first (cat panes only, no
+    /// `$SHELL` spawn), so this also confirms a broke-out pane can be joined straight back.
+    /// REVERT-PROOF: dropping the `JoinInto` arm leaves the window count at two and this fails.
+    #[test]
+    fn the_move_to_command_joins_the_target_pane_into_the_named_window() {
+        let host = Host::new((40, 6));
+        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+            .unwrap();
+        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+            .unwrap();
+        Owner::new().run(|| {
+            seed_terminal(host);
+            let tv = use_terminal();
+            // Break a pane out to create the second window (now current, holding that pane).
+            assert!(
+                tv.slots.break_pane(0, None).is_some(),
+                "the break sets up the second window"
+            );
+            let _ = tv.slots.reconcile(); // remap slots onto the new current window
+            assert_eq!(tv.slots.windows().len(), 2);
+            let occupied = tv.slots.occupied_slots();
+            assert_eq!(
+                occupied.len(),
+                1,
+                "the new current window holds exactly the broke-out pane"
+            );
+            // Mirror `open_at` for that pane: a second window now yields a `Move to` target.
+            use_target_pane().set(Some(occupied[0]));
+            menu_actions().set(build_actions());
+            let join = menu_actions()
+                .get()
+                .iter()
+                .find_map(|a| match a {
+                    MenuAction::JoinInto(window) => Some(MenuAction::JoinInto(window.clone())),
+                    _ => None,
+                })
+                .expect("the second window offers a join target");
+            assert!(
+                handle_command(&command_intent(row_of(&join))),
+                "the menu command is handled"
+            );
+            assert_eq!(
+                tv.slots.windows().len(),
+                1,
+                "the pane rejoined the named window and the emptied source auto-closed"
+            );
+        });
     }
 }
