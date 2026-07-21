@@ -11,6 +11,9 @@
 //! moves, erase-in-line/display, and alternate-screen + cursor-visibility
 //! private modes. Unhandled sequences are ignored (see [`Emulator::advance`]).
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use termwiz::cell::{Blink, Intensity, Underline};
 use termwiz::color::ColorSpec;
 use termwiz::escape::csi::{
@@ -23,8 +26,8 @@ use termwiz::escape::{Action, ControlCode, Esc, EscCode, OperatingSystemCommand}
 
 use crate::port::{
     Attrs, Cell, ClipboardQuery, ClipboardTarget, ClipboardTargets, ClipboardWrite, Color, Cursor,
-    CursorShape, InputModes, KittyKeyboardFlags, Notification, PromptMark, Rgb, Screen, ScreenKind,
-    UnderlineStyle, VtPort, Width, char_columns,
+    CursorShape, Hyperlink, InputModes, KittyKeyboardFlags, Notification, PromptMark, Rgb, Screen,
+    ScreenKind, UnderlineStyle, VtPort, Width, char_columns,
 };
 
 /// The cursor state DECSC (`ESC 7` / `CSI s`) saves and DECRC (`ESC 8` / `CSI u`) restores:
@@ -140,6 +143,21 @@ pub struct Emulator {
     /// or after an action that is not a plain print. Repeat re-emits this, so it tracks exactly
     /// what a bare `print` would repeat.
     last_print: Option<char>,
+    /// The OSC-8 hyperlink PEN: the link (`Arc<Hyperlink>`) currently open via `\e]8;…`, or `None`
+    /// between links. Each printed cell clones this handle ([`Self::print_str`]), so a link and its
+    /// wrap continuations share one `Arc` and the projection groups them by pointer identity.
+    /// Cleared by `\e]8;;` (the OSC-8 close). Deliberately NOT saved by DECSC — OSC-8 URL mode is
+    /// separate from the SGR pen a cursor save restores (a documented bound, matching tmux). Carries
+    /// no cells of its own, so setting it does NOT bump [`Self::generation`]; the cells printed
+    /// under it carry their own damage.
+    current_hyperlink: Option<Arc<Hyperlink>>,
+    /// Interns OSC-8 links by their `id=` grouping key, so a link that reappears non-adjacently (the
+    /// same `id` after intervening text) reuses the SAME `Arc` and its runs group as one logical
+    /// link (R-69.3.b — what pure position-based grouping cannot express). Anonymous links (no `id`)
+    /// are never cached — each `\e]8;;uri` opens a fresh run. Bounded by [`HYPERLINK_ID_CAP`]: once
+    /// full a new `id` gets a fresh (ungrouped) `Arc` rather than growing unbounded — a documented
+    /// degradation, not a leak.
+    hyperlink_ids: HashMap<String, Arc<Hyperlink>>,
     /// Monotonic damage stamp, bumped on every row-mutating action.
     generation: u64,
     /// `true` between a resize and the next batch of bytes — the window in which a
@@ -207,6 +225,8 @@ impl Emulator {
             clipboard_query_seq: 0,
             saved_cursor: None,
             last_print: None,
+            current_hyperlink: None,
+            hyperlink_ids: HashMap::new(),
             generation: 0,
             in_resize_redraw: false,
         }
@@ -406,8 +426,58 @@ impl Emulator {
             OperatingSystemCommand::QuerySelection(sel) => {
                 self.set_clipboard_query(sel_to_query_target(sel));
             }
+            // OSC 8 — hyperlink. `Some(link)` OPENS a link: the cells printed after it belong to it
+            // (a pen-like state, like SGR), until `None` (`\e]8;;`) CLOSES it. termwiz has fully
+            // parsed the URI and params (the `id=` grouping key lives in params); a link's cell
+            // footprint is the emulator's to track. Extract the child-controlled strings here (so
+            // the helper never names termwiz's type) and clamp them like the other OSC payloads.
+            OperatingSystemCommand::SetHyperlink(link) => {
+                let link = link.as_ref().map(|l| {
+                    (
+                        clamp_bytes(l.uri(), MAX_CLIPBOARD_BYTES),
+                        l.params()
+                            .get("id")
+                            .map(|id| clamp_bytes(id, MAX_TITLE_BYTES)),
+                    )
+                });
+                self.set_hyperlink(link);
+            }
             _ => {}
         }
+    }
+
+    /// Apply an OSC-8 hyperlink control: `Some((uri, id))` opens a link (subsequent printed cells
+    /// carry it via [`Self::current_hyperlink`]); `None` (`\e]8;;`) closes the current one. A link
+    /// tagged with an `id=` is INTERNED ([`Self::hyperlink_ids`]) so a later run sharing that id
+    /// reuses the same `Arc` and groups with it into one logical link across intervening text or a
+    /// wrap (R-69.3.b); an anonymous link (no `id`) opens a fresh `Arc` each time, so two anonymous
+    /// links to the same URI stay distinct runs. Carries no cells, so it does not bump the damage
+    /// generation (the cells printed under the pen carry their own).
+    fn set_hyperlink(&mut self, link: Option<(String, Option<String>)>) {
+        let Some((uri, id)) = link else {
+            self.current_hyperlink = None;
+            return;
+        };
+        let arc = match &id {
+            Some(id_key) => {
+                if let Some(existing) = self.hyperlink_ids.get(id_key) {
+                    existing.clone()
+                } else {
+                    let arc = Arc::new(Hyperlink {
+                        uri,
+                        id: id.clone(),
+                    });
+                    // Cache for cross-run grouping, but only up to the cap — a runaway id stream then
+                    // degrades to fresh ungrouped links rather than growing the map without bound.
+                    if self.hyperlink_ids.len() < HYPERLINK_ID_CAP {
+                        self.hyperlink_ids.insert(id_key.clone(), arc.clone());
+                    }
+                    arc
+                }
+            }
+            None => Arc::new(Hyperlink { uri, id: None }),
+        };
+        self.current_hyperlink = Some(arc);
     }
 
     /// Latch an OSC 52 clipboard WRITE (clamping the child-controlled text) and bump the monotonic
@@ -869,6 +939,9 @@ impl Emulator {
                 bg: self.bg,
                 underline_color: self.underline_color,
                 attrs: self.attrs,
+                // Stamp the OSC-8 pen: a link and every cell it covers (including
+                // wrap continuations printed on later rows) share this one `Arc`.
+                hyperlink: self.current_hyperlink.clone(),
                 width: if cell_w == 2 {
                     Width::Wide
                 } else {
@@ -1027,6 +1100,12 @@ const KITTY_KEYBOARD_SUPPORTED: u8 = KittyKeyboardFlags::DISAMBIGUATE;
 /// popping. Deep real nesting is a handful; past the cap further pushes are ignored (the current
 /// level holds), which degrades safely rather than growing unbounded.
 const KITTY_STACK_CAP: usize = 32;
+
+/// Cap on the OSC-8 `id=` intern cache ([`Emulator::hyperlink_ids`]) — bounds memory against a
+/// child that emits an unbounded stream of distinct link ids. A screenful of distinct grouped links
+/// is small; past the cap a new id gets a fresh (ungrouped) `Arc` rather than being cached, which
+/// degrades the non-adjacent-grouping nicety safely rather than growing without bound.
+const HYPERLINK_ID_CAP: usize = 4096;
 
 /// Map a termwiz OSC 52 [`Selection`] set to the [`ClipboardTargets`] a WRITE addresses. The
 /// clipboard (`c`) maps to the clipboard; the "configured selection" (`s`) and the empty-`Pc`
@@ -2684,5 +2763,135 @@ mod tests {
             g0,
             "no row damage from negotiation"
         );
+    }
+
+    // ---- OSC 8 hyperlinks ----
+
+    /// The OSC-8 hyperlink `Arc` a cell carries, or `None` for an unlinked cell.
+    fn link_at(em: &Emulator, col: u16, row: u16) -> Option<Arc<Hyperlink>> {
+        em.screen().cell(col, row).unwrap().hyperlink.clone()
+    }
+
+    /// The pen opened by `\e]8;;<uri>` stamps every cell printed until `\e]8;;`
+    /// closes it, and a contiguous run shares ONE interned `Arc`.
+    #[test]
+    fn osc8_pen_stamps_cells_between_open_and_close() {
+        let mut em = Emulator::new(20, 2);
+        em.advance(b"a\x1b]8;;https://example.com\x1b\\LK\x1b]8;;\x1b\\b");
+        assert!(link_at(&em, 0, 0).is_none(), "before the link: unlinked");
+        let l = link_at(&em, 1, 0).expect("L is linked");
+        let k = link_at(&em, 2, 0).expect("K is linked");
+        assert_eq!(l.uri, "https://example.com");
+        assert_eq!(l.id, None);
+        assert!(Arc::ptr_eq(&l, &k), "contiguous link cells share one Arc");
+        assert!(link_at(&em, 3, 0).is_none(), "after `8;;`: unlinked");
+    }
+
+    /// The `id=` grouping key ties NON-ADJACENT runs (separated by plain text)
+    /// into one logical link — they share the interned `Arc` (R-69.3.b).
+    #[test]
+    fn osc8_id_groups_non_adjacent_runs() {
+        let mut em = Emulator::new(40, 2);
+        em.advance(
+            b"\x1b]8;id=r1;http://x\x1b\\AA\x1b]8;;\x1b\\ZZ\x1b]8;id=r1;http://x\x1b\\BB\x1b]8;;\x1b\\",
+        );
+        let a = link_at(&em, 0, 0).expect("A linked");
+        let b = link_at(&em, 4, 0).expect("B linked");
+        assert!(
+            link_at(&em, 2, 0).is_none(),
+            "the ZZ between runs is unlinked"
+        );
+        assert_eq!(a.id.as_deref(), Some("r1"));
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "same id groups non-adjacent runs into one link"
+        );
+    }
+
+    /// Two ANONYMOUS links (no `id`) to the same URI are DISTINCT runs — each
+    /// opens a fresh `Arc`, so pointer identity keeps them apart even though
+    /// their URIs are equal. (Grouping anonymous links by URI would be wrong.)
+    #[test]
+    fn osc8_anonymous_links_to_same_uri_are_distinct_runs() {
+        let mut em = Emulator::new(40, 2);
+        em.advance(b"\x1b]8;;http://x\x1b\\A\x1b]8;;\x1b\\ \x1b]8;;http://x\x1b\\B\x1b]8;;\x1b\\");
+        let a = link_at(&em, 0, 0).expect("A linked");
+        let b = link_at(&em, 2, 0).expect("B linked");
+        assert_eq!(a.uri, b.uri, "same URI");
+        assert!(
+            !Arc::ptr_eq(&a, &b),
+            "anonymous links are distinct runs even with an equal URI"
+        );
+    }
+
+    /// A link that WRAPS onto the next row is one logical link — the head cell
+    /// and the wrapped continuation share the pen's `Arc` (the marquee OSC-8
+    /// "link split across a wrap" case, grouped without any position math).
+    #[test]
+    fn osc8_link_wrapping_to_next_row_shares_one_arc() {
+        let mut em = Emulator::new(4, 3);
+        em.advance(b"\x1b]8;;http://w\x1b\\ABCDEF\x1b]8;;\x1b\\");
+        let head = link_at(&em, 0, 0).expect("row0 linked");
+        let wrapped = link_at(&em, 1, 1).expect("wrapped onto row1, still linked");
+        assert!(
+            Arc::ptr_eq(&head, &wrapped),
+            "a wrapped link is one Arc across the wrap"
+        );
+    }
+
+    /// The link rides PHYSICALLY with the cell: a linked row scrolled off the
+    /// top keeps its target in scrollback (no separate interning table to sync
+    /// — the win over an OSC-133-style parallel-array approach).
+    #[test]
+    fn osc8_link_rides_the_cell_into_scrollback() {
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b]8;;http://s\x1b\\HI\x1b]8;;\x1b\\");
+        em.advance(b"\r\n\r\n"); // push row 0 ("HI") off the top into scrollback
+        let scrollback: Vec<&[Cell]> = em.screen().scrollback_cells().collect();
+        let first = scrollback.first().expect("a row scrolled off");
+        let link = first[0]
+            .hyperlink
+            .as_ref()
+            .expect("the scrolled-off cell keeps its link");
+        assert_eq!(link.uri, "http://s");
+    }
+
+    /// An OSC-8 control carries no cells, so — like the title / notification —
+    /// it must not stamp ROW DAMAGE.
+    #[test]
+    fn osc8_control_does_not_bump_the_damage_generation() {
+        let mut em = Emulator::new(8, 2);
+        let g0 = em.screen().row_generation(0).unwrap();
+        em.advance(b"\x1b]8;;http://x\x1b\\");
+        assert_eq!(
+            em.screen().row_generation(0).unwrap(),
+            g0,
+            "OSC 8 carries no cells"
+        );
+    }
+
+    /// `hyperlink_runs` reports the visible links as data — the covered text, the
+    /// URI, and the `id` — so an agent reads a link's destination without OCR
+    /// (the tmux-superior surface).
+    #[test]
+    fn osc8_hyperlink_runs_report_visible_links_as_data() {
+        let mut em = Emulator::new(20, 2);
+        em.advance(b"go \x1b]8;id=k;https://ok\x1b\\here\x1b]8;;\x1b\\ end");
+        let runs = em.screen().hyperlink_runs();
+        assert_eq!(runs.len(), 1, "exactly one linked run");
+        assert_eq!(runs[0].text, "here");
+        assert_eq!(runs[0].uri, "https://ok");
+        assert_eq!(runs[0].id.as_deref(), Some("k"));
+    }
+
+    /// A link that wraps onto the next row folds into ONE run with continuous
+    /// text — the run tracks the link handle, not row boundaries.
+    #[test]
+    fn osc8_hyperlink_runs_fold_a_wrapped_link_into_one_run() {
+        let mut em = Emulator::new(4, 3);
+        em.advance(b"\x1b]8;;http://w\x1b\\ABCDEF\x1b]8;;\x1b\\");
+        let runs = em.screen().hyperlink_runs();
+        assert_eq!(runs.len(), 1, "a wrapped link is one run");
+        assert_eq!(runs[0].text, "ABCDEF", "text continues across the wrap");
     }
 }

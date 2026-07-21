@@ -9,8 +9,9 @@
 //!
 //! It is a [Model Context Protocol](https://modelcontextprotocol.io) **stdio
 //! server**: Claude Code (or any MCP client) spawns it and it speaks newline-delimited
-//! JSON-RPC 2.0 on stdin/stdout. It advertises five self-describing tools —
-//! `list_panes`, `read_pane`, `read_last_command`, `write_pane`, `send_keys` — so an
+//! JSON-RPC 2.0 on stdin/stdout. It advertises six self-describing tools —
+//! `list_panes`, `read_pane`, `read_last_command`, `read_pane_links`, `write_pane`,
+//! `send_keys` — so an
 //! agent *immediately* understands "read/write a sibling pane" without reading any sprag
 //! source. Each tool call bridges to the host wire via [`sprag_rpc::HostConn`],
 //! addressing panes with the [`sprag_host::wire`] path SSOT.
@@ -45,7 +46,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use sprag_host::wire::{FULL_TEXT_SLOT, KEY_ACTION, LAST_COMMAND_SLOT, PANES_SLOT, TEXT_ACTION};
+use sprag_host::wire::{
+    FULL_TEXT_SLOT, KEY_ACTION, LAST_COMMAND_SLOT, LINKS_SLOT, PANES_SLOT, TEXT_ACTION,
+};
 use sprag_host::{mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
 
@@ -187,7 +190,7 @@ fn handle_initialize(message: &Value) -> Value {
     })
 }
 
-/// The five self-describing tools. Descriptions are written for an agent so a request
+/// The six self-describing tools. Descriptions are written for an agent so a request
 /// like "type xxx into pane 2" maps directly onto the `write_pane` tool.
 fn tools_list() -> Value {
     let pane_arg = json!({
@@ -233,6 +236,21 @@ fn tools_list() -> Value {
                     'did that build pass?'). Reports if the command is still running, \
                     and falls back with a note if the pane's shell has no OSC 133 \
                     integration.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "pane": pane_arg },
+                    "required": ["pane"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "read_pane_links",
+                "description": "List the OSC-8 hyperlinks visible in a pane — each link's \
+                    displayed text and the URI it points at (https / file / mailto). Use \
+                    this to read a link's DESTINATION as data, without OCR or guessing from \
+                    the text: `ls --hyperlink`, compiler diagnostics, and doc tools attach \
+                    real URIs to text that looks plain on screen. Reports nothing when the \
+                    pane shows no links.",
                 "inputSchema": {
                     "type": "object",
                     "properties": { "pane": pane_arg },
@@ -302,6 +320,7 @@ fn handle_tools_call(message: &Value) -> Value {
         "list_panes" => tool_list_panes(),
         "read_pane" => tool_read_pane(&args),
         "read_last_command" => tool_read_last_command(&args),
+        "read_pane_links" => tool_read_pane_links(&args),
         "write_pane" => tool_write_pane(&args),
         "send_keys" => tool_send_keys(&args),
         other => Err(format!("unknown tool: {other}")),
@@ -431,6 +450,33 @@ fn tool_read_last_command(args: &Value) -> Result<String, String> {
         }
     };
     Ok(format!("{command}\n[{status}]\n--- output ---\n{output}"))
+}
+
+/// List a pane's visible OSC-8 hyperlinks — each link's displayed text and its URI — so an agent
+/// reads a link's destination as data. tmux's `capture-pane` cannot: it flattens OSC 8 to plain
+/// text, dropping the URI entirely.
+fn tool_read_pane_links(args: &Value) -> Result<String, String> {
+    let id = resolve_pane_id(args)?;
+    let value = host_call(
+        "scene/query",
+        json!({ "path": pane_input_path(id, LINKS_SLOT) }),
+    )?;
+    let runs = value
+        .as_array()
+        .ok_or("the host did not return a links array")?;
+    if runs.is_empty() {
+        return Ok("This pane shows no OSC-8 hyperlinks.".to_owned());
+    }
+    let mut out = format!("{} link(s) in this pane:\n", runs.len());
+    for run in runs {
+        let text = run.get("text").and_then(Value::as_str).unwrap_or("");
+        let uri = run.get("uri").and_then(Value::as_str).unwrap_or("");
+        match run.get("id").and_then(Value::as_str) {
+            Some(id) => out.push_str(&format!("  {text:?} -> {uri} (id={id})\n")),
+            None => out.push_str(&format!("  {text:?} -> {uri}\n")),
+        }
+    }
+    Ok(out)
 }
 
 fn tool_write_pane(args: &Value) -> Result<String, String> {
@@ -644,7 +690,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tools_list_advertises_the_five_tools_with_object_schemas() {
+    fn tools_list_advertises_the_six_tools_with_object_schemas() {
         let tools = tools_list();
         let names: Vec<&str> = tools["tools"]
             .as_array()
@@ -658,6 +704,7 @@ mod tests {
                 "list_panes",
                 "read_pane",
                 "read_last_command",
+                "read_pane_links",
                 "write_pane",
                 "send_keys"
             ]
@@ -667,7 +714,7 @@ mod tests {
             assert!(tool["description"].as_str().unwrap().len() > 10);
         }
         // write_pane requires pane + text (the "type xxx into pane 2" path).
-        let write = tools["tools"].as_array().unwrap()[3].clone();
+        let write = tools["tools"].as_array().unwrap()[4].clone();
         assert_eq!(write["inputSchema"]["required"], json!(["pane", "text"]));
     }
 

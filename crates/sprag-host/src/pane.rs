@@ -53,7 +53,8 @@ use crate::host::PaneScrollFacts;
 // two cannot drift.
 use crate::wire::{
     CELLS_FIELD, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT, CURSOR_KEYS_SLOT, FRAMES_SLOT,
-    FULL_TEXT_SLOT, KEY_ACTION, LAST_COMMAND_SLOT, PANE_SCHEMA, PROMPT_MARKS_SLOT, TEXT_ACTION,
+    FULL_TEXT_SLOT, KEY_ACTION, LAST_COMMAND_SLOT, LINKS_SLOT, PANE_SCHEMA, PROMPT_MARKS_SLOT,
+    TEXT_ACTION,
 };
 
 /// Encode a W3C `key` + `mods` to PTY bytes (the sprag-owned R2.6 encoder,
@@ -270,6 +271,16 @@ impl ExternalIntrospect for SpragPaneExternal {
             // jump-to-prompt scrolls to — a JSON array, read on demand not per frame.
             PROMPT_MARKS_SLOT => Some(IntrospectValue::Json(json!(
                 self.pty.with_screen(|screen| screen.prompt_positions())
+            ))),
+            // The OSC-8 hyperlink runs on the visible grid — a JSON array of {text, uri, id}, read
+            // on demand by `read_pane_links`. `[]` when the pane shows no links. The link's URI as
+            // data, which tmux's `capture-pane` cannot give (it flattens OSC 8 to plain text).
+            LINKS_SLOT => Some(IntrospectValue::Json(json!(
+                self.pty
+                    .with_screen(Screen::hyperlink_runs)
+                    .iter()
+                    .map(|run| json!({ "text": run.text, "uri": run.uri, "id": run.id }))
+                    .collect::<Vec<_>>()
             ))),
             // The pane's most recent OSC 52 clipboard WRITE, fetched ON DEMAND when the write seq
             // in the pane list grows (the payload can be a whole paste, so it is not carried per

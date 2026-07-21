@@ -102,6 +102,12 @@ pub const LAST_COMMAND_SLOT: &str = "last_command";
 /// line indices (from the oldest retained line, the scroll `offset_y` unit) a display client's
 /// jump-to-prompt scrolls to. Read ON DEMAND (a keyboard jump), never per frame.
 pub const PROMPT_MARKS_SLOT: &str = "prompt_marks";
+/// The pane-input external query slot: the OSC-8 hyperlink runs on the visible grid
+/// ([`Screen::hyperlink_runs`](sprag_vt::Screen::hyperlink_runs)) — a JSON array of
+/// `{text, uri, id}`, one per contiguous link run, or `[]` when the pane shows no links. An agent
+/// reads a link's DESTINATION as data (the URI, without OCR), which tmux's `capture-pane` cannot
+/// expose because it flattens OSC 8 to plain text. Read ON DEMAND (a `read_pane_links` call).
+pub const LINKS_SLOT: &str = "links";
 /// The pane-input external query slot: the pane's most recent OSC 52 clipboard WRITE — a JSON
 /// object `{targets:{clipboard,primary}, text, seq}`, or `null` when the child has written none.
 /// Fetched ON DEMAND when the `clipboard_write_seq` in the pane list grows (the payload can be a
@@ -135,6 +141,7 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     SchemaField::new(FULL_TEXT_SLOT, "string"),
     SchemaField::new(LAST_COMMAND_SLOT, "object"),
     SchemaField::new(PROMPT_MARKS_SLOT, "array"),
+    SchemaField::new(LINKS_SLOT, "array"),
     SchemaField::new(CLIPBOARD_WRITE_SLOT, "object"),
     SchemaField::new(CLIPBOARD_ANSWER_ACTION, "action"),
 ];

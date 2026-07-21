@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    CLIENTS_SLOT, CLOSE_ACTION, FULL_TEXT_SLOT, KILL_SESSION_ACTION, LAYOUT_SLOT,
+    CLIENTS_SLOT, CLOSE_ACTION, FULL_TEXT_SLOT, KILL_SESSION_ACTION, LAYOUT_SLOT, LINKS_SLOT,
     NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
     SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
 };
@@ -1027,6 +1027,41 @@ fn a_child_osc_133_cycle_reaches_the_panes_slot() {
             shell_of(&mut conn) == (Some("at_prompt".to_owned()), Some(3))
         }),
         "the child's OSC 133 cycle must surface as shell=at_prompt + exit_status=3 on the panes slot",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// A child that emits an OSC 8 hyperlink surfaces on the `links` slot as a `{text, uri}` run — the
+/// link's DESTINATION as data, end-to-end over the real socket. The tmux-superior surface: tmux's
+/// `capture-pane` flattens OSC 8 to plain text and drops the URI, so an agent there cannot read a
+/// link's target at all.
+#[test]
+fn a_child_osc_8_hyperlink_reaches_the_links_slot() {
+    let (_host, sock) = spawn_host_running(&[
+        "sh",
+        "-c",
+        "printf '\\033]8;;https://example.com/spec\\007docs\\033]8;;\\007'; sleep 30",
+    ]);
+    let mut conn =
+        HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the spawned host");
+
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            conn.call(
+                "scene/query",
+                json!({ "path": pane_input_path(0, LINKS_SLOT) }),
+            )
+            .ok()
+            .and_then(|v| v.as_array().cloned())
+            .is_some_and(|arr| {
+                arr.iter().any(|run| {
+                    run["text"].as_str() == Some("docs")
+                        && run["uri"].as_str() == Some("https://example.com/spec")
+                })
+            })
+        }),
+        "the child's OSC 8 link must surface as a {{text: docs, uri: ...}} run on the links slot",
     );
 
     let _ = std::fs::remove_file(&sock);

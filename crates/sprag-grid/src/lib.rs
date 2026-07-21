@@ -7,12 +7,18 @@
 //! Because both sides model the same axes, this is a flat mapping rather
 //! than a translation.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use pinion_core::style::Color as PinColor;
 use pinion_core::{
-    CellAttrs, CursorShape as PinCursorShape, GridBuffer, GridCursor, ScreenKind as PinScreenKind,
-    TermCell, TermColor, UnderlineStyle as PinUnderlineStyle,
+    CellAttrs, CursorShape as PinCursorShape, GridBuffer, GridCursor, Hyperlink as PinHyperlink,
+    HyperlinkId, ScreenKind as PinScreenKind, TermCell, TermColor,
+    UnderlineStyle as PinUnderlineStyle,
 };
-use sprag_vt::{Attrs, Cell, Color, CursorShape, Screen, ScreenKind, UnderlineStyle, Width};
+use sprag_vt::{
+    Attrs, Cell, Color, CursorShape, Hyperlink, Screen, ScreenKind, UnderlineStyle, Width,
+};
 
 /// Project a screen into a fresh pinion `GridBuffer`.
 ///
@@ -23,9 +29,10 @@ pub fn project(screen: &Screen) -> GridBuffer {
     let cols = screen.cols();
     let rows = screen.rows();
     let mut buffer = GridBuffer::new(cols, rows);
+    let mut interner = HyperlinkInterner::default();
 
     for row in 0..rows {
-        buffer = buffer.with_row(row, project_row(screen, row, cols));
+        buffer = buffer.with_row(row, project_row(screen, row, cols, &mut interner));
         if let Some(generation) = screen.row_generation(row) {
             buffer = buffer.with_row_generation(row, generation);
         }
@@ -38,7 +45,9 @@ pub fn project(screen: &Screen) -> GridBuffer {
         cursor_shape(cursor.shape),
         cursor.visible,
     ));
-    buffer.with_screen(screen_kind(screen.screen_kind()))
+    buffer
+        .with_screen(screen_kind(screen.screen_kind()))
+        .with_hyperlinks(interner.table)
 }
 
 /// Project a screen into a `GridBuffer` scrolled up by `offset_lines` rows of
@@ -75,17 +84,25 @@ pub fn project_scrolled(screen: &Screen, offset_lines: usize) -> GridBuffer {
     let top = scrollback_len - offset;
 
     let mut buffer = GridBuffer::new(cols, rows);
+    let mut interner = HyperlinkInterner::default();
     for display in 0..rows {
         let logical = top + display as usize;
         let cells = if logical < scrollback_len {
-            project_glyph_row(scrollback[logical], cols)
+            project_glyph_row(scrollback[logical], cols, &mut interner)
         } else {
-            project_row(screen, (logical - scrollback_len) as u16, cols)
+            project_row(
+                screen,
+                (logical - scrollback_len) as u16,
+                cols,
+                &mut interner,
+            )
         };
         buffer = buffer.with_row(display, cells);
     }
     // No cursor while scrolled; the screen kind matches the live screen.
-    buffer.with_screen(screen_kind(screen.screen_kind()))
+    buffer
+        .with_screen(screen_kind(screen.screen_kind()))
+        .with_hyperlinks(interner.table)
 }
 
 /// Overlay an in-progress IME preedit (composition) string onto `buffer` at its
@@ -240,7 +257,11 @@ fn preedit_cell(ch: char) -> TermCell {
 /// stores a head with no room for a trailer); it lands in the `Width::Wide`
 /// no-room arm below and renders narrow (matching `project_row`'s edge clip).
 /// Padded with blanks / truncated to `cols`.
-fn project_glyph_row(glyphs: &[Cell], cols: u16) -> Vec<TermCell> {
+fn project_glyph_row(
+    glyphs: &[Cell],
+    cols: u16,
+    interner: &mut HyperlinkInterner,
+) -> Vec<TermCell> {
     let ncols = cols as usize;
     let mut out = Vec::with_capacity(ncols);
     for cell in glyphs {
@@ -249,9 +270,9 @@ fn project_glyph_row(glyphs: &[Cell], cols: u16) -> Vec<TermCell> {
             break;
         }
         match cell.width {
-            Width::Wide if col + 1 < ncols => push_wide_pair(&mut out, cell),
+            Width::Wide if col + 1 < ncols => push_wide_pair(&mut out, cell, interner),
             Width::Trailer => {}
-            _ => out.push(term_cell(cell)),
+            _ => out.push(term_cell(cell, interner)),
         }
     }
     while out.len() < ncols {
@@ -262,7 +283,12 @@ fn project_glyph_row(glyphs: &[Cell], cols: u16) -> Vec<TermCell> {
 
 /// Build one row's `TermCell`s, expanding wide heads into pinion's
 /// head + trailer pair (DESIGN.md §3: producer determines width).
-fn project_row(screen: &Screen, row: u16, cols: u16) -> Vec<TermCell> {
+fn project_row(
+    screen: &Screen,
+    row: u16,
+    cols: u16,
+    interner: &mut HyperlinkInterner,
+) -> Vec<TermCell> {
     let mut out = Vec::with_capacity(cols as usize);
     let mut col = 0;
     while col < cols {
@@ -271,7 +297,7 @@ fn project_row(screen: &Screen, row: u16, cols: u16) -> Vec<TermCell> {
         };
         match cell.width {
             Width::Wide if col + 1 < cols => {
-                push_wide_pair(&mut out, cell);
+                push_wide_pair(&mut out, cell, interner);
                 col += 2;
             }
             // An orphan trailer means the head was clipped at the edge;
@@ -281,7 +307,7 @@ fn project_row(screen: &Screen, row: u16, cols: u16) -> Vec<TermCell> {
                 col += 1;
             }
             _ => {
-                out.push(term_cell(cell));
+                out.push(term_cell(cell, interner));
                 col += 1;
             }
         }
@@ -289,8 +315,46 @@ fn project_row(screen: &Screen, row: u16, cols: u16) -> Vec<TermCell> {
     out
 }
 
-fn term_cell(cell: &Cell) -> TermCell {
-    let tc = TermCell::new(
+/// Assigns each distinct OSC-8 hyperlink a pinion [`HyperlinkId`] for ONE
+/// projected [`GridBuffer`], deduping by the sprag-vt `Arc<Hyperlink>` POINTER.
+///
+/// The emulator gives every cell of one link — including its wrap
+/// continuations — the same `Arc` (its OSC-8 pen), so pointer identity
+/// collapses them to a single table entry and thus one id, while two anonymous
+/// links to the same URI (distinct `Arc`s) stay distinct entries. Value
+/// equality would wrongly merge those, so the dedup is deliberately by pointer
+/// — matching the emulator's own grouping (a `Some(id)` link is already one
+/// `Arc` across its runs; an anonymous link is one `Arc` per run). The
+/// assembled [`table`](Self::table) is handed to [`GridBuffer::with_hyperlinks`]
+/// wholesale, exactly like the cells (producer-owned state).
+#[derive(Default)]
+struct HyperlinkInterner {
+    table: Vec<PinHyperlink>,
+    by_ptr: HashMap<*const Hyperlink, HyperlinkId>,
+}
+
+impl HyperlinkInterner {
+    /// Resolve a cell's optional link to its [`HyperlinkId`], adding a fresh
+    /// table entry the first time a given `Arc` is seen this projection.
+    fn intern(&mut self, link: Option<&Arc<Hyperlink>>) -> Option<HyperlinkId> {
+        let arc = link?;
+        let ptr = Arc::as_ptr(arc);
+        if let Some(&id) = self.by_ptr.get(&ptr) {
+            return Some(id);
+        }
+        let id = HyperlinkId(u32::try_from(self.table.len()).unwrap_or(u32::MAX));
+        let mut entry = PinHyperlink::new(arc.uri.clone());
+        if let Some(group) = &arc.id {
+            entry = entry.with_id(group.clone());
+        }
+        self.table.push(entry);
+        self.by_ptr.insert(ptr, id);
+        Some(id)
+    }
+}
+
+fn term_cell(cell: &Cell, interner: &mut HyperlinkInterner) -> TermCell {
+    let mut tc = TermCell::new(
         cell.cluster.clone(),
         term_color(cell.fg),
         term_color(cell.bg),
@@ -298,17 +362,24 @@ fn term_cell(cell: &Cell) -> TermCell {
     .with_attrs(cell_attrs(cell.attrs));
     // SGR 58 underline colour (orthogonal to the style axis). `None` is the
     // SGR-59 default — pinion then draws the underline in the cell's own fg.
-    match cell.underline_color {
-        Some(color) => tc.with_underline_color(term_color(color)),
-        None => tc,
+    if let Some(color) = cell.underline_color {
+        tc = tc.with_underline_color(term_color(color));
     }
+    // OSC-8 hyperlink: intern the link into this buffer's table and stamp the
+    // cell with its id (pinion resolves the id -> uri at paint / snapshot time).
+    if let Some(id) = interner.intern(cell.hyperlink.as_ref()) {
+        tc = tc.with_hyperlink(id);
+    }
+    tc
 }
 
 /// Push a wide cluster as pinion's head + trailer pair (DESIGN.md §3: producer
 /// determines width). Shared by the live-grid [`project_row`] and the history
 /// [`project_glyph_row`], which differ in iteration but emit wide cells the same way.
-fn push_wide_pair(out: &mut Vec<TermCell>, cell: &Cell) {
-    let head = term_cell(cell).wide();
+/// pinion's [`TermCell::trailer`] copies the head's hyperlink, so the wide glyph's
+/// continuation column stays part of the same link.
+fn push_wide_pair(out: &mut Vec<TermCell>, cell: &Cell, interner: &mut HyperlinkInterner) {
+    let head = term_cell(cell, interner).wide();
     let trailer = head.trailer();
     out.push(head);
     out.push(trailer);
@@ -653,5 +724,61 @@ mod tests {
         // Row 2: cols 0,1 selected; 2,3 not.
         assert!(buf.cell(1, 2).unwrap().attrs.reverse);
         assert!(!buf.cell(2, 2).unwrap().attrs.reverse);
+    }
+
+    // ---- OSC 8 hyperlink projection ----
+
+    /// A linked cell projects to a `HyperlinkId` that resolves through the
+    /// buffer's interning table to the OSC-8 URI; an unlinked cell carries none.
+    #[test]
+    fn projection_interns_a_hyperlink_and_resolves_its_uri() {
+        let screen = screen_from(b"\x1b]8;;https://ok\x1b\\LINK\x1b]8;;\x1b\\ x", 20, 1);
+        let buf = project(&screen);
+        let id = buf
+            .cell(0, 0)
+            .unwrap()
+            .hyperlink
+            .expect("col 0 (L) is linked");
+        assert_eq!(buf.hyperlink(id).unwrap().uri, "https://ok");
+        assert!(
+            buf.cell(5, 0).unwrap().hyperlink.is_none(),
+            "the cell past the closed link is unlinked"
+        );
+    }
+
+    /// A `id=`-tagged link that appears in two non-adjacent runs interns to ONE
+    /// table entry (the pointer dedup collapses its shared `Arc`), so both runs
+    /// project to the same id — one logical link a client highlights together.
+    #[test]
+    fn projection_groups_a_same_id_link_to_one_table_entry() {
+        let screen = screen_from(
+            b"\x1b]8;id=g;http://x\x1b\\A\x1b]8;;\x1b\\ \x1b]8;id=g;http://x\x1b\\B\x1b]8;;\x1b\\",
+            20,
+            1,
+        );
+        let buf = project(&screen);
+        let a = buf.cell(0, 0).unwrap().hyperlink.expect("A linked");
+        let b = buf.cell(2, 0).unwrap().hyperlink.expect("B linked");
+        assert_eq!(a, b, "a same-id link interns to a single id");
+        assert_eq!(buf.hyperlink(a).unwrap().id.as_deref(), Some("g"));
+    }
+
+    /// Two ANONYMOUS links to the same URI project to DISTINCT ids — the dedup
+    /// is by `Arc` pointer, not URI value, so separate runs stay separate.
+    #[test]
+    fn projection_keeps_anonymous_same_uri_links_distinct() {
+        let screen = screen_from(
+            b"\x1b]8;;http://x\x1b\\A\x1b]8;;\x1b\\ \x1b]8;;http://x\x1b\\B\x1b]8;;\x1b\\",
+            20,
+            1,
+        );
+        let buf = project(&screen);
+        let a = buf.cell(0, 0).unwrap().hyperlink.expect("A linked");
+        let b = buf.cell(2, 0).unwrap().hyperlink.expect("B linked");
+        assert_ne!(
+            a, b,
+            "two anonymous links get distinct ids even with an equal URI"
+        );
+        assert_eq!(buf.hyperlink(a).unwrap().uri, buf.hyperlink(b).unwrap().uri);
     }
 }

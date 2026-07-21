@@ -12,6 +12,7 @@
 //! rather than a translation (DESIGN.md §3).
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use unicode_width::UnicodeWidthStr;
 
@@ -120,6 +121,33 @@ pub enum Width {
     Trailer,
 }
 
+/// An OSC-8 hyperlink target a cell can carry: the `uri` the link opens and
+/// its optional grouping `id`. sprag-owned and library-agnostic (mirrors
+/// pinion's `Hyperlink` and termwiz's, but depends on neither — exactly as
+/// [`UnderlineStyle`] mirrors pinion's `UnderlineStyle`).
+///
+/// A cell references its link by an [`Arc`] shared handle rather than owning
+/// the URI: the emulator's OSC-8 pen holds one `Arc` per active link, and
+/// every cell printed under it clones that `Arc` (a refcount bump, never the
+/// URI string). So a link spanning many cells — including its wrap
+/// continuations — stores its URI exactly once, and the cells are recognisable
+/// as one link by `Arc` pointer identity. The `Arc` rides physically with the
+/// cell, so scroll / scrollback / reflow carry the link for free (no
+/// separate interning table to keep in sync, unlike an OSC-133 mark).
+///
+/// The `id` (`Some`) ties non-adjacent runs that share it into one logical
+/// link across a wrap or a repeat; `None` is an anonymous link grouped only
+/// within its own contiguous run (so two anonymous links to the same URI are
+/// distinct runs — distinct `Arc`s).
+#[derive(Clone, PartialEq, Eq, Hash, Debug, Default)]
+pub struct Hyperlink {
+    /// The URI the link opens (`https://…`, `file://…`, `mailto:…`). Opaque
+    /// to the emulator: a consumer decides how to open it (R-69.3 activation).
+    pub uri: String,
+    /// The OSC-8 `id=` grouping key, or `None` for an anonymous link.
+    pub id: Option<String>,
+}
+
 /// A single terminal cell.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Cell {
@@ -132,6 +160,13 @@ pub struct Cell {
     /// underline (when [`Attrs::underline`] is on) draws in `fg`.
     pub underline_color: Option<Color>,
     pub attrs: Attrs,
+    /// The OSC-8 hyperlink this cell belongs to ([`Hyperlink`]), or `None` for
+    /// a plain cell. A shared [`Arc`] handle: all cells printed under one
+    /// `\e]8;…` pen (a link and its wrap continuations) share the same `Arc`,
+    /// so the projection groups them into one link by pointer identity without
+    /// cloning the URI per cell. Rides with the cell through scroll / scrollback
+    /// / reflow — a link in history keeps its target.
+    pub hyperlink: Option<Arc<Hyperlink>>,
     pub width: Width,
 }
 
@@ -143,6 +178,7 @@ impl Default for Cell {
             bg: Color::Default,
             underline_color: None,
             attrs: Attrs::default(),
+            hyperlink: None,
             width: Width::Narrow,
         }
     }
@@ -164,6 +200,9 @@ impl Cell {
             bg: head.bg,
             underline_color: head.underline_color,
             attrs: head.attrs,
+            // The continuation column of a wide link glyph belongs to the same
+            // OSC-8 link, so the whole glyph is one hover / activation target.
+            hyperlink: head.hyperlink.clone(),
             width: Width::Trailer,
         }
     }
@@ -457,6 +496,22 @@ pub struct LastCommand {
     /// `true` when no [`CommandEnd`](PromptMark::CommandEnd) has arrived after the output start — the
     /// command is still executing and `output` is what it has printed so far.
     pub running: bool,
+}
+
+/// One contiguous OSC-8 hyperlink run on the visible grid: the displayed text and the link it
+/// points at. Returned by [`Screen::hyperlink_runs`]. Serde-free like [`LastCommand`] — the host
+/// projects it to JSON for the `read_pane_links` MCP tool. The tmux-superior surface: an agent
+/// reads a link's DESTINATION as data (the URI, without OCR), which `capture-pane` cannot give
+/// because tmux flattens OSC 8 to plain text.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct LinkRun {
+    /// The displayed text the link covers (its cells' clusters, in reading order).
+    pub text: String,
+    /// The URI the link opens (`https://…`, `file://…`, `mailto:…`).
+    pub uri: String,
+    /// The OSC-8 `id=` grouping key, or `None` for an anonymous link. Two runs that share an id are
+    /// one logical link (a link split across a wrap, or the same target repeated).
+    pub id: Option<String>,
 }
 
 /// One scrolled-off line: its STYLED cells plus any shell-integration [`PromptMark`] the row
@@ -790,6 +845,48 @@ impl Screen {
             }
         }
         out
+    }
+
+    /// The OSC-8 hyperlink runs on the VISIBLE grid, in reading order — each a contiguous span of
+    /// cells sharing one link ([`LinkRun`]). Adjacent cells with the same link handle (a link and
+    /// its wrap continuations) form one run; a run ends where the link changes or stops. An agent
+    /// reads this to learn a pane's clickable targets as DATA — the URIs without OCR, which tmux's
+    /// `capture-pane` cannot expose (it flattens OSC 8 to plain text). Scans the visible rows only
+    /// (the on-screen links, bounded by the grid size); a `Some(id)` on two runs ties them into one
+    /// logical link for the consumer. Grouping is by the link's `Arc` POINTER, so two anonymous
+    /// links to the same URI stay distinct runs (as they render).
+    #[must_use]
+    pub fn hyperlink_runs(&self) -> Vec<LinkRun> {
+        let mut runs: Vec<LinkRun> = Vec::new();
+        // The link the current run belongs to, by `Arc` pointer identity; `None` between runs.
+        let mut open: Option<*const Hyperlink> = None;
+        for row in 0..self.rows {
+            for col in 0..self.cols {
+                let Some(cell) = self.cell(col, row) else {
+                    break;
+                };
+                match &cell.hyperlink {
+                    Some(link) => {
+                        let ptr = Arc::as_ptr(link);
+                        if open == Some(ptr) {
+                            // Continuation of the current run (including across a wrap).
+                            if let Some(run) = runs.last_mut() {
+                                run.text.push_str(&cell.cluster);
+                            }
+                        } else {
+                            open = Some(ptr);
+                            runs.push(LinkRun {
+                                text: cell.cluster.clone(),
+                                uri: link.uri.clone(),
+                                id: link.id.clone(),
+                            });
+                        }
+                    }
+                    None => open = None,
+                }
+            }
+        }
+        runs
     }
 
     // --- mutation surface for VT backends (crate-internal) ---
