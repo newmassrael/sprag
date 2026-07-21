@@ -27,7 +27,9 @@ use termwiz::escape::csi::{
 };
 use termwiz::escape::osc::{FinalTermSemanticPrompt, Selection};
 use termwiz::escape::parser::Parser;
-use termwiz::escape::{Action, ControlCode, Esc, EscCode, OperatingSystemCommand};
+use termwiz::escape::{
+    Action, ControlCode, Esc, EscCode, OperatingSystemCommand, Sixel, SixelData,
+};
 
 use crate::port::{
     Attrs, Cell, ClipboardQuery, ClipboardTarget, ClipboardTargets, ClipboardWrite, Color, Cursor,
@@ -163,6 +165,12 @@ pub struct Emulator {
     /// full a new `id` gets a fresh (ungrouped) `Arc` rather than growing unbounded — a documented
     /// degradation, not a leak.
     hyperlink_ids: HashMap<String, Arc<Hyperlink>>,
+    /// A monotonic counter minting an [`Image::id`] for each SIXEL image (Kitty images carry their
+    /// own `i=` id; sixel has none). Namespaced with the high bit set (`0x8000_0000 | n`) so a
+    /// synthesized sixel id does not collide with a small child-chosen Kitty id in the shared
+    /// replace-by-id [`Screen`] store — a documented bound (a Kitty image with the top bit set,
+    /// unusual, could still collide).
+    next_sixel_id: u32,
     /// Monotonic damage stamp, bumped on every row-mutating action.
     generation: u64,
     /// `true` between a resize and the next batch of bytes — the window in which a
@@ -232,6 +240,7 @@ impl Emulator {
             last_print: None,
             current_hyperlink: None,
             hyperlink_ids: HashMap::new(),
+            next_sixel_id: 0,
             generation: 0,
             in_resize_redraw: false,
         }
@@ -251,9 +260,11 @@ impl Emulator {
             Action::CSI(csi) => self.csi(csi),
             Action::OperatingSystemCommand(osc) => self.osc(&osc),
             Action::Esc(esc) => self.esc(esc),
-            // Kitty graphics (APC `_G…`, pinion R1404): capture a transmitted-and-displayed
-            // image. Sixel (DCS) is Stage 2 and still dropped by the `_` arm below.
+            // Kitty graphics (APC `_G…`) + Sixel (DCS `P…q…`), pinion R1404: capture a
+            // transmitted image anchored at the cursor. Both rasterize to the same [`Image`]
+            // and flow through the one image store -> panes-slot wire -> GUI composite.
             Action::KittyImage(img) => self.kitty_image(&img),
+            Action::Sixel(sixel) => self.sixel_image(&sixel),
             _ => {}
         }
     }
@@ -270,6 +281,26 @@ impl Emulator {
         {
             self.screen.add_image(image);
         }
+    }
+
+    /// Rasterize a Sixel (DCS) image and store it anchored at the cursor (pinion R1404, Stage 2).
+    /// Sixel carries no image id, so one is minted from [`Self::next_sixel_id`] (high-bit
+    /// namespaced against child-chosen Kitty ids). A raster that is empty or over
+    /// [`MAX_IMAGE_BYTES`] is dropped ([`raster_sixel`]). Like a Kitty image it clears only on a
+    /// whole-screen erase this stage (scroll / reflow eviction is a documented later bound).
+    fn sixel_image(&mut self, sixel: &Sixel) {
+        let Some((width, height, rgba)) = raster_sixel(sixel) else {
+            return;
+        };
+        let id = 0x8000_0000 | (self.next_sixel_id & 0x7fff_ffff);
+        self.next_sixel_id = self.next_sixel_id.wrapping_add(1);
+        self.screen.add_image(Image {
+            id,
+            width,
+            height,
+            rgba,
+            anchor: (self.col, self.row),
+        });
     }
 
     /// Decode a Kitty transmit into an [`Image`] anchored at the cursor, or `None` when it is
@@ -1316,6 +1347,142 @@ fn image_within_cap(width: u32, height: u32) -> bool {
         .checked_mul(height as usize)
         .and_then(|n| n.checked_mul(4))
         .is_some_and(|bytes| bytes <= MAX_IMAGE_BYTES)
+}
+
+/// Rasterize a termwiz [`Sixel`] into `(width, height, rgba)`, or `None` when it is empty or its
+/// raster would exceed [`MAX_IMAGE_BYTES`]. Standard sixel semantics: a data byte's low six bits are
+/// six VERTICAL pixels (bit 0 = topmost) painted in the current colour at the current column;
+/// [`Repeat`](SixelData::Repeat) paints the same byte across a run of columns; `$`
+/// ([`CarriageReturn`](SixelData::CarriageReturn)) returns to column 0 in the same 6-row band; `-`
+/// ([`NewLine`](SixelData::NewLine)) drops to the next band. `#n;2;r;g;b`
+/// ([`DefineColorMapRGB`](SixelData::DefineColorMapRGB)) both defines register `n` AND selects it;
+/// `#n` ([`SelectColorMapEntry`](SixelData::SelectColorMapEntry)) selects. The background is
+/// transparent — an unpainted pixel keeps alpha `0`. Registers seed the VT340 default 16-colour
+/// palette; an undefined index paints black.
+fn raster_sixel(sixel: &Sixel) -> Option<(u32, u32, Vec<u8>)> {
+    let (width, height) = sixel.dimensions();
+    if width == 0 || height == 0 || !image_within_cap(width, height) {
+        return None;
+    }
+    let w = width as usize;
+    let mut rgba = vec![0u8; w * height as usize * 4];
+    let mut registers = default_sixel_palette();
+    let mut color = *registers.get(&0).unwrap_or(&(0, 0, 0));
+    let mut x: u32 = 0;
+    let mut band_top: u32 = 0;
+    // Paint a data byte's six vertical pixels at column `x` in `color`. Bit 0 is the topmost.
+    let paint = |rgba: &mut [u8], x: u32, value: u8, band_top: u32, color: (u8, u8, u8)| {
+        for bit in 0..6u32 {
+            if value & (1 << bit) != 0 && x < width && band_top + bit < height {
+                let idx = ((band_top + bit) as usize * w + x as usize) * 4;
+                rgba[idx] = color.0;
+                rgba[idx + 1] = color.1;
+                rgba[idx + 2] = color.2;
+                rgba[idx + 3] = 255;
+            }
+        }
+    };
+    for item in &sixel.data {
+        match item {
+            SixelData::Data(v) => {
+                paint(&mut rgba, x, *v, band_top, color);
+                x += 1;
+            }
+            SixelData::Repeat { repeat_count, data } => {
+                for _ in 0..*repeat_count {
+                    paint(&mut rgba, x, *data, band_top, color);
+                    x += 1;
+                }
+            }
+            SixelData::SelectColorMapEntry(n) => color = *registers.get(n).unwrap_or(&(0, 0, 0)),
+            SixelData::DefineColorMapRGB { color_number, rgb } => {
+                let c = rgb.to_tuple_rgb8();
+                registers.insert(*color_number, c);
+                color = c; // `#n;2;…` defines AND selects.
+            }
+            SixelData::DefineColorMapHSL {
+                color_number,
+                hue_angle,
+                lightness,
+                saturation,
+            } => {
+                let c = hsl_to_rgb(*hue_angle, *lightness, *saturation);
+                registers.insert(*color_number, c);
+                color = c;
+            }
+            SixelData::CarriageReturn => x = 0,
+            SixelData::NewLine => {
+                x = 0;
+                band_top += 6;
+            }
+        }
+    }
+    Some((width, height, rgba))
+}
+
+/// The VT340 default sixel colour registers (0-15), converted from the standard percentage triples
+/// to 8-bit RGB. Most sixels [`DefineColorMapRGB`](SixelData::DefineColorMapRGB) their own colours;
+/// this seeds a sensible palette for one that selects an index it never defined.
+fn default_sixel_palette() -> HashMap<u16, (u8, u8, u8)> {
+    [
+        (0, (0, 0, 0)),
+        (1, (51, 51, 204)),
+        (2, (204, 33, 33)),
+        (3, (51, 204, 51)),
+        (4, (204, 51, 204)),
+        (5, (51, 204, 204)),
+        (6, (204, 204, 51)),
+        (7, (135, 135, 135)),
+        (8, (66, 66, 66)),
+        (9, (84, 84, 153)),
+        (10, (153, 66, 66)),
+        (11, (84, 153, 84)),
+        (12, (153, 84, 153)),
+        (13, (84, 153, 153)),
+        (14, (153, 153, 84)),
+        (15, (204, 204, 204)),
+    ]
+    .into_iter()
+    .collect()
+}
+
+/// Convert a sixel HLS colour to 8-bit RGB. Sixel's hue is the DEC convention (0 deg = BLUE), so it
+/// is rotated onto the standard HSL wheel (0 deg = red) by +240 deg; lightness / saturation are
+/// percentages. Best-effort — sixels overwhelmingly use RGB (`;2;`), so HSL is a rarely-exercised
+/// path and its exact DEC rounding is a documented bound.
+fn hsl_to_rgb(hue_angle: u16, lightness: u8, saturation: u8) -> (u8, u8, u8) {
+    let h = f32::from((hue_angle + 240) % 360) / 360.0;
+    let l = f32::from(lightness.min(100)) / 100.0;
+    let s = f32::from(saturation.min(100)) / 100.0;
+    if s == 0.0 {
+        let v = (l * 255.0).round() as u8;
+        return (v, v, v);
+    }
+    let q = if l < 0.5 {
+        l * (1.0 + s)
+    } else {
+        l + s - l * s
+    };
+    let p = 2.0 * l - q;
+    let channel = |mut t: f32| -> u8 {
+        if t < 0.0 {
+            t += 1.0;
+        }
+        if t > 1.0 {
+            t -= 1.0;
+        }
+        let v = if t < 1.0 / 6.0 {
+            p + (q - p) * 6.0 * t
+        } else if t < 0.5 {
+            q
+        } else if t < 2.0 / 3.0 {
+            p + (q - p) * (2.0 / 3.0 - t) * 6.0
+        } else {
+            p
+        };
+        (v * 255.0).round() as u8
+    };
+    (channel(h + 1.0 / 3.0), channel(h), channel(h - 1.0 / 3.0))
 }
 
 /// Clamp a child-set title to [`MAX_TITLE_BYTES`].
@@ -3058,5 +3225,122 @@ mod tests {
         assert!(!image_within_cap(2048, 2049), "past 16 MiB is refused");
         // A raster whose byte count overflows usize is refused, not wrapped.
         assert!(!image_within_cap(u32::MAX, u32::MAX), "overflow is refused");
+    }
+
+    /// The sixel rasterizer's correctness core: the low six bits of a data byte are six VERTICAL
+    /// pixels (bit 0 = topmost), `Repeat` runs one byte across columns, `NewLine` advances a 6-row
+    /// band, `#n;2;…` defines AND selects a colour, and unpainted pixels stay transparent.
+    #[test]
+    fn sixel_rasters_the_six_bit_columns_and_colors() {
+        use termwiz::color::RgbColor;
+        use termwiz::escape::{Sixel, SixelData};
+        let sixel = Sixel {
+            pan: 1,
+            pad: 1,
+            pixel_width: Some(4),
+            pixel_height: Some(12),
+            background_is_transparent: true,
+            horizontal_grid_size: None,
+            data: vec![
+                SixelData::DefineColorMapRGB {
+                    color_number: 0,
+                    rgb: RgbColor::new_8bpc(255, 0, 0),
+                },
+                SixelData::Data(0b000001), // col 0: bit 0 -> row 0 red
+                SixelData::Data(0b100000), // col 1: bit 5 -> row 5 red
+                SixelData::Repeat {
+                    repeat_count: 2,
+                    data: 0b000001,
+                }, // cols 2,3: row 0 red
+                SixelData::NewLine,        // -> band_top 6, x 0
+                SixelData::DefineColorMapRGB {
+                    color_number: 1,
+                    rgb: RgbColor::new_8bpc(0, 255, 0),
+                },
+                SixelData::Data(0b000001), // col 0, band 1: row 6 green
+            ],
+        };
+        let (w, h, rgba) = raster_sixel(&sixel).expect("rasters");
+        assert_eq!((w, h), (4, 12));
+        let wu = w as usize;
+        let px = |x: usize, y: usize| -> [u8; 4] {
+            let i = (y * wu + x) * 4;
+            [rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]]
+        };
+        assert_eq!(px(0, 0), [255, 0, 0, 255], "col0 bit0 -> row0 red");
+        assert_eq!(
+            px(1, 5),
+            [255, 0, 0, 255],
+            "col1 bit5 -> row5 (6-bit unpack)"
+        );
+        assert_eq!(px(2, 0), [255, 0, 0, 255], "repeat col2 row0");
+        assert_eq!(px(3, 0), [255, 0, 0, 255], "repeat col3 row0");
+        assert_eq!(px(0, 6), [0, 255, 0, 255], "newline advanced 6 rows; green");
+        assert_eq!(px(0, 1), [0, 0, 0, 0], "unpainted -> transparent");
+        assert_eq!(px(1, 0), [0, 0, 0, 0], "col1 row0 unpainted");
+    }
+
+    /// A DCS sixel through the REAL termwiz parser stores an image at the cursor cell, painted
+    /// opaque (the whole vertical column the `~` filled).
+    #[test]
+    fn sixel_dcs_stores_an_image_at_the_cursor() {
+        let mut em = Emulator::new(10, 5);
+        em.advance(b"\x1b[2;3H"); // cursor -> row 1, col 2 (0-based)
+        em.advance(b"\x1bPq#0;2;100;0;0~\x1b\\"); // define+select red, one all-6 column
+        let imgs = em.screen().images();
+        assert_eq!(imgs.len(), 1, "one sixel image stored");
+        assert_eq!(imgs[0].anchor, (2, 1), "anchored at the cursor cell");
+        // The `~` (all six bits) painted the whole column opaque, red-dominant.
+        assert_eq!(imgs[0].rgba[3], 255, "top-left pixel is opaque (painted)");
+        assert!(
+            imgs[0].rgba[0] > imgs[0].rgba[1] && imgs[0].rgba[0] > imgs[0].rgba[2],
+            "painted red"
+        );
+    }
+
+    #[test]
+    fn sixel_image_is_dropped_on_screen_clear() {
+        let mut em = Emulator::new(10, 5);
+        em.advance(b"\x1bPq#0;2;100;0;0~\x1b\\");
+        assert_eq!(em.screen().images().len(), 1);
+        em.advance(b"\x1b[2J"); // ED2 whole-screen clear
+        assert!(
+            em.screen().images().is_empty(),
+            "screen clear drops the sixel"
+        );
+    }
+
+    #[test]
+    fn sixel_over_the_cap_is_dropped() {
+        use termwiz::escape::{Sixel, SixelData};
+        let sixel = Sixel {
+            pan: 1,
+            pad: 1,
+            pixel_width: Some(3000), // 3000*3000*4 = ~34 MiB > 16 MiB cap
+            pixel_height: Some(3000),
+            background_is_transparent: true,
+            horizontal_grid_size: None,
+            data: vec![SixelData::Data(1)],
+        };
+        assert!(
+            raster_sixel(&sixel).is_none(),
+            "an over-cap sixel is refused"
+        );
+    }
+
+    /// An inline image survives a resize / reflow verbatim — a plain resize must NOT drop it
+    /// (position-eviction under scroll / reflow is a later stage). Regression guard: a GUI's boot
+    /// settling resize was silently dropping every image.
+    #[test]
+    fn an_image_survives_a_resize() {
+        let mut em = Emulator::new(10, 5);
+        em.advance(b"\x1bPq#0;2;100;0;0~\x1b\\"); // a sixel image at the cursor
+        assert_eq!(em.screen().images().len(), 1);
+        VtPort::resize(&mut em, 20, 8); // reflow to a new size
+        assert_eq!(
+            em.screen().images().len(),
+            1,
+            "the image survives the resize/reflow"
+        );
     }
 }

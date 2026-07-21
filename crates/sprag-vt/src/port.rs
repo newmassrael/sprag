@@ -1111,6 +1111,10 @@ impl Screen {
         // Scrollback is text history, independent of the grid dimensions; carry
         // it across verbatim (lines are not reflowed to the new width).
         next.scrollback = self.scrollback.clone();
+        // Inline images (Kitty / Sixel) carry across a resize verbatim — a plain
+        // resize must NOT drop them (position-eviction under scroll / reflow is a
+        // later stage, but the image data survives a re-layout).
+        next.images = self.images.clone();
         next
     }
 
@@ -1296,6 +1300,9 @@ impl Screen {
             visible: self.cursor.visible,
         };
         next.kind = self.kind;
+        // Inline images survive the rewrap verbatim (data preserved; position-eviction
+        // under scroll / reflow is a later stage) — same as [`Self::resized`].
+        next.images = self.images.clone();
         next
     }
 
