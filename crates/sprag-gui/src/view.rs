@@ -13,8 +13,8 @@ use crate::split::{
 };
 use crate::terminal::{TerminalView, pane_index_of, pane_tag, use_terminal};
 use pinion_core::external::OUTER_DOCK_ZONE_TAG;
-use pinion_core::scene::ContainerNode;
-use pinion_core::style::{BoxStyle, FlexDirection, LayoutStyle, Size, SizeValue};
+use pinion_core::scene::{ContainerNode, ImageNode, Rect};
+use pinion_core::style::{BoxStyle, Fit, FlexDirection, ImageStyle, LayoutStyle, Size, SizeValue};
 use pinion_core::theme::{ColorRole, Theme, use_theme};
 use pinion_core::{Frame, Scene};
 use pinion_shell::{
@@ -242,6 +242,54 @@ fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
 /// [`TerminalViewer::reconcile_frame`](crate::TerminalViewer) (pinion R1047's
 /// pre-view hook), which runs first, so `offset_y` is already current here — the
 /// view fn never writes a `Signal` (the §6.3 `dry_run` purity guarantee).
+/// Composite pane `i`'s inline images (Kitty graphics, R1404) over its text grid: register each
+/// image's RGBA into the shell's root image store ([`pinion_runtime::use_image_store`]) under
+/// `pane{i}.img{id}`, then push a `Scene::Image` node (`memory://pane{i}.img{id}`) as a child of the
+/// grid `Container`, absolutely positioned at the image's anchor cell × the cell metric and sized
+/// to its pixel raster, so pinion's `ImageCache` paints it over the `TextGrid`. A no-op when the
+/// pane has no images (returns `grid` unchanged, so the common case allocates nothing).
+///
+/// Stage 1 registers each visible image every frame (`use_image_store` is a cheap handle; the
+/// `insert` replaces by key), which is fine for the small images this stage renders — an
+/// insert-only-when-changed cache is a follow-up, as is on-demand RGBA transport for large images.
+fn compose_pane_images(grid: Scene, tv: &TerminalView, i: usize) -> Scene {
+    let images = tv.slots.pane_images(i);
+    if images.is_empty() {
+        return grid;
+    }
+    let Scene::Container(mut container) = grid else {
+        return grid;
+    };
+    let store = pinion_runtime::use_image_store();
+    let (cell_w, cell_h) = (tv.metric.cell_w(), tv.metric.cell_h());
+    for img in &images {
+        let Some(decoded) =
+            pinion_runtime::DecodedImage::from_rgba8(img.width, img.height, img.rgba.clone())
+        else {
+            continue; // a byte count that does not match the raster — skip, never paint torn
+        };
+        let key = format!("pane{i}.img{}", img.id);
+        store.insert(&key, &decoded);
+        container.children.push(Scene::Image(
+            ImageNode::styled(
+                format!("memory://{key}"),
+                Rect::default(),
+                ImageStyle::default().with_fit(Fit::Fill),
+            )
+            .with_tag(format!("{}#img{}", pane_tag(i), img.id))
+            .with_layout(
+                LayoutStyle::new()
+                    .with_absolute_position(
+                        u32::from(img.anchor.0) * cell_w,
+                        u32::from(img.anchor.1) * cell_h,
+                    )
+                    .with_size(Size::px(img.width, img.height)),
+            ),
+        ));
+    }
+    Scene::Container(container)
+}
+
 fn build_pane_scene(tv: &TerminalView, i: usize, theme: &Theme) -> Scene {
     let scroll = crate::scrollbar::use_pane_scroll(i);
     let preedit = use_preedit(i).get();
@@ -289,6 +337,12 @@ fn build_pane_scene(tv: &TerminalView, i: usize, theme: &Theme) -> Scene {
         }
         other => other,
     };
+    // R1404: composite the pane's inline images (Kitty graphics) over the text grid — register each
+    // image's RGBA into the shell's root MemoryImageStore and add a `Scene::Image` node at the
+    // image's anchor cell (× the cell metric). Stage 1: single-chunk RGBA/RGB, cleared only on
+    // screen-clear/alt-screen (scroll/reflow eviction is a documented later bound). tmux cannot
+    // show inline images at all.
+    let grid = compose_pane_images(grid, tv, i);
     let bar = crate::scrollbar::view_pane_scrollbar(i, &scroll, dims.visible_rows, track_h, theme);
     let pane = crate::scrollbar::wrap_pane_with_bar(grid, bar);
     // R142: sprag's focus indicator = DIM THE INACTIVE panes (the iTerm2 / kitty / tmux

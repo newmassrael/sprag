@@ -98,6 +98,10 @@ serde_json = "1"
 # matches pinion's so the one serde instance is shared across the dep graph.
 serde = { version = "1", features = ["derive"] }
 
+# Base64 for inline-image (Kitty graphics) payload decode + the wire RGBA carry
+# (pinion R1404). Matches termwiz's transitive version, so no duplicate in the lock.
+base64 = "0.22"
+
 # Production logging: first-party diagnostics are leveled `tracing` events
 # (targets like `sprag_gui::dock`), env-filtered by log level — NOT ad-hoc
 # eprintln. Versions match pinion's so the one global subscriber is shared.

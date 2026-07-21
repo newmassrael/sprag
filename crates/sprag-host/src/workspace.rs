@@ -54,6 +54,8 @@
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use pinion_core::SceneRevision;
 use pinion_core::external::{
     ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError, SchemaField,
@@ -671,6 +673,28 @@ impl ExternalIntrospect for WorkspaceExternal {
                                 "sel": query.target.osc_char().to_string(),
                                 "seq": p.clipboard_query_seq,
                             });
+                        }
+                        // Inline images (Kitty graphics, R1404). ADDITIVE: present only once the
+                        // child has transmitted one, so an image-less pane is byte-identical to the
+                        // pre-R1404 wire shape. Stage 1 carries each image's RGBA WHOLE inline as
+                        // base64 (the small demo images that prove the pipeline); an on-demand fetch
+                        // for large images off a per-image seq is the Stage-4 bound (the
+                        // `clipboard_write` payload precedent).
+                        if !p.images.is_empty() {
+                            let images: Vec<Value> = p
+                                .images
+                                .iter()
+                                .map(|img| {
+                                    serde_json::json!({
+                                        "id": img.id,
+                                        "width": img.width,
+                                        "height": img.height,
+                                        "anchor": [img.anchor.0, img.anchor.1],
+                                        "rgba_b64": STANDARD.encode(&img.rgba),
+                                    })
+                                })
+                                .collect();
+                            entry["images"] = Value::Array(images);
                         }
                         entry
                     })

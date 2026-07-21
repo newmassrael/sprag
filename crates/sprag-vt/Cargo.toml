@@ -14,3 +14,5 @@ publish = false
 termwiz = { workspace = true }
 # Cell display width (UAX#11) for wide-cluster (CJK) head/trailer.
 unicode-width = { workspace = true }
+# Base64 decode of Kitty graphics `Direct` image payloads (pinion R1404, Stage 1).
+base64 = { workspace = true }

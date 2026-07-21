@@ -14,8 +14,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use termwiz::cell::{Blink, Intensity, Underline};
 use termwiz::color::ColorSpec;
+use termwiz::escape::apc::{
+    KittyImage, KittyImageCompression, KittyImageData, KittyImageFormat, KittyImageTransmit,
+};
 use termwiz::escape::csi::{
     CSI, Cursor as CsiCursor, CursorStyle, DecPrivateMode, DecPrivateModeCode, Edit,
     EraseInDisplay, EraseInLine, Keyboard, KittyKeyboardMode, Mode, Sgr,
@@ -26,8 +31,8 @@ use termwiz::escape::{Action, ControlCode, Esc, EscCode, OperatingSystemCommand}
 
 use crate::port::{
     Attrs, Cell, ClipboardQuery, ClipboardTarget, ClipboardTargets, ClipboardWrite, Color, Cursor,
-    CursorShape, Hyperlink, InputModes, KittyKeyboardFlags, Notification, PromptMark, Rgb, Screen,
-    ScreenKind, UnderlineStyle, VtPort, Width, char_columns,
+    CursorShape, Hyperlink, Image, InputModes, KittyKeyboardFlags, Notification, PromptMark, Rgb,
+    Screen, ScreenKind, UnderlineStyle, VtPort, Width, char_columns,
 };
 
 /// The cursor state DECSC (`ESC 7` / `CSI s`) saves and DECRC (`ESC 8` / `CSI u`) restores:
@@ -246,9 +251,74 @@ impl Emulator {
             Action::CSI(csi) => self.csi(csi),
             Action::OperatingSystemCommand(osc) => self.osc(&osc),
             Action::Esc(esc) => self.esc(esc),
-            // Device-control (sixel), APC (Kitty graphics): not part of the subset.
+            // Kitty graphics (APC `_G…`, pinion R1404): capture a transmitted-and-displayed
+            // image. Sixel (DCS) is Stage 2 and still dropped by the `_` arm below.
+            Action::KittyImage(img) => self.kitty_image(&img),
             _ => {}
         }
+    }
+
+    /// Capture a Kitty graphics image (APC `_G…`, pinion R1404). **Stage 1 scope**: only
+    /// `TransmitDataAndDisplay` (`a=T`) with a single-chunk `Direct` (base64) / `DirectBin`
+    /// payload in RGB (`f=24`) or RGBA (`f=32`), anchored at the cursor cell. Deferred with
+    /// documented bounds (ignored, NOT misrendered): transmit-without-display / `Display` /
+    /// `Delete` / `Query` ack, chunked (`m=1`), compression, PNG (`f=100`), file/shm transmit,
+    /// animation, and placement geometry (columns/rows/z/offsets).
+    fn kitty_image(&mut self, img: &KittyImage) {
+        if let KittyImage::TransmitDataAndDisplay { transmit, .. } = img
+            && let Some(image) = self.decode_kitty(transmit)
+        {
+            self.screen.add_image(image);
+        }
+    }
+
+    /// Decode a Kitty transmit into an [`Image`] anchored at the cursor, or `None` when it is
+    /// outside the Stage-1 subset (chunked / compressed / PNG / file / missing dimensions) or
+    /// the byte count does not match `width * height * bpp` (dropped, never misrendered).
+    fn decode_kitty(&self, transmit: &KittyImageTransmit) -> Option<Image> {
+        if transmit.more_data_follows || transmit.compression != KittyImageCompression::None {
+            return None;
+        }
+        let bpp: usize = match transmit.format {
+            Some(KittyImageFormat::Rgb) => 3,
+            Some(KittyImageFormat::Rgba) => 4,
+            _ => return None,
+        };
+        let (width, height) = (transmit.width?, transmit.height?);
+        // Bound a child-controlled raster BEFORE decoding (consistent with the clipboard / title
+        // caps): a huge image would OOM on decode and, inlined on the panes slot (Stage 1), flood
+        // every poll. Over the cap (or an overflowing size) is dropped, never stored / wired.
+        if !image_within_cap(width, height) {
+            return None;
+        }
+        let bytes = match &transmit.data {
+            KittyImageData::Direct(b64) => BASE64.decode(b64.as_bytes()).ok()?,
+            KittyImageData::DirectBin(raw) => raw.clone(),
+            _ => return None,
+        };
+        let expected = (width as usize)
+            .checked_mul(height as usize)?
+            .checked_mul(bpp)?;
+        if bytes.len() != expected {
+            return None;
+        }
+        let rgba = if bpp == 4 {
+            bytes
+        } else {
+            let mut out = Vec::with_capacity(width as usize * height as usize * 4);
+            for px in bytes.chunks_exact(3) {
+                out.extend_from_slice(px);
+                out.push(255); // RGB -> RGBA: opaque alpha.
+            }
+            out
+        };
+        Some(Image {
+            id: transmit.image_id.unwrap_or(0),
+            width,
+            height,
+            rgba,
+            anchor: (self.col, self.row),
+        })
     }
 
     /// The two-byte `ESC <final>` sequences in the subset:
@@ -777,6 +847,10 @@ impl Emulator {
                         for r in 0..self.rows {
                             self.screen.clear_row(r, g);
                         }
+                        // Stage-1 image lifecycle: a whole-screen clear drops inline images too
+                        // (they carry no cells, so the row clears above don't touch them). Scroll
+                        // / erase-covered-cells / reflow eviction is a later stage.
+                        self.screen.clear_images();
                     }
                     // ED-3: drop the retained scrollback (R16 models it).
                     EraseInDisplay::EraseScrollback => self.screen.clear_scrollback(),
@@ -1226,6 +1300,23 @@ const MAX_NOTIFICATION_BYTES: usize = 2048;
 /// must be bounded so a hostile or runaway child cannot pin unbounded memory). An over-cap write
 /// is truncated on a char boundary; this is a rare, documented bound.
 const MAX_CLIPBOARD_BYTES: usize = 1 << 20;
+
+/// Upper bound on a single inline image's RGBA raster (16 MiB = a 2048x2048 image). Same reason as
+/// the clipboard cap: a child-controlled buffer must be bounded so a hostile / runaway child cannot
+/// pin unbounded memory — and in Stage 1 an image rides the panes slot INLINE (base64) on every
+/// poll, so an uncapped raster would flood the wire, not just the store. An over-cap image is
+/// DROPPED (never stored / wired / painted); large images await on-demand transport (a later stage).
+const MAX_IMAGE_BYTES: usize = 16 << 20;
+
+/// Whether an image's RGBA raster (`width * height * 4`) fits within [`MAX_IMAGE_BYTES`] — `false`
+/// for an over-cap size OR one that overflows `usize`. The guard [`Emulator::decode_kitty`] applies
+/// before it decodes / stores a child-controlled image.
+fn image_within_cap(width: u32, height: u32) -> bool {
+    (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|n| n.checked_mul(4))
+        .is_some_and(|bytes| bytes <= MAX_IMAGE_BYTES)
+}
 
 /// Clamp a child-set title to [`MAX_TITLE_BYTES`].
 fn clamp_title(t: &str) -> String {
@@ -2893,5 +2984,79 @@ mod tests {
         let runs = em.screen().hyperlink_runs();
         assert_eq!(runs.len(), 1, "a wrapped link is one run");
         assert_eq!(runs[0].text, "ABCDEF", "text continues across the wrap");
+    }
+
+    // ---- Kitty graphics images (pinion R1404, Stage 1) ----
+
+    /// A Kitty `a=T` RGBA transmit stores a decoded image anchored at the cursor,
+    /// keyed by its `i=` id, with the exact pixels.
+    #[test]
+    fn kitty_rgba_transmit_and_display_stores_an_image_at_the_cursor() {
+        let mut em = Emulator::new(10, 4);
+        em.advance(b"xy"); // cursor now at col 2
+        let px: Vec<u8> = (1..=16).collect(); // 2x2 RGBA
+        let b64 = BASE64.encode(&px);
+        em.advance(format!("\x1b_Ga=T,f=32,s=2,v=2,i=7;{b64}\x1b\\").as_bytes());
+        let imgs = em.screen().images();
+        assert_eq!(imgs.len(), 1, "one image captured");
+        assert_eq!(imgs[0].id, 7);
+        assert_eq!((imgs[0].width, imgs[0].height), (2, 2));
+        assert_eq!(imgs[0].rgba, px, "exact pixels");
+        assert_eq!(imgs[0].anchor, (2, 0), "anchored at the cursor");
+    }
+
+    /// An RGB (`f=24`) transmit expands to RGBA with an opaque alpha.
+    #[test]
+    fn kitty_rgb_expands_to_opaque_rgba() {
+        let mut em = Emulator::new(6, 2);
+        let b64 = BASE64.encode([10u8, 20, 30]); // 1x1 RGB
+        em.advance(format!("\x1b_Ga=T,f=24,s=1,v=1;{b64}\x1b\\").as_bytes());
+        assert_eq!(em.screen().images()[0].rgba, vec![10, 20, 30, 255]);
+    }
+
+    /// A re-transmit under the same id REPLACES the image (Kitty update), not append.
+    #[test]
+    fn kitty_same_id_retransmit_replaces() {
+        let mut em = Emulator::new(6, 2);
+        let a = BASE64.encode([1u8, 1, 1, 1]);
+        let b = BASE64.encode([9u8, 9, 9, 9]);
+        em.advance(format!("\x1b_Ga=T,f=32,s=1,v=1,i=3;{a}\x1b\\").as_bytes());
+        em.advance(format!("\x1b_Ga=T,f=32,s=1,v=1,i=3;{b}\x1b\\").as_bytes());
+        let imgs = em.screen().images();
+        assert_eq!(imgs.len(), 1, "same id replaced, not appended");
+        assert_eq!(imgs[0].rgba, vec![9, 9, 9, 9]);
+    }
+
+    /// A whole-screen clear (ED 2) drops the inline images (Stage-1 lifecycle).
+    #[test]
+    fn screen_clear_drops_the_inline_images() {
+        let mut em = Emulator::new(6, 3);
+        let b64 = BASE64.encode([5u8, 5, 5, 5]);
+        em.advance(format!("\x1b_Ga=T,f=32,s=1,v=1;{b64}\x1b\\").as_bytes());
+        assert_eq!(em.screen().images().len(), 1);
+        em.advance(b"\x1b[2J"); // ED 2
+        assert!(em.screen().images().is_empty(), "screen-clear drops images");
+    }
+
+    /// A byte count that does not match `w*h*bpp` is DROPPED, never misrendered.
+    #[test]
+    fn kitty_malformed_byte_count_is_dropped() {
+        let mut em = Emulator::new(6, 2);
+        let b64 = BASE64.encode([1u8, 2, 3, 4]); // 4 bytes, but claims 2x2 RGBA (16)
+        em.advance(format!("\x1b_Ga=T,f=32,s=2,v=2;{b64}\x1b\\").as_bytes());
+        assert!(em.screen().images().is_empty(), "malformed image dropped");
+    }
+
+    /// A child-controlled raster past [`MAX_IMAGE_BYTES`] (or one that overflows) is refused BEFORE
+    /// it is decoded / stored / wired — the same bound as the clipboard / title caps, and (Stage 1)
+    /// the guard against flooding the inline panes-slot wire.
+    #[test]
+    fn image_cap_rejects_oversized_and_overflowing_rasters() {
+        // At the cap: 2048x2048x4 = 16 MiB exactly is allowed.
+        assert!(image_within_cap(2048, 2048));
+        // One row over the cap is refused.
+        assert!(!image_within_cap(2048, 2049), "past 16 MiB is refused");
+        // A raster whose byte count overflows usize is refused, not wrapped.
+        assert!(!image_within_cap(u32::MAX, u32::MAX), "overflow is refused");
     }
 }

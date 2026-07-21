@@ -76,6 +76,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use pinion_core::{GridBuffer, QuitSink};
 use serde_json::{Value, json};
 use sprag_host::wire::{
@@ -91,7 +93,7 @@ use sprag_host::{
 use sprag_input::Modifiers;
 use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn, runtime_path};
 use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId, SessionInfo, WindowInfo};
-use sprag_vt::{ClipboardTarget, ClipboardTargets};
+use sprag_vt::{ClipboardTarget, ClipboardTargets, Image};
 
 /// How long to wait for a just-spawned daemon's socket to accept — covers its bind race.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -147,6 +149,9 @@ struct WirePane {
     /// authoritative + dynamic — [`crate::clipboard_osc`] answers it (subject to policy) when the
     /// seq grows.
     clipboard_query: Option<PaneClipboardQuery>,
+    /// The pane's inline images (Kitty graphics, R1404), empty if none. Host-authoritative +
+    /// dynamic — re-adopted each wake, composited over the grid by [`crate::view`].
+    images: Vec<Image>,
     frame: CellFrame,
     /// The GUI's tracked grid `(cols, rows)`: seeded from the host at boot, advanced only
     /// when a `resize` RPC SUCCEEDS (so the reflow no-op guard reads it with no
@@ -1403,6 +1408,16 @@ impl HostClient for WireHost {
             .map_or(0, |pane| pane.bell_seq)
     }
 
+    /// Served from the same poll-refreshed mirror as [`Self::pane_bell_seq`], re-adopted each wake,
+    /// so the composited images reflect the host's latest transmit / clear.
+    fn pane_images(&self, id: PaneId) -> Vec<Image> {
+        self.lock_cache()
+            .iter()
+            .find(|pane| pane.id == id)
+            .map(|pane| pane.images.clone())
+            .unwrap_or_default()
+    }
+
     /// The CHEAP clipboard-write count, served from the poll-refreshed mirror (no round-trip) —
     /// `clipboard_osc` polls it each frame and fetches the payload only when it grows.
     fn pane_clipboard_write_seq(&self, id: PaneId) -> u64 {
@@ -1564,6 +1579,8 @@ struct PaneSeed {
     clipboard_write_seq: u64,
     /// The pane's pending OSC 52 read query (selection + seq), `None` when the wire omits the key.
     clipboard_query: Option<PaneClipboardQuery>,
+    /// The pane's inline images (Kitty graphics, R1404), empty when the wire omits the key.
+    images: Vec<Image>,
     dims: (u16, u16),
 }
 
@@ -1590,6 +1607,7 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
             let bell_seq = pane["bell_seq"].as_u64().unwrap_or(0);
             let clipboard_write_seq = pane["clipboard_write_seq"].as_u64().unwrap_or(0);
             let clipboard_query = parse_clipboard_query(&pane["clipboard_query"]);
+            let images = parse_images(&pane["images"]);
             let cols = u16::try_from(pane["cols"].as_u64().unwrap_or(1)).unwrap_or(1);
             let rows = u16::try_from(pane["rows"].as_u64().unwrap_or(1)).unwrap_or(1);
             Ok(PaneSeed {
@@ -1600,6 +1618,7 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
                 bell_seq,
                 clipboard_write_seq,
                 clipboard_query,
+                images,
                 dims: (cols, rows),
             })
         })
@@ -1624,6 +1643,39 @@ fn parse_notification(value: &Value) -> Option<PaneNotification> {
             .to_owned(),
         seq: object.get("seq").and_then(Value::as_u64).unwrap_or(0),
     })
+}
+
+/// Parse a pane's `images` wire value — a JSON array of `{id, width, height, anchor:[col,row],
+/// rgba_b64}` (Kitty graphics, R1404), or absent/`null` — into [`Image`]s. A missing key, a
+/// non-array, or a malformed entry (bad base64, or a byte count that is not `width*height*4`)
+/// yields an empty list / drops the entry, so a garbled payload never paints a torn image.
+fn parse_images(value: &Value) -> Vec<Image> {
+    let Some(array) = value.as_array() else {
+        return Vec::new();
+    };
+    array
+        .iter()
+        .filter_map(|entry| {
+            let id = u32::try_from(entry["id"].as_u64()?).ok()?;
+            let width = u32::try_from(entry["width"].as_u64()?).ok()?;
+            let height = u32::try_from(entry["height"].as_u64()?).ok()?;
+            let anchor = entry["anchor"].as_array()?;
+            let col = u16::try_from(anchor.first()?.as_u64()?).ok()?;
+            let row = u16::try_from(anchor.get(1)?.as_u64()?).ok()?;
+            let rgba = STANDARD.decode(entry["rgba_b64"].as_str()?).ok()?;
+            // Drop a payload whose byte count does not match the declared raster.
+            if rgba.len() != (width as usize) * (height as usize) * 4 {
+                return None;
+            }
+            Some(Image {
+                id,
+                width,
+                height,
+                rgba,
+                anchor: (col, row),
+            })
+        })
+        .collect()
 }
 
 /// Parse a pane's `clipboard_query` wire value (`{sel, seq}`, or absent/`null`) into a
@@ -1846,6 +1898,8 @@ fn merge_panes(
             // clipboard write count / read query reflect the child's latest for `clipboard_osc`.
             clipboard_write_seq: seed.clipboard_write_seq,
             clipboard_query: seed.clipboard_query,
+            // host-authoritative + dynamic: re-adopt the query's images each wake.
+            images: seed.images.clone(),
             frame,
             dims: prior.map_or(seed.dims, |pane| pane.dims), // GUI-authoritative — keep tracked
         });
@@ -2000,6 +2054,7 @@ fn spawn_poll(
                                 // keep the last-known clipboard signals across a transient miss
                                 clipboard_write_seq: pane.clipboard_write_seq,
                                 clipboard_query: pane.clipboard_query,
+                                images: pane.images.clone(), // keep last-known images too
                                 dims: pane.dims,
                             })
                             .collect();
@@ -2153,6 +2208,33 @@ mod tests {
     use std::io::{BufRead, BufReader};
     use std::os::unix::net::UnixListener;
     use std::sync::atomic::AtomicUsize;
+
+    /// The panes-slot `images` wire value round-trips to [`Image`]s, and a malformed entry (a byte
+    /// count that is not `w*h*4`, or bad base64) is dropped — never painting a torn image.
+    #[test]
+    fn parse_images_round_trips_and_drops_malformed() {
+        let rgba = vec![1u8, 2, 3, 4, 5, 6, 7, 8]; // a 2x1 RGBA raster = 8 bytes
+        let value = json!([
+            {
+                "id": 7, "width": 2, "height": 1, "anchor": [3, 4],
+                "rgba_b64": STANDARD.encode(&rgba),
+            },
+            // byte count 4 != 2*2*4 = 16 → dropped (the revert-proof guard).
+            {
+                "id": 8, "width": 2, "height": 2, "anchor": [0, 0],
+                "rgba_b64": STANDARD.encode([0u8; 4]),
+            },
+            // not base64 → dropped.
+            { "id": 9, "width": 1, "height": 1, "anchor": [0, 0], "rgba_b64": "!!!" },
+        ]);
+        let images = parse_images(&value);
+        assert_eq!(images.len(), 1, "only the well-formed image survives");
+        assert_eq!(images[0].id, 7);
+        assert_eq!((images[0].width, images[0].height), (2, 1));
+        assert_eq!(images[0].anchor, (3, 4));
+        assert_eq!(images[0].rgba, rgba);
+        assert!(parse_images(&Value::Null).is_empty(), "absent ⇒ empty");
+    }
 
     /// A structural session list in creation order, the shape [`destroy_successor`] reads — only the
     /// name matters to the neighbour pick, so the live fields are empty.
@@ -3017,6 +3099,7 @@ mod tests {
                 bell_seq: 0,
                 clipboard_write_seq: 0,
                 clipboard_query: None,
+                images: Vec::new(),
                 frame: frame(3),
                 dims: (80, 24),
             },
@@ -3028,6 +3111,7 @@ mod tests {
                 bell_seq: 0,
                 clipboard_write_seq: 0,
                 clipboard_query: None,
+                images: Vec::new(),
                 frame: frame(3),
                 dims: (40, 12),
             },
@@ -3044,6 +3128,7 @@ mod tests {
                 bell_seq: 0,
                 clipboard_write_seq: 0,
                 clipboard_query: None,
+                images: Vec::new(),
                 dims: (100, 30),
             },
             PaneSeed {
@@ -3054,6 +3139,7 @@ mod tests {
                 bell_seq: 0,
                 clipboard_write_seq: 0,
                 clipboard_query: None,
+                images: Vec::new(),
                 dims: (80, 24),
             },
             PaneSeed {
@@ -3064,6 +3150,7 @@ mod tests {
                 bell_seq: 0,
                 clipboard_write_seq: 0,
                 clipboard_query: None,
+                images: Vec::new(),
                 dims: (80, 24),
             },
         ];
@@ -3109,6 +3196,7 @@ mod tests {
             bell_seq: 0,
             clipboard_write_seq: 0,
             clipboard_query: None,
+            images: Vec::new(),
             frame: frame(3),
             dims: (80, 24),
         }];
@@ -3120,6 +3208,7 @@ mod tests {
             bell_seq: 0,
             clipboard_write_seq: 0,
             clipboard_query: None,
+            images: Vec::new(),
             dims: (80, 24),
         }];
         let merged = merge_panes(&existing, &seeds, &[]); // fetch missed this wake
@@ -3146,6 +3235,7 @@ mod tests {
                 bell_seq: 0,
                 clipboard_write_seq: 0,
                 clipboard_query: None,
+                images: Vec::new(),
                 frame: frame(3),
                 dims: (80, 24),
             },
@@ -3157,6 +3247,7 @@ mod tests {
                 bell_seq: 0,
                 clipboard_write_seq: 0,
                 clipboard_query: None,
+                images: Vec::new(),
                 frame: frame(3),
                 dims: (80, 24),
             },
@@ -3170,6 +3261,7 @@ mod tests {
                 bell_seq: 0,
                 clipboard_write_seq: 0,
                 clipboard_query: None,
+                images: Vec::new(),
                 dims: (80, 24),
             },
             PaneSeed {
@@ -3180,6 +3272,7 @@ mod tests {
                 bell_seq: 0,
                 clipboard_write_seq: 0,
                 clipboard_query: None,
+                images: Vec::new(),
                 dims: (80, 24),
             },
         ];

@@ -3605,6 +3605,7 @@ dependencies = [
 name = "sprag-gui"
 version = "0.0.1"
 dependencies = [
+ "base64",
  "pinion-a11y",
  "pinion-core",
  "pinion-forge",
@@ -3629,6 +3630,7 @@ dependencies = [
 name = "sprag-host"
 version = "0.0.1"
 dependencies = [
+ "base64",
  "libc",
  "pinion-core",
  "pinion-rpc",
@@ -3700,6 +3702,7 @@ dependencies = [
 name = "sprag-vt"
 version = "0.0.1"
 dependencies = [
+ "base64",
  "termwiz",
  "unicode-width",
 ]

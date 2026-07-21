@@ -35,6 +35,11 @@ pub fn char_columns(ch: char) -> usize {
 /// memory under unbounded output; the oldest line drops past this.
 pub(crate) const SCROLLBACK_CAP: usize = 1000;
 
+/// Maximum number of distinct inline [`Image`]s a [`Screen`] retains (FIFO). Bounds memory
+/// against a child that transmits many distinct image ids without clearing; past this the
+/// oldest is dropped. A screenful of images is a handful, so this is generous.
+pub(crate) const IMAGE_CAP: usize = 256;
+
 /// A 24-bit truecolor value.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Rgb {
@@ -524,6 +529,32 @@ pub(crate) struct ScrollbackLine {
     pub(crate) mark: Option<PromptMark>,
 }
 
+/// An inline raster image the terminal is displaying (Kitty graphics / Sixel) — its decoded
+/// RGBA pixels plus where it sits on the grid. sprag-owned and library-agnostic (no termwiz
+/// types), exactly as [`Cell`] / [`Hyperlink`] are, so the VT-library choice stays reversible.
+///
+/// `rgba` is `width * height * 4` bytes (8-bit R,G,B,A row-major). `anchor` is the top-left
+/// grid CELL the image is placed at (Kitty places at the cursor); a consumer converts it to
+/// pixels via the cell metric and composites the image over the text grid. `id` is the Kitty
+/// image id (`i=`), so a re-transmit under the same id REPLACES the image (animation / update).
+///
+/// Stage-1 scope (pinion R1404): the image is a static placement cleared on screen-clear /
+/// alt-screen only; scroll / erase-covered-cells / reflow eviction is a later stage
+/// (documented bound), as are chunked transmit, delete, query-ack, and PNG.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Image {
+    /// The Kitty image id (`i=`); a re-transmit under the same id replaces this image.
+    pub id: u32,
+    /// Pixel width of the RGBA raster.
+    pub width: u32,
+    /// Pixel height of the RGBA raster.
+    pub height: u32,
+    /// `width * height * 4` bytes: 8-bit R,G,B,A, row-major.
+    pub rgba: Vec<u8>,
+    /// The top-left grid cell `(col, row)` the image is anchored at (the cursor at transmit).
+    pub anchor: (u16, u16),
+}
+
 /// A queryable terminal screen: a `cols x rows` grid of cells plus the
 /// cursor, screen kind, and per-row damage generations.
 ///
@@ -575,6 +606,11 @@ pub struct Screen {
     /// scrollback), erasing ([`Self::clear_row`] drops it), and reflow ([`Self::reflowed`]
     /// re-attaches it to the logical line's first physical row). See [`PromptMark`].
     marks: Vec<Option<PromptMark>>,
+    /// Inline raster images (Kitty graphics / Sixel) the child is displaying, in transmit
+    /// order (pinion R1404). Keyed by [`Image::id`] on insert (a re-transmit replaces). Carries
+    /// no cells, so it is NOT parallel to the rows like [`Self::marks`]; it is cleared wholesale
+    /// on screen-clear / alt-screen (Stage-1 lifecycle — scroll / reflow eviction is later).
+    images: Vec<Image>,
 }
 
 impl Screen {
@@ -592,7 +628,35 @@ impl Screen {
             scrollback: VecDeque::new(),
             wrapped: vec![false; rows as usize],
             marks: vec![None; rows as usize],
+            images: Vec::new(),
         }
+    }
+
+    /// The inline images (Kitty graphics / Sixel) the child is displaying (pinion R1404), in
+    /// transmit order. A consumer composites each over the text grid at its [`Image::anchor`]
+    /// cell (× the cell metric). Empty until the child transmits one.
+    #[must_use]
+    pub fn images(&self) -> &[Image] {
+        &self.images
+    }
+
+    /// Add (or REPLACE, by [`Image::id`]) an inline image — a Kitty re-transmit under the same
+    /// id updates it in place. Bounded by [`IMAGE_CAP`] against a child that streams distinct
+    /// ids without clearing; past the cap the oldest is dropped (FIFO).
+    pub(crate) fn add_image(&mut self, image: Image) {
+        if let Some(slot) = self.images.iter_mut().find(|i| i.id == image.id) {
+            *slot = image;
+            return;
+        }
+        if self.images.len() >= IMAGE_CAP {
+            self.images.remove(0);
+        }
+        self.images.push(image);
+    }
+
+    /// Drop every inline image — the screen-clear / alt-screen lifecycle (Stage 1).
+    pub(crate) fn clear_images(&mut self) {
+        self.images.clear();
     }
 
     #[must_use]

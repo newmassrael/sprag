@@ -33,6 +33,10 @@ sprag-terminal = { workspace = true }
 # ClipboardSelection when it applies a write / answers a read (crate::clipboard_osc).
 sprag-vt = { workspace = true }
 pinion-core = { workspace = true }
+# use_image_store + DecodedImage: register a pane's inline-image RGBA (Kitty graphics,
+# R1404) into the shell's root MemoryImageStore so a `Scene::Image("memory://…")`
+# composited over the grid paints it (crate::view).
+pinion-runtime = { workspace = true }
 # WidgetA11y for the (empty) access tree.
 pinion-a11y = { workspace = true }
 # The windowed GPU shell entry point (pinion_shell::run) + RepaintSink impl.
@@ -58,12 +62,14 @@ serde = { workspace = true }
 # (env-filtered by SPRAG_LOG) before pinion's run() fallback.
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+# Decode the panes-slot inline-image RGBA (base64) the host carries (R1404, crate::wire).
+base64 = { workspace = true }
 
 [build-dependencies]
 # Compiles app.pinion.xml -> OUT_DIR/app.rs (the Vello renderer scaffold).
 pinion-forge = { workspace = true }
 
 [dev-dependencies]
-# `PointerId` for the end-to-end click-to-focus test (the shell's pointer methods
-# take it). Test-only — no sprag crate depends on pinion-runtime at runtime.
+# `PointerId` for the end-to-end click-to-focus test — a test-only use; pinion-runtime is
+# also a runtime dependency now (the R1404 image store, see [dependencies]).
 pinion-runtime = { workspace = true }

@@ -30,7 +30,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use sprag_vt::{ClipboardQuery, ClipboardWrite, Notification, ShellState};
+use sprag_vt::{ClipboardQuery, ClipboardWrite, Image, Notification, ShellState};
 
 use crate::pane_pty::{CommandBuilder, PanePty, PanePtyError, PanePtyHandle};
 
@@ -130,6 +130,15 @@ impl Pane {
         self.pty.bell_seq()
     }
 
+    /// The inline images (Kitty graphics, R1404) the child has transmitted, each anchored at its
+    /// transmit-time cursor cell — read LIVE from the emulator's screen. A display client
+    /// composites each over the grid at its anchor cell × the cell metric. See
+    /// [`sprag_vt::Screen::images`].
+    #[must_use]
+    pub fn images(&self) -> Vec<Image> {
+        self.pty.with_screen(|s| s.images().to_vec())
+    }
+
     /// The pane's shell-integration state (OSC 133) + last command exit status, read LIVE from the
     /// emulator's screen marks. Surfaced so a monitor / an AI sibling knows whether the shell is
     /// idle at a prompt or running a command, and how the last one exited.
@@ -210,6 +219,10 @@ pub struct PaneInfo {
     /// first). A display client answers a NEW query — subject to policy — when this grows, the
     /// answer arbitrated to exactly one reply across clients (see [`Pane::clipboard_query`]).
     pub clipboard_query_seq: u64,
+    /// The inline images (Kitty graphics, R1404) the child has transmitted, each anchored at its
+    /// transmit-time cursor cell. Empty when the child transmitted none. A display client
+    /// composites each over the grid; see [`Pane::images`].
+    pub images: Vec<Image>,
 }
 
 /// The multiplexer's pane pool: a set of live panes, a monotonic id
@@ -477,6 +490,7 @@ impl Workspace {
                     clipboard_write_seq: p.clipboard_write().1,
                     clipboard_query,
                     clipboard_query_seq,
+                    images: p.images(),
                 }
             })
             .collect()

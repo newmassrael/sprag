@@ -52,7 +52,7 @@ use sprag_terminal::{
     CommandBuilder, LayoutSnapshot, LayoutWire, Pane, PaneId, PanePtyError, PanePtyHandle,
     SessionInfo, SessionRegistry, Snapshot, SnapshotError, WindowInfo, Workspace,
 };
-use sprag_vt::{ClipboardTarget, ClipboardTargets, Screen, osc52_reply};
+use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, Screen, osc52_reply};
 
 use crate::external::lock;
 use crate::scope::SessionScope;
@@ -380,6 +380,14 @@ pub trait HostClient {
     /// both. Defaulted to `0` so an older [`HostClient`] impl need not implement it.
     fn pane_bell_seq(&self, _id: PaneId) -> u64 {
         0
+    }
+
+    /// The pane's inline images (Kitty graphics, R1404), each anchored at its transmit-time cursor
+    /// cell. Empty if the pane is absent or its child transmitted none. A display client composites
+    /// each over the grid at its anchor cell × the cell metric. Defaulted to empty so an older
+    /// [`HostClient`] impl need not implement it.
+    fn pane_images(&self, _id: PaneId) -> Vec<Image> {
+        Vec::new()
     }
 
     /// The pane's most recent OSC 52 clipboard WRITE ([`PaneClipboardWrite`]) — fetched ON
@@ -839,6 +847,12 @@ impl HostClient for Host {
     /// [`Self::pane_notification`]). An absent pane flattens to `0`.
     fn pane_bell_seq(&self, id: PaneId) -> u64 {
         self.with_pane_id(id, Pane::bell_seq).unwrap_or(0)
+    }
+
+    /// The pane's live inline images, read off the emulator under the workspace lock (like
+    /// [`Self::pane_bell_seq`]). An absent pane flattens to an empty list.
+    fn pane_images(&self, id: PaneId) -> Vec<Image> {
+        self.with_pane_id(id, Pane::images).unwrap_or_default()
     }
 
     /// The pane's live OSC 52 clipboard WRITE, read off the emulator under the workspace lock and
