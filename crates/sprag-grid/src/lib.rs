@@ -476,7 +476,7 @@ mod tests {
         let composed = buffer.cell(2, 0).unwrap(); // cursor sat at col 2
         assert_eq!(composed.cluster, "x");
         assert!(
-            composed.attrs.underline,
+            composed.attrs.underline.is_on(),
             "the preedit is underlined (composing marker)"
         );
     }
@@ -490,7 +490,7 @@ mod tests {
         let head = buffer.cell(2, 0).unwrap();
         assert_eq!(head.cluster, "한");
         assert_eq!(head.width, pinion_core::CellWidth::Wide);
-        assert!(head.attrs.underline);
+        assert!(head.attrs.underline.is_on());
         assert_eq!(
             buffer.cell(3, 0).unwrap().width,
             pinion_core::CellWidth::Trailer
