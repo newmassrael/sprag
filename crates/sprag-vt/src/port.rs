@@ -654,9 +654,16 @@ impl Screen {
         self.images.push(image);
     }
 
-    /// Drop every inline image — the screen-clear / alt-screen lifecycle (Stage 1).
+    /// Drop every inline image — the screen-clear / alt-screen lifecycle (Stage 1), and the Kitty
+    /// delete-all (`a=d, d=a`, Stage 4).
     pub(crate) fn clear_images(&mut self) {
         self.images.clear();
+    }
+
+    /// Drop the inline image with [`Image::id`] `id` — the Kitty delete-by-id (`a=d, d=i, i=<id>`,
+    /// Stage 4). A no-op when no image carries that id.
+    pub(crate) fn delete_image(&mut self, id: u32) {
+        self.images.retain(|img| img.id != id);
     }
 
     #[must_use]

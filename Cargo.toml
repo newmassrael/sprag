@@ -102,6 +102,10 @@ serde = { version = "1", features = ["derive"] }
 # (pinion R1404). Matches termwiz's transitive version, so no duplicate in the lock.
 base64 = "0.22"
 
+# PNG decode for the Kitty graphics `f=100` image format (pinion R1404 Stage 4).
+# Version matches the already-resolved transitive (via vello / image), so no lock dup.
+png = "0.17"
+
 # Production logging: first-party diagnostics are leveled `tracing` events
 # (targets like `sprag_gui::dock`), env-filtered by log level — NOT ad-hoc
 # eprintln. Versions match pinion's so the one global subscriber is shared.

@@ -19,7 +19,8 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use termwiz::cell::{Blink, Intensity, Underline};
 use termwiz::color::ColorSpec;
 use termwiz::escape::apc::{
-    KittyImage, KittyImageCompression, KittyImageData, KittyImageFormat, KittyImageTransmit,
+    KittyImage, KittyImageCompression, KittyImageData, KittyImageDelete, KittyImageFormat,
+    KittyImageTransmit,
 };
 use termwiz::escape::csi::{
     CSI, Cursor as CsiCursor, CursorStyle, DecPrivateMode, DecPrivateModeCode, Edit,
@@ -171,6 +172,15 @@ pub struct Emulator {
     /// replace-by-id [`Screen`] store — a documented bound (a Kitty image with the top bit set,
     /// unusual, could still collide).
     next_sixel_id: u32,
+    /// The SINGLE in-flight Kitty graphics CHUNKED transmission (`m=1`), or `None`. kitty allows one
+    /// chunked transmission at a time and its continuation chunks carry ONLY the `m` key (no `i=`),
+    /// so the terminal tracks the pending transmission itself rather than keying by id. The first
+    /// chunk records the format / dimensions / display intent / id; each subsequent chunk appends its
+    /// base64; the closing chunk (`m=0`) decodes the assembled payload and — if the first chunk asked
+    /// to display (`a=T`) — stores the image (Stage 4). Bounded by [`MAX_KITTY_CHUNK_BYTES`]: a
+    /// transmission whose accumulated base64 exceeds the cap is dropped (a runaway / never-closing
+    /// chunk cannot pin unbounded memory).
+    kitty_chunk: Option<KittyChunk>,
     /// Monotonic damage stamp, bumped on every row-mutating action.
     generation: u64,
     /// `true` between a resize and the next batch of bytes — the window in which a
@@ -241,6 +251,7 @@ impl Emulator {
             current_hyperlink: None,
             hyperlink_ids: HashMap::new(),
             next_sixel_id: 0,
+            kitty_chunk: None,
             generation: 0,
             in_resize_redraw: false,
         }
@@ -269,18 +280,90 @@ impl Emulator {
         }
     }
 
-    /// Capture a Kitty graphics image (APC `_G…`, pinion R1404). **Stage 1 scope**: only
-    /// `TransmitDataAndDisplay` (`a=T`) with a single-chunk `Direct` (base64) / `DirectBin`
-    /// payload in RGB (`f=24`) or RGBA (`f=32`), anchored at the cursor cell. Deferred with
-    /// documented bounds (ignored, NOT misrendered): transmit-without-display / `Display` /
-    /// `Delete` / `Query` ack, chunked (`m=1`), compression, PNG (`f=100`), file/shm transmit,
-    /// animation, and placement geometry (columns/rows/z/offsets).
+    /// Capture / manage a Kitty graphics image (APC `_G…`, pinion R1404). Handles `a=T`
+    /// transmit-and-display (RGB `f=24` / RGBA `f=32` / PNG `f=100`, single-chunk or chunked
+    /// `m=1`), `a=t` transmit (chunk continuation), `a=d` delete, and `a=q` support-query ack.
+    /// Deferred with documented bounds (ignored, NOT misrendered): `a=p` Display-without-transmit,
+    /// compression, file/shm transmit (`t=f/s`), animation (`a=f/c`), and placement geometry
+    /// (columns/rows/z/offsets — one placement per image id, anchored at the cursor).
     fn kitty_image(&mut self, img: &KittyImage) {
-        if let KittyImage::TransmitDataAndDisplay { transmit, .. } = img
-            && let Some(image) = self.decode_kitty(transmit)
-        {
+        match img {
+            KittyImage::TransmitDataAndDisplay { transmit, .. } => {
+                self.kitty_transmit(transmit, true);
+            }
+            KittyImage::TransmitData { transmit, .. } => self.kitty_transmit(transmit, false),
+            KittyImage::Delete { what, .. } => self.kitty_delete(what),
+            KittyImage::Query { transmit } => self.kitty_query(transmit),
+            // a=p Display / a=f,c animation frames: documented bounds.
+            _ => {}
+        }
+    }
+
+    /// Apply a Kitty transmit with CHUNKING (`m=1`, R1404 Stage 4). A chunk (`more_data_follows`)
+    /// accumulates its base64 payload keyed by image id / number; the FIRST chunk records the format
+    /// / dimensions / display intent. The closing chunk (`m=0`, or a non-chunked transmit) decodes
+    /// the assembled payload via [`Self::decode_image`] and, when the transmission asked to display
+    /// (`a=T`), stores the image at the cursor. `display` is honoured from the FIRST chunk only, so
+    /// an `a=T`-then-`m=1` continuation still displays. A transmission whose accumulated base64
+    /// exceeds [`MAX_KITTY_CHUNK_BYTES`] (a runaway / never-closing chunk) is dropped.
+    fn kitty_transmit(&mut self, transmit: &KittyImageTransmit, display: bool) {
+        if transmit.more_data_follows {
+            let accum = self.kitty_chunk.get_or_insert_with(|| KittyChunk {
+                base64: String::new(),
+                format: transmit.format.clone(),
+                width: transmit.width,
+                height: transmit.height,
+                display,
+                id: transmit.image_id.or(transmit.image_number).unwrap_or(0),
+            });
+            if let KittyImageData::Direct(b64) = &transmit.data {
+                if accum.base64.len().saturating_add(b64.len()) > MAX_KITTY_CHUNK_BYTES {
+                    self.kitty_chunk = None; // runaway / never-closing — drop, never leak.
+                } else {
+                    accum.base64.push_str(b64);
+                }
+            }
+            return;
+        }
+        // Closing chunk of the in-flight transmission, or a single non-chunked transmit.
+        if let Some(mut accum) = self.kitty_chunk.take() {
+            if let KittyImageData::Direct(b64) = &transmit.data {
+                accum.base64.push_str(b64);
+            }
+            if accum.display
+                && let Ok(bytes) = BASE64.decode(accum.base64.as_bytes())
+                && let Some(image) =
+                    self.decode_image(accum.format, accum.width, accum.height, &bytes, accum.id)
+            {
+                self.screen.add_image(image);
+            }
+            return;
+        }
+        if display && let Some(image) = self.decode_kitty(transmit) {
             self.screen.add_image(image);
         }
+    }
+
+    /// Delete inline images per a Kitty `a=d` command (R1404 Stage 4): all (`d=a`/`d=A`) or by image
+    /// id (`d=i`/`d=I`). Other delete targets (by placement / cursor / cell / z / animation frames)
+    /// are documented bounds — sprag stores one placement per image id this stage.
+    fn kitty_delete(&mut self, what: &KittyImageDelete) {
+        match what {
+            KittyImageDelete::All { .. } => self.screen.clear_images(),
+            KittyImageDelete::ByImageId { image_id, .. } => self.screen.delete_image(*image_id),
+            _ => {}
+        }
+    }
+
+    /// Reply to a Kitty graphics support probe (`a=q`, R1404 Stage 4): append `ESC _ G i=<id>;OK ESC
+    /// \` to the device-response channel ([`Self::responses`], written back to the pty by the reader
+    /// like the DA / DSR / Kitty-keyboard replies), so an app detects sprag renders images — a
+    /// capability tmux lacks. Carries no cells, so no damage-generation bump. termwiz models a query
+    /// as always non-quiet, so sprag always acks (a quiet query is not representable = a bound).
+    fn kitty_query(&mut self, transmit: &KittyImageTransmit) {
+        let id = transmit.image_id.unwrap_or(0);
+        self.responses
+            .extend_from_slice(format!("\x1b_Gi={id};OK\x1b\\").as_bytes());
     }
 
     /// Rasterize a Sixel (DCS) image and store it anchored at the cursor (pinion R1404, Stage 2).
@@ -303,23 +386,12 @@ impl Emulator {
         });
     }
 
-    /// Decode a Kitty transmit into an [`Image`] anchored at the cursor, or `None` when it is
-    /// outside the Stage-1 subset (chunked / compressed / PNG / file / missing dimensions) or
-    /// the byte count does not match `width * height * bpp` (dropped, never misrendered).
+    /// Decode a SINGLE-CHUNK Kitty transmit into an [`Image`] anchored at the cursor, or `None` when
+    /// it is chunked / compressed (chunking is [`Self::kitty_transmit`]'s job) or otherwise
+    /// undecodable. Base64-decodes the `Direct` payload (or takes `DirectBin`), then defers to
+    /// [`Self::decode_image`] for the format handling + cap.
     fn decode_kitty(&self, transmit: &KittyImageTransmit) -> Option<Image> {
         if transmit.more_data_follows || transmit.compression != KittyImageCompression::None {
-            return None;
-        }
-        let bpp: usize = match transmit.format {
-            Some(KittyImageFormat::Rgb) => 3,
-            Some(KittyImageFormat::Rgba) => 4,
-            _ => return None,
-        };
-        let (width, height) = (transmit.width?, transmit.height?);
-        // Bound a child-controlled raster BEFORE decoding (consistent with the clipboard / title
-        // caps): a huge image would OOM on decode and, inlined on the panes slot (Stage 1), flood
-        // every poll. Over the cap (or an overflowing size) is dropped, never stored / wired.
-        if !image_within_cap(width, height) {
             return None;
         }
         let bytes = match &transmit.data {
@@ -327,26 +399,64 @@ impl Emulator {
             KittyImageData::DirectBin(raw) => raw.clone(),
             _ => return None,
         };
-        let expected = (width as usize)
-            .checked_mul(height as usize)?
-            .checked_mul(bpp)?;
-        if bytes.len() != expected {
-            return None;
-        }
-        let rgba = if bpp == 4 {
-            bytes
-        } else {
-            let mut out = Vec::with_capacity(width as usize * height as usize * 4);
-            for px in bytes.chunks_exact(3) {
-                out.extend_from_slice(px);
-                out.push(255); // RGB -> RGBA: opaque alpha.
+        self.decode_image(
+            transmit.format.clone(),
+            transmit.width,
+            transmit.height,
+            &bytes,
+            transmit.image_id.unwrap_or(0),
+        )
+    }
+
+    /// Decode already-base64-decoded / assembled image `bytes` in `format` to an [`Image`] anchored
+    /// at the cursor, or `None` if undecodable. `RGB` (`f=24`, alpha-expanded) / `RGBA` (`f=32`)
+    /// validate `bytes.len() == width * height * bpp`; `PNG` (`f=100`, R1404 Stage 4) reads its own
+    /// dimensions. Every path applies [`image_within_cap`] BEFORE allocating, so a hostile raster is
+    /// dropped, never stored / wired. The byte count not matching the raster → `None` (never
+    /// misrendered).
+    fn decode_image(
+        &self,
+        format: Option<KittyImageFormat>,
+        width: Option<u32>,
+        height: Option<u32>,
+        bytes: &[u8],
+        id: u32,
+    ) -> Option<Image> {
+        let (w, h, rgba) = match format {
+            Some(KittyImageFormat::Png) => decode_png(bytes)?,
+            Some(KittyImageFormat::Rgb) => {
+                let (w, h) = (width?, height?);
+                if !image_within_cap(w, h) {
+                    return None;
+                }
+                let expected = (w as usize).checked_mul(h as usize)?.checked_mul(3)?;
+                if bytes.len() != expected {
+                    return None;
+                }
+                let mut rgba = Vec::with_capacity(w as usize * h as usize * 4);
+                for px in bytes.chunks_exact(3) {
+                    rgba.extend_from_slice(px);
+                    rgba.push(255); // RGB -> RGBA: opaque alpha.
+                }
+                (w, h, rgba)
             }
-            out
+            Some(KittyImageFormat::Rgba) => {
+                let (w, h) = (width?, height?);
+                if !image_within_cap(w, h) {
+                    return None;
+                }
+                let expected = (w as usize).checked_mul(h as usize)?.checked_mul(4)?;
+                if bytes.len() != expected {
+                    return None;
+                }
+                (w, h, bytes.to_vec())
+            }
+            _ => return None,
         };
         Some(Image {
-            id: transmit.image_id.unwrap_or(0),
-            width,
-            height,
+            id,
+            width: w,
+            height: h,
             rgba,
             anchor: (self.col, self.row),
         })
@@ -1339,14 +1449,71 @@ const MAX_CLIPBOARD_BYTES: usize = 1 << 20;
 /// DROPPED (never stored / wired / painted); large images await on-demand transport (a later stage).
 const MAX_IMAGE_BYTES: usize = 16 << 20;
 
+/// Upper bound on a Kitty CHUNKED transmission's accumulated base64 (`m=1` reassembly, Stage 4).
+/// A 16 MiB RGBA raster base64-encodes to ~21.3 MiB, so 24 MiB gives slack; a transmission that
+/// exceeds it (a runaway or never-closing chunk sequence) is dropped before it can pin memory.
+const MAX_KITTY_CHUNK_BYTES: usize = 24 << 20;
+
 /// Whether an image's RGBA raster (`width * height * 4`) fits within [`MAX_IMAGE_BYTES`] — `false`
-/// for an over-cap size OR one that overflows `usize`. The guard [`Emulator::decode_kitty`] applies
+/// for an over-cap size OR one that overflows `usize`. The guard [`Emulator::decode_image`] applies
 /// before it decodes / stores a child-controlled image.
 fn image_within_cap(width: u32, height: u32) -> bool {
     (width as usize)
         .checked_mul(height as usize)
         .and_then(|n| n.checked_mul(4))
         .is_some_and(|bytes| bytes <= MAX_IMAGE_BYTES)
+}
+
+/// One in-flight Kitty CHUNKED transmission ([`Emulator::kitty_chunks`], Stage 4): the accumulated
+/// base64 payload plus the FIRST chunk's format / dimensions / display intent.
+struct KittyChunk {
+    base64: String,
+    format: Option<KittyImageFormat>,
+    width: Option<u32>,
+    height: Option<u32>,
+    display: bool,
+    id: u32,
+}
+
+/// Decode a PNG payload to `(width, height, RGBA8)` (Kitty `f=100`, R1404 Stage 4), or `None` on a
+/// malformed / oversized / unsupported PNG (dropped, never misrendered). Reads the PNG's OWN
+/// dimensions and applies [`image_within_cap`] before allocating; `EXPAND` + `STRIP_16` normalise
+/// palette / low-bit / 16-bit inputs to 8-bit, then every colour type folds to RGBA8.
+fn decode_png(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    let mut decoder = png::Decoder::new(bytes);
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info().ok()?;
+    let (width, height) = (reader.info().width, reader.info().height);
+    if !image_within_cap(width, height) {
+        return None;
+    }
+    let mut buf = vec![0u8; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buf).ok()?;
+    buf.truncate(info.buffer_size());
+    let px = (width as usize).checked_mul(height as usize)?;
+    let mut rgba = Vec::with_capacity(px.checked_mul(4)?);
+    match info.color_type {
+        png::ColorType::Rgba => return Some((width, height, buf)),
+        png::ColorType::Rgb => {
+            for c in buf.chunks_exact(3) {
+                rgba.extend_from_slice(c);
+                rgba.push(255);
+            }
+        }
+        png::ColorType::Grayscale => {
+            for g in &buf {
+                rgba.extend_from_slice(&[*g, *g, *g, 255]);
+            }
+        }
+        png::ColorType::GrayscaleAlpha => {
+            for ga in buf.chunks_exact(2) {
+                rgba.extend_from_slice(&[ga[0], ga[0], ga[0], ga[1]]);
+            }
+        }
+        // EXPAND removes the palette; a residual indexed frame is unexpected — drop, not misrender.
+        png::ColorType::Indexed => return None,
+    }
+    Some((width, height, rgba))
 }
 
 /// Rasterize a termwiz [`Sixel`] into `(width, height, rgba)`, or `None` when it is empty or its
@@ -3415,6 +3582,105 @@ mod tests {
             em.screen().images()[0].anchor,
             (0, 3),
             "an image below the scroll region is unmoved"
+        );
+    }
+
+    // ---- Kitty graphics Stage 4: chunking / delete / query / PNG ----
+
+    /// Encode `rgba` (`width x height`, 8-bit RGBA) to PNG bytes for a decode round-trip test.
+    fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut out, width, height);
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            enc.write_header().unwrap().write_image_data(rgba).unwrap();
+        }
+        out
+    }
+
+    /// A chunked transmit (`m=1` then `m=0`) reassembles its split base64 into one image at the
+    /// closing chunk — and nothing appears until it closes.
+    #[test]
+    fn kitty_chunked_transmit_reassembles() {
+        let mut em = Emulator::new(6, 2);
+        let raw = [10u8, 20, 30, 40, 50, 60, 70, 80]; // 2x1 RGBA
+        let b64 = BASE64.encode(raw);
+        let (h1, h2) = b64.split_at(b64.len() / 2);
+        em.advance(format!("\x1b_Ga=T,f=32,s=2,v=1,i=5,m=1;{h1}\x1b\\").as_bytes());
+        assert!(em.screen().images().is_empty(), "nothing yet — chunk open");
+        em.advance(format!("\x1b_Gm=0;{h2}\x1b\\").as_bytes());
+        let imgs = em.screen().images();
+        assert_eq!(imgs.len(), 1, "the closing chunk assembled one image");
+        assert_eq!(imgs[0].id, 5);
+        assert_eq!(imgs[0].rgba, raw.to_vec(), "reassembled payload matches");
+    }
+
+    /// A chunk opened with `m=1` that never sends its `m=0` closer stores no image (and does not
+    /// leak — the accumulator is bounded).
+    #[test]
+    fn kitty_never_closed_chunk_leaves_no_image() {
+        let mut em = Emulator::new(6, 2);
+        let b64 = BASE64.encode([10u8, 20, 30, 40]);
+        em.advance(format!("\x1b_Ga=T,f=32,s=1,v=1,i=5,m=1;{b64}\x1b\\").as_bytes());
+        assert!(
+            em.screen().images().is_empty(),
+            "an unclosed chunk shows nothing"
+        );
+    }
+
+    /// `a=d,d=i,i=N` deletes the image with id N; `a=d,d=a` clears all.
+    #[test]
+    fn kitty_delete_removes_by_id_then_all() {
+        let mut em = Emulator::new(6, 2);
+        let b64 = BASE64.encode([1u8, 2, 3, 4]); // 1x1 RGBA
+        em.advance(format!("\x1b_Ga=T,f=32,s=1,v=1,i=7;{b64}\x1b\\").as_bytes());
+        em.advance(format!("\x1b_Ga=T,f=32,s=1,v=1,i=8;{b64}\x1b\\").as_bytes());
+        assert_eq!(em.screen().images().len(), 2);
+        em.advance(b"\x1b_Ga=d,d=i,i=7\x1b\\");
+        assert_eq!(em.screen().images().len(), 1, "delete-by-id dropped id 7");
+        assert_eq!(em.screen().images()[0].id, 8, "id 8 remains");
+        em.advance(b"\x1b_Ga=d,d=a\x1b\\");
+        assert!(
+            em.screen().images().is_empty(),
+            "delete-all cleared the store"
+        );
+    }
+
+    /// A PNG (`f=100`) payload decodes to the exact RGBA it encoded (dimensions from the PNG).
+    #[test]
+    fn kitty_png_decodes_to_exact_rgba() {
+        let mut em = Emulator::new(6, 2);
+        let rgba = [255u8, 0, 0, 255, 0, 255, 0, 128]; // 2x1: opaque red, semi-transparent green
+        let png = encode_png(2, 1, &rgba);
+        let b64 = BASE64.encode(&png);
+        em.advance(format!("\x1b_Ga=T,f=100,i=9;{b64}\x1b\\").as_bytes());
+        let imgs = em.screen().images();
+        assert_eq!(imgs.len(), 1, "PNG decoded to an image");
+        assert_eq!((imgs[0].width, imgs[0].height), (2, 1));
+        assert_eq!(imgs[0].rgba, rgba.to_vec(), "exact RGBA round-trip");
+    }
+
+    /// A malformed PNG payload is dropped, never misrendered.
+    #[test]
+    fn kitty_malformed_png_is_dropped() {
+        let mut em = Emulator::new(6, 2);
+        let b64 = BASE64.encode(b"this is not a PNG");
+        em.advance(format!("\x1b_Ga=T,f=100,i=9;{b64}\x1b\\").as_bytes());
+        assert!(em.screen().images().is_empty(), "a bad PNG stores nothing");
+    }
+
+    /// A graphics support probe (`a=q`) is acked over the device-response channel with the image id
+    /// — how an app learns sprag renders images (tmux cannot).
+    #[test]
+    fn kitty_query_acks_graphics_support() {
+        let mut em = Emulator::new(6, 2);
+        let b64 = BASE64.encode([0u8, 0, 0, 0]);
+        em.advance(format!("\x1b_Ga=q,f=32,s=1,v=1,i=3;{b64}\x1b\\").as_bytes());
+        let resp = String::from_utf8(VtPort::take_responses(&mut em)).unwrap();
+        assert_eq!(
+            resp, "\x1b_Gi=3;OK\x1b\\",
+            "acks support with the queried image id"
         );
     }
 }

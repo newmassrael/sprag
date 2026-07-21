@@ -16,3 +16,5 @@ termwiz = { workspace = true }
 unicode-width = { workspace = true }
 # Base64 decode of Kitty graphics `Direct` image payloads (pinion R1404, Stage 1).
 base64 = { workspace = true }
+# PNG decode for the Kitty graphics `f=100` format (pinion R1404, Stage 4).
+png = { workspace = true }

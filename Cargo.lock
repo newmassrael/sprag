@@ -3703,6 +3703,7 @@ name = "sprag-vt"
 version = "0.0.1"
 dependencies = [
  "base64",
+ "png 0.17.16",
  "termwiz",
  "unicode-width",
 ]
