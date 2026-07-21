@@ -51,10 +51,13 @@ use crate::host::PaneScrollFacts;
 // The action names + query slots this external answers are the shared wire ABI
 // vocabulary ([`crate::wire`]) — the SAME consts the wire client addresses, so the
 // two cannot drift.
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
+
 use crate::wire::{
     CELLS_FIELD, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT, CURSOR_KEYS_SLOT, FRAMES_SLOT,
-    FULL_TEXT_SLOT, KEY_ACTION, LAST_COMMAND_SLOT, LINKS_SLOT, PANE_SCHEMA, PROMPT_MARKS_SLOT,
-    TEXT_ACTION,
+    FULL_TEXT_SLOT, IMAGE_DATA_FIELD, KEY_ACTION, LAST_COMMAND_SLOT, LINKS_SLOT, PANE_SCHEMA,
+    PROMPT_MARKS_SLOT, TEXT_ACTION,
 };
 
 /// Encode a W3C `key` + `mods` to PTY bytes (the sprag-owned R2.6 encoder,
@@ -238,6 +241,25 @@ impl ExternalIntrospect for SpragPaneExternal {
                 serde_json::to_value(self.frame_at(offset))
                     .map_or(IntrospectValue::Null, IntrospectValue::Json)
             }));
+        }
+        // One inline image's RGBA as base64, fetched ON DEMAND (R1404 Stage 5) — the RGBA can be
+        // megabytes, so it does not ride the per-poll panes slot (only the `{id,seq}` summary
+        // does). `Null` (present-but-empty, a member of the family) for an id the pane is not
+        // showing or a malformed id — the same shape a malformed `cells.<off>` reports.
+        if let Some(arg) = path.strip_prefix(IMAGE_DATA_FIELD.literal_prefix()) {
+            return Some(
+                arg.parse::<u32>()
+                    .ok()
+                    .and_then(|id| {
+                        self.pty.with_screen(|s| {
+                            s.images()
+                                .iter()
+                                .find(|im| im.id == id)
+                                .map(|im| STANDARD.encode(&im.rgba))
+                        })
+                    })
+                    .map_or(IntrospectValue::Null, IntrospectValue::Text),
+            );
         }
         match path {
             // The count that bounds `cells.<offset>` (`IndexOf(FRAMES_SLOT)`): the live view

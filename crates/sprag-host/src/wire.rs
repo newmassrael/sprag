@@ -120,6 +120,21 @@ pub const CLIPBOARD_WRITE_SLOT: &str = "clipboard_write";
 /// EXACTLY ONE reply per query across all attached clients; the answer reports `{wrote}`.
 pub const CLIPBOARD_ANSWER_ACTION: &str = "clipboard_answer";
 
+/// The arguments of [`IMAGE_DATA_FIELD`] — one inline image `id`, `Open`. Unlike
+/// [`CELLS_FIELD`]'s bounded `IndexOf`, a Kitty image id is a PRODUCER-CHOSEN key, not sprag's
+/// index into a count, so there is no count to publish; the ids are the open set the child
+/// transmitted (enumerated in the panes-slot `images` summary). `Open` is earned here, not a
+/// default hiding a count.
+const IMAGE_DATA_ARGS: &[SchemaArg] = &[SchemaArg::open("id", "int")];
+/// The pane-input external query FAMILY: one inline image's RGBA as base64 (`image_data.<id>`,
+/// R1404 Stage 5). Fetched ON DEMAND when a display client sees a NEW / CHANGED image in the
+/// panes-slot `images` summary (keyed on `{id, seq}`) — the RGBA is up to
+/// [`MAX_IMAGE_BYTES`](sprag_vt) and must NOT ride the per-poll panes slot, the
+/// [`FULL_TEXT_SLOT`] / [`CLIPBOARD_WRITE_SLOT`] on-demand precedent. `Null` for an id the pane
+/// is not currently showing.
+pub const IMAGE_DATA_FIELD: SchemaField =
+    SchemaField::parametric("image_data.<id>", "string", IMAGE_DATA_ARGS);
+
 /// The pane-input external's DECLARED SCHEMA — every path it answers, with its type and any
 /// arguments, in `$schema` order. [`SpragPaneExternal`](crate::SpragPaneExternal) publishes
 /// this verbatim.
@@ -142,6 +157,7 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     SchemaField::new(LAST_COMMAND_SLOT, "object"),
     SchemaField::new(PROMPT_MARKS_SLOT, "array"),
     SchemaField::new(LINKS_SLOT, "array"),
+    IMAGE_DATA_FIELD,
     SchemaField::new(CLIPBOARD_WRITE_SLOT, "object"),
     SchemaField::new(CLIPBOARD_ANSWER_ACTION, "action"),
 ];

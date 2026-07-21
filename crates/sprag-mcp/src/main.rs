@@ -9,9 +9,9 @@
 //!
 //! It is a [Model Context Protocol](https://modelcontextprotocol.io) **stdio
 //! server**: Claude Code (or any MCP client) spawns it and it speaks newline-delimited
-//! JSON-RPC 2.0 on stdin/stdout. It advertises six self-describing tools —
-//! `list_panes`, `read_pane`, `read_last_command`, `read_pane_links`, `write_pane`,
-//! `send_keys` — so an
+//! JSON-RPC 2.0 on stdin/stdout. It advertises seven self-describing tools —
+//! `list_panes`, `read_pane`, `read_last_command`, `read_pane_links`, `read_pane_images`,
+//! `write_pane`, `send_keys` — so an
 //! agent *immediately* understands "read/write a sibling pane" without reading any sprag
 //! source. Each tool call bridges to the host wire via [`sprag_rpc::HostConn`],
 //! addressing panes with the [`sprag_host::wire`] path SSOT.
@@ -190,7 +190,7 @@ fn handle_initialize(message: &Value) -> Value {
     })
 }
 
-/// The six self-describing tools. Descriptions are written for an agent so a request
+/// The seven self-describing tools. Descriptions are written for an agent so a request
 /// like "type xxx into pane 2" maps directly onto the `write_pane` tool.
 fn tools_list() -> Value {
     let pane_arg = json!({
@@ -251,6 +251,20 @@ fn tools_list() -> Value {
                     the text: `ls --hyperlink`, compiler diagnostics, and doc tools attach \
                     real URIs to text that looks plain on screen. Reports nothing when the \
                     pane shows no links.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "pane": pane_arg },
+                    "required": ["pane"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "read_pane_images",
+                "description": "List the inline images (Kitty graphics / Sixel) a pane is \
+                    displaying — each image's id, pixel size, and the cell it is anchored at. \
+                    You cannot read an image's contents, but this tells you an image IS \
+                    present and where, which the pane's text alone does not. Reports nothing \
+                    when the pane shows no images.",
                 "inputSchema": {
                     "type": "object",
                     "properties": { "pane": pane_arg },
@@ -321,6 +335,7 @@ fn handle_tools_call(message: &Value) -> Value {
         "read_pane" => tool_read_pane(&args),
         "read_last_command" => tool_read_last_command(&args),
         "read_pane_links" => tool_read_pane_links(&args),
+        "read_pane_images" => tool_read_pane_images(&args),
         "write_pane" => tool_write_pane(&args),
         "send_keys" => tool_send_keys(&args),
         other => Err(format!("unknown tool: {other}")),
@@ -358,6 +373,33 @@ struct PaneInfo {
     /// The last finished command's exit status (OSC 133 `D`), or `None` — lets an agent verify a
     /// command succeeded without parsing its output.
     exit_status: Option<i64>,
+    /// The inline images (Kitty graphics / Sixel, R1404) the pane is displaying, each a summary
+    /// {id, pixel size, anchor cell}. An agent cannot OCR an image, but CAN learn one is present and
+    /// where — tmux shows no inline images at all.
+    images: Vec<ImageInfo>,
+}
+
+/// One inline image a pane shows, as an agent reads it (R1404 Stage 5): its id, pixel size, and the
+/// grid cell it is anchored at. The RGBA is not carried — a summary an agent uses to know an image
+/// is present, not to reconstruct it.
+struct ImageInfo {
+    id: u64,
+    width: u64,
+    height: u64,
+    col: u64,
+    row: u64,
+}
+
+/// Parse one panes-slot `images` summary entry (`{id,width,height,anchor:[col,row],seq}`).
+fn parse_image_info(entry: &Value) -> Option<ImageInfo> {
+    let anchor = entry.get("anchor")?.as_array()?;
+    Some(ImageInfo {
+        id: entry.get("id")?.as_u64()?,
+        width: entry.get("width")?.as_u64()?,
+        height: entry.get("height")?.as_u64()?,
+        col: anchor.first()?.as_u64()?,
+        row: anchor.get(1)?.as_u64()?,
+    })
 }
 
 fn tool_list_panes() -> Result<String, String> {
@@ -479,6 +521,28 @@ fn tool_read_pane_links(args: &Value) -> Result<String, String> {
     Ok(out)
 }
 
+/// List the inline images (Kitty graphics / Sixel) a pane is displaying — each image's id, pixel
+/// size, and anchor cell. An agent can't OCR an image, but CAN learn one is present and where; tmux
+/// shows no inline images at all, let alone as data.
+fn tool_read_pane_images(args: &Value) -> Result<String, String> {
+    let number = pane_number(args)?;
+    let panes = query_panes()?;
+    let pane = panes
+        .get(number - 1)
+        .ok_or_else(|| format!("no pane number {number} (there are {})", panes.len()))?;
+    if pane.images.is_empty() {
+        return Ok("This pane shows no inline images.".to_owned());
+    }
+    let mut out = format!("{} image(s) in pane {number}:\n", pane.images.len());
+    for img in &pane.images {
+        out.push_str(&format!(
+            "  image #{}: {}x{} px at cell ({}, {})\n",
+            img.id, img.width, img.height, img.col, img.row
+        ));
+    }
+    Ok(out)
+}
+
 fn tool_write_pane(args: &Value) -> Result<String, String> {
     let number = pane_number(args)?;
     let id = pane_id_for(number)?;
@@ -593,6 +657,11 @@ fn query_panes() -> Result<Vec<PaneInfo>, String> {
             bell: pane.get("bell_seq").and_then(Value::as_u64).unwrap_or(0),
             shell: pane.get("shell").and_then(Value::as_str).map(str::to_owned),
             exit_status: pane.get("exit_status").and_then(Value::as_i64),
+            images: pane
+                .get("images")
+                .and_then(Value::as_array)
+                .map(|arr| arr.iter().filter_map(parse_image_info).collect())
+                .unwrap_or_default(),
         })
         .collect())
 }
@@ -690,7 +759,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tools_list_advertises_the_six_tools_with_object_schemas() {
+    fn tools_list_advertises_the_seven_tools_with_object_schemas() {
         let tools = tools_list();
         let names: Vec<&str> = tools["tools"]
             .as_array()
@@ -705,6 +774,7 @@ mod tests {
                 "read_pane",
                 "read_last_command",
                 "read_pane_links",
+                "read_pane_images",
                 "write_pane",
                 "send_keys"
             ]
@@ -714,8 +784,25 @@ mod tests {
             assert!(tool["description"].as_str().unwrap().len() > 10);
         }
         // write_pane requires pane + text (the "type xxx into pane 2" path).
-        let write = tools["tools"].as_array().unwrap()[4].clone();
+        let write = tools["tools"].as_array().unwrap()[5].clone();
         assert_eq!(write["inputSchema"]["required"], json!(["pane", "text"]));
+    }
+
+    #[test]
+    fn parse_image_info_reads_a_summary_and_rejects_a_malformed_one() {
+        let img = parse_image_info(&json!({
+            "id": 7, "width": 640, "height": 480, "anchor": [3, 10], "seq": 2
+        }))
+        .expect("a well-formed summary parses");
+        assert_eq!(
+            (img.id, img.width, img.height, img.col, img.row),
+            (7, 640, 480, 3, 10)
+        );
+        // A missing anchor is dropped (None), never a torn half-summary.
+        assert!(
+            parse_image_info(&json!({ "id": 1, "width": 2, "height": 2 })).is_none(),
+            "a summary missing its anchor is rejected"
+        );
     }
 
     #[test]

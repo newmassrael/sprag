@@ -549,10 +549,17 @@ pub struct Image {
     pub width: u32,
     /// Pixel height of the RGBA raster.
     pub height: u32,
-    /// `width * height * 4` bytes: 8-bit R,G,B,A, row-major.
+    /// `width * height * 4` bytes: 8-bit R,G,B,A, row-major. May be EMPTY in a wire SUMMARY —
+    /// a display client carries only `{id,width,height,anchor,seq}` per poll and fetches the
+    /// bytes ON DEMAND (R1404 Stage 5); [`Screen::images`] always carries them.
     pub rgba: Vec<u8>,
     /// The top-left grid cell `(col, row)` the image is anchored at (the cursor at transmit).
     pub anchor: (u16, u16),
+    /// A monotonic CONTENT generation, assigned by `Screen::add_image` on every insert — a
+    /// re-transmit that REPLACES the same [`id`](Self::id) gets a NEW `seq`. A display client keys
+    /// its RGBA cache on `(id, seq)`, so it re-fetches the bytes exactly once per content change and
+    /// reuses the cached decode otherwise (R1404 Stage 5 on-demand transport).
+    pub seq: u64,
 }
 
 /// A queryable terminal screen: a `cols x rows` grid of cells plus the
@@ -611,6 +618,10 @@ pub struct Screen {
     /// no cells, so it is NOT parallel to the rows like [`Self::marks`]; it is cleared wholesale
     /// on screen-clear / alt-screen (Stage-1 lifecycle — scroll / reflow eviction is later).
     images: Vec<Image>,
+    /// The next [`Image::seq`] [`Self::add_image`] will assign — a monotonic content generation so a
+    /// re-transmit that replaces an image id is distinguishable from a re-poll of the same content
+    /// (R1404 Stage 5 on-demand transport). Bumped on every insert.
+    next_image_seq: u64,
 }
 
 impl Screen {
@@ -629,6 +640,7 @@ impl Screen {
             wrapped: vec![false; rows as usize],
             marks: vec![None; rows as usize],
             images: Vec::new(),
+            next_image_seq: 0,
         }
     }
 
@@ -644,6 +656,11 @@ impl Screen {
     /// id updates it in place. Bounded by [`IMAGE_CAP`] against a child that streams distinct
     /// ids without clearing; past the cap the oldest is dropped (FIFO).
     pub(crate) fn add_image(&mut self, image: Image) {
+        // Stamp a fresh content generation so a re-transmit (even one that keeps the same id) is
+        // distinguishable from a re-poll — the on-demand client keys its cache on `(id, seq)`.
+        let mut image = image;
+        image.seq = self.next_image_seq;
+        self.next_image_seq = self.next_image_seq.wrapping_add(1);
         if let Some(slot) = self.images.iter_mut().find(|i| i.id == image.id) {
             *slot = image;
             return;

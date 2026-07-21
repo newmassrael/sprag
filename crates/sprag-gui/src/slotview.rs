@@ -331,12 +331,21 @@ impl SlotView {
         self.id(slot).map_or(0, |id| self.host.pane_bell_seq(id))
     }
 
-    /// Slot `slot`'s inline images (Kitty graphics, R1404), empty for a hole or a pane with none.
-    /// The GUI composites each over the pane grid at its anchor cell (see [`crate::view`]).
+    /// Slot `slot`'s inline image SUMMARIES (`{id,width,height,anchor,seq}`, RGBA empty — R1404
+    /// Stage 5), empty for a hole or a pane with none. The GUI composites each over the pane grid at
+    /// its anchor cell and fetches the RGBA on demand via [`Self::pane_image_rgba`] (see
+    /// [`crate::view`]).
     pub(crate) fn pane_images(&self, slot: usize) -> Vec<sprag_vt::Image> {
         self.id(slot)
             .map(|id| self.host.pane_images(id))
             .unwrap_or_default()
+    }
+
+    /// Slot `slot`'s image `image_id` RGBA, fetched ON DEMAND (R1404 Stage 5) — `None` for a hole or
+    /// an id the pane no longer shows. The compositor calls this once per `(id, seq)` change.
+    pub(crate) fn pane_image_rgba(&self, slot: usize, image_id: u32) -> Option<Vec<u8>> {
+        self.id(slot)
+            .and_then(|id| self.host.pane_image_rgba(id, image_id))
     }
 
     /// Slot `slot`'s cheap OSC 52 clipboard-WRITE count (`0` for a hole) — [`crate::clipboard_osc`]

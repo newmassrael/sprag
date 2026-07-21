@@ -11,8 +11,9 @@ use crate::slotview::SlotView;
 use crate::split::{
     pane_index_of_panel, panel_id, use_dock_topology, use_drop_preview, use_split_ratio,
 };
-use crate::terminal::{TerminalView, pane_index_of, pane_tag, use_terminal};
+use crate::terminal::{TerminalView, pane_cache_key, pane_index_of, pane_tag, use_terminal};
 use pinion_core::external::OUTER_DOCK_ZONE_TAG;
+use pinion_core::reactive::Owner;
 use pinion_core::scene::{ContainerNode, ImageNode, Rect};
 use pinion_core::style::{BoxStyle, Fit, FlexDirection, ImageStyle, LayoutStyle, Size, SizeValue};
 use pinion_core::theme::{ColorRole, Theme, use_theme};
@@ -25,6 +26,9 @@ use pinion_widget_paint::dock::{
     view_dock_panel_with_actions, view_dock_surface_chrome, view_window_controls,
 };
 use std::borrow::Cow;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 
 /// Shared [`ThemeProvider`](pinion_core::ThemeProvider) cache key (the surface fill behind the grid).
 const THEME_TAG: &str = "app";
@@ -242,34 +246,95 @@ fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
 /// [`TerminalViewer::reconcile_frame`](crate::TerminalViewer) (pinion R1047's
 /// pre-view hook), which runs first, so `offset_y` is already current here — the
 /// view fn never writes a `Signal` (the §6.3 `dry_run` purity guarantee).
-/// Composite pane `i`'s inline images (Kitty graphics, R1404) over its text grid: register each
-/// image's RGBA into the shell's root image store ([`pinion_runtime::use_image_store`]) under
-/// `pane{i}.img{id}`, then push a `Scene::Image` node (`memory://pane{i}.img{id}`) as a child of the
-/// grid `Container`, absolutely positioned at the image's anchor cell × the cell metric and sized
-/// to its pixel raster, so pinion's `ImageCache` paints it over the `TextGrid`. A no-op when the
-/// pane has no images (returns `grid` unchanged, so the common case allocates nothing).
-///
-/// Stage 1 registers each visible image every frame (`use_image_store` is a cheap handle; the
-/// `insert` replaces by key), which is fine for the small images this stage renders — an
-/// insert-only-when-changed cache is a follow-up, as is on-demand RGBA transport for large images.
+/// The `memory://` store key + `Scene::Image` tag suffix for pane `i`'s image `id`.
+fn image_store_key(i: usize, id: u32) -> String {
+    format!("pane{i}.img{id}")
+}
+
+/// Pane `i`'s client-local record of which image `(id -> seq)` is CURRENTLY registered in the root
+/// image store — so [`reconcile_pane_images`] fetches + registers an image's RGBA exactly ONCE per
+/// content change (R1404 Stage 5 on-demand), reusing the store entry on every later frame. The
+/// `Owner::cache` per-pane pattern (like the scrollbar / hyperlink state).
+fn use_pane_image_registry(i: usize) -> Rc<RefCell<HashMap<u32, u64>>> {
+    Owner::current()
+        .expect("use_pane_image_registry requires an active Owner scope")
+        .cache(pane_cache_key("image_registry", i), || {
+            Rc::new(RefCell::new(HashMap::new()))
+        })
+        .as_ref()
+        .clone()
+}
+
+/// Fetch + register pane `i`'s NEW / CHANGED inline images into the root image store, and evict the
+/// store entries of images the pane no longer shows — the off-thread-fact → UI seam, run from
+/// [`reconcile_frame`](crate::TerminalViewer), NOT the pure view (the RGBA fetch is a blocking wire
+/// round-trip, like the clipboard-write payload fetch). Keyed on `(id, seq)` from the panes-slot
+/// summary, so a given image's megabyte raster crosses the wire ONCE per transmit, not per poll; the
+/// pure [`compose_pane_images`] then just references the already-registered `memory://` key.
+pub(crate) fn reconcile_pane_images(slots: &SlotView, i: usize) {
+    let images = slots.pane_images(i);
+    let registry = use_pane_image_registry(i);
+    let store = pinion_runtime::use_image_store();
+    // Evict a store key whose image left the pane (delete / clear / scrolled off), pruning the record.
+    registry.borrow_mut().retain(|id, _| {
+        let present = images.iter().any(|img| img.id == *id);
+        if !present {
+            store.remove(&image_store_key(i, *id));
+        }
+        present
+    });
+    // Fetch + register a new id, or a re-transmit (seq changed), exactly once.
+    for img in &images {
+        if registry.borrow().get(&img.id).copied() == Some(img.seq) {
+            continue; // already registered at this content generation — reuse the store entry
+        }
+        let Some(rgba) = slots.pane_image_rgba(i, img.id) else {
+            continue; // the host no longer has it (a transmit/clear race) — try again next frame
+        };
+        let Some(decoded) = pinion_runtime::DecodedImage::from_rgba8(img.width, img.height, rgba)
+        else {
+            continue; // a byte count that does not match the raster — skip, never register torn
+        };
+        store.insert(image_store_key(i, img.id), &decoded);
+        registry.borrow_mut().insert(img.id, img.seq);
+    }
+}
+
+/// Reset pane slot `i`'s image registry when the slot FREES — evict its store keys and clear the
+/// record, so a reused slot inherits no stale image. Called from
+/// [`reset_freed_slot`](crate::reset_freed_slot).
+pub(crate) fn reset_pane_images(i: usize) {
+    let registry = use_pane_image_registry(i);
+    let store = pinion_runtime::use_image_store();
+    for id in registry.borrow().keys() {
+        store.remove(&image_store_key(i, *id));
+    }
+    registry.borrow_mut().clear();
+}
+
+/// Composite pane `i`'s inline images (Kitty / Sixel, R1404) over its text grid: push a
+/// `Scene::Image` node (`memory://pane{i}.img{id}`) as a child of the grid `Container`, absolutely
+/// positioned at the image's anchor cell × the cell metric and sized to its pixel raster, so
+/// pinion's `ImageCache` paints it over the `TextGrid`. PURE — the RGBA was fetched + registered by
+/// [`reconcile_pane_images`] (the pre-view hook); this only references the registered key, and skips
+/// an image not yet registered (a first-frame race resolves next frame). A no-op when the pane has
+/// no images (returns `grid` unchanged, so the common case allocates nothing).
 fn compose_pane_images(grid: Scene, tv: &TerminalView, i: usize) -> Scene {
     let images = tv.slots.pane_images(i);
     if images.is_empty() {
         return grid;
     }
+    let registry = use_pane_image_registry(i);
     let Scene::Container(mut container) = grid else {
         return grid;
     };
-    let store = pinion_runtime::use_image_store();
     let (cell_w, cell_h) = (tv.metric.cell_w(), tv.metric.cell_h());
     for img in &images {
-        let Some(decoded) =
-            pinion_runtime::DecodedImage::from_rgba8(img.width, img.height, img.rgba.clone())
-        else {
-            continue; // a byte count that does not match the raster — skip, never paint torn
-        };
-        let key = format!("pane{i}.img{}", img.id);
-        store.insert(&key, &decoded);
+        // Only paint an image the reconcile already fetched + registered at THIS content generation.
+        if registry.borrow().get(&img.id).copied() != Some(img.seq) {
+            continue;
+        }
+        let key = image_store_key(i, img.id);
         container.children.push(Scene::Image(
             ImageNode::styled(
                 format!("memory://{key}"),

@@ -291,6 +291,7 @@ fn reset_freed_slot(slot: usize) {
     attention::reset_pane_ack(slot);
     clipboard_osc::reset_pane_clip_acks(slot);
     hyperlink::reset_pane_hyperlinks(slot);
+    view::reset_pane_images(slot);
 }
 
 struct TerminalViewer;
@@ -687,6 +688,9 @@ impl WidgetCore for TerminalViewer {
             let offset = scrollbar::offset_lines_from_top(scroll.offset_y(), facts.scrollback_len);
             let buffer = terminal.slots.pane_cells(i, offset);
             hyperlink::reconcile_pane_hyperlinks(i, &buffer);
+            // Fetch + register the pane's new/changed inline-image RGBA on demand (R1404 Stage 5),
+            // before the pure view references the `memory://` keys.
+            view::reconcile_pane_images(&terminal.slots, i);
         }
         // (3) (R130) Track each floating window's OS title to its pane's live display
         // title (a child retitle renames its taskbar entry). Diffs internally, so it

@@ -20,7 +20,8 @@ sprag-input = { workspace = true }
 # The plugin substrate (PaneAccess + Driver + bundled plugins): the plugin-host
 # External (plugins.rs) runs plugins over it on background threads.
 sprag-plugin = { workspace = true }
-# Base64 for the inline-image (Kitty graphics, R1404) RGBA carry on the panes slot.
+# Base64 for the inline-image (Kitty graphics / Sixel, R1404) RGBA served ON DEMAND via the
+# `image_data.<id>` pane slot (the panes slot carries only the {id,w,h,anchor,seq} summary).
 base64 = { workspace = true }
 pinion-core = { workspace = true }
 # The RPC dispatch + scene/snapshot wire. Its heavy transitive deps are
@@ -46,3 +47,7 @@ serde_json = { workspace = true }
 # serde derive for the wire DTOs (PaneScrollFacts + the pane cells-frame). The
 # GridBuffer's own serde comes from pinion-core; this is for sprag's frame types.
 serde = { workspace = true }
+
+[dev-dependencies]
+# The real-socket wire tests build/decode base64 image payloads (R1404 Stage 5 on-demand).
+base64 = { workspace = true }

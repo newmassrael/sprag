@@ -382,12 +382,23 @@ pub trait HostClient {
         0
     }
 
-    /// The pane's inline images (Kitty graphics, R1404), each anchored at its transmit-time cursor
-    /// cell. Empty if the pane is absent or its child transmitted none. A display client composites
-    /// each over the grid at its anchor cell × the cell metric. Defaulted to empty so an older
+    /// The pane's inline images (Kitty graphics / Sixel, R1404) as SUMMARIES — `{id, width,
+    /// height, anchor, seq}`, the [`Image::rgba`](sprag_vt::Image) EMPTY over the wire. A display
+    /// client reads the summary each poll, composites each over the grid at its anchor cell × the
+    /// cell metric, and fetches the RGBA bytes ON DEMAND via [`Self::pane_image_rgba`] keyed on
+    /// `(id, seq)` (R1404 Stage 5 — the raster is up to a MiB, so it does not ride the panes slot).
+    /// Empty if the pane is absent or its child transmitted none. Defaulted to empty so an older
     /// [`HostClient`] impl need not implement it.
     fn pane_images(&self, _id: PaneId) -> Vec<Image> {
         Vec::new()
+    }
+
+    /// One inline image's RGBA bytes, fetched ON DEMAND by [`Image::id`] when a display client sees
+    /// a new / changed image in [`Self::pane_images`] (R1404 Stage 5). `None` if the pane is absent
+    /// or shows no image with that id. Defaulted to `None` so an older [`HostClient`] impl need not
+    /// implement it.
+    fn pane_image_rgba(&self, _id: PaneId, _image_id: u32) -> Option<Vec<u8>> {
+        None
     }
 
     /// The pane's most recent OSC 52 clipboard WRITE ([`PaneClipboardWrite`]) — fetched ON
@@ -850,9 +861,23 @@ impl HostClient for Host {
     }
 
     /// The pane's live inline images, read off the emulator under the workspace lock (like
-    /// [`Self::pane_bell_seq`]). An absent pane flattens to an empty list.
+    /// [`Self::pane_bell_seq`]). An absent pane flattens to an empty list. (In-process the RGBA is
+    /// present; a display client ignores it and fetches via [`Self::pane_image_rgba`], so both the
+    /// in-process and wire paths compose identically.)
     fn pane_images(&self, id: PaneId) -> Vec<Image> {
         self.with_pane_id(id, Pane::images).unwrap_or_default()
+    }
+
+    /// One inline image's live RGBA bytes by id (R1404 Stage 5 on-demand), read off the emulator
+    /// under the workspace lock. `None` if the pane is absent or shows no image with that id.
+    fn pane_image_rgba(&self, id: PaneId, image_id: u32) -> Option<Vec<u8>> {
+        self.with_pane_id(id, |p| {
+            p.images()
+                .into_iter()
+                .find(|im| im.id == image_id)
+                .map(|im| im.rgba)
+        })
+        .flatten()
     }
 
     /// The pane's live OSC 52 clipboard WRITE, read off the emulator under the workspace lock and

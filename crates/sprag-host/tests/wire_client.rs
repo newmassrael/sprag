@@ -1067,6 +1067,61 @@ fn a_child_osc_8_hyperlink_reaches_the_links_slot() {
     let _ = std::fs::remove_file(&sock);
 }
 
+/// A child that transmits a Kitty RGBA image surfaces a SUMMARY on the panes slot
+/// (`{id,width,height,anchor,seq}`, NO rgba), and the RGBA is served ON DEMAND via `image_data.<id>`
+/// (R1404 Stage 5) — the raster does not ride the per-poll panes slot. tmux shows no inline images.
+#[test]
+fn a_child_kitty_image_summarises_on_the_panes_slot_and_serves_rgba_on_demand() {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
+    let rgba: Vec<u8> = [255u8, 0, 0, 255].repeat(4); // 2x2 opaque red = 16 bytes
+    let b64 = STANDARD.encode(&rgba);
+    let cmd = format!("printf '\\033_Ga=T,f=32,s=2,v=2,i=1;{b64}\\033\\\\'; sleep 30");
+    let (_host, sock) = spawn_host_running(&["sh", "-c", &cmd]);
+    let mut conn =
+        HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the spawned host");
+
+    // The panes slot carries the SUMMARY only — id/size/anchor/seq, and NO rgba on the poll.
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            conn.call(
+                "scene/query",
+                json!({ "path": mux_action_path(PANES_SLOT) }),
+            )
+            .ok()
+            .and_then(|v| v.as_array().and_then(|a| a.first().cloned()))
+            .and_then(|p| p["images"].as_array().cloned())
+            .is_some_and(|imgs| {
+                imgs.iter().any(|im| {
+                    im["id"].as_u64() == Some(1)
+                        && im["width"].as_u64() == Some(2)
+                        && im["height"].as_u64() == Some(2)
+                        && im["seq"].is_u64()
+                        && im.get("rgba_b64").is_none() // the raster does NOT ride the poll
+                })
+            })
+        }),
+        "the image summary (id/size/anchor/seq, NO rgba) must reach the panes slot",
+    );
+
+    // The RGBA is fetched ON DEMAND via image_data.<id> and matches the transmit.
+    let fetched = conn
+        .call(
+            "scene/query",
+            json!({ "path": pane_input_path(0, "image_data.1") }),
+        )
+        .expect("image_data.1 query")
+        .as_str()
+        .and_then(|s| STANDARD.decode(s).ok());
+    assert_eq!(
+        fetched.as_deref(),
+        Some(rgba.as_slice()),
+        "image_data.1 serves the transmitted RGBA on demand",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
 /// The boot pane's `(shell, exit_status)` off the `panes` slot — the wire shape an agent's
 /// idle/running + exit summary reads. Either is `None` when its key is absent (no shell
 /// integration / no finished command).

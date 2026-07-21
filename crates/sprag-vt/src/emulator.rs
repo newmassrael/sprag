@@ -383,6 +383,7 @@ impl Emulator {
             height,
             rgba,
             anchor: (self.col, self.row),
+            seq: 0, // assigned by Screen::add_image
         });
     }
 
@@ -459,6 +460,7 @@ impl Emulator {
             height: h,
             rgba,
             anchor: (self.col, self.row),
+            seq: 0, // assigned by Screen::add_image
         })
     }
 
@@ -3359,6 +3361,21 @@ mod tests {
         let imgs = em.screen().images();
         assert_eq!(imgs.len(), 1, "same id replaced, not appended");
         assert_eq!(imgs[0].rgba, vec![9, 9, 9, 9]);
+    }
+
+    /// Every insert stamps a fresh monotonic `seq` — a re-transmit that REPLACES the same id gets a
+    /// NEW seq, so an on-demand client (R1404 Stage 5) can tell a content change from a re-poll and
+    /// re-fetch the RGBA exactly once.
+    #[test]
+    fn kitty_retransmit_bumps_the_content_seq() {
+        let mut em = Emulator::new(6, 2);
+        let a = BASE64.encode([1u8, 1, 1, 1]);
+        let b = BASE64.encode([9u8, 9, 9, 9]);
+        em.advance(format!("\x1b_Ga=T,f=32,s=1,v=1,i=3;{a}\x1b\\").as_bytes());
+        let seq0 = em.screen().images()[0].seq;
+        em.advance(format!("\x1b_Ga=T,f=32,s=1,v=1,i=3;{b}\x1b\\").as_bytes());
+        let seq1 = em.screen().images()[0].seq;
+        assert!(seq1 > seq0, "a re-transmit bumps seq ({seq1} > {seq0})");
     }
 
     /// A whole-screen clear (ED 2) drops the inline images (Stage-1 lifecycle).

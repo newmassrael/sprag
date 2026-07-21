@@ -1408,14 +1408,25 @@ impl HostClient for WireHost {
             .map_or(0, |pane| pane.bell_seq)
     }
 
-    /// Served from the same poll-refreshed mirror as [`Self::pane_bell_seq`], re-adopted each wake,
-    /// so the composited images reflect the host's latest transmit / clear.
+    /// The image SUMMARIES (`{id,width,height,anchor,seq}`, RGBA empty), served from the same
+    /// poll-refreshed mirror as [`Self::pane_bell_seq`], re-adopted each wake, so the composited
+    /// images reflect the host's latest transmit / clear. The RGBA is fetched separately via
+    /// [`Self::pane_image_rgba`] (R1404 Stage 5 on-demand).
     fn pane_images(&self, id: PaneId) -> Vec<Image> {
         self.lock_cache()
             .iter()
             .find(|pane| pane.id == id)
             .map(|pane| pane.images.clone())
             .unwrap_or_default()
+    }
+
+    /// One image's RGBA, fetched ON DEMAND over the wire (`image_data.<id>`, R1404 Stage 5) when the
+    /// compositor sees a new / changed `(id, seq)` — not per poll, since the raster is up to a MiB.
+    /// `None` if the host returns `Null` (the pane no longer shows that id) or a decode fails.
+    fn pane_image_rgba(&self, id: PaneId, image_id: u32) -> Option<Vec<u8>> {
+        let params = json!({ "path": pane_input_path(id.0, &format!("image_data.{image_id}")) });
+        let value = self.request("scene/query", params, "pane_image_rgba")?;
+        STANDARD.decode(value.as_str()?).ok()
     }
 
     /// The CHEAP clipboard-write count, served from the poll-refreshed mirror (no round-trip) —
@@ -1662,17 +1673,16 @@ fn parse_images(value: &Value) -> Vec<Image> {
             let anchor = entry["anchor"].as_array()?;
             let col = u16::try_from(anchor.first()?.as_u64()?).ok()?;
             let row = u16::try_from(anchor.get(1)?.as_u64()?).ok()?;
-            let rgba = STANDARD.decode(entry["rgba_b64"].as_str()?).ok()?;
-            // Drop a payload whose byte count does not match the declared raster.
-            if rgba.len() != (width as usize) * (height as usize) * 4 {
-                return None;
-            }
+            let seq = entry["seq"].as_u64()?;
             Some(Image {
                 id,
                 width,
                 height,
-                rgba,
+                // A SUMMARY: the RGBA is fetched on demand via `image_data.<id>` (R1404 Stage 5),
+                // keyed on `(id, seq)` — it does not ride the panes slot.
+                rgba: Vec::new(),
                 anchor: (col, row),
+                seq,
             })
         })
         .collect()
@@ -2209,30 +2219,25 @@ mod tests {
     use std::os::unix::net::UnixListener;
     use std::sync::atomic::AtomicUsize;
 
-    /// The panes-slot `images` wire value round-trips to [`Image`]s, and a malformed entry (a byte
-    /// count that is not `w*h*4`, or bad base64) is dropped — never painting a torn image.
+    /// The panes-slot `images` wire value round-trips to [`Image`] SUMMARIES (R1404 Stage 5): each
+    /// carries `{id,width,height,anchor,seq}` and an EMPTY rgba (fetched on demand), and an entry
+    /// missing a field is dropped. NO rgba rides the panes slot.
     #[test]
-    fn parse_images_round_trips_and_drops_malformed() {
-        let rgba = vec![1u8, 2, 3, 4, 5, 6, 7, 8]; // a 2x1 RGBA raster = 8 bytes
+    fn parse_images_round_trips_summaries_and_drops_malformed() {
         let value = json!([
-            {
-                "id": 7, "width": 2, "height": 1, "anchor": [3, 4],
-                "rgba_b64": STANDARD.encode(&rgba),
-            },
-            // byte count 4 != 2*2*4 = 16 → dropped (the revert-proof guard).
-            {
-                "id": 8, "width": 2, "height": 2, "anchor": [0, 0],
-                "rgba_b64": STANDARD.encode([0u8; 4]),
-            },
-            // not base64 → dropped.
-            { "id": 9, "width": 1, "height": 1, "anchor": [0, 0], "rgba_b64": "!!!" },
+            { "id": 7, "width": 2, "height": 1, "anchor": [3, 4], "seq": 5 },
+            // missing seq → dropped (the revert-proof guard: the summary must carry the generation).
+            { "id": 8, "width": 2, "height": 2, "anchor": [0, 0] },
+            // missing anchor → dropped.
+            { "id": 9, "width": 1, "height": 1, "seq": 1 },
         ]);
         let images = parse_images(&value);
-        assert_eq!(images.len(), 1, "only the well-formed image survives");
+        assert_eq!(images.len(), 1, "only the well-formed summary survives");
         assert_eq!(images[0].id, 7);
         assert_eq!((images[0].width, images[0].height), (2, 1));
         assert_eq!(images[0].anchor, (3, 4));
-        assert_eq!(images[0].rgba, rgba);
+        assert_eq!(images[0].seq, 5);
+        assert!(images[0].rgba.is_empty(), "the summary carries NO rgba");
         assert!(parse_images(&Value::Null).is_empty(), "absent ⇒ empty");
     }
 

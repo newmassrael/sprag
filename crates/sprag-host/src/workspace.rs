@@ -54,8 +54,6 @@
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD;
 use pinion_core::SceneRevision;
 use pinion_core::external::{
     ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError, SchemaField,
@@ -674,12 +672,13 @@ impl ExternalIntrospect for WorkspaceExternal {
                                 "seq": p.clipboard_query_seq,
                             });
                         }
-                        // Inline images (Kitty graphics, R1404). ADDITIVE: present only once the
-                        // child has transmitted one, so an image-less pane is byte-identical to the
-                        // pre-R1404 wire shape. Stage 1 carries each image's RGBA WHOLE inline as
-                        // base64 (the small demo images that prove the pipeline); an on-demand fetch
-                        // for large images off a per-image seq is the Stage-4 bound (the
-                        // `clipboard_write` payload precedent).
+                        // Inline images (Kitty graphics / Sixel, R1404). ADDITIVE: present only once
+                        // the child has transmitted one, so an image-less pane is byte-identical to
+                        // the pre-R1404 wire shape. Each entry is a SUMMARY — `{id, width, height,
+                        // anchor, seq}`, NO rgba (R1404 Stage 5): the RGBA is up to a MiB, so a
+                        // display client fetches it ON DEMAND via `image_data.<id>` keyed on
+                        // `(id, seq)`, not per poll (the `clipboard_write` payload precedent). An
+                        // agent reads the summary here to learn "a WxH image sits at cell (col,row)".
                         if !p.images.is_empty() {
                             let images: Vec<Value> = p
                                 .images
@@ -690,7 +689,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                                         "width": img.width,
                                         "height": img.height,
                                         "anchor": [img.anchor.0, img.anchor.1],
-                                        "rgba_b64": STANDARD.encode(&img.rgba),
+                                        "seq": img.seq,
                                     })
                                 })
                                 .collect();
