@@ -102,6 +102,17 @@ pub const LAST_COMMAND_SLOT: &str = "last_command";
 /// line indices (from the oldest retained line, the scroll `offset_y` unit) a display client's
 /// jump-to-prompt scrolls to. Read ON DEMAND (a keyboard jump), never per frame.
 pub const PROMPT_MARKS_SLOT: &str = "prompt_marks";
+/// The pane-input external query slot: the pane's most recent OSC 52 clipboard WRITE — a JSON
+/// object `{targets:{clipboard,primary}, text, seq}`, or `null` when the child has written none.
+/// Fetched ON DEMAND when the `clipboard_write_seq` in the pane list grows (the payload can be a
+/// whole paste, so it is not carried per poll). A client applies it — subject to its clipboard
+/// policy — to its own system clipboard.
+pub const CLIPBOARD_WRITE_SLOT: &str = "clipboard_write";
+/// The pane-input external action: ANSWER a pending OSC 52 read query. Params `{seq, sel, text}`
+/// — the query `seq` a display client saw in the pane list, the selection char (`c`/`p`) it read,
+/// and that selection's current text. The host writes the `OSC 52` reply back to the PTY, admitting
+/// EXACTLY ONE reply per query across all attached clients; the answer reports `{wrote}`.
+pub const CLIPBOARD_ANSWER_ACTION: &str = "clipboard_answer";
 
 /// The pane-input external's DECLARED SCHEMA — every path it answers, with its type and any
 /// arguments, in `$schema` order. [`SpragPaneExternal`](crate::SpragPaneExternal) publishes
@@ -124,6 +135,8 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     SchemaField::new(FULL_TEXT_SLOT, "string"),
     SchemaField::new(LAST_COMMAND_SLOT, "object"),
     SchemaField::new(PROMPT_MARKS_SLOT, "array"),
+    SchemaField::new(CLIPBOARD_WRITE_SLOT, "object"),
+    SchemaField::new(CLIPBOARD_ANSWER_ACTION, "action"),
 ];
 
 /// The out-of-band request param naming the SESSION a request acts on — `{"session": "work"}`

@@ -3619,6 +3619,7 @@ dependencies = [
  "sprag-input",
  "sprag-rpc",
  "sprag-terminal",
+ "sprag-vt",
  "tracing",
  "tracing-subscriber",
  "vello",

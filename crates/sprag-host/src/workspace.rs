@@ -655,6 +655,23 @@ impl ExternalIntrospect for WorkspaceExternal {
                         if let Some(status) = p.last_exit_status {
                             entry["exit_status"] = serde_json::json!(status);
                         }
+                        // OSC 52 clipboard signals. The write SEQ travels here (ADDITIVE, present
+                        // only once the child has written a clipboard); the write PAYLOAD does NOT
+                        // — it can be a whole paste, so a client fetches it on demand off this seq
+                        // via the `clipboard_write` pane slot. A pane whose child never wrote is
+                        // byte-identical to the pre-OSC52 wire shape.
+                        if p.clipboard_write_seq > 0 {
+                            entry["clipboard_write_seq"] = serde_json::json!(p.clipboard_write_seq);
+                        }
+                        // A pending OSC 52 READ query: the single selection the child asked to
+                        // read back (`c`/`p`) + its seq. Tiny, so — unlike the write — it travels
+                        // inline. ADDITIVE: present only once the child has issued a read.
+                        if let Some(query) = p.clipboard_query {
+                            entry["clipboard_query"] = serde_json::json!({
+                                "sel": query.target.osc_char().to_string(),
+                                "seq": p.clipboard_query_seq,
+                            });
+                        }
                         entry
                     })
                     .collect();

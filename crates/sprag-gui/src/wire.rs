@@ -79,17 +79,19 @@ use std::time::Duration;
 use pinion_core::{GridBuffer, QuitSink};
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    FULL_TEXT_SLOT, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
-    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PROMPT_MARKS_SLOT, RESIZE_ACTION,
-    SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION,
-    TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
+    CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT, FULL_TEXT_SLOT, KEY_ACTION, KILL_SESSION_ACTION,
+    KILL_WINDOW_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT,
+    PROMPT_MARKS_SLOT, RESIZE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
 };
 use sprag_host::{
-    CellFrame, HostClient, PaneNotification, PaneScrollFacts, mux_action_path, pane_input_path,
+    CellFrame, HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneNotification,
+    PaneScrollFacts, mux_action_path, pane_input_path,
 };
 use sprag_input::Modifiers;
 use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn, runtime_path};
 use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId, SessionInfo, WindowInfo};
+use sprag_vt::{ClipboardTarget, ClipboardTargets};
 
 /// How long to wait for a just-spawned daemon's socket to accept — covers its bind race.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -137,6 +139,14 @@ struct WirePane {
     /// [`Self::notification`] — re-adopted each wake, kept SEPARATE from it (a bell carries no
     /// text) so the attention marker can combine the two.
     bell_seq: u64,
+    /// The pane's OSC 52 clipboard WRITE count, `0` if none. Host-authoritative + dynamic — the
+    /// CHEAP detection counter (no payload); [`crate::clipboard_osc`] fetches the actual write via
+    /// [`WireHost::pane_clipboard_write`] only when this grows past the ack.
+    clipboard_write_seq: u64,
+    /// The pane's pending OSC 52 clipboard READ query (selection + seq), `None` if none. Host-
+    /// authoritative + dynamic — [`crate::clipboard_osc`] answers it (subject to policy) when the
+    /// seq grows.
+    clipboard_query: Option<PaneClipboardQuery>,
     frame: CellFrame,
     /// The GUI's tracked grid `(cols, rows)`: seeded from the host at boot, advanced only
     /// when a `resize` RPC SUCCEEDS (so the reflow no-op guard reads it with no
@@ -1392,6 +1402,68 @@ impl HostClient for WireHost {
             .find(|pane| pane.id == id)
             .map_or(0, |pane| pane.bell_seq)
     }
+
+    /// The CHEAP clipboard-write count, served from the poll-refreshed mirror (no round-trip) —
+    /// `clipboard_osc` polls it each frame and fetches the payload only when it grows.
+    fn pane_clipboard_write_seq(&self, id: PaneId) -> u64 {
+        self.lock_cache()
+            .iter()
+            .find(|pane| pane.id == id)
+            .map_or(0, |pane| pane.clipboard_write_seq)
+    }
+
+    /// The pending read query (selection + seq), served from the mirror (no round-trip).
+    fn pane_clipboard_query(&self, id: PaneId) -> Option<PaneClipboardQuery> {
+        self.lock_cache()
+            .iter()
+            .find(|pane| pane.id == id)
+            .and_then(|pane| pane.clipboard_query)
+    }
+
+    /// The actual clipboard WRITE payload — an ON-DEMAND `scene/query` (like
+    /// [`Self::pane_full_text`]), issued only when the mirrored write seq grows, so the
+    /// (potentially large) paste never rides the per-frame path.
+    fn pane_clipboard_write(&self, id: PaneId) -> Option<PaneClipboardWrite> {
+        let params = json!({ "path": pane_input_path(id.0, CLIPBOARD_WRITE_SLOT) });
+        let value = self.request("scene/query", params, "pane_clipboard_write")?;
+        let object = value.as_object()?;
+        let targets = object.get("targets").and_then(Value::as_object);
+        Some(PaneClipboardWrite {
+            targets: ClipboardTargets {
+                clipboard: targets
+                    .and_then(|t| t.get("clipboard"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                primary: targets
+                    .and_then(|t| t.get("primary"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            },
+            text: object
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            seq: object.get("seq").and_then(Value::as_u64).unwrap_or(0),
+        })
+    }
+
+    /// Answer a read query — an ON-DEMAND `scene/invoke` of the `clipboard_answer` action. The
+    /// host arbitrates exactly-once across clients and replies `{wrote}`; `true` here means THIS
+    /// client's answer reached the PTY. A selection char (`c`/`p`) from the [`ClipboardTarget`].
+    fn answer_clipboard_query(
+        &self,
+        id: PaneId,
+        seq: u64,
+        target: ClipboardTarget,
+        text: &str,
+    ) -> bool {
+        let args = json!({ "seq": seq, "sel": target.osc_char().to_string(), "text": text });
+        let params = invoke(&pane_input_path(id.0, CLIPBOARD_ANSWER_ACTION), args);
+        self.request("scene/invoke", params, "answer_clipboard_query")
+            .and_then(|value| value.get("wrote").and_then(Value::as_bool))
+            .unwrap_or(false)
+    }
 }
 
 impl Drop for WireHost {
@@ -1487,6 +1559,11 @@ struct PaneSeed {
     /// The pane's tmux monitor-bell count, `0` when the wire omits the key (the child rang none,
     /// or an older daemon).
     bell_seq: u64,
+    /// The pane's OSC 52 clipboard-write count, `0` when the wire omits the key (no write, or an
+    /// older daemon).
+    clipboard_write_seq: u64,
+    /// The pane's pending OSC 52 read query (selection + seq), `None` when the wire omits the key.
+    clipboard_query: Option<PaneClipboardQuery>,
     dims: (u16, u16),
 }
 
@@ -1511,6 +1588,8 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
             let title = pane["title"].as_str().map(str::to_owned);
             let notification = parse_notification(&pane["notification"]);
             let bell_seq = pane["bell_seq"].as_u64().unwrap_or(0);
+            let clipboard_write_seq = pane["clipboard_write_seq"].as_u64().unwrap_or(0);
+            let clipboard_query = parse_clipboard_query(&pane["clipboard_query"]);
             let cols = u16::try_from(pane["cols"].as_u64().unwrap_or(1)).unwrap_or(1);
             let rows = u16::try_from(pane["rows"].as_u64().unwrap_or(1)).unwrap_or(1);
             Ok(PaneSeed {
@@ -1519,6 +1598,8 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
                 title,
                 notification,
                 bell_seq,
+                clipboard_write_seq,
+                clipboard_query,
                 dims: (cols, rows),
             })
         })
@@ -1541,6 +1622,23 @@ fn parse_notification(value: &Value) -> Option<PaneNotification> {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned(),
+        seq: object.get("seq").and_then(Value::as_u64).unwrap_or(0),
+    })
+}
+
+/// Parse a pane's `clipboard_query` wire value (`{sel, seq}`, or absent/`null`) into a
+/// [`PaneClipboardQuery`]. A missing key, a non-object, or an unknown `sel` is `None` (the
+/// additive shape: a pane that issued no read, or a daemon that never sends it). `c` -> clipboard,
+/// `p` -> primary; a malformed `seq` clamps to `0`.
+fn parse_clipboard_query(value: &Value) -> Option<PaneClipboardQuery> {
+    let object = value.as_object()?;
+    let target = match object.get("sel").and_then(Value::as_str) {
+        Some("c") => ClipboardTarget::Clipboard,
+        Some("p") => ClipboardTarget::Primary,
+        _ => return None,
+    };
+    Some(PaneClipboardQuery {
+        target,
         seq: object.get("seq").and_then(Value::as_u64).unwrap_or(0),
     })
 }
@@ -1744,6 +1842,10 @@ fn merge_panes(
             // grows as the child raises more (and clears to None if the host ever drops it).
             notification: seed.notification.clone(),
             bell_seq: seed.bell_seq, // host-authoritative + dynamic, like the notification
+            // host-authoritative + dynamic like the notification: re-adopt the query's, so the
+            // clipboard write count / read query reflect the child's latest for `clipboard_osc`.
+            clipboard_write_seq: seed.clipboard_write_seq,
+            clipboard_query: seed.clipboard_query,
             frame,
             dims: prior.map_or(seed.dims, |pane| pane.dims), // GUI-authoritative — keep tracked
         });
@@ -1895,6 +1997,9 @@ fn spawn_poll(
                                 // than dropping the attention badge on a transient query miss.
                                 notification: pane.notification.clone(),
                                 bell_seq: pane.bell_seq, // keep the last-known bell count too
+                                // keep the last-known clipboard signals across a transient miss
+                                clipboard_write_seq: pane.clipboard_write_seq,
+                                clipboard_query: pane.clipboard_query,
                                 dims: pane.dims,
                             })
                             .collect();
@@ -2910,6 +3015,8 @@ mod tests {
                 title: None,
                 notification: None,
                 bell_seq: 0,
+                clipboard_write_seq: 0,
+                clipboard_query: None,
                 frame: frame(3),
                 dims: (80, 24),
             },
@@ -2919,6 +3026,8 @@ mod tests {
                 title: None,
                 notification: None,
                 bell_seq: 0,
+                clipboard_write_seq: 0,
+                clipboard_query: None,
                 frame: frame(3),
                 dims: (40, 12),
             },
@@ -2933,6 +3042,8 @@ mod tests {
                 title: None,
                 notification: None,
                 bell_seq: 0,
+                clipboard_write_seq: 0,
+                clipboard_query: None,
                 dims: (100, 30),
             },
             PaneSeed {
@@ -2941,6 +3052,8 @@ mod tests {
                 title: None,
                 notification: None,
                 bell_seq: 0,
+                clipboard_write_seq: 0,
+                clipboard_query: None,
                 dims: (80, 24),
             },
             PaneSeed {
@@ -2949,6 +3062,8 @@ mod tests {
                 title: None,
                 notification: None,
                 bell_seq: 0,
+                clipboard_write_seq: 0,
+                clipboard_query: None,
                 dims: (80, 24),
             },
         ];
@@ -2992,6 +3107,8 @@ mod tests {
             title: None,
             notification: None,
             bell_seq: 0,
+            clipboard_write_seq: 0,
+            clipboard_query: None,
             frame: frame(3),
             dims: (80, 24),
         }];
@@ -3001,6 +3118,8 @@ mod tests {
             title: None,
             notification: None,
             bell_seq: 0,
+            clipboard_write_seq: 0,
+            clipboard_query: None,
             dims: (80, 24),
         }];
         let merged = merge_panes(&existing, &seeds, &[]); // fetch missed this wake
@@ -3025,6 +3144,8 @@ mod tests {
                 title: Some("stale: vim README".to_owned()),
                 notification: None,
                 bell_seq: 0,
+                clipboard_write_seq: 0,
+                clipboard_query: None,
                 frame: frame(3),
                 dims: (80, 24),
             },
@@ -3034,6 +3155,8 @@ mod tests {
                 title: Some("about to be cleared".to_owned()),
                 notification: None,
                 bell_seq: 0,
+                clipboard_write_seq: 0,
+                clipboard_query: None,
                 frame: frame(3),
                 dims: (80, 24),
             },
@@ -3045,6 +3168,8 @@ mod tests {
                 title: Some("coin@host:~".to_owned()), // child retitled at the new prompt
                 notification: None,
                 bell_seq: 0,
+                clipboard_write_seq: 0,
+                clipboard_query: None,
                 dims: (80, 24),
             },
             PaneSeed {
@@ -3053,6 +3178,8 @@ mod tests {
                 title: None, // child cleared its title
                 notification: None,
                 bell_seq: 0,
+                clipboard_write_seq: 0,
+                clipboard_query: None,
                 dims: (80, 24),
             },
         ];

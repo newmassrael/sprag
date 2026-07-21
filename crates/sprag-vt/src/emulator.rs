@@ -17,13 +17,14 @@ use termwiz::escape::csi::{
     CSI, Cursor as CsiCursor, CursorStyle, DecPrivateMode, DecPrivateModeCode, Edit,
     EraseInDisplay, EraseInLine, Mode, Sgr,
 };
-use termwiz::escape::osc::FinalTermSemanticPrompt;
+use termwiz::escape::osc::{FinalTermSemanticPrompt, Selection};
 use termwiz::escape::parser::Parser;
 use termwiz::escape::{Action, ControlCode, Esc, EscCode, OperatingSystemCommand};
 
 use crate::port::{
-    Attrs, Cell, Color, Cursor, CursorShape, InputModes, Notification, PromptMark, Rgb, Screen,
-    ScreenKind, UnderlineStyle, VtPort, Width, char_columns,
+    Attrs, Cell, ClipboardQuery, ClipboardTarget, ClipboardTargets, ClipboardWrite, Color, Cursor,
+    CursorShape, InputModes, Notification, PromptMark, Rgb, Screen, ScreenKind, UnderlineStyle,
+    VtPort, Width, char_columns,
 };
 
 /// The cursor state DECSC (`ESC 7` / `CSI s`) saves and DECRC (`ESC 8` / `CSI u`) restores:
@@ -105,6 +106,22 @@ pub struct Emulator {
     /// `on_dirty`. NB the `\a` that TERMINATES an OSC string (its `ST`) is consumed by the parser
     /// as part of the OSC, so only a bare BEL in the stream counts here.
     bell_seq: u64,
+    /// The most recent OSC 52 clipboard WRITE the child requested (`None` until one), LATCHED
+    /// like [`Self::notification`]. Exposed via [`VtPort::clipboard_write`]; a display client
+    /// applies it to its system clipboard when [`Self::clipboard_write_seq`] grows. Carries no
+    /// cells, so — like the title / notification — it does NOT bump [`Self::generation`]; the OSC
+    /// bytes arrive as PTY output, which already fires the session's `on_dirty`.
+    clipboard_write: Option<ClipboardWrite>,
+    /// Monotonic count of OSC 52 clipboard writes requested (`0` before the first), exposed via
+    /// [`VtPort::clipboard_write_seq`] — lets a consumer apply each write once.
+    clipboard_write_seq: u64,
+    /// The most recent OSC 52 clipboard READ (query) the child requested (`None` until one),
+    /// LATCHED. Exposed via [`VtPort::clipboard_query`]; a display client answers it, subject to
+    /// policy, when [`Self::clipboard_query_seq`] grows. Does NOT bump [`Self::generation`].
+    clipboard_query: Option<ClipboardQuery>,
+    /// Monotonic count of OSC 52 clipboard reads requested (`0` before the first), exposed via
+    /// [`VtPort::clipboard_query_seq`] — lets a consumer answer each query once.
+    clipboard_query_seq: u64,
     /// The cursor position + pen saved by DECSC (`ESC 7` / `CSI s`) and restored by DECRC
     /// (`ESC 8` / `CSI u`), or `None` before any save. Saves the same set a terminal restores —
     /// position, SGR foreground/background/attributes, and cursor shape — so an app that saves,
@@ -173,6 +190,10 @@ impl Emulator {
             notification: None,
             notification_seq: 0,
             bell_seq: 0,
+            clipboard_write: None,
+            clipboard_write_seq: 0,
+            clipboard_query: None,
+            clipboard_query_seq: 0,
             saved_cursor: None,
             last_print: None,
             generation: 0,
@@ -307,16 +328,20 @@ impl Emulator {
     /// * the ATTENTION-NOTIFICATION family — `OSC 9` (iTerm2/xterm `SystemNotification`),
     ///   `OSC 777;notify;title;body` (urxvt), and `OSC 99` (kitty) — captured as a
     ///   [`Notification`] the multiplexer surfaces as "this pane wants attention".
+    /// * the CLIPBOARD family — `OSC 52` (`ManipulateSelectionData`): a WRITE (set / clear a
+    ///   selection) is captured as a [`ClipboardWrite`], a READ (`?`) as a [`ClipboardQuery`].
+    ///   The clipboard itself is the display client's, so the emulator only records the request +
+    ///   a monotonic sequence; the client applies a write to its system clipboard and answers a
+    ///   read (both policy-gated), the read reply going back to the PTY (see [`osc52_reply`]).
     ///
-    /// Every other OSC (hyperlinks, clipboard, colour queries) is dropped, per the
-    /// skeleton contract.
+    /// Every other OSC (hyperlinks, colour queries) is dropped, per the skeleton contract.
     ///
-    /// Child-controlled strings (the title, and each notification field) are CLAMPED
-    /// ([`clamp_title`] / [`MAX_NOTIFICATION_BYTES`]): the underlying `vtparse` bounds
-    /// the OSC parameter COUNT, not the payload BYTE length, so an uncapped store would
-    /// let a hostile/buggy child buffer an arbitrarily large string that is then cloned
-    /// every poll wake and shipped over the wire. This mirrors the `RAW_CAPTURE_CAP`
-    /// bound on the sibling child-controlled buffer.
+    /// Child-controlled strings (the title, each notification field, the clipboard write text)
+    /// are CLAMPED ([`clamp_title`] / [`MAX_NOTIFICATION_BYTES`] / [`MAX_CLIPBOARD_BYTES`]): the
+    /// underlying `vtparse` bounds the OSC parameter COUNT, not the payload BYTE length, so an
+    /// uncapped store would let a hostile/buggy child buffer an arbitrarily large string that is
+    /// then cloned on demand. This mirrors the `RAW_CAPTURE_CAP` bound on the sibling
+    /// child-controlled buffer.
     fn osc(&mut self, osc: &OperatingSystemCommand) {
         match osc {
             OperatingSystemCommand::SetWindowTitle(t)
@@ -357,8 +382,41 @@ impl Emulator {
             OperatingSystemCommand::FinalTermSemanticPrompt(prompt) => {
                 self.shell_integration(prompt);
             }
+            // OSC 52 — clipboard manipulation. A SET / CLEAR is a write (clear = write the empty
+            // string); a `?` is a read query. termwiz has already base64-decoded + UTF-8-validated
+            // the write data (a payload that was not valid UTF-8 fails to parse and never reaches
+            // here). The clipboard is the display client's, so we only record the request.
+            OperatingSystemCommand::SetSelection(sel, data) => {
+                self.set_clipboard_write(sel_to_targets(sel), data);
+            }
+            OperatingSystemCommand::ClearSelection(sel) => {
+                self.set_clipboard_write(sel_to_targets(sel), "");
+            }
+            OperatingSystemCommand::QuerySelection(sel) => {
+                self.set_clipboard_query(sel_to_query_target(sel));
+            }
             _ => {}
         }
+    }
+
+    /// Latch an OSC 52 clipboard WRITE (clamping the child-controlled text) and bump the monotonic
+    /// sequence. A write addressing no selection sprag models (an X-cut-buffer-only request) is a
+    /// no-op — neither latched nor counted, so it cannot supersede a real pending write.
+    fn set_clipboard_write(&mut self, targets: ClipboardTargets, text: &str) {
+        if targets.is_empty() {
+            return;
+        }
+        self.clipboard_write = Some(ClipboardWrite {
+            targets,
+            text: clamp_bytes(text, MAX_CLIPBOARD_BYTES),
+        });
+        self.clipboard_write_seq += 1;
+    }
+
+    /// Latch an OSC 52 clipboard READ query and bump the monotonic sequence.
+    fn set_clipboard_query(&mut self, target: ClipboardTarget) {
+        self.clipboard_query = Some(ClipboardQuery { target });
+        self.clipboard_query_seq += 1;
     }
 
     /// Apply one OSC 133 (FinalTerm) semantic-prompt marker, attaching a [`PromptMark`] to the
@@ -865,6 +923,65 @@ impl VtPort for Emulator {
     fn bell_seq(&self) -> u64 {
         self.bell_seq
     }
+
+    fn clipboard_write(&self) -> Option<&ClipboardWrite> {
+        self.clipboard_write.as_ref()
+    }
+
+    fn clipboard_write_seq(&self) -> u64 {
+        self.clipboard_write_seq
+    }
+
+    fn clipboard_query(&self) -> Option<ClipboardQuery> {
+        self.clipboard_query
+    }
+
+    fn clipboard_query_seq(&self) -> u64 {
+        self.clipboard_query_seq
+    }
+}
+
+/// Map a termwiz OSC 52 [`Selection`] set to the [`ClipboardTargets`] a WRITE addresses. The
+/// clipboard (`c`) maps to the clipboard; the "configured selection" (`s`) and the empty-`Pc`
+/// default (which termwiz expands to `s` + cut buffer 0) fold onto the clipboard too, matching
+/// the common intent that an unqualified copy be pasteable. PRIMARY (`p`) maps to primary. The X
+/// cut buffers (`0`-`9`) alone have no windowing analog and map to nothing (an empty set).
+fn sel_to_targets(sel: &Selection) -> ClipboardTargets {
+    ClipboardTargets {
+        clipboard: sel.contains(Selection::CLIPBOARD) || sel.contains(Selection::SELECT),
+        primary: sel.contains(Selection::PRIMARY),
+    }
+}
+
+/// Reduce an OSC 52 READ [`Selection`] to the single [`ClipboardTarget`] a reply carries. A reply
+/// echoes one selection, so a query naming several resolves by priority: PRIMARY only when it is
+/// the sole modeled selection asked for, else the clipboard (covering `c`, `s`, the empty
+/// default, and any cut-buffer-only request that has no analog to read).
+fn sel_to_query_target(sel: &Selection) -> ClipboardTarget {
+    let clipboard = sel.contains(Selection::CLIPBOARD) || sel.contains(Selection::SELECT);
+    if sel.contains(Selection::PRIMARY) && !clipboard {
+        ClipboardTarget::Primary
+    } else {
+        ClipboardTarget::Clipboard
+    }
+}
+
+/// Build the framed OSC 52 reply bytes that answer a clipboard READ (`OSC 52 ; <sel> ; ?`):
+/// `ESC ] 52 ; <c|p> ; <base64(text)> ST`. The whole wire form — the `ESC ]` introducer, the
+/// selection token, the base64 encoding, and the `ST` terminator — is termwiz's own
+/// [`OperatingSystemCommand`] emission, the SSOT that mirrors the parser sprag reads OSC 52
+/// through, so an encode here and the child's decode agree. This is the ONE place sprag emits
+/// the OSC 52 wire form: a display client fetches these bytes and feeds them back to the pane's
+/// PTY (the child receives its reply as if the terminal typed it).
+#[must_use]
+pub fn osc52_reply(target: ClipboardTarget, text: &str) -> Vec<u8> {
+    let sel = match target {
+        ClipboardTarget::Clipboard => Selection::CLIPBOARD,
+        ClipboardTarget::Primary => Selection::PRIMARY,
+    };
+    OperatingSystemCommand::SetSelection(sel, text.to_string())
+        .to_string()
+        .into_bytes()
 }
 
 /// Parse a kitty `OSC 99` desktop notification from termwiz's raw `Unspecified` params
@@ -936,6 +1053,13 @@ const MAX_TITLE_BYTES: usize = 2048;
 /// for the same reason (a child-controlled string stored, cloned per poll wake, and shipped
 /// over the wire must be bounded — see [`Emulator::osc`]).
 const MAX_NOTIFICATION_BYTES: usize = 2048;
+
+/// Upper bound on a stored OSC 52 clipboard WRITE payload. A clipboard write is legitimately far
+/// larger than a title or a toast — a paste can be a whole file — so the cap is generous (1 MiB),
+/// but it exists for the same reason (a child-controlled string, latched and cloned on demand,
+/// must be bounded so a hostile or runaway child cannot pin unbounded memory). An over-cap write
+/// is truncated on a char boundary; this is a rare, documented bound.
+const MAX_CLIPBOARD_BYTES: usize = 1 << 20;
 
 /// Clamp a child-set title to [`MAX_TITLE_BYTES`].
 fn clamp_title(t: &str) -> String {
@@ -2217,5 +2341,171 @@ mod tests {
         );
         assert_eq!(em.screen().mark(1), None, "not on a continuation row");
         assert_eq!(em.screen().mark(2), None);
+    }
+
+    // ----- OSC 52 (clipboard) -----
+
+    /// A WRITE (`OSC 52 ; c ; <base64>`) captures the base64-DECODED text against the requested
+    /// selection and bumps the write sequence; a later write to a different selection supersedes.
+    /// (`aGk=` is base64("hi").)
+    #[test]
+    fn osc_52_write_captures_the_decoded_text_and_targets() {
+        let mut em = Emulator::new(8, 2);
+        assert!(
+            em.clipboard_write().is_none(),
+            "none until the child writes"
+        );
+        assert_eq!(em.clipboard_write_seq(), 0);
+
+        em.advance(b"\x1b]52;c;aGk=\x07");
+        let w = em.clipboard_write().expect("write latched");
+        assert_eq!(w.text, "hi", "base64 decoded to the plain text");
+        assert_eq!(
+            w.targets,
+            ClipboardTargets {
+                clipboard: true,
+                primary: false
+            }
+        );
+        assert_eq!(em.clipboard_write_seq(), 1);
+
+        em.advance(b"\x1b]52;p;aGk=\x07");
+        let w = em.clipboard_write().expect("write latched");
+        assert_eq!(
+            w.targets,
+            ClipboardTargets {
+                clipboard: false,
+                primary: true
+            }
+        );
+        assert_eq!(em.clipboard_write_seq(), 2, "each write bumps the seq");
+    }
+
+    /// A write naming BOTH selections (`OSC 52 ; cp ; …`) sets both — a write is not reducible to
+    /// one target.
+    #[test]
+    fn osc_52_write_to_both_selections() {
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b]52;cp;aGk=\x07");
+        assert_eq!(
+            em.clipboard_write().unwrap().targets,
+            ClipboardTargets {
+                clipboard: true,
+                primary: true
+            },
+        );
+    }
+
+    /// A CLEAR (`OSC 52 ; c` with no data field) is captured as a write of the empty string — the
+    /// consumer clears that selection.
+    #[test]
+    fn osc_52_clear_is_an_empty_write() {
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b]52;c;aGk=\x07");
+        em.advance(b"\x1b]52;c\x07"); // clear
+        let w = em.clipboard_write().expect("clear latched as a write");
+        assert_eq!(w.text, "", "a clear is an empty write");
+        assert!(w.targets.clipboard);
+        assert_eq!(em.clipboard_write_seq(), 2, "the clear bumped the seq");
+    }
+
+    /// A READ (`OSC 52 ; c ; ?`) captures a query for that selection and bumps the query
+    /// sequence, distinct from the write sequence.
+    #[test]
+    fn osc_52_query_captures_the_read_request() {
+        let mut em = Emulator::new(8, 2);
+        assert!(em.clipboard_query().is_none());
+        assert_eq!(em.clipboard_query_seq(), 0);
+
+        em.advance(b"\x1b]52;c;?\x07");
+        assert_eq!(
+            em.clipboard_query().unwrap().target,
+            ClipboardTarget::Clipboard
+        );
+        assert_eq!(em.clipboard_query_seq(), 1);
+        assert_eq!(em.clipboard_write_seq(), 0, "a read is not a write");
+
+        em.advance(b"\x1b]52;p;?\x07");
+        assert_eq!(
+            em.clipboard_query().unwrap().target,
+            ClipboardTarget::Primary
+        );
+        assert_eq!(em.clipboard_query_seq(), 2);
+    }
+
+    /// An OSC 52 naming ONLY an X cut buffer (`0`-`9`) has no clipboard/primary analog in sprag's
+    /// model, so it is a no-op: nothing latched, the seq untouched — it cannot supersede a real
+    /// pending write.
+    #[test]
+    fn osc_52_cut_buffer_only_write_is_ignored() {
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b]52;0;aGk=\x07");
+        assert!(
+            em.clipboard_write().is_none(),
+            "cut-buffer-only maps to no selection"
+        );
+        assert_eq!(em.clipboard_write_seq(), 0);
+    }
+
+    /// A clipboard write carries no cells, so — like the title / notification — it must not stamp
+    /// ROW DAMAGE. Consumers still learn of it: the OSC bytes are PTY output, which fires
+    /// `on_dirty`.
+    #[test]
+    fn osc_52_write_does_not_bump_the_damage_generation() {
+        let mut em = Emulator::new(8, 2);
+        let g0 = em.screen().row_generation(0).unwrap();
+        em.advance(b"\x1b]52;c;aGk=\x07");
+        assert!(em.clipboard_write().is_some());
+        assert_eq!(
+            em.screen().row_generation(0).unwrap(),
+            g0,
+            "no row damage from OSC 52"
+        );
+    }
+
+    /// A hostile oversized write is CLAMPED to `MAX_CLIPBOARD_BYTES` on a char boundary — a
+    /// child-controlled buffer must be bounded. (Feeds the decoded text via [`osc52_reply`], the
+    /// same encoder a reply uses, so the base64 is correct without hand-encoding.)
+    #[test]
+    fn osc_52_write_over_cap_is_clamped() {
+        let mut em = Emulator::new(8, 2);
+        let payload = "é".repeat(MAX_CLIPBOARD_BYTES); // 2 bytes each, well over the cap
+        let bytes = osc52_reply(ClipboardTarget::Clipboard, &payload); // ESC ] 52;c;<base64> ST
+        em.advance(&bytes);
+        let w = em.clipboard_write().expect("write latched");
+        assert!(w.text.len() <= MAX_CLIPBOARD_BYTES, "clamped to the cap");
+        assert!(
+            w.text.chars().all(|c| c == 'é'),
+            "truncated on a char boundary"
+        );
+    }
+
+    /// [`osc52_reply`] frames the answer as `ESC ] 52 ; <sel> ; <base64> ST`, and the bytes
+    /// ROUND-TRIP: parsing them back yields the original text against the reply's selection.
+    #[test]
+    fn osc_52_reply_frames_and_round_trips() {
+        // Exact wire form (aGk= is base64("hi")).
+        assert_eq!(
+            osc52_reply(ClipboardTarget::Clipboard, "hi"),
+            b"\x1b]52;c;aGk=\x1b\\"
+        );
+        assert_eq!(
+            osc52_reply(ClipboardTarget::Primary, "hi"),
+            b"\x1b]52;p;aGk=\x1b\\"
+        );
+
+        // Round-trip a non-trivial payload through the parser: reply bytes -> a WRITE of the
+        // same text on the same selection.
+        let mut em = Emulator::new(8, 2);
+        em.advance(&osc52_reply(ClipboardTarget::Primary, "clip board!"));
+        let w = em.clipboard_write().expect("reply parsed as a write");
+        assert_eq!(w.text, "clip board!");
+        assert_eq!(
+            w.targets,
+            ClipboardTargets {
+                clipboard: false,
+                primary: true
+            }
+        );
     }
 }

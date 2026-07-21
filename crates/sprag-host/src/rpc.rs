@@ -1322,6 +1322,115 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_write_reaches_the_slot_and_the_on_demand_fetch() {
+        // A child sets the system clipboard via OSC 52 (`aGk=` is base64("hi")). The CHEAP write
+        // seq rides the pane list; the actual payload (targets + text) is fetched ON DEMAND from
+        // the pane's clipboard_write slot — the split that keeps a large paste off the per-poll path.
+        let state = host_with(r"printf '\033]52;c;aGk=\007'", 20, 4);
+        wait_for_pane0_eof(&state);
+        let panes = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/query","params":{"path":"/sprag_mux/external/panes"}}"#,
+        );
+        assert_eq!(
+            panes["result"][0]["clipboard_write_seq"].as_u64(),
+            Some(1),
+            "the cheap write seq rides the pane list: {panes}"
+        );
+        let write = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":2,"method":"scene/query","params":{"path":"/pane_0/sprag_input/external/clipboard_write"}}"#,
+        );
+        let w = &write["result"];
+        assert_eq!(
+            w["text"], "hi",
+            "the base64-decoded write payload over RPC: {write}"
+        );
+        assert_eq!(w["targets"]["clipboard"], true, "{write}");
+        assert_eq!(w["targets"]["primary"], false, "{write}");
+        assert_eq!(w["seq"].as_u64(), Some(1), "{write}");
+    }
+
+    #[test]
+    fn clipboard_read_query_reaches_the_panes_slot() {
+        // A child asks to READ the clipboard (`OSC 52 ; c ; ?`). The tiny query (selection + seq)
+        // rides the pane list INLINE — a display client answers it (subject to policy).
+        let state = host_with(r"printf '\033]52;p;?\007'", 20, 4);
+        wait_for_pane0_eof(&state);
+        let panes = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/query","params":{"path":"/sprag_mux/external/panes"}}"#,
+        );
+        let q = &panes["result"][0]["clipboard_query"];
+        assert_eq!(q["sel"], "p", "the queried selection (primary): {panes}");
+        assert_eq!(q["seq"].as_u64(), Some(1), "{panes}");
+        // A read is NOT a write — no write seq appears.
+        assert!(
+            panes["result"][0].get("clipboard_write_seq").is_none(),
+            "a read must not report a write seq: {panes}"
+        );
+    }
+
+    /// Poll (bounded) the pane 0 clipboard_write slot until its text equals `expected` — used to
+    /// observe an OSC 52 reply that a `cat` child echoes back and the emulator re-parses.
+    fn wait_for_clipboard_write_text(state: &HostState, expected: &str) -> bool {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            let write = serve_one(
+                state,
+                r#"{"jsonrpc":"2.0","id":9,"method":"scene/query","params":{"path":"/pane_0/sprag_input/external/clipboard_write"}}"#,
+            );
+            if write["result"]["text"] == expected {
+                return true;
+            }
+            sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
+    #[test]
+    fn clipboard_answer_writes_the_reply_exactly_once() {
+        // A live `cat` echoes whatever is written to its PTY. Answering a read query writes an
+        // OSC 52 reply to the PTY; cat echoes it and the emulator re-parses it as a clipboard
+        // WRITE — proving the reply actually reached the child. The host admits EXACTLY ONE reply
+        // per query seq (the multi-client arbitration tmux has no analog for — it does no reads).
+        //
+        // `stty raw -echo` puts the PTY in raw mode: cat reads each byte immediately (the reply has
+        // no newline, so a cooked line-buffer would never release it) and echoes it VERBATIM (a
+        // cooked tty would render the ESC as a visible `^[`, which the emulator would not re-parse).
+        let state = host_with("stty raw -echo 2>/dev/null; exec cat", 20, 4);
+        let answer = |seq: u64, text: &str| {
+            let req = format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{{"path":"/pane_0/sprag_input/external/clipboard_answer","args":{{"seq":{seq},"sel":"c","text":"{text}"}}}}}}"#
+            );
+            serve_one(&state, &req)
+        };
+        // The FIRST answer for query seq 1 wins and writes the reply.
+        assert_eq!(
+            answer(1, "rt")["result"]["wrote"],
+            true,
+            "first answer writes"
+        );
+        // It reached cat's PTY, echoed, and round-tripped through the real parser back to a write.
+        assert!(
+            wait_for_clipboard_write_text(&state, "rt"),
+            "the OSC 52 reply never round-tripped through the child"
+        );
+        // A SECOND answer for the SAME seq is DROPPED — exactly-once across clients.
+        assert_eq!(
+            answer(1, "again")["result"]["wrote"],
+            false,
+            "a duplicate answer for an already-answered query must be dropped"
+        );
+        // A NEWER query seq is admitted again.
+        assert_eq!(
+            answer(2, "rt2")["result"]["wrote"],
+            true,
+            "a newer query seq is admitted"
+        );
+    }
+
+    #[test]
     fn lists_the_agent_among_available_plugins() {
         let state = host_with("cat", 20, 4);
         let plugins = serve_one(

@@ -255,6 +255,80 @@ pub struct Notification {
     pub body: String,
 }
 
+/// Which system selection an OSC 52 clipboard operation addresses. A windowing system
+/// distinguishes two, and sprag models both: the CLIPBOARD (the explicit Ctrl-C / Ctrl-V
+/// buffer, OSC 52 `c`) and the PRIMARY selection (X11 select-to-copy / middle-click paste,
+/// OSC 52 `p`). The OSC 52 X cut buffers (`0`-`9`) have no windowing-system analog and are
+/// not modeled; the "configured selection" `s` and the empty-`Pc` default fold onto the
+/// clipboard (the common intent — see [`crate::emulator`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ClipboardTarget {
+    /// The system clipboard (OSC 52 `c`).
+    Clipboard,
+    /// The PRIMARY selection (OSC 52 `p`).
+    Primary,
+}
+
+impl ClipboardTarget {
+    /// The OSC 52 selection character (`c` / `p`). A read reply echoes the requested selection
+    /// so the asking app matches the response to its query.
+    #[must_use]
+    pub fn osc_char(self) -> char {
+        match self {
+            ClipboardTarget::Clipboard => 'c',
+            ClipboardTarget::Primary => 'p',
+        }
+    }
+}
+
+/// The set of selections a single OSC 52 WRITE addresses. One `OSC 52 ; cp ; …` sets BOTH the
+/// clipboard and the primary selection, so a write is not reducible to one [`ClipboardTarget`];
+/// a consumer applies the write text to every selection this marks. A set that names neither
+/// (an X-cut-buffer-only request sprag does not model) is [`empty`](Self::is_empty) and the
+/// write is dropped.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct ClipboardTargets {
+    /// The write addresses the system clipboard (`c`).
+    pub clipboard: bool,
+    /// The write addresses the PRIMARY selection (`p`).
+    pub primary: bool,
+}
+
+impl ClipboardTargets {
+    /// Whether this addresses no selection sprag models — such a write is a no-op.
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        !self.clipboard && !self.primary
+    }
+}
+
+/// An OSC 52 clipboard WRITE the child requested: set the named [`targets`](Self::targets) to
+/// [`text`](Self::text) (already base64-decoded and UTF-8-validated by the parser, and clamped
+/// to a byte cap — see [`crate::emulator`]). A clipboard CLEAR (`OSC 52` with no
+/// data) arrives here as a write of the empty string. LATCHED like a [`Notification`] (last
+/// wins) and paired with a monotonic sequence ([`VtPort::clipboard_write_seq`]) so a consumer
+/// applies each write exactly once; it carries no cells, so it does not bump row damage.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ClipboardWrite {
+    /// The selections to set.
+    pub targets: ClipboardTargets,
+    /// The text to place on each target selection (may be empty — a clear).
+    pub text: String,
+}
+
+/// An OSC 52 clipboard READ the child requested (`OSC 52 ; <sel> ; ?`): send it the current
+/// contents of [`target`](Self::target). The terminal cannot answer from the emulator — the
+/// clipboard is the display client's, and the answer is written back to the pane's PTY as an
+/// `OSC 52 ; <sel> ; <base64> ST` reply (see [`crate::emulator::osc52_reply`]). LATCHED and
+/// paired with a monotonic sequence ([`VtPort::clipboard_query_seq`]) so a consumer answers
+/// each query once. A query naming both selections reduces to the clipboard (a reply carries
+/// one selection); a query for none sprag models reduces to the clipboard too.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ClipboardQuery {
+    /// The selection whose contents the child asked for.
+    pub target: ClipboardTarget,
+}
+
 /// A shell-integration (OSC 133 / FinalTerm) boundary mark attached to a row: the point at
 /// which a shell prompt, a command's output, or a finished command begins. These are the
 /// `A`/`C`/`D` semantic markers a shell with integration configured emits, and they are what
@@ -1185,6 +1259,31 @@ pub trait VtPort {
     /// distinguish a bell from a notification reads them apart. Only a BARE bell counts — the
     /// `\a` that terminates an OSC string is consumed by the parser as part of that OSC.
     fn bell_seq(&self) -> u64;
+
+    /// The MOST RECENT OSC 52 clipboard WRITE the child requested ([`ClipboardWrite`]), or
+    /// `None` if it never wrote one. LATCHED like [`notification`](Self::notification) and paired
+    /// with [`clipboard_write_seq`](Self::clipboard_write_seq): a display client applies a write
+    /// to its own system clipboard when the seq grows past the last it applied, so a late attach
+    /// never re-clobbers the clipboard with a stale copy. Potentially large (a whole paste), so a
+    /// consumer fetches it on demand off the seq rather than shipping it every poll.
+    fn clipboard_write(&self) -> Option<&ClipboardWrite>;
+
+    /// A monotonic counter bumped once per OSC 52 clipboard write the child requests — `0` before
+    /// the first. A consumer that remembers the last value it applied learns a NEW write arrived
+    /// when this grows (the latched payload alone cannot distinguish a re-write of the same text).
+    fn clipboard_write_seq(&self) -> u64;
+
+    /// The MOST RECENT OSC 52 clipboard READ the child requested ([`ClipboardQuery`]), or `None`
+    /// if it never asked. LATCHED and paired with [`clipboard_query_seq`](Self::clipboard_query_seq):
+    /// a display client answers a query — subject to its clipboard policy — when the seq grows,
+    /// writing the reply back to the pane's PTY (see [`crate::emulator::osc52_reply`]). The answer
+    /// is arbitrated to EXACTLY ONE reply across all attached clients (see the host).
+    fn clipboard_query(&self) -> Option<ClipboardQuery>;
+
+    /// A monotonic counter bumped once per OSC 52 clipboard read the child requests — `0` before
+    /// the first. A consumer that remembers the last value it answered learns a NEW query arrived
+    /// when this grows.
+    fn clipboard_query_seq(&self) -> u64;
 }
 
 #[cfg(test)]

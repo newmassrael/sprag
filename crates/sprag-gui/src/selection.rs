@@ -76,8 +76,10 @@ pub(crate) fn use_selection() -> Signal<Option<PaneSelection>> {
 }
 
 /// The process clipboard (real OS clipboard via arboard; an in-memory fallback when
-/// arboard cannot init). `Owner::cache`-keyed so one handle is shared per session.
-fn clipboard() -> Rc<dyn Clipboard> {
+/// arboard cannot init). `Owner::cache`-keyed so one handle is shared per session — the ONE
+/// clipboard handle, shared with the OSC 52 integration ([`crate::clipboard_osc`]) so a program
+/// setting the clipboard via OSC 52 and a `Ctrl+Shift+C` copy reach the SAME buffer.
+pub(crate) fn clipboard() -> Rc<dyn Clipboard> {
     pinion_platform_clipboard::use_app_clipboard(CLIPBOARD_KEY)
 }
 

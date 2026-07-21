@@ -63,7 +63,9 @@ pub use durability::{
     load_snapshot, restore_allowlist, restore_command, save_if_changed, save_snapshot,
     snapshot_path,
 };
-pub use host::{Host, HostClient, PaneNotification, PaneScrollFacts};
+pub use host::{
+    Host, HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneNotification, PaneScrollFacts,
+};
 pub use pane::{CellFrame, SpragPaneExternal, send_key, send_text};
 pub use plugins::PluginsExternal;
 pub use rpc::{

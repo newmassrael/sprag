@@ -43,7 +43,7 @@ use pinion_core::external::{
 use serde_json::{Value, json};
 use sprag_input::Modifiers;
 use sprag_terminal::PanePtyHandle;
-use sprag_vt::Screen;
+use sprag_vt::{ClipboardTarget, Screen, osc52_reply};
 
 use crate::external::rpc_external_impl;
 use crate::host::PaneScrollFacts;
@@ -52,8 +52,8 @@ use crate::host::PaneScrollFacts;
 // vocabulary ([`crate::wire`]) — the SAME consts the wire client addresses, so the
 // two cannot drift.
 use crate::wire::{
-    CELLS_FIELD, CURSOR_KEYS_SLOT, FRAMES_SLOT, FULL_TEXT_SLOT, KEY_ACTION, LAST_COMMAND_SLOT,
-    PANE_SCHEMA, PROMPT_MARKS_SLOT, TEXT_ACTION,
+    CELLS_FIELD, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT, CURSOR_KEYS_SLOT, FRAMES_SLOT,
+    FULL_TEXT_SLOT, KEY_ACTION, LAST_COMMAND_SLOT, PANE_SCHEMA, PROMPT_MARKS_SLOT, TEXT_ACTION,
 };
 
 /// Encode a W3C `key` + `mods` to PTY bytes (the sprag-owned R2.6 encoder,
@@ -128,6 +128,20 @@ impl SpragPaneExternal {
             Ok(IntrospectValue::Null)
         } else {
             Err(InvokeError::Rejected)
+        }
+    }
+
+    /// Answer a pending OSC 52 read query: format the `OSC 52` reply for the requested selection
+    /// and hand it to the pane's exactly-once arbiter, which writes it to the PTY only if no
+    /// client answered this query (or a newer one) first. Returns `{wrote}` — whether THIS answer
+    /// reached the PTY — so a caller can tell it lost the race (harmless; the child got its
+    /// reply). A write failure is an [`InvokeError::Rejected`].
+    fn answer_clipboard(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let (seq, target, text) = parse_clipboard_answer_args(args)?;
+        let reply = osc52_reply(target, &text);
+        match self.pty.answer_clipboard_query(seq, &reply) {
+            Ok(wrote) => Ok(IntrospectValue::Json(json!({ "wrote": wrote }))),
+            Err(_) => Err(InvokeError::Rejected),
         }
     }
 
@@ -257,6 +271,23 @@ impl ExternalIntrospect for SpragPaneExternal {
             PROMPT_MARKS_SLOT => Some(IntrospectValue::Json(json!(
                 self.pty.with_screen(|screen| screen.prompt_positions())
             ))),
+            // The pane's most recent OSC 52 clipboard WRITE, fetched ON DEMAND when the write seq
+            // in the pane list grows (the payload can be a whole paste, so it is not carried per
+            // poll). `Null` (present-but-empty) when the child has written no clipboard — the
+            // client then has nothing to apply, exactly as a malformed `cells.<off>` is `Null`.
+            CLIPBOARD_WRITE_SLOT => {
+                let (write, seq) = self.pty.clipboard_write();
+                Some(write.map_or(IntrospectValue::Null, |w| {
+                    IntrospectValue::Json(json!({
+                        "targets": {
+                            "clipboard": w.targets.clipboard,
+                            "primary": w.targets.primary,
+                        },
+                        "text": w.text,
+                        "seq": seq,
+                    }))
+                }))
+            }
             _ => None,
         }
     }
@@ -281,9 +312,38 @@ impl ExternalIntrospect for SpragPaneExternal {
         match path {
             KEY_ACTION => self.inject_key(&args),
             TEXT_ACTION => self.inject_text(&args),
+            CLIPBOARD_ANSWER_ACTION => self.answer_clipboard(&args),
             _ => Err(InvokeError::UnknownPath),
         }
     }
+}
+
+/// Parse the `clipboard_answer` action's params `{seq, sel, text}`: the query `seq` a client
+/// saw, the selection char it read (`c` clipboard / `p` primary), and that selection's current
+/// text. Only the object form is accepted (this is a machine wire, never hand-typed). A missing
+/// or ill-typed field is an [`InvokeError::TypeMismatch`]; an empty `text` is valid (an empty
+/// clipboard reads back as the empty string).
+fn parse_clipboard_answer_args(
+    args: &IntrospectValue,
+) -> Result<(u64, ClipboardTarget, String), InvokeError> {
+    let IntrospectValue::Json(Value::Object(map)) = args else {
+        return Err(InvokeError::TypeMismatch);
+    };
+    let seq = map
+        .get("seq")
+        .and_then(Value::as_u64)
+        .ok_or(InvokeError::TypeMismatch)?;
+    let target = match map.get("sel").and_then(Value::as_str) {
+        Some("c") => ClipboardTarget::Clipboard,
+        Some("p") => ClipboardTarget::Primary,
+        _ => return Err(InvokeError::TypeMismatch),
+    };
+    let text = map
+        .get("text")
+        .and_then(Value::as_str)
+        .ok_or(InvokeError::TypeMismatch)?
+        .to_owned();
+    Ok((seq, target, text))
 }
 
 /// Parse the `text` action's args into the literal string to write. Accepts a

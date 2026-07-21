@@ -28,6 +28,10 @@ sprag-input = { workspace = true }
 # The PTY producer: Workspace::spawn_with_dirty wires the R23 on_dirty hook to
 # the RepaintSink, and the emulator screen is read each frame via with_screen.
 sprag-terminal = { workspace = true }
+# ClipboardTarget / ClipboardTargets: the OSC 52 selection types the host's
+# PaneClipboardWrite / PaneClipboardQuery carry — the GUI maps them onto pinion's
+# ClipboardSelection when it applies a write / answers a read (crate::clipboard_osc).
+sprag-vt = { workspace = true }
 pinion-core = { workspace = true }
 # WidgetA11y for the (empty) access tree.
 pinion-a11y = { workspace = true }

@@ -30,9 +30,12 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 
 use pinion_core::GridBuffer;
-use sprag_host::{HostClient, PaneNotification, PaneScrollFacts};
+use sprag_host::{
+    HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneNotification, PaneScrollFacts,
+};
 use sprag_input::Modifiers;
 use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId, SessionInfo, WindowInfo};
+use sprag_vt::ClipboardTarget;
 
 use crate::terminal::MAX_PANES;
 
@@ -326,6 +329,41 @@ impl SlotView {
     /// [`crate::attention`]) — kept SEPARATE because a bell carries no text.
     pub(crate) fn pane_bell_seq(&self, slot: usize) -> u64 {
         self.id(slot).map_or(0, |id| self.host.pane_bell_seq(id))
+    }
+
+    /// Slot `slot`'s cheap OSC 52 clipboard-WRITE count (`0` for a hole) — [`crate::clipboard_osc`]
+    /// polls it each frame and fetches the payload only when it grows.
+    pub(crate) fn pane_clipboard_write_seq(&self, slot: usize) -> u64 {
+        self.id(slot)
+            .map_or(0, |id| self.host.pane_clipboard_write_seq(id))
+    }
+
+    /// Slot `slot`'s pending OSC 52 read query (selection + seq), `None` for a hole or no query.
+    pub(crate) fn pane_clipboard_query(&self, slot: usize) -> Option<PaneClipboardQuery> {
+        self.id(slot)
+            .and_then(|id| self.host.pane_clipboard_query(id))
+    }
+
+    /// Slot `slot`'s most recent OSC 52 clipboard WRITE payload (targets + text + seq), fetched ON
+    /// DEMAND. `None` for a hole or no write.
+    pub(crate) fn pane_clipboard_write(&self, slot: usize) -> Option<PaneClipboardWrite> {
+        self.id(slot)
+            .and_then(|id| self.host.pane_clipboard_write(id))
+    }
+
+    /// Answer slot `slot`'s pending OSC 52 read query `seq` with `text` for `target`; `true` if
+    /// THIS client's reply reached the PTY (the host arbitrates exactly-once across clients).
+    /// `false` for a hole.
+    #[must_use]
+    pub(crate) fn answer_clipboard_query(
+        &self,
+        slot: usize,
+        seq: u64,
+        target: ClipboardTarget,
+        text: &str,
+    ) -> bool {
+        self.id(slot)
+            .is_some_and(|id| self.host.answer_clipboard_query(id, seq, target, text))
     }
 }
 

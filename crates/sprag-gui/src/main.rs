@@ -195,6 +195,7 @@
 
 mod a11y;
 mod attention;
+mod clipboard_osc;
 mod ctxmenu;
 mod diag;
 mod dock;
@@ -274,6 +275,8 @@ struct BootFocusSeed;
 /// * the IME preedit overlay — reset by [`input::reset_pane_preedit`];
 /// * the mouse text selection — cleared by [`selection::reset_pane_selection`] iff the
 ///   single active selection is in this slot (R139).
+/// * the OSC 52 clipboard apply/answer acks — reset by [`clipboard_osc::reset_pane_clip_acks`] so a
+///   reused slot re-primes against its new pane (no stale write replay / query answer).
 ///
 /// NOT reset: the per-slot reflow [`Effect`](pinion_core::reactive::Effect) is slot-keyed and
 /// deliberately KEPT — it re-resolves the slot's live pane each fire, so it correctly reflows
@@ -285,6 +288,7 @@ fn reset_freed_slot(slot: usize) {
     input::reset_pane_preedit(slot);
     selection::reset_pane_selection(slot);
     attention::reset_pane_ack(slot);
+    clipboard_osc::reset_pane_clip_acks(slot);
 }
 
 struct TerminalViewer;
@@ -686,6 +690,11 @@ impl WidgetCore for TerminalViewer {
         // an off-thread-producer fact (the session mirror the wire poll updates) into a UI-thread
         // `Signal` BEFORE the pure view runs.
         stabs::reconcile_pending_kill(&terminal.slots);
+        // (6) OSC 52: apply any new clipboard writes to this client's system clipboard and answer
+        // any new read queries (subject to the SPRAG_OSC52 policy). Like (2)/(5), this reconciles
+        // an off-thread-producer fact (the child's OSC 52 output) on the UI thread each frame —
+        // here into a real side effect (the system clipboard / a PTY reply), not just a signal.
+        clipboard_osc::reconcile_clipboard(&terminal.slots);
     }
 
     /// Mouse-wheel / touchpad two-finger scroll over a pane scrolls its scrollback

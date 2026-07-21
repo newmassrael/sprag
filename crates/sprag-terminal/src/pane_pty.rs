@@ -14,14 +14,16 @@
 
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use portable_pty::{Child, PtySize, native_pty_system};
-use sprag_vt::{Emulator, InputModes, Notification, Screen, ShellState, VtPort};
+use sprag_vt::{
+    ClipboardQuery, ClipboardWrite, Emulator, InputModes, Notification, Screen, ShellState, VtPort,
+};
 
 // Re-exported so callers build commands without depending on portable-pty
 // directly (it is an implementation detail of the PTY seam).
@@ -146,6 +148,11 @@ pub struct PanePty {
     emulator: Arc<Mutex<Emulator>>,
     raw_output: SharedRawCapture,
     eof: Arc<AtomicBool>,
+    /// High-water mark of the OSC 52 clipboard READ query this pane has ANSWERED, shared with
+    /// every [`PanePtyHandle`]. When several display clients race to answer the same query (each
+    /// has its own system clipboard), a CAS on this admits EXACTLY ONE reply to the PTY — the
+    /// child must not receive N conflicting `OSC 52` responses. See [`answer_clipboard_query`].
+    clipboard_answered: Arc<AtomicU64>,
     reader_thread: Option<JoinHandle<()>>,
     resize_tx: Option<Sender<(u16, u16)>>,
     resize_thread: Option<JoinHandle<()>>,
@@ -297,6 +304,7 @@ impl PanePty {
             emulator,
             raw_output,
             eof,
+            clipboard_answered: Arc::new(AtomicU64::new(0)),
             reader_thread: Some(reader_thread),
             resize_tx: Some(resize_tx),
             resize_thread: Some(resize_thread),
@@ -342,6 +350,47 @@ impl PanePty {
     pub fn shell(&self) -> (ShellState, Option<i32>) {
         let emu = lock(&self.emulator);
         (emu.screen().shell_state(), emu.screen().last_exit_status())
+    }
+
+    /// The most recent OSC 52 clipboard WRITE the child requested, or `None`, paired with its
+    /// monotonic sequence — read out from under the emulator lock in ONE take so the payload and
+    /// its sequence stay consistent (a consumer detects a new write via the sequence growing).
+    /// The payload can be large (a whole paste), so a consumer fetches it on demand off the
+    /// sequence rather than shipping it every poll. See [`VtPort::clipboard_write`].
+    #[must_use]
+    pub fn clipboard_write(&self) -> (Option<ClipboardWrite>, u64) {
+        let emu = lock(&self.emulator);
+        (emu.clipboard_write().cloned(), emu.clipboard_write_seq())
+    }
+
+    /// Just the monotonic count of OSC 52 clipboard WRITES the child has requested — the CHEAP
+    /// detection read (no payload clone) a consumer polls every frame to learn when to fetch the
+    /// (potentially large) write via [`Self::clipboard_write`]. See [`VtPort::clipboard_write_seq`].
+    #[must_use]
+    pub fn clipboard_write_seq(&self) -> u64 {
+        lock(&self.emulator).clipboard_write_seq()
+    }
+
+    /// The most recent OSC 52 clipboard READ query the child requested, or `None`, paired with
+    /// its monotonic sequence (one lock take). Tiny (a single selection), so — unlike the write —
+    /// it travels inline. See [`VtPort::clipboard_query`].
+    #[must_use]
+    pub fn clipboard_query(&self) -> (Option<ClipboardQuery>, u64) {
+        let emu = lock(&self.emulator);
+        (emu.clipboard_query(), emu.clipboard_query_seq())
+    }
+
+    /// Admit ONE display client's answer to the OSC 52 read query `seq`, writing `reply` (the
+    /// framed `OSC 52` response bytes, from [`sprag_vt::osc52_reply`]) to the PTY only if no
+    /// client has already answered this query or a newer one. Returns whether this call wrote.
+    /// The CAS on the shared answered-query high-water mark makes the reply exactly-once across all
+    /// attached clients.
+    ///
+    /// # Errors
+    ///
+    /// Returns an IO error if the write to the master fails.
+    pub fn answer_clipboard_query(&self, seq: u64, reply: &[u8]) -> io::Result<bool> {
+        answer_query(&self.clipboard_answered, &self.writer, seq, reply)
     }
 
     /// An owned snapshot of the current screen.
@@ -417,6 +466,7 @@ impl PanePty {
             emulator: Arc::clone(&self.emulator),
             writer: Arc::clone(&self.writer),
             raw_output: Arc::clone(&self.raw_output),
+            clipboard_answered: Arc::clone(&self.clipboard_answered),
         }
     }
 
@@ -483,6 +533,9 @@ pub struct PanePtyHandle {
     emulator: Arc<Mutex<Emulator>>,
     writer: SharedWriter,
     raw_output: SharedRawCapture,
+    /// Shared OSC 52 answered-query high-water mark — see [`PanePty::clipboard_answered`]. The
+    /// host answers a read query through this handle, so the exactly-once arbitration lives here.
+    clipboard_answered: Arc<AtomicU64>,
 }
 
 impl PanePtyHandle {
@@ -506,6 +559,15 @@ impl PanePtyHandle {
         lock(&self.raw_output).snapshot()
     }
 
+    /// The most recent OSC 52 clipboard WRITE the child requested, or `None`, with its monotonic
+    /// sequence (one lock take) — the on-demand payload the host serves through this handle when a
+    /// client's write seq grows. See [`PanePty::clipboard_write`].
+    #[must_use]
+    pub fn clipboard_write(&self) -> (Option<ClipboardWrite>, u64) {
+        let emu = lock(&self.emulator);
+        (emu.clipboard_write().cloned(), emu.clipboard_write_seq())
+    }
+
     /// Write already-encoded input bytes to the child (R2.6: the caller
     /// owns key→byte encoding).
     ///
@@ -514,6 +576,37 @@ impl PanePtyHandle {
     /// Returns an IO error if the write to the master fails.
     pub fn write(&self, bytes: &[u8]) -> io::Result<()> {
         write_shared(&self.writer, bytes)
+    }
+
+    /// Admit ONE client's answer to OSC 52 read query `seq`, writing `reply` to the PTY only if
+    /// no client answered this query or a newer one — the exactly-once arbitration the host runs
+    /// when a display client offers its clipboard. See [`PanePty::answer_clipboard_query`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an IO error if the write to the master fails.
+    pub fn answer_clipboard_query(&self, seq: u64, reply: &[u8]) -> io::Result<bool> {
+        answer_query(&self.clipboard_answered, &self.writer, seq, reply)
+    }
+}
+
+/// The shared OSC 52 read-query arbiter: a CAS on `answered` admits `seq` (and its `reply`) only
+/// if it is NEWER than every query already answered on this pane, so exactly one of the racing
+/// display clients writes a reply to the PTY. `fetch_max` is a single atomic RMW, so of two
+/// clients offering the same `seq`, one observes a smaller prior value (writes) and the other
+/// observes `seq` already in place (drops) — no lost or duplicated reply.
+fn answer_query(
+    answered: &AtomicU64,
+    writer: &SharedWriter,
+    seq: u64,
+    reply: &[u8],
+) -> io::Result<bool> {
+    let prev = answered.fetch_max(seq, Ordering::AcqRel);
+    if seq > prev {
+        write_shared(writer, reply)?;
+        Ok(true)
+    } else {
+        Ok(false)
     }
 }
 

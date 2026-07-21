@@ -52,7 +52,7 @@ use sprag_terminal::{
     CommandBuilder, LayoutSnapshot, LayoutWire, Pane, PaneId, PanePtyError, PanePtyHandle,
     SessionInfo, SessionRegistry, Snapshot, SnapshotError, WindowInfo, Workspace,
 };
-use sprag_vt::Screen;
+use sprag_vt::{ClipboardTarget, ClipboardTargets, Screen, osc52_reply};
 
 use crate::external::lock;
 use crate::scope::SessionScope;
@@ -105,6 +105,37 @@ pub struct PaneNotification {
     pub body: String,
     /// The monotonic count of notifications this pane's child has raised — always `>= 1` here
     /// (this type exists only when there IS a notification).
+    pub seq: u64,
+}
+
+/// A pane's most recent OSC 52 clipboard WRITE, as a display client fetches it ON DEMAND off
+/// [`HostClient::pane_clipboard_write`] once the write `seq` in the pane list grows past the last
+/// it applied. The payload is potentially large (a whole paste), which is why it is fetched on
+/// demand rather than carried in the per-poll pane list. A client applies [`text`](Self::text) to
+/// each selection [`targets`](Self::targets) names — subject to its clipboard policy — on its own
+/// system clipboard.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct PaneClipboardWrite {
+    /// The selections to set (a single OSC 52 may name both the clipboard and the primary).
+    pub targets: ClipboardTargets,
+    /// The text to place on each target selection (empty = a clear).
+    pub text: String,
+    /// The monotonic count of clipboard writes this pane's child has requested — `>= 1` here
+    /// (this type exists only when there IS a write).
+    pub seq: u64,
+}
+
+/// A pane's pending OSC 52 clipboard READ query, as a display client reads it off
+/// [`HostClient::pane_clipboard_query`] — the single selection the child asked to read back, plus
+/// the monotonic `seq` that lets a client answer each query once. Tiny (a selection + a counter),
+/// so — unlike the write payload — it rides the per-poll pane list. A client answers by reading
+/// that selection off ITS clipboard (if policy permits) and calling
+/// [`HostClient::answer_clipboard_query`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PaneClipboardQuery {
+    /// The selection the child wants read back (`c` clipboard / `p` primary).
+    pub target: ClipboardTarget,
+    /// The monotonic count of clipboard reads this pane's child has requested — `>= 1` here.
     pub seq: u64,
 }
 
@@ -349,6 +380,49 @@ pub trait HostClient {
     /// both. Defaulted to `0` so an older [`HostClient`] impl need not implement it.
     fn pane_bell_seq(&self, _id: PaneId) -> u64 {
         0
+    }
+
+    /// The pane's most recent OSC 52 clipboard WRITE ([`PaneClipboardWrite`]) — fetched ON
+    /// DEMAND when the write `seq` in the pane list grows, NOT carried per poll, because the
+    /// payload can be large (a whole paste). `None` if the pane is absent or its child has
+    /// written no clipboard. A client applies it — subject to its clipboard policy — to its own
+    /// system clipboard. Defaulted to `None` so an older [`HostClient`] impl need not implement it.
+    fn pane_clipboard_write(&self, _id: PaneId) -> Option<PaneClipboardWrite> {
+        None
+    }
+
+    /// The CHEAP monotonic count of OSC 52 clipboard WRITES this pane's child has requested (`0`
+    /// before the first, or an absent pane) — no payload. A display client polls this every frame
+    /// and fetches the (potentially large) payload via [`pane_clipboard_write`](Self::pane_clipboard_write)
+    /// only when it grows past the last write it applied. Defaulted to `0`.
+    fn pane_clipboard_write_seq(&self, _id: PaneId) -> u64 {
+        0
+    }
+
+    /// The pane's pending OSC 52 clipboard READ query ([`PaneClipboardQuery`]) — the selection the
+    /// child asked to read back plus its `seq` — or `None` if the pane is absent or issued no read.
+    /// Tiny, so it rides the per-poll pane list (a display client answers when the `seq` grows past
+    /// the last it handled). Defaulted to `None`.
+    fn pane_clipboard_query(&self, _id: PaneId) -> Option<PaneClipboardQuery> {
+        None
+    }
+
+    /// Answer pane `id`'s pending OSC 52 clipboard READ query `seq` by writing `text` for
+    /// `target` back to its PTY as an `OSC 52` reply. Returns whether THIS call wrote: the host
+    /// admits EXACTLY ONE reply per query across all attached clients (each has its own system
+    /// clipboard), so a later or duplicate offer for the same `seq` returns `false` without
+    /// writing. A client calls this only after its clipboard policy PERMITS the read; if every
+    /// client's policy denies, the query goes unanswered (no one shares their clipboard).
+    /// Defaulted to `false` so an older [`HostClient`] impl need not implement it.
+    #[must_use]
+    fn answer_clipboard_query(
+        &self,
+        _id: PaneId,
+        _seq: u64,
+        _target: ClipboardTarget,
+        _text: &str,
+    ) -> bool {
+        false
     }
 }
 
@@ -765,6 +839,55 @@ impl HostClient for Host {
     /// [`Self::pane_notification`]). An absent pane flattens to `0`.
     fn pane_bell_seq(&self, id: PaneId) -> u64 {
         self.with_pane_id(id, Pane::bell_seq).unwrap_or(0)
+    }
+
+    /// The pane's live OSC 52 clipboard WRITE, read off the emulator under the workspace lock and
+    /// shaped into a [`PaneClipboardWrite`]. Flattens "absent pane" and "wrote nothing" to `None`.
+    fn pane_clipboard_write(&self, id: PaneId) -> Option<PaneClipboardWrite> {
+        self.with_pane_id(id, Pane::clipboard_write)
+            .and_then(|(write, seq)| {
+                write.map(|w| PaneClipboardWrite {
+                    targets: w.targets,
+                    text: w.text,
+                    seq,
+                })
+            })
+    }
+
+    /// The pane's cheap live clipboard-write count (no payload clone), read under the workspace
+    /// lock. `0` for an absent pane.
+    fn pane_clipboard_write_seq(&self, id: PaneId) -> u64 {
+        self.with_pane_id(id, Pane::clipboard_write_seq)
+            .unwrap_or(0)
+    }
+
+    /// The pane's live pending OSC 52 read query, read off the emulator under the workspace lock
+    /// and shaped into a [`PaneClipboardQuery`]. Flattens "absent pane" and "issued no read" to
+    /// `None`.
+    fn pane_clipboard_query(&self, id: PaneId) -> Option<PaneClipboardQuery> {
+        self.with_pane_id(id, Pane::clipboard_query)
+            .and_then(|(query, seq)| {
+                query.map(|q| PaneClipboardQuery {
+                    target: q.target,
+                    seq,
+                })
+            })
+    }
+
+    /// Formats the `OSC 52` reply ([`osc52_reply`]) and hands it to the pane's exactly-once
+    /// arbiter through the pane's handle, which is extracted from under the workspace lock and
+    /// written OUTSIDE it (like [`Self::send_key`]) so the pty write does not hold the registry.
+    /// `false` for an absent pane (nothing to answer).
+    fn answer_clipboard_query(
+        &self,
+        id: PaneId,
+        seq: u64,
+        target: ClipboardTarget,
+        text: &str,
+    ) -> bool {
+        let reply = osc52_reply(target, text);
+        self.with_pane_id(id, Pane::handle)
+            .is_some_and(|handle| handle.answer_clipboard_query(seq, &reply).unwrap_or(false))
     }
 
     /// The DEFAULT session's window (see [`Host::workspace`]).

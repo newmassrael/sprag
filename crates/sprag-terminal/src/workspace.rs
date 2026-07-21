@@ -30,7 +30,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use sprag_vt::{Notification, ShellState};
+use sprag_vt::{ClipboardQuery, ClipboardWrite, Notification, ShellState};
 
 use crate::pane_pty::{CommandBuilder, PanePty, PanePtyError, PanePtyHandle};
 
@@ -138,6 +138,28 @@ impl Pane {
         self.pty.shell()
     }
 
+    /// The most recent OSC 52 clipboard WRITE the child requested, or `None`, with its monotonic
+    /// sequence — read LIVE from the emulator. Potentially large (a paste), so it is fetched on
+    /// demand off the sequence, not shipped every poll. See [`sprag_vt::VtPort::clipboard_write`].
+    #[must_use]
+    pub fn clipboard_write(&self) -> (Option<ClipboardWrite>, u64) {
+        self.pty.clipboard_write()
+    }
+
+    /// The cheap monotonic count of OSC 52 clipboard writes — no payload clone. A display client
+    /// polls this each frame and fetches [`Self::clipboard_write`] only when it grows.
+    #[must_use]
+    pub fn clipboard_write_seq(&self) -> u64 {
+        self.pty.clipboard_write_seq()
+    }
+
+    /// The most recent OSC 52 clipboard READ query the child requested, or `None`, with its
+    /// monotonic sequence — read LIVE from the emulator. See [`sprag_vt::VtPort::clipboard_query`].
+    #[must_use]
+    pub fn clipboard_query(&self) -> (Option<ClipboardQuery>, u64) {
+        self.pty.clipboard_query()
+    }
+
     /// A cloneable I/O handle onto this pane's pseudoterminal.
     #[must_use]
     pub fn handle(&self) -> PanePtyHandle {
@@ -175,6 +197,19 @@ pub struct PaneInfo {
     /// The last finished command's exit status (OSC 133 `D`), `None` when none has finished with a
     /// reported status. Pair with [`Self::shell_state`] to tell "no command ran" from "unreported".
     pub last_exit_status: Option<i32>,
+    /// Monotonic count of OSC 52 clipboard WRITES this pane's child has requested (`0` before the
+    /// first). A display client that remembers the value it last applied learns a NEW write
+    /// arrived when this grows, then fetches the (potentially large) payload on demand and applies
+    /// it — subject to policy — to its own system clipboard. The seq alone travels in the pane
+    /// list; the payload does not (see [`Pane::clipboard_write`]).
+    pub clipboard_write_seq: u64,
+    /// The most recent OSC 52 clipboard READ query the child requested, or `None` — the single
+    /// selection it wants read back. Tiny, so it travels inline (unlike the write payload).
+    pub clipboard_query: Option<ClipboardQuery>,
+    /// Monotonic count of OSC 52 clipboard READS this pane's child has requested (`0` before the
+    /// first). A display client answers a NEW query — subject to policy — when this grows, the
+    /// answer arbitrated to exactly one reply across clients (see [`Pane::clipboard_query`]).
+    pub clipboard_query_seq: u64,
 }
 
 /// The multiplexer's pane pool: a set of live panes, a monotonic id
@@ -427,6 +462,7 @@ impl Workspace {
                 let (cols, rows) = p.pty.dimensions();
                 let (notification, notification_seq) = p.notification();
                 let (shell_state, last_exit_status) = p.shell();
+                let (clipboard_query, clipboard_query_seq) = p.clipboard_query();
                 PaneInfo {
                     id: p.id.0,
                     cols,
@@ -438,6 +474,9 @@ impl Workspace {
                     bell_seq: p.bell_seq(),
                     shell_state,
                     last_exit_status,
+                    clipboard_write_seq: p.clipboard_write().1,
+                    clipboard_query,
+                    clipboard_query_seq,
                 }
             })
             .collect()
