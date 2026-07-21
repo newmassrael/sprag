@@ -3602,6 +3602,93 @@ mod tests {
         );
     }
 
+    /// #8 reflow: NARROWING that re-breaks a logical line follows the anchor onto the cell's new
+    /// (col, row). Revert-proof — a verbatim carry would leave the anchor at (4, 0).
+    #[test]
+    fn image_anchor_follows_a_cell_onto_a_narrowed_wrap_row() {
+        let mut em = Emulator::new(8, 4);
+        em.advance(b"abcdefg"); // one logical line on row 0 (fits width 8)
+        // Anchor the image on 'e' (row 0, col 4).
+        em.advance(format!("\x1b[1;5H{}", tiny_image_apc()).as_bytes());
+        assert_eq!(em.screen().images()[0].anchor, (4, 0));
+        VtPort::resize(&mut em, 4, 4); // "abcdefg" -> "abcd" (row 0, wrapped) + "efg" (row 1)
+        assert_eq!(
+            em.screen().images()[0].anchor,
+            (0, 1),
+            "the anchor followed 'e' onto the wrapped continuation row"
+        );
+    }
+
+    /// #8 reflow: WIDENING that rejoins a soft-wrapped line follows the anchor back onto the merged
+    /// row. Revert-proof — a verbatim carry would leave the anchor at (0, 1).
+    #[test]
+    fn image_anchor_follows_a_cell_onto_a_widened_rejoin_row() {
+        let mut em = Emulator::new(6, 3);
+        em.advance(b"abcdefgh"); // width 6 autowraps: "abcdef" (row 0, wrapped) + "gh" (row 1)
+        // Anchor on 'g' (row 1, col 0).
+        em.advance(format!("\x1b[2;1H{}", tiny_image_apc()).as_bytes());
+        assert_eq!(em.screen().images()[0].anchor, (0, 1));
+        VtPort::resize(&mut em, 8, 3); // rejoin: "abcdefgh" on row 0, 'g' at col 6
+        assert_eq!(
+            em.screen().images()[0].anchor,
+            (6, 0),
+            "the anchor followed 'g' back onto the rejoined row"
+        );
+    }
+
+    /// #8 reflow: an image whose anchor cell reflows ABOVE the visible window is evicted — the same
+    /// no-scrollback-image bound as a scrolled-off image, now reached via a rewrap instead of a
+    /// scroll.
+    #[test]
+    fn image_reflowed_above_the_window_is_evicted() {
+        let mut em = Emulator::new(8, 3);
+        em.advance(b"\x1b[1;1H"); // cursor at row 0
+        em.advance(tiny_image_apc().as_bytes()); // anchor (0, 0), on the top row
+        em.advance(b"XY\r\naaaaaaaa\r\nbbbbbbbb"); // rows fit in 3 at width 8
+        assert_eq!(em.screen().images().len(), 1);
+        // Narrow to 4: "aaaaaaaa"/"bbbbbbbb" each double to 2 rows, so "XY" (with the anchor) is
+        // pushed above the 3-row window into the overflow that becomes scrollback.
+        VtPort::resize(&mut em, 4, 3);
+        assert!(
+            em.screen().images().is_empty(),
+            "the image whose anchor reflowed above the window was evicted"
+        );
+    }
+
+    /// #8 reflow: a narrow-then-widen round trip restores the anchor cell (the exact-cell tracking
+    /// is reversible, not lossy).
+    #[test]
+    fn image_anchor_round_trips_across_narrow_then_widen() {
+        let mut em = Emulator::new(8, 4);
+        em.advance(b"abcdefg");
+        em.advance(format!("\x1b[1;5H{}", tiny_image_apc()).as_bytes());
+        let original = em.screen().images()[0].anchor; // (4, 0)
+        VtPort::resize(&mut em, 4, 4);
+        VtPort::resize(&mut em, 8, 4);
+        assert_eq!(
+            em.screen().images()[0].anchor,
+            original,
+            "narrow then widen restores the anchor cell"
+        );
+    }
+
+    /// #8 reflow: the reflow carries `next_image_seq`, so a re-transmit AFTER a resize keeps a
+    /// content seq above every surviving image's. Revert-proof — a reset to 0 would make the
+    /// re-transmit's seq read as older than the pre-resize image's.
+    #[test]
+    fn a_retransmit_after_a_reflow_keeps_a_monotonic_seq() {
+        let mut em = Emulator::new(8, 4);
+        em.advance(tiny_image_apc().as_bytes());
+        assert_eq!(em.screen().images()[0].seq, 0);
+        VtPort::resize(&mut em, 10, 4); // reflow must carry next_image_seq (not reset it to 0)
+        em.advance(tiny_image_apc().as_bytes()); // re-transmit under the same id
+        assert_eq!(
+            em.screen().images()[0].seq,
+            1,
+            "the re-transmit's content seq stayed monotonic across the reflow"
+        );
+    }
+
     // ---- Kitty graphics Stage 4: chunking / delete / query / PNG ----
 
     /// Encode `rgba` (`width x height`, 8-bit RGBA) to PNG bytes for a decode round-trip test.

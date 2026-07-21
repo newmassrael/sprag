@@ -1169,9 +1169,11 @@ impl Screen {
         next.scrollback = self.scrollback.clone();
         next.scrollback_logical = self.scrollback_logical; // same lines -> same logical count
         // Inline images (Kitty / Sixel) carry across a resize verbatim — a plain
-        // resize must NOT drop them (position-eviction under scroll / reflow is a
-        // later stage, but the image data survives a re-layout).
+        // resize must NOT drop them. This is the alt-screen / degenerate fallback: the app owns its
+        // layout, so the anchor is not re-mapped here (the main-screen rewrap in [`Self::reflowed`]
+        // does that). `next_image_seq` carries so a post-resize re-transmit stays monotonic.
         next.images = self.images.clone();
+        next.next_image_seq = self.next_image_seq;
         next
     }
 
@@ -1190,7 +1192,8 @@ impl Screen {
     /// so a live line editor's resize redraw overwrites in place rather than stacking — see the
     /// cursor-anchor note in Pass 3. Wide clusters never split across the margin; overflow above
     /// the visible window materializes as the new scrollback (as styled cells, wrap + mark
-    /// preserved). `gen` is a fresh damage stamp for every (re-laid-out) visible row.
+    /// preserved). Inline images track their ANCHOR CELL across the rewrap and are evicted if it
+    /// reflows above the window. `gen` is a fresh damage stamp for every (re-laid-out) visible row.
     pub(crate) fn reflowed(&self, cols: u16, rows: u16, generation: u64) -> Screen {
         if self.kind != ScreenKind::Main || cols == 0 || rows == 0 {
             return self.resized(cols, rows);
@@ -1208,6 +1211,22 @@ impl Screen {
         let mut cur_mark: Option<PromptMark> = None;
         let (cur_col, cur_row) = (self.cursor.col, self.cursor.row);
         let (mut cursor_line, mut cursor_off, mut cursor_found) = (0usize, 0usize, false);
+        // Per-image anchor tracking across the rewrap, parallel to `self.images` — the same idea as
+        // the cursor: Pass 1 records the anchor cell's (logical line, glyph offset), Pass 2 maps it
+        // to the new (col, physical row), Pass 3 keeps it if that row stays visible and EVICTS it if
+        // the cell reflowed ABOVE the window (no scrollback images — the Stage-3 bound, matching a
+        // scrolled-off image). `images_on_row` lets the Pass-1 cell scan check only the images on the
+        // current row; an anchor row outside the visible grid is unrepresented, so that image's
+        // `anchor_pos` stays `None` and it is evicted. Images only ever anchor in the visible grid
+        // (a scroll evicts one that leaves the top), so scanning the visible rows alone suffices.
+        let mut anchor_pos: Vec<Option<(usize, usize)>> = vec![None; self.images.len()];
+        let mut anchor_phys: Vec<Option<(u16, usize)>> = vec![None; self.images.len()];
+        let mut images_on_row: Vec<Vec<usize>> = vec![Vec::new(); self.rows as usize];
+        for (i, img) in self.images.iter().enumerate() {
+            if img.anchor.1 < self.rows {
+                images_on_row[img.anchor.1 as usize].push(i);
+            }
+        }
         // Scrollback rows first (oldest -> newest), no cursor. A wrapped last scrollback line
         // leaves `cur` open so the first visible row continues its logical line.
         for line in &self.scrollback {
@@ -1247,6 +1266,13 @@ impl Screen {
                     cursor_found = true;
                     cursor_line = lines.len();
                     cursor_off = cur.len() + glyphs.len();
+                }
+                // An image anchored at this cell rides the rewrap by glyph offset (captured before
+                // the trailer skip below, so an anchor on any cell — glyph or blank — is recorded).
+                for &ai in &images_on_row[r as usize] {
+                    if anchor_pos[ai].is_none() && self.images[ai].anchor.0 == c {
+                        anchor_pos[ai] = Some((lines.len(), cur.len() + glyphs.len()));
+                    }
                 }
                 let cell = self.cell(c, r).cloned().unwrap_or_else(Cell::blank);
                 if cell.width == Width::Trailer {
@@ -1322,10 +1348,25 @@ impl Screen {
                 if cell.width == Width::Wide {
                     buf.push(Cell::trailer_for(cell));
                 }
+                // Record where an anchor at this glyph offset LANDS — after the wrap above, so the
+                // (col, physical row) is the cell's real post-rewrap position, not its pre-wrap one.
+                for (ai, pos) in anchor_pos.iter().enumerate() {
+                    if anchor_phys[ai].is_none() && *pos == Some((li, i)) {
+                        anchor_phys[ai] = Some((col, phys.len()));
+                    }
+                }
                 col += w;
             }
             if cursor_phys.is_none() && cursor_line == li && cursor_off >= line.len() {
                 cursor_phys = Some((col, phys.len()));
+            }
+            // An anchor offset past this line's content (a trimmed trailing blank) maps to its end.
+            for (ai, pos) in anchor_pos.iter().enumerate() {
+                if anchor_phys[ai].is_none()
+                    && pos.is_some_and(|(l, off)| l == li && off >= line.len())
+                {
+                    anchor_phys[ai] = Some((col, phys.len()));
+                }
             }
             phys.push((buf, false, None)); // hard end of this logical line
             // Re-attach the logical line's mark to its head physical row (always pushed above).
@@ -1397,14 +1438,28 @@ impl Screen {
             visible: self.cursor.visible,
         };
         next.kind = self.kind;
-        // Inline images survive the rewrap verbatim: the RGBA is preserved and the anchor cell is
-        // carried unchanged. Scroll now repositions an image (Stage 3), but a REFLOW does NOT
-        // re-map the anchor to its rewrapped cell — a width change can leave an image misplaced
-        // until the app redraws. A documented bound: precise reflow-repositioning of an image
-        // (mirroring how a mark re-attaches to a re-broken line) is deferred; verbatim-carry keeps
-        // the image rather than dropping or misrendering it. Same verbatim carry as [`Self::resized`]
-        // (a plain resize, no rewrap, keeps anchors correct).
-        next.images = self.images.clone();
+        // Inline images ride the rewrap by ANCHOR CELL: each image's anchor is re-mapped to where
+        // its cell lands after the re-break (the exact cell, tracked through the three passes like
+        // the cursor — an image is a 2D placement, so it tracks its cell rather than re-attaching to
+        // the line head the way a mark does). An image whose anchor cell reflows ABOVE the visible
+        // window is evicted — the same no-scrollback-image bound as a scrolled-off image (Stage 3);
+        // an anchor cell no longer in the reconstructed content (its row shrank away, or its
+        // trailing-blank line was dropped) is likewise dropped rather than left at a stale margin.
+        // `next_image_seq` carries so a re-transmit after the resize keeps a seq ABOVE every
+        // surviving image's — a reset to 0 would read as STALE to a consumer tracking seq growth.
+        next.next_image_seq = self.next_image_seq;
+        for (ai, img) in self.images.iter().enumerate() {
+            if let Some((col, prow)) = anchor_phys[ai]
+                && prow >= start
+            {
+                let mut moved = img.clone();
+                moved.anchor = (
+                    col.min(cols.saturating_sub(1)),
+                    ((prow - start) as u16).min(rows.saturating_sub(1)),
+                );
+                next.images.push(moved);
+            }
+        }
         next
     }
 
