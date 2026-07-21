@@ -430,6 +430,33 @@ impl Workspace {
         Some(self.panes.remove(index))
     }
 
+    /// Take in an ALREADY-LIVE pane — the exact inverse of [`close`](Self::close), and the one
+    /// primitive a cross-window move (`break-pane` / `join-pane`) needs.
+    ///
+    /// A pane LEAVES one pool through [`close`](Self::close) (removed and RETURNED, its blocking
+    /// `Drop` deliberately NOT run) and ENTERS another through this, its object intact — PTY,
+    /// emulator, scrollback, and reader thread all untouched, because a pane carries its whole
+    /// world and this only moves the owning `Vec` slot. Nothing is re-spawned and no child is
+    /// signalled: the move is a pure relocation, so a `break-pane` keeps the user's shell, its
+    /// history, and its running program exactly as they were.
+    ///
+    /// **Why the id is already safe.** Every pool in a [`SessionRegistry`](crate::SessionRegistry)
+    /// shares ONE id counter ([`sibling`](Self::sibling)), so a pane brought in from a sibling pool
+    /// already carries a [`PaneId`] unique across the whole registry — this cannot introduce a
+    /// collision. The counter is nonetheless advanced past the adopted id
+    /// (`next_id = max(next_id, id + 1)`, saturating), so the never-reused invariant holds even for
+    /// a pane adopted from a pool that did NOT share this counter (there is no such caller today;
+    /// the reservation makes the primitive correct regardless, the same discipline
+    /// [`spawn_with_dirty_id`](Self::spawn_with_dirty_id) keeps for a restore).
+    ///
+    /// The caller owns membership: it must have obtained `pane` from a [`close`](Self::close) it
+    /// just performed, so the same id is never live in two pools at once.
+    pub fn adopt(&mut self, pane: Pane) {
+        self.next_id
+            .fetch_max(pane.id.0.saturating_add(1), Ordering::Relaxed);
+        self.panes.push(pane);
+    }
+
     /// Resize the pane with `id` to `cols x rows` (PTY + emulator).
     ///
     /// Returns `Ok(true)` when the pane exists and was resized, `Ok(false)`

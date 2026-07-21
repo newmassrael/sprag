@@ -32,8 +32,8 @@ pub use layout::{
 };
 pub use pane_pty::{CommandBuilder, PanePty, PanePtyError, PanePtyHandle, RawOutput};
 pub use registry::{
-    KillOutcome, Session, SessionError, SessionInfo, SessionRegistry, Window, WindowInfo,
-    WindowKillOutcome,
+    KillOutcome, PaneMoveError, Session, SessionError, SessionInfo, SessionRegistry, Window,
+    WindowInfo, WindowKillOutcome,
 };
 pub use snapshot::{
     PaneRestore, PaneSnapshot, RestorePlan, SNAPSHOT_VERSION, SessionSnapshot, Snapshot,

@@ -206,6 +206,26 @@ impl Window {
         &self.layout
     }
 
+    /// Self-heal the arrangement against this window's OWN live pool — the caller-less form of
+    /// [`reconcile_layout`](Self::reconcile_layout), for the paths that change a window's pane set
+    /// from INSIDE the registry (a cross-window move) rather than from a host that already holds
+    /// the pane ids.
+    ///
+    /// Keeps the [`layout`](crate::layout) lock discipline exactly: the pool ids are collected
+    /// under the workspace lock, which is RELEASED before [`reconcile_layout`](Self::reconcile_layout)
+    /// runs, so the registry lock the caller holds and this window's workspace lock are never both
+    /// held at once (registry-then-workspace, released, then the lock-free reconcile).
+    fn reconcile_own(&mut self) {
+        let ids: Vec<PaneId> = {
+            let pool = self
+                .workspace
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            pool.panes().iter().map(Pane::id).collect()
+        };
+        self.reconcile_layout(&ids);
+    }
+
     /// Install a client's settled arrangement, but only if it was authored against the
     /// arrangement still in force — a compare-and-set on
     /// [`layout_revision`](Self::layout_revision).
@@ -365,6 +385,47 @@ impl std::fmt::Display for SessionError {
 }
 
 impl std::error::Error for SessionError {}
+
+/// Why a pane MOVE between windows was refused ([`break_pane`](SessionRegistry::break_pane) /
+/// [`join_pane`](SessionRegistry::join_pane)). Its own class rather than a [`SessionError`]
+/// arm, because a move addresses THREE things a session op does not — a source window, a
+/// destination, and a specific pane by id — and each has a distinct way to be wrong. Every
+/// variant leaves the registry UNCHANGED: the pane is taken out of its pool only after every
+/// check has passed, so a refusal never strands a pane between two windows.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum PaneMoveError {
+    /// No session carries the name.
+    UnknownSession(String),
+    /// The session has no window with the (source or destination) name.
+    UnknownWindow(String),
+    /// The named window does not hold the pane — a client naming a pane that has since exited or
+    /// that lives in another window. Refused rather than silently retargeted.
+    UnknownPane(PaneId),
+    /// `break-pane` on a window that tiles only ONE pane: moving it to a new window would empty
+    /// and close the source, a rename dressed as a move. tmux refuses the same ("can't break the
+    /// only pane in a window").
+    LastPane,
+    /// `break-pane` with an explicit new-window name already taken in the session — a name is an
+    /// address, so it must stay unique.
+    DuplicateWindow(String),
+    /// `join-pane` with the source and destination window being the SAME one — a no-op move.
+    SameWindow(String),
+}
+
+impl std::fmt::Display for PaneMoveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownSession(name) => write!(f, "no session named {name:?}"),
+            Self::UnknownWindow(name) => write!(f, "no window named {name:?}"),
+            Self::UnknownPane(id) => write!(f, "no pane with id {} in that window", id.0),
+            Self::LastPane => write!(f, "cannot break the only pane in a window"),
+            Self::DuplicateWindow(name) => write!(f, "a window named {name:?} already exists"),
+            Self::SameWindow(name) => write!(f, "source and destination window are both {name:?}"),
+        }
+    }
+}
+
+impl std::error::Error for PaneMoveError {}
 
 /// What a [`kill_session`](SessionRegistry::kill_session) did — carrying the reaped owners so the
 /// CALLER drops them (running each pane's blocking [`PanePty`](crate::PanePty) `Drop`: kill,
@@ -650,6 +711,162 @@ impl Session {
         }
         self.windows[idx].name = new.to_owned();
         Ok(())
+    }
+
+    /// The index of the window whose pool holds `pane`, or `None` if no window of this session
+    /// does — how [`break_pane`](Self::break_pane) / [`join_pane`](Self::join_pane) find a pane's
+    /// SOURCE window from its id ALONE.
+    ///
+    /// A [`PaneId`] is unique across the whole registry (the module's load-bearing invariant), so
+    /// at most one window holds it and the answer is unambiguous — the caller never has to name
+    /// the source window, and cannot mis-name it (tmux requires `-s src-window.pane`; the unique
+    /// id makes the window part redundant). Scans each window's pool under its own lock, released
+    /// before the next — one lock at a time, registry-then-workspace order.
+    fn window_index_of_pane(&self, pane: PaneId) -> Option<usize> {
+        self.windows.iter().position(|w| {
+            w.workspace()
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .pane(pane)
+                .is_some()
+        })
+    }
+
+    /// Break `pane` out of the window that holds it into a NEW window, select the new window, and
+    /// return its name — tmux `break-pane`.
+    ///
+    /// The pane is MOVED whole (its PTY, emulator, scrollback, and running program ride along —
+    /// see [`Workspace::adopt`](crate::Workspace::adopt)); nothing is re-spawned. The new window's
+    /// pool siblings off the source's, so the moved pane's id stays unique across the registry.
+    ///
+    /// The SOURCE window is derived from `pane` alone (the window whose pool holds it — a
+    /// [`PaneId`] is registry-unique, so at most one does), so there is no window arg to
+    /// mis-name. `new_name` is the caller's choice for the new window; `None` allocates the lowest
+    /// free integer window name (as [`new_window`](Self::new_window) does), the way tmux's
+    /// `break-pane` with no `-n` picks the next index.
+    ///
+    /// Every check runs BEFORE the pane leaves its pool, so a refusal moves nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`PaneMoveError::UnknownPane`] if no window of the session holds `pane`;
+    /// [`PaneMoveError::DuplicateWindow`] if an explicit `new_name` is taken;
+    /// [`PaneMoveError::LastPane`] if the source window tiles only that one pane (breaking it would
+    /// just rename the window — tmux refuses the same).
+    pub fn break_pane(
+        &mut self,
+        pane: PaneId,
+        new_name: Option<&str>,
+    ) -> Result<String, PaneMoveError> {
+        let widx = self
+            .window_index_of_pane(pane)
+            .ok_or(PaneMoveError::UnknownPane(pane))?;
+        // Resolve the new window name (and reject a duplicate) BEFORE touching the pane.
+        let name = match new_name {
+            Some(n) => {
+                if self.windows.iter().any(|w| w.name == n) {
+                    return Err(PaneMoveError::DuplicateWindow(n.to_owned()));
+                }
+                n.to_owned()
+            }
+            None => self.lowest_free_window_name(),
+        };
+        // Take the pane out and mint the new window's pool under ONE source-pool lock, with the
+        // last-pane guard checked first so a refusal leaves the pool untouched. Membership is
+        // already known (window_index_of_pane found it in this pool).
+        let src_ws = Arc::clone(self.windows[widx].workspace());
+        let (taken, mut new_pool) = {
+            let mut pool = src_ws.lock().unwrap_or_else(PoisonError::into_inner);
+            if pool.panes().len() <= 1 {
+                return Err(PaneMoveError::LastPane);
+            }
+            let taken = pool
+                .close(pane)
+                .expect("window_index_of_pane found it in this pool");
+            let new_pool = pool.sibling();
+            (taken, new_pool)
+        };
+        // The new window is born ALREADY holding the moved pane; heal its tree to the single leaf
+        // and select it (tmux's break-pane makes the new window current).
+        new_pool.adopt(taken);
+        let mut win = Window::new(&name, new_pool);
+        win.reconcile_own();
+        self.windows.push(win);
+        self.current_window = self.windows.len() - 1;
+        // The source window lost a leaf: heal its tree (prunes the gone pane, bumps its revision).
+        self.windows[widx].reconcile_own();
+        Ok(name)
+    }
+
+    /// Move `pane` into the window named `dst` of THIS session, appending it as a new tiled leaf —
+    /// tmux `join-pane`. Returns whether the SOURCE window was CLOSED (it is when the join emptied
+    /// it).
+    ///
+    /// The pane is MOVED whole, as in [`break_pane`](Self::break_pane), and its SOURCE window is
+    /// derived from its id (the window whose pool holds it) — the caller names only the
+    /// destination. Placement is the arrangement's append (the destination's
+    /// [`reconcile_layout`](Window::reconcile_layout) folds the new leaf in); a client that wants
+    /// it at a specific split drops it there and writes the tree ([`Window::set_layout`]), the same
+    /// "a gesture outranks a default" rule floating uses.
+    ///
+    /// A join that empties the source window CLOSES it (tmux's behaviour). The destination is a
+    /// DIFFERENT window of this session, so at least two windows exist and removing the emptied
+    /// source always leaves the session with at least one — [`current_window`](Self::current_window)
+    /// is kept valid and, if it WAS the closed source, moved to the neighbour that takes its place.
+    ///
+    /// Every check runs BEFORE the pane leaves its pool, so a refusal moves nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`PaneMoveError::UnknownWindow`] if the session has no window named `dst`;
+    /// [`PaneMoveError::UnknownPane`] if no window of the session holds `pane`;
+    /// [`PaneMoveError::SameWindow`] if `pane` already lives in `dst` (a no-op move).
+    pub fn join_pane(&mut self, pane: PaneId, dst: &str) -> Result<bool, PaneMoveError> {
+        let dst_idx = self
+            .windows
+            .iter()
+            .position(|w| w.name == dst)
+            .ok_or_else(|| PaneMoveError::UnknownWindow(dst.to_owned()))?;
+        let src_idx = self
+            .window_index_of_pane(pane)
+            .ok_or(PaneMoveError::UnknownPane(pane))?;
+        if src_idx == dst_idx {
+            return Err(PaneMoveError::SameWindow(
+                self.windows[dst_idx].name.clone(),
+            ));
+        }
+        let src_ws = Arc::clone(self.windows[src_idx].workspace());
+        let dst_ws = Arc::clone(self.windows[dst_idx].workspace());
+        // Take from the source, then adopt into the destination under a SEPARATE lock — never both
+        // pools held at once. Membership is known (window_index_of_pane found it in the source).
+        let taken = src_ws
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .close(pane)
+            .expect("window_index_of_pane found it in this pool");
+        dst_ws
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .adopt(taken);
+        self.windows[dst_idx].reconcile_own();
+        // tmux closes a source window a join emptied.
+        let src_empty = src_ws
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .panes()
+            .is_empty();
+        if src_empty {
+            self.windows.remove(src_idx);
+            if self.current_window > src_idx {
+                self.current_window -= 1;
+            } else if self.current_window == src_idx {
+                self.current_window = src_idx.min(self.windows.len() - 1);
+            }
+            Ok(true)
+        } else {
+            self.windows[src_idx].reconcile_own();
+            Ok(false)
+        }
     }
 }
 
@@ -1110,6 +1327,49 @@ impl SessionRegistry {
         new: &str,
     ) -> Result<(), SessionError> {
         self.session_named_mut(session)?.rename_window(name, new)
+    }
+
+    /// Break `pane` out of the window that holds it, within the session named `session`, into a new
+    /// window, returning its name — the registry-level entry the wire handler uses (resolve the
+    /// session, then delegate to [`Session::break_pane`], which derives the pane's source window).
+    /// tmux `break-pane`.
+    ///
+    /// # Errors
+    ///
+    /// [`PaneMoveError::UnknownSession`] if no session carries `session`; otherwise the refusals
+    /// [`Session::break_pane`] gives.
+    pub fn break_pane(
+        &mut self,
+        session: &str,
+        pane: PaneId,
+        new_name: Option<&str>,
+    ) -> Result<String, PaneMoveError> {
+        self.sessions
+            .iter_mut()
+            .find(|s| s.name == session)
+            .ok_or_else(|| PaneMoveError::UnknownSession(session.to_owned()))?
+            .break_pane(pane, new_name)
+    }
+
+    /// Move `pane` into the window named `dst` of the session named `session`, returning whether the
+    /// source window was closed — the registry-level entry the wire handler uses ([`Session::join_pane`]
+    /// derives the pane's source window). tmux `join-pane`.
+    ///
+    /// # Errors
+    ///
+    /// [`PaneMoveError::UnknownSession`] if no session carries `session`; otherwise the refusals
+    /// [`Session::join_pane`] gives.
+    pub fn join_pane(
+        &mut self,
+        session: &str,
+        pane: PaneId,
+        dst: &str,
+    ) -> Result<bool, PaneMoveError> {
+        self.sessions
+            .iter_mut()
+            .find(|s| s.name == session)
+            .ok_or_else(|| PaneMoveError::UnknownSession(session.to_owned()))?
+            .join_pane(pane, dst)
     }
 
     /// Kill the window named `window` of the session named `session` — tmux `kill-window`.
@@ -2370,6 +2630,252 @@ mod tests {
             reg.session(&default).unwrap().windows().len(),
             2,
             "a refused kill removed nothing",
+        );
+    }
+
+    /// Spawn `n` live panes into the window named `w` of the default session, returning their ids
+    /// (spawned straight into the pool, as the host does; the window's layout lags until a read
+    /// reconciles it, which the move paths do).
+    fn spawn_into(reg: &SessionRegistry, w: &str, n: usize) -> Vec<PaneId> {
+        let ws = reg
+            .window_workspace(&default_name(reg), w)
+            .expect("the window exists");
+        (0..n)
+            .map(|_| lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap())
+            .collect()
+    }
+
+    /// The pane ids the window named `w` currently pools, in order.
+    fn pool_ids(reg: &SessionRegistry, w: &str) -> Vec<PaneId> {
+        let ws = reg
+            .window_workspace(&default_name(reg), w)
+            .expect("the window exists");
+        let pool = lock(&ws);
+        pool.panes().iter().map(Pane::id).collect()
+    }
+
+    /// `break-pane` moves the pane WHOLE into a new window (same id — not re-spawned), selects the
+    /// new window, and leaves the source with its remaining panes. The tmux-superior claim: the
+    /// pane's identity survives the move, so its PTY / emulator / history ride along.
+    #[test]
+    fn break_pane_moves_a_pane_whole_into_a_new_selected_window() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        let ids = spawn_into(&reg, "0", 2);
+        let (a, b) = (ids[0], ids[1]);
+
+        assert_eq!(
+            reg.break_pane(&default, b, None).unwrap(),
+            "1",
+            "the new window gets the lowest free name",
+        );
+        let session = reg.session(&default).unwrap();
+        assert_eq!(session.windows().len(), 2);
+        assert_eq!(
+            session.current_window().name(),
+            "1",
+            "break-pane makes the new window current",
+        );
+        // The moved pane kept its exact id in the new window; the source kept the other.
+        assert_eq!(pool_ids(&reg, "1"), vec![b], "moved pane, same id");
+        assert_eq!(
+            pool_ids(&reg, "0"),
+            vec![a],
+            "source keeps its remaining pane"
+        );
+        // The new (current) window's tree reconciled to the moved pane.
+        assert_eq!(
+            reg.session(&default)
+                .unwrap()
+                .current_window()
+                .layout()
+                .panes(),
+            vec![b],
+            "the new window's tree reconciled to the moved pane",
+        );
+
+        // The id counter is shared and monotonic: the next spawn is 2, never a reused 0/1.
+        let next = spawn_into(&reg, "1", 1)[0];
+        assert_eq!(next.0, 2, "shared, monotonic id counter across the move");
+    }
+
+    /// `break-pane` refuses without moving anything: the only pane of a window (a rename dressed as
+    /// a move), a taken new-window name, an unknown window, and a pane the window does not hold.
+    #[test]
+    fn break_pane_refuses_and_moves_nothing() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+
+        // The only pane cannot be broken out.
+        let solo = spawn_into(&reg, "0", 1)[0];
+        assert_eq!(
+            reg.break_pane(&default, solo, None).unwrap_err(),
+            PaneMoveError::LastPane,
+        );
+        assert_eq!(
+            reg.session(&default).unwrap().windows().len(),
+            1,
+            "no window added"
+        );
+        assert_eq!(pool_ids(&reg, "0"), vec![solo], "the pane stayed put");
+
+        // Two panes now; an explicit name that is taken is refused.
+        let more = spawn_into(&reg, "0", 1)[0];
+        reg.new_window(&default, Some("keep")).unwrap();
+        assert_eq!(
+            reg.break_pane(&default, more, Some("keep")).unwrap_err(),
+            PaneMoveError::DuplicateWindow("keep".to_owned()),
+        );
+        assert_eq!(
+            pool_ids(&reg, "0"),
+            vec![solo, more],
+            "nothing moved on a refusal"
+        );
+
+        // A pane no window holds refuses (the source window is derived from the id).
+        assert_eq!(
+            reg.break_pane(&default, PaneId(999), None).unwrap_err(),
+            PaneMoveError::UnknownPane(PaneId(999)),
+        );
+        // An unknown SESSION refuses at the registry wrapper.
+        assert_eq!(
+            reg.break_pane("nope", more, None).unwrap_err(),
+            PaneMoveError::UnknownSession("nope".to_owned()),
+        );
+    }
+
+    /// `join-pane` appends a pane from one window into another as a new leaf; the source keeps its
+    /// remaining panes and the current window does not move.
+    #[test]
+    fn join_pane_appends_into_the_destination_and_keeps_a_nonempty_source() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        let src = spawn_into(&reg, "0", 2);
+        let (a, b) = (src[0], src[1]);
+        reg.new_window(&default, Some("1")).unwrap();
+        let c = spawn_into(&reg, "1", 1)[0];
+        // Selecting "1" then back to "0" leaves current on "0" — the join must not move it.
+        reg.select_window(&default, "0").unwrap();
+
+        assert!(
+            !reg.join_pane(&default, b, "1").unwrap(),
+            "the source kept a pane, so it was not closed",
+        );
+        assert_eq!(
+            pool_ids(&reg, "1"),
+            vec![c, b],
+            "appended after the destination's pane"
+        );
+        assert_eq!(
+            pool_ids(&reg, "0"),
+            vec![a],
+            "source keeps its remaining pane"
+        );
+        assert_eq!(
+            reg.session(&default).unwrap().current_window().name(),
+            "0",
+            "a join that keeps the source open leaves the current window put",
+        );
+    }
+
+    /// A join that EMPTIES the source window closes it (tmux), and when that source was the CURRENT
+    /// window the current moves to the neighbour that takes its place — the kill_window clamp.
+    #[test]
+    fn join_pane_that_empties_the_source_closes_it_and_reclamps_current() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        let a = spawn_into(&reg, "0", 1)[0];
+        reg.new_window(&default, Some("1")).unwrap();
+        let b = spawn_into(&reg, "1", 1)[0];
+        // Current is the SOURCE window "0" (index 0).
+        reg.select_window(&default, "0").unwrap();
+
+        assert!(
+            reg.join_pane(&default, a, "1").unwrap(),
+            "the source emptied, so it was closed",
+        );
+        let session = reg.session(&default).unwrap();
+        assert_eq!(
+            session.windows().len(),
+            1,
+            "the emptied source window is gone"
+        );
+        assert_eq!(
+            session.current_window().name(),
+            "1",
+            "current re-clamped onto the window that took the closed one's place",
+        );
+        assert_eq!(
+            pool_ids(&reg, "1"),
+            vec![b, a],
+            "both panes now live in the survivor"
+        );
+    }
+
+    /// The other clamp branch: when the CURRENT window sits ABOVE the source that a join closes,
+    /// its index must DECREMENT to keep naming the same window — without it, the removal shifts the
+    /// list under a now-out-of-range `current_window`, which `current_window()` would panic on.
+    #[test]
+    fn join_pane_closing_a_source_below_the_current_decrements_it() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        let a = spawn_into(&reg, "0", 1)[0]; // source at index 0
+        reg.new_window(&default, Some("1")).unwrap(); // destination at index 1
+        spawn_into(&reg, "1", 1);
+        reg.new_window(&default, Some("2")).unwrap(); // index 2
+        spawn_into(&reg, "2", 1);
+        // Current is "2" (index 2), ABOVE the source "0" that the join will close.
+        reg.select_window(&default, "2").unwrap();
+
+        assert!(
+            reg.join_pane(&default, a, "1").unwrap(),
+            "source emptied ⇒ closed"
+        );
+        let session = reg.session(&default).unwrap();
+        assert_eq!(
+            session.windows().len(),
+            2,
+            "\"0\" gone; \"1\" and \"2\" remain"
+        );
+        assert_eq!(
+            session.current_window().name(),
+            "2",
+            "current still names \"2\" after the list shifted down",
+        );
+    }
+
+    /// `join-pane` refuses without moving anything: the same window as source and destination, an
+    /// unknown source or destination window, and a pane the source does not hold.
+    #[test]
+    fn join_pane_refuses_and_moves_nothing() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        let a = spawn_into(&reg, "0", 1)[0];
+        reg.new_window(&default, Some("1")).unwrap();
+        spawn_into(&reg, "1", 1);
+
+        // The pane already lives in "0", so joining it INTO "0" is a no-op move.
+        assert_eq!(
+            reg.join_pane(&default, a, "0").unwrap_err(),
+            PaneMoveError::SameWindow("0".to_owned()),
+        );
+        // An unknown DESTINATION window refuses (the source is derived from the pane id).
+        assert_eq!(
+            reg.join_pane(&default, a, "ghost").unwrap_err(),
+            PaneMoveError::UnknownWindow("ghost".to_owned()),
+        );
+        assert_eq!(
+            reg.join_pane(&default, PaneId(999), "1").unwrap_err(),
+            PaneMoveError::UnknownPane(PaneId(999)),
+        );
+        assert_eq!(
+            reg.join_pane("nope", a, "1").unwrap_err(),
+            PaneMoveError::UnknownSession("nope".to_owned()),
+        );
+        assert_eq!(
+            pool_ids(&reg, "0"),
+            vec![a],
+            "every refusal left the pane in place"
         );
     }
 }
