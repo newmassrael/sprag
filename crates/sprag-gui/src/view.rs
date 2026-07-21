@@ -15,7 +15,9 @@ use crate::terminal::{TerminalView, pane_cache_key, pane_index_of, pane_tag, use
 use pinion_core::external::OUTER_DOCK_ZONE_TAG;
 use pinion_core::reactive::Owner;
 use pinion_core::scene::{ContainerNode, ImageNode, Rect};
-use pinion_core::style::{BoxStyle, Fit, FlexDirection, ImageStyle, LayoutStyle, Size, SizeValue};
+use pinion_core::style::{
+    Border, BoxStyle, Fit, FlexDirection, ImageStyle, LayoutStyle, Size, SizeValue,
+};
 use pinion_core::theme::{ColorRole, Theme, use_theme};
 use pinion_core::{Frame, Scene};
 use pinion_shell::{
@@ -419,7 +421,7 @@ fn build_pane_scene(tv: &TerminalView, i: usize, theme: &Theme) -> Scene {
     // live winit paint AND the RPC snapshot/screenshot produce path, so the dim shows on
     // screen AND in a snapshot. Reading it here auto-subscribes the paint, so the dim
     // follows a click / Tab focus move.
-    if pinion_core::focus_state::focused()
+    let pane = if pinion_core::focus_state::focused()
         .as_deref()
         .and_then(pane_index_of)
         == Some(i)
@@ -427,6 +429,20 @@ fn build_pane_scene(tv: &TerminalView, i: usize, theme: &Theme) -> Scene {
         pane
     } else {
         dim_inactive(pane)
+    };
+    // cmux ATTENTION RING — outline an inactive pane whose child raised a notification this
+    // client has not yet VIEWED (OSC 9 / 99 / 777, or a bell), so the panel wanting attention
+    // is glanceable at a distance without reading titles (cmux's ring-around-the-panel
+    // affordance; tmux offers only the title bell FLAG, no per-panel outline). Keyed on the
+    // SAME `pane_has_unseen_attention` the title marker uses, so it appears on a notification
+    // and CLEARS when the pane is focused (the focus ack bumps the seen-`seq`). A focused pane
+    // is acked before this runs, so the ring only ever wears an inactive (already-dimmed) pane;
+    // painting it AFTER `dim_inactive` puts it over the scrim. Reading the predicate here
+    // subscribes the paint, so the ring follows a notification arriving / the pane being viewed.
+    if attention::pane_has_unseen_attention(&tv.slots, i) {
+        attention_ring(pane, theme)
+    } else {
+        pane
     }
 }
 
@@ -457,6 +473,43 @@ fn dim_inactive(pane: Scene) -> Scene {
     match pane {
         Scene::Container(mut c) => {
             c.children.push(scrim);
+            Scene::Container(c)
+        }
+        other => other,
+    }
+}
+
+/// The width (px) of the cmux [`attention_ring`] stroked around an inactive pane with an unseen
+/// notification — the sidebar cursor-row border convention ([`crate::stabs`]).
+const ATTENTION_RING_WIDTH: u32 = 2;
+
+/// Draw the cmux-parity ATTENTION RING around a pane whose child raised a notification this client
+/// has not yet viewed. Built exactly like [`dim_inactive`] — a `pointer_transparent` absolute
+/// overlay (never blocks click-to-focus / drag-select) at `Percent(100)` full cover, appended LAST
+/// so it paints over the pane content AND the dim scrim — but with a TRANSPARENT fill carrying an
+/// [`Accent`](ColorRole::Accent) [`Border`], so only the frame draws. The border rides the OVERLAY,
+/// not the pane container, so it adds no layout: a notification arriving never shifts or resizes the
+/// pane. Snapshot-visible like the dim scrim (same absolute-overlay path the RPC produce walks).
+fn attention_ring(pane: Scene, theme: &Theme) -> Scene {
+    let ring = Scene::Container(
+        ContainerNode::new(Vec::new())
+            .with_tag("sprag_gui.pane_attention")
+            .with_style(
+                BoxStyle::filled(pinion_core::style::Color::TRANSPARENT).with_border(Border::new(
+                    theme.resolve(ColorRole::Accent),
+                    ATTENTION_RING_WIDTH,
+                )),
+            )
+            .with_layout(
+                LayoutStyle::new()
+                    .with_absolute_position(0, 0)
+                    .with_size(fill_size())
+                    .with_pointer_transparent(true),
+            ),
+    );
+    match pane {
+        Scene::Container(mut c) => {
+            c.children.push(ring);
             Scene::Container(c)
         }
         other => other,
@@ -645,6 +698,51 @@ mod tests {
             child_tag(1),
             Some("grid_stub"),
             "the content is the second child of the column (below the strip)",
+        );
+    }
+
+    /// The cmux ATTENTION RING: [`attention_ring`] frames a pane with a BORDER-only overlay — a
+    /// `pane_attention`-tagged child appended LAST (paints over the pane content + dim scrim),
+    /// carrying a [`Border`] and NO visible fill, full-cover so the frame sits at the pane's edges,
+    /// and pointer-transparent so it never blocks click-to-focus / drag-select (like the dim
+    /// scrim). REVERT-PROOF: drop the `with_border` and the border assertion FAILs; drop the append
+    /// and the last-child tag assertion FAILs.
+    #[test]
+    fn attention_ring_frames_the_pane_with_a_pointer_transparent_border() {
+        let owner = Owner::new();
+        let ring = owner.run(|| {
+            let theme = use_theme(THEME_TAG).theme_animated();
+            let pane = Scene::Container(ContainerNode::new(Vec::new()).with_tag("pane_stub"));
+            let Scene::Container(mut framed) = attention_ring(pane, &theme) else {
+                unreachable!("attention_ring returns the pane Container");
+            };
+            match framed.children.pop() {
+                Some(Scene::Container(c)) => c,
+                other => unreachable!("the ring is the pane's LAST child, got {other:?}"),
+            }
+        });
+        assert_eq!(
+            ring.tag.as_deref(),
+            Some("sprag_gui.pane_attention"),
+            "the ring is a distinct tagged overlay (queryable in a snapshot smoke)",
+        );
+        assert!(
+            ring.style.border.is_some(),
+            "the ring draws a Border — the outline, not a scrim (REVERT-PROOF: drop `with_border`)",
+        );
+        assert_eq!(
+            ring.layout.size.width,
+            SizeValue::Percent(100),
+            "full-cover width so the frame lands at the pane's edges",
+        );
+        assert_eq!(
+            ring.layout.size.height,
+            SizeValue::Percent(100),
+            "full-cover height so the frame lands at the pane's edges",
+        );
+        assert!(
+            ring.layout.pointer_transparent,
+            "the ring must not block click-to-focus / drag-select (like the dim scrim)",
         );
     }
 }
