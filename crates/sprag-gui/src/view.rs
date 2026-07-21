@@ -271,8 +271,24 @@ fn build_pane_scene(tv: &TerminalView, i: usize, theme: &Theme) -> Scene {
         Some((start, end)) => sprag_grid::overlay_selection(cells, start, end),
         None => cells,
     };
+    // R-71.2 (pinion R1405): light the hovered OSC-8 link's whole id-group. The hover
+    // is tracked by the pane's hover-oracle External (fed the link map in
+    // `reconcile_frame`); reading its `hovered` Signal here subscribes the paint, so a
+    // hover move repaints the highlight.
+    let hovered = crate::hyperlink::hovered_link(i);
+    let cells = sprag_grid::overlay_hyperlink_hover(cells, hovered);
     let grid =
         sprag_host::pane_view_scene_from_cells(pane_tag(i), cells, tv.metric, tv.font_size_px);
+    // R-71.1: the hand cursor while hovering a link (the grid's whole rect resolves to
+    // the pointer cursor exactly when the current hover is a link, since the oracle
+    // only sets `hovered` over a link cell).
+    let grid = match grid {
+        Scene::Container(mut c) if hovered.is_some() => {
+            c.layout.cursor = Some(pinion_core::style::CursorHint::Pointer);
+            Scene::Container(c)
+        }
+        other => other,
+    };
     let bar = crate::scrollbar::view_pane_scrollbar(i, &scroll, dims.visible_rows, track_h, theme);
     let pane = crate::scrollbar::wrap_pane_with_bar(grid, bar);
     // R142: sprag's focus indicator = DIM THE INACTIVE panes (the iTerm2 / kitty / tmux

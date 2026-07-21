@@ -199,6 +199,7 @@ mod clipboard_osc;
 mod ctxmenu;
 mod diag;
 mod dock;
+mod hyperlink;
 mod input;
 mod reflow;
 mod rpc;
@@ -289,6 +290,7 @@ fn reset_freed_slot(slot: usize) {
     selection::reset_pane_selection(slot);
     attention::reset_pane_ack(slot);
     clipboard_osc::reset_pane_clip_acks(slot);
+    hyperlink::reset_pane_hyperlinks(slot);
 }
 
 struct TerminalViewer;
@@ -401,6 +403,17 @@ impl WidgetCore for TerminalViewer {
                 .iter()
                 .copied()
                 .map(scrollbar::pane_scrollbar_external),
+        );
+        // One OSC-8 hover-oracle per pane (pinion R1405, R-71.1/.2/.3): registered at
+        // `pane_tag(i)` (the primary half of the grid's `#grid` composite hit-tag) so
+        // the hover router forwards a grid hover to it, without painting (the pane
+        // Container keeps the tag for focus / selection / rect lookups). Pointer-only,
+        // never focusable — like the scrollbars/splitters above.
+        externals.extend(
+            occupied
+                .iter()
+                .copied()
+                .map(hyperlink::pane_hyperlink_external),
         );
         // Drag-to-dock / tear-off (pinion R1081/R1084/R1094 §5.51, P2/PR-31): one R742
         // `DockPanelExternal` per pane, registered at the panel ROOT tag
@@ -662,10 +675,18 @@ impl WidgetCore for TerminalViewer {
         // client's user just settled. Runs BEFORE the view, so the first paint already has
         // the host's arrangement and no frame is painted from a stale tree.
         split::sync_layout(&terminal.slots);
-        // (2) Grow each occupied pane's scroll bound to its live scrollback depth.
+        // (2) Grow each occupied pane's scroll bound to its live scrollback depth, then
+        // feed its OSC-8 hover-oracle the current link map (R-71, pinion R1405) and open
+        // any click-activated URI. The link map comes from the SAME projection the view
+        // renders (`pane_cells` at the reconciled scroll offset), so a click resolves the
+        // exact URI the hovered cell shows, and a scrolled-back link is hoverable too.
         for i in terminal.slots.occupied_slots() {
-            let scrollback_len = terminal.slots.pane_scroll_facts(i).scrollback_len;
-            scrollbar::reconcile_scroll(&scrollbar::use_pane_scroll(i), scrollback_len);
+            let facts = terminal.slots.pane_scroll_facts(i);
+            let scroll = scrollbar::use_pane_scroll(i);
+            scrollbar::reconcile_scroll(&scroll, facts.scrollback_len);
+            let offset = scrollbar::offset_lines_from_top(scroll.offset_y(), facts.scrollback_len);
+            let buffer = terminal.slots.pane_cells(i, offset);
+            hyperlink::reconcile_pane_hyperlinks(i, &buffer);
         }
         // (3) (R130) Track each floating window's OS title to its pane's live display
         // title (a child retitle renames its taskbar entry). Diffs internally, so it
