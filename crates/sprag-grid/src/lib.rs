@@ -10,9 +10,9 @@
 use pinion_core::style::Color as PinColor;
 use pinion_core::{
     CellAttrs, CursorShape as PinCursorShape, GridBuffer, GridCursor, ScreenKind as PinScreenKind,
-    TermCell, TermColor,
+    TermCell, TermColor, UnderlineStyle as PinUnderlineStyle,
 };
-use sprag_vt::{Attrs, Cell, Color, CursorShape, Screen, ScreenKind, Width};
+use sprag_vt::{Attrs, Cell, Color, CursorShape, Screen, ScreenKind, UnderlineStyle, Width};
 
 /// Project a screen into a fresh pinion `GridBuffer`.
 ///
@@ -290,12 +290,18 @@ fn project_row(screen: &Screen, row: u16, cols: u16) -> Vec<TermCell> {
 }
 
 fn term_cell(cell: &Cell) -> TermCell {
-    TermCell::new(
+    let tc = TermCell::new(
         cell.cluster.clone(),
         term_color(cell.fg),
         term_color(cell.bg),
     )
-    .with_attrs(cell_attrs(cell.attrs))
+    .with_attrs(cell_attrs(cell.attrs));
+    // SGR 58 underline colour (orthogonal to the style axis). `None` is the
+    // SGR-59 default — pinion then draws the underline in the cell's own fg.
+    match cell.underline_color {
+        Some(color) => tc.with_underline_color(term_color(color)),
+        None => tc,
+    }
 }
 
 /// Push a wide cluster as pinion's head + trailer pair (DESIGN.md §3: producer
@@ -321,11 +327,24 @@ fn cell_attrs(attrs: Attrs) -> CellAttrs {
         .with_bold(attrs.bold)
         .with_dim(attrs.dim)
         .with_italic(attrs.italic)
-        .with_underline(attrs.underline)
+        .with_underline_style(pin_underline(attrs.underline))
         .with_blink(attrs.blink)
         .with_reverse(attrs.reverse)
         .with_hidden(attrs.hidden)
         .with_strikethrough(attrs.strikethrough)
+}
+
+/// Map the port's [`UnderlineStyle`] to pinion's — the two enums share
+/// their six SGR 4:x variants one-for-one.
+fn pin_underline(style: UnderlineStyle) -> PinUnderlineStyle {
+    match style {
+        UnderlineStyle::None => PinUnderlineStyle::None,
+        UnderlineStyle::Single => PinUnderlineStyle::Single,
+        UnderlineStyle::Double => PinUnderlineStyle::Double,
+        UnderlineStyle::Curly => PinUnderlineStyle::Curly,
+        UnderlineStyle::Dotted => PinUnderlineStyle::Dotted,
+        UnderlineStyle::Dashed => PinUnderlineStyle::Dashed,
+    }
 }
 
 fn cursor_shape(shape: CursorShape) -> PinCursorShape {
@@ -479,6 +498,34 @@ mod tests {
             composed.attrs.underline.is_on(),
             "the preedit is underlined (composing marker)"
         );
+    }
+
+    /// The underline style axis and SGR-58 underline colour survive the
+    /// projection into pinion's `TermCell` — the two separate slots (style on
+    /// `CellAttrs`, colour on `TermCell`) that make an editor's red curly LSP
+    /// error renderable rather than flattened to a plain rule.
+    #[test]
+    fn projection_carries_underline_style_and_color() {
+        // curly (4:3) + red (58:2) underline through the real SGR parser
+        let screen = screen_from(b"\x1b[4:3;58:2::255:0:0mE", 10, 1);
+        let buffer = project(&screen);
+        let cell = buffer.cell(0, 0).unwrap();
+        assert_eq!(cell.attrs.underline, PinUnderlineStyle::Curly);
+        assert_eq!(
+            cell.underline_color,
+            Some(TermColor::Rgb(PinColor::rgb(0xff, 0x00, 0x00)))
+        );
+    }
+
+    /// A plain underline projects with no underline colour (the SGR-59
+    /// default), so pinion draws the rule in the cell's own foreground.
+    #[test]
+    fn projection_default_underline_color_is_none() {
+        let screen = screen_from(b"\x1b[4mU", 10, 1);
+        let buffer = project(&screen);
+        let cell = buffer.cell(0, 0).unwrap();
+        assert_eq!(cell.attrs.underline, PinUnderlineStyle::Single);
+        assert_eq!(cell.underline_color, None);
     }
 
     /// A wide (Hangul) preedit syllable expands to pinion's head + trailer pair,

@@ -59,13 +59,49 @@ pub enum Color {
     Rgb(Rgb),
 }
 
-/// SGR display attributes — the eight booleans pinion's `CellAttrs` models.
+/// The style of a cell's underline — the ECMA-48 SGR `4:x` vocabulary
+/// (`4:0`–`4:5` / `21`). Mirrors termwiz's `Underline` and pinion's
+/// `UnderlineStyle` one-for-one (same six variants) so the SGR parse and
+/// the grid projection are both lossless. A single on/off bool cannot tell
+/// an editor's red *curly* LSP error from a blue *dotted* spellcheck; this
+/// axis keeps them distinct all the way to the renderer. The underline
+/// *colour* (SGR 58 / 59) is the orthogonal [`Cell::underline_color`] axis.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum UnderlineStyle {
+    /// SGR 24 / 4:0 — no underline (the default).
+    #[default]
+    None,
+    /// SGR 4 / 4:1 — a single straight rule.
+    Single,
+    /// SGR 21 / 4:2 — a double straight rule.
+    Double,
+    /// SGR 4:3 — an undercurl (the squiggle under a diagnostic).
+    Curly,
+    /// SGR 4:4 — a dotted rule.
+    Dotted,
+    /// SGR 4:5 — a dashed rule.
+    Dashed,
+}
+
+impl UnderlineStyle {
+    /// `true` for any drawn underline — every variant but [`Self::None`].
+    #[must_use]
+    pub const fn is_on(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
+/// SGR display attributes pinion's `CellAttrs` models: seven booleans plus
+/// the [`UnderlineStyle`] axis (SGR 4:x). The underline *colour* (SGR 58 /
+/// 59) is NOT here — it is a third colour channel and lives on
+/// [`Cell::underline_color`], a peer of `fg` / `bg`, exactly as the SGR
+/// grammar (`58:…` mirrors `38:…` / `48:…`) and pinion's `TermCell` place it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Attrs {
     pub bold: bool,
     pub dim: bool,
     pub italic: bool,
-    pub underline: bool,
+    pub underline: UnderlineStyle,
     pub blink: bool,
     pub reverse: bool,
     pub hidden: bool,
@@ -91,6 +127,10 @@ pub struct Cell {
     pub cluster: String,
     pub fg: Color,
     pub bg: Color,
+    /// SGR 58 / 59 underline colour — a third colour channel, peer of
+    /// [`Self::fg`] / [`Self::bg`]. `None` is the SGR-59 default: the
+    /// underline (when [`Attrs::underline`] is on) draws in `fg`.
+    pub underline_color: Option<Color>,
     pub attrs: Attrs,
     pub width: Width,
 }
@@ -101,6 +141,7 @@ impl Default for Cell {
             cluster: " ".to_string(),
             fg: Color::Default,
             bg: Color::Default,
+            underline_color: None,
             attrs: Attrs::default(),
             width: Width::Narrow,
         }
@@ -121,6 +162,7 @@ impl Cell {
             cluster: String::new(),
             fg: head.fg,
             bg: head.bg,
+            underline_color: head.underline_color,
             attrs: head.attrs,
             width: Width::Trailer,
         }

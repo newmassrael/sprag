@@ -23,7 +23,7 @@ use termwiz::escape::{Action, ControlCode, Esc, EscCode, OperatingSystemCommand}
 
 use crate::port::{
     Attrs, Cell, Color, Cursor, CursorShape, InputModes, Notification, PromptMark, Rgb, Screen,
-    ScreenKind, VtPort, Width, char_columns,
+    ScreenKind, UnderlineStyle, VtPort, Width, char_columns,
 };
 
 /// The cursor state DECSC (`ESC 7` / `CSI s`) saves and DECRC (`ESC 8` / `CSI u`) restores:
@@ -35,6 +35,7 @@ struct SavedCursor {
     row: u16,
     fg: Color,
     bg: Color,
+    underline_color: Option<Color>,
     attrs: Attrs,
     cursor_shape: CursorShape,
 }
@@ -68,6 +69,9 @@ pub struct Emulator {
     cursor_shape: CursorShape,
     fg: Color,
     bg: Color,
+    /// SGR 58 / 59 underline colour — a third pen colour channel, peer of
+    /// `fg` / `bg` (`None` = SGR-59 default, draw the underline in `fg`).
+    underline_color: Option<Color>,
     attrs: Attrs,
     /// Input modes set by the child (DECCKM, …) that the key encoder
     /// reads; tracked here, exposed via [`VtPort::input_modes`].
@@ -162,6 +166,7 @@ impl Emulator {
             cursor_shape: CursorShape::Block,
             fg: Color::Default,
             bg: Color::Default,
+            underline_color: None,
             attrs: Attrs::default(),
             input_modes: InputModes::default(),
             title: None,
@@ -266,6 +271,7 @@ impl Emulator {
             row: self.row,
             fg: self.fg,
             bg: self.bg,
+            underline_color: self.underline_color,
             attrs: self.attrs,
             cursor_shape: self.cursor_shape,
         });
@@ -280,6 +286,7 @@ impl Emulator {
             row: 0,
             fg: Color::Default,
             bg: Color::Default,
+            underline_color: None,
             attrs: Attrs::default(),
             cursor_shape: CursorShape::Block,
         });
@@ -287,6 +294,7 @@ impl Emulator {
         self.row = saved.row.min(self.rows.saturating_sub(1));
         self.fg = saved.fg;
         self.bg = saved.bg;
+        self.underline_color = saved.underline_color;
         self.attrs = saved.attrs;
         self.cursor_shape = saved.cursor_shape;
     }
@@ -449,6 +457,7 @@ impl Emulator {
             Sgr::Reset => {
                 self.fg = Color::Default;
                 self.bg = Color::Default;
+                self.underline_color = None;
                 self.attrs = Attrs::default();
             }
             Sgr::Intensity(Intensity::Bold) => {
@@ -463,7 +472,8 @@ impl Emulator {
                 self.attrs.bold = false;
                 self.attrs.dim = false;
             }
-            Sgr::Underline(u) => self.attrs.underline = u != Underline::None,
+            Sgr::Underline(u) => self.attrs.underline = conv_underline(u),
+            Sgr::UnderlineColor(c) => self.underline_color = conv_underline_color(c),
             Sgr::Blink(b) => self.attrs.blink = b != Blink::None,
             Sgr::Italic(on) => self.attrs.italic = on,
             Sgr::Inverse(on) => self.attrs.reverse = on,
@@ -471,7 +481,7 @@ impl Emulator {
             Sgr::StrikeThrough(on) => self.attrs.strikethrough = on,
             Sgr::Foreground(c) => self.fg = conv_color(c),
             Sgr::Background(c) => self.bg = conv_color(c),
-            // Font, Overline, UnderlineColor, VerticalAlign: ignored.
+            // Font, Overline, VerticalAlign: ignored.
             _ => {}
         }
     }
@@ -731,6 +741,7 @@ impl Emulator {
                 cluster: ch.to_string(),
                 fg: self.fg,
                 bg: self.bg,
+                underline_color: self.underline_color,
                 attrs: self.attrs,
                 width: if cell_w == 2 {
                     Width::Wide
@@ -970,6 +981,29 @@ fn conv_color(spec: ColorSpec) -> Color {
     }
 }
 
+/// Convert a termwiz `Underline` (SGR 4:x) to the port's [`UnderlineStyle`].
+/// The two enums share their six variants one-for-one.
+fn conv_underline(u: Underline) -> UnderlineStyle {
+    match u {
+        Underline::None => UnderlineStyle::None,
+        Underline::Single => UnderlineStyle::Single,
+        Underline::Double => UnderlineStyle::Double,
+        Underline::Curly => UnderlineStyle::Curly,
+        Underline::Dotted => UnderlineStyle::Dotted,
+        Underline::Dashed => UnderlineStyle::Dashed,
+    }
+}
+
+/// Convert an SGR 58 / 59 underline colour to the pen's `Option<Color>`.
+/// `ColorSpec::Default` is SGR 59 (reset) → `None`: the underline is then
+/// drawn in the cell's own foreground, not in `Color::Default` literally.
+fn conv_underline_color(spec: ColorSpec) -> Option<Color> {
+    match spec {
+        ColorSpec::Default => None,
+        other => Some(conv_color(other)),
+    }
+}
+
 /// A movement count: termwiz may emit 0 for an omitted parameter; ANSI
 /// treats that as 1.
 fn clamp_count(n: u32) -> u16 {
@@ -1017,6 +1051,70 @@ mod tests {
             em.screen().cell(0, 0).unwrap().fg,
             Color::Rgb(Rgb::new(10, 20, 30))
         );
+    }
+
+    #[test]
+    fn underline_styles_map_each_sgr_variant() {
+        // Each ECMA-48 SGR 4:x underline reaches the pen as its own style,
+        // not flattened to a single on/off — one char per style at its column.
+        let mut em = Emulator::new(20, 1);
+        em.advance(b"\x1b[4mA"); // 4    -> single
+        em.advance(b"\x1b[4:2mB"); // 4:2  -> double
+        em.advance(b"\x1b[4:3mC"); // 4:3  -> curly (undercurl)
+        em.advance(b"\x1b[4:4mD"); // 4:4  -> dotted
+        em.advance(b"\x1b[4:5mE"); // 4:5  -> dashed
+        em.advance(b"\x1b[24mF"); // 24   -> off
+        let style = |c| em.screen().cell(c, 0).unwrap().attrs.underline;
+        assert_eq!(style(0), UnderlineStyle::Single);
+        assert_eq!(style(1), UnderlineStyle::Double);
+        assert_eq!(style(2), UnderlineStyle::Curly);
+        assert_eq!(style(3), UnderlineStyle::Dotted);
+        assert_eq!(style(4), UnderlineStyle::Dashed);
+        assert_eq!(style(5), UnderlineStyle::None);
+    }
+
+    #[test]
+    fn underline_color_sgr_58_is_orthogonal_to_style() {
+        // SGR 58 sets the underline colour (truecolor + palette); SGR 59
+        // resets it to None (draw in fg) WITHOUT touching the style axis.
+        let mut em = Emulator::new(20, 1);
+        em.advance(b"\x1b[4;58:2::255:0:0mA"); // single + red underline
+        em.advance(b"\x1b[58:5:3mB"); // palette-3 underline, style stays
+        em.advance(b"\x1b[59mC"); // reset colour, style stays single
+        let a = em.screen().cell(0, 0).unwrap();
+        assert_eq!(a.attrs.underline, UnderlineStyle::Single);
+        assert_eq!(a.underline_color, Some(Color::Rgb(Rgb::new(255, 0, 0))));
+        let b = em.screen().cell(1, 0).unwrap();
+        assert_eq!(b.underline_color, Some(Color::Indexed(3)));
+        assert_eq!(b.attrs.underline, UnderlineStyle::Single);
+        let c = em.screen().cell(2, 0).unwrap();
+        assert_eq!(c.underline_color, None);
+        assert_eq!(c.attrs.underline, UnderlineStyle::Single);
+    }
+
+    #[test]
+    fn sgr_reset_clears_underline_style_and_color() {
+        let mut em = Emulator::new(20, 1);
+        em.advance(b"\x1b[4:3;58:2::0:255:0mX"); // curly + green
+        em.advance(b"\x1b[0mY"); // full reset
+        let y = em.screen().cell(1, 0).unwrap();
+        assert_eq!(y.attrs.underline, UnderlineStyle::None);
+        assert_eq!(y.underline_color, None);
+    }
+
+    #[test]
+    fn decsc_decrc_round_trip_underline_style_and_color() {
+        // The underline axes ride the pen, so DECSC/DECRC save and restore
+        // them alongside fg/bg/bold — a reset between the two is undone.
+        let mut em = Emulator::new(20, 2);
+        em.advance(b"\x1b[4:3;58:5:5m"); // pen: curly + palette-5 underline
+        em.advance(b"\x1b7"); // DECSC
+        em.advance(b"\x1b[0m"); // clobber the pen
+        em.advance(b"\x1b8"); // DECRC restores the saved pen + home
+        em.advance(b"Z");
+        let z = em.screen().cell(0, 0).unwrap();
+        assert_eq!(z.attrs.underline, UnderlineStyle::Curly);
+        assert_eq!(z.underline_color, Some(Color::Indexed(5)));
     }
 
     #[test]
