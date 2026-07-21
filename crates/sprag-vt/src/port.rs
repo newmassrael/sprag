@@ -234,6 +234,55 @@ pub struct InputModes {
     /// (`ESC [`); full-screen apps (vim, less) enable it, so the arrow
     /// and Home/End encodings flip on this flag.
     pub application_cursor_keys: bool,
+    /// The active Kitty keyboard protocol enhancement flags (`CSI > flags u` and friends).
+    /// The sprag-owned key encoder reads these to decide how a key event serializes to the PTY —
+    /// unambiguous `CSI u` codes when [`disambiguate`](KittyKeyboardFlags::disambiguate) is on,
+    /// legacy bytes otherwise. Empty by default (the legacy encoding). See [`KittyKeyboardFlags`].
+    pub kitty_keyboard: KittyKeyboardFlags,
+}
+
+/// The Kitty keyboard protocol progressive-enhancement flags currently active — the bitmask a
+/// child negotiates via `CSI > flags u` (push) / `CSI = flags ; mode u` (set) / `CSI < n u` (pop),
+/// read by the sprag-owned key encoder to serialize key events. The bits mirror the protocol wire
+/// values. sprag only advertises + honors the flags it can encode TRUTHFULLY (currently
+/// [`DISAMBIGUATE`](Self::DISAMBIGUATE)); a child that requests an unsupported bit sees it dropped
+/// at negotiation time (a `CSI ? u` query reports back only the honored subset), so the terminal
+/// never claims a capability it does not deliver.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct KittyKeyboardFlags(u8);
+
+impl KittyKeyboardFlags {
+    /// `0b1` — *Disambiguate escape codes*: report Esc, and any key held with Ctrl / Alt / Super,
+    /// as unambiguous `CSI unicode ; modifiers u` codes instead of the colliding legacy bytes (so
+    /// e.g. `Ctrl+i` is distinct from `Tab`, and a lone `Esc` from an escape-sequence prefix).
+    pub const DISAMBIGUATE: u8 = 0b1;
+    // The higher flags (report event types 0b10, alternate keys 0b100, report all keys as escape
+    // codes 0b1000, report associated text 0b10000) are NOT yet honored — negotiating them needs
+    // key-release + text plumbing the display client does not yet supply, so they are masked off.
+
+    /// The flags from their raw wire bits.
+    #[must_use]
+    pub const fn from_bits(bits: u8) -> Self {
+        Self(bits)
+    }
+
+    /// The raw wire bits (what a `CSI ? flags u` query reports).
+    #[must_use]
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// Whether no enhancement is active (the legacy encoding applies).
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// Whether *Disambiguate escape codes* ([`DISAMBIGUATE`](Self::DISAMBIGUATE)) is active.
+    #[must_use]
+    pub const fn disambiguate(self) -> bool {
+        self.0 & Self::DISAMBIGUATE != 0
+    }
 }
 
 /// A desktop-style ATTENTION notification a child raised out-of-band — an
@@ -1284,6 +1333,14 @@ pub trait VtPort {
     /// the first. A consumer that remembers the last value it answered learns a NEW query arrived
     /// when this grows.
     fn clipboard_query_seq(&self) -> u64;
+
+    /// Take (and clear) any bytes the terminal must write BACK to the PTY in reply to a query the
+    /// child made — the device-response channel. Unlike a clipboard read (whose answer comes from
+    /// the display client's clipboard), these are INTRINSIC responses the terminal answers itself:
+    /// currently the Kitty keyboard `CSI ? u` flags query (`CSI ? flags u`). The layer driving
+    /// [`advance`](Self::advance) drains this after each batch and writes the bytes to the child,
+    /// which receives its reply as if the terminal typed it. Empty when the batch asked nothing.
+    fn take_responses(&mut self) -> Vec<u8>;
 }
 
 #[cfg(test)]

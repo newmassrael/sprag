@@ -15,7 +15,7 @@ use termwiz::cell::{Blink, Intensity, Underline};
 use termwiz::color::ColorSpec;
 use termwiz::escape::csi::{
     CSI, Cursor as CsiCursor, CursorStyle, DecPrivateMode, DecPrivateModeCode, Edit,
-    EraseInDisplay, EraseInLine, Mode, Sgr,
+    EraseInDisplay, EraseInLine, Keyboard, KittyKeyboardMode, Mode, Sgr,
 };
 use termwiz::escape::osc::{FinalTermSemanticPrompt, Selection};
 use termwiz::escape::parser::Parser;
@@ -23,8 +23,8 @@ use termwiz::escape::{Action, ControlCode, Esc, EscCode, OperatingSystemCommand}
 
 use crate::port::{
     Attrs, Cell, ClipboardQuery, ClipboardTarget, ClipboardTargets, ClipboardWrite, Color, Cursor,
-    CursorShape, InputModes, Notification, PromptMark, Rgb, Screen, ScreenKind, UnderlineStyle,
-    VtPort, Width, char_columns,
+    CursorShape, InputModes, KittyKeyboardFlags, Notification, PromptMark, Rgb, Screen, ScreenKind,
+    UnderlineStyle, VtPort, Width, char_columns,
 };
 
 /// The cursor state DECSC (`ESC 7` / `CSI s`) saves and DECRC (`ESC 8` / `CSI u`) restores:
@@ -77,6 +77,15 @@ pub struct Emulator {
     /// Input modes set by the child (DECCKM, …) that the key encoder
     /// reads; tracked here, exposed via [`VtPort::input_modes`].
     input_modes: InputModes,
+    /// The Kitty keyboard protocol enhancement-flag STACK the child pushes/pops (`CSI > u` /
+    /// `CSI < u` / `CSI = u`). Each entry is a flag bitmask ALREADY masked to what sprag honors
+    /// ([`KITTY_KEYBOARD_SUPPORTED`]); the CURRENT flags exposed via [`VtPort::input_modes`] are
+    /// the top of the stack (or empty). Bounded by [`KITTY_STACK_CAP`] against a runaway pusher.
+    kitty_kbd_stack: Vec<u8>,
+    /// Bytes the terminal owes the child in reply to a query it made (the device-response channel:
+    /// currently the Kitty `CSI ? u` flags query). Drained by [`VtPort::take_responses`] after each
+    /// batch and written back to the PTY. Not row damage — carries no cells.
+    responses: Vec<u8>,
     /// The child's self-reported window TITLE (`OSC 0` / `OSC 2`), `None` until it
     /// sets one. Exposed via [`VtPort::title`]; a shell's `PROMPT_COMMAND` (or vim,
     /// ssh, tmux…) rewrites it continuously, so this is live state, NOT the spawn
@@ -186,6 +195,8 @@ impl Emulator {
             underline_color: None,
             attrs: Attrs::default(),
             input_modes: InputModes::default(),
+            kitty_kbd_stack: Vec::new(),
+            responses: Vec::new(),
             title: None,
             notification: None,
             notification_seq: 0,
@@ -506,8 +517,65 @@ impl Emulator {
             CSI::Cursor(c) => self.cursor_op(c),
             CSI::Edit(e) => self.edit(e),
             CSI::Mode(m) => self.mode(m),
+            CSI::Keyboard(k) => self.kitty_keyboard(k),
             _ => {}
         }
+    }
+
+    /// Apply one Kitty keyboard protocol negotiation command. The protocol is a STACK of
+    /// enhancement-flag sets: `CSI > flags u` PUSHES a level, `CSI < n u` POPS `n`, `CSI = flags ; mode u`
+    /// MODIFIES the current (top) level, and `CSI ? u` QUERIES it (the terminal replies
+    /// `CSI ? flags u`). Every stored/reported value is MASKED to [`KITTY_KEYBOARD_SUPPORTED`] — the
+    /// flags sprag can encode truthfully — so an unsupported bit is dropped at negotiation time and
+    /// a query never reports a capability the encoder does not honor. The active flags (the top of
+    /// the stack) reach the key encoder via [`VtPort::input_modes`]. Carries no cells (no damage).
+    fn kitty_keyboard(&mut self, k: Keyboard) {
+        match k {
+            // `CSI > flags u` — push a new level (bounded against a runaway pusher).
+            Keyboard::PushKittyState { flags, .. } => {
+                if self.kitty_kbd_stack.len() < KITTY_STACK_CAP {
+                    let bits = (flags.bits() as u8) & KITTY_KEYBOARD_SUPPORTED;
+                    self.kitty_kbd_stack.push(bits);
+                }
+            }
+            // `CSI < n u` — pop n levels (n == 0 pops one, per the protocol; saturating).
+            Keyboard::PopKittyState(n) => {
+                let n = usize::try_from(n).unwrap_or(usize::MAX).max(1);
+                let keep = self.kitty_kbd_stack.len().saturating_sub(n);
+                self.kitty_kbd_stack.truncate(keep);
+            }
+            // `CSI = flags ; mode u` — modify the CURRENT level (creating a base 0 level if the
+            // stack is empty, since a set implies an active entry to set).
+            Keyboard::SetKittyState { flags, mode } => {
+                let requested = (flags.bits() as u8) & KITTY_KEYBOARD_SUPPORTED;
+                if self.kitty_kbd_stack.is_empty() {
+                    self.kitty_kbd_stack.push(0);
+                }
+                let top = self
+                    .kitty_kbd_stack
+                    .last_mut()
+                    .expect("just ensured non-empty");
+                *top = match mode {
+                    KittyKeyboardMode::AssignAll => requested,
+                    KittyKeyboardMode::SetSpecified => *top | requested,
+                    KittyKeyboardMode::ClearSpecified => *top & !requested,
+                };
+            }
+            // `CSI ? u` — report the current flags back to the child.
+            Keyboard::QueryKittySupport => {
+                let current = self.kitty_keyboard_flags().bits();
+                self.responses
+                    .extend_from_slice(format!("\x1b[?{current}u").as_bytes());
+            }
+            // A child would not send us a report; ignore.
+            Keyboard::ReportKittyState(_) => {}
+        }
+    }
+
+    /// The CURRENTLY active Kitty keyboard flags — the top of the negotiation stack, already masked
+    /// to the supported set, or empty when no level is pushed. Exposed via [`VtPort::input_modes`].
+    fn kitty_keyboard_flags(&self) -> KittyKeyboardFlags {
+        KittyKeyboardFlags::from_bits(self.kitty_kbd_stack.last().copied().unwrap_or(0))
     }
 
     fn sgr(&mut self, sgr: Sgr) {
@@ -905,7 +973,12 @@ impl VtPort for Emulator {
     }
 
     fn input_modes(&self) -> InputModes {
-        self.input_modes
+        // The Kitty keyboard flags live in the negotiation stack (their SSOT); overlay the current
+        // top onto the mode flags the key encoder reads.
+        InputModes {
+            kitty_keyboard: self.kitty_keyboard_flags(),
+            ..self.input_modes
+        }
     }
 
     fn title(&self) -> Option<&str> {
@@ -939,7 +1012,21 @@ impl VtPort for Emulator {
     fn clipboard_query_seq(&self) -> u64 {
         self.clipboard_query_seq
     }
+
+    fn take_responses(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.responses)
+    }
 }
+
+/// The Kitty keyboard protocol enhancement flags sprag ADVERTISES + honors — currently only
+/// *Disambiguate escape codes*. A child may request more; the negotiation masks to this so the
+/// terminal never claims (via a `CSI ? u` reply) a flag its key encoder does not implement.
+const KITTY_KEYBOARD_SUPPORTED: u8 = KittyKeyboardFlags::DISAMBIGUATE;
+
+/// Depth cap on the Kitty keyboard flag stack — bounds memory against a child that pushes without
+/// popping. Deep real nesting is a handful; past the cap further pushes are ignored (the current
+/// level holds), which degrades safely rather than growing unbounded.
+const KITTY_STACK_CAP: usize = 32;
 
 /// Map a termwiz OSC 52 [`Selection`] set to the [`ClipboardTargets`] a WRITE addresses. The
 /// clipboard (`c`) maps to the clipboard; the "configured selection" (`s`) and the empty-`Pc`
@@ -2506,6 +2593,96 @@ mod tests {
                 clipboard: false,
                 primary: true
             }
+        );
+    }
+
+    // ----- Kitty keyboard protocol (negotiation) -----
+
+    /// `CSI > 1 u` pushes the disambiguate flag; the current flags reach the key encoder via
+    /// `input_modes`. `CSI < u` pops back to the legacy (empty) state.
+    #[test]
+    fn kitty_keyboard_push_and_pop_the_flag_stack() {
+        let mut em = Emulator::new(8, 2);
+        assert!(
+            em.input_modes().kitty_keyboard.is_empty(),
+            "legacy until pushed"
+        );
+
+        em.advance(b"\x1b[>1u"); // push disambiguate
+        assert!(em.input_modes().kitty_keyboard.disambiguate());
+
+        em.advance(b"\x1b[<u"); // pop (default 1)
+        assert!(
+            em.input_modes().kitty_keyboard.is_empty(),
+            "popped back to legacy"
+        );
+    }
+
+    /// A child requesting flags sprag does NOT honor (here the full 0b11111) has the unsupported
+    /// bits DROPPED at push time — so the terminal never advertises a capability its encoder lacks.
+    #[test]
+    fn kitty_keyboard_masks_off_unsupported_flags() {
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b[>31u"); // all five flags requested
+        let flags = em.input_modes().kitty_keyboard;
+        assert!(flags.disambiguate());
+        assert_eq!(
+            flags.bits(),
+            KittyKeyboardFlags::DISAMBIGUATE,
+            "only the supported bit survives"
+        );
+    }
+
+    /// `CSI = flags ; mode u` modifies the CURRENT level: mode 1 assigns, 2 sets bits, 3 clears.
+    #[test]
+    fn kitty_keyboard_set_modes_modify_the_current_level() {
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b[=1;1u"); // assign-all disambiguate (creates a base level)
+        assert!(em.input_modes().kitty_keyboard.disambiguate());
+        em.advance(b"\x1b[=1;3u"); // clear-specified disambiguate
+        assert!(em.input_modes().kitty_keyboard.is_empty(), "cleared");
+        em.advance(b"\x1b[=1;2u"); // set-specified disambiguate
+        assert!(
+            em.input_modes().kitty_keyboard.disambiguate(),
+            "set back on"
+        );
+    }
+
+    /// `CSI ? u` makes the terminal REPLY `CSI ? flags u` with the CURRENT honored flags — the
+    /// device-response the reader writes back to the child. The reply reports the SUPPORTED subset,
+    /// never the raw request, so it cannot claim an unimplemented capability.
+    #[test]
+    fn kitty_keyboard_query_replies_with_the_supported_flags() {
+        let mut em = Emulator::new(8, 2);
+        // No level pushed → reports 0.
+        em.advance(b"\x1b[?u");
+        assert_eq!(em.take_responses(), b"\x1b[?0u", "empty stack reports 0");
+
+        // A request for all flags is masked to the honored disambiguate bit, and the reply agrees.
+        em.advance(b"\x1b[>31u");
+        em.advance(b"\x1b[?u");
+        assert_eq!(
+            em.take_responses(),
+            b"\x1b[?1u",
+            "reply reports only the honored subset"
+        );
+        assert!(
+            em.take_responses().is_empty(),
+            "take drains the response buffer"
+        );
+    }
+
+    /// A keyboard negotiation carries no cells, so it must not stamp ROW DAMAGE.
+    #[test]
+    fn kitty_keyboard_negotiation_does_not_bump_the_damage_generation() {
+        let mut em = Emulator::new(8, 2);
+        let g0 = em.screen().row_generation(0).unwrap();
+        em.advance(b"\x1b[>1u\x1b[?u");
+        assert!(em.input_modes().kitty_keyboard.disambiguate());
+        assert_eq!(
+            em.screen().row_generation(0).unwrap(),
+            g0,
+            "no row damage from negotiation"
         );
     }
 }

@@ -234,6 +234,9 @@ impl PanePty {
         let reader_emulator = Arc::clone(&emulator);
         let reader_raw = Arc::clone(&raw_output);
         let reader_eof = Arc::clone(&eof);
+        // The reader writes device RESPONSES (e.g. the Kitty `CSI ? u` flags reply) back to the
+        // child; it shares the SAME writer the input path uses, so the two serialize on its mutex.
+        let reader_writer = Arc::clone(&writer);
         let reader_thread = std::thread::Builder::new()
             .name("sprag-pty-reader".to_string())
             .spawn(move || {
@@ -248,7 +251,17 @@ impl PanePty {
                             // BOTH captured and applied to the screen — the same
                             // completeness guarantee `is_eof` gives the grid.
                             lock(&reader_raw).push(&buf[..n]);
-                            lock(&reader_emulator).advance(&buf[..n]);
+                            // Apply the batch, then drain any device response it produced UNDER the
+                            // same lock (so a response is consistent with the state that made it),
+                            // and write it back OUTSIDE the emulator lock (the writer has its own).
+                            let responses = {
+                                let mut emu = lock(&reader_emulator);
+                                emu.advance(&buf[..n]);
+                                emu.take_responses()
+                            };
+                            if !responses.is_empty() {
+                                let _ = write_shared(&reader_writer, &responses);
+                            }
                             // R999 seam: wake the windowed host to repaint
                             // now that this batch is applied (no-op headless).
                             if let Some(ref notify) = on_dirty {
@@ -906,6 +919,38 @@ mod tests {
     /// A child that emits more than the cap latches `truncated` and keeps the
     /// head it already captured — the bounded-degradation path a structured
     /// reader treats as unparseable.
+    /// The device-response path end-to-end: a child enables the Kitty disambiguate flag and
+    /// queries it; the emulator replies `CSI ? 1 u`, which the READER THREAD writes back to the
+    /// child's PTY. A raw (`stty raw`) `cat` echoes that reply to its output, so the reply bytes
+    /// appear in the raw capture — proving the response reached the child. The reply `ESC [ ? 1 u`
+    /// is distinct from the query the child printed (`ESC [ ? u`, no `1`), so its presence is the
+    /// round-trip, not the echo of the query.
+    #[test]
+    fn the_reader_writes_a_kitty_query_response_back_to_the_child() {
+        fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+            haystack.windows(needle.len()).any(|w| w == needle)
+        }
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg("stty raw -echo 2>/dev/null; printf '\\033[>1u\\033[?u'; cat");
+        command.env("TERM", "xterm");
+        let pty = PanePty::spawn(command, 40, 6).expect("spawn a pty");
+
+        let start = Instant::now();
+        let mut seen = false;
+        while start.elapsed() < Duration::from_secs(5) {
+            if contains(&pty.raw_output().bytes, b"\x1b[?1u") {
+                seen = true;
+                break;
+            }
+            sleep(Duration::from_millis(20));
+        }
+        assert!(
+            seen,
+            "the CSI ? 1 u reply never reached the child (the reader did not write the response)",
+        );
+    }
+
     #[test]
     fn raw_output_truncates_past_the_cap() {
         // Emit one more KiB than the cap with `yes` piped through `head -c`.

@@ -61,6 +61,12 @@ impl Modifiers {
 /// single-codepoint key always encodes (its bytes are well defined).
 #[must_use]
 pub fn encode(key: &str, mods: Modifiers, modes: InputModes) -> Option<Vec<u8>> {
+    // Under the Kitty keyboard protocol's DISAMBIGUATE flag the whole encoding changes (Esc and
+    // Ctrl/Alt/Super combos become unambiguous `CSI u` codes), so it is a distinct path, not a
+    // tweak of the legacy one.
+    if modes.kitty_keyboard.disambiguate() {
+        return encode_kitty_disambiguate(key, mods);
+    }
     let mut chars = key.chars();
     let first = chars.next()?;
     if chars.next().is_none() {
@@ -125,13 +131,20 @@ fn encode_named(key: &str, mods: Modifiers, modes: InputModes) -> Option<Vec<u8>
         "Space" => return Some(encode_char(' ', mods)),
         _ => {}
     }
+    encode_functional(key, mods, modes.application_cursor_keys)
+}
 
+/// Encode the cursor / navigation / function keys — the part of a named key shared by the legacy
+/// path ([`encode_named`]) and the Kitty disambiguate path ([`encode_kitty_disambiguate`], which
+/// passes `application_cursor_keys = false` because the enhanced protocol reports these with `CSI`
+/// finals, not the DECCKM `SS3` form). `None` for a name that is not one of these keys.
+fn encode_functional(key: &str, mods: Modifiers, application_cursor_keys: bool) -> Option<Vec<u8>> {
     // Cursor / positional keys with a single letter final: `CSI`/`SS3` per
     // DECCKM when unmodified, always `CSI 1;mod final` when modified.
     if let Some(final_byte) = letter_final(key) {
         return Some(if mods.any() {
             csi(format!("1;{}", mods.xterm_param()).as_bytes(), final_byte)
-        } else if modes.application_cursor_keys {
+        } else if application_cursor_keys {
             vec![ESC, b'O', final_byte]
         } else {
             vec![ESC, b'[', final_byte]
@@ -157,6 +170,81 @@ fn encode_named(key: &str, mods: Modifiers, modes: InputModes) -> Option<Vec<u8>
     }
 
     None
+}
+
+/// Encode a key under the Kitty keyboard protocol's DISAMBIGUATE flag. Relative to the legacy
+/// encoding, the ONLY keys whose bytes change are the genuinely-ambiguous ones: `Esc` (always a
+/// `CSI 27 u` now, so a lone Escape is distinct from an escape-sequence prefix), any printable key
+/// held with `Ctrl`/`Alt`/`Super` (a `CSI code ; mods u` code, so e.g. `Ctrl+i` is distinct from
+/// `Tab`), and a MODIFIED `Enter`/`Tab`/`Backspace`. Everything else — unmodified text, shifted
+/// text, unmodified `Enter`/`Tab`/`Backspace`, and the cursor / navigation / function keys — keeps
+/// its legacy bytes (the flag only disambiguates what was ambiguous). `None` for an unrecognized
+/// named key, matching [`encode_named`].
+fn encode_kitty_disambiguate(key: &str, mods: Modifiers) -> Option<Vec<u8>> {
+    let mut chars = key.chars();
+    let first = chars.next()?;
+    if chars.next().is_none() {
+        // A single character key: plain text unless Ctrl/Alt/Super is held.
+        return Some(encode_kitty_char(first, mods));
+    }
+    match key {
+        // Esc is ALWAYS reported as a CSI u code under disambiguate — that is the flag's namesake.
+        "Escape" => Some(csi_u(27, mods)),
+        // These keep their legacy control byte UNMODIFIED (kitty preserves basic compatibility),
+        // but disambiguate to a CSI u code when modified (so Ctrl+Enter ≠ Enter, etc.).
+        "Enter" => Some(kitty_legacy_or_u(0x0d, 13, mods)),
+        "Tab" => Some(kitty_legacy_or_u(0x09, 9, mods)),
+        "Backspace" => Some(kitty_legacy_or_u(0x7f, 127, mods)),
+        // The named spacebar encodes exactly like the space character.
+        "Space" => Some(encode_kitty_char(' ', mods)),
+        // Cursor / navigation / function keys: the legacy CSI encoding, but the CSI (not SS3) form
+        // — the enhanced protocol ignores DECCKM for these.
+        _ => encode_functional(key, mods, false),
+    }
+}
+
+/// A single-character key under disambiguate: its plain (already-shifted) text when no
+/// `Ctrl`/`Alt`/`Super` is held, else the unambiguous `CSI code ; mods u` form.
+fn encode_kitty_char(c: char, mods: Modifiers) -> Vec<u8> {
+    if mods.ctrl || mods.alt || mods.sup {
+        csi_u(base_key_code(c), mods)
+    } else {
+        // No modifiers, or Shift only — the character already carries the shift, so it is text.
+        char_utf8(c)
+    }
+}
+
+/// The Kitty key code for a printable character: the UNSHIFTED base. ASCII uppercase folds to
+/// lowercase (so `Ctrl+A` and `Ctrl+Shift+A` share code 97, with Shift carried in the modifier
+/// field). A shifted SYMBOL keeps its shifted codepoint — reverse-mapping it to its base key needs
+/// the keyboard layout, which the display client does not supply; a documented bound that touches
+/// only `Ctrl`/`Alt` + shifted-symbol combos (rare), never letters or unmodified keys.
+fn base_key_code(c: char) -> u32 {
+    if c.is_ascii_uppercase() {
+        c as u32 + 32
+    } else {
+        c as u32
+    }
+}
+
+/// `Enter`/`Tab`/`Backspace` under disambiguate: the legacy control byte when unmodified, the
+/// `CSI code ; mods u` code when any modifier is held.
+fn kitty_legacy_or_u(legacy: u8, code: u32, mods: Modifiers) -> Vec<u8> {
+    if mods.any() {
+        csi_u(code, mods)
+    } else {
+        vec![legacy]
+    }
+}
+
+/// The Kitty functional-key code `CSI code u` (no modifiers) or `CSI code ; modifiers u`, where the
+/// modifier value is the same `1 + Shift + Alt*2 + Ctrl*4 + Super*8` the legacy CSI keys use.
+fn csi_u(code: u32, mods: Modifiers) -> Vec<u8> {
+    if mods.any() {
+        csi(format!("{code};{}", mods.xterm_param()).as_bytes(), b'u')
+    } else {
+        csi(code.to_string().as_bytes(), b'u')
+    }
 }
 
 /// A single base byte, prefixed with `ESC` when `Alt` is held.
@@ -228,6 +316,17 @@ mod tests {
     fn modes(app_cursor: bool) -> InputModes {
         InputModes {
             application_cursor_keys: app_cursor,
+            kitty_keyboard: sprag_vt::KittyKeyboardFlags::default(),
+        }
+    }
+
+    /// Input modes with the Kitty keyboard DISAMBIGUATE flag active.
+    fn kitty_modes() -> InputModes {
+        InputModes {
+            application_cursor_keys: false,
+            kitty_keyboard: sprag_vt::KittyKeyboardFlags::from_bits(
+                sprag_vt::KittyKeyboardFlags::DISAMBIGUATE,
+            ),
         }
     }
 
@@ -235,10 +334,21 @@ mod tests {
         encode(key, mods, modes(false)).expect("encodable")
     }
 
+    /// Encode a key under the Kitty DISAMBIGUATE flag.
+    fn kenc(key: &str, mods: Modifiers) -> Vec<u8> {
+        encode(key, mods, kitty_modes()).expect("encodable")
+    }
+
     const CTRL: Modifiers = Modifiers {
         ctrl: true,
         alt: false,
         shift: false,
+        sup: false,
+    };
+    const CTRL_SHIFT: Modifiers = Modifiers {
+        ctrl: true,
+        alt: false,
+        shift: true,
         sup: false,
     };
     const ALT: Modifiers = Modifiers {
@@ -417,6 +527,63 @@ mod tests {
         assert_eq!(
             encode("\u{c548}\u{b155}", Modifiers::default(), modes(false)),
             None
+        );
+    }
+
+    // ----- Kitty keyboard protocol: DISAMBIGUATE encoding -----
+
+    /// Under the disambiguate flag, only the genuinely-ambiguous keys change bytes. Text keys with
+    /// no modifiers or Shift-only stay plain; Esc and Ctrl/Alt/Super combos become `CSI u` codes.
+    /// The modifier value is `1 + Shift + Alt*2 + Ctrl*4 + Super*8`, and the key code is the
+    /// UNSHIFTED base (so Ctrl+A and Ctrl+Shift+A share code 97).
+    #[test]
+    fn kitty_disambiguate_text_and_modified_keys() {
+        // No / Shift-only modifiers → plain (already-shifted) UTF-8 text.
+        assert_eq!(kenc("a", Modifiers::default()), b"a");
+        assert_eq!(kenc("A", SHIFT), b"A");
+        // Ctrl / Alt printable → CSI code;mods u (code 97 = unshifted 'a').
+        assert_eq!(kenc("a", CTRL), b"\x1b[97;5u"); // ctrl → 1+4 = 5 (NOT signal 0x01)
+        assert_eq!(kenc("a", ALT), b"\x1b[97;3u"); // alt  → 1+2 = 3
+        assert_eq!(kenc("A", CTRL_SHIFT), b"\x1b[97;6u"); // ctrl+shift → 1+4+1 = 6, base 'a'
+        // Esc is ALWAYS a CSI u code — the namesake disambiguation.
+        assert_eq!(kenc("Escape", Modifiers::default()), b"\x1b[27u");
+        assert_eq!(kenc("Escape", CTRL), b"\x1b[27;5u");
+        // Enter/Tab/Backspace: legacy byte unmodified, CSI u when modified.
+        assert_eq!(kenc("Enter", Modifiers::default()), vec![0x0d]);
+        assert_eq!(kenc("Enter", CTRL), b"\x1b[13;5u");
+        assert_eq!(kenc("Tab", Modifiers::default()), vec![0x09]);
+        assert_eq!(kenc("Tab", SHIFT), b"\x1b[9;2u"); // shift → 1+1 = 2
+        assert_eq!(kenc("Backspace", Modifiers::default()), vec![0x7f]);
+        // Space: plain 0x20 unmodified; Ctrl+Space → CSI 32;5 u (32 = the space codepoint).
+        assert_eq!(kenc("Space", Modifiers::default()), b" ");
+        assert_eq!(kenc(" ", CTRL), b"\x1b[32;5u");
+    }
+
+    /// The cursor / navigation / function keys under disambiguate use the legacy CSI encoding, but
+    /// the `CSI` (not `SS3`) form — the enhanced protocol ignores DECCKM for these.
+    #[test]
+    fn kitty_disambiguate_functional_keys_use_csi() {
+        assert_eq!(kenc("ArrowUp", Modifiers::default()), b"\x1b[A");
+        assert_eq!(kenc("ArrowUp", CTRL), b"\x1b[1;5A");
+        assert_eq!(kenc("Home", Modifiers::default()), b"\x1b[H");
+        assert_eq!(kenc("PageUp", Modifiers::default()), b"\x1b[5~");
+        assert_eq!(kenc("Delete", CTRL), b"\x1b[3;5~");
+    }
+
+    /// The disambiguate encoder RE-USES the legacy functional path with DECCKM forced off, so the
+    /// refactor that extracted it did not change the legacy output: an arrow in application-cursor
+    /// mode still encodes as SS3 when the flag is off. (Guards the refactor.)
+    #[test]
+    fn legacy_functional_encoding_is_unchanged_by_the_refactor() {
+        assert_eq!(
+            encode("ArrowUp", Modifiers::default(), modes(true)),
+            Some(vec![ESC, b'O', b'A']),
+            "DECCKM arrow stays SS3 in the legacy path",
+        );
+        assert_eq!(
+            encode("ArrowUp", CTRL, modes(true)),
+            Some(b"\x1b[1;5A".to_vec()),
+            "a modified arrow is CSI 1;mods regardless of DECCKM",
         );
     }
 }
