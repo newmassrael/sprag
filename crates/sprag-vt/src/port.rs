@@ -294,6 +294,12 @@ pub struct InputModes {
     /// unambiguous `CSI u` codes when [`disambiguate`](KittyKeyboardFlags::disambiguate) is on,
     /// legacy bytes otherwise. Empty by default (the legacy encoding). See [`KittyKeyboardFlags`].
     pub kitty_keyboard: KittyKeyboardFlags,
+    /// Bracketed paste (DEC private mode 2004). When set, the child has asked to receive PASTED
+    /// text wrapped in `ESC [ 200 ~` … `ESC [ 201 ~` so it can tell a paste from typed keystrokes
+    /// (shells / editors enable it so a multi-line paste does not auto-execute line by line). The
+    /// paste seam at the PTY boundary consults this flag to decide whether to bracket; typed and
+    /// IME-committed text is never bracketed (it is not a paste). Off by default (raw paste).
+    pub bracketed_paste: bool,
 }
 
 /// The Kitty keyboard protocol progressive-enhancement flags currently active — the bitmask a

@@ -317,6 +317,7 @@ mod tests {
         InputModes {
             application_cursor_keys: app_cursor,
             kitty_keyboard: sprag_vt::KittyKeyboardFlags::default(),
+            ..InputModes::default()
         }
     }
 
@@ -327,6 +328,7 @@ mod tests {
             kitty_keyboard: sprag_vt::KittyKeyboardFlags::from_bits(
                 sprag_vt::KittyKeyboardFlags::DISAMBIGUATE,
             ),
+            ..InputModes::default()
         }
     }
 

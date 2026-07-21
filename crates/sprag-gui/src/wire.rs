@@ -83,9 +83,9 @@ use serde_json::{Value, json};
 use sprag_host::wire::{
     BREAK_PANE_ACTION, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT, FULL_TEXT_SLOT,
     JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
-    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PROMPT_MARKS_SLOT, RESIZE_ACTION,
-    SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION,
-    TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
+    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, PROMPT_MARKS_SLOT,
+    RESIZE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
+    SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
 };
 use sprag_host::{
     CellFrame, HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneNotification,
@@ -1383,6 +1383,17 @@ impl HostClient for WireHost {
     fn send_text(&self, id: PaneId, text: &str) -> bool {
         let params = invoke(&pane_input_path(id.0, TEXT_ACTION), json!({ "text": text }));
         self.request("scene/invoke", params, "send_text").is_some()
+    }
+
+    fn paste(&self, id: PaneId, text: &str) -> bool {
+        // Forward the raw text; the host brackets it (and filters an embedded end marker) if the
+        // pane's child has enabled DEC private mode 2004. This client cannot see the pane's input
+        // modes, so the bracketing decision stays at the PTY boundary.
+        let params = invoke(
+            &pane_input_path(id.0, PASTE_ACTION),
+            json!({ "text": text }),
+        );
+        self.request("scene/invoke", params, "paste").is_some()
     }
 
     fn pane_full_text(&self, id: PaneId) -> String {

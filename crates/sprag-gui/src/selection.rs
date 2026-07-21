@@ -4,9 +4,10 @@
 //! band, [`sprag_grid::overlay_selection`]); the swept text is published to the X11
 //! PRIMARY selection continuously (select-to-copy) and to the CLIPBOARD on
 //! `Ctrl+Shift+C`. A middle-click pastes PRIMARY, `Ctrl+Shift+V` pastes CLIPBOARD —
-//! both write the text to the focused pane's PTY through the same
-//! [`HostClient::send_text`](sprag_host::HostClient::send_text) seam an IME commit and
-//! an AI peer use.
+//! both write the text to the focused pane's PTY through the
+//! [`HostClient::paste`](sprag_host::HostClient::paste) seam, which brackets the text (DEC
+//! private mode 2004) when the pane's child asked for it, unlike the raw
+//! [`HostClient::send_text`](sprag_host::HostClient::send_text) an IME commit and an AI peer use.
 //!
 //! All of this rides pinion primitives (NO pinion change): the pointer coordinates
 //! arrive through [`WidgetView::position_caret_for_point`](pinion_shell::WidgetView) /
@@ -210,8 +211,10 @@ pub(crate) fn paste_primary(pane: usize) -> bool {
     paste_into(pane, ClipboardSelection::Primary)
 }
 
-/// Read `selection`'s clipboard and write it to pane `pane`'s PTY (the same
-/// text->PTY seam an IME commit uses). No-op on an empty / absent clipboard.
+/// Read `selection`'s clipboard and PASTE it into pane `pane` — the paste seam, distinct from an
+/// IME commit: the host brackets the text (DEC private mode 2004) when the pane's child asked for
+/// it, so a multi-line paste does not auto-execute line by line. No-op on an empty / absent
+/// clipboard.
 fn paste_into(pane: usize, selection: ClipboardSelection) -> bool {
     let Some(text) = clipboard().paste_from(selection) else {
         return false;
@@ -219,7 +222,7 @@ fn paste_into(pane: usize, selection: ClipboardSelection) -> bool {
     if text.is_empty() {
         return false;
     }
-    let _ = use_terminal().slots.send_text(pane, &text);
+    let _ = use_terminal().slots.paste(pane, &text);
     true
 }
 

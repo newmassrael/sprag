@@ -18,8 +18,8 @@ use serde_json::{Value, json};
 use sprag_host::wire::{
     BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, FULL_TEXT_SLOT, JOIN_PANE_ACTION,
     KILL_SESSION_ACTION, LAYOUT_SLOT, LINKS_SLOT, NEW_SESSION_ACTION, NEW_WINDOW_ACTION,
-    PANES_SLOT, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
-    SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
+    PANES_SLOT, PASTE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
 };
 use sprag_host::{mux_action_path, pane_input_path};
 use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn};
@@ -214,6 +214,29 @@ fn wire_client_drives_a_real_sprag_term_host() {
             .unwrap_or(false)
         }),
         "the sent text never echoed back through the wire",
+    );
+
+    // The PASTE action routes over the same socket: this `cat` never enabled bracketed paste
+    // (mode 2004 off), so the paste is written raw and its marker echoes back — proving
+    // `PASTE_ACTION` reaches `inject_paste` -> `pane::paste`. (The bracketing bytes themselves,
+    // when 2004 IS on, are pinned by `pane::tests::paste_brackets_when_the_child_enabled_2004`,
+    // which reads the raw capture the emulator consumes before it reaches `full_text`.)
+    conn.call(
+        "scene/invoke",
+        json!({ "path": pane_input_path(0, PASTE_ACTION), "args": { "text": "wire_paste_43\n" } }),
+    )
+    .expect("paste over the wire");
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            conn.call(
+                "scene/query",
+                json!({ "path": pane_input_path(0, FULL_TEXT_SLOT) }),
+            )
+            .ok()
+            .and_then(|v| v.as_str().map(|s| s.contains("wire_paste_43")))
+            .unwrap_or(false)
+        }),
+        "the pasted text never echoed back through the wire (PASTE_ACTION dispatch)",
     );
 
     let _ = std::fs::remove_file(&sock);

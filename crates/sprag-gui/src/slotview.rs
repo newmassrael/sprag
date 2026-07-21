@@ -310,6 +310,14 @@ impl SlotView {
             .is_some_and(|id| self.host.send_text(id, text))
     }
 
+    /// PASTE text into slot `slot`'s pane — bracketed at the host when the child enabled DEC
+    /// private mode 2004, raw otherwise. `false` for a hole / failed send. Distinct from
+    /// [`Self::send_text`] so only a clipboard paste is bracketed, never typed / IME text.
+    #[must_use]
+    pub(crate) fn paste(&self, slot: usize, text: &str) -> bool {
+        self.id(slot).is_some_and(|id| self.host.paste(id, text))
+    }
+
     /// Slot `slot`'s full text (empty for a hole).
     pub(crate) fn pane_full_text(&self, slot: usize) -> String {
         self.id(slot)

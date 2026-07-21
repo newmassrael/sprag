@@ -15,8 +15,11 @@
 //! encodes the W3C key + modifiers to PTY bytes ([`sprag_input::encode`],
 //! sprag-owned) and writes them to the child. A sibling `invoke("text",
 //! {text})` writes **literal** UTF-8 to the child (no key-encoding) — the seam
-//! for IME-composed input (a Hangul/CJK commit is text, not a keystroke) and
-//! for pasting; the AI peer drives the same wire.
+//! for IME-composed input (a Hangul/CJK commit is text, not a keystroke); the
+//! AI peer drives the same wire. `invoke("paste", {text})` is the paste seam:
+//! like `text`, but the host brackets it (`ESC [ 200 ~` … `ESC [ 201 ~`) when
+//! the child enabled DEC private mode 2004, so a multi-line paste is held as
+//! one paste, not executed line by line.
 //!
 //! The read channel serves the pane's cell FRAME as the `query("cells.<offset>")` family
 //! ([`CELLS_FIELD`]) — the projected [`GridBuffer`] at that scrollback offset (serde-able
@@ -57,7 +60,7 @@ use base64::engine::general_purpose::STANDARD;
 use crate::wire::{
     CELLS_FIELD, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT, CURSOR_KEYS_SLOT, FRAMES_SLOT,
     FULL_TEXT_SLOT, IMAGE_DATA_FIELD, KEY_ACTION, LAST_COMMAND_SLOT, LINKS_SLOT, PANE_SCHEMA,
-    PROMPT_MARKS_SLOT, TEXT_ACTION,
+    PASTE_ACTION, PROMPT_MARKS_SLOT, TEXT_ACTION,
 };
 
 /// Encode a W3C `key` + `mods` to PTY bytes (the sprag-owned R2.6 encoder,
@@ -87,6 +90,53 @@ pub fn send_text(pty: &PanePtyHandle, text: &str) -> bool {
         return true;
     }
     pty.write(text.as_bytes()).is_ok()
+}
+
+/// The bracketed-paste START marker (`ESC [ 200 ~`) — written before pasted text when the pane's
+/// child has enabled DEC private mode 2004.
+const PASTE_BRACKET_START: &str = "\x1b[200~";
+/// The bracketed-paste END marker (`ESC [ 201 ~`) — written after pasted text.
+const PASTE_BRACKET_END: &str = "\x1b[201~";
+
+/// PASTE literal UTF-8 `text` into `pty` — the clipboard-paste seam, distinct from [`send_text`]
+/// (typed / IME-committed text). When the pane's child has enabled bracketed paste (DEC private
+/// mode 2004, read LIVE from the emulator), the text is wrapped in `ESC [ 200 ~` … `ESC [ 201 ~`
+/// so the child can tell a paste from typed keystrokes (a shell / editor then holds a multi-line
+/// paste instead of executing each line). Otherwise it is written raw, exactly like [`send_text`].
+///
+/// The bracketing decision lives HERE, at the PTY boundary, because the emulator holds the
+/// authoritative mode — the same reason [`send_key`] encodes here rather than in the display
+/// client (which never sees [`crate::HostClient`]-side input modes).
+///
+/// Security: any embedded END marker in the pasted text is stripped BEFORE wrapping, so a paste
+/// whose content contains `ESC [ 201 ~` cannot close the bracket early and have its tail
+/// interpreted as typed commands (the paste-injection guard xterm applies). Empty text is a
+/// no-op success. `true` on success; `false` on a write failure.
+#[must_use]
+pub fn paste(pty: &PanePtyHandle, text: &str) -> bool {
+    if text.is_empty() {
+        return true;
+    }
+    if !pty.input_modes().bracketed_paste {
+        return pty.write(text.as_bytes()).is_ok();
+    }
+    pty.write(&frame_bracketed_paste(text)).is_ok()
+}
+
+/// Frame `text` as a bracketed paste: `ESC [ 200 ~` + `text` (with any embedded bracket marker
+/// filtered out) + `ESC [ 201 ~`. Pure (no PTY) so the framing and the paste-injection guard are
+/// deterministically testable. The END marker is filtered so a paste whose content contains
+/// `ESC [ 201 ~` cannot close the bracket early and have its tail read as typed commands; the
+/// START marker is filtered too (a forged start only confuses a child that already saw ours).
+fn frame_bracketed_paste(text: &str) -> Vec<u8> {
+    let sanitized = text
+        .replace(PASTE_BRACKET_END, "")
+        .replace(PASTE_BRACKET_START, "");
+    let mut framed = Vec::with_capacity(PASTE_BRACKET_START.len() + sanitized.len() + 6);
+    framed.extend_from_slice(PASTE_BRACKET_START.as_bytes());
+    framed.extend_from_slice(sanitized.as_bytes());
+    framed.extend_from_slice(PASTE_BRACKET_END.as_bytes());
+    framed
 }
 
 /// The pane engine `External`: a thin, scene-stateless forwarder onto the
@@ -129,6 +179,19 @@ impl SpragPaneExternal {
     fn inject_text(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let text = parse_text_args(args)?;
         if send_text(&self.pty, &text) {
+            Ok(IntrospectValue::Null)
+        } else {
+            Err(InvokeError::Rejected)
+        }
+    }
+
+    /// PASTE a `paste` action's literal UTF-8 into the PTY — like [`Self::inject_text`], but the
+    /// text is bracketed (and its embedded end marker filtered) when the child enabled DEC private
+    /// mode 2004. The seam a display client's clipboard paste reaches over the wire. Empty text is
+    /// a no-op success. A write failure is an [`InvokeError::Rejected`].
+    fn inject_paste(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let text = parse_text_args(args)?;
+        if paste(&self.pty, &text) {
             Ok(IntrospectValue::Null)
         } else {
             Err(InvokeError::Rejected)
@@ -345,6 +408,7 @@ impl ExternalIntrospect for SpragPaneExternal {
         match path {
             KEY_ACTION => self.inject_key(&args),
             TEXT_ACTION => self.inject_text(&args),
+            PASTE_ACTION => self.inject_paste(&args),
             CLIPBOARD_ANSWER_ACTION => self.answer_clipboard(&args),
             _ => Err(InvokeError::UnknownPath),
         }
@@ -468,6 +532,36 @@ mod tests {
     }
 
     #[test]
+    fn frame_bracketed_paste_wraps_multiline_text() {
+        // The whole multi-line paste sits INSIDE one bracket pair, so a child holds it as one
+        // paste instead of executing each line — the reason bracketed paste exists.
+        assert_eq!(
+            frame_bracketed_paste("git status\nls -a"),
+            b"\x1b[200~git status\nls -a\x1b[201~",
+        );
+    }
+
+    #[test]
+    fn frame_bracketed_paste_strips_an_embedded_end_marker() {
+        // Paste-injection guard: a payload carrying the END marker must NOT be able to close the
+        // bracket early and have its tail (`rm -rf /`) read as typed input.
+        let framed = frame_bracketed_paste("safe\x1b[201~rm -rf /");
+        assert_eq!(framed, b"\x1b[200~saferm -rf /\x1b[201~".to_vec());
+        // Exactly ONE end marker survives — the framing's own trailer.
+        let end = b"\x1b[201~";
+        let count = framed.windows(end.len()).filter(|w| *w == end).count();
+        assert_eq!(count, 1, "no forged end marker survives the sanitize");
+    }
+
+    #[test]
+    fn frame_bracketed_paste_strips_an_embedded_start_marker() {
+        assert_eq!(
+            frame_bracketed_paste("a\x1b[200~b"),
+            b"\x1b[200~ab\x1b[201~".to_vec(),
+        );
+    }
+
+    #[test]
     fn parses_bare_string_key() {
         let parsed = parse_key_args(&IntrospectValue::Text("a".to_string())).unwrap();
         assert_eq!(parsed, Some(("a".to_string(), Modifiers::default())));
@@ -564,6 +658,73 @@ mod tests {
         assert_eq!(
             parse_text_args(&IntrospectValue::Int(1)),
             Err(InvokeError::TypeMismatch)
+        );
+    }
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    /// A `sh` that puts its PTY in raw `-echo` (so the raw capture is byte-clean, not cooked /
+    /// caret-mangled) and copies stdin to stdout with `cat`, optionally enabling bracketed paste
+    /// (DECSET 2004) first — the child echoes whatever the host writes, so what we pasted appears
+    /// verbatim in [`PanePtyHandle::raw_output`].
+    fn raw_cat(enable_2004: bool) -> sprag_terminal::PanePty {
+        use sprag_terminal::{CommandBuilder, PanePty};
+        let script = if enable_2004 {
+            "stty raw -echo 2>/dev/null; printf '\\033[?2004h'; cat"
+        } else {
+            "stty raw -echo 2>/dev/null; cat"
+        };
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg(script);
+        command.env("TERM", "xterm");
+        PanePty::spawn(command, 40, 6).expect("spawn a pty")
+    }
+
+    fn wait_until(mut done: impl FnMut() -> bool) -> bool {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            if done() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        done()
+    }
+
+    #[test]
+    fn paste_brackets_when_the_child_enabled_2004() {
+        let pty = raw_cat(true);
+        let handle = pty.handle();
+        assert!(
+            wait_until(|| handle.input_modes().bracketed_paste),
+            "the child's DECSET 2004 was never emulated",
+        );
+        assert!(paste(&handle, "a\nb"));
+        // The raw `cat` echoes the bytes the host wrote, so the bracket wrap rides the capture.
+        assert!(
+            wait_until(|| contains(&pty.raw_output().bytes, b"\x1b[200~a\nb\x1b[201~")),
+            "the paste reached the child UNBRACKETED (mode 2004 was on)",
+        );
+    }
+
+    #[test]
+    fn paste_is_raw_when_the_child_did_not_enable_2004() {
+        let pty = raw_cat(false);
+        let handle = pty.handle();
+        assert!(!handle.input_modes().bracketed_paste);
+        assert!(paste(&handle, "a\nb"));
+        // The literal text echoes back with NO bracket markers (legacy, == send_text).
+        assert!(
+            wait_until(|| contains(&pty.raw_output().bytes, b"a\nb")),
+            "the raw paste never reached the child",
+        );
+        assert!(
+            !contains(&pty.raw_output().bytes, b"\x1b[200~"),
+            "an un-negotiated pane must NOT get bracket markers",
         );
     }
 }

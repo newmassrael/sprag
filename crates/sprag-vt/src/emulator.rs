@@ -1099,6 +1099,9 @@ impl Emulator {
                 DecPrivateModeCode::ClearAndEnableAlternateScreen
                 | DecPrivateModeCode::EnableAlternateScreen
                 | DecPrivateModeCode::OptEnableAlternateScreen => self.enter_alt(),
+                DecPrivateModeCode::BracketedPaste => {
+                    self.input_modes.bracketed_paste = true;
+                }
                 _ => {}
             },
             Mode::ResetDecPrivateMode(DecPrivateMode::Code(code)) => match code {
@@ -1109,6 +1112,9 @@ impl Emulator {
                 DecPrivateModeCode::ClearAndEnableAlternateScreen
                 | DecPrivateModeCode::EnableAlternateScreen
                 | DecPrivateModeCode::OptEnableAlternateScreen => self.exit_alt(),
+                DecPrivateModeCode::BracketedPaste => {
+                    self.input_modes.bracketed_paste = false;
+                }
                 _ => {}
             },
             _ => {}
@@ -2248,6 +2254,36 @@ mod tests {
         // DECRST 1 (ESC [ ? 1 l) restores normal cursor keys.
         em.advance(b"\x1b[?1l");
         assert!(!em.input_modes().application_cursor_keys);
+    }
+
+    #[test]
+    fn bracketed_paste_mode_defaults_off() {
+        let em = Emulator::new(4, 2);
+        assert!(!em.input_modes().bracketed_paste);
+    }
+
+    #[test]
+    fn bracketed_paste_set_and_reset_tracked() {
+        let mut em = Emulator::new(4, 2);
+        // DECSET 2004 (ESC [ ? 2004 h) asks for pastes to arrive bracketed.
+        em.advance(b"\x1b[?2004h");
+        assert!(em.input_modes().bracketed_paste);
+        // DECRST 2004 (ESC [ ? 2004 l) returns to raw paste.
+        em.advance(b"\x1b[?2004l");
+        assert!(!em.input_modes().bracketed_paste);
+    }
+
+    #[test]
+    fn bracketed_paste_mode_does_not_bump_the_damage_generation() {
+        // A mode toggle carries no cells; a consumer polling row damage must not see churn.
+        let mut em = Emulator::new(4, 2);
+        let g0 = em.screen().row_generation(0).unwrap();
+        em.advance(b"\x1b[?2004h");
+        assert_eq!(
+            em.screen().row_generation(0).unwrap(),
+            g0,
+            "no row damage from a mode set"
+        );
     }
 
     // ----- B1: soft-wrap continuation metadata (`Screen::wrapped`) -----

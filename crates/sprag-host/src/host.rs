@@ -207,10 +207,21 @@ pub trait HostClient {
     #[must_use]
     fn send_key(&self, id: PaneId, key: &str, mods: Modifiers) -> bool;
 
-    /// Write literal committed `text` to pane `id` — the IME-commit / paste client
-    /// path. Empty is a no-op success. `true` if it reached the PTY.
+    /// Write literal committed `text` to pane `id` — the IME-commit client path (typed text,
+    /// never bracketed). Empty is a no-op success. `true` if it reached the PTY.
     #[must_use]
     fn send_text(&self, id: PaneId, text: &str) -> bool;
+
+    /// PASTE literal `text` into pane `id` — the clipboard-paste client path, distinct from
+    /// [`Self::send_text`]: the host wraps it in the bracketed-paste markers (and filters an
+    /// embedded end marker) when pane `id`'s child has enabled DEC private mode 2004. The default
+    /// forwards to [`Self::send_text`] (raw, unbracketed) — a safe legacy fallback for a client
+    /// that cannot reach the authoritative mode; [`Host`] and the wire client override it to do
+    /// the mode-aware bracketing at the PTY boundary. Empty is a no-op success.
+    #[must_use]
+    fn paste(&self, id: PaneId, text: &str) -> bool {
+        self.send_text(id, text)
+    }
 
     /// Pane `id`'s full text (scrollback + visible) — the a11y text SSOT. Empty if
     /// `id` is absent.
@@ -841,6 +852,14 @@ impl HostClient for Host {
     fn send_text(&self, id: PaneId, text: &str) -> bool {
         self.with_pane_id(id, Pane::handle)
             .is_some_and(|handle| crate::send_text(&handle, text))
+    }
+
+    /// Brackets the paste (and filters an embedded end marker) at the PTY boundary when the pane's
+    /// child enabled DEC private mode 2004 — the mode is read live from the emulator here, so the
+    /// bracketing cannot disagree with what the child asked for. `false` for an absent id.
+    fn paste(&self, id: PaneId, text: &str) -> bool {
+        self.with_pane_id(id, Pane::handle)
+            .is_some_and(|handle| crate::paste(&handle, text))
     }
 
     fn pane_full_text(&self, id: PaneId) -> String {

@@ -22,6 +22,13 @@ pub const KEY_ACTION: &str = "key";
 /// The pane-input external invoke action that writes literal UTF-8 (IME commit /
 /// paste), no key-encoding.
 pub const TEXT_ACTION: &str = "text";
+/// The pane-input external invoke action that PASTES literal UTF-8: like [`TEXT_ACTION`], but the
+/// host wraps it in the bracketed-paste markers (`ESC [ 200 ~` … `ESC [ 201 ~`) when the pane's
+/// child has enabled DEC private mode 2004, and filters any embedded end marker so the paste
+/// cannot break out of the bracket. Distinct from [`TEXT_ACTION`] because only a paste is
+/// bracketed — typed / IME-committed text never is. The bracketing decision lives at the PTY
+/// boundary (which holds the authoritative mode), so a display client just forwards the raw text.
+pub const PASTE_ACTION: &str = "paste";
 /// The pane-input external query slot: how many distinct frames [`CELLS_FIELD`] can address
 /// — `scrollback_len + 1` (the live view, plus one per retained history line).
 ///
@@ -150,6 +157,7 @@ pub const IMAGE_DATA_FIELD: SchemaField =
 pub const PANE_SCHEMA: &[SchemaField] = &[
     SchemaField::new(KEY_ACTION, "action"),
     SchemaField::new(TEXT_ACTION, "action"),
+    SchemaField::new(PASTE_ACTION, "action"),
     CELLS_FIELD,
     SchemaField::new(FRAMES_SLOT, "int"),
     SchemaField::new(CURSOR_KEYS_SLOT, "bool"),
