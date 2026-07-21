@@ -237,6 +237,55 @@ pub fn overlay_selection(buffer: GridBuffer, start: (u16, u16), end: (u16, u16))
     buffer
 }
 
+/// Overlay the OSC-8 hyperlink hover highlight (R-71.2, pinion R1405): reverse-video
+/// every cell whose link matches `hovered` — the WHOLE id-group at once, so a link
+/// split across a wrap lights together (its non-adjacent runs share one
+/// [`HyperlinkId`] in this buffer's interning table). `None` (nothing hovered) is a
+/// no-op returning `buffer` unchanged.
+///
+/// `hovered` is a [`HyperlinkId`] INTO THIS buffer's table: the caller resolves the
+/// pointer's cell to its link id (the cell's own [`TermCell::hyperlink`], obtained
+/// e.g. via [`GridBuffer::cell`]) and passes it. Like [`overlay_selection`] this
+/// rewrites only affected rows wholesale on the per-frame projected buffer, never the
+/// producer's authoritative cells. The URI a click opens is resolved separately via
+/// [`GridBuffer::cell_hyperlink`].
+#[must_use]
+pub fn overlay_hyperlink_hover(buffer: GridBuffer, hovered: Option<HyperlinkId>) -> GridBuffer {
+    let Some(hovered) = hovered else {
+        return buffer;
+    };
+    let cols = buffer.cols();
+    let rows = buffer.rows();
+    let mut buffer = buffer;
+    for row in 0..rows {
+        // Rewrite a row only if it actually carries a cell of the hovered link.
+        let touched = (0..cols).any(|col| {
+            buffer
+                .cell(col, row)
+                .is_some_and(|c| c.hyperlink == Some(hovered))
+        });
+        if !touched {
+            continue;
+        }
+        let cells: Vec<TermCell> = (0..cols)
+            .map(|col| {
+                let cell = buffer
+                    .cell(col, row)
+                    .cloned()
+                    .unwrap_or_else(TermCell::blank);
+                if cell.hyperlink == Some(hovered) {
+                    let attrs = cell.attrs;
+                    cell.with_attrs(attrs.with_reverse(!attrs.reverse))
+                } else {
+                    cell
+                }
+            })
+            .collect();
+        buffer = buffer.with_row(row, cells);
+    }
+    buffer
+}
+
 /// One preedit cell: the char in default colors, underlined to mark an
 /// in-progress composition. The grid cursor (a block at the compose position)
 /// highlights the active cell; the underline distinguishes the rest of the
@@ -780,5 +829,39 @@ mod tests {
             "two anonymous links get distinct ids even with an equal URI"
         );
         assert_eq!(buf.hyperlink(a).unwrap().uri, buf.hyperlink(b).unwrap().uri);
+    }
+
+    /// The hover overlay reverse-videos the WHOLE id-group — a wrapped link's
+    /// cells on both rows light together; unlinked cells stay put; `None` no-ops.
+    #[test]
+    fn hyperlink_hover_overlay_lights_the_whole_id_group() {
+        // A 6-char link on a 4-col screen wraps: "ABCD" on row 0, "EF" on row 1.
+        let screen = screen_from(b"\x1b]8;;http://w\x1b\\ABCDEF\x1b]8;;\x1b\\", 4, 3);
+        let buf = project(&screen);
+        let id = buf.cell(0, 0).unwrap().hyperlink.expect("row0 linked");
+        assert_eq!(
+            buf.cell(1, 1).unwrap().hyperlink,
+            Some(id),
+            "the wrap put the same-id link on row 1"
+        );
+        let base = buf.cell(0, 0).unwrap().attrs.reverse;
+        let lit = overlay_hyperlink_hover(project(&screen), Some(id));
+        assert_eq!(
+            lit.cell(0, 0).unwrap().attrs.reverse,
+            !base,
+            "row 0 link cell lit"
+        );
+        assert_eq!(
+            lit.cell(1, 1).unwrap().attrs.reverse,
+            !base,
+            "row 1 wrap cell lit (whole id-group)"
+        );
+        // A None hover is a no-op.
+        let plain = overlay_hyperlink_hover(project(&screen), None);
+        assert_eq!(
+            plain.cell(0, 0).unwrap().attrs.reverse,
+            base,
+            "no hover = unchanged"
+        );
     }
 }
