@@ -83,15 +83,15 @@ use serde_json::{Value, json};
 use sprag_host::wire::{
     BREAK_PANE_ACTION, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT, FULL_TEXT_SLOT,
     JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
-    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, PROMPT_MARKS_SLOT,
-    RESIZE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
-    SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
+    MOUSE_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION,
+    PROMPT_MARKS_SLOT, RESIZE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
 };
 use sprag_host::{
     CellFrame, HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneNotification,
     PaneScrollFacts, mux_action_path, pane_input_path,
 };
-use sprag_input::Modifiers;
+use sprag_input::{Modifiers, MouseButton, MouseEventKind, MouseInput};
 use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn, runtime_path};
 use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId, SessionInfo, WindowInfo};
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image};
@@ -153,6 +153,10 @@ struct WirePane {
     /// The pane's inline images (Kitty graphics, R1404), empty if none. Host-authoritative +
     /// dynamic — re-adopted each wake, composited over the grid by [`crate::view`].
     images: Vec<Image>,
+    /// Whether the pane's child has a mouse-tracking mode active (DECSET 1000/1002/1003 — the wire
+    /// `mouse` key is present only while tracking). Host-authoritative + dynamic — re-adopted each
+    /// wake; the pane pointer oracle reads it to decide whether to CAPTURE a press for reporting.
+    mouse_active: bool,
     frame: CellFrame,
     /// The GUI's tracked grid `(cols, rows)`: seeded from the host at boot, advanced only
     /// when a `resize` RPC SUCCEEDS (so the reflow no-op guard reads it with no
@@ -1396,6 +1400,20 @@ impl HostClient for WireHost {
         self.request("scene/invoke", params, "paste").is_some()
     }
 
+    /// REPORT a mouse event: forward the SEMANTIC event (cell + button edge + mods) to the host,
+    /// which gates it against the pane's LIVE tracking mode and encodes the X10 / SGR report at the
+    /// PTY boundary — the same mode-authority-at-the-boundary split as [`Self::paste`] / send_key
+    /// (this client cannot see the pane's input modes, so it never encodes). The wire arg shape is
+    /// the `mouse` action's `{button, kind, col, row, ctrl, alt, shift}` (host `parse_mouse_args`).
+    fn mouse(&self, id: PaneId, event: MouseInput) -> bool {
+        self.request(
+            "scene/invoke",
+            invoke(&pane_input_path(id.0, MOUSE_ACTION), mouse_wire_args(event)),
+            "mouse",
+        )
+        .is_some()
+    }
+
     fn pane_full_text(&self, id: PaneId) -> String {
         let params = json!({ "path": pane_input_path(id.0, FULL_TEXT_SLOT) });
         self.request("scene/query", params, "pane_full_text")
@@ -1452,6 +1470,17 @@ impl HostClient for WireHost {
             .iter()
             .find(|pane| pane.id == id)
             .map_or(0, |pane| pane.bell_seq)
+    }
+
+    /// The child's mouse-tracking bit, served from the same poll-refreshed mirror as
+    /// [`Self::pane_bell_seq`] (re-adopted each wake). The pane pointer oracle reads it per frame to
+    /// gate pointer capture; the authoritative encode still re-reads the live mode host-side in
+    /// [`Self::mouse`], so a one-wake-stale bit can at most mis-gate a single press.
+    fn pane_mouse_active(&self, id: PaneId) -> bool {
+        self.lock_cache()
+            .iter()
+            .find(|pane| pane.id == id)
+            .is_some_and(|pane| pane.mouse_active)
     }
 
     /// The image SUMMARIES (`{id,width,height,anchor,seq}`, RGBA empty), served from the same
@@ -1638,6 +1667,9 @@ struct PaneSeed {
     clipboard_query: Option<PaneClipboardQuery>,
     /// The pane's inline images (Kitty graphics, R1404), empty when the wire omits the key.
     images: Vec<Image>,
+    /// Whether the pane's child has a mouse-tracking mode active — `true` when the additive `mouse`
+    /// wire key is present (`false` when omitted: no tracking, or an older daemon).
+    mouse_active: bool,
     dims: (u16, u16),
 }
 
@@ -1665,6 +1697,9 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
             let clipboard_write_seq = pane["clipboard_write_seq"].as_u64().unwrap_or(0);
             let clipboard_query = parse_clipboard_query(&pane["clipboard_query"]);
             let images = parse_images(&pane["images"]);
+            // ADDITIVE: the `mouse` key is a protocol-name string present only while the child is
+            // tracking, so its mere presence is the "active" bit the client's capture gate needs.
+            let mouse_active = pane["mouse"].is_string();
             let cols = u16::try_from(pane["cols"].as_u64().unwrap_or(1)).unwrap_or(1);
             let rows = u16::try_from(pane["rows"].as_u64().unwrap_or(1)).unwrap_or(1);
             Ok(PaneSeed {
@@ -1676,10 +1711,53 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
                 clipboard_write_seq,
                 clipboard_query,
                 images,
+                mouse_active,
                 dims: (cols, rows),
             })
         })
         .collect()
+}
+
+/// Build the `mouse` action's wire args from a semantic [`MouseInput`] — the object shape the
+/// host's `parse_mouse_args` decodes (`{button, kind, col, row, ctrl, alt, shift}`). Extracted from
+/// [`WireHost::mouse`] so the wire grammar is unit-testable without a live host. `super` is not
+/// carried: a mouse report has no encoding for the logo key (host-side `parse_mouse_args` fixes it
+/// to `false`).
+fn mouse_wire_args(event: MouseInput) -> Value {
+    json!({
+        "button": mouse_button_wire(event.button),
+        "kind": mouse_kind_wire(event.kind),
+        "col": event.col,
+        "row": event.row,
+        "ctrl": event.mods.ctrl,
+        "alt": event.mods.alt,
+        "shift": event.mods.shift,
+    })
+}
+
+/// The `button` wire token for a [`MouseButton`] — the vocabulary the host's `parse_mouse_args`
+/// decodes back. The producer twin of that parser, kept beside [`WireHost::mouse`] so the wire
+/// grammar has one emitter.
+fn mouse_button_wire(button: MouseButton) -> &'static str {
+    match button {
+        MouseButton::Left => "left",
+        MouseButton::Middle => "middle",
+        MouseButton::Right => "right",
+        MouseButton::WheelUp => "wheelup",
+        MouseButton::WheelDown => "wheeldown",
+        MouseButton::None => "none",
+    }
+}
+
+/// The `kind` wire token for a [`MouseEventKind`] — the edge vocabulary the host's
+/// `parse_mouse_args` decodes back.
+fn mouse_kind_wire(kind: MouseEventKind) -> &'static str {
+    match kind {
+        MouseEventKind::Press => "press",
+        MouseEventKind::Release => "release",
+        MouseEventKind::Drag => "drag",
+        MouseEventKind::Motion => "motion",
+    }
 }
 
 /// Parse a pane's `notification` wire value (`{title, body, seq}`, or absent/`null`) into a
@@ -1956,6 +2034,9 @@ fn merge_panes(
             clipboard_query: seed.clipboard_query,
             // host-authoritative + dynamic: re-adopt the query's images each wake.
             images: seed.images.clone(),
+            // host-authoritative + dynamic: re-adopt the query's mouse-tracking bit each wake, so
+            // the capture gate tracks the child enabling / disabling reporting.
+            mouse_active: seed.mouse_active,
             frame,
             dims: prior.map_or(seed.dims, |pane| pane.dims), // GUI-authoritative — keep tracked
         });
@@ -2111,6 +2192,7 @@ fn spawn_poll(
                                 clipboard_write_seq: pane.clipboard_write_seq,
                                 clipboard_query: pane.clipboard_query,
                                 images: pane.images.clone(), // keep last-known images too
+                                mouse_active: pane.mouse_active, // keep last-known tracking bit too
                                 dims: pane.dims,
                             })
                             .collect();
@@ -2285,6 +2367,42 @@ mod tests {
         assert_eq!(images[0].seq, 5);
         assert!(images[0].rgba.is_empty(), "the summary carries NO rgba");
         assert!(parse_images(&Value::Null).is_empty(), "absent ⇒ empty");
+    }
+
+    /// [`WireHost::mouse`] serializes a semantic event into the exact object shape the host's
+    /// `parse_mouse_args` decodes (`{button, kind, col, row, ctrl, alt, shift}`) — a token typo here
+    /// would make the host silently drop the report. Pins the vocabulary + the 0-based coordinates.
+    #[test]
+    fn mouse_wire_args_matches_the_host_parse_shape() {
+        let event = MouseInput {
+            button: MouseButton::Left,
+            kind: MouseEventKind::Press,
+            col: 4,
+            row: 2,
+            mods: Modifiers {
+                ctrl: true,
+                alt: false,
+                shift: true,
+                sup: true, // never travels — a mouse report has no logo bit
+            },
+        };
+        assert_eq!(
+            mouse_wire_args(event),
+            json!({
+                "button": "left",
+                "kind": "press",
+                "col": 4,
+                "row": 2,
+                "ctrl": true,
+                "alt": false,
+                "shift": true,
+            }),
+        );
+        // The release edge + the other buttons/edges use the tokens the parser matches.
+        assert_eq!(mouse_button_wire(MouseButton::Right), "right");
+        assert_eq!(mouse_button_wire(MouseButton::WheelUp), "wheelup");
+        assert_eq!(mouse_kind_wire(MouseEventKind::Release), "release");
+        assert_eq!(mouse_kind_wire(MouseEventKind::Motion), "motion");
     }
 
     /// A structural session list in creation order, the shape [`destroy_successor`] reads — only the
@@ -3153,6 +3271,7 @@ mod tests {
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
+                mouse_active: false,
                 frame: frame(3),
                 dims: (80, 24),
             },
@@ -3165,6 +3284,7 @@ mod tests {
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
+                mouse_active: false,
                 frame: frame(3),
                 dims: (40, 12),
             },
@@ -3182,6 +3302,7 @@ mod tests {
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
+                mouse_active: false,
                 dims: (100, 30),
             },
             PaneSeed {
@@ -3193,6 +3314,7 @@ mod tests {
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
+                mouse_active: false,
                 dims: (80, 24),
             },
             PaneSeed {
@@ -3204,6 +3326,7 @@ mod tests {
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
+                mouse_active: false,
                 dims: (80, 24),
             },
         ];
@@ -3250,6 +3373,7 @@ mod tests {
             clipboard_write_seq: 0,
             clipboard_query: None,
             images: Vec::new(),
+            mouse_active: false,
             frame: frame(3),
             dims: (80, 24),
         }];
@@ -3262,6 +3386,7 @@ mod tests {
             clipboard_write_seq: 0,
             clipboard_query: None,
             images: Vec::new(),
+            mouse_active: false,
             dims: (80, 24),
         }];
         let merged = merge_panes(&existing, &seeds, &[]); // fetch missed this wake
@@ -3289,6 +3414,7 @@ mod tests {
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
+                mouse_active: false,
                 frame: frame(3),
                 dims: (80, 24),
             },
@@ -3301,6 +3427,7 @@ mod tests {
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
+                mouse_active: false,
                 frame: frame(3),
                 dims: (80, 24),
             },
@@ -3315,6 +3442,7 @@ mod tests {
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
+                mouse_active: false,
                 dims: (80, 24),
             },
             PaneSeed {
@@ -3326,6 +3454,7 @@ mod tests {
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
+                mouse_active: false,
                 dims: (80, 24),
             },
         ];

@@ -696,7 +696,15 @@ impl WidgetCore for TerminalViewer {
             scrollbar::reconcile_scroll(&scroll, facts.scrollback_len);
             let offset = scrollbar::offset_lines_from_top(scroll.offset_y(), facts.scrollback_len);
             let buffer = terminal.slots.pane_cells(i, offset);
-            hyperlink::reconcile_pane_hyperlinks(i, &buffer);
+            // Feed the oracle its link map AND the child's live mouse-tracking bit, then DRAIN any
+            // press/release the oracle captured while tracking and forward it to the host (which
+            // gates + encodes the X10 / SGR report at the PTY boundary). The send lives here — where
+            // `terminal.slots` is in scope — not in the oracle, mirroring the URI-open drain.
+            let mouse_active = terminal.slots.pane_mouse_active(i);
+            hyperlink::reconcile_pane_hyperlinks(i, &buffer, mouse_active);
+            for event in hyperlink::take_pane_mouse_reports(i) {
+                let _ = terminal.slots.mouse(i, event);
+            }
             // Fetch + register the pane's new/changed inline-image RGBA on demand (R1404 Stage 5),
             // before the pure view references the `memory://` keys.
             view::reconcile_pane_images(&terminal.slots, i);
@@ -1056,6 +1064,17 @@ impl WidgetView for TerminalViewer {
         y: f32,
         extend: bool,
     ) -> Option<usize> {
+        // When the pane's child is TRACKING the mouse, an unmodified press is a REPORT (captured by
+        // the pane pointer oracle at `pane_tag(i)`), not a text-selection anchor — suppress
+        // selection here so a click does not both report AND start a drag-select. Shift is the
+        // escape hatch: a Shift-press still selects natively (the xterm "override mouse mode"
+        // convention), so `extend` presses fall through.
+        if !extend
+            && let Some(i) = selection::pane_of_hit(hit_tag)
+            && hyperlink::pane_mouse_capturing(i)
+        {
+            return None;
+        }
         selection::press(scene, hit_tag, x, y, extend)
     }
 

@@ -425,6 +425,17 @@ pub trait HostClient {
         0
     }
 
+    /// Whether pane `id`'s child has a mouse-tracking mode active (DECSET 1000/1002/1003) — the
+    /// CHEAP per-frame bit a display client reads to decide whether to CAPTURE the pointer for
+    /// reporting (vs. its native selection / link-hover behaviour). The report ENCODING stays at
+    /// the PTY boundary ([`Self::mouse`], which re-reads the authoritative live mode); this bit is
+    /// only the client's capture gate, so a one-frame-stale value at most mis-gates one press.
+    /// Defaulted to `false` so an older [`HostClient`] impl need not implement it.
+    #[must_use]
+    fn pane_mouse_active(&self, _id: PaneId) -> bool {
+        false
+    }
+
     /// The pane's inline images (Kitty graphics / Sixel, R1404) as SUMMARIES — `{id, width,
     /// height, anchor, seq}`, the [`Image::rgba`](sprag_vt::Image) EMPTY over the wire. A display
     /// client reads the summary each poll, composites each over the grid at its anchor cell × the
@@ -916,6 +927,13 @@ impl HostClient for Host {
     /// [`Self::pane_notification`]). An absent pane flattens to `0`.
     fn pane_bell_seq(&self, id: PaneId) -> u64 {
         self.with_pane_id(id, Pane::bell_seq).unwrap_or(0)
+    }
+
+    /// Whether the pane's child has a mouse-tracking mode active, read off the emulator under the
+    /// workspace lock (like [`Self::pane_bell_seq`]). An absent pane flattens to `false`.
+    fn pane_mouse_active(&self, id: PaneId) -> bool {
+        self.with_pane_id(id, |pane| pane.mouse_protocol().is_active())
+            .unwrap_or(false)
     }
 
     /// The pane's live inline images, read off the emulator under the workspace lock (like

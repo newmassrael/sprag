@@ -289,7 +289,7 @@ fn extract_text(cells: &GridBuffer, start: Cell, end: Cell) -> String {
 /// The pane a router hit-target `hit_tag` addresses, or `None` if it is not a pane
 /// grid. The grid node is tagged `{pane_tag}#grid`, so strip any `#…` suffix before
 /// resolving; a non-pane target (dock header / splitter / scrollbar) resolves to `None`.
-fn pane_of_hit(hit_tag: Option<&str>) -> Option<usize> {
+pub(crate) fn pane_of_hit(hit_tag: Option<&str>) -> Option<usize> {
     let tag = hit_tag?;
     let base = tag.split('#').next().unwrap_or(tag);
     pane_index_of(base)

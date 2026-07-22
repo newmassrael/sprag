@@ -33,7 +33,7 @@ use pinion_core::GridBuffer;
 use sprag_host::{
     HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneNotification, PaneScrollFacts,
 };
-use sprag_input::Modifiers;
+use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId, SessionInfo, WindowInfo};
 use sprag_vt::ClipboardTarget;
 
@@ -316,6 +316,22 @@ impl SlotView {
     #[must_use]
     pub(crate) fn paste(&self, slot: usize, text: &str) -> bool {
         self.id(slot).is_some_and(|id| self.host.paste(id, text))
+    }
+
+    /// REPORT a mouse `event` to slot `slot`'s pane — the host gates it against the pane's live
+    /// tracking mode and encodes an X10 / SGR report at the PTY boundary. `false` for a hole /
+    /// failed send (an event the mode does not want is a legitimate `true` no-op host-side).
+    #[must_use]
+    pub(crate) fn mouse(&self, slot: usize, event: MouseInput) -> bool {
+        self.id(slot).is_some_and(|id| self.host.mouse(id, event))
+    }
+
+    /// Whether slot `slot`'s pane has a mouse-tracking mode active — the pane pointer oracle's
+    /// per-frame capture gate. `false` for a hole.
+    #[must_use]
+    pub(crate) fn pane_mouse_active(&self, slot: usize) -> bool {
+        self.id(slot)
+            .is_some_and(|id| self.host.pane_mouse_active(id))
     }
 
     /// Slot `slot`'s full text (empty for a hole).

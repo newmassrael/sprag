@@ -43,6 +43,21 @@
 //! tmux flattens OSC 8 to plain text — no hover, no open. sprag lights the whole
 //! id-group across wraps, shows a hand cursor, opens scheme-gated on click, AND the
 //! link is agent-readable as data (`read_pane_links`, prior round).
+//!
+//! ## The pane's ONE pointer authority (mouse tracking, DECSET 1000/1006)
+//!
+//! Because only ONE [`External`] may register at `pane_tag(i)`, this oracle is ALSO the
+//! pane's mouse-report capture layer (xterm mouse tracking). When the pane's child has a
+//! tracking mode active (the host's per-frame `mouse` bit, fed via
+//! [`reconcile_pane_hyperlinks`]), [`External::wants_pointer_capture`] turns on for EVERY
+//! press (not just over a link), the captured press/release is recorded as a semantic
+//! [`MouseInput`] at the last hovered cell, and [`take_pane_mouse_reports`] hands it to the
+//! reconcile to forward to the host (which gates + encodes the X10 / SGR report at the PTY
+//! boundary — coordinate conversion is the ONLY job here). A press with a mode active
+//! reports instead of activating a link; with no mode active the link / selection behaviour
+//! is unchanged. Only the LEFT button routes through the framework capture channel
+//! (`PointerDown`/`PointerUp`); middle / right / wheel reach separate shell arms and are a
+//! later stage.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -50,6 +65,7 @@ use std::process::Command;
 use std::rc::Rc;
 
 use pinion_core::GridBuffer;
+use pinion_core::composite_tag::split_send_payload;
 use pinion_core::external::{
     Backend, BackendFallback, BackendSupport, External, ExternalIntrospect, InterveneError,
     IntrospectSchema, IntrospectValue, InvokeError, RepaintOwner, SchemaField, ThreadOwnership,
@@ -57,6 +73,7 @@ use pinion_core::external::{
 use pinion_core::reactive::{Owner, Signal};
 use pinion_core::term_grid::HyperlinkId;
 use pinion_core::widget_core::ExtraExternal;
+use sprag_input::{Modifiers, MouseButton, MouseEventKind, MouseInput};
 
 use crate::terminal::{pane_cache_key, pane_tag};
 
@@ -88,6 +105,19 @@ pub(crate) struct HoverState {
     hovered: Signal<Option<HyperlinkId>>,
     /// A URI a click activated, awaiting [`reconcile_pane_hyperlinks`] to open it.
     activated: RefCell<Option<String>>,
+    /// Whether the pane's child has a mouse-tracking mode active (fed each frame from the host's
+    /// `mouse` bit). Gates [`HyperlinkOracle::wants_pointer_capture`] so a press is captured for
+    /// REPORTING (not link / selection) whenever the child is tracking. Plain [`Cell`] — read on
+    /// the press edge, not painted, so it needs no reactive `Signal`.
+    mouse_active: Cell<bool>,
+    /// The 0-based cell the pointer last resolved to (set on every `pointer_move`, link or not) —
+    /// the coordinate a captured press/release report addresses. Distinct from [`Self::hovered`],
+    /// which is `None` off a link; a mouse report needs the cell even over plain text.
+    last_cell: Cell<(u16, u16)>,
+    /// Semantic mouse reports the oracle captured (press / release), awaiting
+    /// [`take_pane_mouse_reports`] to forward them to the host. A queue (not a single slot) so a
+    /// press and its release both survive to the same drain frame.
+    pending_mouse: RefCell<Vec<MouseInput>>,
 }
 
 impl Default for HoverState {
@@ -98,6 +128,9 @@ impl Default for HoverState {
             links: RefCell::new(HashMap::new()),
             hovered: Signal::new(None),
             activated: RefCell::new(None),
+            mouse_active: Cell::new(false),
+            last_cell: Cell::new((0, 0)),
+            pending_mouse: RefCell::new(Vec::new()),
         }
     }
 }
@@ -118,6 +151,20 @@ impl HoverState {
             .values()
             .find(|(cell_id, _)| *cell_id == id)
             .map(|(_, uri)| uri.to_string())
+    }
+
+    /// Queue a LEFT-button report of `kind` at the last hovered cell (no modifiers — the framework
+    /// capture channel carries none on the press edge). The reconcile drains it via
+    /// [`take_pane_mouse_reports`] and forwards it to the host, which gates + encodes it.
+    fn record_report(&self, kind: MouseEventKind) {
+        let (col, row) = self.last_cell.get();
+        self.pending_mouse.borrow_mut().push(MouseInput {
+            button: MouseButton::Left,
+            kind,
+            col,
+            row,
+            mods: Modifiers::default(),
+        });
     }
 }
 
@@ -165,6 +212,14 @@ pub(crate) fn hovered_link(i: usize) -> Option<HyperlinkId> {
     use_pane_hover(i).hovered.get()
 }
 
+/// Whether pane `i`'s pointer oracle is CAPTURING presses for mouse reporting (its child has a
+/// tracking mode active) — the client-local mirror of the host bit the reconcile last fed. Read by
+/// `position_caret_for_point` to suppress text selection on a press the report path owns. A plain
+/// [`Cell`] read (not a tracked `Signal`), so it does not subscribe the caller's scope.
+pub(crate) fn pane_mouse_capturing(i: usize) -> bool {
+    use_pane_hover(i).mouse_active.get()
+}
+
 /// Feed pane `i`'s oracle its current link map + geometry from the live `buffer`, and
 /// DRAIN any click-activated URI to open it. Runs per-frame from
 /// [`reconcile_frame`](crate::TerminalViewer) (the sanctioned off-thread-fact -> UI
@@ -172,12 +227,14 @@ pub(crate) fn hovered_link(i: usize) -> Option<HyperlinkId> {
 /// `TermCell::hyperlink` + interning table so a click resolves the exact URI the
 /// hovered cell shows. A hovered id that no longer resolves (the buffer changed under
 /// a paused pointer) is cleared so a stale highlight cannot linger.
-pub(crate) fn reconcile_pane_hyperlinks(i: usize, buffer: &GridBuffer) {
+pub(crate) fn reconcile_pane_hyperlinks(i: usize, buffer: &GridBuffer, mouse_active: bool) {
     let state = use_pane_hover(i);
     let cols = buffer.cols();
     let rows = buffer.rows();
     state.cols.set(cols);
     state.rows.set(rows);
+    // Feed the live tracking bit so `wants_pointer_capture` gates the next press correctly.
+    state.mouse_active.set(mouse_active);
     {
         let mut links = state.links.borrow_mut();
         links.clear();
@@ -206,6 +263,15 @@ pub(crate) fn reconcile_pane_hyperlinks(i: usize, buffer: &GridBuffer) {
     }
 }
 
+/// Drain pane `i`'s captured mouse reports (empty when the child is not tracking or no press
+/// landed). The reconcile ([`reconcile_frame`](crate::TerminalViewer)) forwards each to the host
+/// via [`SlotView::mouse`](crate::slotview::SlotView::mouse) — the send lives THERE (not here) so
+/// this module needs no host handle, mirroring how the URI open drains through
+/// [`reconcile_pane_hyperlinks`]. Draining leaves the queue empty so a report sends exactly once.
+pub(crate) fn take_pane_mouse_reports(i: usize) -> Vec<MouseInput> {
+    std::mem::take(&mut *use_pane_hover(i).pending_mouse.borrow_mut())
+}
+
 /// Reset pane slot `i`'s hyperlink hover state when the slot FREES (the ONE reset
 /// owner, [`reset_freed_slot`](crate::reset_freed_slot)), so a reused slot inherits no
 /// stale hover / links / pending open.
@@ -216,6 +282,9 @@ pub(crate) fn reset_pane_hyperlinks(i: usize) {
     *state.activated.borrow_mut() = None;
     state.cols.set(0);
     state.rows.set(0);
+    state.mouse_active.set(false);
+    state.last_cell.set((0, 0));
+    state.pending_mouse.borrow_mut().clear();
 }
 
 /// Register pane `i`'s hover-oracle [`External`] at [`pane_tag`]`(i)` (the primary
@@ -250,6 +319,33 @@ impl HyperlinkOracle {
             *self.state.activated.borrow_mut() = Some(uri);
         }
     }
+
+    /// A LEFT PointerDown: report the press when the child is tracking, else activate a hovered
+    /// link (the reporting path takes precedence — a tracking app owns the click).
+    fn on_pointer_down(&self) {
+        if self.state.mouse_active.get() {
+            self.state.record_report(MouseEventKind::Press);
+        } else {
+            self.activate();
+        }
+    }
+
+    /// A LEFT PointerUp: report the release when the child is tracking. A link activates on the
+    /// PRESS (matching the pre-tracking behaviour), so a non-tracking release does nothing.
+    fn on_pointer_up(&self) {
+        if self.state.mouse_active.get() {
+            self.state.record_report(MouseEventKind::Release);
+        }
+    }
+}
+
+/// The event name a `send` payload carries. A NATIVE grid pointer send is composite
+/// (`"grid:PointerDown"` — the `{pane}#grid` sub-index the router splits on); the RPC / test path
+/// sends the bare event name. [`split_send_payload`] returns `None` for the colon-free bare form,
+/// so falling back to the whole string decodes both without the caller knowing which arrived. This
+/// is why an earlier exact `== "PointerDown"` match missed native clicks.
+fn send_event_name(payload: &str) -> &str {
+    split_send_payload(payload).map_or(payload, |(_, event, _)| event)
 }
 
 impl External for HyperlinkOracle {
@@ -270,17 +366,20 @@ impl External for HyperlinkOracle {
         true
     }
 
-    /// Capture the press ONLY while over a link, so a click on a link activates it
-    /// but a press on plain text falls through to text selection / focus. Dynamic
-    /// from `hovered` (set by the last `pointer_move`).
+    /// Capture the press when the child is TRACKING the mouse (report EVERY press) or, absent a
+    /// tracking mode, only while over a link (activate it). A press captured for neither reason
+    /// falls through to text selection / focus. Dynamic from the live tracking bit + `hovered`
+    /// (both set before the press: the bit by the reconcile, `hovered` by the last `pointer_move`).
     fn wants_pointer_capture(&self) -> bool {
-        self.state.hovered.get().is_some()
+        self.state.mouse_active.get() || self.state.hovered.get().is_some()
     }
 
-    /// Each hover move delivers a `[0,1]` pane-rect fraction: reconstruct the cell and
-    /// set the hovered link (or `None` off a link).
+    /// Each hover move delivers a `[0,1]` pane-rect fraction: reconstruct the cell, record it as
+    /// the last pointer cell (for a report — valid link or not), and set the hovered link (or
+    /// `None` off a link, for the hover highlight).
     fn pointer_move(&mut self, x_rel: f32, y_rel: f32) {
         let (col, row) = self.state.cell_at(x_rel, y_rel);
+        self.state.last_cell.set((col, row));
         let hovered = self
             .state
             .links
@@ -354,11 +453,18 @@ impl ExternalIntrospect for HyperlinkOracle {
         args: IntrospectValue,
     ) -> Result<IntrospectValue, InvokeError> {
         match path {
-            // The router press/release channel (R1401): a PointerDown over a link
-            // activates it (the click). Other sends are ignored.
+            // The router press/release channel (R1401). A native grid press arrives COMPOSITE
+            // (`"grid:PointerDown"`, the `{pane}#grid` sub-index), the RPC / test path sends the
+            // bare event name — `send_event_name` decodes both. When the child is tracking, a
+            // press/release becomes a mouse REPORT (the pane pointer authority); otherwise a
+            // PointerDown over a link activates it (the click). Other sends are ignored.
             "send" => {
-                if matches!(args, IntrospectValue::Text(ref name) if name == "PointerDown") {
-                    self.activate();
+                if let IntrospectValue::Text(payload) = &args {
+                    match send_event_name(payload) {
+                        "PointerDown" => self.on_pointer_down(),
+                        "PointerUp" => self.on_pointer_up(),
+                        _ => {}
+                    }
                 }
                 Ok(IntrospectValue::Null)
             }
@@ -523,7 +629,7 @@ mod tests {
                 b"\x1b]8;;https://ok\x1b\\ABCDEF\x1b]8;;\x1b\\gh",
             );
             let buffer = sprag_grid::project(sprag_vt::VtPort::screen(&screen));
-            reconcile_pane_hyperlinks(0, &buffer);
+            reconcile_pane_hyperlinks(0, &buffer, false);
 
             let mut oracle = HyperlinkOracle {
                 state: use_pane_hover(0),
@@ -563,7 +669,7 @@ mod tests {
             let mut screen = sprag_vt::Emulator::new(20, 1);
             sprag_vt::VtPort::advance(&mut screen, b"\x1b]8;;https://ex\x1b\\link\x1b]8;;\x1b\\");
             let buffer = sprag_grid::project(sprag_vt::VtPort::screen(&screen));
-            reconcile_pane_hyperlinks(1, &buffer);
+            reconcile_pane_hyperlinks(1, &buffer, false);
             let mut oracle = HyperlinkOracle {
                 state: use_pane_hover(1),
             };
@@ -592,7 +698,7 @@ mod tests {
             let state = use_pane_hover(2);
             *state.activated.borrow_mut() = Some("mailto:x@example.com".to_owned());
             let empty = GridBuffer::new(1, 1);
-            reconcile_pane_hyperlinks(2, &empty); // drains -> recorder (no spawn) + clears
+            reconcile_pane_hyperlinks(2, &empty, false); // drains -> recorder (no spawn) + clears
             assert_eq!(
                 opener.opened(),
                 vec!["mailto:x@example.com".to_owned()],
@@ -603,7 +709,7 @@ mod tests {
                 "the activation was cleared after draining"
             );
             // A second reconcile with nothing activated opens nothing more.
-            reconcile_pane_hyperlinks(2, &empty);
+            reconcile_pane_hyperlinks(2, &empty, false);
             assert_eq!(
                 opener.opened().len(),
                 1,
@@ -639,5 +745,110 @@ mod tests {
             .map(|a| a.to_string_lossy().to_string())
             .collect();
         assert!(args.iter().any(|a| a == "https://example.com"));
+    }
+
+    // ----- Mouse tracking (the pane pointer authority) -----
+
+    /// A native grid press arrives COMPOSITE (`"grid:PointerDown"` — the `{pane}#grid` sub-index);
+    /// the RPC / test path sends the bare event name. Both must decode to the same event, or a
+    /// native click is missed (the exact `== "PointerDown"` bug this replaced).
+    #[test]
+    fn send_event_name_decodes_composite_and_bare() {
+        assert_eq!(send_event_name("grid:PointerDown"), "PointerDown");
+        assert_eq!(send_event_name("grid:PointerUp"), "PointerUp");
+        assert_eq!(
+            send_event_name("PointerUp"),
+            "PointerUp",
+            "bare RPC/test form"
+        );
+    }
+
+    /// While the child is tracking the mouse, the oracle captures EVERY press (link or not) and a
+    /// press/release becomes a LEFT report at the last hovered cell — the report path, not link /
+    /// selection. Revert-proof: reverting `wants_pointer_capture` to `hovered`-only makes the
+    /// off-a-link capture assert fail; dropping the report branch empties the drained queue.
+    #[test]
+    fn tracking_captures_every_press_and_reports_left_press_then_release() {
+        Owner::new().run(|| {
+            // A plain screen with NO links — a report must not need a link under the cursor.
+            let mut screen = sprag_vt::Emulator::new(8, 3);
+            sprag_vt::VtPort::advance(&mut screen, b"hello");
+            let buffer = sprag_grid::project(sprag_vt::VtPort::screen(&screen));
+            reconcile_pane_hyperlinks(3, &buffer, true); // the child is tracking
+            let mut oracle = HyperlinkOracle {
+                state: use_pane_hover(3),
+            };
+            oracle.pointer_move(0.3, 0.0); // a plain cell on row 0 (no link)
+            assert!(
+                oracle.wants_pointer_capture(),
+                "tracking captures every press, link or not"
+            );
+            let cell = use_pane_hover(3).last_cell.get();
+            // A native grid press + release (composite payloads).
+            let _ = ExternalIntrospect::invoke(
+                &mut oracle,
+                "send",
+                IntrospectValue::Text("grid:PointerDown".to_owned()),
+            );
+            let _ = ExternalIntrospect::invoke(
+                &mut oracle,
+                "send",
+                IntrospectValue::Text("grid:PointerUp".to_owned()),
+            );
+            let reports = take_pane_mouse_reports(3);
+            assert_eq!(reports.len(), 2, "one press + one release queued");
+            assert_eq!(
+                (reports[0].button, reports[0].kind),
+                (MouseButton::Left, MouseEventKind::Press),
+            );
+            assert_eq!(
+                (reports[1].button, reports[1].kind),
+                (MouseButton::Left, MouseEventKind::Release),
+            );
+            assert_eq!(
+                (reports[0].col, reports[0].row),
+                cell,
+                "reported at the last hovered cell"
+            );
+            assert!(
+                take_pane_mouse_reports(3).is_empty(),
+                "the drain emptied the queue (send exactly once)"
+            );
+            assert!(
+                use_pane_hover(3).activated.borrow().is_none(),
+                "a tracking press reports, it does not activate a link"
+            );
+        });
+    }
+
+    /// With NO tracking, a press over a link still ACTIVATES it (via the composite decode — the
+    /// native-click fix) and queues NO mouse report. Revert-proof: the old exact `== "PointerDown"`
+    /// match would miss the composite payload, leaving `activated` `None`.
+    #[test]
+    fn not_tracking_a_press_activates_the_link_and_queues_no_report() {
+        Owner::new().run(|| {
+            let mut screen = sprag_vt::Emulator::new(20, 1);
+            sprag_vt::VtPort::advance(&mut screen, b"\x1b]8;;https://ex\x1b\\link\x1b]8;;\x1b\\");
+            let buffer = sprag_grid::project(sprag_vt::VtPort::screen(&screen));
+            reconcile_pane_hyperlinks(4, &buffer, false); // NOT tracking
+            let mut oracle = HyperlinkOracle {
+                state: use_pane_hover(4),
+            };
+            oracle.pointer_move(0.01, 0.5); // over 'l' (a link cell)
+            let _ = ExternalIntrospect::invoke(
+                &mut oracle,
+                "send",
+                IntrospectValue::Text("grid:PointerDown".to_owned()),
+            );
+            assert_eq!(
+                use_pane_hover(4).activated.borrow().as_deref(),
+                Some("https://ex"),
+                "a native composite press activates the link"
+            );
+            assert!(
+                take_pane_mouse_reports(4).is_empty(),
+                "not tracking => no mouse report"
+            );
+        });
     }
 }
