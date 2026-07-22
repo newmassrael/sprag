@@ -739,17 +739,27 @@ impl WidgetCore for TerminalViewer {
         clipboard_osc::reconcile_clipboard(&terminal.slots);
     }
 
-    /// Mouse-wheel / touchpad two-finger scroll over a pane scrolls its scrollback
-    /// (pinion R1045 / PR-18 — the GUI-side wheel seam). Hit-tests the cursor to the
-    /// pane under it (grid OR scrollbar gutter), converts the `WheelDelta` to LINES
-    /// (notched `Lines.dy`, or touchpad `Pixels.dy / LINE_HEIGHT_PX`), and scrolls
-    /// the **GUI's own** `ScrollState` via [`scrollbar::wheel_scroll_pane`] — NOT the
-    /// AI-facing pane engine (the R1.7 boundary). Runs in the binding root `Owner`.
+    /// Mouse-wheel / touchpad two-finger scroll over a pane. Hit-tests the cursor to the pane
+    /// under it (grid OR scrollbar gutter) and converts the `WheelDelta` to LINES (notched
+    /// `Lines.dy`, or touchpad `Pixels.dy / LINE_HEIGHT_PX`). Then it forks (mouse tracking
+    /// Stage 2 — the wheel step of the VT mouse-reporting front):
+    ///
+    /// * **over a mouse-tracking child's GRID, no Shift** -> REPORT the wheel to the child as
+    ///   an xterm pseudo-button 64 (up) / 65 (down) press ([`hyperlink::wheel_reports`] builds
+    ///   them, [`SlotView::mouse`](crate::slotview::SlotView::mouse) gates + encodes at the PTY
+    ///   boundary). Coordinate conversion ([`selection::cell_at`]) is the only GUI job. Holding
+    ///   Shift bypasses tracking to reach this client's own scrollback (the xterm escape hatch,
+    ///   mirroring the selection escape hatch in `position_caret_for_point`).
+    /// * **otherwise** (gutter, no tracking, or Shift held) -> scroll the **GUI's own**
+    ///   `ScrollState` via [`scrollbar::wheel_scroll_pane`] (pinion R1045 / PR-18) — NOT the
+    ///   AI-facing pane engine (the R1.7 boundary).
+    ///
+    /// Runs in the binding root `Owner`.
     fn apply_wheel(
         scene: &Scene,
         cursor: (f64, f64),
         delta: WheelDelta,
-        _modifiers: Modifiers,
+        modifiers: Modifiers,
     ) -> bool {
         let (cx, cy) = cursor;
         let hit = |tag: &str| {
@@ -763,13 +773,18 @@ impl WidgetCore for TerminalViewer {
         // A pane's grid and its scrollbar gutter are disjoint sibling rects
         // (wrap_pane_with_bar), so first-hit is unambiguous; and a pane tag is
         // painted in at most one window per frame (its dock window), so on an undock
-        // window's single-pane scene the absent panes simply miss (rect -> None).
-        let Some(i) = use_terminal()
-            .slots
-            .occupied_slots()
-            .into_iter()
-            .find(|&i| hit(pane_tag(i)) || hit(pane_scrollbar_tag(i)))
-        else {
+        // window's single-pane scene the absent panes simply miss (rect -> None). Keep WHICH
+        // sibling was hit: a wheel-report only fires over the grid, never the client's scrollbar.
+        let terminal = use_terminal();
+        let Some((i, on_grid)) = terminal.slots.occupied_slots().into_iter().find_map(|i| {
+            if hit(pane_tag(i)) {
+                Some((i, true))
+            } else if hit(pane_scrollbar_tag(i)) {
+                Some((i, false))
+            } else {
+                None
+            }
+        }) else {
             return false;
         };
         let lines = match delta {
@@ -779,6 +794,20 @@ impl WidgetCore for TerminalViewer {
         };
         if lines == 0.0 {
             return false;
+        }
+        if on_grid && !modifiers.shift && terminal.slots.pane_mouse_active(i) {
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "cursor pixels fit f32 for the pixel→cell converter"
+            )]
+            let (fx, fy) = (cx as f32, cy as f32);
+            if let Some((col, row)) = selection::cell_at(scene, i, fx, fy) {
+                let mods = input::to_input_mods(modifiers);
+                for event in hyperlink::wheel_reports(i, col, row, lines, mods) {
+                    let _ = terminal.slots.mouse(i, event);
+                }
+            }
+            return true;
         }
         scrollbar::wheel_scroll_pane(i, lines);
         true

@@ -901,4 +901,21 @@ mod tests {
             Some(b"\x1b[<65;1;1M".to_vec()),
         );
     }
+
+    #[test]
+    fn a_wheel_step_carries_held_modifiers_into_the_button_code() {
+        let modes = mouse_modes(MouseProtocol::Click, MouseEncoding::Sgr);
+        // Ctrl+wheel-up: base 64 | ctrl bit 16 = 80 (a Ctrl+scroll a canvas-zooming app reads).
+        let ctrl_wheel = MouseInput {
+            mods: Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+            ..ev(MouseButton::WheelUp, MouseEventKind::Press, 0, 0)
+        };
+        assert_eq!(
+            encode_mouse(ctrl_wheel, modes),
+            Some(b"\x1b[<80;1;1M".to_vec()),
+        );
+    }
 }

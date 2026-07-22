@@ -298,14 +298,16 @@ pub(crate) fn pane_of_hit(hit_tag: Option<&str>) -> Option<usize> {
 /// Map a window-local pixel `(x, y)` to a `(col, row)` cell of pane `pane`, clamped to
 /// the pane's visible grid (a drag past an edge lands on the edge cell). Uses the pane
 /// container's laid-out rect ([`Scene::rect_for_tag_absolute`]) and the measured cell
-/// size — the same geometry `grid_dims` derives the PTY winsize from.
+/// size — the same geometry `grid_dims` derives the PTY winsize from. The ONE
+/// pixel→cell converter: a click-drag selection anchors through it AND a wheel-report
+/// over a tracking pane addresses its cell through it ([`apply_wheel`](crate::TerminalViewer)).
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     reason = "grid coords are small non-negative counts that fit f32 then u16 after clamping"
 )]
-fn cell_at(scene: &Scene, pane: usize, x: f32, y: f32) -> Option<Cell> {
+pub(crate) fn cell_at(scene: &Scene, pane: usize, x: f32, y: f32) -> Option<Cell> {
     let rect = scene.rect_for_tag_absolute(pane_tag(pane))?;
     let tv = use_terminal();
     let cw = tv.metric.cell_w() as f32;

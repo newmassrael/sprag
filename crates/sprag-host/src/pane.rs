@@ -867,6 +867,24 @@ mod tests {
     }
 
     #[test]
+    fn a_wheel_report_reaches_the_child_when_tracking_is_on() {
+        let pty = raw_cat_mouse();
+        let handle = pty.handle();
+        assert!(
+            wait_until(|| handle.input_modes().mouse_protocol == sprag_vt::MouseProtocol::Click),
+            "the child's DECSET 1000 was never emulated",
+        );
+        // A wheel-up step at cell (col 4, row 2) → xterm pseudo-button 64, SGR ESC [ < 64 ; 5 ; 3 M
+        // (a wheel step is a press, no release). This is the Stage 2 report the GUI's `apply_wheel`
+        // sends when the pointer wheels over a tracking pane's grid.
+        assert!(mouse(&handle, press(MouseButton::WheelUp, 4, 2)));
+        assert!(
+            wait_until(|| contains(&pty.raw_output().bytes, b"\x1b[<64;5;3M")),
+            "the SGR wheel report never reached the child",
+        );
+    }
+
+    #[test]
     fn mouse_report_is_dropped_when_no_tracking_mode_is_active() {
         // A `cat` that never enables a tracking mode.
         let pty = raw_cat(false);

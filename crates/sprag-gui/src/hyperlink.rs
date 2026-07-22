@@ -118,6 +118,13 @@ pub(crate) struct HoverState {
     /// [`take_pane_mouse_reports`] to forward them to the host. A queue (not a single slot) so a
     /// press and its release both survive to the same drain frame.
     pending_mouse: RefCell<Vec<MouseInput>>,
+    /// Fractional wheel-line remainder carried between wheel events, so a fine touchpad pan (many
+    /// sub-line `Pixels` deltas) accumulates to whole notches instead of rounding to zero each
+    /// event — the mouse-report twin of the scrollbar's `wheel_accum`, but counted in whole
+    /// notches (one report per line) rather than scrollback rows. Read + written only by
+    /// [`wheel_reports`], on the wheel-handler thread, so a plain [`Cell`] suffices (not painted,
+    /// no reactive `Signal`).
+    wheel_accum: Cell<f32>,
 }
 
 impl Default for HoverState {
@@ -131,6 +138,7 @@ impl Default for HoverState {
             mouse_active: Cell::new(false),
             last_cell: Cell::new((0, 0)),
             pending_mouse: RefCell::new(Vec::new()),
+            wheel_accum: Cell::new(0.0),
         }
     }
 }
@@ -285,6 +293,66 @@ pub(crate) fn reset_pane_hyperlinks(i: usize) {
     state.mouse_active.set(false);
     state.last_cell.set((0, 0));
     state.pending_mouse.borrow_mut().clear();
+    state.wheel_accum.set(0.0);
+}
+
+/// A safety bound on the wheel reports emitted from a single event — a defensive clamp on a
+/// pathological driver / pixel delta (never a real physical scroll), the same child-buffer-clamp
+/// discipline as the clipboard / image byte caps. Well above any genuine fling.
+const WHEEL_REPORT_CAP: i32 = 64;
+
+/// Fold `lines` of wheel delta into whole notches, carrying the sub-notch remainder in `accum`.
+/// Returns `(new_accum, notches)` where `notches` is signed (positive = scroll-DOWN / toward the
+/// live bottom = xterm wheel-down, negative = wheel-up), truncated toward zero so a reversal
+/// cancels rather than double-counting. Pure — the storage (`HoverState::wheel_accum`) and the
+/// report construction live in [`wheel_reports`]; this is the unit-testable core.
+fn accumulate_wheel_notches(accum: f32, lines: f32) -> (f32, i32) {
+    let total = accum + lines;
+    let notches = total.trunc();
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "notches is a small whole scroll count clamped below by WHEEL_REPORT_CAP at the caller"
+    )]
+    let count = notches as i32;
+    (total - notches, count)
+}
+
+/// Build the wheel-button reports for a `lines` delta over tracking pane `i`, addressed to cell
+/// `(col, row)` with `mods` held (the wheel handler HAS the real modifiers, unlike the press-edge
+/// capture channel). Accumulates the sub-notch remainder in the pane's [`HoverState::wheel_accum`]
+/// so a fine touchpad pan still reports, and emits one report per whole notch (xterm's model: a
+/// wheel step is a press-only pseudo-button 64/65, no release). The direction follows the sign
+/// ([`accumulate_wheel_notches`]); the per-event count is clamped to [`WHEEL_REPORT_CAP`]. The
+/// caller ([`apply_wheel`](crate::TerminalViewer)) forwards each via
+/// [`SlotView::mouse`](crate::slotview::SlotView::mouse), which gates + encodes at the PTY boundary.
+pub(crate) fn wheel_reports(
+    i: usize,
+    col: u16,
+    row: u16,
+    lines: f32,
+    mods: Modifiers,
+) -> Vec<MouseInput> {
+    let state = use_pane_hover(i);
+    let (remainder, notches) = accumulate_wheel_notches(state.wheel_accum.get(), lines);
+    state.wheel_accum.set(remainder);
+    if notches == 0 {
+        return Vec::new();
+    }
+    let button = if notches > 0 {
+        MouseButton::WheelDown
+    } else {
+        MouseButton::WheelUp
+    };
+    let count = notches.unsigned_abs().min(WHEEL_REPORT_CAP.unsigned_abs()) as usize;
+    (0..count)
+        .map(|_| MouseInput {
+            button,
+            kind: MouseEventKind::Press,
+            col,
+            row,
+            mods,
+        })
+        .collect()
 }
 
 /// Register pane `i`'s hover-oracle [`External`] at [`pane_tag`]`(i)` (the primary
@@ -849,6 +917,63 @@ mod tests {
                 take_pane_mouse_reports(4).is_empty(),
                 "not tracking => no mouse report"
             );
+        });
+    }
+
+    /// The pure notch folder: a whole line is one notch; sub-line touchpad steps carry until they
+    /// cross a whole line then fire once; a reversal cancels (no phantom up-then-down); a fling
+    /// reports its whole magnitude.
+    #[test]
+    fn wheel_notches_accumulate_and_carry_the_fraction() {
+        assert_eq!(accumulate_wheel_notches(0.0, 1.0), (0.0, 1));
+        let (accum, n) = accumulate_wheel_notches(0.0, 0.4);
+        assert_eq!(n, 0, "0.4 line: no notch yet");
+        let (accum, n) = accumulate_wheel_notches(accum, 0.4);
+        assert_eq!(n, 0, "0.8 line: still none");
+        let (accum, n) = accumulate_wheel_notches(accum, 0.4);
+        assert_eq!(n, 1, "1.2 line: one notch fires");
+        assert!((accum - 0.2).abs() < 1e-5, "0.2 remainder carried");
+        let (_, n) = accumulate_wheel_notches(0.6, -0.9);
+        assert_eq!(n, 0, "-0.3 total: no notch, no phantom up-and-down");
+        assert_eq!(accumulate_wheel_notches(0.0, -3.0), (0.0, -3));
+    }
+
+    /// `wheel_reports` maps the sign to xterm's pseudo-buttons (down = 65, up = 64), emits one
+    /// press-only report per whole notch at the cell under the pointer, and carries the real
+    /// modifiers the wheel handler holds. A sub-line pan yields nothing (accumulated per pane).
+    #[test]
+    fn wheel_reports_map_sign_to_pseudo_button_carry_cell_and_mods() {
+        Owner::new().run(|| {
+            let mods = Modifiers::default();
+            // Scroll DOWN (+lines, toward the live bottom) -> wheel-down.
+            let down = wheel_reports(0, 4, 2, 1.0, mods);
+            assert_eq!(down.len(), 1);
+            assert_eq!(down[0].button, MouseButton::WheelDown);
+            assert_eq!(
+                down[0].kind,
+                MouseEventKind::Press,
+                "a wheel step is press-only (no release)"
+            );
+            assert_eq!(
+                (down[0].col, down[0].row),
+                (4, 2),
+                "addresses the cell under the pointer"
+            );
+            // Scroll UP (-lines) -> wheel-up, and a multi-line fling -> one report per notch.
+            let up = wheel_reports(0, 0, 0, -3.0, mods);
+            assert_eq!(up.len(), 3);
+            assert!(up.iter().all(|e| e.button == MouseButton::WheelUp));
+            // A sub-line pan on a fresh pane accumulates, reporting nothing yet.
+            assert!(wheel_reports(1, 0, 0, 0.3, mods).is_empty());
+            // Ctrl held at the wheel handler reaches the report (the wheel path HAS real mods,
+            // unlike the press-edge capture channel).
+            let ctrl = Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            };
+            let reports = wheel_reports(2, 1, 1, 1.0, ctrl);
+            assert_eq!(reports.len(), 1);
+            assert_eq!(reports[0].mods, ctrl, "the held modifiers reach the report");
         });
     }
 }

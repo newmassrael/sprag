@@ -400,7 +400,7 @@ pub(crate) fn route_key(
 
 /// Map pinion's key [`Modifiers`] to the encoder's [`sprag_input::Modifiers`]:
 /// pinion's `meta` (Cmd / Super / Win) is the encoder's `sup` (the only rename).
-fn to_input_mods(m: Modifiers) -> sprag_input::Modifiers {
+pub(crate) fn to_input_mods(m: Modifiers) -> sprag_input::Modifiers {
     sprag_input::Modifiers {
         ctrl: m.ctrl,
         alt: m.alt,
