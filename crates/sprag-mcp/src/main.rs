@@ -211,7 +211,11 @@ fn tools_list() -> Value {
                 "description": "List the sibling terminal panes in this sprag window, \
                     with their 1-based number, host id, size, running command, live \
                     window title, and the most recent attention notification a pane \
-                    raised (OSC 9 / 777 / 99), if any. Call this first to learn which \
+                    raised (OSC 9 / 777 / 99), if any. Also reports each pane's invisible \
+                    input-mode state: whether its app is tracking the MOUSE (DECSET \
+                    1000/1002/1003 — clicks, drag, motion) and whether it is tracking \
+                    FOCUS (DECSET 1004 — focus in/out), which the pane's on-screen text \
+                    does not show and tmux does not expose. Call this first to learn which \
                     number is which pane.",
                 "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
             },
@@ -379,6 +383,15 @@ struct PaneInfo {
     /// The last finished command's exit status (OSC 133 `D`), or `None` — lets an agent verify a
     /// command succeeded without parsing its output.
     exit_status: Option<i64>,
+    /// The pane's live mouse-tracking level (DECSET 1000/1002/1003) as the host's `mouse` wire token
+    /// (`"click"` / `"button"` / `"any"`), or `None` when the child is not tracking the mouse. An
+    /// input-mode fact invisible in the pane's TEXT — an app that captures the pointer for itself —
+    /// which tmux does not expose to an agent at all.
+    mouse: Option<String>,
+    /// Whether the pane's child has enabled focus reporting (DECSET 1004) — `true` when the app asked
+    /// to be told it gained or lost focus (vim's external-edit check, a TUI that dims when inactive).
+    /// Another invisible input-mode fact, orthogonal to [`PaneInfo::mouse`].
+    focus_tracking: bool,
     /// The inline images (Kitty graphics / Sixel, R1404) the pane is displaying, each a summary
     /// {id, pixel size, anchor cell}. An agent cannot OCR an image, but CAN learn one is present and
     /// where — tmux shows no inline images at all.
@@ -415,44 +428,74 @@ fn tool_list_panes() -> Result<String, String> {
     }
     let mut out = format!("{} pane(s) in this sprag terminal:\n", panes.len());
     for pane in &panes {
-        let title = if pane.title.is_empty() {
-            "(none)".to_owned()
-        } else {
-            format!("{:?}", pane.title)
-        };
-        out.push_str(&format!(
-            "  pane {}: id={} {}x{} command={} title={}\n",
-            pane.number, pane.id, pane.cols, pane.rows, pane.command, title
-        ));
-        // Surface an attention notification on its own indented line, so an agent scanning the
-        // list sees which sibling raised one (OSC 9 / 777;notify / 99).
-        if let Some(note) = &pane.notification {
-            out.push_str(&format!("      notification: {note}\n"));
-        }
-        // The tmux monitor-bell count, distinct from a notification (a bell carries no text).
-        if pane.bell > 0 {
-            out.push_str(&format!("      bell: rang {} time(s)\n", pane.bell));
-        }
-        // Shell-integration (OSC 133) summary: idle at a prompt vs running a command, and the last
-        // command's exit status — what an agent needs to know a sibling's command finished, and
-        // how, without parsing its output.
-        if let Some(shell) = &pane.shell {
-            let state = if shell == "running" {
-                "running a command"
-            } else {
-                "at a prompt"
-            };
-            match pane.exit_status {
-                Some(code) => {
-                    out.push_str(&format!(
-                        "      shell: {state} (last command exit {code})\n"
-                    ));
-                }
-                None => out.push_str(&format!("      shell: {state}\n")),
-            }
-        }
+        out.push_str(&pane_summary(pane));
     }
     Ok(out)
+}
+
+/// Render ONE pane as its `list_panes` block — the header line plus an indented line per live
+/// signal the pane raised. Each sub-line is emitted ONLY when its signal is present, so a resting
+/// pane is just the header (mirrors the additive wire). Split out as a pure function so the
+/// invisible-state lines (mouse / focus) are unit-testable without a live host.
+fn pane_summary(pane: &PaneInfo) -> String {
+    let title = if pane.title.is_empty() {
+        "(none)".to_owned()
+    } else {
+        format!("{:?}", pane.title)
+    };
+    let mut out = format!(
+        "  pane {}: id={} {}x{} command={} title={}\n",
+        pane.number, pane.id, pane.cols, pane.rows, pane.command, title
+    );
+    // Surface an attention notification on its own indented line, so an agent scanning the
+    // list sees which sibling raised one (OSC 9 / 777;notify / 99).
+    if let Some(note) = &pane.notification {
+        out.push_str(&format!("      notification: {note}\n"));
+    }
+    // The tmux monitor-bell count, distinct from a notification (a bell carries no text).
+    if pane.bell > 0 {
+        out.push_str(&format!("      bell: rang {} time(s)\n", pane.bell));
+    }
+    // Shell-integration (OSC 133) summary: idle at a prompt vs running a command, and the last
+    // command's exit status — what an agent needs to know a sibling's command finished, and
+    // how, without parsing its output.
+    if let Some(shell) = &pane.shell {
+        let state = if shell == "running" {
+            "running a command"
+        } else {
+            "at a prompt"
+        };
+        match pane.exit_status {
+            Some(code) => {
+                out.push_str(&format!(
+                    "      shell: {state} (last command exit {code})\n"
+                ));
+            }
+            None => out.push_str(&format!("      shell: {state}\n")),
+        }
+    }
+    // Invisible INPUT-MODE state — what the app has asked the terminal to report, which is nowhere
+    // in the pane's text and which tmux does not expose. An agent reads it to know the app is in a
+    // pointer/focus-driven mode (so typing plain text may not behave as it would at a shell prompt).
+    if let Some(mouse) = &pane.mouse {
+        out.push_str(&format!("      mouse: tracking {}\n", mouse_phrase(mouse)));
+    }
+    if pane.focus_tracking {
+        out.push_str("      focus: tracking focus in/out\n");
+    }
+    out
+}
+
+/// Render a pane's mouse-tracking wire token (`"click"` / `"button"` / `"any"`) into an agent-facing
+/// phrase naming which pointer events the app captures. An unknown token passes through verbatim, so
+/// a future tracking level still surfaces rather than vanishing.
+fn mouse_phrase(token: &str) -> String {
+    match token {
+        "click" => "clicks (press/release)".to_owned(),
+        "button" => "clicks + drag".to_owned(),
+        "any" => "clicks + drag + motion".to_owned(),
+        other => other.to_owned(),
+    }
 }
 
 fn tool_read_pane(args: &Value) -> Result<String, String> {
@@ -644,32 +687,45 @@ fn query_panes() -> Result<Vec<PaneInfo>, String> {
     Ok(array
         .iter()
         .enumerate()
-        .map(|(index, pane)| PaneInfo {
-            number: index + 1,
-            id: pane.get("id").and_then(Value::as_u64).unwrap_or(0),
-            title: pane
-                .get("title")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned(),
-            command: pane
-                .get("command")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned(),
-            cols: pane.get("cols").and_then(Value::as_u64).unwrap_or(0),
-            rows: pane.get("rows").and_then(Value::as_u64).unwrap_or(0),
-            notification: pane.get("notification").map(notification_line),
-            bell: pane.get("bell_seq").and_then(Value::as_u64).unwrap_or(0),
-            shell: pane.get("shell").and_then(Value::as_str).map(str::to_owned),
-            exit_status: pane.get("exit_status").and_then(Value::as_i64),
-            images: pane
-                .get("images")
-                .and_then(Value::as_array)
-                .map(|arr| arr.iter().filter_map(parse_image_info).collect())
-                .unwrap_or_default(),
-        })
+        .map(|(index, pane)| parse_pane_info(index, pane))
         .collect())
+}
+
+/// Parse one panes-slot entry into a [`PaneInfo`], numbered 1-based from its host-order `index`.
+/// Every field is ADDITIVE on the wire (present only when its signal fired), so a missing key maps
+/// to the resting default — split out as a pure function so the parse is testable without a live
+/// host (mirrors [`parse_image_info`]).
+fn parse_pane_info(index: usize, pane: &Value) -> PaneInfo {
+    PaneInfo {
+        number: index + 1,
+        id: pane.get("id").and_then(Value::as_u64).unwrap_or(0),
+        title: pane
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        command: pane
+            .get("command")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        cols: pane.get("cols").and_then(Value::as_u64).unwrap_or(0),
+        rows: pane.get("rows").and_then(Value::as_u64).unwrap_or(0),
+        notification: pane.get("notification").map(notification_line),
+        bell: pane.get("bell_seq").and_then(Value::as_u64).unwrap_or(0),
+        shell: pane.get("shell").and_then(Value::as_str).map(str::to_owned),
+        exit_status: pane.get("exit_status").and_then(Value::as_i64),
+        mouse: pane.get("mouse").and_then(Value::as_str).map(str::to_owned),
+        focus_tracking: pane
+            .get("focus_tracking")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        images: pane
+            .get("images")
+            .and_then(Value::as_array)
+            .map(|arr| arr.iter().filter_map(parse_image_info).collect())
+            .unwrap_or_default(),
+    }
 }
 
 /// Format the panes slot's `notification` object (`{title, body, seq}`) into one display line —
@@ -861,6 +917,79 @@ mod tests {
         assert_eq!(last_n_lines(text, 2), "c\nd");
         assert_eq!(last_n_lines(text, 100), "a\nb\nc\nd");
         assert_eq!(last_n_lines("", 3), "");
+    }
+
+    #[test]
+    fn mouse_phrase_maps_wire_tokens_and_passes_unknown_through() {
+        assert_eq!(mouse_phrase("click"), "clicks (press/release)");
+        assert_eq!(mouse_phrase("button"), "clicks + drag");
+        assert_eq!(mouse_phrase("any"), "clicks + drag + motion");
+        // A token a future tracking level might add surfaces verbatim, never vanishes.
+        assert_eq!(mouse_phrase("future"), "future");
+    }
+
+    #[test]
+    fn parse_pane_info_reads_mouse_and_focus_from_the_wire_entry() {
+        // A tracking pane: the additive `mouse` / `focus_tracking` keys are present.
+        let info = parse_pane_info(
+            1,
+            &json!({
+                "id": 5, "cols": 80, "rows": 24, "command": "htop", "title": null,
+                "mouse": "any", "focus_tracking": true
+            }),
+        );
+        assert_eq!(info.number, 2, "1-based number is index + 1");
+        assert_eq!(info.id, 5);
+        assert_eq!(info.mouse.as_deref(), Some("any"));
+        assert!(info.focus_tracking);
+        // A resting pane: neither key present -> the resting defaults (None / false), never a panic.
+        let resting = parse_pane_info(0, &json!({ "id": 1, "command": "bash", "title": null }));
+        assert_eq!(resting.mouse, None);
+        assert!(!resting.focus_tracking);
+    }
+
+    #[test]
+    fn pane_summary_surfaces_mouse_and_focus_tracking() {
+        let tracking = PaneInfo {
+            number: 2,
+            id: 7,
+            title: String::new(),
+            command: "vim".to_owned(),
+            cols: 80,
+            rows: 24,
+            notification: None,
+            bell: 0,
+            shell: None,
+            exit_status: None,
+            mouse: Some("any".to_owned()),
+            focus_tracking: true,
+            images: vec![],
+        };
+        let summary = pane_summary(&tracking);
+        assert!(
+            summary.contains("mouse: tracking clicks + drag + motion"),
+            "the mouse-tracking level must surface: {summary}"
+        );
+        assert!(
+            summary.contains("focus: tracking focus in/out"),
+            "the focus-tracking mode must surface: {summary}"
+        );
+        // A resting pane (child tracking neither) emits NEITHER line — the additive default, so the
+        // header stays uncluttered for the common case.
+        let resting = PaneInfo {
+            mouse: None,
+            focus_tracking: false,
+            ..tracking
+        };
+        let resting = pane_summary(&resting);
+        assert!(
+            !resting.contains("mouse:"),
+            "no mouse line when off: {resting}"
+        );
+        assert!(
+            !resting.contains("focus:"),
+            "no focus line when off: {resting}"
+        );
     }
 
     #[test]

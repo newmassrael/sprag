@@ -719,6 +719,14 @@ impl ExternalIntrospect for WorkspaceExternal {
                         if let Some(mouse) = p.mouse_protocol.wire_str() {
                             entry["mouse"] = serde_json::json!(mouse);
                         }
+                        // Focus-tracking mode (DECSET 1004). ADDITIVE — the key is present only while
+                        // the child is tracking focus, so a pane that never enabled it is
+                        // byte-identical to the pre-focus wire shape (mirrors `mouse`). A display
+                        // client reads it to decide whether to emit a focus edge on a pane focus
+                        // change; an agent reads it to learn the app reacts to focus.
+                        if p.focus_tracking {
+                            entry["focus_tracking"] = serde_json::json!(true);
+                        }
                         // OSC 52 clipboard signals. The write SEQ travels here (ADDITIVE, present
                         // only once the child has written a clipboard); the write PAYLOAD does NOT
                         // — it can be a whole paste, so a client fetches it on demand off this seq
@@ -1135,6 +1143,40 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         panic!("the child's OSC 2 window title never reached the pane-list wire");
+    }
+
+    /// A child's live INPUT-MODE state — mouse tracking (DECSET 1000/1002/1003) and focus tracking
+    /// (DECSET 1004) — reaches the pane-list WIRE, ADDITIVELY: the keys appear only once the child
+    /// has enabled them. This is the producer→wire path the agent-facing `list_panes` MCP tool reads;
+    /// `query_panes_lists_metadata` proves the resting shape carries NEITHER key.
+    #[test]
+    fn query_panes_reports_the_childs_mouse_and_focus_tracking() {
+        use std::time::{Duration, Instant};
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        // A raw child that enables button-event mouse tracking (1002) AND focus reporting (1004).
+        ext.invoke(
+            SPAWN_ACTION,
+            IntrospectValue::Json(json!({
+                "cmd": ["sh", "-c", "stty raw -echo 2>/dev/null; printf '\\033[?1002h\\033[?1004h'; cat"],
+                "cols": 40, "rows": 12,
+            })),
+        )
+        .unwrap();
+
+        // The reader thread applies the bytes asynchronously — poll the wire until both land.
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            if let Some(IntrospectValue::Json(Value::Array(entries))) = ext.query(PANES_SLOT)
+                && let Some(pane) = entries.first()
+                && pane.get("mouse").and_then(Value::as_str) == Some("button")
+                && pane.get("focus_tracking").and_then(Value::as_bool) == Some(true)
+            {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("the child's DECSET 1002/1004 modes never reached the pane-list wire");
     }
 
     /// The `layout` slot serves the CURRENT window's arrangement — and reconciles it

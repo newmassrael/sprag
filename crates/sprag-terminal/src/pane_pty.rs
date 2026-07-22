@@ -375,6 +375,16 @@ impl PanePty {
         lock(&self.emulator).input_modes().mouse_protocol
     }
 
+    /// Whether the child has asked the terminal to report focus changes (DECSET 1004), read LIVE
+    /// from the emulator's input modes. `false` by default; a full-screen app (vim checking for
+    /// external edits, a TUI dimming when inactive) sets it. A display client reads this to decide
+    /// whether to emit a focus-in / focus-out edge on a pane focus change. See
+    /// [`sprag_vt::InputModes::focus_tracking`].
+    #[must_use]
+    pub fn focus_tracking(&self) -> bool {
+        lock(&self.emulator).input_modes().focus_tracking
+    }
+
     /// The most recent OSC 52 clipboard WRITE the child requested, or `None`, paired with its
     /// monotonic sequence — read out from under the emulator lock in ONE take so the payload and
     /// its sequence stay consistent (a consumer detects a new write via the sequence growing).

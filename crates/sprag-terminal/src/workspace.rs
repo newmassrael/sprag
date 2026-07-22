@@ -155,6 +155,15 @@ impl Pane {
         self.pty.mouse_protocol()
     }
 
+    /// Whether the child has asked the terminal to report focus changes (DECSET 1004), read LIVE
+    /// from the emulator. Surfaced so a display client emits a focus edge on a pane focus change,
+    /// and an AI sibling learns whether the app reacts to focus at all. See
+    /// [`sprag_vt::InputModes::focus_tracking`].
+    #[must_use]
+    pub fn focus_tracking(&self) -> bool {
+        self.pty.focus_tracking()
+    }
+
     /// The most recent OSC 52 clipboard WRITE the child requested, or `None`, with its monotonic
     /// sequence — read LIVE from the emulator. Potentially large (a paste), so it is fetched on
     /// demand off the sequence, not shipped every poll. See [`sprag_vt::VtPort::clipboard_write`].
@@ -219,6 +228,11 @@ pub struct PaneInfo {
     /// to decide whether to capture the pointer for reporting instead of handling it itself
     /// (selection, wheel-scroll), and — from the level — whether to forward drag / motion.
     pub mouse_protocol: MouseProtocol,
+    /// Whether the child has asked the terminal to report focus changes (DECSET 1004), `false` when
+    /// it has not. A display client reads this to decide whether to emit a focus-in / focus-out edge
+    /// on a pane focus change; an agent reads it to learn the app reacts to focus (invisible in the
+    /// pane's text). Orthogonal to [`Self::mouse_protocol`] — a child may set either, both, or neither.
+    pub focus_tracking: bool,
     /// Monotonic count of OSC 52 clipboard WRITES this pane's child has requested (`0` before the
     /// first). A display client that remembers the value it last applied learns a NEW write
     /// arrived when this grows, then fetches the (potentially large) payload on demand and applies
@@ -528,6 +542,7 @@ impl Workspace {
                     shell_state,
                     last_exit_status,
                     mouse_protocol: p.mouse_protocol(),
+                    focus_tracking: p.focus_tracking(),
                     clipboard_write_seq: p.clipboard_write().1,
                     clipboard_query,
                     clipboard_query_seq,
