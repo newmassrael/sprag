@@ -94,7 +94,7 @@ use sprag_host::{
 use sprag_input::{Modifiers, MouseButton, MouseEventKind, MouseInput};
 use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn, runtime_path};
 use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId, SessionInfo, WindowInfo};
-use sprag_vt::{ClipboardTarget, ClipboardTargets, Image};
+use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol};
 
 /// How long to wait for a just-spawned daemon's socket to accept — covers its bind race.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -153,10 +153,11 @@ struct WirePane {
     /// The pane's inline images (Kitty graphics, R1404), empty if none. Host-authoritative +
     /// dynamic — re-adopted each wake, composited over the grid by [`crate::view`].
     images: Vec<Image>,
-    /// Whether the pane's child has a mouse-tracking mode active (DECSET 1000/1002/1003 — the wire
-    /// `mouse` key is present only while tracking). Host-authoritative + dynamic — re-adopted each
-    /// wake; the pane pointer oracle reads it to decide whether to CAPTURE a press for reporting.
-    mouse_active: bool,
+    /// The pane's live mouse-tracking protocol level (None / Click / ButtonEvent / AnyEvent — the
+    /// wire `mouse` key carries the level token, present only while tracking). Host-authoritative +
+    /// dynamic — re-adopted each wake; the pane pointer oracle reads it to decide whether to CAPTURE
+    /// a press AND, from the level, whether to forward drag / bare motion.
+    mouse_protocol: MouseProtocol,
     frame: CellFrame,
     /// The GUI's tracked grid `(cols, rows)`: seeded from the host at boot, advanced only
     /// when a `resize` RPC SUCCEEDS (so the reflow no-op guard reads it with no
@@ -1474,13 +1475,14 @@ impl HostClient for WireHost {
 
     /// The child's mouse-tracking bit, served from the same poll-refreshed mirror as
     /// [`Self::pane_bell_seq`] (re-adopted each wake). The pane pointer oracle reads it per frame to
-    /// gate pointer capture; the authoritative encode still re-reads the live mode host-side in
-    /// [`Self::mouse`], so a one-wake-stale bit can at most mis-gate a single press.
-    fn pane_mouse_active(&self, id: PaneId) -> bool {
+    /// gate pointer capture + decide drag / motion forwarding; the authoritative encode still
+    /// re-reads the live mode host-side in [`Self::mouse`], so a one-wake-stale level can at most
+    /// mis-gate a single event. `pane_mouse_active` is the trait's derived `.is_active()`.
+    fn pane_mouse_protocol(&self, id: PaneId) -> MouseProtocol {
         self.lock_cache()
             .iter()
             .find(|pane| pane.id == id)
-            .is_some_and(|pane| pane.mouse_active)
+            .map_or(MouseProtocol::None, |pane| pane.mouse_protocol)
     }
 
     /// The image SUMMARIES (`{id,width,height,anchor,seq}`, RGBA empty), served from the same
@@ -1667,9 +1669,9 @@ struct PaneSeed {
     clipboard_query: Option<PaneClipboardQuery>,
     /// The pane's inline images (Kitty graphics, R1404), empty when the wire omits the key.
     images: Vec<Image>,
-    /// Whether the pane's child has a mouse-tracking mode active — `true` when the additive `mouse`
-    /// wire key is present (`false` when omitted: no tracking, or an older daemon).
-    mouse_active: bool,
+    /// The pane's live mouse-tracking protocol level, parsed from the additive `mouse` wire token
+    /// ([`MouseProtocol::from_wire_str`]); `None` when the key is omitted (no tracking / older daemon).
+    mouse_protocol: MouseProtocol,
     dims: (u16, u16),
 }
 
@@ -1697,9 +1699,9 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
             let clipboard_write_seq = pane["clipboard_write_seq"].as_u64().unwrap_or(0);
             let clipboard_query = parse_clipboard_query(&pane["clipboard_query"]);
             let images = parse_images(&pane["images"]);
-            // ADDITIVE: the `mouse` key is a protocol-name string present only while the child is
-            // tracking, so its mere presence is the "active" bit the client's capture gate needs.
-            let mouse_active = pane["mouse"].is_string();
+            // ADDITIVE: the `mouse` key is a protocol-level token present only while the child is
+            // tracking; parse it back to the level (absent / unknown -> None) via the vt SSOT.
+            let mouse_protocol = MouseProtocol::from_wire_str(pane["mouse"].as_str());
             let cols = u16::try_from(pane["cols"].as_u64().unwrap_or(1)).unwrap_or(1);
             let rows = u16::try_from(pane["rows"].as_u64().unwrap_or(1)).unwrap_or(1);
             Ok(PaneSeed {
@@ -1711,7 +1713,7 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
                 clipboard_write_seq,
                 clipboard_query,
                 images,
-                mouse_active,
+                mouse_protocol,
                 dims: (cols, rows),
             })
         })
@@ -2034,9 +2036,9 @@ fn merge_panes(
             clipboard_query: seed.clipboard_query,
             // host-authoritative + dynamic: re-adopt the query's images each wake.
             images: seed.images.clone(),
-            // host-authoritative + dynamic: re-adopt the query's mouse-tracking bit each wake, so
-            // the capture gate tracks the child enabling / disabling reporting.
-            mouse_active: seed.mouse_active,
+            // host-authoritative + dynamic: re-adopt the query's mouse-tracking level each wake, so
+            // the capture gate + drag/motion forwarding track the child enabling / disabling reporting.
+            mouse_protocol: seed.mouse_protocol,
             frame,
             dims: prior.map_or(seed.dims, |pane| pane.dims), // GUI-authoritative — keep tracked
         });
@@ -2192,7 +2194,7 @@ fn spawn_poll(
                                 clipboard_write_seq: pane.clipboard_write_seq,
                                 clipboard_query: pane.clipboard_query,
                                 images: pane.images.clone(), // keep last-known images too
-                                mouse_active: pane.mouse_active, // keep last-known tracking bit too
+                                mouse_protocol: pane.mouse_protocol, // keep last-known tracking level too
                                 dims: pane.dims,
                             })
                             .collect();
@@ -3271,7 +3273,7 @@ mod tests {
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
-                mouse_active: false,
+                mouse_protocol: MouseProtocol::None,
                 frame: frame(3),
                 dims: (80, 24),
             },
@@ -3284,7 +3286,7 @@ mod tests {
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
-                mouse_active: false,
+                mouse_protocol: MouseProtocol::None,
                 frame: frame(3),
                 dims: (40, 12),
             },
@@ -3302,7 +3304,7 @@ mod tests {
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
-                mouse_active: false,
+                mouse_protocol: MouseProtocol::None,
                 dims: (100, 30),
             },
             PaneSeed {
@@ -3314,7 +3316,7 @@ mod tests {
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
-                mouse_active: false,
+                mouse_protocol: MouseProtocol::None,
                 dims: (80, 24),
             },
             PaneSeed {
@@ -3326,7 +3328,7 @@ mod tests {
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
-                mouse_active: false,
+                mouse_protocol: MouseProtocol::None,
                 dims: (80, 24),
             },
         ];
@@ -3373,7 +3375,7 @@ mod tests {
             clipboard_write_seq: 0,
             clipboard_query: None,
             images: Vec::new(),
-            mouse_active: false,
+            mouse_protocol: MouseProtocol::None,
             frame: frame(3),
             dims: (80, 24),
         }];
@@ -3386,7 +3388,7 @@ mod tests {
             clipboard_write_seq: 0,
             clipboard_query: None,
             images: Vec::new(),
-            mouse_active: false,
+            mouse_protocol: MouseProtocol::None,
             dims: (80, 24),
         }];
         let merged = merge_panes(&existing, &seeds, &[]); // fetch missed this wake
@@ -3414,7 +3416,7 @@ mod tests {
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
-                mouse_active: false,
+                mouse_protocol: MouseProtocol::None,
                 frame: frame(3),
                 dims: (80, 24),
             },
@@ -3427,7 +3429,7 @@ mod tests {
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
-                mouse_active: false,
+                mouse_protocol: MouseProtocol::None,
                 frame: frame(3),
                 dims: (80, 24),
             },
@@ -3442,7 +3444,7 @@ mod tests {
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
-                mouse_active: false,
+                mouse_protocol: MouseProtocol::None,
                 dims: (80, 24),
             },
             PaneSeed {
@@ -3454,7 +3456,7 @@ mod tests {
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
-                mouse_active: false,
+                mouse_protocol: MouseProtocol::None,
                 dims: (80, 24),
             },
         ];

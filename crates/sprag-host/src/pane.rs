@@ -885,6 +885,38 @@ mod tests {
     }
 
     #[test]
+    fn a_drag_report_reaches_the_child_under_button_event_tracking() {
+        use sprag_terminal::{CommandBuilder, PanePty};
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        // DECSET 1002 (button-event) + 1006 (SGR) — this level reports drag.
+        command.arg("stty raw -echo 2>/dev/null; printf '\\033[?1002h\\033[?1006h'; cat");
+        command.env("TERM", "xterm");
+        let pty = PanePty::spawn(command, 40, 6).expect("spawn a pty");
+        let handle = pty.handle();
+        assert!(
+            wait_until(
+                || handle.input_modes().mouse_protocol == sprag_vt::MouseProtocol::ButtonEvent
+            ),
+            "the child's DECSET 1002 was never emulated",
+        );
+        // A LEFT drag at cell (col 4, row 2) -> button 0 | motion bit 32 = 32, SGR ESC[<32;5;3M
+        // (the Stage 4 report the GUI sends when the pointer moves cell with a button held).
+        let drag = MouseInput {
+            button: MouseButton::Left,
+            kind: MouseEventKind::Drag,
+            col: 4,
+            row: 2,
+            mods: Modifiers::default(),
+        };
+        assert!(mouse(&handle, drag));
+        assert!(
+            wait_until(|| contains(&pty.raw_output().bytes, b"\x1b[<32;5;3M")),
+            "the SGR drag report never reached the child",
+        );
+    }
+
+    #[test]
     fn mouse_report_is_dropped_when_no_tracking_mode_is_active() {
         // A `cat` that never enables a tracking mode.
         let pty = raw_cat(false);

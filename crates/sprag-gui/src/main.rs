@@ -700,8 +700,8 @@ impl WidgetCore for TerminalViewer {
             // press/release the oracle captured while tracking and forward it to the host (which
             // gates + encodes the X10 / SGR report at the PTY boundary). The send lives here — where
             // `terminal.slots` is in scope — not in the oracle, mirroring the URI-open drain.
-            let mouse_active = terminal.slots.pane_mouse_active(i);
-            hyperlink::reconcile_pane_hyperlinks(i, &buffer, mouse_active);
+            let mouse_protocol = terminal.slots.pane_mouse_protocol(i);
+            hyperlink::reconcile_pane_hyperlinks(i, &buffer, mouse_protocol);
             for event in hyperlink::take_pane_mouse_reports(i) {
                 let _ = terminal.slots.mouse(i, event);
             }

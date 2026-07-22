@@ -55,14 +55,17 @@
 //! reconcile to forward to the host (which gates + encodes the X10 / SGR report at the PTY
 //! boundary — coordinate conversion is the ONLY job here). A press with a mode active
 //! reports instead of activating a link; with no mode active the link / selection behaviour
-//! is unchanged. Only the LEFT button routes through the framework capture channel
-//! (`PointerDown`/`PointerUp`); middle / right / wheel reach separate shell arms and are a
-//! later stage.
+//! is unchanged. Under button-event (1002) / any-event (1003) tracking a captured `pointer_move`
+//! also forwards a DRAG (a button held) or bare MOTION report, cell-granular. Only the LEFT
+//! button routes through the framework capture channel (`PointerDown`/`PointerUp`); wheel is
+//! reported separately via [`apply_wheel`](crate::TerminalViewer) (Stage 2); middle / right need
+//! PINION-PR72 (their press/release reach separate shell arms, not this capture channel).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::process::Command;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use pinion_core::GridBuffer;
 use pinion_core::composite_tag::split_send_payload;
@@ -70,10 +73,12 @@ use pinion_core::external::{
     Backend, BackendFallback, BackendSupport, External, ExternalIntrospect, InterveneError,
     IntrospectSchema, IntrospectValue, InvokeError, RepaintOwner, SchemaField, ThreadOwnership,
 };
-use pinion_core::reactive::{Owner, Signal};
+use pinion_core::reactive::{Owner, Signal, use_repaint_sink};
 use pinion_core::term_grid::HyperlinkId;
 use pinion_core::widget_core::ExtraExternal;
+use pinion_core::{NullRepaintSink, RepaintSink};
 use sprag_input::{Modifiers, MouseButton, MouseEventKind, MouseInput};
+use sprag_vt::MouseProtocol;
 
 use crate::terminal::{pane_cache_key, pane_tag};
 
@@ -85,6 +90,18 @@ const ALLOWED_SCHEMES: [&str; 5] = ["http", "https", "mailto", "file", "ftp"];
 /// A pane's visible link cells: `(col, row)` -> the cell's link id (in the pane's
 /// current buffer table) and the URI a click opens.
 type LinkMap = HashMap<(u16, u16), (HyperlinkId, Rc<str>)>;
+
+/// A repaint sink resolved in-scope at [`HoverState`] construction ([`use_pane_hover`], inside the
+/// binding Owner) and stored so `HoverState::record_report` can schedule a drain frame from the
+/// oracle's event handlers, which the framework dispatches OUTSIDE the Owner scope (where
+/// [`use_repaint_sink`] would panic). Debug-opaque ([`RepaintSink`] is not `Debug`).
+struct RepaintHandle(Arc<dyn RepaintSink>);
+
+impl std::fmt::Debug for RepaintHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RepaintHandle")
+    }
+}
 
 /// Per-pane client-local hover state, shared between the oracle [`External`] (writes
 /// `hovered` / `activated` from pointer events) and the view + reconcile (feed
@@ -105,14 +122,21 @@ pub(crate) struct HoverState {
     hovered: Signal<Option<HyperlinkId>>,
     /// A URI a click activated, awaiting [`reconcile_pane_hyperlinks`] to open it.
     activated: RefCell<Option<String>>,
-    /// Whether the pane's child has a mouse-tracking mode active (fed each frame from the host's
-    /// `mouse` bit). Gates [`HyperlinkOracle::wants_pointer_capture`] so a press is captured for
-    /// REPORTING (not link / selection) whenever the child is tracking. Plain [`Cell`] — read on
-    /// the press edge, not painted, so it needs no reactive `Signal`.
-    mouse_active: Cell<bool>,
+    /// The pane's live mouse-tracking protocol LEVEL (fed each frame from the host's `mouse` token).
+    /// Gates [`HyperlinkOracle::wants_pointer_capture`] (any active level captures a press for
+    /// REPORTING, not link / selection) AND, from the level, whether a `pointer_move` forwards a
+    /// DRAG ([`MouseProtocol::reports_drag`]) or bare MOTION ([`MouseProtocol::reports_motion`]).
+    /// Plain [`Cell`] — read on the pointer edges, not painted, so it needs no reactive `Signal`.
+    mouse_protocol: Cell<MouseProtocol>,
+    /// Whether a LEFT button is currently held after a captured tracking press — set on
+    /// [`HyperlinkOracle::on_pointer_down`] while tracking, cleared on release. Distinguishes a DRAG
+    /// (button held) from bare MOTION (no button) at `pointer_move` time. Only LEFT is captured
+    /// (Stage 1 bound), so this single flag suffices; middle/right need PINION-PR72.
+    pressed: Cell<bool>,
     /// The 0-based cell the pointer last resolved to (set on every `pointer_move`, link or not) —
-    /// the coordinate a captured press/release report addresses. Distinct from [`Self::hovered`],
-    /// which is `None` off a link; a mouse report needs the cell even over plain text.
+    /// the coordinate a captured press/release report addresses, and the cell a drag/motion report
+    /// dedupes against (only a CELL change reports, xterm's granularity — never per-pixel). Distinct
+    /// from [`Self::hovered`], which is `None` off a link; a mouse report needs the cell over plain text.
     last_cell: Cell<(u16, u16)>,
     /// Semantic mouse reports the oracle captured (press / release), awaiting
     /// [`take_pane_mouse_reports`] to forward them to the host. A queue (not a single slot) so a
@@ -125,6 +149,10 @@ pub(crate) struct HoverState {
     /// [`wheel_reports`], on the wheel-handler thread, so a plain [`Cell`] suffices (not painted,
     /// no reactive `Signal`).
     wheel_accum: Cell<f32>,
+    /// The shell's repaint sink, resolved once in-scope (see [`RepaintHandle`]). `record_report`
+    /// calls it so a queued report always gets a drain frame, even when the pointer event repainted
+    /// nothing on its own.
+    repaint: RepaintHandle,
 }
 
 impl Default for HoverState {
@@ -135,10 +163,25 @@ impl Default for HoverState {
             links: RefCell::new(HashMap::new()),
             hovered: Signal::new(None),
             activated: RefCell::new(None),
-            mouse_active: Cell::new(false),
+            mouse_protocol: Cell::new(MouseProtocol::None),
+            pressed: Cell::new(false),
             last_cell: Cell::new((0, 0)),
             pending_mouse: RefCell::new(Vec::new()),
             wheel_accum: Cell::new(0.0),
+            // Null until `HoverState::new` overrides it with the in-scope sink; a bare `default()`
+            // (never used to build a live oracle) simply no-ops its repaint requests.
+            repaint: RepaintHandle(Arc::new(NullRepaintSink)),
+        }
+    }
+}
+
+impl HoverState {
+    /// Build a [`HoverState`] carrying the current scope's [`RepaintSink`] — called by
+    /// [`use_pane_hover`] inside the binding Owner, the ONE place the sink resolves.
+    fn new(repaint: Arc<dyn RepaintSink>) -> Self {
+        Self {
+            repaint: RepaintHandle(repaint),
+            ..Self::default()
         }
     }
 }
@@ -161,18 +204,26 @@ impl HoverState {
             .map(|(_, uri)| uri.to_string())
     }
 
-    /// Queue a LEFT-button report of `kind` at the last hovered cell (no modifiers — the framework
-    /// capture channel carries none on the press edge). The reconcile drains it via
-    /// [`take_pane_mouse_reports`] and forwards it to the host, which gates + encodes it.
-    fn record_report(&self, kind: MouseEventKind) {
+    /// Queue a report of `button` / `kind` at the last resolved cell (no modifiers — the framework
+    /// capture channel carries none on the press edge, PINION-PR72). The reconcile drains it via
+    /// [`take_pane_mouse_reports`] and forwards it to the host, which gates + encodes it. Left
+    /// press/release for a click; Left drag while held; [`MouseButton::None`] for bare motion.
+    fn record_report(&self, button: MouseButton, kind: MouseEventKind) {
         let (col, row) = self.last_cell.get();
         self.pending_mouse.borrow_mut().push(MouseInput {
-            button: MouseButton::Left,
+            button,
             kind,
             col,
             row,
             mods: Modifiers::default(),
         });
+        // Force a frame so `reconcile_frame` DRAINS this report even when the pointer event itself
+        // repaints nothing: a bare motion over plain text leaves `hovered` unchanged, so its
+        // `Signal::set` schedules no paint, and the queued report would otherwise wait for an
+        // unrelated repaint. Uses the sink resolved in-scope at construction (calling
+        // `use_repaint_sink()` HERE panics — a pointer event dispatches outside the Owner scope).
+        // Mirrors the PTY `on_dirty` -> `request_repaint` seam; idempotent, and a Null sink no-ops.
+        self.repaint.0.request_repaint();
     }
 }
 
@@ -204,10 +255,15 @@ fn frac_to_index(frac: f32, count: u16) -> u16 {
 /// Pane `i`'s shared hover state (Owner::cache-backed, the scrollbar `ScrollState`
 /// pattern) — resolved by the oracle, the view, and the reconcile to the ONE slot.
 pub(crate) fn use_pane_hover(i: usize) -> Rc<HoverState> {
-    Owner::current()
-        .expect("use_pane_hover() requires an active Owner scope")
+    let owner = Owner::current().expect("use_pane_hover() requires an active Owner scope");
+    // PRE-RESOLVE the repaint sink here (in the Owner scope, the ONE place `use_repaint_sink` is
+    // valid) — NOT inside the cache factory below, where a nested slot resolution is forbidden
+    // ([[owner-cache-no-nested-factory]]). The oracle's later event handlers run outside the Owner
+    // scope and reuse the stored sink. Cheap (an `Arc` clone) even when the state is already cached.
+    let sink = use_repaint_sink();
+    owner
         .cache(pane_cache_key("hyperlink_hover", i), || {
-            Rc::new(HoverState::default())
+            Rc::new(HoverState::new(sink))
         })
         .as_ref()
         .clone()
@@ -221,11 +277,11 @@ pub(crate) fn hovered_link(i: usize) -> Option<HyperlinkId> {
 }
 
 /// Whether pane `i`'s pointer oracle is CAPTURING presses for mouse reporting (its child has a
-/// tracking mode active) — the client-local mirror of the host bit the reconcile last fed. Read by
-/// `position_caret_for_point` to suppress text selection on a press the report path owns. A plain
-/// [`Cell`] read (not a tracked `Signal`), so it does not subscribe the caller's scope.
+/// tracking level active) — the client-local mirror of the host level the reconcile last fed. Read
+/// by `position_caret_for_point` to suppress text selection on a press the report path owns. A
+/// plain [`Cell`] read (not a tracked `Signal`), so it does not subscribe the caller's scope.
 pub(crate) fn pane_mouse_capturing(i: usize) -> bool {
-    use_pane_hover(i).mouse_active.get()
+    use_pane_hover(i).mouse_protocol.get().is_active()
 }
 
 /// Feed pane `i`'s oracle its current link map + geometry from the live `buffer`, and
@@ -235,14 +291,19 @@ pub(crate) fn pane_mouse_capturing(i: usize) -> bool {
 /// `TermCell::hyperlink` + interning table so a click resolves the exact URI the
 /// hovered cell shows. A hovered id that no longer resolves (the buffer changed under
 /// a paused pointer) is cleared so a stale highlight cannot linger.
-pub(crate) fn reconcile_pane_hyperlinks(i: usize, buffer: &GridBuffer, mouse_active: bool) {
+pub(crate) fn reconcile_pane_hyperlinks(
+    i: usize,
+    buffer: &GridBuffer,
+    mouse_protocol: MouseProtocol,
+) {
     let state = use_pane_hover(i);
     let cols = buffer.cols();
     let rows = buffer.rows();
     state.cols.set(cols);
     state.rows.set(rows);
-    // Feed the live tracking bit so `wants_pointer_capture` gates the next press correctly.
-    state.mouse_active.set(mouse_active);
+    // Feed the live tracking level so `wants_pointer_capture` gates the next press + `pointer_move`
+    // decides drag / motion forwarding correctly.
+    state.mouse_protocol.set(mouse_protocol);
     {
         let mut links = state.links.borrow_mut();
         links.clear();
@@ -290,7 +351,8 @@ pub(crate) fn reset_pane_hyperlinks(i: usize) {
     *state.activated.borrow_mut() = None;
     state.cols.set(0);
     state.rows.set(0);
-    state.mouse_active.set(false);
+    state.mouse_protocol.set(MouseProtocol::None);
+    state.pressed.set(false);
     state.last_cell.set((0, 0));
     state.pending_mouse.borrow_mut().clear();
     state.wheel_accum.set(0.0);
@@ -388,22 +450,29 @@ impl HyperlinkOracle {
         }
     }
 
-    /// A LEFT PointerDown: report the press when the child is tracking, else activate a hovered
-    /// link (the reporting path takes precedence — a tracking app owns the click).
+    /// A LEFT PointerDown: report the press when the child is tracking (and mark the button held so
+    /// a following `pointer_move` reports a DRAG), else activate a hovered link (the reporting path
+    /// takes precedence — a tracking app owns the click).
     fn on_pointer_down(&self) {
-        if self.state.mouse_active.get() {
-            self.state.record_report(MouseEventKind::Press);
+        if self.state.mouse_protocol.get().is_active() {
+            self.state
+                .record_report(MouseButton::Left, MouseEventKind::Press);
+            self.state.pressed.set(true);
         } else {
             self.activate();
         }
     }
 
-    /// A LEFT PointerUp: report the release when the child is tracking. A link activates on the
-    /// PRESS (matching the pre-tracking behaviour), so a non-tracking release does nothing.
+    /// A LEFT PointerUp: report the release when the child is tracking, and clear the held flag
+    /// either way (so a mode toggled off mid-hold cannot leave a phantom drag armed). A link
+    /// activates on the PRESS (matching the pre-tracking behaviour), so a non-tracking release does
+    /// nothing.
     fn on_pointer_up(&self) {
-        if self.state.mouse_active.get() {
-            self.state.record_report(MouseEventKind::Release);
+        if self.state.mouse_protocol.get().is_active() {
+            self.state
+                .record_report(MouseButton::Left, MouseEventKind::Release);
         }
+        self.state.pressed.set(false);
     }
 }
 
@@ -439,21 +508,30 @@ impl External for HyperlinkOracle {
     /// falls through to text selection / focus. Dynamic from the live tracking bit + `hovered`
     /// (both set before the press: the bit by the reconcile, `hovered` by the last `pointer_move`).
     fn wants_pointer_capture(&self) -> bool {
-        self.state.mouse_active.get() || self.state.hovered.get().is_some()
+        self.state.mouse_protocol.get().is_active() || self.state.hovered.get().is_some()
     }
 
-    /// Each hover move delivers a `[0,1]` pane-rect fraction: reconstruct the cell, record it as
-    /// the last pointer cell (for a report — valid link or not), and set the hovered link (or
-    /// `None` off a link, for the hover highlight).
+    /// Each move delivers a `[0,1]` pane-rect fraction: reconstruct the cell and, when it CHANGES,
+    /// forward a DRAG (a button held under button/any-event tracking) or bare MOTION (no button,
+    /// any-event tracking) report at the new cell — cell-granular, never per-pixel (xterm's rule).
+    /// Always records the last pointer cell (for a press/release report, link or not) and updates
+    /// the hovered link (or `None` off a link, for the hover highlight).
     fn pointer_move(&mut self, x_rel: f32, y_rel: f32) {
-        let (col, row) = self.state.cell_at(x_rel, y_rel);
-        self.state.last_cell.set((col, row));
-        let hovered = self
-            .state
-            .links
-            .borrow()
-            .get(&(col, row))
-            .map(|(id, _)| *id);
+        let cell = self.state.cell_at(x_rel, y_rel);
+        if cell != self.state.last_cell.get() {
+            let proto = self.state.mouse_protocol.get();
+            self.state.last_cell.set(cell);
+            if self.state.pressed.get() {
+                if proto.reports_drag() {
+                    self.state
+                        .record_report(MouseButton::Left, MouseEventKind::Drag);
+                }
+            } else if proto.reports_motion() {
+                self.state
+                    .record_report(MouseButton::None, MouseEventKind::Motion);
+            }
+        }
+        let hovered = self.state.links.borrow().get(&cell).map(|(id, _)| *id);
         self.state.hovered.set(hovered);
     }
 
@@ -697,7 +775,7 @@ mod tests {
                 b"\x1b]8;;https://ok\x1b\\ABCDEF\x1b]8;;\x1b\\gh",
             );
             let buffer = sprag_grid::project(sprag_vt::VtPort::screen(&screen));
-            reconcile_pane_hyperlinks(0, &buffer, false);
+            reconcile_pane_hyperlinks(0, &buffer, MouseProtocol::None);
 
             let mut oracle = HyperlinkOracle {
                 state: use_pane_hover(0),
@@ -737,7 +815,7 @@ mod tests {
             let mut screen = sprag_vt::Emulator::new(20, 1);
             sprag_vt::VtPort::advance(&mut screen, b"\x1b]8;;https://ex\x1b\\link\x1b]8;;\x1b\\");
             let buffer = sprag_grid::project(sprag_vt::VtPort::screen(&screen));
-            reconcile_pane_hyperlinks(1, &buffer, false);
+            reconcile_pane_hyperlinks(1, &buffer, MouseProtocol::None);
             let mut oracle = HyperlinkOracle {
                 state: use_pane_hover(1),
             };
@@ -766,7 +844,7 @@ mod tests {
             let state = use_pane_hover(2);
             *state.activated.borrow_mut() = Some("mailto:x@example.com".to_owned());
             let empty = GridBuffer::new(1, 1);
-            reconcile_pane_hyperlinks(2, &empty, false); // drains -> recorder (no spawn) + clears
+            reconcile_pane_hyperlinks(2, &empty, MouseProtocol::None); // drains -> recorder (no spawn) + clears
             assert_eq!(
                 opener.opened(),
                 vec!["mailto:x@example.com".to_owned()],
@@ -777,7 +855,7 @@ mod tests {
                 "the activation was cleared after draining"
             );
             // A second reconcile with nothing activated opens nothing more.
-            reconcile_pane_hyperlinks(2, &empty, false);
+            reconcile_pane_hyperlinks(2, &empty, MouseProtocol::None);
             assert_eq!(
                 opener.opened().len(),
                 1,
@@ -842,7 +920,7 @@ mod tests {
             let mut screen = sprag_vt::Emulator::new(8, 3);
             sprag_vt::VtPort::advance(&mut screen, b"hello");
             let buffer = sprag_grid::project(sprag_vt::VtPort::screen(&screen));
-            reconcile_pane_hyperlinks(3, &buffer, true); // the child is tracking
+            reconcile_pane_hyperlinks(3, &buffer, MouseProtocol::Click); // the child is tracking
             let mut oracle = HyperlinkOracle {
                 state: use_pane_hover(3),
             };
@@ -898,7 +976,7 @@ mod tests {
             let mut screen = sprag_vt::Emulator::new(20, 1);
             sprag_vt::VtPort::advance(&mut screen, b"\x1b]8;;https://ex\x1b\\link\x1b]8;;\x1b\\");
             let buffer = sprag_grid::project(sprag_vt::VtPort::screen(&screen));
-            reconcile_pane_hyperlinks(4, &buffer, false); // NOT tracking
+            reconcile_pane_hyperlinks(4, &buffer, MouseProtocol::None); // NOT tracking
             let mut oracle = HyperlinkOracle {
                 state: use_pane_hover(4),
             };
@@ -975,5 +1053,151 @@ mod tests {
             assert_eq!(reports.len(), 1);
             assert_eq!(reports[0].mods, ctrl, "the held modifiers reach the report");
         });
+    }
+
+    /// Feed a plain 8x3 grid to a pane oracle at a given tracking level, returning the oracle over
+    /// its shared state (helper for the drag / motion tests).
+    #[cfg(test)]
+    fn oracle_at(slot: usize, proto: MouseProtocol) -> HyperlinkOracle {
+        let mut screen = sprag_vt::Emulator::new(8, 3);
+        sprag_vt::VtPort::advance(&mut screen, b"........");
+        let buffer = sprag_grid::project(sprag_vt::VtPort::screen(&screen));
+        reconcile_pane_hyperlinks(slot, &buffer, proto);
+        HyperlinkOracle {
+            state: use_pane_hover(slot),
+        }
+    }
+
+    /// Under button-event tracking (1002) a captured LEFT press then a cell-changing move reports a
+    /// DRAG (button Left) at the new cell; a bare move (no button) reports nothing; a move that does
+    /// not change cell reports nothing. Revert-proof: dropping the `pointer_move` drag branch empties
+    /// the drag; removing the cell-change guard would report on the no-op move.
+    #[test]
+    fn button_event_tracking_reports_left_drag_only_on_a_cell_change_while_held() {
+        Owner::new().run(|| {
+            let mut oracle = oracle_at(5, MouseProtocol::ButtonEvent);
+            // A bare move (no button) under 1002 reports NOTHING (1002 = drag only, no bare motion).
+            oracle.pointer_move(0.05, 0.05); // ~cell (0,0)
+            assert!(
+                take_pane_mouse_reports(5).is_empty(),
+                "1002 reports no bare motion"
+            );
+            // Press (captured) then drag to a new cell -> exactly one Drag report at the new cell.
+            let _ = ExternalIntrospect::invoke(
+                &mut oracle,
+                "send",
+                IntrospectValue::Text("grid:PointerDown".to_owned()),
+            );
+            oracle.pointer_move(0.95, 0.05); // ~cell (7,0)
+            let reports = take_pane_mouse_reports(5);
+            let drags: Vec<_> = reports
+                .iter()
+                .filter(|r| r.kind == MouseEventKind::Drag)
+                .collect();
+            assert_eq!(drags.len(), 1, "one drag on the cell change");
+            assert_eq!(drags[0].button, MouseButton::Left);
+            assert_eq!((drags[0].col, drags[0].row), (7, 0), "drag at the new cell");
+            // A move within the SAME cell reports nothing (cell-granular, not per-pixel).
+            oracle.pointer_move(0.96, 0.06); // still ~cell (7,0)
+            assert!(
+                take_pane_mouse_reports(5)
+                    .iter()
+                    .all(|r| r.kind != MouseEventKind::Drag),
+                "no drag without a cell change"
+            );
+        });
+    }
+
+    /// Under any-event tracking (1003) a bare move (no button) reports MOTION (button None); with a
+    /// button held the same move is a DRAG, not bare motion. Revert-proof: dropping the motion
+    /// branch empties the motion assertion.
+    #[test]
+    fn any_event_tracking_reports_bare_motion_then_drag_when_held() {
+        Owner::new().run(|| {
+            let mut oracle = oracle_at(6, MouseProtocol::AnyEvent);
+            // A bare move to a new cell reports MOTION with no button.
+            oracle.pointer_move(0.5, 0.05); // ~cell (4,0), changed from init (0,0)
+            let motions: Vec<_> = take_pane_mouse_reports(6)
+                .into_iter()
+                .filter(|r| r.kind == MouseEventKind::Motion)
+                .collect();
+            assert_eq!(
+                motions.len(),
+                1,
+                "one bare-motion report on the cell change"
+            );
+            assert_eq!(motions[0].button, MouseButton::None);
+            // With a button held, a move is a DRAG (Left), not bare motion.
+            let _ = ExternalIntrospect::invoke(
+                &mut oracle,
+                "send",
+                IntrospectValue::Text("grid:PointerDown".to_owned()),
+            );
+            oracle.pointer_move(0.95, 0.05); // ~cell (7,0)
+            let held = take_pane_mouse_reports(6);
+            assert!(
+                held.iter()
+                    .any(|r| r.kind == MouseEventKind::Drag && r.button == MouseButton::Left),
+                "a held move is a drag"
+            );
+            assert!(
+                !held.iter().any(|r| r.kind == MouseEventKind::Motion),
+                "no bare motion while a button is held"
+            );
+        });
+    }
+
+    /// Under click tracking (1000) a move — held or not — reports NO drag / motion (only the
+    /// press/release edges). Guards the level gate: 1000 must not leak the 1002/1003 behaviour.
+    #[test]
+    fn click_tracking_reports_no_drag_or_motion() {
+        Owner::new().run(|| {
+            let mut oracle = oracle_at(7, MouseProtocol::Click);
+            oracle.pointer_move(0.1, 0.1);
+            let _ = ExternalIntrospect::invoke(
+                &mut oracle,
+                "send",
+                IntrospectValue::Text("grid:PointerDown".to_owned()),
+            );
+            oracle.pointer_move(0.9, 0.1); // a held move
+            assert!(
+                take_pane_mouse_reports(7)
+                    .iter()
+                    .all(|r| matches!(r.kind, MouseEventKind::Press | MouseEventKind::Release)),
+                "1000 reports only press/release, never drag or motion"
+            );
+        });
+    }
+
+    /// Queuing a report REQUESTS A REPAINT so `reconcile_frame` drains it even when the pointer
+    /// event repaints nothing on its own (a bare motion over plain text leaves `hovered` unchanged).
+    /// Asserted against a provided counting [`RepaintSink`] — revert-proof: dropping the
+    /// `request_repaint()` call in `record_report` leaves the count at 0.
+    #[test]
+    fn a_queued_report_requests_a_repaint_so_the_drain_frame_runs() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Debug)]
+        struct CountingSink(Arc<AtomicUsize>);
+        impl pinion_core::RepaintSink for CountingSink {
+            fn request_repaint(&self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let owner = Owner::new();
+        let count = Arc::new(AtomicUsize::new(0));
+        let sink: Arc<dyn pinion_core::RepaintSink> = Arc::new(CountingSink(Arc::clone(&count)));
+        pinion_core::REPAINT_SINK.provide(&owner, sink);
+        owner.run(|| {
+            let mut oracle = oracle_at(8, MouseProtocol::AnyEvent);
+            // A bare motion to a new cell queues a report -> must have requested a repaint.
+            oracle.pointer_move(0.5, 0.5);
+        });
+        assert!(
+            count.load(Ordering::SeqCst) > 0,
+            "queuing a mouse report must request a repaint so the drain frame runs"
+        );
     }
 }

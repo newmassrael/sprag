@@ -35,7 +35,7 @@ use sprag_host::{
 };
 use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId, SessionInfo, WindowInfo};
-use sprag_vt::ClipboardTarget;
+use sprag_vt::{ClipboardTarget, MouseProtocol};
 
 use crate::terminal::MAX_PANES;
 
@@ -332,6 +332,14 @@ impl SlotView {
     pub(crate) fn pane_mouse_active(&self, slot: usize) -> bool {
         self.id(slot)
             .is_some_and(|id| self.host.pane_mouse_active(id))
+    }
+
+    /// Slot `slot`'s live mouse-tracking protocol LEVEL — the pane pointer oracle reads it per frame
+    /// to gate capture AND, from the level, whether to forward drag / bare motion. `None` for a hole.
+    #[must_use]
+    pub(crate) fn pane_mouse_protocol(&self, slot: usize) -> MouseProtocol {
+        self.id(slot)
+            .map_or(MouseProtocol::None, |id| self.host.pane_mouse_protocol(id))
     }
 
     /// Slot `slot`'s full text (empty for a hole).

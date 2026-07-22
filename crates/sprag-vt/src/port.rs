@@ -366,6 +366,20 @@ impl MouseProtocol {
             Self::AnyEvent => Some("any"),
         }
     }
+
+    /// The inverse of [`wire_str`](Self::wire_str) — the SSOT for reading a wire `mouse` token back
+    /// into a level. A missing key (`None`) or an unknown token is [`MouseProtocol::None`] (the
+    /// pane is not tracking / an older daemon), so a display client parses the level a producer
+    /// serialized without duplicating the vocabulary.
+    #[must_use]
+    pub fn from_wire_str(token: Option<&str>) -> Self {
+        match token {
+            Some("click") => Self::Click,
+            Some("button") => Self::ButtonEvent,
+            Some("any") => Self::AnyEvent,
+            _ => Self::None,
+        }
+    }
 }
 
 /// How a mouse report is serialized to the child. The legacy [`MouseEncoding::X10`] form packs the

@@ -52,7 +52,7 @@ use sprag_terminal::{
     CommandBuilder, LayoutSnapshot, LayoutWire, Pane, PaneId, PanePtyError, PanePtyHandle,
     SessionInfo, SessionRegistry, Snapshot, SnapshotError, WindowInfo, Workspace,
 };
-use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, Screen, osc52_reply};
+use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol, Screen, osc52_reply};
 
 use crate::external::lock;
 use crate::scope::SessionScope;
@@ -425,15 +425,24 @@ pub trait HostClient {
         0
     }
 
-    /// Whether pane `id`'s child has a mouse-tracking mode active (DECSET 1000/1002/1003) — the
-    /// CHEAP per-frame bit a display client reads to decide whether to CAPTURE the pointer for
-    /// reporting (vs. its native selection / link-hover behaviour). The report ENCODING stays at
-    /// the PTY boundary ([`Self::mouse`], which re-reads the authoritative live mode); this bit is
-    /// only the client's capture gate, so a one-frame-stale value at most mis-gates one press.
-    /// Defaulted to `false` so an older [`HostClient`] impl need not implement it.
+    /// Pane `id`'s live mouse-tracking protocol level (None / Click / ButtonEvent / AnyEvent, DECSET
+    /// 1000 / 1002 / 1003) — the ONE mouse-report authority fact a display client reads to decide
+    /// whether to CAPTURE the pointer AND, from the level, which edges to forward (press/release,
+    /// drag while a button is held, bare motion). The report ENCODING stays at the PTY boundary
+    /// ([`Self::mouse`], which re-reads the authoritative live mode); this is only the client's
+    /// capture gate, so a one-frame-stale value at most mis-gates one event. Defaulted to `None` so
+    /// an older [`HostClient`] impl need not implement it.
     #[must_use]
-    fn pane_mouse_active(&self, _id: PaneId) -> bool {
-        false
+    fn pane_mouse_protocol(&self, _id: PaneId) -> MouseProtocol {
+        MouseProtocol::None
+    }
+
+    /// Whether pane `id`'s child has ANY tracking active — DERIVED from
+    /// [`Self::pane_mouse_protocol`] (not a separate fact), the boolean the pointer oracle's
+    /// capture gate reads. Not overridden: the protocol level is the single source.
+    #[must_use]
+    fn pane_mouse_active(&self, id: PaneId) -> bool {
+        self.pane_mouse_protocol(id).is_active()
     }
 
     /// The pane's inline images (Kitty graphics / Sixel, R1404) as SUMMARIES — `{id, width,
@@ -929,11 +938,11 @@ impl HostClient for Host {
         self.with_pane_id(id, Pane::bell_seq).unwrap_or(0)
     }
 
-    /// Whether the pane's child has a mouse-tracking mode active, read off the emulator under the
-    /// workspace lock (like [`Self::pane_bell_seq`]). An absent pane flattens to `false`.
-    fn pane_mouse_active(&self, id: PaneId) -> bool {
-        self.with_pane_id(id, |pane| pane.mouse_protocol().is_active())
-            .unwrap_or(false)
+    /// The pane's live mouse-tracking protocol level, read off the emulator under the workspace
+    /// lock (like [`Self::pane_bell_seq`]). An absent pane flattens to `None`.
+    fn pane_mouse_protocol(&self, id: PaneId) -> MouseProtocol {
+        self.with_pane_id(id, |pane| pane.mouse_protocol())
+            .unwrap_or_default()
     }
 
     /// The pane's live inline images, read off the emulator under the workspace lock (like

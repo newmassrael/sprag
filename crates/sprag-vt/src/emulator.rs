@@ -1103,11 +1103,20 @@ impl Emulator {
                 DecPrivateModeCode::BracketedPaste => {
                     self.input_modes.bracketed_paste = true;
                 }
-                // DECSET 1000 — X11 mouse tracking (button press/release). Modes 1002/1003 (drag /
-                // any-motion) are a later stage; until then they fall through unhandled so the
-                // terminal keeps owning the mouse rather than half-reporting.
+                // DECSET 1000 / 1002 / 1003 — X11 mouse tracking at three levels: press+release
+                // (Click), + DRAG while a button is held (ButtonEvent), + BARE motion (AnyEvent).
+                // sprag keeps ONE highest-active protocol field rather than xterm's independent
+                // mode bits (documented bound on `MouseProtocol`): a child sets exactly one level
+                // and resets the same, which this models faithfully; only a pathological stack
+                // (set two, reset the higher) differs.
                 DecPrivateModeCode::MouseTracking => {
                     self.input_modes.mouse_protocol = MouseProtocol::Click;
+                }
+                DecPrivateModeCode::ButtonEventMouse => {
+                    self.input_modes.mouse_protocol = MouseProtocol::ButtonEvent;
+                }
+                DecPrivateModeCode::AnyEventMouse => {
+                    self.input_modes.mouse_protocol = MouseProtocol::AnyEvent;
                 }
                 // DECSET 1006 — SGR mouse encoding. Orthogonal to the tracking mode: a child sets a
                 // tracking mode AND (optionally) this encoding.
@@ -1127,8 +1136,11 @@ impl Emulator {
                 DecPrivateModeCode::BracketedPaste => {
                     self.input_modes.bracketed_paste = false;
                 }
-                // DECRST 1000 — stop mouse tracking, hand the mouse back to the terminal.
-                DecPrivateModeCode::MouseTracking => {
+                // DECRST 1000 / 1002 / 1003 — stop mouse tracking at any level, hand the mouse back
+                // to the terminal (single-field model: any tracking reset returns to None).
+                DecPrivateModeCode::MouseTracking
+                | DecPrivateModeCode::ButtonEventMouse
+                | DecPrivateModeCode::AnyEventMouse => {
                     self.input_modes.mouse_protocol = MouseProtocol::None;
                 }
                 // DECRST 1006 — back to the legacy X10 encoding (the tracking mode is unaffected).
@@ -2323,6 +2335,44 @@ mod tests {
         // DECRST 1000 hands the mouse back to the terminal.
         em.advance(b"\x1b[?1000l");
         assert_eq!(em.input_modes().mouse_protocol, MouseProtocol::None);
+    }
+
+    #[test]
+    fn decset_1002_and_1003_set_drag_and_any_motion_levels() {
+        let mut em = Emulator::new(4, 2);
+        // DECSET 1002 — button-event tracking: press/release + drag (motion with a button held).
+        em.advance(b"\x1b[?1002h");
+        assert_eq!(em.input_modes().mouse_protocol, MouseProtocol::ButtonEvent);
+        assert!(em.input_modes().mouse_protocol.reports_drag());
+        assert!(!em.input_modes().mouse_protocol.reports_motion());
+        // Upgrade to 1003 — any-event tracking adds bare motion (no button held).
+        em.advance(b"\x1b[?1003h");
+        assert_eq!(em.input_modes().mouse_protocol, MouseProtocol::AnyEvent);
+        assert!(em.input_modes().mouse_protocol.reports_drag());
+        assert!(em.input_modes().mouse_protocol.reports_motion());
+        // DECRST 1003 hands the mouse back (single-field model: any reset -> None).
+        em.advance(b"\x1b[?1003l");
+        assert_eq!(em.input_modes().mouse_protocol, MouseProtocol::None);
+        // 1002 reset likewise returns to None.
+        em.advance(b"\x1b[?1002h\x1b[?1002l");
+        assert_eq!(em.input_modes().mouse_protocol, MouseProtocol::None);
+    }
+
+    #[test]
+    fn mouse_protocol_round_trips_through_its_wire_token() {
+        for proto in [
+            MouseProtocol::None,
+            MouseProtocol::Click,
+            MouseProtocol::ButtonEvent,
+            MouseProtocol::AnyEvent,
+        ] {
+            assert_eq!(MouseProtocol::from_wire_str(proto.wire_str()), proto);
+        }
+        assert_eq!(
+            MouseProtocol::from_wire_str(Some("bogus")),
+            MouseProtocol::None,
+            "an unknown token is not tracking"
+        );
     }
 
     #[test]
