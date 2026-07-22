@@ -311,6 +311,12 @@ pub struct InputModes {
     /// encoding. Defaults to the legacy [`MouseEncoding::X10`]; `ESC [ ? 1006 h` selects the modern
     /// [`MouseEncoding::Sgr`] form (unbounded coordinates, a distinct release edge).
     pub mouse_encoding: MouseEncoding,
+    /// Focus reporting (DEC private mode 1004). When set, the child has asked the terminal to send
+    /// `ESC [ I` when the terminal (here: the pane) GAINS focus and `ESC [ O` when it LOSES focus,
+    /// so an app (vim checking for external file changes, a TUI dimming when inactive) can react.
+    /// The display client emits the edge on a pane focus change; the encode at the PTY boundary
+    /// consults this flag. Off by default (no focus reports).
+    pub focus_tracking: bool,
 }
 
 /// Which pointer events a child has asked the terminal to report, selected by the DECSET

@@ -399,6 +399,24 @@ pub fn encode_mouse(ev: MouseInput, modes: InputModes) -> Option<Vec<u8>> {
     })
 }
 
+/// Encode a pane FOCUS change into the report bytes the child should receive, given the terminal's
+/// [`InputModes`]. Returns `None` when the child has not enabled focus reporting (DEC private mode
+/// 1004), so a display client may call it on every focus edge and let this one authority gate — the
+/// same "mode authority at the boundary" as [`encode_mouse`] / key encoding. When enabled the report
+/// is the fixed pair `ESC [ I` (focus IN / gained) or `ESC [ O` (focus OUT / lost) — no coordinates,
+/// unaffected by the mouse encoding.
+#[must_use]
+pub fn encode_focus(focused: bool, modes: InputModes) -> Option<Vec<u8>> {
+    if !modes.focus_tracking {
+        return None;
+    }
+    Some(if focused {
+        vec![ESC, b'[', b'I']
+    } else {
+        vec![ESC, b'[', b'O']
+    })
+}
+
 /// The button portion of a report code (before the modifier bits): the low button bits (or the
 /// wheel pseudo-button), plus the motion bit 32 for a drag or bare motion.
 fn mouse_button_code(button: MouseButton, kind: MouseEventKind) -> u8 {
@@ -900,6 +918,21 @@ mod tests {
             ),
             Some(b"\x1b[<65;1;1M".to_vec()),
         );
+    }
+
+    #[test]
+    fn focus_reports_gate_on_1004_and_use_the_fixed_pair() {
+        // Off by default: no report either way.
+        let off = InputModes::default();
+        assert_eq!(encode_focus(true, off), None);
+        assert_eq!(encode_focus(false, off), None);
+        // With 1004 on: ESC [ I on focus in, ESC [ O on focus out.
+        let on = InputModes {
+            focus_tracking: true,
+            ..InputModes::default()
+        };
+        assert_eq!(encode_focus(true, on), Some(b"\x1b[I".to_vec()));
+        assert_eq!(encode_focus(false, on), Some(b"\x1b[O".to_vec()));
     }
 
     #[test]

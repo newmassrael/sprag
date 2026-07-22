@@ -58,9 +58,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 
 use crate::wire::{
-    CELLS_FIELD, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT, CURSOR_KEYS_SLOT, FRAMES_SLOT,
-    FULL_TEXT_SLOT, IMAGE_DATA_FIELD, KEY_ACTION, LAST_COMMAND_SLOT, LINKS_SLOT, MOUSE_ACTION,
-    PANE_SCHEMA, PASTE_ACTION, PROMPT_MARKS_SLOT, TEXT_ACTION,
+    CELLS_FIELD, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT, CURSOR_KEYS_SLOT, FOCUS_ACTION,
+    FRAMES_SLOT, FULL_TEXT_SLOT, IMAGE_DATA_FIELD, KEY_ACTION, LAST_COMMAND_SLOT, LINKS_SLOT,
+    MOUSE_ACTION, PANE_SCHEMA, PASTE_ACTION, PROMPT_MARKS_SLOT, TEXT_ACTION,
 };
 
 /// Encode a W3C `key` + `mods` to PTY bytes (the sprag-owned R2.6 encoder,
@@ -139,6 +139,20 @@ pub fn mouse(pty: &PanePtyHandle, event: MouseInput) -> bool {
     match sprag_input::encode_mouse(event, pty.input_modes()) {
         Some(bytes) => pty.write(&bytes).is_ok(),
         None => true, // the mode did not want this event — a no-op, not a rejection
+    }
+}
+
+/// Report a pane FOCUS change to its child, gated + encoded against the pane's live focus-reporting
+/// mode ([`sprag_input::encode_focus`]): `ESC [ I` on focus gained, `ESC [ O` on focus lost, only
+/// while the child has enabled DEC private mode 1004. The mode authority lives HERE at the PTY
+/// boundary (like [`mouse`] / key encoding); a display client reports only the edge. A change the
+/// mode does not want (1004 off) is a no-op SUCCESS, not a failure. `true` on a successful write or
+/// a legitimate drop; `false` only on a write failure.
+#[must_use]
+pub fn focus(pty: &PanePtyHandle, focused: bool) -> bool {
+    match sprag_input::encode_focus(focused, pty.input_modes()) {
+        Some(bytes) => pty.write(&bytes).is_ok(),
+        None => true, // focus reporting is off — a no-op, not a rejection
     }
 }
 
@@ -223,6 +237,18 @@ impl SpragPaneExternal {
     fn inject_mouse(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let event = parse_mouse_args(args)?;
         if mouse(&self.pty, event) {
+            Ok(IntrospectValue::Null)
+        } else {
+            Err(InvokeError::Rejected)
+        }
+    }
+
+    /// Parse a `focus` action's args (`{focused: bool}`) and report the edge to the PTY, gated +
+    /// encoded against the pane's live focus-reporting mode ([`focus`]). A change 1004 does not want
+    /// is a no-op success; a write failure is an [`InvokeError::Rejected`].
+    fn inject_focus(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let focused = parse_focus_args(args)?;
+        if focus(&self.pty, focused) {
             Ok(IntrospectValue::Null)
         } else {
             Err(InvokeError::Rejected)
@@ -439,6 +465,7 @@ impl ExternalIntrospect for SpragPaneExternal {
         match path {
             KEY_ACTION => self.inject_key(&args),
             MOUSE_ACTION => self.inject_mouse(&args),
+            FOCUS_ACTION => self.inject_focus(&args),
             TEXT_ACTION => self.inject_text(&args),
             PASTE_ACTION => self.inject_paste(&args),
             CLIPBOARD_ANSWER_ACTION => self.answer_clipboard(&args),
@@ -598,6 +625,18 @@ fn parse_mouse_args(args: &IntrospectValue) -> Result<MouseInput, InvokeError> {
             sup: false,
         },
     })
+}
+
+/// Parse a `focus` action's args `{focused: bool}` into the focus edge. Only the object form is
+/// accepted (a machine wire, never hand-typed); a missing/ill-typed `focused` is an
+/// [`InvokeError::TypeMismatch`].
+fn parse_focus_args(args: &IntrospectValue) -> Result<bool, InvokeError> {
+    let IntrospectValue::Json(Value::Object(map)) = args else {
+        return Err(InvokeError::TypeMismatch);
+    };
+    map.get("focused")
+        .and_then(Value::as_bool)
+        .ok_or(InvokeError::TypeMismatch)
 }
 
 #[cfg(test)]
@@ -913,6 +952,51 @@ mod tests {
         assert!(
             wait_until(|| contains(&pty.raw_output().bytes, b"\x1b[<32;5;3M")),
             "the SGR drag report never reached the child",
+        );
+    }
+
+    #[test]
+    fn focus_reports_reach_the_child_when_1004_is_on() {
+        use sprag_terminal::{CommandBuilder, PanePty};
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg("stty raw -echo 2>/dev/null; printf '\\033[?1004h'; cat");
+        command.env("TERM", "xterm");
+        let pty = PanePty::spawn(command, 40, 6).expect("spawn a pty");
+        let handle = pty.handle();
+        assert!(
+            wait_until(|| handle.input_modes().focus_tracking),
+            "the child's DECSET 1004 was never emulated",
+        );
+        // Focus gained -> ESC [ I, focus lost -> ESC [ O (Stage 5).
+        assert!(focus(&handle, true));
+        assert!(
+            wait_until(|| contains(&pty.raw_output().bytes, b"\x1b[I")),
+            "the focus-in report never reached the child",
+        );
+        assert!(focus(&handle, false));
+        assert!(
+            wait_until(|| contains(&pty.raw_output().bytes, b"\x1b[O")),
+            "the focus-out report never reached the child",
+        );
+    }
+
+    #[test]
+    fn a_focus_report_is_dropped_when_1004_is_off() {
+        let pty = raw_cat(false); // a cat that never enables 1004
+        let handle = pty.handle();
+        assert!(!handle.input_modes().focus_tracking);
+        // The seam accepts the edge as a no-op success — the mode wanted nothing.
+        assert!(focus(&handle, true));
+        // Prove nothing was written by ordering a sentinel after it.
+        assert!(send_text(&handle, "SENTINEL"));
+        assert!(
+            wait_until(|| contains(&pty.raw_output().bytes, b"SENTINEL")),
+            "the sentinel never echoed",
+        );
+        assert!(
+            !contains(&pty.raw_output().bytes, b"\x1b[I"),
+            "a pane with 1004 off must receive NO focus report",
         );
     }
 

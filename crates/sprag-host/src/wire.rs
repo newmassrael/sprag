@@ -25,6 +25,11 @@ pub const KEY_ACTION: &str = "key";
 /// mode-authority-at-the-boundary discipline as [`PASTE_ACTION`]). A display client sends the raw
 /// cell + button; it never encodes the report itself.
 pub const MOUSE_ACTION: &str = "mouse";
+/// The pane-input external invoke action that reports a pane FOCUS change (`{focused: bool}`): the
+/// host sends `ESC [ I` / `ESC [ O` to the child when it has enabled focus reporting (DEC private
+/// mode 1004), a no-op otherwise. Same mode-authority-at-the-boundary discipline as [`MOUSE_ACTION`]
+/// — a display client reports the edge, the host gates + encodes.
+pub const FOCUS_ACTION: &str = "focus";
 /// The pane-input external invoke action that writes literal UTF-8 (IME commit /
 /// paste), no key-encoding.
 pub const TEXT_ACTION: &str = "text";
@@ -163,6 +168,7 @@ pub const IMAGE_DATA_FIELD: SchemaField =
 pub const PANE_SCHEMA: &[SchemaField] = &[
     SchemaField::new(KEY_ACTION, "action"),
     SchemaField::new(MOUSE_ACTION, "action"),
+    SchemaField::new(FOCUS_ACTION, "action"),
     SchemaField::new(TEXT_ACTION, "action"),
     SchemaField::new(PASTE_ACTION, "action"),
     CELLS_FIELD,

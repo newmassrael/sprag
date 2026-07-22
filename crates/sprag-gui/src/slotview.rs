@@ -326,6 +326,14 @@ impl SlotView {
         self.id(slot).is_some_and(|id| self.host.mouse(id, event))
     }
 
+    /// REPORT a pane FOCUS change to slot `slot`'s pane — the host sends `ESC [ I` / `ESC [ O` when
+    /// the child enabled DEC 1004, a no-op otherwise. `false` for a hole. Called on the focus edge
+    /// (the newly-focused pane gets `true`, the pane it left gets `false`).
+    #[must_use]
+    pub(crate) fn focus(&self, slot: usize, focused: bool) -> bool {
+        self.id(slot).is_some_and(|id| self.host.focus(id, focused))
+    }
+
     /// Whether slot `slot`'s pane has a mouse-tracking mode active — the pane pointer oracle's
     /// per-frame capture gate. `false` for a hole.
     #[must_use]

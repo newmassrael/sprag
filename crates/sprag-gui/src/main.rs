@@ -208,6 +208,7 @@ mod clipboard_osc;
 mod ctxmenu;
 mod diag;
 mod dock;
+mod focus_report;
 mod hyperlink;
 mod input;
 mod reflow;
@@ -726,6 +727,10 @@ impl WidgetCore for TerminalViewer {
         // OS title never flashes the marker the instant a notification lands on the pane in view.
         attention::ack_focused(&terminal.slots, focused_pane);
         dock::sync_main_title(focused_pane);
+        // (4c) DEC 1004 focus reporting (mouse-tracking Stage 5): tell each pane's child when it
+        // gains / loses focus (`ESC [ I` / `ESC [ O`), gated host-side on the child's 1004 mode.
+        // Runs on the same `focus_state::focused()` SSOT as the title, diffed against the last frame.
+        focus_report::reconcile_focus(&terminal.slots, focused_pane);
         // (5) (R175) Auto-disarm a pending session kill whose captured session has VANISHED from the
         // live list (killed out of band while the `kill '<name>'?` strip was up), so the confirmation
         // strip cannot linger on a session that no longer exists. Like (2)/(3) above, this reconciles

@@ -218,6 +218,16 @@ pub trait HostClient {
         false
     }
 
+    /// REPORT a pane FOCUS change to pane `id` — the CLIENT focus path. The host sends `ESC [ I` /
+    /// `ESC [ O` when pane `id`'s child has enabled focus reporting (DEC private mode 1004), a no-op
+    /// otherwise. The default is a no-op `false`; [`Host`] and the wire client override it. `true` if
+    /// the edge reached the PTY or was legitimately dropped (1004 off); `false` if `id` is absent or
+    /// the write failed.
+    #[must_use]
+    fn focus(&self, _id: PaneId, _focused: bool) -> bool {
+        false
+    }
+
     /// Write literal committed `text` to pane `id` — the IME-commit client path (typed text,
     /// never bracketed). Empty is a no-op success. `true` if it reached the PTY.
     #[must_use]
@@ -885,6 +895,13 @@ impl HostClient for Host {
     fn mouse(&self, id: PaneId, event: MouseInput) -> bool {
         self.with_pane_id(id, Pane::handle)
             .is_some_and(|handle| crate::mouse(&handle, event))
+    }
+
+    /// Gates + encodes the focus report at the PTY boundary via the shared [`crate::focus`] SSOT
+    /// (reading the pane's live DEC 1004 mode from the emulator); `false` for an absent id.
+    fn focus(&self, id: PaneId, focused: bool) -> bool {
+        self.with_pane_id(id, Pane::handle)
+            .is_some_and(|handle| crate::focus(&handle, focused))
     }
 
     fn send_text(&self, id: PaneId, text: &str) -> bool {

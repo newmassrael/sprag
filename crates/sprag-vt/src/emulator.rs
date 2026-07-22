@@ -1123,6 +1123,11 @@ impl Emulator {
                 DecPrivateModeCode::SGRMouse => {
                     self.input_modes.mouse_encoding = MouseEncoding::Sgr;
                 }
+                // DECSET 1004 — focus reporting. Orthogonal to mouse tracking: the terminal sends
+                // ESC [ I / ESC [ O when the pane gains / loses focus.
+                DecPrivateModeCode::FocusTracking => {
+                    self.input_modes.focus_tracking = true;
+                }
                 _ => {}
             },
             Mode::ResetDecPrivateMode(DecPrivateMode::Code(code)) => match code {
@@ -1146,6 +1151,10 @@ impl Emulator {
                 // DECRST 1006 — back to the legacy X10 encoding (the tracking mode is unaffected).
                 DecPrivateModeCode::SGRMouse => {
                     self.input_modes.mouse_encoding = MouseEncoding::X10;
+                }
+                // DECRST 1004 — stop focus reporting.
+                DecPrivateModeCode::FocusTracking => {
+                    self.input_modes.focus_tracking = false;
                 }
                 _ => {}
             },
@@ -2394,6 +2403,20 @@ mod tests {
         em.advance(b"\x1b[?1006l");
         assert_eq!(em.input_modes().mouse_encoding, MouseEncoding::X10);
         assert_eq!(em.input_modes().mouse_protocol, MouseProtocol::Click);
+    }
+
+    #[test]
+    fn decset_1004_toggles_focus_tracking() {
+        let mut em = Emulator::new(4, 2);
+        assert!(!em.input_modes().focus_tracking, "off by default");
+        em.advance(b"\x1b[?1004h");
+        assert!(em.input_modes().focus_tracking, "DECSET 1004 enables it");
+        em.advance(b"\x1b[?1004l");
+        assert!(!em.input_modes().focus_tracking, "DECRST 1004 disables it");
+        // Orthogonal to mouse tracking: a child may set both.
+        em.advance(b"\x1b[?1000h\x1b[?1004h");
+        assert_eq!(em.input_modes().mouse_protocol, MouseProtocol::Click);
+        assert!(em.input_modes().focus_tracking);
     }
 
     #[test]

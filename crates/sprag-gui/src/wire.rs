@@ -81,7 +81,7 @@ use base64::engine::general_purpose::STANDARD;
 use pinion_core::{GridBuffer, QuitSink};
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    BREAK_PANE_ACTION, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT, FULL_TEXT_SLOT,
+    BREAK_PANE_ACTION, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT, FOCUS_ACTION, FULL_TEXT_SLOT,
     JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
     MOUSE_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION,
     PROMPT_MARKS_SLOT, RESIZE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION,
@@ -1411,6 +1411,21 @@ impl HostClient for WireHost {
             "scene/invoke",
             invoke(&pane_input_path(id.0, MOUSE_ACTION), mouse_wire_args(event)),
             "mouse",
+        )
+        .is_some()
+    }
+
+    /// REPORT a pane FOCUS change: forward `{focused}` to the host, which sends `ESC [ I` / `ESC [ O`
+    /// when the pane's child has enabled DEC 1004 (a no-op otherwise) — the same
+    /// mode-authority-at-the-boundary split as [`Self::mouse`] (this client never encodes).
+    fn focus(&self, id: PaneId, focused: bool) -> bool {
+        self.request(
+            "scene/invoke",
+            invoke(
+                &pane_input_path(id.0, FOCUS_ACTION),
+                json!({ "focused": focused }),
+            ),
+            "focus",
         )
         .is_some()
     }
