@@ -19,6 +19,12 @@ use crate::{INPUT_TAG, MUX_TAG};
 /// The pane-input external invoke action that injects a key (W3C key + mods →
 /// PTY bytes, the R2.6 encoder).
 pub const KEY_ACTION: &str = "key";
+/// The pane-input external invoke action that reports a MOUSE event — a semantic pointer edge
+/// (`{button, kind, col, row, ctrl?, alt?, shift?}`) which the host gates against the pane's active
+/// mouse-tracking mode and, if wanted, encodes to an X10 / SGR report at the PTY boundary (the same
+/// mode-authority-at-the-boundary discipline as [`PASTE_ACTION`]). A display client sends the raw
+/// cell + button; it never encodes the report itself.
+pub const MOUSE_ACTION: &str = "mouse";
 /// The pane-input external invoke action that writes literal UTF-8 (IME commit /
 /// paste), no key-encoding.
 pub const TEXT_ACTION: &str = "text";
@@ -156,6 +162,7 @@ pub const IMAGE_DATA_FIELD: SchemaField =
 /// path a client builds are the same string by construction.
 pub const PANE_SCHEMA: &[SchemaField] = &[
     SchemaField::new(KEY_ACTION, "action"),
+    SchemaField::new(MOUSE_ACTION, "action"),
     SchemaField::new(TEXT_ACTION, "action"),
     SchemaField::new(PASTE_ACTION, "action"),
     CELLS_FIELD,

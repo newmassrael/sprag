@@ -44,7 +44,7 @@ use pinion_core::external::{
     read_only_or_unknown,
 };
 use serde_json::{Value, json};
-use sprag_input::Modifiers;
+use sprag_input::{Modifiers, MouseButton, MouseEventKind, MouseInput};
 use sprag_terminal::PanePtyHandle;
 use sprag_vt::{ClipboardTarget, Screen, osc52_reply};
 
@@ -59,8 +59,8 @@ use base64::engine::general_purpose::STANDARD;
 
 use crate::wire::{
     CELLS_FIELD, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT, CURSOR_KEYS_SLOT, FRAMES_SLOT,
-    FULL_TEXT_SLOT, IMAGE_DATA_FIELD, KEY_ACTION, LAST_COMMAND_SLOT, LINKS_SLOT, PANE_SCHEMA,
-    PASTE_ACTION, PROMPT_MARKS_SLOT, TEXT_ACTION,
+    FULL_TEXT_SLOT, IMAGE_DATA_FIELD, KEY_ACTION, LAST_COMMAND_SLOT, LINKS_SLOT, MOUSE_ACTION,
+    PANE_SCHEMA, PASTE_ACTION, PROMPT_MARKS_SLOT, TEXT_ACTION,
 };
 
 /// Encode a W3C `key` + `mods` to PTY bytes (the sprag-owned R2.6 encoder,
@@ -121,6 +121,25 @@ pub fn paste(pty: &PanePtyHandle, text: &str) -> bool {
         return pty.write(text.as_bytes()).is_ok();
     }
     pty.write(&frame_bracketed_paste(text)).is_ok()
+}
+
+/// REPORT a mouse event to `pty`'s child — the mouse-tracking seam, distinct from [`send_key`] /
+/// [`send_text`]. The semantic event (a cell + a button edge) is gated against the pane's active
+/// mouse-tracking mode and encoded to an X10 / SGR report by the sprag-owned encoder
+/// ([`sprag_input::encode_mouse`], reading the LIVE modes from the emulator). Like [`send_key`], the
+/// encoding lives HERE at the PTY boundary because the emulator holds the authoritative mode; a
+/// display client supplies only the raw cell + button.
+///
+/// An event the active mode does not want (no tracking on, a motion outside any-event tracking, a
+/// drag outside button/any-event tracking) is a no-op SUCCESS — it is silently dropped, not a
+/// failure, exactly as an empty [`send_text`] is. `true` on a successful write or a legitimate drop;
+/// `false` only on a write failure.
+#[must_use]
+pub fn mouse(pty: &PanePtyHandle, event: MouseInput) -> bool {
+    match sprag_input::encode_mouse(event, pty.input_modes()) {
+        Some(bytes) => pty.write(&bytes).is_ok(),
+        None => true, // the mode did not want this event — a no-op, not a rejection
+    }
 }
 
 /// Frame `text` as a bracketed paste: `ESC [ 200 ~` + `text` (with any embedded bracket marker
@@ -192,6 +211,18 @@ impl SpragPaneExternal {
     fn inject_paste(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let text = parse_text_args(args)?;
         if paste(&self.pty, &text) {
+            Ok(IntrospectValue::Null)
+        } else {
+            Err(InvokeError::Rejected)
+        }
+    }
+
+    /// Parse a `mouse` action's args into a [`MouseInput`] and report it to the PTY, gated + encoded
+    /// against the pane's live mouse-tracking mode ([`mouse`]). An event the mode drops is a no-op
+    /// success; a write failure is an [`InvokeError::Rejected`].
+    fn inject_mouse(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let event = parse_mouse_args(args)?;
+        if mouse(&self.pty, event) {
             Ok(IntrospectValue::Null)
         } else {
             Err(InvokeError::Rejected)
@@ -407,6 +438,7 @@ impl ExternalIntrospect for SpragPaneExternal {
     ) -> Result<IntrospectValue, InvokeError> {
         match path {
             KEY_ACTION => self.inject_key(&args),
+            MOUSE_ACTION => self.inject_mouse(&args),
             TEXT_ACTION => self.inject_text(&args),
             PASTE_ACTION => self.inject_paste(&args),
             CLIPBOARD_ANSWER_ACTION => self.answer_clipboard(&args),
@@ -520,6 +552,52 @@ fn parse_key_args(args: &IntrospectValue) -> Result<Option<(String, Modifiers)>,
         }
         _ => Err(InvokeError::TypeMismatch),
     }
+}
+
+/// Parse the `mouse` action's args `{button, kind, col, row, ctrl?, alt?, shift?}` into a
+/// [`MouseInput`]. Only the object form is accepted (a machine wire, never hand-typed). `button` is
+/// `left`/`middle`/`right`/`wheelup`/`wheeldown`/`none`, `kind` is `press`/`release`/`drag`/
+/// `motion`, and `col`/`row` are 0-based cells. A missing/ill-typed field is an
+/// [`InvokeError::TypeMismatch`].
+fn parse_mouse_args(args: &IntrospectValue) -> Result<MouseInput, InvokeError> {
+    let IntrospectValue::Json(Value::Object(map)) = args else {
+        return Err(InvokeError::TypeMismatch);
+    };
+    let button = match map.get("button").and_then(Value::as_str) {
+        Some("left") => MouseButton::Left,
+        Some("middle") => MouseButton::Middle,
+        Some("right") => MouseButton::Right,
+        Some("wheelup") => MouseButton::WheelUp,
+        Some("wheeldown") => MouseButton::WheelDown,
+        Some("none") => MouseButton::None,
+        _ => return Err(InvokeError::TypeMismatch),
+    };
+    let kind = match map.get("kind").and_then(Value::as_str) {
+        Some("press") => MouseEventKind::Press,
+        Some("release") => MouseEventKind::Release,
+        Some("drag") => MouseEventKind::Drag,
+        Some("motion") => MouseEventKind::Motion,
+        _ => return Err(InvokeError::TypeMismatch),
+    };
+    let coord = |name: &str| -> Result<u16, InvokeError> {
+        map.get(name)
+            .and_then(Value::as_u64)
+            .and_then(|n| u16::try_from(n).ok())
+            .ok_or(InvokeError::TypeMismatch)
+    };
+    let flag = |name: &str| map.get(name).and_then(Value::as_bool).unwrap_or(false);
+    Ok(MouseInput {
+        button,
+        kind,
+        col: coord("col")?,
+        row: coord("row")?,
+        mods: Modifiers {
+            ctrl: flag("ctrl"),
+            alt: flag("alt"),
+            shift: flag("shift"),
+            sup: false,
+        },
+    })
 }
 
 #[cfg(test)]
@@ -725,6 +803,90 @@ mod tests {
         assert!(
             !contains(&pty.raw_output().bytes, b"\x1b[200~"),
             "an un-negotiated pane must NOT get bracket markers",
+        );
+    }
+
+    /// A `raw -echo` `cat` that first enables mouse tracking (DECSET 1000) + SGR encoding (1006), so
+    /// a report the host writes echoes back verbatim in [`PanePtyHandle::raw_output`].
+    fn raw_cat_mouse() -> sprag_terminal::PanePty {
+        use sprag_terminal::{CommandBuilder, PanePty};
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg("stty raw -echo 2>/dev/null; printf '\\033[?1000h\\033[?1006h'; cat");
+        command.env("TERM", "xterm");
+        PanePty::spawn(command, 40, 6).expect("spawn a pty")
+    }
+
+    fn press(button: MouseButton, col: u16, row: u16) -> MouseInput {
+        MouseInput {
+            button,
+            kind: MouseEventKind::Press,
+            col,
+            row,
+            mods: Modifiers::default(),
+        }
+    }
+
+    #[test]
+    fn parse_mouse_args_reads_the_object_form() {
+        let parsed = parse_mouse_args(&json_args(json!({
+            "button": "right", "kind": "press", "col": 4, "row": 2, "ctrl": true,
+        })))
+        .expect("valid");
+        assert_eq!(parsed.button, MouseButton::Right);
+        assert_eq!(parsed.kind, MouseEventKind::Press);
+        assert_eq!((parsed.col, parsed.row), (4, 2));
+        assert!(parsed.mods.ctrl && !parsed.mods.shift);
+        // An unknown button / kind, or a bare string, is a type mismatch (a machine wire).
+        assert_eq!(
+            parse_mouse_args(&json_args(
+                json!({"button": "x", "kind": "press", "col": 0, "row": 0})
+            )),
+            Err(InvokeError::TypeMismatch),
+        );
+        assert_eq!(
+            parse_mouse_args(&IntrospectValue::Text("left".into())),
+            Err(InvokeError::TypeMismatch),
+        );
+    }
+
+    #[test]
+    fn mouse_report_reaches_the_child_when_tracking_is_on() {
+        let pty = raw_cat_mouse();
+        let handle = pty.handle();
+        assert!(
+            wait_until(|| handle.input_modes().mouse_protocol == sprag_vt::MouseProtocol::Click),
+            "the child's DECSET 1000 was never emulated",
+        );
+        // A left press at cell (col 4, row 2) → SGR report ESC [ < 0 ; 5 ; 3 M (1-based).
+        assert!(mouse(&handle, press(MouseButton::Left, 4, 2)));
+        assert!(
+            wait_until(|| contains(&pty.raw_output().bytes, b"\x1b[<0;5;3M")),
+            "the SGR mouse report never reached the child",
+        );
+    }
+
+    #[test]
+    fn mouse_report_is_dropped_when_no_tracking_mode_is_active() {
+        // A `cat` that never enables a tracking mode.
+        let pty = raw_cat(false);
+        let handle = pty.handle();
+        assert_eq!(
+            handle.input_modes().mouse_protocol,
+            sprag_vt::MouseProtocol::None
+        );
+        // The seam accepts the event as a no-op success — the mode wanted nothing.
+        assert!(mouse(&handle, press(MouseButton::Left, 4, 2)));
+        // Prove NOTHING was written by ordering a sentinel after it: if a report had been written it
+        // would echo before the sentinel does.
+        assert!(send_text(&handle, "SENTINEL"));
+        assert!(
+            wait_until(|| contains(&pty.raw_output().bytes, b"SENTINEL")),
+            "the sentinel never echoed",
+        );
+        assert!(
+            !contains(&pty.raw_output().bytes, b"\x1b[<"),
+            "a pane with no tracking mode must receive NO mouse report",
         );
     }
 }

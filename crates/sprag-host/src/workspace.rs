@@ -711,6 +711,14 @@ impl ExternalIntrospect for WorkspaceExternal {
                         if let Some(status) = p.last_exit_status {
                             entry["exit_status"] = serde_json::json!(status);
                         }
+                        // Mouse-tracking mode (DECSET 1000/1002/1003). ADDITIVE — the key is present
+                        // only while the child is tracking (`wire_str` returns `None` for the
+                        // resting `MouseProtocol::None`), so a pane that never enabled mouse
+                        // reporting is byte-identical to the pre-mouse wire shape. A display client
+                        // reads it to decide whether to capture the pointer for reporting.
+                        if let Some(mouse) = p.mouse_protocol.wire_str() {
+                            entry["mouse"] = serde_json::json!(mouse);
+                        }
                         // OSC 52 clipboard signals. The write SEQ travels here (ADDITIVE, present
                         // only once the child has written a clipboard); the write PAYLOAD does NOT
                         // — it can be a whole paste, so a client fetches it on demand off this seq

@@ -47,7 +47,7 @@
 use std::sync::{Arc, Mutex};
 
 use pinion_core::GridBuffer;
-use sprag_input::Modifiers;
+use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{
     CommandBuilder, LayoutSnapshot, LayoutWire, Pane, PaneId, PanePtyError, PanePtyHandle,
     SessionInfo, SessionRegistry, Snapshot, SnapshotError, WindowInfo, Workspace,
@@ -206,6 +206,17 @@ pub trait HostClient {
     /// failed.
     #[must_use]
     fn send_key(&self, id: PaneId, key: &str, mods: Modifiers) -> bool;
+
+    /// REPORT a mouse `event` to pane `id` — the CLIENT pointer path. The host gates it against pane
+    /// `id`'s live mouse-tracking mode and encodes an X10 / SGR report at the PTY boundary (an event
+    /// the mode does not want is a no-op success). The default is a no-op `false` — a client that
+    /// cannot reach the authoritative mode reports nothing; [`Host`] and the wire client override it.
+    /// `true` if the event reached the PTY or was legitimately dropped by the mode; `false` if `id`
+    /// is absent or the write failed.
+    #[must_use]
+    fn mouse(&self, _id: PaneId, _event: MouseInput) -> bool {
+        false
+    }
 
     /// Write literal committed `text` to pane `id` — the IME-commit client path (typed text,
     /// never bracketed). Empty is a no-op success. `true` if it reached the PTY.
@@ -847,6 +858,13 @@ impl HostClient for Host {
     fn send_key(&self, id: PaneId, key: &str, mods: Modifiers) -> bool {
         self.with_pane_id(id, Pane::handle)
             .is_some_and(|handle| crate::send_key(&handle, key, mods))
+    }
+
+    /// Gates + encodes the mouse report at the PTY boundary via the shared [`crate::mouse`] SSOT
+    /// (reading the pane's live tracking mode from the emulator); `false` for an absent id.
+    fn mouse(&self, id: PaneId, event: MouseInput) -> bool {
+        self.with_pane_id(id, Pane::handle)
+            .is_some_and(|handle| crate::mouse(&handle, event))
     }
 
     fn send_text(&self, id: PaneId, text: &str) -> bool {

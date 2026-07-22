@@ -300,6 +300,87 @@ pub struct InputModes {
     /// paste seam at the PTY boundary consults this flag to decide whether to bracket; typed and
     /// IME-committed text is never bracketed (it is not a paste). Off by default (raw paste).
     pub bracketed_paste: bool,
+    /// Which pointer events the child has asked the terminal to REPORT (the DECSET mouse-tracking
+    /// modes 1000 / 1002 / 1003). While active the terminal stops handling the mouse itself
+    /// (selection, wheel-scroll) and instead forwards reports to the child. The sprag-owned mouse
+    /// encoder gates each event against this; the display client reads it to decide whether to
+    /// capture the pointer. Off by default ([`MouseProtocol::None`] — the terminal owns the mouse).
+    pub mouse_protocol: MouseProtocol,
+    /// How a mouse report serializes on the wire (DECSET 1006). Independent of
+    /// [`mouse_protocol`](Self::mouse_protocol): a child sets a tracking mode AND, optionally, an
+    /// encoding. Defaults to the legacy [`MouseEncoding::X10`]; `ESC [ ? 1006 h` selects the modern
+    /// [`MouseEncoding::Sgr`] form (unbounded coordinates, a distinct release edge).
+    pub mouse_encoding: MouseEncoding,
+}
+
+/// Which pointer events a child has asked the terminal to report, selected by the DECSET
+/// mouse-tracking modes. The variants are ordered by how much they report: each reports a superset
+/// of the events below it, so a single field captures the effective reporting level (a child sets
+/// exactly one tracking mode in practice; the pathological "several set at once, reset the highest"
+/// nuance of xterm's independent mode bits is a documented bound — see the emulator's `mode`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum MouseProtocol {
+    /// No reporting — the terminal owns the mouse (text selection, wheel scrolls the scrollback).
+    #[default]
+    None,
+    /// DECSET 1000 (X11 mouse tracking): button PRESS and RELEASE only — no motion, no drag.
+    Click,
+    /// DECSET 1002 (button-event tracking): press/release + DRAG (motion while a button is held).
+    ButtonEvent,
+    /// DECSET 1003 (any-event tracking): press/release + ALL motion (whether or not a button is held).
+    AnyEvent,
+}
+
+impl MouseProtocol {
+    /// Whether any reporting is active (the terminal should forward pointer events to the child
+    /// rather than handle them itself). `false` only for [`MouseProtocol::None`].
+    #[must_use]
+    pub fn is_active(self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    /// Whether this level reports pointer MOTION with no button held (only [`MouseProtocol::AnyEvent`]).
+    #[must_use]
+    pub fn reports_motion(self) -> bool {
+        matches!(self, Self::AnyEvent)
+    }
+
+    /// Whether this level reports DRAG — motion while a button is held ([`MouseProtocol::ButtonEvent`]
+    /// and [`MouseProtocol::AnyEvent`]).
+    #[must_use]
+    pub fn reports_drag(self) -> bool {
+        matches!(self, Self::ButtonEvent | Self::AnyEvent)
+    }
+
+    /// The wire / display token for an ACTIVE tracking level (`"click"` / `"button"` / `"any"`), or
+    /// `None` for [`None`](MouseProtocol::None). The single source of the wire vocabulary — a
+    /// serializer omits the key when this is `None`, so a pane not tracking the mouse keeps the
+    /// pre-mouse wire shape (additive), and a display client reads it to decide whether to capture
+    /// the pointer (and, from the level, whether to forward drag / motion).
+    #[must_use]
+    pub fn wire_str(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Click => Some("click"),
+            Self::ButtonEvent => Some("button"),
+            Self::AnyEvent => Some("any"),
+        }
+    }
+}
+
+/// How a mouse report is serialized to the child. The legacy [`MouseEncoding::X10`] form packs the
+/// button and 1-based coordinates into three `32 + value` bytes after `ESC [ M` (so a coordinate
+/// past column/row 223 cannot be represented — it is clamped); the modern [`MouseEncoding::Sgr`]
+/// form (DECSET 1006) writes decimal parameters `ESC [ < b ; col ; row` with the final byte `M` for
+/// a press/motion and `m` for a release, so coordinates are unbounded and the released button is
+/// preserved.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum MouseEncoding {
+    /// The legacy `ESC [ M` + three `32 + value` bytes form (the default before DECSET 1006).
+    #[default]
+    X10,
+    /// The DECSET 1006 `ESC [ < b ; col ; row M|m` form.
+    Sgr,
 }
 
 /// The Kitty keyboard protocol progressive-enhancement flags currently active — the bitmask a

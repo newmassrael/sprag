@@ -12,7 +12,7 @@
 //! This crate is pinion-free by design — it lives in the producer layer
 //! beside sprag-vt and depends on it only for [`InputModes`].
 
-use sprag_vt::InputModes;
+use sprag_vt::{InputModes, MouseEncoding};
 
 /// The escape byte (`0x1b`) that introduces every `CSI`/`SS3` sequence and
 /// prefixes `Alt`-modified keys.
@@ -48,6 +48,13 @@ impl Modifiers {
     /// Whether any modifier is held (equivalently `xterm_param() != 1`).
     fn any(self) -> bool {
         self.ctrl || self.alt || self.shift || self.sup
+    }
+
+    /// The modifier bits a mouse report packs directly into the button code: Shift = 4, Alt/Meta =
+    /// 8, Ctrl = 16 (a different layout from the key [`xterm_param`](Self::xterm_param) parameter).
+    /// Mouse reports have no encoding for the super/logo key, so it does not contribute.
+    fn mouse_bits(self) -> u8 {
+        (u8::from(self.shift) << 2) | (u8::from(self.alt) << 3) | (u8::from(self.ctrl) << 4)
     }
 }
 
@@ -307,6 +314,150 @@ fn ss3_function(key: &str) -> Option<u8> {
         "F4" => b'S',
         _ => return None,
     })
+}
+
+// ----- Mouse reporting (the DECSET 1000/1002/1003 tracking modes, X10 + SGR 1006 encodings) -----
+//
+// A mouse report flows FROM the terminal TO the child: when the child has enabled a tracking mode,
+// a pointer event over the pane is serialized here and written to the PTY. Encoding is sprag's
+// responsibility (the same R2.6 boundary as keys), so the report bytes are built here rather than in
+// any display client — the client supplies only a semantic [`MouseInput`] (a cell + a button edge).
+
+/// A pointer button in a mouse report. Wheel steps are reported as pseudo-buttons (xterm's model);
+/// [`MouseButton::None`] is the "no button" used for a bare motion event under any-event tracking.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MouseButton {
+    /// The primary (left) button — report button 0.
+    Left,
+    /// The middle button — report button 1.
+    Middle,
+    /// The secondary (right) button — report button 2.
+    Right,
+    /// Wheel scrolled up / away — xterm pseudo-button 64.
+    WheelUp,
+    /// Wheel scrolled down / toward — xterm pseudo-button 65.
+    WheelDown,
+    /// No button held — the "button" of a bare motion event (any-event tracking).
+    None,
+}
+
+/// The kind of pointer edge a report describes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MouseEventKind {
+    /// A button went down.
+    Press,
+    /// A button came up.
+    Release,
+    /// The pointer moved while a button is held (button-event or any-event tracking).
+    Drag,
+    /// The pointer moved with no button held (any-event tracking only).
+    Motion,
+}
+
+/// A semantic pointer event addressed to a cell, before mode-gating and wire-encoding. A display
+/// client converts a pixel position to a 0-based cell and fills this in; [`encode_mouse`] decides
+/// whether the active tracking mode wants the event and, if so, serializes it. The coordinates are
+/// 0-based cells (the wire report is 1-based — the encoder adds one).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct MouseInput {
+    /// The button (or wheel step, or [`MouseButton::None`] for a bare motion).
+    pub button: MouseButton,
+    /// The edge this event describes.
+    pub kind: MouseEventKind,
+    /// 0-based cell column.
+    pub col: u16,
+    /// 0-based cell row.
+    pub row: u16,
+    /// The keyboard modifiers held during the event (Shift / Alt / Ctrl reach the report).
+    pub mods: Modifiers,
+}
+
+/// Encode a semantic mouse event into the PTY report bytes the focused child should receive, given
+/// the terminal's current mouse [`InputModes`]. Returns `None` when the active
+/// [`MouseProtocol`](sprag_vt::MouseProtocol) does not want this event — no tracking active, a bare
+/// motion outside any-event tracking, or a drag outside button/any-event tracking — so a display
+/// client's over-eager motion stream is filtered at this one authority (mirroring how the emulator's
+/// `mode` is the authority for which modes are set). The encoding follows
+/// [`InputModes::mouse_encoding`]: the legacy X10 byte form (coordinates clamped at 223) or the SGR
+/// 1006 decimal form.
+#[must_use]
+pub fn encode_mouse(ev: MouseInput, modes: InputModes) -> Option<Vec<u8>> {
+    let protocol = modes.mouse_protocol;
+    // Gate the event against what the active tracking mode reports.
+    let wanted = match ev.kind {
+        MouseEventKind::Press | MouseEventKind::Release => protocol.is_active(),
+        MouseEventKind::Drag => protocol.reports_drag(),
+        MouseEventKind::Motion => protocol.reports_motion(),
+    };
+    if !wanted {
+        return None;
+    }
+    let code = mouse_button_code(ev.button, ev.kind) | ev.mods.mouse_bits();
+    Some(match modes.mouse_encoding {
+        MouseEncoding::Sgr => encode_mouse_sgr(code, ev),
+        MouseEncoding::X10 => encode_mouse_x10(code, ev),
+    })
+}
+
+/// The button portion of a report code (before the modifier bits): the low button bits (or the
+/// wheel pseudo-button), plus the motion bit 32 for a drag or bare motion.
+fn mouse_button_code(button: MouseButton, kind: MouseEventKind) -> u8 {
+    let base = match button {
+        MouseButton::Left => 0,
+        MouseButton::Middle => 1,
+        MouseButton::Right => 2,
+        MouseButton::None => 3,
+        MouseButton::WheelUp => 64,
+        MouseButton::WheelDown => 65,
+    };
+    let motion = match kind {
+        MouseEventKind::Drag | MouseEventKind::Motion => 32,
+        MouseEventKind::Press | MouseEventKind::Release => 0,
+    };
+    base | motion
+}
+
+/// SGR 1006 form: `ESC [ < code ; col ; row (M|m)` — decimal, 1-based, `m` for a release (which,
+/// unlike X10, keeps the released button in `code`). Coordinates are unbounded.
+fn encode_mouse_sgr(code: u8, ev: MouseInput) -> Vec<u8> {
+    let final_byte = if ev.kind == MouseEventKind::Release {
+        'm'
+    } else {
+        'M'
+    };
+    format!(
+        "\x1b[<{};{};{}{}",
+        code,
+        u32::from(ev.col) + 1,
+        u32::from(ev.row) + 1,
+        final_byte
+    )
+    .into_bytes()
+}
+
+/// X10 legacy form: `ESC [ M` + three `32 + value` bytes. A release does not carry which button (its
+/// low button bits become 3, the modifier and motion bits are kept); a coordinate past 223 cannot be
+/// represented and pins at the last byte (SGR has no such limit). 1-based coordinates.
+fn encode_mouse_x10(code: u8, ev: MouseInput) -> Vec<u8> {
+    let code = if ev.kind == MouseEventKind::Release {
+        (code & !0b11) | 0b11
+    } else {
+        code
+    };
+    vec![
+        ESC,
+        b'[',
+        b'M',
+        x10_byte(u16::from(code)),
+        x10_byte(ev.col.saturating_add(1)),
+        x10_byte(ev.row.saturating_add(1)),
+    ]
+}
+
+/// One byte of an X10 mouse report: `32 + value`, pinned at the 255 ceiling (the legacy form cannot
+/// represent a value past 223).
+fn x10_byte(value: u16) -> u8 {
+    32u16.saturating_add(value).min(255) as u8
 }
 
 #[cfg(test)]
@@ -586,6 +737,168 @@ mod tests {
             encode("ArrowUp", CTRL, modes(true)),
             Some(b"\x1b[1;5A".to_vec()),
             "a modified arrow is CSI 1;mods regardless of DECCKM",
+        );
+    }
+
+    // ----- Mouse reporting -----
+
+    use sprag_vt::MouseProtocol;
+
+    /// Input modes with a mouse tracking protocol + encoding.
+    fn mouse_modes(protocol: MouseProtocol, encoding: MouseEncoding) -> InputModes {
+        InputModes {
+            mouse_protocol: protocol,
+            mouse_encoding: encoding,
+            ..InputModes::default()
+        }
+    }
+
+    /// A no-modifier mouse event at a cell.
+    fn ev(button: MouseButton, kind: MouseEventKind, col: u16, row: u16) -> MouseInput {
+        MouseInput {
+            button,
+            kind,
+            col,
+            row,
+            mods: Modifiers::default(),
+        }
+    }
+
+    #[test]
+    fn sgr_press_and_release_carry_the_button_and_1_based_cell() {
+        let modes = mouse_modes(MouseProtocol::Click, MouseEncoding::Sgr);
+        // Left press at cell (col 4, row 2) -> code 0, 1-based (5, 3), final M.
+        assert_eq!(
+            encode_mouse(ev(MouseButton::Left, MouseEventKind::Press, 4, 2), modes),
+            Some(b"\x1b[<0;5;3M".to_vec()),
+        );
+        // Release keeps the button (SGR) and flips the final byte to m.
+        assert_eq!(
+            encode_mouse(ev(MouseButton::Left, MouseEventKind::Release, 4, 2), modes),
+            Some(b"\x1b[<0;5;3m".to_vec()),
+        );
+    }
+
+    #[test]
+    fn sgr_middle_and_right_buttons_are_codes_1_and_2() {
+        let modes = mouse_modes(MouseProtocol::Click, MouseEncoding::Sgr);
+        assert_eq!(
+            encode_mouse(ev(MouseButton::Middle, MouseEventKind::Press, 0, 0), modes),
+            Some(b"\x1b[<1;1;1M".to_vec()),
+        );
+        assert_eq!(
+            encode_mouse(ev(MouseButton::Right, MouseEventKind::Press, 0, 0), modes),
+            Some(b"\x1b[<2;1;1M".to_vec()),
+        );
+    }
+
+    #[test]
+    fn x10_press_packs_32_plus_value_bytes_and_release_drops_the_button() {
+        let modes = mouse_modes(MouseProtocol::Click, MouseEncoding::X10);
+        // Left press at (0,0): code 0, coords 1,1 -> bytes 32, 33, 33 after ESC [ M.
+        assert_eq!(
+            encode_mouse(ev(MouseButton::Left, MouseEventKind::Press, 0, 0), modes),
+            Some(vec![ESC, b'[', b'M', 32, 33, 33]),
+        );
+        // X10 release does not say which button: low bits become 3 -> code byte 32 + 3 = 35.
+        assert_eq!(
+            encode_mouse(ev(MouseButton::Right, MouseEventKind::Release, 0, 0), modes),
+            Some(vec![ESC, b'[', b'M', 35, 33, 33]),
+        );
+    }
+
+    #[test]
+    fn x10_coordinate_past_223_pins_at_the_byte_ceiling() {
+        let modes = mouse_modes(MouseProtocol::Click, MouseEncoding::X10);
+        // col 300 -> 32 + 301 = 333, clamped to 255 (the legacy form's documented limit).
+        let bytes = encode_mouse(ev(MouseButton::Left, MouseEventKind::Press, 300, 0), modes)
+            .expect("reported");
+        assert_eq!(bytes[4], 255, "column clamps at the 255 ceiling");
+        assert_eq!(bytes[5], 33, "row is unaffected");
+    }
+
+    #[test]
+    fn modifiers_add_shift_4_alt_8_ctrl_16_to_the_code() {
+        let modes = mouse_modes(MouseProtocol::Click, MouseEncoding::Sgr);
+        let ctrl = MouseInput {
+            mods: CTRL,
+            ..ev(MouseButton::Left, MouseEventKind::Press, 0, 0)
+        };
+        assert_eq!(encode_mouse(ctrl, modes), Some(b"\x1b[<16;1;1M".to_vec()));
+        let shift = MouseInput {
+            mods: Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+            ..ev(MouseButton::Left, MouseEventKind::Press, 0, 0)
+        };
+        assert_eq!(encode_mouse(shift, modes), Some(b"\x1b[<4;1;1M".to_vec()));
+    }
+
+    #[test]
+    fn no_reporting_when_no_tracking_mode_is_active() {
+        let modes = mouse_modes(MouseProtocol::None, MouseEncoding::Sgr);
+        assert_eq!(
+            encode_mouse(ev(MouseButton::Left, MouseEventKind::Press, 0, 0), modes),
+            None,
+            "a press is dropped when no tracking mode is set",
+        );
+    }
+
+    #[test]
+    fn click_tracking_reports_presses_but_not_drag_or_motion() {
+        let modes = mouse_modes(MouseProtocol::Click, MouseEncoding::Sgr);
+        assert!(
+            encode_mouse(ev(MouseButton::Left, MouseEventKind::Press, 0, 0), modes).is_some(),
+            "press reported",
+        );
+        assert_eq!(
+            encode_mouse(ev(MouseButton::Left, MouseEventKind::Drag, 0, 0), modes),
+            None,
+            "1000 does not report drag",
+        );
+        assert_eq!(
+            encode_mouse(ev(MouseButton::None, MouseEventKind::Motion, 0, 0), modes),
+            None,
+            "1000 does not report motion",
+        );
+    }
+
+    #[test]
+    fn button_event_reports_drag_and_any_event_reports_motion() {
+        let sgr = MouseEncoding::Sgr;
+        // 1002 reports a drag (motion bit 32) but still not a bare motion.
+        let button = mouse_modes(MouseProtocol::ButtonEvent, sgr);
+        assert_eq!(
+            encode_mouse(ev(MouseButton::Left, MouseEventKind::Drag, 1, 1), button),
+            Some(b"\x1b[<32;2;2M".to_vec()),
+        );
+        assert_eq!(
+            encode_mouse(ev(MouseButton::None, MouseEventKind::Motion, 1, 1), button),
+            None,
+            "1002 does not report a bare motion",
+        );
+        // 1003 reports a bare motion: no button -> low bits 3, motion bit 32 -> code 35.
+        let any = mouse_modes(MouseProtocol::AnyEvent, sgr);
+        assert_eq!(
+            encode_mouse(ev(MouseButton::None, MouseEventKind::Motion, 1, 1), any),
+            Some(b"\x1b[<35;2;2M".to_vec()),
+        );
+    }
+
+    #[test]
+    fn wheel_steps_report_as_pseudo_buttons_64_and_65() {
+        let modes = mouse_modes(MouseProtocol::Click, MouseEncoding::Sgr);
+        assert_eq!(
+            encode_mouse(ev(MouseButton::WheelUp, MouseEventKind::Press, 0, 0), modes),
+            Some(b"\x1b[<64;1;1M".to_vec()),
+        );
+        assert_eq!(
+            encode_mouse(
+                ev(MouseButton::WheelDown, MouseEventKind::Press, 0, 0),
+                modes
+            ),
+            Some(b"\x1b[<65;1;1M".to_vec()),
         );
     }
 }

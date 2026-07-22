@@ -66,7 +66,7 @@ pub use durability::{
 pub use host::{
     Host, HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneNotification, PaneScrollFacts,
 };
-pub use pane::{CellFrame, SpragPaneExternal, paste, send_key, send_text};
+pub use pane::{CellFrame, SpragPaneExternal, mouse, paste, send_key, send_text};
 pub use plugins::PluginsExternal;
 pub use rpc::{
     FrameIngress, HostState, SUPPORTED_METHODS, bump_on_dirty, dispatch_frames, handle_parsed,

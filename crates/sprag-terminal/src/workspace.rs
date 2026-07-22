@@ -30,7 +30,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use sprag_vt::{ClipboardQuery, ClipboardWrite, Image, Notification, ShellState};
+use sprag_vt::{ClipboardQuery, ClipboardWrite, Image, MouseProtocol, Notification, ShellState};
 
 use crate::pane_pty::{CommandBuilder, PanePty, PanePtyError, PanePtyHandle};
 
@@ -147,6 +147,14 @@ impl Pane {
         self.pty.shell()
     }
 
+    /// Which pointer events the child has asked the terminal to report (the DECSET mouse-tracking
+    /// mode), read LIVE from the emulator. A display client reads this to decide whether to capture
+    /// the pointer for reporting. See [`sprag_vt::MouseProtocol`].
+    #[must_use]
+    pub fn mouse_protocol(&self) -> MouseProtocol {
+        self.pty.mouse_protocol()
+    }
+
     /// The most recent OSC 52 clipboard WRITE the child requested, or `None`, with its monotonic
     /// sequence — read LIVE from the emulator. Potentially large (a paste), so it is fetched on
     /// demand off the sequence, not shipped every poll. See [`sprag_vt::VtPort::clipboard_write`].
@@ -206,6 +214,11 @@ pub struct PaneInfo {
     /// The last finished command's exit status (OSC 133 `D`), `None` when none has finished with a
     /// reported status. Pair with [`Self::shell_state`] to tell "no command ran" from "unreported".
     pub last_exit_status: Option<i32>,
+    /// Which pointer events the child has asked the terminal to report (the DECSET mouse-tracking
+    /// mode), [`MouseProtocol::None`] when it is not tracking. A display client reads this each poll
+    /// to decide whether to capture the pointer for reporting instead of handling it itself
+    /// (selection, wheel-scroll), and — from the level — whether to forward drag / motion.
+    pub mouse_protocol: MouseProtocol,
     /// Monotonic count of OSC 52 clipboard WRITES this pane's child has requested (`0` before the
     /// first). A display client that remembers the value it last applied learns a NEW write
     /// arrived when this grows, then fetches the (potentially large) payload on demand and applies
@@ -514,6 +527,7 @@ impl Workspace {
                     bell_seq: p.bell_seq(),
                     shell_state,
                     last_exit_status,
+                    mouse_protocol: p.mouse_protocol(),
                     clipboard_write_seq: p.clipboard_write().1,
                     clipboard_query,
                     clipboard_query_seq,

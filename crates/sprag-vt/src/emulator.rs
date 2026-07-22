@@ -34,8 +34,9 @@ use termwiz::escape::{
 
 use crate::port::{
     Attrs, Cell, ClipboardQuery, ClipboardTarget, ClipboardTargets, ClipboardWrite, Color, Cursor,
-    CursorShape, Hyperlink, Image, InputModes, KittyKeyboardFlags, Notification, PromptMark, Rgb,
-    Screen, ScreenKind, ShellState, UnderlineStyle, VtPort, Width, char_columns,
+    CursorShape, Hyperlink, Image, InputModes, KittyKeyboardFlags, MouseEncoding, MouseProtocol,
+    Notification, PromptMark, Rgb, Screen, ScreenKind, ShellState, UnderlineStyle, VtPort, Width,
+    char_columns,
 };
 
 /// The cursor state DECSC (`ESC 7` / `CSI s`) saves and DECRC (`ESC 8` / `CSI u`) restores:
@@ -1102,6 +1103,17 @@ impl Emulator {
                 DecPrivateModeCode::BracketedPaste => {
                     self.input_modes.bracketed_paste = true;
                 }
+                // DECSET 1000 — X11 mouse tracking (button press/release). Modes 1002/1003 (drag /
+                // any-motion) are a later stage; until then they fall through unhandled so the
+                // terminal keeps owning the mouse rather than half-reporting.
+                DecPrivateModeCode::MouseTracking => {
+                    self.input_modes.mouse_protocol = MouseProtocol::Click;
+                }
+                // DECSET 1006 — SGR mouse encoding. Orthogonal to the tracking mode: a child sets a
+                // tracking mode AND (optionally) this encoding.
+                DecPrivateModeCode::SGRMouse => {
+                    self.input_modes.mouse_encoding = MouseEncoding::Sgr;
+                }
                 _ => {}
             },
             Mode::ResetDecPrivateMode(DecPrivateMode::Code(code)) => match code {
@@ -1114,6 +1126,14 @@ impl Emulator {
                 | DecPrivateModeCode::OptEnableAlternateScreen => self.exit_alt(),
                 DecPrivateModeCode::BracketedPaste => {
                     self.input_modes.bracketed_paste = false;
+                }
+                // DECRST 1000 — stop mouse tracking, hand the mouse back to the terminal.
+                DecPrivateModeCode::MouseTracking => {
+                    self.input_modes.mouse_protocol = MouseProtocol::None;
+                }
+                // DECRST 1006 — back to the legacy X10 encoding (the tracking mode is unaffected).
+                DecPrivateModeCode::SGRMouse => {
+                    self.input_modes.mouse_encoding = MouseEncoding::X10;
                 }
                 _ => {}
             },
@@ -2284,6 +2304,55 @@ mod tests {
             g0,
             "no row damage from a mode set"
         );
+    }
+
+    #[test]
+    fn mouse_modes_default_off() {
+        let em = Emulator::new(4, 2);
+        assert_eq!(em.input_modes().mouse_protocol, MouseProtocol::None);
+        assert!(!em.input_modes().mouse_protocol.is_active());
+        assert_eq!(em.input_modes().mouse_encoding, MouseEncoding::X10);
+    }
+
+    #[test]
+    fn decset_1000_sets_click_tracking_and_reset_clears_it() {
+        let mut em = Emulator::new(4, 2);
+        // DECSET 1000 (ESC [ ? 1000 h) — X11 mouse tracking (press/release).
+        em.advance(b"\x1b[?1000h");
+        assert_eq!(em.input_modes().mouse_protocol, MouseProtocol::Click);
+        // DECRST 1000 hands the mouse back to the terminal.
+        em.advance(b"\x1b[?1000l");
+        assert_eq!(em.input_modes().mouse_protocol, MouseProtocol::None);
+    }
+
+    #[test]
+    fn decset_1006_selects_sgr_encoding_orthogonally_to_tracking() {
+        let mut em = Emulator::new(4, 2);
+        // 1006 is an ENCODING; it does not enable reporting on its own.
+        em.advance(b"\x1b[?1006h");
+        assert_eq!(em.input_modes().mouse_encoding, MouseEncoding::Sgr);
+        assert_eq!(
+            em.input_modes().mouse_protocol,
+            MouseProtocol::None,
+            "1006 alone reports nothing"
+        );
+        // A tracking mode composes with the encoding.
+        em.advance(b"\x1b[?1000h");
+        assert_eq!(em.input_modes().mouse_protocol, MouseProtocol::Click);
+        assert_eq!(em.input_modes().mouse_encoding, MouseEncoding::Sgr);
+        // DECRST 1006 returns to X10 without touching the tracking mode.
+        em.advance(b"\x1b[?1006l");
+        assert_eq!(em.input_modes().mouse_encoding, MouseEncoding::X10);
+        assert_eq!(em.input_modes().mouse_protocol, MouseProtocol::Click);
+    }
+
+    #[test]
+    fn mouse_mode_set_does_not_bump_the_damage_generation() {
+        // Like every input-mode toggle, enabling mouse tracking carries no cells.
+        let mut em = Emulator::new(4, 2);
+        let g0 = em.screen().row_generation(0).unwrap();
+        em.advance(b"\x1b[?1000h\x1b[?1006h");
+        assert_eq!(em.screen().row_generation(0).unwrap(), g0, "no row damage");
     }
 
     // ----- B1: soft-wrap continuation metadata (`Screen::wrapped`) -----

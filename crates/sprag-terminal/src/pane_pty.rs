@@ -22,7 +22,8 @@ use std::time::Duration;
 
 use portable_pty::{Child, PtySize, native_pty_system};
 use sprag_vt::{
-    ClipboardQuery, ClipboardWrite, Emulator, InputModes, Notification, Screen, ShellState, VtPort,
+    ClipboardQuery, ClipboardWrite, Emulator, InputModes, MouseProtocol, Notification, Screen,
+    ShellState, VtPort,
 };
 
 // Re-exported so callers build commands without depending on portable-pty
@@ -363,6 +364,15 @@ impl PanePty {
     pub fn shell(&self) -> (ShellState, Option<i32>) {
         let emu = lock(&self.emulator);
         (emu.screen().shell_state(), emu.screen().last_exit_status())
+    }
+
+    /// Which pointer events the child has asked the terminal to report (the DECSET mouse-tracking
+    /// mode), read LIVE from the emulator's input modes. A display client reads this to decide
+    /// whether to capture the pointer for reporting instead of handling it itself (selection,
+    /// wheel-scroll). See [`sprag_vt::MouseProtocol`].
+    #[must_use]
+    pub fn mouse_protocol(&self) -> MouseProtocol {
+        lock(&self.emulator).input_modes().mouse_protocol
     }
 
     /// The most recent OSC 52 clipboard WRITE the child requested, or `None`, paired with its
