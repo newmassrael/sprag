@@ -2295,6 +2295,7 @@ mod tests {
             .map(|name| SessionInfo {
                 name: (*name).to_owned(),
                 windows: 1,
+                panes: 1,
                 default: false,
                 cwd: None,
                 branch: None,
@@ -2440,6 +2441,7 @@ mod tests {
             .map(|(name, attached)| SessionInfo {
                 name: (*name).to_owned(),
                 windows: 1,
+                panes: 1,
                 default: false,
                 cwd: None,
                 branch: None,

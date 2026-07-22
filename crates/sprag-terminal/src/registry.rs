@@ -499,6 +499,16 @@ pub struct SessionInfo {
     pub name: String,
     /// How many windows the session holds.
     pub windows: usize,
+    /// How many panes the session holds across ALL its windows — the live count that tells a
+    /// resting empty anchor (0 panes) from a working session. Filled only by
+    /// [`SessionRegistry::session_infos_live`] (it needs each window's pool lock, which the
+    /// structural [`session_infos`](SessionRegistry::session_infos) must not take under the
+    /// registry lock); a registry-only list carries `0`. Consumed by [`is_listable`](Self::is_listable).
+    ///
+    /// TRULY additive like the enrichment fields below: `skip_serializing_if` keeps a paneless
+    /// session at its prior wire shape, and `#[serde(default)]` reads a peer that omits it as `0`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub panes: usize,
     /// Whether this is the registry default (where an unscoped request lands).
     pub default: bool,
     /// The session's current window's FIRST pane's live working directory, in display form
@@ -542,9 +552,33 @@ pub struct SessionInfo {
     pub attached: usize,
 }
 
-/// `skip_serializing_if` predicate for [`SessionInfo::attached`] — a `usize` has no `is_empty`,
-/// so the "omit the default" rule the other enrichment fields get from `Option`/`Vec` is spelled
-/// out here, keeping an unattached session byte-identical to the pre-attachment wire shape.
+impl SessionInfo {
+    /// Whether a HUMAN-facing session list should show this session — the SSOT rule every
+    /// listing surface (`sprag ls`, the GUI session rail) applies so they cannot disagree on the
+    /// resting anchor. A session lists iff it holds a pane OR a client is attached to it:
+    ///
+    /// * `panes > 0` — a working session, always shown.
+    /// * `attached > 0` — an EMPTY session a client is currently viewing (all its panes closed
+    ///   while it stays attached). Shown so a client can see where it is; tmux cannot represent
+    ///   this state at all (an empty session does not exist there), so honestly listing it is a
+    ///   sprag-superior refinement, not a divergence.
+    ///
+    /// The daemon keeps an empty resting anchor for `default_session` totality + reattach
+    /// durability (unlike tmux, whose server exits when its last session dies); that anchor holds
+    /// no pane and, at rest, no attachment — so it is hidden, matching `tmux ls` at rest while the
+    /// daemon (and its durable layout) live on. Both facts are known only host-side (`panes` from
+    /// the registry, `attached` from the dispatch layer), so this runs there, once, after both are
+    /// filled — never in the wire producer alone, or the in-process arm would drift from it.
+    #[must_use]
+    pub fn is_listable(&self) -> bool {
+        self.panes > 0 || self.attached > 0
+    }
+}
+
+/// `skip_serializing_if` predicate for [`SessionInfo::attached`] / [`SessionInfo::panes`] — a
+/// `usize` has no `is_empty`, so the "omit the default" rule the other enrichment fields get from
+/// `Option`/`Vec` is spelled out here, keeping a paneless / unattached session byte-identical to
+/// the pre-enrichment wire shape.
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_zero(n: &usize) -> bool {
     *n == 0
@@ -1044,6 +1078,10 @@ impl SessionRegistry {
             .map(|session| SessionInfo {
                 name: session.name().to_owned(),
                 windows: session.windows().len(),
+                // Live count; the structural builder cannot take the pool locks it needs, so it
+                // is 0 here and filled by `session_infos_live` (which locks the pools off the
+                // registry lock). A registry-only list therefore reports every session paneless.
+                panes: 0,
                 default: session.name() == default,
                 cwd: None,
                 branch: None,
@@ -1115,6 +1153,13 @@ impl SessionRegistry {
             .iter()
             .map(|pools| Self::window_pids(pools))
             .collect();
+        // Each session's live pane count across ALL its windows — the signal that tells a resting
+        // empty anchor (0) from a working session (see [`SessionInfo::is_listable`]). Same pool
+        // locks as `window_pids`, each on its own, never nested with the registry lock.
+        let pane_counts: Vec<usize> = window_pools
+            .iter()
+            .map(|pools| Self::window_pane_count(pools))
+            .collect();
 
         // Phase 3 (no lock): the git branch from each cwd, and the listening ports from each
         // session's pids via ONE shared `/proc` scan (one pass for the whole list) — but ONLY when
@@ -1125,12 +1170,13 @@ impl SessionRegistry {
         } else {
             crate::ports::ProcScan::default()
         };
-        for ((info, cwd), pids) in infos.iter_mut().zip(cwds).zip(pids) {
+        for (((info, cwd), pids), panes) in infos.iter_mut().zip(cwds).zip(pids).zip(pane_counts) {
             if let Some(cwd) = cwd {
                 info.branch = crate::git::branch(&cwd);
                 info.cwd = Some(cwd.to_string_lossy().into_owned());
             }
             info.ports = scan.listening_ports(&pids);
+            info.panes = panes;
         }
         infos
     }
@@ -1158,6 +1204,22 @@ impl SessionRegistry {
                     .collect::<Vec<_>>()
             })
             .collect()
+    }
+
+    /// The total pane count across `pools` (a session's windows) — the STRUCTURAL count (every
+    /// pooled pane, whether or not its child still has a live pid), so a session whose processes
+    /// have exited but whose panes remain still reads as non-empty. Each pool locked on its OWN,
+    /// never nested with the registry lock, exactly like [`window_pids`](Self::window_pids).
+    fn window_pane_count(pools: &[Arc<Mutex<Workspace>>]) -> usize {
+        pools
+            .iter()
+            .map(|pool| {
+                pool.lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .panes()
+                    .len()
+            })
+            .sum()
     }
 
     /// Resolve a session by NAME. `None` if no session carries it.
@@ -1569,6 +1631,37 @@ mod tests {
         }
     }
 
+    /// The listability rule ([`SessionInfo::is_listable`]) shows a session iff it holds a pane OR a
+    /// client is attached — so the resting empty anchor (neither) is hidden while an empty session a
+    /// client is viewing still lists. Deterministic + revert-proof: flipping the rule's `||` to `&&`
+    /// would drop the attached-empty case, and dropping the pane check would drop a working session.
+    #[test]
+    fn is_listable_shows_working_or_attached_and_hides_the_resting_anchor() {
+        let si = |panes: usize, attached: usize| SessionInfo {
+            name: "s".to_owned(),
+            windows: 1,
+            panes,
+            default: false,
+            cwd: None,
+            branch: None,
+            ports: Vec::new(),
+            attached,
+        };
+        assert!(si(1, 0).is_listable(), "a working session lists");
+        assert!(si(3, 2).is_listable(), "a working, watched session lists");
+        // tmux-superior: an EMPTY session a client is attached to still lists, so the client can
+        // see where it is — a state tmux cannot represent (an empty session cannot exist there).
+        assert!(
+            si(0, 1).is_listable(),
+            "an empty but attached session lists"
+        );
+        // The resting anchor: no pane, nobody attached — hidden, matching `tmux ls` at rest.
+        assert!(
+            !si(0, 0).is_listable(),
+            "the resting empty anchor is hidden"
+        );
+    }
+
     /// `session_infos_live` carries EACH session's own live cwd and git branch, derived host-side
     /// from the current window's first pane. A pane in a (fake) repo reports its branch; a pane in a
     /// plain dir reports a cwd but no branch — proving the derivation is per-session, not global.
@@ -1605,6 +1698,10 @@ mod tests {
             .iter()
             .find(|i| i.default)
             .expect("the default session");
+        assert_eq!(
+            def_info.panes, 1,
+            "session_infos_live counts the default session's one live pane",
+        );
         assert_eq!(
             def_info.branch.as_deref(),
             Some("slice2"),

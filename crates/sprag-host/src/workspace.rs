@@ -788,6 +788,11 @@ impl ExternalIntrospect for WorkspaceExternal {
                         info.attached = attachments.attached_count(&info.name);
                     }
                 }
+                // Drop the resting empty anchor (and any paneless, unattached session): a human
+                // session list shows working sessions + those a client is viewing, matching
+                // `tmux ls` at rest. Applied HERE, after `attached` is filled, because that is the
+                // one place both facts the rule needs are known (see `SessionInfo::is_listable`).
+                infos.retain(SessionInfo::is_listable);
                 match serde_json::to_value(&infos) {
                     Ok(json) => Some(IntrospectValue::Json(json)),
                     Err(error) => {
@@ -1493,9 +1498,11 @@ mod tests {
     }
 
     /// The session set is discoverable, so a client learns what it may name in `session` by
-    /// ASKING rather than by guessing — and learns where an unscoped request lands.
+    /// ASKING rather than by guessing — and learns where an unscoped request lands. A RESTING
+    /// empty anchor is HIDDEN (no pane, nobody attached), matching `tmux ls` at rest while the
+    /// daemon lives on; see [`SessionInfo::is_listable`].
     #[test]
-    fn the_sessions_slot_lists_every_session_and_names_the_default() {
+    fn the_sessions_slot_lists_working_sessions_and_hides_the_resting_anchor() {
         // Compare only the STRUCTURAL discovery fields — a session's live cwd / git branch (Slice 2)
         // depend on where the birth pane happens to run and on the host's git state, which is
         // orthogonal to what this slot promises (which sessions exist, and which is the default).
@@ -1517,10 +1524,20 @@ mod tests {
 
         let reg = registry();
         let (mut ext, _rev) = control(&reg);
+        // At boot the only session is the empty anchor "0": no pane, nobody attached, so the human
+        // list is empty — the phantom "0" that `sprag ls` used to print at rest is gone.
+        assert_eq!(
+            structural(ext.query(SESSIONS_SLOT)),
+            Vec::<(String, u64, bool)>::new(),
+            "the resting empty anchor is not listed",
+        );
+
+        // A pane makes the default session real: now it lists, and it still names itself default.
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Null).unwrap();
         assert_eq!(
             structural(ext.query(SESSIONS_SLOT)),
             vec![("0".to_owned(), 1, true)],
-            "at boot: one session, and it is where an unscoped request goes",
+            "a session holding a pane lists, and it is where an unscoped request goes",
         );
 
         ext.invoke(
@@ -1531,7 +1548,7 @@ mod tests {
         assert_eq!(
             structural(ext.query(SESSIONS_SLOT)),
             vec![("0".to_owned(), 1, true), ("work".to_owned(), 1, false)],
-            "the new session is listed, and creating it moved the default for nobody",
+            "the new session (born with a pane) is listed; creating it moved the default for nobody",
         );
 
         // This slot is deliberately registry-WIDE: a WORK-scoped surface still sees EVERY
@@ -1543,6 +1560,45 @@ mod tests {
             work.query(SESSIONS_SLOT),
             ext.query(SESSIONS_SLOT),
             "the sessions list does not narrow to the caller's own scope",
+        );
+    }
+
+    /// The tmux-SUPERIOR half of the listing rule: an EMPTY session a client is attached to still
+    /// lists (so the client can see where it is), even though it holds no pane. tmux cannot reach
+    /// this state at all — killing the last pane there destroys the session — so honestly showing it
+    /// is a refinement, not a divergence. Proves the filter reads the HOST-filled `attached`, not
+    /// just the registry's pane count.
+    #[test]
+    fn an_empty_session_a_client_is_attached_to_still_lists() {
+        let session_names = |value: Option<IntrospectValue>| -> Vec<String> {
+            let Some(IntrospectValue::Json(Value::Array(items))) = value else {
+                panic!("the sessions slot answers with a JSON array");
+            };
+            items
+                .iter()
+                .map(|s| s["name"].as_str().unwrap().to_owned())
+                .collect()
+        };
+
+        let reg = registry(); // the only session is the empty anchor "0"
+        let attachments = Arc::new(Mutex::new(crate::AttachmentRegistry::default()));
+        {
+            let mut a = lock(&attachments);
+            let conn = pinion_rpc::ConnId::allocate();
+            a.hello(conn, "gui".to_owned());
+            a.attach(conn, "0".to_owned()); // a client is viewing the empty anchor
+        }
+        let ext = WorkspaceExternal::new(
+            Arc::clone(&reg),
+            SessionScope::unscoped(&reg),
+            Arc::new(SceneRevision::new()),
+            None,
+            Some(attachments),
+        );
+        assert_eq!(
+            session_names(ext.query(SESSIONS_SLOT)),
+            vec!["0".to_owned()],
+            "an empty session a client is attached to lists (the anchor would otherwise hide)",
         );
     }
 

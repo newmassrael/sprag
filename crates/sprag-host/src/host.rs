@@ -1049,7 +1049,13 @@ impl HostClient for Host {
     /// even though this arm only renders that one: the list's whole purpose is to enumerate the
     /// scopes a switcher could name.
     fn sessions(&self) -> Vec<SessionInfo> {
-        SessionRegistry::session_infos_live(&self.registry)
+        let mut infos = SessionRegistry::session_infos_live(&self.registry);
+        // Same human-facing filter the wire `sessions` slot applies (the SSOT rule), so the
+        // in-process arm and the daemon cannot disagree on whether the resting anchor lists. An
+        // in-process host has no attachment map, so `attached` stays 0 and a session lists on its
+        // pane count alone — the empty anchor drops, a working session stays.
+        infos.retain(SessionInfo::is_listable);
+        infos
     }
 
     /// The in-process arm renders the DEFAULT session (see [`Host::workspace`]), so that is the
@@ -1106,6 +1112,26 @@ mod tests {
         command.arg("cat");
         command.env("TERM", "dumb");
         command
+    }
+
+    /// The in-process `Host::sessions()` applies the SAME listability filter the wire `sessions`
+    /// slot does (the SSOT rule), so the two arms cannot disagree on the resting anchor: a fresh
+    /// host's empty anchor is hidden, and a session that holds a pane lists.
+    #[test]
+    fn sessions_hides_the_empty_anchor_and_lists_a_worked_session() {
+        let host = Host::new((40, 6));
+        assert!(
+            host.sessions().is_empty(),
+            "a fresh host's empty anchor holds no pane and is not listed",
+        );
+        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+            .unwrap();
+        let names: Vec<String> = host.sessions().into_iter().map(|s| s.name).collect();
+        assert_eq!(
+            names,
+            vec!["0".to_owned()],
+            "a session holding a pane lists"
+        );
     }
 
     #[test]

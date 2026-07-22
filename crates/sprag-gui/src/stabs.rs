@@ -860,6 +860,7 @@ mod tests {
                 .map(|name| SessionInfo {
                     name: name.clone(),
                     windows: 1,
+                    panes: 1,
                     default: false,
                     cwd: None,
                     branch: None,
