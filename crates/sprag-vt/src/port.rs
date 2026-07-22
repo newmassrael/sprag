@@ -1579,18 +1579,22 @@ impl Screen {
         }
         let cols = self.cols as usize;
         let shift = height - n; // rows that survive and move up by `n`
-        // Shift up: move each surviving row `n` positions toward the top. Walk top->bottom
-        // so a source row is read before a later iteration overwrites it.
-        for i in 0..shift {
-            let (dst, src) = ((top + i) as usize, (top + i + n) as usize);
-            for c in 0..cols {
-                self.cells[dst * cols + c] = self.cells[src * cols + c].clone();
-            }
-            self.wrapped[dst] = self.wrapped[src];
-            self.marks[dst] = self.marks[src];
-            self.generations[dst] = generation;
+        // Move the surviving rows up by `n` as an in-place slice ROTATION, not a per-cell clone:
+        // each [`Cell`] owns a heap `cluster`, so cloning every cell of every scrolled line made a
+        // bulk scroll O(cells) heap allocations — a throughput wall on `cat`-style output (a screen
+        // of continuous text scrolled ~74 KiB/s). A rotation is memmove-cheap and allocates nothing.
+        // The already-evicted top `n` rows land at the bottom, to be blanked next.
+        let region = (top as usize * cols)..((bottom as usize + 1) * cols);
+        self.cells[region].rotate_left(n as usize * cols);
+        // The per-row metadata rotates in lockstep (cheap Copy scalars).
+        self.wrapped[top as usize..=bottom as usize].rotate_left(n as usize);
+        self.marks[top as usize..=bottom as usize].rotate_left(n as usize);
+        // The surviving rows are dirty at the new generation.
+        for r in top..top + shift {
+            self.generations[r as usize] = generation;
         }
-        // Blank the `n` rows vacated at the bottom of the region.
+        // Blank the `n` rows vacated at the bottom of the region (this also resets their
+        // wrapped/mark/generation, overwriting whatever the rotation parked there).
         for i in 0..n {
             self.clear_row(top + shift + i, generation);
         }
@@ -1619,17 +1623,16 @@ impl Screen {
         // An image's anchor scrolls down with the region (mirror of [`Self::scroll_region_up`]).
         self.shift_images_down(top, bottom, n);
         let cols = self.cols as usize;
-        let shift = height - n; // rows that survive and move down by `n`
-        // Shift down: move each surviving row `n` positions toward the bottom. Walk
-        // bottom->top so a source row is read before a later iteration overwrites it.
-        for i in 0..shift {
-            let (dst, src) = ((bottom - i) as usize, (bottom - n - i) as usize);
-            for c in 0..cols {
-                self.cells[dst * cols + c] = self.cells[src * cols + c].clone();
-            }
-            self.wrapped[dst] = self.wrapped[src];
-            self.marks[dst] = self.marks[src];
-            self.generations[dst] = generation;
+        // Move the surviving rows down by `n` as an in-place slice ROTATION (mirror of
+        // [`Self::scroll_region_up`] — no per-cell clone, so a reverse-scroll allocates nothing).
+        // The bottom `n` rows wrap to the top, to be blanked next.
+        let region = (top as usize * cols)..((bottom as usize + 1) * cols);
+        self.cells[region].rotate_right(n as usize * cols);
+        self.wrapped[top as usize..=bottom as usize].rotate_right(n as usize);
+        self.marks[top as usize..=bottom as usize].rotate_right(n as usize);
+        // The surviving rows (now at `[top + n, bottom]`) are dirty at the new generation.
+        for r in (top + n)..=bottom {
+            self.generations[r as usize] = generation;
         }
         // Blank the `n` rows vacated at the top of the region.
         for i in 0..n {

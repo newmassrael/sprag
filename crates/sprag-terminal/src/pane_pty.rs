@@ -826,6 +826,22 @@ mod tests {
         assert!(pty.is_eof(), "child did not reach EOF in time");
     }
 
+    /// Wait (bounded) until the raw capture has latched `truncated` — the condition a truncation
+    /// test actually asserts. This latches as soon as the reader has drained past the cap, which is
+    /// bounded by draining ~256 KiB; it does NOT wait for the child to exit / EOF (which additionally
+    /// waits on the whole pipeline collapsing via `SIGPIPE` and the shell reaping — that lag
+    /// occasionally exceeds a fixed bound, and it is not what the assertions check).
+    fn wait_truncated(pty: &PanePty) {
+        let start = Instant::now();
+        while !lock(&pty.raw_output).truncated && start.elapsed() < Duration::from_secs(5) {
+            sleep(Duration::from_millis(5));
+        }
+        assert!(
+            lock(&pty.raw_output).truncated,
+            "capture did not reach the cap in time",
+        );
+    }
+
     /// A child that exits without ever writing a byte still wakes the host, and EOF
     /// is published by the time that wake lands.
     ///
@@ -969,14 +985,23 @@ mod tests {
 
     #[test]
     fn raw_output_truncates_past_the_cap() {
-        // Emit one more KiB than the cap with `yes` piped through `head -c`.
+        // Emit one more KiB than the cap. `head -c … /dev/zero` (NUL bytes) is DELIBERATE: this
+        // exercises the reader -> capture truncation path, and the capture stores RAW bytes before
+        // the emulator sees them, so the byte value is incidental. NUL parses to a no-op in the
+        // emulator, which keeps the drain fast and the cap latch deterministic — an over-cap stream
+        // of PRINTABLE text is dominated by the per-cell print cost (a separately tracked emulator
+        // throughput debt), which raced this test's fixed timeout. What is under test is only that
+        // the capture bounds at the cap and keeps the HEAD bytes.
         let want = RAW_CAPTURE_CAP + 1024;
         let mut command = CommandBuilder::new("/bin/sh");
         command.arg("-c");
-        command.arg(format!("yes a | tr -d '\\n' | head -c {want}"));
+        command.arg(format!("head -c {want} /dev/zero"));
         command.env("TERM", "dumb");
         let pty = PanePty::spawn(command, 80, 24).expect("spawn a pty");
-        wait_eof(&pty);
+        // Wait for the CONDITION under test (the cap latched), not for the child to exit — the cap
+        // latches during draining, deterministically, whereas EOF additionally waits on the pipeline
+        // collapsing, which occasionally loses a fixed-timeout race.
+        wait_truncated(&pty);
 
         let RawOutput { bytes, truncated } = pty.raw_output();
         assert!(
@@ -988,7 +1013,7 @@ mod tests {
             RAW_CAPTURE_CAP,
             "capture is bounded at the cap"
         );
-        assert!(bytes.iter().all(|&b| b == b'a'), "the head bytes are kept");
+        assert!(bytes.iter().all(|&b| b == 0), "the head bytes are kept");
     }
 
     /// A1 resize debounce: a rapid burst of distinct sizes (a continuous drag)
