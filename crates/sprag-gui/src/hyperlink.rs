@@ -839,7 +839,10 @@ mod tests {
                 &mut screen,
                 b"\x1b]8;;https://ok\x1b\\ABCDEF\x1b]8;;\x1b\\gh",
             );
-            let buffer = sprag_grid::project(sprag_vt::VtPort::screen(&screen));
+            let buffer = sprag_grid::project(
+                sprag_vt::VtPort::screen(&screen),
+                sprag_vt::VtPort::palette(&screen),
+            );
             reconcile_pane_hyperlinks(0, &buffer, MouseProtocol::None);
 
             let mut oracle = HyperlinkOracle {
@@ -879,7 +882,10 @@ mod tests {
         Owner::new().run(|| {
             let mut screen = sprag_vt::Emulator::new(20, 1);
             sprag_vt::VtPort::advance(&mut screen, b"\x1b]8;;https://ex\x1b\\link\x1b]8;;\x1b\\");
-            let buffer = sprag_grid::project(sprag_vt::VtPort::screen(&screen));
+            let buffer = sprag_grid::project(
+                sprag_vt::VtPort::screen(&screen),
+                sprag_vt::VtPort::palette(&screen),
+            );
             reconcile_pane_hyperlinks(1, &buffer, MouseProtocol::None);
             let mut oracle = HyperlinkOracle {
                 state: use_pane_hover(1),
@@ -985,7 +991,10 @@ mod tests {
             // A plain screen with NO links — a report must not need a link under the cursor.
             let mut screen = sprag_vt::Emulator::new(8, 3);
             sprag_vt::VtPort::advance(&mut screen, b"hello");
-            let buffer = sprag_grid::project(sprag_vt::VtPort::screen(&screen));
+            let buffer = sprag_grid::project(
+                sprag_vt::VtPort::screen(&screen),
+                sprag_vt::VtPort::palette(&screen),
+            );
             reconcile_pane_hyperlinks(3, &buffer, MouseProtocol::Click); // the child is tracking
             let mut oracle = HyperlinkOracle {
                 state: use_pane_hover(3),
@@ -1033,7 +1042,10 @@ mod tests {
         Owner::new().run(|| {
             let mut screen = sprag_vt::Emulator::new(20, 1);
             sprag_vt::VtPort::advance(&mut screen, b"\x1b]8;;https://ex\x1b\\link\x1b]8;;\x1b\\");
-            let buffer = sprag_grid::project(sprag_vt::VtPort::screen(&screen));
+            let buffer = sprag_grid::project(
+                sprag_vt::VtPort::screen(&screen),
+                sprag_vt::VtPort::palette(&screen),
+            );
             reconcile_pane_hyperlinks(4, &buffer, MouseProtocol::None); // NOT tracking
             let mut oracle = HyperlinkOracle {
                 state: use_pane_hover(4),
@@ -1119,7 +1131,10 @@ mod tests {
     fn oracle_at(slot: usize, proto: MouseProtocol) -> HyperlinkOracle {
         let mut screen = sprag_vt::Emulator::new(8, 3);
         sprag_vt::VtPort::advance(&mut screen, b"........");
-        let buffer = sprag_grid::project(sprag_vt::VtPort::screen(&screen));
+        let buffer = sprag_grid::project(
+            sprag_vt::VtPort::screen(&screen),
+            sprag_vt::VtPort::palette(&screen),
+        );
         reconcile_pane_hyperlinks(slot, &buffer, proto);
         HyperlinkOracle {
             state: use_pane_hover(slot),

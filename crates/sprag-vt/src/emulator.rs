@@ -17,7 +17,7 @@ use std::sync::Arc;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use termwiz::cell::{Blink, Intensity, Underline};
-use termwiz::color::ColorSpec;
+use termwiz::color::{ColorSpec, RgbColor, SrgbaTuple};
 use termwiz::escape::apc::{
     KittyImage, KittyImageCompression, KittyImageData, KittyImageDelete, KittyImageFormat,
     KittyImageTransmit,
@@ -26,7 +26,7 @@ use termwiz::escape::csi::{
     CSI, Cursor as CsiCursor, CursorStyle, DecPrivateMode, DecPrivateModeCode, Device, Edit,
     EraseInDisplay, EraseInLine, Keyboard, KittyKeyboardMode, Mode, Sgr, XtSmGraphicsItem,
 };
-use termwiz::escape::osc::{FinalTermSemanticPrompt, Selection};
+use termwiz::escape::osc::{ColorOrQuery, DynamicColorNumber, FinalTermSemanticPrompt, Selection};
 use termwiz::escape::parser::Parser;
 use termwiz::escape::{
     Action, ControlCode, Esc, EscCode, OperatingSystemCommand, Sixel, SixelData,
@@ -35,8 +35,8 @@ use termwiz::escape::{
 use crate::port::{
     Attrs, Cell, ClipboardQuery, ClipboardTarget, ClipboardTargets, ClipboardWrite, Color, Cursor,
     CursorShape, Hyperlink, Image, InputModes, KittyKeyboardFlags, MouseEncoding, MouseProtocol,
-    Notification, PromptMark, Rgb, Screen, ScreenKind, ShellState, UnderlineStyle, VtPort, Width,
-    char_columns,
+    Notification, Palette, PromptMark, Rgb, Screen, ScreenKind, ShellState, UnderlineStyle, VtPort,
+    Width, char_columns,
 };
 
 /// The cursor state DECSC (`ESC 7` / `CSI s`) saves and DECRC (`ESC 8` / `CSI u`) restores:
@@ -94,9 +94,16 @@ pub struct Emulator {
     /// ([`KITTY_KEYBOARD_SUPPORTED`]); the CURRENT flags exposed via [`VtPort::input_modes`] are
     /// the top of the stack (or empty). Bounded by [`KITTY_STACK_CAP`] against a runaway pusher.
     kitty_kbd_stack: Vec<u8>,
+    /// The terminal's live colour [`Palette`] — the 256 indexed slots plus the dynamic default
+    /// foreground / background / cursor colours. Mutated by the OSC colour commands (`OSC 4 / 10 /
+    /// 11 / 12` set, `OSC 104 / 110 / 111 / 112` reset) and read by the projection to resolve each
+    /// cell's [`Color`]. Terminal-wide, so it lives here (not on a [`Screen`]) and survives the
+    /// whole-screen swap an alt-screen transition performs. Exposed via [`VtPort::palette`].
+    palette: Palette,
     /// Bytes the terminal owes the child in reply to a query it made (the device-response channel:
-    /// currently the Kitty `CSI ? u` flags query). Drained by [`VtPort::take_responses`] after each
-    /// batch and written back to the PTY. Not row damage — carries no cells.
+    /// the Kitty `CSI ? u` flags query, DA/DSR, and OSC colour queries `OSC 4 / 10 / 11 / 12 ; ?`).
+    /// Drained by [`VtPort::take_responses`] after each batch and written back to the PTY. Not row
+    /// damage — carries no cells.
     responses: Vec<u8>,
     /// The child's self-reported window TITLE (`OSC 0` / `OSC 2`), `None` until it
     /// sets one. Exposed via [`VtPort::title`]; a shell's `PROMPT_COMMAND` (or vim,
@@ -247,6 +254,7 @@ impl Emulator {
             attrs: Attrs::default(),
             input_modes: InputModes::default(),
             kitty_kbd_stack: Vec::new(),
+            palette: Palette::xterm_default(),
             responses: Vec::new(),
             title: None,
             notification: None,
@@ -665,8 +673,85 @@ impl Emulator {
                 });
                 self.set_hyperlink(link);
             }
+            // OSC 10 / 11 (/ 12) — the DYNAMIC colours: the default foreground, background, and
+            // cursor. `ChangeDynamicColors(first, colors)` applies the colour list to CONSECUTIVE
+            // dynamic numbers starting at `first` (xterm's `OSC 10 ; fg ; bg ; cursor` batch), each
+            // entry a SET (a colour) or a QUERY (`?` -> reply the current value on the device-response
+            // channel, like DA / DSR). Stage 1 owns the default foreground (10) + background (11) —
+            // the highest-value pair (an app queries `OSC 11 ; ?` to detect a dark vs light
+            // background and pick its theme, and sets 10 / 11 to theme the terminal). The cursor (12)
+            // and the exotic mouse / highlight / Tektronix numbers (13-19) are out of subset.
+            OperatingSystemCommand::ChangeDynamicColors(first, colors) => {
+                self.change_dynamic_colors(*first, colors);
+            }
+            // OSC 110 / 111 (/ 112) — reset a dynamic colour to its xterm default.
+            OperatingSystemCommand::ResetDynamicColor(which) => {
+                self.reset_dynamic_color(*which);
+            }
             _ => {}
         }
+    }
+
+    /// Apply an `OSC 10 / 11 / …` dynamic-colour command: the colours in `colors` bind to the
+    /// consecutive dynamic numbers `first, first + 1, …` (the xterm batch form). Each entry either
+    /// SETS the colour (mutating the palette's default foreground / background) or, for a `?`,
+    /// QUERIES it (pushing an `OSC <n> ; rgb:… ST` reply onto the device-response channel the reader
+    /// loop drains back to the child). Numbers outside the honoured set (12+ this stage) are dropped
+    /// — a set is a silent no-op, a query yields no reply (the app falls back to its own default).
+    fn change_dynamic_colors(&mut self, first: DynamicColorNumber, colors: &[ColorOrQuery]) {
+        let base = first as u8;
+        for (offset, entry) in colors.iter().enumerate() {
+            // A pathologically long list can never address a real dynamic number past 19, so a
+            // number that overflows `u8` is simply out of subset (dropped), never a panic.
+            let Some(number) = u8::try_from(offset).ok().and_then(|o| base.checked_add(o)) else {
+                break;
+            };
+            match entry {
+                ColorOrQuery::Color(spec) => {
+                    let rgb = srgba_to_rgb(*spec);
+                    match number {
+                        10 => self.palette.set_default_fg(rgb),
+                        11 => self.palette.set_default_bg(rgb),
+                        _ => {}
+                    }
+                }
+                ColorOrQuery::Query => {
+                    let current = match number {
+                        10 => Some(self.palette.default_fg()),
+                        11 => Some(self.palette.default_bg()),
+                        _ => None,
+                    };
+                    if let Some(rgb) = current {
+                        self.push_color_reply(&format!("{number}"), rgb);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Reset an `OSC 110 / 111 / …` dynamic colour to its xterm default. Out-of-subset numbers
+    /// (12+ this stage) are dropped.
+    fn reset_dynamic_color(&mut self, which: DynamicColorNumber) {
+        match which as u8 {
+            10 => self.palette.reset_default_fg(),
+            11 => self.palette.reset_default_bg(),
+            _ => {}
+        }
+    }
+
+    /// Push a colour-query reply onto the device-response channel: `ESC ] <ps> ; rgb:RRRR/GGGG/BBBB
+    /// ST`, where `ps` is the OSC selector (`"10"` / `"11"` for a dynamic colour, `"4;<i>"` for a
+    /// palette index) and each 8-bit channel is scaled to xterm's 16-bit form by byte-replication
+    /// (`0xcd` -> `0xcdcd`). Terminated with `ST` (`ESC \`), the form every consumer accepts. The
+    /// reader loop drains [`Self::responses`] back to the PTY, exactly as for the DA / DSR replies.
+    fn push_color_reply(&mut self, ps: &str, rgb: Rgb) {
+        let reply = format!(
+            "\x1b]{ps};rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}\x1b\\",
+            r = rgb.r,
+            g = rgb.g,
+            b = rgb.b,
+        );
+        self.responses.extend_from_slice(reply.as_bytes());
     }
 
     /// Apply an OSC-8 hyperlink control: `Some((uri, id))` opens a link (subsequent printed cells
@@ -1390,6 +1475,10 @@ impl VtPort for Emulator {
         &self.screen
     }
 
+    fn palette(&self) -> &Palette {
+        &self.palette
+    }
+
     fn input_modes(&self) -> InputModes {
         // The Kitty keyboard flags live in the negotiation stack (their SSOT); overlay the current
         // top onto the mode flags the key encoder reads.
@@ -1494,6 +1583,14 @@ fn sel_to_targets(sel: &Selection) -> ClipboardTargets {
         clipboard: sel.contains(Selection::CLIPBOARD) || sel.contains(Selection::SELECT),
         primary: sel.contains(Selection::PRIMARY),
     }
+}
+
+/// Convert a termwiz OSC colour spec (`SrgbaTuple`, normalized sRGB floats) to the sprag-owned
+/// 8-bit [`Rgb`] the palette stores, via termwiz's own `RgbColor` quantization so a set / query
+/// round-trips to the value termwiz would render.
+fn srgba_to_rgb(spec: SrgbaTuple) -> Rgb {
+    let (r, g, b) = RgbColor::from(spec).to_tuple_rgb8();
+    Rgb::new(r, g, b)
 }
 
 /// Reduce an OSC 52 READ [`Selection`] to the single [`ClipboardTarget`] a reply carries. A reply
@@ -3575,6 +3672,83 @@ mod tests {
             "a query is not a paint"
         );
         assert!(!em.take_responses().is_empty(), "but it did answer");
+    }
+
+    /// OSC 11 sets the default BACKGROUND colour: the palette's dynamic background changes, so a
+    /// `Color::Default` background cell now resolves to it (proven end-to-end at the projection).
+    #[test]
+    fn osc_11_sets_the_default_background() {
+        let mut em = Emulator::new(8, 2);
+        assert_eq!(
+            em.palette().default_bg(),
+            Rgb::new(0x00, 0x00, 0x00),
+            "seed is xterm black"
+        );
+        em.advance(b"\x1b]11;rgb:ff/00/00\x1b\\");
+        assert_eq!(em.palette().default_bg(), Rgb::new(0xff, 0x00, 0x00));
+    }
+
+    /// OSC 10 sets the default FOREGROUND colour.
+    #[test]
+    fn osc_10_sets_the_default_foreground() {
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b]10;rgb:12/34/56\x1b\\");
+        assert_eq!(em.palette().default_fg(), Rgb::new(0x12, 0x34, 0x56));
+    }
+
+    /// A `?` OSC 11 QUERY answers the current background on the device-response channel in xterm's
+    /// `rgb:RRRR/GGGG/BBBB` form (each 8-bit channel byte-replicated to 16-bit). Revert-proof: the
+    /// reply tracks the LIVE value — after a set it reports the new colour, not the xterm seed.
+    #[test]
+    fn osc_11_query_answers_the_live_background() {
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b]11;?\x1b\\");
+        assert_eq!(
+            em.take_responses(),
+            b"\x1b]11;rgb:0000/0000/0000\x1b\\",
+            "the seed background is black"
+        );
+        // Set it, then re-query: the reply is the NEW colour.
+        em.advance(b"\x1b]11;rgb:ab/cd/ef\x1b\\\x1b]11;?\x1b\\");
+        assert_eq!(em.take_responses(), b"\x1b]11;rgb:abab/cdcd/efef\x1b\\");
+    }
+
+    /// OSC 10 query mirrors OSC 11: the seed default foreground is xterm light grey (`e5e5e5`).
+    #[test]
+    fn osc_10_query_answers_the_live_foreground() {
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b]10;?\x1b\\");
+        assert_eq!(em.take_responses(), b"\x1b]10;rgb:e5e5/e5e5/e5e5\x1b\\");
+    }
+
+    /// OSC 111 resets the default background to the xterm seed (black), undoing an OSC 11 set.
+    /// Revert-proof: a hard-coded pass would fail the post-set assertion above the reset.
+    #[test]
+    fn osc_111_resets_the_background_to_the_xterm_default() {
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b]11;rgb:ff/00/00\x1b\\");
+        assert_eq!(em.palette().default_bg(), Rgb::new(0xff, 0x00, 0x00));
+        em.advance(b"\x1b]111\x1b\\");
+        assert_eq!(
+            em.palette().default_bg(),
+            Rgb::new(0x00, 0x00, 0x00),
+            "OSC 111 restores xterm black"
+        );
+    }
+
+    /// An OSC colour command carries no cells, so — like a DA / DSR query — it must not stamp ROW
+    /// DAMAGE. (A colour CHANGE re-colours via the next projection, driven by the PTY-output
+    /// `on_dirty`, not a cell-generation bump.)
+    #[test]
+    fn an_osc_color_command_stamps_no_row_damage() {
+        let mut em = Emulator::new(8, 2);
+        let before = em.screen().row_generation(0).unwrap();
+        em.advance(b"\x1b]11;rgb:ff/00/00\x1b\\\x1b]10;?\x1b\\");
+        assert_eq!(
+            em.screen().row_generation(0).unwrap(),
+            before,
+            "a colour op is not a paint"
+        );
     }
 
     /// XtSmGraphics completes the Sixel handshake the Primary DA (`4`) opens: a colour-register query

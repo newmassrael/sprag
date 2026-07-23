@@ -76,6 +76,195 @@ pub enum Color {
     Rgb(Rgb),
 }
 
+/// Which default a [`Color::Default`] cell resolves to — foreground or
+/// background have distinct defaults (OSC 10 vs OSC 11).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ColorTarget {
+    Foreground,
+    Background,
+}
+
+/// The terminal's live colour palette: the 256 indexed slots plus the three
+/// dynamic colours (default foreground / background / cursor). This is the
+/// SSOT the OSC colour commands mutate — `OSC 4` a palette index, `OSC 10 / 11
+/// / 12` the dynamic colours, `OSC 104 / 110 / 111 / 112` the resets — and it
+/// is what a colour QUERY (`OSC 4 ; i ; ?`, `OSC 10 ; ?`, …) reports back.
+///
+/// The palette lives on the [`Emulator`](crate::emulator::Emulator), NOT on a
+/// [`Screen`]: it is a single terminal-wide state shared by the main and
+/// alternate buffers (an alt-screen app inherits the terminal's palette, and an
+/// `OSC 4` from either buffer is one global change), so it must survive the
+/// whole-[`Screen`] swap the alt-screen transition performs.
+///
+/// Cells store their colour SYMBOLICALLY ([`Color::Indexed`] / [`Color::Default`]),
+/// never a resolved RGB, so a palette change RE-COLOURS every existing cell that
+/// uses it — the projection (sprag-grid's `project`, host-side) resolves each cell
+/// against the live palette every frame. The seed values and resolution formulas
+/// are the standard xterm palette, matching pinion's `Palette` byte-for-byte, so
+/// an un-mutated palette projects identically to the pre-OSC-colour behaviour.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Palette {
+    /// The 256 indexed slots (`0..=255`), each an explicit RGB so `OSC 4` can
+    /// override ANY of them and `OSC 104` restores the xterm seed.
+    colors: [Rgb; 256],
+    default_fg: Rgb,
+    default_bg: Rgb,
+    cursor: Rgb,
+}
+
+impl Palette {
+    /// The standard xterm 16-colour ANSI base table (`0..=7` normal, `8..=15`
+    /// bright) — the conventional default, identical to pinion's `XTERM_ANSI16`.
+    const XTERM_ANSI16: [Rgb; 16] = [
+        Rgb::new(0x00, 0x00, 0x00), // 0  black
+        Rgb::new(0xcd, 0x00, 0x00), // 1  red
+        Rgb::new(0x00, 0xcd, 0x00), // 2  green
+        Rgb::new(0xcd, 0xcd, 0x00), // 3  yellow
+        Rgb::new(0x00, 0x00, 0xee), // 4  blue
+        Rgb::new(0xcd, 0x00, 0xcd), // 5  magenta
+        Rgb::new(0x00, 0xcd, 0xcd), // 6  cyan
+        Rgb::new(0xe5, 0xe5, 0xe5), // 7  white (light grey)
+        Rgb::new(0x7f, 0x7f, 0x7f), // 8  bright black (grey)
+        Rgb::new(0xff, 0x00, 0x00), // 9  bright red
+        Rgb::new(0x00, 0xff, 0x00), // 10 bright green
+        Rgb::new(0xff, 0xff, 0x00), // 11 bright yellow
+        Rgb::new(0x5c, 0x5c, 0xff), // 12 bright blue
+        Rgb::new(0xff, 0x00, 0xff), // 13 bright magenta
+        Rgb::new(0x00, 0xff, 0xff), // 14 bright cyan
+        Rgb::new(0xff, 0xff, 0xff), // 15 bright white
+    ];
+
+    /// The standard-xterm value for palette index `i`: the 16 ANSI base colours
+    /// (`0..=15`), the 6x6x6 colour cube (`16..=231`), then the 24-step grayscale
+    /// ramp (`232..=255`). The `OSC 104` reset restores an index to this.
+    #[must_use]
+    pub const fn xterm_indexed(i: u8) -> Rgb {
+        match i {
+            0..=15 => Self::XTERM_ANSI16[i as usize],
+            16..=231 => {
+                let n = i - 16; // 0..=215
+                Rgb::new(
+                    Self::cube_channel(n / 36),
+                    Self::cube_channel((n / 6) % 6),
+                    Self::cube_channel(n % 6),
+                )
+            }
+            232..=255 => {
+                // 24 grays: level = 8 + step*10  ->  8, 18, …, 238.
+                let level = 8 + (i - 232) * 10;
+                Rgb::new(level, level, level)
+            }
+        }
+    }
+
+    /// Map a cube axis step (`0..=5`) to its 8-bit channel value: `0` for step 0,
+    /// then `55 + step*40` (→ `95, 135, 175, 215, 255`) — the xterm cube formula.
+    const fn cube_channel(step: u8) -> u8 {
+        if step == 0 { 0 } else { 55 + step * 40 }
+    }
+
+    /// The conventional xterm palette: the standard 256 indexed colours, with
+    /// light-grey-on-black default foreground / background and a foreground-toned
+    /// cursor — the seed a fresh terminal ships with.
+    #[must_use]
+    pub fn xterm_default() -> Self {
+        let mut colors = [Rgb::new(0, 0, 0); 256];
+        let mut i = 0usize;
+        while i < 256 {
+            colors[i] = Self::xterm_indexed(i as u8);
+            i += 1;
+        }
+        Self {
+            colors,
+            default_fg: Self::XTERM_ANSI16[7],
+            default_bg: Self::XTERM_ANSI16[0],
+            cursor: Self::XTERM_ANSI16[7],
+        }
+    }
+
+    /// Resolve a cell [`Color`] to the concrete RGB a painter draws — the ONLY
+    /// place index / default resolution happens (the projection calls this per
+    /// cell). `Default` consults the per-target dynamic colour, `Indexed` the
+    /// palette slot, `Rgb` is used verbatim.
+    #[must_use]
+    pub fn resolve(&self, color: Color, target: ColorTarget) -> Rgb {
+        match color {
+            Color::Default => match target {
+                ColorTarget::Foreground => self.default_fg,
+                ColorTarget::Background => self.default_bg,
+            },
+            Color::Indexed(i) => self.colors[i as usize],
+            Color::Rgb(rgb) => rgb,
+        }
+    }
+
+    /// The current default foreground / background / cursor colour — the value an
+    /// `OSC 10 / 11 / 12 ; ?` query reports.
+    #[must_use]
+    pub const fn default_fg(&self) -> Rgb {
+        self.default_fg
+    }
+    #[must_use]
+    pub const fn default_bg(&self) -> Rgb {
+        self.default_bg
+    }
+    #[must_use]
+    pub const fn cursor(&self) -> Rgb {
+        self.cursor
+    }
+    /// The current colour of palette index `i` — the value an `OSC 4 ; i ; ?`
+    /// query reports.
+    #[must_use]
+    pub const fn indexed(&self, i: u8) -> Rgb {
+        self.colors[i as usize]
+    }
+
+    /// `OSC 10 / 11 / 12` set: replace the default foreground / background / cursor.
+    pub const fn set_default_fg(&mut self, rgb: Rgb) {
+        self.default_fg = rgb;
+    }
+    pub const fn set_default_bg(&mut self, rgb: Rgb) {
+        self.default_bg = rgb;
+    }
+    pub const fn set_cursor(&mut self, rgb: Rgb) {
+        self.cursor = rgb;
+    }
+    /// `OSC 4 ; i ; spec` set: override palette index `i`.
+    pub const fn set_indexed(&mut self, i: u8, rgb: Rgb) {
+        self.colors[i as usize] = rgb;
+    }
+
+    /// `OSC 110 / 111 / 112` reset: restore the default foreground / background /
+    /// cursor to the xterm seed.
+    pub fn reset_default_fg(&mut self) {
+        self.default_fg = Self::XTERM_ANSI16[7];
+    }
+    pub fn reset_default_bg(&mut self) {
+        self.default_bg = Self::XTERM_ANSI16[0];
+    }
+    pub fn reset_cursor(&mut self) {
+        self.cursor = Self::XTERM_ANSI16[7];
+    }
+    /// `OSC 104 ; i` reset: restore palette index `i` to its xterm value.
+    pub const fn reset_indexed(&mut self, i: u8) {
+        self.colors[i as usize] = Self::xterm_indexed(i);
+    }
+    /// `OSC 104` (no params) reset: restore the entire indexed palette.
+    pub fn reset_all_indexed(&mut self) {
+        let mut i = 0usize;
+        while i < 256 {
+            self.colors[i] = Self::xterm_indexed(i as u8);
+            i += 1;
+        }
+    }
+}
+
+impl Default for Palette {
+    fn default() -> Self {
+        Self::xterm_default()
+    }
+}
+
 /// The style of a cell's underline — the ECMA-48 SGR `4:x` vocabulary
 /// (`4:0`–`4:5` / `21`). Mirrors termwiz's `Underline` and pinion's
 /// `UnderlineStyle` one-for-one (same six variants) so the SGR parse and
@@ -1804,6 +1993,12 @@ pub trait VtPort {
     /// The current authoritative screen.
     fn screen(&self) -> &Screen;
 
+    /// The terminal's live colour [`Palette`] — the SSOT the OSC colour commands
+    /// mutate, read by the projection (sprag-grid's `project`) to resolve each cell's
+    /// [`Color`] to a concrete RGB. Terminal-wide (shared by the main and alt
+    /// screens), so it lives beside the emulator, not on a [`Screen`].
+    fn palette(&self) -> &Palette;
+
     /// The current input modes affecting key→PTY-byte encoding (DECCKM,
     /// …). Read by the sprag-owned key encoder (R2.6).
     fn input_modes(&self) -> InputModes;
@@ -1884,6 +2079,72 @@ mod tests {
         let mut e = Emulator::new(cols, rows);
         e.advance(bytes.as_bytes());
         e
+    }
+
+    /// The palette resolves the three colour forms and the standard-xterm indexed ranges — the
+    /// formulas must match pinion's `Palette` byte-for-byte, so an un-mutated palette projects
+    /// identically to the pre-OSC-colour behaviour.
+    #[test]
+    fn palette_resolves_xterm_colors() {
+        let p = Palette::xterm_default();
+        // Rgb passes through; Default consults the per-target dynamic colour.
+        assert_eq!(
+            p.resolve(Color::Rgb(Rgb::new(1, 2, 3)), ColorTarget::Foreground),
+            Rgb::new(1, 2, 3)
+        );
+        assert_eq!(
+            p.resolve(Color::Default, ColorTarget::Foreground),
+            Rgb::new(0xe5, 0xe5, 0xe5),
+            "default fg = xterm ANSI 7"
+        );
+        assert_eq!(
+            p.resolve(Color::Default, ColorTarget::Background),
+            Rgb::new(0x00, 0x00, 0x00),
+            "default bg = xterm ANSI 0"
+        );
+        // ANSI base (index 1 = red), the 6x6x6 cube, and the grayscale ramp.
+        assert_eq!(p.indexed(1), Rgb::new(0xcd, 0x00, 0x00));
+        assert_eq!(
+            p.indexed(196),
+            Rgb::new(0xff, 0x00, 0x00),
+            "cube 16+180 = pure red"
+        );
+        assert_eq!(
+            p.indexed(232),
+            Rgb::new(0x08, 0x08, 0x08),
+            "grayscale ramp start"
+        );
+        assert_eq!(
+            p.indexed(255),
+            Rgb::new(0xee, 0xee, 0xee),
+            "grayscale ramp end"
+        );
+    }
+
+    /// `OSC 4` / `OSC 104` override and reset a single index without disturbing the others; the
+    /// whole-palette reset restores the xterm seed.
+    #[test]
+    fn palette_index_override_and_reset() {
+        let mut p = Palette::xterm_default();
+        p.set_indexed(1, Rgb::new(0x11, 0x22, 0x33));
+        assert_eq!(p.indexed(1), Rgb::new(0x11, 0x22, 0x33));
+        assert_eq!(
+            p.indexed(2),
+            Rgb::new(0x00, 0xcd, 0x00),
+            "a sibling index is untouched"
+        );
+        p.reset_indexed(1);
+        assert_eq!(
+            p.indexed(1),
+            Rgb::new(0xcd, 0x00, 0x00),
+            "reset restores xterm red"
+        );
+        // Whole-palette reset after two overrides.
+        p.set_indexed(5, Rgb::new(1, 1, 1));
+        p.set_indexed(200, Rgb::new(2, 2, 2));
+        p.reset_all_indexed();
+        assert_eq!(p.indexed(5), Palette::xterm_indexed(5));
+        assert_eq!(p.indexed(200), Palette::xterm_indexed(200));
     }
 
     #[test]

@@ -1892,7 +1892,10 @@ mod tests {
         owner.run(|| {
             let mut em = sprag_vt::Emulator::new(8, 3);
             sprag_vt::VtPort::advance(&mut em, b"........");
-            let buffer = sprag_grid::project(sprag_vt::VtPort::screen(&em));
+            let buffer = sprag_grid::project(
+                sprag_vt::VtPort::screen(&em),
+                sprag_vt::VtPort::palette(&em),
+            );
             crate::hyperlink::reconcile_pane_hyperlinks(0, &buffer, sprag_vt::MouseProtocol::Click);
         });
 

@@ -22,8 +22,8 @@ use std::time::Duration;
 
 use portable_pty::{Child, PtySize, native_pty_system};
 use sprag_vt::{
-    ClipboardQuery, ClipboardWrite, Emulator, InputModes, MouseProtocol, Notification, Screen,
-    ShellState, VtPort,
+    ClipboardQuery, ClipboardWrite, Emulator, InputModes, MouseProtocol, Notification, Palette,
+    Screen, ShellState, VtPort,
 };
 
 // Re-exported so callers build commands without depending on portable-pty
@@ -330,6 +330,14 @@ impl PanePty {
         f(lock(&self.emulator).screen())
     }
 
+    /// Read the current screen AND the live colour [`Palette`] together under one emulator lock —
+    /// the projection (sprag-grid's `project`) needs both (the palette resolves each cell's colour).
+    /// A single lock keeps them consistent (a colour change and the cells it re-colours cannot tear).
+    pub fn with_screen_palette<R>(&self, f: impl FnOnce(&Screen, &Palette) -> R) -> R {
+        let emu = lock(&self.emulator);
+        f(emu.screen(), emu.palette())
+    }
+
     /// The child's self-reported window title (`OSC 0` / `OSC 2`), `None` until it sets
     /// one. LIVE state (a shell rewrites it every prompt), distinct from the pane's
     /// spawn [`command_label`](crate::workspace::Pane::command_label). Owned, because
@@ -577,6 +585,13 @@ impl PanePtyHandle {
         f(lock(&self.emulator).screen())
     }
 
+    /// Read the current screen AND the live colour [`Palette`] together under one emulator lock —
+    /// the projection needs both. See [`PanePty::with_screen_palette`].
+    pub fn with_screen_palette<R>(&self, f: impl FnOnce(&Screen, &Palette) -> R) -> R {
+        let emu = lock(&self.emulator);
+        f(emu.screen(), emu.palette())
+    }
+
     /// The current input modes (DECCKM, …) the key encoder consults.
     #[must_use]
     pub fn input_modes(&self) -> InputModes {
@@ -819,6 +834,43 @@ mod tests {
         assert!(
             row0.contains("1b 5b 30 6e"),
             "the child read back CSI 0 n and dumped it; row0 = {row0:?}",
+        );
+    }
+
+    /// End-to-end proof that an OSC colour QUERY is answered back onto the child's input — the same
+    /// `take_responses` reverse channel as the DA / DSR reply, now carrying an `OSC 11 ; rgb:… ST`
+    /// reply. The child asks `OSC 11 ; ?` (its background); the terminal must write back the current
+    /// background (the xterm seed, black). `stty -icanon min 25` blocks the read until the exact
+    /// 25-byte reply arrives (no timing race), then `od` hex-dumps it. `1b 5d 31 31 3b 72 67 62 3a`
+    /// = ESC `]` `1` `1` `;` `r` `g` `b` `:` — the unmistakable OSC 11 reply opener.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_osc_color_query_is_answered_back_onto_the_childs_input() {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg(
+            "stty -echo -icanon min 25 2>/dev/null; printf '\\033]11;?\\033\\\\'; head -c 25 | od -An -tx1",
+        );
+        command.env("TERM", "dumb");
+        let pty = PanePty::spawn(command, 40, 4).expect("spawn a pty");
+
+        let start = Instant::now();
+        while !pty.is_eof() && start.elapsed() < Duration::from_secs(5) {
+            sleep(Duration::from_millis(20));
+        }
+
+        let dump = pty.with_screen(|screen| {
+            (0..screen.rows())
+                .flat_map(|row| {
+                    (0..screen.cols()).filter_map(move |col| {
+                        screen.cell(col, row).map(|cell| cell.cluster.clone())
+                    })
+                })
+                .collect::<String>()
+        });
+        assert!(
+            dump.contains("1b 5d 31 31 3b 72 67 62 3a"),
+            "the child read back the OSC 11 background reply and dumped it; dump = {dump:?}",
         );
     }
 

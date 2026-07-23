@@ -291,8 +291,8 @@ impl SpragPaneExternal {
     /// the live view and a larger offset windows into history, self-clamping to the retained
     /// depth (so `0..=scrollback_len` are all answerable, and past the top gets the top).
     fn frame_at(&self, offset: usize) -> CellFrame {
-        self.pty.with_screen(|screen| CellFrame {
-            cells: sprag_grid::project_scrolled(screen, offset),
+        self.pty.with_screen_palette(|screen, palette| CellFrame {
+            cells: sprag_grid::project_scrolled(screen, offset, palette),
             facts: PaneScrollFacts::from_screen(screen),
         })
     }

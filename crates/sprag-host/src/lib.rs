@@ -84,7 +84,7 @@ use pinion_core::scene::{ContainerNode, ExternalNode, TextGridNode};
 use pinion_core::style::{LayoutStyle, Size, SizeValue};
 use pinion_core::{CellMetric, GridBuffer, Scene, SceneRevision};
 use sprag_terminal::{PaneId, PanePty, SessionRegistry};
-use sprag_vt::Screen;
+use sprag_vt::{Palette, Screen};
 
 use crate::external::lock;
 
@@ -133,8 +133,12 @@ fn grid_node(
 /// `rect` unset (the authoritative terminal size is the projected `GridBuffer`,
 /// read via [`TextGridSnapshot::buffer_cols`] / `buffer_rows`); the GUI seam
 /// adds layout + font size via [`view_text_grid`].
-pub(crate) fn text_grid_node(screen: &Screen, metric: CellMetric) -> TextGridNode {
-    grid_node(GRID_TAG, metric, sprag_grid::project(screen))
+pub(crate) fn text_grid_node(
+    screen: &Screen,
+    palette: &Palette,
+    metric: CellMetric,
+) -> TextGridNode {
+    grid_node(GRID_TAG, metric, sprag_grid::project(screen, palette))
 }
 
 /// The per-pane cell DATA a display client reads to paint a pane — the host side
@@ -160,7 +164,9 @@ pub(crate) fn text_grid_node(screen: &Screen, metric: CellMetric) -> TextGridNod
 /// a history view with no extra check).
 #[must_use]
 pub fn pane_cells(pty: &PanePty, offset_lines: usize) -> GridBuffer {
-    pty.with_screen(|screen| sprag_grid::project_scrolled(screen, offset_lines))
+    pty.with_screen_palette(|screen, palette| {
+        sprag_grid::project_scrolled(screen, offset_lines, palette)
+    })
 }
 
 /// Assemble ONE pane's `Scene::Container` from an already-projected cell buffer
@@ -242,14 +248,14 @@ fn view_text_grid(
 /// host builds per-pane scenes via [`pane_view_scene_from_cells`] (from cells it
 /// reads through [`pane_cells`]) and arranges them GUI-side.
 #[must_use]
-pub fn scene(screen: &Screen) -> Scene {
-    scene_with_metric(screen, CellMetric::DEFAULT)
+pub fn scene(screen: &Screen, palette: &Palette) -> Scene {
+    scene_with_metric(screen, palette, CellMetric::DEFAULT)
 }
 
 /// [`scene`] with an explicit cell metric.
 #[must_use]
-pub fn scene_with_metric(screen: &Screen, metric: CellMetric) -> Scene {
-    Scene::TextGrid(text_grid_node(screen, metric))
+pub fn scene_with_metric(screen: &Screen, palette: &Palette, metric: CellMetric) -> Scene {
+    Scene::TextGrid(text_grid_node(screen, palette, metric))
 }
 
 /// Build one pane's `Scene::Container` (tagged `pane_<id>`) — the R1.7
@@ -258,9 +264,9 @@ pub fn scene_with_metric(screen: &Screen, metric: CellMetric) -> Scene {
 /// [`PanePtyHandle`](sprag_terminal::PanePtyHandle) so `scene/invoke` reaches
 /// that pane's PTY.
 fn pane_container(id: PaneId, pty: &PanePty) -> Scene {
-    let children = pty.with_screen(|screen| {
+    let children = pty.with_screen_palette(|screen, palette| {
         vec![
-            Scene::TextGrid(text_grid_node(screen, CellMetric::DEFAULT)),
+            Scene::TextGrid(text_grid_node(screen, palette, CellMetric::DEFAULT)),
             Scene::External(
                 ExternalNode::new(Box::new(pane::SpragPaneExternal::new(pty.handle())))
                     .with_tag(INPUT_TAG),
@@ -371,8 +377,8 @@ pub fn workspace_scene(
 /// supported `scene/snapshot` query, so neither failure can occur for a
 /// scene built by [`scene`].
 #[must_use]
-pub fn snapshot(screen: &Screen) -> TextGridSnapshot {
-    let scene = scene(screen);
+pub fn snapshot(screen: &Screen, palette: &Palette) -> TextGridSnapshot {
+    let scene = scene(screen, palette);
     match pinion_rpc::snapshot::snapshot(&scene, "")
         .expect("the empty path is a supported scene/snapshot query")
     {
@@ -389,7 +395,7 @@ mod tests {
     fn snapshot_of(bytes: &[u8], cols: u16, rows: u16) -> TextGridSnapshot {
         let mut em = Emulator::new(cols, rows);
         em.advance(bytes);
-        snapshot(em.screen())
+        snapshot(em.screen(), em.palette())
     }
 
     #[test]
@@ -497,7 +503,7 @@ mod tests {
         em.advance(b"\x1b[38;2;10;20;30mR\x1b[0m "); // truecolor "R"
         em.advance(b"\x1b[7mV\x1b[0m"); // reverse "V"
         em.advance("世".as_bytes()); // a wide cluster (head + trailer)
-        let buf = sprag_grid::project_scrolled(em.screen(), 0);
+        let buf = sprag_grid::project_scrolled(em.screen(), 0, em.palette());
 
         // The wire: serialize -> deserialize the paint-authoritative buffer.
         let json = serde_json::to_string(&buf).expect("GridBuffer serializes (PR-49)");
@@ -517,16 +523,21 @@ mod tests {
                 .flat_map(|c| (0..back.rows()).map(move |r| (c, r)))
                 .find_map(|(c, r)| back.cell(c, r).filter(|x| pred(x)))
         };
-        // bold + indexed fg (the "red").
-        let red = find(&|x| x.fg == pinion_core::TermColor::Indexed(1))
-            .expect("an indexed-fg cell survived");
+        // bold + the indexed "red": the projection resolves the palette, so ANSI index 1
+        // reaches the wire as its concrete xterm RGB (0xcd0000), not a bare `Indexed(1)`.
+        let red = find(&|x| {
+            x.fg == pinion_core::TermColor::Rgb(pinion_core::style::Color::rgb(0xcd, 0x00, 0x00))
+        })
+        .expect("the resolved indexed-red fg survived");
         assert!(
             red.attrs.bold,
-            "bold attr survived alongside the indexed fg"
+            "bold attr survived alongside the resolved indexed fg"
         );
-        // truecolor fg (the "R").
+        // truecolor fg (the "R" at 10,20,30) — distinct from the resolved red above.
         assert!(
-            find(&|x| matches!(x.fg, pinion_core::TermColor::Rgb(_))).is_some(),
+            find(&|x| x.fg
+                == pinion_core::TermColor::Rgb(pinion_core::style::Color::rgb(10, 20, 30)))
+            .is_some(),
             "a truecolor (rgb) fg survived",
         );
         // reverse attr (the "V").
@@ -572,7 +583,7 @@ mod tests {
         // default above): a fullscreen app's alt screen must reach the client.
         let mut alt = Emulator::new(4, 2);
         alt.advance(b"\x1b[?1049hA");
-        let altbuf = sprag_grid::project(alt.screen());
+        let altbuf = sprag_grid::project(alt.screen(), alt.palette());
         assert_eq!(altbuf.screen(), pinion_core::ScreenKind::Alternate);
         let altback: GridBuffer =
             serde_json::from_str(&serde_json::to_string(&altbuf).unwrap()).unwrap();

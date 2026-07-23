@@ -17,22 +17,28 @@ use pinion_core::{
     UnderlineStyle as PinUnderlineStyle,
 };
 use sprag_vt::{
-    Attrs, Cell, Color, CursorShape, Hyperlink, Screen, ScreenKind, UnderlineStyle, Width,
+    Attrs, Cell, Color, ColorTarget, CursorShape, Hyperlink, Palette, Screen, ScreenKind,
+    UnderlineStyle, Width,
 };
 
-/// Project a screen into a fresh pinion `GridBuffer`.
+/// Project a screen into a fresh pinion `GridBuffer`, resolving each cell's colour
+/// against the terminal's live [`Palette`] (the OSC-colour SSOT).
 ///
-/// pinion replaces the node's buffer wholesale each frame (no per-cell
+/// Cells store their colour symbolically ([`Color::Indexed`] / [`Color::Default`]),
+/// so resolving here — every frame, against the live palette — is what makes an
+/// `OSC 4 / 10 / 11` change re-colour the whole screen. An un-mutated palette
+/// resolves to the standard xterm values, byte-identical to the pre-OSC-colour
+/// projection. pinion replaces the node's buffer wholesale each frame (no per-cell
 /// mutation), so a new buffer per call is the intended shape.
 #[must_use]
-pub fn project(screen: &Screen) -> GridBuffer {
+pub fn project(screen: &Screen, palette: &Palette) -> GridBuffer {
     let cols = screen.cols();
     let rows = screen.rows();
     let mut buffer = GridBuffer::new(cols, rows);
     let mut interner = HyperlinkInterner::default();
 
     for row in 0..rows {
-        buffer = buffer.with_row(row, project_row(screen, row, cols, &mut interner));
+        buffer = buffer.with_row(row, project_row(screen, row, cols, &mut interner, palette));
         if let Some(generation) = screen.row_generation(row) {
             buffer = buffer.with_row_generation(row, generation);
         }
@@ -63,9 +69,9 @@ pub fn project(screen: &Screen) -> GridBuffer {
 /// region below the view). `offset_lines` is clamped to the retained scrollback
 /// depth.
 #[must_use]
-pub fn project_scrolled(screen: &Screen, offset_lines: usize) -> GridBuffer {
+pub fn project_scrolled(screen: &Screen, offset_lines: usize, palette: &Palette) -> GridBuffer {
     if offset_lines == 0 {
-        return project(screen);
+        return project(screen, palette);
     }
     let cols = screen.cols();
     let rows = screen.rows();
@@ -76,7 +82,7 @@ pub fn project_scrolled(screen: &Screen, offset_lines: usize) -> GridBuffer {
         // A stale positive offset against now-empty scrollback (the screen
         // cleared its history, or switched to the alternate screen) IS the live
         // view — return it with the cursor, not a cursor-less window.
-        return project(screen);
+        return project(screen, palette);
     }
     // First displayed row's index into the logical [scrollback .. visible]
     // sequence: the window of `rows` rows ends `offset` above the live bottom
@@ -88,13 +94,14 @@ pub fn project_scrolled(screen: &Screen, offset_lines: usize) -> GridBuffer {
     for display in 0..rows {
         let logical = top + display as usize;
         let cells = if logical < scrollback_len {
-            project_glyph_row(scrollback[logical], cols, &mut interner)
+            project_glyph_row(scrollback[logical], cols, &mut interner, palette)
         } else {
             project_row(
                 screen,
                 (logical - scrollback_len) as u16,
                 cols,
                 &mut interner,
+                palette,
             )
         };
         buffer = buffer.with_row(display, cells);
@@ -310,6 +317,7 @@ fn project_glyph_row(
     glyphs: &[Cell],
     cols: u16,
     interner: &mut HyperlinkInterner,
+    palette: &Palette,
 ) -> Vec<TermCell> {
     let ncols = cols as usize;
     let mut out = Vec::with_capacity(ncols);
@@ -319,9 +327,9 @@ fn project_glyph_row(
             break;
         }
         match cell.width {
-            Width::Wide if col + 1 < ncols => push_wide_pair(&mut out, cell, interner),
+            Width::Wide if col + 1 < ncols => push_wide_pair(&mut out, cell, interner, palette),
             Width::Trailer => {}
-            _ => out.push(term_cell(cell, interner)),
+            _ => out.push(term_cell(cell, interner, palette)),
         }
     }
     while out.len() < ncols {
@@ -337,6 +345,7 @@ fn project_row(
     row: u16,
     cols: u16,
     interner: &mut HyperlinkInterner,
+    palette: &Palette,
 ) -> Vec<TermCell> {
     let mut out = Vec::with_capacity(cols as usize);
     let mut col = 0;
@@ -346,7 +355,7 @@ fn project_row(
         };
         match cell.width {
             Width::Wide if col + 1 < cols => {
-                push_wide_pair(&mut out, cell, interner);
+                push_wide_pair(&mut out, cell, interner, palette);
                 col += 2;
             }
             // An orphan trailer means the head was clipped at the edge;
@@ -356,7 +365,7 @@ fn project_row(
                 col += 1;
             }
             _ => {
-                out.push(term_cell(cell, interner));
+                out.push(term_cell(cell, interner, palette));
                 col += 1;
             }
         }
@@ -402,17 +411,17 @@ impl HyperlinkInterner {
     }
 }
 
-fn term_cell(cell: &Cell, interner: &mut HyperlinkInterner) -> TermCell {
+fn term_cell(cell: &Cell, interner: &mut HyperlinkInterner, palette: &Palette) -> TermCell {
     let mut tc = TermCell::new(
         cell.cluster.clone(),
-        term_color(cell.fg),
-        term_color(cell.bg),
+        term_color(cell.fg, ColorTarget::Foreground, palette),
+        term_color(cell.bg, ColorTarget::Background, palette),
     )
     .with_attrs(cell_attrs(cell.attrs));
     // SGR 58 underline colour (orthogonal to the style axis). `None` is the
     // SGR-59 default — pinion then draws the underline in the cell's own fg.
     if let Some(color) = cell.underline_color {
-        tc = tc.with_underline_color(term_color(color));
+        tc = tc.with_underline_color(term_color(color, ColorTarget::Foreground, palette));
     }
     // OSC-8 hyperlink: intern the link into this buffer's table and stamp the
     // cell with its id (pinion resolves the id -> uri at paint / snapshot time).
@@ -427,19 +436,27 @@ fn term_cell(cell: &Cell, interner: &mut HyperlinkInterner) -> TermCell {
 /// [`project_glyph_row`], which differ in iteration but emit wide cells the same way.
 /// pinion's [`TermCell::trailer`] copies the head's hyperlink, so the wide glyph's
 /// continuation column stays part of the same link.
-fn push_wide_pair(out: &mut Vec<TermCell>, cell: &Cell, interner: &mut HyperlinkInterner) {
-    let head = term_cell(cell, interner).wide();
+fn push_wide_pair(
+    out: &mut Vec<TermCell>,
+    cell: &Cell,
+    interner: &mut HyperlinkInterner,
+    palette: &Palette,
+) {
+    let head = term_cell(cell, interner, palette).wide();
     let trailer = head.trailer();
     out.push(head);
     out.push(trailer);
 }
 
-fn term_color(color: Color) -> TermColor {
-    match color {
-        Color::Default => TermColor::Default,
-        Color::Indexed(index) => TermColor::Indexed(index),
-        Color::Rgb(rgb) => TermColor::Rgb(PinColor::rgb(rgb.r, rgb.g, rgb.b)),
-    }
+/// Resolve a sprag-vt cell [`Color`] to a pinion [`TermColor`] against the live
+/// [`Palette`]. Every colour resolves to a concrete [`TermColor::Rgb`]: `Indexed`
+/// and `Default` are looked up in the palette (so an OSC-colour override is honoured
+/// and the whole screen re-colours on a palette change), `Rgb` passes through. An
+/// un-mutated palette yields the standard xterm value pinion would itself resolve to,
+/// so this is transparent until the child changes a colour.
+fn term_color(color: Color, target: ColorTarget, palette: &Palette) -> TermColor {
+    let rgb = palette.resolve(color, target);
+    TermColor::Rgb(PinColor::rgb(rgb.r, rgb.g, rgb.b))
 }
 
 fn cell_attrs(attrs: Attrs) -> CellAttrs {
@@ -493,10 +510,15 @@ mod tests {
         em.screen().clone()
     }
 
+    /// The default (un-mutated) xterm palette these projection tests resolve against.
+    fn palette() -> Palette {
+        Palette::xterm_default()
+    }
+
     #[test]
     fn projects_dimensions_and_text() {
         let screen = screen_from(b"hi", 10, 2);
-        let buffer = project(&screen);
+        let buffer = project(&screen, &palette());
         assert_eq!(buffer.cols(), 10);
         assert_eq!(buffer.rows(), 2);
         assert_eq!(buffer.cell(0, 0).unwrap().cluster, "h");
@@ -506,10 +528,35 @@ mod tests {
     #[test]
     fn projects_indexed_color_and_bold() {
         let screen = screen_from(b"\x1b[1;31mA", 4, 1);
-        let buffer = project(&screen);
+        let buffer = project(&screen, &palette());
         let cell = buffer.cell(0, 0).unwrap();
-        assert_eq!(cell.fg, TermColor::Indexed(1));
+        // The projection resolves the palette: ANSI index 1 (red) -> xterm 0xcd0000.
+        assert_eq!(cell.fg, TermColor::Rgb(PinColor::rgb(0xcd, 0x00, 0x00)));
         assert!(cell.attrs.bold);
+    }
+
+    /// The projection resolves a `Color::Default` background against the palette's DYNAMIC
+    /// background, so an OSC 11 change (which mutates that dynamic bg) re-colours the whole screen —
+    /// the render half of OSC 11. A plain cell projects to the palette's `default_bg`, never a bare
+    /// `TermColor::Default`. Revert-proof: with an un-mutated palette it resolves to xterm black.
+    #[test]
+    fn project_resolves_default_bg_against_the_palette_dynamic_background() {
+        let screen = screen_from(b"x", 4, 1);
+        // A palette whose default background was set (as OSC 11 would) to a distinct colour.
+        let mut pal = Palette::xterm_default();
+        pal.set_default_bg(sprag_vt::Rgb::new(0x10, 0x20, 0x30));
+        let buffer = project(&screen, &pal);
+        assert_eq!(
+            buffer.cell(0, 0).unwrap().bg,
+            TermColor::Rgb(PinColor::rgb(0x10, 0x20, 0x30)),
+            "a default-bg cell resolves to the palette's dynamic background"
+        );
+        // The un-mutated palette resolves the same default bg to xterm black (transparent default).
+        let plain = project(&screen, &palette());
+        assert_eq!(
+            plain.cell(0, 0).unwrap().bg,
+            TermColor::Rgb(PinColor::rgb(0x00, 0x00, 0x00))
+        );
     }
 
     /// A colored row scrolled off the top keeps its fg/attrs in the scrollback
@@ -520,17 +567,21 @@ mod tests {
         // 1-row screen: bold-red "A", then a newline scrolls it into scrollback.
         let screen = screen_from(b"\x1b[1;31mA\r\n", 4, 1);
         assert_eq!(screen.scrollback_len(), 1, "the A row scrolled off");
-        let buf = project_scrolled(&screen, 1);
+        let buf = project_scrolled(&screen, 1, &palette());
         let cell = buf.cell(0, 0).unwrap();
         assert_eq!(cell.cluster, "A");
-        assert_eq!(cell.fg, TermColor::Indexed(1), "scrollback keeps fg color");
+        assert_eq!(
+            cell.fg,
+            TermColor::Rgb(PinColor::rgb(0xcd, 0x00, 0x00)),
+            "scrollback keeps fg color (index 1 resolved to xterm red)"
+        );
         assert!(cell.attrs.bold, "scrollback keeps bold");
     }
 
     #[test]
     fn projects_wide_head_and_trailer() {
         let screen = screen_from("世".as_bytes(), 6, 1);
-        let buffer = project(&screen);
+        let buffer = project(&screen, &palette());
         assert_eq!(
             buffer.cell(0, 0).unwrap().width,
             pinion_core::CellWidth::Wide
@@ -544,7 +595,7 @@ mod tests {
     #[test]
     fn projects_cursor_position() {
         let screen = screen_from(b"abc", 10, 1);
-        let buffer = project(&screen);
+        let buffer = project(&screen, &palette());
         assert_eq!(buffer.cursor().col, 3);
         assert_eq!(buffer.cursor().row, 0);
     }
@@ -571,16 +622,16 @@ mod tests {
                 .to_owned()
         };
         // offset 0 == live (rows d, e), identical to project().
-        let live = project_scrolled(&screen, 0);
+        let live = project_scrolled(&screen, 0, &palette());
         assert_eq!((row0(&live), row1(&live)), ("d".into(), "e".into()));
         // offset 1: one scrollback line ("c") on top, visible "d" below.
-        let up1 = project_scrolled(&screen, 1);
+        let up1 = project_scrolled(&screen, 1, &palette());
         assert_eq!((row0(&up1), row1(&up1)), ("c".into(), "d".into()));
         // offset 3: top of history ("a", "b").
-        let up3 = project_scrolled(&screen, 3);
+        let up3 = project_scrolled(&screen, 3, &palette());
         assert_eq!((row0(&up3), row1(&up3)), ("a".into(), "b".into()));
         // Clamp: a larger offset cannot scroll past the oldest line.
-        let up99 = project_scrolled(&screen, 99);
+        let up99 = project_scrolled(&screen, 99, &palette());
         assert_eq!((row0(&up99), row1(&up99)), ("a".into(), "b".into()));
     }
 
@@ -591,8 +642,8 @@ mod tests {
     fn project_scrolled_clamps_stale_offset_to_live_with_cursor() {
         let screen = screen_from(b"abc", 10, 2);
         assert_eq!(screen.scrollback_len(), 0);
-        let scrolled = project_scrolled(&screen, 7); // stale offset, no history
-        let live = project(&screen);
+        let scrolled = project_scrolled(&screen, 7, &palette()); // stale offset, no history
+        let live = project(&screen, &palette());
         assert_eq!(scrolled.cursor().col, live.cursor().col);
         assert!(
             scrolled.cursor().visible,
@@ -605,7 +656,7 @@ mod tests {
     #[test]
     fn overlay_preedit_underlines_narrow_text_at_the_cursor() {
         let screen = screen_from(b"ab", 10, 1);
-        let buffer = overlay_preedit(project(&screen), "x");
+        let buffer = overlay_preedit(project(&screen, &palette()), "x");
         assert_eq!(
             buffer.cell(0, 0).unwrap().cluster,
             "a",
@@ -628,7 +679,7 @@ mod tests {
     fn projection_carries_underline_style_and_color() {
         // curly (4:3) + red (58:2) underline through the real SGR parser
         let screen = screen_from(b"\x1b[4:3;58:2::255:0:0mE", 10, 1);
-        let buffer = project(&screen);
+        let buffer = project(&screen, &palette());
         let cell = buffer.cell(0, 0).unwrap();
         assert_eq!(cell.attrs.underline, PinUnderlineStyle::Curly);
         assert_eq!(
@@ -642,7 +693,7 @@ mod tests {
     #[test]
     fn projection_default_underline_color_is_none() {
         let screen = screen_from(b"\x1b[4mU", 10, 1);
-        let buffer = project(&screen);
+        let buffer = project(&screen, &palette());
         let cell = buffer.cell(0, 0).unwrap();
         assert_eq!(cell.attrs.underline, PinUnderlineStyle::Single);
         assert_eq!(cell.underline_color, None);
@@ -653,7 +704,7 @@ mod tests {
     #[test]
     fn overlay_preedit_expands_a_wide_syllable_to_head_and_trailer() {
         let screen = screen_from(b"ab", 10, 1);
-        let buffer = overlay_preedit(project(&screen), "한");
+        let buffer = overlay_preedit(project(&screen, &palette()), "한");
         let head = buffer.cell(2, 0).unwrap();
         assert_eq!(head.cluster, "한");
         assert_eq!(head.width, pinion_core::CellWidth::Wide);
@@ -669,8 +720,8 @@ mod tests {
     #[test]
     fn overlay_preedit_empty_is_a_no_op() {
         let screen = screen_from(b"ab", 10, 1);
-        let plain = project(&screen);
-        let overlaid = overlay_preedit(project(&screen), "");
+        let plain = project(&screen, &palette());
+        let overlaid = overlay_preedit(project(&screen, &palette()), "");
         for col in 0..plain.cols() {
             assert_eq!(
                 plain.cell(col, 0).unwrap().cluster,
@@ -684,8 +735,8 @@ mod tests {
     #[test]
     fn overlay_preedit_clips_a_wide_syllable_at_the_row_edge() {
         let screen = screen_from(b"abc", 4, 1); // 4 cols, cursor lands on the last column (3)
-        assert_eq!(project(&screen).cursor().col, 3);
-        let buffer = overlay_preedit(project(&screen), "한");
+        assert_eq!(project(&screen, &palette()).cursor().col, 3);
+        let buffer = overlay_preedit(project(&screen, &palette()), "한");
         let last = buffer.cell(3, 0).unwrap();
         assert_ne!(
             last.cluster, "한",
@@ -713,10 +764,10 @@ mod tests {
                 .any(|c| (0..buf.rows()).any(|r| buf.cell(c, r).is_some_and(|x| x.cluster == "한")))
         };
         // Live (offset 0): the composition overlays the preedit at the cursor.
-        let live = overlay_preedit(project_scrolled(&screen, 0), "한");
+        let live = overlay_preedit(project_scrolled(&screen, 0, &palette()), "한");
         assert!(contains_han(&live), "the live window shows the preedit");
         // Scrolled (offset 1): the cursor is dropped, so the overlay self-gates off.
-        let scrolled = overlay_preedit(project_scrolled(&screen, 1), "한");
+        let scrolled = overlay_preedit(project_scrolled(&screen, 1, &palette()), "한");
         assert!(
             !contains_han(&scrolled),
             "a scrolled history window shows no preedit"
@@ -728,8 +779,12 @@ mod tests {
     #[test]
     fn overlay_preedit_no_op_without_a_visible_cursor() {
         let screen = screen_from(b"ab", 10, 1);
-        let hidden =
-            project(&screen).with_cursor(GridCursor::new(2, 0, PinCursorShape::Block, false));
+        let hidden = project(&screen, &palette()).with_cursor(GridCursor::new(
+            2,
+            0,
+            PinCursorShape::Block,
+            false,
+        ));
         let out = overlay_preedit(hidden, "x");
         assert_ne!(
             out.cell(2, 0).unwrap().cluster,
@@ -743,15 +798,15 @@ mod tests {
     #[test]
     fn overlay_selection_inverts_the_selected_span() {
         let screen = screen_from(b"abcdef", 10, 1);
-        let buf = overlay_selection(project(&screen), (1, 0), (3, 0)); // cols 1..=3
+        let buf = overlay_selection(project(&screen, &palette()), (1, 0), (3, 0)); // cols 1..=3
         assert!(!buf.cell(0, 0).unwrap().attrs.reverse, "col 0 outside");
         assert!(buf.cell(1, 0).unwrap().attrs.reverse, "col 1 selected");
         assert!(buf.cell(3, 0).unwrap().attrs.reverse, "col 3 selected");
         assert!(!buf.cell(4, 0).unwrap().attrs.reverse, "col 4 outside");
         // SGR 7 (reverse) cell toggles back to normal inside the selection.
         let rev = screen_from(b"\x1b[7mX", 4, 1);
-        assert!(project(&rev).cell(0, 0).unwrap().attrs.reverse);
-        let sel = overlay_selection(project(&rev), (0, 0), (0, 0));
+        assert!(project(&rev, &palette()).cell(0, 0).unwrap().attrs.reverse);
+        let sel = overlay_selection(project(&rev, &palette()), (0, 0), (0, 0));
         assert!(
             !sel.cell(0, 0).unwrap().attrs.reverse,
             "a reverse cell inverts to normal under the selection"
@@ -763,7 +818,7 @@ mod tests {
     #[test]
     fn overlay_selection_spans_rows_linearly() {
         let screen = screen_from(b"aaaa\r\nbbbb\r\ncccc", 4, 3);
-        let buf = overlay_selection(project(&screen), (2, 0), (1, 2));
+        let buf = overlay_selection(project(&screen, &palette()), (2, 0), (1, 2));
         // Row 0: cols 2,3 selected; 0,1 not.
         assert!(!buf.cell(1, 0).unwrap().attrs.reverse);
         assert!(buf.cell(2, 0).unwrap().attrs.reverse);
@@ -782,7 +837,7 @@ mod tests {
     #[test]
     fn projection_interns_a_hyperlink_and_resolves_its_uri() {
         let screen = screen_from(b"\x1b]8;;https://ok\x1b\\LINK\x1b]8;;\x1b\\ x", 20, 1);
-        let buf = project(&screen);
+        let buf = project(&screen, &palette());
         let id = buf
             .cell(0, 0)
             .unwrap()
@@ -805,7 +860,7 @@ mod tests {
             20,
             1,
         );
-        let buf = project(&screen);
+        let buf = project(&screen, &palette());
         let a = buf.cell(0, 0).unwrap().hyperlink.expect("A linked");
         let b = buf.cell(2, 0).unwrap().hyperlink.expect("B linked");
         assert_eq!(a, b, "a same-id link interns to a single id");
@@ -821,7 +876,7 @@ mod tests {
             20,
             1,
         );
-        let buf = project(&screen);
+        let buf = project(&screen, &palette());
         let a = buf.cell(0, 0).unwrap().hyperlink.expect("A linked");
         let b = buf.cell(2, 0).unwrap().hyperlink.expect("B linked");
         assert_ne!(
@@ -837,7 +892,7 @@ mod tests {
     fn hyperlink_hover_overlay_lights_the_whole_id_group() {
         // A 6-char link on a 4-col screen wraps: "ABCD" on row 0, "EF" on row 1.
         let screen = screen_from(b"\x1b]8;;http://w\x1b\\ABCDEF\x1b]8;;\x1b\\", 4, 3);
-        let buf = project(&screen);
+        let buf = project(&screen, &palette());
         let id = buf.cell(0, 0).unwrap().hyperlink.expect("row0 linked");
         assert_eq!(
             buf.cell(1, 1).unwrap().hyperlink,
@@ -845,7 +900,7 @@ mod tests {
             "the wrap put the same-id link on row 1"
         );
         let base = buf.cell(0, 0).unwrap().attrs.reverse;
-        let lit = overlay_hyperlink_hover(project(&screen), Some(id));
+        let lit = overlay_hyperlink_hover(project(&screen, &palette()), Some(id));
         assert_eq!(
             lit.cell(0, 0).unwrap().attrs.reverse,
             !base,
@@ -857,7 +912,7 @@ mod tests {
             "row 1 wrap cell lit (whole id-group)"
         );
         // A None hover is a no-op.
-        let plain = overlay_hyperlink_hover(project(&screen), None);
+        let plain = overlay_hyperlink_hover(project(&screen, &palette()), None);
         assert_eq!(
             plain.cell(0, 0).unwrap().attrs.reverse,
             base,
