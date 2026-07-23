@@ -1836,6 +1836,76 @@ mod tests {
         );
     }
 
+    /// End-to-end through the REAL pinion raw-pointer router (R1416 / PINION-PR72): a TRACKING pane's
+    /// oracle owns the raw multi-button stream, so a RIGHT and a MIDDLE press+release route through
+    /// the shell's `pointer_button_for_window` seam (the same one winit's `MouseInput` reaches) ->
+    /// `deliver_raw_pointer_button` -> `dispatch_raw_button` (which polls the oracle's
+    /// `wants_raw_pointer_buttons`) into `HyperlinkOracle::raw_pointer_button`, and the shell
+    /// SUPPRESSES the GUI default — no context menu on right, no PRIMARY paste on middle. The unit
+    /// tests drive the oracle method directly; this proves the pinion routing reaches it for a real
+    /// button edge (the seam a pixel smoke exercises, without a GPU). A drained report per edge with
+    /// the right button IS the proof the raw path consumed it: had the GUI arc run instead, the
+    /// oracle would have recorded nothing.
+    #[test]
+    fn a_tracking_pane_reports_right_and_middle_raw_clicks_through_the_real_router() {
+        use pinion_core::{PointerButton, PointerEdge};
+        use pinion_runtime::PointerId;
+        use sprag_input::{MouseButton, MouseEventKind};
+
+        let mut core = ShellCore::<TerminalViewer>::new();
+        let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+        core.finalize_frame(scene);
+        let scene = core.compute_paint_scene(WINDOW_W, WINDOW_H);
+        let (cx, cy) = {
+            let r = scene
+                .rect_for_tag_absolute(pane_tag(0))
+                .expect("pane 0 painted");
+            (
+                f64::from(r.x) + f64::from(r.w) / 2.0,
+                f64::from(r.y) + f64::from(r.h) / 2.0,
+            )
+        };
+
+        // A cloned owner handle so the owner-scoped `use_pane_hover` calls (which resolve the cached
+        // `HoverState`) run inside `owner.run` WITHOUT holding a `&core` borrow that would block the
+        // `&mut core` pointer drive between them.
+        let owner = core.root_owner().clone();
+
+        // Feed pane 0's oracle a live tracking level, exactly as the per-frame host `mouse` token
+        // would when the child enables DECSET 1000. Resolves the SAME cached `HoverState` the scene's
+        // oracle reads; done AFTER the last paint so no reconcile overwrites it before the edges.
+        owner.run(|| {
+            let mut em = sprag_vt::Emulator::new(8, 3);
+            sprag_vt::VtPort::advance(&mut em, b"........");
+            let buffer = sprag_grid::project(sprag_vt::VtPort::screen(&em));
+            crate::hyperlink::reconcile_pane_hyperlinks(0, &buffer, sprag_vt::MouseProtocol::Click);
+        });
+
+        // Hover the pane center so the raw router resolves the pane as the pointer target, then drive
+        // a right and a middle press+release through the shell seam.
+        core.cursor_moved_for_window(dock::MAIN_WINDOW_ID, PointerId::MOUSE, cx, cy);
+        for button in [PointerButton::Right, PointerButton::Middle] {
+            core.pointer_button_for_window(dock::MAIN_WINDOW_ID, button, PointerEdge::Down);
+            core.pointer_button_for_window(dock::MAIN_WINDOW_ID, button, PointerEdge::Up);
+        }
+
+        let seq: Vec<_> = owner
+            .run(|| crate::hyperlink::take_pane_mouse_reports(0))
+            .iter()
+            .map(|r| (r.button, r.kind))
+            .collect();
+        assert_eq!(
+            seq,
+            vec![
+                (MouseButton::Right, MouseEventKind::Press),
+                (MouseButton::Right, MouseEventKind::Release),
+                (MouseButton::Middle, MouseEventKind::Press),
+                (MouseButton::Middle, MouseEventKind::Release),
+            ],
+            "the real pinion router routes right/middle edges to the tracking oracle (GUI defaults suppressed)",
+        );
+    }
+
     /// End-to-end dock/undock through the REAL `TerminalViewer` + the shell's
     /// per-window paint dispatch: undock pane 1 and assert the main window drops
     /// it while the `pane-1` undock window paints exactly it — the docked/floating

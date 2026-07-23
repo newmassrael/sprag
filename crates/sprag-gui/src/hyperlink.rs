@@ -44,22 +44,23 @@
 //! id-group across wraps, shows a hand cursor, opens scheme-gated on click, AND the
 //! link is agent-readable as data (`read_pane_links`, prior round).
 //!
-//! ## The pane's ONE pointer authority (mouse tracking, DECSET 1000/1006)
+//! ## The pane's ONE pointer authority (mouse tracking, DECSET 1000/1002/1003/1006)
 //!
 //! Because only ONE [`External`] may register at `pane_tag(i)`, this oracle is ALSO the
-//! pane's mouse-report capture layer (xterm mouse tracking). When the pane's child has a
-//! tracking mode active (the host's per-frame `mouse` bit, fed via
-//! [`reconcile_pane_hyperlinks`]), [`External::wants_pointer_capture`] turns on for EVERY
-//! press (not just over a link), the captured press/release is recorded as a semantic
-//! [`MouseInput`] at the last hovered cell, and [`take_pane_mouse_reports`] hands it to the
-//! reconcile to forward to the host (which gates + encodes the X10 / SGR report at the PTY
-//! boundary — coordinate conversion is the ONLY job here). A press with a mode active
-//! reports instead of activating a link; with no mode active the link / selection behaviour
-//! is unchanged. Under button-event (1002) / any-event (1003) tracking a captured `pointer_move`
-//! also forwards a DRAG (a button held) or bare MOTION report, cell-granular. Only the LEFT
-//! button routes through the framework capture channel (`PointerDown`/`PointerUp`); wheel is
-//! reported separately via [`apply_wheel`](crate::TerminalViewer) (Stage 2); middle / right need
-//! PINION-PR72 (their press/release reach separate shell arms, not this capture channel).
+//! pane's mouse-report layer (xterm mouse tracking). When the pane's child has a tracking
+//! mode active (the host's per-frame `mouse` bit, fed via [`reconcile_pane_hyperlinks`]),
+//! [`External::wants_raw_pointer_buttons`] turns on and pinion routes EVERY left / middle /
+//! right press and release — with the modifiers held at each edge (PINION-PR72's raw stream,
+//! consumed since R1418) — to the oracle's `raw_pointer_button`, SUPPRESSING the pane's GUI
+//! defaults (no context menu, no PRIMARY paste, no legacy `PointerDown` / `PointerUp` wire).
+//! Each edge is recorded as a semantic [`MouseInput`] at the last hovered cell, and
+//! [`take_pane_mouse_reports`] hands it to the reconcile to forward to the host (which gates +
+//! encodes the X10 / SGR report at the PTY boundary — coordinate conversion is the ONLY job
+//! here). With no mode active the pane keeps native link / selection / paste / context-menu
+//! behaviour. Under button-event (1002) / any-event (1003) tracking a `pointer_move` also
+//! forwards a DRAG (with the held button, `primary_held`) or bare MOTION report, cell-granular;
+//! the R1418 implicit grab keeps the drag position flowing even off the pane's rect. Wheel is
+//! reported separately via [`apply_wheel`](crate::TerminalViewer) (Stage 2).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -76,10 +77,13 @@ use pinion_core::external::{
 use pinion_core::reactive::{Owner, Signal, use_repaint_sink};
 use pinion_core::term_grid::HyperlinkId;
 use pinion_core::widget_core::ExtraExternal;
-use pinion_core::{NullRepaintSink, RepaintSink};
+use pinion_core::{
+    NullRepaintSink, PointerButton, PointerButtons, PointerEdge, RawPointerButton, RepaintSink,
+};
 use sprag_input::{Modifiers, MouseButton, MouseEventKind, MouseInput};
 use sprag_vt::MouseProtocol;
 
+use crate::input::to_input_mods;
 use crate::terminal::{pane_cache_key, pane_tag};
 
 /// The URI schemes a click is allowed to open — the safety gate so a hostile child
@@ -123,16 +127,18 @@ pub(crate) struct HoverState {
     /// A URI a click activated, awaiting [`reconcile_pane_hyperlinks`] to open it.
     activated: RefCell<Option<String>>,
     /// The pane's live mouse-tracking protocol LEVEL (fed each frame from the host's `mouse` token).
-    /// Gates [`HyperlinkOracle::wants_pointer_capture`] (any active level captures a press for
-    /// REPORTING, not link / selection) AND, from the level, whether a `pointer_move` forwards a
-    /// DRAG ([`MouseProtocol::reports_drag`]) or bare MOTION ([`MouseProtocol::reports_motion`]).
-    /// Plain [`Cell`] — read on the pointer edges, not painted, so it needs no reactive `Signal`.
+    /// Gates [`HyperlinkOracle::wants_raw_pointer_buttons`] (any active level makes the oracle own
+    /// the raw L/M/R stream for REPORTING, not link / selection / paste / context-menu) AND, from
+    /// the level, whether a `pointer_move` forwards a DRAG ([`MouseProtocol::reports_drag`]) or bare
+    /// MOTION ([`MouseProtocol::reports_motion`]). Plain [`Cell`] — read on the pointer edges, not
+    /// painted, so it needs no reactive `Signal`.
     mouse_protocol: Cell<MouseProtocol>,
-    /// Whether a LEFT button is currently held after a captured tracking press — set on
-    /// [`HyperlinkOracle::on_pointer_down`] while tracking, cleared on release. Distinguishes a DRAG
-    /// (button held) from bare MOTION (no button) at `pointer_move` time. Only LEFT is captured
-    /// (Stage 1 bound), so this single flag suffices; middle/right need PINION-PR72.
-    pressed: Cell<bool>,
+    /// The button to report on a following DRAG — the PRIMARY button held after the last raw edge
+    /// (left over middle over right, [`RawPointerButton::buttons`]'s primary), or `None` when no
+    /// button is held. Set from every [`HyperlinkOracle::raw_pointer_button`] edge (PINION-PR72's
+    /// raw multi-button stream), so a held move under 1002/1003 drags with the ACTUAL button
+    /// (left / middle / right), not just left. `None` at `pointer_move` time means a bare MOTION.
+    held: Cell<Option<MouseButton>>,
     /// The 0-based cell the pointer last resolved to (set on every `pointer_move`, link or not) —
     /// the coordinate a captured press/release report addresses, and the cell a drag/motion report
     /// dedupes against (only a CELL change reports, xterm's granularity — never per-pixel). Distinct
@@ -164,7 +170,7 @@ impl Default for HoverState {
             hovered: Signal::new(None),
             activated: RefCell::new(None),
             mouse_protocol: Cell::new(MouseProtocol::None),
-            pressed: Cell::new(false),
+            held: Cell::new(None),
             last_cell: Cell::new((0, 0)),
             pending_mouse: RefCell::new(Vec::new()),
             wheel_accum: Cell::new(0.0),
@@ -204,18 +210,19 @@ impl HoverState {
             .map(|(_, uri)| uri.to_string())
     }
 
-    /// Queue a report of `button` / `kind` at the last resolved cell (no modifiers — the framework
-    /// capture channel carries none on the press edge, PINION-PR72). The reconcile drains it via
-    /// [`take_pane_mouse_reports`] and forwards it to the host, which gates + encodes it. Left
-    /// press/release for a click; Left drag while held; [`MouseButton::None`] for bare motion.
-    fn record_report(&self, button: MouseButton, kind: MouseEventKind) {
+    /// Queue a report of `button` / `kind` with the modifiers `mods` held at that edge, at the last
+    /// resolved cell. The reconcile drains it via [`take_pane_mouse_reports`] and forwards it to the
+    /// host, which gates + encodes it. A press/release edge carries its real modifiers (PINION-PR72's
+    /// raw stream delivers them on BOTH edges); a drag / bare-motion report has no keyboard edge to
+    /// read live, so those pass [`Modifiers::default`]. [`MouseButton::None`] marks a bare motion.
+    fn record_report(&self, button: MouseButton, kind: MouseEventKind, mods: Modifiers) {
         let (col, row) = self.last_cell.get();
         self.pending_mouse.borrow_mut().push(MouseInput {
             button,
             kind,
             col,
             row,
-            mods: Modifiers::default(),
+            mods,
         });
         // Force a frame so `reconcile_frame` DRAINS this report even when the pointer event itself
         // repaints nothing: a bare motion over plain text leaves `hovered` unchanged, so its
@@ -301,7 +308,7 @@ pub(crate) fn reconcile_pane_hyperlinks(
     let rows = buffer.rows();
     state.cols.set(cols);
     state.rows.set(rows);
-    // Feed the live tracking level so `wants_pointer_capture` gates the next press + `pointer_move`
+    // Feed the live tracking level so `wants_raw_pointer_buttons` gates the next press + `pointer_move`
     // decides drag / motion forwarding correctly.
     state.mouse_protocol.set(mouse_protocol);
     {
@@ -352,7 +359,7 @@ pub(crate) fn reset_pane_hyperlinks(i: usize) {
     state.cols.set(0);
     state.rows.set(0);
     state.mouse_protocol.set(MouseProtocol::None);
-    state.pressed.set(false);
+    state.held.set(None);
     state.last_cell.set((0, 0));
     state.pending_mouse.borrow_mut().clear();
     state.wheel_accum.set(0.0);
@@ -450,29 +457,16 @@ impl HyperlinkOracle {
         }
     }
 
-    /// A LEFT PointerDown: report the press when the child is tracking (and mark the button held so
-    /// a following `pointer_move` reports a DRAG), else activate a hovered link (the reporting path
-    /// takes precedence — a tracking app owns the click).
+    /// A PointerDown on the legacy `send` wire: activate a hovered link. Only reached when the pane
+    /// is NOT tracking — while a mouse mode is active the oracle owns the raw multi-button stream
+    /// ([`External::wants_raw_pointer_buttons`]) and pinion SUPPRESSES this legacy wire, routing
+    /// every L/M/R press/release through [`HyperlinkOracle::raw_pointer_button`] as a mouse report.
+    /// The `is_active` guard keeps "a tracking press reports, it does not activate a link" even if
+    /// the wire were ever reached mid-tracking.
     fn on_pointer_down(&self) {
-        if self.state.mouse_protocol.get().is_active() {
-            self.state
-                .record_report(MouseButton::Left, MouseEventKind::Press);
-            self.state.pressed.set(true);
-        } else {
+        if !self.state.mouse_protocol.get().is_active() {
             self.activate();
         }
-    }
-
-    /// A LEFT PointerUp: report the release when the child is tracking, and clear the held flag
-    /// either way (so a mode toggled off mid-hold cannot leave a phantom drag armed). A link
-    /// activates on the PRESS (matching the pre-tracking behaviour), so a non-tracking release does
-    /// nothing.
-    fn on_pointer_up(&self) {
-        if self.state.mouse_protocol.get().is_active() {
-            self.state
-                .record_report(MouseButton::Left, MouseEventKind::Release);
-        }
-        self.state.pressed.set(false);
     }
 }
 
@@ -483,6 +477,21 @@ impl HyperlinkOracle {
 /// is why an earlier exact `== "PointerDown"` match missed native clicks.
 fn send_event_name(payload: &str) -> &str {
     split_send_payload(payload).map_or(payload, |(_, event, _)| event)
+}
+
+/// The button a DRAG should report given the set still held after a raw edge: the PRIMARY of the
+/// held set, left over middle over right (xterm reports a drag with one held button, so a chord
+/// picks a deterministic primary). `None` when nothing is held — the disarm that ends a drag.
+fn primary_held(buttons: PointerButtons) -> Option<MouseButton> {
+    if buttons.contains(PointerButton::Left) {
+        Some(MouseButton::Left)
+    } else if buttons.contains(PointerButton::Middle) {
+        Some(MouseButton::Middle)
+    } else if buttons.contains(PointerButton::Right) {
+        Some(MouseButton::Right)
+    } else {
+        None
+    }
 }
 
 impl External for HyperlinkOracle {
@@ -503,36 +512,73 @@ impl External for HyperlinkOracle {
         true
     }
 
-    /// Capture the press when the child is TRACKING the mouse (report EVERY press) or, absent a
-    /// tracking mode, only while over a link (activate it). A press captured for neither reason
-    /// falls through to text selection / focus. Dynamic from the live tracking bit + `hovered`
-    /// (both set before the press: the bit by the reconcile, `hovered` by the last `pointer_move`).
+    /// Capture the press only while over a link, to activate it. A TRACKING pane does not capture
+    /// here: it owns the raw multi-button stream ([`Self::wants_raw_pointer_buttons`]), whose
+    /// PINION-PR72 R1418 implicit grab forwards the drag position and whose L/M/R press/release
+    /// edges arrive through [`HyperlinkOracle::raw_pointer_button`] — capture is purely the
+    /// link-activation affordance. A press over neither a link nor a tracking pane falls through to
+    /// text selection / focus. Dynamic from `hovered` (set by the last `pointer_move`).
     fn wants_pointer_capture(&self) -> bool {
-        self.state.mouse_protocol.get().is_active() || self.state.hovered.get().is_some()
+        self.state.hovered.get().is_some()
+    }
+
+    /// Own the pane's raw multi-button pointer stream whenever the child is TRACKING the mouse
+    /// (PINION-PR72). Returning `true` makes pinion deliver EVERY left / middle / right press and
+    /// release to [`HyperlinkOracle::raw_pointer_button`] with the modifiers held at each edge, and
+    /// SUPPRESS the GUI defaults for this pane — no context menu on right, no PRIMARY paste on
+    /// middle, no legacy `PointerDown` / `PointerUp` send wire — so a tracking TUI (vim right-drag,
+    /// middle paste, a context-menu app) owns the buttons. Polled per edge, so it tracks the live
+    /// mode: off a tracking mode the pane keeps the native GUI button semantics.
+    fn wants_raw_pointer_buttons(&self) -> bool {
+        self.state.mouse_protocol.get().is_active()
     }
 
     /// Each move delivers a `[0,1]` pane-rect fraction: reconstruct the cell and, when it CHANGES,
-    /// forward a DRAG (a button held under button/any-event tracking) or bare MOTION (no button,
-    /// any-event tracking) report at the new cell — cell-granular, never per-pixel (xterm's rule).
-    /// Always records the last pointer cell (for a press/release report, link or not) and updates
-    /// the hovered link (or `None` off a link, for the hover highlight).
+    /// forward a DRAG (the `held` button under button/any-event tracking) or bare MOTION (no
+    /// button, any-event tracking) report at the new cell — cell-granular, never per-pixel (xterm's
+    /// rule). Always records the last pointer cell (for a press/release report, link or not) and
+    /// updates the hovered link (or `None` off a link, for the hover highlight).
     fn pointer_move(&mut self, x_rel: f32, y_rel: f32) {
         let cell = self.state.cell_at(x_rel, y_rel);
         if cell != self.state.last_cell.get() {
             let proto = self.state.mouse_protocol.get();
             self.state.last_cell.set(cell);
-            if self.state.pressed.get() {
+            if let Some(button) = self.state.held.get() {
                 if proto.reports_drag() {
                     self.state
-                        .record_report(MouseButton::Left, MouseEventKind::Drag);
+                        .record_report(button, MouseEventKind::Drag, Modifiers::default());
                 }
             } else if proto.reports_motion() {
-                self.state
-                    .record_report(MouseButton::None, MouseEventKind::Motion);
+                self.state.record_report(
+                    MouseButton::None,
+                    MouseEventKind::Motion,
+                    Modifiers::default(),
+                );
             }
         }
         let hovered = self.state.links.borrow().get(&cell).map(|(id, _)| *id);
         self.state.hovered.set(hovered);
+    }
+
+    /// A raw pointer-button edge from the PINION-PR72 multi-button stream (opted into by
+    /// [`Self::wants_raw_pointer_buttons`] while the child is tracking): report the left / middle /
+    /// right press or release at the last resolved cell, with the modifiers held at THIS edge — the
+    /// press edge now carries them too (the gap the legacy send wire had). Then track the PRIMARY
+    /// held button (left over middle over right) from the event's held set, so a following
+    /// `pointer_move` drags with the actual button and a full release (`buttons` empty) disarms it.
+    fn raw_pointer_button(&mut self, event: RawPointerButton) {
+        let button = match event.button {
+            PointerButton::Left => MouseButton::Left,
+            PointerButton::Middle => MouseButton::Middle,
+            PointerButton::Right => MouseButton::Right,
+        };
+        let kind = match event.edge {
+            PointerEdge::Down => MouseEventKind::Press,
+            PointerEdge::Up => MouseEventKind::Release,
+        };
+        self.state
+            .record_report(button, kind, to_input_mods(event.modifiers));
+        self.state.held.set(primary_held(event.buttons));
     }
 
     fn introspect(&self) -> Option<&dyn ExternalIntrospect> {
@@ -599,18 +645,17 @@ impl ExternalIntrospect for HyperlinkOracle {
         args: IntrospectValue,
     ) -> Result<IntrospectValue, InvokeError> {
         match path {
-            // The router press/release channel (R1401). A native grid press arrives COMPOSITE
+            // The legacy router press channel (R1401). A native grid press arrives COMPOSITE
             // (`"grid:PointerDown"`, the `{pane}#grid` sub-index), the RPC / test path sends the
-            // bare event name — `send_event_name` decodes both. When the child is tracking, a
-            // press/release becomes a mouse REPORT (the pane pointer authority); otherwise a
-            // PointerDown over a link activates it (the click). Other sends are ignored.
+            // bare event name — `send_event_name` decodes both. This wire only fires when the pane
+            // is NOT tracking (a tracking pane owns the raw multi-button stream, which suppresses
+            // it): a PointerDown over a link activates it (the click). The release edge carries no
+            // non-tracking semantic (a link activates on the press), so PointerUp is ignored here.
             "send" => {
-                if let IntrospectValue::Text(payload) = &args {
-                    match send_event_name(payload) {
-                        "PointerDown" => self.on_pointer_down(),
-                        "PointerUp" => self.on_pointer_up(),
-                        _ => {}
-                    }
+                if let IntrospectValue::Text(payload) = &args
+                    && send_event_name(payload) == "PointerDown"
+                {
+                    self.on_pointer_down();
                 }
                 Ok(IntrospectValue::Null)
             }
@@ -747,6 +792,26 @@ impl Drop for RecordedOpener {
 mod tests {
     use super::*;
     use pinion_core::reactive::Owner;
+
+    /// Build a lone raw button edge — a single press or release of `button` with `mods` held. The
+    /// held set is just that button on a press, empty on a release (a single-button click); the
+    /// PINION-PR72 stream the oracle's `raw_pointer_button` consumes while a pane is tracking.
+    fn raw_edge(
+        button: PointerButton,
+        edge: PointerEdge,
+        mods: pinion_core::Modifiers,
+    ) -> RawPointerButton {
+        let buttons = match edge {
+            PointerEdge::Down => PointerButtons::empty().with(button),
+            PointerEdge::Up => PointerButtons::empty(),
+        };
+        RawPointerButton {
+            button,
+            edge,
+            modifiers: mods,
+            buttons,
+        }
+    }
 
     #[test]
     fn frac_to_index_floors_and_clamps_one_short() {
@@ -909,10 +974,11 @@ mod tests {
         );
     }
 
-    /// While the child is tracking the mouse, the oracle captures EVERY press (link or not) and a
-    /// press/release becomes a LEFT report at the last hovered cell — the report path, not link /
-    /// selection. Revert-proof: reverting `wants_pointer_capture` to `hovered`-only makes the
-    /// off-a-link capture assert fail; dropping the report branch empties the drained queue.
+    /// While the child is tracking the mouse, the oracle OWNS the raw multi-button stream
+    /// ([`wants_raw_pointer_buttons`]) and a left press/release becomes a LEFT report at the last
+    /// hovered cell — the report path, not link / selection. Revert-proof: reverting
+    /// `wants_raw_pointer_buttons` to `false` stops the router delivering the edges; dropping the
+    /// `record_report` in `raw_pointer_button` empties the drained queue.
     #[test]
     fn tracking_captures_every_press_and_reports_left_press_then_release() {
         Owner::new().run(|| {
@@ -926,21 +992,13 @@ mod tests {
             };
             oracle.pointer_move(0.3, 0.0); // a plain cell on row 0 (no link)
             assert!(
-                oracle.wants_pointer_capture(),
-                "tracking captures every press, link or not"
+                oracle.wants_raw_pointer_buttons(),
+                "a tracking pane owns the raw multi-button stream, link or not"
             );
             let cell = use_pane_hover(3).last_cell.get();
-            // A native grid press + release (composite payloads).
-            let _ = ExternalIntrospect::invoke(
-                &mut oracle,
-                "send",
-                IntrospectValue::Text("grid:PointerDown".to_owned()),
-            );
-            let _ = ExternalIntrospect::invoke(
-                &mut oracle,
-                "send",
-                IntrospectValue::Text("grid:PointerUp".to_owned()),
-            );
+            let mods = pinion_core::Modifiers::default();
+            oracle.raw_pointer_button(raw_edge(PointerButton::Left, PointerEdge::Down, mods));
+            oracle.raw_pointer_button(raw_edge(PointerButton::Left, PointerEdge::Up, mods));
             let reports = take_pane_mouse_reports(3);
             assert_eq!(reports.len(), 2, "one press + one release queued");
             assert_eq!(
@@ -1082,12 +1140,12 @@ mod tests {
                 take_pane_mouse_reports(5).is_empty(),
                 "1002 reports no bare motion"
             );
-            // Press (captured) then drag to a new cell -> exactly one Drag report at the new cell.
-            let _ = ExternalIntrospect::invoke(
-                &mut oracle,
-                "send",
-                IntrospectValue::Text("grid:PointerDown".to_owned()),
-            );
+            // A raw left press (tracking) then a drag to a new cell -> one Drag report there.
+            oracle.raw_pointer_button(raw_edge(
+                PointerButton::Left,
+                PointerEdge::Down,
+                pinion_core::Modifiers::default(),
+            ));
             oracle.pointer_move(0.95, 0.05); // ~cell (7,0)
             let reports = take_pane_mouse_reports(5);
             let drags: Vec<_> = reports
@@ -1127,12 +1185,12 @@ mod tests {
                 "one bare-motion report on the cell change"
             );
             assert_eq!(motions[0].button, MouseButton::None);
-            // With a button held, a move is a DRAG (Left), not bare motion.
-            let _ = ExternalIntrospect::invoke(
-                &mut oracle,
-                "send",
-                IntrospectValue::Text("grid:PointerDown".to_owned()),
-            );
+            // With a button held (raw left press), a move is a DRAG (Left), not bare motion.
+            oracle.raw_pointer_button(raw_edge(
+                PointerButton::Left,
+                PointerEdge::Down,
+                pinion_core::Modifiers::default(),
+            ));
             oracle.pointer_move(0.95, 0.05); // ~cell (7,0)
             let held = take_pane_mouse_reports(6);
             assert!(
@@ -1154,17 +1212,108 @@ mod tests {
         Owner::new().run(|| {
             let mut oracle = oracle_at(7, MouseProtocol::Click);
             oracle.pointer_move(0.1, 0.1);
-            let _ = ExternalIntrospect::invoke(
-                &mut oracle,
-                "send",
-                IntrospectValue::Text("grid:PointerDown".to_owned()),
-            );
+            oracle.raw_pointer_button(raw_edge(
+                PointerButton::Left,
+                PointerEdge::Down,
+                pinion_core::Modifiers::default(),
+            ));
             oracle.pointer_move(0.9, 0.1); // a held move
             assert!(
                 take_pane_mouse_reports(7)
                     .iter()
                     .all(|r| matches!(r.kind, MouseEventKind::Press | MouseEventKind::Release)),
                 "1000 reports only press/release, never drag or motion"
+            );
+        });
+    }
+
+    /// PINION-PR72 S3: the raw stream reports the MIDDLE and RIGHT buttons on BOTH edges (not just
+    /// left) — the arc pinion's legacy send wire never delivered (right had no Released arm, middle
+    /// no press edge). Revert-proof: mapping every button to Left would fail the button asserts.
+    #[test]
+    fn right_and_middle_press_release_report_their_button_both_edges() {
+        Owner::new().run(|| {
+            let mut oracle = oracle_at(9, MouseProtocol::Click);
+            oracle.pointer_move(0.3, 0.3);
+            let mods = pinion_core::Modifiers::default();
+            for button in [PointerButton::Right, PointerButton::Middle] {
+                oracle.raw_pointer_button(raw_edge(button, PointerEdge::Down, mods));
+                oracle.raw_pointer_button(raw_edge(button, PointerEdge::Up, mods));
+            }
+            let reports = take_pane_mouse_reports(9);
+            let kinds: Vec<_> = reports.iter().map(|r| (r.button, r.kind)).collect();
+            assert_eq!(
+                kinds,
+                vec![
+                    (MouseButton::Right, MouseEventKind::Press),
+                    (MouseButton::Right, MouseEventKind::Release),
+                    (MouseButton::Middle, MouseEventKind::Press),
+                    (MouseButton::Middle, MouseEventKind::Release),
+                ],
+                "each button reports its own identity on both the press and release edge"
+            );
+        });
+    }
+
+    /// PINION-PR72 S4 press-mods: the raw stream carries the modifiers held at EACH edge — the press
+    /// now too (the legacy `PointerDown` wire dropped them). A Ctrl+Shift left click reports both on
+    /// press and release. Revert-proof: hard-coding `Modifiers::default()` in `record_report` for the
+    /// edge would drop them.
+    #[test]
+    fn a_raw_press_carries_the_modifiers_held_at_that_edge() {
+        Owner::new().run(|| {
+            let mut oracle = oracle_at(10, MouseProtocol::Click);
+            oracle.pointer_move(0.3, 0.3);
+            let ctrl_shift = pinion_core::Modifiers {
+                ctrl: true,
+                shift: true,
+                ..pinion_core::Modifiers::default()
+            };
+            oracle.raw_pointer_button(raw_edge(PointerButton::Left, PointerEdge::Down, ctrl_shift));
+            oracle.raw_pointer_button(raw_edge(PointerButton::Left, PointerEdge::Up, ctrl_shift));
+            let reports = take_pane_mouse_reports(10);
+            let want = Modifiers {
+                ctrl: true,
+                shift: true,
+                ..Modifiers::default()
+            };
+            assert_eq!(reports.len(), 2);
+            assert!(
+                reports.iter().all(|r| r.mods == want),
+                "both edges carry the Ctrl+Shift modifiers held at the click"
+            );
+        });
+    }
+
+    /// A held RIGHT button drags with the RIGHT button under 1002 — the generalized held-button path
+    /// (`primary_held` off the raw held set), not the old left-only flag. Revert-proof: reverting
+    /// `held` to a bool would drag as Left.
+    #[test]
+    fn a_right_button_drag_reports_the_right_button() {
+        Owner::new().run(|| {
+            let mut oracle = oracle_at(11, MouseProtocol::ButtonEvent);
+            oracle.pointer_move(0.05, 0.05); // ~cell (0,0)
+            let mods = pinion_core::Modifiers::default();
+            oracle.raw_pointer_button(raw_edge(PointerButton::Right, PointerEdge::Down, mods));
+            oracle.pointer_move(0.95, 0.05); // ~cell (7,0) — a drag
+            let drags: Vec<_> = take_pane_mouse_reports(11)
+                .into_iter()
+                .filter(|r| r.kind == MouseEventKind::Drag)
+                .collect();
+            assert_eq!(drags.len(), 1, "one drag on the cell change");
+            assert_eq!(
+                drags[0].button,
+                MouseButton::Right,
+                "drags with the held button"
+            );
+            // Releasing disarms the drag (held set empties).
+            oracle.raw_pointer_button(raw_edge(PointerButton::Right, PointerEdge::Up, mods));
+            oracle.pointer_move(0.5, 0.05); // another cell change, no button held
+            assert!(
+                take_pane_mouse_reports(11)
+                    .iter()
+                    .all(|r| r.kind != MouseEventKind::Drag),
+                "no drag after the release disarms the held button"
             );
         });
     }
