@@ -210,6 +210,12 @@ pub struct Emulator {
     /// ([`KITTY_KEYBOARD_SUPPORTED`]); the CURRENT flags exposed via [`VtPort::input_modes`] are
     /// the top of the stack (or empty). Bounded by [`KITTY_STACK_CAP`] against a runaway pusher.
     kitty_kbd_stack: Vec<u8>,
+    /// XTSAVE / XTRESTORE (`CSI ? Ps s` / `r`) shadow registers: a DEC private mode's number mapped to
+    /// the value it held when last saved. One slot per mode (xterm's `save_modes[]`, not a growable
+    /// stack — a re-save overwrites), holding only modes sprag tracks. Survives the alt-screen swap
+    /// and a DECSTR (an xterm extension outside the DEC soft-reset set), cleared only by RIS via
+    /// [`Emulator::new`]. Read by XTRESTORE to reapply through [`Emulator::set_dec_private_mode`].
+    saved_dec_modes: HashMap<u16, bool>,
     /// The terminal's live colour [`Palette`] — the 256 indexed slots plus the dynamic default
     /// foreground / background / cursor colours. Mutated by the OSC colour commands (`OSC 4 / 10 /
     /// 11 / 12` set, `OSC 104 / 110 / 111 / 112` reset) and read by the projection to resolve each
@@ -376,6 +382,7 @@ impl Emulator {
             attrs: Attrs::default(),
             input_modes: InputModes::default(),
             kitty_kbd_stack: Vec::new(),
+            saved_dec_modes: HashMap::new(),
             palette: Palette::xterm_default(),
             responses: Vec::new(),
             title: None,
@@ -1580,90 +1587,24 @@ impl Emulator {
 
     fn mode(&mut self, m: Mode) {
         match m {
-            Mode::SetDecPrivateMode(DecPrivateMode::Code(code)) => match code {
-                DecPrivateModeCode::ShowCursor => self.cursor_visible = true,
-                DecPrivateModeCode::ApplicationCursorKeys => {
-                    self.input_modes.application_cursor_keys = true;
-                }
-                // DECSET 7 — autowrap on (the boot default): print past the right margin wraps.
-                DecPrivateModeCode::AutoWrap => self.autowrap = true,
-                // DECSET 6 — origin mode: cursor addressing becomes region-relative and confined
-                // to the scroll region; entering homes the cursor to the region's top-left.
-                DecPrivateModeCode::OriginMode => {
-                    self.origin_mode = true;
-                    self.col = 0;
-                    self.row = self.origin_row();
-                }
-                DecPrivateModeCode::ClearAndEnableAlternateScreen
-                | DecPrivateModeCode::EnableAlternateScreen
-                | DecPrivateModeCode::OptEnableAlternateScreen => self.enter_alt(),
-                DecPrivateModeCode::BracketedPaste => {
-                    self.input_modes.bracketed_paste = true;
-                }
-                // DECSET 1000 / 1002 / 1003 — X11 mouse tracking at three levels: press+release
-                // (Click), + DRAG while a button is held (ButtonEvent), + BARE motion (AnyEvent).
-                // sprag keeps ONE highest-active protocol field rather than xterm's independent
-                // mode bits (documented bound on `MouseProtocol`): a child sets exactly one level
-                // and resets the same, which this models faithfully; only a pathological stack
-                // (set two, reset the higher) differs.
-                DecPrivateModeCode::MouseTracking => {
-                    self.input_modes.mouse_protocol = MouseProtocol::Click;
-                }
-                DecPrivateModeCode::ButtonEventMouse => {
-                    self.input_modes.mouse_protocol = MouseProtocol::ButtonEvent;
-                }
-                DecPrivateModeCode::AnyEventMouse => {
-                    self.input_modes.mouse_protocol = MouseProtocol::AnyEvent;
-                }
-                // DECSET 1006 — SGR mouse encoding. Orthogonal to the tracking mode: a child sets a
-                // tracking mode AND (optionally) this encoding.
-                DecPrivateModeCode::SGRMouse => {
-                    self.input_modes.mouse_encoding = MouseEncoding::Sgr;
-                }
-                // DECSET 1004 — focus reporting. Orthogonal to mouse tracking: the terminal sends
-                // ESC [ I / ESC [ O when the pane gains / loses focus.
-                DecPrivateModeCode::FocusTracking => {
-                    self.input_modes.focus_tracking = true;
-                }
-                _ => {}
-            },
-            Mode::ResetDecPrivateMode(DecPrivateMode::Code(code)) => match code {
-                DecPrivateModeCode::ShowCursor => self.cursor_visible = false,
-                DecPrivateModeCode::ApplicationCursorKeys => {
-                    self.input_modes.application_cursor_keys = false;
-                }
-                // DECRST 7 — autowrap off: print at the right margin overwrites in place.
-                DecPrivateModeCode::AutoWrap => self.autowrap = false,
-                // DECRST 6 — leave origin mode: addressing returns to screen-absolute and the
-                // cursor homes to the screen top-left.
-                DecPrivateModeCode::OriginMode => {
-                    self.origin_mode = false;
-                    self.col = 0;
-                    self.row = self.origin_row();
-                }
-                DecPrivateModeCode::ClearAndEnableAlternateScreen
-                | DecPrivateModeCode::EnableAlternateScreen
-                | DecPrivateModeCode::OptEnableAlternateScreen => self.exit_alt(),
-                DecPrivateModeCode::BracketedPaste => {
-                    self.input_modes.bracketed_paste = false;
-                }
-                // DECRST 1000 / 1002 / 1003 — stop mouse tracking at any level, hand the mouse back
-                // to the terminal (single-field model: any tracking reset returns to None).
-                DecPrivateModeCode::MouseTracking
-                | DecPrivateModeCode::ButtonEventMouse
-                | DecPrivateModeCode::AnyEventMouse => {
-                    self.input_modes.mouse_protocol = MouseProtocol::None;
-                }
-                // DECRST 1006 — back to the legacy X10 encoding (the tracking mode is unaffected).
-                DecPrivateModeCode::SGRMouse => {
-                    self.input_modes.mouse_encoding = MouseEncoding::X10;
-                }
-                // DECRST 1004 — stop focus reporting.
-                DecPrivateModeCode::FocusTracking => {
-                    self.input_modes.focus_tracking = false;
-                }
-                _ => {}
-            },
+            // DECSET / DECRST — set (`CSI ? Ps h`) or reset (`CSI ? Ps l`) a DEC private mode, both
+            // routed through the one `set_dec_private_mode` SSOT so DECSET, DECRST, and an XTRESTORE
+            // apply a mode value the same way (no drift between the three entry points).
+            Mode::SetDecPrivateMode(DecPrivateMode::Code(code)) => {
+                self.set_dec_private_mode(code, true);
+            }
+            Mode::ResetDecPrivateMode(DecPrivateMode::Code(code)) => {
+                self.set_dec_private_mode(code, false);
+            }
+            // XTSAVE / XTRESTORE (`CSI ? Ps s` / `CSI ? Ps r`) — save the current value of a DEC
+            // private mode to a per-mode shadow register, then later restore it. One slot per mode
+            // (xterm's `save_modes[]` model, not a growable stack): a second save overwrites the slot.
+            Mode::SaveDecPrivateMode(DecPrivateMode::Code(code)) => {
+                self.save_dec_private_mode(code);
+            }
+            Mode::RestoreDecPrivateMode(DecPrivateMode::Code(code)) => {
+                self.restore_dec_private_mode(code);
+            }
             // IRM insert / replace mode (ANSI mode 4) — the one ANSI (non-private) mode sprag acts
             // on. `print_str` reads the flag; see [`Self::insert_mode`].
             Mode::SetMode(TerminalMode::Code(TerminalModeCode::Insert)) => {
@@ -1677,55 +1618,149 @@ impl Emulator {
             // `CSI Ps $ p` for an ANSI mode.
             Mode::QueryDecPrivateMode(dm) => self.report_dec_private_mode(dm),
             Mode::QueryMode(tm) => self.report_ansi_mode(tm),
-            // Still dropped: other ANSI mode set / reset (KAM / SRM / LNM / …), the XTSAVE / XTRESTORE
-            // private-mode stack (`CSI ? Ps s` / `r`), and XtermKeyMode — none in the acted-on subset.
+            // Still dropped: other ANSI mode set / reset (KAM / SRM / LNM / …), XtermKeyMode, and any
+            // Unspecified (unknown-number) mode across every family — none in the acted-on subset.
             _ => {}
+        }
+    }
+
+    /// Apply a value to a DEC private mode — the single SSOT for "what does setting mode `code` to
+    /// `on` do", shared by DECSET (`on = true`), DECRST (`on = false`), and an XTRESTORE replay so the
+    /// three entry points can never drift. An unrecognized code is a no-op. Behaviourally identical to
+    /// the old split DECSET / DECRST arms: origin mode homes the cursor on either edge; the three
+    /// alt-screen spellings enter / exit the one modeled alt screen; the single mouse-protocol field
+    /// takes the level on set and returns to `None` on reset (its documented bound); SGR mouse
+    /// encoding toggles Sgr / X10.
+    fn set_dec_private_mode(&mut self, code: DecPrivateModeCode, on: bool) {
+        match code {
+            // DECSET / DECRST 25 — cursor visibility.
+            DecPrivateModeCode::ShowCursor => self.cursor_visible = on,
+            // DECCKM (1) — application vs normal cursor-key encoding.
+            DecPrivateModeCode::ApplicationCursorKeys => {
+                self.input_modes.application_cursor_keys = on;
+            }
+            // DECAWM (7) — autowrap on wraps past the right margin; off overwrites in place.
+            DecPrivateModeCode::AutoWrap => self.autowrap = on,
+            // DECOM (6) — origin mode: on makes addressing region-relative and confined; either edge
+            // homes the cursor (to the region top when on, the screen top when off).
+            DecPrivateModeCode::OriginMode => {
+                self.origin_mode = on;
+                self.col = 0;
+                self.row = self.origin_row();
+            }
+            // 1049 / 1047 / 47 — enter / exit the one modeled alternate screen.
+            DecPrivateModeCode::ClearAndEnableAlternateScreen
+            | DecPrivateModeCode::EnableAlternateScreen
+            | DecPrivateModeCode::OptEnableAlternateScreen => {
+                if on {
+                    self.enter_alt();
+                } else {
+                    self.exit_alt();
+                }
+            }
+            // 2004 — bracketed paste.
+            DecPrivateModeCode::BracketedPaste => self.input_modes.bracketed_paste = on,
+            // 1000 / 1002 / 1003 — X11 mouse tracking at three levels. The single-field model
+            // (documented on `MouseProtocol`) takes the level on set; any reset returns to `None`.
+            DecPrivateModeCode::MouseTracking => {
+                self.input_modes.mouse_protocol = if on {
+                    MouseProtocol::Click
+                } else {
+                    MouseProtocol::None
+                };
+            }
+            DecPrivateModeCode::ButtonEventMouse => {
+                self.input_modes.mouse_protocol = if on {
+                    MouseProtocol::ButtonEvent
+                } else {
+                    MouseProtocol::None
+                };
+            }
+            DecPrivateModeCode::AnyEventMouse => {
+                self.input_modes.mouse_protocol = if on {
+                    MouseProtocol::AnyEvent
+                } else {
+                    MouseProtocol::None
+                };
+            }
+            // 1006 — SGR mouse encoding (orthogonal to the tracking level); off is the legacy X10.
+            DecPrivateModeCode::SGRMouse => {
+                self.input_modes.mouse_encoding = if on {
+                    MouseEncoding::Sgr
+                } else {
+                    MouseEncoding::X10
+                };
+            }
+            // 1004 — focus reporting.
+            DecPrivateModeCode::FocusTracking => self.input_modes.focus_tracking = on,
+            _ => {}
+        }
+    }
+
+    /// The current boolean state of a DEC private mode, or `None` if sprag does not track it. The one
+    /// SSOT read by both DECRQM ([`Self::report_dec_private_mode`]) and XTSAVE
+    /// ([`Self::save_dec_private_mode`]) so the reported and saved values can never diverge.
+    fn dec_private_mode_state(&self, code: &DecPrivateModeCode) -> Option<bool> {
+        Some(match code {
+            DecPrivateModeCode::ShowCursor => self.cursor_visible,
+            DecPrivateModeCode::ApplicationCursorKeys => self.input_modes.application_cursor_keys,
+            DecPrivateModeCode::AutoWrap => self.autowrap,
+            DecPrivateModeCode::OriginMode => self.origin_mode,
+            // One alt screen is modeled (`saved_main` present iff on the alt); all three enable
+            // spellings report that single state.
+            DecPrivateModeCode::ClearAndEnableAlternateScreen
+            | DecPrivateModeCode::EnableAlternateScreen
+            | DecPrivateModeCode::OptEnableAlternateScreen => self.saved_main.is_some(),
+            DecPrivateModeCode::BracketedPaste => self.input_modes.bracketed_paste,
+            // Single-protocol mouse model: each tracking level reads set iff it is the EXACT active
+            // level (setting 1002 leaves 1000 reset, as in xterm).
+            DecPrivateModeCode::MouseTracking => {
+                self.input_modes.mouse_protocol == MouseProtocol::Click
+            }
+            DecPrivateModeCode::ButtonEventMouse => {
+                self.input_modes.mouse_protocol == MouseProtocol::ButtonEvent
+            }
+            DecPrivateModeCode::AnyEventMouse => {
+                self.input_modes.mouse_protocol == MouseProtocol::AnyEvent
+            }
+            DecPrivateModeCode::SGRMouse => self.input_modes.mouse_encoding == MouseEncoding::Sgr,
+            DecPrivateModeCode::FocusTracking => self.input_modes.focus_tracking,
+            _ => return None,
+        })
+    }
+
+    /// XTSAVE (`CSI ? Ps s`) — copy a DEC private mode's current value into its shadow register. A
+    /// mode sprag does not track is a no-op (nothing to save — matching xterm for an unknown mode).
+    /// One slot per mode number: a second save of the same mode overwrites it (not a growable stack).
+    fn save_dec_private_mode(&mut self, code: DecPrivateModeCode) {
+        if let Some(on) = self.dec_private_mode_state(&code) {
+            self.saved_dec_modes.insert(code as u16, on);
+        }
+    }
+
+    /// XTRESTORE (`CSI ? Ps r`) — reapply the value saved by XTSAVE, through the same
+    /// [`Self::set_dec_private_mode`] path DECSET / DECRST use. With no prior save for this mode it is
+    /// a no-op (xterm leaves the mode unchanged rather than forcing a default).
+    fn restore_dec_private_mode(&mut self, code: DecPrivateModeCode) {
+        let number = code.clone() as u16;
+        if let Some(&on) = self.saved_dec_modes.get(&number) {
+            self.set_dec_private_mode(code, on);
         }
     }
 
     /// DECRQM for a DEC private mode (`CSI ? Ps $ p`) — answer DECRPM `CSI ? Ps ; Pm $ y`, where `Pm`
     /// reports the mode's CURRENT state: `1` = set, `2` = reset, `0` = not recognized. sprag never
     /// answers `3` / `4` (permanently set / reset) — every mode it recognizes is genuinely togglable.
-    /// A mode termwiz tokenizes but sprag does not act on, and any Unspecified (unknown) code, answer
-    /// `0` so a probe learns "unsupported" rather than timing out. A query carries no cells, so — like
-    /// DA / DSR — it stamps NO row damage (it only reads state and appends to `responses`).
+    /// A mode termwiz tokenizes but sprag does not act on ([`Self::dec_private_mode_state`] returns
+    /// `None`), and any Unspecified (unknown) code, answer `0` so a probe learns "unsupported" rather
+    /// than timing out. A query carries no cells, so — like DA / DSR — it stamps NO row damage.
     fn report_dec_private_mode(&mut self, dm: DecPrivateMode) {
         let (number, state) = match dm {
             DecPrivateMode::Unspecified(n) => (n, DECRPM_NOT_RECOGNIZED),
             DecPrivateMode::Code(code) => {
-                let state = match &code {
-                    DecPrivateModeCode::ShowCursor => decrpm(self.cursor_visible),
-                    DecPrivateModeCode::ApplicationCursorKeys => {
-                        decrpm(self.input_modes.application_cursor_keys)
-                    }
-                    DecPrivateModeCode::AutoWrap => decrpm(self.autowrap),
-                    DecPrivateModeCode::OriginMode => decrpm(self.origin_mode),
-                    // One alt screen is modeled (`saved_main` present iff on the alt); all three
-                    // enable spellings report that single state.
-                    DecPrivateModeCode::ClearAndEnableAlternateScreen
-                    | DecPrivateModeCode::EnableAlternateScreen
-                    | DecPrivateModeCode::OptEnableAlternateScreen => {
-                        decrpm(self.saved_main.is_some())
-                    }
-                    DecPrivateModeCode::BracketedPaste => decrpm(self.input_modes.bracketed_paste),
-                    // Single-protocol mouse model (documented on `MouseProtocol`): each tracking level
-                    // reports set iff it is the EXACT active level — matching what a child that set one
-                    // level and queries another sees, and how xterm's independent bits read for that
-                    // child (setting 1002 leaves 1000 reset).
-                    DecPrivateModeCode::MouseTracking => {
-                        decrpm(self.input_modes.mouse_protocol == MouseProtocol::Click)
-                    }
-                    DecPrivateModeCode::ButtonEventMouse => {
-                        decrpm(self.input_modes.mouse_protocol == MouseProtocol::ButtonEvent)
-                    }
-                    DecPrivateModeCode::AnyEventMouse => {
-                        decrpm(self.input_modes.mouse_protocol == MouseProtocol::AnyEvent)
-                    }
-                    DecPrivateModeCode::SGRMouse => {
-                        decrpm(self.input_modes.mouse_encoding == MouseEncoding::Sgr)
-                    }
-                    DecPrivateModeCode::FocusTracking => decrpm(self.input_modes.focus_tracking),
-                    _ => DECRPM_NOT_RECOGNIZED,
+                let state = match self.dec_private_mode_state(&code) {
+                    Some(on) => decrpm(on),
+                    None => DECRPM_NOT_RECOGNIZED,
                 };
                 (code as u16, state)
             }
@@ -5549,5 +5584,121 @@ mod tests {
             "a query is not a paint"
         );
         assert!(!em.take_responses().is_empty(), "but it answered");
+    }
+
+    // --- XTSAVE / XTRESTORE DEC private-mode shadow registers (CSI ? Ps s / CSI ? Ps r) ---
+
+    #[test]
+    fn xtsave_and_xtrestore_round_trips_autowrap() {
+        // Save autowrap (default ON), turn it off, restore -> ON again (observed through print wrap).
+        let mut em = Emulator::new(3, 2);
+        em.advance(b"\x1b[?7s"); // XTSAVE autowrap (on)
+        em.advance(b"\x1b[?7l"); // DECRST 7 -> off
+        em.advance(b"\x1b[?7r"); // XTRESTORE -> on
+        em.advance(b"abcd"); // width 4 on a 3-col row: wraps only if autowrap is on
+        assert_eq!(cluster(&em, 0, 1), "d", "autowrap was restored to ON");
+        assert_eq!(em.screen().cursor().row, 1);
+    }
+
+    #[test]
+    fn xtrestore_reapplies_the_saved_off_state() {
+        // The register holds whatever value was current at save time — here OFF.
+        let mut em = Emulator::new(3, 2);
+        em.advance(b"\x1b[?7l"); // autowrap off
+        em.advance(b"\x1b[?7s"); // XTSAVE (off)
+        em.advance(b"\x1b[?7h"); // on
+        em.advance(b"\x1b[?7r"); // XTRESTORE -> off again
+        em.advance(b"abcd");
+        assert_eq!(
+            em.screen().row_text(0),
+            "abd",
+            "d overwrote c at the margin"
+        );
+        assert_eq!(
+            cluster(&em, 0, 1),
+            " ",
+            "autowrap restored to OFF: nothing wrapped"
+        );
+    }
+
+    #[test]
+    fn xtrestore_without_a_prior_save_is_a_noop() {
+        // XTRESTORE with no saved value leaves the mode as-is (xterm does not force a default).
+        let mut em = Emulator::new(3, 2);
+        em.advance(b"\x1b[?7l"); // autowrap off, never saved
+        em.advance(b"\x1b[?7r"); // XTRESTORE with no save -> unchanged (stays off)
+        em.advance(b"abcd");
+        assert_eq!(cluster(&em, 0, 1), " ", "no save -> autowrap left off");
+    }
+
+    #[test]
+    fn xtsave_xtrestore_round_trips_cursor_visibility() {
+        // A non-print mode round-trips too, observed via DECRQM.
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b[?25s"); // save cursor visibility (on)
+        em.advance(b"\x1b[?25l"); // hide
+        em.advance(b"\x1b[?25r"); // restore -> visible
+        em.advance(b"\x1b[?25$p");
+        assert_eq!(
+            em.take_responses(),
+            b"\x1b[?25;1$y",
+            "cursor visibility restored to set"
+        );
+    }
+
+    #[test]
+    fn xtsave_overwrites_the_single_slot_per_mode() {
+        // One slot per mode (not a growable stack): a second save overwrites the first.
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b[?7h\x1b[?7s"); // autowrap on, save (on)
+        em.advance(b"\x1b[?7l\x1b[?7s"); // autowrap off, save again -> slot now holds off
+        em.advance(b"\x1b[?7h"); // on
+        em.advance(b"\x1b[?7r"); // restore -> off (the second save won)
+        em.advance(b"\x1b[?7$p");
+        assert_eq!(
+            em.take_responses(),
+            b"\x1b[?7;2$y",
+            "the second save overwrote the slot"
+        );
+    }
+
+    #[test]
+    fn xtsave_restore_of_an_untracked_mode_is_a_noop() {
+        // ReverseVideo (5) is not tracked: save + restore do nothing and touch no other state.
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b[?5s\x1b[?5r"); // XTSAVE + XTRESTORE mode 5
+        em.advance(b"\x1b[?7$p"); // a tracked mode is untouched, still default-on
+        assert_eq!(em.take_responses(), b"\x1b[?7;1$y");
+    }
+
+    #[test]
+    fn the_xtsave_register_survives_a_soft_reset() {
+        // The shadow register is an xterm extension outside the DEC DECSTR set, so DECSTR keeps it
+        // (DECSTR restores autowrap to ON; a later XTRESTORE still reaches the pre-DECSTR saved OFF).
+        let mut em = Emulator::new(3, 2);
+        em.advance(b"\x1b[?7l\x1b[?7s"); // autowrap off, save (off)
+        em.advance(b"\x1b[!p"); // DECSTR -> autowrap back ON, register kept
+        em.advance(b"\x1b[?7r"); // XTRESTORE -> off (the surviving saved value)
+        em.advance(b"abcd");
+        assert_eq!(
+            cluster(&em, 0, 1),
+            " ",
+            "the saved register survived DECSTR"
+        );
+    }
+
+    #[test]
+    fn ris_clears_the_xtsave_register() {
+        // RIS rebuilds from Emulator::new, so the shadow registers are gone and a restore is a no-op.
+        let mut em = Emulator::new(3, 2);
+        em.advance(b"\x1b[?7l\x1b[?7s"); // autowrap off, save
+        em.advance(b"\x1bc"); // RIS -> register cleared, autowrap back on
+        em.advance(b"\x1b[?7r"); // XTRESTORE with no save -> no-op (autowrap stays on)
+        em.advance(b"abcd"); // autowrap on -> wraps
+        assert_eq!(
+            cluster(&em, 0, 1),
+            "d",
+            "RIS cleared the register: restore was a no-op"
+        );
     }
 }
