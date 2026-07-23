@@ -1672,12 +1672,84 @@ impl Emulator {
             Mode::ResetMode(TerminalMode::Code(TerminalModeCode::Insert)) => {
                 self.insert_mode = false;
             }
-            // Other ANSI modes (KAM / SRM / LNM / …) and every DECRQM query (`CSI Pd $ p` /
-            // `CSI ? Pd $ p`) stay dropped: DECRQM is a mode-agnostic REPORT feature belonging to all
-            // modes at once, not something IRM alone should half-answer — a partial DECRQM (reply for
-            // one mode, silence for the rest) is worse than none, so it is a coherent later round.
+            // DECRQM — Request Mode: report the current state of a queried mode (a query, so it
+            // produces a response rather than mutating). `CSI ? Ps $ p` for a DEC private mode,
+            // `CSI Ps $ p` for an ANSI mode.
+            Mode::QueryDecPrivateMode(dm) => self.report_dec_private_mode(dm),
+            Mode::QueryMode(tm) => self.report_ansi_mode(tm),
+            // Still dropped: other ANSI mode set / reset (KAM / SRM / LNM / …), the XTSAVE / XTRESTORE
+            // private-mode stack (`CSI ? Ps s` / `r`), and XtermKeyMode — none in the acted-on subset.
             _ => {}
         }
+    }
+
+    /// DECRQM for a DEC private mode (`CSI ? Ps $ p`) — answer DECRPM `CSI ? Ps ; Pm $ y`, where `Pm`
+    /// reports the mode's CURRENT state: `1` = set, `2` = reset, `0` = not recognized. sprag never
+    /// answers `3` / `4` (permanently set / reset) — every mode it recognizes is genuinely togglable.
+    /// A mode termwiz tokenizes but sprag does not act on, and any Unspecified (unknown) code, answer
+    /// `0` so a probe learns "unsupported" rather than timing out. A query carries no cells, so — like
+    /// DA / DSR — it stamps NO row damage (it only reads state and appends to `responses`).
+    fn report_dec_private_mode(&mut self, dm: DecPrivateMode) {
+        let (number, state) = match dm {
+            DecPrivateMode::Unspecified(n) => (n, DECRPM_NOT_RECOGNIZED),
+            DecPrivateMode::Code(code) => {
+                let state = match &code {
+                    DecPrivateModeCode::ShowCursor => decrpm(self.cursor_visible),
+                    DecPrivateModeCode::ApplicationCursorKeys => {
+                        decrpm(self.input_modes.application_cursor_keys)
+                    }
+                    DecPrivateModeCode::AutoWrap => decrpm(self.autowrap),
+                    DecPrivateModeCode::OriginMode => decrpm(self.origin_mode),
+                    // One alt screen is modeled (`saved_main` present iff on the alt); all three
+                    // enable spellings report that single state.
+                    DecPrivateModeCode::ClearAndEnableAlternateScreen
+                    | DecPrivateModeCode::EnableAlternateScreen
+                    | DecPrivateModeCode::OptEnableAlternateScreen => {
+                        decrpm(self.saved_main.is_some())
+                    }
+                    DecPrivateModeCode::BracketedPaste => decrpm(self.input_modes.bracketed_paste),
+                    // Single-protocol mouse model (documented on `MouseProtocol`): each tracking level
+                    // reports set iff it is the EXACT active level — matching what a child that set one
+                    // level and queries another sees, and how xterm's independent bits read for that
+                    // child (setting 1002 leaves 1000 reset).
+                    DecPrivateModeCode::MouseTracking => {
+                        decrpm(self.input_modes.mouse_protocol == MouseProtocol::Click)
+                    }
+                    DecPrivateModeCode::ButtonEventMouse => {
+                        decrpm(self.input_modes.mouse_protocol == MouseProtocol::ButtonEvent)
+                    }
+                    DecPrivateModeCode::AnyEventMouse => {
+                        decrpm(self.input_modes.mouse_protocol == MouseProtocol::AnyEvent)
+                    }
+                    DecPrivateModeCode::SGRMouse => {
+                        decrpm(self.input_modes.mouse_encoding == MouseEncoding::Sgr)
+                    }
+                    DecPrivateModeCode::FocusTracking => decrpm(self.input_modes.focus_tracking),
+                    _ => DECRPM_NOT_RECOGNIZED,
+                };
+                (code as u16, state)
+            }
+        };
+        self.responses
+            .extend_from_slice(format!("\x1b[?{number};{state}$y").as_bytes());
+    }
+
+    /// DECRQM for an ANSI mode (`CSI Ps $ p`) — answer DECRPM `CSI Ps ; Pm $ y`. IRM (mode 4) is the
+    /// one ANSI mode sprag acts on; every other ANSI mode and any Unspecified code answer `0` (not
+    /// recognized). Like [`Self::report_dec_private_mode`], a read-only query that stamps no damage.
+    fn report_ansi_mode(&mut self, tm: TerminalMode) {
+        let (number, state) = match tm {
+            TerminalMode::Unspecified(n) => (n, DECRPM_NOT_RECOGNIZED),
+            TerminalMode::Code(code) => {
+                let state = match &code {
+                    TerminalModeCode::Insert => decrpm(self.insert_mode),
+                    _ => DECRPM_NOT_RECOGNIZED,
+                };
+                (code as u16, state)
+            }
+        };
+        self.responses
+            .extend_from_slice(format!("\x1b[{number};{state}$y").as_bytes());
     }
 
     fn enter_alt(&mut self) {
@@ -1953,6 +2025,18 @@ const SECONDARY_DA: &[u8] = b"\x1b[>0;0;0c";
 
 /// Device Status Report "ready, no malfunction" reply (`CSI 5 n` -> `CSI 0 n`).
 const DSR_OK: &[u8] = b"\x1b[0n";
+
+/// DECRPM mode-state values (the `Pm` of a `CSI Ps ; Pm $ y` DECRQM reply): `0` = mode not
+/// recognized, `1` = set, `2` = reset. sprag never emits `3` / `4` (permanently set / reset) since
+/// every mode it recognizes is togglable.
+const DECRPM_NOT_RECOGNIZED: u8 = 0;
+const DECRPM_SET: u8 = 1;
+const DECRPM_RESET: u8 = 2;
+
+/// Map a mode's current boolean state to its DECRPM `Pm` value.
+const fn decrpm(on: bool) -> u8 {
+    if on { DECRPM_SET } else { DECRPM_RESET }
+}
 
 /// Sixel colour registers sprag honours, reported to the XtSmGraphics capability query
 /// (`CSI ? 1 ; 1 ; 0 S`). The sixel palette is a `u16`-keyed map holding a true 24-bit colour per
@@ -5353,5 +5437,117 @@ mod tests {
         em.advance(b"\x1bc"); // RIS
         em.advance(b"abc\x1b[2GX");
         assert_eq!(em.screen().row_text(0), "aXc", "RIS reset IRM to replace");
+    }
+
+    // --- DECRQM request mode (CSI Ps $ p / CSI ? Ps $ p -> DECRPM CSI [?] Ps ; Pm $ y) ---
+
+    #[test]
+    fn decrqm_reports_irm_set_and_reset() {
+        // The ANSI-mode form (no `?`): IRM (mode 4) reports reset by default, set after CSI 4 h.
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b[4$p");
+        assert_eq!(
+            em.take_responses(),
+            b"\x1b[4;2$y",
+            "IRM reports reset by default"
+        );
+        em.advance(b"\x1b[4h\x1b[4$p");
+        assert_eq!(
+            em.take_responses(),
+            b"\x1b[4;1$y",
+            "IRM reports set after CSI 4 h"
+        );
+    }
+
+    #[test]
+    fn decrqm_reports_autowrap_and_origin_state() {
+        // DEC private form (`?`): autowrap defaults ON (1), origin OFF (2); toggling flips them.
+        let mut em = Emulator::new(8, 3);
+        em.advance(b"\x1b[?7$p\x1b[?6$p");
+        assert_eq!(em.take_responses(), b"\x1b[?7;1$y\x1b[?6;2$y");
+        em.advance(b"\x1b[?7l\x1b[?6h"); // autowrap off, origin on
+        em.advance(b"\x1b[?7$p\x1b[?6$p");
+        assert_eq!(em.take_responses(), b"\x1b[?7;2$y\x1b[?6;1$y");
+    }
+
+    #[test]
+    fn decrqm_reports_cursor_visibility() {
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b[?25$p");
+        assert_eq!(
+            em.take_responses(),
+            b"\x1b[?25;1$y",
+            "cursor visible by default"
+        );
+        em.advance(b"\x1b[?25l\x1b[?25$p");
+        assert_eq!(
+            em.take_responses(),
+            b"\x1b[?25;2$y",
+            "reset after DECRST 25"
+        );
+    }
+
+    #[test]
+    fn decrqm_reports_alt_screen_state() {
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b[?1049$p");
+        assert_eq!(em.take_responses(), b"\x1b[?1049;2$y", "on the main screen");
+        em.advance(b"\x1b[?1049h\x1b[?1049$p");
+        assert_eq!(
+            em.take_responses(),
+            b"\x1b[?1049;1$y",
+            "after entering the alt screen"
+        );
+    }
+
+    #[test]
+    fn decrqm_reports_mouse_tracking_by_exact_level() {
+        // sprag's single-protocol model: with 1002 (button-event) active, 1002 reports set but a
+        // different tracking level (1000) reports reset — matching xterm's independent bits for that
+        // child (setting 1002 never sets 1000).
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b[?1002h");
+        em.advance(b"\x1b[?1002$p\x1b[?1000$p");
+        assert_eq!(em.take_responses(), b"\x1b[?1002;1$y\x1b[?1000;2$y");
+    }
+
+    #[test]
+    fn decrqm_reports_the_remaining_tracked_modes() {
+        // Bracketed paste (2004), focus (1004), SGR mouse encoding (1006), DECCKM (1) — all set.
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b[?2004h\x1b[?1004h\x1b[?1006h\x1b[?1h");
+        em.advance(b"\x1b[?2004$p\x1b[?1004$p\x1b[?1006$p\x1b[?1$p");
+        assert_eq!(
+            em.take_responses(),
+            b"\x1b[?2004;1$y\x1b[?1004;1$y\x1b[?1006;1$y\x1b[?1;1$y"
+        );
+    }
+
+    #[test]
+    fn decrqm_reports_untracked_modes_as_not_recognized() {
+        let mut em = Emulator::new(8, 1);
+        // Unknown-to-termwiz private mode -> the number is echoed, state 0.
+        em.advance(b"\x1b[?9999$p");
+        assert_eq!(em.take_responses(), b"\x1b[?9999;0$y");
+        // A DEC private mode termwiz knows but sprag does not act on (ReverseVideo 5) -> number 5, 0.
+        em.advance(b"\x1b[?5$p");
+        assert_eq!(em.take_responses(), b"\x1b[?5;0$y");
+        // An ANSI mode sprag does not track (BiDi 8) -> number 8, 0.
+        em.advance(b"\x1b[8$p");
+        assert_eq!(em.take_responses(), b"\x1b[8;0$y");
+    }
+
+    #[test]
+    fn decrqm_stamps_no_row_damage() {
+        // A DECRQM query reads state and answers; it must not stamp row damage (like DA / DSR).
+        let mut em = Emulator::new(8, 2);
+        let before = em.screen().row_generation(0).unwrap();
+        em.advance(b"\x1b[?7$p\x1b[4$p\x1b[?25$p");
+        assert_eq!(
+            em.screen().row_generation(0).unwrap(),
+            before,
+            "a query is not a paint"
+        );
+        assert!(!em.take_responses().is_empty(), "but it answered");
     }
 }
