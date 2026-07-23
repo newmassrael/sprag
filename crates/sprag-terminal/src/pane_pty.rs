@@ -788,6 +788,40 @@ mod tests {
         assert_eq!(pty.dimensions(), (20, 4));
     }
 
+    /// End-to-end proof that a child's device query is ANSWERED BACK onto its input — the intrinsic
+    /// `take_responses` reverse channel drained in the reader loop (not the clipboard path). The
+    /// child asks DSR status (`CSI 5 n`); the terminal must write `CSI 0 n` to the child's stdin.
+    /// To OBSERVE the reply the child reads it and hex-dumps it to the screen — deterministically:
+    /// `stty -echo -icanon min 4` puts the pty in raw mode with `VMIN=4`, so `head -c 4` returns the
+    /// exact 4-byte reply (a newline-less terminal reply would otherwise block a cooked read). No
+    /// timing sleep, no fixed byte race. `1b 5b 30 6e` = ESC `[` `0` `n`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_device_query_is_answered_back_onto_the_childs_input() {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg(
+            "stty -echo -icanon min 4 2>/dev/null; printf '\\033[5n'; head -c 4 | od -An -tx1",
+        );
+        command.env("TERM", "dumb");
+        let pty = PanePty::spawn(command, 40, 4).expect("spawn a pty");
+
+        let start = Instant::now();
+        while !pty.is_eof() && start.elapsed() < Duration::from_secs(5) {
+            sleep(Duration::from_millis(20));
+        }
+
+        let row0 = pty.with_screen(|screen| {
+            (0..screen.cols())
+                .filter_map(|col| screen.cell(col, 0).map(|cell| cell.cluster.clone()))
+                .collect::<String>()
+        });
+        assert!(
+            row0.contains("1b 5b 30 6e"),
+            "the child read back CSI 0 n and dumped it; row0 = {row0:?}",
+        );
+    }
+
     /// `pid` resolves a live child, and `cwd` reads where it is working — the fact the
     /// durability ring snapshots so a restored shell re-spawns in the same directory. The
     /// child is `cd`'d into a known dir at spawn (`CommandBuilder::cwd`), and `cwd()` reads

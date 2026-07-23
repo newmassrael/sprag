@@ -24,7 +24,7 @@ use termwiz::escape::apc::{
 };
 use termwiz::escape::csi::{
     CSI, Cursor as CsiCursor, CursorStyle, DecPrivateMode, DecPrivateModeCode, Device, Edit,
-    EraseInDisplay, EraseInLine, Keyboard, KittyKeyboardMode, Mode, Sgr,
+    EraseInDisplay, EraseInLine, Keyboard, KittyKeyboardMode, Mode, Sgr, XtSmGraphicsItem,
 };
 use termwiz::escape::osc::{FinalTermSemanticPrompt, Selection};
 use termwiz::escape::parser::Parser;
@@ -892,6 +892,31 @@ impl Emulator {
             Device::StatusReport => {
                 self.responses.extend_from_slice(DSR_OK);
             }
+            // XtSmGraphics (`CSI ? Pi ; Pa ; Pv S`) — the Sixel capability handshake the Primary DA's
+            // `4` opens. sprag's caps are FIXED, so every action (read current / read max / set /
+            // reset) answers the same honest value with status `0` (success): `CSI ? Pi ; 0 ; Pv S`.
+            // Answering this (vs dropping it) is what keeps the advertised Sixel support non-partial.
+            Device::XtSmGraphics(g) => match g.item {
+                XtSmGraphicsItem::NumberOfColorRegisters => {
+                    self.responses.extend_from_slice(
+                        format!("\x1b[?1;0;{SIXEL_COLOR_REGISTERS}S").as_bytes(),
+                    );
+                }
+                XtSmGraphicsItem::SixelGraphicsGeometry => {
+                    self.responses.extend_from_slice(
+                        format!("\x1b[?2;0;{SIXEL_MAX_DIM};{SIXEL_MAX_DIM}S").as_bytes(),
+                    );
+                }
+                // ReGIS is not supported (the Primary DA does not advertise `3`); answer "failure"
+                // (status `3`) so a probe fails fast instead of timing out. An unspecified item is a
+                // non-standard extension — left unanswered (its own query vocabulary is unknown).
+                XtSmGraphicsItem::RegisGraphicsGeometry => {
+                    self.responses.extend_from_slice(b"\x1b[?3;3;0S");
+                }
+                XtSmGraphicsItem::Unspecified(_) => {}
+            },
+            // Out of the DA/DSR subset: SoftReset/DECSTR (a separate soft-reset feature), tertiary DA,
+            // XTVERSION name/version, DECREQTPARM — dropped unchanged.
             _ => {}
         }
     }
@@ -1442,6 +1467,22 @@ const SECONDARY_DA: &[u8] = b"\x1b[>0;0;0c";
 
 /// Device Status Report "ready, no malfunction" reply (`CSI 5 n` -> `CSI 0 n`).
 const DSR_OK: &[u8] = b"\x1b[0n";
+
+/// Sixel colour registers sprag honours, reported to the XtSmGraphics capability query
+/// (`CSI ? 1 ; 1 ; 0 S`). The sixel palette is a `u16`-keyed map holding a true 24-bit colour per
+/// register (not a fixed hardware palette), so the whole `u16` index space is usable with zero
+/// sprag-side quantisation loss. Completing the sixel handshake the Primary DA opens (advertising `4`)
+/// is what makes the Sixel claim non-partial: a sixel encoder sizes its palette to this instead of
+/// timing out and falling back to 16 colours. xterm's default is 1024; tmux's passthrough is
+/// narrower — reporting the full register space is the tmux-superior, truthful answer.
+const SIXEL_COLOR_REGISTERS: u32 = 1 << 16;
+
+/// Max sixel image dimension (pixels) sprag rasterises, per axis — the square bound of the
+/// [`MAX_IMAGE_BYTES`] RGBA cap (`isqrt(16 MiB / 4)` = 2048), reported to the XtSmGraphics geometry
+/// query (`CSI ? 2 ; 1 ; 0 S`). Per-axis (not product) so any image within BOTH maxima is guaranteed
+/// to fit the byte cap and never silently drop — a conservative bound an app can trust. Kept in step
+/// with [`MAX_IMAGE_BYTES`] by `sixel_geometry_fits_the_image_byte_cap`.
+const SIXEL_MAX_DIM: u32 = 2048;
 
 /// Map a termwiz OSC 52 [`Selection`] set to the [`ClipboardTargets`] a WRITE addresses. The
 /// clipboard (`c`) maps to the clipboard; the "configured selection" (`s`) and the empty-`Pc`
@@ -3534,6 +3575,35 @@ mod tests {
             "a query is not a paint"
         );
         assert!(!em.take_responses().is_empty(), "but it did answer");
+    }
+
+    /// XtSmGraphics completes the Sixel handshake the Primary DA (`4`) opens: a colour-register query
+    /// (`CSI ? 1 ; 1 ; 0 S`) reports sprag's honored register count, and a geometry query
+    /// (`CSI ? 2 ; 1 ; 0 S`) reports the per-axis pixel maximum — so a sixel encoder sizes to sprag
+    /// instead of timing out. Answering these is what keeps the advertised Sixel support non-partial.
+    #[test]
+    fn xtsmgraphics_answers_the_sixel_capability_queries() {
+        let mut em = Emulator::new(8, 2);
+        // Number of colour registers (item 1, action 1 = read).
+        em.advance(b"\x1b[?1;1;0S");
+        assert_eq!(em.take_responses(), b"\x1b[?1;0;65536S");
+        // Sixel geometry (item 2, action 1 = read) — per-axis pixel max.
+        em.advance(b"\x1b[?2;1;0S");
+        assert_eq!(em.take_responses(), b"\x1b[?2;0;2048;2048S");
+        // ReGIS (item 3) is not supported -> fail fast (status 3), never a timeout.
+        em.advance(b"\x1b[?3;1;0S");
+        assert_eq!(em.take_responses(), b"\x1b[?3;3;0S");
+    }
+
+    /// The advertised per-axis Sixel geometry max must fit the image byte cap, so an app that
+    /// respects both maxima never has its image silently dropped. Keeps the two consts in step.
+    #[test]
+    fn sixel_geometry_fits_the_image_byte_cap() {
+        let px = (SIXEL_MAX_DIM as usize) * (SIXEL_MAX_DIM as usize);
+        assert!(
+            px * 4 <= MAX_IMAGE_BYTES,
+            "a {SIXEL_MAX_DIM}x{SIXEL_MAX_DIM} RGBA image must fit MAX_IMAGE_BYTES"
+        );
     }
 
     /// A keyboard negotiation carries no cells, so it must not stamp ROW DAMAGE.
