@@ -14,7 +14,8 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use unicode_width::UnicodeWidthStr;
+use smol_str::SmolStr;
+use unicode_width::UnicodeWidthChar;
 
 /// The number of terminal columns a `char` occupies (UAX #11 via
 /// [`unicode_width`]): `0` for a zero-width combining mark (merged into the
@@ -28,7 +29,12 @@ use unicode_width::UnicodeWidthStr;
 /// exposes it rather than letting each consumer recompute it.
 #[must_use]
 pub fn char_columns(ch: char) -> usize {
-    UnicodeWidthStr::width(ch.to_string().as_str())
+    // `UnicodeWidthChar::width` is exactly what `UnicodeWidthStr::width` sums per
+    // char (control chars -> `None` -> 0), so this is behaviour-identical to the
+    // old one-char-string form WITHOUT its per-call heap allocation — and the
+    // print path calls this twice per printed char, so the alloc was a hot-path
+    // throughput wall on bulk output.
+    UnicodeWidthChar::width(ch).unwrap_or(0)
 }
 
 /// Maximum number of scrolled-off LOGICAL lines [`Screen`] retains (FIFO). A soft-wrapped line
@@ -357,7 +363,15 @@ pub struct Hyperlink {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Cell {
     /// Grapheme cluster. `" "` for a blank cell, `""` for a wide trailer.
-    pub cluster: String,
+    ///
+    /// A [`SmolStr`] rather than a `String`: a cluster is almost always a
+    /// single char (<= 4 UTF-8 bytes), which stays inline in the cell with no
+    /// heap allocation (the print path builds one per printed char — the
+    /// bulk-output hot path). Clone is O(1) — an inline copy, or an `Arc` bump
+    /// for the rare cluster past the inline cap — which the clone-heavy
+    /// scrollback / reflow / selection paths get for free. It is effectively
+    /// immutable; the one growth site (combining-mark merge) rebuilds it.
+    pub cluster: SmolStr,
     pub fg: Color,
     pub bg: Color,
     /// SGR 58 / 59 underline colour — a third colour channel, peer of
@@ -378,7 +392,7 @@ pub struct Cell {
 impl Default for Cell {
     fn default() -> Self {
         Self {
-            cluster: " ".to_string(),
+            cluster: SmolStr::new_inline(" "),
             fg: Color::Default,
             bg: Color::Default,
             underline_color: None,
@@ -400,7 +414,7 @@ impl Cell {
     #[must_use]
     pub fn trailer_for(head: &Cell) -> Self {
         Self {
-            cluster: String::new(),
+            cluster: SmolStr::new_inline(""),
             fg: head.fg,
             bg: head.bg,
             underline_color: head.underline_color,
@@ -1293,7 +1307,7 @@ impl Screen {
                         } else {
                             open = Some(ptr);
                             runs.push(LinkRun {
-                                text: cell.cluster.clone(),
+                                text: cell.cluster.to_string(),
                                 uri: link.uri.clone(),
                                 id: link.id.clone(),
                             });

@@ -796,7 +796,7 @@ mod tests {
 
         let row0 = pty.with_screen(|screen| {
             (0..screen.cols())
-                .filter_map(|col| screen.cell(col, 0).map(|cell| cell.cluster.clone()))
+                .filter_map(|col| screen.cell(col, 0).map(|cell| cell.cluster.to_string()))
                 .collect::<String>()
         });
         assert!(row0.starts_with("hi"), "row0 = {row0:?}");
@@ -828,7 +828,7 @@ mod tests {
 
         let row0 = pty.with_screen(|screen| {
             (0..screen.cols())
-                .filter_map(|col| screen.cell(col, 0).map(|cell| cell.cluster.clone()))
+                .filter_map(|col| screen.cell(col, 0).map(|cell| cell.cluster.to_string()))
                 .collect::<String>()
         });
         assert!(
@@ -863,7 +863,7 @@ mod tests {
             (0..screen.rows())
                 .flat_map(|row| {
                     (0..screen.cols()).filter_map(move |col| {
-                        screen.cell(col, row).map(|cell| cell.cluster.clone())
+                        screen.cell(col, row).map(|cell| cell.cluster.to_string())
                     })
                 })
                 .collect::<String>()

@@ -115,6 +115,17 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Cell display width (UAX#11) for the emulator's wide-cluster handling.
 unicode-width = "0.2"
 
+# Small-string storage for `Cell.cluster` (sprag-vt). A grapheme cluster is
+# almost always one char (<= 4 bytes), so an inline SSO string keeps it in the
+# cell's 24 bytes with NO heap allocation on the print path (the old `String`
+# allocated per printed cell — the bulk-output throughput wall). Clone is O(1):
+# an inline memcpy, or an `Arc` bump for the rare > 23-byte cluster, which the
+# clone-heavy scrollback / reflow / selection paths get for free. Already in the
+# lock via winit -> accesskit_winit -> pinion-shell, so this reuses the one
+# resolved 0.2.x (no new distinct crate); bump in lockstep with a pinion rev bump
+# if that ever moves winit's smol_str minor.
+smol_str = "0.2"
+
 # Vello pinned to pinion-shell's version so the forge renderer macro
 # output type-checks against pinion's vello.
 vello = "0.9"

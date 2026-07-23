@@ -14,6 +14,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use smol_str::SmolStr;
+
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use termwiz::cell::{Blink, Intensity, Underline};
@@ -41,6 +43,17 @@ use crate::port::{
     Notification, Palette, PromptMark, Rgb, Screen, ScreenKind, ShellState, UnderlineStyle, VtPort,
     Width, char_columns,
 };
+
+/// Build a single-char cluster with no heap allocation.
+///
+/// A `char` is at most 4 UTF-8 bytes, always within [`SmolStr`]'s inline
+/// capacity, so this stays inline in the cell — the whole point of the
+/// [`Cell::cluster`](crate::port::Cell::cluster) change: the print path runs
+/// this per printed char and must not allocate.
+fn cluster_from_char(ch: char) -> SmolStr {
+    let mut buf = [0u8; 4];
+    SmolStr::new_inline(ch.encode_utf8(&mut buf))
+}
 
 /// The cursor state DECSC (`ESC 7` / `CSI s`) saves and DECRC (`ESC 8` / `CSI u`) restores:
 /// position plus the SGR pen and cursor shape. Charset state is out of the emulator's subset, so
@@ -412,7 +425,7 @@ impl Emulator {
     /// Apply one parsed action to the grid.
     fn apply(&mut self, action: Action) {
         match action {
-            Action::Print(ch) => self.print_str(&ch.to_string()),
+            Action::Print(ch) => self.print_char(ch),
             Action::PrintString(s) => self.print_str(&s),
             Action::Control(code) => self.control(code),
             Action::CSI(csi) => self.csi(csi),
@@ -1837,72 +1850,81 @@ impl Emulator {
         }
     }
 
-    /// Print one or more graphemes, advancing the cursor with autowrap.
+    /// Print each grapheme of `s`, advancing the cursor with autowrap.
     fn print_str(&mut self, s: &str) {
         // Char-level is sufficient for the skeleton; ZWJ emoji clusters
         // are a known gap (DESIGN.md §5 — logged, not silently capped).
         for ch in s.chars() {
-            if char_columns(ch) == 0 {
-                // Combining mark: merge into the previous cell if possible. Never charset-
-                // translated, and it does NOT consume a single shift — SS2 / SS3 apply to the
-                // next SPACING character, so the shift stays armed across a combining mark.
-                self.merge_combining(ch);
-                continue;
-            }
-            // Resolve the charset for this graphic character: a single shift (SS2 / SS3) wins
-            // for one character then clears; otherwise the GL locking-shift set (SI = G0 /
-            // SO = G1). Translate BEFORE measuring width, so `cell_w` is the drawn glyph's.
-            let g = self.single_shift.take().unwrap_or(self.gl);
-            let ch = self.charsets[g].translate(ch);
-            let cell_w = char_columns(ch) as u16; // the one width authority (port::char_columns)
-            if self.col + cell_w > self.cols {
-                if self.autowrap {
-                    // DECAWM on (the default): this row's logical line continues onto the next.
-                    self.screen.set_wrapped(self.row, true);
-                    self.col = 0;
-                    self.line_feed();
-                } else {
-                    // DECAWM off: pin at the right margin and overwrite. Back the cursor up so the
-                    // grapheme lands in the last cell(s); the `self.col += cell_w` below returns it
-                    // to the margin, so the next grapheme overwrites the same position — the VT100
-                    // "replace at the right margin" rule (used by full-width, non-scrolling lines).
-                    self.col = self.cols.saturating_sub(cell_w);
-                }
-            }
-            let g = self.next_gen();
-            if self.insert_mode {
-                // IRM (ANSI mode 4): open a gap of `cell_w` cells at the cursor, shifting the rest of
-                // the row right (the tail falling past the right margin), so the incoming glyph
-                // inserts rather than overwrites. The wrap / pin above has already guaranteed
-                // `col + cell_w <= cols`, so the gap fits exactly — a wide glyph opens two cells for
-                // its head + trailer.
-                self.screen.insert_cells(self.col, self.row, cell_w, g);
-            }
-            let head = Cell {
-                cluster: ch.to_string(),
-                fg: self.fg,
-                bg: self.bg,
-                underline_color: self.underline_color,
-                attrs: self.attrs,
-                // Stamp the OSC-8 pen: a link and every cell it covers (including
-                // wrap continuations printed on later rows) share this one `Arc`.
-                hyperlink: self.current_hyperlink.clone(),
-                width: if cell_w == 2 {
-                    Width::Wide
-                } else {
-                    Width::Narrow
-                },
-            };
-            let (col, row) = (self.col, self.row);
-            if cell_w == 2 && col + 1 < self.cols {
-                self.screen
-                    .set_cell(col + 1, row, Cell::trailer_for(&head), g);
-            }
-            self.screen.set_cell(col, row, head, g);
-            self.col += cell_w;
-            // Remember the last graphic char for REP (`CSI b`).
-            self.last_print = Some(ch);
+            self.print_char(ch);
         }
+    }
+
+    /// Print one grapheme, advancing the cursor with autowrap.
+    ///
+    /// `Action::Print` (the bulk-output hot path — termwiz emits one per printed
+    /// char) calls this directly, so a printed char never materializes into a
+    /// heap `String` just to be handed to [`Self::print_str`] as a `&str`.
+    fn print_char(&mut self, ch: char) {
+        if char_columns(ch) == 0 {
+            // Combining mark: merge into the previous cell if possible. Never charset-
+            // translated, and it does NOT consume a single shift — SS2 / SS3 apply to the
+            // next SPACING character, so the shift stays armed across a combining mark.
+            self.merge_combining(ch);
+            return;
+        }
+        // Resolve the charset for this graphic character: a single shift (SS2 / SS3) wins
+        // for one character then clears; otherwise the GL locking-shift set (SI = G0 /
+        // SO = G1). Translate BEFORE measuring width, so `cell_w` is the drawn glyph's.
+        let g = self.single_shift.take().unwrap_or(self.gl);
+        let ch = self.charsets[g].translate(ch);
+        let cell_w = char_columns(ch) as u16; // the one width authority (port::char_columns)
+        if self.col + cell_w > self.cols {
+            if self.autowrap {
+                // DECAWM on (the default): this row's logical line continues onto the next.
+                self.screen.set_wrapped(self.row, true);
+                self.col = 0;
+                self.line_feed();
+            } else {
+                // DECAWM off: pin at the right margin and overwrite. Back the cursor up so the
+                // grapheme lands in the last cell(s); the `self.col += cell_w` below returns it
+                // to the margin, so the next grapheme overwrites the same position — the VT100
+                // "replace at the right margin" rule (used by full-width, non-scrolling lines).
+                self.col = self.cols.saturating_sub(cell_w);
+            }
+        }
+        let g = self.next_gen();
+        if self.insert_mode {
+            // IRM (ANSI mode 4): open a gap of `cell_w` cells at the cursor, shifting the rest of
+            // the row right (the tail falling past the right margin), so the incoming glyph
+            // inserts rather than overwrites. The wrap / pin above has already guaranteed
+            // `col + cell_w <= cols`, so the gap fits exactly — a wide glyph opens two cells for
+            // its head + trailer.
+            self.screen.insert_cells(self.col, self.row, cell_w, g);
+        }
+        let head = Cell {
+            cluster: cluster_from_char(ch),
+            fg: self.fg,
+            bg: self.bg,
+            underline_color: self.underline_color,
+            attrs: self.attrs,
+            // Stamp the OSC-8 pen: a link and every cell it covers (including
+            // wrap continuations printed on later rows) share this one `Arc`.
+            hyperlink: self.current_hyperlink.clone(),
+            width: if cell_w == 2 {
+                Width::Wide
+            } else {
+                Width::Narrow
+            },
+        };
+        let (col, row) = (self.col, self.row);
+        if cell_w == 2 && col + 1 < self.cols {
+            self.screen
+                .set_cell(col + 1, row, Cell::trailer_for(&head), g);
+        }
+        self.screen.set_cell(col, row, head, g);
+        self.col += cell_w;
+        // Remember the last graphic char for REP (`CSI b`).
+        self.last_print = Some(ch);
     }
 
     fn merge_combining(&mut self, ch: char) {
@@ -1912,7 +1934,11 @@ impl Emulator {
         let (col, row) = (self.col - 1, self.row);
         if let Some(prev) = self.screen.cell(col, row) {
             let mut merged = prev.clone();
-            merged.cluster.push(ch);
+            // The cluster is an (effectively immutable) `SmolStr`; a combining
+            // mark grows it. This is the one growth site and a rare path (base
+            // char + marks), so rebuild it — `format_smolstr!` keeps the short
+            // result inline (no heap unless it exceeds the inline cap).
+            merged.cluster = smol_str::format_smolstr!("{}{ch}", merged.cluster);
             let g = self.next_gen();
             self.screen.set_cell(col, row, merged, g);
         }

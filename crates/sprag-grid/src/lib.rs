@@ -413,7 +413,7 @@ impl HyperlinkInterner {
 
 fn term_cell(cell: &Cell, interner: &mut HyperlinkInterner, palette: &Palette) -> TermCell {
     let mut tc = TermCell::new(
-        cell.cluster.clone(),
+        cell.cluster.to_string(),
         term_color(cell.fg, ColorTarget::Foreground, palette),
         term_color(cell.bg, ColorTarget::Background, palette),
     )
@@ -634,14 +634,14 @@ mod tests {
         assert_eq!(screen.scrollback_len(), 3);
         let row0 = |buf: &GridBuffer| {
             (0..buf.cols())
-                .filter_map(|c| buf.cell(c, 0).map(|cell| cell.cluster.clone()))
+                .filter_map(|c| buf.cell(c, 0).map(|cell| cell.cluster.to_string()))
                 .collect::<String>()
                 .trim_end()
                 .to_owned()
         };
         let row1 = |buf: &GridBuffer| {
             (0..buf.cols())
-                .filter_map(|c| buf.cell(c, 1).map(|cell| cell.cluster.clone()))
+                .filter_map(|c| buf.cell(c, 1).map(|cell| cell.cluster.to_string()))
                 .collect::<String>()
                 .trim_end()
                 .to_owned()

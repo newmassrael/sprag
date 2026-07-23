@@ -14,6 +14,9 @@ publish = false
 termwiz = { workspace = true }
 # Cell display width (UAX#11) for wide-cluster (CJK) head/trailer.
 unicode-width = { workspace = true }
+# Inline SSO string for `Cell.cluster`: no heap alloc on the print path for the
+# common single-char cluster, O(1) clone for scroll / scrollback / reflow.
+smol_str = { workspace = true }
 # Base64 decode of Kitty graphics `Direct` image payloads (pinion R1404, Stage 1).
 base64 = { workspace = true }
 # PNG decode for the Kitty graphics `f=100` format (pinion R1404, Stage 4).
