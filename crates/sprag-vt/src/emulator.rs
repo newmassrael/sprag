@@ -675,14 +675,15 @@ impl Emulator {
                 });
                 self.set_hyperlink(link);
             }
-            // OSC 10 / 11 (/ 12) — the DYNAMIC colours: the default foreground, background, and
-            // cursor. `ChangeDynamicColors(first, colors)` applies the colour list to CONSECUTIVE
-            // dynamic numbers starting at `first` (xterm's `OSC 10 ; fg ; bg ; cursor` batch), each
-            // entry a SET (a colour) or a QUERY (`?` -> reply the current value on the device-response
-            // channel, like DA / DSR). Stage 1 owns the default foreground (10) + background (11) —
-            // the highest-value pair (an app queries `OSC 11 ; ?` to detect a dark vs light
-            // background and pick its theme, and sets 10 / 11 to theme the terminal). The cursor (12)
-            // and the exotic mouse / highlight / Tektronix numbers (13-19) are out of subset.
+            // OSC 10 / 11 / 12 — the DYNAMIC colours: the default foreground, background, and cursor.
+            // `ChangeDynamicColors(first, colors)` applies the colour list to CONSECUTIVE dynamic
+            // numbers starting at `first` (xterm's `OSC 10 ; fg ; bg ; cursor` batch), each entry a
+            // SET (a colour) or a QUERY (`?` -> reply the current value on the device-response
+            // channel, like DA / DSR). 10 / 11 fully set + query + RENDER (an app queries `OSC 11 ; ?`
+            // to detect a dark vs light background and pick its theme). 12 (cursor) sets + queries the
+            // STATE, but rendering the cursor in that colour is PINION-BLOCKED (PINION-PR74) — a
+            // documented bound. The exotic mouse / highlight / Tektronix numbers (13-19) are out of
+            // subset.
             OperatingSystemCommand::ChangeDynamicColors(first, colors) => {
                 self.change_dynamic_colors(*first, colors);
             }
@@ -770,6 +771,10 @@ impl Emulator {
                             self.palette.set_default_bg(rgb);
                             changed = true;
                         }
+                        // OSC 12 sets the cursor colour STATE (queryable); it touches no cells, and
+                        // rendering the cursor in that colour is PINION-BLOCKED (pinion's `GridCursor`
+                        // has no colour field — PINION-PR74), so no cell-damage bump. A documented bound.
+                        12 => self.palette.set_cursor(rgb),
                         _ => {}
                     }
                 }
@@ -777,6 +782,7 @@ impl Emulator {
                     let current = match number {
                         10 => Some(self.palette.default_fg()),
                         11 => Some(self.palette.default_bg()),
+                        12 => Some(self.palette.cursor()),
                         _ => None,
                     };
                     if let Some(rgb) = current {
@@ -801,6 +807,11 @@ impl Emulator {
             11 => {
                 self.palette.reset_default_bg();
                 true
+            }
+            // OSC 112 resets the cursor colour STATE; no cell damage (render is PINION-PR74-gated).
+            12 => {
+                self.palette.reset_cursor();
+                false
             }
             _ => false,
         };
@@ -3798,6 +3809,51 @@ mod tests {
         let mut em = Emulator::new(8, 2);
         em.advance(b"\x1b]10;?\x1b\\");
         assert_eq!(em.take_responses(), b"\x1b]10;rgb:e5e5/e5e5/e5e5\x1b\\");
+    }
+
+    /// OSC 12 sets + queries the cursor-colour STATE (the render is PINION-PR74-gated). The seed is
+    /// the xterm foreground tone (`e5e5e5`); a set is reflected by the query.
+    #[test]
+    fn osc_12_sets_and_queries_the_cursor_color() {
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b]12;?\x1b\\");
+        assert_eq!(
+            em.take_responses(),
+            b"\x1b]12;rgb:e5e5/e5e5/e5e5\x1b\\",
+            "the seed cursor colour is the xterm foreground tone"
+        );
+        em.advance(b"\x1b]12;rgb:00/00/ff\x1b\\");
+        assert_eq!(em.palette().cursor(), Rgb::new(0x00, 0x00, 0xff));
+        em.advance(b"\x1b]12;?\x1b\\");
+        assert_eq!(em.take_responses(), b"\x1b]12;rgb:0000/0000/ffff\x1b\\");
+    }
+
+    /// OSC 112 resets the cursor colour to the xterm seed.
+    #[test]
+    fn osc_112_resets_the_cursor_color() {
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b]12;rgb:00/00/ff\x1b\\");
+        assert_eq!(em.palette().cursor(), Rgb::new(0x00, 0x00, 0xff));
+        em.advance(b"\x1b]112\x1b\\");
+        assert_eq!(
+            em.palette().cursor(),
+            Rgb::new(0xe5, 0xe5, 0xe5),
+            "reset to xterm foreground tone"
+        );
+    }
+
+    /// OSC 12 touches no cells (the cursor render is PINION-PR74-gated), so it stamps NO row damage —
+    /// unlike an OSC 4 / 10 / 11 colour set, which re-colours cells and bumps every row.
+    #[test]
+    fn osc_12_cursor_set_stamps_no_row_damage() {
+        let mut em = Emulator::new(8, 2);
+        let before = em.screen().row_generation(0).unwrap();
+        em.advance(b"\x1b]12;rgb:00/00/ff\x1b\\");
+        assert_eq!(
+            em.screen().row_generation(0).unwrap(),
+            before,
+            "a cursor-colour set changes no cells, so no row damage"
+        );
     }
 
     /// OSC 111 resets the default background to the xterm seed (black), undoing an OSC 11 set.
