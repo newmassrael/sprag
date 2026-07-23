@@ -510,6 +510,7 @@ impl Emulator {
     ///   minus the carriage return.
     /// * RI (`ESC M`, reverse index) is the mirror: up one line, scrolling the region DOWN
     ///   at the top margin ([`reverse_index`](Self::reverse_index)).
+    /// * RIS (`ESC c`, full reset) restores the power-on state ([`hard_reset`](Self::hard_reset)).
     ///
     /// Every other ESC (charset selection, NEL, keypad modes) is out of the subset and
     /// dropped.
@@ -520,6 +521,7 @@ impl Emulator {
                 EscCode::DecRestoreCursorPosition => self.restore_cursor(),
                 EscCode::Index => self.line_feed(),
                 EscCode::ReverseIndex => self.reverse_index(),
+                EscCode::FullReset => self.hard_reset(),
                 _ => {}
             }
         }
@@ -606,6 +608,41 @@ impl Emulator {
             self.rows.saturating_sub(1)
         };
         self.row = self.row.saturating_add(n).min(ceil);
+    }
+
+    /// RIS — Reset to Initial State (`ESC c`): a full hard reset to the power-on state. Rebuilding
+    /// from [`Emulator::new`] is the SSOT — it cannot drift from the constructor's defaults as fields
+    /// are added — and resets EVERYTHING the child could have touched: both screens (the alt screen
+    /// is discarded, back to a blank main), scrollback, cursor + pen, scroll region, every DEC mode
+    /// (autowrap back on, origin off, cursor visible, mouse / focus / bracketed paste off), the Kitty
+    /// keyboard stack, the colour palette, the title, and pending device responses. Only the geometry
+    /// (`cols` x `rows`) survives — it is display-owned, not the child's to reset. The already-parsed
+    /// action batch is unaffected; a fresh parser is fine, since RIS is a complete escape and no
+    /// parser state straddles it.
+    fn hard_reset(&mut self) {
+        *self = Emulator::new(self.cols, self.rows);
+    }
+
+    /// DECSTR — Soft Terminal Reset (`CSI ! p`): reset the DEC-defined subset WITHOUT clearing the
+    /// screen, scrollback, palette, or title, and without leaving the current (main / alt) screen.
+    /// Homes the cursor, drops the DECSC save, restores the full-screen scroll region, and returns
+    /// the modes DECSTR governs to their defaults: cursor visible, origin mode off, autowrap ON, and
+    /// a normal SGR pen. Autowrap goes ON (not off): the `reset` terminfo string runs RIS then DECSTR
+    /// with no explicit re-enable, so DECSTR must leave autowrap in its power-on ON state or the shell
+    /// would stop wrapping afterward. Mouse / focus / bracketed-paste (xterm extensions, not in the
+    /// DEC DECSTR set) are intentionally left untouched.
+    fn soft_reset(&mut self) {
+        self.cursor_visible = true;
+        self.origin_mode = false;
+        self.autowrap = true;
+        self.reset_scroll_region();
+        self.col = 0;
+        self.row = 0;
+        self.fg = Color::Default;
+        self.bg = Color::Default;
+        self.underline_color = None;
+        self.attrs = Attrs::default();
+        self.saved_cursor = None;
     }
 
     /// Save the cursor position + pen (DECSC / `CSI s`).
@@ -1048,7 +1085,12 @@ impl Emulator {
             CSI::Edit(e) => self.edit(e),
             CSI::Mode(m) => self.mode(m),
             CSI::Keyboard(k) => self.kitty_keyboard(k),
-            CSI::Device(dev) => self.device(&dev),
+            // DECSTR (`CSI ! p`) is a state MUTATION, not a query, so it is handled here rather than
+            // in the query-answering `device()`; every other Device variant is a reply.
+            CSI::Device(dev) => match dev.as_ref() {
+                Device::SoftReset => self.soft_reset(),
+                _ => self.device(&dev),
+            },
             _ => {}
         }
     }
@@ -1112,8 +1154,9 @@ impl Emulator {
     /// Answer a Device Attributes / Device Status query on the device-response channel
     /// ([`Self::responses`], written back to the pty by the reader). The child probes the terminal's
     /// identity/status at startup and the terminal replies as if it typed the answer — the reverse
-    /// channel [`VtPort::take_responses`] drains. Out of the DA/DSR subset (SoftReset/DECSTR,
-    /// tertiary DA, terminal name/version, DECREQTPARM, graphics-attrs) stay dropped, unchanged.
+    /// channel [`VtPort::take_responses`] drains. DECSTR (also a `Device` variant in termwiz, but a
+    /// mutation) is intercepted in [`csi`](Self::csi); out of the DA/DSR subset (tertiary DA,
+    /// terminal name/version, DECREQTPARM, graphics-attrs) stay dropped, unchanged.
     fn device(&mut self, dev: &Device) {
         match dev {
             // Primary DA (`CSI c`) — who are you + what can you do.
@@ -1152,8 +1195,8 @@ impl Emulator {
                 }
                 XtSmGraphicsItem::Unspecified(_) => {}
             },
-            // Out of the DA/DSR subset: SoftReset/DECSTR (a separate soft-reset feature), tertiary DA,
-            // XTVERSION name/version, DECREQTPARM — dropped unchanged.
+            // Out of the DA/DSR subset: tertiary DA, XTVERSION name/version, DECREQTPARM — dropped
+            // unchanged. (DECSTR/SoftReset is a mutation, intercepted in `csi` before reaching here.)
             _ => {}
         }
     }
@@ -4004,6 +4047,80 @@ mod tests {
         em.advance(b"\x1b8"); // DECRC restores origin = true (and position)
         em.advance(b"\x1b[1;1HR"); // CUP line 1 -> region-relative row 1 (origin restored)
         assert_eq!(cluster(&em, 0, 1), "R");
+    }
+
+    // --- RIS (ESC c) / DECSTR (CSI ! p) terminal reset ---
+
+    #[test]
+    fn ris_clears_the_screen_and_restores_power_on_state() {
+        let mut em = Emulator::new(6, 4);
+        em.advance(b"\x1b[31mHELLO\r\nWORLD"); // coloured text on two rows
+        em.advance(b"\x1b[2;3r"); // scroll region
+        em.advance(b"\x1b[?6h\x1b[?7l\x1b[?25l"); // origin on, autowrap off, cursor hidden
+        em.advance(b"\x1b[?1049h"); // alternate screen
+        em.advance(b"\x1bc"); // RIS
+        assert_eq!(
+            em.screen().screen_kind(),
+            ScreenKind::Main,
+            "back to the main screen"
+        );
+        assert_eq!(cluster(&em, 0, 0), " ", "the screen was cleared");
+        assert_eq!(em.screen().cursor().row, 0);
+        assert_eq!(em.screen().cursor().col, 0);
+        assert!(em.screen().cursor().visible, "the cursor is visible again");
+        // Autowrap is back on and the region is full: printing past the margin wraps to row 1.
+        em.advance(b"abcdefg");
+        assert_eq!(
+            cluster(&em, 0, 1),
+            "g",
+            "autowrap and the full region were restored"
+        );
+        assert_eq!(
+            em.screen().cell(0, 0).unwrap().fg,
+            Color::Default,
+            "the pen was reset"
+        );
+    }
+
+    #[test]
+    fn ris_clears_the_title_and_resets_the_palette() {
+        let mut em = Emulator::new(6, 2);
+        em.advance(b"\x1b]2;my title\x1b\\"); // OSC 2 set the title
+        em.advance(b"\x1b]11;rgb:ff/00/00\x1b\\"); // OSC 11 set the default bg red
+        assert_eq!(em.palette().default_bg(), Rgb::new(0xff, 0x00, 0x00));
+        em.advance(b"\x1bc"); // RIS
+        assert_eq!(em.title(), None, "RIS clears the title");
+        assert_eq!(
+            em.palette().default_bg(),
+            Rgb::new(0x00, 0x00, 0x00),
+            "RIS resets the palette to xterm defaults"
+        );
+    }
+
+    #[test]
+    fn decstr_soft_resets_modes_and_pen_but_preserves_the_screen() {
+        let mut em = Emulator::new(6, 4);
+        em.advance(b"\x1b[2;3H\x1b[33mKEEP"); // yellow text at row 1
+        em.advance(b"\x1b[2;3r\x1b[?6h\x1b[?7l\x1b[?25l"); // region, origin, autowrap off, cursor hidden
+        em.advance(b"\x1b[!p"); // DECSTR
+        assert_eq!(
+            cluster(&em, 2, 1),
+            "K",
+            "DECSTR preserves the screen contents"
+        );
+        assert_eq!(em.screen().cursor().row, 0);
+        assert_eq!(em.screen().cursor().col, 0);
+        assert!(em.screen().cursor().visible, "the cursor is visible again");
+        // Origin mode and the scroll region were reset: CUP line 1 is absolute row 0 again.
+        em.advance(b"\x1b[1;1HX");
+        assert_eq!(
+            cluster(&em, 0, 0),
+            "X",
+            "origin mode and the region were reset"
+        );
+        // Autowrap is back on: printing past the margin wraps to the next row.
+        em.advance(b"\x1b[3;1Habcdefg");
+        assert_eq!(cluster(&em, 0, 3), "g", "DECSTR turns autowrap back on");
     }
 
     /// OSC 11 sets the default BACKGROUND colour: the palette's dynamic background changes, so a
