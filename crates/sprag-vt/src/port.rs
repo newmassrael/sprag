@@ -506,6 +506,12 @@ pub struct InputModes {
     /// The display client emits the edge on a pane focus change; the encode at the PTY boundary
     /// consults this flag. Off by default (no focus reports).
     pub focus_tracking: bool,
+    /// LNM line-feed / new-line mode (ANSI mode 20). When set, a received LF / VT / FF also returns
+    /// the cursor to column 0 (a CR+LF, applied by the emulator's control handler), AND the Return
+    /// key transmits CR+LF instead of a bare CR (applied by the key encoder). Off by default (a bare
+    /// LF moves straight down, Return sends CR) — the normal Unix behaviour. The one flag both halves
+    /// read, so the display translation and the key encoding can never disagree.
+    pub newline_mode: bool,
 }
 
 /// Which pointer events a child has asked the terminal to report, selected by the DECSET

@@ -68,6 +68,13 @@ impl Modifiers {
 /// single-codepoint key always encodes (its bytes are well defined).
 #[must_use]
 pub fn encode(key: &str, mods: Modifiers, modes: InputModes) -> Option<Vec<u8>> {
+    // LNM (ANSI mode 20): under new-line mode an UNMODIFIED Return transmits CR+LF instead of a bare
+    // CR. Checked before the protocol branch so it applies whichever key encoding is active; only the
+    // plain Return is affected — modified Enter combos are a post-LNM extension owned by the legacy /
+    // Kitty paths below.
+    if modes.newline_mode && key == "Enter" && !mods.any() {
+        return Some(vec![0x0d, 0x0a]);
+    }
     // Under the Kitty keyboard protocol's DISAMBIGUATE flag the whole encoding changes (Esc and
     // Ctrl/Alt/Super combos become unambiguous `CSI u` codes), so it is a distinct path, not a
     // tweak of the legacy one.
@@ -949,6 +956,48 @@ mod tests {
         assert_eq!(
             encode_mouse(ctrl_wheel, modes),
             Some(b"\x1b[<80;1;1M".to_vec()),
+        );
+    }
+
+    /// Input modes with LNM (new-line mode) active.
+    fn newline_modes(kitty: bool) -> InputModes {
+        InputModes {
+            kitty_keyboard: if kitty {
+                sprag_vt::KittyKeyboardFlags::from_bits(sprag_vt::KittyKeyboardFlags::DISAMBIGUATE)
+            } else {
+                sprag_vt::KittyKeyboardFlags::default()
+            },
+            newline_mode: true,
+            ..InputModes::default()
+        }
+    }
+
+    #[test]
+    fn newline_mode_enter_transmits_cr_lf() {
+        // LNM (mode 20): an unmodified Return sends CR+LF instead of a bare CR.
+        assert_eq!(
+            encode("Enter", Modifiers::default(), newline_modes(false)),
+            Some(b"\x0d\x0a".to_vec())
+        );
+    }
+
+    #[test]
+    fn newline_mode_applies_under_the_kitty_protocol_too() {
+        // The LNM translation is checked before the protocol branch, so a plain Return sends CR+LF
+        // even under the Kitty keyboard protocol.
+        assert_eq!(
+            encode("Enter", Modifiers::default(), newline_modes(true)),
+            Some(b"\x0d\x0a".to_vec())
+        );
+    }
+
+    #[test]
+    fn newline_mode_leaves_a_modified_enter_alone() {
+        // LNM is defined for the plain Return; a modified Enter keeps its combo encoding (Ctrl+Enter
+        // on the legacy path stays a bare CR, not CR+LF).
+        assert_eq!(
+            encode("Enter", CTRL, newline_modes(false)),
+            Some(b"\x0d".to_vec())
         );
     }
 }

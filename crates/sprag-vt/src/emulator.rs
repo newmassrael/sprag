@@ -1207,6 +1207,11 @@ impl Emulator {
                 let soft_wrap = self.in_resize_redraw;
                 self.screen.set_wrapped(self.row, soft_wrap);
                 self.line_feed();
+                // LNM (ANSI mode 20): under new-line mode a line feed also returns the cursor to
+                // column 0 (a CR+LF); off (the default) it moves straight down, keeping the column.
+                if self.input_modes.newline_mode {
+                    self.col = 0;
+                }
             }
             ControlCode::CarriageReturn => self.col = 0,
             ControlCode::Backspace => self.col = self.col.saturating_sub(1),
@@ -1605,20 +1610,17 @@ impl Emulator {
             Mode::RestoreDecPrivateMode(DecPrivateMode::Code(code)) => {
                 self.restore_dec_private_mode(code);
             }
-            // IRM insert / replace mode (ANSI mode 4) — the one ANSI (non-private) mode sprag acts
-            // on. `print_str` reads the flag; see [`Self::insert_mode`].
-            Mode::SetMode(TerminalMode::Code(TerminalModeCode::Insert)) => {
-                self.insert_mode = true;
-            }
-            Mode::ResetMode(TerminalMode::Code(TerminalModeCode::Insert)) => {
-                self.insert_mode = false;
-            }
+            // SM / RM — set (`CSI Ps h`) or reset (`CSI Ps l`) an ANSI mode, routed through the one
+            // `set_ansi_mode` SSOT (peer of `set_dec_private_mode`). sprag acts on IRM (4) and LNM (20).
+            Mode::SetMode(TerminalMode::Code(code)) => self.set_ansi_mode(code, true),
+            Mode::ResetMode(TerminalMode::Code(code)) => self.set_ansi_mode(code, false),
             // DECRQM — Request Mode: report the current state of a queried mode (a query, so it
             // produces a response rather than mutating). `CSI ? Ps $ p` for a DEC private mode,
             // `CSI Ps $ p` for an ANSI mode.
             Mode::QueryDecPrivateMode(dm) => self.report_dec_private_mode(dm),
             Mode::QueryMode(tm) => self.report_ansi_mode(tm),
-            // Still dropped: other ANSI mode set / reset (KAM / SRM / LNM / …), XtermKeyMode, and any
+            // Still dropped: KAM (2, keyboard lock — an input-side concern), SRM (12, local echo — the
+            // PTY's line discipline owns echo, not the emulator), XtermKeyMode (modifyOtherKeys), and
             // Unspecified (unknown-number) mode across every family — none in the acted-on subset.
             _ => {}
         }
@@ -1769,16 +1771,39 @@ impl Emulator {
             .extend_from_slice(format!("\x1b[?{number};{state}$y").as_bytes());
     }
 
-    /// DECRQM for an ANSI mode (`CSI Ps $ p`) — answer DECRPM `CSI Ps ; Pm $ y`. IRM (mode 4) is the
-    /// one ANSI mode sprag acts on; every other ANSI mode and any Unspecified code answer `0` (not
-    /// recognized). Like [`Self::report_dec_private_mode`], a read-only query that stamps no damage.
+    /// Apply a value to an ANSI mode — the SSOT peer of [`Self::set_dec_private_mode`], shared by SM
+    /// (`on = true`) and RM (`on = false`). sprag acts on IRM (4 — insert / replace, read by
+    /// `print_str`) and LNM (20 — new-line mode, read by the control handler and the key encoder via
+    /// [`InputModes::newline_mode`]). An unrecognized code is a no-op.
+    fn set_ansi_mode(&mut self, code: TerminalModeCode, on: bool) {
+        match code {
+            TerminalModeCode::Insert => self.insert_mode = on,
+            TerminalModeCode::AutomaticNewline => self.input_modes.newline_mode = on,
+            _ => {}
+        }
+    }
+
+    /// The current boolean state of an ANSI mode, or `None` if sprag does not track it — the read SSOT
+    /// [`Self::report_ansi_mode`] answers DECRQM from, peer of [`Self::dec_private_mode_state`].
+    fn ansi_mode_state(&self, code: &TerminalModeCode) -> Option<bool> {
+        Some(match code {
+            TerminalModeCode::Insert => self.insert_mode,
+            TerminalModeCode::AutomaticNewline => self.input_modes.newline_mode,
+            _ => return None,
+        })
+    }
+
+    /// DECRQM for an ANSI mode (`CSI Ps $ p`) — answer DECRPM `CSI Ps ; Pm $ y`. IRM (4) and LNM (20)
+    /// are the ANSI modes sprag acts on ([`Self::ansi_mode_state`]); every other ANSI mode and any
+    /// Unspecified code answer `0`. Like [`Self::report_dec_private_mode`], a read-only query that
+    /// stamps no damage.
     fn report_ansi_mode(&mut self, tm: TerminalMode) {
         let (number, state) = match tm {
             TerminalMode::Unspecified(n) => (n, DECRPM_NOT_RECOGNIZED),
             TerminalMode::Code(code) => {
-                let state = match &code {
-                    TerminalModeCode::Insert => decrpm(self.insert_mode),
-                    _ => DECRPM_NOT_RECOGNIZED,
+                let state = match self.ansi_mode_state(&code) {
+                    Some(on) => decrpm(on),
+                    None => DECRPM_NOT_RECOGNIZED,
                 };
                 (code as u16, state)
             }
@@ -5699,6 +5724,55 @@ mod tests {
             cluster(&em, 0, 1),
             "d",
             "RIS cleared the register: restore was a no-op"
+        );
+    }
+
+    // --- LNM line-feed / new-line mode (ANSI mode 20) ---
+
+    #[test]
+    fn lnm_line_feed_returns_to_column_zero() {
+        // SM 20 (LNM on): a bare LF also carriage-returns, so the next glyph starts at column 0.
+        let mut em = Emulator::new(8, 3);
+        em.advance(b"\x1b[20h"); // LNM on
+        em.advance(b"ab\nc"); // a,b on row 0; LF -> row 1 col 0 (CR+LF); c at (0,1)
+        assert_eq!(cluster(&em, 0, 1), "c", "LNM: LF returned to column 0");
+        assert_eq!(em.screen().cursor().col, 1);
+        assert_eq!(em.screen().cursor().row, 1);
+    }
+
+    #[test]
+    fn lnm_off_line_feed_keeps_the_column() {
+        // The power-on default: a bare LF moves straight down, keeping the column (the Unix default).
+        let mut em = Emulator::new(8, 3);
+        em.advance(b"ab\nc"); // LF keeps col 2; c lands at (2,1)
+        assert_eq!(cluster(&em, 2, 1), "c", "LF kept the column with LNM off");
+        assert_eq!(cluster(&em, 0, 1), " ", "nothing wrapped to column 0");
+    }
+
+    #[test]
+    fn lnm_reset_restores_the_default_line_feed() {
+        let mut em = Emulator::new(8, 3);
+        em.advance(b"\x1b[20h"); // on
+        em.advance(b"\x1b[20l"); // RM 20 -> off again
+        em.advance(b"ab\nc");
+        assert_eq!(cluster(&em, 2, 1), "c", "LNM off: LF kept the column");
+    }
+
+    #[test]
+    fn decrqm_reports_lnm_state() {
+        // LNM (20) is now a mode sprag acts on, so DECRQM reports its real state (not 0).
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b[20$p");
+        assert_eq!(
+            em.take_responses(),
+            b"\x1b[20;2$y",
+            "LNM reports reset by default"
+        );
+        em.advance(b"\x1b[20h\x1b[20$p");
+        assert_eq!(
+            em.take_responses(),
+            b"\x1b[20;1$y",
+            "LNM reports set after SM 20"
         );
     }
 }
