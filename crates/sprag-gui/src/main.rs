@@ -729,8 +729,23 @@ impl WidgetCore for TerminalViewer {
         dock::sync_main_title(focused_pane);
         // (4c) DEC 1004 focus reporting (mouse-tracking Stage 5): tell each pane's child when it
         // gains / loses focus (`ESC [ I` / `ESC [ O`), gated host-side on the child's 1004 mode.
-        // Runs on the same `focus_state::focused()` SSOT as the title, diffed against the last frame.
-        focus_report::reconcile_focus(&terminal.slots, focused_pane);
+        // The within-app `focused_pane` (title SSOT) is INTERSECTED with OS-window focus (pinion
+        // R1419–R1421 / PINION-PR73): `window_focus_state::os_focused_window()` names the OS window
+        // the WM has activated (auto-subscribing this root-scope reconcile, so an OS focus / blur
+        // re-runs it and repaints). The child's focus is real only while the OS window CONTAINING
+        // its pane holds focus, so alt-tabbing the whole app away emits `ESC [ O` and returning
+        // `ESC [ I`. Compared by window IDENTITY (main tiling window vs the pane's `pane-{i}`
+        // tear-off) so a floating pane reports its OWN window's focus, not a shared app-wide bool.
+        let os_focused = pinion_core::window_focus_state::os_focused_window();
+        let effective_focus =
+            focus_report::os_gated_focus(focused_pane, os_focused.as_deref(), |i| {
+                if dock::is_pane_floating(i) {
+                    dock::pane_window_id(i)
+                } else {
+                    dock::MAIN_WINDOW_ID.to_owned()
+                }
+            });
+        focus_report::reconcile_focus(&terminal.slots, effective_focus);
         // (5) (R175) Auto-disarm a pending session kill whose captured session has VANISHED from the
         // live list (killed out of band while the `kill '<name>'?` strip was up), so the confirmation
         // strip cannot linger on a session that no longer exists. Like (2)/(3) above, this reconciles

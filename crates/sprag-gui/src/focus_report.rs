@@ -5,11 +5,18 @@
 //! SSOT the window title tracks); the mode-gating + byte encoding live at the host PTY boundary
 //! ([`sprag_host::focus`]), so the client reports only the semantic edge.
 //!
-//! Mapped to PANE focus, not OS-window focus: a pane's child is "focused" exactly when it is the
-//! active pane. The whole-window blur dimension (the app losing OS keyboard focus while a pane stays
-//! active) is a documented bound — `focus_state` exposes only the focused pane tag, not a
-//! window-focus read, so it would need a pinion signal. Pane focus is the multiplexer-core behaviour
-//! and a complete vertical on its own (tmux forwards focus at the same granularity).
+//! Focus has TWO axes and a pane's child is focused only when BOTH hold: (1) WHICH pane is active
+//! within the app (pane<->pane, `pinion_core::focus_state::focused()`), and (2) whether the OS
+//! window CONTAINING that pane holds the OS keyboard focus (`window_focus_state::os_focused_window()`,
+//! pinion R1419/PR73). [`os_gated_focus`] intersects them before [`reconcile_focus`], so alt-tabbing
+//! the whole app away emits `ESC [ O` to the active pane's child (vim re-runs its external-edit check
+//! on return, a TUI dims while the app is blurred) and returning emits `ESC [ I`.
+//!
+//! tmux-superior: tmux forwards its single client terminal's DEC 1004 focus to whichever pane is
+//! active, so every pane shares ONE outer-terminal focus signal; sprag reports each OS window — the
+//! main tiling window AND each tear-off floating window — with its OWN OS-focus accuracy (the R1421
+//! window-IDENTITY read: a floating pane reports blur when a DIFFERENT window of the same app holds
+//! focus, which a single shared bool could not express).
 
 use std::cell::Cell;
 
@@ -37,6 +44,25 @@ fn focus_transitions(prev: Option<usize>, next: Option<usize>) -> Vec<(usize, bo
         reports.push((new, true));
     }
     reports
+}
+
+/// The effective DEC 1004 focus for the current frame: the within-app `focused_pane` gated on
+/// OS-window focus (pinion R1419–R1421 / PINION-PR73). The focused pane's child holds keyboard
+/// focus only while the OS window CONTAINING that pane is the one the window manager has activated,
+/// so this keeps `focused_pane` iff `os_focused_window` names the pane's own window (`window_id_of`:
+/// the main tiling window, or the pane's `pane-{i}` tear-off) — the R1421 window-IDENTITY read.
+///
+/// `None` `os_focused_window` (the whole app is blurred, or OS focus is not yet known — headless, or
+/// before the first focus event) collapses to no effective focus, so the active pane's child gets
+/// `ESC [ O`. Pure — the SSOT for the OS-focus gate, unit-testable without a live window: `main.rs`
+/// resolves the reactive `window_focus_state::os_focused_window()` (auto-subscribing the reconcile)
+/// and the live pane->window mapping, then delegates the decision here.
+pub(crate) fn os_gated_focus(
+    focused_pane: Option<usize>,
+    os_focused_window: Option<&str>,
+    window_id_of: impl Fn(usize) -> String,
+) -> Option<usize> {
+    focused_pane.filter(|&i| os_focused_window == Some(window_id_of(i).as_str()))
 }
 
 /// Emit focus reports for the current `focused` pane, diffing against the last-focused slot cached
@@ -72,5 +98,42 @@ mod tests {
         // No change: no reports (idempotent per frame).
         assert!(focus_transitions(Some(2), Some(2)).is_empty());
         assert!(focus_transitions(None, None).is_empty());
+    }
+
+    /// Stand-in pane->window map: pane 2 floats (its own `pane-2` window), every other pane lives
+    /// in the main tiling window — the shape `main.rs` builds from `dock::is_pane_floating`.
+    fn window_of(i: usize) -> String {
+        if i == 2 {
+            "pane-2".to_owned()
+        } else {
+            "main".to_owned()
+        }
+    }
+
+    #[test]
+    fn os_focus_gate_intersects_pane_and_window_focus() {
+        // A tiled pane whose window (main) holds OS focus: the child is focused.
+        assert_eq!(os_gated_focus(Some(0), Some("main"), window_of), Some(0));
+        // Whole-app blur (os focus None): the active pane's child focuses OUT.
+        assert_eq!(os_gated_focus(Some(0), None, window_of), None);
+        // A floating pane whose own tear-off window holds OS focus: focused.
+        assert_eq!(os_gated_focus(Some(2), Some("pane-2"), window_of), Some(2));
+    }
+
+    #[test]
+    fn os_focus_gate_is_per_window_identity_not_a_shared_bool() {
+        // The app IS focused, but on a DIFFERENT window than the one holding the focused pane: the
+        // focused pane's child is NOT focused (R1421 window-identity — a shared bool would miss this).
+        // Focus on the main window while pane 2 floats -> pane 2's child focuses out.
+        assert_eq!(os_gated_focus(Some(2), Some("main"), window_of), None);
+        // Focus on the floating window while a tiled pane is within-app focused -> that pane out.
+        assert_eq!(os_gated_focus(Some(0), Some("pane-2"), window_of), None);
+    }
+
+    #[test]
+    fn os_focus_gate_is_none_when_no_pane_is_focused() {
+        // No within-app focus (app chrome) stays None regardless of OS-window focus.
+        assert_eq!(os_gated_focus(None, Some("main"), window_of), None);
+        assert_eq!(os_gated_focus(None, None, window_of), None);
     }
 }
