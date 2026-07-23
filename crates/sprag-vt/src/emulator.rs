@@ -23,7 +23,7 @@ use termwiz::escape::apc::{
     KittyImageTransmit,
 };
 use termwiz::escape::csi::{
-    CSI, Cursor as CsiCursor, CursorStyle, DecPrivateMode, DecPrivateModeCode, Edit,
+    CSI, Cursor as CsiCursor, CursorStyle, DecPrivateMode, DecPrivateModeCode, Device, Edit,
     EraseInDisplay, EraseInLine, Keyboard, KittyKeyboardMode, Mode, Sgr,
 };
 use termwiz::escape::osc::{FinalTermSemanticPrompt, Selection};
@@ -811,6 +811,7 @@ impl Emulator {
             CSI::Edit(e) => self.edit(e),
             CSI::Mode(m) => self.mode(m),
             CSI::Keyboard(k) => self.kitty_keyboard(k),
+            CSI::Device(dev) => self.device(&dev),
             _ => {}
         }
     }
@@ -869,6 +870,30 @@ impl Emulator {
     /// to the supported set, or empty when no level is pushed. Exposed via [`VtPort::input_modes`].
     fn kitty_keyboard_flags(&self) -> KittyKeyboardFlags {
         KittyKeyboardFlags::from_bits(self.kitty_kbd_stack.last().copied().unwrap_or(0))
+    }
+
+    /// Answer a Device Attributes / Device Status query on the device-response channel
+    /// ([`Self::responses`], written back to the pty by the reader). The child probes the terminal's
+    /// identity/status at startup and the terminal replies as if it typed the answer — the reverse
+    /// channel [`VtPort::take_responses`] drains. Out of the DA/DSR subset (SoftReset/DECSTR,
+    /// tertiary DA, terminal name/version, DECREQTPARM, graphics-attrs) stay dropped, unchanged.
+    fn device(&mut self, dev: &Device) {
+        match dev {
+            // Primary DA (`CSI c`) — who are you + what can you do.
+            Device::RequestPrimaryDeviceAttributes => {
+                self.responses.extend_from_slice(PRIMARY_DA);
+            }
+            // Secondary DA (`CSI > c`) — terminal type / firmware version.
+            Device::RequestSecondaryDeviceAttributes => {
+                self.responses.extend_from_slice(SECONDARY_DA);
+            }
+            // DSR status (`CSI 5 n`) — report "ready". The cursor-position report (`CSI 6 n`) is a
+            // `CSI::Cursor(RequestActivePositionReport)`, answered in `cursor_op`.
+            Device::StatusReport => {
+                self.responses.extend_from_slice(DSR_OK);
+            }
+            _ => {}
+        }
     }
 
     fn sgr(&mut self, sgr: Sgr) {
@@ -941,6 +966,14 @@ impl Emulator {
             // stays out of the subset).
             CsiCursor::SetTopAndBottomMargins { top, bottom } => {
                 self.set_scroll_region(top.as_zero_based(), bottom.as_zero_based());
+            }
+            // CPR — Cursor Position Report (`CSI 6 n`): answer the 1-based cursor row;col on the
+            // device-response channel (`CSI r ; c R`). Origin mode (DECOM) is not modeled, so this is
+            // the absolute screen position — a documented bound. `ActivePositionReport` (the reply
+            // form a child never sends us) stays dropped in the wildcard below.
+            CsiCursor::RequestActivePositionReport => {
+                let report = format!("\x1b[{};{}R", self.row + 1, self.col + 1);
+                self.responses.extend_from_slice(report.as_bytes());
             }
             _ => {}
         }
@@ -1393,6 +1426,22 @@ const KITTY_STACK_CAP: usize = 32;
 /// is small; past the cap a new id gets a fresh (ungrouped) `Arc` rather than being cached, which
 /// degrades the non-adjacent-grouping nicety safely rather than growing without bound.
 const HYPERLINK_ID_CAP: usize = 4096;
+
+/// Primary Device Attributes reply (`CSI c` / `CSI 0 c`): `CSI ? 62 ; 4 ; 22 c` — identify as a
+/// VT220-class terminal (`62`) advertising ONLY the extensions sprag actually honors: Sixel graphics
+/// (`4`, the image round renders it) and ANSI colour (`22`). Same truthful-capability discipline as
+/// the Kitty flags mask — never claim a feature the emulator drops, so an app's DA-gated code path
+/// only turns on what works (e.g. Sixel auto-detect, a tmux-superior win — tmux has no Sixel).
+const PRIMARY_DA: &[u8] = b"\x1b[?62;4;22c";
+
+/// Secondary Device Attributes reply (`CSI > c` / `CSI > 0 c`): `CSI > 0 ; 0 ; 0 c` — terminal type
+/// `0` (VT100-family), firmware version `0`, ROM cartridge `0`. Deliberately does NOT impersonate a
+/// specific xterm/rxvt build an app might feature-gate on a version threshold; a generic identity so
+/// version-sniffing apps fall back to their portable path rather than enabling something sprag drops.
+const SECONDARY_DA: &[u8] = b"\x1b[>0;0;0c";
+
+/// Device Status Report "ready, no malfunction" reply (`CSI 5 n` -> `CSI 0 n`).
+const DSR_OK: &[u8] = b"\x1b[0n";
 
 /// Map a termwiz OSC 52 [`Selection`] set to the [`ClipboardTargets`] a WRITE addresses. The
 /// clipboard (`c`) maps to the clipboard; the "configured selection" (`s`) and the empty-`Pc`
@@ -3428,6 +3477,63 @@ mod tests {
             em.take_responses().is_empty(),
             "take drains the response buffer"
         );
+    }
+
+    /// Primary DA (`CSI c`, and the `CSI 0 c` spelling) replies with sprag's honored attributes —
+    /// VT220 class + Sixel (4) + ANSI colour (22) — on the device-response channel.
+    #[test]
+    fn primary_device_attributes_reports_the_honored_capabilities() {
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b[c");
+        assert_eq!(em.take_responses(), b"\x1b[?62;4;22c");
+        // The explicit-zero spelling parses the same.
+        em.advance(b"\x1b[0c");
+        assert_eq!(em.take_responses(), b"\x1b[?62;4;22c");
+    }
+
+    /// Secondary DA (`CSI > c`) replies with a generic VT100-family identity (type 0, version 0),
+    /// deliberately not impersonating a version-gated xterm build.
+    #[test]
+    fn secondary_device_attributes_reports_a_generic_identity() {
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b[>c");
+        assert_eq!(em.take_responses(), b"\x1b[>0;0;0c");
+    }
+
+    /// DSR status (`CSI 5 n`) reports "ready, no malfunction" (`CSI 0 n`).
+    #[test]
+    fn device_status_report_replies_ready() {
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b[5n");
+        assert_eq!(em.take_responses(), b"\x1b[0n");
+    }
+
+    /// CPR (`CSI 6 n`) reports the 1-based cursor position after the cursor has moved — so a
+    /// hard-coded `1;1` would fail. Revert-proof: the position is read from the live cursor.
+    #[test]
+    fn cursor_position_report_answers_the_live_1_based_cursor() {
+        let mut em = Emulator::new(8, 3);
+        // Move to line 2, col 3 (1-based) = row 1, col 2 (0-based), then query.
+        em.advance(b"\x1b[2;3H\x1b[6n");
+        assert_eq!(em.take_responses(), b"\x1b[2;3R");
+        // At the home position the report is 1;1.
+        em.advance(b"\x1b[H\x1b[6n");
+        assert_eq!(em.take_responses(), b"\x1b[1;1R");
+    }
+
+    /// A DA / DSR query carries no cells, so — like the keyboard negotiation — it must not stamp ROW
+    /// DAMAGE (the generation counter stays put).
+    #[test]
+    fn a_device_query_stamps_no_row_damage() {
+        let mut em = Emulator::new(8, 2);
+        let before = em.screen().row_generation(0).unwrap();
+        em.advance(b"\x1b[c\x1b[5n\x1b[6n");
+        assert_eq!(
+            em.screen().row_generation(0).unwrap(),
+            before,
+            "a query is not a paint"
+        );
+        assert!(!em.take_responses().is_empty(), "but it did answer");
     }
 
     /// A keyboard negotiation carries no cells, so it must not stamp ROW DAMAGE.
