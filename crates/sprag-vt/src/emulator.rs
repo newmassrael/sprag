@@ -24,7 +24,8 @@ use termwiz::escape::apc::{
 };
 use termwiz::escape::csi::{
     CSI, Cursor as CsiCursor, CursorStyle, DecPrivateMode, DecPrivateModeCode, Device, Edit,
-    EraseInDisplay, EraseInLine, Keyboard, KittyKeyboardMode, Mode, Sgr, XtSmGraphicsItem,
+    EraseInDisplay, EraseInLine, Keyboard, KittyKeyboardMode, Mode, Sgr, TerminalMode,
+    TerminalModeCode, XtSmGraphicsItem,
 };
 use termwiz::escape::osc::{
     ChangeColorPair, ColorOrQuery, DynamicColorNumber, FinalTermSemanticPrompt, Selection,
@@ -170,6 +171,13 @@ pub struct Emulator {
     /// cursor to the origin (the region top when on, the screen top when off). Part of the
     /// cursor state DECSC / DECRC saves and restores (VT100), unlike [`Self::autowrap`].
     origin_mode: bool,
+    /// IRM insert / replace mode (ANSI mode 4), default OFF (replace). On, each printed graphic
+    /// character first shifts the cells at and right of the cursor one column right (per its width),
+    /// the tail falling off the right margin, then lands in the opened gap — the ECMA-48 / VT510 IRM
+    /// rule a line editor uses to type into the middle of a line. Off (the power-on default), a
+    /// character overwrites in place. Set / reset by `CSI 4 h` / `CSI 4 l`; a terminal MODE, not
+    /// cursor state, so DECSC does not save it (like [`Self::autowrap`]). DECSTR resets it to OFF.
+    insert_mode: bool,
     /// The four G-sets (G0..G3) designated by the SCS escapes. termwiz parses only the G0 / G1
     /// designators (`ESC ( F` / `ESC ) F`), so G2 / G3 stay at their [`CharSet::Ascii`] default
     /// (a documented bound — no `ESC * F` / `ESC + F`); a single shift onto them is then a no-op,
@@ -354,6 +362,7 @@ impl Emulator {
             scroll_bottom: rows.max(1) - 1,
             autowrap: true,
             origin_mode: false,
+            insert_mode: false,
             charsets: [CharSet::Ascii; 4],
             gl: 0,
             single_shift: None,
@@ -726,8 +735,9 @@ impl Emulator {
     /// RIS — Reset to Initial State (`ESC c`): a full hard reset to the power-on state. Rebuilding
     /// from [`Emulator::new`] is the SSOT — it cannot drift from the constructor's defaults as fields
     /// are added — and resets EVERYTHING the child could have touched: both screens (the alt screen
-    /// is discarded, back to a blank main), scrollback, cursor + pen, scroll region, every DEC mode
-    /// (autowrap back on, origin off, cursor visible, mouse / focus / bracketed paste off), the
+    /// is discarded, back to a blank main), scrollback, cursor + pen, scroll region, every mode
+    /// (autowrap back on, origin off, IRM insert back to replace, cursor visible, mouse / focus /
+    /// bracketed paste off), the
     /// character-set state (G0..G3 back to ASCII, GL to G0), the Kitty keyboard stack, the colour
     /// palette, the title, and pending device responses. Only the geometry
     /// (`cols` x `rows`) survives — it is display-owned, not the child's to reset. The already-parsed
@@ -740,8 +750,9 @@ impl Emulator {
     /// DECSTR — Soft Terminal Reset (`CSI ! p`): reset the DEC-defined subset WITHOUT clearing the
     /// screen, scrollback, palette, or title, and without leaving the current (main / alt) screen.
     /// Homes the cursor, drops the DECSC save, restores the full-screen scroll region, and returns
-    /// the modes DECSTR governs to their defaults: cursor visible, origin mode off, autowrap ON, and
-    /// a normal SGR pen. Autowrap goes ON (not off): the `reset` terminfo string runs RIS then DECSTR
+    /// the modes DECSTR governs to their defaults: cursor visible, origin mode off, insert / replace
+    /// back to replace (IRM off), autowrap ON, and a normal SGR pen. Autowrap goes ON (not off): the
+    /// `reset` terminfo string runs RIS then DECSTR
     /// with no explicit re-enable, so DECSTR must leave autowrap in its power-on ON state or the shell
     /// would stop wrapping afterward. The character-set state (G0..G3, GL, any armed single shift) also
     /// returns to default — VT510 lists it in the DECSTR set, and it is the recovery a wedged shell
@@ -750,6 +761,7 @@ impl Emulator {
     fn soft_reset(&mut self) {
         self.cursor_visible = true;
         self.origin_mode = false;
+        self.insert_mode = false;
         self.autowrap = true;
         self.reset_scroll_region();
         self.col = 0;
@@ -1652,6 +1664,18 @@ impl Emulator {
                 }
                 _ => {}
             },
+            // IRM insert / replace mode (ANSI mode 4) — the one ANSI (non-private) mode sprag acts
+            // on. `print_str` reads the flag; see [`Self::insert_mode`].
+            Mode::SetMode(TerminalMode::Code(TerminalModeCode::Insert)) => {
+                self.insert_mode = true;
+            }
+            Mode::ResetMode(TerminalMode::Code(TerminalModeCode::Insert)) => {
+                self.insert_mode = false;
+            }
+            // Other ANSI modes (KAM / SRM / LNM / …) and every DECRQM query (`CSI Pd $ p` /
+            // `CSI ? Pd $ p`) stay dropped: DECRQM is a mode-agnostic REPORT feature belonging to all
+            // modes at once, not something IRM alone should half-answer — a partial DECRQM (reply for
+            // one mode, silence for the rest) is worse than none, so it is a coherent later round.
             _ => {}
         }
     }
@@ -1714,6 +1738,14 @@ impl Emulator {
                 }
             }
             let g = self.next_gen();
+            if self.insert_mode {
+                // IRM (ANSI mode 4): open a gap of `cell_w` cells at the cursor, shifting the rest of
+                // the row right (the tail falling past the right margin), so the incoming glyph
+                // inserts rather than overwrites. The wrap / pin above has already guaranteed
+                // `col + cell_w <= cols`, so the gap fits exactly — a wide glyph opens two cells for
+                // its head + trailer.
+                self.screen.insert_cells(self.col, self.row, cell_w, g);
+            }
             let head = Cell {
                 cluster: ch.to_string(),
                 fg: self.fg,
@@ -5200,5 +5232,126 @@ mod tests {
         for c in 0..3 {
             assert_eq!(cluster(&em, c, 0), "─", "the line glyph, repeated");
         }
+    }
+
+    // --- IRM insert / replace mode (ANSI mode 4) ---
+
+    #[test]
+    fn irm_insert_shifts_existing_cells_right() {
+        // CSI 4 h: a printed glyph opens a gap at the cursor and shifts the rest of the row right,
+        // rather than overwriting — the readline "type into the middle of a line" case.
+        let mut em = Emulator::new(6, 1);
+        em.advance(b"abc"); // "abc", cursor at col 3
+        em.advance(b"\x1b[2G"); // CHA -> column 2 (1-based) = col 1, on 'b'
+        em.advance(b"\x1b[4hX"); // IRM on, then insert 'X'
+        assert_eq!(em.screen().row_text(0), "aXbc");
+        assert_eq!(
+            em.screen().cursor().col,
+            2,
+            "the cursor advances past the inserted glyph"
+        );
+    }
+
+    #[test]
+    fn irm_off_by_default_overwrites_in_place() {
+        // The power-on default is replace mode: with no CSI 4 h, a glyph overwrites (guards the gate).
+        let mut em = Emulator::new(6, 1);
+        em.advance(b"abc\x1b[2GX"); // move to col 1 and print without enabling IRM
+        assert_eq!(em.screen().row_text(0), "aXc", "X overwrote b");
+    }
+
+    #[test]
+    fn irm_reset_returns_to_overwrite() {
+        // CSI 4 l goes back to replace mode after an insert.
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"abcd\x1b[2G"); // "abcd", cursor at col 1 (on 'b')
+        em.advance(b"\x1b[4hX"); // insert -> "aXbcd", cursor col 2 (on 'b')
+        assert_eq!(em.screen().row_text(0), "aXbcd");
+        em.advance(b"\x1b[4lY"); // replace -> Y overwrites 'b' at col 2
+        assert_eq!(
+            em.screen().row_text(0),
+            "aXYcd",
+            "replace resumed after CSI 4 l"
+        );
+    }
+
+    #[test]
+    fn irm_insert_drops_the_tail_past_the_right_margin() {
+        // A full row: inserting at the head pushes the last cell off the right margin (it is gone,
+        // not wrapped — insert is row-local).
+        let mut em = Emulator::new(4, 1);
+        em.advance(b"abcd"); // fills the row
+        em.advance(b"\x1b[1G"); // CHA -> col 0
+        em.advance(b"\x1b[4hZ"); // IRM on, insert Z at col 0
+        assert_eq!(
+            em.screen().row_text(0),
+            "Zabc",
+            "the tail 'd' fell off the right margin"
+        );
+    }
+
+    #[test]
+    fn irm_inserts_a_wide_glyph_opening_two_cells() {
+        // A wide (double-width) glyph inserts by two columns: its head + trailer both open a gap.
+        let mut em = Emulator::new(6, 1);
+        em.advance(b"abcd"); // "abcd", cursor col 4
+        em.advance(b"\x1b[1G"); // CHA -> col 0
+        em.advance("\x1b[4h世".as_bytes()); // IRM on, insert wide '世' at col 0
+        let head = em.screen().cell(0, 0).unwrap();
+        assert_eq!(head.cluster, "世");
+        assert_eq!(head.width, Width::Wide);
+        assert_eq!(em.screen().cell(1, 0).unwrap().width, Width::Trailer);
+        assert_eq!(
+            cluster(&em, 2, 0),
+            "a",
+            "the row shifted right by two cells"
+        );
+        assert_eq!(cluster(&em, 3, 0), "b");
+        assert_eq!(
+            em.screen().cursor().col,
+            2,
+            "the cursor advanced by the wide width"
+        );
+    }
+
+    #[test]
+    fn irm_is_not_saved_by_decsc() {
+        // IRM is a terminal MODE, not cursor state, so DECSC / DECRC neither save nor restore it
+        // (matching DECAWM). On -> save -> off -> restore leaves it OFF.
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b[4h"); // IRM on
+        em.advance(b"\x1b7"); // DECSC
+        em.advance(b"\x1b[4l"); // IRM off
+        em.advance(b"\x1b8"); // DECRC — must NOT bring IRM back
+        em.advance(b"abc\x1b[2GX"); // print, move to col 1, print in the current (replace) mode
+        assert_eq!(
+            em.screen().row_text(0),
+            "aXc",
+            "IRM stayed off — DECRC did not restore it"
+        );
+    }
+
+    #[test]
+    fn soft_reset_clears_insert_mode() {
+        // DECSTR (CSI ! p) returns IRM to replace (VT510 lists it in the soft-reset set).
+        let mut em = Emulator::new(6, 1);
+        em.advance(b"\x1b[4h"); // IRM on
+        em.advance(b"\x1b[!p"); // DECSTR
+        em.advance(b"abc\x1b[2GX"); // print then overwrite at col 1
+        assert_eq!(
+            em.screen().row_text(0),
+            "aXc",
+            "soft reset put IRM back to replace"
+        );
+    }
+
+    #[test]
+    fn ris_clears_insert_mode() {
+        // RIS (ESC c) rebuilds the power-on state, so IRM returns to replace.
+        let mut em = Emulator::new(6, 1);
+        em.advance(b"\x1b[4h"); // IRM on
+        em.advance(b"\x1bc"); // RIS
+        em.advance(b"abc\x1b[2GX");
+        assert_eq!(em.screen().row_text(0), "aXc", "RIS reset IRM to replace");
     }
 }
