@@ -53,6 +53,8 @@ struct SavedCursor {
     underline_color: Option<Color>,
     attrs: Attrs,
     cursor_shape: CursorShape,
+    /// DECOM origin-mode state (VT100 saves origin mode as part of the cursor).
+    origin_mode: bool,
 }
 
 /// A terminal emulator: feed PTY bytes via [`VtPort::advance`], read the
@@ -72,11 +74,24 @@ pub struct Emulator {
     /// rows outside the region stay put — the `less` / `vim` / tmux-status-bar split-region
     /// idiom. Reset to the full screen on resize and on every alt-screen transition (the
     /// region is screen-relative, and a fullscreen app sets its own after entering the alt
-    /// screen). Origin mode (DECOM) is not modeled, so a DECSTBM homes the cursor to the
-    /// SCREEN top-left, not the region's top — a documented bound consistent with the rest
-    /// of the skeleton.
+    /// screen). Under [`Self::origin_mode`] (DECOM) cursor addressing is region-relative and
+    /// a DECSTBM homes the cursor to the region's top-left; otherwise it homes to the SCREEN
+    /// top-left.
     scroll_top: u16,
     scroll_bottom: u16,
+    /// DECAWM autowrap (DEC private mode 7), default ON. On (the xterm default), a grapheme
+    /// printed past the right margin wraps to the next line as a SOFT line-continuation; off,
+    /// the cursor pins at the last column and each further grapheme overwrites it — the VT100
+    /// "replace at the right margin" rule a full-width status line relies on to not scroll.
+    /// Set / reset by `CSI ? 7 h` / `l`. A terminal MODE, not cursor state, so DECSC does not
+    /// save it (unlike [`Self::origin_mode`]).
+    autowrap: bool,
+    /// DECOM origin mode (DEC private mode 6), default OFF. On, CUP / HVP / VPA address rows
+    /// RELATIVE to [`Self::scroll_top`] and the cursor is CONFINED to the region
+    /// `[scroll_top, scroll_bottom]`; setting or resetting it — and any DECSTBM — homes the
+    /// cursor to the origin (the region top when on, the screen top when off). Part of the
+    /// cursor state DECSC / DECRC saves and restores (VT100), unlike [`Self::autowrap`].
+    origin_mode: bool,
     // Cursor + pen state the screen does not itself track.
     col: u16,
     row: u16,
@@ -246,6 +261,8 @@ impl Emulator {
             rows: rows.max(1),
             scroll_top: 0,
             scroll_bottom: rows.max(1) - 1,
+            autowrap: true,
+            origin_mode: false,
             col: 0,
             row: 0,
             cursor_visible: true,
@@ -535,8 +552,8 @@ impl Emulator {
     /// last row) as 1-based `OneBased`; the caller passes them already 0-based, `bottom`
     /// clamped here to the last row (termwiz's "big default" is `u32::MAX - 1`). A region
     /// needs at least two lines: an invalid one (`top >= bottom`) is IGNORED, leaving the
-    /// margins and cursor unchanged (the VT100 rule). On a valid set the cursor homes to
-    /// the screen top-left (origin mode is not modeled — see the field doc).
+    /// margins and cursor unchanged (the VT100 rule). On a valid set the cursor homes to the
+    /// origin — the new region's top-left under origin mode, else the screen top-left.
     fn set_scroll_region(&mut self, top: u32, bottom: u32) {
         let max_row = self.rows.saturating_sub(1);
         let top = u16::try_from(top).unwrap_or(u16::MAX).min(max_row);
@@ -544,9 +561,51 @@ impl Emulator {
         if top < bottom {
             self.scroll_top = top;
             self.scroll_bottom = bottom;
-            self.row = 0;
             self.col = 0;
+            self.row = self.origin_row();
         }
+    }
+
+    /// The row the cursor homes to on a DECSTBM, a DECOM set / reset, or any "home": the scroll
+    /// region's top under origin mode, else the screen top.
+    fn origin_row(&self) -> u16 {
+        if self.origin_mode { self.scroll_top } else { 0 }
+    }
+
+    /// Resolve a 0-based vertical target (a CUP / HVP line or a VPA row parameter) to an absolute
+    /// screen row. Under origin mode the parameter is RELATIVE to the region top and CONFINED to
+    /// `[scroll_top, scroll_bottom]`; otherwise it is screen-absolute, clamped to the last row.
+    fn resolve_origin_row(&self, zero_based: u16) -> u16 {
+        if self.origin_mode {
+            self.scroll_top
+                .saturating_add(zero_based)
+                .min(self.scroll_bottom)
+        } else {
+            zero_based.min(self.rows.saturating_sub(1))
+        }
+    }
+
+    /// CUU / CPL: move the cursor up `n` rows without crossing the top margin when it starts at or
+    /// below it (a cursor already above the region stops at the screen top). xterm's margin-aware
+    /// relative motion — the scroll region bounds vertical motion independently of origin mode.
+    fn move_cursor_up(&mut self, n: u16) {
+        let floor = if self.row >= self.scroll_top {
+            self.scroll_top
+        } else {
+            0
+        };
+        self.row = self.row.saturating_sub(n).max(floor);
+    }
+
+    /// CUD / CNL: move the cursor down `n` rows without crossing the bottom margin when it starts
+    /// at or above it (a cursor already below the region stops at the screen bottom).
+    fn move_cursor_down(&mut self, n: u16) {
+        let ceil = if self.row <= self.scroll_bottom {
+            self.scroll_bottom
+        } else {
+            self.rows.saturating_sub(1)
+        };
+        self.row = self.row.saturating_add(n).min(ceil);
     }
 
     /// Save the cursor position + pen (DECSC / `CSI s`).
@@ -559,6 +618,7 @@ impl Emulator {
             underline_color: self.underline_color,
             attrs: self.attrs,
             cursor_shape: self.cursor_shape,
+            origin_mode: self.origin_mode,
         });
     }
 
@@ -574,6 +634,7 @@ impl Emulator {
             underline_color: None,
             attrs: Attrs::default(),
             cursor_shape: CursorShape::Block,
+            origin_mode: false,
         });
         self.col = saved.col.min(self.cols.saturating_sub(1));
         self.row = saved.row.min(self.rows.saturating_sub(1));
@@ -582,6 +643,7 @@ impl Emulator {
         self.underline_color = saved.underline_color;
         self.attrs = saved.attrs;
         self.cursor_shape = saved.cursor_shape;
+        self.origin_mode = saved.origin_mode;
     }
 
     /// Operating-system commands. Two families are in the subset:
@@ -1132,28 +1194,32 @@ impl Emulator {
 
     fn cursor_op(&mut self, c: CsiCursor) {
         let max_col = self.cols.saturating_sub(1);
-        let max_row = self.rows.saturating_sub(1);
         match c {
-            CsiCursor::Up(n) => self.row = self.row.saturating_sub(clamp_count(n)),
-            CsiCursor::Down(n) => self.row = (self.row + clamp_count(n)).min(max_row),
+            // Relative vertical motion is margin-aware (see `move_cursor_up` / `_down`); the
+            // horizontal moves are plain screen-column clamps (no left / right margins modeled).
+            CsiCursor::Up(n) => self.move_cursor_up(clamp_count(n)),
+            CsiCursor::Down(n) => self.move_cursor_down(clamp_count(n)),
             CsiCursor::Left(n) => self.col = self.col.saturating_sub(clamp_count(n)),
             CsiCursor::Right(n) => self.col = (self.col + clamp_count(n)).min(max_col),
+            // CUP / HVP — the line is origin-mode-relative (`resolve_origin_row`); the column is a
+            // plain screen-absolute clamp.
             CsiCursor::Position { line, col } => {
-                self.row = zero_based_u16(line.as_zero_based()).min(max_row);
+                self.row = self.resolve_origin_row(zero_based_u16(line.as_zero_based()));
                 self.col = zero_based_u16(col.as_zero_based()).min(max_col);
             }
             CsiCursor::CharacterAbsolute(c) | CsiCursor::CharacterPositionAbsolute(c) => {
                 self.col = zero_based_u16(c.as_zero_based()).min(max_col);
             }
+            // VPA — a vertical absolute address, so it too is origin-mode-relative.
             CsiCursor::LinePositionAbsolute(n) => {
-                self.row = zero_based_u16(n.saturating_sub(1)).min(max_row);
+                self.row = self.resolve_origin_row(zero_based_u16(n.saturating_sub(1)));
             }
             CsiCursor::NextLine(n) => {
-                self.row = (self.row + clamp_count(n)).min(max_row);
+                self.move_cursor_down(clamp_count(n));
                 self.col = 0;
             }
             CsiCursor::PrecedingLine(n) => {
-                self.row = self.row.saturating_sub(clamp_count(n));
+                self.move_cursor_up(clamp_count(n));
                 self.col = 0;
             }
             // DECSC / DECRC in their `CSI s` / `CSI u` spelling (same save/restore as `ESC 7/8`).
@@ -1168,11 +1234,17 @@ impl Emulator {
                 self.set_scroll_region(top.as_zero_based(), bottom.as_zero_based());
             }
             // CPR — Cursor Position Report (`CSI 6 n`): answer the 1-based cursor row;col on the
-            // device-response channel (`CSI r ; c R`). Origin mode (DECOM) is not modeled, so this is
-            // the absolute screen position — a documented bound. `ActivePositionReport` (the reply
-            // form a child never sends us) stays dropped in the wildcard below.
+            // device-response channel (`CSI r ; c R`). Under origin mode the row is reported RELATIVE
+            // to the scroll region top (matching how CUP addressed it); otherwise it is the absolute
+            // screen row. `ActivePositionReport` (the reply form a child never sends us) stays
+            // dropped in the wildcard below.
             CsiCursor::RequestActivePositionReport => {
-                let report = format!("\x1b[{};{}R", self.row + 1, self.col + 1);
+                let report_row = if self.origin_mode {
+                    self.row.saturating_sub(self.scroll_top) + 1
+                } else {
+                    self.row + 1
+                };
+                let report = format!("\x1b[{};{}R", report_row, self.col + 1);
                 self.responses.extend_from_slice(report.as_bytes());
             }
             _ => {}
@@ -1330,6 +1402,15 @@ impl Emulator {
                 DecPrivateModeCode::ApplicationCursorKeys => {
                     self.input_modes.application_cursor_keys = true;
                 }
+                // DECSET 7 — autowrap on (the boot default): print past the right margin wraps.
+                DecPrivateModeCode::AutoWrap => self.autowrap = true,
+                // DECSET 6 — origin mode: cursor addressing becomes region-relative and confined
+                // to the scroll region; entering homes the cursor to the region's top-left.
+                DecPrivateModeCode::OriginMode => {
+                    self.origin_mode = true;
+                    self.col = 0;
+                    self.row = self.origin_row();
+                }
                 DecPrivateModeCode::ClearAndEnableAlternateScreen
                 | DecPrivateModeCode::EnableAlternateScreen
                 | DecPrivateModeCode::OptEnableAlternateScreen => self.enter_alt(),
@@ -1367,6 +1448,15 @@ impl Emulator {
                 DecPrivateModeCode::ShowCursor => self.cursor_visible = false,
                 DecPrivateModeCode::ApplicationCursorKeys => {
                     self.input_modes.application_cursor_keys = false;
+                }
+                // DECRST 7 — autowrap off: print at the right margin overwrites in place.
+                DecPrivateModeCode::AutoWrap => self.autowrap = false,
+                // DECRST 6 — leave origin mode: addressing returns to screen-absolute and the
+                // cursor homes to the screen top-left.
+                DecPrivateModeCode::OriginMode => {
+                    self.origin_mode = false;
+                    self.col = 0;
+                    self.row = self.origin_row();
                 }
                 DecPrivateModeCode::ClearAndEnableAlternateScreen
                 | DecPrivateModeCode::EnableAlternateScreen
@@ -1433,10 +1523,18 @@ impl Emulator {
             }
             let cell_w = w as u16;
             if self.col + cell_w > self.cols {
-                // Autowrap: this row's logical line continues onto the next.
-                self.screen.set_wrapped(self.row, true);
-                self.col = 0;
-                self.line_feed();
+                if self.autowrap {
+                    // DECAWM on (the default): this row's logical line continues onto the next.
+                    self.screen.set_wrapped(self.row, true);
+                    self.col = 0;
+                    self.line_feed();
+                } else {
+                    // DECAWM off: pin at the right margin and overwrite. Back the cursor up so the
+                    // grapheme lands in the last cell(s); the `self.col += cell_w` below returns it
+                    // to the margin, so the next grapheme overwrites the same position — the VT100
+                    // "replace at the right margin" rule (used by full-width, non-scrolling lines).
+                    self.col = self.cols.saturating_sub(cell_w);
+                }
             }
             let g = self.next_gen();
             let head = Cell {
@@ -3762,6 +3860,150 @@ mod tests {
             "a query is not a paint"
         );
         assert!(!em.take_responses().is_empty(), "but it did answer");
+    }
+
+    // --- DECAWM autowrap (DEC private mode 7) ---
+
+    #[test]
+    fn decawm_off_overwrites_at_the_right_margin() {
+        // DECRST 7: printing past the right margin overwrites the last cell in place instead of
+        // wrapping to the next line (the VT100 "replace at the right margin" rule).
+        let mut em = Emulator::new(4, 2);
+        em.advance(b"\x1b[?7l"); // autowrap off
+        em.advance(b"abcdef");
+        assert_eq!(cluster(&em, 0, 0), "a");
+        assert_eq!(cluster(&em, 1, 0), "b");
+        assert_eq!(cluster(&em, 2, 0), "c");
+        assert_eq!(cluster(&em, 3, 0), "f", "e and f overwrote d at the margin");
+        assert_eq!(cluster(&em, 0, 1), " ", "nothing wrapped onto row 1");
+        assert_eq!(em.screen().cursor().row, 0);
+    }
+
+    #[test]
+    fn decawm_off_wide_grapheme_overwrites_the_last_two_cells() {
+        // A wide grapheme at the margin backs up to the last two cells; a second wide grapheme
+        // overwrites it, the cursor staying pinned at the margin.
+        let mut em = Emulator::new(4, 2);
+        em.advance(b"\x1b[?7l");
+        em.advance("abc世界".as_bytes());
+        assert_eq!(cluster(&em, 0, 0), "a");
+        assert_eq!(cluster(&em, 1, 0), "b");
+        let head = em.screen().cell(2, 0).unwrap();
+        assert_eq!(head.cluster, "界", "the last wide grapheme won the margin");
+        assert_eq!(head.width, Width::Wide);
+        assert_eq!(em.screen().cell(3, 0).unwrap().width, Width::Trailer);
+        assert_eq!(cluster(&em, 0, 1), " ", "nothing wrapped");
+    }
+
+    #[test]
+    fn decawm_resumes_wrapping_when_turned_back_on() {
+        let mut em = Emulator::new(3, 2);
+        em.advance(b"\x1b[?7labcd"); // off: "abd" (d overwrites c), cursor pinned at the margin
+        assert_eq!(em.screen().row_text(0), "abd");
+        em.advance(b"\x1b[?7he"); // on again: the next glyph wraps to row 1
+        assert_eq!(cluster(&em, 0, 1), "e");
+        assert_eq!(em.screen().cursor().row, 1);
+    }
+
+    // --- DECOM origin mode (DEC private mode 6) ---
+
+    #[test]
+    fn origin_mode_sets_cup_addressing_relative_to_the_region() {
+        // DECSET 6: CUP line coordinates are relative to the scroll region top and confined to it.
+        let mut em = Emulator::new(6, 5);
+        em.advance(b"\x1b[2;4r"); // region rows 1..=3 (0-based)
+        em.advance(b"\x1b[?6h"); // origin on -> homes to the region top (row 1)
+        assert_eq!(
+            em.screen().cursor().row,
+            1,
+            "DECSET 6 homes to the region top"
+        );
+        assert_eq!(em.screen().cursor().col, 0);
+        em.advance(b"\x1b[1;1HT"); // line 1 -> region row 1
+        assert_eq!(cluster(&em, 0, 1), "T");
+        em.advance(b"\x1b[3;2HM"); // line 3 col 2 -> region row 3, col 1
+        assert_eq!(cluster(&em, 1, 3), "M");
+        em.advance(b"\x1b[9;1HB"); // line 9 -> clamped to the region bottom (row 3)
+        assert_eq!(
+            cluster(&em, 0, 3),
+            "B",
+            "origin CUP is confined to the region bottom"
+        );
+    }
+
+    #[test]
+    fn origin_mode_off_keeps_cup_absolute_and_homes_to_screen_top() {
+        // A scroll region alone does NOT shift addressing — only DECOM does (guards the off path).
+        let mut em = Emulator::new(6, 5);
+        em.advance(b"\x1b[2;4r"); // DECSTBM homes to the screen top without origin mode
+        assert_eq!(
+            em.screen().cursor().row,
+            0,
+            "DECSTBM homes to (0,0) with origin off"
+        );
+        em.advance(b"\x1b[1;1HT"); // CUP line 1 -> absolute row 0
+        assert_eq!(
+            cluster(&em, 0, 0),
+            "T",
+            "a region alone does not shift addressing"
+        );
+    }
+
+    #[test]
+    fn decstbm_homes_to_the_region_top_under_origin_mode() {
+        let mut em = Emulator::new(6, 5);
+        em.advance(b"\x1b[?6h"); // origin on (full-screen region: home = row 0)
+        assert_eq!(em.screen().cursor().row, 0);
+        em.advance(b"\x1b[2;4r"); // set region rows 1..=3 -> homes to the NEW region top (row 1)
+        assert_eq!(em.screen().cursor().row, 1);
+        assert_eq!(em.screen().cursor().col, 0);
+    }
+
+    #[test]
+    fn scroll_region_confines_relative_cursor_motion_to_the_margins() {
+        // CUU / CUD stop at the region margins when the cursor is inside it (xterm's margin-aware
+        // relative motion — independent of origin mode).
+        let mut em = Emulator::new(6, 6);
+        em.advance(b"\x1b[2;5r"); // region rows 1..=4 (0-based)
+        em.advance(b"\x1b[3;1H"); // absolute CUP to row 2 (inside the region)
+        em.advance(b"\x1b[9B"); // CUD 9 -> stops at the bottom margin (row 4)
+        assert_eq!(
+            em.screen().cursor().row,
+            4,
+            "CUD is confined to the bottom margin"
+        );
+        em.advance(b"\x1b[9A"); // CUU 9 -> stops at the top margin (row 1)
+        assert_eq!(
+            em.screen().cursor().row,
+            1,
+            "CUU is confined to the top margin"
+        );
+    }
+
+    #[test]
+    fn origin_mode_cpr_reports_the_region_relative_row() {
+        let mut em = Emulator::new(8, 6);
+        em.advance(b"\x1b[2;5r"); // region rows 1..=4
+        em.advance(b"\x1b[?6h"); // origin on
+        em.advance(b"\x1b[2;3H\x1b[6n"); // CUP region line 2 col 3, then CPR
+        assert_eq!(
+            em.take_responses(),
+            b"\x1b[2;3R",
+            "CPR is region-relative under origin mode",
+        );
+    }
+
+    #[test]
+    fn decsc_decrc_round_trips_origin_mode() {
+        // VT100 saves origin mode as part of the cursor: DECSC / DECRC restore it across a toggle.
+        let mut em = Emulator::new(6, 5);
+        em.advance(b"\x1b[2;4r"); // region rows 1..=3
+        em.advance(b"\x1b[?6h"); // origin on
+        em.advance(b"\x1b7"); // DECSC saves origin = true (cursor at region top)
+        em.advance(b"\x1b[?6l"); // origin off
+        em.advance(b"\x1b8"); // DECRC restores origin = true (and position)
+        em.advance(b"\x1b[1;1HR"); // CUP line 1 -> region-relative row 1 (origin restored)
+        assert_eq!(cluster(&em, 0, 1), "R");
     }
 
     /// OSC 11 sets the default BACKGROUND colour: the palette's dynamic background changes, so a
