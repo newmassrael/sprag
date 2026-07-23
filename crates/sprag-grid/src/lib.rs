@@ -535,6 +535,31 @@ mod tests {
         assert!(cell.attrs.bold);
     }
 
+    /// A palette change RE-COLOURS already-projected cells: a cell printed in ANSI index 1 keeps its
+    /// symbolic `Color::Indexed(1)`, so after an OSC 4 redefines index 1 the SAME cell re-projects to
+    /// the new colour — the whole-screen re-colour a real terminal performs (data path; the live GUI
+    /// repaints on the OSC's PTY-output `on_dirty`).
+    #[test]
+    fn a_palette_change_recolors_already_projected_cells() {
+        use sprag_vt::Emulator;
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b[31mX"); // "X" in ANSI index 1 (red)
+        let before = project(VtPort::screen(&em), VtPort::palette(&em));
+        assert_eq!(
+            before.cell(0, 0).unwrap().fg,
+            TermColor::Rgb(PinColor::rgb(0xcd, 0x00, 0x00)),
+            "index 1 resolves to xterm red before the OSC 4"
+        );
+        // Redefine index 1 -> green; the same (still `Indexed(1)`) cell re-projects green.
+        em.advance(b"\x1b]4;1;rgb:00/ff/00\x1b\\");
+        let after = project(VtPort::screen(&em), VtPort::palette(&em));
+        assert_eq!(
+            after.cell(0, 0).unwrap().fg,
+            TermColor::Rgb(PinColor::rgb(0x00, 0xff, 0x00)),
+            "the already-printed cell re-colours to the redefined index 1"
+        );
+    }
+
     /// The projection resolves a `Color::Default` background against the palette's DYNAMIC
     /// background, so an OSC 11 change (which mutates that dynamic bg) re-colours the whole screen —
     /// the render half of OSC 11. A plain cell projects to the palette's `default_bg`, never a bare

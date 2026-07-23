@@ -1328,6 +1328,18 @@ impl Screen {
         self.kind = kind;
     }
 
+    /// Mark EVERY row dirty at `generation` — a whole-screen APPEARANCE change that touches no
+    /// cells. A colour-palette change (`OSC 4 / 10 / 11 / 12`) re-colours existing cells: they keep
+    /// their symbolic [`Color`], but resolve differently against the new palette. Since a
+    /// generation-gated painter (pinion's `TextGrid` re-rasterizes only rows whose damage stamp
+    /// advanced) would otherwise keep the stale colours, bumping every row's generation forces the
+    /// re-colour to reach the display. No cells change, so this is the damage peer of an `OSC 4` set.
+    pub(crate) fn mark_all_dirty(&mut self, generation: u64) {
+        for g in &mut self.generations {
+            *g = generation;
+        }
+    }
+
     /// Write a cell and bump the owning row's damage generation.
     pub(crate) fn set_cell(&mut self, col: u16, row: u16, cell: Cell, generation: u64) {
         if let Some(i) = self.index(col, row) {

@@ -26,7 +26,9 @@ use termwiz::escape::csi::{
     CSI, Cursor as CsiCursor, CursorStyle, DecPrivateMode, DecPrivateModeCode, Device, Edit,
     EraseInDisplay, EraseInLine, Keyboard, KittyKeyboardMode, Mode, Sgr, XtSmGraphicsItem,
 };
-use termwiz::escape::osc::{ColorOrQuery, DynamicColorNumber, FinalTermSemanticPrompt, Selection};
+use termwiz::escape::osc::{
+    ChangeColorPair, ColorOrQuery, DynamicColorNumber, FinalTermSemanticPrompt, Selection,
+};
 use termwiz::escape::parser::Parser;
 use termwiz::escape::{
     Action, ControlCode, Esc, EscCode, OperatingSystemCommand, Sixel, SixelData,
@@ -688,8 +690,57 @@ impl Emulator {
             OperatingSystemCommand::ResetDynamicColor(which) => {
                 self.reset_dynamic_color(*which);
             }
+            // OSC 4 — the INDEXED palette: set or query a 256-colour slot. Each pair names an index
+            // and either a colour (SET) or `?` (QUERY -> reply `OSC 4 ; i ; rgb:… ST`). An `OSC 4`
+            // override re-colours every cell using that index, because the projection resolves each
+            // cell against the live palette every frame — a themer redefining ANSI red (index 1)
+            // recolours all red text at once, which tmux cannot do (it has no palette model).
+            OperatingSystemCommand::ChangeColorNumber(pairs) => {
+                self.change_color_number(pairs);
+            }
+            // OSC 104 — reset indexed palette colours: an empty list resets the WHOLE palette to the
+            // xterm seed, else just the named indices.
+            OperatingSystemCommand::ResetColors(indices) => {
+                self.reset_colors(indices);
+            }
             _ => {}
         }
+    }
+
+    /// Apply an `OSC 4` indexed-palette command: for each `(index, colour-or-query)` pair, SET the
+    /// palette slot or, for a `?`, QUERY it (pushing an `OSC 4 ; i ; rgb:… ST` reply onto the
+    /// device-response channel the reader loop drains back to the child).
+    fn change_color_number(&mut self, pairs: &[ChangeColorPair]) {
+        let mut changed = false;
+        for pair in pairs {
+            match &pair.color {
+                ColorOrQuery::Color(spec) => {
+                    self.palette
+                        .set_indexed(pair.palette_index, srgba_to_rgb(*spec));
+                    changed = true;
+                }
+                ColorOrQuery::Query => {
+                    let rgb = self.palette.indexed(pair.palette_index);
+                    self.push_color_reply(&format!("4;{}", pair.palette_index), rgb);
+                }
+            }
+        }
+        if changed {
+            self.repaint_for_palette_change();
+        }
+    }
+
+    /// Apply an `OSC 104` reset: an empty `indices` restores the ENTIRE indexed palette to the xterm
+    /// seed, otherwise each named index individually. Always a change, so always repaints.
+    fn reset_colors(&mut self, indices: &[u8]) {
+        if indices.is_empty() {
+            self.palette.reset_all_indexed();
+        } else {
+            for &i in indices {
+                self.palette.reset_indexed(i);
+            }
+        }
+        self.repaint_for_palette_change();
     }
 
     /// Apply an `OSC 10 / 11 / …` dynamic-colour command: the colours in `colors` bind to the
@@ -700,6 +751,7 @@ impl Emulator {
     /// — a set is a silent no-op, a query yields no reply (the app falls back to its own default).
     fn change_dynamic_colors(&mut self, first: DynamicColorNumber, colors: &[ColorOrQuery]) {
         let base = first as u8;
+        let mut changed = false;
         for (offset, entry) in colors.iter().enumerate() {
             // A pathologically long list can never address a real dynamic number past 19, so a
             // number that overflows `u8` is simply out of subset (dropped), never a panic.
@@ -710,8 +762,14 @@ impl Emulator {
                 ColorOrQuery::Color(spec) => {
                     let rgb = srgba_to_rgb(*spec);
                     match number {
-                        10 => self.palette.set_default_fg(rgb),
-                        11 => self.palette.set_default_bg(rgb),
+                        10 => {
+                            self.palette.set_default_fg(rgb);
+                            changed = true;
+                        }
+                        11 => {
+                            self.palette.set_default_bg(rgb);
+                            changed = true;
+                        }
                         _ => {}
                     }
                 }
@@ -727,16 +785,37 @@ impl Emulator {
                 }
             }
         }
+        if changed {
+            self.repaint_for_palette_change();
+        }
     }
 
     /// Reset an `OSC 110 / 111 / …` dynamic colour to its xterm default. Out-of-subset numbers
     /// (12+ this stage) are dropped.
     fn reset_dynamic_color(&mut self, which: DynamicColorNumber) {
-        match which as u8 {
-            10 => self.palette.reset_default_fg(),
-            11 => self.palette.reset_default_bg(),
-            _ => {}
+        let changed = match which as u8 {
+            10 => {
+                self.palette.reset_default_fg();
+                true
+            }
+            11 => {
+                self.palette.reset_default_bg();
+                true
+            }
+            _ => false,
+        };
+        if changed {
+            self.repaint_for_palette_change();
         }
+    }
+
+    /// A colour-palette change re-colours existing cells without touching them, so bump every row's
+    /// damage generation — otherwise pinion's generation-gated `TextGrid` painter keeps the stale
+    /// colours (proven live: without this, an `OSC 4` redefining a palette index leaves already-drawn
+    /// text its old colour). Called by every OSC-colour SET / RESET, never by a query.
+    fn repaint_for_palette_change(&mut self) {
+        let generation = self.next_gen();
+        self.screen.mark_all_dirty(generation);
     }
 
     /// Push a colour-query reply onto the device-response channel: `ESC ] <ps> ; rgb:RRRR/GGGG/BBBB
@@ -3736,19 +3815,102 @@ mod tests {
         );
     }
 
-    /// An OSC colour command carries no cells, so — like a DA / DSR query — it must not stamp ROW
-    /// DAMAGE. (A colour CHANGE re-colours via the next projection, driven by the PTY-output
-    /// `on_dirty`, not a cell-generation bump.)
+    /// An OSC colour SET / RESET bumps EVERY row's damage generation: it re-colours existing cells
+    /// (they keep their symbolic colour but resolve anew), and pinion's generation-gated painter
+    /// re-rasterizes only rows whose damage advanced — so without the bump the re-colour never shows.
+    /// Revert-proof: dropping `repaint_for_palette_change` leaves the generations unchanged.
     #[test]
-    fn an_osc_color_command_stamps_no_row_damage() {
+    fn an_osc_color_set_bumps_all_row_damage() {
+        let mut em = Emulator::new(8, 2);
+        let before0 = em.screen().row_generation(0).unwrap();
+        let before1 = em.screen().row_generation(1).unwrap();
+        em.advance(b"\x1b]11;rgb:ff/00/00\x1b\\"); // a SET
+        assert!(
+            em.screen().row_generation(0).unwrap() > before0
+                && em.screen().row_generation(1).unwrap() > before1,
+            "an OSC colour set marks every row dirty so the re-colour paints"
+        );
+        // OSC 4 (index) and OSC 104 (reset) likewise bump.
+        let g = em.screen().row_generation(0).unwrap();
+        em.advance(b"\x1b]4;1;rgb:00/ff/00\x1b\\");
+        assert!(
+            em.screen().row_generation(0).unwrap() > g,
+            "OSC 4 set bumps damage"
+        );
+        let g = em.screen().row_generation(0).unwrap();
+        em.advance(b"\x1b]104\x1b\\");
+        assert!(
+            em.screen().row_generation(0).unwrap() > g,
+            "OSC 104 reset bumps damage"
+        );
+    }
+
+    /// A colour QUERY (`?`) is a read, so — like a DA / DSR query — it must NOT stamp row damage.
+    #[test]
+    fn an_osc_color_query_stamps_no_row_damage() {
         let mut em = Emulator::new(8, 2);
         let before = em.screen().row_generation(0).unwrap();
-        em.advance(b"\x1b]11;rgb:ff/00/00\x1b\\\x1b]10;?\x1b\\");
+        em.advance(b"\x1b]11;?\x1b\\\x1b]10;?\x1b\\\x1b]4;1;?\x1b\\");
         assert_eq!(
             em.screen().row_generation(0).unwrap(),
             before,
-            "a colour op is not a paint"
+            "a colour query is not a paint"
         );
+        assert!(!em.take_responses().is_empty(), "but it did answer");
+    }
+
+    /// OSC 4 overrides an indexed palette slot: redefining ANSI index 1 (red) changes what a
+    /// `Color::Indexed(1)` cell resolves to, without disturbing its siblings.
+    #[test]
+    fn osc_4_sets_a_palette_index() {
+        let mut em = Emulator::new(8, 2);
+        assert_eq!(
+            em.palette().indexed(1),
+            Rgb::new(0xcd, 0x00, 0x00),
+            "seed = xterm red"
+        );
+        em.advance(b"\x1b]4;1;rgb:00/ff/00\x1b\\");
+        assert_eq!(em.palette().indexed(1), Rgb::new(0x00, 0xff, 0x00));
+        assert_eq!(
+            em.palette().indexed(2),
+            Rgb::new(0x00, 0xcd, 0x00),
+            "a sibling is untouched"
+        );
+    }
+
+    /// A `?` OSC 4 QUERY answers the slot's current colour: `OSC 4 ; i ; rgb:… ST`. Revert-proof:
+    /// after a set the reply is the new colour, not the xterm seed.
+    #[test]
+    fn osc_4_query_answers_the_indexed_color() {
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b]4;1;?\x1b\\");
+        assert_eq!(
+            em.take_responses(),
+            b"\x1b]4;1;rgb:cdcd/0000/0000\x1b\\",
+            "the seed for index 1 is xterm red"
+        );
+        em.advance(b"\x1b]4;1;rgb:00/ff/00\x1b\\\x1b]4;1;?\x1b\\");
+        assert_eq!(em.take_responses(), b"\x1b]4;1;rgb:0000/ffff/0000\x1b\\");
+    }
+
+    /// OSC 104 with an index resets just that slot to the xterm seed; empty resets the whole palette.
+    #[test]
+    fn osc_104_resets_indexed_colors() {
+        let mut em = Emulator::new(8, 2);
+        // Single-index reset.
+        em.advance(b"\x1b]4;1;rgb:00/ff/00\x1b\\");
+        assert_eq!(em.palette().indexed(1), Rgb::new(0x00, 0xff, 0x00));
+        em.advance(b"\x1b]104;1\x1b\\");
+        assert_eq!(
+            em.palette().indexed(1),
+            Rgb::new(0xcd, 0x00, 0x00),
+            "reset to xterm red"
+        );
+        // Whole-palette reset (empty list) after two overrides.
+        em.advance(b"\x1b]4;1;rgb:11/11/11\x1b\\\x1b]4;200;rgb:22/22/22\x1b\\");
+        em.advance(b"\x1b]104\x1b\\");
+        assert_eq!(em.palette().indexed(1), Palette::xterm_indexed(1));
+        assert_eq!(em.palette().indexed(200), Palette::xterm_indexed(200));
     }
 
     /// XtSmGraphics completes the Sixel handshake the Primary DA (`4`) opens: a colour-register query
