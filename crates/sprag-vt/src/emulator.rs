@@ -55,6 +55,84 @@ struct SavedCursor {
     cursor_shape: CursorShape,
     /// DECOM origin-mode state (VT100 saves origin mode as part of the cursor).
     origin_mode: bool,
+    /// The G0..G3 charset designations + the GL locking shift (VT100 saves the character-set
+    /// state as part of the cursor). The pending single shift is transient and NOT saved — a
+    /// single shift armed before a DECSC still applies to the next graphic character after it.
+    charsets: [CharSet; 4],
+    gl: usize,
+}
+
+/// A designated character set (SCS — Select Character Set). Only the sets an xterm-family
+/// terminal actually honours once bytes arrive as UTF-8: US ASCII (the identity), the DEC
+/// Special Graphics / line-drawing set (box drawing, scan lines, and a few technical glyphs —
+/// the one that matters, used by `dialog` / `menuconfig` / `mc` / ncurses ACS), and the UK
+/// national set (a single `#` → `£` swap). Each G-set (G0..G3) holds one of these.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum CharSet {
+    #[default]
+    Ascii,
+    DecLineDrawing,
+    Uk,
+}
+
+impl CharSet {
+    /// Translate one printed character under this charset. ASCII — and any byte outside the
+    /// mapped range under the others — is the identity, so the UTF-8 the child already decoded
+    /// passes through untouched (including a box-drawing glyph re-fed by REP, since its code
+    /// point is outside the ASCII input range these tables map). Only the DEC-graphics / UK
+    /// ranges remap.
+    fn translate(self, ch: char) -> char {
+        match self {
+            CharSet::Ascii => ch,
+            CharSet::Uk if ch == '#' => '£',
+            CharSet::Uk => ch,
+            CharSet::DecLineDrawing => dec_special_graphic(ch),
+        }
+    }
+}
+
+/// The DEC Special Graphics / line-drawing translation for the input range `0x5F..=0x7E`
+/// (the VT100 special-graphics set). `_` is the spec's "blank"; `` ` ``..`~` are the diamond,
+/// shades, control pictures, degree / plus-minus, box-drawing corners and tees, the six scan
+/// lines, and the technical symbols `≤ ≥ π ≠ £ ·`. Every output is a single-width glyph, so
+/// the caller's width computation on the TRANSLATED character stays correct. Bytes outside the
+/// range are the identity. This is the canonical xterm / `st` table.
+fn dec_special_graphic(ch: char) -> char {
+    match ch {
+        '_' => ' ', // 0x5F blank
+        '`' => '◆', // 0x60 diamond
+        'a' => '▒', // 0x61 checkerboard (medium shade)
+        'b' => '␉', // 0x62 HT
+        'c' => '␌', // 0x63 FF
+        'd' => '␍', // 0x64 CR
+        'e' => '␊', // 0x65 LF
+        'f' => '°', // 0x66 degree
+        'g' => '±', // 0x67 plus/minus
+        'h' => '␤', // 0x68 NL
+        'i' => '␋', // 0x69 VT
+        'j' => '┘', // 0x6A lower-right corner
+        'k' => '┐', // 0x6B upper-right corner
+        'l' => '┌', // 0x6C upper-left corner
+        'm' => '└', // 0x6D lower-left corner
+        'n' => '┼', // 0x6E crossing lines
+        'o' => '⎺', // 0x6F scan line 1
+        'p' => '⎻', // 0x70 scan line 3
+        'q' => '─', // 0x71 horizontal line (scan line 5)
+        'r' => '⎼', // 0x72 scan line 7
+        's' => '⎽', // 0x73 scan line 9
+        't' => '├', // 0x74 left tee
+        'u' => '┤', // 0x75 right tee
+        'v' => '┴', // 0x76 bottom tee
+        'w' => '┬', // 0x77 top tee
+        'x' => '│', // 0x78 vertical line
+        'y' => '≤', // 0x79 less-than-or-equal
+        'z' => '≥', // 0x7A greater-than-or-equal
+        '{' => 'π', // 0x7B pi
+        '|' => '≠', // 0x7C not-equal
+        '}' => '£', // 0x7D pound sterling
+        '~' => '·', // 0x7E centered dot
+        other => other,
+    }
 }
 
 /// A terminal emulator: feed PTY bytes via [`VtPort::advance`], read the
@@ -92,6 +170,19 @@ pub struct Emulator {
     /// cursor to the origin (the region top when on, the screen top when off). Part of the
     /// cursor state DECSC / DECRC saves and restores (VT100), unlike [`Self::autowrap`].
     origin_mode: bool,
+    /// The four G-sets (G0..G3) designated by the SCS escapes. termwiz parses only the G0 / G1
+    /// designators (`ESC ( F` / `ESC ) F`), so G2 / G3 stay at their [`CharSet::Ascii`] default
+    /// (a documented bound — no `ESC * F` / `ESC + F`); a single shift onto them is then a no-op,
+    /// which is the correct behaviour for an undesignated set.
+    charsets: [CharSet; 4],
+    /// Which G-set is locking-shifted into GL (the `0x20..=0x7F` graphic range): index `0` = G0
+    /// (SI / `^O`, the power-on default), `1` = G1 (SO / `^N`). GR national sets are not modeled —
+    /// sprag decodes UTF-8, so bytes `0xA0..` never arrive as single 8-bit charset codes.
+    gl: usize,
+    /// A pending single shift armed by SS2 (`ESC N` → G2) or SS3 (`ESC O` → G3): the NEXT graphic
+    /// character is drawn from that G-set, then this clears. `None` when no single shift is armed.
+    /// Transient — survives a DECSC / DECRC untouched so a shift armed before the save still lands.
+    single_shift: Option<usize>,
     // Cursor + pen state the screen does not itself track.
     col: u16,
     row: u16,
@@ -263,6 +354,9 @@ impl Emulator {
             scroll_bottom: rows.max(1) - 1,
             autowrap: true,
             origin_mode: false,
+            charsets: [CharSet::Ascii; 4],
+            gl: 0,
+            single_shift: None,
             col: 0,
             row: 0,
             cursor_visible: true,
@@ -511,9 +605,12 @@ impl Emulator {
     /// * RI (`ESC M`, reverse index) is the mirror: up one line, scrolling the region DOWN
     ///   at the top margin ([`reverse_index`](Self::reverse_index)).
     /// * RIS (`ESC c`, full reset) restores the power-on state ([`hard_reset`](Self::hard_reset)).
+    /// * SCS (`ESC ( F` / `ESC ) F`, select character set) designates the DEC line-drawing, UK,
+    ///   or US-ASCII set into G0 / G1 ([`designate`](Self::designate)); SS2 / SS3 (`ESC N` /
+    ///   `ESC O`) arm a single shift onto G2 / G3 for the next graphic character.
     ///
-    /// Every other ESC (charset selection, NEL, keypad modes) is out of the subset and
-    /// dropped.
+    /// Every other ESC (G2 / G3 designators — unparsed by termwiz — NEL, keypad modes,
+    /// double-width/height lines) is out of the subset and dropped.
     fn esc(&mut self, esc: Esc) {
         if let Esc::Code(code) = esc {
             match code {
@@ -522,9 +619,25 @@ impl Emulator {
                 EscCode::Index => self.line_feed(),
                 EscCode::ReverseIndex => self.reverse_index(),
                 EscCode::FullReset => self.hard_reset(),
+                // SCS — designate a charset into a G-set. termwiz parses only G0 / G1.
+                EscCode::DecLineDrawingG0 => self.designate(0, CharSet::DecLineDrawing),
+                EscCode::UkCharacterSetG0 => self.designate(0, CharSet::Uk),
+                EscCode::AsciiCharacterSetG0 => self.designate(0, CharSet::Ascii),
+                EscCode::DecLineDrawingG1 => self.designate(1, CharSet::DecLineDrawing),
+                EscCode::UkCharacterSetG1 => self.designate(1, CharSet::Uk),
+                EscCode::AsciiCharacterSetG1 => self.designate(1, CharSet::Ascii),
+                // SS2 / SS3 — single shift the next graphic character onto G2 / G3.
+                EscCode::SingleShiftG2 => self.single_shift = Some(2),
+                EscCode::SingleShiftG3 => self.single_shift = Some(3),
                 _ => {}
             }
         }
+    }
+
+    /// Designate `set` into G-set `g` (SCS). G-set designation is persistent — it survives until
+    /// re-designated, a soft / hard reset, or a DECRC — unlike the transient single shift.
+    fn designate(&mut self, g: usize, set: CharSet) {
+        self.charsets[g] = set;
     }
 
     /// RI (reverse index, `ESC M`): move the cursor UP one line. At the top margin this
@@ -614,8 +727,9 @@ impl Emulator {
     /// from [`Emulator::new`] is the SSOT — it cannot drift from the constructor's defaults as fields
     /// are added — and resets EVERYTHING the child could have touched: both screens (the alt screen
     /// is discarded, back to a blank main), scrollback, cursor + pen, scroll region, every DEC mode
-    /// (autowrap back on, origin off, cursor visible, mouse / focus / bracketed paste off), the Kitty
-    /// keyboard stack, the colour palette, the title, and pending device responses. Only the geometry
+    /// (autowrap back on, origin off, cursor visible, mouse / focus / bracketed paste off), the
+    /// character-set state (G0..G3 back to ASCII, GL to G0), the Kitty keyboard stack, the colour
+    /// palette, the title, and pending device responses. Only the geometry
     /// (`cols` x `rows`) survives — it is display-owned, not the child's to reset. The already-parsed
     /// action batch is unaffected; a fresh parser is fine, since RIS is a complete escape and no
     /// parser state straddles it.
@@ -629,8 +743,10 @@ impl Emulator {
     /// the modes DECSTR governs to their defaults: cursor visible, origin mode off, autowrap ON, and
     /// a normal SGR pen. Autowrap goes ON (not off): the `reset` terminfo string runs RIS then DECSTR
     /// with no explicit re-enable, so DECSTR must leave autowrap in its power-on ON state or the shell
-    /// would stop wrapping afterward. Mouse / focus / bracketed-paste (xterm extensions, not in the
-    /// DEC DECSTR set) are intentionally left untouched.
+    /// would stop wrapping afterward. The character-set state (G0..G3, GL, any armed single shift) also
+    /// returns to default — VT510 lists it in the DECSTR set, and it is the recovery a wedged shell
+    /// needs (a DECSTR that left G0 stuck in line-drawing would render the fresh prompt as box glyphs).
+    /// Mouse / focus / bracketed-paste (xterm extensions, not in the DEC DECSTR set) are left untouched.
     fn soft_reset(&mut self) {
         self.cursor_visible = true;
         self.origin_mode = false;
@@ -642,6 +758,9 @@ impl Emulator {
         self.bg = Color::Default;
         self.underline_color = None;
         self.attrs = Attrs::default();
+        self.charsets = [CharSet::Ascii; 4];
+        self.gl = 0;
+        self.single_shift = None;
         self.saved_cursor = None;
     }
 
@@ -656,6 +775,8 @@ impl Emulator {
             attrs: self.attrs,
             cursor_shape: self.cursor_shape,
             origin_mode: self.origin_mode,
+            charsets: self.charsets,
+            gl: self.gl,
         });
     }
 
@@ -672,6 +793,8 @@ impl Emulator {
             attrs: Attrs::default(),
             cursor_shape: CursorShape::Block,
             origin_mode: false,
+            charsets: [CharSet::Ascii; 4],
+            gl: 0,
         });
         self.col = saved.col.min(self.cols.saturating_sub(1));
         self.row = saved.row.min(self.rows.saturating_sub(1));
@@ -681,6 +804,8 @@ impl Emulator {
         self.attrs = saved.attrs;
         self.cursor_shape = saved.cursor_shape;
         self.origin_mode = saved.origin_mode;
+        self.charsets = saved.charsets;
+        self.gl = saved.gl;
     }
 
     /// Operating-system commands. Two families are in the subset:
@@ -1074,6 +1199,9 @@ impl Emulator {
             // BEL (`\a`) — the tmux monitor-bell attention ping. Count it (a text-less attention
             // event); it does not touch the grid. See `bell_seq`.
             ControlCode::Bell => self.bell_seq += 1,
+            // SI (`^O`, LS0) / SO (`^N`, LS1) — the locking shifts that select G0 / G1 into GL.
+            ControlCode::ShiftIn => self.gl = 0,
+            ControlCode::ShiftOut => self.gl = 1,
             _ => {}
         }
     }
@@ -1558,13 +1686,19 @@ impl Emulator {
         // Char-level is sufficient for the skeleton; ZWJ emoji clusters
         // are a known gap (DESIGN.md §5 — logged, not silently capped).
         for ch in s.chars() {
-            let w = char_columns(ch); // the one width authority (port::char_columns)
-            if w == 0 {
-                // Combining mark: merge into the previous cell if possible.
+            if char_columns(ch) == 0 {
+                // Combining mark: merge into the previous cell if possible. Never charset-
+                // translated, and it does NOT consume a single shift — SS2 / SS3 apply to the
+                // next SPACING character, so the shift stays armed across a combining mark.
                 self.merge_combining(ch);
                 continue;
             }
-            let cell_w = w as u16;
+            // Resolve the charset for this graphic character: a single shift (SS2 / SS3) wins
+            // for one character then clears; otherwise the GL locking-shift set (SI = G0 /
+            // SO = G1). Translate BEFORE measuring width, so `cell_w` is the drawn glyph's.
+            let g = self.single_shift.take().unwrap_or(self.gl);
+            let ch = self.charsets[g].translate(ch);
+            let cell_w = char_columns(ch) as u16; // the one width authority (port::char_columns)
             if self.col + cell_w > self.cols {
                 if self.autowrap {
                     // DECAWM on (the default): this row's logical line continues onto the next.
@@ -4965,5 +5099,106 @@ mod tests {
             resp, "\x1b_Gi=3;OK\x1b\\",
             "acks support with the queried image id"
         );
+    }
+
+    /// SCS (`ESC ( 0`) designates DEC line drawing into G0; the box-drawing bytes then render
+    /// as glyphs. `ESC ( B` designates US-ASCII back, and the same bytes are literal again —
+    /// so the translation is confined to the designated span, not a latched global flag.
+    #[test]
+    fn dec_line_drawing_g0_translates_box_and_ascii_restores() {
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b(0lqk"); // G0 = DEC line drawing, then l q k
+        assert_eq!(cluster(&em, 0, 0), "┌");
+        assert_eq!(cluster(&em, 1, 0), "─");
+        assert_eq!(cluster(&em, 2, 0), "┐");
+        // Untranslated bytes (outside 0x5F..=0x7E) pass through even in line-drawing mode.
+        em.advance(b"A");
+        assert_eq!(cluster(&em, 3, 0), "A");
+        // Back to ASCII: the same box bytes are literal letters.
+        em.advance(b"\x1b(B\r\nlqk");
+        assert_eq!(cluster(&em, 0, 1), "l");
+        assert_eq!(cluster(&em, 1, 1), "q");
+        assert_eq!(cluster(&em, 2, 1), "k");
+    }
+
+    /// SO (`^N`) locking-shifts G1 into GL, SI (`^O`) shifts G0 back. With G1 designated to
+    /// line drawing and G0 left ASCII, the SAME byte `x` is a vertical bar under SO and a
+    /// literal `x` under SI.
+    #[test]
+    fn shift_out_and_in_select_g1_and_g0() {
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b)0"); // G1 = DEC line drawing; G0 stays ASCII; GL = G0
+        em.advance(b"x"); // GL is G0 (ASCII) -> literal x
+        assert_eq!(cluster(&em, 0, 0), "x");
+        em.advance(b"\x0ex"); // SO -> GL = G1 (line drawing) -> vertical bar
+        assert_eq!(cluster(&em, 1, 0), "│");
+        em.advance(b"\x0fx"); // SI -> GL = G0 (ASCII) -> literal x
+        assert_eq!(cluster(&em, 2, 0), "x");
+    }
+
+    /// SS2 (`ESC N`) single-shifts the NEXT graphic character onto G2, then GL takes over
+    /// again. G2 is undesignated (ASCII, since termwiz parses no G2 designator), so with G0
+    /// in line drawing the single-shifted `q` is a literal `q` while the chars around it are
+    /// horizontal lines — proving the shift both overrides GL for one char and then clears.
+    #[test]
+    fn single_shift_ss2_overrides_gl_for_exactly_one_char() {
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b(0"); // G0 = DEC line drawing, GL = G0
+        em.advance(b"q"); // GL (line drawing) -> horizontal line
+        assert_eq!(cluster(&em, 0, 0), "─");
+        em.advance(b"\x1bNq"); // SS2 then q: G2 (ASCII) -> literal q
+        assert_eq!(cluster(&em, 1, 0), "q");
+        em.advance(b"q"); // shift cleared -> GL (line drawing) again
+        assert_eq!(cluster(&em, 2, 0), "─");
+    }
+
+    /// The UK national set (`ESC ( A`) differs from ASCII only in `#` -> `£`; every other
+    /// byte is the identity.
+    #[test]
+    fn uk_charset_maps_hash_to_pound() {
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b(A#a#");
+        assert_eq!(cluster(&em, 0, 0), "£");
+        assert_eq!(cluster(&em, 1, 0), "a");
+        assert_eq!(cluster(&em, 2, 0), "£");
+    }
+
+    /// DECSC / DECRC save and restore the charset designation (VT100). A save in line-drawing
+    /// mode, a switch to ASCII, then a restore brings line drawing back for the same byte.
+    #[test]
+    fn decsc_decrc_round_trips_the_charset() {
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b(0"); // G0 = DEC line drawing
+        em.advance(b"\x1b7"); // DECSC saves it
+        em.advance(b"\x1b(B"); // G0 = ASCII
+        em.advance(b"q"); // literal q under ASCII
+        assert_eq!(cluster(&em, 0, 0), "q");
+        em.advance(b"\x1b8"); // DECRC restores G0 = line drawing
+        em.advance(b"\rq"); // (CR home) horizontal line again
+        assert_eq!(cluster(&em, 0, 0), "─");
+    }
+
+    /// DECSTR (`CSI ! p`) returns the charset state to default so a wedged shell recovers:
+    /// after a soft reset the box byte is literal again without an explicit `ESC ( B`.
+    #[test]
+    fn soft_reset_restores_the_default_charset() {
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b(0"); // G0 = DEC line drawing
+        em.advance(b"\x1b[!p"); // DECSTR
+        em.advance(b"q");
+        assert_eq!(cluster(&em, 0, 0), "q", "soft reset put G0 back to ASCII");
+    }
+
+    /// REP (`CSI b`) reproduces the GLYPH that was drawn, not the source byte: after a line-
+    /// drawing `q` (a horizontal line), REP paints more horizontal lines — the translated
+    /// character is what `last_print` records, and re-feeding it is idempotent.
+    #[test]
+    fn repeat_reproduces_the_translated_line_drawing_glyph() {
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b(0q"); // line-drawing q -> horizontal line
+        em.advance(b"\x1b[2b"); // REP 2
+        for c in 0..3 {
+            assert_eq!(cluster(&em, c, 0), "─", "the line glyph, repeated");
+        }
     }
 }
