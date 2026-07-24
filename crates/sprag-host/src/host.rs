@@ -198,8 +198,11 @@ pub trait HostClient {
     fn pane_grid_size(&self, id: PaneId) -> (u16, u16);
 
     /// Resize pane `id`'s PTY (`TIOCSWINSZ`) + emulator — the reflow control path. A
-    /// no-op for an absent id.
-    fn resize(&self, id: PaneId, cols: u16, rows: u16);
+    /// no-op for an absent id. `cell_px` is the display's `(cell_width, cell_height)` in logical
+    /// pixels (the caller's font metric), so the PTY winsize carries real `ws_xpixel` / `ws_ypixel`
+    /// and XTWINOPS pixel reports answer truthfully; `(0, 0)` means "unknown" and leaves the pane's
+    /// last-known cell geometry untouched.
+    fn resize(&self, id: PaneId, cols: u16, rows: u16, cell_px: (u16, u16));
 
     /// Send a W3C `key` + `mods` to pane `id` — the CLIENT input path. `true` if it
     /// reached the PTY; `false` if `id` is absent, the key is unencodable, or the send
@@ -871,14 +874,14 @@ impl HostClient for Host {
 
     /// A closed / absent pane is TRACED and ignored (the swallow is honest, not
     /// silent); so is a winsize-ioctl failure.
-    fn resize(&self, id: PaneId, cols: u16, rows: u16) {
+    fn resize(&self, id: PaneId, cols: u16, rows: u16, cell_px: (u16, u16)) {
         let ws = self.workspace();
         let workspace = lock(&ws);
         if workspace.pane(id).is_none() {
             tracing::trace!(target: "sprag_host", %id, "resize of a closed/absent pane ignored");
             return;
         }
-        if let Err(error) = workspace.resize(id, cols, rows) {
+        if let Err(error) = workspace.resize(id, cols, rows, cell_px) {
             tracing::trace!(target: "sprag_host", %id, ?error, "resize winsize ioctl failed; ignored");
         }
     }
@@ -1213,7 +1216,7 @@ mod tests {
         let id = host
             .spawn(cat(), "cat".to_owned(), 40, 6, None, None)
             .unwrap();
-        host.resize(id, 100, 30);
+        host.resize(id, 100, 30, (0, 0));
         assert_eq!(host.pane_grid_size(id), (100, 30));
     }
 
@@ -1415,6 +1418,6 @@ mod tests {
         assert!(host.pane_full_text(ghost).is_empty());
         assert!(host.pane_command_label(ghost).is_empty());
         assert!(host.pane_handle(ghost).is_none());
-        host.resize(ghost, 10, 10); // no panic
+        host.resize(ghost, 10, 10, (0, 0)); // no panic
     }
 }

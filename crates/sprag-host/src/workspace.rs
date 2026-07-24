@@ -254,7 +254,14 @@ impl WorkspaceExternal {
         let id = require_pane_id(map, "id")?;
         let cols = opt_dim(map, "cols")?.ok_or(InvokeError::TypeMismatch)?;
         let rows = opt_dim(map, "rows")?.ok_or(InvokeError::TypeMismatch)?;
-        match lock(self.workspace()).resize(id, cols, rows) {
+        // The display's cell pixel geometry, OPTIONAL: a GUI client sends it (its font metric) so
+        // the PTY winsize and XTWINOPS pixel reports are truthful; a headless / older client omits
+        // it and `(0, 0)` leaves the pane's last-known cell geometry untouched.
+        let cell_px = (
+            opt_dim(map, "cell_width")?.unwrap_or(0),
+            opt_dim(map, "cell_height")?.unwrap_or(0),
+        );
+        match lock(self.workspace()).resize(id, cols, rows, cell_px) {
             Ok(true) => Ok(IntrospectValue::Null),
             Ok(false) => Err(InvokeError::Rejected), // no such pane
             Err(_) => Err(InvokeError::Rejected),    // winsize ioctl failed
@@ -1093,6 +1100,49 @@ mod tests {
                 .pty()
                 .dimensions(),
             (100, 30)
+        );
+    }
+
+    #[test]
+    fn resize_threads_the_optional_cell_metric_to_the_pane() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Null).unwrap();
+        // A GUI client sends cell_width/cell_height (its font metric) — they reach the emulator.
+        assert_eq!(
+            ext.invoke(
+                RESIZE_ACTION,
+                IntrospectValue::Json(
+                    json!({"id": 0, "cols": 100, "rows": 30, "cell_width": 9, "cell_height": 18})
+                )
+            ),
+            Ok(IntrospectValue::Null)
+        );
+        assert_eq!(
+            lock(&pool(&reg))
+                .pane(PaneId(0))
+                .unwrap()
+                .pty()
+                .cell_pixel_size(),
+            (9, 18),
+            "the invoke's cell metric reaches the pane's emulator"
+        );
+        // A resize WITHOUT the metric (a headless client) is still accepted and preserves it.
+        assert_eq!(
+            ext.invoke(
+                RESIZE_ACTION,
+                IntrospectValue::Json(json!({"id": 0, "cols": 80, "rows": 24}))
+            ),
+            Ok(IntrospectValue::Null)
+        );
+        assert_eq!(
+            lock(&pool(&reg))
+                .pane(PaneId(0))
+                .unwrap()
+                .pty()
+                .cell_pixel_size(),
+            (9, 18),
+            "a metric-less resize preserves the last-known cell geometry"
         );
     }
 

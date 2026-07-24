@@ -289,10 +289,11 @@ impl SlotView {
             .map_or((1, 1), |id| self.host.pane_grid_size(id))
     }
 
-    /// Resize slot `slot`'s pane (a no-op for a hole).
-    pub(crate) fn resize(&self, slot: usize, cols: u16, rows: u16) {
+    /// Resize slot `slot`'s pane (a no-op for a hole). `cell_px` is the display's
+    /// `(cell_width, cell_height)` in logical pixels, forwarded so the PTY winsize is truthful.
+    pub(crate) fn resize(&self, slot: usize, cols: u16, rows: u16, cell_px: (u16, u16)) {
         if let Some(id) = self.id(slot) {
-            self.host.resize(id, cols, rows);
+            self.host.resize(id, cols, rows, cell_px);
         }
     }
 
@@ -596,7 +597,7 @@ mod tests {
         fn pane_grid_size(&self, _id: PaneId) -> (u16, u16) {
             (1, 1)
         }
-        fn resize(&self, _id: PaneId, _cols: u16, _rows: u16) {}
+        fn resize(&self, _id: PaneId, _cols: u16, _rows: u16, _cell_px: (u16, u16)) {}
         fn send_key(&self, _id: PaneId, _key: &str, _mods: Modifiers) -> bool {
             false
         }

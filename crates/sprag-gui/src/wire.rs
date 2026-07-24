@@ -1354,10 +1354,18 @@ impl HostClient for WireHost {
             .unwrap_or((1, 1))
     }
 
-    fn resize(&self, id: PaneId, cols: u16, rows: u16) {
+    fn resize(&self, id: PaneId, cols: u16, rows: u16, cell_px: (u16, u16)) {
         let params = invoke(
             &mux_action_path(RESIZE_ACTION),
-            json!({ "id": id.0, "cols": cols, "rows": rows }),
+            // Carry the display's cell pixel geometry so the daemon's PTY winsize and XTWINOPS pixel
+            // reports are truthful. The host treats `0` as "unknown" and keeps the last-known metric.
+            json!({
+                "id": id.0,
+                "cols": cols,
+                "rows": rows,
+                "cell_width": cell_px.0,
+                "cell_height": cell_px.1,
+            }),
         );
         // Advance the tracked size only on a SUCCESSFUL resize (else it is retried, not
         // latched). Addressed by IDENTITY: the write-back finds the pane by `id`, so a

@@ -498,10 +498,18 @@ impl Workspace {
     /// # Errors
     ///
     /// Returns [`PanePtyError`] if the PTY winsize ioctl fails.
-    pub fn resize(&self, id: PaneId, cols: u16, rows: u16) -> Result<bool, PanePtyError> {
+    /// `cell_px` is the display's `(cell_width, cell_height)` in logical pixels (`(0, 0)` = unknown);
+    /// it is forwarded to [`PanePty::resize`] so the PTY winsize carries real pixel extents.
+    pub fn resize(
+        &self,
+        id: PaneId,
+        cols: u16,
+        rows: u16,
+        cell_px: (u16, u16),
+    ) -> Result<bool, PanePtyError> {
         match self.panes.iter().find(|p| p.id == id) {
             Some(pane) => {
-                pane.pty.resize(cols, rows)?;
+                pane.pty.resize(cols, rows, cell_px)?;
                 Ok(true)
             }
             None => Ok(false),
@@ -640,14 +648,26 @@ mod tests {
         let a = ws.spawn(cmd(), "sh".to_string(), 80, 24).unwrap();
         // The emulator resizes synchronously (only the PTY ioctl is debounced),
         // so `dimensions()` is current immediately after `resize`.
-        assert!(ws.resize(a, 100, 30).unwrap());
+        assert!(ws.resize(a, 100, 30, (0, 0)).unwrap());
         assert_eq!(ws.pane(a).unwrap().pty().dimensions(), (100, 30));
-        assert!(!ws.resize(PaneId(999), 10, 10).unwrap());
+        assert!(!ws.resize(PaneId(999), 10, 10, (0, 0)).unwrap());
         // Through a SHARED &Workspace — the path the GUI reflow Effect uses via
         // an Rc; resize needs no &mut now that the pty is interior-mutable.
         let shared: &Workspace = &ws;
-        assert!(shared.resize(a, 64, 20).unwrap());
+        assert!(shared.resize(a, 64, 20, (0, 0)).unwrap());
         assert_eq!(ws.pane(a).unwrap().pty().dimensions(), (64, 20));
+    }
+
+    #[test]
+    fn resize_threads_the_cell_pixel_geometry_to_the_pane() {
+        let mut ws = Workspace::new((80, 24));
+        let a = ws.spawn(cmd(), "sh".to_string(), 80, 24).unwrap();
+        assert!(ws.resize(a, 100, 30, (9, 18)).unwrap());
+        assert_eq!(
+            ws.pane(a).unwrap().pty().cell_pixel_size(),
+            (9, 18),
+            "the display cell metric reaches the pane's emulator"
+        );
     }
 
     #[test]

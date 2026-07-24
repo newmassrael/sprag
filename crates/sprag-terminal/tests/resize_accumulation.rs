@@ -137,7 +137,7 @@ fn drag_sweep(
         settle(session, Duration::from_millis(250), Duration::from_secs(3));
     }
     for &w in widths {
-        session.resize(w, rows).expect("resize the session");
+        session.resize(w, rows, (0, 0)).expect("resize the session");
         std::thread::sleep(step_gap);
     }
     settle(session, Duration::from_millis(300), Duration::from_secs(3));

@@ -163,6 +163,18 @@ pub struct Emulator {
     saved_main: Option<Screen>,
     cols: u16,
     rows: u16,
+    /// Logical pixels spanned by one cell, per axis (`width`, `height`), or `0` when the display
+    /// geometry is unknown. This is DISPLAY geometry the HOST supplies via
+    /// [`VtPort::set_cell_pixel_size`] (the GUI owns the font metrics and is the only side that
+    /// knows a cell's pixel extent — the emulator runs in the daemon with none of its own), NOT
+    /// state the child can set. It is the source for the XTWINOPS PIXEL reports (`14 t` text-area,
+    /// `15 t` screen, `16 t` cell size) and for the PTY winsize `xpixel` / `ypixel` the host derives
+    /// (`cols * cell_w`, `rows * cell_h`) so a child sizes sixel / Kitty images correctly. `0` on
+    /// either axis means "unknown" — the reports fall back to the `0` sentinel, exactly as they did
+    /// before any metric arrived. A peer of [`Self::cols`] / [`Self::rows`]: like them it is host-set
+    /// display geometry, so RIS PRESERVES it (see [`Self::hard_reset`]) rather than clearing it.
+    cell_pixel_width: u16,
+    cell_pixel_height: u16,
     /// The DECSTBM scroll region as an INCLUSIVE, 0-based row range
     /// `[scroll_top, scroll_bottom]`, defaulting to `[0, rows - 1]` = the whole screen.
     /// A line feed / IND at `scroll_bottom` scrolls the region up (its top line leaving);
@@ -451,6 +463,8 @@ impl Emulator {
             saved_main: None,
             cols: cols.max(1),
             rows: rows.max(1),
+            cell_pixel_width: 0,
+            cell_pixel_height: 0,
             scroll_top: 0,
             scroll_bottom: rows.max(1) - 1,
             autowrap: true,
@@ -852,9 +866,13 @@ impl Emulator {
     /// palette, the title, and pending device responses. Only the geometry
     /// (`cols` x `rows`) survives — it is display-owned, not the child's to reset. The already-parsed
     /// action batch is unaffected; a fresh parser is fine, since RIS is a complete escape and no
-    /// parser state straddles it.
+    /// parser state straddles it. The cell PIXEL geometry survives alongside `cols` x `rows` — it
+    /// is host-set display geometry, not the child's to reset (the font does not change on a RIS).
     fn hard_reset(&mut self) {
+        let (cell_w, cell_h) = (self.cell_pixel_width, self.cell_pixel_height);
         *self = Emulator::new(self.cols, self.rows);
+        self.cell_pixel_width = cell_w;
+        self.cell_pixel_height = cell_h;
     }
 
     /// DECSTR — Soft Terminal Reset (`CSI ! p`): reset the DEC-defined subset WITHOUT clearing the
@@ -1485,18 +1503,19 @@ impl Emulator {
 
     /// XTWINOPS (`CSI Ps ; … t`) — xterm window manipulation + reports. sprag is a WIRE-CLIENT
     /// terminal: the GUI (a separate process) owns the real OS window, and this emulator lives in
-    /// the daemon with NO pixel geometry (its PTY winsize reports `0` pixels — hardcoded in the
-    /// resize coalescer). So the op set splits four ways:
+    /// the daemon. So the op set splits four ways:
     ///
     /// * REPORTS sprag can answer truthfully — text-area / screen size in CELLS (`18 t` / `19 t`)
     ///   and window state (`11 t`, always "normal", never iconified) — are answered on the
     ///   device-response channel from [`Self::cols`] / [`Self::rows`], exactly like DA / DSR.
-    /// * PIXEL reports (`14 t` / `15 t` / `16 t`, plus the pixel window-size / position forms) are
-    ///   answered with a `0` sentinel: sprag does not track pixel geometry (matching its `0`-pixel
-    ///   PTY winsize). Answering — rather than dropping — keeps a probing app from timing out (the
-    ///   same answer-every-query stance [`Self::device`] takes for XtSmGraphics), while `0` honestly
-    ///   reads as "unknown" (real values await carrying pixel dimensions over the resize wire, a
-    ///   separate front); a client divides cell-relative and copes with `0` as tmux's clients do.
+    /// * PIXEL reports (`14 t` text area / `15 t` screen / `16 t` cell size) are answered from the
+    ///   host-set cell geometry ([`Self::cell_pixel_width`] / [`Self::cell_pixel_height`], carried
+    ///   over the resize wire from the GUI's font metrics): `14 t` / `15 t` = `cols * cell_w` x
+    ///   `rows * cell_h`, `16 t` = the cell size itself. Until a metric arrives (or on a client that
+    ///   sends none) the cell size is `0` and these fall back to the `0` sentinel — honestly
+    ///   "unknown", and still answered rather than dropped so a probing app never times out (the
+    ///   same answer-every-query stance [`Self::device`] takes for XtSmGraphics). The pixel
+    ///   window-POSITION form (`13 t`) stays `0`: sprag has no window origin (the GUI owns it).
     /// * The TITLE STACK (`22 t` push / `23 t` pop) saves / restores [`Self::title`] (see
     ///   [`Self::title_stack`]).
     /// * WINDOW MANIPULATION (iconify, move, resize, raise / lower, refresh, maximize, fullscreen)
@@ -1520,15 +1539,32 @@ impl Emulator {
             }
             // 11t — window state: always de-iconified / normal. CSI 1 t.
             Window::ReportWindowState => self.responses.extend_from_slice(b"\x1b[1t"),
-            // 14t / 14;2t — text area / whole-window size in PIXELS: CSI 4 ; height ; width t,
-            // 0 = unknown (see the doc above).
+            // 14t / 14;2t — text area / whole-window size in PIXELS: CSI 4 ; height ; width t.
+            // Derived from the host-set cell geometry (`cols * cell_w` x `rows * cell_h`); `0 ; 0`
+            // when the cell size is unknown (no metric yet), matching the pre-metric sentinel.
             Window::ReportTextAreaSizePixels | Window::ReportWindowSizePixels => {
-                self.responses.extend_from_slice(b"\x1b[4;0;0t");
+                let (w, h) = self.pixel_area();
+                self.responses
+                    .extend_from_slice(format!("\x1b[4;{h};{w}t").as_bytes());
             }
-            // 15t — screen size in PIXELS: CSI 5 ; height ; width t, 0 = unknown.
-            Window::ReportScreenSizePixels => self.responses.extend_from_slice(b"\x1b[5;0;0t"),
-            // 16t — character cell size in PIXELS: CSI 6 ; height ; width t, 0 = unknown.
-            Window::ReportCellSizePixels => self.responses.extend_from_slice(b"\x1b[6;0;0t"),
+            // 15t — screen size in PIXELS: CSI 5 ; height ; width t. sprag draws no separate screen
+            // vs text area, so the screen size equals the text-area size (0 ; 0 when unknown).
+            Window::ReportScreenSizePixels => {
+                let (w, h) = self.pixel_area();
+                self.responses
+                    .extend_from_slice(format!("\x1b[5;{h};{w}t").as_bytes());
+            }
+            // 16t — character cell size in PIXELS: CSI 6 ; height ; width t. A zero on either axis
+            // is "unknown" (the whole metric), so report 0 ; 0 rather than a half-known cell.
+            Window::ReportCellSizePixels => {
+                let (w, h) = if self.cell_pixel_width == 0 || self.cell_pixel_height == 0 {
+                    (0, 0)
+                } else {
+                    (self.cell_pixel_width, self.cell_pixel_height)
+                };
+                self.responses
+                    .extend_from_slice(format!("\x1b[6;{h};{w}t").as_bytes());
+            }
             // 13t / 13;2t — window / text-area position: CSI 3 ; x ; y t, 0 = unknown.
             Window::ReportWindowPosition | Window::ReportTextAreaPosition => {
                 self.responses.extend_from_slice(b"\x1b[3;0;0t");
@@ -1549,6 +1585,19 @@ impl Emulator {
             // Window manipulation, title reports (injection-gated), and DECRQCRA: see the doc above.
             _ => {}
         }
+    }
+
+    /// The text-area size in logical pixels (`width`, `height`) = (`cols * cell_w`, `rows * cell_h`),
+    /// or `(0, 0)` when the cell geometry is unknown. Computed in `u32` (a wide grid times a cell
+    /// size overflows `u16`) for the XTWINOPS `14 t` / `15 t` pixel reports.
+    fn pixel_area(&self) -> (u32, u32) {
+        if self.cell_pixel_width == 0 || self.cell_pixel_height == 0 {
+            return (0, 0);
+        }
+        (
+            u32::from(self.cols) * u32::from(self.cell_pixel_width),
+            u32::from(self.rows) * u32::from(self.cell_pixel_height),
+        )
     }
 
     /// Interpret a CSI termwiz handed back as [`Unspecified`] (it tokenized the sequence but has no
@@ -2629,6 +2678,15 @@ impl VtPort for Emulator {
             self.in_resize_redraw = false;
         }
         self.sync_cursor();
+    }
+
+    fn set_cell_pixel_size(&mut self, width: u16, height: u16) {
+        self.cell_pixel_width = width;
+        self.cell_pixel_height = height;
+    }
+
+    fn cell_pixel_size(&self) -> (u16, u16) {
+        (self.cell_pixel_width, self.cell_pixel_height)
     }
 
     fn resize(&mut self, cols: u16, rows: u16) {
@@ -6583,11 +6641,51 @@ mod tests {
 
     #[test]
     fn xtwinops_answers_pixel_reports_with_the_unknown_sentinel() {
-        // sprag tracks no pixel geometry (its PTY winsize is 0 pixels), but ANSWERS rather than
+        // Until a cell metric arrives the pixel geometry is unknown, but sprag ANSWERS rather than
         // drops so a probe never times out: 14t -> 4;0;0, 15t -> 5;0;0, 16t -> 6;0;0.
         let mut em = Emulator::new(8, 2);
         em.advance(b"\x1b[14t\x1b[15t\x1b[16t");
         assert_eq!(em.take_responses(), b"\x1b[4;0;0t\x1b[5;0;0t\x1b[6;0;0t");
+    }
+
+    #[test]
+    fn xtwinops_reports_real_pixel_geometry_from_the_host_cell_metric() {
+        // Once the host sets a 9x18 cell metric on an 80x24 grid, the pixel reports are truthful:
+        // 16t = the cell size (6 ; H ; W), 14t / 15t = the text area (cols*W x rows*H).
+        let mut em = Emulator::new(80, 24);
+        em.set_cell_pixel_size(9, 18);
+        em.advance(b"\x1b[16t\x1b[14t\x1b[15t");
+        // 16t: 6 ; height ; width. 14t/15t: 4/5 ; rows*18 ; cols*9 = 432 ; 720.
+        assert_eq!(
+            em.take_responses(),
+            b"\x1b[6;18;9t\x1b[4;432;720t\x1b[5;432;720t"
+        );
+    }
+
+    #[test]
+    fn ris_preserves_the_host_set_cell_pixel_geometry() {
+        // The cell metric is host-set DISPLAY geometry (like cols/rows), not the child's — so a RIS
+        // (`ESC c`) preserves it, and 16t still reports the real cell size afterwards.
+        let mut em = Emulator::new(80, 24);
+        em.set_cell_pixel_size(9, 18);
+        em.advance(b"\x1bc"); // RIS
+        assert_eq!(
+            em.cell_pixel_size(),
+            (9, 18),
+            "RIS keeps the display cell metric"
+        );
+        em.advance(b"\x1b[16t");
+        assert_eq!(em.take_responses(), b"\x1b[6;18;9t");
+    }
+
+    #[test]
+    fn a_zero_axis_cell_metric_reads_as_unknown() {
+        // A degenerate metric (one axis zero) is treated as unknown, so the pixel reports fall back
+        // to the 0 sentinel rather than emitting a half-known size.
+        let mut em = Emulator::new(80, 24);
+        em.set_cell_pixel_size(9, 0);
+        em.advance(b"\x1b[14t\x1b[16t");
+        assert_eq!(em.take_responses(), b"\x1b[4;0;0t\x1b[6;0;0t");
     }
 
     #[test]

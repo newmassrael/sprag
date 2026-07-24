@@ -900,7 +900,7 @@ mod tests {
         fn pane_grid_size(&self, _id: PaneId) -> (u16, u16) {
             (1, 1)
         }
-        fn resize(&self, _id: PaneId, _cols: u16, _rows: u16) {}
+        fn resize(&self, _id: PaneId, _cols: u16, _rows: u16, _cell_px: (u16, u16)) {}
         fn send_key(&self, _id: PaneId, _key: &str, _mods: Modifiers) -> bool {
             false
         }

@@ -155,7 +155,10 @@ pub struct PanePty {
     /// child must not receive N conflicting `OSC 52` responses. See [`answer_clipboard_query`].
     clipboard_answered: Arc<AtomicU64>,
     reader_thread: Option<JoinHandle<()>>,
-    resize_tx: Option<Sender<(u16, u16)>>,
+    // The full winsize a resize applies: `(cols, rows, pixel_width, pixel_height)`. The pixel
+    // extents are derived host-side (`cols * cell_w`, `rows * cell_h`) from the display's cell
+    // metric so a child reads a real `TIOCGWINSZ` `ws_xpixel` / `ws_ypixel` (0 while unknown).
+    resize_tx: Option<Sender<(u16, u16, u16, u16)>>,
     resize_thread: Option<JoinHandle<()>>,
 }
 
@@ -306,19 +309,23 @@ impl PanePty {
         // synchronously and sends every intermediate size here; the coalescer
         // debounces the PTY ioctl to the final one — so the live shell gets one
         // `SIGWINCH` per settle, not one per cell-width boundary.
-        let (resize_tx, resize_rx) = mpsc::channel::<(u16, u16)>();
+        let (resize_tx, resize_rx) = mpsc::channel::<(u16, u16, u16, u16)>();
         let master = pair.master;
         let resize_thread = std::thread::Builder::new()
             .name("sprag-pty-resize".to_string())
             .spawn(move || {
-                run_resize_coalescer(RESIZE_DEBOUNCE, &resize_rx, |(cols, rows)| {
-                    let _ = master.resize(PtySize {
-                        rows,
-                        cols,
-                        pixel_width: 0,
-                        pixel_height: 0,
-                    });
-                });
+                run_resize_coalescer(
+                    RESIZE_DEBOUNCE,
+                    &resize_rx,
+                    |(cols, rows, pixel_width, pixel_height)| {
+                        let _ = master.resize(PtySize {
+                            rows,
+                            cols,
+                            pixel_width,
+                            pixel_height,
+                        });
+                    },
+                );
             })
             .map_err(|e| PanePtyError::new("spawn resize thread", &e))?;
 
@@ -538,10 +545,17 @@ impl PanePty {
     /// reflects it. The disagreement is transient and self-heals within the next
     /// batch; it is visual-only, never a lost update.
     ///
+    /// `cell_px` is the display's `(cell_width, cell_height)` in logical pixels — the GUI's font
+    /// metric, the only side that knows a cell's pixel extent. `(0, 0)` means "unknown" (a headless
+    /// or metric-less client) and leaves the emulator's last-known cell geometry untouched, so a
+    /// plain resize never clobbers it. The PTY winsize `ws_xpixel` / `ws_ypixel` are derived
+    /// (`cols * cell_w`, `rows * cell_h`) from the resulting cell geometry so a child sizes sixel /
+    /// Kitty images correctly; they stay `0` until a metric has arrived.
+    ///
     /// # Errors
     ///
     /// Returns [`PanePtyError`] if the master resize fails.
-    pub fn resize(&self, cols: u16, rows: u16) -> Result<(), PanePtyError> {
+    pub fn resize(&self, cols: u16, rows: u16, cell_px: (u16, u16)) -> Result<(), PanePtyError> {
         let cols = cols.max(1);
         let rows = rows.max(1);
         // Resize the emulator screen SYNCHRONOUSLY so the grid reflows the SAME
@@ -551,11 +565,22 @@ impl PanePty {
         // live shell with `SIGWINCH`es and it redraws its prompt for every one,
         // which the emulator accumulates (the reported bug). The coalescer
         // applies one ioctl per settle.
-        lock(&self.emulator).resize(cols, rows);
+        let (pixel_width, pixel_height) = {
+            let mut emulator = lock(&self.emulator);
+            emulator.resize(cols, rows);
+            // Update the display cell geometry only when the caller measured it (0 = unknown), so a
+            // metric-less resize never zeroes a known cell size. Then derive the winsize pixels from
+            // the resulting (possibly just-updated) cell geometry — the emulator is the SSOT.
+            if cell_px != (0, 0) {
+                emulator.set_cell_pixel_size(cell_px.0, cell_px.1);
+            }
+            let (cw, ch) = emulator.cell_pixel_size();
+            (cols.saturating_mul(cw), rows.saturating_mul(ch))
+        };
         if let Some(tx) = &self.resize_tx {
             // A send only fails once the pty is dropping (coalescer gone),
             // where a stale PTY size is moot.
-            let _ = tx.send((cols, rows));
+            let _ = tx.send((cols, rows, pixel_width, pixel_height));
         }
         Ok(())
     }
@@ -570,6 +595,15 @@ impl PanePty {
         let emulator = lock(&self.emulator);
         let screen = emulator.screen();
         (screen.cols(), screen.rows())
+    }
+
+    /// The display's `(cell_width, cell_height)` in logical pixels last carried by a
+    /// [`resize`](Self::resize), or `(0, 0)` while unknown — the peer of [`dimensions`](Self::dimensions)
+    /// for the pixel axis. The PTY winsize `ws_xpixel` / `ws_ypixel` are `cols * cell_w`,
+    /// `rows * cell_h`.
+    #[must_use]
+    pub fn cell_pixel_size(&self) -> (u16, u16) {
+        lock(&self.emulator).cell_pixel_size()
     }
 }
 
@@ -733,12 +767,8 @@ const RESIZE_DEBOUNCE: Duration = Duration::from_millis(40);
 /// it flushes the final pending size synchronously so a resize-then-quit never
 /// strands the PTY at a stale size. Generic over `apply` so the debounce policy
 /// is unit-tested without a real PTY.
-fn run_resize_coalescer(
-    quiet: Duration,
-    rx: &Receiver<(u16, u16)>,
-    mut apply: impl FnMut((u16, u16)),
-) {
-    let mut pending: Option<(u16, u16)> = None;
+fn run_resize_coalescer<T: Copy>(quiet: Duration, rx: &Receiver<T>, mut apply: impl FnMut(T)) {
+    let mut pending: Option<T> = None;
     loop {
         let recv = if pending.is_some() {
             rx.recv_timeout(quiet)
@@ -974,13 +1004,35 @@ mod tests {
         assert_eq!(pty.dimensions(), (20, 4));
         // Through a SHARED borrow — proves the resize needs no `&mut`.
         let shared: &PanePty = &pty;
-        shared.resize(100, 30).expect("resize through a shared ref");
+        shared
+            .resize(100, 30, (0, 0))
+            .expect("resize through a shared ref");
         // The emulator resizes synchronously (only the PTY ioctl is debounced),
         // so `dimensions()` is current immediately.
         assert_eq!(pty.dimensions(), (100, 30), "dimensions track the emulator");
         // The floor at 1x1 holds (a zero dimension cannot reach the PTY).
-        shared.resize(0, 0).expect("resize floors at 1x1");
+        shared.resize(0, 0, (0, 0)).expect("resize floors at 1x1");
         assert_eq!(pty.dimensions(), (1, 1));
+    }
+
+    #[test]
+    fn resize_carries_the_cell_pixel_geometry_and_a_metric_less_resize_preserves_it() {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg("cat"); // long-lived: keeps the PTY open across the resizes
+        command.env("TERM", "dumb");
+        let pty = PanePty::spawn(command, 20, 4).expect("spawn a pty");
+        assert_eq!(pty.cell_pixel_size(), (0, 0), "no metric at spawn");
+        // A resize carrying a 9x18 metric records it (feeds the winsize ws_xpixel/ypixel + XTWINOPS).
+        pty.resize(80, 24, (9, 18)).expect("resize with a metric");
+        assert_eq!(pty.cell_pixel_size(), (9, 18), "the metric is recorded");
+        // A later metric-less resize (0,0 = unknown, e.g. a headless client) must NOT clobber it.
+        pty.resize(100, 30, (0, 0)).expect("metric-less resize");
+        assert_eq!(
+            pty.cell_pixel_size(),
+            (9, 18),
+            "a metric-less resize preserves the last-known cell geometry"
+        );
     }
 
     /// Wait (bounded) until the child has exited and all its bytes are applied.

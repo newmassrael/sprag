@@ -2027,6 +2027,19 @@ pub trait VtPort {
     /// Resize the screen to `cols x rows` cells.
     fn resize(&mut self, cols: u16, rows: u16);
 
+    /// Set the logical-pixel extent of one cell (`width`, `height`) — the DISPLAY geometry the
+    /// host sources from the GUI's font metrics (the emulator runs in the daemon and has none of
+    /// its own). It feeds the XTWINOPS PIXEL reports (`14 t` / `15 t` / `16 t`) and, via
+    /// [`Self::cell_pixel_size`], the PTY winsize `xpixel` / `ypixel` the host derives so a child
+    /// sizes images correctly. `0` on either axis means "unknown" (the reports fall back to the `0`
+    /// sentinel). It is display geometry, not the child's — RIS preserves it, like `cols` / `rows`.
+    fn set_cell_pixel_size(&mut self, width: u16, height: u16);
+
+    /// The logical-pixel extent of one cell (`width`, `height`) last set via
+    /// [`Self::set_cell_pixel_size`], or `(0, 0)` while unknown. The host reads it to derive the
+    /// PTY winsize `xpixel` / `ypixel` (`cols * width`, `rows * height`).
+    fn cell_pixel_size(&self) -> (u16, u16);
+
     /// Note that the CONSUMER has just sent the child input (a keystroke, a paste, an
     /// injected key). This ends the resize-redraw reinterpretation epoch (see the emulator's
     /// `in_resize_redraw`): the user acting — typing at, or submitting from, the prompt — is the

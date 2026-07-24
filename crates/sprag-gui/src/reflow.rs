@@ -96,7 +96,14 @@ fn install_pane_reflow(owner: &Owner, terminal: &Rc<TerminalView>, index: usize)
         // Reflow only on a real change, so an unchanged frame issues no ioctl.
         // Both the PTY-size read and the resize go through the host client.
         if terminal.slots.pane_grid_size(index) != target {
-            terminal.slots.resize(index, target.0, target.1);
+            // Carry the display's cell pixel geometry (the reflow metric) so the daemon's PTY
+            // winsize gets real `ws_xpixel` / `ws_ypixel` and XTWINOPS pixel reports answer
+            // truthfully. `u32 -> u16` saturates (a cell never spans near 65535 px).
+            let cell_px = (
+                u16::try_from(terminal.metric.cell_w()).unwrap_or(u16::MAX),
+                u16::try_from(terminal.metric.cell_h()).unwrap_or(u16::MAX),
+            );
+            terminal.slots.resize(index, target.0, target.1, cell_px);
         }
     });
     owner.cache(key, move || ReflowMarker { _effect: effect });
