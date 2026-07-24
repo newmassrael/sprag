@@ -26,9 +26,9 @@ use termwiz::escape::apc::{
     KittyImageTransmit,
 };
 use termwiz::escape::csi::{
-    CSI, Cursor as CsiCursor, CursorStyle, DecPrivateMode, DecPrivateModeCode, Device, Edit,
-    EraseInDisplay, EraseInLine, Keyboard, KittyKeyboardMode, Mode, Sgr, TerminalMode,
-    TerminalModeCode, Window, XtSmGraphicsItem,
+    CSI, CsiParam, Cursor as CsiCursor, CursorStyle, DecPrivateMode, DecPrivateModeCode, Device,
+    Edit, EraseInDisplay, EraseInLine, Keyboard, KittyKeyboardMode, Mode, Sgr, TerminalMode,
+    TerminalModeCode, Unspecified, Window, XtSmGraphicsItem,
 };
 use termwiz::escape::osc::{
     ChangeColorPair, ColorOrQuery, DynamicColorNumber, FinalTermSemanticPrompt, Selection,
@@ -1349,6 +1349,10 @@ impl Emulator {
             // XTWINOPS (`CSI Ps ; … t`) — window manipulation + reports. sprag acts only on the
             // parts a wire-client terminal can answer truthfully (see `window_op`).
             CSI::Window(w) => self.window_op(&w),
+            // A CSI termwiz tokenizes but does not model is handed back as `Unspecified` (its
+            // documented escape hatch — params + final byte, verbatim). sprag interprets the VT420
+            // rectangular editing ops from it (see `unspecified_csi`); the rest stay dropped.
+            CSI::Unspecified(u) => self.unspecified_csi(&u),
             _ => {}
         }
     }
@@ -1524,6 +1528,162 @@ impl Emulator {
             }
             // Window manipulation, title reports (injection-gated), and DECRQCRA: see the doc above.
             _ => {}
+        }
+    }
+
+    /// Interpret a CSI termwiz handed back as [`Unspecified`] (it tokenized the sequence but has no
+    /// model for it). sprag acts on the VT420 RECTANGULAR EDITING ops — DECFRA (fill), DECERA
+    /// (erase), DECCRA (copy) — which carry the `$` intermediate and a final byte termwiz does not
+    /// type. These give an app fast whole-rectangle fill / clear / block-move that tmux and cmux
+    /// lack entirely. The integer params are read in order (the `;` separators and any other
+    /// intermediate are skipped); a non-`$` sequence, or a `$` final byte outside this set, is a
+    /// no-op. (Protected areas — DECSCA + selective erase — and the DECRQCRA checksum are a separate
+    /// stage: the first needs a per-cell protected bit, the second an exact esctest-matching
+    /// checksum where a wrong value would mislead, so neither is guessed here.)
+    fn unspecified_csi(&mut self, u: &Unspecified) {
+        let mut ints: Vec<i64> = Vec::new();
+        let mut intermediate = None;
+        for p in &u.params {
+            match p {
+                CsiParam::Integer(n) => ints.push(*n),
+                CsiParam::P(b';') => {}
+                CsiParam::P(b) => intermediate = Some(*b),
+            }
+        }
+        if intermediate != Some(b'$') {
+            return;
+        }
+        match u.control {
+            'x' => self.decfra(&ints),
+            'z' => self.decera(&ints),
+            'v' => self.deccra(&ints),
+            _ => {}
+        }
+    }
+
+    /// Resolve a VT420 rectangle (`top; left; bottom; right`, 1-based INCLUSIVE) to clamped 0-based
+    /// inclusive bounds, or `None` if it is degenerate (top past bottom / left past right after
+    /// clamping). A `0` bound already arrived as its default from the caller.
+    fn resolve_rect(
+        &self,
+        top: i64,
+        left: i64,
+        bottom: i64,
+        right: i64,
+    ) -> Option<(u16, u16, u16, u16)> {
+        let rows = i64::from(self.rows);
+        let cols = i64::from(self.cols);
+        let top = top.clamp(1, rows) as u16 - 1;
+        let left = left.clamp(1, cols) as u16 - 1;
+        let bottom = bottom.clamp(1, rows) as u16 - 1;
+        let right = right.clamp(1, cols) as u16 - 1;
+        if top > bottom || left > right {
+            return None;
+        }
+        Some((top, left, bottom, right))
+    }
+
+    /// DECFRA (`Pch ; Pt ; Pl ; Pb ; Pr $ x`) — fill a rectangle with the single character `Pch`
+    /// (a printable code point, `32..=126` or `160..=255`) in the CURRENT pen. Out-of-range `Pch`
+    /// or a degenerate rectangle is a no-op.
+    fn decfra(&mut self, p: &[i64]) {
+        let ch = p.first().copied().unwrap_or(0);
+        let Some(ch) = u32::try_from(ch)
+            .ok()
+            .and_then(char::from_u32)
+            .filter(|c| is_decfra_char(*c))
+        else {
+            return;
+        };
+        let (t, l, b, r) = (
+            p.get(1).copied().unwrap_or(1),
+            p.get(2).copied().unwrap_or(1),
+            p.get(3).copied().unwrap_or(i64::from(self.rows)),
+            p.get(4).copied().unwrap_or(i64::from(self.cols)),
+        );
+        let Some((t, l, b, r)) = self.resolve_rect(t, l, b, r) else {
+            return;
+        };
+        let g = self.next_gen();
+        let fill = Cell {
+            cluster: cluster_from_char(ch),
+            fg: self.fg,
+            bg: self.bg,
+            underline_color: self.underline_color,
+            attrs: self.attrs,
+            hyperlink: self.current_hyperlink.clone(),
+            width: Width::Narrow,
+        };
+        for row in t..=b {
+            for col in l..=r {
+                self.screen.set_cell(col, row, fill.clone(), g);
+            }
+        }
+    }
+
+    /// DECERA (`Pt ; Pl ; Pb ; Pr $ z`) — erase a rectangle to blanks (no pen, no protection: this
+    /// is the unconditional erase; the selective form DECSERA is the separate protected-areas stage).
+    fn decera(&mut self, p: &[i64]) {
+        let (t, l, b, r) = (
+            p.first().copied().unwrap_or(1),
+            p.get(1).copied().unwrap_or(1),
+            p.get(2).copied().unwrap_or(i64::from(self.rows)),
+            p.get(3).copied().unwrap_or(i64::from(self.cols)),
+        );
+        let Some((t, l, b, r)) = self.resolve_rect(t, l, b, r) else {
+            return;
+        };
+        let g = self.next_gen();
+        for row in t..=b {
+            for col in l..=r {
+                self.screen.set_cell(col, row, Cell::blank(), g);
+            }
+        }
+    }
+
+    /// DECCRA (`Pts;Pls;Pbs;Prs;Pps ; Ptd;Pld;Ppd $ v`) — copy the source rectangle to the
+    /// destination top-left. Pages (`Pps` / `Ppd`) are ignored (sprag has one page). The source is
+    /// snapshotted BEFORE any write, so an overlapping copy is well-defined (no read-after-write
+    /// smear). Destination cells that fall off the screen are dropped.
+    fn deccra(&mut self, p: &[i64]) {
+        let (ts, ls, bs, rs) = (
+            p.first().copied().unwrap_or(1),
+            p.get(1).copied().unwrap_or(1),
+            p.get(2).copied().unwrap_or(i64::from(self.rows)),
+            p.get(3).copied().unwrap_or(i64::from(self.cols)),
+        );
+        // p[4] = source page (ignored); p[5]/p[6] = dest top/left; p[7] = dest page (ignored).
+        let (td, ld) = (
+            p.get(5).copied().unwrap_or(1),
+            p.get(6).copied().unwrap_or(1),
+        );
+        let Some((ts, ls, bs, rs)) = self.resolve_rect(ts, ls, bs, rs) else {
+            return;
+        };
+        let (src_h, src_w) = (bs - ts + 1, rs - ls + 1);
+        let mut buf = Vec::with_capacity(usize::from(src_h) * usize::from(src_w));
+        for row in ts..=bs {
+            for col in ls..=rs {
+                buf.push(
+                    self.screen
+                        .cell(col, row)
+                        .cloned()
+                        .unwrap_or_else(Cell::blank),
+                );
+            }
+        }
+        let dt = td.clamp(1, i64::from(self.rows)) as u16 - 1;
+        let dl = ld.clamp(1, i64::from(self.cols)) as u16 - 1;
+        let g = self.next_gen();
+        let mut i = 0;
+        for dr in 0..src_h {
+            for dc in 0..src_w {
+                let (col, row) = (dl + dc, dt + dr);
+                if row < self.rows && col < self.cols {
+                    self.screen.set_cell(col, row, buf[i].clone(), g);
+                }
+                i += 1;
+            }
         }
     }
 
@@ -2873,6 +3033,13 @@ const fn decscusr_code(shape: CursorShape) -> u8 {
         CursorShape::Underline => 4,
         CursorShape::Bar => 6,
     }
+}
+
+/// Whether `ch` is a legal DECFRA fill character — a printable code point per the VT420 spec:
+/// GL `0x20..=0x7E` (space through `~`) or GR `0xA0..=0xFF`. Anything else (a control, or a wide /
+/// multi-byte scalar) is rejected so a fill never writes a partial or control glyph.
+const fn is_decfra_char(ch: char) -> bool {
+    matches!(ch, ' '..='~' | '\u{A0}'..='\u{FF}')
 }
 
 /// The number of UAX #29 extended grapheme clusters in `s` — the authority mode 2027 uses to decide
@@ -6526,6 +6693,68 @@ mod tests {
             Some(false),
             "RIS cleared it"
         );
+    }
+
+    // --- Rectangular editing (DECFRA fill / DECERA erase / DECCRA copy) ---
+
+    #[test]
+    fn decfra_fills_a_rectangle_with_a_character() {
+        // Pch;Pt;Pl;Pb;Pr $ x — fill 'X' (88) into rows 2-3, cols 2-4 (1-based inclusive).
+        let mut em = Emulator::new(5, 4);
+        em.advance(b"\x1b[88;2;2;3;4$x");
+        assert_eq!(cluster(&em, 1, 1), "X", "top-left of the rect");
+        assert_eq!(cluster(&em, 3, 2), "X", "bottom-right of the rect");
+        assert_eq!(cluster(&em, 0, 1), " ", "column left of the rect untouched");
+        assert_eq!(
+            cluster(&em, 4, 1),
+            " ",
+            "column right of the rect untouched"
+        );
+        assert_eq!(cluster(&em, 1, 0), " ", "row above the rect untouched");
+        assert_eq!(cluster(&em, 1, 3), " ", "row below the rect untouched");
+    }
+
+    #[test]
+    fn decfra_rejects_a_non_printable_fill_character() {
+        // A control code (BEL, 7) is not a legal DECFRA character -> the whole op is a no-op.
+        let mut em = Emulator::new(4, 2);
+        em.advance(b"\x1b[7;1;1;2;2$x");
+        assert_eq!(cluster(&em, 0, 0), " ", "out-of-range Pch filled nothing");
+    }
+
+    #[test]
+    fn decera_erases_a_rectangle_to_blanks() {
+        // Fill the whole 5x4 screen with 'A', then erase rows 2-3, cols 2-4.
+        let mut em = Emulator::new(5, 4);
+        em.advance(b"\x1b[65;1;1;4;5$x"); // DECFRA 'A' everywhere
+        em.advance(b"\x1b[2;2;3;4$z"); // DECERA the inner rect
+        assert_eq!(cluster(&em, 1, 1), " ", "inside the erased rect");
+        assert_eq!(cluster(&em, 3, 2), " ", "inside the erased rect");
+        assert_eq!(cluster(&em, 0, 0), "A", "outside the rect still filled");
+        assert_eq!(cluster(&em, 4, 3), "A", "outside the rect still filled");
+    }
+
+    #[test]
+    fn deccra_copies_an_overlapping_rectangle_without_smear() {
+        // "ABCDEF" on row 0; copy cols 1-3 ("ABC") to a destination one column right (overlapping).
+        // Snapshotting the source first makes the result well-defined: "AABCEF", not a smear.
+        let mut em = Emulator::new(6, 1);
+        em.advance(b"ABCDEF");
+        em.advance(b"\x1b[1;1;1;3;1;1;2;1$v");
+        assert_eq!(
+            em.screen().row_text(0),
+            "AABCEF",
+            "overlap copy is snapshot-correct"
+        );
+    }
+
+    #[test]
+    fn an_unspecified_csi_without_the_dollar_intermediate_is_a_noop() {
+        // DECSCA (`CSI 1 " q`) is Unspecified to termwiz too, but its intermediate is `"`, not `$`
+        // — sprag leaves it alone (protected areas are a separate stage), touching no cells.
+        let mut em = Emulator::new(4, 1);
+        em.advance(b"hi\x1b[1\"q");
+        assert_eq!(em.screen().row_text(0), "hi", "the grid is untouched");
     }
 
     // --- DECRQSS (DCS $ q … ST) request selection or setting ---
