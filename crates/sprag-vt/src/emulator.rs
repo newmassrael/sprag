@@ -34,7 +34,7 @@ use termwiz::escape::osc::{
 };
 use termwiz::escape::parser::Parser;
 use termwiz::escape::{
-    Action, ControlCode, Esc, EscCode, OperatingSystemCommand, Sixel, SixelData,
+    Action, ControlCode, DeviceControlMode, Esc, EscCode, OperatingSystemCommand, Sixel, SixelData,
 };
 
 use crate::port::{
@@ -465,6 +465,9 @@ impl Emulator {
             // and flow through the one image store -> panes-slot wire -> GUI composite.
             Action::KittyImage(img) => self.kitty_image(&img),
             Action::Sixel(sixel) => self.sixel_image(&sixel),
+            // DECRQSS (`DCS $ q … ST`) — the child asks for the current value of a setting; the
+            // only device-control string sprag answers (see `device_control`).
+            Action::DeviceControl(dc) => self.device_control(&dc),
             _ => {}
         }
     }
@@ -1464,6 +1467,100 @@ impl Emulator {
             // Window manipulation, title reports (injection-gated), and DECRQCRA: see the doc above.
             _ => {}
         }
+    }
+
+    /// Answer a device-control string. The only one sprag acts on is DECRQSS — Request Selection or
+    /// Setting (`DCS $ q <Pt> ST`): a child asks for the CURRENT value of a setting, and the
+    /// terminal replies with a string that, replayed, reproduces it. The reply is `DCS 1 $ r <Pt>
+    /// ST` for a request sprag models (`Pt` = the reproducing sequence, ending in the same final
+    /// byte the request named) or `DCS 0 $ r ST` for one it does not — answering "invalid" (rather
+    /// than dropping) so a probe fails fast instead of blocking, the same stance [`Self::device`]
+    /// takes. sprag answers three settings: SGR (`m`, the pen), DECSCUSR (` q`, the cursor shape),
+    /// and DECSTBM (`r`, the scroll region). Every other DCS (a real DCS Enter / Exit, tmux control
+    /// mode, raw `Data`) is outside the subset and dropped. Carries no cells — stamps no row damage.
+    fn device_control(&mut self, dc: &DeviceControlMode) {
+        // DECRQSS is a SHORT DCS with intermediate `$`, final `q`; the requested setting is `data`.
+        let DeviceControlMode::ShortDeviceControl(sdc) = dc else {
+            return;
+        };
+        if sdc.intermediates.as_slice() != b"$" || sdc.byte != b'q' {
+            return;
+        }
+        let pt = match sdc.data.as_slice() {
+            // SGR (`m`) — the current pen as SGR parameters (`0`-led so it is self-contained).
+            b"m" => Some(format!("{}m", self.sgr_params())),
+            // DECSCUSR (` q`) — the cursor shape as its STEADY DECSCUSR code (blink is not modeled,
+            // so the steady code stands for the shape).
+            b" q" => Some(format!("{} q", decscusr_code(self.cursor_shape))),
+            // DECSTBM (`r`) — the scroll region as 1-based inclusive `top;bottom`.
+            b"r" => Some(format!(
+                "{};{}r",
+                self.scroll_top + 1,
+                self.scroll_bottom + 1
+            )),
+            _ => None,
+        };
+        match pt {
+            // `DCS 1 $ r <Pt> ST` — recognized: echo the reproducing string.
+            Some(pt) => self
+                .responses
+                .extend_from_slice(format!("\x1bP1$r{pt}\x1b\\").as_bytes()),
+            // `DCS 0 $ r ST` — unrecognized: answer "invalid".
+            None => self.responses.extend_from_slice(b"\x1bP0$r\x1b\\"),
+        }
+    }
+
+    /// The current SGR pen ([`Self::attrs`] / [`Self::fg`] / [`Self::bg`] /
+    /// [`Self::underline_color`]) serialized as a `;`-joined SGR parameter string that, replayed as
+    /// `CSI … m`, reproduces the pen. Always leads with `0` (reset) so the DECRQSS reply is
+    /// self-contained — an app applies it verbatim to restore state. The curly / dotted / dashed
+    /// underline styles use the colon-subparam form (`4:3` etc.) they were set with; a plain single
+    /// / double underline uses the legacy `4` / `21`.
+    fn sgr_params(&self) -> String {
+        let mut ps = vec!["0".to_string()];
+        if self.attrs.bold {
+            ps.push("1".to_string());
+        }
+        if self.attrs.dim {
+            ps.push("2".to_string());
+        }
+        if self.attrs.italic {
+            ps.push("3".to_string());
+        }
+        match self.attrs.underline {
+            UnderlineStyle::None => {}
+            UnderlineStyle::Single => ps.push("4".to_string()),
+            UnderlineStyle::Double => ps.push("21".to_string()),
+            UnderlineStyle::Curly => ps.push("4:3".to_string()),
+            UnderlineStyle::Dotted => ps.push("4:4".to_string()),
+            UnderlineStyle::Dashed => ps.push("4:5".to_string()),
+        }
+        if self.attrs.blink {
+            ps.push("5".to_string());
+        }
+        if self.attrs.reverse {
+            ps.push("7".to_string());
+        }
+        if self.attrs.hidden {
+            ps.push("8".to_string());
+        }
+        if self.attrs.strikethrough {
+            ps.push("9".to_string());
+        }
+        // Default fg / bg are implied by the leading reset, so only a non-default pen colour emits.
+        if let Some(p) = sgr_color_params(self.fg, true) {
+            ps.push(p);
+        }
+        if let Some(p) = sgr_color_params(self.bg, false) {
+            ps.push(p);
+        }
+        // SGR 58 — underline colour (no short "default" code; only the indexed / rgb forms).
+        match self.underline_color {
+            None | Some(Color::Default) => {}
+            Some(Color::Indexed(n)) => ps.push(format!("58:5:{n}")),
+            Some(Color::Rgb(rgb)) => ps.push(format!("58:2::{}:{}:{}", rgb.r, rgb.g, rgb.b)),
+        }
+        ps.join(";")
     }
 
     fn sgr(&mut self, sgr: Sgr) {
@@ -2622,6 +2719,34 @@ fn cursor_shape_of(style: CursorStyle) -> CursorShape {
         }
         CursorStyle::BlinkingUnderline | CursorStyle::SteadyUnderline => CursorShape::Underline,
         CursorStyle::BlinkingBar | CursorStyle::SteadyBar => CursorShape::Bar,
+    }
+}
+
+/// The STEADY DECSCUSR parameter for a cursor shape — the inverse of [`cursor_shape_of`] for the
+/// DECRQSS ` q` reply. sprag does not model cursor blink (a shape's blinking and steady DECSCUSR
+/// codes both map to the one shape in [`cursor_shape_of`]), so the report answers with the steady
+/// code of that shape: block 2, underline 4, bar 6.
+const fn decscusr_code(shape: CursorShape) -> u8 {
+    match shape {
+        CursorShape::Block => 2,
+        CursorShape::Underline => 4,
+        CursorShape::Bar => 6,
+    }
+}
+
+/// One SGR pen colour ([`Color`]) as its SGR parameter string, or `None` for [`Color::Default`]
+/// (implied by the DECRQSS reply's leading reset). `is_fg` selects the foreground codes
+/// (30-37 / 90-97 / `38;5;` / `38;2;`) or the background codes (40-47 / 100-107 / `48;5;` /
+/// `48;2;`). The indexed 0-15 range uses the legacy short codes; 16-255 the `5;` indexed form;
+/// truecolor the `2;` form.
+fn sgr_color_params(color: Color, is_fg: bool) -> Option<String> {
+    let (base, bright, ext) = if is_fg { (30, 90, 38) } else { (40, 100, 48) };
+    match color {
+        Color::Default => None,
+        Color::Indexed(n) if n < 8 => Some((base + u16::from(n)).to_string()),
+        Color::Indexed(n) if n < 16 => Some((bright + u16::from(n - 8)).to_string()),
+        Color::Indexed(n) => Some(format!("{ext};5;{n}")),
+        Color::Rgb(rgb) => Some(format!("{ext};2;{};{};{}", rgb.r, rgb.g, rgb.b)),
     }
 }
 
@@ -6044,6 +6169,85 @@ mod tests {
             Some("after"),
             "RIS cleared the stack: the pop was inert"
         );
+    }
+
+    // --- DECRQSS (DCS $ q … ST) request selection or setting ---
+
+    #[test]
+    fn decrqss_reports_the_default_sgr_pen() {
+        // A fresh pen serializes to just the reset: DCS 1 $ r 0 m ST.
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1bP$qm\x1b\\");
+        assert_eq!(em.take_responses(), b"\x1bP1$r0m\x1b\\");
+    }
+
+    #[test]
+    fn decrqss_reports_active_sgr_attributes() {
+        // Bold + reverse -> 0;1;7; the reply is `0`-led so it is self-contained.
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b[1;7m");
+        em.advance(b"\x1bP$qm\x1b\\");
+        assert_eq!(em.take_responses(), b"\x1bP1$r0;1;7m\x1b\\");
+    }
+
+    #[test]
+    fn decrqss_reports_sgr_indexed_and_truecolor() {
+        // Indexed fg red (31) + indexed bg blue (44).
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b[31;44m\x1bP$qm\x1b\\");
+        assert_eq!(em.take_responses(), b"\x1bP1$r0;31;44m\x1b\\");
+        // Truecolor fg.
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b[38;2;10;20;30m\x1bP$qm\x1b\\");
+        assert_eq!(em.take_responses(), b"\x1bP1$r0;38;2;10;20;30m\x1b\\");
+    }
+
+    #[test]
+    fn decrqss_reports_the_cursor_style() {
+        // Default cursor is a block -> steady-block code 2.
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1bP$q q\x1b\\");
+        assert_eq!(em.take_responses(), b"\x1bP1$r2 q\x1b\\", "default block");
+        // DECSCUSR 4 (steady underline) -> 4.
+        em.advance(b"\x1b[4 q\x1bP$q q\x1b\\");
+        assert_eq!(
+            em.take_responses(),
+            b"\x1bP1$r4 q\x1b\\",
+            "steady underline"
+        );
+    }
+
+    #[test]
+    fn decrqss_reports_the_scroll_region() {
+        // Default region is the whole screen: 1;rows.
+        let mut em = Emulator::new(8, 24);
+        em.advance(b"\x1bP$qr\x1b\\");
+        assert_eq!(em.take_responses(), b"\x1bP1$r1;24r\x1b\\", "full screen");
+        // DECSTBM 2;5 -> 1-based inclusive 2;5.
+        em.advance(b"\x1b[2;5r\x1bP$qr\x1b\\");
+        assert_eq!(em.take_responses(), b"\x1bP1$r2;5r\x1b\\");
+    }
+
+    #[test]
+    fn decrqss_answers_an_unknown_request_as_invalid() {
+        // A setting sprag does not model -> DCS 0 $ r ST (invalid), never a silent drop.
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1bP$qZ\x1b\\");
+        assert_eq!(em.take_responses(), b"\x1bP0$r\x1b\\");
+    }
+
+    #[test]
+    fn decrqss_stamps_no_row_damage() {
+        // A DECRQSS query reads state and answers; it must not stamp row damage (like DA / DSR).
+        let mut em = Emulator::new(8, 2);
+        let before = em.screen().row_generation(0).unwrap();
+        em.advance(b"\x1bP$qm\x1b\\");
+        assert_eq!(
+            em.screen().row_generation(0).unwrap(),
+            before,
+            "a query is not a paint"
+        );
+        assert!(!em.take_responses().is_empty(), "but it answered");
     }
 
     // --- LNM line-feed / new-line mode (ANSI mode 20) ---
