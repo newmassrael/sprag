@@ -782,3 +782,41 @@ fn the_cli_ssh_forward_surfaces_the_local_port_in_the_sidebar() {
         "the forwarded port {free_port} surfaces on the ssh session in `sprag ls`",
     );
 }
+
+/// The `--tmux` preset reaches exec as `tmux new-session -A -s NAME` (attach-or-create), and clashing
+/// it with a `--` remote command is a clean LOCAL error surfaced before anything is sent — the parse
+/// runs ahead of the connect.
+#[test]
+fn the_cli_ssh_tmux_preset_reaches_exec_and_rejects_a_conflict() {
+    let (_tmp, dir, argv_file) = stub_ssh("tmux", |_| "exec cat".to_owned());
+    let path = format!(
+        "{}:{}",
+        dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let (_host, sock) = spawn_host_env(&[("PATH", &path)]);
+
+    // --tmux=work: the birth pane execs the attach-or-create tmux command on the remote.
+    let run = sprag(&sock, &["ssh", "host", "--tmux=work"]);
+    assert!(run.ok, "sprag ssh --tmux succeeded: {}", run.stderr);
+    assert!(
+        wait_for(Duration::from_secs(5), || argv_file.exists()),
+        "the ssh birth pane exec'd",
+    );
+    let recorded = std::fs::read_to_string(&argv_file).unwrap_or_default();
+    for expected in ["tmux", "new-session", "-A", "-s", "work"] {
+        assert!(
+            recorded.lines().any(|line| line == expected),
+            "the exec argv carries {expected:?}: {recorded:?}",
+        );
+    }
+
+    // --tmux together with a -- command is a clean, non-zero local error (nothing spawned).
+    let clash = sprag(&sock, &["ssh", "host", "--tmux", "--", "vim"]);
+    assert!(!clash.ok, "combining --tmux and a -- command fails");
+    assert!(
+        clash.stderr.contains("--tmux") && clash.stderr.contains("not both"),
+        "a clean conflict message: {}",
+        clash.stderr,
+    );
+}

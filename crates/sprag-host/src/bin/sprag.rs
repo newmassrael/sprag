@@ -4,8 +4,9 @@
 //! sprag ls                 list every session
 //! sprag list-clients [-t SESSION]  list attached clients and the session each views (tmux list-clients)
 //! sprag new [name]         create a session with a shell (absent name -> the lowest free), print its name
-//! sprag ssh [user@]host [-p PORT] [-L FWD]... [-- cmd...]  create a session running ssh to a remote
-//!                          host (a first-classed remote workspace); -L forwards a local->remote port
+//! sprag ssh [user@]host [-p PORT] [-L FWD]... [--tmux[=NAME]] [-- cmd...]  create a session running
+//!                          ssh to a remote host (a first-classed remote workspace); -L forwards a
+//!                          local->remote port; --tmux attaches-or-creates a remote tmux session
 //! sprag attach NAME        open a sprag-gui window attached to a session (tmux attach-session)
 //! sprag kill-session NAME   kill a session (the last one ends the daemon)
 //! sprag kill-server [--purge]  kill every session, ending the daemon; --purge also deletes the
@@ -94,7 +95,7 @@ fn run() -> io::Result<()> {
 fn print_usage() {
     eprintln!(
         "usage: sprag <ls | list-clients [-t SESSION] | new [name] | attach NAME\n\
-         \x20             | ssh [user@]host [-p PORT] [-L FWD]… [-- command…]\n\
+         \x20             | ssh [user@]host [-p PORT] [-L FWD]… [--tmux[=NAME]] [-- command…]\n\
          \x20             | kill-session NAME | kill-server [--purge]>\n\
          \x20      sprag <windows | new-window [name] | select-window NAME\n\
          \x20             | rename-window [window] NAME | kill-window [window]\n\
@@ -283,6 +284,10 @@ fn new(name: Option<String>) -> io::Result<()> {
 /// `-L FWD` requests a local→remote port forward (repeatable). Because the ssh process itself holds
 /// the local listener, the forwarded port also surfaces in the session's sidebar ports badge for
 /// free — the existing per-pane `/proc` port scan attributes it like any other listening server.
+///
+/// `--tmux[=NAME]` runs the remote-tmux preset (`tmux new-session -A -s NAME`, attach-or-create), so
+/// the remote session survives the ssh link dropping. It and a `--` remote command are mutually
+/// exclusive.
 ///
 /// A malformed destination, port, or forward is a clean local error (nothing is sent). The whole
 /// argument parse lives in [`SshTarget::from_args`] so every branch is unit-tested there and this

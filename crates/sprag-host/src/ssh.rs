@@ -111,6 +111,23 @@ impl PortForward {
     }
 }
 
+/// The default remote-tmux session name for a bare `--tmux`, when no `--tmux=NAME` is given.
+const DEFAULT_TMUX_SESSION: &str = "main";
+
+/// The remote command for the `--tmux` preset: `tmux new-session -A -s SESSION`, which ATTACHES to
+/// `SESSION` if it already exists on the remote and otherwise CREATES it (the `-A` flag). This is
+/// superior to a bare `tmux attach`, which fails when the remote has no session yet — so
+/// `sprag ssh host --tmux work` always lands in a durable remote session, fresh host or not.
+fn tmux_attach_argv(session: &str) -> Vec<String> {
+    vec![
+        "tmux".to_owned(),
+        "new-session".to_owned(),
+        "-A".to_owned(),
+        "-s".to_owned(),
+        session.to_owned(),
+    ]
+}
+
 /// Why a `sprag ssh …` invocation could not be turned into an [`SshTarget`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SshTargetError {
@@ -126,6 +143,9 @@ pub enum SshTargetError {
     MissingForwardValue,
     /// A `-L` forward spec was malformed (a bad port, an empty field, or too many fields).
     BadForward(String),
+    /// Both `--tmux` and a `--` remote command were given — two ways to set the remote command, so
+    /// combining them is ambiguous rather than one silently winning.
+    ConflictingRemoteCommand,
     /// An extra positional argument appeared after the destination — the remote command must follow
     /// a `--` separator, so a stray token is a mistake rather than a silently-dropped argument.
     UnexpectedArgument(String),
@@ -143,6 +163,9 @@ impl fmt::Display for SshTargetError {
                 f,
                 "invalid -L forward {spec:?}: expected PORT, LOCAL:REMOTE, or LOCAL:HOST:REMOTE"
             ),
+            Self::ConflictingRemoteCommand => {
+                f.write_str("give either --tmux or a -- remote command, not both")
+            }
             Self::UnexpectedArgument(arg) => {
                 write!(
                     f,
@@ -186,18 +209,19 @@ impl SshTarget {
     }
 
     /// Parse a whole `sprag ssh` argument list:
-    /// `[user@]host [-p PORT] [-L FORWARD]… [-- remote-command…]`.
+    /// `[user@]host [-p PORT] [-L FORWARD]… [--tmux[=NAME]] [-- remote-command…]`.
     ///
     /// The FIRST non-flag token is the destination; `-p`/`--port` takes the next token as the port;
-    /// `-L`/`--local-forward` takes the next token as a forward spec and may repeat; `--` ends option
-    /// parsing so everything after it is the remote command VERBATIM (a `-p`/`-L` after `--` is a
-    /// remote argument, not a local flag). Keeping the whole parse here — not in the CLI binary —
+    /// `-L`/`--local-forward` takes the next token as a forward spec and may repeat; `--tmux[=NAME]`
+    /// is the remote-tmux preset (attach-or-create a `tmux new-session -A -s NAME`); `--` ends option
+    /// parsing so everything after it is the remote command VERBATIM (a `-p`/`-L`/`--tmux` after `--`
+    /// is a remote argument, not a local flag). Keeping the whole parse here — not in the CLI binary —
     /// makes every branch unit-testable and keeps the binary a thin call site.
     ///
     /// # Errors
     ///
     /// An [`SshTargetError`] for a missing/empty destination, a missing or malformed port or forward,
-    /// or a stray positional argument before `--`.
+    /// a stray positional argument before `--`, or `--tmux` combined with a `--` remote command.
     pub fn from_args<I>(args: I) -> Result<Self, SshTargetError>
     where
         I: IntoIterator<Item = String>,
@@ -205,6 +229,7 @@ impl SshTarget {
         let mut destination: Option<String> = None;
         let mut port: Option<u16> = None;
         let mut forwards: Vec<PortForward> = Vec::new();
+        let mut tmux_session: Option<String> = None;
         let mut remote_command: Vec<String> = Vec::new();
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
@@ -220,6 +245,16 @@ impl SshTarget {
                     let value = args.next().ok_or(SshTargetError::MissingForwardValue)?;
                     forwards.push(PortForward::parse(&value)?);
                 }
+                // `--tmux` / `--tmux=NAME`: the remote-tmux preset. The optional name uses the `=`
+                // form (not a following token) so it never greedily swallows the destination; a bare
+                // `--tmux` or empty `--tmux=` falls back to the default session.
+                name if name == "--tmux" || name.starts_with("--tmux=") => {
+                    let session = name
+                        .strip_prefix("--tmux=")
+                        .filter(|session| !session.is_empty())
+                        .unwrap_or(DEFAULT_TMUX_SESSION);
+                    tmux_session = Some(session.to_owned());
+                }
                 "--" => {
                     remote_command.extend(args.by_ref());
                     break;
@@ -232,7 +267,15 @@ impl SshTarget {
         let mut target = Self::parse(&destination)?;
         target.port = port;
         target.forwards = forwards;
-        target.remote_command = remote_command;
+        // `--tmux` and a `--` command are two ways to set the remote command; giving both is a
+        // mistake, not a silent precedence. Otherwise the tmux preset (if any) IS the remote command.
+        target.remote_command = match tmux_session {
+            Some(_) if !remote_command.is_empty() => {
+                return Err(SshTargetError::ConflictingRemoteCommand);
+            }
+            Some(session) => tmux_attach_argv(&session),
+            None => remote_command,
+        };
         Ok(target)
     }
 
@@ -427,6 +470,65 @@ mod tests {
         let target = SshTarget::from_args(strings(&["host", "--", "run", "-L", "x"])).unwrap();
         assert!(target.forwards.is_empty());
         assert_eq!(target.remote_command, strings(&["run", "-L", "x"]));
+    }
+
+    #[test]
+    fn tmux_attach_argv_attaches_or_creates() {
+        // Revert-proof for the `-A` (attach-OR-create) superiority: without it this drops to a bare
+        // attach that fails on a fresh remote.
+        assert_eq!(
+            tmux_attach_argv("work"),
+            strings(&["tmux", "new-session", "-A", "-s", "work"]),
+        );
+    }
+
+    #[test]
+    fn from_args_bare_tmux_uses_the_default_session() {
+        let target = SshTarget::from_args(strings(&["host", "--tmux"])).unwrap();
+        assert_eq!(target.remote_command, tmux_attach_argv("main"));
+    }
+
+    #[test]
+    fn from_args_named_tmux_uses_the_given_session() {
+        let target = SshTarget::from_args(strings(&["host", "--tmux=dev"])).unwrap();
+        assert_eq!(target.remote_command, tmux_attach_argv("dev"));
+    }
+
+    #[test]
+    fn ssh_argv_renders_the_tmux_preset_after_the_destination() {
+        let target = SshTarget::from_args(strings(&["host", "-L", "3000", "--tmux=dev"])).unwrap();
+        assert_eq!(
+            target.ssh_argv(),
+            strings(&[
+                "ssh",
+                "-t",
+                "-L",
+                "3000:localhost:3000",
+                "host",
+                "tmux",
+                "new-session",
+                "-A",
+                "-s",
+                "dev",
+            ]),
+        );
+    }
+
+    #[test]
+    fn from_args_tmux_conflicts_with_a_dashdash_command() {
+        // Revert-proof for the conflict guard: two ways to set the remote command must be refused,
+        // never one silently winning.
+        assert_eq!(
+            SshTarget::from_args(strings(&["host", "--tmux", "--", "vim"])),
+            Err(SshTargetError::ConflictingRemoteCommand),
+        );
+    }
+
+    #[test]
+    fn from_args_tmux_after_the_separator_is_a_remote_argument_not_the_preset() {
+        // `--tmux` AFTER `--` is a literal remote token, so there is no preset and no conflict.
+        let target = SshTarget::from_args(strings(&["host", "--", "run", "--tmux"])).unwrap();
+        assert_eq!(target.remote_command, strings(&["run", "--tmux"]));
     }
 
     #[test]
