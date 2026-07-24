@@ -178,6 +178,17 @@ pub struct Emulator {
     /// Set / reset by `CSI ? 7 h` / `l`. A terminal MODE, not cursor state, so DECSC does not
     /// save it (unlike [`Self::origin_mode`]).
     autowrap: bool,
+    /// Reverse wraparound (DEC private mode 45), default OFF. On, a backspace at the LEFT margin
+    /// backs up over the autowrap that put the cursor there — to the last column of the previous
+    /// row — instead of clamping at column 0. sprag makes this the EXACT inverse of autowrap: it
+    /// reverse-wraps only when the previous row actually soft-wrapped into this one (its
+    /// [`Screen::wrapped`] flag is set), so it never steps back across a HARD line break. That is
+    /// strictly more correct than xterm (which reverse-wraps unconditionally, merging across hard
+    /// breaks) and than tmux (which does not implement mode 45 at all). Set / reset by `CSI ? 45 h`
+    /// / `l`; a terminal MODE, not cursor state, so DECSC does not save it (like [`Self::autowrap`]).
+    /// Cleared by RIS (via [`Emulator::new`]); left untouched by DECSTR (an xterm private extension
+    /// outside the DEC soft-reset set, like mouse / focus).
+    reverse_wraparound: bool,
     /// DECOM origin mode (DEC private mode 6), default OFF. On, CUP / HVP / VPA address rows
     /// RELATIVE to [`Self::scroll_top`] and the cursor is CONFINED to the region
     /// `[scroll_top, scroll_bottom]`; setting or resetting it — and any DECSTBM — homes the
@@ -407,6 +418,7 @@ impl Emulator {
             scroll_top: 0,
             scroll_bottom: rows.max(1) - 1,
             autowrap: true,
+            reverse_wraparound: false,
             origin_mode: false,
             insert_mode: false,
             synchronized_output: false,
@@ -1259,7 +1271,23 @@ impl Emulator {
                 }
             }
             ControlCode::CarriageReturn => self.col = 0,
-            ControlCode::Backspace => self.col = self.col.saturating_sub(1),
+            ControlCode::Backspace => {
+                // Reverse wraparound (DEC 45): a backspace at the left margin backs up over the
+                // autowrap that put the cursor here — to the last column of the previous row — but
+                // ONLY when that row actually soft-wrapped into this one, so it is the exact inverse
+                // of the wrap and never merges across a hard line break (see `reverse_wraparound`).
+                // Off, or at a hard break / the top row, it is the ordinary non-destructive clamp.
+                if self.reverse_wraparound
+                    && self.col == 0
+                    && self.row > 0
+                    && self.screen.wrapped(self.row - 1)
+                {
+                    self.row -= 1;
+                    self.col = self.cols.saturating_sub(1);
+                } else {
+                    self.col = self.col.saturating_sub(1);
+                }
+            }
             ControlCode::HorizontalTab => {
                 // Advance to the next 8-column tab stop, clamped to width.
                 let next = ((self.col / 8) + 1) * 8;
@@ -1853,6 +1881,8 @@ impl Emulator {
             }
             // DECAWM (7) — autowrap on wraps past the right margin; off overwrites in place.
             DecPrivateModeCode::AutoWrap => self.autowrap = on,
+            // 45 — reverse wraparound: a left-margin backspace backs up over a soft wrap.
+            DecPrivateModeCode::ReverseWraparound => self.reverse_wraparound = on,
             // DECOM (6) — origin mode: on makes addressing region-relative and confined; either edge
             // homes the cursor (to the region top when on, the screen top when off).
             DecPrivateModeCode::OriginMode => {
@@ -1921,6 +1951,7 @@ impl Emulator {
             DecPrivateModeCode::ShowCursor => self.cursor_visible,
             DecPrivateModeCode::ApplicationCursorKeys => self.input_modes.application_cursor_keys,
             DecPrivateModeCode::AutoWrap => self.autowrap,
+            DecPrivateModeCode::ReverseWraparound => self.reverse_wraparound,
             DecPrivateModeCode::OriginMode => self.origin_mode,
             // One alt screen is modeled (`saved_main` present iff on the alt); all three enable
             // spellings report that single state.
@@ -6169,6 +6200,59 @@ mod tests {
             Some("after"),
             "RIS cleared the stack: the pop was inert"
         );
+    }
+
+    // --- Reverse wraparound (DEC private mode 45) ---
+
+    #[test]
+    fn reverse_wraparound_backs_up_over_a_soft_wrap() {
+        // 3-col, autowrap on: "abcd" fills row 0 ("abc", wrapped) and puts "d" at row 1 col 0.
+        // With mode 45 on, two backspaces from row 1 col 1 walk back to row 1 col 0 then REVERSE
+        // WRAP to the last column of row 0.
+        let mut em = Emulator::new(3, 3);
+        em.advance(b"abcd\x1b[?45h\x08\x08");
+        assert_eq!(em.screen().cursor().row, 0, "reverse-wrapped up a row");
+        assert_eq!(em.screen().cursor().col, 2, "to the last column");
+    }
+
+    #[test]
+    fn reverse_wraparound_off_clamps_at_column_zero() {
+        // Default (mode 45 off): a backspace at the left margin stays put (non-destructive clamp).
+        let mut em = Emulator::new(3, 3);
+        em.advance(b"abcd\x08\x08");
+        assert_eq!(em.screen().cursor().row, 1, "stayed on the wrapped row");
+        assert_eq!(em.screen().cursor().col, 0, "clamped at column 0");
+    }
+
+    #[test]
+    fn reverse_wraparound_does_not_cross_a_hard_break() {
+        // The superiority over xterm: reverse wrap follows the SOFT-wrap flag, so a backspace at
+        // the left margin of a row that began with a HARD break (CR LF) does NOT step up — it would
+        // wrongly merge two distinct logical lines. sprag clamps at column 0 instead.
+        let mut em = Emulator::new(3, 3);
+        em.advance(b"ab\r\nc\x1b[?45h\x08\x08");
+        assert_eq!(em.screen().cursor().row, 1, "did not cross the hard break");
+        assert_eq!(em.screen().cursor().col, 0, "clamped at column 0");
+    }
+
+    #[test]
+    fn decrqm_reports_reverse_wraparound() {
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b[?45$p");
+        assert_eq!(em.take_responses(), b"\x1b[?45;2$y", "reset by default");
+        em.advance(b"\x1b[?45h\x1b[?45$p");
+        assert_eq!(em.take_responses(), b"\x1b[?45;1$y", "set after DECSET 45");
+    }
+
+    #[test]
+    fn xtsave_and_ris_handle_reverse_wraparound() {
+        // Shares the DEC private-mode SSOT: XTSAVE/XTRESTORE round-trips it, and RIS clears it.
+        let mut em = Emulator::new(3, 3);
+        em.advance(b"\x1b[?45h\x1b[?45s\x1b[?45l"); // set, save, reset
+        em.advance(b"\x1b[?45r"); // XTRESTORE -> set again
+        assert!(em.dec_private_mode_state(&DecPrivateModeCode::ReverseWraparound) == Some(true));
+        em.advance(b"\x1bc"); // RIS
+        assert!(em.dec_private_mode_state(&DecPrivateModeCode::ReverseWraparound) == Some(false));
     }
 
     // --- DECRQSS (DCS $ q … ST) request selection or setting ---
