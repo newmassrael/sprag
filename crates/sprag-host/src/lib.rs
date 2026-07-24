@@ -55,6 +55,7 @@ pub mod plugins;
 pub mod rpc;
 pub mod runs;
 pub mod scope;
+pub mod ssh;
 pub mod wire;
 pub mod workspace;
 
@@ -74,6 +75,7 @@ pub use rpc::{
 };
 pub use runs::{RunId, RunRegistry, RunState};
 pub use scope::{ScopeError, SessionScope};
+pub use ssh::{SshTarget, SshTargetError};
 pub use wire::{mux_action_path, pane_container_tag, pane_input_path};
 pub use workspace::WorkspaceExternal;
 

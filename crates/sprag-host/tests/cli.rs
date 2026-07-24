@@ -34,6 +34,12 @@ fn socket_path() -> PathBuf {
 /// Spawn a NON-daemon `sprag-term` serving `sock`, its boot pane running `cat` (which blocks on
 /// its PTY, so the session stays live for the test's duration).
 fn spawn_host() -> (HostChild, PathBuf) {
+    spawn_host_env(&[])
+}
+
+/// [`spawn_host`] with EXTRA env vars on the daemon — the ssh test prepends a stand-in `ssh` to the
+/// daemon's `PATH`, because the daemon (not the CLI) is what spawns the pane and resolves the program.
+fn spawn_host_env(envs: &[(&str, &str)]) -> (HostChild, PathBuf) {
     let sock = socket_path();
     let _ = std::fs::remove_file(&sock);
     let child = Command::new(env!("CARGO_BIN_EXE_sprag-term"))
@@ -41,6 +47,7 @@ fn spawn_host() -> (HostChild, PathBuf) {
         .arg("cat")
         .env("SPRAG_HOST_RPC_SOCK", &sock)
         .env("SPRAG_HOST_RPC", "1")
+        .envs(envs.iter().copied())
         .stdin(Stdio::null())
         .spawn()
         .expect("spawn the sprag-term host binary");
@@ -573,4 +580,78 @@ fn wait_for(timeout: Duration, mut predicate: impl FnMut() -> bool) -> bool {
         std::thread::sleep(Duration::from_millis(50));
     }
     predicate()
+}
+
+/// A temp directory removed on drop (including on a panicked assertion) — holds the ssh test's
+/// stand-in `ssh` and the argv it records, so a failed run leaves nothing behind.
+struct TempDir(PathBuf);
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// `sprag ssh` end to end over the socket. The CLI parses `me@server -p 2222`, builds the `ssh -t …`
+/// argv ([`sprag_host::SshTarget`]), and the daemon spawns it as the birth pane of a FRESH session —
+/// no ssh-awareness anywhere on the wire, it rides the existing `new_session {cmd}` action. A
+/// stand-in `ssh` on the daemon's PATH records the exact argv it is exec'd with, then blocks
+/// (`exec cat`) so the pane stays live and the assertion is deterministic (not racing a real ssh's
+/// connect-and-die). This pins the WHOLE chain — parse → `ssh_argv` → `new_session {cmd}` →
+/// `build_command` → PTY exec — reaching exec with the real arguments; the argv *shape* itself is the
+/// [`sprag_host::ssh`] unit tests' job.
+#[test]
+fn the_cli_ssh_launches_a_remote_pane_with_the_ssh_argv() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // A stand-in `ssh` that records its argv (one per line) then blocks like the boot `cat`.
+    let dir = std::env::temp_dir().join(format!("sprag-ssh-it-{}", std::process::id()));
+    let _tmp = TempDir(dir.clone());
+    std::fs::create_dir_all(&dir).expect("create the stand-in ssh dir");
+    let argv_file = dir.join("argv.txt");
+    let fake_ssh = dir.join("ssh");
+    std::fs::write(
+        &fake_ssh,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nexec cat\n",
+            argv_file.display(),
+        ),
+    )
+    .expect("write the stand-in ssh");
+    std::fs::set_permissions(&fake_ssh, std::fs::Permissions::from_mode(0o755)).expect("chmod +x");
+
+    // The DAEMON spawns the pane, so the stand-in must be first on ITS PATH.
+    let path = format!(
+        "{}:{}",
+        dir.display(),
+        std::env::var("PATH").unwrap_or_default(),
+    );
+    let (_host, sock) = spawn_host_env(&[("PATH", &path)]);
+
+    // ssh me@server -p 2222: creates a session, printing the allocated name to scope a client to.
+    let run = sprag(&sock, &["ssh", "me@server", "-p", "2222"]);
+    assert!(run.ok, "sprag ssh succeeded: {}", run.stderr);
+    let name = run.stdout.trim().to_owned();
+    assert!(
+        !name.is_empty() && name != "0",
+        "ssh prints a fresh allocated session name: {name:?}",
+    );
+
+    // The birth pane exec'd the stand-in ssh with the real argv (async spawn — poll for the record).
+    assert!(
+        wait_for(Duration::from_secs(5), || argv_file.exists()),
+        "the ssh birth pane exec'd and recorded its argv",
+    );
+    let recorded = std::fs::read_to_string(&argv_file).unwrap_or_default();
+    for expected in ["-t", "-p", "2222", "me@server"] {
+        assert!(
+            recorded.lines().any(|line| line == expected),
+            "the exec argv carries {expected:?}: {recorded:?}",
+        );
+    }
+
+    // The live remote pane keeps the session listable (panes > 0), like any other workspace.
+    assert!(
+        sprag(&sock, &["ls"]).stdout.contains(&name),
+        "the ssh session lists as a live workspace",
+    );
 }

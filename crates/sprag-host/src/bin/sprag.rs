@@ -41,12 +41,12 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use sprag_host::mux_action_path;
 use sprag_host::wire::{
     BREAK_PANE_ACTION, CLIENTS_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION,
     NEW_SESSION_ACTION, NEW_WINDOW_ACTION, RENAME_WINDOW_ACTION, SELECT_WINDOW_ACTION,
     SESSIONS_SLOT, WINDOWS_SLOT,
 };
+use sprag_host::{SshTarget, mux_action_path};
 use sprag_rpc::{HOST_SOCKET, HostConn, socket_path};
 
 /// A management command is talking to an already-running daemon, so the socket either accepts
@@ -66,6 +66,7 @@ fn run() -> io::Result<()> {
         Some("ls") => ls(),
         Some("list-clients") => list_clients(args.collect()),
         Some("new") => new(args.next()),
+        Some("ssh") => ssh(args.collect()),
         Some("attach") => attach(args.next()),
         Some("kill-session") => kill_session(args.next()),
         Some("kill-server") => kill_server(args.collect()),
@@ -91,6 +92,7 @@ fn run() -> io::Result<()> {
 fn print_usage() {
     eprintln!(
         "usage: sprag <ls | list-clients [-t SESSION] | new [name] | attach NAME\n\
+         \x20             | ssh [user@]host [-p PORT] [-- command…]\n\
          \x20             | kill-session NAME | kill-server [--purge]>\n\
          \x20      sprag <windows | new-window [name] | select-window NAME\n\
          \x20             | rename-window [window] NAME | kill-window [window]\n\
@@ -266,6 +268,36 @@ fn new(name: Option<String>) -> io::Result<()> {
             ))
         }
         Err(error) => Err(error),
+    }
+}
+
+/// `ssh [user@]host [-p PORT] [-- command…]`: create a session whose first pane runs `ssh` to a
+/// remote host — a first-classed remote workspace. The birth pane's argv is `ssh -t …`
+/// ([`SshTarget::ssh_argv`]), so the remote login shell (or the given remote command) gets a real
+/// TTY and the whole reflow/resize/scrollback machinery applies unchanged; nothing on the wire or
+/// in the daemon is ssh-aware — this rides the existing `new_session {cmd}` action. The registry
+/// allocates the session name (like `new` with no name), which is printed for scoping a client.
+///
+/// A malformed destination or port is a clean local error (nothing is sent). The whole argument
+/// parse lives in [`SshTarget::from_args`] so every branch is unit-tested there and this stays a
+/// thin call site.
+fn ssh(args: Vec<String>) -> io::Result<()> {
+    let target = SshTarget::from_args(args)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let mut conn = connect()?;
+    let answer = conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(NEW_SESSION_ACTION),
+            "args": { "cmd": target.ssh_argv() },
+        }),
+    )?;
+    match answer.as_str() {
+        Some(created) => {
+            println!("{created}");
+            Ok(())
+        }
+        None => Err(io::Error::other("ssh did not answer with a name")),
     }
 }
 
