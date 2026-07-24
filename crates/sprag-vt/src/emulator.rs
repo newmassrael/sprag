@@ -27,7 +27,7 @@ use termwiz::escape::apc::{
 use termwiz::escape::csi::{
     CSI, Cursor as CsiCursor, CursorStyle, DecPrivateMode, DecPrivateModeCode, Device, Edit,
     EraseInDisplay, EraseInLine, Keyboard, KittyKeyboardMode, Mode, Sgr, TerminalMode,
-    TerminalModeCode, XtSmGraphicsItem,
+    TerminalModeCode, Window, XtSmGraphicsItem,
 };
 use termwiz::escape::osc::{
     ChangeColorPair, ColorOrQuery, DynamicColorNumber, FinalTermSemanticPrompt, Selection,
@@ -264,6 +264,17 @@ pub struct Emulator {
     /// needless cell re-render. The change still reaches consumers because the OSC
     /// bytes arrive as PTY output, which already fires the session's `on_dirty`.
     title: Option<String>,
+    /// The XTWINOPS title STACK (`CSI 22 t` push / `CSI 23 t` pop) — a save/restore stack for
+    /// [`Self::title`] that vim / tmux / ssh use to snapshot the window title on entry and put it
+    /// back on exit. A push snapshots the current title; a pop makes the most recent snapshot the
+    /// live title again. sprag models ONE title (both `OSC 0` and `OSC 2` write [`Self::title`]),
+    /// so the icon-title vs window-title distinction xterm draws (`CSI 22 ; 1` / `; 2`) collapses
+    /// onto this single stack — a documented bound (the three push spellings all snapshot the one
+    /// title, the three pops all restore it). Bounded by [`TITLE_STACK_CAP`] against a child that
+    /// pushes without ever popping. Cleared by RIS (via [`Emulator::new`]); a pop with an empty
+    /// stack is a no-op (nothing was saved). Like [`Self::title`] it carries no cells, so a
+    /// push / pop stamps NO row damage — the CSI bytes arrive as PTY output, firing `on_dirty`.
+    title_stack: Vec<Option<String>>,
     /// The most recent attention notification the child raised (`OSC 9` / `OSC
     /// 777;notify` / `OSC 99`), or `None`. Latched (last wins), exposed via
     /// [`VtPort::notification`]. Like [`Self::title`] it deliberately does NOT bump
@@ -416,6 +427,7 @@ impl Emulator {
             palette: Palette::xterm_default(),
             responses: Vec::new(),
             title: None,
+            title_stack: Vec::new(),
             notification: None,
             notification_seq: 0,
             bell_seq: 0,
@@ -1273,6 +1285,9 @@ impl Emulator {
                 Device::SoftReset => self.soft_reset(),
                 _ => self.device(&dev),
             },
+            // XTWINOPS (`CSI Ps ; … t`) — window manipulation + reports. sprag acts only on the
+            // parts a wire-client terminal can answer truthfully (see `window_op`).
+            CSI::Window(w) => self.window_op(&w),
             _ => {}
         }
     }
@@ -1379,6 +1394,74 @@ impl Emulator {
             },
             // Out of the DA/DSR subset: tertiary DA, XTVERSION name/version, DECREQTPARM — dropped
             // unchanged. (DECSTR/SoftReset is a mutation, intercepted in `csi` before reaching here.)
+            _ => {}
+        }
+    }
+
+    /// XTWINOPS (`CSI Ps ; … t`) — xterm window manipulation + reports. sprag is a WIRE-CLIENT
+    /// terminal: the GUI (a separate process) owns the real OS window, and this emulator lives in
+    /// the daemon with NO pixel geometry (its PTY winsize reports `0` pixels — hardcoded in the
+    /// resize coalescer). So the op set splits four ways:
+    ///
+    /// * REPORTS sprag can answer truthfully — text-area / screen size in CELLS (`18 t` / `19 t`)
+    ///   and window state (`11 t`, always "normal", never iconified) — are answered on the
+    ///   device-response channel from [`Self::cols`] / [`Self::rows`], exactly like DA / DSR.
+    /// * PIXEL reports (`14 t` / `15 t` / `16 t`, plus the pixel window-size / position forms) are
+    ///   answered with a `0` sentinel: sprag does not track pixel geometry (matching its `0`-pixel
+    ///   PTY winsize). Answering — rather than dropping — keeps a probing app from timing out (the
+    ///   same answer-every-query stance [`Self::device`] takes for XtSmGraphics), while `0` honestly
+    ///   reads as "unknown" (real values await carrying pixel dimensions over the resize wire, a
+    ///   separate front); a client divides cell-relative and copes with `0` as tmux's clients do.
+    /// * The TITLE STACK (`22 t` push / `23 t` pop) saves / restores [`Self::title`] (see
+    ///   [`Self::title_stack`]).
+    /// * WINDOW MANIPULATION (iconify, move, resize, raise / lower, refresh, maximize, fullscreen)
+    ///   and TITLE REPORTS (`20 t` icon label / `21 t` window title) are DROPPED: manipulation is
+    ///   the GUI's to own (a child cannot move sprag's window through the terminal), and echoing the
+    ///   title back to the child is a known injection vector xterm gates off by default — sprag
+    ///   never reports it (matching ghostty). DECRQCRA (a rectangular-area checksum) is out of the
+    ///   modeled subset. All of these carry no cells, so — like a query — they stamp no row damage.
+    fn window_op(&mut self, w: &Window) {
+        match w {
+            // 18t — text area size in CELLS: CSI 8 ; rows ; cols t.
+            Window::ReportTextAreaSizeCells => {
+                self.responses
+                    .extend_from_slice(format!("\x1b[8;{};{}t", self.rows, self.cols).as_bytes());
+            }
+            // 19t — screen size in CELLS (sprag draws no separate screen vs text area):
+            // CSI 9 ; rows ; cols t.
+            Window::ReportScreenSizeCells => {
+                self.responses
+                    .extend_from_slice(format!("\x1b[9;{};{}t", self.rows, self.cols).as_bytes());
+            }
+            // 11t — window state: always de-iconified / normal. CSI 1 t.
+            Window::ReportWindowState => self.responses.extend_from_slice(b"\x1b[1t"),
+            // 14t / 14;2t — text area / whole-window size in PIXELS: CSI 4 ; height ; width t,
+            // 0 = unknown (see the doc above).
+            Window::ReportTextAreaSizePixels | Window::ReportWindowSizePixels => {
+                self.responses.extend_from_slice(b"\x1b[4;0;0t");
+            }
+            // 15t — screen size in PIXELS: CSI 5 ; height ; width t, 0 = unknown.
+            Window::ReportScreenSizePixels => self.responses.extend_from_slice(b"\x1b[5;0;0t"),
+            // 16t — character cell size in PIXELS: CSI 6 ; height ; width t, 0 = unknown.
+            Window::ReportCellSizePixels => self.responses.extend_from_slice(b"\x1b[6;0;0t"),
+            // 13t / 13;2t — window / text-area position: CSI 3 ; x ; y t, 0 = unknown.
+            Window::ReportWindowPosition | Window::ReportTextAreaPosition => {
+                self.responses.extend_from_slice(b"\x1b[3;0;0t");
+            }
+            // 22t — push the current title onto the stack (bounded; the three spellings collapse
+            // onto sprag's single title).
+            Window::PushIconAndWindowTitle | Window::PushIconTitle | Window::PushWindowTitle => {
+                if self.title_stack.len() < TITLE_STACK_CAP {
+                    self.title_stack.push(self.title.clone());
+                }
+            }
+            // 23t — pop the most recent saved title back to live (a no-op with an empty stack).
+            Window::PopIconAndWindowTitle | Window::PopIconTitle | Window::PopWindowTitle => {
+                if let Some(saved) = self.title_stack.pop() {
+                    self.title = saved;
+                }
+            }
+            // Window manipulation, title reports (injection-gated), and DECRQCRA: see the doc above.
             _ => {}
         }
     }
@@ -2115,6 +2198,12 @@ const KITTY_KEYBOARD_SUPPORTED: u8 = KittyKeyboardFlags::DISAMBIGUATE;
 /// popping. Deep real nesting is a handful; past the cap further pushes are ignored (the current
 /// level holds), which degrades safely rather than growing unbounded.
 const KITTY_STACK_CAP: usize = 32;
+
+/// Depth cap on the XTWINOPS title stack ([`Emulator::title_stack`], `CSI 22 t` push) — bounds
+/// memory against a child that pushes titles without ever popping. Real nesting (vim inside tmux
+/// inside ssh) is a handful; past the cap further pushes are ignored, degrading safely rather than
+/// growing unbounded — the same stance as [`KITTY_STACK_CAP`].
+const TITLE_STACK_CAP: usize = 32;
 
 /// Cap on the OSC-8 `id=` intern cache ([`Emulator::hyperlink_ids`]) — bounds memory against a
 /// child that emits an unbounded stream of distinct link ids. A screenful of distinct grouped links
@@ -5854,6 +5943,106 @@ mod tests {
         assert!(
             em.synchronized_output(),
             "DECSTR left the open update alone"
+        );
+    }
+
+    // --- XTWINOPS window ops + reports (CSI Ps ; … t) ---
+
+    #[test]
+    fn xtwinops_reports_text_area_and_screen_size_in_cells() {
+        // 18t -> CSI 8 ; rows ; cols t; 19t -> CSI 9 ; rows ; cols t. Answered from the grid size.
+        let mut em = Emulator::new(80, 24);
+        em.advance(b"\x1b[18t");
+        assert_eq!(
+            em.take_responses(),
+            b"\x1b[8;24;80t",
+            "text area size in cells"
+        );
+        em.advance(b"\x1b[19t");
+        assert_eq!(
+            em.take_responses(),
+            b"\x1b[9;24;80t",
+            "screen size in cells"
+        );
+    }
+
+    #[test]
+    fn xtwinops_reports_window_state_normal() {
+        // 11t -> CSI 1 t (de-iconified / normal); sprag never reports iconified.
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b[11t");
+        assert_eq!(em.take_responses(), b"\x1b[1t");
+    }
+
+    #[test]
+    fn xtwinops_answers_pixel_reports_with_the_unknown_sentinel() {
+        // sprag tracks no pixel geometry (its PTY winsize is 0 pixels), but ANSWERS rather than
+        // drops so a probe never times out: 14t -> 4;0;0, 15t -> 5;0;0, 16t -> 6;0;0.
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b[14t\x1b[15t\x1b[16t");
+        assert_eq!(em.take_responses(), b"\x1b[4;0;0t\x1b[5;0;0t\x1b[6;0;0t");
+    }
+
+    #[test]
+    fn xtwinops_title_stack_push_pop_round_trips_the_title() {
+        // 22t snapshots the title; a later 23t restores it — the vim / tmux save-title idiom.
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b]2;first\x07"); // title = first
+        em.advance(b"\x1b[22;0t"); // push (saves "first")
+        em.advance(b"\x1b]2;second\x07"); // title = second
+        assert_eq!(em.title(), Some("second"), "changed after the push");
+        em.advance(b"\x1b[23;0t"); // pop -> restore "first"
+        assert_eq!(em.title(), Some("first"), "pop restored the pushed title");
+    }
+
+    #[test]
+    fn xtwinops_title_pop_with_an_empty_stack_is_a_noop() {
+        // A pop with nothing saved leaves the live title untouched (never clears it to None).
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b]2;keep\x07");
+        em.advance(b"\x1b[23;0t"); // pop with an empty stack
+        assert_eq!(em.title(), Some("keep"), "empty-stack pop is inert");
+    }
+
+    #[test]
+    fn xtwinops_never_reports_the_title_back_to_the_child() {
+        // Title / icon-label reports (20t / 21t) are an injection vector xterm gates off by
+        // default; sprag never answers them (matching ghostty). No bytes on the response channel.
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b]2;secret\x07");
+        em.advance(b"\x1b[21t\x1b[20t");
+        assert!(
+            em.take_responses().is_empty(),
+            "the title is never echoed back to the child"
+        );
+    }
+
+    #[test]
+    fn xtwinops_reports_stamp_no_row_damage() {
+        // A size/state report reads state and answers; it must not stamp row damage (like DA / DSR).
+        let mut em = Emulator::new(8, 2);
+        let before = em.screen().row_generation(0).unwrap();
+        em.advance(b"\x1b[18t\x1b[11t");
+        assert_eq!(
+            em.screen().row_generation(0).unwrap(),
+            before,
+            "a report is not a paint"
+        );
+        assert!(!em.take_responses().is_empty(), "but it answered");
+    }
+
+    #[test]
+    fn ris_clears_the_title_stack() {
+        // RIS rebuilds from Emulator::new, so a pushed title does not survive a hard reset: the
+        // stack is empty afterward and a pop is a no-op.
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b]2;before\x07\x1b[22;0t"); // title + push
+        em.advance(b"\x1bc"); // RIS -> title None, stack cleared
+        em.advance(b"\x1b]2;after\x07\x1b[23;0t"); // pop with a (cleared) empty stack -> inert
+        assert_eq!(
+            em.title(),
+            Some("after"),
+            "RIS cleared the stack: the pop was inert"
         );
     }
 
