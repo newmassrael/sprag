@@ -14,6 +14,9 @@ publish = false
 termwiz = { workspace = true }
 # Cell display width (UAX#11) for wide-cluster (CJK) head/trailer.
 unicode-width = { workspace = true }
+
+# Grapheme-cluster segmentation (UAX#29) for DEC mode 2027.
+unicode-segmentation = { workspace = true }
 # Inline SSO string for `Cell.cluster`: no heap alloc on the print path for the
 # common single-char cluster, O(1) clone for scroll / scrollback / reflow.
 smol_str = { workspace = true }

@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use smol_str::SmolStr;
+use unicode_segmentation::UnicodeSegmentation;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -218,6 +219,26 @@ pub struct Emulator {
     /// Cleared by RIS (via [`Emulator::new`]); left untouched by DECSTR (an xterm/private extension,
     /// outside the DEC soft-reset set — the same stance the soft reset takes for mouse / focus).
     synchronized_output: bool,
+    /// Grapheme clustering (DEC private mode 2027, the kitty / contour "grapheme width" protocol),
+    /// default OFF. On, a whole Unicode extended grapheme cluster (UAX #29) occupies ONE cell — a
+    /// ZWJ emoji sequence (`👨‍👩‍👧‍👦`), a flag (two regional indicators), an emoji + skin-tone
+    /// modifier, or a base + VS16 / keycap all render as a single grapheme rather than being split
+    /// across cells per code point (the default, per-scalar behaviour every legacy terminal and
+    /// tmux use). This is the modern-correct text model kitty / ghostty ship; sprag drives it off
+    /// the same UAX #29 segmenter (`unicode-segmentation`) so the boundaries are authoritative, not
+    /// hand-rolled. Only the ON path clusters; OFF is byte-for-byte the pre-2027 per-scalar path
+    /// (so the hot bulk-output print loop is unchanged when the mode is off). Set / reset by
+    /// `CSI ? 2027 h` / `l`; reported by DECRQM and saved / restored by XTSAVE / XTRESTORE via the
+    /// shared SSOT. Cleared by RIS (via [`Emulator::new`]); left untouched by DECSTR (a private
+    /// extension outside the DEC soft-reset set, like [`Self::synchronized_output`] / mouse / focus).
+    grapheme_clustering: bool,
+    /// While [`Self::grapheme_clustering`] is on, the `(col, row, width)` of the HEAD cell of the
+    /// grapheme currently being built, or `None` between graphemes. A run of consecutive
+    /// `Action::Print` code points that stay one grapheme (per the UAX #29 segmenter) EXTEND this
+    /// head cell in place rather than each taking its own cell; the very next non-print action
+    /// clears it (see [`Self::apply`]), so a cluster never spans an escape / control / cursor move.
+    /// Unused (and always `None`) when grapheme clustering is off.
+    grapheme_head: Option<(u16, u16, u16)>,
     /// The four G-sets (G0..G3) designated by the SCS escapes. termwiz parses only the G0 / G1
     /// designators (`ESC ( F` / `ESC ) F`), so G2 / G3 stay at their [`CharSet::Ascii`] default
     /// (a documented bound — no `ESC * F` / `ESC + F`); a single shift onto them is then a no-op,
@@ -422,6 +443,8 @@ impl Emulator {
             origin_mode: false,
             insert_mode: false,
             synchronized_output: false,
+            grapheme_clustering: false,
+            grapheme_head: None,
             charsets: [CharSet::Ascii; 4],
             gl: 0,
             single_shift: None,
@@ -465,6 +488,13 @@ impl Emulator {
 
     /// Apply one parsed action to the grid.
     fn apply(&mut self, action: Action) {
+        // Grapheme clustering (mode 2027) builds a cluster from CONSECUTIVE printed code points;
+        // ANY other action — a control, CSI, cursor move, escape — ends the current cluster, so the
+        // next print starts a fresh one. This one choke point is the whole reset story: no scattered
+        // clears across the cursor movers (a no-op when clustering is off — `grapheme_head` is None).
+        if !matches!(action, Action::Print(_) | Action::PrintString(_)) {
+            self.grapheme_head = None;
+        }
         match action {
             Action::Print(ch) => self.print_char(ch),
             Action::PrintString(s) => self.print_str(&s),
@@ -1939,6 +1969,14 @@ impl Emulator {
             // mutations); the presentation gate that holds the repaint lives downstream (see
             // `synchronized_output`).
             DecPrivateModeCode::SynchronizedOutput => self.synchronized_output = on,
+            // 2027 — grapheme clustering. Turning it OFF ends any in-flight cluster so the next
+            // print starts per-scalar again.
+            DecPrivateModeCode::GraphemeClustering => {
+                self.grapheme_clustering = on;
+                if !on {
+                    self.grapheme_head = None;
+                }
+            }
             _ => {}
         }
     }
@@ -1973,6 +2011,7 @@ impl Emulator {
             DecPrivateModeCode::SGRMouse => self.input_modes.mouse_encoding == MouseEncoding::Sgr,
             DecPrivateModeCode::FocusTracking => self.input_modes.focus_tracking,
             DecPrivateModeCode::SynchronizedOutput => self.synchronized_output,
+            DecPrivateModeCode::GraphemeClustering => self.grapheme_clustering,
             _ => return None,
         })
     }
@@ -2098,9 +2137,21 @@ impl Emulator {
     /// char) calls this directly, so a printed char never materializes into a
     /// heap `String` just to be handed to [`Self::print_str`] as a `&str`.
     fn print_char(&mut self, ch: char) {
-        if char_columns(ch) == 0 {
-            // Combining mark: merge into the previous cell if possible. Never charset-
-            // translated, and it does NOT consume a single shift — SS2 / SS3 apply to the
+        if self.grapheme_clustering {
+            // Mode 2027: a code point that continues the current grapheme folds into its head cell
+            // in place (no charset translate, no single-shift consumption — like a combining mark).
+            if self.try_extend_grapheme(ch) {
+                return;
+            }
+            // A zero-width scalar that extended nothing (no base to attach to) is dropped, exactly
+            // as the per-scalar path drops a leading combining mark.
+            if char_columns(ch) == 0 {
+                return;
+            }
+            // Otherwise `ch` begins a NEW grapheme — placed as a fresh cell by the code below.
+        } else if char_columns(ch) == 0 {
+            // Per-scalar path (mode off): merge a combining mark into the previous cell. Never
+            // charset-translated, and it does NOT consume a single shift — SS2 / SS3 apply to the
             // next SPACING character, so the shift stays armed across a combining mark.
             self.merge_combining(ch);
             return;
@@ -2158,6 +2209,65 @@ impl Emulator {
         self.col += cell_w;
         // Remember the last graphic char for REP (`CSI b`).
         self.last_print = Some(ch);
+        // Mode 2027: record this cell as the head so the next print's continuation code points
+        // cluster into it (a no-op when clustering is off).
+        if self.grapheme_clustering {
+            self.grapheme_head = Some((col, row, cell_w));
+        }
+    }
+
+    /// Under grapheme clustering (mode 2027), try to fold `ch` into the grapheme currently being
+    /// built at [`Self::grapheme_head`]. Returns `true` — and extends the head cell IN PLACE — iff a
+    /// head exists, the cursor still sits immediately after it, and the UAX #29 segmenter says
+    /// `head_cluster + ch` is still ONE grapheme. A width promotion (base + VS16, a keycap, or a
+    /// regional-indicator pair) widens the head to two cells: it writes a trailer and advances the
+    /// cursor by the delta. Returns `false` when `ch` begins a NEW grapheme (the caller places it).
+    fn try_extend_grapheme(&mut self, ch: char) -> bool {
+        let Some((hc, hr, hw)) = self.grapheme_head else {
+            return false;
+        };
+        // Adjacency: the cursor must sit exactly after the head. `apply`'s reset already guarantees
+        // only consecutive prints reach here, so this is a defensive guard, not the main mechanism.
+        if self.row != hr || self.col != hc + hw {
+            return false;
+        }
+        let Some(prev) = self.screen.cell(hc, hr) else {
+            return false;
+        };
+        let candidate = smol_str::format_smolstr!("{}{ch}", prev.cluster);
+        if grapheme_count(&candidate) != 1 {
+            return false; // `ch` opens a new grapheme
+        }
+        // A grapheme only grows, so its width never shrinks below what the head already occupies.
+        let new_w = grapheme_width(&candidate).max(hw);
+        // Clone the head cell (ending the immutable borrow of `self.screen`) before `next_gen`.
+        let mut cell = prev.clone();
+        let g = self.next_gen();
+        cell.cluster = candidate;
+        cell.width = if new_w == 2 {
+            Width::Wide
+        } else {
+            Width::Narrow
+        };
+        if new_w == 2 && hw == 1 {
+            // Narrow -> wide promotion (e.g. `1` + VS16 + keycap): needs a trailer and the cursor
+            // to step over it — unless the head sits at the last column, where there is no room to
+            // widen, so it stays narrow (a rare degenerate bound, not a misrender).
+            if hc + 1 < self.cols {
+                self.screen
+                    .set_cell(hc + 1, hr, Cell::trailer_for(&cell), g);
+                self.screen.set_cell(hc, hr, cell, g);
+                self.col = hc + 2;
+                self.grapheme_head = Some((hc, hr, 2));
+            } else {
+                cell.width = Width::Narrow;
+                self.screen.set_cell(hc, hr, cell, g);
+            }
+        } else {
+            // Width unchanged (stayed 1, or already 2 with its trailer in place): rewrite the head.
+            self.screen.set_cell(hc, hr, cell, g);
+        }
+        true
     }
 
     fn merge_combining(&mut self, ch: char) {
@@ -2763,6 +2873,37 @@ const fn decscusr_code(shape: CursorShape) -> u8 {
         CursorShape::Underline => 4,
         CursorShape::Bar => 6,
     }
+}
+
+/// The number of UAX #29 extended grapheme clusters in `s` — the authority mode 2027 uses to decide
+/// whether a new code point CONTINUES the current grapheme (count stays `1`) or OPENS a new one.
+fn grapheme_count(s: &str) -> usize {
+    s.graphemes(true).count()
+}
+
+/// The display width (in cells) of one grapheme cluster under mode 2027. The general rule is the
+/// widest scalar's cell width (at least `1` for a spacing base), with two promotions that a plain
+/// per-scalar sum gets wrong: a cluster carrying VS16 (`U+FE0F`, emoji presentation) is width 2
+/// (a text-default glyph like a keycap digit becomes a full-width emoji), and a regional-indicator
+/// PAIR (a flag) is width 2 (each indicator alone measures 1). This matches how kitty / ghostty
+/// size these clusters; a legacy per-scalar terminal splits them, which is the behaviour 2027 fixes.
+fn grapheme_width(cluster: &str) -> u16 {
+    if cluster.contains('\u{FE0F}') {
+        return 2;
+    }
+    let regional_indicators = cluster
+        .chars()
+        .filter(|c| ('\u{1F1E6}'..='\u{1F1FF}').contains(c))
+        .count();
+    if regional_indicators >= 2 {
+        return 2;
+    }
+    cluster
+        .chars()
+        .map(|c| char_columns(c) as u16)
+        .max()
+        .unwrap_or(1)
+        .max(1)
 }
 
 /// One SGR pen colour ([`Color`]) as its SGR parameter string, or `None` for [`Color::Default`]
@@ -6253,6 +6394,138 @@ mod tests {
         assert!(em.dec_private_mode_state(&DecPrivateModeCode::ReverseWraparound) == Some(true));
         em.advance(b"\x1bc"); // RIS
         assert!(em.dec_private_mode_state(&DecPrivateModeCode::ReverseWraparound) == Some(false));
+    }
+
+    // --- Grapheme clustering (DEC private mode 2027) ---
+
+    #[test]
+    fn grapheme_clustering_collapses_a_zwj_family_into_one_cell() {
+        // A ZWJ family emoji is ONE grapheme under 2027: one wide cell, cursor advances by 2.
+        let family = "👨\u{200d}👩\u{200d}👧\u{200d}👦";
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b[?2027h");
+        em.advance(family.as_bytes());
+        assert_eq!(
+            cluster(&em, 0, 0),
+            family,
+            "the whole ZWJ run is one cluster"
+        );
+        assert_eq!(em.screen().cursor().col, 2, "occupies a single wide cell");
+    }
+
+    #[test]
+    fn without_2027_a_zwj_family_splits_per_scalar() {
+        // The revert-proof / default contrast: with clustering OFF each emoji scalar takes its own
+        // cell (the ZWJ merges as a zero-width mark), so the run spans several cells and the head
+        // cell is just the first emoji — NOT the whole family. (Asserting the exact column would
+        // couple to unicode-width's per-emoji table; the robust contrast is "did not collapse".)
+        let family = "👨\u{200d}👩\u{200d}👧\u{200d}👦";
+        let mut em = Emulator::new(8, 1);
+        em.advance(family.as_bytes());
+        assert_ne!(
+            cluster(&em, 0, 0),
+            family,
+            "OFF does not collapse the family into one cell"
+        );
+        assert!(em.screen().cursor().col > 2, "OFF spans more than one cell");
+    }
+
+    #[test]
+    fn grapheme_clustering_groups_a_flag() {
+        // A regional-indicator PAIR is one grapheme (a flag) — width 2 though each indicator is 1.
+        let flag = "🇰🇷";
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b[?2027h");
+        em.advance(flag.as_bytes());
+        assert_eq!(
+            cluster(&em, 0, 0),
+            flag,
+            "the two indicators form one flag cluster"
+        );
+        assert_eq!(em.screen().cursor().col, 2);
+    }
+
+    #[test]
+    fn grapheme_clustering_promotes_a_keycap_to_wide() {
+        // Keycap `1` = '1' + VS16 + enclosing-keycap: a width-1 base PROMOTED to a wide cell by the
+        // VS16 emoji presentation (exercises the narrow -> wide extend path).
+        let keycap = "1\u{FE0F}\u{20E3}";
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b[?2027h");
+        em.advance(keycap.as_bytes());
+        assert_eq!(
+            cluster(&em, 0, 0),
+            keycap,
+            "digit + VS16 + keycap is one cluster"
+        );
+        assert_eq!(em.screen().cursor().col, 2, "promoted to a wide cell");
+    }
+
+    #[test]
+    fn grapheme_clustering_still_merges_a_combining_mark() {
+        // A base + combining accent stays one narrow cell (as the per-scalar path already did).
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b[?2027h");
+        em.advance("e\u{0301}".as_bytes());
+        assert_eq!(cluster(&em, 0, 0), "e\u{0301}");
+        assert_eq!(em.screen().cursor().col, 1, "combining stays width 1");
+    }
+
+    #[test]
+    fn a_control_ends_the_current_grapheme() {
+        // The `apply` choke point: any non-print action ends the cluster, so a ZWJ + emoji AFTER a
+        // cursor move does NOT fold back into the earlier emoji — it opens a fresh grapheme.
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b[?2027h");
+        em.advance("👨".as_bytes());
+        em.advance(b"\x1b[C"); // cursor forward -> ends the grapheme
+        em.advance("\u{200d}👩".as_bytes());
+        assert_eq!(
+            cluster(&em, 0, 0),
+            "👨",
+            "the first emoji did not absorb the later ZWJ run"
+        );
+        assert_eq!(
+            cluster(&em, 3, 0),
+            "👩",
+            "the second emoji is its own grapheme"
+        );
+    }
+
+    #[test]
+    fn decrqm_reports_grapheme_clustering() {
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b[?2027$p");
+        assert_eq!(em.take_responses(), b"\x1b[?2027;2$y", "reset by default");
+        em.advance(b"\x1b[?2027h\x1b[?2027$p");
+        assert_eq!(
+            em.take_responses(),
+            b"\x1b[?2027;1$y",
+            "set after DECSET 2027"
+        );
+    }
+
+    #[test]
+    fn xtsave_ris_and_decstr_handle_grapheme_clustering() {
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b[?2027h\x1b[?2027s\x1b[?2027l\x1b[?2027r"); // set, save, reset, restore
+        assert_eq!(
+            em.dec_private_mode_state(&DecPrivateModeCode::GraphemeClustering),
+            Some(true),
+            "XTRESTORE reopened it"
+        );
+        em.advance(b"\x1b[!p"); // DECSTR leaves the private extension untouched
+        assert_eq!(
+            em.dec_private_mode_state(&DecPrivateModeCode::GraphemeClustering),
+            Some(true),
+            "DECSTR did not clear it"
+        );
+        em.advance(b"\x1bc"); // RIS clears it
+        assert_eq!(
+            em.dec_private_mode_state(&DecPrivateModeCode::GraphemeClustering),
+            Some(false),
+            "RIS cleared it"
+        );
     }
 
     // --- DECRQSS (DCS $ q … ST) request selection or setting ---

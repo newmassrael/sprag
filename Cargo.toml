@@ -115,6 +115,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Cell display width (UAX#11) for the emulator's wide-cluster handling.
 unicode-width = "0.2"
 
+# Grapheme-cluster segmentation (UAX#29) for DEC mode 2027 (grapheme
+# clustering): groups ZWJ emoji sequences, flags, and skin-tone / VS16
+# sequences into one cell. Already in the lock (a transitive dep), so reusing
+# it adds no new distinct crate.
+unicode-segmentation = "1"
+
 # Small-string storage for `Cell.cluster` (sprag-vt). A grapheme cluster is
 # almost always one char (<= 4 bytes), so an inline SSO string keeps it in the
 # cell's 24 bytes with NO heap allocation on the print path (the old `String`

@@ -3706,6 +3706,7 @@ dependencies = [
  "png 0.17.16",
  "smol_str",
  "termwiz",
+ "unicode-segmentation",
  "unicode-width",
 ]
 
