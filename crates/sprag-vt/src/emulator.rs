@@ -191,6 +191,22 @@ pub struct Emulator {
     /// character overwrites in place. Set / reset by `CSI 4 h` / `CSI 4 l`; a terminal MODE, not
     /// cursor state, so DECSC does not save it (like [`Self::autowrap`]). DECSTR resets it to OFF.
     insert_mode: bool,
+    /// Synchronized output (DEC private mode 2026, the "synchronized update" / atomic-frame
+    /// protocol), default OFF. On (`CSI ? 2026 h`), the emulator keeps applying every mutation to
+    /// the [`Screen`] as usual, but a display client must HOLD its repaint — not present any
+    /// intermediate state — until the child releases the mode (`CSI ? 2026 l`), at which point the
+    /// whole batch of changes appears as ONE frame. This is what neovim / notcurses / fzf wrap a
+    /// redraw in to eliminate tearing and flicker on a fast full-screen update. sprag does NOT
+    /// buffer a shadow grid here: the presentation gate lives at the one place a frame is published
+    /// (the PTY reader's `on_dirty` notify — see sprag-terminal `pane_pty`), which simply defers the
+    /// repaint wake while this is set and fires it on release, so the consumer re-reads the already
+    /// atomic [`Screen`] once. An OUTPUT-presentation mode, not an input-encoding one, so it lives
+    /// here as a peer of [`Self::cursor_visible`] rather than on [`InputModes`]; exposed via
+    /// [`VtPort::synchronized_output`]. Reported by DECRQM and saved / restored by XTSAVE / XTRESTORE
+    /// through the shared [`Self::dec_private_mode_state`] / [`Self::set_dec_private_mode`] SSOTs.
+    /// Cleared by RIS (via [`Emulator::new`]); left untouched by DECSTR (an xterm/private extension,
+    /// outside the DEC soft-reset set — the same stance the soft reset takes for mouse / focus).
+    synchronized_output: bool,
     /// The four G-sets (G0..G3) designated by the SCS escapes. termwiz parses only the G0 / G1
     /// designators (`ESC ( F` / `ESC ) F`), so G2 / G3 stay at their [`CharSet::Ascii`] default
     /// (a documented bound — no `ESC * F` / `ESC + F`); a single shift onto them is then a no-op,
@@ -382,6 +398,7 @@ impl Emulator {
             autowrap: true,
             origin_mode: false,
             insert_mode: false,
+            synchronized_output: false,
             charsets: [CharSet::Ascii; 4],
             gl: 0,
             single_shift: None,
@@ -1708,6 +1725,10 @@ impl Emulator {
             }
             // 1004 — focus reporting.
             DecPrivateModeCode::FocusTracking => self.input_modes.focus_tracking = on,
+            // 2026 — synchronized output: the emulator only tracks the flag (it keeps applying
+            // mutations); the presentation gate that holds the repaint lives downstream (see
+            // `synchronized_output`).
+            DecPrivateModeCode::SynchronizedOutput => self.synchronized_output = on,
             _ => {}
         }
     }
@@ -1740,6 +1761,7 @@ impl Emulator {
             }
             DecPrivateModeCode::SGRMouse => self.input_modes.mouse_encoding == MouseEncoding::Sgr,
             DecPrivateModeCode::FocusTracking => self.input_modes.focus_tracking,
+            DecPrivateModeCode::SynchronizedOutput => self.synchronized_output,
             _ => return None,
         })
     }
@@ -2077,6 +2099,10 @@ impl VtPort for Emulator {
 
     fn take_responses(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.responses)
+    }
+
+    fn synchronized_output(&self) -> bool {
+        self.synchronized_output
     }
 }
 
@@ -5750,6 +5776,84 @@ mod tests {
             cluster(&em, 0, 1),
             "d",
             "RIS cleared the register: restore was a no-op"
+        );
+    }
+
+    // --- Synchronized output (DEC private mode 2026) ---
+
+    #[test]
+    fn synchronized_output_tracks_mode_2026() {
+        // DECSET ?2026h opens the atomic-frame update; DECRST ?2026l closes it. The accessor the
+        // presentation gate reads flips with each.
+        let mut em = Emulator::new(8, 2);
+        assert!(!em.synchronized_output(), "off at power-on");
+        em.advance(b"\x1b[?2026h");
+        assert!(em.synchronized_output(), "set after DECSET 2026");
+        em.advance(b"\x1b[?2026l");
+        assert!(!em.synchronized_output(), "cleared after DECRST 2026");
+    }
+
+    #[test]
+    fn synchronized_output_still_applies_screen_mutations() {
+        // The mode gates PRESENTATION downstream, not the emulation: the emulator keeps writing to
+        // the Screen while the update is open (sprag buffers no shadow grid), so the cells are
+        // already there when the consumer finally repaints on release.
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b[?2026hHI");
+        assert!(em.synchronized_output(), "still inside the open update");
+        assert_eq!(cluster(&em, 0, 0), "H", "the mutation landed while gated");
+        assert_eq!(cluster(&em, 1, 0), "I");
+    }
+
+    #[test]
+    fn decrqm_reports_synchronized_output() {
+        // DEC private form: 2026 reports reset (2) by default, set (1) once opened.
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b[?2026$p");
+        assert_eq!(em.take_responses(), b"\x1b[?2026;2$y", "reset by default");
+        em.advance(b"\x1b[?2026h\x1b[?2026$p");
+        assert_eq!(
+            em.take_responses(),
+            b"\x1b[?2026;1$y",
+            "set after DECSET 2026"
+        );
+    }
+
+    #[test]
+    fn xtsave_xtrestore_round_trips_synchronized_output() {
+        // Save the open state, close it, restore -> open again (through the shared SSOT the other
+        // DEC private modes use).
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b[?2026h"); // open
+        em.advance(b"\x1b[?2026s"); // XTSAVE (on)
+        em.advance(b"\x1b[?2026l"); // close
+        assert!(!em.synchronized_output(), "closed before the restore");
+        em.advance(b"\x1b[?2026r"); // XTRESTORE -> back on
+        assert!(
+            em.synchronized_output(),
+            "XTRESTORE reopened the saved update"
+        );
+    }
+
+    #[test]
+    fn ris_clears_synchronized_output() {
+        // RIS rebuilds from Emulator::new, so a hard reset ends any open update.
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b[?2026h");
+        em.advance(b"\x1bc"); // RIS
+        assert!(!em.synchronized_output(), "RIS ended the update");
+    }
+
+    #[test]
+    fn decstr_leaves_synchronized_output_untouched() {
+        // 2026 is an xterm/private extension outside the DEC soft-reset set, so DECSTR does NOT
+        // touch it (the same stance the soft reset takes for mouse / focus / bracketed paste).
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b[?2026h");
+        em.advance(b"\x1b[!p"); // DECSTR
+        assert!(
+            em.synchronized_output(),
+            "DECSTR left the open update alone"
         );
     }
 

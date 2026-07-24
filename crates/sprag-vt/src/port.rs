@@ -2099,6 +2099,17 @@ pub trait VtPort {
     /// [`advance`](Self::advance) drains this after each batch and writes the bytes to the child,
     /// which receives its reply as if the terminal typed it. Empty when the batch asked nothing.
     fn take_responses(&mut self) -> Vec<u8>;
+
+    /// Whether SYNCHRONIZED OUTPUT (DEC private mode 2026) is currently active — the child has
+    /// opened an atomic-frame update (`CSI ? 2026 h`) and not yet closed it (`CSI ? 2026 l`). While
+    /// this is `true`, a display client MUST NOT present intermediate state: it holds its repaint
+    /// so the whole batch of screen changes lands as ONE frame (the tearing-free redraw neovim /
+    /// notcurses / fzf rely on). The [`Screen`] is mutated as usual regardless — this only gates
+    /// PRESENTATION — so a consumer honors it by deferring its repaint wake while set and repainting
+    /// once when it clears (the reader loop's `on_dirty` gate). A never-closed update is the child's
+    /// bug; a robust client MAY add a safety deadline (a held frame is flushed after a short timeout)
+    /// — that timing policy is the display's, not the emulator's (which owns no clock).
+    fn synchronized_output(&self) -> bool;
 }
 
 #[cfg(test)]

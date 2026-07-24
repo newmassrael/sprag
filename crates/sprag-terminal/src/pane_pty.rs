@@ -255,17 +255,27 @@ impl PanePty {
                             // Apply the batch, then drain any device response it produced UNDER the
                             // same lock (so a response is consistent with the state that made it),
                             // and write it back OUTSIDE the emulator lock (the writer has its own).
-                            let responses = {
+                            let (responses, present) = {
                                 let mut emu = lock(&reader_emulator);
                                 emu.advance(&buf[..n]);
-                                emu.take_responses()
+                                // Synchronized output (DEC 2026): while the child holds an
+                                // atomic-frame update open, DEFER the repaint so this batch's
+                                // screen changes present as one tear-free frame. Device responses
+                                // still flow (a query mid-update is answered at once); only the
+                                // on-screen present waits. When the update closes in this same
+                                // batch, `synchronized_output()` reads false and we wake normally —
+                                // the consumer then re-reads the already-complete Screen once.
+                                (emu.take_responses(), !emu.synchronized_output())
                             };
                             if !responses.is_empty() {
                                 let _ = write_shared(&reader_writer, &responses);
                             }
-                            // R999 seam: wake the windowed host to repaint
-                            // now that this batch is applied (no-op headless).
-                            if let Some(ref notify) = on_dirty {
+                            // R999 seam: wake the windowed host to repaint now that this batch is
+                            // applied (no-op headless) — UNLESS a synchronized-output update is
+                            // still open, in which case the wake waits for the batch that closes it
+                            // (the EOF path below still wakes unconditionally, flushing a held frame
+                            // if the child dies mid-update).
+                            if present && let Some(ref notify) = on_dirty {
                                 notify();
                             }
                         }
@@ -801,6 +811,56 @@ mod tests {
         });
         assert!(row0.starts_with("hi"), "row0 = {row0:?}");
         assert_eq!(pty.dimensions(), (20, 4));
+    }
+
+    /// Synchronized output (DEC 2026) end-to-end: a child wraps its writes in an atomic-frame
+    /// update (`CSI ? 2026 h … CSI ? 2026 l`). The reader DEFERS the repaint wake while the update
+    /// is open and fires it once the update closes, so the content must both (a) reach the screen
+    /// and (b) trigger a present — i.e. the held frame is RELEASED, never stuck. We wait on the
+    /// content CONDITION (not a timing sleep) to stay deterministic; a gate that suppressed the
+    /// wake forever (or swallowed the close) would leave row0 blank and fail here.
+    #[test]
+    fn synchronized_output_defers_then_presents_the_frame() {
+        let presents = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&presents);
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        // Open the update, write the frame, close it, then exit.
+        command.arg("printf '\\033[?2026hSYNCED\\033[?2026l'");
+        command.env("TERM", "dumb");
+        let pty = PanePty::spawn_with_dirty(
+            command,
+            20,
+            4,
+            Some(Box::new(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            })),
+            None,
+        )
+        .expect("spawn a pty");
+
+        let read_row0 = || {
+            pty.with_screen(|screen| {
+                (0..screen.cols())
+                    .filter_map(|col| screen.cell(col, 0).map(|cell| cell.cluster.to_string()))
+                    .collect::<String>()
+            })
+        };
+        // Wait on the CONDITION the released frame produces, not on EOF timing.
+        let start = Instant::now();
+        while !read_row0().starts_with("SYNCED") && start.elapsed() < Duration::from_secs(5) {
+            sleep(Duration::from_millis(20));
+        }
+
+        assert!(
+            read_row0().starts_with("SYNCED"),
+            "the frame written inside the 2026 update presented; row0 = {:?}",
+            read_row0(),
+        );
+        assert!(
+            presents.load(Ordering::SeqCst) >= 1,
+            "closing the update released a repaint wake (the frame was not left stuck)",
+        );
     }
 
     /// End-to-end proof that a child's device query is ANSWERED BACK onto its input — the intrinsic
