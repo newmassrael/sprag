@@ -75,7 +75,7 @@ pub use rpc::{
 };
 pub use runs::{RunId, RunRegistry, RunState};
 pub use scope::{ScopeError, SessionScope};
-pub use ssh::{SshTarget, SshTargetError};
+pub use ssh::{PortForward, SshTarget, SshTargetError};
 pub use wire::{mux_action_path, pane_container_tag, pane_input_path};
 pub use workspace::WorkspaceExternal;
 

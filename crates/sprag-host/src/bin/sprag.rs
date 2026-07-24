@@ -4,6 +4,8 @@
 //! sprag ls                 list every session
 //! sprag list-clients [-t SESSION]  list attached clients and the session each views (tmux list-clients)
 //! sprag new [name]         create a session with a shell (absent name -> the lowest free), print its name
+//! sprag ssh [user@]host [-p PORT] [-L FWD]... [-- cmd...]  create a session running ssh to a remote
+//!                          host (a first-classed remote workspace); -L forwards a local->remote port
 //! sprag attach NAME        open a sprag-gui window attached to a session (tmux attach-session)
 //! sprag kill-session NAME   kill a session (the last one ends the daemon)
 //! sprag kill-server [--purge]  kill every session, ending the daemon; --purge also deletes the
@@ -92,7 +94,7 @@ fn run() -> io::Result<()> {
 fn print_usage() {
     eprintln!(
         "usage: sprag <ls | list-clients [-t SESSION] | new [name] | attach NAME\n\
-         \x20             | ssh [user@]host [-p PORT] [-- command…]\n\
+         \x20             | ssh [user@]host [-p PORT] [-L FWD]… [-- command…]\n\
          \x20             | kill-session NAME | kill-server [--purge]>\n\
          \x20      sprag <windows | new-window [name] | select-window NAME\n\
          \x20             | rename-window [window] NAME | kill-window [window]\n\
@@ -278,9 +280,13 @@ fn new(name: Option<String>) -> io::Result<()> {
 /// in the daemon is ssh-aware — this rides the existing `new_session {cmd}` action. The registry
 /// allocates the session name (like `new` with no name), which is printed for scoping a client.
 ///
-/// A malformed destination or port is a clean local error (nothing is sent). The whole argument
-/// parse lives in [`SshTarget::from_args`] so every branch is unit-tested there and this stays a
-/// thin call site.
+/// `-L FWD` requests a local→remote port forward (repeatable). Because the ssh process itself holds
+/// the local listener, the forwarded port also surfaces in the session's sidebar ports badge for
+/// free — the existing per-pane `/proc` port scan attributes it like any other listening server.
+///
+/// A malformed destination, port, or forward is a clean local error (nothing is sent). The whole
+/// argument parse lives in [`SshTarget::from_args`] so every branch is unit-tested there and this
+/// stays a thin call site.
 fn ssh(args: Vec<String>) -> io::Result<()> {
     let target = SshTarget::from_args(args)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;

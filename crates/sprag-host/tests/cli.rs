@@ -582,7 +582,7 @@ fn wait_for(timeout: Duration, mut predicate: impl FnMut() -> bool) -> bool {
     predicate()
 }
 
-/// A temp directory removed on drop (including on a panicked assertion) — holds the ssh test's
+/// A temp directory removed on drop (including on a panicked assertion) — holds an ssh test's
 /// stand-in `ssh` and the argv it records, so a failed run leaves nothing behind.
 struct TempDir(PathBuf);
 impl Drop for TempDir {
@@ -591,39 +591,48 @@ impl Drop for TempDir {
     }
 }
 
-/// `sprag ssh` end to end over the socket. The CLI parses `me@server -p 2222`, builds the `ssh -t …`
-/// argv ([`sprag_host::SshTarget`]), and the daemon spawns it as the birth pane of a FRESH session —
-/// no ssh-awareness anywhere on the wire, it rides the existing `new_session {cmd}` action. A
-/// stand-in `ssh` on the daemon's PATH records the exact argv it is exec'd with, then blocks
-/// (`exec cat`) so the pane stays live and the assertion is deterministic (not racing a real ssh's
-/// connect-and-die). This pins the WHOLE chain — parse → `ssh_argv` → `new_session {cmd}` →
-/// `build_command` → PTY exec — reaching exec with the real arguments; the argv *shape* itself is the
-/// [`sprag_host::ssh`] unit tests' job.
-#[test]
-fn the_cli_ssh_launches_a_remote_pane_with_the_ssh_argv() {
+/// Create a temp dir holding an executable stand-in `ssh` that records its exec argv (one token per
+/// line) to `<dir>/argv.txt`, then runs the shell fragment `tail(dir)` — `exec cat` to block like a
+/// live pane, or a listener to simulate `ssh -L`. `tail` receives the dir so it can reference sibling
+/// files by absolute path (the pane is exec'd via PATH, so `$0`-relative paths are unreliable).
+/// Returns the drop guard, the dir (prepend to the daemon PATH), and the argv-record path.
+fn stub_ssh(label: &str, tail: impl FnOnce(&Path) -> String) -> (TempDir, PathBuf, PathBuf) {
     use std::os::unix::fs::PermissionsExt;
-
-    // A stand-in `ssh` that records its argv (one per line) then blocks like the boot `cat`.
-    let dir = std::env::temp_dir().join(format!("sprag-ssh-it-{}", std::process::id()));
-    let _tmp = TempDir(dir.clone());
+    let dir = std::env::temp_dir().join(format!("sprag-ssh-it-{}-{label}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create the stand-in ssh dir");
     let argv_file = dir.join("argv.txt");
-    let fake_ssh = dir.join("ssh");
+    let ssh = dir.join("ssh");
     std::fs::write(
-        &fake_ssh,
+        &ssh,
         format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nexec cat\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n{}\n",
             argv_file.display(),
+            tail(&dir),
         ),
     )
     .expect("write the stand-in ssh");
-    std::fs::set_permissions(&fake_ssh, std::fs::Permissions::from_mode(0o755)).expect("chmod +x");
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).expect("chmod +x");
+    (TempDir(dir.clone()), dir, argv_file)
+}
+
+/// `sprag ssh` end to end over the socket. The CLI parses `me@server -p 2222`, builds the `ssh -t …`
+/// argv ([`sprag_host::SshTarget`]), and the daemon spawns it as the birth pane of a FRESH session —
+/// no ssh-awareness anywhere on the wire, it rides the existing `new_session {cmd}` action. The
+/// stand-in `ssh` records the exact argv it is exec'd with, then blocks (`exec cat`) so the pane
+/// stays live and the assertion is deterministic (not racing a real ssh's connect-and-die). This
+/// pins the WHOLE chain — parse → `ssh_argv` → `new_session {cmd}` → `build_command` → PTY exec —
+/// reaching exec with the real arguments; the argv *shape* itself is the [`sprag_host::ssh`] unit
+/// tests' job.
+#[test]
+fn the_cli_ssh_launches_a_remote_pane_with_the_ssh_argv() {
+    let (_tmp, dir, argv_file) = stub_ssh("launch", |_| "exec cat".to_owned());
 
     // The DAEMON spawns the pane, so the stand-in must be first on ITS PATH.
     let path = format!(
         "{}:{}",
         dir.display(),
-        std::env::var("PATH").unwrap_or_default(),
+        std::env::var("PATH").unwrap_or_default()
     );
     let (_host, sock) = spawn_host_env(&[("PATH", &path)]);
 
@@ -653,5 +662,123 @@ fn the_cli_ssh_launches_a_remote_pane_with_the_ssh_argv() {
     assert!(
         sprag(&sock, &["ls"]).stdout.contains(&name),
         "the ssh session lists as a live workspace",
+    );
+}
+
+/// `sprag ssh -L` reaches exec with the forwards ssh's SSOT rendered — the one-field shorthand
+/// `3000` EXPANDED to `3000:localhost:3000`, the three-field spec verbatim. Deterministic (`exec cat`
+/// stand-in, no listener), so it pins the CLI→argv→exec path for forwards; the live "the forward
+/// surfaces in the sidebar" composition is the next test.
+#[test]
+fn the_cli_ssh_passes_local_forwards_to_exec() {
+    let (_tmp, dir, argv_file) = stub_ssh("fwd", |_| "exec cat".to_owned());
+    let path = format!(
+        "{}:{}",
+        dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let (_host, sock) = spawn_host_env(&[("PATH", &path)]);
+
+    let run = sprag(&sock, &["ssh", "host", "-L", "3000", "-L", "8080:db:5432"]);
+    assert!(run.ok, "sprag ssh -L succeeded: {}", run.stderr);
+
+    assert!(
+        wait_for(Duration::from_secs(5), || argv_file.exists()),
+        "the ssh birth pane exec'd",
+    );
+    let recorded = std::fs::read_to_string(&argv_file).unwrap_or_default();
+    for expected in ["-L", "3000:localhost:3000", "8080:db:5432"] {
+        assert!(
+            recorded.lines().any(|line| line == expected),
+            "the exec argv carries {expected:?}: {recorded:?}",
+        );
+    }
+}
+
+/// The headline of Slice 2, LIVE: a remote workspace's forwarded local port shows up in the session
+/// sidebar (`sprag ls`). Real `ssh -L PORT:…` opens a local listener on the ssh process; here a
+/// python stand-in binds that same local port and holds it, so the daemon's per-pane `/proc` port
+/// scan attributes it to the ssh session — no ssh-specific code in the scan, an ssh pane is just a
+/// pane. Proves the composition end to end (`/proc` attribution itself is unit-covered in
+/// `sprag_terminal::ports`). Linux-only, like the port scan; needs python3 to hold the socket.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_cli_ssh_forward_surfaces_the_local_port_in_the_sidebar() {
+    let has_python = Command::new("python3")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if !has_python {
+        eprintln!(
+            "skipping ssh-forward-surfaces: python3 is needed to hold the forwarded listener"
+        );
+        return;
+    }
+
+    // A free local port: bind :0 to learn a number, then release it (SO_REUSEADDR lets python rebind).
+    let free_port = std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("bind an ephemeral loopback port")
+        .local_addr()
+        .unwrap()
+        .port();
+
+    // The stand-in ssh execs a python listener on $LISTEN_PORT (what real `ssh -L` would bind).
+    let (_tmp, dir, argv_file) = stub_ssh("surface", |dir| {
+        format!(
+            "exec python3 '{}' \"$LISTEN_PORT\"",
+            dir.join("listener.py").display(),
+        )
+    });
+    std::fs::write(
+        dir.join("listener.py"),
+        "import socket, sys, signal\n\
+         s = socket.socket()\n\
+         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n\
+         s.bind((\"127.0.0.1\", int(sys.argv[1])))\n\
+         s.listen()\n\
+         signal.pause()\n",
+    )
+    .expect("write the python listener");
+
+    let path = format!(
+        "{}:{}",
+        dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let (_host, sock) = spawn_host_env(&[("PATH", &path), ("LISTEN_PORT", &free_port.to_string())]);
+
+    // Forward the free local port to the remote's :22 (the remote target is irrelevant to the LOCAL
+    // listen this test observes).
+    let spec = format!("{free_port}:localhost:22");
+    let run = sprag(&sock, &["ssh", "host", "-L", &spec]);
+    assert!(run.ok, "sprag ssh -L succeeded: {}", run.stderr);
+    let name = run.stdout.trim().to_owned();
+
+    // The -L reached exec (deterministic argv record).
+    assert!(
+        wait_for(Duration::from_secs(5), || argv_file.exists()),
+        "the ssh birth pane exec'd",
+    );
+    let recorded = std::fs::read_to_string(&argv_file).unwrap_or_default();
+    assert!(
+        recorded.lines().any(|line| line == spec),
+        "the exec argv carries the forward {spec:?}: {recorded:?}",
+    );
+
+    // The live composition: the forwarded port, held by the ssh (python) process in the pane's
+    // subtree, surfaces on THIS session's `sprag ls` line. Polled — the listener binds asynchronously
+    // and the port scan is a live per-read.
+    let badge = format!(":{free_port}");
+    assert!(
+        wait_for(Duration::from_secs(10), || {
+            sprag(&sock, &["ls"])
+                .stdout
+                .lines()
+                .any(|line| line.starts_with(&format!("{name}:")) && line.contains(&badge))
+        }),
+        "the forwarded port {free_port} surfaces on the ssh session in `sprag ls`",
     );
 }
