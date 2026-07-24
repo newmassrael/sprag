@@ -387,6 +387,17 @@ pub struct Cell {
     /// / reflow — a link in history keeps its target.
     pub hyperlink: Option<Arc<Hyperlink>>,
     pub width: Width,
+    /// The DECSCA (Select Character Protection Attribute) protection bit: `true`
+    /// marks this cell as protected against the *selective* erase family (DECSED
+    /// `CSI ? Ps J`, DECSEL `CSI ? Ps K`, DECSERA `CSI … $ {`), which skip
+    /// protected cells and clear only the rest — the mechanism a form / dialog
+    /// uses to blank the input fields while keeping the labels. It has NO visual
+    /// effect (protection is invisible), so it is a bare `Cell` field rather than
+    /// an [`Attrs`] flag: the projection maps only the rendered attributes, and a
+    /// protected cell renders identically to an unprotected one. Emulator-internal
+    /// — never serialized to the wire or read by the client. The *non*-selective
+    /// erases (ED / EL / ECH / DECERA) ignore it and clear everything.
+    pub protected: bool,
 }
 
 impl Default for Cell {
@@ -399,6 +410,7 @@ impl Default for Cell {
             attrs: Attrs::default(),
             hyperlink: None,
             width: Width::Narrow,
+            protected: false,
         }
     }
 }
@@ -423,6 +435,10 @@ impl Cell {
             // OSC-8 link, so the whole glyph is one hover / activation target.
             hyperlink: head.hyperlink.clone(),
             width: Width::Trailer,
+            // The trailer shares the head's DECSCA protection, so a selective
+            // erase treats a wide glyph as one unit (both cells kept or both
+            // cleared) rather than splitting it.
+            protected: head.protected,
         }
     }
 }

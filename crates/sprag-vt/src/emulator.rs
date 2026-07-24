@@ -67,6 +67,9 @@ struct SavedCursor {
     bg: Color,
     underline_color: Option<Color>,
     attrs: Attrs,
+    /// DECSCA selective-erase protection attribute of the pen (VT510 saves it as
+    /// part of the cursor state, alongside the SGR rendition).
+    protected: bool,
     cursor_shape: CursorShape,
     /// DECOM origin-mode state (VT100 saves origin mode as part of the cursor).
     origin_mode: bool,
@@ -263,6 +266,18 @@ pub struct Emulator {
     /// `fg` / `bg` (`None` = SGR-59 default, draw the underline in `fg`).
     underline_color: Option<Color>,
     attrs: Attrs,
+    /// The DECSCA (`CSI Ps " q`) protection attribute of the PEN, default OFF
+    /// (unprotected). Every graphic character printed while this is on is stamped
+    /// [`Cell::protected`], marking it as protected against the selective-erase
+    /// family (DECSED / DECSEL / DECSERA) — the mechanism a form lays out fixed
+    /// labels with, so a "clear the fields" selective erase leaves them intact.
+    /// `CSI 1 " q` turns it on; `CSI 0 " q` / `CSI 2 " q` (and a bare `CSI " q`)
+    /// turn it off. It is a pen attribute like [`Self::attrs`], so DECSC saves it
+    /// and DECRC restores it (VT510 lists the selective-erase attribute among the
+    /// cursor state DECSC saves); DECSTR resets it to OFF; RIS clears it via
+    /// [`Emulator::new`]. Purely a rendering-invisible flag — it never reaches the
+    /// projection or the wire.
+    protected: bool,
     /// Input modes set by the child (DECCKM, …) that the key encoder
     /// reads; tracked here, exposed via [`VtPort::input_modes`].
     input_modes: InputModes,
@@ -456,6 +471,7 @@ impl Emulator {
             bg: Color::Default,
             underline_color: None,
             attrs: Attrs::default(),
+            protected: false,
             input_modes: InputModes::default(),
             kitty_kbd_stack: Vec::new(),
             saved_dec_modes: HashMap::new(),
@@ -864,6 +880,7 @@ impl Emulator {
         self.bg = Color::Default;
         self.underline_color = None;
         self.attrs = Attrs::default();
+        self.protected = false;
         self.charsets = [CharSet::Ascii; 4];
         self.gl = 0;
         self.single_shift = None;
@@ -879,6 +896,7 @@ impl Emulator {
             bg: self.bg,
             underline_color: self.underline_color,
             attrs: self.attrs,
+            protected: self.protected,
             cursor_shape: self.cursor_shape,
             origin_mode: self.origin_mode,
             charsets: self.charsets,
@@ -897,6 +915,7 @@ impl Emulator {
             bg: Color::Default,
             underline_color: None,
             attrs: Attrs::default(),
+            protected: false,
             cursor_shape: CursorShape::Block,
             origin_mode: false,
             charsets: [CharSet::Ascii; 4],
@@ -908,6 +927,7 @@ impl Emulator {
         self.bg = saved.bg;
         self.underline_color = saved.underline_color;
         self.attrs = saved.attrs;
+        self.protected = saved.protected;
         self.cursor_shape = saved.cursor_shape;
         self.origin_mode = saved.origin_mode;
         self.charsets = saved.charsets;
@@ -1532,14 +1552,21 @@ impl Emulator {
     }
 
     /// Interpret a CSI termwiz handed back as [`Unspecified`] (it tokenized the sequence but has no
-    /// model for it). sprag acts on the VT420 RECTANGULAR EDITING ops — DECFRA (fill), DECERA
-    /// (erase), DECCRA (copy) — which carry the `$` intermediate and a final byte termwiz does not
-    /// type. These give an app fast whole-rectangle fill / clear / block-move that tmux and cmux
-    /// lack entirely. The integer params are read in order (the `;` separators and any other
-    /// intermediate are skipped); a non-`$` sequence, or a `$` final byte outside this set, is a
-    /// no-op. (Protected areas — DECSCA + selective erase — and the DECRQCRA checksum are a separate
-    /// stage: the first needs a per-cell protected bit, the second an exact esctest-matching
-    /// checksum where a wrong value would mislead, so neither is guessed here.)
+    /// model for it). sprag acts on two families here, distinguished by their intermediate byte and
+    /// final control:
+    ///
+    /// - The VT420 RECTANGULAR EDITING ops — DECFRA (fill, `$ x`), DECERA (erase, `$ z`), DECCRA
+    ///   (copy, `$ v`) — fast whole-rectangle fill / clear / block-move that tmux and cmux lack.
+    /// - The PROTECTED-AREA ops (DECSCA + the selective-erase family): DECSCA (`" q`) sets the pen's
+    ///   protection attribute; DECSED (`? J`) and DECSEL (`? K`) — private forms of ED / EL that
+    ///   termwiz cannot type, so they too surface here — selectively erase the display / line; and
+    ///   DECSERA (`$ {`) selectively erases a rectangle. All three erasers skip protected cells.
+    ///
+    /// The integer params are read in order (the `;` separators are skipped, the last non-`;`
+    /// intermediate byte captured); the `(intermediate, control)` pair then selects the op. Anything
+    /// outside these sets is a no-op. (DECRQCRA — the rectangle checksum reply, `* y` — is left
+    /// unimplemented: its only consumer is esctest with an exact algorithm that varies by version, so
+    /// a guessed checksum would mislead rather than help.)
     fn unspecified_csi(&mut self, u: &Unspecified) {
         let mut ints: Vec<i64> = Vec::new();
         let mut intermediate = None;
@@ -1550,13 +1577,14 @@ impl Emulator {
                 CsiParam::P(b) => intermediate = Some(*b),
             }
         }
-        if intermediate != Some(b'$') {
-            return;
-        }
-        match u.control {
-            'x' => self.decfra(&ints),
-            'z' => self.decera(&ints),
-            'v' => self.deccra(&ints),
+        match (intermediate, u.control) {
+            (Some(b'$'), 'x') => self.decfra(&ints),
+            (Some(b'$'), 'z') => self.decera(&ints),
+            (Some(b'$'), 'v') => self.deccra(&ints),
+            (Some(b'$'), '{') => self.decsera(&ints),
+            (Some(b'"'), 'q') => self.decsca(&ints),
+            (Some(b'?'), 'J') => self.decsed(&ints),
+            (Some(b'?'), 'K') => self.decsel(&ints),
             _ => {}
         }
     }
@@ -1613,6 +1641,10 @@ impl Emulator {
             attrs: self.attrs,
             hyperlink: self.current_hyperlink.clone(),
             width: Width::Narrow,
+            // DECFRA fills with the current pen, and DECSCA protection is a pen
+            // attribute — so a rectangle filled while protection is on is itself
+            // protected against selective erase.
+            protected: self.protected,
         };
         for row in t..=b {
             for col in l..=r {
@@ -1621,8 +1653,9 @@ impl Emulator {
         }
     }
 
-    /// DECERA (`Pt ; Pl ; Pb ; Pr $ z`) — erase a rectangle to blanks (no pen, no protection: this
-    /// is the unconditional erase; the selective form DECSERA is the separate protected-areas stage).
+    /// DECERA (`Pt ; Pl ; Pb ; Pr $ z`) — erase a rectangle to blanks unconditionally (no pen, and
+    /// ignoring DECSCA protection, exactly like ED / EL; the protection-respecting counterpart is
+    /// DECSERA — see [`Self::decsera`]).
     fn decera(&mut self, p: &[i64]) {
         let (t, l, b, r) = (
             p.first().copied().unwrap_or(1),
@@ -1683,6 +1716,107 @@ impl Emulator {
                     self.screen.set_cell(col, row, buf[i].clone(), g);
                 }
                 i += 1;
+            }
+        }
+    }
+
+    /// DECSCA (`Ps " q`) — Select Character Protection Attribute. Sets whether characters printed
+    /// from now on are protected against the selective-erase family: `Ps` = 1 protects; `Ps` = 0,
+    /// `Ps` = 2, or a bare `CSI " q` un-protects (the power-on default). Any other `Ps` is a no-op.
+    /// This only moves the pen — already-printed cells keep the protection they were stamped with.
+    fn decsca(&mut self, p: &[i64]) {
+        match p.first().copied().unwrap_or(0) {
+            1 => self.protected = true,
+            0 | 2 => self.protected = false,
+            _ => {}
+        }
+    }
+
+    /// Blank one cell only if it is NOT [protected](Cell::protected) — the primitive behind the
+    /// selective-erase family (DECSED / DECSEL / DECSERA). A protected cell is left exactly as it is;
+    /// an unprotected one becomes a default blank, the same blank a non-selective erase writes (sprag
+    /// does not do background-colour erase, so both fill with [`Cell::blank`]).
+    fn selective_blank(&mut self, col: u16, row: u16, g: u64) {
+        let protected = self.screen.cell(col, row).is_some_and(|c| c.protected);
+        if !protected {
+            self.screen.set_cell(col, row, Cell::blank(), g);
+        }
+    }
+
+    /// DECSED (`CSI ? Ps J`) — Selective Erase in Display. The private-mode counterpart of ED that
+    /// clears only UNPROTECTED cells (DECSCA-protected ones survive): `Ps` = 0 (default) erases from
+    /// the cursor to the end of the display, `1` from the start of the display to the cursor
+    /// (inclusive), `2` the whole display. Unlike ED there is no scrollback-clearing `3` variant.
+    fn decsed(&mut self, p: &[i64]) {
+        let g = self.next_gen();
+        let (row, cols, rows) = (self.row, self.cols, self.rows);
+        match p.first().copied().unwrap_or(0) {
+            0 => {
+                for c in self.col..cols {
+                    self.selective_blank(c, row, g);
+                }
+                for r in (row + 1)..rows {
+                    for c in 0..cols {
+                        self.selective_blank(c, r, g);
+                    }
+                }
+            }
+            1 => {
+                for r in 0..row {
+                    for c in 0..cols {
+                        self.selective_blank(c, r, g);
+                    }
+                }
+                for c in 0..=self.col.min(cols.saturating_sub(1)) {
+                    self.selective_blank(c, row, g);
+                }
+            }
+            2 => {
+                for r in 0..rows {
+                    for c in 0..cols {
+                        self.selective_blank(c, r, g);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// DECSEL (`CSI ? Ps K`) — Selective Erase in Line. The private-mode counterpart of EL that
+    /// clears only UNPROTECTED cells on the cursor's row: `Ps` = 0 (default) from the cursor to the
+    /// end of the line, `1` from the start of the line to the cursor (inclusive), `2` the whole line.
+    fn decsel(&mut self, p: &[i64]) {
+        let g = self.next_gen();
+        let (row, cols) = (self.row, self.cols);
+        let (start, end) = match p.first().copied().unwrap_or(0) {
+            0 => (self.col, cols),
+            1 => (0, self.col.saturating_add(1)),
+            2 => (0, cols),
+            _ => return,
+        };
+        for c in start..end.min(cols) {
+            self.selective_blank(c, row, g);
+        }
+    }
+
+    /// DECSERA (`Pt ; Pl ; Pb ; Pr $ {`) — Selective Erase Rectangular Area. Clears only the
+    /// UNPROTECTED cells inside the rectangle (the protection-respecting counterpart of DECERA);
+    /// a degenerate rectangle is a no-op. Bounds resolve like the other rectangle ops (1-based
+    /// inclusive, clamped) via [`Self::resolve_rect`].
+    fn decsera(&mut self, p: &[i64]) {
+        let (t, l, b, r) = (
+            p.first().copied().unwrap_or(1),
+            p.get(1).copied().unwrap_or(1),
+            p.get(2).copied().unwrap_or(i64::from(self.rows)),
+            p.get(3).copied().unwrap_or(i64::from(self.cols)),
+        );
+        let Some((t, l, b, r)) = self.resolve_rect(t, l, b, r) else {
+            return;
+        };
+        let g = self.next_gen();
+        for row in t..=b {
+            for col in l..=r {
+                self.selective_blank(col, row, g);
             }
         }
     }
@@ -2359,6 +2493,10 @@ impl Emulator {
             } else {
                 Width::Narrow
             },
+            // Stamp the DECSCA pen: a character typed while protection is on is
+            // protected against the selective-erase family (its trailer inherits
+            // this via `Cell::trailer_for`).
+            protected: self.protected,
         };
         let (col, row) = (self.col, self.row);
         if cell_w == 2 && col + 1 < self.cols {
@@ -3142,6 +3280,11 @@ mod tests {
         em.screen()
             .cell(col, row)
             .map_or("", |c| c.cluster.as_str())
+    }
+
+    /// The DECSCA protection bit of the cell at `(col, row)` (false if off-grid).
+    fn protected_at(em: &Emulator, col: u16, row: u16) -> bool {
+        em.screen().cell(col, row).is_some_and(|c| c.protected)
     }
 
     #[test]
@@ -6749,12 +6892,142 @@ mod tests {
     }
 
     #[test]
-    fn an_unspecified_csi_without_the_dollar_intermediate_is_a_noop() {
-        // DECSCA (`CSI 1 " q`) is Unspecified to termwiz too, but its intermediate is `"`, not `$`
-        // — sprag leaves it alone (protected areas are a separate stage), touching no cells.
+    fn a_genuinely_unknown_unspecified_csi_is_a_noop() {
+        // An intermediate/final pair sprag models nothing for (`CSI 9 & q`, `&` intermediate) must
+        // leave the grid untouched — the `_ => {}` arm of `unspecified_csi`.
         let mut em = Emulator::new(4, 1);
-        em.advance(b"hi\x1b[1\"q");
+        em.advance(b"hi\x1b[9&q");
         assert_eq!(em.screen().row_text(0), "hi", "the grid is untouched");
+    }
+
+    // --- DECSCA protection (`CSI Ps " q`) + selective erase (DECSED/DECSEL/DECSERA) ---
+
+    #[test]
+    fn decsca_stamps_the_protection_bit_on_printed_cells() {
+        // `CSI 1 " q` turns protection on; characters printed after it are protected, and `CSI 0 " q`
+        // (or `2`) turns it back off — the pen state, not the grid, is what moves.
+        let mut em = Emulator::new(6, 1);
+        em.advance(b"a\x1b[1\"qbc\x1b[0\"qd");
+        assert!(!protected_at(&em, 0, 0), "'a' printed before DECSCA-on");
+        assert!(protected_at(&em, 1, 0), "'b' printed while protected");
+        assert!(protected_at(&em, 2, 0), "'c' printed while protected");
+        assert!(!protected_at(&em, 3, 0), "'d' printed after DECSCA-off");
+        assert_eq!(em.screen().row_text(0), "abcd", "DECSCA touches no cells");
+    }
+
+    #[test]
+    fn decsel_erases_only_unprotected_cells_in_the_line() {
+        // Protect "BC" in the middle of "ABCDE", then DECSEL the whole line (`CSI ? 2 K`): the
+        // protected pair survives, everything else clears.
+        let mut em = Emulator::new(5, 1);
+        em.advance(b"A\x1b[1\"qBC\x1b[0\"qDE");
+        em.advance(b"\x1b[?2K");
+        assert_eq!(cluster(&em, 0, 0), " ", "unprotected 'A' cleared");
+        assert_eq!(cluster(&em, 1, 0), "B", "protected 'B' survives");
+        assert_eq!(cluster(&em, 2, 0), "C", "protected 'C' survives");
+        assert_eq!(cluster(&em, 3, 0), " ", "unprotected 'D' cleared");
+        assert_eq!(cluster(&em, 4, 0), " ", "unprotected 'E' cleared");
+    }
+
+    #[test]
+    fn decsed_erases_only_unprotected_cells_in_the_display() {
+        // Row 0 = protected "PP", row 1 = unprotected "uu"; DECSED whole display (`CSI ? 2 J`)
+        // keeps the protected row and clears the rest.
+        let mut em = Emulator::new(2, 2);
+        em.advance(b"\x1b[1\"qPP\x1b[0\"q");
+        em.advance(b"\x1b[2;1H"); // cursor to row 1
+        em.advance(b"uu");
+        em.advance(b"\x1b[?2J");
+        assert_eq!(cluster(&em, 0, 0), "P", "protected cell on row 0 survives");
+        assert_eq!(cluster(&em, 1, 0), "P", "protected cell on row 0 survives");
+        assert_eq!(cluster(&em, 0, 1), " ", "unprotected cell on row 1 cleared");
+        assert_eq!(cluster(&em, 1, 1), " ", "unprotected cell on row 1 cleared");
+    }
+
+    #[test]
+    fn decsera_selectively_erases_a_rectangle() {
+        // Fill 4x2 with unprotected 'a', protect a single cell (1,0) by reprinting it, then DECSERA
+        // the top row rectangle: the protected cell stays, its unprotected neighbours clear.
+        let mut em = Emulator::new(4, 2);
+        em.advance(b"\x1b[65;1;1;2;4$x"); // DECFRA 'A' everywhere (unprotected pen)
+        em.advance(b"\x1b[1;2H\x1b[1\"qA\x1b[0\"q"); // reprint (1,0) as protected 'A'
+        em.advance(b"\x1b[1;1;1;4${"); // DECSERA the top row
+        assert_eq!(cluster(&em, 0, 0), " ", "unprotected (0,0) cleared");
+        assert_eq!(cluster(&em, 1, 0), "A", "protected (1,0) survives");
+        assert_eq!(cluster(&em, 2, 0), " ", "unprotected (2,0) cleared");
+        assert_eq!(cluster(&em, 0, 1), "A", "row below the rect untouched");
+    }
+
+    #[test]
+    fn decera_ignores_protection_but_decsera_respects_it() {
+        // The non-selective rectangle erase (DECERA `$ z`) clears a protected cell; the selective
+        // one (DECSERA `$ {`) does not — the one contrast that defines "protected".
+        let mut unconditional = Emulator::new(2, 1);
+        unconditional.advance(b"\x1b[1\"qPP\x1b[0\"q");
+        unconditional.advance(b"\x1b[1;1;1;2$z"); // DECERA
+        assert_eq!(
+            unconditional.screen().row_text(0),
+            "",
+            "DECERA erases even protected cells"
+        );
+
+        let mut selective = Emulator::new(2, 1);
+        selective.advance(b"\x1b[1\"qPP\x1b[0\"q");
+        selective.advance(b"\x1b[1;1;1;2${"); // DECSERA
+        assert_eq!(
+            selective.screen().row_text(0),
+            "PP",
+            "DECSERA leaves protected cells intact"
+        );
+    }
+
+    #[test]
+    fn plain_ed_and_el_ignore_protection() {
+        // A protected cell is still cleared by the ordinary ED / EL — protection guards ONLY the
+        // selective family. (EL first, then ED, each on a fresh protected screen.)
+        let mut el = Emulator::new(3, 1);
+        el.advance(b"\x1b[1\"qPPP\x1b[0\"q\x1b[2K"); // EL whole line
+        assert_eq!(el.screen().row_text(0), "", "EL clears protected cells");
+
+        let mut ed = Emulator::new(3, 1);
+        ed.advance(b"\x1b[1\"qPPP\x1b[0\"q\x1b[2J"); // ED whole display
+        assert_eq!(ed.screen().row_text(0), "", "ED clears protected cells");
+    }
+
+    #[test]
+    fn decsca_pen_is_saved_by_decsc_and_restored_by_decrc() {
+        // DECSC/DECRC carry the protection pen (VT510 saves the selective-erase attribute): protect,
+        // save, turn protection off, print unprotected, restore -> the pen is protected again. DECRC
+        // also homes the cursor to the save point, so a CHA (`CSI 2 G`) steps past 'x' before 'y' —
+        // the pen move is what is under test, not the cursor.
+        let mut em = Emulator::new(4, 1);
+        em.advance(b"\x1b[1\"q\x1b7\x1b[0\"qx\x1b8\x1b[2Gy");
+        assert!(!protected_at(&em, 0, 0), "'x' printed while off");
+        assert!(
+            protected_at(&em, 1, 0),
+            "'y' printed after DECRC restored on"
+        );
+    }
+
+    #[test]
+    fn decstr_resets_protection_but_ris_and_survivors_are_covered() {
+        // DECSTR (soft reset) clears the protection pen; RIS clears it too. Neither retroactively
+        // un-protects already-printed cells. DECSTR homes the cursor, so a CHA steps past 'P'.
+        let mut em = Emulator::new(4, 1);
+        em.advance(b"\x1b[1\"qP\x1b[!p"); // print protected 'P', then DECSTR
+        em.advance(b"\x1b[2GQ"); // step past 'P', print 'Q' with the reset pen
+        assert!(
+            protected_at(&em, 0, 0),
+            "the already-printed 'P' stays protected"
+        );
+        assert!(
+            !protected_at(&em, 1, 0),
+            "DECSTR reset the pen -> 'Q' unprotected"
+        );
+
+        let mut ris = Emulator::new(4, 1);
+        ris.advance(b"\x1b[1\"q\x1bcZ"); // DECSCA on, RIS, print 'Z'
+        assert!(!protected_at(&ris, 0, 0), "RIS cleared the protection pen");
     }
 
     // --- DECRQSS (DCS $ q … ST) request selection or setting ---
