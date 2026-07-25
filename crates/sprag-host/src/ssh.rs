@@ -8,11 +8,13 @@
 //! future GUI affordance assemble the same command — the argv then rides the existing
 //! `new_session {cmd}` action ([`crate::workspace`]) with no wire or daemon change.
 //!
-//! Durability note (Slice 1): the pane's argv is recorded like any other, but `ssh` is deliberately
-//! OUTSIDE the default exact-command restore allowlist ([`crate::durability`]) because re-running an
-//! arbitrary `ssh host '<command>'` on restore is a side-effect risk. So a restored ssh workspace
-//! comes back as a plain shell today; restoring the *connection* from structured intent (not opaque
-//! argv) is a later slice, not a silent default change.
+//! Durability: `ssh` is deliberately OUTSIDE the default exact-command restore allowlist
+//! ([`crate::durability`]) — an arbitrary `ssh host '<command>'` that merely appears in a shell's
+//! argv must not re-run on restore. A `sprag ssh` workspace is different: it records a STRUCTURED
+//! [`SshRemote`](sprag_terminal::SshRemote) endpoint (via [`SshTarget::remote`]), the explicit
+//! intent marker the host reconnects from ([`crate::reconnect_command`]) — a login shell only, with
+//! the forwards and remote command dropped ([`SshTarget::reconnect`]), so the connection comes back
+//! but no recorded side-effect does. Intent (`remote`), not opaque argv, is what a restore trusts.
 
 use std::fmt;
 
@@ -279,6 +281,34 @@ impl SshTarget {
         Ok(target)
     }
 
+    /// A CONNECTION-ONLY target from a recorded [`SshRemote`](sprag_terminal::SshRemote) — the
+    /// restore path. Carries the endpoint (`user`/`host`/`port`) but NO forwards and NO remote
+    /// command, so [`ssh_argv`](Self::ssh_argv) renders a plain `ssh -t [-p PORT] user@host` login
+    /// shell: a restore re-establishes the connection without re-running any recorded remote command.
+    #[must_use]
+    pub fn reconnect(remote: &sprag_terminal::SshRemote) -> Self {
+        Self {
+            user: remote.user.clone(),
+            host: remote.host.clone(),
+            port: remote.port,
+            remote_command: Vec::new(),
+            forwards: Vec::new(),
+        }
+    }
+
+    /// The structured [`SshRemote`](sprag_terminal::SshRemote) endpoint to record on the pane — the
+    /// connection identity (`user`/`host`/`port`), dropping the forwards and remote command. `sprag
+    /// ssh` sends this alongside the argv so the daemon marks the birth pane a sanctioned remote
+    /// workspace (for reconnect-on-restore and dropped-file `scp`).
+    #[must_use]
+    pub fn remote(&self) -> sprag_terminal::SshRemote {
+        sprag_terminal::SshRemote {
+            user: self.user.clone(),
+            host: self.host.clone(),
+            port: self.port,
+        }
+    }
+
     /// The ssh destination argument (`user@host`, or just `host` when no user is set).
     #[must_use]
     pub fn destination(&self) -> String {
@@ -529,6 +559,37 @@ mod tests {
         // `--tmux` AFTER `--` is a literal remote token, so there is no preset and no conflict.
         let target = SshTarget::from_args(strings(&["host", "--", "run", "--tmux"])).unwrap();
         assert_eq!(target.remote_command, strings(&["run", "--tmux"]));
+    }
+
+    #[test]
+    fn reconnect_builds_a_connection_only_login_shell() {
+        let remote = sprag_terminal::SshRemote {
+            user: Some("me".to_owned()),
+            host: "srv".to_owned(),
+            port: Some(2222),
+        };
+        // Connection ONLY: `-t` + port + destination, NO forwards and NO remote command.
+        assert_eq!(
+            SshTarget::reconnect(&remote).ssh_argv(),
+            strings(&["ssh", "-t", "-p", "2222", "me@srv"]),
+        );
+    }
+
+    #[test]
+    fn remote_keeps_the_endpoint_and_drops_forwards_and_command() {
+        // The structured endpoint is user/host/port only — a `--tmux` preset and a `-L` forward are
+        // NOT part of the identity, so a reconnect from it is a plain login shell.
+        let target =
+            SshTarget::from_args(strings(&["me@srv", "-p", "22", "-L", "3000", "--tmux=w"]))
+                .unwrap();
+        let remote = target.remote();
+        assert_eq!(remote.user.as_deref(), Some("me"));
+        assert_eq!(remote.host, "srv");
+        assert_eq!(remote.port, Some(22));
+        assert_eq!(
+            SshTarget::reconnect(&remote).ssh_argv(),
+            strings(&["ssh", "-t", "-p", "22", "me@srv"]),
+        );
     }
 
     #[test]

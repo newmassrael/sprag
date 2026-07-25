@@ -42,6 +42,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::layout::LayoutWire;
 use crate::registry::SessionRegistry;
+use crate::remote::SshRemote;
 use crate::workspace::{Pane, PaneId};
 
 /// The on-disk snapshot format version. Bumped when the shape changes incompatibly; a loader
@@ -128,6 +129,13 @@ pub struct PaneSnapshot {
     /// command-line secrets.
     #[serde(default)]
     pub argv: Vec<String>,
+    /// The structured remote endpoint of a `sprag ssh` workspace pane, or `None` for a local pane.
+    /// Present marks a SANCTIONED remote workspace: on restore the host RECONNECTS it (`ssh -t
+    /// user@host`) instead of falling back to a shell, and the argv allowlist is bypassed because
+    /// the endpoint is explicit intent, not an argv that merely mentions `ssh`. `#[serde(default)]`
+    /// keeps the addition additive — a pre-Slice-5 snapshot loads with `None`, the old behaviour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<SshRemote>,
     /// The pane's size, so the restored shell opens at the same dimensions.
     pub cols: u16,
     pub rows: u16,
@@ -288,6 +296,10 @@ pub struct PaneRestore {
     /// label is DERIVED from what actually re-ran (`restore_command`), so the recorded
     /// `command_label` is not carried into the plan.
     pub argv: Vec<String>,
+    /// The structured remote endpoint (a `sprag ssh` workspace pane), or `None` for a local pane.
+    /// `Some` tells the host to RECONNECT (`ssh -t user@host`, allowlist bypassed) rather than run
+    /// the recorded argv through the exact-command gate, and to re-mark the restored pane remote.
+    pub remote: Option<SshRemote>,
     /// The size to open at.
     pub cols: u16,
     pub rows: u16,
@@ -302,6 +314,7 @@ pub(crate) fn pane_snapshot(pane: &Pane) -> PaneSnapshot {
         cwd: pane.pty().cwd(),
         command_label: pane.command_label().to_owned(),
         argv: pane.argv().to_vec(),
+        remote: pane.remote().cloned(),
         cols,
         rows,
     }
@@ -454,6 +467,32 @@ mod tests {
         );
     }
 
+    /// A remote workspace pane carries its structured endpoint into the snapshot — the projection
+    /// (`pane_snapshot`) reads `pane.remote()`. Revert-proof: drop `remote: pane.remote().cloned()`
+    /// in the projection and this is `None`, so a restore would never know to reconnect.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_remote_pane_carries_its_endpoint_into_the_snapshot() {
+        use crate::SshRemote;
+        let dir = std::env::temp_dir();
+        let reg = Arc::new(Mutex::new(SessionRegistry::new((80, 24))));
+        let pool = lock(&reg).workspace_of("0").unwrap();
+        let endpoint = SshRemote {
+            user: Some("me".to_owned()),
+            host: "srv".to_owned(),
+            port: Some(22),
+        };
+        let id = {
+            let mut ws = lock(&pool);
+            let id = ws.spawn(cmd_in(&dir), "ssh".to_owned(), 80, 24).unwrap();
+            ws.set_pane_remote(id, endpoint.clone());
+            id
+        };
+        let ws = lock(&pool);
+        let snap = pane_snapshot(ws.pane(id).unwrap());
+        assert_eq!(snap.remote, Some(endpoint));
+    }
+
     /// A snapshot whose version this build does not understand is REFUSED — the daemon boots
     /// empty rather than parsing a format it cannot.
     #[test]
@@ -537,6 +576,7 @@ mod tests {
             cwd: None,
             command_label: "sh".to_owned(),
             argv: vec!["sh".to_owned()],
+            remote: None,
             cols: 80,
             rows: 24,
         }

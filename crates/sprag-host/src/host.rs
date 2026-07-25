@@ -624,19 +624,35 @@ impl Host {
                 // but the resolve is fallible, so skip rather than unwrap a should-not-happen.
                 continue;
             };
-            // Re-run the exact command for an allowlisted program, else a shell in the cwd (a
-            // shell / non-allowlisted / cwd-less pane). Env is re-derived from the daemon, not disk.
-            let (command, label) =
-                crate::restore_command(&pane.argv, pane.cwd.as_deref(), allowlist);
-            match lock(&pool).spawn_with_dirty_id(
+            // A SANCTIONED remote workspace (its `remote` endpoint is explicit `sprag ssh` intent)
+            // RECONNECTS (`ssh -t user@host`, a login shell) — the argv allowlist is bypassed
+            // because the endpoint is intent, not an argv that merely mentions ssh, and the original
+            // remote command is dropped so a side-effecting `-- rm -rf` never re-runs on its own.
+            // Every other pane takes the exact-command-or-shell path. Env is re-derived from the
+            // daemon, not disk.
+            let (command, label) = match &pane.remote {
+                Some(remote) => crate::reconnect_command(remote),
+                None => crate::restore_command(&pane.argv, pane.cwd.as_deref(), allowlist),
+            };
+            // Bind the spawn result so the pool lock RELEASES at the `;` — a `match` scrutinee's
+            // temporary lock would live across the arms, and the `Ok` arm re-locks to mark the pane
+            // remote, which on a non-reentrant `Mutex` would self-deadlock.
+            let spawned = lock(&pool).spawn_with_dirty_id(
                 pane.id,
                 command,
                 label,
                 (pane.cols, pane.rows),
                 on_dirty(),
                 on_exit(),
-            ) {
-                Ok(()) => restored += 1,
+            );
+            match spawned {
+                Ok(()) => {
+                    // Keep the restored pane marked remote so a CHAINED restore reconnects it again.
+                    if let Some(remote) = pane.remote {
+                        lock(&pool).set_pane_remote(pane.id, remote);
+                    }
+                    restored += 1;
+                }
                 Err(e) => tracing::warn!(
                     target: "sprag_host::durability",
                     session = %pane.session,
@@ -1298,6 +1314,7 @@ mod tests {
                             cwd: Some("/tmp".into()),
                             command_label: "sh".to_owned(),
                             argv: vec!["sh".to_owned()],
+                            remote: None,
                             cols: 80,
                             rows: 24,
                         },
@@ -1306,6 +1323,7 @@ mod tests {
                             cwd: None, // no recorded cwd -> falls back to the daemon's
                             command_label: "sh".to_owned(),
                             argv: vec!["sh".to_owned()],
+                            remote: None,
                             cols: 80,
                             rows: 24,
                         },
@@ -1358,6 +1376,7 @@ mod tests {
                         cwd: None,
                         command_label: "cat".to_owned(),
                         argv: vec!["cat".to_owned()], // allowlisted -> re-run exactly
+                        remote: None,
                         cols: 80,
                         rows: 24,
                     }],
@@ -1378,6 +1397,88 @@ mod tests {
             "cat",
             "the allowlisted program re-ran exactly, not a shell fallback",
         );
+    }
+
+    /// The Slice-5 security-defining restore path: a SANCTIONED remote workspace (its structured
+    /// `remote` endpoint is `sprag ssh` intent) RECONNECTS on restore — `ssh` runs even though it is
+    /// NOT in the allowlist (the bypass) — while a pane whose argv merely CONTAINS `ssh` but has no
+    /// `remote` marker falls back to a shell, so an incidentally-typed `ssh host '<cmd>'` never
+    /// re-runs itself. Also proves the reconnected pane STAYS marked remote (chained-restore safe).
+    #[test]
+    fn restore_reconnects_a_remote_workspace_but_not_a_bare_ssh_argv() {
+        use sprag_terminal::{PaneSnapshot, SessionSnapshot, SshRemote, WindowSnapshot};
+
+        // `ssh` is deliberately NOT allowlisted — so ONLY the structured `remote` reconnects.
+        let allow: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let snap = Snapshot {
+            version: sprag_terminal::SNAPSHOT_VERSION,
+            next_id: 2,
+            default_size: (80, 24),
+            sessions: vec![SessionSnapshot {
+                name: "0".to_owned(),
+                current_window: "0".to_owned(),
+                windows: vec![WindowSnapshot {
+                    name: "0".to_owned(),
+                    layout: LayoutWire::default(),
+                    floating: vec![],
+                    panes: vec![
+                        PaneSnapshot {
+                            id: PaneId(0),
+                            cwd: None,
+                            command_label: "ssh".to_owned(),
+                            argv: vec!["ssh".to_owned(), "-t".to_owned(), "srv".to_owned()],
+                            remote: Some(SshRemote {
+                                user: None,
+                                host: "srv".to_owned(),
+                                port: None,
+                            }),
+                            cols: 80,
+                            rows: 24,
+                        },
+                        PaneSnapshot {
+                            id: PaneId(1),
+                            cwd: None,
+                            command_label: "ssh".to_owned(),
+                            // A shell that merely had `ssh` in its argv — NOT a sanctioned workspace.
+                            argv: vec!["ssh".to_owned(), "host".to_owned(), "danger".to_owned()],
+                            remote: None,
+                            cols: 80,
+                            rows: 24,
+                        },
+                    ],
+                }],
+            }],
+        };
+
+        let host = Host::new((80, 24));
+        assert_eq!(
+            host.restore(snap, &allow, || None, || None)
+                .expect("restores"),
+            2,
+        );
+        let ws = host.workspace();
+        let pool = lock(&ws);
+
+        // Pane 0 RECONNECTED (ssh ran despite the empty allowlist) and stays marked remote.
+        let reconnected = pool.pane(PaneId(0)).unwrap();
+        assert_eq!(
+            reconnected.command_label(),
+            "ssh",
+            "the sanctioned remote workspace reconnected — the allowlist was bypassed",
+        );
+        assert!(
+            reconnected.remote().is_some(),
+            "the reconnected pane stays marked remote for a chained restore",
+        );
+
+        // Pane 1 did NOT reconnect: a bare ssh argv with no intent marker falls back to a shell.
+        let shell = pool.pane(PaneId(1)).unwrap();
+        assert_ne!(
+            shell.command_label(),
+            "ssh",
+            "a bare ssh argv without the remote marker is NOT auto-reconnected — a shell",
+        );
+        assert!(shell.remote().is_none());
     }
 
     #[test]

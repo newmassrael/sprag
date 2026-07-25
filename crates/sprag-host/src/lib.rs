@@ -61,8 +61,8 @@ pub mod workspace;
 
 pub use attach::{AttachOutcome, AttachmentRegistry, ClientId, ClientInfo};
 pub use durability::{
-    load_snapshot, restore_allowlist, restore_command, save_if_changed, save_snapshot,
-    snapshot_path,
+    load_snapshot, reconnect_command, restore_allowlist, restore_command, save_if_changed,
+    save_snapshot, snapshot_path,
 };
 pub use host::{
     Host, HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneNotification, PaneScrollFacts,

@@ -13,7 +13,7 @@
 //! * `resize {id, cols, rows}` → resizes a pane's PTY + emulator.
 //! * `set_layout {tree}` → installs a client's settled arrangement, returns the canonical one.
 //! * `set_floating {id, floating}` → takes a pane out of the tiling / puts it back.
-//! * `new_session {name?, cmd?, cols?, rows?}` → creates a session BORN with one pane (absent
+//! * `new_session {name?, cmd?, cols?, rows?, remote?}` → creates a session BORN with one pane (absent
 //!   name → lowest free; `cmd`/`cols`/`rows` shape the birth pane), returns its name.
 //! * `kill_session {name}` → kills a session; the last one ends the daemon (tmux kill-session).
 //!
@@ -61,7 +61,7 @@ use pinion_core::external::{
 use serde_json::{Map, Value};
 use sprag_terminal::{
     CommandBuilder, KillOutcome, LayoutSnapshot, LayoutWire, PaneId, SessionInfo, SessionRegistry,
-    WindowKillOutcome, Workspace,
+    SshRemote, WindowKillOutcome, Workspace,
 };
 
 use crate::bump_on_dirty;
@@ -131,6 +131,9 @@ struct SpawnSpec {
     label: String,
     cols: Option<u16>,
     rows: Option<u16>,
+    /// The structured remote endpoint for a `sprag ssh` birth pane, stamped onto the pane after the
+    /// spawn so the host can reconnect it on restore and `scp` to it. `None` for an ordinary spawn.
+    remote: Option<SshRemote>,
 }
 
 impl WorkspaceExternal {
@@ -178,7 +181,42 @@ impl WorkspaceExternal {
             label,
             cols: opt_dim(map, "cols")?,
             rows: opt_dim(map, "rows")?,
+            remote: Self::parse_remote(map)?,
         })
+    }
+
+    /// Parse the OPTIONAL `remote` object (`{host, user?, port?}`) a `sprag ssh` birth request
+    /// carries — the structured endpoint that marks the pane a sanctioned remote workspace. Absent
+    /// is `None` (an ordinary spawn); present-but-malformed (no string `host`, a non-string `user`,
+    /// or a `port` outside `1..=65535`) is a `TypeMismatch`, validated before anything is built.
+    fn parse_remote(map: &Map<String, Value>) -> Result<Option<SshRemote>, InvokeError> {
+        let Some(value) = map.get("remote") else {
+            return Ok(None);
+        };
+        let obj = value.as_object().ok_or(InvokeError::TypeMismatch)?;
+        let host = obj
+            .get("host")
+            .and_then(Value::as_str)
+            .filter(|host| !host.is_empty())
+            .ok_or(InvokeError::TypeMismatch)?
+            .to_owned();
+        let user = match obj.get("user") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(user)) => Some(user.clone()),
+            Some(_) => return Err(InvokeError::TypeMismatch),
+        };
+        let port = match obj.get("port") {
+            None | Some(Value::Null) => None,
+            Some(value) => {
+                let port = value.as_u64().ok_or(InvokeError::TypeMismatch)?;
+                let port = u16::try_from(port).map_err(|_| InvokeError::TypeMismatch)?;
+                if port == 0 {
+                    return Err(InvokeError::TypeMismatch);
+                }
+                Some(port)
+            }
+        };
+        Ok(Some(SshRemote { user, host, port }))
     }
 
     /// Fork/exec a validated [`SpawnSpec`] into `pool` — the RUNTIME half, shared by the `spawn`
@@ -196,19 +234,32 @@ impl WorkspaceExternal {
         pool: &Arc<Mutex<Workspace>>,
         spec: SpawnSpec,
     ) -> Result<PaneId, InvokeError> {
+        let SpawnSpec {
+            command,
+            label,
+            cols,
+            rows,
+            remote,
+        } = spec;
         let on_exit = self.on_pane_exit.as_ref().map(crate::pane_exit_hook);
         let mut workspace = lock(pool);
         let (default_cols, default_rows) = workspace.default_size();
-        workspace
+        let id = workspace
             .spawn_with_dirty(
-                spec.command,
-                spec.label,
-                spec.cols.unwrap_or(default_cols),
-                spec.rows.unwrap_or(default_rows),
+                command,
+                label,
+                cols.unwrap_or(default_cols),
+                rows.unwrap_or(default_rows),
                 Some(bump_on_dirty(&self.revision)),
                 on_exit,
             )
-            .map_err(|_| InvokeError::Rejected)
+            .map_err(|_| InvokeError::Rejected)?;
+        // Stamp the remote endpoint onto the just-born pane (metadata the process does not need),
+        // so a restore reconnects it and a dropped-file upload knows its `scp` target.
+        if let Some(remote) = remote {
+            workspace.set_pane_remote(id, remote);
+        }
+        Ok(id)
     }
 
     /// `spawn` action: create a pane in THIS request's session and return its id. `cmd` (an argv
@@ -327,8 +378,8 @@ impl WorkspaceExternal {
         layout_value(snapshot).ok_or(InvokeError::Rejected)
     }
 
-    /// `new_session {name?, cmd?, cols?, rows?}` action: create a session BORN WITH A SHELL,
-    /// answering with its name.
+    /// `new_session {name?, cmd?, cols?, rows?, remote?}` action: create a session BORN WITH A
+    /// SHELL, answering with its name.
     ///
     /// `name` mirrors the `session` scope param's own three-way shape: ABSENT asks the
     /// registry to allocate the lowest free name (tmux's `new-session` with no `-s`), a STRING
@@ -1823,6 +1874,72 @@ mod tests {
             lock(&pool(&reg)).panes().is_empty(),
             "the default session is untouched — a create births a pane in the NEW session",
         );
+    }
+
+    #[test]
+    fn parse_remote_reads_the_endpoint_and_rejects_malformed() {
+        let obj = |value: Value| value.as_object().cloned().unwrap();
+        // Absent -> None; a full and a host-only endpoint parse.
+        assert_eq!(WorkspaceExternal::parse_remote(&Map::new()), Ok(None));
+        assert_eq!(
+            WorkspaceExternal::parse_remote(&obj(
+                json!({"remote": {"host": "srv", "user": "me", "port": 2222}})
+            )),
+            Ok(Some(SshRemote {
+                user: Some("me".to_owned()),
+                host: "srv".to_owned(),
+                port: Some(2222),
+            })),
+        );
+        assert_eq!(
+            WorkspaceExternal::parse_remote(&obj(json!({"remote": {"host": "srv"}}))),
+            Ok(Some(SshRemote {
+                user: None,
+                host: "srv".to_owned(),
+                port: None,
+            })),
+        );
+        // Malformed: no host, empty host, a zero/overflowing port, or a non-object all reject.
+        for bad in [
+            json!({"remote": {}}),
+            json!({"remote": {"host": ""}}),
+            json!({"remote": {"host": "srv", "port": 0}}),
+            json!({"remote": {"host": "srv", "port": 99999}}),
+            json!({"remote": "srv"}),
+        ] {
+            assert_eq!(
+                WorkspaceExternal::parse_remote(&obj(bad)),
+                Err(InvokeError::TypeMismatch),
+            );
+        }
+    }
+
+    #[test]
+    fn a_new_session_with_a_remote_marks_its_birth_pane() {
+        // Revert-proof for `spawn_parsed`'s `set_pane_remote`: drop it and the birth pane has no
+        // endpoint, so this `expect` panics.
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        assert_eq!(
+            ext.invoke(
+                NEW_SESSION_ACTION,
+                IntrospectValue::Json(json!({
+                    "name": "remote",
+                    "cmd": ["ssh", "-t", "srv"],
+                    "remote": {"host": "srv", "user": "me", "port": 2222},
+                })),
+            ),
+            Ok(IntrospectValue::Json(Value::String("remote".to_owned()))),
+        );
+        let pool = pool_of(&reg, "remote");
+        let pool = lock(&pool);
+        let pane = pool.panes().first().expect("born with a pane");
+        let remote = pane
+            .remote()
+            .expect("the birth pane is marked a remote workspace");
+        assert_eq!(remote.host, "srv");
+        assert_eq!(remote.user.as_deref(), Some("me"));
+        assert_eq!(remote.port, Some(2222));
     }
 
     /// A session born via `new_session` feeds the reaper when its birth pane dies — the guard

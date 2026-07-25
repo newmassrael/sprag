@@ -1028,6 +1028,7 @@ impl SessionRegistry {
                         id: p.id,
                         cwd: p.cwd.clone(),
                         argv: p.argv.clone(),
+                        remote: p.remote.clone(),
                         cols: p.cols,
                         rows: p.rows,
                     });

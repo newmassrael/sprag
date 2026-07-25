@@ -295,12 +295,15 @@ fn new(name: Option<String>) -> io::Result<()> {
 fn ssh(args: Vec<String>) -> io::Result<()> {
     let target = SshTarget::from_args(args)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    // The structured endpoint marks the birth pane a sanctioned remote workspace (reconnect on
+    // restore + dropped-file scp), alongside the argv the pane actually runs.
+    let remote = serde_json::to_value(target.remote()).expect("SshRemote serialises");
     let mut conn = connect()?;
     let answer = conn.call(
         "scene/invoke",
         json!({
             "path": mux_action_path(NEW_SESSION_ACTION),
-            "args": { "cmd": target.ssh_argv() },
+            "args": { "cmd": target.ssh_argv(), "remote": remote },
         }),
     )?;
     match answer.as_str() {

@@ -22,6 +22,7 @@ pub mod pane_pty;
 /// display fact (crate-internal).
 mod ports;
 pub mod registry;
+pub mod remote;
 pub mod snapshot;
 pub mod workspace;
 
@@ -35,6 +36,7 @@ pub use registry::{
     KillOutcome, PaneMoveError, Session, SessionError, SessionInfo, SessionRegistry, Window,
     WindowInfo, WindowKillOutcome,
 };
+pub use remote::SshRemote;
 pub use snapshot::{
     PaneRestore, PaneSnapshot, RestorePlan, SNAPSHOT_VERSION, SessionSnapshot, Snapshot,
     SnapshotError, WindowSnapshot, snapshot,

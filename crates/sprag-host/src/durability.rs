@@ -21,8 +21,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use sprag_terminal::{
-    CommandBuilder, SessionRegistry, Snapshot, command_from_parts, default_shell_command, snapshot,
+    CommandBuilder, SessionRegistry, Snapshot, SshRemote, command_from_parts,
+    default_shell_command, snapshot,
 };
+
+use crate::ssh::SshTarget;
 
 /// The persistent snapshot path for the daemon on `socket`.
 ///
@@ -222,6 +225,23 @@ pub fn restore_command(
     (command, label)
 }
 
+/// Build the command to RECONNECT a sanctioned remote workspace pane on restore: `ssh -t [-p PORT]
+/// user@host` (a login shell) from the pane's recorded [`SshRemote`].
+///
+/// This is the allowlist BYPASS the `restore_command` gate cannot express: `ssh` is deliberately off
+/// the default allowlist (an incidentally-typed `ssh host '<cmd>'` must not re-run its remote
+/// command), but a pane carrying a structured `remote` was EXPLICITLY created by `sprag ssh`, so
+/// reconnecting it is the user's intent. The remote command and forwards are dropped (see
+/// [`SshTarget::reconnect`]), so only the connection comes back — never a recorded side-effect. The
+/// local cwd is irrelevant to a remote login shell, so none is set.
+#[must_use]
+pub fn reconnect_command(remote: &SshRemote) -> (CommandBuilder, String) {
+    let argv = SshTarget::reconnect(remote).ssh_argv();
+    // `ssh_argv` always yields at least `["ssh", "-t", dest]`, so the split is total.
+    let (program, args) = argv.split_first().expect("ssh_argv is never empty");
+    command_from_parts(program, args)
+}
+
 /// The exact-vs-shell decision (cwd applied by [`restore_command`]).
 fn exact_or_shell(argv: &[String], allowlist: &HashSet<String>) -> (CommandBuilder, String) {
     if let Some(program) = argv.first()
@@ -418,6 +438,28 @@ mod tests {
             "a shell fallback runs a shell ({argv:?}), not an arbitrary program",
         );
         assert_eq!(cwd_of(&command).as_deref(), Some("/tmp"));
+    }
+
+    #[test]
+    fn reconnect_command_builds_the_ssh_connection_bypassing_the_allowlist() {
+        let remote = SshRemote {
+            user: Some("me".to_owned()),
+            host: "srv".to_owned(),
+            port: Some(2222),
+        };
+        let (command, label) = reconnect_command(&remote);
+        assert_eq!(
+            argv_of(&command),
+            vec![
+                "ssh".to_owned(),
+                "-t".to_owned(),
+                "-p".to_owned(),
+                "2222".to_owned(),
+                "me@srv".to_owned(),
+            ],
+            "a remote workspace reconnects with a connection-only ssh, no allowlist involved",
+        );
+        assert_eq!(label, "ssh");
     }
 
     /// The pure parser: an explicit value REPLACES the default (trimmed), an empty value disables

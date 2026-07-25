@@ -33,6 +33,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use sprag_vt::{ClipboardQuery, ClipboardWrite, Image, MouseProtocol, Notification, ShellState};
 
 use crate::pane_pty::{CommandBuilder, PanePty, PanePtyError, PanePtyHandle};
+use crate::remote::SshRemote;
 
 /// A stable, monotonic identifier for a pane within a [`Workspace`].
 ///
@@ -73,6 +74,12 @@ pub struct Pane {
     /// restored from a pre-argv snapshot re-runs a shell, so it comes back with the shell's argv,
     /// never empty.
     argv: Vec<String>,
+    /// The structured remote endpoint, set ONLY for a pane born via `sprag ssh` (its explicit
+    /// intent marker). `Some` marks a sanctioned remote workspace — the host reconnects it on
+    /// restore (bypassing the argv allowlist) and can `scp` a dropped file to it; `None` is an
+    /// ordinary local pane. Distinct from [`argv`](Self::argv), which merely happens to contain
+    /// `ssh`: a shell with `ssh` in its history is not a remote workspace and is never reconnected.
+    remote: Option<SshRemote>,
 }
 
 impl Pane {
@@ -100,6 +107,13 @@ impl Pane {
     #[must_use]
     pub fn argv(&self) -> &[String] {
         &self.argv
+    }
+
+    /// The pane's structured remote endpoint, `Some` only for a `sprag ssh` workspace pane — the
+    /// marker the host reads to reconnect it on restore or to `scp` a dropped file to it.
+    #[must_use]
+    pub fn remote(&self) -> Option<&SshRemote> {
+        self.remote.as_ref()
     }
 
     /// The child's self-reported window title (`OSC 0` / `OSC 2`), `None` until it sets
@@ -399,6 +413,7 @@ impl Workspace {
             pty,
             command_label: label,
             argv,
+            remote: None,
         });
         Ok(id)
     }
@@ -442,6 +457,7 @@ impl Workspace {
             pty,
             command_label: label,
             argv,
+            remote: None,
         });
         Ok(())
     }
@@ -520,6 +536,15 @@ impl Workspace {
     #[must_use]
     pub fn pane(&self, id: PaneId) -> Option<&Pane> {
         self.panes.iter().find(|p| p.id == id)
+    }
+
+    /// Mark the pane with `id` as a remote workspace pane (the `sprag ssh` intent marker). Set
+    /// AFTER the spawn — the endpoint is metadata the pane process does not need — by the birth
+    /// path and by a restore. A no-op for an unknown id.
+    pub fn set_pane_remote(&mut self, id: PaneId, remote: SshRemote) {
+        if let Some(pane) = self.panes.iter_mut().find(|p| p.id == id) {
+            pane.remote = Some(remote);
+        }
     }
 
     /// All panes, in spawn order.
