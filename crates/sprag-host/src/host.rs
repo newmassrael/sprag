@@ -109,12 +109,31 @@ pub struct PaneMatch {
     pub cols: u16,
 }
 
-/// The answer to a pane search: the matches plus whether the scan hit its cap
+/// One line carrying at least one match, with its text — the serde projection of
+/// [`sprag_vt::FindLine`], and the DISPLAY view of a search beside [`PaneFind::matches`]'s
+/// coordinate view.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PaneFindLine {
+    /// The logical line index — the join key back to [`PaneMatch::line`].
+    pub line: usize,
+    /// The line's text, trailing blanks trimmed.
+    pub text: String,
+}
+
+/// The answer to a pane search: the matches, the matching lines, and whether the scan hit its cap
 /// ([`sprag_vt::FIND_MATCH_CAP`]). The serde projection of [`sprag_vt::FindResult`].
+///
+/// Two views of ONE search, and each consumer reads exactly one: a find bar navigates
+/// [`matches`](Self::matches) (coordinates, no text), a grep-like CLI or agent prints
+/// [`lines`](Self::lines) (deduped text, no columns). Carrying the text per MATCH instead would
+/// repeat a line once per match on it, for a field the interactive consumer never reads.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PaneFind {
     /// Every match, in reading order (oldest line first, then by column).
     pub matches: Vec<PaneMatch>,
+    /// Every line that carries a match, in order and each ONCE.
+    #[serde(default)]
+    pub lines: Vec<PaneFindLine>,
     /// `true` when the search stopped at the cap — there may be more past the last match.
     pub truncated: bool,
 }
@@ -131,6 +150,14 @@ impl PaneFind {
                     line: m.line,
                     col: m.col,
                     cols: m.cols,
+                })
+                .collect(),
+            lines: found
+                .lines
+                .iter()
+                .map(|l| PaneFindLine {
+                    line: l.line,
+                    text: l.text.clone(),
                 })
                 .collect(),
             truncated: found.truncated,

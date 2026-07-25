@@ -54,8 +54,9 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use sprag_host::wire::{
     FULL_TEXT_SLOT, KEY_ACTION, LAST_COMMAND_SLOT, LINKS_SLOT, PANES_SLOT, TEXT_ACTION,
+    find_slot_for,
 };
-use sprag_host::{mux_action_path, pane_input_path};
+use sprag_host::{PaneFind, mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
 
 /// The env var the host sets on the pane shells it spawns (and thus on their
@@ -283,6 +284,30 @@ fn tools_list() -> Value {
                 }
             },
             {
+                "name": "find_in_pane",
+                "description": "Search a pane's whole retained output — scrollback AND the \
+                    visible screen — for a literal string, and get back the matching lines with \
+                    their line numbers. Prefer this over read_pane when you are looking for \
+                    something specific ('where did it print the error?'): it searches history \
+                    the screen no longer shows and returns only what matched, instead of the \
+                    whole buffer for you to scan. Matching is case-insensitive for ASCII and \
+                    never spans a line break. Line numbers count from the OLDEST retained line, \
+                    so they are stable to quote back.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "pane": pane_arg,
+                        "needle": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "The literal text to search for."
+                        }
+                    },
+                    "required": ["pane", "needle"],
+                    "additionalProperties": false
+                }
+            },
+            {
                 "name": "write_pane",
                 "description": "Type literal text into a sibling pane's shell, as if the \
                     user typed it, and (by default) press Enter to run it. Use this to \
@@ -346,6 +371,7 @@ fn handle_tools_call(message: &Value) -> Value {
         "read_last_command" => tool_read_last_command(&args),
         "read_pane_links" => tool_read_pane_links(&args),
         "read_pane_images" => tool_read_pane_images(&args),
+        "find_in_pane" => tool_find_in_pane(&args),
         "write_pane" => tool_write_pane(&args),
         "send_keys" => tool_send_keys(&args),
         other => Err(format!("unknown tool: {other}")),
@@ -592,6 +618,40 @@ fn tool_read_pane_images(args: &Value) -> Result<String, String> {
     Ok(out)
 }
 
+/// Search a pane through the host's `find.<needle>` query family and render the matching LINES for
+/// an agent — `LINE: text`, one per matching line.
+///
+/// Reads the answer's `lines` (deduped) rather than its `matches` (coordinates): an agent quotes
+/// text and line numbers, and cell columns would be noise it cannot act on. No second search lives
+/// here — the host owns what matches, so this tool, the `sprag find` CLI and the GUI's highlight
+/// cannot disagree. A capped answer says so in the rendered text, since an agent that believed a
+/// truncated list was complete would conclude something false about the pane.
+fn tool_find_in_pane(args: &Value) -> Result<String, String> {
+    let id = resolve_pane_id(args)?;
+    let needle = args
+        .get("needle")
+        .and_then(Value::as_str)
+        .filter(|needle| !needle.is_empty())
+        .ok_or("find_in_pane needs a non-empty `needle`")?;
+    let value = host_call(
+        "scene/query",
+        json!({ "path": pane_input_path(id, &find_slot_for(needle)) }),
+    )?;
+    let found: PaneFind =
+        serde_json::from_value(value).map_err(|error| format!("malformed find answer: {error}"))?;
+    if found.lines.is_empty() {
+        return Ok(format!("no matches for {needle:?} in pane {id}"));
+    }
+    let mut out = String::new();
+    for line in &found.lines {
+        out.push_str(&format!("{}: {}\n", line.line, line.text));
+    }
+    if found.truncated {
+        out.push_str("(the search hit its cap; later matches were not scanned)\n");
+    }
+    Ok(out)
+}
+
 fn tool_write_pane(args: &Value) -> Result<String, String> {
     let number = pane_number(args)?;
     let id = pane_id_for(number)?;
@@ -821,7 +881,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tools_list_advertises_the_seven_tools_with_object_schemas() {
+    fn tools_list_advertises_the_eight_tools_with_object_schemas() {
         let tools = tools_list();
         let names: Vec<&str> = tools["tools"]
             .as_array()
@@ -837,6 +897,7 @@ mod tests {
                 "read_last_command",
                 "read_pane_links",
                 "read_pane_images",
+                "find_in_pane",
                 "write_pane",
                 "send_keys"
             ]
@@ -845,9 +906,22 @@ mod tests {
             assert_eq!(tool["inputSchema"]["type"], "object");
             assert!(tool["description"].as_str().unwrap().len() > 10);
         }
+        // Required-argument spot checks, looked up BY NAME: an index would silently move to a
+        // different tool the next time one is inserted above it (which is exactly what adding
+        // `find_in_pane` did to the old `[5]`).
+        let required = |name: &str| {
+            tools["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == name)
+                .unwrap_or_else(|| panic!("{name} is advertised"))["inputSchema"]["required"]
+                .clone()
+        };
         // write_pane requires pane + text (the "type xxx into pane 2" path).
-        let write = tools["tools"].as_array().unwrap()[5].clone();
-        assert_eq!(write["inputSchema"]["required"], json!(["pane", "text"]));
+        assert_eq!(required("write_pane"), json!(["pane", "text"]));
+        // find_in_pane requires the pane AND something to look for.
+        assert_eq!(required("find_in_pane"), json!(["pane", "needle"]));
     }
 
     #[test]

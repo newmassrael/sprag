@@ -46,10 +46,10 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use sprag_host::wire::{
     BREAK_PANE_ACTION, CLIENTS_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION,
-    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, RENAME_WINDOW_ACTION, SELECT_WINDOW_ACTION,
-    SESSIONS_SLOT, WINDOWS_SLOT,
+    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, RENAME_WINDOW_ACTION, SELECT_WINDOW_ACTION,
+    SESSIONS_SLOT, WINDOWS_SLOT, find_slot_for,
 };
-use sprag_host::{SshTarget, mux_action_path};
+use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{HOST_SOCKET, HostConn, socket_path};
 
 /// A management command is talking to an already-running daemon, so the socket either accepts
@@ -70,6 +70,7 @@ fn run() -> io::Result<()> {
         Some("list-clients") => list_clients(args.collect()),
         Some("new") => new(args.next()),
         Some("ssh") => ssh(args.collect()),
+        Some("find") => find(args.collect()),
         Some("attach") => attach(args.next()),
         Some("kill-session") => kill_session(args.next()),
         Some("kill-server") => kill_server(args.collect()),
@@ -96,6 +97,7 @@ fn print_usage() {
     eprintln!(
         "usage: sprag <ls | list-clients [-t SESSION] | new [name] | attach NAME\n\
          \x20             | ssh [user@]host [-p PORT] [-L FWD]… [--tmux[=NAME]] [-- command…]\n\
+         \x20             | find NEEDLE [-t SESSION]\n\
          \x20             | kill-session NAME | kill-server [--purge]>\n\
          \x20      sprag <windows | new-window [name] | select-window NAME\n\
          \x20             | rename-window [window] NAME | kill-window [window]\n\
@@ -212,7 +214,86 @@ fn list_clients(args: Vec<String>) -> io::Result<()> {
     Ok(())
 }
 
-/// Parse an OPTIONAL `-t SESSION` filter (unlike the window commands' required target). Any
+/// `sprag find NEEDLE [-t SESSION]` — search every pane of the session's current window and print
+/// each matching line as `PANE:LINE: text`, the `grep -n` shape a script or an agent can slice.
+///
+/// **Session-wide, not per-pane, on purpose.** The question a terminal user actually has is "which
+/// pane has the error", so the sweep is the useful unit; an agent that already knows its pane uses
+/// the `find_in_pane` MCP tool instead. Neither implements a second search: both read the host's
+/// `find.<needle>` family, so there is ONE definition of what matches (`sprag_vt::Screen::find`) and
+/// the CLI cannot drift from the GUI's highlight.
+///
+/// Prints the matching LINES (deduped — a line with three matches is one output line), because that
+/// is what a grep-shaped output means. A capped answer is reported on stderr rather than silently
+/// looking complete. No matches is not an error: it exits 0 having printed nothing, so "the search
+/// ran" and "something failed" stay distinguishable (unlike grep's exit 1, which sprag reserves for
+/// errors).
+fn find(args: Vec<String>) -> io::Result<()> {
+    let (needle, session) = find_args(args)?;
+    let mut conn = connect()?;
+    if let Some(session) = &session {
+        require_session(&mut conn, session)?;
+    }
+    let scoped = |path: String| match &session {
+        Some(name) => json!({ "session": name, "path": path }),
+        None => json!({ "path": path }),
+    };
+    let listed: Value = conn.call("scene/query", scoped(mux_action_path(PANES_SLOT)))?;
+    let panes: Vec<u64> = listed
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|pane| pane["id"].as_u64())
+        .collect();
+    let mut truncated = false;
+    for pane in panes {
+        let answer: Value = conn.call(
+            "scene/query",
+            scoped(pane_input_path(pane, &find_slot_for(&needle))),
+        )?;
+        let found: PaneFind = serde_json::from_value(answer).unwrap_or_default();
+        truncated |= found.truncated;
+        for line in &found.lines {
+            println!("{pane}:{}: {}", line.line, line.text);
+        }
+    }
+    if truncated {
+        eprintln!("sprag: find: the answer was capped; later matches were not scanned");
+    }
+    Ok(())
+}
+
+/// Parse `find`'s arguments: the required NEEDLE positional plus an optional `-t SESSION`. A second
+/// positional is a mistake (a multi-word needle must be one quoted argument), not a silent join.
+fn find_args(args: Vec<String>) -> io::Result<(String, Option<String>)> {
+    let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
+    let mut needle: Option<String> = None;
+    let mut session = None;
+    let mut it = args.into_iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "-t" | "--target" => {
+                session = Some(
+                    it.next()
+                        .ok_or_else(|| bad("find: -t needs a session name".to_owned()))?,
+                );
+            }
+            _ if needle.is_none() => needle = Some(arg),
+            other => {
+                return Err(bad(format!(
+                    "find: unexpected argument {other:?} (quote a multi-word needle)"
+                )));
+            }
+        }
+    }
+    let needle = needle.ok_or_else(|| bad("find: a search needle is required".to_owned()))?;
+    if needle.is_empty() {
+        return Err(bad("find: the search needle is empty".to_owned()));
+    }
+    Ok((needle, session))
+}
+
+/// Parse an OPTIONAL `-t SESSION` filter (unlike the window commands' required target). Any/// Parse an OPTIONAL `-t SESSION` filter (unlike the window commands' required target). Any
 /// non-flag positional is unexpected — `list-clients` takes only the optional target.
 fn optional_target(args: Vec<String>, command: &str) -> io::Result<Option<String>> {
     let mut session = None;

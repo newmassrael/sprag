@@ -943,12 +943,31 @@ pub struct FindMatch {
     pub cols: u16,
 }
 
+/// One line that carries at least one match, with its text — the DISPLAY view of a search, beside
+/// the coordinate view [`FindResult::matches`] gives.
+///
+/// Deduped: a line with three matches appears ONCE. That is the whole reason this is a second
+/// collection rather than a `text` field on every [`FindMatch`] — a grep-like consumer prints one
+/// line per matching LINE (ripgrep groups its submatches the same way), while a find bar navigates
+/// matches one at a time and needs no text at all. Each consumer reads exactly one of the two.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct FindLine {
+    /// The logical line index — the join key back to [`FindMatch::line`].
+    pub line: usize,
+    /// The line's text, trailing blanks trimmed (the same text [`Screen::row_text`] gives).
+    pub text: String,
+}
+
 /// The answer to a [`Screen::find`]: the matches, oldest line first, and whether the search hit its
 /// cap. Serde-free like [`LastCommand`]; the host projects it to JSON.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct FindResult {
     /// Every match found, in reading order (oldest line first, then by column).
     pub matches: Vec<FindMatch>,
+    /// Every line that carries a match, in the same order and each ONCE — the display view. Every
+    /// `matches[i].line` appears here exactly once; the two are produced together, so a consumer can
+    /// join on the line index without checking.
+    pub lines: Vec<FindLine>,
     /// `true` when the search stopped at [`FIND_MATCH_CAP`] — the answer is complete only up to the
     /// last match reported, and lines after it were never scanned. Reported rather than silently
     /// implied: a capped answer that looked total would misdraw a match count.
@@ -1430,27 +1449,47 @@ impl Screen {
         let mut starts = Vec::new();
         let sb_len = self.scrollback.len();
         for (line, history) in self.scrollback.iter().enumerate() {
-            if !find_in_line(
+            let before = result.matches.len();
+            let within_cap = find_in_line(
                 &history.cells,
                 &needle,
                 line,
                 &mut text,
                 &mut starts,
                 &mut result.matches,
-            ) {
+            );
+            if result.matches.len() > before {
+                // Matched: record the line's ORIGINAL text (the scratch buffer above has been
+                // lowercased in place, so it is derived afresh from the cells).
+                result.lines.push(FindLine {
+                    line,
+                    text: cells_text(&history.cells),
+                });
+            }
+            if !within_cap {
                 result.truncated = true;
                 return result;
             }
         }
         for row in 0..self.rows {
-            if !find_in_line(
-                &self.row_cells(row),
+            let cells = self.row_cells(row);
+            let line = sb_len + row as usize;
+            let before = result.matches.len();
+            let within_cap = find_in_line(
+                &cells,
                 &needle,
-                sb_len + row as usize,
+                line,
                 &mut text,
                 &mut starts,
                 &mut result.matches,
-            ) {
+            );
+            if result.matches.len() > before {
+                result.lines.push(FindLine {
+                    line,
+                    text: cells_text(&cells),
+                });
+            }
+            if !within_cap {
                 result.truncated = true;
                 return result;
             }
@@ -2611,6 +2650,33 @@ mod tests {
     /// REVERT-PROOF for the `starts` map + the trailer absorption: a byte-offset column would report
     /// `col: 3` for the ASCII match below, and dropping the trailer walk would report `cols: 1` for
     /// the wide one.
+    /// The DISPLAY view: every matching line ONCE, with its text — what a grep-like consumer prints.
+    /// Deduping is the point: the row below carries two matches and must still be one line.
+    #[test]
+    fn find_reports_each_matching_line_once_with_its_text() {
+        let e = em(16, 2, "err a err\r\nquiet\r\nerr b");
+        let found = e.screen().find("err");
+        assert_eq!(
+            found.matches.len(),
+            3,
+            "two on the first line, one on the last"
+        );
+        assert_eq!(
+            found.lines,
+            vec![
+                FindLine {
+                    line: 0,
+                    text: "err a err".to_owned()
+                },
+                FindLine {
+                    line: 2,
+                    text: "err b".to_owned()
+                },
+            ],
+            "one entry per matching LINE, in order, with the untouched original text",
+        );
+    }
+
     #[test]
     fn find_columns_are_cells_not_bytes_for_a_wide_cluster() {
         let e = em(16, 2, "x\u{ac00}y err");

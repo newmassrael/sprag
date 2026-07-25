@@ -40,11 +40,22 @@ fn spawn_host() -> (HostChild, PathBuf) {
 /// [`spawn_host`] with EXTRA env vars on the daemon — the ssh test prepends a stand-in `ssh` to the
 /// daemon's `PATH`, because the daemon (not the CLI) is what spawns the pane and resolves the program.
 fn spawn_host_env(envs: &[(&str, &str)]) -> (HostChild, PathBuf) {
+    spawn_host_with(&["cat"], envs)
+}
+
+/// [`spawn_host`] whose boot pane runs `program [args…]` instead of `cat` — for a test that needs
+/// the pane to have PRINTED something (the search tests), not just to echo.
+fn spawn_host_running(program_and_args: &[&str]) -> (HostChild, PathBuf) {
+    spawn_host_with(program_and_args, &[])
+}
+
+/// The one spawn: the boot command plus any daemon env overrides.
+fn spawn_host_with(program_and_args: &[&str], envs: &[(&str, &str)]) -> (HostChild, PathBuf) {
     let sock = socket_path();
     let _ = std::fs::remove_file(&sock);
     let child = Command::new(env!("CARGO_BIN_EXE_sprag-term"))
         .arg("--")
-        .arg("cat")
+        .args(program_and_args)
         .env("SPRAG_HOST_RPC_SOCK", &sock)
         .env("SPRAG_HOST_RPC", "1")
         .envs(envs.iter().copied())
@@ -582,7 +593,55 @@ fn wait_for(timeout: Duration, mut predicate: impl FnMut() -> bool) -> bool {
     predicate()
 }
 
-/// Wait until the stand-in's recorded argv carries EVERY token in `expected`, panicking with what it
+/// `sprag find` end to end: the CLI sweeps the session's panes through the host's `find.<needle>`
+/// query and prints each matching line as `PANE:LINE: text`.
+///
+/// The boot pane prints two lines, one of which matches twice — so this pins the two properties a
+/// grep-shaped output has to get right: the matching line appears ONCE (deduped, not once per
+/// match), and the non-matching line does not appear at all. The needle carries a SPACE, which also
+/// proves the path-carried argument survives the wire verbatim from a shell argument.
+#[test]
+fn the_cli_find_prints_matching_lines_from_the_session() {
+    let (_host, sock) =
+        spawn_host_running(&["sh", "-c", "printf 'a hit and a hit\\nquiet\\n'; exec cat"]);
+
+    // The pane's output is asynchronous, so poll the search itself until it sees the line.
+    let mut run = sprag(&sock, &["find", "a hit"]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !run.stdout.contains("a hit and a hit") && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+        run = sprag(&sock, &["find", "a hit"]);
+    }
+    assert!(run.ok, "sprag find succeeded: {}", run.stderr);
+    let lines: Vec<&str> = run.stdout.lines().collect();
+    assert_eq!(
+        lines,
+        vec!["0:0: a hit and a hit"],
+        "one line per MATCHING line — deduped, and the quiet line is absent: {:?}",
+        run.stdout,
+    );
+
+    // A needle nothing matches is not an error: it prints nothing and exits 0, so a script can
+    // tell "the search ran" from "something broke".
+    let empty = sprag(&sock, &["find", "zzz-no-such-text"]);
+    assert!(empty.ok, "a search with no matches still succeeds");
+    assert!(
+        empty.stdout.is_empty(),
+        "and prints nothing: {:?}",
+        empty.stdout
+    );
+
+    // A missing needle is a clean local error, before any request.
+    let bare = sprag(&sock, &["find"]);
+    assert!(!bare.ok, "find with no needle fails");
+    assert!(
+        bare.stderr.contains("needle is required"),
+        "with a clear message: {}",
+        bare.stderr,
+    );
+}
+
+/// Wait until the stand-in's recorded argv carries EVERY token in `expected`/// Wait until the stand-in's recorded argv carries EVERY token in `expected`, panicking with what it
 /// did record if it never does.
 ///
 /// Polling `argv_file.exists()` and then reading it is a race, not a wait: the stub's
