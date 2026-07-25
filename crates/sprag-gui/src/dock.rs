@@ -117,6 +117,34 @@ pub(crate) fn pane_window_index(window_id: &str) -> Option<usize> {
         .filter(|&i| i < MAX_PANES)
 }
 
+/// The pane an OS file drop on `window_id` targets, or `None` when this window has no
+/// defensible single target (pinion R1437 / PINION-PR76 — the hook now names the window
+/// the drop landed on).
+///
+/// Two branches, and the window id is what separates them:
+/// - a **tear-off** window (`pane-{i}`) shows exactly ONE pane, so the drop targets pane `i`
+///   whatever holds keyboard focus. This is the case a focus-only rule got WRONG: X11 /
+///   Wayland DND does not focus a window before the drop, so a drop on an unfocused floater
+///   used to land on whichever pane was focused elsewhere.
+/// - the **main** window shows the split tree, and winit's drop event carries no position, so
+///   there is no hit test to route by. The focused pane is the only defensible target — the
+///   same rule the context menu already uses ([`crate::terminal::focused_pane`]) — but only
+///   while that pane is actually IN this window: a focused FLOATER is being addressed through
+///   its own window, so a drop on main is not for it. Resolving a tag's window from the
+///   binding's own topology is exactly what pinion's `focus_state` docs prescribe, the
+///   focused tag being binding-wide rather than per-window.
+///
+/// `None` therefore means "this gesture names no pane", and the drop is not delivered.
+/// Guessing instead — the first docked pane, say — would paste a path into a shell the user
+/// never pointed at, possibly mid-command; a drop that does nothing is recoverable, a drop
+/// into the wrong pane is not.
+pub(crate) fn drop_target_pane(window_id: &str) -> Option<usize> {
+    match pane_window_index(window_id) {
+        Some(i) => Some(i),
+        None => crate::terminal::focused_pane().filter(|&i| !is_pane_floating(i)),
+    }
+}
+
 /// The runtime window topology Signal — the floating SSOT. Cached in the root
 /// owner (the view fns + `windows_signal` resolve the same shared slot), seeded
 /// with just the main window. [`toggle_pane_floating`] pushes/removes undock
@@ -628,6 +656,57 @@ mod tests {
         assert_eq!(pane_window_index("pane-x"), None); // non-numeric
         assert_eq!(pane_window_index("nope"), None);
         assert_eq!(pane_window_index(&pane_window_id(MAX_PANES)), None); // out of range
+    }
+
+    /// (PINION-PR76 / pinion R1437) The three branches of [`drop_target_pane`], as a pure
+    /// function of the window id, the focused tag and the float topology.
+    ///
+    /// Kept beside the e2e that drives the real PTY
+    /// (`TerminalViewer::on_file_drop`'s two tests) because the DECISION is what R1437 changed
+    /// and it is decidable without any I/O — the delivery path was already pinned.
+    ///
+    /// REVERT-PROOF: resolving the target from focus alone (the pre-R1437 shape, when the hook
+    /// had no window to route by) returns pane 1 for the tear-off case and `Some(0)` for the
+    /// floating-focus case — so both of those assertions fail, in opposite directions.
+    #[test]
+    fn a_drop_targets_the_pane_its_window_addresses() {
+        let owner = Owner::new();
+        owner.run(|| {
+            project_host_layout();
+            let focus = Owner::current()
+                .expect("inside the owner scope")
+                .focused_tag_signal();
+            focus.set(Some(crate::terminal::pane_tag(1).to_owned()));
+
+            // MAIN + a focused DOCKED pane: focus is the only target available, winit's drop
+            // carrying no position to hit-test the split tree with.
+            assert_eq!(drop_target_pane(MAIN_WINDOW_ID), Some(1));
+
+            // A TEAR-OFF window addresses ITS pane, not the focused one. This is the case the
+            // focus-only rule got wrong, and it needs pane 0 unfocused to discriminate.
+            toggle_pane_floating(0);
+            assert!(is_pane_floating(0), "pane 0 must actually float");
+            assert_eq!(drop_target_pane(&pane_window_id(0)), Some(0));
+            assert_eq!(
+                drop_target_pane(MAIN_WINDOW_ID),
+                Some(1),
+                "the float must not disturb the main window's own target",
+            );
+
+            // MAIN while the FOCUSED pane floats: focus points into another window, so main
+            // names no pane and the drop is not delivered.
+            focus.set(Some(crate::terminal::pane_tag(0).to_owned()));
+            assert_eq!(drop_target_pane(MAIN_WINDOW_ID), None);
+            assert_eq!(
+                drop_target_pane(&pane_window_id(0)),
+                Some(0),
+                "the floater's own window still addresses it",
+            );
+
+            // No focus at all: main has nothing to name.
+            focus.set(None);
+            assert_eq!(drop_target_pane(MAIN_WINDOW_ID), None);
+        });
     }
 
     #[test]

@@ -810,6 +810,10 @@ mod tests {
             edge,
             modifiers: mods,
             buttons,
+            // A LONE edge, which is what this helper builds: pinion reports `1` for a first press
+            // and for a release with no tracked press. `2` would make it a double-click — a
+            // different gesture, and not one the tracking oracle reads (pinion R1422).
+            click_count: 1,
         }
     }
 

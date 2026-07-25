@@ -1152,17 +1152,18 @@ impl WidgetView for TerminalViewer {
         selection::drag(scene, x, y)
     }
 
-    /// OS file drop (pinion R770 §5.15): a file dragged from the desktop onto a sprag window is
-    /// delivered to the FOCUSED pane — pasted as a local path, or `scp`-uploaded first when that pane
-    /// is a `sprag ssh` remote workspace and then pasted as its REMOTE path. The host owns that
-    /// decision ([`sprag_host::HostClient::drop_file`]); this end only resolves WHICH pane.
+    /// OS file drop (pinion R770 §5.15, R1437 §5.16): a file dragged from the desktop onto a sprag
+    /// window is delivered to the pane that window addresses — pasted as a local path, or
+    /// `scp`-uploaded first when that pane is a `sprag ssh` remote workspace and then pasted as its
+    /// REMOTE path. The host owns that decision ([`sprag_host::HostClient::drop_file`]); this end
+    /// only resolves WHICH pane, from `window_id` ([`dock::drop_target_pane`], which is where the
+    /// two-branch rule and its `None` are justified).
     ///
-    /// The focused pane is the only defensible target: winit's drop event carries NO position (and
-    /// pinion's hook, which the substrate calls per window, does not pass the window either), so
-    /// there is no hit-test to route by — exactly the situation the context menu's target-pane rule
-    /// already answers ([`crate::terminal::focused_pane`]). Reported upstream as PINION-PR76; a drop
-    /// on an unfocused tear-off window therefore lands on the focused pane, not the one under the
-    /// cursor.
+    /// `window_id` arrived with PINION-PR76 (pinion R1437) and is what makes the drop ROUTABLE: the
+    /// substrate always knew which window caught the file, and the hook now passes it through, so a
+    /// drop on an unfocused tear-off window no longer has to fall back to keyboard focus. winit's
+    /// event still carries no position, so within the main window's split tree focus remains the
+    /// only available target — routing is per WINDOW, not per pane rect.
     ///
     /// winit delivers ONE call per file, so a multi-file drop arrives as several drops and each
     /// pasted path carries a trailing space — they accumulate into a usable argument list.
@@ -1170,10 +1171,11 @@ impl WidgetView for TerminalViewer {
     /// Returns `false` (no redraw request): nothing reactive changed here. The pasted path appears
     /// as ordinary pane output — for an upload, only once the transfer completes — so the pane's own
     /// change notification repaints it, exactly as a keystroke's echo does.
-    fn on_file_drop(_state: &Self::State, path: &str) -> bool {
+    fn on_file_drop(window_id: &str, _state: &Self::State, path: &str) -> bool {
         let terminal = use_terminal();
-        let delivered = focused_pane().and_then(|pane| terminal.slots.drop_file(pane, path));
-        tracing::debug!(target: "sprag_gui::input", path, ?delivered, "os file drop");
+        let delivered =
+            dock::drop_target_pane(window_id).and_then(|pane| terminal.slots.drop_file(pane, path));
+        tracing::debug!(target: "sprag_gui::input", window_id, path, ?delivered, "os file drop");
         false
     }
 
@@ -1366,14 +1368,25 @@ mod tests {
         c
     }
 
-    /// An OS file drop lands on the FOCUSED pane, and only on it.
+    /// Pane width for the file-drop fixtures, which assert `pane_full_text(..).contains(path)`
+    /// after the pasted path echoes back through `cat`.
     ///
-    /// That is the whole routing rule, and it needs pinning because it is not derived from anything
-    /// the drop itself carries: winit's `DroppedFile` has no position and pinion's hook passes no
-    /// window, so [`TerminalViewer::on_file_drop`] resolves the target the same way the context menu
-    /// does — [`crate::terminal::focused_pane`]. Focus is published the way the focus manager
-    /// publishes it (writing the owner's focus mirror, the stand-in pinion's own `focus_state` tests
-    /// use), so this drives the REAL read rather than a seam beneath it.
+    /// Wide enough that the path cannot SOFT-WRAP: a wrap puts a newline inside the needle, so the
+    /// `contains` fails even though the drop was delivered correctly. At the 40 columns these tests
+    /// used to share, whether they passed depended on the length of `TMPDIR` plus the fixture's own
+    /// directory name — a fixture rename away from a false failure. The width is not otherwise
+    /// load-bearing here (routing is per WINDOW; no assertion reads a column).
+    const DROP_PANE_COLS: u16 = 200;
+
+    /// A drop on the MAIN window lands on the FOCUSED pane, and only on it.
+    ///
+    /// That is the main window's half of the routing rule, and it needs pinning because it is not
+    /// derived from anything the drop itself carries: winit's `DroppedFile` has no position, so
+    /// within the split tree [`TerminalViewer::on_file_drop`] resolves the target the same way the
+    /// context menu does — [`crate::terminal::focused_pane`]. Focus is published the way the focus
+    /// manager publishes it (writing the owner's focus mirror, the stand-in pinion's own
+    /// `focus_state` tests use), so this drives the REAL read rather than a seam beneath it. The
+    /// tear-off half is `a_drop_on_a_tear_off_window_lands_on_that_windows_pane`.
     ///
     /// REVERT-PROOF: routing to a fixed pane — or to every pane — fails the second assertion, which
     /// is why the drop targets pane 1 while pane 0 exists and is checked for silence.
@@ -1391,11 +1404,25 @@ mod tests {
         })
         .expect("canonicalize the dropped file");
 
-        let host = Host::new((40, 6));
-        host.spawn(untitled_pane(), "sh".to_owned(), 40, 6, None, None)
-            .unwrap();
-        host.spawn(untitled_pane(), "sh".to_owned(), 40, 6, None, None)
-            .unwrap();
+        let host = Host::new((DROP_PANE_COLS, 6));
+        host.spawn(
+            untitled_pane(),
+            "sh".to_owned(),
+            DROP_PANE_COLS,
+            6,
+            None,
+            None,
+        )
+        .unwrap();
+        host.spawn(
+            untitled_pane(),
+            "sh".to_owned(),
+            DROP_PANE_COLS,
+            6,
+            None,
+            None,
+        )
+        .unwrap();
 
         let owner = Owner::new();
         owner.run(|| {
@@ -1412,6 +1439,7 @@ mod tests {
 
             assert!(
                 !<TerminalViewer as WidgetView>::on_file_drop(
+                    dock::MAIN_WINDOW_ID,
                     &view::ViewState::default(),
                     dropped.to_str().unwrap(),
                 ),
@@ -1431,6 +1459,96 @@ mod tests {
             assert!(
                 !terminal.slots.pane_full_text(0).contains(&path),
                 "the drop must reach ONLY the focused pane, never its unfocused sibling",
+            );
+        });
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A drop on a TEAR-OFF window reaches that window's pane even though another pane holds
+    /// keyboard focus — the payoff of PINION-PR76 (pinion R1437), which passes the dropped
+    /// window's id into the hook.
+    ///
+    /// This is not reachable by the focus-only rule at all: X11 / Wayland DND does not focus a
+    /// window before the drop, so a file dragged onto a floater arrived with focus still on the
+    /// pane the user last typed in. The routing decision itself is unit-tested across all its
+    /// branches ([`dock::drop_target_pane`]); what this pins is the WIRING — that `window_id`
+    /// reaches the host write and the bytes land in the addressed pane's PTY.
+    ///
+    /// REVERT-PROOF: routing from focus alone writes into pane 1, so the first loop times out on
+    /// pane 0 AND the silence assertion on pane 1 fires — the two panes cannot both be explained
+    /// by a fixed target.
+    #[test]
+    fn a_drop_on_a_tear_off_window_lands_on_that_windows_pane() {
+        use std::time::{Duration, Instant};
+
+        let dir = std::env::temp_dir().join(format!("sprag-gui-drop-float-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create the drop dir");
+        let dropped = std::fs::canonicalize({
+            let path = dir.join("dropped.txt");
+            std::fs::write(&path, b"payload").expect("write the dropped file");
+            path
+        })
+        .expect("canonicalize the dropped file");
+
+        let host = Host::new((DROP_PANE_COLS, 6));
+        host.spawn(
+            untitled_pane(),
+            "sh".to_owned(),
+            DROP_PANE_COLS,
+            6,
+            None,
+            None,
+        )
+        .unwrap();
+        host.spawn(
+            untitled_pane(),
+            "sh".to_owned(),
+            DROP_PANE_COLS,
+            6,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let owner = Owner::new();
+        owner.run(|| {
+            crate::terminal::seed_terminal(host);
+            let terminal = use_terminal();
+            assert_eq!(terminal.slots.occupied_slots(), vec![0, 1]);
+
+            // Focus pane 1, then tear pane 0 off into its own window: the drop target and the
+            // focus are now DIFFERENT panes, which is the whole point of the fixture.
+            Owner::current()
+                .expect("inside the owner scope")
+                .focused_tag_signal()
+                .set(Some(pane_tag(1).to_owned()));
+            crate::split::sync_layout(&terminal.slots);
+            dock::toggle_pane_floating(0);
+            assert_eq!(crate::terminal::focused_pane(), Some(1));
+
+            assert!(
+                !<TerminalViewer as WidgetView>::on_file_drop(
+                    &dock::pane_window_id(0),
+                    &view::ViewState::default(),
+                    dropped.to_str().unwrap(),
+                ),
+                "a drop changes no reactive state, so it requests no redraw",
+            );
+
+            let path = dropped.to_str().unwrap().to_owned();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !terminal.slots.pane_full_text(0).contains(&path) {
+                assert!(
+                    Instant::now() < deadline,
+                    "the dropped path never reached the TORN-OFF pane the drop landed on",
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(
+                !terminal.slots.pane_full_text(1).contains(&path),
+                "the drop must not reach the FOCUSED pane in the other window",
             );
         });
 
