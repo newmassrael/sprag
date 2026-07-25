@@ -69,6 +69,30 @@ fn pane_history_path(dir: &Path, id: PaneId) -> PathBuf {
     dir.join(format!("{}.{HISTORY_EXTENSION}", id.0))
 }
 
+/// The pane `path` is a DURABLE saved history for, or `None` when the path is not one of ours —
+/// the inverse of the private `<id>.hist` path constructor, and the ONE answer to "which files in a
+/// history directory count".
+///
+/// Public because the directory is ([`history_dir`]), so anything that can list it needs to be able
+/// to tell a finished history from the rest — notably `<id>.hist.tmp`, the in-flight half of the
+/// atomic write, which is present in the directory but is NOT yet anything a restore would read.
+/// A caller that filters by hand instead gets that wrong: treating a `.tmp` as durable reads a
+/// history the daemon has not committed, and may not commit at all.
+///
+/// Two things are checked, and both matter: the `.hist` extension (so a `.tmp`, or any foreign
+/// file, is refused) and a stem that parses as a pane id (so a `notes.hist` a user dropped in is
+/// not mistaken for a pane's — the reap relies on that to never delete what is not ours).
+#[must_use]
+pub fn history_file_pane(path: &Path) -> Option<PaneId> {
+    if path.extension().and_then(|e| e.to_str()) != Some(HISTORY_EXTENSION) {
+        return None;
+    }
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .and_then(|stem| stem.parse::<u64>().ok())
+        .map(PaneId)
+}
+
 /// How many logical lines of each pane's output to persist: `SPRAG_RESTORE_HISTORY` if it holds a
 /// number, else [`DEFAULT_HISTORY_LINES`]. `0` disables history persistence entirely — the daemon
 /// then neither saves nor restores it.
@@ -194,16 +218,10 @@ fn reap_orphans(dir: &Path, live: &HashSet<PaneId>) {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some(HISTORY_EXTENSION) {
-            continue;
-        }
-        let id = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .and_then(|stem| stem.parse::<u64>().ok())
-            .map(PaneId);
-        // A `.hist` whose stem is not a pane id is not ours to delete.
-        if id.is_some_and(|id| !live.contains(&id)) {
+        // Only a file that IS a pane's history is ours to delete — [`history_file_pane`] refuses a
+        // foreign name and a `.tmp` alike, so a reap can neither remove a user's file nor race an
+        // in-flight atomic write.
+        if history_file_pane(&path).is_some_and(|id| !live.contains(&id)) {
             let _ = std::fs::remove_file(&path);
         }
     }
@@ -286,6 +304,39 @@ mod tests {
 
         assert_eq!(load_pane_history(&dir, PaneId(2)), b"b!".to_vec());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// [`history_file_pane`] answers for a DURABLE history only — and the case that matters is
+    /// `<id>.hist.tmp`, the in-flight half of the atomic write, which lives in the same directory as
+    /// the finished file and names a real pane id in its path.
+    ///
+    /// Counting a `.tmp` as durable is not hypothetical: it cost a ~15% flake in
+    /// `cli.rs::a_killed_daemon_gives_its_panes_back_with_their_scrollback`, whose wait scanned the
+    /// directory by hand and so cleared as soon as the TEMP file held the needle. It then killed the
+    /// daemon before the rename, and the pane came back blank.
+    ///
+    /// REVERT-PROOF: dropping the extension check accepts the `.tmp` (its stem is `0.hist`, which
+    /// does not parse as an id — so the FIRST case below would still pass and only the third fails;
+    /// hence a `.tmp` whose stem IS a bare id is checked too).
+    #[test]
+    fn only_a_committed_hist_file_names_a_pane() {
+        let dir = Path::new("/tmp/whatever.history");
+        assert_eq!(history_file_pane(&dir.join("7.hist")), Some(PaneId(7)));
+        assert_eq!(
+            history_file_pane(&dir.join("7.hist.tmp")),
+            None,
+            "the atomic write's in-flight temp is not a history a restore may read",
+        );
+        assert_eq!(
+            history_file_pane(&dir.join("7.tmp")),
+            None,
+            "nor is a bare temp whose stem IS a pane id — the extension is what decides",
+        );
+        assert_eq!(
+            history_file_pane(&dir.join("notes.hist")),
+            None,
+            "a foreign file with our extension is not ours to read or reap",
+        );
     }
 
     /// A pane that is gone takes its history file with it, so a long-lived daemon's history

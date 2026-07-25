@@ -1060,7 +1060,20 @@ fn spawn_daemon(sock: &Path, state: &Path) {
     assert!(status.success(), "the daemon's parent forked cleanly");
 }
 
-/// Whether any saved pane history under `state` contains `needle`.
+/// Whether any DURABLE saved pane history under `state` contains `needle`.
+///
+/// "Durable" is the whole point, and it is why the file filter is
+/// [`sprag_host::history_file_pane`] rather than a hand-rolled one: the atomic write leaves
+/// `<id>.hist.tmp` in the same directory while it is in flight, and an unfiltered scan matches THAT.
+/// A caller waiting on this to decide the history is safe would then kill the daemon between the
+/// temp write and the rename — the pane comes back with no history at all, and the successor's own
+/// save loop overwrites the file with its fresh prompt, erasing the evidence.
+///
+/// That was a real ~15% flake in
+/// `a_killed_daemon_gives_its_panes_back_with_their_scrollback`, found by dumping the bytes: the
+/// needle was sitting in `0.hist.tmp`. Waiting on the file a RESTORE would actually read is the
+/// condition the assertion depends on — the rule this helper had stated in its caller's comment and
+/// then not implemented.
 fn saved_history_contains(state: &Path, needle: &str) -> bool {
     let Ok(dirs) = std::fs::read_dir(state.join("sprag")) else {
         return false;
@@ -1073,6 +1086,7 @@ fn saved_history_contains(state: &Path, needle: &str) -> bool {
                 .flatten()
                 .flatten()
         })
+        .filter(|file| sprag_host::history_file_pane(&file.path()).is_some())
         .any(|file| {
             std::fs::read(file.path())
                 .is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains(needle))
