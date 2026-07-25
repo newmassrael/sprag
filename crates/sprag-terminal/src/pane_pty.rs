@@ -457,6 +457,23 @@ impl PanePty {
         self.with_screen(Screen::clone)
     }
 
+    /// This pane's retained output encoded as REPLAYABLE terminal bytes, bounded to its last
+    /// `limit` logical lines — the durable form of its scrollback.
+    ///
+    /// The companion of [`cwd`](Self::cwd) for the durability ring: a reboot kills the PTY, and
+    /// re-spawning a shell in the recorded directory puts the pane back where the user was working,
+    /// but blank. These bytes are what puts the user's OUTPUT back with it. Read at save time
+    /// (history grows with every scroll), so like the cwd it is live child state rather than
+    /// something stored on the pane.
+    ///
+    /// Not routed through [`with_screen`](Self::with_screen): while a fullscreen app holds the
+    /// alternate screen the ACTIVE screen is that app's furniture and carries no scrollback, so the
+    /// encoding is taken from the emulator, which knows to reach past it to the main screen.
+    #[must_use]
+    pub fn history_bytes(&self, limit: usize) -> Vec<u8> {
+        lock(&self.emulator).history_bytes(limit)
+    }
+
     /// The OS process id of the child on this pty's slave.
     ///
     /// The current backend (portable-pty over [`std::process::Child`]) reports the id for the whole

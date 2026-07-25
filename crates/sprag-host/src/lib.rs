@@ -49,6 +49,7 @@
 pub mod attach;
 pub mod durability;
 mod external;
+pub mod history;
 pub mod host;
 pub mod pane;
 pub mod plugins;
@@ -68,6 +69,10 @@ pub use attach::{AttachOutcome, AttachmentRegistry, ClientId, ClientInfo};
 pub use durability::{
     load_snapshot, reconnect_command, restore_allowlist, restore_command, save_if_changed,
     save_snapshot, snapshot_path,
+};
+pub use history::{
+    DEFAULT_HISTORY_LINES, history_dir, history_limit, load_pane_history, purge_histories,
+    save_histories_if_changed,
 };
 pub use host::{
     Host, HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneMatch,

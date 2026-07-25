@@ -36,16 +36,29 @@ use crate::ssh::SshTarget;
 /// reboot.
 #[must_use]
 pub fn snapshot_path(socket: &Path) -> PathBuf {
-    let state_dir = std::env::var_os("XDG_STATE_HOME")
+    sprag_state_dir().join(format!("{}.snapshot.json", socket_key(socket)))
+}
+
+/// sprag's persistent state directory: `$XDG_STATE_HOME/sprag`, falling back to
+/// `~/.local/state/sprag` then `/tmp/sprag`. The one derivation, shared by every durable artifact
+/// (the snapshot and the per-pane history files) so they cannot land in two different places.
+pub(crate) fn sprag_state_dir() -> PathBuf {
+    std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
-    let key = socket
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("sprag")
+}
+
+/// The identity a daemon's durable artifacts are keyed on: its socket's file stem
+/// (`sprag-host.sock` → `sprag-host`). Two daemons on two sockets (tmux's per-socket-server model)
+/// therefore keep two independent sets of state.
+pub(crate) fn socket_key(socket: &Path) -> &str {
+    socket
         .file_stem()
         .and_then(|s| s.to_str())
-        .unwrap_or("sprag-host");
-    state_dir.join("sprag").join(format!("{key}.snapshot.json"))
+        .unwrap_or("sprag-host")
 }
 
 /// Write `snapshot` to `path` ATOMICALLY and OWNER-PRIVATE: serialize to a sibling temp created
@@ -63,18 +76,33 @@ pub fn snapshot_path(socket: &Path) -> PathBuf {
 /// An [`io::Error`] if the directory cannot be created, the temp cannot be written, or the
 /// rename fails (serialization failure is surfaced as [`io::ErrorKind::Other`]).
 pub fn save_snapshot(path: &Path, snapshot: &Snapshot) -> io::Result<()> {
+    let json = serde_json::to_vec_pretty(snapshot).map_err(io::Error::other)?;
+    write_atomic_private(path, &json)
+}
+
+/// Write `bytes` to `path` ATOMICALLY and OWNER-PRIVATE — the one durable-write policy, shared by
+/// the snapshot and the per-pane history files.
+///
+/// Creates the parent directory if absent and tightens it to 0700, writes a sibling temp created
+/// mode 0600, fsyncs it, then renames it over the target. A crash mid-write leaves the temp
+/// (harmless) or the previous good file, never a half-written one a restore would choke on.
+///
+/// # Errors
+///
+/// An [`io::Error`] if the directory cannot be created, the temp cannot be written, or the rename
+/// fails.
+pub(crate) fn write_atomic_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
         harden_dir(parent);
     }
-    let json = serde_json::to_vec_pretty(snapshot).map_err(io::Error::other)?;
     // A per-target temp in the SAME directory, so the rename is atomic (same filesystem). One
     // daemon owns this path (the single-instance flock), so a fixed `.tmp` suffix cannot collide.
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
     let mut file = private_create(&tmp)?;
-    file.write_all(&json)?;
+    file.write_all(bytes)?;
     file.sync_all()?; // durable before the rename, so a power loss can't strand an empty file
     drop(file);
     std::fs::rename(&tmp, path)
@@ -82,7 +110,7 @@ pub fn save_snapshot(path: &Path, snapshot: &Snapshot) -> io::Result<()> {
 
 /// Create `path` for writing, truncated, OWNER-read/write only (0600) where the OS supports it —
 /// so the argv-bearing snapshot temp is never briefly world-readable.
-fn private_create(path: &Path) -> io::Result<File> {
+pub(crate) fn private_create(path: &Path) -> io::Result<File> {
     let mut opts = OpenOptions::new();
     opts.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -92,12 +120,12 @@ fn private_create(path: &Path) -> io::Result<File> {
 
 /// Best-effort tighten `dir` to owner-only (0700) — the snapshot's argv can carry secrets.
 #[cfg(unix)]
-fn harden_dir(dir: &Path) {
+pub(crate) fn harden_dir(dir: &Path) {
     let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
 }
 
 #[cfg(not(unix))]
-fn harden_dir(_dir: &Path) {}
+pub(crate) fn harden_dir(_dir: &Path) {}
 
 /// Read the snapshot at `path`, or `None` if there is none to restore — the FAIL-SAFE load.
 ///

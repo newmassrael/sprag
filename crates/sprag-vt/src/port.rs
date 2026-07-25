@@ -44,7 +44,7 @@ pub fn char_columns(ch: char) -> usize {
 /// of the terminal width: narrowing (which multiplies physical rows) never evicts history it would
 /// have kept at the wider size. This is tmux's `history-limit` model — tmux counts logical lines
 /// because it never wraps history — and sprag matches it while ALSO reflowing, which tmux does not.
-pub(crate) const SCROLLBACK_CAP: usize = 1000;
+pub const SCROLLBACK_CAP: usize = 1000;
 
 /// A hard ceiling on the PHYSICAL rows scrollback may hold — a memory guard orthogonal to
 /// [`SCROLLBACK_CAP`]. A pathological single logical line (megabytes with no newline) is one

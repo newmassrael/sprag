@@ -22,11 +22,16 @@
 //! working directory, launch label and size. The global pane-id high-water mark rides too, so a
 //! restore never reissues a retired id.
 //!
-//! A live PTY, its child process, its scrollback and a running agent's in-memory state do NOT —
-//! a reboot ends them. On restore each pane re-spawns a fresh shell IN ITS RECORDED CWD (slice 1;
-//! re-running the exact command is a later, allowlisted increment), which is the honest cmux
-//! analogue: the pane and its directory come back, and an agent resumes its own state through its
-//! own tool. The snapshot carries `command_label` for display and for that future increment.
+//! A live PTY, its child process and a running agent's in-memory state do NOT — a reboot ends
+//! them. On restore each pane re-spawns a fresh shell IN ITS RECORDED CWD (slice 1; re-running the
+//! exact command is a later, allowlisted increment), which is the honest cmux analogue: the pane
+//! and its directory come back, and an agent resumes its own state through its own tool. The
+//! snapshot carries `command_label` for display and for that future increment.
+//!
+//! A pane's SCROLLBACK does survive, but not through this DTO — see [`pane_histories`]. It is
+//! captured as replayable terminal bytes into one raw file per pane, because it is orders of
+//! magnitude larger than the shape, changes on every scroll, and would not survive a JSON string
+//! escape intact.
 //!
 //! ## Homes are not persisted (a documented bound)
 //!
@@ -232,6 +237,55 @@ pub fn snapshot(registry: &Arc<Mutex<SessionRegistry>>) -> Snapshot {
         default_size,
         sessions,
     }
+}
+
+/// Capture every live pane's retained output as REPLAYABLE terminal bytes, bounded to `limit`
+/// logical lines each — the CONTENT half of the durability ring, paired with [`snapshot`]'s SHAPE
+/// half. `limit == 0` captures nothing (history persistence disabled).
+///
+/// ## Why content is not part of [`Snapshot`]
+///
+/// A pane's history is orders of magnitude larger than its shape and changes on every scroll,
+/// while the shape changes only when the user rearranges something. Folding it into the snapshot
+/// DTO would make any shape change — a resize, a `cd` — rewrite every pane's history with it, and
+/// would put a stream full of `ESC` bytes through a JSON string escape, tripling it and destroying
+/// the "a user can read their saved layout" property the snapshot file has. So the shape stays one
+/// small human-readable JSON file and the content becomes one raw, `cat`-able file per pane.
+///
+/// The two are written at different instants and are deliberately allowed to disagree: a pane born
+/// between them has a shape and no history (it restores blank) or a history and no shape (an
+/// orphan file the next save reaps). Both degrade to less history, never to a corrupt restore.
+///
+/// Takes the registry lock and each workspace lock SEQUENTIALLY, never nested — the same discipline
+/// [`snapshot`] documents, and for the same deadlock reason.
+#[must_use]
+pub fn pane_histories(
+    registry: &Arc<Mutex<SessionRegistry>>,
+    limit: usize,
+) -> Vec<(PaneId, Vec<u8>)> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    // Phase 1 — registry lock ONLY: clone out the pools as handles, then release it.
+    let pools: Vec<Arc<Mutex<crate::workspace::Workspace>>> = {
+        let reg = registry.lock().unwrap_or_else(PoisonError::into_inner);
+        reg.sessions()
+            .iter()
+            .flat_map(|session| session.windows())
+            .map(|window| Arc::clone(window.workspace()))
+            .collect()
+    };
+    // Phase 2 — registry lock released; each pool read under its OWN lock.
+    pools
+        .iter()
+        .flat_map(|pool| {
+            let pool = pool.lock().unwrap_or_else(PoisonError::into_inner);
+            pool.panes()
+                .iter()
+                .map(|pane| (pane.id(), pane.pty().history_bytes(limit)))
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// Why restoring a [`Snapshot`] was refused. Every case is a reason the daemon falls back to an
