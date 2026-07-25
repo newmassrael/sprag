@@ -5,6 +5,16 @@
 //! [`crate::slotview::SlotView::pane_find`]). This module is the display half: a text field to type
 //! the needle into, the jump between matches, and the colours laid over the grid.
 //!
+//! ## Two search LANGUAGES, one field
+//!
+//! The field's text is read either literally or as a regular expression
+//! ([`use_find_regex`], the `Regex` toggle / `Alt+R`), and that choice picks between two DISTINCT
+//! queries — `find.<needle>` and `regex.<pattern>` — never one query with a mode argument. The same
+//! characters mean different things in the two languages, which is why the wire keeps them at separate
+//! addresses and why the mode must be VISIBLE here: nothing else on screen would say which language
+//! the user is typing. A pattern the engine refuses is reported as a refusal ([`use_find_error`]),
+//! never as an empty result, for the same reason.
+//!
 //! ## What is client state and what is not
 //!
 //! The needle, the open flag, the current match index and the last answer are all THIS client's —
@@ -22,13 +32,17 @@
 
 use std::rc::Rc;
 
+use pinion_core::WidgetStateName;
+use pinion_core::external::IntrospectValue;
 use pinion_core::reactive::{Owner, Signal};
 use pinion_core::theme::Theme;
 use pinion_core::widget_core::ExtraExternal;
 use pinion_core::widgets::caret_blink::use_caret_blink;
+use pinion_core::widgets::checkbox::{CheckboxExternal, CheckboxState};
 use pinion_core::widgets::text_edit::use_text_edit_state;
 use pinion_core::widgets::text_field::{TextFieldExternal, TextFieldState};
 use pinion_core::{Modifiers, Scene, TermColor};
+use pinion_widget_paint::checkbox as pw_checkbox;
 use pinion_widget_paint::text_field as tf_paint;
 use sprag_grid::MatchSpan;
 use sprag_host::PaneMatch;
@@ -39,12 +53,20 @@ use crate::terminal::{pane_tag, use_terminal};
 /// `use_caret_blink` key, the paint tag, and the focus tag — one string for one surface.
 pub(crate) const FIND_FIELD_TAG: &str = "sprag_find";
 
+/// The regex-mode checkbox's tag: its External registration key, its paint tag, and the tag its
+/// `checked` intent arrives under — one string for one surface, like [`FIND_FIELD_TAG`].
+pub(crate) const FIND_REGEX_TAG: &str = "sprag_find_regex";
+
 /// `Owner::cache` key for the searched pane (`None` = the bar is closed).
 const FIND_PANE_KEY: &str = "sprag_gui.find.pane";
 /// `Owner::cache` key for the last answered match list.
 const FIND_MATCHES_KEY: &str = "sprag_gui.find.matches";
 /// `Owner::cache` key for the index of the CURRENT match within that list.
 const FIND_INDEX_KEY: &str = "sprag_gui.find.index";
+/// `Owner::cache` key for whether the needle is read as a REGULAR EXPRESSION.
+const FIND_REGEX_KEY: &str = "sprag_gui.find.regex";
+/// `Owner::cache` key for the engine's message about a pattern it refused (`None` = it searched).
+const FIND_ERROR_KEY: &str = "sprag_gui.find.error";
 
 /// The placeholder the empty field shows — also its accessible name.
 const FIND_PLACEHOLDER: &str = "Find";
@@ -88,6 +110,35 @@ pub(crate) fn use_find_index() -> Signal<usize> {
         .clone()
 }
 
+/// Whether the field's text is read as a REGULAR EXPRESSION rather than literal characters.
+///
+/// This client's state, like the needle — and it is a MODE only at this surface, never on the wire:
+/// [`refresh`] picks between two distinct queries from it, so the address always says which language
+/// it carries. It has to be visible in the bar for the same reason the two addresses exist — the same
+/// characters mean different things in the two languages, so the user must be able to see which one
+/// they are typing.
+pub(crate) fn use_find_regex() -> Signal<bool> {
+    Owner::current()
+        .expect("use_find_regex() requires an active Owner scope")
+        .cache(FIND_REGEX_KEY, || Signal::new(false))
+        .as_ref()
+        .clone()
+}
+
+/// The regex engine's explanation of a pattern it REFUSED, or `None` when the last search ran.
+///
+/// Kept as its own signal rather than folded into an empty match list, which is the same distinction
+/// the wire refuses to collapse: "your pattern is wrong" and "nothing matched" are different answers,
+/// and a bar that showed "no matches" for a half-typed `(foo` would be lying about a search it never
+/// performed.
+pub(crate) fn use_find_error() -> Signal<Option<Rc<str>>> {
+    Owner::current()
+        .expect("use_find_error() requires an active Owner scope")
+        .cache(FIND_ERROR_KEY, || Signal::new(None))
+        .as_ref()
+        .clone()
+}
+
 /// The find field's live text — the needle.
 pub(crate) fn needle() -> String {
     use_text_edit_state(FIND_FIELD_TAG).text()
@@ -110,7 +161,41 @@ pub(crate) fn create_find_external() -> ExtraExternal {
     )
 }
 
-/// The field's interaction posture for the paint — the `Copy` snapshot the shell caches into the
+/// The regex toggle as an extra External, registered every reconcile at [`FIND_REGEX_TAG`].
+///
+/// A real pinion [`CheckboxExternal`] rather than a hand-painted glyph: it comes focusable, hoverable,
+/// keyboard-activatable and AT-named, it publishes itself in `scene/snapshot`, and — the property this
+/// project needs most — it is drivable BY INTENT from its tag, so the toggle is testable headlessly
+/// instead of only by synthesising a click at a pixel.
+pub(crate) fn create_regex_external() -> ExtraExternal {
+    ExtraExternal::new(FIND_REGEX_TAG.to_owned(), Box::new(CheckboxExternal::new()))
+}
+
+/// Handle the regex checkbox's `checked` intent — the click / Space path. Returns whether it was ours.
+///
+/// The checkbox's statechart owns its own interaction state; the CHECKED value it reports is mirrored
+/// into [`use_find_regex`], which is this client's SSOT for the search language. Flipping it re-queries
+/// immediately: the same characters now address a different query, so the matches on screen describe a
+/// search that is no longer the one being asked.
+pub(crate) fn handle_regex_intent(intent: &pinion_core::Intent) -> bool {
+    let Some((who, _event)) = intent.tag_str().rsplit_once('.') else {
+        return false;
+    };
+    if who != FIND_REGEX_TAG {
+        return false;
+    }
+    if let IntrospectValue::Bool(on) = &intent.payload {
+        use_find_regex().set(*on);
+    } else {
+        // No boolean payload (a checkbox intent that is not the `checked` one): treat the activation
+        // as a plain toggle rather than dropping it, so the surface can never latch.
+        use_find_regex().set(!use_find_regex().get());
+    }
+    refresh();
+    true
+}
+
+/// The bar's interaction posture for the paint — the `Copy` snapshot the shell caches into the
 /// binding's `State`, read out of the model scene like the context menu's own.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub(crate) struct FindFieldState {
@@ -118,13 +203,39 @@ pub(crate) struct FindFieldState {
     pub(crate) field: TextFieldState,
     /// The caret's byte offset within the needle.
     pub(crate) caret: u32,
+    /// The regex checkbox's own SCXML interaction state (idle / hover / pressed / focused), so it
+    /// paints its hover and focus like every other pinion control. Its CHECKED value is not here —
+    /// that lives in [`use_find_regex`], this client's state, which the checkbox's intent writes.
+    pub(crate) regex_box: CheckboxState,
 }
 
-/// Project the find field's posture out of the model scene (the `read_state` seam). Defaults when
-/// the External is absent (before the first reconcile registers it).
+/// Project the bar's posture out of the model scene (the `read_state` seam). Defaults when the
+/// Externals are absent (before the first reconcile registers them).
 pub(crate) fn read_field_state(scene: &Scene) -> FindFieldState {
     let (field, caret) = tf_paint::read_text_field_state(scene, FIND_FIELD_TAG);
-    FindFieldState { field, caret }
+    FindFieldState {
+        field,
+        caret,
+        regex_box: read_checkbox_state(scene, FIND_REGEX_TAG),
+    }
+}
+
+/// One checkbox External's SCXML interaction state, off the standard introspect `"state"` slot —
+/// pinion's own settings-panel binding reads its checkboxes exactly this way (there is no
+/// `read_checkbox_state` sibling to `read_text_field_state` in `pinion-widget-paint`).
+///
+/// `Idle` when the External is not wired yet, which is the create-then-paint window every External
+/// has on its first frame.
+fn read_checkbox_state(scene: &Scene, tag: &str) -> CheckboxState {
+    scene
+        .find_external_with_tag(tag)
+        .and_then(|node| node.handle.introspect())
+        .and_then(|intro| intro.query("state"))
+        .and_then(|value| match value {
+            IntrospectValue::Text(name) => Some(CheckboxState::from_name_or_default(&name)),
+            _ => None,
+        })
+        .unwrap_or(CheckboxState::Idle)
 }
 
 /// Open the bar on pane `pane` and focus its field (`Ctrl+Shift+F`).
@@ -164,6 +275,14 @@ pub(crate) fn is_find_focus(tag: &str) -> bool {
 /// back. A key the field recognizes re-queries: the needle changed, so the old matches describe a
 /// different search.
 pub(crate) fn handle_key(scene: &mut Scene, key: &str, modifiers: Modifiers) -> bool {
+    // `Alt+R` toggles the search LANGUAGE without leaving the field — VS Code's / IntelliJ's binding
+    // for the same toggle, so it needs no explanation. Checked before the field's own dispatch, since
+    // the field would otherwise type an `r`.
+    if modifiers.alt && key.eq_ignore_ascii_case("r") {
+        use_find_regex().set(!use_find_regex().get());
+        refresh();
+        return true;
+    }
     match key {
         "Escape" => {
             close();
@@ -191,7 +310,14 @@ pub(crate) fn refresh() {
     let Some(pane) = use_find_pane().get() else {
         return;
     };
-    let found = use_terminal().slots.pane_find(pane, &needle());
+    // Which LANGUAGE the needle is in decides which QUERY is sent — the one choice, made here, exactly
+    // as the CLI makes it once before its sweep. Neither call takes a mode.
+    let slots = &use_terminal().slots;
+    let found = if use_find_regex().get() {
+        slots.pane_find_regex(pane, &needle())
+    } else {
+        slots.pane_find(pane, &needle())
+    };
     if found.truncated {
         tracing::debug!(
             target: "sprag_gui::find",
@@ -200,6 +326,9 @@ pub(crate) fn refresh() {
             "the search hit its cap; later matches were not scanned",
         );
     }
+    // A refused pattern is NOT an empty result: keep the engine's message and drop the stale matches,
+    // so the bar says why it did not search rather than claiming it found nothing.
+    use_find_error().set(found.error.as_deref().map(Rc::from));
     let top = crate::scrollbar::use_pane_scroll(pane).offset_y();
     let index = first_at_or_after(&found.matches, top);
     use_find_matches().set(Rc::new(found.matches));
@@ -327,7 +456,12 @@ pub(crate) fn view_bar(state: FindFieldState, theme: &Theme, window: (u32, u32))
 
     use_find_pane().get()?;
     let matches = use_find_matches().get();
-    let counter = if matches.is_empty() {
+    // The refusal outranks the count: a pattern the engine rejected was never searched, so reporting
+    // "no matches" for it would describe a search that did not happen. The message is the engine's own
+    // ("unclosed group"), which is what tells the user WHICH character to fix.
+    let counter = if let Some(error) = use_find_error().get() {
+        format!("bad pattern: {error}")
+    } else if matches.is_empty() {
         if needle().is_empty() {
             String::new()
         } else {
@@ -354,9 +488,21 @@ pub(crate) fn view_bar(state: FindFieldState, theme: &Theme, window: (u32, u32))
         Rect::default(),
         TextStyle::new().with_size_px(13),
     ));
+    // The mode has to be VISIBLE, not just bound to a key: with two search languages behind one field,
+    // the same characters mean different things, and nothing else on screen says which is in force.
+    // The label is a WORD rather than VS Code's `.*` glyph because it doubles as the AT accessible name
+    // and as the label an RPC consumer reads.
+    let regex_box = pw_checkbox::view_checkbox(
+        FIND_REGEX_TAG,
+        state.regex_box,
+        use_find_regex().get(),
+        theme,
+        &pw_checkbox::CheckboxStyle::m3_filled(),
+        REGEX_LABEL,
+    );
     let x = window.0.saturating_sub(FIND_FIELD_W + FIND_BAR_MARGIN * 2);
     Some(Scene::Container(
-        ContainerNode::new(vec![field, label])
+        ContainerNode::new(vec![field, regex_box, label])
             .with_layout(LayoutStyle::new().with_absolute_position(x, FIND_BAR_MARGIN)),
     ))
 }
@@ -368,6 +514,8 @@ const FIND_FIELD_W: u32 = 280;
 const FIND_FIELD_H: u32 = 40;
 /// The bar's inset from the window's top-right corner.
 const FIND_BAR_MARGIN: u32 = 12;
+/// The regex toggle's label — the visible text AND its accessible name.
+const REGEX_LABEL: &str = "Regex";
 
 #[cfg(test)]
 mod tests {
@@ -594,5 +742,195 @@ mod tests {
         assert_eq!(row_of(123, 100, 24), Some(23));
         assert_eq!(row_of(124, 100, 24), None, "one past the last row");
         assert_eq!(row_of(99, 100, 24), None, "above the view");
+    }
+
+    /// The bar can search in the OTHER language: the same characters find different things once the
+    /// regex mode is on, and both the checkbox intent and `Alt+R` flip it.
+    ///
+    /// The needle `e.r` is the discriminator — it occurs NOWHERE literally in `err a e r`, and as a
+    /// pattern it matches both `err` (via `.` = `r`) and `e r`. So a mode that failed to reach the wire
+    /// could not produce these two matches, and a mode stuck ON could not produce the literal answer.
+    ///
+    /// The toggle is driven BY INTENT (its tag) and by the key, never by a synthesised click at a
+    /// pixel — the surface has a symbolic external precisely so it is testable.
+    ///
+    /// REVERT-PROOF: routing `refresh` to `pane_find` regardless of the mode leaves the literal
+    /// assertion passing and finds nothing in regex mode.
+    #[test]
+    fn the_find_bar_searches_in_the_regex_language_when_toggled() {
+        let host = Host::new((40, 6));
+        let id = host
+            .spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+            .unwrap();
+        let handle = host.pane_handle(id).expect("pane handle");
+        let owner = Owner::new();
+        owner.run(|| {
+            seed_terminal(host);
+            assert!(use_terminal().slots.send_text(0, "err a e r"), "seed");
+            wait_for_row0(&handle, "err a e r");
+
+            use_text_edit_state(FIND_FIELD_TAG).seed("e.r".to_owned());
+            open(0);
+            assert!(!use_find_regex().get(), "literal is the default language");
+            assert!(
+                use_find_matches().get().is_empty(),
+                "`e.r` occurs nowhere LITERALLY",
+            );
+
+            // The checkbox's own intent — the click path, addressed by tag.
+            assert!(handle_regex_intent(&pinion_core::Intent::new_owned(
+                format!("{FIND_REGEX_TAG}.checked"),
+                IntrospectValue::Bool(true),
+            )));
+            assert!(use_find_regex().get(), "the intent set the mode");
+            assert_eq!(
+                use_find_matches().get().as_slice(),
+                &[hit(0, 0, 3), hit(0, 6, 3)],
+                "as a PATTERN `e.r` matches `err` and `e r`",
+            );
+
+            // Alt+R is the same toggle from the keyboard, and it re-queries.
+            let mut scene = Scene::Container(ContainerNode::new(Vec::new()));
+            assert!(TerminalViewer::apply_key(
+                &mut scene,
+                Some(FIND_FIELD_TAG),
+                "r",
+                Modifiers {
+                    alt: true,
+                    ..Modifiers::default()
+                },
+            ));
+            assert!(!use_find_regex().get(), "Alt+R toggled it back");
+            assert!(
+                use_find_matches().get().is_empty(),
+                "...and the literal search answers nothing again",
+            );
+            close();
+        });
+    }
+
+    /// A pattern the engine REFUSES is reported as a refusal, never as "no matches" — the same
+    /// distinction the wire keeps, now visible to a human.
+    ///
+    /// `(unclosed` is invalid; the bar must show the engine's own message (which names what to fix)
+    /// and drop the stale matches from the previous, valid search. Fixing the pattern clears it.
+    ///
+    /// REVERT-PROOF: dropping `use_find_error` and letting the empty match list stand renders
+    /// "no matches" — a claim about a search that never ran. Both the message assertion and the
+    /// cleared-again assertion fail.
+    #[test]
+    fn an_invalid_pattern_reports_the_refusal_not_an_empty_result() {
+        let host = Host::new((40, 6));
+        let id = host
+            .spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+            .unwrap();
+        let handle = host.pane_handle(id).expect("pane handle");
+        let owner = Owner::new();
+        owner.run(|| {
+            seed_terminal(host);
+            assert!(use_terminal().slots.send_text(0, "hello"), "seed");
+            wait_for_row0(&handle, "hello");
+
+            use_find_regex().set(true);
+            use_text_edit_state(FIND_FIELD_TAG).seed("hel".to_owned());
+            open(0);
+            assert!(use_find_error().get().is_none(), "a valid pattern searched");
+            assert_eq!(use_find_matches().get().len(), 1);
+
+            use_text_edit_state(FIND_FIELD_TAG).seed("(unclosed".to_owned());
+            refresh();
+            let error = use_find_error().get().expect("the refusal is carried");
+            assert!(
+                !error.is_empty(),
+                "the engine's own message says what to fix: {error}",
+            );
+            assert!(
+                use_find_matches().get().is_empty(),
+                "the previous search's matches must not linger over a search that never ran",
+            );
+
+            // The bar SAYS so, rather than showing a count or "no matches".
+            let bar = view_bar(
+                FindFieldState::default(),
+                &pinion_core::theme::Theme::dark(),
+                (1200, 800),
+            )
+            .expect("the bar paints while open");
+            let text = scene_text(&bar);
+            assert!(
+                text.iter().any(|t| t.starts_with("bad pattern:")),
+                "the bar reports the refusal: {text:?}",
+            );
+            assert!(
+                !text.iter().any(|t| t == "no matches"),
+                "and never calls a refusal an empty result: {text:?}",
+            );
+
+            // A valid pattern again clears it.
+            use_text_edit_state(FIND_FIELD_TAG).seed("hel".to_owned());
+            refresh();
+            assert!(use_find_error().get().is_none(), "the refusal cleared");
+            close();
+        });
+    }
+
+    /// Every `TextNode` string in `scene`, in DFS order — the bar's visible words, so an assertion can
+    /// read what the user reads instead of a pixel.
+    fn scene_text(scene: &Scene) -> Vec<String> {
+        let mut out = Vec::new();
+        collect_text(scene, &mut out);
+        out
+    }
+
+    fn collect_text(scene: &Scene, out: &mut Vec<String>) {
+        match scene {
+            Scene::Text(node) => out.push(node.content.clone()),
+            Scene::Container(node) => {
+                for child in &node.children {
+                    collect_text(child, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The regex toggle is a REAL widget in the painted bar, not a keyboard-only mode: it carries the
+    /// tag its intent arrives under and the label that doubles as its accessible name.
+    ///
+    /// This is what makes the mode discoverable. With two search languages behind one field, a mode
+    /// bound only to `Alt+R` would leave the user unable to see which language their characters are in.
+    #[test]
+    fn the_bar_paints_a_labelled_regex_toggle() {
+        let owner = Owner::new();
+        owner.run(|| {
+            use_find_pane().set(Some(0));
+            let bar = view_bar(
+                FindFieldState::default(),
+                &pinion_core::theme::Theme::dark(),
+                (1200, 800),
+            )
+            .expect("the bar paints while open");
+            assert!(
+                scene_text(&bar).iter().any(|t| t == REGEX_LABEL),
+                "the toggle's label is visible: {:?}",
+                scene_text(&bar),
+            );
+            assert!(
+                find_tag(&bar, FIND_REGEX_TAG),
+                "and it paints under the tag its intent arrives on",
+            );
+        });
+    }
+
+    /// Whether any node in `scene` carries `tag` — the symbolic address, which is how the toggle is
+    /// reached by intent and by an RPC consumer.
+    fn find_tag(scene: &Scene, tag: &str) -> bool {
+        match scene {
+            Scene::Container(node) => {
+                node.tag.as_deref() == Some(tag)
+                    || node.children.iter().any(|child| find_tag(child, tag))
+            }
+            other => other.tag() == Some(tag),
+        }
     }
 }

@@ -304,6 +304,24 @@ pub trait HostClient {
         PaneFind::default()
     }
 
+    /// The same read over a REGULAR EXPRESSION rather than literal text — a SEPARATE method for the
+    /// same reason it is a separate wire address (`regex.<pattern>` beside `find.<needle>`): a needle
+    /// and a pattern are different languages, and the same string means different things in each, so
+    /// one entry point taking a mode argument would make what a search MEANS depend on something the
+    /// call does not carry.
+    ///
+    /// A pattern the engine REFUSES answers the normal shape with [`PaneFind::error`] set, never an
+    /// empty match list — a caller that cannot tell "your pattern is wrong" from "nothing matched"
+    /// retries forever. Case is the pattern language's to decide, so this is case-SENSITIVE and
+    /// `(?i)` is the caller's switch (the literal search folds ASCII case instead).
+    ///
+    /// Defaulted to empty like [`pane_find`](HostClient::pane_find), so a client that reaches no host
+    /// search — and the test doubles — need not implement it.
+    fn pane_find_regex(&self, id: PaneId, pattern: &str) -> PaneFind {
+        let _ = (id, pattern);
+        PaneFind::default()
+    }
+
     /// Pane `id`'s current grid `(cols, rows)` — the emulator screen size, which tracks
     /// the last reflow target (the reflow no-op guard + an undock window's intrinsic
     /// open size read it). `(1, 1)` if `id` is absent.
@@ -1027,6 +1045,20 @@ impl HostClient for Host {
     fn pane_find(&self, id: PaneId, needle: &str) -> PaneFind {
         self.with_pane_id(id, |pane| {
             PaneFind::from_screen_result(&pane.pty().with_screen(|screen| screen.find(needle)))
+        })
+        .unwrap_or_default()
+    }
+
+    /// Runs the REGEX search on the pane's own [`Screen`] — the same
+    /// [`Screen::find_regex`](sprag_vt::Screen::find_regex) the wire `regex.<pattern>` family serves,
+    /// including its refusal: a pattern the engine rejects comes back as a [`PaneFind`] carrying the
+    /// engine's own message, exactly as the wire answers it.
+    fn pane_find_regex(&self, id: PaneId, pattern: &str) -> PaneFind {
+        self.with_pane_id(id, |pane| {
+            match pane.pty().with_screen(|screen| screen.find_regex(pattern)) {
+                Ok(found) => PaneFind::from_screen_result(&found),
+                Err(bad) => PaneFind::refused(&bad),
+            }
         })
         .unwrap_or_default()
     }

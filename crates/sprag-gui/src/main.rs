@@ -433,6 +433,9 @@ impl WidgetCore for TerminalViewer {
         // registered whether or not the bar is open: the External is what holds the text the bar
         // shows when it re-opens, and an unpainted External costs nothing.
         externals.push(find::create_find_external());
+        // ...and its regex-mode toggle, on the same terms: one constant tag, registered every
+        // reconcile, holding the checkbox statechart whose `checked` intent the reducer routes.
+        externals.push(find::create_regex_external());
         // Drag-to-dock / tear-off (pinion R1081/R1084/R1094 §5.51, P2/PR-31): one R742
         // `DockPanelExternal` per pane, registered at the panel ROOT tag
         // (`split::panel_id(i)` = the `view_dock_panel` root the `view_dock_surface_chrome`
@@ -904,6 +907,11 @@ impl WidgetCore for TerminalViewer {
         // intent — run its Copy / Paste / Select-all action and stop (it is not a
         // dock-panel tag, so the panel routing below would drop it anyway).
         if ctxmenu::handle_command(intent) {
+            return Vec::new();
+        }
+        // The find bar's regex toggle: a checkbox `checked` intent, not a pane tag, so it is routed
+        // here beside the context menu rather than falling through to the panel routing.
+        if find::handle_regex_intent(intent) {
             return Vec::new();
         }
         // The window tab strip: a tab / "+" / "×" button click routes to a `SlotView` window

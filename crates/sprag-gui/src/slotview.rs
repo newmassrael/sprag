@@ -227,6 +227,16 @@ impl SlotView {
             .unwrap_or_default()
     }
 
+    /// Slot `slot`'s pane's REGEX matches for `pattern` — the find bar's read in the other search
+    /// LANGUAGE. A distinct method, not a mode on [`Self::pane_find`], all the way down to the wire
+    /// address: the same characters mean different things in the two languages, so which one is being
+    /// asked must be carried by the call itself.
+    pub(crate) fn pane_find_regex(&self, slot: usize, pattern: &str) -> PaneFind {
+        self.id(slot)
+            .map(|id| self.host.pane_find_regex(id, pattern))
+            .unwrap_or_default()
+    }
+
     /// Every session on the host (registry-wide) — the list the session sidebar draws. NOT
     /// slot-mapped: sessions are not pane-addressed, so this passes straight through (the reducer
     /// addresses sessions by NAME, like it does windows).

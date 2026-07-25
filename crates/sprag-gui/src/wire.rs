@@ -86,7 +86,7 @@ use sprag_host::wire::{
     KILL_WINDOW_ACTION, LAYOUT_SLOT, MOUSE_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION,
     PANES_SLOT, PASTE_ACTION, PROMPT_MARKS_SLOT, RESIZE_ACTION, SELECT_WINDOW_ACTION,
     SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT,
-    cells_slot_at, find_slot_for,
+    cells_slot_at, find_slot_for, regex_slot_for,
 };
 use sprag_host::{
     CellFrame, HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneNotification,
@@ -1471,6 +1471,21 @@ impl HostClient for WireHost {
         }
         let params = json!({ "path": pane_input_path(id.0, &find_slot_for(needle)) });
         self.request("scene/query", params, "pane_find")
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default()
+    }
+
+    /// The pane's REGEX matches, over the `regex.<pattern>` query family — a DIFFERENT address from
+    /// `pane_find`'s, not the same one with a flag, so the wire never has to guess which language the
+    /// characters are in. An empty pattern is a malformed member the host answers `Null` for, so it is
+    /// not asked; a REFUSED pattern is a well-formed address whose value the engine rejected, and its
+    /// answer deserializes into the same [`PaneFind`] carrying `error`.
+    fn pane_find_regex(&self, id: PaneId, pattern: &str) -> PaneFind {
+        if pattern.is_empty() {
+            return PaneFind::default();
+        }
+        let params = json!({ "path": pane_input_path(id.0, &regex_slot_for(pattern)) });
+        self.request("scene/query", params, "pane_find_regex")
             .and_then(|value| serde_json::from_value(value).ok())
             .unwrap_or_default()
     }
