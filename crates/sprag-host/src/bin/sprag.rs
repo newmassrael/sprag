@@ -7,6 +7,8 @@
 //! sprag ssh [user@]host [-p PORT] [-L FWD]... [--tmux[=NAME]] [-- cmd...]  create a session running
 //!                          ssh to a remote host (a first-classed remote workspace); -L forwards a
 //!                          local->remote port; --tmux attaches-or-creates a remote tmux session
+//! sprag find NEEDLE [-t SESSION] [--pane N]  print each matching line as PANE:LINE: text
+//!                          (literal, ASCII case-insensitive); --pane narrows to one pane
 //! sprag attach NAME        open a sprag-gui window attached to a session (tmux attach-session)
 //! sprag kill-session NAME   kill a session (the last one ends the daemon)
 //! sprag kill-server [--purge]  kill every session, ending the daemon; --purge also deletes the
@@ -98,7 +100,7 @@ fn print_usage() {
     eprintln!(
         "usage: sprag <ls | list-clients [-t SESSION] | new [name] | attach NAME\n\
          \x20             | ssh [user@]host [-p PORT] [-L FWD]… [--tmux[=NAME]] [-- command…]\n\
-         \x20             | find NEEDLE [-t SESSION]\n\
+         \x20             | find NEEDLE [-t SESSION] [--pane N]\n\
          \x20             | kill-session NAME | kill-server [--purge]>\n\
          \x20      sprag <windows | new-window [name] | select-window NAME\n\
          \x20             | rename-window [window] NAME | kill-window [window]\n\
@@ -221,14 +223,20 @@ fn list_clients(args: Vec<String>) -> io::Result<()> {
     Ok(())
 }
 
-/// `sprag find NEEDLE [-t SESSION]` — search every pane of the session's current window and print
-/// each matching line as `PANE:LINE: text`, the `grep -n` shape a script or an agent can slice.
+/// `sprag find NEEDLE [-t SESSION] [--pane N]` — search the session's current window and print each
+/// matching line as `PANE:LINE: text`, the `grep -n` shape a script or an agent can slice.
 ///
-/// **Session-wide, not per-pane, on purpose.** The question a terminal user actually has is "which
-/// pane has the error", so the sweep is the useful unit; an agent that already knows its pane uses
-/// the `find_in_pane` MCP tool instead. Neither implements a second search: both read the host's
+/// **Session-wide by DEFAULT, not per-pane, on purpose.** The question a terminal user actually has
+/// is "which pane has the error", so the sweep is the useful unit; `--pane` narrows it once the
+/// answer to that question is known. An agent that already knows its pane uses the `find_in_pane`
+/// MCP tool instead. None of the three implements a second search: all read the host's
 /// `find.<needle>` family, so there is ONE definition of what matches (`sprag_vt::Screen::find`) and
 /// the CLI cannot drift from the GUI's highlight.
+///
+/// A `--pane` naming a pane the session's current window does not hold is a clean ERROR, not an
+/// empty result: the caller asked for a specific pane, and reporting "no matches" for a pane that
+/// is not there would answer a question they did not ask. Contrast the needle itself, where finding
+/// nothing IS the answer.
 ///
 /// Prints the matching LINES (deduped — a line with three matches is one output line), because that
 /// is what a grep-shaped output means. A capped answer is reported on stderr rather than silently
@@ -236,7 +244,11 @@ fn list_clients(args: Vec<String>) -> io::Result<()> {
 /// ran" and "something failed" stay distinguishable (unlike grep's exit 1, which sprag reserves for
 /// errors).
 fn find(args: Vec<String>) -> io::Result<()> {
-    let (needle, session) = find_args(args)?;
+    let FindArgs {
+        needle,
+        session,
+        pane: only,
+    } = find_args(args)?;
     let mut conn = connect()?;
     if let Some(session) = &session {
         require_session(&mut conn, session)?;
@@ -246,12 +258,22 @@ fn find(args: Vec<String>) -> io::Result<()> {
         None => json!({ "path": path }),
     };
     let listed: Value = conn.call("scene/query", scoped(mux_action_path(PANES_SLOT)))?;
-    let panes: Vec<u64> = listed
+    let mut panes: Vec<u64> = listed
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|pane| pane["id"].as_u64())
         .collect();
+    if let Some(only) = only {
+        if !panes.contains(&only) {
+            let where_ = session.as_deref().unwrap_or("the current session");
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("find: no pane {only} in {where_} (panes: {panes:?})"),
+            ));
+        }
+        panes.retain(|pane| *pane == only);
+    }
     let mut truncated = false;
     for pane in panes {
         let answer: Value = conn.call(
@@ -270,12 +292,23 @@ fn find(args: Vec<String>) -> io::Result<()> {
     Ok(())
 }
 
-/// Parse `find`'s arguments: the required NEEDLE positional plus an optional `-t SESSION`. A second
-/// positional is a mistake (a multi-word needle must be one quoted argument), not a silent join.
-fn find_args(args: Vec<String>) -> io::Result<(String, Option<String>)> {
+/// `find`'s parsed arguments — the needle, which session to search, and which pane to narrow to.
+struct FindArgs {
+    needle: String,
+    session: Option<String>,
+    /// The one pane to search, or `None` to sweep the whole window.
+    pane: Option<u64>,
+}
+
+/// Parse `find`'s arguments: the required NEEDLE positional plus optional `-t SESSION` and
+/// `--pane N`. A second positional is a mistake (a multi-word needle must be one quoted argument),
+/// not a silent join, and a non-numeric `--pane` is rejected here rather than sent as a path that
+/// could not match anything.
+fn find_args(args: Vec<String>) -> io::Result<FindArgs> {
     let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
     let mut needle: Option<String> = None;
     let mut session = None;
+    let mut pane = None;
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -284,6 +317,16 @@ fn find_args(args: Vec<String>) -> io::Result<(String, Option<String>)> {
                     it.next()
                         .ok_or_else(|| bad("find: -t needs a session name".to_owned()))?,
                 );
+            }
+            "--pane" => {
+                let value = it
+                    .next()
+                    .ok_or_else(|| bad("find: --pane needs a pane id".to_owned()))?;
+                pane = Some(value.parse::<u64>().map_err(|_| {
+                    bad(format!(
+                        "find: --pane {value:?} is not a pane id (a number)"
+                    ))
+                })?);
             }
             _ if needle.is_none() => needle = Some(arg),
             other => {
@@ -297,7 +340,11 @@ fn find_args(args: Vec<String>) -> io::Result<(String, Option<String>)> {
     if needle.is_empty() {
         return Err(bad("find: the search needle is empty".to_owned()));
     }
-    Ok((needle, session))
+    Ok(FindArgs {
+        needle,
+        session,
+        pane,
+    })
 }
 
 /// Parse an OPTIONAL `-t SESSION` filter (unlike the window commands' required target). Any/// Parse an OPTIONAL `-t SESSION` filter (unlike the window commands' required target). Any

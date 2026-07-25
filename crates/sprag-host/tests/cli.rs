@@ -864,6 +864,71 @@ fn the_cli_ssh_tmux_preset_reaches_exec_and_rejects_a_conflict() {
     );
 }
 
+/// `--pane` narrows the sweep to ONE pane, and naming a pane the window does not hold is a clean
+/// ERROR rather than an empty result.
+///
+/// The asymmetry is the point: finding no matches for a needle IS the answer, but finding no
+/// matches for a pane that is not there answers a question the caller did not ask. Two panes print
+/// the SAME needle so the filter has something to exclude — a one-pane fixture would pass whether
+/// the filter worked or not.
+#[test]
+fn the_cli_find_narrows_to_one_pane_and_rejects_an_absent_one() {
+    let printer = "printf 'shared marker\\n'; exec cat";
+    let (_host, sock) = spawn_host_running(&["sh", "-c", printer]);
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the host");
+    let second: u64 = conn
+        .call(
+            "scene/invoke",
+            json!({
+                "session": "0",
+                "path": mux_action_path(SPAWN_ACTION),
+                "args": { "cmd": ["sh", "-c", printer] },
+            }),
+        )
+        .expect("spawn a second pane")
+        .as_u64()
+        .expect("spawn returns the pane id");
+
+    // Both panes match, once the second one has printed (its output is asynchronous).
+    let mut all = sprag(&sock, &["find", "shared marker"]);
+    let both = wait_for(Duration::from_secs(5), || {
+        all = sprag(&sock, &["find", "shared marker"]);
+        all.stdout.lines().count() == 2
+    });
+    assert!(both, "both panes matched: {:?}", all.stdout);
+
+    // --pane keeps only that pane's lines.
+    let only = sprag(
+        &sock,
+        &["find", "shared marker", "--pane", &second.to_string()],
+    );
+    assert!(only.ok, "find --pane succeeded: {}", only.stderr);
+    assert_eq!(
+        only.stdout.trim_end(),
+        format!("{second}:0: shared marker"),
+        "only the named pane's line: {:?}",
+        only.stdout,
+    );
+
+    // An absent pane is an error that says what IS there, not an empty success.
+    let absent = sprag(&sock, &["find", "shared marker", "--pane", "9999"]);
+    assert!(!absent.ok, "an absent pane fails");
+    assert!(
+        absent.stderr.contains("no pane 9999"),
+        "and names it: {}",
+        absent.stderr,
+    );
+
+    // A non-numeric --pane is rejected locally, before any request reaches the daemon.
+    let bad = sprag(&sock, &["find", "shared marker", "--pane", "abc"]);
+    assert!(!bad.ok, "a non-numeric pane id fails");
+    assert!(
+        bad.stderr.contains("is not a pane id"),
+        "with a clear message: {}",
+        bad.stderr,
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The durability ring, end to end: a daemon that dies gives its panes back WITH
 // their scrollback.
