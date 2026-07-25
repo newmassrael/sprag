@@ -114,7 +114,7 @@ pub struct WindowSnapshot {
 pub struct PaneSnapshot {
     /// The pane's registry-global id — restored EXACTLY, because the layout tree, float set and
     /// homes all reference the pane by it (see
-    /// [`spawn_with_dirty_id`](crate::Workspace::spawn_with_dirty_id)).
+    /// [`spawn_restored`](crate::Workspace::spawn_restored)).
     pub id: PaneId,
     /// The child's working directory at snapshot time, where the restored shell re-spawns.
     /// `None` when it could not be read (the child had exited, or a non-Linux host) — the
@@ -341,7 +341,7 @@ pub struct PaneRestore {
     /// The window the pane docks into.
     pub window: String,
     /// The id to spawn it under (the layout references it by this — see
-    /// [`spawn_with_dirty_id`](crate::Workspace::spawn_with_dirty_id)).
+    /// [`spawn_restored`](crate::Workspace::spawn_restored)).
     pub id: PaneId,
     /// Where to spawn; `None` falls back to the daemon's cwd.
     pub cwd: Option<PathBuf>,
@@ -689,7 +689,7 @@ mod tests {
 
     /// Two panes claiming one id is refused — the global-unique-PaneId invariant. A hand-edited
     /// state file is the only way to reach it (sprag's writer mints unique ids), and without this
-    /// check `spawn_with_dirty_id` would push both, leaving id-addressed reads ambiguous.
+    /// check `spawn_restored` would push both, leaving id-addressed reads ambiguous.
     #[test]
     fn a_duplicate_pane_id_is_refused() {
         let snap = snap_of("0", vec![win("0", vec![pane(5), pane(5)])]);

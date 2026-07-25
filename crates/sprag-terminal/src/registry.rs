@@ -957,7 +957,7 @@ impl SessionRegistry {
     /// id counter are all rebuilt here, but the pools are EMPTY — a pane is born at the HOST so it
     /// carries the daemon's death-signal (the D4 seam this crate does not hold). The plan names,
     /// per pane, the window it docks into and the facts to spawn its shell with; the host spawns
-    /// each under its old id ([`Workspace::spawn_with_dirty_id`](crate::Workspace)) so the trees,
+    /// each under its old id ([`Workspace::spawn_restored`](crate::Workspace)) so the trees,
     /// already referencing those ids, resolve, and the first reconcile heals any that fail to spawn.
     ///
     /// Every pool shares ONE id counter seeded to the snapshot's high-water mark, so a restore
@@ -988,7 +988,7 @@ impl SessionRegistry {
         // A PaneId is unique across the WHOLE registry (the load-bearing invariant), so a snapshot
         // with two panes claiming one id is malformed. sprag's own writer cannot produce this
         // (`snapshot()` reads ids unique by construction), but a hand-edited state file could — and
-        // `spawn_with_dirty_id` would push both, leaving two live panes sharing an id that
+        // `spawn_restored` would push both, leaving two live panes sharing an id that
         // id-addressed reads then resolve ambiguously. Reject it so the fail-safe holds: a corrupt
         // snapshot boots EMPTY, never into an id-colliding registry.
         let mut seen_panes = HashSet::new();

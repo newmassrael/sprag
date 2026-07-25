@@ -50,7 +50,7 @@ use pinion_core::GridBuffer;
 use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{
     CommandBuilder, LayoutSnapshot, LayoutWire, Pane, PaneId, PanePtyError, PanePtyHandle,
-    SessionInfo, SessionRegistry, Snapshot, SnapshotError, WindowInfo, Workspace,
+    PaneRebirth, SessionInfo, SessionRegistry, Snapshot, SnapshotError, WindowInfo, Workspace,
 };
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol, Screen, osc52_reply};
 
@@ -699,6 +699,12 @@ impl Host {
     /// daemon passes `|| Some(bump_on_dirty(&revision))` and
     /// `|| Some(pane_exit_hook(&on_pane_exit))`, the same hooks its boot pane gets.
     ///
+    /// `history` supplies each pane's recorded scrollback as replayable terminal bytes, replayed
+    /// into its fresh emulator before the child can write a byte. Injected for the same reason the
+    /// allowlist is — the host names no state directory and reads no environment — so the daemon
+    /// passes a closure over [`crate::load_pane_history`] and a test passes one returning whatever
+    /// it wants. Returning empty restores the pane blank, the pre-history behaviour.
+    ///
     /// A pane whose shell fails to spawn (a cwd removed since the snapshot, an unexecutable
     /// `$SHELL`) is LOGGED and skipped — best-effort, the way the boot pane's own spawn failure
     /// is non-fatal; the first [`reconcile_layout`](sprag_terminal::Window) drops its now-empty
@@ -715,6 +721,7 @@ impl Host {
         allowlist: &std::collections::HashSet<String>,
         mut on_dirty: impl FnMut() -> Option<Box<dyn Fn() + Send>>,
         mut on_exit: impl FnMut() -> Option<Box<dyn Fn() + Send>>,
+        history: impl Fn(PaneId) -> Vec<u8>,
     ) -> Result<usize, SnapshotError> {
         // Build the new shape FIRST (fallible), so a bad snapshot leaves the boot registry intact.
         let (registry, plan) = SessionRegistry::from_snapshot(snapshot)?;
@@ -744,14 +751,15 @@ impl Host {
             // Bind the spawn result so the pool lock RELEASES at the `;` — a `match` scrutinee's
             // temporary lock would live across the arms, and the `Ok` arm re-locks to mark the pane
             // remote, which on a non-reentrant `Mutex` would self-deadlock.
-            let spawned = lock(&pool).spawn_with_dirty_id(
-                pane.id,
+            let spawned = lock(&pool).spawn_restored(PaneRebirth {
+                id: pane.id,
                 command,
                 label,
-                (pane.cols, pane.rows),
-                on_dirty(),
-                on_exit(),
-            );
+                size: (pane.cols, pane.rows),
+                on_dirty: on_dirty(),
+                on_exit: on_exit(),
+                history: history(pane.id),
+            });
             match spawned {
                 Ok(()) => {
                     // Keep the restored pane marked remote so a CHAINED restore reconnects it again.
@@ -1367,6 +1375,70 @@ mod tests {
         assert_eq!(host.pane_grid_size(id), (100, 30));
     }
 
+    /// The OTHER half of the reboot payoff: a restored pane comes back with its OUTPUT, not just
+    /// its shape and directory.
+    ///
+    /// The recorded history is replayed into the fresh emulator before its child can write a byte,
+    /// so the text is on the screen the MOMENT `restore` returns — this assertion needs no wait on
+    /// the new shell, which is precisely the ordering guarantee the seam was built for.
+    #[test]
+    fn restore_replays_a_panes_recorded_history_onto_its_screen() {
+        let live = Host::new((80, 24));
+        let id = live
+            .spawn(cat(), "sh".to_owned(), 80, 24, None, None)
+            .unwrap();
+        let snap = sprag_terminal::snapshot(live.registry());
+
+        let restored = Host::new((80, 24));
+        let n = restored
+            .restore(
+                snap,
+                &std::collections::HashSet::new(),
+                || None,
+                || None,
+                |pane| format!("output of pane {pane}\r\n").into_bytes(),
+            )
+            .expect("a valid snapshot restores");
+
+        assert_eq!(n, 1, "the pane came back");
+        assert!(
+            restored
+                .pane_full_text(id)
+                .contains(&format!("output of pane {id}")),
+            "the restored pane's screen: {:?}",
+            restored.pane_full_text(id),
+        );
+    }
+
+    /// An absent history restores the pane BLANK rather than failing it — the pre-history
+    /// behaviour, and what a disabled or unreadable history degrades to.
+    #[test]
+    fn restore_without_history_brings_the_pane_back_blank() {
+        let live = Host::new((80, 24));
+        let id = live
+            .spawn(cat(), "sh".to_owned(), 80, 24, None, None)
+            .unwrap();
+        let snap = sprag_terminal::snapshot(live.registry());
+
+        let restored = Host::new((80, 24));
+        let n = restored
+            .restore(
+                snap,
+                &std::collections::HashSet::new(),
+                || None,
+                || None,
+                |_| Vec::new(),
+            )
+            .expect("a valid snapshot restores");
+
+        assert_eq!(n, 1, "the pane still came back");
+        // Whatever the fresh shell has printed by now, nothing was REPLAYED into it.
+        assert!(
+            !restored.pane_full_text(id).contains("output of pane"),
+            "no history was seeded",
+        );
+    }
+
     /// The reboot payoff at the host level: a live host is snapshotted, a FRESH host restores it,
     /// and every pane comes back under its OLD id in the SAME session — two in the default, one in
     /// a second session. Restore replaces the empty boot registry with the snapshot's shape and
@@ -1394,7 +1466,13 @@ mod tests {
         // A FRESH host restores it, as a daemon boot would (no hooks needed for the mechanism).
         let restored = Host::new((80, 24));
         let n = restored
-            .restore(snap, &std::collections::HashSet::new(), || None, || None)
+            .restore(
+                snap,
+                &std::collections::HashSet::new(),
+                || None,
+                || None,
+                |_| Vec::new(),
+            )
             .expect("a valid snapshot restores");
         assert_eq!(n, 3, "all three panes came back");
 
@@ -1465,7 +1543,13 @@ mod tests {
 
         let host = Host::new((80, 24));
         let n = host
-            .restore(snap, &std::collections::HashSet::new(), || None, || None)
+            .restore(
+                snap,
+                &std::collections::HashSet::new(),
+                || None,
+                || None,
+                |_| Vec::new(),
+            )
             .expect("a valid snapshot restores");
         assert_eq!(n, 2, "both the cwd and the cwd-less pane re-spawned");
         let ids = host.pane_ids();
@@ -1517,7 +1601,7 @@ mod tests {
 
         let host = Host::new((80, 24));
         assert_eq!(
-            host.restore(snap, &allow, || None, || None)
+            host.restore(snap, &allow, || None, || None, |_| Vec::new())
                 .expect("restores"),
             1,
         );
@@ -1583,7 +1667,7 @@ mod tests {
 
         let host = Host::new((80, 24));
         assert_eq!(
-            host.restore(snap, &allow, || None, || None)
+            host.restore(snap, &allow, || None, || None, |_| Vec::new())
                 .expect("restores"),
             2,
         );

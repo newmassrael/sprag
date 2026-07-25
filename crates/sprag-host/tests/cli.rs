@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 use sprag_host::mux_action_path;
-use sprag_host::wire::{PANES_SLOT, SPAWN_ACTION, WINDOWS_SLOT};
+use sprag_host::wire::{NEW_SESSION_ACTION, PANES_SLOT, SPAWN_ACTION, WINDOWS_SLOT};
 use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn};
 
 /// Reaps the spawned host process and its socket file on drop — including on a panicked
@@ -862,4 +862,181 @@ fn the_cli_ssh_tmux_preset_reaches_exec_and_rejects_a_conflict() {
         "a clean conflict message: {}",
         clash.stderr,
     );
+}
+
+// ---------------------------------------------------------------------------
+// The durability ring, end to end: a daemon that dies gives its panes back WITH
+// their scrollback.
+// ---------------------------------------------------------------------------
+
+/// Kills whatever daemon is serving `sock` and removes the socket and the state directory —
+/// including on a panicked assertion, so a failed run leaks neither a process nor a temp tree.
+struct DaemonGuard {
+    sock: PathBuf,
+    state: PathBuf,
+}
+
+impl Drop for DaemonGuard {
+    fn drop(&mut self) {
+        if let Some(pid) = daemon_pid(&self.sock) {
+            kill_daemon(pid);
+        }
+        let _ = std::fs::remove_file(&self.sock);
+        let _ = std::fs::remove_dir_all(&self.state);
+    }
+}
+
+/// The pid of the `sprag-term` daemon serving `sock`.
+///
+/// It has to be FOUND rather than remembered: a `--daemon` forks and the parent exits, so the
+/// process the test spawned is a short-lived intermediate, not the daemon. Matching on the
+/// environment rather than the command line because the socket travels as `SPRAG_HOST_RPC_SOCK`,
+/// and that value is unique per test call — so this cannot pick up a sibling test's daemon the way
+/// a `pkill -f sprag-term` would.
+fn daemon_pid(sock: &Path) -> Option<u32> {
+    let want = format!("SPRAG_HOST_RPC_SOCK={}", sock.display());
+    let me = std::process::id();
+    std::fs::read_dir("/proc")
+        .ok()?
+        .flatten()
+        .find_map(|entry| {
+            let pid: u32 = entry.file_name().to_str()?.parse().ok()?;
+            if pid == me {
+                return None;
+            }
+            let comm = std::fs::read_to_string(entry.path().join("comm")).ok()?;
+            if comm.trim() != "sprag-term" {
+                return None;
+            }
+            let environ = std::fs::read(entry.path().join("environ")).ok()?;
+            environ
+                .split(|byte| *byte == 0)
+                .any(|value| value == want.as_bytes())
+                .then_some(pid)
+        })
+}
+
+/// SIGKILL `pid` and wait for it to be gone — the reboot analogue. Deliberately not a graceful
+/// `kill-server`: the ring exists for the case where the daemon gets NO chance to tidy up, and a
+/// clean shutdown would also race its own teardown against the save loop.
+fn kill_daemon(pid: u32) {
+    // SAFETY: `pid` was just read from /proc for a process this test spawned.
+    unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+    wait_for(Duration::from_secs(5), || {
+        !Path::new(&format!("/proc/{pid}")).exists()
+    });
+}
+
+/// Launch a `--daemon` on `sock` keeping its durable state under `state`. Returns once the
+/// intermediate parent has forked and exited; the caller waits for the socket to answer.
+fn spawn_daemon(sock: &Path, state: &Path) {
+    let status = Command::new(env!("CARGO_BIN_EXE_sprag-term"))
+        .arg("--daemon")
+        .env("SPRAG_HOST_RPC_SOCK", sock)
+        .env("SPRAG_HOST_RPC", "1")
+        .env("XDG_STATE_HOME", state)
+        .stdin(Stdio::null())
+        .status()
+        .expect("spawn the sprag-term daemon");
+    assert!(status.success(), "the daemon's parent forked cleanly");
+}
+
+/// Whether any saved pane history under `state` contains `needle`.
+fn saved_history_contains(state: &Path, needle: &str) -> bool {
+    let Ok(dirs) = std::fs::read_dir(state.join("sprag")) else {
+        return false;
+    };
+    dirs.flatten()
+        .filter(|dir| dir.path().extension().is_some_and(|e| e == "history"))
+        .flat_map(|dir| {
+            std::fs::read_dir(dir.path())
+                .into_iter()
+                .flatten()
+                .flatten()
+        })
+        .any(|file| {
+            std::fs::read(file.path())
+                .is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains(needle))
+        })
+}
+
+/// THE reboot payoff, end to end: a pane prints something, the daemon is KILLED outright, and the
+/// next daemon on the same socket brings the pane back with its scrollback — provable because
+/// `sprag find` still finds text the pane printed before the crash.
+///
+/// This is the one test that exercises the whole ring at once: the save loop's timer, the encoding,
+/// the per-pane file, the restore's replay-before-the-reader seam, and the search that reads the
+/// result. The pane comes back as a plain SHELL (a recorded `sh -c` is never re-run), so the text
+/// it finds can only have come from the restored history, never from re-running the command.
+///
+/// Linux-gated: it finds the forked daemon through `/proc`.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_killed_daemon_gives_its_panes_back_with_their_scrollback() {
+    let sock = socket_path();
+    let state = std::env::temp_dir().join(format!(
+        "sprag-durability-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+    // Unique per run, so a needle can never be found in another test's leftovers.
+    let needle = format!("PERSISTED-SCROLLBACK-{}", std::process::id());
+
+    // Daemon A, and a session whose pane PRINTS the needle then blocks on its pty.
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the first daemon never started serving",
+    );
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(NEW_SESSION_ACTION),
+            "args": {
+                "name": "work",
+                "cmd": ["sh", "-c", format!("printf '{needle}\\n'; exec cat")],
+            },
+        }),
+    )
+    .expect("new_session answers");
+    drop(conn);
+
+    // Wait on the CONDITION the assertion reads: the needle is actually ON DISK. The save loop is
+    // on a timer, so polling anything else here would be a race dressed as a wait.
+    assert!(
+        wait_for(Duration::from_secs(30), || saved_history_contains(
+            &state, &needle
+        )),
+        "the daemon never persisted the pane's scrollback under {}",
+        state.display(),
+    );
+
+    // The reboot: kill the daemon outright, then start its successor on the same socket + state.
+    let pid = daemon_pid(&sock).expect("the daemon is running");
+    kill_daemon(pid);
+    let _ = std::fs::remove_file(&sock);
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the second daemon never started serving",
+    );
+
+    // The payoff: the restored pane is searchable over output its predecessor produced.
+    let mut run = sprag(&sock, &["find", "-t", "work", &needle]);
+    let found = wait_for(Duration::from_secs(15), || {
+        run = sprag(&sock, &["find", "-t", "work", &needle]);
+        run.stdout.contains(&needle)
+    });
+    assert!(
+        found,
+        "the restored pane lost its scrollback (stdout {:?}, stderr {:?})",
+        run.stdout, run.stderr,
+    );
+    drop(guard);
 }

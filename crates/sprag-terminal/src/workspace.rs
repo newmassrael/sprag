@@ -266,6 +266,35 @@ pub struct PaneInfo {
     pub images: Vec<Image>,
 }
 
+/// Everything a RESTORED pane is reborn from: the recorded identity the layout still references it
+/// by, what to run, and what it carries back with it.
+///
+/// A struct rather than a parameter list because restore-time facts keep accruing — first the id,
+/// then the size, then the birth hooks, now the recorded scrollback — and each one would otherwise
+/// widen a signature every caller has to edit. Grouping them means the NEXT restore-time fact is an
+/// added field, not a churned call site. See [`Workspace::spawn_restored`].
+pub struct PaneRebirth {
+    /// The id to come back under. The window's arrangement, float set and homes all reference the
+    /// pane by it, so a restored pane that took a fresh id would leave the tree pointing at nothing.
+    pub id: PaneId,
+    /// What to run in the pane — the recorded command, or the shell a non-allowlisted argv falls
+    /// back to. The caller (the host's restore) owns that decision, not this crate.
+    pub command: CommandBuilder,
+    /// The pane's display label — DERIVED from what actually re-ran, so a pane that fell back to a
+    /// shell is labelled a shell.
+    pub label: String,
+    /// The `(cols, rows)` to open at, so the restored pane is the size it was.
+    pub size: (u16, u16),
+    /// The repaint wake, as [`Workspace::spawn_with_dirty`] takes it.
+    pub on_dirty: Option<Box<dyn Fn() + Send>>,
+    /// The child-exited signal, as [`Workspace::spawn_with_dirty`] takes it.
+    pub on_exit: Option<Box<dyn Fn() + Send>>,
+    /// The pane's recorded scrollback as replayable terminal bytes, applied to the fresh emulator
+    /// before its child can write a byte. EMPTY brings the pane back blank — the behaviour before
+    /// history was persisted, and what a disabled or unreadable history degrades to.
+    pub history: Vec<u8>,
+}
+
 /// The multiplexer's pane pool: a set of live panes, a monotonic id
 /// counter, and the default size a dimension-less spawn adopts.
 ///
@@ -403,7 +432,7 @@ impl Workspace {
         // Capture the launch argv BEFORE the builder is moved into the spawn, so a snapshot can
         // later re-run it (an allowlisted program) or fall back to a shell.
         let argv = argv_of(&command);
-        let pty = PanePty::spawn_with_dirty(command, cols, rows, on_dirty, on_exit)?;
+        let pty = PanePty::spawn_with_dirty(command, cols, rows, on_dirty, on_exit, &[])?;
         // Mint AFTER a successful spawn so a failed spawn consumes no id (preserving the
         // old counter's gap-free-on-failure behaviour). Relaxed ordering: ids need only
         // uniqueness + monotonicity, not synchronization with other memory.
@@ -418,8 +447,8 @@ impl Workspace {
         Ok(id)
     }
 
-    /// Spawn `command` on a fresh `cols x rows` pane at a CALLER-GIVEN `id`, rather than a
-    /// freshly minted one — the restore primitive.
+    /// Re-spawn a pane exactly as it was recorded — the restore primitive. See [`PaneRebirth`] for
+    /// what a restored pane comes back with.
     ///
     /// A [`SessionRegistry`](crate::SessionRegistry) restore re-spawns each pane the pre-reboot
     /// session held, and the arrangement ([`LayoutTree`](crate::LayoutTree)), float set, and
@@ -435,18 +464,18 @@ impl Workspace {
     ///
     /// Returns [`PanePtyError`] if the pseudoterminal or child cannot be started; on failure no
     /// pane is added.
-    pub fn spawn_with_dirty_id(
-        &mut self,
-        id: PaneId,
-        command: CommandBuilder,
-        label: String,
-        size: (u16, u16),
-        on_dirty: Option<Box<dyn Fn() + Send>>,
-        on_exit: Option<Box<dyn Fn() + Send>>,
-    ) -> Result<(), PanePtyError> {
-        let (cols, rows) = size;
+    pub fn spawn_restored(&mut self, pane: PaneRebirth) -> Result<(), PanePtyError> {
+        let PaneRebirth {
+            id,
+            command,
+            label,
+            size: (cols, rows),
+            on_dirty,
+            on_exit,
+            history,
+        } = pane;
         let argv = argv_of(&command);
-        let pty = PanePty::spawn_with_dirty(command, cols, rows, on_dirty, on_exit)?;
+        let pty = PanePty::spawn_with_dirty(command, cols, rows, on_dirty, on_exit, &history)?;
         // Reserve the id above the counter so a future mint cannot reissue it (saturating so a
         // pathological u64::MAX id cannot wrap the reservation back to 0). Relaxed matches the
         // mint path: ids need only uniqueness + monotonicity, not synchronization.
@@ -490,7 +519,7 @@ impl Workspace {
     /// (`next_id = max(next_id, id + 1)`, saturating), so the never-reused invariant holds even for
     /// a pane adopted from a pool that did NOT share this counter (there is no such caller today;
     /// the reservation makes the primitive correct regardless, the same discipline
-    /// [`spawn_with_dirty_id`](Self::spawn_with_dirty_id) keeps for a restore).
+    /// [`spawn_restored`](Self::spawn_restored) keeps for a restore).
     ///
     /// The caller owns membership: it must have obtained `pane` from a [`close`](Self::close) it
     /// just performed, so the same id is never live in two pools at once.
@@ -642,10 +671,26 @@ mod tests {
         let mut ws = Workspace::new((80, 24));
         // Restore two panes OUT of monotonic order, leaving a gap at the top (id 5 is the
         // high-water mark; 3 and 4 were minted then closed pre-reboot and did not come back).
-        ws.spawn_with_dirty_id(PaneId(5), cmd(), "sh".into(), (80, 24), None, None)
-            .unwrap();
-        ws.spawn_with_dirty_id(PaneId(1), cmd(), "sh".into(), (80, 24), None, None)
-            .unwrap();
+        ws.spawn_restored(PaneRebirth {
+            id: PaneId(5),
+            command: cmd(),
+            label: "sh".into(),
+            size: (80, 24),
+            on_dirty: None,
+            on_exit: None,
+            history: Vec::new(),
+        })
+        .unwrap();
+        ws.spawn_restored(PaneRebirth {
+            id: PaneId(1),
+            command: cmd(),
+            label: "sh".into(),
+            size: (80, 24),
+            on_dirty: None,
+            on_exit: None,
+            history: Vec::new(),
+        })
+        .unwrap();
         assert!(ws.pane(PaneId(5)).is_some());
         assert!(ws.pane(PaneId(1)).is_some());
         // A fresh mint goes ABOVE the highest reserved id — it never reissues 5.

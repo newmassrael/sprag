@@ -10,7 +10,8 @@
 //! sprag attach NAME        open a sprag-gui window attached to a session (tmux attach-session)
 //! sprag kill-session NAME   kill a session (the last one ends the daemon)
 //! sprag kill-server [--purge]  kill every session, ending the daemon; --purge also deletes the
-//!                              durability snapshot (destroy the saved workspace, start fresh)
+//!                              durability snapshot AND every pane's saved scrollback (destroy
+//!                              the saved workspace, start fresh)
 //!
 //! sprag windows -t SESSION                list a session's windows (name, and which is current)
 //! sprag new-window -t SESSION [name]      create + select a window, born with a shell; print its name
@@ -110,14 +111,20 @@ fn print_usage() {
 /// discovery of `sprag-term`.
 const GUI_BIN_ENV: &str = "SPRAG_GUI_BIN";
 
-/// Delete the durability snapshot for the daemon on this socket — the EXPLICIT "start fresh",
-/// reached ONLY by `kill-server --purge`. The daemon lifecycle otherwise PRESERVES the snapshot: a
-/// reboot, a crash, a natural close, and a plain `kill-server` all leave it, so the workspace comes
-/// back next launch (the cmux-durable model). `--purge` is the one way to destroy the saved
-/// workspace. Best-effort — a missing file is fine, and it runs as the daemon is ending (its save
-/// loop dies with it), so it does not race a live save.
+/// Delete the durability state for the daemon on this socket — its snapshot AND every pane's saved
+/// scrollback — the EXPLICIT "start fresh", reached ONLY by `kill-server --purge`.
+///
+/// The daemon lifecycle otherwise PRESERVES both: a reboot, a crash, a natural close, and a plain
+/// `kill-server` all leave them, so the workspace comes back next launch (the cmux-durable model),
+/// and even turning history off (`SPRAG_RESTORE_HISTORY=0`) only stops saving rather than deleting.
+/// `--purge` is the one way to destroy saved state, which is why it must take the history with the
+/// shape: leaving a pane's recorded output behind after the user asked to start fresh would be the
+/// opposite of what they asked for. Best-effort — missing files are fine, and it runs as the daemon
+/// is ending (its save loop dies with it), so it does not race a live save.
 fn clear_snapshot() {
-    let _ = std::fs::remove_file(sprag_host::snapshot_path(&socket_path(HOST_SOCKET)));
+    let socket = socket_path(HOST_SOCKET);
+    let _ = std::fs::remove_file(sprag_host::snapshot_path(&socket));
+    sprag_host::purge_histories(&sprag_host::history_dir(&socket));
 }
 
 /// Connect to the running daemon, mapping a refused connection to a clear "no server" message
@@ -503,7 +510,8 @@ fn kill_session(name: Option<String>) -> io::Result<()> {
 ///
 /// By DEFAULT the durability snapshot is PRESERVED: stopping the daemon does not destroy the saved
 /// workspace, so the next launch restores it (the cmux-durable model — your workspace persists).
-/// `--purge` additionally DELETES the snapshot: the explicit "start fresh", the one way to destroy
+/// `--purge` additionally DELETES the snapshot and every pane's saved scrollback: the explicit
+/// "start fresh", the one way to destroy
 /// the saved workspace.
 fn kill_server(args: Vec<String>) -> io::Result<()> {
     let purge = args.iter().any(|a| a == "--purge");

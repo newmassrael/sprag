@@ -36,10 +36,14 @@
 //! and would pin the self-cleaning count above zero forever. Instead it RESTORES its durability
 //! snapshot if one survived a reboot (the `durability` ring — sessions, windows, layout and pane
 //! working directories rebuilt, each pane re-running its recorded command — an allowlisted program
-//! — or a shell in its cwd), else boots empty. A natural last-pane exit KEEPS the snapshot (so a
+//! — or a shell in its cwd), else boots empty. Each pane also comes back with its SCROLLBACK, saved
+//! beside the snapshot as replayable terminal bytes (the `history` module) and bounded by
+//! `SPRAG_RESTORE_HISTORY` lines — `0` turns it off, which stops saving and restoring without
+//! deleting anything. A natural last-pane exit KEEPS the snapshot (so a
 //! transient program exit retries next boot). The daemon lifecycle otherwise PRESERVES the
 //! snapshot — a reboot, a crash, a natural close, and a plain `kill-server` all leave it, so the
-//! workspace comes back; only `sprag kill-server --purge` destroys the saved workspace (CLI-side).
+//! workspace comes back; only `sprag kill-server --purge` destroys the saved workspace, snapshot
+//! and pane histories alike (CLI-side).
 //! Standalone mode (no `--daemon`) never persists and is unchanged.
 
 // A binary crate: `cargo doc` builds it with private items and its crate-root doc links to the
@@ -48,6 +52,7 @@
 // here (mirrors `sprag-gui`) — declared crate-wide so a future internal link cannot re-break it.
 #![allow(rustdoc::private_intra_doc_links)]
 
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::unix::io::AsRawFd;
@@ -61,11 +66,12 @@ use std::time::Duration;
 use pinion_core::SceneRevision;
 use signal_hook::consts::{SIGINT, SIGTERM};
 use sprag_host::{
-    FrameIngress, Host, HostState, RunRegistry, bump_on_dirty, dispatch_frames, load_snapshot,
-    pane_exit_hook, save_if_changed, snapshot_path, spawn_reaper, stdin_frames,
+    FrameIngress, Host, HostState, RunRegistry, bump_on_dirty, dispatch_frames, history_dir,
+    history_limit, load_pane_history, load_snapshot, pane_exit_hook, save_histories_if_changed,
+    save_if_changed, snapshot_path, spawn_reaper, stdin_frames,
 };
 use sprag_rpc::HOST_SOCKET;
-use sprag_terminal::{CommandBuilder, SessionRegistry, Snapshot};
+use sprag_terminal::{CommandBuilder, PaneId, SessionRegistry, Snapshot};
 use tracing_subscriber::{EnvFilter, fmt};
 
 fn main() -> io::Result<()> {
@@ -147,6 +153,12 @@ fn main() -> io::Result<()> {
     // snapshot leaves the registry empty — the pre-durability behaviour. Standalone still boots its
     // one pane (the `sprag-term -- cmd` contract + the `wire_client` tests rely on it) and never
     // persists.
+    // Where each pane's scrollback lives, and how much of it survives a restart. Both read ONCE
+    // here and injected, so the library names no state directory and reads no environment. A zero
+    // limit disables history on BOTH edges — nothing saved, nothing replayed — while leaving
+    // whatever is already on disk untouched (`kill-server --purge` is the one destroying verb).
+    let hist_dir = history_dir(&sock);
+    let hist_limit = history_limit();
     if args.daemon {
         if let Some(snapshot) = load_snapshot(&snap_path) {
             // Gate the reaper across the restore loop, then run it with the exact-command allowlist
@@ -157,6 +169,10 @@ fn main() -> io::Result<()> {
                 &sprag_host::restore_allowlist(),
                 || Some(bump_on_dirty(&revision)),
                 || Some(pane_exit_hook(&on_pane_exit)),
+                |id| match hist_limit {
+                    0 => Vec::new(),
+                    _ => load_pane_history(&hist_dir, id),
+                },
             );
             restoring.store(false, Ordering::Release);
             match outcome {
@@ -173,7 +189,7 @@ fn main() -> io::Result<()> {
             }
         }
         // The durability save loop: persist the live shape so the NEXT daemon can rebuild it.
-        spawn_snapshot_saver(Arc::clone(host.registry()), snap_path);
+        spawn_durability_saver(Arc::clone(host.registry()), snap_path, hist_dir, hist_limit);
     } else {
         host.spawn(
             args.command,
@@ -234,21 +250,33 @@ fn init_tracing() {
 /// does no disk I/O.
 const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Spawn the durability save loop (daemon only): every [`SNAPSHOT_INTERVAL`], project the registry
-/// to a [`Snapshot`] and write it ATOMICALLY — but only when it differs from the last one saved, so
-/// an idle daemon rewrites nothing. This is the cmux-parity ring: a reboot ends the daemon and every
-/// PTY, but the snapshot on disk lets the NEXT daemon rebuild the sessions, windows, layout and
-/// working directories a live PTY could never carry across.
+/// Spawn the durability save loop (daemon only): every [`SNAPSHOT_INTERVAL`], persist the
+/// workspace's SHAPE (the [`Snapshot`]) and its CONTENT (each pane's scrollback) — each written
+/// ATOMICALLY, and only when it differs from what was last saved, so an idle daemon rewrites
+/// nothing. This is the cmux-parity ring: a reboot ends the daemon and every PTY, but what is on
+/// disk lets the NEXT daemon rebuild the sessions, windows, layout, working directories and
+/// scrollback a live PTY could never carry across.
 ///
-/// The `snapshot` projection takes the registry then each workspace lock SEQUENTIALLY (never
-/// nested), so this background thread never contends with dispatch beyond a brief membership read.
-/// A transient save error is logged and retried next tick (`last` is left unchanged), so a full disk
-/// or a momentary permission glitch does not silently stop persistence.
-fn spawn_snapshot_saver(registry: Arc<Mutex<SessionRegistry>>, path: PathBuf) {
+/// One thread drives both halves so they are written from the same tick rather than drifting
+/// apart on two timers. Both projections take the registry then each workspace lock SEQUENTIALLY
+/// (never nested), so this background thread never contends with dispatch beyond a brief
+/// membership read.
+///
+/// A transient save error is logged and retried next tick (the last-saved state is left
+/// unchanged), so a full disk or a momentary permission glitch does not silently stop persistence.
+/// The two halves fail INDEPENDENTLY: an unwritable history must not cost the workspace its shape.
+fn spawn_durability_saver(
+    registry: Arc<Mutex<SessionRegistry>>,
+    path: PathBuf,
+    history_dir: PathBuf,
+    history_limit: usize,
+) {
     thread::spawn(move || {
-        // `save_if_changed` owns the write-if-changed dedup (tested in `durability`); the loop is
-        // just it on a timer, carrying the last-saved snapshot between ticks.
+        // `save_if_changed` / `save_histories_if_changed` own the write-if-changed dedup (both
+        // tested in their own modules); the loop is just them on a timer, carrying what was last
+        // saved between ticks.
         let mut last: Option<Snapshot> = None;
+        let mut last_histories: HashMap<PaneId, Vec<u8>> = HashMap::new();
         loop {
             thread::sleep(SNAPSHOT_INTERVAL);
             if let Err(e) = save_if_changed(&path, &registry, &mut last) {
@@ -256,6 +284,18 @@ fn spawn_snapshot_saver(registry: Arc<Mutex<SessionRegistry>>, path: PathBuf) {
                     target: "sprag_host::durability",
                     "snapshot save to {} failed: {e}",
                     path.display()
+                );
+            }
+            if let Err(e) = save_histories_if_changed(
+                &history_dir,
+                &registry,
+                history_limit,
+                &mut last_histories,
+            ) {
+                tracing::warn!(
+                    target: "sprag_host::durability",
+                    "pane history save to {} failed: {e}",
+                    history_dir.display()
                 );
             }
         }

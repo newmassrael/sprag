@@ -170,7 +170,7 @@ impl PanePty {
     /// Returns [`PanePtyError`] if the PTY cannot be opened, the child
     /// cannot be spawned, or the master reader/writer cannot be acquired.
     pub fn spawn(command: CommandBuilder, cols: u16, rows: u16) -> Result<Self, PanePtyError> {
-        Self::spawn_with_dirty(command, cols, rows, None, None)
+        Self::spawn_with_dirty(command, cols, rows, None, None, &[])
     }
 
     /// [`Self::spawn`] with two reader-thread callbacks:
@@ -193,6 +193,15 @@ impl PanePty {
     /// decoupled from the GUI shell and the host lifetime. `None` is for a caller with
     /// nothing to do (this crate's own tests, and [`spawn`](Self::spawn)).
     ///
+    /// `history` is a restored pane's recorded scrollback as replayable terminal bytes (empty for
+    /// an ordinary spawn). It is applied to the emulator BEFORE the reader thread exists, which is
+    /// the only race-free point: the child is already running by the time this returns, so seeding
+    /// afterwards would interleave with its first output and could land the restored history
+    /// UNDER a prompt the shell had already printed. It is applied to the emulator only, never
+    /// written to the PTY — the child must not receive its predecessor's output — and it is
+    /// deliberately kept out of [`raw_output`](Self::raw_output), which captures what THIS child
+    /// said.
+    ///
     /// # Errors
     ///
     /// Same as [`Self::spawn`].
@@ -202,6 +211,7 @@ impl PanePty {
         rows: u16,
         on_dirty: Option<Box<dyn Fn() + Send>>,
         on_exit: Option<Box<dyn Fn() + Send>>,
+        history: &[u8],
     ) -> Result<Self, PanePtyError> {
         let cols = cols.max(1);
         let rows = rows.max(1);
@@ -233,6 +243,11 @@ impl PanePty {
         ));
 
         let emulator = Arc::new(Mutex::new(Emulator::new(cols, rows)));
+        // Replay a restored pane's recorded scrollback into the fresh emulator while this thread is
+        // still its only observer — before the reader below can apply a single byte from the child.
+        if !history.is_empty() {
+            lock(&emulator).advance(history);
+        }
         let raw_output: SharedRawCapture = Arc::new(Mutex::new(RawCapture::new()));
         let eof = Arc::new(AtomicBool::new(false));
         let reader_emulator = Arc::clone(&emulator);
@@ -883,6 +898,7 @@ mod tests {
                 counter.fetch_add(1, Ordering::SeqCst);
             })),
             None,
+            &[],
         )
         .expect("spawn a pty");
 
@@ -1108,6 +1124,7 @@ mod tests {
                 let _ = tx.send(());
             })),
             None,
+            &[],
         )
         .expect("spawn a pty");
 
@@ -1141,6 +1158,7 @@ mod tests {
             Some(Box::new(move || {
                 counter.fetch_add(1, Ordering::SeqCst);
             })),
+            &[],
         )
         .expect("spawn a pty");
 

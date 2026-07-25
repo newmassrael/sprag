@@ -41,4 +41,4 @@ pub use snapshot::{
     PaneRestore, PaneSnapshot, RestorePlan, SNAPSHOT_VERSION, SessionSnapshot, Snapshot,
     SnapshotError, WindowSnapshot, pane_histories, snapshot,
 };
-pub use workspace::{Pane, PaneId, PaneInfo, Workspace};
+pub use workspace::{Pane, PaneId, PaneInfo, PaneRebirth, Workspace};

@@ -51,3 +51,6 @@ serde = { workspace = true }
 [dev-dependencies]
 # The real-socket wire tests build/decode base64 image payloads (R1404 Stage 5 on-demand).
 base64 = { workspace = true }
+# The durability e2e SIGKILLs the forked daemon (the reboot analogue). An integration test links
+# the crate's dev-dependencies, not its own, so libc is declared again here.
+libc = { workspace = true }
