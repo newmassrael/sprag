@@ -16,7 +16,7 @@ impl WidgetA11y for TerminalViewer {
     /// root Owner scope, so [`use_terminal`] resolves the live panes. Each node's
     /// tag is its [`pane_tag`], so AT focus and the keyboard focus gate
     /// ([`route_key`](crate::input::route_key)) share one identity per pane.
-    fn access_node(_state: &crate::ctxmenu::MenuState, focused: Option<&str>) -> Vec<AccessNode> {
+    fn access_node(_state: &crate::view::ViewState, focused: Option<&str>) -> Vec<AccessNode> {
         let terminal = use_terminal();
         terminal
             .slots
@@ -178,7 +178,7 @@ mod tests {
     fn access_node_reads_each_live_pane() {
         let owner = Owner::new();
         let nodes = owner.run(|| {
-            TerminalViewer::access_node(&crate::ctxmenu::MenuState::default(), Some(pane_tag(0)))
+            TerminalViewer::access_node(&crate::view::ViewState::default(), Some(pane_tag(0)))
         });
         let count = owner.run(|| use_terminal().slots.occupied_slots().len());
         assert_eq!(nodes.len(), count, "one terminal node per pane");

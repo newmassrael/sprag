@@ -7,7 +7,7 @@
 
 use crate::terminal::{pane_cache_key, pane_index_of, pane_tag, use_terminal};
 use pinion_core::reactive::{Owner, Signal};
-use pinion_core::{CompositionEvent, Modifiers};
+use pinion_core::{CompositionEvent, Modifiers, Scene};
 
 /// `Owner::cache` key for pane `pane`'s IME preedit overlay. Minted via the one
 /// per-pane key site [`pane_cache_key`] so the index suffix cannot drift.
@@ -215,6 +215,13 @@ fn clipboard_chord(key: &str, modifiers: Modifiers) -> Option<ClipboardChord> {
     None
 }
 
+/// Whether `key` + `modifiers` is the find-bar chord (`Ctrl+Shift+F`). Pure, and case-insensitive
+/// because `Shift` upper-cases the letter; `Alt` excluded so `Ctrl+Alt+Shift+F` is not stolen —
+/// the same shape [`clipboard_chord`] uses.
+fn find_chord(key: &str, modifiers: Modifiers) -> bool {
+    modifiers.ctrl && modifiers.shift && !modifiers.alt && key.eq_ignore_ascii_case("f")
+}
+
 /// A reserved chord that switches this CLIENT's SESSION, NOT the focused pane's PTY — `Ctrl+Shift+L`
 /// (the tmux `switch-client -l` "last session"), `Ctrl+Shift+PageUp/Down` (cycle to the previous /
 /// next session in the sidebar's list order). `route_key` recognizes one via [`session_chord`] and
@@ -307,6 +314,7 @@ fn switch_to_last_session() {
 /// than injecting nothing. Returning `true` for the encodable keys swallows
 /// Escape/Tab from the shell's quit/traverse defaults so a full-screen TUI receives them.
 pub(crate) fn route_key(
+    scene: &mut Scene,
     focused: Option<&str>,
     key: &str,
     modifiers: Modifiers,
@@ -315,6 +323,14 @@ pub(crate) fn route_key(
     let Some(tag) = focused else {
         return false;
     };
+    // The find bar (find-in-scrollback): with its field focused, every key belongs to the SEARCH —
+    // typing edits the needle, Enter steps matches, Escape closes — so it is dispatched before the
+    // pane gate below drops a non-pane focus. The `scene` is threaded this far for exactly this: a
+    // field edit is delivered through the field's own External (pinion's `forward_key_to_field`),
+    // which needs the model scene; every other route here is a client SEND to the host.
+    if crate::find::is_find_focus(tag) {
+        return crate::find::handle_key(scene, key, modifiers);
+    }
     // The session rail (R179): with the sidebar focused — its `tablist` (the list's single Tab
     // stop) or a footer button — route the key to the sidebar keyboard model (rove the cursor /
     // switch / arm-kill / confirm), NOT the pane PTY. Checked BEFORE the pane focus gate below,
@@ -328,6 +344,13 @@ pub(crate) fn route_key(
     // Clipboard chords (R139) act on the selection / clipboard, not the PTY: copy the
     // active selection to CLIPBOARD, or paste CLIPBOARD into the focused pane. Consumed
     // either way so `Ctrl+Shift+C/V` never reach the shell (Ctrl+C there is SIGINT).
+    // `Ctrl+Shift+F` opens the find bar on the focused pane — the terminal-convention `Shift`
+    // variant of the browser `Ctrl+F`, because bare `Ctrl+F` is a PTY key (readline forward-char,
+    // vim page-down) that must keep reaching the child. Consumed here so it never does both.
+    if find_chord(key, modifiers) {
+        crate::find::open(active);
+        return true;
+    }
     if let Some(chord) = clipboard_chord(key, modifiers) {
         match chord {
             ClipboardChord::Copy => {

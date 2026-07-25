@@ -12,6 +12,7 @@ use crate::split::{
     pane_index_of_panel, panel_id, use_dock_topology, use_drop_preview, use_split_ratio,
 };
 use crate::terminal::{TerminalView, pane_cache_key, pane_index_of, pane_tag, use_terminal};
+use crate::{WINDOW_H, WINDOW_W};
 use pinion_core::external::OUTER_DOCK_ZONE_TAG;
 use pinion_core::reactive::Owner;
 use pinion_core::scene::{ContainerNode, ImageNode, Rect};
@@ -75,11 +76,36 @@ pub(crate) fn pane_display_title(slots: &SlotView, i: usize) -> String {
 /// pane content. [`WidgetCore::view`](crate::TerminalViewer) (the windowless /
 /// RPC-snapshot fallback) routes here as the main window. The producer threads (the PTY
 /// readers) live in `create_extra_externals`, not here.
-pub(crate) fn view_for_window(
-    window_id: &str,
-    state: crate::ctxmenu::MenuState,
-    _frame: &Frame,
-) -> Scene {
+/// The binding's cached per-frame `State`: the `Copy` snapshots the shell reads out of the MODEL
+/// scene and hands to the pure paint.
+///
+/// It grew from `()` to the context menu's posture, and now carries the find field's too — both are
+/// External-owned interaction states that only the model scene knows, so both must cross this seam
+/// rather than be re-derived in the view. A struct rather than a tuple so a third surface adds a
+/// named field instead of a positional one.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub(crate) struct ViewState {
+    /// The context menu's open anchor + active item.
+    pub(crate) menu: crate::ctxmenu::MenuState,
+    /// The find field's interaction state + caret.
+    pub(crate) find: crate::find::FindFieldState,
+}
+
+/// Overlay the find bar on `scene` when it is open (a no-op when closed), pushed LAST so the
+/// absolutely-positioned bar paints over the tiling below it — the placement the context menu's own
+/// overlay documents.
+fn with_find_bar(scene: Scene, field: crate::find::FindFieldState, theme: &Theme) -> Scene {
+    let Some(bar) = crate::find::view_bar(field, theme, (WINDOW_W, WINDOW_H)) else {
+        return scene;
+    };
+    let Scene::Container(mut root) = scene else {
+        return scene;
+    };
+    root.children.push(bar);
+    Scene::Container(root)
+}
+
+pub(crate) fn view_for_window(window_id: &str, state: ViewState, _frame: &Frame) -> Scene {
     let theme = use_theme(THEME_TAG).theme_animated();
     let tv = use_terminal();
     match pane_window_index(window_id) {
@@ -119,7 +145,13 @@ pub(crate) fn view_for_window(
         }
         // The main window tiles the docked panes; overlay the right-click context menu
         // (R140) when it is open (a no-op when closed) — LAST so the popup paints over.
-        _ => crate::ctxmenu::overlay(view_main(&tv, &theme), state, &theme),
+        // The find bar rides ABOVE the tiling and BELOW the context menu: a menu opened over the
+        // bar must still paint on top, and the menu's own dismiss barrier must not sit over it.
+        _ => crate::ctxmenu::overlay(
+            with_find_bar(view_main(&tv, &theme), state.find, &theme),
+            state.menu,
+            &theme,
+        ),
     }
 }
 
@@ -392,6 +424,11 @@ fn build_pane_scene(tv: &TerminalView, i: usize, theme: &Theme) -> Scene {
     // hover move repaints the highlight.
     let hovered = crate::hyperlink::hovered_link(i);
     let cells = sprag_grid::overlay_hyperlink_hover(cells, hovered);
+    // Find-in-scrollback: recolour this pane's visible matches (and, distinctly, the current one).
+    // Laid AFTER the selection / hover inversions on purpose — a match must stay legible inside a
+    // selected band, which two stacked inversions would cancel. Reading the find Signals here
+    // subscribes the paint, so typing in the bar repaints the highlight.
+    let cells = crate::find::overlay_matches(cells, i, scroll.offset_y(), dims.visible_rows);
     let grid =
         sprag_host::pane_view_scene_from_cells(pane_tag(i), cells, tv.metric, tv.font_size_px);
     // R-71.1: the hand cursor while hovering a link (the grid's whole rect resolves to

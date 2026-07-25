@@ -31,7 +31,7 @@ use std::collections::HashSet;
 
 use pinion_core::GridBuffer;
 use sprag_host::{
-    HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneNotification, PaneScrollFacts,
+    HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneNotification, PaneScrollFacts,
 };
 use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId, SessionInfo, WindowInfo};
@@ -217,6 +217,14 @@ impl SlotView {
     /// WHICH pane the drop landed on.
     pub(crate) fn drop_file(&self, slot: usize, path: &str) -> Option<String> {
         self.host.drop_file(self.id(slot)?, path)
+    }
+
+    /// Slot `slot`'s pane's search matches for `needle` — the find bar's read. `None`-safe for a
+    /// hole (an empty result), like every other slot-mapped read.
+    pub(crate) fn pane_find(&self, slot: usize, needle: &str) -> PaneFind {
+        self.id(slot)
+            .map(|id| self.host.pane_find(id, needle))
+            .unwrap_or_default()
     }
 
     /// Every session on the host (registry-wide) — the list the session sidebar draws. NOT

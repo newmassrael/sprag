@@ -208,6 +208,7 @@ mod clipboard_osc;
 mod ctxmenu;
 mod diag;
 mod dock;
+mod find;
 mod focus_report;
 mod hyperlink;
 mod input;
@@ -310,7 +311,7 @@ impl WidgetCore for TerminalViewer {
     /// The context-menu open/active projection (R140) — sprag's first stateful surface,
     /// so `State` grew from `()`. Read from the `ContextMenuExternal` each frame by
     /// [`Self::read_state`] and rendered by the pure `view` ([`ctxmenu::overlay`]).
-    type State = ctxmenu::MenuState;
+    type State = view::ViewState;
     type Event = ();
 
     /// sprag has **NO primary interactive surface** (R127, consuming PINION-PR51): every
@@ -426,6 +427,12 @@ impl WidgetCore for TerminalViewer {
                 .copied()
                 .map(hyperlink::pane_hyperlink_external),
         );
+        // The find bar's text field (find-in-scrollback). Registered EVERY reconcile at its constant
+        // tag, like the context menu's External — pinion R689 preserves a surviving external's live
+        // state by tag, so the needle and caret survive the per-frame re-registration. It is
+        // registered whether or not the bar is open: the External is what holds the text the bar
+        // shows when it re-opens, and an unpainted External costs nothing.
+        externals.push(find::create_find_external());
         // Drag-to-dock / tear-off (pinion R1081/R1084/R1094 §5.51, P2/PR-31): one R742
         // `DockPanelExternal` per pane, registered at the panel ROOT tag
         // (`split::panel_id(i)` = the `view_dock_panel` root the `view_dock_surface_chrome`
@@ -565,9 +572,10 @@ impl WidgetCore for TerminalViewer {
             false,
             focused,
         );
-        // The paint scene is not read: input is a client SEND to the host (route_key
-        // -> Host::send_key), not a mutation of the GUI's own scene (topology B).
-        route_key(focused, key, modifiers, false)
+        // The scene is threaded through for ONE route: a find-bar edit, which pinion delivers
+        // through the field External. Every other route is a client SEND to the host (route_key ->
+        // Host::send_key), not a mutation of the GUI's own scene (topology B).
+        route_key(_scene, focused, key, modifiers, false)
     }
 
     /// Repeat-aware key dispatch (pinion R1071 / PINION-PR27) — the variant the live
@@ -592,7 +600,7 @@ impl WidgetCore for TerminalViewer {
             repeat,
             focused,
         );
-        route_key(focused, key, modifiers, repeat)
+        route_key(_scene, focused, key, modifiers, repeat)
     }
 
     /// Route committed IME text to the focused pane's PTY — delegates to
@@ -842,7 +850,10 @@ impl WidgetCore for TerminalViewer {
     /// Project the context menu's open/active state out of the model scene (R140) —
     /// the `read_state` seam the shell caches into [`Self::State`] for the pure `view`.
     fn read_state(scene: &Scene) -> Self::State {
-        ctxmenu::read_menu_state(scene)
+        view::ViewState {
+            menu: ctxmenu::read_menu_state(scene),
+            find: find::read_field_state(scene),
+        }
     }
 
     /// Reducer — pinion routes external-drained intents through `WidgetCore::update`
@@ -888,7 +899,7 @@ impl WidgetCore for TerminalViewer {
     /// field) is the correct SSOT — and splitting once avoids the per-call `format!`
     /// allocation a candidate-rebuild-per-arm would cost on the `follow` hot path
     /// (the follow fires per drag-move, hundreds of times in one gesture).
-    fn update(_state: ctxmenu::MenuState, intent: &Intent) -> Vec<Command> {
+    fn update(_state: view::ViewState, intent: &Intent) -> Vec<Command> {
         // R140: a context-menu item activation arrives as the menu's `"command"`
         // intent — run its Copy / Paste / Select-all action and stop (it is not a
         // dock-panel tag, so the panel routing below would drop it anyway).
@@ -1274,7 +1285,7 @@ impl WidgetView for TerminalViewer {
     /// [`a11y::access_nodes_for_window`].
     fn access_node_for_window(
         window_id: &str,
-        _state: &ctxmenu::MenuState,
+        _state: &view::ViewState,
         focused: Option<&str>,
     ) -> Vec<AccessNode> {
         a11y::access_nodes_for_window(window_id, focused)
@@ -1401,7 +1412,7 @@ mod tests {
 
             assert!(
                 !<TerminalViewer as WidgetView>::on_file_drop(
-                    &ctxmenu::MenuState::default(),
+                    &view::ViewState::default(),
                     dropped.to_str().unwrap(),
                 ),
                 "a drop changes no reactive state, so it requests no redraw",
@@ -1461,7 +1472,7 @@ mod tests {
             split::sync_layout(&use_terminal().slots); // project the host arrangement
             view::view_for_window(
                 dock::MAIN_WINDOW_ID,
-                ctxmenu::MenuState::default(),
+                view::ViewState::default(),
                 &Frame::new(),
             )
         });
@@ -3100,9 +3111,8 @@ mod tests {
         let core = ShellCore::<TerminalViewer>::new();
         core.root_owner().run(|| {
             let frame = Frame::new();
-            let render = || {
-                view::view_for_window(dock::MAIN_WINDOW_ID, ctxmenu::MenuState::default(), &frame)
-            };
+            let render =
+                || view::view_for_window(dock::MAIN_WINDOW_ID, view::ViewState::default(), &frame);
 
             // Baseline: no preview.
             split::use_drop_preview().set(None);

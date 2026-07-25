@@ -244,6 +244,72 @@ pub fn overlay_selection(buffer: GridBuffer, start: (u16, u16), end: (u16, u16))
     buffer
 }
 
+/// One search-match span to highlight, in the buffer's VISIBLE grid: `(row, col, cols)`.
+/// Rows / columns past the buffer are clamped by [`overlay_matches`]; a zero-`cols` span paints
+/// nothing.
+pub type MatchSpan = (u16, u16, u16);
+
+/// Overlay find-in-scrollback match highlights onto `buffer` by RECOLOURING each matched cell to
+/// `fg` / `bg` — the third overlay of the family, and the one that must NOT be reverse-video.
+///
+/// [`overlay_selection`] and [`overlay_hyperlink_hover`] both invert, which is right for a state the
+/// user is holding (a drag, a hover) but wrong here: a match can coincide with a selection, and two
+/// inversions would cancel to "no highlight at all" over exactly the cells the user is looking at. A
+/// distinct colour pair also lets a caller mark the CURRENT match differently from the rest — the
+/// same decision tmux encodes as `copy-mode-match-style` vs `copy-mode-current-match-style`.
+///
+/// The colours are the CALLER's (a display concern), passed as [`TermColor`]s so an
+/// [`Indexed`](TermColor::Indexed) pair resolves through the pane's own live palette and stays
+/// theme-consistent. Like its siblings this rewrites only the affected rows wholesale on the
+/// per-frame projected buffer, never the producer's authoritative cells.
+#[must_use]
+pub fn overlay_matches(
+    buffer: GridBuffer,
+    spans: &[MatchSpan],
+    fg: TermColor,
+    bg: TermColor,
+) -> GridBuffer {
+    let cols = buffer.cols();
+    let rows = buffer.rows();
+    if cols == 0 || rows == 0 || spans.is_empty() {
+        return buffer;
+    }
+    let mut buffer = buffer;
+    for row in 0..rows {
+        // Rewrite a row only if a span actually lands on it — most rows carry no match.
+        let on_row: Vec<MatchSpan> = spans
+            .iter()
+            .copied()
+            .filter(|&(span_row, _, span_cols)| span_row == row && span_cols > 0)
+            .collect();
+        if on_row.is_empty() {
+            continue;
+        }
+        let cells: Vec<TermCell> = (0..cols)
+            .map(|col| {
+                let cell = buffer
+                    .cell(col, row)
+                    .cloned()
+                    .unwrap_or_else(TermCell::blank);
+                let hit = on_row
+                    .iter()
+                    .any(|&(_, start, width)| col >= start && col < start.saturating_add(width));
+                // Recolour IN PLACE rather than rebuilding: only the two colour axes change, so the
+                // cell keeps its attrs, width role, hyperlink and underline colour — a match on a
+                // bold link stays a bold link.
+                let mut cell = cell;
+                if hit {
+                    cell.fg = fg;
+                    cell.bg = bg;
+                }
+                cell
+            })
+            .collect();
+        buffer = buffer.with_row(row, cells);
+    }
+    buffer
+}
+
 /// Overlay the OSC-8 hyperlink hover highlight (R-71.2, pinion R1405): reverse-video
 /// every cell whose link matches `hovered` — the WHOLE id-group at once, so a link
 /// split across a wrap lights together (its non-adjacent runs share one
@@ -815,6 +881,54 @@ mod tests {
             out.cell(2, 0).unwrap().cluster,
             "x",
             "no overlay without a visible cursor"
+        );
+    }
+
+    /// Match highlights RECOLOUR rather than invert, and only the spans given. The distinction is
+    /// the reason the function exists: an inverted match inside an inverted selection would cancel
+    /// to no highlight at all, over exactly the cells the user is looking at.
+    #[test]
+    fn overlay_matches_recolours_only_the_spans() {
+        let screen = screen_from(b"ab cd", 10, 1);
+        let buf = project(&screen, &palette());
+        // The projection has already resolved every cell's colour against the palette, so an
+        // untouched cell's bg is whatever it projected to — captured here rather than assumed.
+        let untouched = buf.cell(2, 0).map(|c| c.bg);
+        let out = overlay_matches(
+            buf,
+            &[(0, 3, 2)],
+            TermColor::Indexed(0),
+            TermColor::Indexed(6),
+        );
+        assert_eq!(out.cell(3, 0).map(|c| c.bg), Some(TermColor::Indexed(6)));
+        assert_eq!(out.cell(4, 0).map(|c| c.bg), Some(TermColor::Indexed(6)));
+        assert_eq!(
+            out.cell(2, 0).map(|c| c.bg),
+            untouched,
+            "a cell outside the span keeps its own colour",
+        );
+        assert!(
+            out.cell(3, 0).is_some_and(|c| !c.attrs.reverse),
+            "a match is recoloured, NOT inverted",
+        );
+    }
+
+    /// A span on a row the buffer does not have, or a zero-width one, paints nothing rather than
+    /// panicking or smearing the first row.
+    #[test]
+    fn overlay_matches_ignores_out_of_range_and_empty_spans() {
+        let screen = screen_from(b"ab", 10, 1);
+        let buf = project(&screen, &palette());
+        let before = buf.clone();
+        let out = overlay_matches(
+            buf,
+            &[(99, 0, 2), (0, 0, 0)],
+            TermColor::Indexed(0),
+            TermColor::Indexed(6),
+        );
+        assert_eq!(
+            out.cell(0, 0).map(|c| c.bg),
+            before.cell(0, 0).map(|c| c.bg),
         );
     }
 

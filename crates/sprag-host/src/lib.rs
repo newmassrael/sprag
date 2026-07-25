@@ -70,7 +70,8 @@ pub use durability::{
     save_snapshot, snapshot_path,
 };
 pub use host::{
-    Host, HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneNotification, PaneScrollFacts,
+    Host, HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneMatch,
+    PaneNotification, PaneScrollFacts,
 };
 pub use pane::{CellFrame, SpragPaneExternal, focus, mouse, paste, send_key, send_text};
 pub use plugins::PluginsExternal;

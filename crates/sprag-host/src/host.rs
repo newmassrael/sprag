@@ -91,6 +91,53 @@ impl PaneScrollFacts {
     }
 }
 
+/// One find-in-scrollback match, as a client reads it off the wire — the serde projection of
+/// [`sprag_vt::FindMatch`], whose coordinate this carries unchanged: `line` counts logical lines
+/// from the pane's OLDEST retained line (the scroll `offset_y` axis, so a client jumps to a match
+/// with the offset it already speaks) and `col`/`cols` are CELL columns, ready to overlay.
+///
+/// The VT layer stays serde-free by design ("the VT layer owns no wire shape"), so the wire shape
+/// lives here, beside [`PaneScrollFacts`] and for the same reason: ONE definition both the host's
+/// `find.<needle>` query and every client deserialize, so the JSON keys cannot drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PaneMatch {
+    /// Logical line index from the pane's oldest retained line.
+    pub line: usize,
+    /// Starting cell column within that line.
+    pub col: u16,
+    /// Width in cell columns (a wide cluster counts two).
+    pub cols: u16,
+}
+
+/// The answer to a pane search: the matches plus whether the scan hit its cap
+/// ([`sprag_vt::FIND_MATCH_CAP`]). The serde projection of [`sprag_vt::FindResult`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PaneFind {
+    /// Every match, in reading order (oldest line first, then by column).
+    pub matches: Vec<PaneMatch>,
+    /// `true` when the search stopped at the cap — there may be more past the last match.
+    pub truncated: bool,
+}
+
+impl PaneFind {
+    /// Project a VT [`FindResult`](sprag_vt::FindResult) onto the wire shape — the SINGLE
+    /// conversion site, so the host's query and a client's deserialize share one field mapping.
+    pub(crate) fn from_screen_result(found: &sprag_vt::FindResult) -> Self {
+        Self {
+            matches: found
+                .matches
+                .iter()
+                .map(|m| PaneMatch {
+                    line: m.line,
+                    col: m.col,
+                    cols: m.cols,
+                })
+                .collect(),
+            truncated: found.truncated,
+        }
+    }
+}
+
 /// A pane's most recent ATTENTION notification (`OSC 9` / `OSC 777;notify` / `OSC 99`), as a
 /// display client reads it off [`HostClient::pane_notification`] — the payload plus the monotonic
 /// `seq` that lets a client tell a NEW one from a re-read of the same latched notification (the
@@ -191,6 +238,21 @@ pub trait HostClient {
     /// [`pane_cells`](HostClient::pane_cells) path. Empty if `id` is absent or the shell emits no
     /// OSC 133 marks.
     fn pane_prompt_positions(&self, id: PaneId) -> Vec<usize>;
+
+    /// Every literal match of `needle` in pane `id`'s retained output (scrollback + visible), in the
+    /// pane's logical line + cell-column coordinate — the find-in-scrollback read.
+    ///
+    /// Queried ON DEMAND (a find bar's keystroke), NEVER per frame, like
+    /// [`pane_prompt_positions`](HostClient::pane_prompt_positions): the search runs where the cells
+    /// are, so a client asks for the handful of matches instead of pulling a whole scrollback across
+    /// a socket to search it itself. Empty for an absent pane or an empty needle.
+    ///
+    /// Defaulted to empty — a client that cannot reach a host search (and the test doubles) need not
+    /// implement it; [`Host`] and the wire client override it.
+    fn pane_find(&self, id: PaneId, needle: &str) -> PaneFind {
+        let _ = (id, needle);
+        PaneFind::default()
+    }
 
     /// Pane `id`'s current grid `(cols, rows)` — the emulator screen size, which tracks
     /// the last reflow target (the reflow no-op guard + an undock window's intrinsic
@@ -897,6 +959,16 @@ impl HostClient for Host {
     fn pane_prompt_positions(&self, id: PaneId) -> Vec<usize> {
         self.with_pane_id(id, |pane| {
             pane.pty().with_screen(|screen| screen.prompt_positions())
+        })
+        .unwrap_or_default()
+    }
+
+    /// Runs the search on the pane's own [`Screen`] — the same
+    /// [`Screen::find`](sprag_vt::Screen::find) the wire `find.<needle>` family serves, so the
+    /// in-process client and a wire client cannot disagree about what matches.
+    fn pane_find(&self, id: PaneId, needle: &str) -> PaneFind {
+        self.with_pane_id(id, |pane| {
+            PaneFind::from_screen_result(&pane.pty().with_screen(|screen| screen.find(needle)))
         })
         .unwrap_or_default()
     }

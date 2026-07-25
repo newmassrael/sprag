@@ -372,15 +372,14 @@ impl ExternalIntrospect for SpragPaneExternal {
             if needle.is_empty() {
                 return Some(IntrospectValue::Null);
             }
-            let found = self.pty.with_screen(|screen| screen.find(needle));
-            return Some(IntrospectValue::Json(json!({
-                "matches": found
-                    .matches
-                    .iter()
-                    .map(|m| json!({ "line": m.line, "col": m.col, "cols": m.cols }))
-                    .collect::<Vec<_>>(),
-                "truncated": found.truncated,
-            })));
+            let found = crate::PaneFind::from_screen_result(
+                &self.pty.with_screen(|screen| screen.find(needle)),
+            );
+            // Serialized from the SHARED wire type, not a hand-built object: the client
+            // deserializes that same type, so the keys are symmetric by construction.
+            return Some(
+                serde_json::to_value(&found).map_or(IntrospectValue::Null, IntrospectValue::Json),
+            );
         }
         // One inline image's RGBA as base64, fetched ON DEMAND (R1404 Stage 5) — the RGBA can be
         // megabytes, so it does not ride the per-poll panes slot (only the `{id,seq}` summary

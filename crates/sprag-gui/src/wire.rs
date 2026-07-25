@@ -86,10 +86,10 @@ use sprag_host::wire::{
     KILL_WINDOW_ACTION, LAYOUT_SLOT, MOUSE_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION,
     PANES_SLOT, PASTE_ACTION, PROMPT_MARKS_SLOT, RESIZE_ACTION, SELECT_WINDOW_ACTION,
     SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT,
-    cells_slot_at,
+    cells_slot_at, find_slot_for,
 };
 use sprag_host::{
-    CellFrame, HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneNotification,
+    CellFrame, HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneNotification,
     PaneScrollFacts, mux_action_path, pane_input_path,
 };
 use sprag_input::{Modifiers, MouseButton, MouseEventKind, MouseInput};
@@ -1458,6 +1458,20 @@ impl HostClient for WireHost {
         let params = json!({ "path": pane_input_path(id.0, FULL_TEXT_SLOT) });
         self.request("scene/query", params, "pane_full_text")
             .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_default()
+    }
+
+    /// The pane's search matches, over the `find.<needle>` query family. On demand (a find bar
+    /// keystroke), never per frame — the needle rides the PATH, so this stays a READ and a client
+    /// typing in the bar wakes no other client's parked `waitFor`. Deserialized into the SAME
+    /// [`PaneFind`] the host serialized, so the two ends cannot drift on a field name.
+    fn pane_find(&self, id: PaneId, needle: &str) -> PaneFind {
+        if needle.is_empty() {
+            return PaneFind::default(); // the host answers Null for an empty member; do not ask
+        }
+        let params = json!({ "path": pane_input_path(id.0, &find_slot_for(needle)) });
+        self.request("scene/query", params, "pane_find")
+            .and_then(|value| serde_json::from_value(value).ok())
             .unwrap_or_default()
     }
 
