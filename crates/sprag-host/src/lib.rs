@@ -56,6 +56,11 @@ pub mod rpc;
 pub mod runs;
 pub mod scope;
 pub mod ssh;
+// Dropped-file delivery (paste a local path / `scp` it to a remote workspace first). Private: the
+// policy is reached ONLY through the `drop_file` action + `HostClient::drop_file`, so there is one
+// way in and no second policy site. A plain comment, not a doc comment: an outer doc here would be
+// merged with the module's own `//!` docs and resolve THEIR intra-doc links in this scope instead.
+mod upload;
 pub mod wire;
 pub mod workspace;
 

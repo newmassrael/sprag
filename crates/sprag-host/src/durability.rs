@@ -232,11 +232,11 @@ pub fn restore_command(
 /// the default allowlist (an incidentally-typed `ssh host '<cmd>'` must not re-run its remote
 /// command), but a pane carrying a structured `remote` was EXPLICITLY created by `sprag ssh`, so
 /// reconnecting it is the user's intent. The remote command and forwards are dropped (see
-/// [`SshTarget::reconnect`]), so only the connection comes back — never a recorded side-effect. The
+/// [`SshTarget::from_remote`]), so only the connection comes back — never a recorded side-effect. The
 /// local cwd is irrelevant to a remote login shell, so none is set.
 #[must_use]
 pub fn reconnect_command(remote: &SshRemote) -> (CommandBuilder, String) {
-    let argv = SshTarget::reconnect(remote).ssh_argv();
+    let argv = SshTarget::from_remote(remote).ssh_argv();
     // `ssh_argv` always yields at least `["ssh", "-t", dest]`, so the split is total.
     let (program, args) = argv.split_first().expect("ssh_argv is never empty");
     command_from_parts(program, args)

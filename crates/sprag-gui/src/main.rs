@@ -245,7 +245,7 @@ use std::rc::Rc;
 
 use crate::input::{route_composition, route_key};
 use crate::reflow::install_reflow;
-use crate::terminal::{pane_index_of, pane_scrollbar_tag, pane_tag, use_terminal};
+use crate::terminal::{focused_pane, pane_index_of, pane_scrollbar_tag, pane_tag, use_terminal};
 
 include!(concat!(env!("OUT_DIR"), "/app.rs"));
 vello_renderer_impl!(SpragGuiRenderer, SpragGuiRendererError);
@@ -719,9 +719,7 @@ impl WidgetCore for TerminalViewer {
         // own tag (same SSOT as `apply_key`'s `focused` arg, reflecting click / Tab /
         // request alike) and auto-subscribes this root-scope reconcile, so a focus change
         // re-runs it and repaints. A non-pane / absent focus maps to `None` -> the app name.
-        let focused_pane = pinion_core::focus_state::focused()
-            .as_deref()
-            .and_then(pane_index_of);
+        let focused_pane = focused_pane();
         // (4b) ACK the focused pane's attention notification (R-PR67 follow-on): viewing a pane
         // clears its "wants attention" marker. Runs BEFORE `sync_main_title` so the focused pane's
         // OS title never flashes the marker the instant a notification lands on the pane in view.
@@ -1143,6 +1141,31 @@ impl WidgetView for TerminalViewer {
         selection::drag(scene, x, y)
     }
 
+    /// OS file drop (pinion R770 §5.15): a file dragged from the desktop onto a sprag window is
+    /// delivered to the FOCUSED pane — pasted as a local path, or `scp`-uploaded first when that pane
+    /// is a `sprag ssh` remote workspace and then pasted as its REMOTE path. The host owns that
+    /// decision ([`sprag_host::HostClient::drop_file`]); this end only resolves WHICH pane.
+    ///
+    /// The focused pane is the only defensible target: winit's drop event carries NO position (and
+    /// pinion's hook, which the substrate calls per window, does not pass the window either), so
+    /// there is no hit-test to route by — exactly the situation the context menu's target-pane rule
+    /// already answers ([`crate::terminal::focused_pane`]). Reported upstream as PINION-PR76; a drop
+    /// on an unfocused tear-off window therefore lands on the focused pane, not the one under the
+    /// cursor.
+    ///
+    /// winit delivers ONE call per file, so a multi-file drop arrives as several drops and each
+    /// pasted path carries a trailing space — they accumulate into a usable argument list.
+    ///
+    /// Returns `false` (no redraw request): nothing reactive changed here. The pasted path appears
+    /// as ordinary pane output — for an upload, only once the transfer completes — so the pane's own
+    /// change notification repaints it, exactly as a keystroke's echo does.
+    fn on_file_drop(_state: &Self::State, path: &str) -> bool {
+        let terminal = use_terminal();
+        let delivered = focused_pane().and_then(|pane| terminal.slots.drop_file(pane, path));
+        tracing::debug!(target: "sprag_gui::input", path, ?delivered, "os file drop");
+        false
+    }
+
     /// Suppress pinion's framework focus ring (R142) — the content-surface opt-out a
     /// terminal pane takes (pinion's own `hello-grid-pointer` does the same). sprag draws
     /// its OWN focus indicator instead: a translucent dark scrim over every INACTIVE pane
@@ -1330,6 +1353,77 @@ mod tests {
         c.arg("exec cat");
         c.env("TERM", "dumb");
         c
+    }
+
+    /// An OS file drop lands on the FOCUSED pane, and only on it.
+    ///
+    /// That is the whole routing rule, and it needs pinning because it is not derived from anything
+    /// the drop itself carries: winit's `DroppedFile` has no position and pinion's hook passes no
+    /// window, so [`TerminalViewer::on_file_drop`] resolves the target the same way the context menu
+    /// does — [`crate::terminal::focused_pane`]. Focus is published the way the focus manager
+    /// publishes it (writing the owner's focus mirror, the stand-in pinion's own `focus_state` tests
+    /// use), so this drives the REAL read rather than a seam beneath it.
+    ///
+    /// REVERT-PROOF: routing to a fixed pane — or to every pane — fails the second assertion, which
+    /// is why the drop targets pane 1 while pane 0 exists and is checked for silence.
+    #[test]
+    fn an_os_file_drop_lands_on_the_focused_pane() {
+        use std::time::{Duration, Instant};
+
+        let dir = std::env::temp_dir().join(format!("sprag-gui-drop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create the drop dir");
+        let dropped = std::fs::canonicalize({
+            let path = dir.join("dropped.txt");
+            std::fs::write(&path, b"payload").expect("write the dropped file");
+            path
+        })
+        .expect("canonicalize the dropped file");
+
+        let host = Host::new((40, 6));
+        host.spawn(untitled_pane(), "sh".to_owned(), 40, 6, None, None)
+            .unwrap();
+        host.spawn(untitled_pane(), "sh".to_owned(), 40, 6, None, None)
+            .unwrap();
+
+        let owner = Owner::new();
+        owner.run(|| {
+            crate::terminal::seed_terminal(host);
+            let terminal = use_terminal();
+            assert_eq!(terminal.slots.occupied_slots(), vec![0, 1]);
+
+            // Publish focus on pane 1 — the focus manager's own carrier.
+            Owner::current()
+                .expect("inside the owner scope")
+                .focused_tag_signal()
+                .set(Some(pane_tag(1).to_owned()));
+            assert_eq!(crate::terminal::focused_pane(), Some(1));
+
+            assert!(
+                !<TerminalViewer as WidgetView>::on_file_drop(
+                    &ctxmenu::MenuState::default(),
+                    dropped.to_str().unwrap(),
+                ),
+                "a drop changes no reactive state, so it requests no redraw",
+            );
+
+            // The panes are `cat`: the pasted path echoes back through the PTY it was written to.
+            let path = dropped.to_str().unwrap().to_owned();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !terminal.slots.pane_full_text(1).contains(&path) {
+                assert!(
+                    Instant::now() < deadline,
+                    "the dropped path never reached the FOCUSED pane",
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(
+                !terminal.slots.pane_full_text(0).contains(&path),
+                "the drop must reach ONLY the focused pane, never its unfocused sibling",
+            );
+        });
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// (R130, PINION-PR52-A) The DOCKED panel's header paints the child's live OSC title,

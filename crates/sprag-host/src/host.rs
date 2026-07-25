@@ -342,6 +342,24 @@ pub trait HostClient {
         None
     }
 
+    /// Deliver a file DROPPED on this client (a drag-and-drop of the LOCAL absolute `path`) to pane
+    /// `id`, returning the path the pane is handed — or `None` if the delivery was refused (no such
+    /// pane, or `path` resolves to nothing).
+    ///
+    /// The host decides what a drop MEANS, because only it knows whether the pane is local or a
+    /// remote workspace: an ordinary pane is pasted the local path; a `sprag ssh` pane has the file
+    /// `scp`-uploaded and is pasted the REMOTE path once it lands, so the answer for a remote pane is
+    /// a path that is still in flight (see the `drop_file` action in [`crate::wire`]). Keeping the
+    /// decision here rather than in the display client is what stops a second, divergent drop policy
+    /// from growing in every frontend.
+    ///
+    /// Defaulted to `None`, like [`break_pane`](Self::break_pane) — a client that cannot spawn
+    /// processes (and the test doubles) need not implement it.
+    fn drop_file(&self, id: PaneId, path: &str) -> Option<String> {
+        let _ = (id, path);
+        None
+    }
+
     /// Every session on the host — registry-WIDE, NOT scoped to this client's own: each session's
     /// name, window count, and whether it is the registry default. The list a session-switcher
     /// sidebar draws; a client re-reads it when the scene revision moves (a new / killed session
@@ -1122,6 +1140,20 @@ impl HostClient for Host {
         let mut registry = lock(&self.registry);
         let session = registry.default_session().name().to_owned();
         registry.join_pane(&session, id, dst).ok()
+    }
+
+    /// Resolves the pane to its PTY handle + recorded remote endpoint, then hands both to the ONE
+    /// delivery policy the wire `drop_file` action also calls. The workspace guard is bound to a
+    /// scope that ENDS before the delivery runs — an upload spawns a thread and a local drop writes
+    /// to the PTY; neither may happen under the pool lock.
+    fn drop_file(&self, id: PaneId, path: &str) -> Option<String> {
+        let target = {
+            let workspace = self.workspace();
+            let workspace = lock(&workspace);
+            let pane = workspace.pane(id)?;
+            (pane.handle(), pane.remote().cloned())
+        };
+        crate::upload::deliver(target.0, target.1, std::path::Path::new(path))
     }
 
     /// Every session in the registry — the SAME registry-wide list the wire `sessions` slot serves

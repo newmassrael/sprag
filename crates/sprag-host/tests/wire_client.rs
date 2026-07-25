@@ -16,10 +16,10 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, FULL_TEXT_SLOT, JOIN_PANE_ACTION,
-    KILL_SESSION_ACTION, LAYOUT_SLOT, LINKS_SLOT, NEW_SESSION_ACTION, NEW_WINDOW_ACTION,
-    PANES_SLOT, PASTE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION,
-    SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
+    BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DROP_FILE_ACTION, FULL_TEXT_SLOT,
+    JOIN_PANE_ACTION, KILL_SESSION_ACTION, LAYOUT_SLOT, LINKS_SLOT, NEW_SESSION_ACTION,
+    NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
+    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
 };
 use sprag_host::{mux_action_path, pane_input_path};
 use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn};
@@ -52,18 +52,28 @@ fn spawn_host() -> (HostChild, PathBuf) {
 /// that need the child to EMIT something (an OSC notification), not just echo. `sprag-term`'s
 /// `-- <program> [args…]` contract sets the boot command.
 fn spawn_host_running(program_and_args: &[&str]) -> (HostChild, PathBuf) {
+    spawn_host_with(program_and_args, &[])
+}
+
+/// The one spawn: `program_and_args` as the boot pane, plus `env` overrides on the DAEMON's own
+/// environment — which is what a test needs when it stands in for a program the HOST spawns (a
+/// stand-in `scp` reached through the daemon's `PATH`), not one the test spawns itself.
+fn spawn_host_with(program_and_args: &[&str], env: &[(&str, &str)]) -> (HostChild, PathBuf) {
     let sock = socket_path();
     let _ = std::fs::remove_file(&sock);
-    let child = Command::new(env!("CARGO_BIN_EXE_sprag-term"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sprag-term"));
+    command
         .arg("--size")
         .arg("40x6")
         .arg("--")
         .args(program_and_args)
         .env("SPRAG_HOST_RPC_SOCK", &sock)
         .env("SPRAG_HOST_RPC", "1")
-        .stdin(Stdio::null())
-        .spawn()
-        .expect("spawn the sprag-term host binary");
+        .stdin(Stdio::null());
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let child = command.spawn().expect("spawn the sprag-term host binary");
     (HostChild(child, sock.clone()), sock)
 }
 
@@ -1641,4 +1651,206 @@ fn a_clients_settled_arrangement_crosses_the_real_socket_and_is_named() {
     );
 
     let _ = std::fs::remove_file(&sock);
+}
+
+/// Drag-to-upload, end to end against a real host process: a file dropped on a REMOTE workspace pane
+/// is `scp`-uploaded and the pane is handed the file's REMOTE path.
+///
+/// The three links this pins, none of which any unit test can reach together:
+/// 1. `drop_file` reaches the daemon's action dispatch and answers the planned remote path;
+/// 2. the host actually EXECS an upload — with the argv [`sprag_host::SshTarget::scp_argv`] builds,
+///    which the stand-in `scp` records verbatim;
+/// 3. the remote path is pasted into the pane only AFTER the transfer succeeds (the upload runs on a
+///    background thread, so this is the ordering that could regress silently).
+///
+/// The pane is a `cat` MARKED remote (`spawn {cmd, remote}`) rather than a real `ssh`: the drop
+/// policy keys off the pane's recorded endpoint, and `cat` echoes what is pasted into it, which is
+/// how the paste becomes observable. The file name carries a SPACE, so the answer also proves the
+/// shell quoting survives the wire (`~/'drop me.txt'`, tilde outside the quotes).
+#[test]
+fn a_dropped_file_on_a_remote_pane_uploads_and_pastes_the_remote_path() {
+    let fixture = DropFixture::new("upload", 0);
+    let dropped = fixture.dropped.clone();
+    let argv_file = fixture.argv_file.clone();
+    let (_host, sock) = spawn_host_with(&["cat"], &[("PATH", &fixture.path_env())]);
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term host");
+
+    // A pane MARKED as a remote workspace — the same `{cmd, remote}` birth spec `sprag ssh` sends.
+    let pane = conn
+        .call(
+            "scene/invoke",
+            json!({
+                "path": mux_action_path(SPAWN_ACTION),
+                "args": { "cmd": ["cat"], "remote": { "host": "server", "user": "me" } },
+            }),
+        )
+        .expect("spawn a remote-marked pane")
+        .as_u64()
+        .expect("spawn returns the new pane id");
+
+    let answer = conn
+        .call(
+            "scene/invoke",
+            json!({
+                "path": mux_action_path(DROP_FILE_ACTION),
+                "args": { "pane": pane, "path": dropped.to_str().unwrap() },
+            }),
+        )
+        .expect("drop_file answers");
+    assert_eq!(
+        answer["path"].as_str(),
+        Some("~/'drop me.txt'"),
+        "the pane is promised the REMOTE path, tilde-expanded and name-quoted: {answer}",
+    );
+
+    // The upload runs on a background thread, so the paste is what proves it finished.
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            conn.call(
+                "scene/query",
+                json!({ "path": pane_input_path(pane, FULL_TEXT_SLOT) }),
+            )
+            .ok()
+            .and_then(|v| v.as_str().map(|s| s.contains("~/'drop me.txt'")))
+            .unwrap_or(false)
+        }),
+        "the remote path never reached the pane after a successful upload",
+    );
+
+    let recorded = std::fs::read_to_string(&argv_file).expect("the stand-in scp ran and recorded");
+    let argv: Vec<&str> = recorded.lines().collect();
+    assert_eq!(
+        argv,
+        vec!["-B", "--", dropped.to_str().unwrap(), "me@server:"],
+        "the host exec'd the batch-mode upload to the remote HOME with the local file verbatim",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// The other half of the upload contract: a FAILED transfer leaves the pane untouched.
+///
+/// Without this, "paste the remote path" and "paste it only if the file got there" are
+/// indistinguishable — every assertion in the success test passes just as well for an unconditional
+/// paste. Here the stand-in `scp` exits non-zero, so a pane that receives the path is being told a
+/// file is on the remote when it is not.
+///
+/// The negative is bounded, not merely awaited: the recorded argv proves the upload RAN and finished
+/// before the window in which the paste is checked for, so this is "the paste did not happen after
+/// the failure", not "the paste had not happened yet".
+#[test]
+fn a_failed_upload_leaves_the_pane_untouched() {
+    let fixture = DropFixture::new("failed", 1);
+    let dropped = fixture.dropped.clone();
+    let argv_file = fixture.argv_file.clone();
+    let (_host, sock) = spawn_host_with(&["cat"], &[("PATH", &fixture.path_env())]);
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term host");
+
+    let pane = conn
+        .call(
+            "scene/invoke",
+            json!({
+                "path": mux_action_path(SPAWN_ACTION),
+                "args": { "cmd": ["cat"], "remote": { "host": "server" } },
+            }),
+        )
+        .expect("spawn a remote-marked pane")
+        .as_u64()
+        .expect("spawn returns the new pane id");
+
+    let answer = conn
+        .call(
+            "scene/invoke",
+            json!({
+                "path": mux_action_path(DROP_FILE_ACTION),
+                "args": { "pane": pane, "path": dropped.to_str().unwrap() },
+            }),
+        )
+        .expect("drop_file answers");
+    assert_eq!(
+        answer["path"].as_str(),
+        Some("~/'drop me.txt'"),
+        "the request itself was valid — only the transfer fails, and it fails LATER: {answer}",
+    );
+
+    assert!(
+        wait_until(Duration::from_secs(5), || argv_file.exists()),
+        "the stand-in scp never ran",
+    );
+    assert!(
+        !wait_until(Duration::from_secs(1), || {
+            conn.call(
+                "scene/query",
+                json!({ "path": pane_input_path(pane, FULL_TEXT_SLOT) }),
+            )
+            .ok()
+            .and_then(|v| v.as_str().map(|s| s.contains("~/'drop me.txt'")))
+            .unwrap_or(false)
+        }),
+        "a FAILED upload must not paste a remote path for a file that never landed",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// The stand-in `scp` + the file to drop, for the drag-to-upload tests.
+///
+/// The stub goes on the DAEMON's `PATH` (the daemon is what spawns the upload — stubbing the test
+/// process's own PATH would prove nothing), records the argv it was exec'd with, and exits with the
+/// requested code so both the success and the failure arm are drivable. Cleans up on drop, including
+/// on a panic, so a failed assertion leaks no temp tree.
+struct DropFixture {
+    dir: PathBuf,
+    argv_file: PathBuf,
+    dropped: PathBuf,
+}
+
+impl DropFixture {
+    fn new(label: &str, scp_exit: i32) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir =
+            std::env::temp_dir().join(format!("sprag-drop-it-{}-{label}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create the stand-in scp dir");
+        let argv_file = dir.join("argv.txt");
+        let scp = dir.join("scp");
+        std::fs::write(
+            &scp,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nexit {scp_exit}\n",
+                argv_file.display()
+            ),
+        )
+        .expect("write the stand-in scp");
+        std::fs::set_permissions(&scp, std::fs::Permissions::from_mode(0o755)).expect("chmod +x");
+
+        // A REAL file: the host canonicalizes the drop before delivering it. The space in the name
+        // is load-bearing — it is what makes the answer prove the shell quoting.
+        let dropped = dir.join("drop me.txt");
+        std::fs::write(&dropped, b"payload").expect("write the file to drop");
+        let dropped = std::fs::canonicalize(&dropped).expect("canonicalize the dropped file");
+        Self {
+            dir,
+            argv_file,
+            dropped,
+        }
+    }
+
+    /// A `PATH` with the stand-in first, for the daemon's environment.
+    fn path_env(&self) -> String {
+        format!(
+            "{}:{}",
+            self.dir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        )
+    }
+}
+
+impl Drop for DropFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
 }

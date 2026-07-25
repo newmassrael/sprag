@@ -362,6 +362,20 @@ pub const BREAK_PANE_ACTION: &str = "break_pane";
 /// no window holds `pane`, or if `window` names no window.
 pub const JOIN_PANE_ACTION: &str = "join_pane";
 
+/// The mux control external invoke action that delivers a DROPPED FILE to a pane (`{pane, path}`) —
+/// the wire form of a display client's drag-and-drop. Answers `{path}`: the path the pane is handed.
+///
+/// `path` is a LOCAL absolute path (the drop happens on the machine the display client and the host
+/// share). For an ordinary pane the answer is that same path, shell-quoted, pasted straight in; for a
+/// remote workspace pane (one carrying a structured `remote` — see [`crate::ssh`]) the file is
+/// UPLOADED with `scp` and the answer is its REMOTE path (`~/<name>`), pasted when the transfer
+/// completes. An upload is therefore ASYNC: a successful answer means the delivery started with a
+/// valid file and a known destination, not that the bytes have landed.
+///
+/// Refused (`Rejected`) if no such pane exists, or if `path` names nothing that can be resolved on
+/// this machine.
+pub const DROP_FILE_ACTION: &str = "drop_file";
+
 /// The container tag of the pane with host id `pane_id` — the `pane_<id>` node the
 /// per-pane data grid + input external live under (the head of a pane-addressed
 /// wire path). The ONE place this tag is formatted, shared by the scene assembly

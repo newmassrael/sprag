@@ -81,11 +81,12 @@ use base64::engine::general_purpose::STANDARD;
 use pinion_core::{GridBuffer, QuitSink};
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    BREAK_PANE_ACTION, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT, FOCUS_ACTION, FULL_TEXT_SLOT,
-    JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
-    MOUSE_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION,
-    PROMPT_MARKS_SLOT, RESIZE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION,
-    SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
+    BREAK_PANE_ACTION, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT, DROP_FILE_ACTION,
+    FOCUS_ACTION, FULL_TEXT_SLOT, JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION,
+    KILL_WINDOW_ACTION, LAYOUT_SLOT, MOUSE_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION,
+    PANES_SLOT, PASTE_ACTION, PROMPT_MARKS_SLOT, RESIZE_ACTION, SELECT_WINDOW_ACTION,
+    SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT,
+    cells_slot_at,
 };
 use sprag_host::{
     CellFrame, HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneNotification,
@@ -1131,6 +1132,21 @@ impl HostClient for WireHost {
             self.refresh_view();
         }
         answer
+    }
+
+    /// Hand a file dropped on this window to pane `id` over the wire, returning the path the pane
+    /// was given — or `None` if the daemon refused it.
+    ///
+    /// No [`refresh_view`](Self::refresh_view): nothing in the pane SET changed. The pasted path
+    /// arrives as ordinary pane output (and, for an upload, only when the transfer finishes), so the
+    /// pane's own change notification is what repaints it — the same path a keystroke's echo takes.
+    fn drop_file(&self, id: PaneId, path: &str) -> Option<String> {
+        let params = invoke(
+            &mux_action_path(DROP_FILE_ACTION),
+            json!({ "pane": id.0, "path": path }),
+        );
+        self.request("scene/invoke", params, "drop_file")
+            .and_then(|value| value.get("path").and_then(Value::as_str).map(str::to_owned))
     }
 
     /// The mirrored session list — a lock and a clone, never a socket call, so the paint path can

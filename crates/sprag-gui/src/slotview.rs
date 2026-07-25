@@ -211,6 +211,14 @@ impl SlotView {
         self.host.join_pane(self.id(slot)?, dst)
     }
 
+    /// Deliver a file dropped on the window to slot `slot`'s pane, returning the path the pane was
+    /// handed — `None` for a hole, or when the host refuses the file. The host decides whether that
+    /// means pasting the local path or uploading to a remote workspace first; this end only says
+    /// WHICH pane the drop landed on.
+    pub(crate) fn drop_file(&self, slot: usize, path: &str) -> Option<String> {
+        self.host.drop_file(self.id(slot)?, path)
+    }
+
     /// Every session on the host (registry-wide) — the list the session sidebar draws. NOT
     /// slot-mapped: sessions are not pane-addressed, so this passes straight through (the reducer
     /// addresses sessions by NAME, like it does windows).

@@ -30,7 +30,7 @@
 //!
 //! Keyboard navigation (Arrow / Enter / Escape) and a11y are deferred (mouse-first).
 
-use crate::terminal::{pane_index_of, use_terminal};
+use crate::terminal::{focused_pane, use_terminal};
 use crate::{WINDOW_H, WINDOW_W};
 use pinion_core::external::IntrospectValue;
 use pinion_core::reactive::{Owner, Signal};
@@ -303,14 +303,6 @@ fn run_item(index: usize) {
             tracing::debug!(target: "sprag_gui::input", ?pane, window, ?closed, "ctxmenu join into");
         }
     }
-}
-
-/// The focused pane's tile index (`focus_state::focused()` -> pane), or `None` when
-/// focus is off a pane.
-fn focused_pane() -> Option<usize> {
-    pinion_core::focus_state::focused()
-        .as_deref()
-        .and_then(pane_index_of)
 }
 
 #[cfg(test)]

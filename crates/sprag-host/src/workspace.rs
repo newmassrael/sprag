@@ -52,6 +52,7 @@
 //! client projects it (see [`sprag_terminal::layout`]).
 
 use std::fmt;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use pinion_core::SceneRevision;
@@ -71,10 +72,10 @@ use crate::scope::SessionScope;
 // The mux control action names + query slots are the shared wire ABI vocabulary
 // ([`crate::wire`]) — the SAME consts a client addresses for pane lifecycle.
 use crate::wire::{
-    BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, JOIN_PANE_ACTION, KILL_SESSION_ACTION,
-    KILL_WINDOW_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT,
-    RENAME_WINDOW_ACTION, RESIZE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION,
-    SET_LAYOUT_ACTION, SPAWN_ACTION, WINDOWS_SLOT,
+    BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DROP_FILE_ACTION, JOIN_PANE_ACTION,
+    KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION, NEW_WINDOW_ACTION,
+    PANES_SLOT, RENAME_WINDOW_ACTION, RESIZE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
+    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, WINDOWS_SLOT,
 };
 
 /// The mux-management engine `External`: a control surface over the shared
@@ -683,6 +684,37 @@ impl WorkspaceExternal {
             serde_json::json!({ "closed_source": closed }),
         ))
     }
+
+    /// `drop_file {pane, path}` action: deliver a file dropped on a display client to `pane`, and
+    /// answer `{path}` — the path the pane is handed ([`crate::upload`] owns the paste-vs-upload
+    /// policy). A refused delivery (no such pane, an unresolvable path) is `Rejected`.
+    ///
+    /// The pane is resolved to its PTY handle + recorded remote under the workspace lock, and the
+    /// guard is dropped BEFORE the delivery runs: an upload spawns a thread and a local drop writes
+    /// to the PTY, neither of which may hold the pool other clients are reading.
+    ///
+    /// No revision bump: the pane's own output (its shell echoing the pasted path) bumps it through
+    /// the spawn-time dirty hook, and an upload's paste lands long after this returns — a bump here
+    /// would announce a change that has not happened yet.
+    fn drop_file(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let map = as_object(args)?;
+        let pane = require_pane_id(map, "pane")?;
+        let path = map
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or(InvokeError::TypeMismatch)?;
+        let target = {
+            let workspace = lock(self.workspace());
+            let pane = workspace.pane(pane).ok_or(InvokeError::Rejected)?;
+            (pane.handle(), pane.remote().cloned())
+        };
+        let (handle, remote) = target;
+        let delivered =
+            crate::upload::deliver(handle, remote, Path::new(path)).ok_or(InvokeError::Rejected)?;
+        Ok(IntrospectValue::Json(
+            serde_json::json!({ "path": delivered }),
+        ))
+    }
 }
 
 impl fmt::Debug for WorkspaceExternal {
@@ -711,6 +743,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                     SchemaField::new(KILL_WINDOW_ACTION, "action"),
                     SchemaField::new(BREAK_PANE_ACTION, "action"),
                     SchemaField::new(JOIN_PANE_ACTION, "action"),
+                    SchemaField::new(DROP_FILE_ACTION, "action"),
                     SchemaField::new(PANES_SLOT, "list"),
                     SchemaField::new(LAYOUT_SLOT, "tree"),
                     SchemaField::new(SESSIONS_SLOT, "list"),
@@ -942,6 +975,7 @@ impl ExternalIntrospect for WorkspaceExternal {
             KILL_WINDOW_ACTION => self.kill_window(&args),
             BREAK_PANE_ACTION => self.break_pane(&args),
             JOIN_PANE_ACTION => self.join_pane(&args),
+            DROP_FILE_ACTION => self.drop_file(&args),
             _ => Err(InvokeError::UnknownPath),
         }
     }
@@ -1940,6 +1974,104 @@ mod tests {
         assert_eq!(remote.host, "srv");
         assert_eq!(remote.user.as_deref(), Some("me"));
         assert_eq!(remote.port, Some(2222));
+    }
+
+    /// A file dropped on an ORDINARY pane is pasted straight in as a local path: the file is already
+    /// reachable from a pane running on this machine, so there is nothing to upload. Driven through
+    /// the real action, and observed the only honest way — the `cat` pane ECHOES what reached its
+    /// PTY, so this proves the paste, not just the return value.
+    ///
+    /// The name carries a space, which pins the quoting at the same time: an unquoted paste would
+    /// hand the shell two words.
+    #[test]
+    fn a_dropped_file_on_a_local_pane_is_pasted_as_a_quoted_local_path() {
+        use std::time::{Duration, Instant};
+
+        let dir = std::env::temp_dir().join(format!("sprag-drop-unit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create the drop dir");
+        let dropped = dir.join("a file.txt");
+        std::fs::write(&dropped, b"payload").expect("write the dropped file");
+        let canonical = std::fs::canonicalize(&dropped).expect("canonicalize");
+        let quoted = format!("'{}'", canonical.display());
+
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        let id = ext
+            .invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+            .expect("spawn a local pane");
+        let IntrospectValue::Int(id) = id else {
+            panic!("spawn answers the pane id")
+        };
+
+        assert_eq!(
+            ext.invoke(
+                DROP_FILE_ACTION,
+                IntrospectValue::Json(json!({"pane": id, "path": canonical.to_str().unwrap()})),
+            ),
+            Ok(IntrospectValue::Json(json!({ "path": quoted }))),
+            "a local pane is handed the dropped file's own path, shell-quoted",
+        );
+
+        // `cat` echoes what was pasted — the paste is what makes this more than a return value.
+        let pool = pool(&reg);
+        let pane = PaneId(u64::try_from(id).unwrap());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let echoed = loop {
+            let text = lock(&pool)
+                .pane(pane)
+                .expect("the pane is alive")
+                .pty()
+                .with_screen(sprag_vt::Screen::full_text);
+            if text.contains(&quoted) {
+                break true;
+            }
+            if Instant::now() > deadline {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(echoed, "the quoted local path never reached the pane's PTY");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The refusals a drop must make, each a DIFFERENT category: a request that names no `path` is
+    /// MALFORMED (`TypeMismatch`), while a well-formed request naming a pane that does not exist —
+    /// or a file that does not — is `Rejected`. Collapsing the two would tell a client to fix the
+    /// wrong end.
+    #[test]
+    fn drop_file_separates_a_malformed_request_from_a_refused_one() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        let id = ext
+            .invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+            .expect("spawn a local pane");
+        let IntrospectValue::Int(id) = id else {
+            panic!("spawn answers the pane id")
+        };
+
+        assert_eq!(
+            ext.invoke(DROP_FILE_ACTION, IntrospectValue::Json(json!({"pane": id}))),
+            Err(InvokeError::TypeMismatch),
+            "a drop with no path is malformed",
+        );
+        assert_eq!(
+            ext.invoke(
+                DROP_FILE_ACTION,
+                IntrospectValue::Json(json!({"pane": 9999, "path": "/etc/hostname"})),
+            ),
+            Err(InvokeError::Rejected),
+            "a well-formed drop on a pane that does not exist is refused, not a type error",
+        );
+        assert_eq!(
+            ext.invoke(
+                DROP_FILE_ACTION,
+                IntrospectValue::Json(json!({"pane": id, "path": "/no/such/file/at/all"})),
+            ),
+            Err(InvokeError::Rejected),
+            "a drop naming a file that cannot be resolved is refused",
+        );
     }
 
     /// A session born via `new_session` feeds the reaper when its birth pane dies — the guard

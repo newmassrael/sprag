@@ -13,8 +13,12 @@
 //! argv must not re-run on restore. A `sprag ssh` workspace is different: it records a STRUCTURED
 //! [`SshRemote`](sprag_terminal::SshRemote) endpoint (via [`SshTarget::remote`]), the explicit
 //! intent marker the host reconnects from ([`crate::reconnect_command`]) — a login shell only, with
-//! the forwards and remote command dropped ([`SshTarget::reconnect`]), so the connection comes back
+//! the forwards and remote command dropped ([`SshTarget::from_remote`]), so the connection comes back
 //! but no recorded side-effect does. Intent (`remote`), not opaque argv, is what a restore trusts.
+//!
+//! The same recorded endpoint is what makes a DROPPED FILE deliverable: dropping a file on a remote
+//! workspace uploads it with [`SshTarget::scp_argv`] and hands the pane the remote path (the
+//! `upload` module owns that policy).
 
 use std::fmt;
 
@@ -282,11 +286,13 @@ impl SshTarget {
     }
 
     /// A CONNECTION-ONLY target from a recorded [`SshRemote`](sprag_terminal::SshRemote) — the
-    /// restore path. Carries the endpoint (`user`/`host`/`port`) but NO forwards and NO remote
-    /// command, so [`ssh_argv`](Self::ssh_argv) renders a plain `ssh -t [-p PORT] user@host` login
-    /// shell: a restore re-establishes the connection without re-running any recorded remote command.
+    /// endpoint constructor both host-side uses of a pane's recorded remote start from. Carries the
+    /// endpoint (`user`/`host`/`port`) but NO forwards and NO remote command, so:
+    /// - [`ssh_argv`](Self::ssh_argv) renders a plain `ssh -t [-p PORT] user@host` login shell — the
+    ///   RESTORE path re-establishes the connection without re-running any recorded remote command;
+    /// - [`scp_argv`](Self::scp_argv) renders the dropped-file upload to the same endpoint.
     #[must_use]
-    pub fn reconnect(remote: &sprag_terminal::SshRemote) -> Self {
+    pub fn from_remote(remote: &sprag_terminal::SshRemote) -> Self {
         Self {
             user: remote.user.clone(),
             host: remote.host.clone(),
@@ -340,6 +346,40 @@ impl SshTarget {
         }
         argv.push(self.destination());
         argv.extend(self.remote_command.iter().cloned());
+        argv
+    }
+
+    /// Build the upload argv for a file dropped onto this remote workspace:
+    /// `scp -B [-r] [-P PORT] -- LOCAL DEST:`.
+    ///
+    /// The destination is the BARE `DEST:` — an empty remote path, which scp resolves to the remote
+    /// login HOME directory, keeping the local basename. That is the one destination reachable
+    /// without a round trip to the remote (nothing here knows the remote's cwd or `$HOME`) AND
+    /// without remote-shell quoting: there is no remote path string for the far-side shell to expand,
+    /// so a local file name full of shell metacharacters cannot turn into a remote command.
+    ///
+    /// `-B` (batch mode) is load-bearing: an upload runs as a background child with no terminal of
+    /// its own, so a password / passphrase prompt could never be answered — batch mode makes it FAIL
+    /// fast instead of hanging forever on a prompt nobody can see. Uploads therefore need
+    /// non-interactive auth (an agent key, or an ssh `ControlMaster` the workspace's own connection
+    /// already opened). `-r` recurses into a dropped DIRECTORY.
+    ///
+    /// Note the uppercase `-P`: that is scp's port flag, where ssh spells it `-p` (which scp uses for
+    /// "preserve times") — the two argv builders differ here on purpose.
+    #[must_use]
+    pub fn scp_argv(&self, local_path: &str, recursive: bool) -> Vec<String> {
+        let mut argv = vec!["scp".to_owned(), "-B".to_owned()];
+        if recursive {
+            argv.push("-r".to_owned());
+        }
+        if let Some(port) = self.port {
+            argv.push("-P".to_owned());
+            argv.push(port.to_string());
+        }
+        // `--` ends option parsing, so a local path that begins with `-` is a path, never a flag.
+        argv.push("--".to_owned());
+        argv.push(local_path.to_owned());
+        argv.push(format!("{}:", self.destination()));
         argv
     }
 }
@@ -562,7 +602,7 @@ mod tests {
     }
 
     #[test]
-    fn reconnect_builds_a_connection_only_login_shell() {
+    fn from_remote_builds_a_connection_only_login_shell() {
         let remote = sprag_terminal::SshRemote {
             user: Some("me".to_owned()),
             host: "srv".to_owned(),
@@ -570,8 +610,45 @@ mod tests {
         };
         // Connection ONLY: `-t` + port + destination, NO forwards and NO remote command.
         assert_eq!(
-            SshTarget::reconnect(&remote).ssh_argv(),
+            SshTarget::from_remote(&remote).ssh_argv(),
             strings(&["ssh", "-t", "-p", "2222", "me@srv"]),
+        );
+    }
+
+    #[test]
+    fn scp_argv_uploads_to_the_remote_home_with_the_uppercase_port_flag() {
+        // Revert-proofs three decisions at once: batch mode (`-B`), scp's UPPERCASE `-P` port flag
+        // (ssh's `-p` means "preserve times" to scp), and the bare `DEST:` = remote HOME target.
+        let remote = sprag_terminal::SshRemote {
+            user: Some("me".to_owned()),
+            host: "srv".to_owned(),
+            port: Some(2222),
+        };
+        assert_eq!(
+            SshTarget::from_remote(&remote).scp_argv("/tmp/report.pdf", false),
+            strings(&[
+                "scp",
+                "-B",
+                "-P",
+                "2222",
+                "--",
+                "/tmp/report.pdf",
+                "me@srv:",
+            ]),
+        );
+    }
+
+    #[test]
+    fn scp_argv_recurses_for_a_directory_and_omits_an_unset_port() {
+        // Revert-proof for the `-r` arm: a dropped DIRECTORY needs it or scp refuses the transfer.
+        let remote = sprag_terminal::SshRemote {
+            user: None,
+            host: "srv".to_owned(),
+            port: None,
+        };
+        assert_eq!(
+            SshTarget::from_remote(&remote).scp_argv("/tmp/logs", true),
+            strings(&["scp", "-B", "-r", "--", "/tmp/logs", "srv:"]),
         );
     }
 
@@ -587,7 +664,7 @@ mod tests {
         assert_eq!(remote.host, "srv");
         assert_eq!(remote.port, Some(22));
         assert_eq!(
-            SshTarget::reconnect(&remote).ssh_argv(),
+            SshTarget::from_remote(&remote).ssh_argv(),
             strings(&["ssh", "-t", "-p", "22", "me@srv"]),
         );
     }

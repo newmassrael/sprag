@@ -102,6 +102,22 @@ pub(crate) fn pane_index_of(tag: &str) -> Option<usize> {
     PANE_SLOTS.iter().position(|s| s.pane == tag)
 }
 
+/// The tile index of the FOCUSED pane, or `None` when focus is off any pane — the app's one answer
+/// to "which pane is the user acting on".
+///
+/// `focus_state::focused()` is the focus manager's own tag (the same SSOT `apply_key` routes by,
+/// reflecting a click, Tab, or a focus request alike) and AUTO-SUBSCRIBES the reactive scope it is
+/// read in, so a caller inside a reconcile / view re-runs on a focus change.
+///
+/// This is the target every POSITIONLESS interaction resolves to: the context menu's actions (a menu
+/// click has since blurred the pane, so the target is snapshotted at open time) and an OS file drop,
+/// which winit delivers with neither a position nor a window (see `TerminalViewer::on_file_drop`).
+pub(crate) fn focused_pane() -> Option<usize> {
+    pinion_core::focus_state::focused()
+        .as_deref()
+        .and_then(pane_index_of)
+}
+
 /// Pane `index`'s `Owner::cache` key in `namespace` — `sprag_gui.<namespace>.<index>`
 /// — for the per-pane view-state slots that need NOT be `&'static` (preedit, reflow,
 /// wheel-accum). The ONE site that mints a per-pane cache key, so the index suffix

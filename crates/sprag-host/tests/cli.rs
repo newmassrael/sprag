@@ -582,6 +582,28 @@ fn wait_for(timeout: Duration, mut predicate: impl FnMut() -> bool) -> bool {
     predicate()
 }
 
+/// Wait until the stand-in's recorded argv carries EVERY token in `expected`, panicking with what it
+/// did record if it never does.
+///
+/// Polling `argv_file.exists()` and then reading it is a race, not a wait: the stub's
+/// `printf … > file` CREATES (truncates) the file at the redirect, before it writes a single byte, so
+/// an existence poll can hand the assertion an empty file. The window is narrow enough to pass alone
+/// and wide enough to fail under a loaded parallel run — which is how it surfaced. Waiting on the
+/// condition the assertion actually reads removes the race instead of widening the timeout.
+fn wait_for_recorded_argv(argv_file: &Path, expected: &[&str]) {
+    let mut recorded = String::new();
+    let complete = wait_for(Duration::from_secs(5), || {
+        recorded = std::fs::read_to_string(argv_file).unwrap_or_default();
+        expected
+            .iter()
+            .all(|token| recorded.lines().any(|line| line == *token))
+    });
+    assert!(
+        complete,
+        "the stand-in never recorded the argv {expected:?}; it recorded {recorded:?}",
+    );
+}
+
 /// A temp directory removed on drop (including on a panicked assertion) — holds an ssh test's
 /// stand-in `ssh` and the argv it records, so a failed run leaves nothing behind.
 struct TempDir(PathBuf);
@@ -646,17 +668,7 @@ fn the_cli_ssh_launches_a_remote_pane_with_the_ssh_argv() {
     );
 
     // The birth pane exec'd the stand-in ssh with the real argv (async spawn — poll for the record).
-    assert!(
-        wait_for(Duration::from_secs(5), || argv_file.exists()),
-        "the ssh birth pane exec'd and recorded its argv",
-    );
-    let recorded = std::fs::read_to_string(&argv_file).unwrap_or_default();
-    for expected in ["-t", "-p", "2222", "me@server"] {
-        assert!(
-            recorded.lines().any(|line| line == expected),
-            "the exec argv carries {expected:?}: {recorded:?}",
-        );
-    }
+    wait_for_recorded_argv(&argv_file, &["-t", "-p", "2222", "me@server"]);
 
     // The live remote pane keeps the session listable (panes > 0), like any other workspace.
     assert!(
@@ -682,17 +694,7 @@ fn the_cli_ssh_passes_local_forwards_to_exec() {
     let run = sprag(&sock, &["ssh", "host", "-L", "3000", "-L", "8080:db:5432"]);
     assert!(run.ok, "sprag ssh -L succeeded: {}", run.stderr);
 
-    assert!(
-        wait_for(Duration::from_secs(5), || argv_file.exists()),
-        "the ssh birth pane exec'd",
-    );
-    let recorded = std::fs::read_to_string(&argv_file).unwrap_or_default();
-    for expected in ["-L", "3000:localhost:3000", "8080:db:5432"] {
-        assert!(
-            recorded.lines().any(|line| line == expected),
-            "the exec argv carries {expected:?}: {recorded:?}",
-        );
-    }
+    wait_for_recorded_argv(&argv_file, &["-L", "3000:localhost:3000", "8080:db:5432"]);
 }
 
 /// The headline of Slice 2, LIVE: a remote workspace's forwarded local port shows up in the session
@@ -758,15 +760,7 @@ fn the_cli_ssh_forward_surfaces_the_local_port_in_the_sidebar() {
     let name = run.stdout.trim().to_owned();
 
     // The -L reached exec (deterministic argv record).
-    assert!(
-        wait_for(Duration::from_secs(5), || argv_file.exists()),
-        "the ssh birth pane exec'd",
-    );
-    let recorded = std::fs::read_to_string(&argv_file).unwrap_or_default();
-    assert!(
-        recorded.lines().any(|line| line == spec),
-        "the exec argv carries the forward {spec:?}: {recorded:?}",
-    );
+    wait_for_recorded_argv(&argv_file, &[&spec]);
 
     // The live composition: the forwarded port, held by the ssh (python) process in the pane's
     // subtree, surfaces on THIS session's `sprag ls` line. Polled — the listener binds asynchronously
@@ -799,17 +793,7 @@ fn the_cli_ssh_tmux_preset_reaches_exec_and_rejects_a_conflict() {
     // --tmux=work: the birth pane execs the attach-or-create tmux command on the remote.
     let run = sprag(&sock, &["ssh", "host", "--tmux=work"]);
     assert!(run.ok, "sprag ssh --tmux succeeded: {}", run.stderr);
-    assert!(
-        wait_for(Duration::from_secs(5), || argv_file.exists()),
-        "the ssh birth pane exec'd",
-    );
-    let recorded = std::fs::read_to_string(&argv_file).unwrap_or_default();
-    for expected in ["tmux", "new-session", "-A", "-s", "work"] {
-        assert!(
-            recorded.lines().any(|line| line == expected),
-            "the exec argv carries {expected:?}: {recorded:?}",
-        );
-    }
+    wait_for_recorded_argv(&argv_file, &["tmux", "new-session", "-A", "-s", "work"]);
 
     // --tmux together with a -- command is a clean, non-zero local error (nothing spawned).
     let clash = sprag(&sock, &["ssh", "host", "--tmux", "--", "vim"]);
