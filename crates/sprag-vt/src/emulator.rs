@@ -272,6 +272,17 @@ pub struct Emulator {
     row: u16,
     cursor_visible: bool,
     cursor_shape: CursorShape,
+    /// Whether the cursor BLINKS — the DECSCUSR blink axis and the legacy mode 12
+    /// (`CSI ? 12 h` / `l`), which are two spellings of this ONE state (as in xterm, where both
+    /// drive the same `cursorBlink`). Power-on default `false`: a steady cursor, sprag's cursor
+    /// since before the axis existed, and xterm's own `cursorBlink` default.
+    ///
+    /// Deliberately NOT part of [`SavedCursor`], unlike `cursor_shape` beside it. Mode 12 is how a
+    /// USER turns blinking off — an accessibility preference, not app state — and DECSC/DECRC is
+    /// an APP's save/restore, so restoring blink would let any app's stray DECRC undo that
+    /// preference. The cost is that a restore can pair a saved shape with a blink set later; every
+    /// such pair is a legal cursor (a DECSCUSR can name it), so nothing unrepresentable results.
+    cursor_blink: bool,
     fg: Color,
     bg: Color,
     /// SGR 58 / 59 underline colour — a third pen colour channel, peer of
@@ -481,6 +492,7 @@ impl Emulator {
             row: 0,
             cursor_visible: true,
             cursor_shape: CursorShape::Block,
+            cursor_blink: false,
             fg: Color::Default,
             bg: Color::Default,
             underline_color: None,
@@ -1155,9 +1167,12 @@ impl Emulator {
                             self.palette.set_default_bg(rgb);
                             changed = true;
                         }
-                        // OSC 12 sets the cursor colour STATE (queryable); it touches no cells, and
-                        // rendering the cursor in that colour is PINION-BLOCKED (pinion's `GridCursor`
-                        // has no colour field — PINION-PR74), so no cell-damage bump. A documented bound.
+                        // OSC 12 sets the cursor colour, which the projection now RENDERS (pinion
+                        // R1424 `GridCursor::cursor_color`, PINION-PR74). Still no cell-damage bump,
+                        // and that is not an accommodation: the damage generations gate per-ROW CELL
+                        // repaint, while the cursor is an overlay pinion paints from the whole
+                        // `GridCursor` every frame. The repaint itself is already scheduled — the
+                        // reader thread wakes the host after EVERY applied batch, this one included.
                         12 => self.palette.set_cursor(rgb),
                         _ => {}
                     }
@@ -1166,7 +1181,7 @@ impl Emulator {
                     let current = match number {
                         10 => Some(self.palette.default_fg()),
                         11 => Some(self.palette.default_bg()),
-                        12 => Some(self.palette.cursor()),
+                        12 => Some(self.palette.reported_cursor()),
                         _ => None,
                     };
                     if let Some(rgb) = current {
@@ -1192,7 +1207,9 @@ impl Emulator {
                 self.palette.reset_default_bg();
                 true
             }
-            // OSC 112 resets the cursor colour STATE; no cell damage (render is PINION-PR74-gated).
+            // OSC 112 drops the explicit cursor colour, returning the cursor to the cell-derived
+            // render. No cell damage, for the same reason `OSC 12` needs none (the cursor is an
+            // overlay, not a row of cells).
             12 => {
                 self.palette.reset_cursor();
                 false
@@ -1906,9 +1923,11 @@ impl Emulator {
         let pt = match sdc.data.as_slice() {
             // SGR (`m`) — the current pen as SGR parameters (`0`-led so it is self-contained).
             b"m" => Some(format!("{}m", self.sgr_params())),
-            // DECSCUSR (` q`) — the cursor shape as its STEADY DECSCUSR code (blink is not modeled,
-            // so the steady code stands for the shape).
-            b" q" => Some(format!("{} q", decscusr_code(self.cursor_shape))),
+            // DECSCUSR (` q`) — the cursor's DECSCUSR code: both its shape and its blink axis.
+            b" q" => Some(format!(
+                "{} q",
+                decscusr_code(self.cursor_shape, self.cursor_blink)
+            )),
             // DECSTBM (`r`) — the scroll region as 1-based inclusive `top;bottom`.
             b"r" => Some(format!(
                 "{};{}r",
@@ -2047,9 +2066,11 @@ impl Emulator {
             // DECSC / DECRC in their `CSI s` / `CSI u` spelling (same save/restore as `ESC 7/8`).
             CsiCursor::SaveCursor => self.save_cursor(),
             CsiCursor::RestoreCursor => self.restore_cursor(),
-            // DECSCUSR — the cursor SHAPE (block / underline / bar); blink is not modeled, so the
-            // steady and blinking variants of each shape map to the same shape.
-            CsiCursor::CursorStyle(style) => self.cursor_shape = cursor_shape_of(style),
+            // DECSCUSR — the cursor style: a shape (block / underline / bar) AND whether it blinks,
+            // both carried by the one parameter ([`decscusr_cursor`]).
+            CsiCursor::CursorStyle(style) => {
+                (self.cursor_shape, self.cursor_blink) = decscusr_cursor(style);
+            }
             // DECSTBM — set the top/bottom scroll margins (`SetLeftAndRightMargins`, DECSLRM,
             // stays out of the subset).
             CsiCursor::SetTopAndBottomMargins { top, bottom } => {
@@ -2264,6 +2285,10 @@ impl Emulator {
         match code {
             // DECSET / DECRST 25 — cursor visibility.
             DecPrivateModeCode::ShowCursor => self.cursor_visible = on,
+            // 12 — the legacy AT&T cursor-blink toggle, shape-independent. The same state DECSCUSR's
+            // blink axis writes, so `CSI ? 12 l` stops a DECSCUSR-started blink and vice versa —
+            // one cursor cannot be blinking and steady at once.
+            DecPrivateModeCode::StartBlinkingCursor => self.cursor_blink = on,
             // DECCKM (1) — application vs normal cursor-key encoding.
             DecPrivateModeCode::ApplicationCursorKeys => {
                 self.input_modes.application_cursor_keys = on;
@@ -2346,6 +2371,9 @@ impl Emulator {
     fn dec_private_mode_state(&self, code: &DecPrivateModeCode) -> Option<bool> {
         Some(match code {
             DecPrivateModeCode::ShowCursor => self.cursor_visible,
+            // Mode 12 reads the one blink state, so a DECRQM after a DECSCUSR `1` reports it SET
+            // even though no `CSI ? 12 h` was ever sent — they are the same fact.
+            DecPrivateModeCode::StartBlinkingCursor => self.cursor_blink,
             DecPrivateModeCode::ApplicationCursorKeys => self.input_modes.application_cursor_keys,
             DecPrivateModeCode::AutoWrap => self.autowrap,
             DecPrivateModeCode::ReverseWraparound => self.reverse_wraparound,
@@ -2672,6 +2700,7 @@ impl Emulator {
             row: self.row.min(self.rows.saturating_sub(1)),
             shape: self.cursor_shape,
             visible: self.cursor_visible,
+            blink: self.cursor_blink,
         });
     }
 }
@@ -3222,28 +3251,43 @@ fn clamp_bytes(s: &str, max: usize) -> String {
     s[..end].to_owned()
 }
 
-/// Map a termwiz DECSCUSR [`CursorStyle`] to the port's [`CursorShape`]. Blink is not modeled, so
-/// each shape's steady and blinking variants collapse to the same shape; `Default` is a block (the
-/// power-on default).
-fn cursor_shape_of(style: CursorStyle) -> CursorShape {
+/// Decode a termwiz DECSCUSR [`CursorStyle`] into the cursor's two axes: its [`CursorShape`] and
+/// whether it BLINKS. One function for both, so a variant cannot be classified as a bar here and
+/// as steady somewhere else — the parameter (`1`..=`6`) names a shape/blink PAIR, and this is the
+/// only place that pair is taken apart.
+///
+/// `Default` (`CSI 0 SP q`) is a RESET, not a seventh style: it restores the terminal's power-on
+/// cursor, which for sprag is a steady block ([`Emulator::new`]). Reading it as "blinking block"
+/// — the pairing xterm's own table prints for `0` — would make a reset SET something, and would
+/// silently start blinking a cursor that had been steady since boot.
+const fn decscusr_cursor(style: CursorStyle) -> (CursorShape, bool) {
     match style {
-        CursorStyle::Default | CursorStyle::BlinkingBlock | CursorStyle::SteadyBlock => {
-            CursorShape::Block
-        }
-        CursorStyle::BlinkingUnderline | CursorStyle::SteadyUnderline => CursorShape::Underline,
-        CursorStyle::BlinkingBar | CursorStyle::SteadyBar => CursorShape::Bar,
+        CursorStyle::Default => (CursorShape::Block, false),
+        CursorStyle::BlinkingBlock => (CursorShape::Block, true),
+        CursorStyle::SteadyBlock => (CursorShape::Block, false),
+        CursorStyle::BlinkingUnderline => (CursorShape::Underline, true),
+        CursorStyle::SteadyUnderline => (CursorShape::Underline, false),
+        CursorStyle::BlinkingBar => (CursorShape::Bar, true),
+        CursorStyle::SteadyBar => (CursorShape::Bar, false),
     }
 }
 
-/// The STEADY DECSCUSR parameter for a cursor shape — the inverse of [`cursor_shape_of`] for the
-/// DECRQSS ` q` reply. sprag does not model cursor blink (a shape's blinking and steady DECSCUSR
-/// codes both map to the one shape in [`cursor_shape_of`]), so the report answers with the steady
-/// code of that shape: block 2, underline 4, bar 6.
-const fn decscusr_code(shape: CursorShape) -> u8 {
-    match shape {
-        CursorShape::Block => 2,
-        CursorShape::Underline => 4,
-        CursorShape::Bar => 6,
+/// The DECSCUSR parameter describing a cursor — the inverse of [`decscusr_cursor`] for the
+/// DECRQSS ` q` reply: blinking block 1, steady block 2, blinking underline 3, steady underline 4,
+/// blinking bar 5, steady bar 6.
+///
+/// Both axes, because the reply is a request to state the CURRENT cursor and a steady-only answer
+/// would misreport a blinking one as steady — a report an app round-trips (read the style, restore
+/// it later) and so would silently stop the blinking it was asked to preserve. `0` is never
+/// reported: it is the reset spelling, not a describable state.
+const fn decscusr_code(shape: CursorShape, blink: bool) -> u8 {
+    match (shape, blink) {
+        (CursorShape::Block, true) => 1,
+        (CursorShape::Block, false) => 2,
+        (CursorShape::Underline, true) => 3,
+        (CursorShape::Underline, false) => 4,
+        (CursorShape::Bar, true) => 5,
+        (CursorShape::Bar, false) => 6,
     }
 }
 
@@ -3792,22 +3836,164 @@ mod tests {
         );
     }
 
-    /// DECSCUSR (`CSI SP q`) sets the cursor SHAPE; blink is not modeled, so each shape's steady
-    /// and blinking codes map to the same shape, and `0`/`1` are the block default.
+    /// DECSCUSR (`CSI Ps SP q`) sets BOTH cursor axes — the shape and whether it blinks — from the
+    /// one parameter. Every code `0`..=`6` is checked, because the mapping is a table and a table is
+    /// only pinned by walking it.
+    ///
+    /// `0` is a RESET to the power-on cursor (steady block), not a seventh style: a code that turned
+    /// blinking ON would make a reset set something.
+    ///
+    /// REVERT-PROOF: folding the blinking variants onto their steady partners (the pre-R1425 shape,
+    /// when blink could not be rendered) leaves every `shape` assertion passing and fails the three
+    /// `blink` ones — which is why both axes are asserted at each code.
     #[test]
-    fn decscusr_sets_the_cursor_shape() {
+    fn decscusr_sets_the_cursor_shape_and_its_blink() {
         let mut em = Emulator::new(4, 1);
+        let cursor = |em: &Emulator| {
+            let c = em.screen().cursor();
+            (c.shape, c.blink)
+        };
+        assert_eq!(
+            cursor(&em),
+            (CursorShape::Block, false),
+            "a steady block at power-on"
+        );
+        for (code, want) in [
+            (b'1', (CursorShape::Block, true)),
+            (b'2', (CursorShape::Block, false)),
+            (b'3', (CursorShape::Underline, true)),
+            (b'4', (CursorShape::Underline, false)),
+            (b'5', (CursorShape::Bar, true)),
+            (b'6', (CursorShape::Bar, false)),
+        ] {
+            em.advance(&[0x1b, b'[', code, b' ', b'q']);
+            assert_eq!(cursor(&em), want, "DECSCUSR {}", code as char);
+        }
+        em.advance(b"\x1b[0 q");
+        assert_eq!(
+            cursor(&em),
+            (CursorShape::Block, false),
+            "0 resets to the power-on cursor, from the blinking bar 5 left above",
+        );
+    }
+
+    /// Mode 12 (`CSI ? 12 h` / `l`) is the legacy blink toggle, and it writes the SAME state
+    /// DECSCUSR's blink axis does — so the two interleave as one fact: a `CSI ? 12 l` stops a
+    /// blink DECSCUSR started, and DECRQM reports mode 12 set after a DECSCUSR that never
+    /// mentioned it. This is xterm's model (both drive one `cursorBlink`).
+    ///
+    /// Mode 12 was previously dropped by the mode wildcard, so the whole sequence was inert.
+    ///
+    /// REVERT-PROOF: giving mode 12 a state of its OWN (a second field) passes the two direct
+    /// toggles and fails both cross-talk assertions — the ones that require it to be one state.
+    #[test]
+    fn mode_12_and_decscusr_write_the_one_cursor_blink_state() {
+        let mut em = Emulator::new(4, 1);
+        let blink = |em: &Emulator| em.screen().cursor().blink;
+
+        em.advance(b"\x1b[?12h");
+        assert!(blink(&em), "mode 12 set starts the blink");
+        em.advance(b"\x1b[?12l");
+        assert!(!blink(&em), "mode 12 reset stops it");
+
+        // Cross-talk, both directions.
+        em.advance(b"\x1b[1 q"); // blinking block
+        assert!(blink(&em));
+        em.advance(b"\x1b[?12l");
+        assert!(
+            !blink(&em),
+            "mode 12 reset must stop a blink DECSCUSR started"
+        );
         assert_eq!(
             em.screen().cursor().shape,
             CursorShape::Block,
-            "block by default"
+            "and must leave the shape alone — it is the blink axis only",
         );
-        em.advance(b"\x1b[4 q"); // steady underline
-        assert_eq!(em.screen().cursor().shape, CursorShape::Underline);
+
+        em.advance(b"\x1b[3 q"); // blinking underline
+        em.advance(b"\x1b[?12$p"); // DECRQM
+        assert_eq!(
+            em.take_responses(),
+            b"\x1b[?12;1$y".to_vec(),
+            "DECRQM reports mode 12 SET after a DECSCUSR blink variant: one state, two spellings",
+        );
+    }
+
+    /// DECRQSS ` q` reports the cursor's DECSCUSR code including its BLINK axis (`1` blinking block,
+    /// `2` steady block, …). An app reads this to restore the cursor later, so a steady-only answer
+    /// would silently stop a blink it was asked to preserve.
+    ///
+    /// REVERT-PROOF: reporting the steady code of the shape (the pre-R1425 reply) answers `2` where
+    /// this expects `1`, and `5` is where the two disagree most visibly.
+    #[test]
+    fn decrqss_reports_the_cursor_blink_in_its_decscusr_code() {
+        let mut em = Emulator::new(4, 1);
+        for (set, want) in [
+            (&b"\x1b[1 q"[..], &b"\x1bP1$r1 q\x1b\\"[..]),
+            (&b"\x1b[2 q"[..], &b"\x1bP1$r2 q\x1b\\"[..]),
+            (&b"\x1b[5 q"[..], &b"\x1bP1$r5 q\x1b\\"[..]),
+            (&b"\x1b[6 q"[..], &b"\x1bP1$r6 q\x1b\\"[..]),
+        ] {
+            em.advance(set);
+            em.advance(b"\x1bP$q q\x1b\\");
+            assert_eq!(em.take_responses(), want.to_vec());
+        }
+        // Mode 12 is the same state, so it moves the reported code too.
+        em.advance(b"\x1b[?12h");
+        em.advance(b"\x1bP$q q\x1b\\");
+        assert_eq!(
+            em.take_responses(),
+            b"\x1bP1$r5 q\x1b\\".to_vec(),
+            "the steady bar 6 above, now blinking via mode 12, reports as 5",
+        );
+    }
+
+    /// A DECRC does NOT restore the cursor's blink, though it does restore the shape beside it.
+    ///
+    /// Mode 12 is how a USER turns blinking off — an accessibility preference, not application
+    /// state — while DECSC/DECRC is an application's own save/restore. Carrying blink through the
+    /// save would let any app's stray DECRC switch blinking back on against that preference.
+    ///
+    /// REVERT-PROOF: adding `cursor_blink` to `SavedCursor` (the symmetric-looking change) restores
+    /// `true` here and fails the final assertion.
+    #[test]
+    fn a_cursor_restore_keeps_the_users_blink_preference() {
+        let mut em = Emulator::new(4, 1);
         em.advance(b"\x1b[5 q"); // blinking bar
-        assert_eq!(em.screen().cursor().shape, CursorShape::Bar);
-        em.advance(b"\x1b[0 q"); // default -> block
-        assert_eq!(em.screen().cursor().shape, CursorShape::Block);
+        em.advance(b"\x1b7"); // DECSC, with blink on
+        em.advance(b"\x1b[?12l"); // the user turns blinking off
+        em.advance(b"\x1b[2 q"); // an app changes the shape (steady block)
+        em.advance(b"\x1b8"); // DECRC
+        assert_eq!(
+            em.screen().cursor().shape,
+            CursorShape::Bar,
+            "the restore brings the saved SHAPE back",
+        );
+        assert!(
+            !em.screen().cursor().blink,
+            "but not the blink: the user's preference outlives an app's restore",
+        );
+    }
+
+    /// RIS returns the cursor to the power-on steady cursor — blink included, since a full reset
+    /// rebuilds the emulator. DECSTR (soft reset) deliberately does NOT, matching how it leaves the
+    /// cursor SHAPE alone (VT510 lists neither in the DECSTR set).
+    #[test]
+    fn ris_clears_the_cursor_blink_and_decstr_leaves_it() {
+        let mut em = Emulator::new(4, 1);
+        em.advance(b"\x1b[5 q"); // blinking bar
+        em.advance(b"\x1b[!p"); // DECSTR
+        assert_eq!(
+            (em.screen().cursor().shape, em.screen().cursor().blink),
+            (CursorShape::Bar, true),
+            "a soft reset governs neither cursor axis",
+        );
+        em.advance(b"\x1bc"); // RIS
+        assert_eq!(
+            (em.screen().cursor().shape, em.screen().cursor().blink),
+            (CursorShape::Block, false),
+            "a hard reset returns the power-on cursor",
+        );
     }
 
     /// The title survives an alt-screen round trip: it is emulator-level state, not a
@@ -5302,39 +5488,66 @@ mod tests {
         assert_eq!(em.take_responses(), b"\x1b]10;rgb:e5e5/e5e5/e5e5\x1b\\");
     }
 
-    /// OSC 12 sets + queries the cursor-colour STATE (the render is PINION-PR74-gated). The seed is
-    /// the xterm foreground tone (`e5e5e5`); a set is reflected by the query.
+    /// OSC 12 sets + queries the cursor colour, and the two reads of that state answer DIFFERENTLY
+    /// before anything is set: the render read is `None` (draw the cursor from its cell — the
+    /// reverse-video default), while the query must still name a colour and reports the xterm
+    /// foreground tone. After a set they agree on it.
+    ///
+    /// REVERT-PROOF: seeding the palette with a concrete cursor colour instead of `None` — the shape
+    /// this state had while the render was pinion-blocked — passes every query assertion here and
+    /// fails only the `cursor_color()` one, which is exactly the fact the renderer reads.
     #[test]
     fn osc_12_sets_and_queries_the_cursor_color() {
         let mut em = Emulator::new(8, 2);
+        assert_eq!(
+            em.palette().cursor_color(),
+            None,
+            "nothing set yet, so the cursor takes its cell's colour"
+        );
         em.advance(b"\x1b]12;?\x1b\\");
         assert_eq!(
             em.take_responses(),
             b"\x1b]12;rgb:e5e5/e5e5/e5e5\x1b\\",
-            "the seed cursor colour is the xterm foreground tone"
+            "a query must answer with a colour even when none is set: the xterm foreground tone"
         );
         em.advance(b"\x1b]12;rgb:00/00/ff\x1b\\");
-        assert_eq!(em.palette().cursor(), Rgb::new(0x00, 0x00, 0xff));
+        assert_eq!(
+            em.palette().cursor_color(),
+            Some(Rgb::new(0x00, 0x00, 0xff))
+        );
+        assert_eq!(em.palette().reported_cursor(), Rgb::new(0x00, 0x00, 0xff));
         em.advance(b"\x1b]12;?\x1b\\");
         assert_eq!(em.take_responses(), b"\x1b]12;rgb:0000/0000/ffff\x1b\\");
     }
 
-    /// OSC 112 resets the cursor colour to the xterm seed.
+    /// OSC 112 UNSETS the cursor colour — back to the cell-derived render, not to the seed held as a
+    /// set value. Only the `cursor_color()` read can tell those apart: both report the xterm
+    /// foreground tone through `reported_cursor()`.
     #[test]
     fn osc_112_resets_the_cursor_color() {
         let mut em = Emulator::new(8, 2);
         em.advance(b"\x1b]12;rgb:00/00/ff\x1b\\");
-        assert_eq!(em.palette().cursor(), Rgb::new(0x00, 0x00, 0xff));
+        assert_eq!(
+            em.palette().cursor_color(),
+            Some(Rgb::new(0x00, 0x00, 0xff))
+        );
         em.advance(b"\x1b]112\x1b\\");
         assert_eq!(
-            em.palette().cursor(),
+            em.palette().cursor_color(),
+            None,
+            "the reset removes the explicit colour rather than overwriting it with the seed"
+        );
+        assert_eq!(
+            em.palette().reported_cursor(),
             Rgb::new(0xe5, 0xe5, 0xe5),
-            "reset to xterm foreground tone"
+            "a query after the reset still answers the xterm foreground tone"
         );
     }
 
-    /// OSC 12 touches no cells (the cursor render is PINION-PR74-gated), so it stamps NO row damage —
-    /// unlike an OSC 4 / 10 / 11 colour set, which re-colours cells and bumps every row.
+    /// OSC 12 changes the cursor overlay, not cells, so it stamps NO row damage — unlike an
+    /// OSC 4 / 10 / 11 colour set, which re-colours cells and bumps every row. The overlay is
+    /// painted from the whole `GridCursor` each frame, so the row generations have nothing to say
+    /// about it; the repaint is scheduled by the batch wake, not by damage.
     #[test]
     fn osc_12_cursor_set_stamps_no_row_damage() {
         let mut em = Emulator::new(8, 2);

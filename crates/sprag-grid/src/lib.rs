@@ -17,7 +17,7 @@ use pinion_core::{
     UnderlineStyle as PinUnderlineStyle,
 };
 use sprag_vt::{
-    Attrs, Cell, Color, ColorTarget, CursorShape, Hyperlink, Palette, Screen, ScreenKind,
+    Attrs, Cell, Color, ColorTarget, Cursor, CursorShape, Hyperlink, Palette, Screen, ScreenKind,
     UnderlineStyle, Width,
 };
 
@@ -44,13 +44,7 @@ pub fn project(screen: &Screen, palette: &Palette) -> GridBuffer {
         }
     }
 
-    let cursor = screen.cursor();
-    buffer = buffer.with_cursor(GridCursor::new(
-        cursor.col,
-        cursor.row,
-        cursor_shape(cursor.shape),
-        cursor.visible,
-    ));
+    buffer = buffer.with_cursor(project_cursor(screen.cursor(), palette));
     buffer
         .with_screen(screen_kind(screen.screen_kind()))
         .with_hyperlinks(interner.table)
@@ -558,6 +552,37 @@ fn cursor_shape(shape: CursorShape) -> PinCursorShape {
     }
 }
 
+/// Project the terminal's cursor into pinion's [`GridCursor`] — all four axes it carries: position,
+/// shape, DECTCEM visibility, the DECSCUSR blink MODE (pinion R1425) and the `OSC 12` colour
+/// (pinion R1424). The one place a cursor crosses into pinion, so [`project`] and
+/// [`project_scrolled`]'s live path cannot describe it two ways.
+///
+/// The blink PHASE is not here and must not be: pinion owns it, running a per-window clock and
+/// gating the overlay through `GridCursor::shown_this_phase`. sprag reports the mode; pinion
+/// animates it. Likewise the hollow unfocused cursor (pinion R1427) is derived from OS window
+/// focus at paint time, so it needs nothing from the projection.
+///
+/// The colour is chained only when `OSC 12` actually set one: pinion reads an absent
+/// `cursor_color` as "draw the cursor from the cell it sits on", which is the reverse-video
+/// default a terminal starts with. Passing the palette's cursor colour unconditionally would
+/// paint every cursor that one absolute colour and lose that default over coloured text — which
+/// is why the palette models the colour as an `Option` rather than a seeded RGB.
+fn project_cursor(cursor: Cursor, palette: &Palette) -> GridCursor {
+    let projected = GridCursor::new(
+        cursor.col,
+        cursor.row,
+        cursor_shape(cursor.shape),
+        cursor.visible,
+    )
+    .with_blink(cursor.blink);
+    match palette.cursor_color() {
+        // A direct `Color`, not a `TermColor`: `OSC 12` names an absolute colour, so — unlike a
+        // cell's fg/bg — there is no palette index or theme default left to resolve later.
+        Some(rgb) => projected.with_cursor_color(PinColor::rgb(rgb.r, rgb.g, rgb.b)),
+        None => projected,
+    }
+}
+
 fn screen_kind(kind: ScreenKind) -> PinScreenKind {
     match kind {
         ScreenKind::Main => PinScreenKind::Main,
@@ -689,6 +714,63 @@ mod tests {
         let buffer = project(&screen, &palette());
         assert_eq!(buffer.cursor().col, 3);
         assert_eq!(buffer.cursor().row, 0);
+    }
+
+    /// The DECSCUSR blink MODE reaches pinion (R1425 / PINION-PR75), which is what makes the cursor
+    /// actually blink — pinion runs the phase clock and gates the overlay on it. The phase itself is
+    /// never in the projection, so `visible` stays pure DECTCEM: a blinking cursor is `visible` on
+    /// both halves of its blink.
+    ///
+    /// REVERT-PROOF: dropping the `with_blink` chain leaves the shape and `visible` assertions
+    /// passing and fails the blink one — the axis the whole slice exists for.
+    #[test]
+    fn projects_the_cursor_blink_mode() {
+        let steady = project(&screen_from(b"\x1b[2 q", 4, 1), &palette());
+        assert!(!steady.cursor().blink, "DECSCUSR 2 is a steady block");
+
+        let blinking = project(&screen_from(b"\x1b[5 q", 4, 1), &palette());
+        assert!(blinking.cursor().blink, "DECSCUSR 5 is a blinking bar");
+        assert_eq!(blinking.cursor().shape, PinCursorShape::Bar);
+        assert!(
+            blinking.cursor().visible,
+            "the blink is a mode; visibility stays DECTCEM's alone",
+        );
+        assert!(
+            blinking.cursor().shown_this_phase(true) && !blinking.cursor().shown_this_phase(false),
+            "pinion's own gate reads the mode: drawn on the visible phase only",
+        );
+    }
+
+    /// The `OSC 12` cursor colour reaches pinion (R1424 / PINION-PR74) — and only when the child
+    /// actually set one. Unset projects `None`, which pinion draws from the cell the cursor sits on
+    /// (the reverse-video default); an `OSC 112` reset returns to it.
+    ///
+    /// REVERT-PROOF: chaining the palette's cursor colour unconditionally — the shape a
+    /// non-`Option` palette field would force — passes the set assertion and fails both `None`
+    /// ones, painting every default cursor the seed grey.
+    #[test]
+    fn projects_the_osc_12_cursor_color_only_when_set() {
+        // The palette is the SSOT for this colour, so drive it through the emulator that owns it.
+        let mut em = Emulator::new(4, 1);
+        assert_eq!(
+            project(em.screen(), em.palette()).cursor().cursor_color,
+            None,
+            "nothing set: the cursor takes its cell's colour",
+        );
+
+        em.advance(b"\x1b]12;rgb:00/00/ff\x1b\\");
+        assert_eq!(
+            project(em.screen(), em.palette()).cursor().cursor_color,
+            Some(PinColor::rgb(0x00, 0x00, 0xff)),
+            "a set colour is projected as an absolute Color, not a palette reference",
+        );
+
+        em.advance(b"\x1b]112\x1b\\");
+        assert_eq!(
+            project(em.screen(), em.palette()).cursor().cursor_color,
+            None,
+            "the reset returns the cursor to its cell-derived colour",
+        );
     }
 
     /// A 2-row screen fed 5 lines scrolls 3 off the top into scrollback;

@@ -117,7 +117,21 @@ pub struct Palette {
     colors: [Rgb; 256],
     default_fg: Rgb,
     default_bg: Rgb,
-    cursor: Rgb,
+    /// The `OSC 12` cursor colour, or `None` while the child has set none.
+    ///
+    /// `Option`, unlike its `default_fg` / `default_bg` siblings, because the two facts
+    /// "the child asked for this cursor colour" and "no cursor colour was asked for" render
+    /// DIFFERENTLY and the renderer must be able to tell them apart: an unset cursor takes
+    /// the colour of the cell it sits on (the reverse-video cursor xterm draws when its
+    /// `cursorColor` resource is unset), while a set one is that absolute colour whatever it
+    /// sits on. Collapsing the two — seeding a concrete RGB — would paint every cursor in the
+    /// seed and lose the reverse-video default over coloured text. A default fg/bg has no such
+    /// second reading: something must be drawn, so its seed IS the answer.
+    ///
+    /// One field carries both facts, so the value and its set-ness cannot drift apart.
+    /// [`Self::cursor_color`] is the render read; [`Self::reported_cursor`] is the
+    /// `OSC 12 ; ?` answer, which must name a colour even when unset.
+    cursor: Option<Rgb>,
 }
 
 impl Palette {
@@ -186,7 +200,7 @@ impl Palette {
             colors,
             default_fg: Self::XTERM_ANSI16[7],
             default_bg: Self::XTERM_ANSI16[0],
-            cursor: Self::XTERM_ANSI16[7],
+            cursor: None,
         }
     }
 
@@ -216,9 +230,21 @@ impl Palette {
     pub const fn default_bg(&self) -> Rgb {
         self.default_bg
     }
+    /// The explicit `OSC 12` cursor colour, or `None` while none is set — the RENDER read,
+    /// projected as pinion's `GridCursor::cursor_color` (whose `None` means "take the cell's
+    /// colour"). Distinct from [`Self::reported_cursor`], which must always name a colour.
     #[must_use]
-    pub const fn cursor(&self) -> Rgb {
+    pub const fn cursor_color(&self) -> Option<Rgb> {
         self.cursor
+    }
+
+    /// The cursor colour an `OSC 12 ; ?` query reports: the explicit one when set, else the
+    /// xterm seed. A query must answer with a colour — a terminal that has been asked nothing
+    /// still draws a cursor — so this is the one place the unset case is given a value, and it
+    /// is the value sprag has always reported.
+    #[must_use]
+    pub fn reported_cursor(&self) -> Rgb {
+        self.cursor.unwrap_or(Self::XTERM_ANSI16[7])
     }
     /// The current colour of palette index `i` — the value an `OSC 4 ; i ; ?`
     /// query reports.
@@ -235,7 +261,7 @@ impl Palette {
         self.default_bg = rgb;
     }
     pub const fn set_cursor(&mut self, rgb: Rgb) {
-        self.cursor = rgb;
+        self.cursor = Some(rgb);
     }
     /// `OSC 4 ; i ; spec` set: override palette index `i`.
     pub const fn set_indexed(&mut self, i: u8, rgb: Rgb) {
@@ -250,8 +276,11 @@ impl Palette {
     pub fn reset_default_bg(&mut self) {
         self.default_bg = Self::XTERM_ANSI16[0];
     }
-    pub fn reset_cursor(&mut self) {
-        self.cursor = Self::XTERM_ANSI16[7];
+    /// `OSC 112` returns the cursor to having NO explicit colour — back to the cell-derived
+    /// render, not to the seed as a set value. That is what makes the reset undo an `OSC 12`
+    /// rather than merely overwrite it with a colour that happens to look like the default.
+    pub const fn reset_cursor(&mut self) {
+        self.cursor = None;
     }
     /// `OSC 104 ; i` reset: restore palette index `i` to its xterm value.
     pub const fn reset_indexed(&mut self, i: u8) {
@@ -588,6 +617,15 @@ pub struct Cursor {
     pub row: u16,
     pub shape: CursorShape,
     pub visible: bool,
+    /// Whether the cursor is a BLINKING variant — the DECSCUSR blink axis (`1`/`3`/`5` blinking,
+    /// `2`/`4`/`6` steady) and the legacy mode-12 toggle, which write this one state.
+    ///
+    /// The MODE, never the render-time on/off phase: the phase belongs to the last renderer in
+    /// the chain (pinion's own per-window blink clock), and folding it in here would make
+    /// [`visible`](Self::visible) — pure DECTCEM, "does the app want a cursor at all" —
+    /// unreadable, since a consumer could no longer tell an app-hidden cursor from a blink's
+    /// off-half. Two facts, kept apart.
+    pub blink: bool,
 }
 
 impl Default for Cursor {
@@ -597,6 +635,7 @@ impl Default for Cursor {
             row: 0,
             shape: CursorShape::Block,
             visible: true,
+            blink: false,
         }
     }
 }
@@ -2164,6 +2203,7 @@ impl Screen {
             row: (cur_phys.saturating_sub(start)).min(keep.saturating_sub(1)) as u16,
             shape: self.cursor.shape,
             visible: self.cursor.visible,
+            blink: self.cursor.blink,
         };
         next.kind = self.kind;
         // Inline images ride the rewrap by ANCHOR CELL: each image's anchor is re-mapped to where
