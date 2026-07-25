@@ -448,6 +448,68 @@ impl Cell {
 /// [`Screen::scrollback_rows`] (scrolled-off rows), so the capture path and the
 /// scrollback never drift. Wide trailers contribute `""`, blank cells `" "`.
 #[must_use]
+/// Collect `needle`'s matches in ONE line's `cells` into `out` — the per-line half of
+/// [`Screen::find`]. `needle` must already be ASCII-lowercased; `text` / `starts` are the caller's
+/// scratch buffers (cleared here, reused across lines). Returns `false` when [`FIND_MATCH_CAP`] was
+/// reached, which is the caller's signal to stop scanning.
+///
+/// `starts` is the byte offset each CELL's cluster begins at, plus a one-past-the-end sentinel —
+/// the map that turns a byte match back into COLUMNS. It has to exist because the two are not the
+/// same axis: a wide cluster contributes its bytes to one cell and occupies two columns, and a
+/// trailer contributes no bytes at all.
+fn find_in_line(
+    cells: &[Cell],
+    needle: &str,
+    line: usize,
+    text: &mut String,
+    starts: &mut Vec<usize>,
+    out: &mut Vec<FindMatch>,
+) -> bool {
+    text.clear();
+    starts.clear();
+    for cell in cells {
+        starts.push(text.len());
+        text.push_str(&cell.cluster);
+    }
+    starts.push(text.len());
+    // Byte-length-preserving by construction (ASCII only), so every offset below stays valid.
+    text.make_ascii_lowercase();
+    // The grid pads every row out to `cols` with blanks; searching them would match filler.
+    let searchable = text.trim_end().len();
+    let mut from = 0;
+    while from < searchable {
+        let Some(offset) = text[from..searchable].find(needle) else {
+            return true;
+        };
+        let start = from + offset;
+        let end = start + needle.len();
+        // The cell holding the first matched byte: the LAST cell whose cluster starts at or before
+        // it (a wide cluster's trailer shares its successor's offset, so the later entry wins and a
+        // match is never attributed to a trailer).
+        let col = starts.partition_point(|&begin| begin <= start).max(1) - 1;
+        // Walk forward while the match's bytes run past the current cell's end...
+        let mut cell = col;
+        while cell < cells.len() && starts[cell + 1] < end {
+            cell += 1;
+        }
+        // ...then absorb the trailer columns of a wide cluster the match ends on.
+        let mut end_cell = cell + 1;
+        while end_cell < cells.len() && cells[end_cell].width == Width::Trailer {
+            end_cell += 1;
+        }
+        out.push(FindMatch {
+            line,
+            col: u16::try_from(col).unwrap_or(u16::MAX),
+            cols: u16::try_from(end_cell - col).unwrap_or(u16::MAX),
+        });
+        if out.len() >= FIND_MATCH_CAP {
+            return false;
+        }
+        from = end; // non-overlapping: the next scan starts past this match
+    }
+    true
+}
+
 fn cells_text(cells: &[Cell]) -> String {
     let mut line = String::new();
     for cell in cells {
@@ -861,6 +923,43 @@ pub struct LinkRun {
     /// one logical link (a link split across a wrap, or the same target repeated).
     pub id: Option<String>,
 }
+
+/// One literal match of a search needle in a pane's retained output. Returned (with its siblings)
+/// by [`Screen::find`]. Serde-free like [`LastCommand`] — the host projects it to JSON.
+///
+/// The coordinate is the pane's LOGICAL one: `line` counts from the OLDEST retained line, exactly
+/// like [`Screen::prompt_positions`], so a display client's scroll `offset_y` IS a line index and
+/// jumping the view to a match is `scroll_to(match.line)`. `col`/`cols` are CELL columns, not byte
+/// or char offsets, so a highlight can be laid straight onto the grid: a wide (double-width) cluster
+/// counts TWO columns, and a match that ends on one includes its trailer column.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct FindMatch {
+    /// Logical line index from the oldest retained line (`0`) — scrollback first, then the visible
+    /// grid, the same axis [`Screen::prompt_positions`] reports on.
+    pub line: usize,
+    /// The starting CELL column within that line.
+    pub col: u16,
+    /// The match's width in CELL columns (a wide cluster counts two).
+    pub cols: u16,
+}
+
+/// The answer to a [`Screen::find`]: the matches, oldest line first, and whether the search hit its
+/// cap. Serde-free like [`LastCommand`]; the host projects it to JSON.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct FindResult {
+    /// Every match found, in reading order (oldest line first, then by column).
+    pub matches: Vec<FindMatch>,
+    /// `true` when the search stopped at [`FIND_MATCH_CAP`] — the answer is complete only up to the
+    /// last match reported, and lines after it were never scanned. Reported rather than silently
+    /// implied: a capped answer that looked total would misdraw a match count.
+    pub truncated: bool,
+}
+
+/// The most matches one [`Screen::find`] reports. A search is bounded because a one-character needle
+/// over a full scrollback can match hundreds of thousands of times, and no consumer needs that: a
+/// find bar navigates matches one at a time and a highlight only paints the visible ones. The cap is
+/// far above any real navigation need, and [`FindResult::truncated`] says when it bit.
+pub const FIND_MATCH_CAP: usize = 1000;
 
 /// One scrolled-off line: its STYLED cells, the soft-wrap flag it carried, plus any
 /// shell-integration [`PromptMark`] the row held. Bundling all three WITH the cells (rather
@@ -1292,6 +1391,71 @@ impl Screen {
             }
         }
         out
+    }
+
+    /// Find every literal occurrence of `needle` in the pane's retained output — scrollback first,
+    /// then the visible grid — as [`FindMatch`]es in the logical line + cell-column coordinate.
+    ///
+    /// This is the find-in-scrollback SSOT, and it lives HERE, beside the cells, for two reasons a
+    /// client-side search cannot have: the columns are only derivable from the CELLS (a wide cluster
+    /// is one cluster but two columns, so a byte offset into the text is not a column), and the
+    /// answer is tiny where the haystack is not — a display client in another process asks for
+    /// matches instead of pulling a whole scrollback over the socket on every keystroke.
+    ///
+    /// Semantics, all deliberate and all observable:
+    /// - **Literal**, not a pattern — a needle is what the user typed. (A regex mode would be a
+    ///   distinct query, not a flag that silently reinterprets the same string.)
+    /// - **ASCII case-INSENSITIVE.** Folding only ASCII is what keeps the column arithmetic exact:
+    ///   `to_ascii_lowercase` preserves every byte offset, whereas full Unicode folding can change a
+    ///   string's length (`İ` lowercases to two chars) and would slide every column after it. Scripts
+    ///   without case (한글, 漢字, かな) are unaffected either way.
+    /// - **Per LINE.** A match never spans a line break, so a needle with `\n` finds nothing.
+    /// - **Non-overlapping**: the scan resumes after each match, so `aa` occurs once in `aaa`.
+    /// - **Trailing blanks are unsearchable.** They are the grid's padding out to `cols`, not
+    ///   content — otherwise a needle of spaces would match every row. [`Screen::row_text`] trims for
+    ///   the same reason.
+    /// - An EMPTY needle matches nothing (a needle is a thing to look for, not a position).
+    ///
+    /// Bounded by [`FIND_MATCH_CAP`]; [`FindResult::truncated`] reports when the cap bit.
+    #[must_use]
+    pub fn find(&self, needle: &str) -> FindResult {
+        let mut result = FindResult::default();
+        if needle.is_empty() {
+            return result;
+        }
+        let needle = needle.to_ascii_lowercase();
+        // Two scratch buffers for the whole search, reused line to line: a scrollback-deep scan
+        // would otherwise allocate twice per line to answer one keystroke.
+        let mut text = String::new();
+        let mut starts = Vec::new();
+        let sb_len = self.scrollback.len();
+        for (line, history) in self.scrollback.iter().enumerate() {
+            if !find_in_line(
+                &history.cells,
+                &needle,
+                line,
+                &mut text,
+                &mut starts,
+                &mut result.matches,
+            ) {
+                result.truncated = true;
+                return result;
+            }
+        }
+        for row in 0..self.rows {
+            if !find_in_line(
+                &self.row_cells(row),
+                &needle,
+                sb_len + row as usize,
+                &mut text,
+                &mut starts,
+                &mut result.matches,
+            ) {
+                result.truncated = true;
+                return result;
+            }
+        }
+        result
     }
 
     /// The OSC-8 hyperlink runs on the VISIBLE grid, in reading order — each a contiguous span of
@@ -2411,5 +2575,134 @@ mod tests {
             0,
             "ED-3 should clear scrollback"
         );
+    }
+
+    /// Find spans the WHOLE retained output on ONE axis: scrollback lines first, then the visible
+    /// grid, numbered from the oldest line — the same coordinate `prompt_positions` reports, which
+    /// is what makes `scroll_to(match.line)` a legal jump.
+    #[test]
+    fn find_reports_matches_across_scrollback_and_the_visible_grid() {
+        // 4 lines on a 2-row screen: "err a", "b" scroll off; "c", "err d" stay visible.
+        let e = em(16, 2, "err a\r\nb\r\nc\r\nerr d");
+        let screen = e.screen();
+        assert_eq!(screen.scrollback_len(), 2, "two lines scrolled off");
+        let found = screen.find("err");
+        assert!(!found.truncated);
+        assert_eq!(
+            found.matches,
+            vec![
+                FindMatch {
+                    line: 0,
+                    col: 0,
+                    cols: 3
+                }, // the oldest scrollback line
+                FindMatch {
+                    line: 3,
+                    col: 0,
+                    cols: 3
+                }, // visible row 1 = scrollback_len + 1
+            ],
+            "history and the live grid are ONE line axis, oldest first",
+        );
+    }
+
+    /// Columns are CELLS, not bytes or chars. A wide cluster before a match shifts it by TWO
+    /// columns, and a match ON one is two columns wide (its trailer is part of the highlight).
+    /// REVERT-PROOF for the `starts` map + the trailer absorption: a byte-offset column would report
+    /// `col: 3` for the ASCII match below, and dropping the trailer walk would report `cols: 1` for
+    /// the wide one.
+    #[test]
+    fn find_columns_are_cells_not_bytes_for_a_wide_cluster() {
+        let e = em(16, 2, "x\u{ac00}y err");
+        let screen = e.screen();
+        assert_eq!(
+            screen.find("err").matches,
+            vec![FindMatch {
+                line: 0,
+                col: 5,
+                cols: 3
+            }],
+            "x=0, the wide cluster=1..2, y=3, space=4 -> the match starts at column 5",
+        );
+        assert_eq!(
+            screen.find("\u{ac00}").matches,
+            vec![FindMatch {
+                line: 0,
+                col: 1,
+                cols: 2
+            }],
+            "a wide cluster occupies two columns, trailer included",
+        );
+    }
+
+    /// ASCII case folding both ways, and a non-overlapping scan. Both are contracts a find bar's
+    /// match COUNT depends on, so they are pinned rather than left to `str::find`'s defaults.
+    #[test]
+    fn find_is_ascii_case_insensitive_and_non_overlapping() {
+        let e = em(16, 1, "ERror aaa");
+        let screen = e.screen();
+        assert_eq!(
+            screen.find("error").matches.len(),
+            1,
+            "needle case is folded"
+        );
+        assert_eq!(
+            screen.find("ERROR").matches.len(),
+            1,
+            "haystack case is folded"
+        );
+        assert_eq!(
+            screen.find("aa").matches,
+            vec![FindMatch {
+                line: 0,
+                col: 6,
+                cols: 2
+            }],
+            "`aa` occurs ONCE in `aaa` — the scan resumes past a match, never inside it",
+        );
+    }
+
+    /// The blanks a grid pads every row with are not content. REVERT-PROOF for the `trim_end` bound:
+    /// without it a two-space needle would match the filler on every row of the screen.
+    #[test]
+    fn find_ignores_the_grids_trailing_padding() {
+        let e = em(16, 2, "a  b");
+        let screen = e.screen();
+        assert_eq!(
+            screen.find("  ").matches,
+            vec![FindMatch {
+                line: 0,
+                col: 1,
+                cols: 2
+            }],
+            "only the interior gap matches, never the padding out to `cols`",
+        );
+    }
+
+    /// A search is BOUNDED, and says so. A one-character needle over a full scrollback can match
+    /// more times than any consumer can use, so the scan stops at the cap and reports it rather than
+    /// answering a silently partial list that a match counter would then misdraw.
+    #[test]
+    fn find_caps_its_answer_and_reports_the_truncation() {
+        let line = "a".repeat(80);
+        let feed: String = std::iter::repeat_n(line.as_str(), 20)
+            .collect::<Vec<_>>()
+            .join("\r\n");
+        let e = em(80, 2, &feed);
+        let found = e.screen().find("a");
+        assert_eq!(
+            found.matches.len(),
+            FIND_MATCH_CAP,
+            "the scan stops at the cap"
+        );
+        assert!(found.truncated, "and the answer admits it is capped");
+    }
+
+    /// An empty needle is not a match at every position — it is nothing to look for.
+    #[test]
+    fn find_of_an_empty_needle_matches_nothing() {
+        let e = em(16, 1, "anything");
+        let found = e.screen().find("");
+        assert!(found.matches.is_empty() && !found.truncated);
     }
 }

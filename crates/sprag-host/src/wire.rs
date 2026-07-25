@@ -153,6 +153,34 @@ const IMAGE_DATA_ARGS: &[SchemaArg] = &[SchemaArg::open("id", "int")];
 pub const IMAGE_DATA_FIELD: SchemaField =
     SchemaField::parametric("image_data.<id>", "string", IMAGE_DATA_ARGS);
 
+/// The arguments of [`FIND_FIELD`] — one search `needle`, `Open`.
+///
+/// `Open` like [`IMAGE_DATA_ARGS`] and for the same earned reason, not as a default that hides a
+/// count: a needle is a string the CALLER invents, so there is no domain to enumerate and no bound
+/// to publish. (`IndexOf` would be a lie about a set that does not exist.)
+const FIND_ARGS: &[SchemaArg] = &[SchemaArg::open("needle", "string")];
+
+/// The pane-input external query FAMILY: every literal match of `needle` in the pane's retained
+/// output — `find.<needle>` — as `{matches: [{line, col, cols}], truncated}`.
+///
+/// **The needle rides the path VERBATIM, and that is exact rather than lax.** pinion hands an
+/// External everything after the first `/external/` untouched
+/// ([`split_at_external`](pinion_rpc::path::split_at_external)), so a needle may contain `.`, `/`,
+/// a space, or any UTF-8 without escaping — and because nothing is encoded, nothing has a second
+/// spelling: one needle, one address. That is the same property `cells.<offset>` had to REJECT
+/// aliases to earn (`cells.007`), obtained here by not encoding at all.
+///
+/// A READ, not an action, which is the whole point of PR-61's lesson: a find bar re-queries on every
+/// keystroke, and an invoke would put a bump on that path — one client's typing waking every other
+/// attached client's parked `waitFor`. Searching a pane changes nothing about it.
+///
+/// The answer is in the pane's LOGICAL coordinate ([`FindMatch`](sprag_vt::FindMatch)): `line`
+/// counts from the oldest retained line — the [`PROMPT_MARKS_SLOT`] axis, so a client jumps to a
+/// match with the scroll `offset_y` it already speaks — and `col`/`cols` are CELL columns, ready to
+/// overlay. An EMPTY needle is a malformed member and answers `Null`, the same shape a malformed
+/// `cells.<offset>` reports.
+pub const FIND_FIELD: SchemaField = SchemaField::parametric("find.<needle>", "object", FIND_ARGS);
+
 /// The pane-input external's DECLARED SCHEMA — every path it answers, with its type and any
 /// arguments, in `$schema` order. [`SpragPaneExternal`](crate::SpragPaneExternal) publishes
 /// this verbatim.
@@ -178,6 +206,7 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     SchemaField::new(LAST_COMMAND_SLOT, "object"),
     SchemaField::new(PROMPT_MARKS_SLOT, "array"),
     SchemaField::new(LINKS_SLOT, "array"),
+    FIND_FIELD,
     IMAGE_DATA_FIELD,
     SchemaField::new(CLIPBOARD_WRITE_SLOT, "object"),
     SchemaField::new(CLIPBOARD_ANSWER_ACTION, "action"),
@@ -416,6 +445,18 @@ pub fn cells_slot_at(offset: usize) -> String {
     format!("{}{offset}", CELLS_FIELD.literal_prefix())
 }
 
+/// The [`FIND_FIELD`] query slot searching for `needle` — `find.<needle>` with the argument filled
+/// in. Compose it with [`pane_input_path`] to address a specific pane.
+///
+/// Built from the declaration's own [`literal_prefix`](SchemaField::literal_prefix) like
+/// [`cells_slot_at`], so the address a client sends, the prefix the host strips, and the template
+/// the schema publishes are one string. The needle is appended VERBATIM — see [`FIND_FIELD`] for why
+/// no escaping is needed, and why that is what makes the address canonical.
+#[must_use]
+pub fn find_slot_for(needle: &str) -> String {
+    format!("{}{needle}", FIND_FIELD.literal_prefix())
+}
+
 #[cfg(test)]
 mod tests {
     use pinion_core::external::ArgDomain;
@@ -471,6 +512,21 @@ mod tests {
             CELLS_FIELD.args[0].domain,
             ArgDomain::IndexOf(FRAMES_SLOT)
         ));
+    }
+
+    /// The same spelling tripwire for the search family — and one thing `cells` cannot have: the
+    /// needle is appended UNESCAPED, so the address of a needle is the needle. A future "let us just
+    /// percent-encode it" would break this and should have to argue with it, since encoding is
+    /// exactly what re-introduces two spellings of one search (`cells.007`'s lesson).
+    #[test]
+    fn the_find_family_declares_the_wire_words_it_uses() {
+        assert_eq!(FIND_FIELD.path, "find.<needle>");
+        assert_eq!(FIND_FIELD.literal_prefix(), "find.");
+        assert_eq!(find_slot_for("a.b c"), "find.a.b c");
+        // `Open`, and honestly so: a needle is caller-invented, so there is no domain to publish.
+        assert_eq!(FIND_FIELD.args.len(), 1);
+        assert_eq!(FIND_FIELD.args[0].name, "needle");
+        assert!(matches!(FIND_FIELD.args[0].domain, ArgDomain::Open));
     }
 
     #[test]

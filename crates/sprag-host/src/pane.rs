@@ -58,9 +58,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 
 use crate::wire::{
-    CELLS_FIELD, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT, CURSOR_KEYS_SLOT, FOCUS_ACTION,
-    FRAMES_SLOT, FULL_TEXT_SLOT, IMAGE_DATA_FIELD, KEY_ACTION, LAST_COMMAND_SLOT, LINKS_SLOT,
-    MOUSE_ACTION, PANE_SCHEMA, PASTE_ACTION, PROMPT_MARKS_SLOT, TEXT_ACTION,
+    CELLS_FIELD, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT, CURSOR_KEYS_SLOT, FIND_FIELD,
+    FOCUS_ACTION, FRAMES_SLOT, FULL_TEXT_SLOT, IMAGE_DATA_FIELD, KEY_ACTION, LAST_COMMAND_SLOT,
+    LINKS_SLOT, MOUSE_ACTION, PANE_SCHEMA, PASTE_ACTION, PROMPT_MARKS_SLOT, TEXT_ACTION,
 };
 
 /// Encode a W3C `key` + `mods` to PTY bytes (the sprag-owned R2.6 encoder,
@@ -361,6 +361,26 @@ impl ExternalIntrospect for SpragPaneExternal {
                 serde_json::to_value(self.frame_at(offset))
                     .map_or(IntrospectValue::Null, IntrospectValue::Json)
             }));
+        }
+        // Every literal match of a needle in the pane's retained output, read ON DEMAND (a find
+        // bar's keystroke, never per frame). A READ — searching a pane changes nothing about it, so
+        // a client that re-queries as the user types cannot wake the waiters it is parked beside
+        // (the R152 lesson `cells` was moved off an invoke for). The needle rides the path verbatim;
+        // an EMPTY one is a malformed member and answers `Null`, the same taxonomy `cells.<off>`
+        // reports (present-but-empty, never absence — the path IS in the schema).
+        if let Some(needle) = path.strip_prefix(FIND_FIELD.literal_prefix()) {
+            if needle.is_empty() {
+                return Some(IntrospectValue::Null);
+            }
+            let found = self.pty.with_screen(|screen| screen.find(needle));
+            return Some(IntrospectValue::Json(json!({
+                "matches": found
+                    .matches
+                    .iter()
+                    .map(|m| json!({ "line": m.line, "col": m.col, "cols": m.cols }))
+                    .collect::<Vec<_>>(),
+                "truncated": found.truncated,
+            })));
         }
         // One inline image's RGBA as base64, fetched ON DEMAND (R1404 Stage 5) — the RGBA can be
         // megabytes, so it does not ride the per-poll panes slot (only the `{id,seq}` summary

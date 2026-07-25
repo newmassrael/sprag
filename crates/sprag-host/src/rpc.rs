@@ -2075,6 +2075,76 @@ mod tests {
         );
     }
 
+    /// The `find.<needle>` family over the FULL dispatch path: a live pane, a real search, and the
+    /// answer in the pane's logical coordinate.
+    ///
+    /// The property that separates this family from `cells.<offset>` is the one worth an
+    /// integration test: **the needle rides the path VERBATIM**. pinion hands an External
+    /// everything after the first `/external/` untouched, so a needle containing the family's own
+    /// `.` separator — or a space — must still address one search, with no escaping and therefore no
+    /// second spelling of the same needle. A unit test on the argument parser cannot show that; only
+    /// a request through the dispatch can.
+    #[test]
+    fn the_find_family_answers_matches_over_the_wire() {
+        // Row 0 = `a.b hit`, row 1 = `hit`: two matches for `hit`, and a needle with a dot+space.
+        let state = host_with("printf 'a.b hit\\nhit'", 20, 4);
+        wait_for_pane0_eof(&state);
+
+        let answer = query_pane0(&state, &crate::wire::find_slot_for("hit"));
+        assert!(answer.get("error").is_none(), "find error: {answer}");
+        assert_eq!(
+            answer["result"]["matches"],
+            serde_json::json!([
+                { "line": 0, "col": 4, "cols": 3 },
+                { "line": 1, "col": 0, "cols": 3 },
+            ]),
+            "matches carry the LOGICAL line + CELL columns a client scrolls and highlights by: \
+             {answer}",
+        );
+        assert_eq!(answer["result"]["truncated"], false);
+
+        // The verbatim-path property: `.` and ` ` inside the needle are needle, not grammar.
+        let dotted = query_pane0(&state, &crate::wire::find_slot_for("a.b hit"));
+        assert_eq!(
+            dotted["result"]["matches"],
+            serde_json::json!([{ "line": 0, "col": 0, "cols": 7 }]),
+            "a needle containing the separator and a space addresses ONE search: {dotted}",
+        );
+
+        // The family taxonomy, same as `cells`: an EMPTY argument is a malformed MEMBER
+        // (present-but-empty), while the bare stem carries no argument and is absent.
+        let empty = query_pane0(&state, "find.");
+        assert!(
+            empty.get("error").is_none() && empty["result"].is_null(),
+            "an empty needle is a malformed member -> Null, not an error: {empty}",
+        );
+        assert!(
+            query_pane0(&state, "find").get("error").is_some(),
+            "the bare stem addresses no search",
+        );
+    }
+
+    /// Searching a pane is a READ: it must not move the scene revision.
+    ///
+    /// This is the PR-61 livelock lesson applied BEFORE it can bite. A find bar re-queries on every
+    /// keystroke; if that bumped, one client's typing would wake every other attached client's
+    /// parked `waitFor` into a full re-fetch — the exact defect that made `cells` a query.
+    #[test]
+    fn a_find_query_does_not_bump_the_revision() {
+        let state = host_with("printf hit", 20, 4);
+        wait_for_pane0_eof(&state);
+        let before = state.revision.current();
+        for _ in 0..5 {
+            let answer = query_pane0(&state, &crate::wire::find_slot_for("hit"));
+            assert!(answer.get("error").is_none(), "find error: {answer}");
+        }
+        assert_eq!(
+            state.revision.current(),
+            before,
+            "a search changes nothing about the pane, so it wakes no waiter",
+        );
+    }
+
     #[test]
     fn the_cells_family_returns_a_deserializable_grid_frame() {
         // The wire client's per-frame read: `cells.0` returns a JSON frame whose `cells`
