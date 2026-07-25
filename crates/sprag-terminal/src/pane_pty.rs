@@ -489,6 +489,15 @@ impl PanePty {
         lock(&self.emulator).history_bytes(limit)
     }
 
+    /// The epoch of everything [`Self::history_bytes`] would encode — cheap enough to poll on a timer,
+    /// which is exactly what it is for: the save loop compares it against the reading it kept and
+    /// encodes only when it moved. Holds the emulator lock for a field read rather than for a walk of
+    /// the whole scrollback, so it does not contend with the reader thread the way an encode does.
+    #[must_use]
+    pub fn history_epoch(&self) -> u64 {
+        lock(&self.emulator).history_epoch()
+    }
+
     /// The OS process id of the child on this pty's slave.
     ///
     /// The current backend (portable-pty over [`std::process::Child`]) reports the id for the whole

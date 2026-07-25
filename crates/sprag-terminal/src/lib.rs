@@ -38,7 +38,7 @@ pub use registry::{
 };
 pub use remote::SshRemote;
 pub use snapshot::{
-    PaneRestore, PaneSnapshot, RestorePlan, SNAPSHOT_VERSION, SessionSnapshot, Snapshot,
-    SnapshotError, WindowSnapshot, pane_histories, snapshot,
+    PaneHistory, PaneRestore, PaneSnapshot, RestorePlan, SNAPSHOT_VERSION, SessionSnapshot,
+    Snapshot, SnapshotError, WindowSnapshot, pane_histories, snapshot,
 };
 pub use workspace::{Pane, PaneId, PaneInfo, PaneRebirth, Workspace};

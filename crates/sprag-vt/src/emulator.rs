@@ -533,10 +533,26 @@ impl Emulator {
     /// redraws, not output the user scrolled through.
     #[must_use]
     pub fn history_bytes(&self, limit: usize) -> Vec<u8> {
-        self.saved_main
-            .as_ref()
-            .unwrap_or(&self.screen)
-            .history_bytes(limit)
+        self.history_screen().history_bytes(limit)
+    }
+
+    /// The [`Screen::content_epoch`] of the screen [`Self::history_bytes`] encodes — the O(1) read a
+    /// persister uses to skip an encode that cannot have changed.
+    ///
+    /// It resolves the SAME screen `history_bytes` does, through the one accessor, which is the whole
+    /// point: an epoch taken from the active screen while an alt-screen app runs would track vim's
+    /// furniture and report the frozen main screen as changing on every frame — busily re-encoding
+    /// history that by definition cannot move until the app exits.
+    #[must_use]
+    pub fn history_epoch(&self) -> u64 {
+        self.history_screen().content_epoch()
+    }
+
+    /// The screen the persisted history comes from: ALWAYS the main one. Entering the alt screen moves
+    /// the main screen (with its scrollback) to `saved_main` and installs a fresh buffer, so the active
+    /// screen while `vim` runs holds vim's furniture and no history at all.
+    fn history_screen(&self) -> &Screen {
+        self.saved_main.as_ref().unwrap_or(&self.screen)
     }
 
     fn next_gen(&mut self) -> u64 {
@@ -3875,6 +3891,80 @@ mod tests {
             (CursorShape::Block, false),
             "0 resets to the power-on cursor, from the blinking bar 5 left above",
         );
+    }
+
+    /// The history epoch moves for everything `history_bytes` encodes and STANDS STILL for everything
+    /// it does not — the two halves that make it a valid substitute for re-encoding to compare.
+    ///
+    /// Four cases, each chosen because a cheaper design fails exactly it:
+    /// - **printing** bumps it (the visible rows are part of the encoding, so a scrollback-only epoch
+    ///   — the shape this was first sketched as — would report a pane that has printed as unchanged);
+    /// - **a scroll** bumps it (content moving into scrollback);
+    /// - **`CSI 3 J`** bumps it, having erased history while touching no visible row at all — the case
+    ///   the per-row damage generations structurally cannot see;
+    /// - **alt-screen output** does NOT bump it, because the main screen and its history are frozen in
+    ///   `saved_main` while a fullscreen app runs. An emulator-global counter would tick on every one
+    ///   of vim's frames and re-encode a history that cannot change until vim exits — the workload
+    ///   where the waste is worst.
+    #[test]
+    fn the_history_epoch_tracks_only_what_the_history_encodes() {
+        let mut em = Emulator::new(8, 2);
+        let start = em.history_epoch();
+
+        em.advance(b"hello");
+        let printed = em.history_epoch();
+        assert!(printed > start, "printing changes what would be encoded");
+
+        // Two rows, so a third line scrolls the first into scrollback.
+        em.advance(b"\r\nsecond\r\nthird");
+        let scrolled = em.history_epoch();
+        assert!(scrolled > printed, "a scroll moves content into history");
+
+        // Alt screen: the main screen (and its scrollback) is set aside, so nothing an alt-screen app
+        // prints can change the persisted history.
+        em.advance(b"\x1b[?1049h");
+        let entered = em.history_epoch();
+        em.advance(b"vim furniture\r\nmore furniture\r\neven more");
+        assert_eq!(
+            em.history_epoch(),
+            entered,
+            "an alt-screen app's output must not look like a history change",
+        );
+        em.advance(b"\x1b[?1049l");
+
+        // `CSI 3 J` erases the scrollback without writing a single visible cell.
+        let before_clear = em.history_epoch();
+        em.advance(b"\x1b[3J");
+        assert!(
+            em.history_epoch() > before_clear,
+            "clearing the scrollback changes the history, though no row was touched",
+        );
+    }
+
+    /// The epoch is a valid GATE: equal epochs imply identical encoded bytes, and the bytes actually
+    /// change whenever it moves for a content reason.
+    ///
+    /// This is the property the save loop rests on, asserted directly rather than inferred — a gate
+    /// that could report "unchanged" over changed bytes would serve stale history on every restore
+    /// from then on, since the loop would never look again.
+    ///
+    /// REVERT-PROOF: making the epoch a constant leaves the first pair passing and fails the second;
+    /// bumping it on a cursor move only (not a content write) fails the first.
+    #[test]
+    fn an_unmoved_history_epoch_means_unchanged_history_bytes() {
+        let mut em = Emulator::new(8, 4);
+        em.advance(b"alpha\r\nbeta");
+        let (epoch, bytes) = (em.history_epoch(), em.history_bytes(100));
+
+        // Reads and cursor motion are not content: neither the epoch nor the bytes move.
+        em.advance(b"\x1b[H");
+        assert_eq!(em.history_epoch(), epoch, "a cursor move encodes nothing");
+        assert_eq!(em.history_bytes(100), bytes);
+
+        // A real write moves both.
+        em.advance(b"\x1b[4;1Hgamma");
+        assert!(em.history_epoch() > epoch, "the write moved the epoch");
+        assert_ne!(em.history_bytes(100), bytes, "...and the bytes with it");
     }
 
     /// Mode 12 (`CSI ? 12 h` / `l`) is the legacy blink toggle, and it writes the SAME state

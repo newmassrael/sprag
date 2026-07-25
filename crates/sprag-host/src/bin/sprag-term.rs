@@ -66,9 +66,9 @@ use std::time::Duration;
 use pinion_core::SceneRevision;
 use signal_hook::consts::{SIGINT, SIGTERM};
 use sprag_host::{
-    FrameIngress, Host, HostState, RunRegistry, bump_on_dirty, dispatch_frames, history_dir,
-    history_limit, load_pane_history, load_snapshot, pane_exit_hook, save_histories_if_changed,
-    save_if_changed, snapshot_path, spawn_reaper, stdin_frames,
+    FrameIngress, Host, HostState, RunRegistry, SavedHistory, bump_on_dirty, dispatch_frames,
+    history_dir, history_limit, load_pane_history, load_snapshot, pane_exit_hook,
+    save_histories_if_changed, save_if_changed, snapshot_path, spawn_reaper, stdin_frames,
 };
 use sprag_rpc::HOST_SOCKET;
 use sprag_terminal::{CommandBuilder, PaneId, SessionRegistry, Snapshot};
@@ -276,7 +276,7 @@ fn spawn_durability_saver(
         // tested in their own modules); the loop is just them on a timer, carrying what was last
         // saved between ticks.
         let mut last: Option<Snapshot> = None;
-        let mut last_histories: HashMap<PaneId, Vec<u8>> = HashMap::new();
+        let mut last_histories: HashMap<PaneId, SavedHistory> = HashMap::new();
         loop {
             thread::sleep(SNAPSHOT_INTERVAL);
             if let Err(e) = save_if_changed(&path, &registry, &mut last) {

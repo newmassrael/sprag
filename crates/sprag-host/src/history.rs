@@ -39,7 +39,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use sprag_terminal::{PaneId, SessionRegistry, pane_histories};
+use sprag_terminal::{PaneHistory, PaneId, SessionRegistry, pane_histories};
 use sprag_vt::SCROLLBACK_CAP;
 
 use crate::durability::{socket_key, sprag_state_dir, write_atomic_private};
@@ -152,7 +152,7 @@ pub fn save_histories_if_changed(
     dir: &Path,
     registry: &Arc<Mutex<SessionRegistry>>,
     limit: usize,
-    last: &mut HashMap<PaneId, Vec<u8>>,
+    last: &mut HashMap<PaneId, SavedHistory>,
 ) -> io::Result<usize> {
     if limit == 0 {
         // Persistence disabled: no capture, no write, and nothing destroyed. `pane_histories`
@@ -160,7 +160,30 @@ pub fn save_histories_if_changed(
         // its locks) outright rather than relying on the other crate to return nothing.
         return Ok(0);
     }
-    write_histories(dir, pane_histories(registry, limit), last)
+    let epochs = last
+        .iter()
+        .map(|(id, saved)| (*id, saved.epoch))
+        .collect::<HashMap<_, _>>();
+    write_histories(dir, pane_histories(registry, limit, &epochs), last)
+}
+
+/// What the save loop remembers about one pane between ticks: the epoch it last captured and the bytes
+/// it last wrote.
+///
+/// ONE record rather than two maps, because the two must agree: an epoch stored without its bytes (or
+/// the reverse) would let the loop believe it had already written content it had not, and the failure
+/// is permanent — every later tick sees the same epoch and skips forever. Keeping them in one value
+/// makes that state unrepresentable.
+///
+/// The bytes are kept whole rather than hashed: a hash collision would skip a write and serve stale
+/// history on the next restore, and a few hundred kilobytes of daemon memory is a cheap price for an
+/// exact answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedHistory {
+    /// The pane's [`sprag_terminal::PanePty::history_epoch`] as of the last capture.
+    epoch: u64,
+    /// The bytes last written for it.
+    bytes: Vec<u8>,
 }
 
 /// Write `captured` to `dir`, skipping panes whose history is byte-identical to `last` and reaping
@@ -169,14 +192,18 @@ pub fn save_histories_if_changed(
 /// Split from [`save_histories_if_changed`] so the dedup and reap policy is testable against
 /// synthetic captures — the registry walk needs live PTYs, these rules do not.
 ///
-/// The dedup keeps the captured bytes in `last` rather than a hash: a hash collision would SKIP a
-/// write and silently serve stale history on the next restore, and a few hundred kilobytes of
-/// daemon memory is a cheap price for an exact answer. On a write error the pane's `last` entry is
-/// left unchanged, so the next tick retries it.
+/// TWO gates, answering two different questions. The capture's EPOCH gate already skipped panes that
+/// were not mutated, so those arrive with `bytes: None` and are only counted as live. The BYTE compare
+/// here catches the rest: a mutation that produced identical encoded bytes (a cell rewritten with the
+/// value it held, a cursor move) bumps the epoch but must not cost a write. Dropping either gate is
+/// correct-but-wasteful; dropping the byte one would fsync+rename on every keystroke.
+///
+/// On a write error the pane's `last` entry is left unchanged, so the next tick retries it — including
+/// its epoch, which is what keeps a failed write from being skipped as "already saved".
 fn write_histories(
     dir: &Path,
-    captured: Vec<(PaneId, Vec<u8>)>,
-    last: &mut HashMap<PaneId, Vec<u8>>,
+    captured: Vec<PaneHistory>,
+    last: &mut HashMap<PaneId, SavedHistory>,
 ) -> io::Result<usize> {
     // A capture with no panes means the registry is EMPTY, which is the ambiguous moment the
     // durability ring deliberately refuses to act on: the last pane exiting may be a deliberate
@@ -185,19 +212,26 @@ fn write_histories(
     // that reason, so the history it belongs to must be too. With at least one live pane the
     // registry is an unambiguous authority and a missing pane really is gone.
     if !captured.is_empty() {
-        let live: HashSet<PaneId> = captured.iter().map(|(id, _)| *id).collect();
+        let live: HashSet<PaneId> = captured.iter().map(|entry| entry.id).collect();
         reap_orphans(dir, &live);
         last.retain(|id, _| live.contains(id));
     }
     let mut wrote = 0usize;
     let mut failure = None;
-    for (id, bytes) in captured {
-        if last.get(&id).is_some_and(|seen| *seen == bytes) {
-            continue; // unchanged since the last save — no redundant write
+    for PaneHistory { id, epoch, bytes } in captured {
+        // The capture did not encode this pane: its epoch matched, so its bytes cannot have changed.
+        let Some(bytes) = bytes else { continue };
+        if last.get(&id).is_some_and(|seen| seen.bytes == bytes) {
+            // Mutated, but to the same encoding. Record the new epoch so the next tick's cheap gate
+            // catches it — without this the epoch would stay stale and every tick would re-encode.
+            if let Some(seen) = last.get_mut(&id) {
+                seen.epoch = epoch;
+            }
+            continue;
         }
         match write_atomic_private(&pane_history_path(dir, id), &bytes) {
             Ok(()) => {
-                last.insert(id, bytes);
+                last.insert(id, SavedHistory { epoch, bytes });
                 wrote += 1;
             }
             // Keep sweeping: one unwritable pane must not cost every other pane its history.
@@ -245,11 +279,28 @@ mod tests {
         dir
     }
 
-    fn capture(entries: &[(u64, &str)]) -> Vec<(PaneId, Vec<u8>)> {
+    fn capture(entries: &[(u64, &str)]) -> Vec<PaneHistory> {
         entries
             .iter()
-            .map(|(id, text)| (PaneId(*id), text.as_bytes().to_vec()))
+            .enumerate()
+            .map(|(i, (id, text))| PaneHistory {
+                id: PaneId(*id),
+                // A DISTINCT epoch per entry per call, derived from the content, so a synthetic
+                // capture behaves like a real one: the same bytes report the same epoch (nothing
+                // mutated) and different bytes report a different one.
+                epoch: text.len() as u64 * 1000 + i as u64,
+                bytes: Some(text.as_bytes().to_vec()),
+            })
             .collect()
+    }
+
+    /// A capture in which pane `id` was SKIPPED by the epoch gate — reported live, nothing encoded.
+    fn unchanged(id: u64) -> Vec<PaneHistory> {
+        vec![PaneHistory {
+            id: PaneId(id),
+            epoch: 0,
+            bytes: None,
+        }]
     }
 
     /// History sits beside the snapshot under the same socket identity, so the two artifacts of one
@@ -337,6 +388,60 @@ mod tests {
             None,
             "a foreign file with our extension is not ours to read or reap",
         );
+    }
+
+    /// A pane the capture SKIPPED (its epoch matched, so nothing was encoded) is written nothing and
+    /// — the part that matters — is NOT reaped: it is still live, it was merely quiet.
+    ///
+    /// REVERT-PROOF: treating a `None` capture as an absent pane deletes its history here, which is
+    /// the worst possible outcome of an optimisation — an idle pane losing the very history the
+    /// optimisation exists to avoid rewriting. The second assertion is the one that catches it.
+    #[test]
+    fn a_skipped_pane_is_neither_written_nor_reaped() {
+        let dir = scratch("skipped");
+        let mut last = HashMap::new();
+        write_histories(&dir, capture(&[(1, "a")]), &mut last).expect("write");
+        assert_eq!(load_pane_history(&dir, PaneId(1)), b"a".to_vec());
+
+        let wrote = write_histories(&dir, unchanged(1), &mut last).expect("skip");
+        assert_eq!(wrote, 0, "nothing to write: nothing was even encoded");
+        assert_eq!(
+            load_pane_history(&dir, PaneId(1)),
+            b"a".to_vec(),
+            "an idle pane keeps its history — a skip is not a departure",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A pane that was MUTATED but re-encoded to the same bytes is not rewritten — and its new epoch
+    /// is recorded anyway.
+    ///
+    /// Recording it is what stops the cheap gate from going useless: without it the pane's stored epoch
+    /// stays behind the live one forever, so every later tick re-encodes the whole scrollback to
+    /// rediscover that the bytes are identical — exactly the waste the epoch was added to remove.
+    ///
+    /// REVERT-PROOF: dropping the `seen.epoch = epoch` line leaves the write count passing and fails
+    /// the recorded-epoch assertion.
+    #[test]
+    fn an_identical_re_encode_is_not_rewritten_but_its_epoch_is_recorded() {
+        let dir = scratch("same-bytes");
+        let mut last = HashMap::new();
+        write_histories(&dir, capture(&[(1, "a")]), &mut last).expect("write");
+
+        // Same bytes, later epoch — a mutation that did not change the encoding.
+        let restated = vec![PaneHistory {
+            id: PaneId(1),
+            epoch: 999,
+            bytes: Some(b"a".to_vec()),
+        }];
+        let wrote = write_histories(&dir, restated, &mut last).expect("no-op");
+        assert_eq!(wrote, 0, "identical bytes are not rewritten");
+        assert_eq!(
+            last.get(&PaneId(1)).map(|saved| saved.epoch),
+            Some(999),
+            "the epoch advances so the next tick's gate can skip the encode entirely",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A pane that is gone takes its history file with it, so a long-lived daemon's history

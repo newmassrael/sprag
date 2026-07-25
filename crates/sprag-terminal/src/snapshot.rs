@@ -42,6 +42,7 @@
 //! reboot, which is the same "a home is a memo, not a promise" fallback the live path already
 //! honors.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -258,11 +259,39 @@ pub fn snapshot(registry: &Arc<Mutex<SessionRegistry>>) -> Snapshot {
 ///
 /// Takes the registry lock and each workspace lock SEQUENTIALLY, never nested — the same discipline
 /// [`snapshot`] documents, and for the same deadlock reason.
+/// One pane's entry in a history capture: its id, the [`PanePty::history_epoch`](crate::PanePty::history_epoch) the capture observed,
+/// and its encoded bytes — or `None` when the epoch matched what the caller already had, so nothing
+/// was encoded.
+///
+/// The epoch travels WITH the bytes rather than being read again by the caller: the two must describe
+/// the same instant, and a second read after the lock was released could observe a later one and then
+/// store it against older bytes — which is precisely the direction that serves stale history forever.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneHistory {
+    /// The pane the entry belongs to.
+    pub id: PaneId,
+    /// The content epoch at capture time — what a caller stores to compare against next tick.
+    pub epoch: u64,
+    /// The encoded history, or `None` for "unchanged since `seen`; not encoded".
+    pub bytes: Option<Vec<u8>>,
+}
+
+/// ## Why the capture takes the epochs it already knows
+///
+/// Encoding a full scrollback is the expensive part of a save, and on an idle pane it produces bytes
+/// identical to last time — so the capture asks each pane's [`PanePty::history_epoch`](crate::PanePty::history_epoch) FIRST and skips
+/// the encode outright when it matches `seen`. An idle daemon then costs one `u64` read per pane per
+/// tick instead of re-encoding every pane's whole history to discover that nothing moved.
+///
+/// A skipped pane is still REPORTED (with `bytes: None`), because the caller uses the pane set for
+/// more than writing: it reaps the files of panes that are gone, and a pane omitted for being
+/// unchanged would read as departed and have its history deleted.
 #[must_use]
 pub fn pane_histories(
     registry: &Arc<Mutex<SessionRegistry>>,
     limit: usize,
-) -> Vec<(PaneId, Vec<u8>)> {
+    seen: &HashMap<PaneId, u64>,
+) -> Vec<PaneHistory> {
     if limit == 0 {
         return Vec::new();
     }
@@ -282,7 +311,15 @@ pub fn pane_histories(
             let pool = pool.lock().unwrap_or_else(PoisonError::into_inner);
             pool.panes()
                 .iter()
-                .map(|pane| (pane.id(), pane.pty().history_bytes(limit)))
+                .map(|pane| {
+                    let id = pane.id();
+                    let epoch = pane.pty().history_epoch();
+                    // The epoch is read and compared under the SAME lock acquisition the encode would
+                    // take, so nothing can mutate between "unchanged" and the decision to skip.
+                    let bytes =
+                        (seen.get(&id) != Some(&epoch)).then(|| pane.pty().history_bytes(limit));
+                    PaneHistory { id, epoch, bytes }
+                })
                 .collect::<Vec<_>>()
         })
         .collect()
@@ -767,5 +804,83 @@ mod tests {
             ),
             "a corrupt stored arrangement boots empty via the Layout error, not a bad tree",
         );
+    }
+
+    /// THE payoff of the epoch gate: a capture over an IDLE registry encodes nothing at all.
+    ///
+    /// The save loop runs every few seconds for a daemon's whole life, and an idle pane's history is
+    /// identical every time — so re-encoding a full scrollback to discover that was pure waste. Here
+    /// the second capture, handed the first's epochs, reports every pane live with `bytes: None`: not
+    /// merely "the same bytes", but no encode performed.
+    ///
+    /// Then a pane PRINTS, and only that pane re-encodes — the gate has to let real change through
+    /// per-pane, not just recognise a wholly idle daemon.
+    ///
+    /// REVERT-PROOF: ignoring `seen` and always encoding leaves every liveness assertion passing and
+    /// fails the `is_none` ones; keying the gate on something that never moves (a constant epoch) fails
+    /// the print assertion instead.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_idle_capture_encodes_nothing_and_a_printing_pane_still_does() {
+        let dir = std::env::temp_dir();
+        let reg = Arc::new(Mutex::new(SessionRegistry::new((80, 24))));
+        let pool = lock(&reg).workspace_of("0").unwrap();
+        let ids: Vec<PaneId> = (0..2)
+            .map(|_| {
+                lock(&pool)
+                    .spawn(cmd_in(&dir), "sh".to_owned(), 80, 24)
+                    .unwrap()
+            })
+            .collect();
+        reconcile(&reg, "0", "0");
+
+        // First capture: nothing is known yet, so every pane encodes.
+        let seen = HashMap::new();
+        let first = pane_histories(&reg, 100, &seen);
+        assert_eq!(first.len(), 2, "both panes are captured");
+        assert!(
+            first.iter().all(|entry| entry.bytes.is_some()),
+            "an unknown pane must be encoded",
+        );
+        let seen: HashMap<PaneId, u64> = first.iter().map(|e| (e.id, e.epoch)).collect();
+
+        // Second capture over an untouched registry: every pane still reported, none encoded.
+        let idle = pane_histories(&reg, 100, &seen);
+        assert_eq!(idle.len(), 2, "a skipped pane is still reported LIVE");
+        assert!(
+            idle.iter().all(|entry| entry.bytes.is_none()),
+            "an idle pane's history is not encoded at all",
+        );
+        assert_eq!(
+            idle.iter().map(|e| e.epoch).collect::<Vec<_>>(),
+            first.iter().map(|e| e.epoch).collect::<Vec<_>>(),
+            "and its epoch is unchanged, so the next tick skips it too",
+        );
+
+        // Pane 0 prints. Wait on the CONDITION the assertion reads — the epoch actually moving —
+        // rather than on a timer, since the reader thread applies the bytes asynchronously.
+        lock(&pool)
+            .pane(ids[0])
+            .unwrap()
+            .pty()
+            .write(b"marker\n")
+            .expect("write to the pane's pty");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let now = pane_histories(&reg, 100, &seen);
+            let changed: Vec<PaneId> = now
+                .iter()
+                .filter(|e| e.bytes.is_some())
+                .map(|e| e.id)
+                .collect();
+            if changed == vec![ids[0]] {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the printing pane never re-encoded (changed: {changed:?})",
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
     }
 }

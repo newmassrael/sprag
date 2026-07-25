@@ -1219,6 +1219,23 @@ pub struct Screen {
     /// re-transmit that replaces an image id is distinguishable from a re-poll of the same content
     /// (R1404 Stage 5 on-demand transport). Bumped on every insert.
     next_image_seq: u64,
+    /// Monotonic count of mutations to everything [`Self::history_bytes`] encodes — the visible cells
+    /// AND the scrollback — so a would-be persister can ask "has anything I would encode changed?"
+    /// in O(1) instead of encoding the whole scrollback to find out.
+    ///
+    /// Why the row [`generations`](Self::generations) cannot answer it alone: they cover the VISIBLE
+    /// grid only, so `clear_scrollback` (`CSI 3 J`) would erase history without moving any of them,
+    /// and a `trim` eviction touches no row either. Why the scrollback alone cannot either: the
+    /// encoding includes the visible rows, so a pane that has printed but not yet scrolled has new
+    /// content and an unchanged scrollback. Both halves, one counter.
+    ///
+    /// CONSERVATIVE by construction: it counts mutations, not content changes, so rewriting a cell
+    /// with the value it already held bumps it. That direction is the safe one — a stale epoch would
+    /// serve stale history on the next restore, an over-eager one only costs an encode that the
+    /// byte-compare then discards. It also lives on the SCREEN rather than the emulator, which is what
+    /// makes it correct across the alt screen: an alt-screen app writing at full tilt bumps ITS
+    /// screen's epoch while the main screen — the one whose history is persisted — stays still.
+    content_epoch: u64,
     /// Count of COMPLETE logical lines currently in [`Self::scrollback`] (each ends in a
     /// non-[`wrapped`](Self::wrapped) row), maintained incrementally so [`Self::trim_scrollback`]
     /// can enforce [`SCROLLBACK_CAP`] on the hot scroll path in O(1). A cached aggregate of the
@@ -1246,6 +1263,7 @@ impl Screen {
             images: Vec::new(),
             next_image_seq: 0,
             scrollback_logical: 0,
+            content_epoch: 0,
         }
     }
 
@@ -1803,7 +1821,7 @@ impl Screen {
     pub(crate) fn set_cell(&mut self, col: u16, row: u16, cell: Cell, generation: u64) {
         if let Some(i) = self.index(col, row) {
             self.cells[i] = cell;
-            self.generations[row as usize] = generation;
+            self.stamp_row(row, generation);
         }
     }
 
@@ -1815,7 +1833,7 @@ impl Screen {
             for c in &mut self.cells[start..end] {
                 *c = Cell::blank();
             }
-            self.generations[row as usize] = generation;
+            self.stamp_row(row, generation);
             // An erased row no longer continues a logical line, and its shell-integration mark
             // (if any) goes with the content that was cleared.
             self.wrapped[row as usize] = false;
@@ -1848,7 +1866,7 @@ impl Screen {
         for cell in &mut self.cells[base + col..base + col + n] {
             *cell = Cell::blank();
         }
-        self.generations[row as usize] = generation;
+        self.stamp_row(row, generation);
         self.wrapped[row as usize] = false;
     }
 
@@ -1870,7 +1888,7 @@ impl Screen {
         for cell in &mut self.cells[base + cols - n..base + cols] {
             *cell = Cell::blank();
         }
-        self.generations[row as usize] = generation;
+        self.stamp_row(row, generation);
         self.wrapped[row as usize] = false;
     }
 
@@ -1887,7 +1905,7 @@ impl Screen {
         for cell in &mut self.cells[base + start..base + end] {
             *cell = Cell::blank();
         }
-        self.generations[row as usize] = generation;
+        self.stamp_row(row, generation);
     }
 
     /// Clear the soft-wrapped CONTINUATION rows of the logical line whose head is
@@ -1941,6 +1959,11 @@ impl Screen {
         // does that). `next_image_seq` carries so a post-resize re-transmit stays monotonic.
         next.images = self.images.clone();
         next.next_image_seq = self.next_image_seq;
+        // The epoch CARRIES AND ADVANCES past this screen's: a resize re-lays-out the content, so a
+        // persister holding an older reading must re-encode. Carrying it unchanged would let a resize
+        // pass for "nothing happened"; resetting to 0 would make the new screen's epoch read as OLDER
+        // than an observation already taken, which is the one direction that serves stale history.
+        next.content_epoch = self.content_epoch.wrapping_add(1);
         next
     }
 
@@ -2216,6 +2239,11 @@ impl Screen {
         // `next_image_seq` carries so a re-transmit after the resize keeps a seq ABOVE every
         // surviving image's — a reset to 0 would read as STALE to a consumer tracking seq growth.
         next.next_image_seq = self.next_image_seq;
+        // The content epoch likewise advances past this screen's — see the note in [`Self::resized`].
+        // The rewrap already stamped every visible row through `stamp_row`, but the SCROLLBACK it
+        // rebuilt was assigned wholesale rather than pushed, so the visible stamps alone would not
+        // account for a history that changed width.
+        next.content_epoch = next.content_epoch.max(self.content_epoch.wrapping_add(1));
         for (ai, img) in self.images.iter().enumerate() {
             if let Some((col, prow)) = anchor_phys[ai]
                 && prow >= start
@@ -2236,6 +2264,7 @@ impl Screen {
     pub(crate) fn clear_scrollback(&mut self) {
         self.scrollback.clear();
         self.scrollback_logical = 0;
+        self.touch_scrollback();
     }
 
     /// The number of COMPLETE logical lines currently in scrollback — the width-independent unit
@@ -2247,6 +2276,35 @@ impl Screen {
         self.scrollback_logical
     }
 
+    /// This screen's [`content_epoch`](Self::content_epoch) — the O(1) "has anything
+    /// [`history_bytes`](Self::history_bytes) would encode changed?" read.
+    ///
+    /// Compare two observations of it: EQUAL means nothing was mutated in between, so a re-encode is
+    /// provably wasted. DIFFERENT means something was, though not necessarily that the encoded bytes
+    /// differ (the counter is conservative — see the field). Never compare across screens: each screen
+    /// counts its own mutations, so the value is only meaningful against an earlier read of the SAME
+    /// screen.
+    #[must_use]
+    pub fn content_epoch(&self) -> u64 {
+        self.content_epoch
+    }
+
+    /// Stamp row `row` dirty at `generation` and count the mutation — the ONE place a visible row's
+    /// damage is recorded, so a writer cannot bump the row generation and forget the epoch (or the
+    /// reverse). Out-of-range rows are ignored, exactly as the callers' own bounds checks did.
+    fn stamp_row(&mut self, row: u16, generation: u64) {
+        if let Some(slot) = self.generations.get_mut(row as usize) {
+            *slot = generation;
+            self.content_epoch = self.content_epoch.wrapping_add(1);
+        }
+    }
+
+    /// Count a mutation of the SCROLLBACK — the rows the visible grid's generations say nothing
+    /// about. Called by the three scrollback SSOT mutators.
+    fn touch_scrollback(&mut self) {
+        self.content_epoch = self.content_epoch.wrapping_add(1);
+    }
+
     /// Append one physical row to scrollback, maintaining the logical-line count. The SSOT for
     /// scrollback GROWTH — every push routes here so the count cannot desync; a row that ENDS a
     /// logical line (not soft-wrapped) adds one logical line.
@@ -2255,6 +2313,7 @@ impl Screen {
             self.scrollback_logical += 1;
         }
         self.scrollback.push_back(line);
+        self.touch_scrollback();
     }
 
     /// Evict the oldest scrollback until it fits BOTH bounds: [`SCROLLBACK_CAP`] LOGICAL lines
@@ -2270,6 +2329,7 @@ impl Screen {
                     if !line.wrapped {
                         self.scrollback_logical -= 1;
                     }
+                    self.touch_scrollback();
                 }
                 None => break,
             }
@@ -2353,7 +2413,7 @@ impl Screen {
         self.marks[top as usize..=bottom as usize].rotate_left(n as usize);
         // The surviving rows are dirty at the new generation.
         for r in top..top + shift {
-            self.generations[r as usize] = generation;
+            self.stamp_row(r, generation);
         }
         // Blank the `n` rows vacated at the bottom of the region (this also resets their
         // wrapped/mark/generation, overwriting whatever the rotation parked there).
@@ -2394,7 +2454,7 @@ impl Screen {
         self.marks[top as usize..=bottom as usize].rotate_right(n as usize);
         // The surviving rows (now at `[top + n, bottom]`) are dirty at the new generation.
         for r in (top + n)..=bottom {
-            self.generations[r as usize] = generation;
+            self.stamp_row(r, generation);
         }
         // Blank the `n` rows vacated at the top of the region.
         for i in 0..n {
