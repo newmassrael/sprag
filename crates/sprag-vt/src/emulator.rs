@@ -511,6 +511,22 @@ impl Emulator {
         }
     }
 
+    /// The pane's retained output encoded as REPLAYABLE terminal bytes, bounded to its last
+    /// `limit` logical lines — see [`Screen::history_bytes`].
+    ///
+    /// Always the MAIN screen, even while a fullscreen app holds the alternate one. Two reasons,
+    /// both structural: the alternate screen is a FRESH buffer with an empty scrollback (entering
+    /// it saves the main screen aside), so encoding the active screen would persist a vim UI and
+    /// no history at all; and an alt-screen buffer is transient app furniture that its own program
+    /// redraws, not output the user scrolled through.
+    #[must_use]
+    pub fn history_bytes(&self, limit: usize) -> Vec<u8> {
+        self.saved_main
+            .as_ref()
+            .unwrap_or(&self.screen)
+            .history_bytes(limit)
+    }
+
     fn next_gen(&mut self) -> u64 {
         self.generation += 1;
         self.generation

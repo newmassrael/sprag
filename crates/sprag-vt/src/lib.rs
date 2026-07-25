@@ -6,6 +6,7 @@
 //! is the termwiz adapter that fills a [`port::Screen`].
 
 pub mod emulator;
+pub(crate) mod history;
 pub mod port;
 
 pub use emulator::{Emulator, osc52_reply};

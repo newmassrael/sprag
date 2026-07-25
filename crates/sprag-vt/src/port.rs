@@ -17,6 +17,8 @@ use std::sync::Arc;
 use smol_str::SmolStr;
 use unicode_width::UnicodeWidthChar;
 
+use crate::history::HistoryRow;
+
 /// The number of terminal columns a `char` occupies (UAX #11 via
 /// [`unicode_width`]): `0` for a zero-width combining mark (merged into the
 /// preceding cell, not its own column), `1` narrow, `2` wide (CJK / full-width).
@@ -1324,6 +1326,48 @@ impl Screen {
             lines.pop();
         }
         lines.join("\n")
+    }
+
+    /// The pane's retained output encoded as REPLAYABLE terminal bytes — the durable form of this
+    /// screen's history, bounded to its last `limit` LOGICAL lines (`0` encodes nothing).
+    ///
+    /// Same axis as [`Self::full_text`] and [`Self::find`] — scrollback then the visible rows — so
+    /// what a restore brings back is exactly what a search can find. Feeding the result to a fresh
+    /// [`Emulator`](crate::Emulator) of the same width reconstructs these cells, their styles,
+    /// their OSC-8 links, their prompt marks and their soft-wrap structure. The crate-internal
+    /// `history` module documents why terminal bytes are the durable form and what alphabet the
+    /// encoder generates (SGR, OSC 8, OSC 133, clusters and `CR LF` — nothing else).
+    ///
+    /// The visible region contributes only up to its last non-blank row: the empty grid below a
+    /// short screen is padding, and encoding it would restore a screenful of blank lines above the
+    /// new shell's prompt.
+    #[must_use]
+    pub fn history_bytes(&self, limit: usize) -> Vec<u8> {
+        let cols = self.cols as usize;
+        let blank = Cell::blank();
+        let visible_end = (0..self.rows as usize)
+            .rev()
+            .find(|row| {
+                self.cells[row * cols..(row + 1) * cols]
+                    .iter()
+                    .any(|cell| *cell != blank)
+            })
+            .map_or(0, |row| row + 1);
+        let rows: Vec<HistoryRow<'_>> = self
+            .scrollback
+            .iter()
+            .map(|line| HistoryRow {
+                cells: &line.cells,
+                wrapped: line.wrapped,
+                mark: line.mark,
+            })
+            .chain((0..visible_end).map(|row| HistoryRow {
+                cells: &self.cells[row * cols..(row + 1) * cols],
+                wrapped: self.wrapped[row],
+                mark: self.marks[row],
+            }))
+            .collect();
+        crate::history::encode(&rows, limit)
     }
 
     /// The last shell command — its line, output, and exit status — sliced from the OSC 133
