@@ -114,6 +114,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Cell display width (UAX#11) for the emulator's wide-cluster handling.
 unicode-width = "0.2"
+# Regular-expression search over a pane's retained output — a DISTINCT query beside the literal
+# find, never a flag that reinterprets a needle. Already in the graph via termwiz -> fancy-regex,
+# so this is a direct name for a crate sprag-vt already builds. The engine's linear-time guarantee
+# is the reason a caller-supplied pattern is safe to run on the dispatch thread at all.
+regex = "1"
 
 # Grapheme-cluster segmentation (UAX#29) for DEC mode 2027 (grapheme
 # clustering): groups ZWJ emoji sequences, flags, and skin-tone / VS16

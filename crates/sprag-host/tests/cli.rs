@@ -929,6 +929,60 @@ fn the_cli_find_narrows_to_one_pane_and_rejects_an_absent_one() {
     );
 }
 
+/// `--regex` sends a DIFFERENT query, not the same one with a flag: the same argument matches
+/// different things under the two languages, and an invalid pattern is an error rather than a
+/// silently empty result.
+///
+/// The fixture prints `axb` and `a.b` on one line so the literal and pattern readings of `a.b` are
+/// distinguishable — one match versus two. A fixture where both readings agree would pass whether
+/// the flag reached the wire or not.
+#[test]
+fn the_cli_find_regex_reads_the_needle_as_a_pattern() {
+    let (_host, sock) = spawn_host_running(&["sh", "-c", "printf 'axb a.b\\n'; exec cat"]);
+
+    // Literal: only the real dot matches, so ONE line, printed once.
+    let mut literal = sprag(&sock, &["find", "a.b"]);
+    let printed = wait_for(Duration::from_secs(5), || {
+        literal = sprag(&sock, &["find", "a.b"]);
+        literal.stdout.contains("axb a.b")
+    });
+    assert!(printed, "the pane printed: {:?}", literal.stdout);
+    assert_eq!(literal.stdout.trim_end(), "0:0: axb a.b");
+
+    // As a pattern the dot matches any character — the same LINE, so the grep-shaped output is
+    // still one line. What proves the language changed is a pattern that is not literal text.
+    let pattern = sprag(&sock, &["find", "--regex", "^a.b a"]);
+    assert!(pattern.ok, "find --regex succeeded: {}", pattern.stderr);
+    assert_eq!(
+        pattern.stdout.trim_end(),
+        "0:0: axb a.b",
+        "an anchored pattern matched: {:?}",
+        pattern.stdout,
+    );
+    // …and the same string as a LITERAL matches nothing, so the flag really did change the query.
+    let as_literal = sprag(&sock, &["find", "^a.b a"]);
+    assert!(
+        as_literal.ok && as_literal.stdout.is_empty(),
+        "literally absent"
+    );
+
+    // An invalid pattern is an error naming the reason, not an empty success.
+    let bad = sprag(&sock, &["find", "--regex", "a(b"]);
+    assert!(!bad.ok, "an invalid pattern fails");
+    assert!(
+        bad.stderr.contains("invalid pattern"),
+        "with the engine's reason: {}",
+        bad.stderr,
+    );
+    // The SAME string is a perfectly good literal needle, which is exactly the point.
+    let fine = sprag(&sock, &["find", "a(b"]);
+    assert!(
+        fine.ok,
+        "the same string is a valid literal needle: {}",
+        fine.stderr
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The durability ring, end to end: a daemon that dies gives its panes back WITH
 // their scrollback.

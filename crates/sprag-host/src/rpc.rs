@@ -2124,6 +2124,67 @@ mod tests {
         );
     }
 
+    /// The `regex.<pattern>` family over the FULL dispatch path, and the two properties that make
+    /// it worth a second address rather than a flag.
+    ///
+    /// First, the SAME string addresses two different searches: `find.a.b` matches three literal
+    /// characters and `regex.a.b` matches "a, anything, b" — over the same pane, in the same
+    /// request shape, differing only in which family the path names. Second, a pattern the engine
+    /// REFUSES answers the normal shape carrying the engine's message, not `Null`: an invalid
+    /// pattern is a well-formed address whose value was rejected, and `Null` there would be
+    /// indistinguishable from "no such pane".
+    #[test]
+    fn the_regex_family_is_a_second_language_at_a_second_address() {
+        // Row 0 = `axb a.b`: the literal needle `a.b` matches once, the pattern matches twice.
+        let state = host_with("printf 'axb a.b'", 20, 4);
+        wait_for_pane0_eof(&state);
+
+        let literal = query_pane0(&state, &crate::wire::find_slot_for("a.b"));
+        assert_eq!(
+            literal["result"]["matches"],
+            serde_json::json!([{ "line": 0, "col": 4, "cols": 3 }]),
+            "literally, only the real dot: {literal}",
+        );
+        let pattern = query_pane0(&state, &crate::wire::regex_slot_for("a.b"));
+        assert_eq!(
+            pattern["result"]["matches"],
+            serde_json::json!([
+                { "line": 0, "col": 0, "cols": 3 },
+                { "line": 0, "col": 4, "cols": 3 },
+            ]),
+            "as a pattern, the dot matches any character: {pattern}",
+        );
+
+        // A refused pattern: the answer is the normal shape, carrying WHY.
+        let refused = query_pane0(&state, &crate::wire::regex_slot_for("a(b"));
+        assert!(refused.get("error").is_none(), "not a protocol error");
+        assert!(
+            refused["result"]["error"].is_string(),
+            "the engine's message rides the answer: {refused}",
+        );
+        assert_eq!(
+            refused["result"]["matches"],
+            serde_json::json!([]),
+            "and it searched nothing: {refused}",
+        );
+        // A VALID pattern never carries the field at all, so a caller can test for its presence.
+        assert!(
+            pattern["result"].get("error").is_none(),
+            "a successful search carries no error key: {pattern}",
+        );
+
+        // Same taxonomy as `find`: an EMPTY pattern is a malformed member, the bare stem is absent.
+        let empty = query_pane0(&state, "regex.");
+        assert!(
+            empty.get("error").is_none() && empty["result"].is_null(),
+            "an empty pattern is a malformed member -> Null: {empty}",
+        );
+        assert!(
+            query_pane0(&state, "regex").get("error").is_some(),
+            "the bare stem addresses no search",
+        );
+    }
+
     /// Searching a pane is a READ: it must not move the scene revision.
     ///
     /// This is the PR-61 livelock lesson applied BEFORE it can bite. A find bar re-queries on every

@@ -467,17 +467,10 @@ fn find_in_line(
     starts: &mut Vec<usize>,
     out: &mut Vec<FindMatch>,
 ) -> bool {
-    text.clear();
-    starts.clear();
-    for cell in cells {
-        starts.push(text.len());
-        text.push_str(&cell.cluster);
-    }
-    starts.push(text.len());
-    // Byte-length-preserving by construction (ASCII only), so every offset below stays valid.
+    let searchable = line_text(cells, text, starts);
+    // Byte-length-preserving by construction (ASCII only), so every offset below stays valid — and
+    // it cannot change which trailing bytes are whitespace, so `searchable` holds across it.
     text.make_ascii_lowercase();
-    // The grid pads every row out to `cols` with blanks; searching them would match filler.
-    let searchable = text.trim_end().len();
     let mut from = 0;
     while from < searchable {
         let Some(offset) = text[from..searchable].find(needle) else {
@@ -485,31 +478,90 @@ fn find_in_line(
         };
         let start = from + offset;
         let end = start + needle.len();
-        // The cell holding the first matched byte: the LAST cell whose cluster starts at or before
-        // it (a wide cluster's trailer shares its successor's offset, so the later entry wins and a
-        // match is never attributed to a trailer).
-        let col = starts.partition_point(|&begin| begin <= start).max(1) - 1;
-        // Walk forward while the match's bytes run past the current cell's end...
-        let mut cell = col;
-        while cell < cells.len() && starts[cell + 1] < end {
-            cell += 1;
-        }
-        // ...then absorb the trailer columns of a wide cluster the match ends on.
-        let mut end_cell = cell + 1;
-        while end_cell < cells.len() && cells[end_cell].width == Width::Trailer {
-            end_cell += 1;
-        }
-        out.push(FindMatch {
-            line,
-            col: u16::try_from(col).unwrap_or(u16::MAX),
-            cols: u16::try_from(end_cell - col).unwrap_or(u16::MAX),
-        });
+        out.push(match_span(cells, starts, line, start, end));
         if out.len() >= FIND_MATCH_CAP {
             return false;
         }
         from = end; // non-overlapping: the next scan starts past this match
     }
     true
+}
+
+/// Append every non-overlapping match of `regex` in one line's cells to `out`, returning whether
+/// the scan stayed within [`FIND_MATCH_CAP`]. The regex peer of [`find_in_line`], sharing its
+/// byte-offset→column mapping so the two searches cannot disagree about where a match sits.
+///
+/// The line text is NOT case-folded: the pattern language owns that decision through `(?i)`, and
+/// folding underneath it would overrule what the caller wrote. Zero-width matches are skipped —
+/// they cover no cells, so a coordinate could not point at anything; `find_iter` still advances
+/// past them, so a pattern that can match empty terminates.
+fn regex_in_line(
+    cells: &[Cell],
+    regex: &regex::Regex,
+    line: usize,
+    text: &mut String,
+    starts: &mut Vec<usize>,
+    out: &mut Vec<FindMatch>,
+) -> bool {
+    let searchable = line_text(cells, text, starts);
+    for found in regex.find_iter(&text[..searchable]) {
+        if found.start() == found.end() {
+            continue;
+        }
+        out.push(match_span(cells, starts, line, found.start(), found.end()));
+        if out.len() >= FIND_MATCH_CAP {
+            return false;
+        }
+    }
+    true
+}
+
+/// Fill the reused scratch buffers with one line's text and its cell→byte-offset map (plus a
+/// sentinel past the last cell), returning the SEARCHABLE byte length.
+///
+/// The grid pads every row out to `cols` with blanks; searching that filler would let a space
+/// needle match every row and let `$` anchor past the content, so the padding is excluded.
+fn line_text(cells: &[Cell], text: &mut String, starts: &mut Vec<usize>) -> usize {
+    text.clear();
+    starts.clear();
+    for cell in cells {
+        starts.push(text.len());
+        text.push_str(&cell.cluster);
+    }
+    starts.push(text.len());
+    text.trim_end().len()
+}
+
+/// The CELL span a matched byte range `start..end` covers — the conversion that makes a search
+/// answer in columns rather than in byte offsets, which is the whole reason the search lives beside
+/// the cells: a byte offset is not a column (a wide cluster is one cluster and two columns, and its
+/// trailer contributes no bytes at all).
+fn match_span(
+    cells: &[Cell],
+    starts: &[usize],
+    line: usize,
+    start: usize,
+    end: usize,
+) -> FindMatch {
+    // The cell holding the first matched byte: the LAST cell whose cluster starts at or before it
+    // (a wide cluster's trailer shares its successor's offset, so the later entry wins and a match
+    // is never attributed to a trailer).
+    let col = starts.partition_point(|&begin| begin <= start).max(1) - 1;
+    // Walk forward while the match's bytes run past the current cell's end...
+    let mut cell = col;
+    while cell < cells.len() && starts[cell + 1] < end {
+        cell += 1;
+    }
+    // ...then absorb the trailer columns of a wide cluster the match ends on.
+    let mut end_cell = cell + 1;
+    while end_cell < cells.len() && cells[end_cell].width == Width::Trailer {
+        end_cell += 1;
+    }
+    FindMatch {
+        line,
+        col: u16::try_from(col).unwrap_or(u16::MAX),
+        cols: u16::try_from(end_cell - col).unwrap_or(u16::MAX),
+    }
 }
 
 fn cells_text(cells: &[Cell]) -> String {
@@ -981,6 +1033,41 @@ pub struct FindResult {
 /// find bar navigates matches one at a time and a highlight only paints the visible ones. The cap is
 /// far above any real navigation need, and [`FindResult::truncated`] says when it bit.
 pub const FIND_MATCH_CAP: usize = 1000;
+
+/// The compiled-program size a [`Screen::find_regex`] pattern may occupy before it is refused.
+///
+/// The engine's linear-time matching guarantee bounds how long a SEARCH can take, but not how long
+/// COMPILING one can take: a deeply nested pattern with large bounded repetitions
+/// (`(a{100}){100}{100}`) expands into an enormous program before it ever matches a byte. A search
+/// is an interactive read served on the dispatch thread, so that bound is made explicit here rather
+/// than inherited from the engine's much larger default. Generous beyond any hand-written pattern —
+/// it bites the pathological case only, and reports it as a [`BadPattern`] rather than a stall.
+pub const REGEX_SIZE_LIMIT: usize = 1 << 20;
+
+/// A regular expression [`Screen::find_regex`] refused, carrying the engine's own explanation.
+///
+/// The message is the point: "unclosed group" and "regex exceeds size limit" tell a caller WHERE
+/// their pattern went wrong, which a bare "no matches" or a `Null` could not. That is also why an
+/// invalid pattern is not modelled as an absent answer on the wire — it is a well-formed address
+/// whose value the engine rejected, and the caller needs to be told which.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct BadPattern(String);
+
+impl BadPattern {
+    /// The engine's explanation of why the pattern was refused.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for BadPattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for BadPattern {}
 
 /// One scrolled-off line: its STYLED cells, the soft-wrap flag it carried, plus any
 /// shell-integration [`PromptMark`] the row held. Bundling all three WITH the cells (rather
@@ -1482,29 +1569,86 @@ impl Screen {
     /// Bounded by [`FIND_MATCH_CAP`]; [`FindResult::truncated`] reports when the cap bit.
     #[must_use]
     pub fn find(&self, needle: &str) -> FindResult {
-        let mut result = FindResult::default();
         if needle.is_empty() {
-            return result;
+            return FindResult::default();
         }
         let needle = needle.to_ascii_lowercase();
         // Two scratch buffers for the whole search, reused line to line: a scrollback-deep scan
         // would otherwise allocate twice per line to answer one keystroke.
         let mut text = String::new();
         let mut starts = Vec::new();
+        self.scan_retained(|cells, line, out| {
+            find_in_line(cells, &needle, line, &mut text, &mut starts, out)
+        })
+    }
+
+    /// Every non-overlapping match of the REGULAR EXPRESSION `pattern` in the pane's retained
+    /// output, in the same coordinates [`Self::find`] answers in — or the engine's own explanation
+    /// of why the pattern was rejected.
+    ///
+    /// ## A distinct search, not a mode on the literal one
+    ///
+    /// A needle and a pattern are different LANGUAGES, and the same string means different things
+    /// in each: `a.b` is three literal characters to [`Self::find`] and "a, anything, b" here.
+    /// So this is its own entry with its own address on the wire — a flag that reinterpreted a
+    /// needle in place would silently change what an already-typed search means.
+    ///
+    /// The case rule differs for the same reason, and deliberately: [`Self::find`] is ASCII
+    /// case-INSENSITIVE because a literal search is a convenience, while a pattern is
+    /// case-SENSITIVE because the language already has `(?i)` and folding underneath it would
+    /// overrule what the caller wrote.
+    ///
+    /// Zero-width matches (`x*` against a line with no `x`) are not reported: they cover no cells,
+    /// so there is nothing to highlight and nothing a coordinate could point at. The scan still
+    /// advances past them, so such a pattern terminates rather than looping.
+    ///
+    /// Bounded twice over. Matching is linear in the input by construction — the engine admits no
+    /// backtracking, which is what makes a caller-supplied pattern safe to run on the dispatch
+    /// thread at all — and COMPILATION is capped at [`REGEX_SIZE_LIMIT`], so a pathological pattern
+    /// is refused rather than spending the interactive path's time building an enormous program.
+    /// Match count is capped by [`FIND_MATCH_CAP`], reported as
+    /// [`truncated`](FindResult::truncated), exactly as for the literal search.
+    ///
+    /// # Errors
+    ///
+    /// [`BadPattern`] when `pattern` is not a valid regular expression or exceeds the size limit,
+    /// carrying the engine's message so a caller can show WHERE it went wrong. An EMPTY pattern is
+    /// not an error — it matches nothing, mirroring an empty needle.
+    pub fn find_regex(&self, pattern: &str) -> Result<FindResult, BadPattern> {
+        if pattern.is_empty() {
+            return Ok(FindResult::default());
+        }
+        let regex = regex::RegexBuilder::new(pattern)
+            .size_limit(REGEX_SIZE_LIMIT)
+            .build()
+            .map_err(|error| BadPattern(error.to_string()))?;
+        let mut text = String::new();
+        let mut starts = Vec::new();
+        Ok(self.scan_retained(|cells, line, out| {
+            regex_in_line(cells, &regex, line, &mut text, &mut starts, out)
+        }))
+    }
+
+    /// Run `scan` over every retained line — scrollback first, then the visible grid — collecting
+    /// its matches and, for each line that produced one, that line's ORIGINAL text.
+    ///
+    /// The traversal both searches share, so the LINE AXIS is defined once: `line` counts logical
+    /// lines from the oldest retained one, which is the axis `prompt_positions` uses and therefore
+    /// the one a client's `scroll_to` already speaks. `scan` returns `false` when it hit the match
+    /// cap, which ends the sweep and marks the result truncated.
+    ///
+    /// The line text is derived AFRESH from the cells rather than taken from `scan`'s scratch
+    /// buffer, which the literal search lowercases in place.
+    fn scan_retained(
+        &self,
+        mut scan: impl FnMut(&[Cell], usize, &mut Vec<FindMatch>) -> bool,
+    ) -> FindResult {
+        let mut result = FindResult::default();
         let sb_len = self.scrollback.len();
         for (line, history) in self.scrollback.iter().enumerate() {
             let before = result.matches.len();
-            let within_cap = find_in_line(
-                &history.cells,
-                &needle,
-                line,
-                &mut text,
-                &mut starts,
-                &mut result.matches,
-            );
+            let within_cap = scan(&history.cells, line, &mut result.matches);
             if result.matches.len() > before {
-                // Matched: record the line's ORIGINAL text (the scratch buffer above has been
-                // lowercased in place, so it is derived afresh from the cells).
                 result.lines.push(FindLine {
                     line,
                     text: cells_text(&history.cells),
@@ -1519,14 +1663,7 @@ impl Screen {
             let cells = self.row_cells(row);
             let line = sb_len + row as usize;
             let before = result.matches.len();
-            let within_cap = find_in_line(
-                &cells,
-                &needle,
-                line,
-                &mut text,
-                &mut starts,
-                &mut result.matches,
-            );
+            let within_cap = scan(&cells, line, &mut result.matches);
             if result.matches.len() > before {
                 result.lines.push(FindLine {
                     line,
@@ -2814,5 +2951,167 @@ mod tests {
         let e = em(16, 1, "anything");
         let found = e.screen().find("");
         assert!(found.matches.is_empty() && !found.truncated);
+    }
+
+    /// The regex search answers on the SAME axis and in the same coordinates as the literal one —
+    /// scrollback first, then the visible grid — so a client can jump to and highlight a regex hit
+    /// with the machinery it already has.
+    #[test]
+    fn find_regex_reports_matches_across_scrollback_and_the_visible_grid() {
+        let e = em(16, 2, "err a\r\nb\r\nc\r\nerr d");
+        let screen = e.screen();
+        assert_eq!(screen.scrollback_len(), 2, "two lines scrolled off");
+        let found = screen.find_regex("err .").expect("a valid pattern");
+        assert_eq!(
+            found
+                .matches
+                .iter()
+                .map(|m| (m.line, m.col, m.cols))
+                .collect::<Vec<_>>(),
+            vec![(0, 0, 5), (3, 0, 5)],
+            "one in scrollback, one visible, both in cell columns",
+        );
+        assert_eq!(
+            found
+                .lines
+                .iter()
+                .map(|l| l.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["err a", "err d"],
+        );
+    }
+
+    /// The two searches are different LANGUAGES over the same input, which is why they are
+    /// different entries rather than one with a mode: `a.b` is three literal characters to `find`
+    /// and "a, anything, b" to `find_regex`. Neither reading is wrong; reading the caller's string
+    /// in the language they did not pick would be.
+    #[test]
+    fn a_needle_and_a_pattern_read_the_same_string_differently() {
+        let e = em(16, 1, "axb a.b");
+        let screen = e.screen();
+        assert_eq!(
+            screen.find("a.b").matches.len(),
+            1,
+            "literally, only the real dot matches",
+        );
+        assert_eq!(
+            screen.find_regex("a.b").expect("valid").matches.len(),
+            2,
+            "as a pattern, the dot matches any character",
+        );
+    }
+
+    /// Case is the pattern language's to decide: `find_regex` is case-SENSITIVE (unlike `find`), and
+    /// `(?i)` is how a caller asks for folding — so the flag they wrote is never overruled.
+    #[test]
+    fn find_regex_is_case_sensitive_until_the_pattern_says_otherwise() {
+        let e = em(16, 1, "Error error");
+        let screen = e.screen();
+        assert_eq!(screen.find_regex("Error").expect("valid").matches.len(), 1);
+        assert_eq!(
+            screen.find_regex("(?i)error").expect("valid").matches.len(),
+            2,
+            "(?i) is the caller's own switch",
+        );
+        assert_eq!(
+            screen.find("error").matches.len(),
+            2,
+            "the literal search folds ASCII case by contrast",
+        );
+    }
+
+    /// Columns are CELLS, not bytes, for the regex search too — the mapping both searches share.
+    /// A wide cluster is one cluster and TWO columns, so a byte offset could not be a column.
+    #[test]
+    fn find_regex_columns_are_cells_not_bytes_for_a_wide_cluster() {
+        // "가" is one cluster occupying columns 0-1; "ab" then sits at columns 2 and 3.
+        let e = em(16, 1, "가ab");
+        let found = e.screen().find_regex("a.").expect("valid");
+        assert_eq!(
+            found
+                .matches
+                .iter()
+                .map(|m| (m.col, m.cols))
+                .collect::<Vec<_>>(),
+            vec![(2, 2)],
+            "the match starts at CELL 2, not byte 3",
+        );
+    }
+
+    /// A pattern the engine refuses answers with its OWN explanation, not a bare "no matches" —
+    /// which is the difference between "your pattern is wrong here" and "your search found nothing".
+    #[test]
+    fn an_invalid_pattern_is_refused_with_the_engines_message() {
+        let e = em(16, 1, "anything");
+        let refused = e
+            .screen()
+            .find_regex("a(b")
+            .expect_err("an unclosed group is refused");
+        assert!(
+            refused.message().contains("("),
+            "the message points at the pattern: {refused}",
+        );
+    }
+
+    /// A pathological pattern is refused by OUR compile bound rather than built on the interactive
+    /// path. Self-discriminating: the same pattern compiles fine under the engine's much larger
+    /// default, so what refuses it here can only be [`REGEX_SIZE_LIMIT`].
+    #[test]
+    fn an_oversized_pattern_is_refused_by_our_compile_bound() {
+        // Nested bounded repetition: ~90k states, well past our limit and well inside the default.
+        let pattern = "(?:a{300}){300}";
+        let e = em(16, 1, "anything");
+        let refused = e
+            .screen()
+            .find_regex(pattern)
+            .expect_err("our bound refuses it");
+        assert!(
+            refused.message().contains("size limit"),
+            "refused for SIZE, not syntax: {refused}",
+        );
+        assert!(
+            regex::Regex::new(pattern).is_ok(),
+            "…yet the engine's own default would have built it, so the bound is ours",
+        );
+    }
+
+    /// A pattern that can match EMPTY terminates and reports nothing for the empty hits: a
+    /// zero-width match covers no cells, so there is no column for a coordinate to point at.
+    #[test]
+    fn a_zero_width_match_is_not_reported_and_does_not_loop() {
+        let e = em(16, 1, "aaa bbb");
+        let found = e.screen().find_regex("x*").expect("valid");
+        assert!(
+            found.matches.is_empty(),
+            "nothing to highlight: {:?}",
+            found.matches,
+        );
+        // The same pattern with a non-empty alternative still reports the real hits.
+        let mixed = e.screen().find_regex("b*").expect("valid");
+        assert_eq!(mixed.matches.len(), 1, "only the non-empty run: {mixed:?}");
+    }
+
+    /// An empty pattern mirrors an empty needle: nothing to look for, not everything.
+    #[test]
+    fn find_regex_of_an_empty_pattern_matches_nothing() {
+        let e = em(16, 1, "anything");
+        let found = e.screen().find_regex("").expect("empty is not an error");
+        assert!(found.matches.is_empty() && !found.truncated);
+    }
+
+    /// The grid's trailing padding is outside the search for the regex too — otherwise `$` would
+    /// anchor at the right MARGIN rather than at the end of the line's content.
+    #[test]
+    fn find_regex_anchors_at_the_content_end_not_the_margin() {
+        let e = em(16, 1, "short");
+        assert_eq!(
+            e.screen()
+                .find_regex("short$")
+                .expect("valid")
+                .matches
+                .len(),
+            1,
+            "`$` sits after the last glyph, not after the padding",
+        );
     }
 }

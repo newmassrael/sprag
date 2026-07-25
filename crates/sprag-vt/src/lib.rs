@@ -11,9 +11,9 @@ pub mod port;
 
 pub use emulator::{Emulator, osc52_reply};
 pub use port::{
-    Attrs, Cell, ClipboardQuery, ClipboardTarget, ClipboardTargets, ClipboardWrite, Color,
-    ColorTarget, Cursor, CursorShape, FIND_MATCH_CAP, FindLine, FindMatch, FindResult, Hyperlink,
-    Image, InputModes, KittyKeyboardFlags, LastCommand, LinkRun, MouseEncoding, MouseProtocol,
-    Notification, Palette, PromptMark, Rgb, SCROLLBACK_CAP, Screen, ScreenKind, ShellState,
-    UnderlineStyle, VtPort, Width, char_columns,
+    Attrs, BadPattern, Cell, ClipboardQuery, ClipboardTarget, ClipboardTargets, ClipboardWrite,
+    Color, ColorTarget, Cursor, CursorShape, FIND_MATCH_CAP, FindLine, FindMatch, FindResult,
+    Hyperlink, Image, InputModes, KittyKeyboardFlags, LastCommand, LinkRun, MouseEncoding,
+    MouseProtocol, Notification, Palette, PromptMark, REGEX_SIZE_LIMIT, Rgb, SCROLLBACK_CAP,
+    Screen, ScreenKind, ShellState, UnderlineStyle, VtPort, Width, char_columns,
 };

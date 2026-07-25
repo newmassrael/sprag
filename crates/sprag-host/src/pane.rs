@@ -60,7 +60,8 @@ use base64::engine::general_purpose::STANDARD;
 use crate::wire::{
     CELLS_FIELD, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT, CURSOR_KEYS_SLOT, FIND_FIELD,
     FOCUS_ACTION, FRAMES_SLOT, FULL_TEXT_SLOT, IMAGE_DATA_FIELD, KEY_ACTION, LAST_COMMAND_SLOT,
-    LINKS_SLOT, MOUSE_ACTION, PANE_SCHEMA, PASTE_ACTION, PROMPT_MARKS_SLOT, TEXT_ACTION,
+    LINKS_SLOT, MOUSE_ACTION, PANE_SCHEMA, PASTE_ACTION, PROMPT_MARKS_SLOT, REGEX_FIELD,
+    TEXT_ACTION,
 };
 
 /// Encode a W3C `key` + `mods` to PTY bytes (the sprag-owned R2.6 encoder,
@@ -377,6 +378,24 @@ impl ExternalIntrospect for SpragPaneExternal {
             );
             // Serialized from the SHARED wire type, not a hand-built object: the client
             // deserializes that same type, so the keys are symmetric by construction.
+            return Some(
+                serde_json::to_value(&found).map_or(IntrospectValue::Null, IntrospectValue::Json),
+            );
+        }
+        // The same search over a REGULAR EXPRESSION — a separate address because a needle and a
+        // pattern are separate languages, so one string cannot be allowed to mean both depending on
+        // a mode carried somewhere other than the address (see `REGEX_FIELD`). An EMPTY pattern is a
+        // malformed member and answers `Null` exactly as an empty needle does; an INVALID one is
+        // not malformed addressing but a rejected VALUE, so it answers the normal shape carrying
+        // the engine's message — `Null` there would read as "no such pane".
+        if let Some(pattern) = path.strip_prefix(REGEX_FIELD.literal_prefix()) {
+            if pattern.is_empty() {
+                return Some(IntrospectValue::Null);
+            }
+            let found = match self.pty.with_screen(|screen| screen.find_regex(pattern)) {
+                Ok(found) => crate::PaneFind::from_screen_result(&found),
+                Err(bad) => crate::PaneFind::refused(&bad),
+            };
             return Some(
                 serde_json::to_value(&found).map_or(IntrospectValue::Null, IntrospectValue::Json),
             );

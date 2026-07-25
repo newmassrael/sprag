@@ -181,6 +181,33 @@ const FIND_ARGS: &[SchemaArg] = &[SchemaArg::open("needle", "string")];
 /// `cells.<offset>` reports.
 pub const FIND_FIELD: SchemaField = SchemaField::parametric("find.<needle>", "object", FIND_ARGS);
 
+/// The arguments of [`REGEX_FIELD`] — one search `pattern`, `Open`, for the same reason
+/// [`FIND_ARGS`] is: a pattern is a string the CALLER invents, so there is no domain to enumerate.
+const REGEX_ARGS: &[SchemaArg] = &[SchemaArg::open("pattern", "string")];
+
+/// The pane-input external query FAMILY for a REGULAR-EXPRESSION search — `regex.<pattern>` —
+/// answering the same `{matches, lines, truncated}` shape as [`FIND_FIELD`], plus an `error` when
+/// the engine refused the pattern.
+///
+/// **A separate ADDRESS, not a flag on `find`, because a needle and a pattern are separate
+/// LANGUAGES.** `find.a.b` and `regex.a.b` carry the same three characters and mean different
+/// things — three literal characters versus "a, anything, b". Keeping them on one address with a
+/// mode argument would make what a stored or in-flight search MEANS depend on something other than
+/// the address, which is exactly the aliasing `cells.<offset>` had to reject. One address, one
+/// language, one answer.
+///
+/// Case follows from the same principle: [`FIND_FIELD`] folds ASCII case (a literal search is a
+/// convenience), while this is case-SENSITIVE because the pattern language owns that decision
+/// through `(?i)`.
+///
+/// A READ like every other query here, so a find bar can re-query per keystroke without waking the
+/// waiters it is parked beside. An EMPTY pattern is a malformed member and answers `Null`, matching
+/// [`FIND_FIELD`]'s taxonomy; an INVALID pattern is NOT — it is a well-formed address whose value
+/// the engine rejected, so it answers the normal shape carrying the engine's message, which `Null`
+/// could not distinguish from "this pane does not exist".
+pub const REGEX_FIELD: SchemaField =
+    SchemaField::parametric("regex.<pattern>", "object", REGEX_ARGS);
+
 /// The pane-input external's DECLARED SCHEMA — every path it answers, with its type and any
 /// arguments, in `$schema` order. [`SpragPaneExternal`](crate::SpragPaneExternal) publishes
 /// this verbatim.
@@ -207,6 +234,7 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     SchemaField::new(PROMPT_MARKS_SLOT, "array"),
     SchemaField::new(LINKS_SLOT, "array"),
     FIND_FIELD,
+    REGEX_FIELD,
     IMAGE_DATA_FIELD,
     SchemaField::new(CLIPBOARD_WRITE_SLOT, "object"),
     SchemaField::new(CLIPBOARD_ANSWER_ACTION, "action"),
@@ -457,6 +485,15 @@ pub fn find_slot_for(needle: &str) -> String {
     format!("{}{needle}", FIND_FIELD.literal_prefix())
 }
 
+/// The [`REGEX_FIELD`] query slot searching for `pattern` — `regex.<pattern>` with the argument
+/// filled in. The regex peer of [`find_slot_for`], built the same way and for the same reasons; the
+/// pattern rides the path VERBATIM, so a pattern full of `.`, `/`, `\` and `|` needs no escaping and
+/// has exactly one spelling.
+#[must_use]
+pub fn regex_slot_for(pattern: &str) -> String {
+    format!("{}{pattern}", REGEX_FIELD.literal_prefix())
+}
+
 #[cfg(test)]
 mod tests {
     use pinion_core::external::ArgDomain;
@@ -527,6 +564,28 @@ mod tests {
         assert_eq!(FIND_FIELD.args.len(), 1);
         assert_eq!(FIND_FIELD.args[0].name, "needle");
         assert!(matches!(FIND_FIELD.args[0].domain, ArgDomain::Open));
+    }
+
+    /// The regex family is a SEPARATE address, and the tripwire says so: `find.a.b` and
+    /// `regex.a.b` are two different searches of the same three characters. Collapsing them onto
+    /// one address with a mode argument would make what a search MEANS depend on something the
+    /// address does not carry, which is the aliasing the whole family grammar exists to prevent.
+    #[test]
+    fn the_regex_family_is_a_distinct_address_from_the_literal_one() {
+        assert_eq!(REGEX_FIELD.path, "regex.<pattern>");
+        assert_eq!(REGEX_FIELD.literal_prefix(), "regex.");
+        assert_eq!(regex_slot_for("a.b|c"), "regex.a.b|c");
+        assert_ne!(
+            regex_slot_for("a.b"),
+            find_slot_for("a.b"),
+            "the same string in two languages must not share one address",
+        );
+        // `Open`, honestly: a pattern is caller-invented, so there is no domain to publish.
+        assert_eq!(REGEX_FIELD.args.len(), 1);
+        assert_eq!(REGEX_FIELD.args[0].name, "pattern");
+        assert!(matches!(REGEX_FIELD.args[0].domain, ArgDomain::Open));
+        // And both are published, so an agent discovers that the choice exists.
+        assert!(PANE_SCHEMA.contains(&FIND_FIELD) && PANE_SCHEMA.contains(&REGEX_FIELD));
     }
 
     #[test]

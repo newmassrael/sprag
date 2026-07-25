@@ -136,6 +136,17 @@ pub struct PaneFind {
     pub lines: Vec<PaneFindLine>,
     /// `true` when the search stopped at the cap — there may be more past the last match.
     pub truncated: bool,
+    /// Why the search could not run, when it could not: the regex engine's own explanation of a
+    /// pattern it refused ("unclosed group", "exceeds size limit"). `None` for every answer that
+    /// actually searched.
+    ///
+    /// Only a `regex.<pattern>` query can set it — a literal needle has no syntax to get wrong, so
+    /// on the `find.<needle>` path this is structurally always `None`. It is carried rather than
+    /// reported as an absent answer because an invalid pattern is a WELL-FORMED address whose value
+    /// the engine rejected: answering `Null` would make "your pattern is wrong here" indistinguish-
+    /// able from "no such pane", and the caller needs to be told which.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 impl PaneFind {
@@ -161,6 +172,18 @@ impl PaneFind {
                 })
                 .collect(),
             truncated: found.truncated,
+            error: None,
+        }
+    }
+
+    /// The answer to a REFUSED regex pattern: no matches, plus the engine's explanation.
+    ///
+    /// A constructor rather than a caller-built literal, so "a refusal is an empty result carrying
+    /// a message" is stated once and every producer of one agrees.
+    pub(crate) fn refused(error: &sprag_vt::BadPattern) -> Self {
+        Self {
+            error: Some(error.message().to_owned()),
+            ..Self::default()
         }
     }
 }

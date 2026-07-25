@@ -9,9 +9,9 @@
 //!
 //! It is a [Model Context Protocol](https://modelcontextprotocol.io) **stdio
 //! server**: Claude Code (or any MCP client) spawns it and it speaks newline-delimited
-//! JSON-RPC 2.0 on stdin/stdout. It advertises seven self-describing tools —
+//! JSON-RPC 2.0 on stdin/stdout. It advertises nine self-describing tools —
 //! `list_panes`, `read_pane`, `read_last_command`, `read_pane_links`, `read_pane_images`,
-//! `write_pane`, `send_keys` — so an
+//! `find_in_pane`, `regex_in_pane`, `write_pane`, `send_keys` — so an
 //! agent *immediately* understands "read/write a sibling pane" without reading any sprag
 //! source. Each tool call bridges to the host wire via [`sprag_rpc::HostConn`],
 //! addressing panes with the [`sprag_host::wire`] path SSOT.
@@ -54,7 +54,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use sprag_host::wire::{
     FULL_TEXT_SLOT, KEY_ACTION, LAST_COMMAND_SLOT, LINKS_SLOT, PANES_SLOT, TEXT_ACTION,
-    find_slot_for,
+    find_slot_for, regex_slot_for,
 };
 use sprag_host::{PaneFind, mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
@@ -308,6 +308,32 @@ fn tools_list() -> Value {
                 }
             },
             {
+                "name": "regex_in_pane",
+                "description": "Like find_in_pane, but the search text is a REGULAR EXPRESSION \
+                    (Rust regex syntax) instead of literal text. Use this when what you are \
+                    looking for is a shape rather than a string — an error code pattern, one of \
+                    several alternatives, a line anchored at its start. It is a separate tool \
+                    rather than a flag because the two read the same string differently: 'a.b' \
+                    means three literal characters to find_in_pane and 'a, any character, b' \
+                    here, so picking the tool is picking the language. Matching is \
+                    case-SENSITIVE (find_in_pane folds ASCII case); write (?i) at the start of \
+                    the pattern to fold. Anchors ^ and $ bind to each line, and a match never \
+                    spans a line break. An invalid pattern is reported with the reason.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "pane": pane_arg,
+                        "pattern": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "The regular expression to search for."
+                        }
+                    },
+                    "required": ["pane", "pattern"],
+                    "additionalProperties": false
+                }
+            },
+            {
                 "name": "write_pane",
                 "description": "Type literal text into a sibling pane's shell, as if the \
                     user typed it, and (by default) press Enter to run it. Use this to \
@@ -372,6 +398,7 @@ fn handle_tools_call(message: &Value) -> Value {
         "read_pane_links" => tool_read_pane_links(&args),
         "read_pane_images" => tool_read_pane_images(&args),
         "find_in_pane" => tool_find_in_pane(&args),
+        "regex_in_pane" => tool_regex_in_pane(&args),
         "write_pane" => tool_write_pane(&args),
         "send_keys" => tool_send_keys(&args),
         other => Err(format!("unknown tool: {other}")),
@@ -633,14 +660,41 @@ fn tool_find_in_pane(args: &Value) -> Result<String, String> {
         .and_then(Value::as_str)
         .filter(|needle| !needle.is_empty())
         .ok_or("find_in_pane needs a non-empty `needle`")?;
-    let value = host_call(
-        "scene/query",
-        json!({ "path": pane_input_path(id, &find_slot_for(needle)) }),
-    )?;
+    search_pane(id, &find_slot_for(needle), needle)
+}
+
+/// `regex_in_pane` — the same search read as a REGULAR EXPRESSION.
+///
+/// A separate tool rather than a flag on `find_in_pane`, all the way up from the wire: a needle and
+/// a pattern are separate languages in which the same string means different things, so which one
+/// an agent means is expressed by WHICH TOOL it calls, not by an argument that could be defaulted,
+/// forgotten, or carried over from a previous call.
+fn tool_regex_in_pane(args: &Value) -> Result<String, String> {
+    let id = resolve_pane_id(args)?;
+    let pattern = args
+        .get("pattern")
+        .and_then(Value::as_str)
+        .filter(|pattern| !pattern.is_empty())
+        .ok_or("regex_in_pane needs a non-empty `pattern`")?;
+    search_pane(id, &regex_slot_for(pattern), pattern)
+}
+
+/// Query pane `id` at `slot` and render the matching lines as `LINE: text`.
+///
+/// The ONE renderer both search tools use, so a literal hit and a regex hit read identically to an
+/// agent — only the language of `wanted` (echoed in the no-match message) differs. Neither tool
+/// implements a search: both read a host query, so they agree with the CLI and the GUI highlight.
+fn search_pane(id: u64, slot: &str, wanted: &str) -> Result<String, String> {
+    let value = host_call("scene/query", json!({ "path": pane_input_path(id, slot) }))?;
     let found: PaneFind =
         serde_json::from_value(value).map_err(|error| format!("malformed find answer: {error}"))?;
+    // A refused pattern is an ERROR, not an empty result: "your pattern is wrong" and "nothing
+    // matched" are different answers, and an agent that cannot tell them apart will retry forever.
+    if let Some(error) = found.error {
+        return Err(format!("invalid pattern {wanted:?}: {error}"));
+    }
     if found.lines.is_empty() {
-        return Ok(format!("no matches for {needle:?} in pane {id}"));
+        return Ok(format!("no matches for {wanted:?} in pane {id}"));
     }
     let mut out = String::new();
     for line in &found.lines {
@@ -881,7 +935,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tools_list_advertises_the_eight_tools_with_object_schemas() {
+    fn tools_list_advertises_the_nine_tools_with_object_schemas() {
         let tools = tools_list();
         let names: Vec<&str> = tools["tools"]
             .as_array()
@@ -898,6 +952,7 @@ mod tests {
                 "read_pane_links",
                 "read_pane_images",
                 "find_in_pane",
+                "regex_in_pane",
                 "write_pane",
                 "send_keys"
             ]
@@ -922,6 +977,9 @@ mod tests {
         assert_eq!(required("write_pane"), json!(["pane", "text"]));
         // find_in_pane requires the pane AND something to look for.
         assert_eq!(required("find_in_pane"), json!(["pane", "needle"]));
+        // regex_in_pane names its argument `pattern`, not `needle`: the argument NAME is part of
+        // how an agent learns which language it is writing in.
+        assert_eq!(required("regex_in_pane"), json!(["pane", "pattern"]));
     }
 
     #[test]

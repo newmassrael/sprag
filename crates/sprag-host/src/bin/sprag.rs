@@ -7,8 +7,10 @@
 //! sprag ssh [user@]host [-p PORT] [-L FWD]... [--tmux[=NAME]] [-- cmd...]  create a session running
 //!                          ssh to a remote host (a first-classed remote workspace); -L forwards a
 //!                          local->remote port; --tmux attaches-or-creates a remote tmux session
-//! sprag find NEEDLE [-t SESSION] [--pane N]  print each matching line as PANE:LINE: text
-//!                          (literal, ASCII case-insensitive); --pane narrows to one pane
+//! sprag find NEEDLE [-t SESSION] [--pane N] [--regex]  print each matching line as
+//!                          PANE:LINE: text. Literal + ASCII case-insensitive by default;
+//!                          --regex reads NEEDLE as a case-SENSITIVE regular expression (use
+//!                          (?i) to fold); --pane narrows the sweep to one pane
 //! sprag attach NAME        open a sprag-gui window attached to a session (tmux attach-session)
 //! sprag kill-session NAME   kill a session (the last one ends the daemon)
 //! sprag kill-server [--purge]  kill every session, ending the daemon; --purge also deletes the
@@ -50,7 +52,7 @@ use serde_json::{Value, json};
 use sprag_host::wire::{
     BREAK_PANE_ACTION, CLIENTS_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION,
     NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, RENAME_WINDOW_ACTION, SELECT_WINDOW_ACTION,
-    SESSIONS_SLOT, WINDOWS_SLOT, find_slot_for,
+    SESSIONS_SLOT, WINDOWS_SLOT, find_slot_for, regex_slot_for,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{HOST_SOCKET, HostConn, socket_path};
@@ -100,7 +102,7 @@ fn print_usage() {
     eprintln!(
         "usage: sprag <ls | list-clients [-t SESSION] | new [name] | attach NAME\n\
          \x20             | ssh [user@]host [-p PORT] [-L FWD]… [--tmux[=NAME]] [-- command…]\n\
-         \x20             | find NEEDLE [-t SESSION] [--pane N]\n\
+         \x20             | find NEEDLE [-t SESSION] [--pane N] [--regex]\n\
          \x20             | kill-session NAME | kill-server [--purge]>\n\
          \x20      sprag <windows | new-window [name] | select-window NAME\n\
          \x20             | rename-window [window] NAME | kill-window [window]\n\
@@ -236,7 +238,14 @@ fn list_clients(args: Vec<String>) -> io::Result<()> {
 /// A `--pane` naming a pane the session's current window does not hold is a clean ERROR, not an
 /// empty result: the caller asked for a specific pane, and reporting "no matches" for a pane that
 /// is not there would answer a question they did not ask. Contrast the needle itself, where finding
-/// nothing IS the answer.
+/// nothing IS the answer. An invalid `--regex` pattern is an error for the same reason — the search
+/// never ran, so exiting 0 with no output would claim it had.
+///
+/// `--regex` selects a different QUERY, not a mode on the same one. A needle and a pattern are
+/// separate languages in which the same string means different things (`a.b`), so the host keeps
+/// them at separate addresses and this flag picks which one to send. It also changes the case rule,
+/// deliberately: the literal search folds ASCII case, while a pattern is case-sensitive because the
+/// language already has `(?i)`.
 ///
 /// Prints the matching LINES (deduped — a line with three matches is one output line), because that
 /// is what a grep-shaped output means. A capped answer is reported on stderr rather than silently
@@ -248,7 +257,15 @@ fn find(args: Vec<String>) -> io::Result<()> {
         needle,
         session,
         pane: only,
+        regex,
     } = find_args(args)?;
+    // Which LANGUAGE the needle is in decides which address is queried — the choice is made once,
+    // here, and the rest of the sweep is identical.
+    let slot = if regex {
+        regex_slot_for(&needle)
+    } else {
+        find_slot_for(&needle)
+    };
     let mut conn = connect()?;
     if let Some(session) = &session {
         require_session(&mut conn, session)?;
@@ -276,11 +293,16 @@ fn find(args: Vec<String>) -> io::Result<()> {
     }
     let mut truncated = false;
     for pane in panes {
-        let answer: Value = conn.call(
-            "scene/query",
-            scoped(pane_input_path(pane, &find_slot_for(&needle))),
-        )?;
+        let answer: Value = conn.call("scene/query", scoped(pane_input_path(pane, &slot)))?;
         let found: PaneFind = serde_json::from_value(answer).unwrap_or_default();
+        // A refused pattern is the same refusal for every pane, so report it once and stop rather
+        // than repeating it per pane or printing nothing and exiting 0 as if it had searched.
+        if let Some(error) = found.error {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("find: invalid pattern: {error}"),
+            ));
+        }
         truncated |= found.truncated;
         for line in &found.lines {
             println!("{pane}:{}: {}", line.line, line.text);
@@ -298,6 +320,10 @@ struct FindArgs {
     session: Option<String>,
     /// The one pane to search, or `None` to sweep the whole window.
     pane: Option<u64>,
+    /// Read the needle as a REGULAR EXPRESSION rather than literal text — which sends a different
+    /// QUERY, not the same one with a flag: the two are separate languages and the host keeps them
+    /// at separate addresses (`sprag_host::wire::REGEX_FIELD`).
+    regex: bool,
 }
 
 /// Parse `find`'s arguments: the required NEEDLE positional plus optional `-t SESSION` and
@@ -309,6 +335,7 @@ fn find_args(args: Vec<String>) -> io::Result<FindArgs> {
     let mut needle: Option<String> = None;
     let mut session = None;
     let mut pane = None;
+    let mut regex = false;
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -328,6 +355,7 @@ fn find_args(args: Vec<String>) -> io::Result<FindArgs> {
                     ))
                 })?);
             }
+            "--regex" => regex = true,
             _ if needle.is_none() => needle = Some(arg),
             other => {
                 return Err(bad(format!(
@@ -344,6 +372,7 @@ fn find_args(args: Vec<String>) -> io::Result<FindArgs> {
         needle,
         session,
         pane,
+        regex,
     })
 }
 
