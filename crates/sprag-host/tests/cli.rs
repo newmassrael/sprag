@@ -1173,3 +1173,136 @@ fn a_killed_daemon_gives_its_panes_back_with_their_scrollback() {
     );
     drop(guard);
 }
+
+/// THE ghostty-parity payoff: a killed daemon gives a pane back WITH ITS INLINE IMAGE — same id, same
+/// extent, same anchor cell — not merely with the text around it.
+///
+/// This is the axis no other multiplexer covers. tmux and cmux persist no image; ghostty renders
+/// images but has no session persistence at all, so it has nothing to restore them into. sprag stores
+/// the image as Kitty transmit bytes in the same `.hist` stream as the text, which is why it costs no
+/// second file, no second lifecycle and — the load-bearing part — no second decoder: the emulator that
+/// replays the text replays the image.
+///
+/// The child PRINTS the sequence itself rather than having it written to the pty: a raw `ESC` written as
+/// input would be echoed back in caret notation by the line discipline and never reach the parser.
+///
+/// Linux-gated: it finds the forked daemon through `/proc`, like its text sibling.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_killed_daemon_gives_its_panes_back_with_their_inline_images() {
+    let sock = socket_path();
+    let state = std::env::temp_dir().join(format!(
+        "sprag-image-durability-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+
+    // A 2x2 RGBA raster with distinctive pixels, transmitted at cell (0,0) under a distinctive id.
+    let pixels: Vec<u8> = (1..=16u8).collect();
+    let b64 = {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(&pixels)
+    };
+    let printf = format!("\\033_Ga=T,f=32,s=2,v=2,i=42;{b64}\\033\\\\");
+
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the first daemon never started serving",
+    );
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(NEW_SESSION_ACTION),
+            "args": {
+                "name": "art",
+                "cmd": ["sh", "-c", format!("printf '{printf}'; exec cat")],
+            },
+        }),
+    )
+    .expect("new_session answers");
+
+    // The pane really is showing the image before anything is killed — otherwise a restore of nothing
+    // would pass vacuously.
+    assert!(
+        wait_for(Duration::from_secs(10), || {
+            image_summaries(&mut conn, "art")
+                .iter()
+                .any(|img| img["id"] == 42 && img["anchor"] == json!([0, 0]) && img["width"] == 2)
+        }),
+        "the child's image never reached the pane",
+    );
+    drop(conn);
+
+    // Wait on the DURABLE condition: the transmit is in a committed `.hist`, not in the atomic
+    // write's temp (see `saved_history_contains`).
+    assert!(
+        wait_for(Duration::from_secs(30), || saved_history_contains(
+            &state, "_Ga=T"
+        )),
+        "the daemon never persisted the pane's image under {}",
+        state.display(),
+    );
+
+    // The reboot.
+    let pid = daemon_pid(&sock).expect("the daemon is running");
+    kill_daemon(pid);
+    let _ = std::fs::remove_file(&sock);
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the second daemon never started serving",
+    );
+
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("reconnect");
+    let mut seen = Vec::new();
+    let restored = wait_for(Duration::from_secs(15), || {
+        seen = image_summaries(&mut conn, "art");
+        !seen.is_empty()
+    });
+    assert!(
+        restored,
+        "the restored pane came back with no image at all (summaries: {seen:?})",
+    );
+    assert_eq!(seen.len(), 1, "exactly the one image: {seen:?}");
+    assert_eq!(seen[0]["id"], 42, "the image kept its OWN id: {seen:?}");
+    assert_eq!(
+        (seen[0]["width"].as_u64(), seen[0]["height"].as_u64()),
+        (Some(2), Some(2)),
+        "and its extent: {seen:?}",
+    );
+    assert_eq!(
+        seen[0]["anchor"],
+        json!([0, 0]),
+        "and the CELL it was anchored at: {seen:?}",
+    );
+    drop(guard);
+}
+
+/// Every pane image summary in session `session`, flattened across its panes — `{id,width,height,
+/// anchor,seq}` as the panes slot reports it. Empty when no pane is showing one (the field is additive,
+/// so an image-less pane simply omits it).
+#[cfg(target_os = "linux")]
+fn image_summaries(conn: &mut HostConn, session: &str) -> Vec<serde_json::Value> {
+    let listed: serde_json::Value = match conn.call(
+        "scene/query",
+        json!({ "session": session, "path": mux_action_path(PANES_SLOT) }),
+    ) {
+        Ok(value) => value,
+        Err(_) => return Vec::new(),
+    };
+    listed
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|pane| pane["images"].as_array())
+        .flatten()
+        .cloned()
+        .collect()
+}

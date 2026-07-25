@@ -22,8 +22,8 @@ use std::time::Duration;
 
 use portable_pty::{Child, PtySize, native_pty_system};
 use sprag_vt::{
-    ClipboardQuery, ClipboardWrite, Emulator, InputModes, MouseProtocol, Notification, Palette,
-    Screen, ShellState, VtPort,
+    ClipboardQuery, ClipboardWrite, Emulator, HistoryLimits, InputModes, MouseProtocol,
+    Notification, Palette, Screen, ShellState, VtPort,
 };
 
 // Re-exported so callers build commands without depending on portable-pty
@@ -485,8 +485,8 @@ impl PanePty {
     /// alternate screen the ACTIVE screen is that app's furniture and carries no scrollback, so the
     /// encoding is taken from the emulator, which knows to reach past it to the main screen.
     #[must_use]
-    pub fn history_bytes(&self, limit: usize) -> Vec<u8> {
-        lock(&self.emulator).history_bytes(limit)
+    pub fn history_bytes(&self, limits: HistoryLimits) -> Vec<u8> {
+        lock(&self.emulator).history_bytes(limits)
     }
 
     /// The epoch of everything [`Self::history_bytes`] would encode — cheap enough to poll on a timer,

@@ -40,7 +40,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use sprag_terminal::{PaneHistory, PaneId, SessionRegistry, pane_histories};
-use sprag_vt::SCROLLBACK_CAP;
+use sprag_vt::{HistoryLimits, SCROLLBACK_CAP};
 
 use crate::durability::{socket_key, sprag_state_dir, write_atomic_private};
 
@@ -49,6 +49,16 @@ use crate::durability::{socket_key, sprag_state_dir, write_atomic_private};
 /// Derived from the emulator's own retention cap rather than restated, so the default is exactly
 /// "everything the pane still holds" and cannot drift away from it.
 pub const DEFAULT_HISTORY_LINES: usize = SCROLLBACK_CAP;
+
+/// The default per-pane budget for inline-image RASTER in a saved history: 8 MiB of RGBA.
+///
+/// Chosen against what it BOUNDS, not what it permits: a screen may hold hundreds of images of many
+/// megabytes each, so an unbounded encoder could turn one 5-second save tick into gigabytes of base64
+/// on the daemon's disk. 8 MiB is comfortably several full-screen images at ordinary terminal sizes —
+/// a `1920x1080` RGBA raster is ~8.3 MiB, so a single wallpaper-sized image is the point where the
+/// budget starts choosing — while keeping a pane's history file in the low tens of megabytes at worst
+/// (base64 costs a third on top).
+pub const DEFAULT_HISTORY_IMAGE_BYTES: usize = 8 << 20;
 
 /// The file extension a pane's history is stored under.
 const HISTORY_EXTENSION: &str = "hist";
@@ -101,18 +111,55 @@ pub fn history_file_pane(path: &Path) -> Option<PaneId> {
 /// an environment variable must not cost the operator their daemon.
 #[must_use]
 pub fn history_limit() -> usize {
-    let raw = std::env::var("SPRAG_RESTORE_HISTORY").ok();
-    if let Some(limit) = parse_limit(raw.as_deref()) {
-        return limit;
+    env_count(
+        "SPRAG_RESTORE_HISTORY",
+        DEFAULT_HISTORY_LINES,
+        "is not a line count",
+    )
+}
+
+/// How many bytes of inline-image RASTER to persist per pane: `SPRAG_RESTORE_IMAGE_BYTES` if it holds
+/// a number, else [`DEFAULT_HISTORY_IMAGE_BYTES`]. `0` keeps the text and drops the images.
+///
+/// Its own knob rather than a fraction of the line limit, because the two axes fail differently: lines
+/// are what a user scrolls and searches, while image rasters are what makes a `.hist` file large. An
+/// operator who wants deep history but no image bulk (a slow disk, a shared home) sets this to `0` and
+/// keeps the other at its default — a single combined knob could not express that.
+#[must_use]
+pub fn history_image_bytes() -> usize {
+    env_count(
+        "SPRAG_RESTORE_IMAGE_BYTES",
+        DEFAULT_HISTORY_IMAGE_BYTES,
+        "is not a byte count",
+    )
+}
+
+/// Both history axes as the emulator's encoder takes them — the ONE place the two env knobs are read
+/// together, so a caller cannot thread one and forget the other.
+#[must_use]
+pub fn history_limits() -> HistoryLimits {
+    HistoryLimits {
+        lines: history_limit(),
+        image_bytes: history_image_bytes(),
+    }
+}
+
+/// One `usize` env knob: the parsed value, else `default` with a WARNING when the variable was set to
+/// something unparseable. A typo in an environment variable must not cost the operator their daemon,
+/// so a malformed value degrades to the default rather than refusing to boot.
+fn env_count(name: &str, default: usize, complaint: &str) -> usize {
+    let raw = std::env::var(name).ok();
+    if let Some(value) = parse_limit(raw.as_deref()) {
+        return value;
     }
     if raw.as_deref().is_some_and(|value| !value.trim().is_empty()) {
         tracing::warn!(
             target: "sprag_host::durability",
-            "SPRAG_RESTORE_HISTORY={:?} is not a line count; using {DEFAULT_HISTORY_LINES}",
+            "{name}={:?} {complaint}; using {default}",
             raw.unwrap_or_default(),
         );
     }
-    DEFAULT_HISTORY_LINES
+    default
 }
 
 /// Parse a raw `SPRAG_RESTORE_HISTORY` value: `Some(n)` for a well-formed count, `None` when the
@@ -151,10 +198,10 @@ pub fn load_pane_history(dir: &Path, id: PaneId) -> Vec<u8> {
 pub fn save_histories_if_changed(
     dir: &Path,
     registry: &Arc<Mutex<SessionRegistry>>,
-    limit: usize,
+    limits: HistoryLimits,
     last: &mut HashMap<PaneId, SavedHistory>,
 ) -> io::Result<usize> {
-    if limit == 0 {
+    if limits.lines == 0 {
         // Persistence disabled: no capture, no write, and nothing destroyed. `pane_histories`
         // refuses a zero limit too — this guard is what lets the step skip the registry walk (and
         // its locks) outright rather than relying on the other crate to return nothing.
@@ -164,7 +211,7 @@ pub fn save_histories_if_changed(
         .iter()
         .map(|(id, saved)| (*id, saved.epoch))
         .collect::<HashMap<_, _>>();
-    write_histories(dir, pane_histories(registry, limit, &epochs), last)
+    write_histories(dir, pane_histories(registry, limits, &epochs), last)
 }
 
 /// What the save loop remembers about one pane between ticks: the epoch it last captured and the bytes
@@ -562,7 +609,8 @@ mod tests {
         write_histories(&dir, capture(&[(1, "a")]), &mut last).expect("write");
 
         let registry = Arc::new(Mutex::new(SessionRegistry::new((80, 24))));
-        let wrote = save_histories_if_changed(&dir, &registry, 0, &mut last).expect("no-op");
+        let wrote = save_histories_if_changed(&dir, &registry, HistoryLimits::none(), &mut last)
+            .expect("no-op");
 
         assert_eq!(wrote, 0, "persistence is off");
         assert_eq!(

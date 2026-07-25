@@ -67,11 +67,12 @@ use pinion_core::SceneRevision;
 use signal_hook::consts::{SIGINT, SIGTERM};
 use sprag_host::{
     FrameIngress, Host, HostState, RunRegistry, SavedHistory, bump_on_dirty, dispatch_frames,
-    history_dir, history_limit, load_pane_history, load_snapshot, pane_exit_hook,
+    history_dir, history_limits, load_pane_history, load_snapshot, pane_exit_hook,
     save_histories_if_changed, save_if_changed, snapshot_path, spawn_reaper, stdin_frames,
 };
 use sprag_rpc::HOST_SOCKET;
 use sprag_terminal::{CommandBuilder, PaneId, SessionRegistry, Snapshot};
+use sprag_vt::HistoryLimits;
 use tracing_subscriber::{EnvFilter, fmt};
 
 fn main() -> io::Result<()> {
@@ -158,7 +159,7 @@ fn main() -> io::Result<()> {
     // limit disables history on BOTH edges — nothing saved, nothing replayed — while leaving
     // whatever is already on disk untouched (`kill-server --purge` is the one destroying verb).
     let hist_dir = history_dir(&sock);
-    let hist_limit = history_limit();
+    let hist_limits = history_limits();
     if args.daemon {
         if let Some(snapshot) = load_snapshot(&snap_path) {
             // Gate the reaper across the restore loop, then run it with the exact-command allowlist
@@ -169,7 +170,7 @@ fn main() -> io::Result<()> {
                 &sprag_host::restore_allowlist(),
                 || Some(bump_on_dirty(&revision)),
                 || Some(pane_exit_hook(&on_pane_exit)),
-                |id| match hist_limit {
+                |id| match hist_limits.lines {
                     0 => Vec::new(),
                     _ => load_pane_history(&hist_dir, id),
                 },
@@ -189,7 +190,12 @@ fn main() -> io::Result<()> {
             }
         }
         // The durability save loop: persist the live shape so the NEXT daemon can rebuild it.
-        spawn_durability_saver(Arc::clone(host.registry()), snap_path, hist_dir, hist_limit);
+        spawn_durability_saver(
+            Arc::clone(host.registry()),
+            snap_path,
+            hist_dir,
+            hist_limits,
+        );
     } else {
         host.spawn(
             args.command,
@@ -269,7 +275,7 @@ fn spawn_durability_saver(
     registry: Arc<Mutex<SessionRegistry>>,
     path: PathBuf,
     history_dir: PathBuf,
-    history_limit: usize,
+    history_limits: HistoryLimits,
 ) {
     thread::spawn(move || {
         // `save_if_changed` / `save_histories_if_changed` own the write-if-changed dedup (both
@@ -289,7 +295,7 @@ fn spawn_durability_saver(
             if let Err(e) = save_histories_if_changed(
                 &history_dir,
                 &registry,
-                history_limit,
+                history_limits,
                 &mut last_histories,
             ) {
                 tracing::warn!(

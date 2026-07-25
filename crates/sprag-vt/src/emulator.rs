@@ -38,6 +38,7 @@ use termwiz::escape::{
     Action, ControlCode, DeviceControlMode, Esc, EscCode, OperatingSystemCommand, Sixel, SixelData,
 };
 
+use crate::history::HistoryLimits;
 use crate::port::{
     Attrs, Cell, ClipboardQuery, ClipboardTarget, ClipboardTargets, ClipboardWrite, Color, Cursor,
     CursorShape, Hyperlink, Image, InputModes, KittyKeyboardFlags, MouseEncoding, MouseProtocol,
@@ -523,8 +524,8 @@ impl Emulator {
         }
     }
 
-    /// The pane's retained output encoded as REPLAYABLE terminal bytes, bounded to its last
-    /// `limit` logical lines — see [`Screen::history_bytes`].
+    /// The pane's retained output encoded as REPLAYABLE terminal bytes, bounded on both axes by
+    /// `limits` — see [`Screen::history_bytes`].
     ///
     /// Always the MAIN screen, even while a fullscreen app holds the alternate one. Two reasons,
     /// both structural: the alternate screen is a FRESH buffer with an empty scrollback (entering
@@ -532,8 +533,8 @@ impl Emulator {
     /// no history at all; and an alt-screen buffer is transient app furniture that its own program
     /// redraws, not output the user scrolled through.
     #[must_use]
-    pub fn history_bytes(&self, limit: usize) -> Vec<u8> {
-        self.history_screen().history_bytes(limit)
+    pub fn history_bytes(&self, limits: HistoryLimits) -> Vec<u8> {
+        self.history_screen().history_bytes(limits)
     }
 
     /// The [`Screen::content_epoch`] of the screen [`Self::history_bytes`] encodes — the O(1) read a
@@ -3954,17 +3955,24 @@ mod tests {
     fn an_unmoved_history_epoch_means_unchanged_history_bytes() {
         let mut em = Emulator::new(8, 4);
         em.advance(b"alpha\r\nbeta");
-        let (epoch, bytes) = (em.history_epoch(), em.history_bytes(100));
+        let (epoch, bytes) = (
+            em.history_epoch(),
+            em.history_bytes(HistoryLimits::text_only(100)),
+        );
 
         // Reads and cursor motion are not content: neither the epoch nor the bytes move.
         em.advance(b"\x1b[H");
         assert_eq!(em.history_epoch(), epoch, "a cursor move encodes nothing");
-        assert_eq!(em.history_bytes(100), bytes);
+        assert_eq!(em.history_bytes(HistoryLimits::text_only(100)), bytes);
 
         // A real write moves both.
         em.advance(b"\x1b[4;1Hgamma");
         assert!(em.history_epoch() > epoch, "the write moved the epoch");
-        assert_ne!(em.history_bytes(100), bytes, "...and the bytes with it");
+        assert_ne!(
+            em.history_bytes(HistoryLimits::text_only(100)),
+            bytes,
+            "...and the bytes with it"
+        );
     }
 
     /// Mode 12 (`CSI ? 12 h` / `l`) is the legacy blink toggle, and it writes the SAME state

@@ -17,7 +17,7 @@ use std::sync::Arc;
 use smol_str::SmolStr;
 use unicode_width::UnicodeWidthChar;
 
-use crate::history::HistoryRow;
+use crate::history::{HistoryLimits, HistoryRow};
 
 /// The number of terminal columns a `char` occupies (UAX #11 via
 /// [`unicode_width`]): `0` for a zero-width combining mark (merged into the
@@ -1284,6 +1284,9 @@ impl Screen {
         let mut image = image;
         image.seq = self.next_image_seq;
         self.next_image_seq = self.next_image_seq.wrapping_add(1);
+        // An image is CONTENT the history encodes, so every image mutation counts toward the epoch —
+        // without this a pane whose only change was an image would read as idle and never be re-saved.
+        self.touch_scrollback();
         if let Some(slot) = self.images.iter_mut().find(|i| i.id == image.id) {
             *slot = image;
             return;
@@ -1297,13 +1300,20 @@ impl Screen {
     /// Drop every inline image — the screen-clear / alt-screen lifecycle (Stage 1), and the Kitty
     /// delete-all (`a=d, d=a`, Stage 4).
     pub(crate) fn clear_images(&mut self) {
+        if !self.images.is_empty() {
+            self.touch_scrollback();
+        }
         self.images.clear();
     }
 
     /// Drop the inline image with [`Image::id`] `id` — the Kitty delete-by-id (`a=d, d=i, i=<id>`,
     /// Stage 4). A no-op when no image carries that id.
     pub(crate) fn delete_image(&mut self, id: u32) {
+        let before = self.images.len();
         self.images.retain(|img| img.id != id);
+        if self.images.len() != before {
+            self.touch_scrollback();
+        }
     }
 
     #[must_use]
@@ -1486,16 +1496,36 @@ impl Screen {
     /// short screen is padding, and encoding it would restore a screenful of blank lines above the
     /// new shell's prompt.
     #[must_use]
-    pub fn history_bytes(&self, limit: usize) -> Vec<u8> {
+    pub fn history_bytes(&self, limits: HistoryLimits) -> Vec<u8> {
         let cols = self.cols as usize;
         let blank = Cell::blank();
+        // Per visible row, the images anchored on it with their columns, in transmit order — the
+        // encoder places each one where its anchor cell is written.
+        let mut anchored: Vec<Vec<(u16, &Image)>> = vec![Vec::new(); self.rows as usize];
+        if limits.image_bytes > 0 {
+            for image in &self.images {
+                if let Some(slot) = anchored.get_mut(image.anchor.1 as usize) {
+                    slot.push((image.anchor.0, image));
+                }
+            }
+            for slot in &mut anchored {
+                // By column, so the encoder's single left-to-right walk can place them without
+                // seeking backwards; transmit order is preserved within a column by the stable sort.
+                slot.sort_by_key(|(col, _)| *col);
+            }
+        }
+        let has_content = |row: usize| {
+            self.cells[row * cols..(row + 1) * cols]
+                .iter()
+                .any(|cell| *cell != blank)
+                // A row carrying an IMAGE is not empty, whatever its cells say: an image displayed
+                // below the last line of text sits on a row of blanks, and trimming that row away
+                // would discard the image with it.
+                || !anchored[row].is_empty()
+        };
         let visible_end = (0..self.rows as usize)
             .rev()
-            .find(|row| {
-                self.cells[row * cols..(row + 1) * cols]
-                    .iter()
-                    .any(|cell| *cell != blank)
-            })
+            .find(|row| has_content(*row))
             .map_or(0, |row| row + 1);
         let rows: Vec<HistoryRow<'_>> = self
             .scrollback
@@ -1504,14 +1534,18 @@ impl Screen {
                 cells: &line.cells,
                 wrapped: line.wrapped,
                 mark: line.mark,
+                // Scrollback carries no images: an image scrolled off the top is evicted, never
+                // retained (the Stage-1 lifecycle this encoder inherits).
+                images: &[],
             })
             .chain((0..visible_end).map(|row| HistoryRow {
                 cells: &self.cells[row * cols..(row + 1) * cols],
                 wrapped: self.wrapped[row],
                 mark: self.marks[row],
+                images: &anchored[row],
             }))
             .collect();
-        crate::history::encode(&rows, limit)
+        crate::history::encode(&rows, limits)
     }
 
     /// The last shell command — its line, output, and exit status — sliced from the OSC 133
@@ -2299,8 +2333,9 @@ impl Screen {
         }
     }
 
-    /// Count a mutation of the SCROLLBACK — the rows the visible grid's generations say nothing
-    /// about. Called by the three scrollback SSOT mutators.
+    /// Count a mutation of content the visible grid's row generations say nothing about: the
+    /// SCROLLBACK (its three SSOT mutators) and the inline IMAGES (add / clear / delete). Both are
+    /// encoded by [`Self::history_bytes`] and neither touches a row's damage stamp.
     fn touch_scrollback(&mut self) {
         self.content_epoch = self.content_epoch.wrapping_add(1);
     }

@@ -46,6 +46,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
+use sprag_vt::HistoryLimits;
+
 use crate::layout::LayoutWire;
 use crate::registry::SessionRegistry;
 use crate::remote::SshRemote;
@@ -289,10 +291,10 @@ pub struct PaneHistory {
 #[must_use]
 pub fn pane_histories(
     registry: &Arc<Mutex<SessionRegistry>>,
-    limit: usize,
+    limits: HistoryLimits,
     seen: &HashMap<PaneId, u64>,
 ) -> Vec<PaneHistory> {
-    if limit == 0 {
+    if limits.lines == 0 {
         return Vec::new();
     }
     // Phase 1 — registry lock ONLY: clone out the pools as handles, then release it.
@@ -317,7 +319,7 @@ pub fn pane_histories(
                     // The epoch is read and compared under the SAME lock acquisition the encode would
                     // take, so nothing can mutate between "unchanged" and the decision to skip.
                     let bytes =
-                        (seen.get(&id) != Some(&epoch)).then(|| pane.pty().history_bytes(limit));
+                        (seen.get(&id) != Some(&epoch)).then(|| pane.pty().history_bytes(limits));
                     PaneHistory { id, epoch, bytes }
                 })
                 .collect::<Vec<_>>()
@@ -836,7 +838,7 @@ mod tests {
 
         // First capture: nothing is known yet, so every pane encodes.
         let seen = HashMap::new();
-        let first = pane_histories(&reg, 100, &seen);
+        let first = pane_histories(&reg, HistoryLimits::text_only(100), &seen);
         assert_eq!(first.len(), 2, "both panes are captured");
         assert!(
             first.iter().all(|entry| entry.bytes.is_some()),
@@ -845,7 +847,7 @@ mod tests {
         let seen: HashMap<PaneId, u64> = first.iter().map(|e| (e.id, e.epoch)).collect();
 
         // Second capture over an untouched registry: every pane still reported, none encoded.
-        let idle = pane_histories(&reg, 100, &seen);
+        let idle = pane_histories(&reg, HistoryLimits::text_only(100), &seen);
         assert_eq!(idle.len(), 2, "a skipped pane is still reported LIVE");
         assert!(
             idle.iter().all(|entry| entry.bytes.is_none()),
@@ -867,7 +869,7 @@ mod tests {
             .expect("write to the pane's pty");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
-            let now = pane_histories(&reg, 100, &seen);
+            let now = pane_histories(&reg, HistoryLimits::text_only(100), &seen);
             let changed: Vec<PaneId> = now
                 .iter()
                 .filter(|e| e.bytes.is_some())
