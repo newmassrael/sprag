@@ -694,6 +694,108 @@ mod tests {
     use super::*;
     use pinion_core::reactive::Owner;
 
+    /// THE display half of the inline-image feature, end to end over a REAL pane: a child transmits a
+    /// Kitty image, the reconcile fetches its raster and registers it in the root image store, and the
+    /// pure compose puts a `Scene::Image` over the grid AT THE ANCHOR CELL x the cell metric.
+    ///
+    /// Worth its own test because the two halves fail apart. `reconcile_pane_images` does the blocking
+    /// wire fetch and is the only writer of the store; `compose_pane_images` is pure and paints nothing
+    /// it has not seen registered. So a broken fetch yields a silently image-LESS pane rather than an
+    /// error, which is the failure mode a data-side test cannot see — the host would still report the
+    /// image in its panes slot and every wire assertion would pass.
+    ///
+    /// This is also what makes "a restored pane comes back with its images" true for a HUMAN and not
+    /// just for the emulator: a restored image reaches this seam exactly as a live one does.
+    ///
+    /// REVERT-PROOF: skipping the store insert leaves the registry unpopulated, so compose paints
+    /// nothing and the `Scene::Image` assertion fails; painting at `(0,0)` instead of the anchor fails
+    /// the position assertion, which is why the fixture puts the image at a NON-zero cell.
+    #[test]
+    fn a_panes_inline_image_is_fetched_registered_and_composed_at_its_anchor() {
+        use crate::terminal::{seed_terminal, use_terminal};
+        use sprag_host::Host;
+        use sprag_terminal::CommandBuilder;
+        use std::time::{Duration, Instant};
+
+        // A 2x2 RGBA image transmitted at cell (3, 1) — a non-zero anchor on both axes, so a paint
+        // that ignored the anchor could not accidentally match.
+        let pixels: Vec<u8> = (1..=16u8).collect();
+        let b64 = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode(&pixels)
+        };
+        let script =
+            format!("printf '\\033[2;4H\\033_Ga=T,f=32,s=2,v=2,i=5;{b64}\\033\\\\'; exec cat");
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg(&script);
+        cmd.env("TERM", "dumb");
+
+        let host = Host::new((40, 6));
+        host.spawn(cmd, "img".to_owned(), 40, 6, None, None)
+            .unwrap();
+
+        let owner = Owner::new();
+        owner.run(|| {
+            seed_terminal(host);
+            let terminal = use_terminal();
+
+            // Wait on the CONDITION the assertions read — the image reaching the host — not a timer.
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while terminal.slots.pane_images(0).is_empty() {
+                assert!(
+                    Instant::now() < deadline,
+                    "the child's image never reached the host",
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let summary = terminal.slots.pane_images(0);
+            assert_eq!(summary.len(), 1);
+            assert_eq!(summary[0].anchor, (3, 1), "the fixture's non-zero anchor");
+            assert_eq!(summary[0].id, 5, "and its own image id");
+            // NOTE the two clients differ here and the reconcile is written to the narrower contract:
+            // the IN-PROCESS `Host` hands back the raster inline (it reads `Screen::images` directly),
+            // while `WireHost` sends a `{id,width,height,anchor,seq}` SUMMARY and fetches the megabyte
+            // raster on demand. `reconcile_pane_images` fetches by id either way, so it never depends
+            // on the summary having brought the bytes along.
+
+            // The reconcile fetches the raster and registers it.
+            reconcile_pane_images(&terminal.slots, 0);
+            let store = pinion_runtime::use_image_store();
+            let key = image_store_key(0, 5);
+            assert!(
+                store.contains(&key),
+                "the reconcile registered the raster under the pane's image key",
+            );
+
+            // ...and the pure compose references it, positioned at anchor x cell metric.
+            let grid = Scene::Container(ContainerNode::new(Vec::new()).with_tag("grid_stub"));
+            let composed = compose_pane_images(grid, &terminal, 0);
+            let Scene::Container(container) = composed else {
+                unreachable!("compose returns the grid Container");
+            };
+            let image = container
+                .children
+                .iter()
+                .find_map(|child| match child {
+                    Scene::Image(node) => Some(node),
+                    _ => None,
+                })
+                .expect("the image is composed over the grid");
+            assert_eq!(
+                image.source,
+                format!("memory://{key}"),
+                "it references the REGISTERED key, not a re-fetch",
+            );
+            let (cell_w, cell_h) = (terminal.metric.cell_w(), terminal.metric.cell_h());
+            assert_eq!(
+                image.layout.absolute_position,
+                Some((3 * cell_w, cell_h)),
+                "positioned at the anchor CELL times the cell metric",
+            );
+        });
+    }
+
     #[test]
     fn compose_wraps_the_grid_in_a_filling_paint_root() {
         let owner = Owner::new();
