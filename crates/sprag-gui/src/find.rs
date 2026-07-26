@@ -68,7 +68,10 @@ const FIND_REGEX_KEY: &str = "sprag_gui.find.regex";
 /// `Owner::cache` key for the engine's message about a pattern it refused (`None` = it searched).
 const FIND_ERROR_KEY: &str = "sprag_gui.find.error";
 
-/// The placeholder the empty field shows — also its accessible name.
+/// The field's ACCESSIBLE NAME. Not a visible placeholder, despite the value reading like one:
+/// [`tf_paint::view_field`] takes this argument only for `with_aria_label` and paints no hint text of
+/// its own, so an empty bar shows an empty field. (Corrected after the command palette hit the same
+/// assumption and its screenshot showed a blank input.)
 const FIND_PLACEHOLDER: &str = "Find";
 
 /// The match highlight colours, as ANSI palette indices so they resolve through the pane's OWN live

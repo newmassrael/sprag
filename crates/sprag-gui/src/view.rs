@@ -89,6 +89,8 @@ pub(crate) struct ViewState {
     pub(crate) menu: crate::ctxmenu::MenuState,
     /// The find field's interaction state + caret.
     pub(crate) find: crate::find::FindFieldState,
+    /// The command palette's query field, on the same terms as the find field's.
+    pub(crate) palette: crate::palette::PaletteFieldState,
 }
 
 /// Overlay the find bar on `scene` when it is open (a no-op when closed), pushed LAST so the
@@ -102,6 +104,25 @@ fn with_find_bar(scene: Scene, field: crate::find::FindFieldState, theme: &Theme
         return scene;
     };
     root.children.push(bar);
+    Scene::Container(root)
+}
+
+/// Overlay the command palette on `scene` when it is open (a no-op when closed), pushed after
+/// everything else so it paints — and HIT-TESTS — above all of it.
+///
+/// Topmost is not a preference here but what MODAL means: the palette's scrim is the click target
+/// everywhere except over its own panel, so a click beside it must not reach a pane, a menu row or
+/// the find bar underneath. That is also why it is layered above the context menu, the reverse of
+/// the find bar's relationship to that menu: a menu can be opened over the bar, but nothing can be
+/// opened over the palette while its focus trap is up.
+fn with_palette(scene: Scene, field: crate::palette::PaletteFieldState, theme: &Theme) -> Scene {
+    let Some(panel) = crate::palette::view_palette(field, theme, (WINDOW_W, WINDOW_H)) else {
+        return scene;
+    };
+    let Scene::Container(mut root) = scene else {
+        return scene;
+    };
+    root.children.push(panel);
     Scene::Container(root)
 }
 
@@ -147,9 +168,13 @@ pub(crate) fn view_for_window(window_id: &str, state: ViewState, _frame: &Frame)
         // (R140) when it is open (a no-op when closed) — LAST so the popup paints over.
         // The find bar rides ABOVE the tiling and BELOW the context menu: a menu opened over the
         // bar must still paint on top, and the menu's own dismiss barrier must not sit over it.
-        _ => crate::ctxmenu::overlay(
-            with_find_bar(view_main(&tv, &theme), state.find, &theme),
-            state.menu,
+        _ => with_palette(
+            crate::ctxmenu::overlay(
+                with_find_bar(view_main(&tv, &theme), state.find, &theme),
+                state.menu,
+                &theme,
+            ),
+            state.palette,
             &theme,
         ),
     }

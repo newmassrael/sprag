@@ -205,6 +205,7 @@
 mod a11y;
 mod attention;
 mod clipboard_osc;
+mod command;
 mod ctxmenu;
 mod diag;
 mod dock;
@@ -212,6 +213,7 @@ mod find;
 mod focus_report;
 mod hyperlink;
 mod input;
+mod palette;
 mod reflow;
 mod rpc;
 mod scrollbar;
@@ -436,6 +438,11 @@ impl WidgetCore for TerminalViewer {
         // ...and its regex-mode toggle, on the same terms: one constant tag, registered every
         // reconcile, holding the checkbox statechart whose `checked` intent the reducer routes.
         externals.push(find::create_regex_external());
+        // The command palette's query field, its row-selection / `execute` handle, and its modal
+        // `open` query — the same every-reconcile-at-a-constant-tag terms as the find field above,
+        // and registered while it is CLOSED for the same reason: the field's External is what holds
+        // the query text, and an unpainted External costs nothing.
+        externals.extend(palette::create_palette_externals());
         // Drag-to-dock / tear-off (pinion R1081/R1084/R1094 §5.51, P2/PR-31): one R742
         // `DockPanelExternal` per pane, registered at the panel ROOT tag
         // (`split::panel_id(i)` = the `view_dock_panel` root the `view_dock_surface_chrome`
@@ -856,6 +863,7 @@ impl WidgetCore for TerminalViewer {
         view::ViewState {
             menu: ctxmenu::read_menu_state(scene),
             find: find::read_field_state(scene),
+            palette: palette::read_field_state(scene),
         }
     }
 
@@ -912,6 +920,13 @@ impl WidgetCore for TerminalViewer {
         // The find bar's regex toggle: a checkbox `checked` intent, not a pane tag, so it is routed
         // here beside the context menu rather than falling through to the panel routing.
         if find::handle_regex_intent(intent) {
+            return Vec::new();
+        }
+        // The command palette: a row activation (a click, or an RPC `execute`) arrives as the
+        // palette's own `run` / `dismiss` intent. The External deliberately does NOT run the command
+        // itself — it cannot, because a command reaches `Owner`-scoped state that only a reducer /
+        // view path has — so the effect happens HERE, exactly as the context menu's rows do.
+        if palette::handle_palette_intent(intent) {
             return Vec::new();
         }
         // The window tab strip: a tab / "+" / "×" button click routes to a `SlotView` window

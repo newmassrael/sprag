@@ -222,6 +222,17 @@ fn find_chord(key: &str, modifiers: Modifiers) -> bool {
     modifiers.ctrl && modifiers.shift && !modifiers.alt && key.eq_ignore_ascii_case("f")
 }
 
+/// Whether `key` + `modifiers` is the command-palette chord (`Ctrl+Shift+P`). Same shape as
+/// [`find_chord`], and `P` is free in sprag's reserved `Ctrl+Shift+<letter>` space (`C`/`V`
+/// clipboard, `F` find, `L` last session).
+///
+/// `Ctrl+Shift+P` is the palette binding VS Code, Atom and Sublime all use, so it is the first thing
+/// a user tries; `Ctrl+P` is left alone because bare `Ctrl+P` is a PTY key (readline previous-line)
+/// that must keep reaching the child, the same reason the find bar took the `Shift` variant.
+fn palette_chord(key: &str, modifiers: Modifiers) -> bool {
+    modifiers.ctrl && modifiers.shift && !modifiers.alt && key.eq_ignore_ascii_case("p")
+}
+
 /// A reserved chord that switches this CLIENT's SESSION, NOT the focused pane's PTY — `Ctrl+Shift+L`
 /// (the tmux `switch-client -l` "last session"), `Ctrl+Shift+PageUp/Down` (cycle to the previous /
 /// next session in the sidebar's list order). `route_key` recognizes one via [`session_chord`] and
@@ -330,6 +341,21 @@ pub(crate) fn route_key(
     // which needs the model scene; every other route here is a client SEND to the host.
     if crate::find::is_find_focus(tag) {
         return crate::find::handle_key(scene, key, modifiers);
+    }
+    // The command palette: with its query field focused every key belongs to the palette — typing
+    // filters, the arrows walk the rows, Enter runs, Escape closes — and none of them may reach a
+    // pane behind the modal scrim. Dispatched before the pane gate for the same reason the find
+    // bar's is, and before the palette CHORD below so a `Ctrl+Shift+P` typed into an open palette
+    // is the field's to swallow rather than a second open.
+    if crate::palette::is_palette_focus(tag) {
+        return crate::palette::handle_key(scene, key, modifiers);
+    }
+    // ...and the chord that OPENS it, checked before the pane gate below so the palette is reachable
+    // from any focus, not only from a pane. It captures whatever pane is focused NOW (`None` when
+    // the focus is elsewhere), which is the pane its pane-commands will act on.
+    if palette_chord(key, modifiers) {
+        crate::palette::open(pane_index_of(tag));
+        return true;
     }
     // The session rail (R179): with the sidebar focused — its `tablist` (the list's single Tab
     // stop) or a footer button — route the key to the sidebar keyboard model (rove the cursor /
