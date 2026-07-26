@@ -257,8 +257,27 @@ mod tests {
     // reaches a command only through the rows `menu_rows` hands it.
     use crate::command::Command;
     use crate::terminal::{seed_terminal, use_terminal};
+    use pinion_core::Clipboard;
     use sprag_host::Host;
     use sprag_terminal::CommandBuilder;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// A clipboard that only RECORDS, installed through [`crate::selection::seed_clipboard`] so a
+    /// copy is observable without writing to the developer's real OS clipboard. `copy_to` / `paste_from`
+    /// keep the trait's defaults, which route CLIPBOARD here and no-op PRIMARY — so the PRIMARY
+    /// publish `select_all` performs cannot be mistaken for the copy under test.
+    #[derive(Default)]
+    struct RecordingClipboard(RefCell<Option<String>>);
+
+    impl Clipboard for RecordingClipboard {
+        fn copy(&self, text: String) {
+            *self.0.borrow_mut() = Some(text);
+        }
+        fn paste(&self) -> Option<String> {
+            self.0.borrow().clone()
+        }
+    }
 
     /// A long-lived `cat` pane (holds its PTY open across the reducer drive), matching the
     /// deterministic pane the input-routing tests seed.
@@ -340,6 +359,50 @@ mod tests {
                 tv.slots.windows().len(),
                 2,
                 "the target pane broke out into a new window"
+            );
+        });
+    }
+
+    /// The `Copy` row still copies when NO pane held focus as the menu opened — the case that makes a
+    /// `needs_pane` gate at the top of [`Command::run`](crate::command::Command::run) wrong. `Copy`
+    /// acts on whatever selection is active, so it needs no target; the OFFER predicate says
+    /// otherwise only because offering it with no pane on screen would be pointless.
+    ///
+    /// Drives the whole live path: a selection exists, the captured target is `None` (what `open_at`
+    /// would have recorded), and the activation goes through the real intent.
+    ///
+    /// REVERT-PROOF: put the `if self.needs_pane() && target.is_none() { return; }` gate back at the
+    /// top of `Command::run` and this fails with nothing copied.
+    #[test]
+    fn the_copy_row_still_copies_with_no_pane_captured() {
+        let host = Host::new((40, 6));
+        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+            .unwrap();
+        Owner::new().run(|| {
+            seed_terminal(host);
+            // Install the recorder BEFORE anything resolves the real clipboard.
+            let recorder: Rc<dyn Clipboard> = Rc::new(RecordingClipboard::default());
+            crate::selection::seed_clipboard(&recorder);
+            let tv = use_terminal();
+
+            // A selection exists in the pane (this publishes to PRIMARY, which the recorder no-ops)...
+            crate::selection::select_all(0);
+            assert!(
+                recorder.paste().is_none(),
+                "nothing is on the CLIPBOARD selection yet, so the assertion below is about the copy"
+            );
+
+            // ...while nothing holds focus, so the menu captured no target.
+            use_target_pane().set(None);
+            captured_rows().set(menu_rows(&tv.slots));
+            assert!(
+                handle_command(&command_intent(row_of(&Command::Copy))),
+                "the menu command is handled"
+            );
+
+            assert!(
+                recorder.paste().is_some(),
+                "the copy reached the clipboard with no captured pane"
             );
         });
     }

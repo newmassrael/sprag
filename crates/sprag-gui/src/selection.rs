@@ -35,6 +35,11 @@ const SELECTION_KEY: &str = "sprag_gui.selection";
 /// ([`use_app_clipboard`](pinion_platform_clipboard::use_app_clipboard)).
 const CLIPBOARD_KEY: &str = "sprag_gui.clipboard";
 
+/// `Owner::cache` key for the clipboard PROVIDER slot — the indirection [`clipboard`] resolves
+/// through, and the one a test fills first (`seed_clipboard`, which is `cfg(test)` and so not
+/// linkable from here).
+const CLIPBOARD_PROVIDER_KEY: &str = "sprag_gui.clipboard.provider";
+
 /// A `(col, row)` cell in a pane's VISIBLE grid.
 type Cell = (u16, u16);
 
@@ -80,8 +85,40 @@ pub(crate) fn use_selection() -> Signal<Option<PaneSelection>> {
 /// arboard cannot init). `Owner::cache`-keyed so one handle is shared per session — the ONE
 /// clipboard handle, shared with the OSC 52 integration ([`crate::clipboard_osc`]) so a program
 /// setting the clipboard via OSC 52 and a `Ctrl+Shift+C` copy reach the SAME buffer.
+/// Resolved through a sprag-owned PROVIDER slot rather than by calling
+/// [`use_app_clipboard`](pinion_platform_clipboard::use_app_clipboard) directly, so that a test can
+/// install its own [`Clipboard`] first (`seed_clipboard`). That indirection is the reason a copy
+/// path can be asserted at all: pinion caches its handle under a slot whose value type is private,
+/// so the substitution has to happen on this side — and without it any test of a copy would write to
+/// the DEVELOPER's real OS clipboard, which is why none did.
+///
+/// Production behaviour is unchanged. The provider resolves once, to exactly the arboard handle it
+/// resolved to before, and this stays the single accessor every consumer (including
+/// [`crate::clipboard_osc`]) goes through — so the ONE-handle invariant above is the same invariant.
 pub(crate) fn clipboard() -> Rc<dyn Clipboard> {
-    pinion_platform_clipboard::use_app_clipboard(CLIPBOARD_KEY)
+    Owner::current()
+        .expect("clipboard() requires an active Owner scope")
+        .cache(CLIPBOARD_PROVIDER_KEY, || {
+            pinion_platform_clipboard::use_app_clipboard(CLIPBOARD_KEY)
+        })
+        .as_ref()
+        .clone()
+}
+
+/// Install `fake` as THE clipboard for the current [`Owner`] scope.
+///
+/// Must run before anything resolves the real handle, and says so LOUDLY rather than letting a test
+/// quietly assert against the OS clipboard: `Owner::cache` keeps the first value written, so this
+/// panics if the slot was already filled instead of silently doing nothing.
+#[cfg(test)]
+pub(crate) fn seed_clipboard(fake: &Rc<dyn Clipboard>) {
+    let installed = Owner::current()
+        .expect("seed_clipboard() requires an active Owner scope")
+        .cache(CLIPBOARD_PROVIDER_KEY, || Rc::clone(fake));
+    assert!(
+        Rc::ptr_eq(installed.as_ref(), fake),
+        "seed_clipboard() must run before the real clipboard is resolved"
+    );
 }
 
 /// The selection span `(start, end)` (inclusive, reading order) to HIGHLIGHT in pane
