@@ -36,14 +36,25 @@
 //!   popup opened ON something, its refusals are already silent no-ops, and a menu that opened EMPTY
 //!   would be the worse failure.
 //!
-//! ## What is NOT in the catalog, and why
+//! ## The destructive commands, and the third thing that is shared
 //!
-//! * **Destructive commands** (`kill-window`, `kill-session`). Both are reachable today only
-//!   through a guarded path: the session rail ARMS a kill and a second, separate click confirms it,
-//!   precisely so no single activation on a moving list can destroy the wrong thing. A palette row
-//!   is the opposite — a fuzzy query plus `Enter`, where one keystroke too many would end a
-//!   session. tmux draws the same line (`kill-window` is bound through `confirm-before`), so these
-//!   stay out until the palette has a confirm step of its own to offer them through.
+//! `kill-window` and `kill-session` were held OUT of the catalog while the palette had no way to
+//! ask before acting: a fuzzy query plus `Enter` is exactly the shape where one keystroke too many
+//! ends a session, and tmux draws the same line (`kill-window` is bound through `confirm-before`).
+//! They are in now, because the confirmation is no longer a property of a surface. Which commands
+//! are destructive — and the words a prompt must show to describe one — is [`Command::confirmation`],
+//! decided HERE beside what the command does, and [`crate::confirm`] is the one surface that asks.
+//! No caller chooses: every surface activates a command through
+//! [`confirm::run_or_arm`](crate::confirm::run_or_arm), which routes a destructive command to the
+//! prompt and everything else straight to [`Command::run`]. A surface added later cannot forget the
+//! guard, because it never reaches `run` itself.
+//!
+//! That is the same lesson the wording split teaches, applied to policy instead of prose: the thing
+//! that must not differ between surfaces belongs on the command; the thing that must differ belongs
+//! to the surface.
+//!
+//! ## What is still NOT in the catalog, and why
+//!
 //! * **Commands that need an ARGUMENT** (`rename-window`). The palette's field holds a query, and
 //!   a second field for a value is a mode this surface does not have yet.
 //! * **Creating and closing PANES.** Not a policy call — the client genuinely cannot do it yet:
@@ -99,6 +110,11 @@ pub(crate) enum Command {
     SwitchSession(String),
     /// Switch back to the most recently used other session (`Ctrl+Shift+L`).
     LastSession,
+    /// Kill the named window of the current session (tmux `kill-window`). DESTRUCTIVE — see
+    /// [`Command::confirmation`].
+    KillWindow(String),
+    /// Kill the named session (tmux `kill-session`). DESTRUCTIVE — see [`Command::confirmation`].
+    KillSession(String),
     /// A command the target pane's PROJECT declares in its `.sprag.toml`.
     ///
     /// Carries the whole action rather than its name, for the reason the dynamic window / session
@@ -127,6 +143,10 @@ impl Command {
             Self::NewSession => "New session".to_owned(),
             Self::SwitchSession(name) => format!("Switch to session {name}"),
             Self::LastSession => "Switch to the last session".to_owned(),
+            // The verb LEADS, so a query of "kill" collects every destructive row in one place —
+            // the one search a user makes when they are about to do something irreversible.
+            Self::KillWindow(name) => format!("Kill window {name}"),
+            Self::KillSession(name) => format!("Kill session {name}"),
             // The project's own words. NOT prefixed with "Run" — a project titles its commands, and
             // wrapping them would make a fuzzy query match sprag's phrasing instead of theirs.
             Self::Project(action) => action.title.clone(),
@@ -160,7 +180,96 @@ impl Command {
             | Self::NewWindow
             | Self::SelectWindow(_)
             | Self::NewSession
-            | Self::SwitchSession(_) => None,
+            | Self::SwitchSession(_)
+            // A kill deliberately advertises no chord: there is none, and this column is also where
+            // the eye looks for one. What it WOULD say is on the confirmation prompt instead, which
+            // is the only place a consequence can be read in time to change the outcome.
+            | Self::KillWindow(_)
+            | Self::KillSession(_) => None,
+        }
+    }
+
+    /// What asking about this command must SAY, or `None` when it needs no asking.
+    ///
+    /// This is the single answer to "is this destructive?", and it lives here rather than on a
+    /// surface for the reason the module docs give: a second surface must not be able to hold a
+    /// second opinion about whether a command can be run without a question, and a surface added
+    /// later must inherit the answer rather than re-decide it.
+    ///
+    /// The match is written out rather than defaulted with a `_` arm ON PURPOSE. A new command has
+    /// to state that it is safe; the compiler asks. A wildcard would make "not destructive" the
+    /// silent default, which is the one direction where forgetting is unrecoverable.
+    ///
+    /// Reads `slots`, because the honest prompt for a kill is not always the same sentence: killing
+    /// a session's LAST window ends the session, and killing the ATTACHED session detaches this
+    /// client. Those are the two facts that change what the user is actually agreeing to, and they
+    /// are knowable only from live state. The caller CAPTURES the result at arm time (see
+    /// [`confirm::arm`](crate::confirm::run_or_arm)) so the prompt cannot be re-derived out from
+    /// under the person reading it — the same discipline the session rail's captured-name kill
+    /// keeps, extended from the name to the whole sentence.
+    pub(crate) fn confirmation(&self, slots: &SlotView) -> Option<Confirmation> {
+        match self {
+            Self::KillWindow(name) => Some(Confirmation {
+                prompt: format!("Kill window '{name}'?"),
+                // The escalation the name alone does not carry: `kill-window` on the last window is
+                // `kill-session` by another route (`SlotView::kill_window` documents it).
+                consequence: (slots.windows().len() <= 1).then(|| {
+                    "It is this session's last window, so the session ends with it.".to_owned()
+                }),
+                verb: KILL_VERB.to_owned(),
+            }),
+            Self::KillSession(name) => Some(Confirmation {
+                prompt: format!("Kill session '{name}'?"),
+                consequence: (*name == slots.current_session())
+                    .then(|| "It is the attached session, so this client detaches.".to_owned()),
+                verb: KILL_VERB.to_owned(),
+            }),
+            Self::Find
+            | Self::Copy
+            | Self::Paste
+            | Self::SelectAll
+            | Self::ToggleFloat
+            | Self::BreakOut
+            | Self::JoinInto(_)
+            | Self::NewWindow
+            | Self::SelectWindow(_)
+            | Self::NewSession
+            | Self::SwitchSession(_)
+            | Self::LastSession
+            // A project command is NOT destructive as an activation: it is PASTED at the pane's
+            // prompt without a newline, so the user's own Enter is already the confirmation, and
+            // the line they are agreeing to is the one the row showed them.
+            | Self::Project(_) => None,
+        }
+    }
+
+    /// Whether the thing this command NAMES is still there — asked of an already-armed command, so
+    /// a prompt cannot linger over a window or session that has since gone.
+    ///
+    /// Only the commands that name a destroyable object can answer `false`. Everything else names
+    /// nothing that can vanish between the question and the answer (`NewWindow` creates, `Copy` acts
+    /// on a selection), so it is trivially still targetable.
+    ///
+    /// The residual this does NOT close is name REUSE, and it is inherent: a name is the only window
+    /// / session identity on the wire, so a captured name whose bearer was killed and replaced reads
+    /// as live. That is the same bound the session rail's own auto-disarm states, unchanged here.
+    pub(crate) fn target_still_exists(&self, slots: &SlotView) -> bool {
+        match self {
+            Self::KillWindow(name) => slots.windows().iter().any(|window| &window.name == name),
+            Self::KillSession(name) => slots.sessions().iter().any(|session| &session.name == name),
+            Self::Find
+            | Self::Copy
+            | Self::Paste
+            | Self::SelectAll
+            | Self::ToggleFloat
+            | Self::BreakOut
+            | Self::JoinInto(_)
+            | Self::NewWindow
+            | Self::SelectWindow(_)
+            | Self::NewSession
+            | Self::SwitchSession(_)
+            | Self::LastSession
+            | Self::Project(_) => true,
         }
     }
 
@@ -195,11 +304,21 @@ impl Command {
             | Self::SelectWindow(_)
             | Self::NewSession
             | Self::SwitchSession(_)
-            | Self::LastSession => false,
+            | Self::LastSession
+            // A kill is addressed by the NAME it carries, like the select / switch rows above it —
+            // what it destroys has nothing to do with which pane the user was looking at.
+            | Self::KillWindow(_)
+            | Self::KillSession(_) => false,
         }
     }
 
     /// Run the command against the pane the palette captured when it opened.
+    ///
+    /// PERFORMS, unconditionally — including a destructive command. The question is asked one level
+    /// out, by [`confirm::run_or_arm`](crate::confirm::run_or_arm), which is what every surface calls;
+    /// this is the performer it eventually reaches, and it has to be reachable with no further
+    /// asking, because the confirmation surface is itself a caller. Guarding here as well would
+    /// either be dead (the prompt already asked) or unsatisfiable (nothing left to ask with).
     ///
     /// Each arm drives the SAME authority the equivalent chord or button drives — the find bar's
     /// own `open`, the selection module's copy / paste, the dock's float toggle, the `SlotView`
@@ -268,6 +387,12 @@ impl Command {
             }
             Self::SwitchSession(name) => slots.switch_session(name),
             Self::LastSession => slots.switch_to_last_session(),
+            // Addressed by NAME, so what is killed is what the prompt named — never a row index
+            // re-resolved against a list that moved in the meantime. Killing the last window ends
+            // the session and killing the attached session detaches this client; both are stated on
+            // the prompt (see [`Command::confirmation`]) rather than refused here.
+            Self::KillWindow(name) => slots.kill_window(name),
+            Self::KillSession(name) => slots.kill_session(name),
             // PASTED at the pane's prompt, without a trailing newline: the user presses Enter. The
             // whole rationale (their shell runs it, so output/history/Ctrl-C behave; and a command
             // named by a file in a repository must not execute on a repository's say-so) lives on
@@ -279,6 +404,28 @@ impl Command {
             }
         }
     }
+}
+
+/// The imperative on the affirmative button of a kill's prompt. tmux's own word for the operation,
+/// and the same one the session rail's confirm strip already paints — a user who has confirmed a kill
+/// once should read the identical word the second time, from whichever surface asked.
+const KILL_VERB: &str = "Kill";
+
+/// What a destructive command's prompt must say — the whole sentence, owned by the command.
+///
+/// A value rather than three methods, and captured rather than re-read, because these strings are
+/// what the user is agreeing to: the surface that paints them must not be able to compose its own
+/// question, and the sentence must not change between being read and being answered.
+#[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Confirmation {
+    /// The question, naming exactly what is about to be destroyed (`Kill session 'work'?`).
+    pub(crate) prompt: String,
+    /// The consequence the name does not already imply — killing a session's last window, or the
+    /// session this client is attached to. `None` when the prompt says everything.
+    pub(crate) consequence: Option<String>,
+    /// The affirmative button's word: the destructive act in the imperative ([`KILL_VERB`]), never a
+    /// bare "OK". A button that names the act cannot be clicked past without reading it.
+    pub(crate) verb: String,
 }
 
 /// The cap on the rows named after a window — `Go to window <name>` and `Move pane to window <name>`
@@ -306,7 +453,9 @@ const MAX_PROJECT_ROWS: usize = sprag_host::project::MAX_ACTIONS;
 ///
 /// Order is by kind, MOST SPECIFIC FIRST: the target pane's PROJECT commands, then the pane
 /// commands (which act on what the user is looking at), then the window commands, then the session
-/// ones. Within a kind, declaration order — the project's own file order for its own commands.
+/// ones, and LAST the destructive ones (see the note beside them for why last is right for those and
+/// wrong for everything else). Within a kind, declaration order — the project's own file order for
+/// its own commands.
 ///
 /// The project going first is not a preference. The palette paints a bounded number of rows
 /// ([`MAX_VISIBLE_ROWS`](crate::palette)), so whatever sits at the END of an unfiltered list is
@@ -390,6 +539,34 @@ pub(crate) fn catalog(target: Option<usize>, slots: &SlotView) -> Catalog {
             .map(|session| Command::SwitchSession(session.name.clone())),
     );
     out.push(Command::LastSession);
+
+    // ...and LAST, the DESTRUCTIVE rows — one kill per window and per session.
+    //
+    // Two differences from every row above, both deliberate:
+    //
+    // Their targets INCLUDE the current window and the attached session, where `Go to window` and
+    // `Switch to session` exclude them. "Go where you already are" is not an action; "kill what you
+    // are looking at" is the commonest kill there is, and both existing "×" affordances do exactly
+    // that. Excluding them would have made the palette the one surface that cannot close the window
+    // in front of you.
+    //
+    // And being pushed past the visible cut is, here alone, a FEATURE. The project rows lead this
+    // list because nothing else can reach them; these trail it because everything about them should
+    // be deliberate — a palette opened by accident must not have `Kill session 0` under the cursor.
+    // Typing "kill" collects them all (see [`Command::title`]), which is the only way they are meant
+    // to be found, and the confirmation is still asked afterwards regardless.
+    out.extend(
+        windows
+            .iter()
+            .take(MAX_WINDOW_ROWS)
+            .map(|window| Command::KillWindow(window.name.clone())),
+    );
+    out.extend(
+        sessions
+            .iter()
+            .take(MAX_SESSION_ROWS)
+            .map(|session| Command::KillSession(session.name.clone())),
+    );
     Catalog {
         commands: out,
         project_error,
@@ -502,6 +679,13 @@ mod tests {
         last_session: usize,
         /// `(pane, text)` per paste — how a project command reaches a pane.
         pasted: Vec<(PaneId, String)>,
+        /// The windows a kill named. Recorded rather than no-op'd because the destructive routing is
+        /// the one place a mis-addressed command cannot be walked back.
+        killed_windows: Vec<String>,
+        /// The sessions a kill named. The in-process `Host` deliberately no-ops `kill_session` (it
+        /// renders only the default session), so a recording fake is the ONLY way to observe that this
+        /// arm addresses the right one at all.
+        killed_sessions: Vec<String>,
     }
 
     /// A [`HostClient`] serving fixed window / session lists and RECORDING the actions
@@ -528,7 +712,9 @@ mod tests {
             self.log.borrow_mut().new_windows += 1;
             "w".to_owned()
         }
-        fn kill_window(&self, _name: &str) {}
+        fn kill_window(&self, name: &str) {
+            self.log.borrow_mut().killed_windows.push(name.to_owned());
+        }
         fn break_pane(&self, id: PaneId, _name: Option<&str>) -> Option<String> {
             self.log.borrow_mut().broken_panes.push(id);
             Some("w".to_owned())
@@ -565,7 +751,9 @@ mod tests {
             self.log.borrow_mut().new_sessions += 1;
             "s".to_owned()
         }
-        fn kill_session(&self, _name: &str) {}
+        fn kill_session(&self, name: &str) {
+            self.log.borrow_mut().killed_sessions.push(name.to_owned());
+        }
         fn switch_to_last_session(&self) {
             self.log.borrow_mut().last_session += 1;
         }
@@ -1030,6 +1218,181 @@ mod tests {
             .collect();
         let (saturated, _log) = slots_with(&window_refs, &["0"], "0");
         assert_eq!(menu_rows(&saturated).len(), MAX_MENU_ROWS);
+    }
+
+    /// A kill reaches the host addressed by the NAME it carries — the whole reason the destructive
+    /// variants hold a `String` instead of an index.
+    ///
+    /// REVERT-PROOF: swap the two kill arms of [`Command::run`] and each assertion below catches it;
+    /// drop either arm and its list is empty.
+    #[test]
+    fn a_kill_addresses_the_window_or_session_it_names() {
+        let (slots, log) = slots_with(&[("main", true), ("build", false)], &["0", "work"], "0");
+
+        Command::KillWindow("build".to_owned()).run(Some(0), &slots);
+        Command::KillSession("work".to_owned()).run(Some(0), &slots);
+
+        let log = log.borrow();
+        assert_eq!(
+            log.killed_windows,
+            vec!["build".to_owned()],
+            "the window kill names the window, and only it"
+        );
+        assert_eq!(
+            log.killed_sessions,
+            vec!["work".to_owned()],
+            "the session kill names the session, and only it"
+        );
+    }
+
+    /// The catalog offers a kill for EVERY window and session, including the current window and the
+    /// attached session — unlike the `Go to` / `Switch to` rows, which exclude them.
+    ///
+    /// "Kill what I am looking at" is the commonest kill there is, and both existing "×" affordances do
+    /// exactly that; excluding it would leave the palette the one surface unable to close the window in
+    /// front of you.
+    ///
+    /// REVERT-PROOF: build the kill rows from the `elsewhere` list (the one the select rows use) and
+    /// the two current/attached assertions fail.
+    #[test]
+    fn the_catalog_offers_a_kill_for_every_window_and_session_including_the_current_one() {
+        let (slots, _log) = slots_with(&[("main", true), ("build", false)], &["0", "work"], "0");
+        let titles: Vec<String> = catalog(Some(0), &slots)
+            .commands
+            .iter()
+            .map(Command::title)
+            .collect();
+
+        assert!(
+            titles.contains(&"Kill window main".to_owned()),
+            "{titles:?}"
+        );
+        assert!(titles.contains(&"Kill window build".to_owned()));
+        assert!(titles.contains(&"Kill session 0".to_owned()));
+        assert!(titles.contains(&"Kill session work".to_owned()));
+    }
+
+    /// The destructive rows come LAST, so a palette opened by accident never has one under the cursor.
+    ///
+    /// REVERT-PROOF: move the kill block anywhere above the session rows and this fails.
+    #[test]
+    fn the_destructive_rows_trail_the_unfiltered_catalog() {
+        let (slots, _log) = slots_with(&[("main", true), ("build", false)], &["0", "work"], "0");
+        let commands = catalog(Some(0), &slots).commands;
+
+        let first_kill = commands
+            .iter()
+            .position(|command| command.confirmation(&slots).is_some())
+            .expect("the catalog offers destructive commands");
+        let last_safe = commands
+            .iter()
+            .rposition(|command| command.confirmation(&slots).is_none())
+            .expect("...and safe ones");
+        assert!(
+            first_kill > last_safe,
+            "every destructive row sits after every safe one: kill at {first_kill}, safe at {last_safe}"
+        );
+        assert!(
+            !matches!(commands.first(), Some(command) if command.confirmation(&slots).is_some()),
+            "and never at the cursor's opening position"
+        );
+    }
+
+    /// Exactly the kills need asking about, and each carries the words for it — the answer no surface
+    /// is allowed to hold a second opinion about.
+    ///
+    /// REVERT-PROOF: return `None` from either kill arm of [`Command::confirmation`] and this fails;
+    /// return `Some` from any other and it fails too.
+    #[test]
+    fn a_confirmation_is_carried_by_exactly_the_destructive_commands() {
+        let (slots, _log) = slots_with(&[("main", true), ("build", false)], &["0", "work"], "0");
+
+        for command in catalog(Some(0), &slots).commands {
+            let destructive = matches!(command, Command::KillWindow(_) | Command::KillSession(_));
+            let asks = command.confirmation(&slots);
+            assert_eq!(
+                asks.is_some(),
+                destructive,
+                "{command:?} asks: {}, destructive: {destructive}",
+                asks.is_some()
+            );
+            if let Some(words) = asks {
+                assert!(
+                    words.prompt.contains('?'),
+                    "the prompt is a QUESTION: {:?}",
+                    words.prompt
+                );
+                assert_eq!(words.verb, "Kill", "the button names the act");
+            }
+        }
+    }
+
+    /// The consequence line appears exactly when the name does not already imply it: the session's last
+    /// window, and the attached session.
+    ///
+    /// REVERT-PROOF: drop either `consequence` condition and its assertion here fails.
+    #[test]
+    fn the_prompt_states_the_escalation_only_when_there_is_one() {
+        // One window: killing it ends the session. Attached session "0": killing it detaches.
+        let (single, _log) = slots_with(&[("main", true)], &["0", "work"], "0");
+        let last_window = Command::KillWindow("main".to_owned())
+            .confirmation(&single)
+            .expect("a kill asks");
+        assert!(
+            last_window
+                .consequence
+                .as_deref()
+                .is_some_and(|line| line.contains("session")),
+            "the last window's prompt names the escalation: {last_window:?}"
+        );
+        let attached = Command::KillSession("0".to_owned())
+            .confirmation(&single)
+            .expect("a kill asks");
+        assert!(
+            attached
+                .consequence
+                .as_deref()
+                .is_some_and(|line| line.contains("detach")),
+            "the attached session's prompt says the client detaches: {attached:?}"
+        );
+
+        // Two windows, and a session this client is NOT on: nothing extra to say.
+        let (several, _log) = slots_with(&[("main", true), ("build", false)], &["0", "work"], "0");
+        assert!(
+            Command::KillWindow("build".to_owned())
+                .confirmation(&several)
+                .expect("a kill asks")
+                .consequence
+                .is_none(),
+            "a window that is not the last one carries no extra warning"
+        );
+        assert!(
+            Command::KillSession("work".to_owned())
+                .confirmation(&several)
+                .expect("a kill asks")
+                .consequence
+                .is_none(),
+            "nor does a session this client is not attached to"
+        );
+    }
+
+    /// A command that names something destroyable knows whether it is still there; everything else is
+    /// trivially still targetable.
+    ///
+    /// REVERT-PROOF: make `target_still_exists` return `true` unconditionally and the two "gone"
+    /// assertions fail — which is what would let a prompt outlive its target.
+    #[test]
+    fn only_a_command_naming_a_destroyable_target_can_report_it_gone() {
+        let (slots, _log) = slots_with(&[("main", true)], &["0"], "0");
+
+        assert!(Command::KillWindow("main".to_owned()).target_still_exists(&slots));
+        assert!(!Command::KillWindow("gone".to_owned()).target_still_exists(&slots));
+        assert!(Command::KillSession("0".to_owned()).target_still_exists(&slots));
+        assert!(!Command::KillSession("gone".to_owned()).target_still_exists(&slots));
+        assert!(
+            Command::NewWindow.target_still_exists(&slots),
+            "a command that names nothing destroyable is always targetable"
+        );
     }
 
     #[test]

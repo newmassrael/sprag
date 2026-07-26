@@ -223,8 +223,14 @@ fn command_index(payload: &IntrospectValue) -> Option<usize> {
     }
 }
 
-/// Run the CAPTURED row at `index`, through the one shared
-/// [`Command::run`](crate::command::Command::run).
+/// Run the CAPTURED row at `index`, through the one shared guarded entry
+/// [`confirm::run_or_arm`](crate::confirm::run_or_arm).
+///
+/// No menu row is destructive today, so that door is a straight passage to
+/// [`Command::run`](crate::command::Command::run) here. It is still the door this goes through, because
+/// the alternative is a surface that runs commands unguarded and a rule someone has to remember when
+/// the menu grows its first irreversible row — see [`crate::confirm`] on why the guard is a door and
+/// not a rule.
 ///
 /// `Copy` acts on the active selection wherever it lives; the rest act on the pane snapshotted at
 /// open time (a right-click does not retarget focus, and the item click has since blurred it). Break
@@ -247,7 +253,7 @@ fn run_item(index: usize) {
         ?pane,
         "ctxmenu command"
     );
-    row.command.run(pane, &use_terminal().slots);
+    crate::confirm::run_or_arm(row.command, pane, &use_terminal().slots);
 }
 
 #[cfg(test)]

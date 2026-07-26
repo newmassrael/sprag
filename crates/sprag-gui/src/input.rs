@@ -331,6 +331,16 @@ pub(crate) fn route_key(
     modifiers: Modifiers,
     repeat: bool,
 ) -> bool {
+    // The destructive-command prompt, FIRST and gated on the prompt being UP rather than on what holds
+    // focus: while the client is asking whether to destroy something, no key may reach anything else —
+    // not a pane behind the scrim, not the palette row that armed it. Every other route below is keyed
+    // on the focused tag, which is right for a surface that can share the screen; this one cannot, and
+    // a focus gate would leak the keystroke in the one case where that is worst — including when there
+    // is NO focus at all, which is why this precedes the `focused` destructure rather than following
+    // it. Answering is `Enter` on the CHOSEN button, which starts on Cancel (see [`crate::confirm`]).
+    if crate::confirm::handle_key(key) {
+        return true;
+    }
     let Some(tag) = focused else {
         return false;
     };
@@ -632,6 +642,64 @@ mod tests {
                 "x",
                 Modifiers::default()
             ));
+        });
+    }
+
+    /// While the client is asking whether to destroy something, a key belongs to the PROMPT even
+    /// though a PANE holds focus — the case that matters, since every other route here is focus-gated
+    /// and this one must not be.
+    ///
+    /// Driven through the public `apply_key` so the ROUTER's gate is what is under test, not
+    /// [`confirm::handle_key`](crate::confirm::handle_key) called directly: the arrow moving the
+    /// prompt's choice and the `Enter` performing the kill are only reachable if the gate is where it
+    /// claims to be, and if it were missing both keys would be encoded to the focused pane's PTY
+    /// instead.
+    ///
+    /// REVERT-PROOF: delete the `confirm::handle_key` gate from [`route_key`] and this fails — the
+    /// choice never moves and no window is killed. (Measured: without this test that deletion left the
+    /// whole suite green, which is why the test exists.)
+    #[test]
+    fn a_key_cannot_reach_a_pane_while_a_destructive_prompt_is_up() {
+        let host = Host::new((40, 6));
+        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+            .unwrap();
+        let owner = Owner::new();
+        owner.run(|| {
+            seed_terminal(host);
+            let terminal = use_terminal();
+            let victim = terminal.slots.new_window();
+            let before = terminal.slots.windows().len();
+            crate::confirm::run_or_arm(
+                crate::command::Command::KillWindow(victim),
+                None,
+                &terminal.slots,
+            );
+            assert!(crate::confirm::is_open(), "a prompt is up");
+
+            let mut scene = Scene::Container(ContainerNode::new(Vec::new()));
+            // A pane holds focus throughout: these keys would otherwise be PTY bytes.
+            assert!(TerminalViewer::apply_key(
+                &mut scene,
+                Some(pane_tag(0)),
+                "ArrowRight",
+                Modifiers::default()
+            ));
+            assert!(TerminalViewer::apply_key(
+                &mut scene,
+                Some(pane_tag(0)),
+                "Enter",
+                Modifiers::default()
+            ));
+
+            assert!(
+                !crate::confirm::is_open(),
+                "the prompt was answered through the router, not the pane"
+            );
+            assert_eq!(
+                use_terminal().slots.windows().len(),
+                before - 1,
+                "and the answer is what performed the kill"
+            );
         });
     }
 

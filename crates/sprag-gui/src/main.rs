@@ -206,6 +206,7 @@ mod a11y;
 mod attention;
 mod clipboard_osc;
 mod command;
+mod confirm;
 mod ctxmenu;
 mod diag;
 mod dock;
@@ -443,6 +444,11 @@ impl WidgetCore for TerminalViewer {
         // and registered while it is CLOSED for the same reason: the field's External is what holds
         // the query text, and an unpainted External costs nothing.
         externals.extend(palette::create_palette_externals());
+        // ...and the destructive-command PROMPT the palette (and the window strip) arms instead of
+        // acting: its captured sentence, its two answers, and its own modal `open` query. Registered
+        // on the same terms, and readable over RPC while nothing is armed so "is this client asking
+        // about anything?" has an address rather than being inferred from the tree.
+        externals.extend(confirm::create_confirm_externals());
         // Drag-to-dock / tear-off (pinion R1081/R1084/R1094 §5.51, P2/PR-31): one R742
         // `DockPanelExternal` per pane, registered at the panel ROOT tag
         // (`split::panel_id(i)` = the `view_dock_panel` root the `view_dock_surface_chrome`
@@ -768,6 +774,10 @@ impl WidgetCore for TerminalViewer {
         // an off-thread-producer fact (the session mirror the wire poll updates) into a UI-thread
         // `Signal` BEFORE the pure view runs.
         stabs::reconcile_pending_kill(&terminal.slots);
+        // (5b) The same auto-disarm for the client-wide destructive prompt: a window or session killed
+        // out of band while its `Kill '<name>'?` modal was up takes the modal with it, so a
+        // confirmation cannot outlive the thing it is asking about. Same hook, same reason as (5).
+        confirm::reconcile(&terminal.slots);
         // (6) OSC 52: apply any new clipboard writes to this client's system clipboard and answer
         // any new read queries (subject to the SPRAG_OSC52 policy). Like (2)/(5), this reconciles
         // an off-thread-producer fact (the child's OSC 52 output) on the UI thread each frame —
@@ -927,6 +937,13 @@ impl WidgetCore for TerminalViewer {
         // itself — it cannot, because a command reaches `Owner`-scoped state that only a reducer /
         // view path has — so the effect happens HERE, exactly as the context menu's rows do.
         if palette::handle_palette_intent(intent) {
+            return Vec::new();
+        }
+        // The destructive-command prompt: an answer (a click on either button, a light-dismiss, or an
+        // RPC `accept` / `dismiss`) arrives as its own intent. Like the palette's, the External arms
+        // and the effect happens HERE — performing an armed command reaches `Owner`-scoped state that
+        // only a reducer path has.
+        if confirm::handle_confirm_intent(intent) {
             return Vec::new();
         }
         // The window tab strip: a tab / "+" / "×" button click routes to a `SlotView` window
@@ -2661,10 +2678,17 @@ mod tests {
     }
 
     /// The window tab strip end to end through the REAL shell: a "+" click creates + selects a
-    /// window, a tab click selects one by its index into the live list, and a "×" click closes the
-    /// current one — each routed by `update` to a `SlotView` window action against the in-process
-    /// host. Built with the SCOPED button tags the shell actually delivers (`{tag}.click`), the
-    /// R67/R68 lesson that a synthetic input which does not match the live wire masks the bug.
+    /// window, a tab click selects one by its index into the live list, and a "×" click ASKS —
+    /// arming the client's confirmation prompt, which a second intent answers before anything is
+    /// destroyed. Each is routed by `update`, to a `SlotView` window action or to
+    /// [`confirm`](crate::confirm), against the in-process host. Built with the SCOPED tags the shell
+    /// actually delivers (`{tag}.{event}`), the R67/R68 lesson that a synthetic input which does not
+    /// match the live wire masks the bug.
+    ///
+    /// The "×" leg is the whole confirmation chain in one test: strip click → armed prompt → answer →
+    /// kill. REVERT-PROOF for the front: restore the direct `slots.kill_window` in
+    /// [`wtabs::handle_window_intent`] and the "destroyed nothing" assertion fails; drop the
+    /// `confirm::handle_confirm_intent` arm from `update` and the window is never killed at all.
     #[test]
     fn window_tab_clicks_route_to_the_host_select_new_and_close() {
         use std::borrow::Cow;
@@ -2706,12 +2730,35 @@ mod tests {
             "the tab click selected window 0",
         );
 
-        // "×" closes the CURRENT window ("0"); the other survives and becomes current.
+        // "×" ASKS before it closes: the click arms the confirmation and destroys nothing on its own.
         core.dispatch_intent(&click("sprag_gui.wclose"));
+        assert_eq!(
+            windows(&core).len(),
+            2,
+            "the × button destroyed nothing on its own",
+        );
+        assert!(
+            core.root_owner().run(confirm::is_open),
+            "it armed the confirmation instead",
+        );
+
+        // ...and the ANSWER closes the CURRENT window ("0"); the other survives and becomes current.
+        core.dispatch_intent(&Intent {
+            tag: Cow::Owned(format!("{}.accept", confirm::CONFIRM_TAG)),
+            payload: IntrospectValue::Null,
+        });
         let after = windows(&core);
-        assert_eq!(after.len(), 1, "the × button closed the current window");
+        assert_eq!(
+            after.len(),
+            1,
+            "the confirmed kill closed the current window"
+        );
         assert_eq!(after[0].name, created, "the other window survived");
         assert!(after[0].current, "and it is now current");
+        assert!(
+            !core.root_owner().run(confirm::is_open),
+            "and the prompt went with the answer",
+        );
     }
 
     /// Live cursor-following tear-off (R1094 / PINION-PR31): the `tear_off_follow`

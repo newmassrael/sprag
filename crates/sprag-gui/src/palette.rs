@@ -281,18 +281,26 @@ pub(crate) fn close() {
     use_cursor().set(0);
 }
 
-/// Run the row the cursor is on, then close. Returns the command that ran, for the caller's report.
+/// ACTIVATE the row the cursor is on, then close. Returns the command that was activated, for the
+/// caller's report.
 ///
-/// CLOSES FIRST, then runs: a command may itself move focus (`Find in scrollback` focuses the find
-/// bar's field), and the trap's restore-on-close must not land after that. Running into a closed
-/// palette is safe — the command reads the pane that was captured, not the live focus.
+/// "Activated", not "ran": a destructive row is HELD for a confirmation instead of performed, and the
+/// choice is not made here. [`confirm::run_or_arm`](crate::confirm::run_or_arm) is the one door every
+/// surface uses, and which side of it a command falls on is the command's own answer — see
+/// [`crate::command`] on why that is not a palette policy. This is also what makes `Enter` on a
+/// `Kill session` row safe enough to offer at all.
+///
+/// CLOSES FIRST, then activates: a command may itself move focus (`Find in scrollback` focuses the
+/// find bar's field, a destructive one opens the prompt and traps focus in it), and the trap's
+/// restore-on-close must not land after that. Activating into a closed palette is safe — the command
+/// reads the pane that was captured, not the live focus.
 fn run_cursor_row() -> Option<Command> {
     let catalog = use_frozen_catalog().get();
     let rows = visible_rows();
     let command = catalog.get(*rows.get(cursor_in(rows.len()))?)?.clone();
     let target = use_target_pane().get();
     close();
-    command.run(target, &use_terminal().slots);
+    crate::confirm::run_or_arm(command.clone(), target, &use_terminal().slots);
     Some(command)
 }
 
@@ -611,10 +619,11 @@ impl ExternalIntrospect for PaletteExternal {
                 Some(title) => IntrospectValue::Text(title),
                 None => IntrospectValue::Null,
             }),
-            // The composite-send wire: a click on row `i` selects it AND runs it. A palette row is
-            // run-on-click (pinion's reference consumer's rule) — there is no second confirming
-            // click in any editor's palette, and the destructive commands are kept out of the
-            // catalog precisely so one click can never be catastrophic.
+            // The composite-send wire: a click on row `i` selects it AND activates it. A palette row
+            // is act-on-click (pinion's reference consumer's rule) — there is no second confirming
+            // click in any editor's palette. What that one click cannot do is destroy anything: a
+            // destructive row activates into the confirmation prompt, never into the act
+            // ([`crate::confirm`]), which is what let those commands into the catalog at all.
             "send" => match args {
                 IntrospectValue::Text(ref payload) => {
                     // The backdrop shares this handle through its composite tag: a click OUTSIDE the
@@ -1168,6 +1177,46 @@ mod tests {
                 "the reducer ran the armed row and the window was created"
             );
             assert!(!is_open(), "running a command closes the palette");
+        });
+    }
+
+    /// A DESTRUCTIVE row activates into the question, not into the act — the property that let
+    /// `kill-window` / `kill-session` into the catalog at all.
+    ///
+    /// The cursor is placed on the row by identity rather than by typing a query, so the test pins the
+    /// ACTIVATION and not the matcher's ranking.
+    ///
+    /// REVERT-PROOF: call `command.run(...)` directly from `run_cursor_row` (what it did before the
+    /// confirmation front) and the window is gone with nobody asked — this fails on both counts.
+    #[test]
+    fn activating_a_destructive_row_asks_instead_of_acting() {
+        Owner::new().run(|| {
+            seed_one_pane();
+            let victim = use_terminal().slots.new_window();
+            let before = use_terminal().slots.windows().len();
+
+            open(Some(0));
+            let rows = visible_rows();
+            let frozen = use_frozen_catalog().get();
+            let at = rows
+                .iter()
+                .position(|&i| frozen[i] == Command::KillWindow(victim.clone()))
+                .expect("the palette offers a kill for the new window");
+            use_cursor().set(at);
+
+            let activated = run_cursor_row().expect("the row activates");
+            assert_eq!(activated, Command::KillWindow(victim.clone()));
+            assert!(!is_open(), "the palette closes behind the activation");
+            assert!(
+                crate::confirm::is_open(),
+                "and the confirmation is up in its place"
+            );
+            assert_eq!(
+                use_terminal().slots.windows().len(),
+                before,
+                "NOTHING was killed by the activation itself"
+            );
+            crate::confirm::dismiss();
         });
     }
 

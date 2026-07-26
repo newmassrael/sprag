@@ -2,6 +2,11 @@
 //! window of the session, plus a "+" (new window) and "×" (close current window) — click a tab to
 //! select it (tmux `select-window`).
 //!
+//! The "×" ASKS before it closes ([`crate::confirm`]), because closing a window is irreversible and
+//! closing the session's LAST window ends the session. It does not ask here, in a 30px band with
+//! nowhere to put a prompt: it activates the catalog's `kill-window` command, which carries its own
+//! question, and the client's one confirmation surface poses it.
+//!
 //! Modeled on [`ctxmenu`](crate::ctxmenu): sprag registers pinion
 //! [`ButtonExternal`]s as EXTRA externals at FIXED tags (preserved across the dynamic-external
 //! reconcile by tag, pinion R689), paints tagged clickable nodes, and the binding reducer routes
@@ -27,6 +32,7 @@ use pinion_core::widget_core::ExtraExternal;
 use pinion_core::widgets::button::ButtonExternal;
 use pinion_core::{Color, Intent, Scene};
 
+use crate::command::Command;
 use crate::slotview::SlotView;
 
 /// The strip container tag (the Row of tabs + action buttons).
@@ -170,9 +176,20 @@ pub(crate) fn handle_window_intent(intent: &Intent, slots: &SlotView) -> bool {
         return true;
     }
     if who == CLOSE_WINDOW_TAG {
-        // Close the CURRENT window (whichever tab is active); the session's last window ends it.
+        // Close the CURRENT window (whichever tab is active) — but ASK first. This is the ONE action
+        // of the strip routed through the command catalog, and the asymmetry is deliberate rather than
+        // an oversight: the question belongs to the command
+        // ([`Command::confirmation`](crate::command::Command::confirmation)), so going through
+        // [`confirm::run_or_arm`](crate::confirm::run_or_arm) is the only way this "×" inherits the
+        // same prompt the palette's `Kill window` row gets. The "+" and the tabs have no question to
+        // inherit; folding them onto the catalog too would be a refactor with no change in behaviour,
+        // deliberately not done here.
+        //
+        // Until this routing landed, this button killed a window on ONE unguarded click — and the
+        // session's last window ends it, so the least guarded surface in the client was the one able
+        // to destroy the most.
         if let Some(current) = slots.windows().into_iter().find(|window| window.current) {
-            slots.kill_window(&current.name);
+            crate::confirm::run_or_arm(Command::KillWindow(current.name), None, slots);
         }
         return true;
     }
@@ -224,5 +241,49 @@ mod tests {
     fn one_button_external_is_registered_per_tab_plus_the_two_actions() {
         // The strip routes at most MAX_WINDOW_TABS tabs plus "+" and "×", each its own external.
         assert_eq!(create_window_externals().len(), MAX_WINDOW_TABS + 2);
+    }
+
+    /// The "×" ASKS instead of killing. This is the defect the confirmation front closed: one click on
+    /// this button used to end a window — and, on the session's last one, the session.
+    ///
+    /// REVERT-PROOF: put `slots.kill_window(&current.name)` back in place of the `run_or_arm` call and
+    /// this fails with the window already gone and no prompt up.
+    #[test]
+    fn the_close_button_asks_before_it_closes_the_current_window() {
+        use pinion_core::reactive::Owner;
+        use sprag_host::Host;
+        use sprag_terminal::CommandBuilder;
+
+        Owner::new().run(|| {
+            let mut cat = CommandBuilder::new("/bin/sh");
+            cat.arg("-c");
+            cat.arg("cat");
+            cat.env("TERM", "dumb");
+            let host = Host::new((40, 6));
+            host.spawn(cat, "cat".to_owned(), 40, 6, None, None)
+                .unwrap();
+            crate::terminal::seed_terminal(host);
+
+            let terminal = crate::terminal::use_terminal();
+            terminal.slots.new_window();
+            let before = terminal.slots.windows().len();
+            assert!(before > 1, "two windows, so a kill would be observable");
+
+            let click = Intent {
+                tag: std::borrow::Cow::Owned(format!("{CLOSE_WINDOW_TAG}.{CLICK_EVENT}")),
+                payload: pinion_core::external::IntrospectValue::Null,
+            };
+            assert!(handle_window_intent(&click, &terminal.slots));
+
+            assert_eq!(
+                crate::terminal::use_terminal().slots.windows().len(),
+                before,
+                "the click destroyed NOTHING on its own"
+            );
+            assert!(
+                crate::confirm::is_open(),
+                "it armed the confirmation instead"
+            );
+        });
     }
 }
