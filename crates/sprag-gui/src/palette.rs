@@ -535,6 +535,19 @@ impl External for PaletteExternal {
             sink(intent);
         }
     }
+    /// Whether a row activation is waiting to be run.
+    ///
+    /// This was MISSING, and its absence was a live defect: pinion's runtime harvests through
+    /// `drain_one`, which skips [`drain_intents`](Self::drain_intents) entirely unless this says yes,
+    /// and the trait default is `false`. So every activation that goes THROUGH this External — a click
+    /// on a row, an RPC `execute` — armed an intent the reducer was never handed, and the palette
+    /// silently did nothing. The keyboard path was unaffected (`Enter` runs in
+    /// [`handle_key`] without touching the External), which is why the surface looked fine and why ten
+    /// green unit tests said so: they call `drain_intents` directly, the one caller that does not ask.
+    /// Found by the confirmation front's live pixel smoke; see the note on [`crate::confirm`]'s own.
+    fn is_dirty(&self) -> bool {
+        !self.pending_intents.is_empty()
+    }
 }
 
 impl ExternalIntrospect for PaletteExternal {
@@ -953,9 +966,15 @@ mod tests {
     /// name and pinion prefixes the emitting external's tag on the way to the reducer. Skipping that
     /// is the live bug the context menu's docs record (matching a bare event never fires), so the
     /// test has to reproduce the prefixing rather than the raw push.
+    ///
+    /// The [`is_dirty`](External::is_dirty) gate is reproduced FIRST because the runtime applies it
+    /// first (`drain_one` returns early on a clean external). Draining unconditionally is what let a
+    /// missing `is_dirty` — a dead click path in the live app — pass every test in this module.
     fn drain_into_reducer(external: &mut PaletteExternal) -> usize {
         let mut intents = Vec::new();
-        external.drain_intents(&mut |intent| intents.push(intent));
+        if external.is_dirty() {
+            external.drain_intents(&mut |intent| intents.push(intent));
+        }
         intents
             .iter()
             .map(|intent| Intent {

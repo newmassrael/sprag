@@ -382,6 +382,18 @@ impl External for ConfirmExternal {
             sink(intent);
         }
     }
+    /// Whether an answer is waiting to be performed.
+    ///
+    /// NOT optional, and not an optimisation. pinion's runtime harvests intents through
+    /// `drain_one`, which returns EARLY unless this says yes — so an emitting External that keeps the
+    /// trait default (`false`) queues answers the reducer is never handed, and the surface silently
+    /// does nothing while every one of its own unit tests passes. That is the live defect this front's
+    /// pixel smoke found, here and in the palette; `intent_query_external_impl!` exists precisely to
+    /// implement this pair for you, and cannot be used here only because it declares an RPC-ONLY
+    /// backend while both these surfaces are also clicked in the GUI.
+    fn is_dirty(&self) -> bool {
+        !self.pending_intents.is_empty()
+    }
 }
 
 impl ExternalIntrospect for ConfirmExternal {
@@ -723,9 +735,16 @@ mod tests {
     ///
     /// The tag is SCOPED here (`{CONFIRM_TAG}.{event}`) because an external pushes only its event
     /// name and pinion prefixes the emitting external's tag on the way to the reducer.
+    ///
+    /// The [`is_dirty`](External::is_dirty) gate is reproduced FIRST because the runtime applies it
+    /// first (`drain_one` returns early on a clean external), and a test that drains unconditionally
+    /// is exactly how a missing `is_dirty` stayed invisible until a live smoke caught it. Draining
+    /// through the gate means these tests fail if it ever goes away again.
     fn drain_into_reducer(external: &mut ConfirmExternal) -> usize {
         let mut intents = Vec::new();
-        external.drain_intents(&mut |intent| intents.push(intent));
+        if external.is_dirty() {
+            external.drain_intents(&mut |intent| intents.push(intent));
+        }
         intents
             .iter()
             .map(|intent| Intent {
