@@ -22,7 +22,10 @@
 //! * the composite-send wire: a row painted `{PALETTE_TAG}#{i}` routes a click to
 //!   [`PaletteExternal`], which selects that row and ARMS it — palette rows are run-on-click, but
 //!   the run itself happens in the reducer (see that type's docs for why it cannot happen there).
-//! * a query-only introspection face, so `open` is a first-class question over RPC.
+//! * a modal introspection face answering `open`, so "is the palette up?" is a first-class QUESTION
+//!   over RPC — paired with an `open` VERB on the palette's own External, so opening it is a
+//!   first-class REQUEST. Without that verb the surface was reachable only by its chord, and a
+//!   chord is precisely what a headless smoke cannot press ([`PaletteExternal`]'s `open`).
 //!
 //! ## What is frozen when the palette opens, and why
 //!
@@ -74,7 +77,7 @@ use pinion_widget_paint::scrim::{M3_SCRIM_ALPHA, scrim_backdrop, scrim_fill};
 use pinion_widget_paint::text_field as tf_paint;
 
 use crate::command::{self, Command};
-use crate::terminal::use_terminal;
+use crate::terminal::{focused_pane, use_terminal};
 
 /// The query field's tag: its External registration key, its `use_text_edit_state` /
 /// `use_caret_blink` key, its paint tag and its focus tag — one string for one surface, like the
@@ -455,6 +458,17 @@ impl PaletteExternal {
         }
     }
 
+    /// Ask the reducer to OPEN the palette.
+    ///
+    /// Armed rather than performed for the same reason a row activation is: [`open`] reads the live
+    /// host through `use_terminal()` and writes the field's text state, all `Owner`-scoped, and this
+    /// runs on the RPC dispatch outside that scope. It also carries no target — see
+    /// [`open_on_request`], which is where the request's preconditions and its target live.
+    fn arm_open(&mut self) {
+        self.pending_intents
+            .push(Intent::new_static(OPEN_EVENT, IntrospectValue::Null));
+    }
+
     /// Ask the reducer to run the cursor's row (see the type docs for why it is not run here).
     /// Returns the title armed, so an RPC caller learns WHAT it just asked for.
     fn arm_run(&mut self) -> Option<String> {
@@ -472,6 +486,11 @@ impl PaletteExternal {
             .push(Intent::new_static(DISMISS_EVENT, IntrospectValue::Null));
     }
 }
+
+/// The event this External emits to have the palette OPENED. A distinct address from the two below
+/// for the same reason they are distinct from each other: the reducer must never have to infer which
+/// of three transitions a payload meant.
+const OPEN_EVENT: &str = "open";
 
 /// The event this External emits to have the cursor's row RUN. Arrives at the reducer scoped as
 /// `{PALETTE_TAG}.{RUN_EVENT}` (pinion prefixes an external's own tag).
@@ -494,6 +513,10 @@ pub(crate) fn handle_palette_intent(intent: &Intent) -> bool {
         return false;
     }
     match event {
+        OPEN_EVENT => {
+            open_on_request();
+            true
+        }
         RUN_EVENT => {
             run_cursor_row();
             true
@@ -504,6 +527,40 @@ pub(crate) fn handle_palette_intent(intent: &Intent) -> bool {
         }
         _ => false,
     }
+}
+
+/// Open the palette on an EXTERNAL's request — the one door such a request goes through, holding the
+/// preconditions the keyboard gets for free from its router.
+///
+/// Both refusals are transitions the chord CANNOT produce, so honouring them is what keeps the RPC
+/// face equal to the surface rather than a wider one:
+///
+/// * **already open.** [`crate::input`] routes a `Ctrl+Shift+P` typed into an open palette to the
+///   query field, deliberately, so a second open never happens. Re-opening here would silently clear
+///   a half-typed query — and the documented way to refresh the frozen list is still `Escape` then
+///   the chord, which is two explicit steps rather than one that looks harmless.
+/// * **the confirmation prompt is up.** `route_key` gates on [`crate::confirm::is_open`] before
+///   anything else, so no key reaches the chord while the client is asking whether to destroy
+///   something. [`crate::a11y`] states the consequence as an invariant its tree relies on — the two
+///   modals are never up together — and an RPC caller must not be the one to break it.
+///
+/// The target is [`focused_pane`] rather than an argument: it is the app's one answer to which pane a
+/// positionless interaction acts on (the context menu and an OS file drop resolve it the same way),
+/// and it is exactly what the chord's `pane_index_of(focused)` yields. Letting a caller name a pane
+/// would be a second authority over that question, and the two would eventually disagree.
+fn open_on_request() {
+    if is_open() {
+        tracing::debug!(target: "sprag_gui::palette", "refusing an open request: already open");
+        return;
+    }
+    if crate::confirm::is_open() {
+        tracing::debug!(
+            target: "sprag_gui::palette",
+            "refusing an open request: the confirmation prompt is up"
+        );
+        return;
+    }
+    open(focused_pane());
 }
 
 impl core::fmt::Debug for PaletteExternal {
@@ -567,6 +624,7 @@ impl ExternalIntrospect for PaletteExternal {
                     ),
                     SchemaField::new("cursor", "int"),
                     SchemaField::new("cursor_command", "string"),
+                    SchemaField::new("open", "bool"),
                     SchemaField::new("select", "int"),
                     SchemaField::new("execute", "json"),
                     SchemaField::new("send", "string"),
@@ -618,6 +676,18 @@ impl ExternalIntrospect for PaletteExternal {
         args: IntrospectValue,
     ) -> Result<IntrospectValue, InvokeError> {
         match path {
+            // ARMS an open (the reducer performs it, and may refuse it — see [`open_on_request`]),
+            // answering only that the request was taken. Whether the palette is now UP is a separate
+            // question with its own address: the modal face at `PALETTE_MODAL_TAG` answers it. That
+            // split is deliberate — a return value here could only ever describe the arm, and a
+            // caller that believed it described the effect would be reading a two-step as one.
+            //
+            // Takes no arguments, so any are ignored: the target pane is the app's, not the
+            // caller's, and there is nothing else to say.
+            "open" => {
+                self.arm_open();
+                Ok(IntrospectValue::Bool(true))
+            }
             "select" => match args {
                 IntrospectValue::Int(n) => {
                     let i = usize::try_from(n).map_err(|_| InvokeError::TypeMismatch)?;
@@ -914,10 +984,10 @@ pub(crate) fn view_palette(
     //
     // It carries no style and no padding, and the CONTENT HEIGHT is unchanged: the panel used to hold
     // N rows and N gaps, and now holds one gap plus a box of N rows and N-1 gaps. That equality is
-    // pinned by `the_rows_container_fits_inside_the_panel_at_every_paintable_count` rather than
-    // asserted here — and it is the arithmetic that is verified, not the pixels: the palette cannot be
-    // opened headlessly (its External has no `open` verb, and synthetic key input does not drain), so
-    // no pixel smoke reaches this panel. That gap is tracked, not papered over.
+    // pinned by `the_rows_container_fits_inside_the_panel_at_every_paintable_count` as ARITHMETIC
+    // between the two sizing functions; the painted geometry it predicts is what the live smoke reads
+    // back, reaching this panel through the External's `open` verb (the chord it used to need is the
+    // one thing a headless run cannot press).
     let row_nodes: Vec<Scene> = rows
         .iter()
         .take(MAX_VISIBLE_ROWS)
@@ -1142,10 +1212,28 @@ mod tests {
     /// A one-pane in-process host, seeded so `use_terminal()` answers. Returns inside an `Owner`
     /// scope, so callers wrap the body in `Owner::new().run(..)`.
     fn seed_one_pane() {
+        seed_panes(1);
+    }
+
+    /// The same, with `count` panes — so a test that pins WHICH pane was captured can focus one that
+    /// is not slot 0, and a hard-coded target cannot pass it.
+    fn seed_panes(count: usize) {
         let host = Host::new((40, 6));
-        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None)
-            .unwrap();
+        for _ in 0..count {
+            host.spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+                .unwrap();
+        }
         seed_terminal(host);
+    }
+
+    /// Publish focus on pane `i` through the focus manager's own carrier — the stand-in pinion's own
+    /// `focus_state` tests use, and the one `crate::terminal::focused_pane` actually reads, so a test
+    /// drives the REAL derivation rather than a seam beneath it.
+    fn focus_pane(i: usize) {
+        Owner::current()
+            .expect("inside the owner scope")
+            .focused_tag_signal()
+            .set(Some(crate::terminal::pane_tag(i).to_owned()));
     }
 
     #[test]
@@ -1300,6 +1388,128 @@ mod tests {
                     .is_err(),
                 "a row past the end is refused rather than clamped silently"
             );
+        });
+    }
+
+    /// The `open` verb: the whole two-step, from an RPC invoke to a palette that is UP over the pane
+    /// the user was on — the path that makes this surface reachable without its chord, and therefore
+    /// reachable by a headless smoke at all.
+    ///
+    /// The target is asserted to be pane 1 while pane 0 exists, which is what distinguishes the real
+    /// [`focused_pane`] derivation from a hard-coded first slot.
+    ///
+    /// REVERT-PROOF: drop the `OPEN_EVENT` arm of [`handle_palette_intent`] and the palette never
+    /// opens; have [`PaletteExternal::arm_open`] push nothing and the drain count falls to zero
+    /// (`is_dirty` goes quiet, exactly as the dead click path did); open on `Some(0)` instead of the
+    /// focused pane and the target assertion fails.
+    #[test]
+    fn the_open_verb_arms_a_request_the_reducer_performs() {
+        Owner::new().run(|| {
+            seed_panes(2);
+            focus_pane(1);
+            assert!(!is_open(), "the palette starts closed");
+
+            let mut external = external();
+            assert!(
+                external.schema().field_for("open").is_some(),
+                "the verb is DECLARED, so a caller can discover it rather than guess it"
+            );
+            assert_eq!(
+                external.invoke("open", IntrospectValue::Null),
+                Ok(IntrospectValue::Bool(true)),
+                "the request is taken"
+            );
+            assert!(
+                !is_open(),
+                "the External itself opens nothing — it cannot reach the catalog's own state"
+            );
+
+            assert_eq!(
+                drain_into_reducer(&mut external),
+                1,
+                "exactly one palette intent reached the reducer"
+            );
+            assert!(is_open(), "the reducer performed the armed open");
+            assert_eq!(
+                use_target_pane().get(),
+                Some(1),
+                "the FOCUSED pane is the capture, as the chord and the context menu resolve it"
+            );
+            assert_eq!(
+                use_target_pane().get(),
+                focused_pane(),
+                "...which is one derivation, not a second authority"
+            );
+            assert!(
+                use_frozen_catalog().get().contains(&Command::Find),
+                "a captured pane means the pane commands are in the frozen list"
+            );
+        });
+    }
+
+    /// An open request over an ALREADY-OPEN palette is refused rather than honoured: re-opening
+    /// rebuilds the frozen list and clears the query, and the chord cannot do that (the field
+    /// swallows a `Ctrl+Shift+P` typed into an open palette). A half-typed query survives.
+    ///
+    /// REVERT-PROOF: drop the `is_open()` guard in [`open_on_request`] and BOTH the query and the
+    /// captured target are wiped — the target back to `None`, since nothing here holds focus.
+    #[test]
+    fn an_open_request_refuses_to_reopen_over_a_typed_query() {
+        Owner::new().run(|| {
+            seed_one_pane();
+            open(Some(0));
+            use_text_edit_state(PALETTE_FIELD_TAG).set_text("new window".to_owned());
+
+            let mut external = external();
+            external
+                .invoke("open", IntrospectValue::Null)
+                .expect("the request is taken");
+            assert_eq!(
+                drain_into_reducer(&mut external),
+                1,
+                "the intent is the palette's whether or not it is honoured — claiming it is routing"
+            );
+
+            assert!(is_open(), "the palette is still up");
+            assert_eq!(query(), "new window", "and the half-typed query survives");
+            assert_eq!(
+                use_target_pane().get(),
+                Some(0),
+                "as does the pane the open captured"
+            );
+        });
+    }
+
+    /// An open request while the destructive-command prompt is up is refused. `route_key` gates every
+    /// key on that prompt before the chord is even considered, so this is the RPC face honouring the
+    /// same rule — and [`crate::a11y`] states the two modals never being up together as an invariant
+    /// its tree relies on.
+    ///
+    /// REVERT-PROOF: drop the [`crate::confirm::is_open`] guard in [`open_on_request`] and the
+    /// palette opens over the prompt, stacking two modal dialogs.
+    #[test]
+    fn an_open_request_refuses_while_the_confirmation_prompt_is_up() {
+        Owner::new().run(|| {
+            seed_one_pane();
+            let victim = use_terminal().slots.new_window();
+            crate::confirm::run_or_arm(Command::KillWindow(victim), Some(0), &use_terminal().slots);
+            assert!(crate::confirm::is_open(), "the prompt is up");
+
+            let mut external = external();
+            external
+                .invoke("open", IntrospectValue::Null)
+                .expect("the request is taken");
+            assert_eq!(drain_into_reducer(&mut external), 1);
+
+            assert!(
+                !is_open(),
+                "the palette stays down while the client is asking whether to destroy something"
+            );
+            assert!(
+                crate::confirm::is_open(),
+                "and the prompt it would have covered is untouched"
+            );
+            crate::confirm::dismiss();
         });
     }
 
