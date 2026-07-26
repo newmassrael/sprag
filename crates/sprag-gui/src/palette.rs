@@ -111,6 +111,8 @@ const PALETTE_CATALOG_KEY: &str = "sprag_gui.palette.catalog";
 const PALETTE_TARGET_KEY: &str = "sprag_gui.palette.target";
 /// `Owner::cache` key for the cursor's index within the VISIBLE (filtered) rows.
 const PALETTE_CURSOR_KEY: &str = "sprag_gui.palette.cursor";
+/// `Owner::cache` key for the report about a project whose config could not be used.
+const PALETTE_PROJECT_ERROR_KEY: &str = "sprag_gui.palette.project_error";
 
 /// The query field's ACCESSIBLE NAME. Not a placeholder: `view_field` takes this only for
 /// `with_aria_label` and paints no hint text, which is why the visible affordance is the prompt
@@ -128,6 +130,16 @@ fn use_frozen_catalog() -> Signal<Rc<Vec<Command>>> {
     Owner::current()
         .expect("use_frozen_catalog() requires an active Owner scope")
         .cache(PALETTE_CATALOG_KEY, || Signal::new(Rc::new(Vec::new())))
+        .as_ref()
+        .clone()
+}
+
+/// Why the target pane's project contributed no commands, captured with the catalog it could not
+/// contribute to. `None` when there is no project or its config is fine.
+fn use_project_error() -> Signal<Option<Rc<str>>> {
+    Owner::current()
+        .expect("use_project_error() requires an active Owner scope")
+        .cache(PALETTE_PROJECT_ERROR_KEY, || Signal::new(None))
         .as_ref()
         .clone()
 }
@@ -248,7 +260,9 @@ fn visible_rows() -> Vec<usize> {
 pub(crate) fn open(target: Option<usize>) {
     let slots = &use_terminal().slots;
     use_target_pane().set(target);
-    use_frozen_catalog().set(Rc::new(command::catalog(target, slots)));
+    let catalog = command::catalog(target, slots);
+    use_project_error().set(catalog.project_error.map(Rc::from));
+    use_frozen_catalog().set(Rc::new(catalog.commands));
     use_cursor().set(0);
     use_text_edit_state(PALETTE_FIELD_TAG).set_text(String::new());
     // The field is the modal's only Tab stop: the rows are reached with the arrows (the palette
@@ -263,6 +277,7 @@ pub(crate) fn open(target: Option<usize>) {
 pub(crate) fn close() {
     use_palette_modal().close();
     use_frozen_catalog().set(Rc::new(Vec::new()));
+    use_project_error().set(None);
     use_cursor().set(0);
 }
 
@@ -729,8 +744,20 @@ pub(crate) fn view_palette(
         ),
     );
 
-    let mut children: Vec<Scene> = Vec::with_capacity(rows.len() + 2);
+    let mut children: Vec<Scene> = Vec::with_capacity(rows.len() + 3);
     children.push(input);
+    // A project whose config is broken gets a line of its own, above the rows: it is a REPORT, not a
+    // command, so it never becomes a row that looks runnable. Painted in the error role so it does
+    // not read as one more thing to pick.
+    if let Some(report) = use_project_error().get() {
+        children.push(Scene::Text(TextNode::styled(
+            format!("{report}"),
+            Rect::default(),
+            TextStyle::new()
+                .with_size_px(CHORD_FONT_PX)
+                .with_fg(theme.resolve(ColorRole::Error)),
+        )));
+    }
     if rows.is_empty() {
         // An honest empty state. "No matching command" describes what happened; a blank panel would
         // read as a palette that had broken.
@@ -803,9 +830,9 @@ fn view_row(row: usize, command: &Command, at_cursor: bool, theme: &Theme) -> Sc
         TextStyle::new().with_size_px(ROW_FONT_PX).with_fg(ink),
     ));
     let mut cells = vec![title];
-    if let Some(chord) = command.chord() {
+    if let Some(hint) = command.hint() {
         cells.push(Scene::Text(TextNode::styled(
-            chord,
+            hint,
             Rect::default(),
             TextStyle::new()
                 .with_size_px(CHORD_FONT_PX)
@@ -868,7 +895,8 @@ const PROMPT_GLYPH: &str = "›";
 const PALETTE_INPUT_TAG: &str = "sprag_palette_input";
 /// A row title's font size.
 const ROW_FONT_PX: u32 = 14;
-/// A chord hint's font size — smaller than the title, because it is a reminder, not the name.
+/// The right-hand hint's font size (a chord, or a project command's line) — smaller than the title,
+/// because it says what the row does rather than naming it.
 const CHORD_FONT_PX: u32 = 12;
 
 /// The most rows painted at once. The palette does not scroll (a fuzzy query is the way to reach a

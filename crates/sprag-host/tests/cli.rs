@@ -1306,3 +1306,83 @@ fn image_summaries(conn: &mut HostConn, session: &str) -> Vec<serde_json::Value>
         .cloned()
         .collect()
 }
+
+/// `sprag run` LISTS a project's declared commands, and TYPES one at the pane's prompt without
+/// running it — the whole vertical, over the real socket, with the daemon's `HOME` pointed at a
+/// temporary project so its boot pane sits inside one.
+///
+/// The pane runs `cat`, so what is "typed" at it comes straight back as its own output: that is how
+/// this proves the paste ARRIVED without needing a shell. The absence of a trailing newline is the
+/// load-bearing assertion — a project's config names the command, but the user presses Enter.
+///
+/// REVERT-PROOF: append a `\n` to the pasted line and the "no newline" assertion fails; drop the
+/// `run` verb's paste and the pane echoes nothing.
+#[test]
+fn the_cli_run_lists_a_projects_commands_and_types_one_at_the_prompt() {
+    let project = std::env::temp_dir().join(format!("sprag-cli-project-{}", std::process::id()));
+    std::fs::create_dir_all(&project).expect("create the temp project");
+    std::fs::write(
+        project.join(sprag_host::PROJECT_FILE),
+        "[[command]]\nname = \"greet\"\nrun = [\"echo\", \"two words\"]\n",
+    )
+    .expect("write the project config");
+
+    let (_host, sock) = spawn_host_env(&[("HOME", &project.display().to_string())]);
+
+    // The listing: `name<TAB>command line`, with the multi-word argument quoted back into one word.
+    let listed = sprag(&sock, &["run"]);
+    assert!(listed.ok, "run listed: {}", listed.stderr);
+    assert_eq!(
+        listed.stdout.trim(),
+        "greet\techo 'two words'",
+        "one line per command, name then the line it would run: {:?}",
+        listed.stdout
+    );
+
+    // An unknown name is a clean error naming what IS declared, never a silent no-op.
+    let unknown = sprag(&sock, &["run", "nope"]);
+    assert!(!unknown.ok, "an unknown command fails");
+    assert!(
+        unknown.stderr.contains("nope") && unknown.stderr.contains("greet"),
+        "the error names the miss and the alternatives: {}",
+        unknown.stderr
+    );
+
+    // The delivery: typed at the pane, which is `cat`, so it echoes back.
+    let typed = sprag(&sock, &["run", "greet"]);
+    assert!(typed.ok, "run greet succeeded: {}", typed.stderr);
+    let echoed = wait_for_pane_text(&sock, "echo 'two words'");
+    // The line appears EXACTLY ONCE: that one copy is the terminal's echo of what was typed. A
+    // trailing newline would have completed `cat`'s line-buffered read, so `cat` would write the
+    // line back and it would appear TWICE — which is precisely the "it ran" signal that must not
+    // happen here. (Measured both ways before being written down.)
+    assert_eq!(
+        echoed.matches("echo 'two words'").count(),
+        1,
+        "the line was typed but NOT executed — the Enter is the user's: {echoed:?}"
+    );
+
+    std::fs::remove_dir_all(&project).ok();
+}
+
+/// Poll pane 0's full text until it contains `needle`, returning it. Waits on the CONDITION the
+/// assertion reads rather than on a timer.
+fn wait_for_pane_text(sock: &Path, needle: &str) -> String {
+    let mut conn = HostConn::connect(sock, Duration::from_secs(5)).expect("connect");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut last = String::new();
+    while Instant::now() < deadline {
+        let answer = conn
+            .call(
+                "scene/query",
+                json!({ "path": sprag_host::pane_input_path(0, sprag_host::wire::FULL_TEXT_SLOT) }),
+            )
+            .expect("full_text query");
+        last = answer.as_str().unwrap_or_default().to_owned();
+        if last.contains(needle) {
+            return last;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!("pane 0 never showed {needle:?}; last text was {last:?}");
+}

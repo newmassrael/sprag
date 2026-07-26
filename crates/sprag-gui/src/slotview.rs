@@ -31,7 +31,8 @@ use std::collections::HashSet;
 
 use pinion_core::GridBuffer;
 use sprag_host::{
-    HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneNotification, PaneScrollFacts,
+    HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneNotification,
+    PaneScrollFacts, Project, ProjectError,
 };
 use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId, SessionInfo, WindowInfo};
@@ -209,6 +210,16 @@ impl SlotView {
     /// source window was closed — `None` for a hole or a refusal.
     pub(crate) fn join_pane(&self, slot: usize, dst: &str) -> Option<bool> {
         self.host.join_pane(self.id(slot)?, dst)
+    }
+
+    /// The project governing slot `slot`'s pane — the commands its `.sprag.toml` declares. `None`
+    /// for a hole, a pane in no project, or a remote pane (whose cwd is on another machine).
+    /// `Some(Err(_))` is a project whose config is unusable and must be SHOWN as such.
+    ///
+    /// Slot-mapped like every other read here, and asked ON DEMAND (the palette opening) because the
+    /// answer costs the host a filesystem walk and this client a socket round trip.
+    pub(crate) fn project(&self, slot: usize) -> Option<Result<Project, ProjectError>> {
+        self.host.project(self.id(slot)?)
     }
 
     /// Deliver a file dropped on the window to slot `slot`'s pane, returning the path the pane was

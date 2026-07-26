@@ -31,12 +31,16 @@
 //!    explicit user action. There is deliberately no "run on open" hook — the durability ring drew
 //!    the same line for restored commands (`SPRAG_RESTORE_PROGRAMS` is an operator trust boundary,
 //!    not a repository's).
-//! 2. **A command is an ARGV, not a shell string.** `run = ["cargo", "test"]` executes exactly those
-//!    words. There is no quoting to get wrong, no word splitting and no metacharacter to smuggle. A
+//! 2. **A command is DECLARED as an argv, not as a shell string.** `run = ["cargo", "test"]` names
+//!    exactly two words, so there is no word-splitting or expansion in what the config MEANS, and a
 //!    project that genuinely wants a shell writes `["bash", "-lc", "…"]` and says so in its own file.
-//! 3. **The argv is shown before it runs.** A client offering these must display what it would
-//!    execute (the palette paints it beside the title), so "run the tests" cannot quietly be
-//!    something else. This module makes that possible by keeping [`ProjectAction::run`] public.
+//!    Rendering that argv back into a command line for a pane's prompt does involve quoting, which is
+//!    why it happens in exactly one place ([`ProjectAction::command_line`], over the crate-private
+//!    `shellword` quoting SSOT the file-drop paste also uses) rather than at each call site.
+//! 3. **The command is shown before it runs.** A client offering these must display what it would
+//!    execute (the palette paints the command line beside the title), so "run the tests" cannot
+//!    quietly be something else — and the line is pasted WITHOUT a newline, so the keystroke that
+//!    runs it is still the user's.
 //!
 //! ## Bounds
 //!
@@ -82,6 +86,34 @@ pub struct ProjectAction {
     /// The argv to execute, verbatim and non-empty (see the module docs on why this is not a shell
     /// string). Public so a client can SHOW what it would run before running it.
     pub run: Vec<String>,
+}
+
+impl ProjectAction {
+    /// The action as ONE shell command line — each argv word quoted so a shell reproduces exactly
+    /// the words the config declared.
+    ///
+    /// This is how an action reaches a pane: a client PASTES this line at the pane's prompt. That is
+    /// deliberate, and it is the whole answer to "where does a project command run":
+    ///
+    /// * the user's own shell runs it, so the output stays in their scrollback, the line enters their
+    ///   history, and `Ctrl+C` works — none of which is true of a command run in a pane that
+    ///   disappears the moment the command exits (sprag has no remain-on-exit yet, so a
+    ///   spawn-a-pane-and-run target would make a fast command flash and vanish);
+    /// * it is pasted WITHOUT a trailing newline, so the user still presses `Enter`. A file arriving
+    ///   from a repository named this command; the person at the keyboard is the one who runs it.
+    ///
+    /// Quoted through the crate-private `shellword::shell_quote` SSOT, the same one the file-drop
+    /// paste uses (de-linked deliberately: this is public documentation and that module is not) — so
+    /// `run = ["git", "commit", "-m", "two words"]` becomes
+    /// `git commit -m 'two words'` and a word containing `$(…)` is inert rather than expanded.
+    #[must_use]
+    pub fn command_line(&self) -> String {
+        self.run
+            .iter()
+            .map(|word| crate::shellword::shell_quote(word))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
 }
 
 /// A project and the commands it declares.
@@ -273,6 +305,34 @@ mod tests {
         std::fs::create_dir_all(root.join("deep/deeper")).expect("temp project");
         std::fs::write(root.join(PROJECT_FILE), text).expect("write config");
         root
+    }
+
+    #[test]
+    fn an_action_becomes_a_shell_command_line_with_every_word_quoted_as_needed() {
+        // The line a client pastes at a prompt. REVERT-PROOF: drop the quoting and the two-word
+        // message becomes two arguments, which is a different command.
+        let action = ProjectAction {
+            name: "commit".to_owned(),
+            title: "Commit".to_owned(),
+            run: vec![
+                "git".to_owned(),
+                "commit".to_owned(),
+                "-m".to_owned(),
+                "two words".to_owned(),
+            ],
+        };
+        assert_eq!(action.command_line(), "git commit -m 'two words'");
+
+        let hostile = ProjectAction {
+            name: "x".to_owned(),
+            title: "x".to_owned(),
+            run: vec!["echo".to_owned(), "$(reboot)".to_owned()],
+        };
+        assert_eq!(
+            hostile.command_line(),
+            "echo '$(reboot)'",
+            "a substitution from an untrusted config is inert on the pasted line"
+        );
     }
 
     #[test]

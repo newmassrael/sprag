@@ -11,6 +11,9 @@
 //!                          PANE:LINE: text. Literal + ASCII case-insensitive by default;
 //!                          --regex reads NEEDLE as a case-SENSITIVE regular expression (use
 //!                          (?i) to fold); --pane narrows the sweep to one pane
+//! sprag run [NAME] [-t SESSION] [--pane N]  list the commands the pane's project declares
+//!                          (its `.sprag.toml`), or, given NAME, TYPE that command at the pane's
+//!                          prompt without running it — the Enter is the user's
 //! sprag attach NAME        open a sprag-gui window attached to a session (tmux attach-session)
 //! sprag kill-session NAME   kill a session (the last one ends the daemon)
 //! sprag kill-server [--purge]  kill every session, ending the daemon; --purge also deletes the
@@ -51,8 +54,9 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use sprag_host::wire::{
     BREAK_PANE_ACTION, CLIENTS_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION,
-    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, RENAME_WINDOW_ACTION, SELECT_WINDOW_ACTION,
-    SESSIONS_SLOT, WINDOWS_SLOT, find_slot_for, regex_slot_for,
+    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, RENAME_WINDOW_ACTION,
+    SELECT_WINDOW_ACTION, SESSIONS_SLOT, WINDOWS_SLOT, find_slot_for, project_slot_for,
+    regex_slot_for,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{HOST_SOCKET, HostConn, socket_path};
@@ -76,6 +80,7 @@ fn run() -> io::Result<()> {
         Some("new") => new(args.next()),
         Some("ssh") => ssh(args.collect()),
         Some("find") => find(args.collect()),
+        Some("run") => run_project(args.collect()),
         Some("attach") => attach(args.next()),
         Some("kill-session") => kill_session(args.next()),
         Some("kill-server") => kill_server(args.collect()),
@@ -96,6 +101,137 @@ fn run() -> io::Result<()> {
             std::process::exit(2);
         }
     }
+}
+
+/// The project commands a pane declares, listed — or one of them TYPED at that pane's prompt.
+///
+/// The pane whose project is read defaults to the first of the session's current window, the same
+/// choice `sprag ls` makes for the cwd it shows (a session's identity follows its first pane);
+/// `--pane` names another. That matters because a project is a function of a pane's working
+/// DIRECTORY: two panes of one window can sit in different repositories.
+///
+/// With no NAME this LISTS, one line per command, `name<TAB>command line` — a shape a script can cut.
+/// With a NAME it delivers that command as a pasted line at the pane's prompt and stops there,
+/// WITHOUT a newline: a command named by a file in a repository is typed for the user, and the
+/// keystroke that runs it stays theirs (see `sprag_host::project` for the whole rationale). This is
+/// the same delivery the GUI palette performs, through the same `paste` action, so the two cannot
+/// mean different things.
+fn run_project(args: Vec<String>) -> io::Result<()> {
+    let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
+    let mut name: Option<String> = None;
+    let mut session: Option<String> = None;
+    let mut pane: Option<u64> = None;
+    let mut it = args.into_iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "-t" | "--target" => {
+                session = Some(
+                    it.next()
+                        .ok_or_else(|| bad("run: -t needs a session name".to_owned()))?,
+                );
+            }
+            "--pane" => {
+                let value = it
+                    .next()
+                    .ok_or_else(|| bad("run: --pane needs a pane id".to_owned()))?;
+                pane = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| bad(format!("run: --pane {value:?} is not a pane id")))?,
+                );
+            }
+            _ if name.is_none() => name = Some(arg),
+            other => return Err(bad(format!("run: unexpected argument {other:?}"))),
+        }
+    }
+
+    let mut conn = connect()?;
+    if let Some(session) = &session {
+        require_session(&mut conn, session)?;
+    }
+    let scoped = |path: String| match &session {
+        Some(name) => json!({ "session": name, "path": path }),
+        None => json!({ "path": path }),
+    };
+
+    // Resolve the pane to read the project of.
+    let listed: Value = conn.call("scene/query", scoped(mux_action_path(PANES_SLOT)))?;
+    let panes: Vec<u64> = listed
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|pane| pane["id"].as_u64())
+        .collect();
+    let pane = match pane {
+        Some(only) if !panes.contains(&only) => {
+            let where_ = session.as_deref().unwrap_or("the current session");
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("run: no pane {only} in {where_} (panes: {panes:?})"),
+            ));
+        }
+        Some(only) => only,
+        None => *panes
+            .first()
+            .ok_or_else(|| bad("run: the window holds no pane".to_owned()))?,
+    };
+
+    let answer: Value = conn.call(
+        "scene/query",
+        scoped(mux_action_path(&project_slot_for(pane))),
+    )?;
+    if answer.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "run: pane {pane} is in no project (no {} above its working directory)",
+                sprag_host::PROJECT_FILE
+            ),
+        ));
+    }
+    // A broken config is the project's own error, reported as such rather than as "no commands".
+    if let Some(error) = answer["error"].as_str() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("run: {error}"),
+        ));
+    }
+    let project: sprag_host::Project = serde_json::from_value(answer)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("run: {error}")))?;
+
+    let Some(name) = name else {
+        // The listing. `name<TAB>command line`, so `cut -f1` yields exactly the names `run` accepts.
+        for action in &project.actions {
+            println!("{}\t{}", action.name, action.command_line());
+        }
+        return Ok(());
+    };
+    let action = project
+        .actions
+        .iter()
+        .find(|action| action.name == name)
+        .ok_or_else(|| {
+            let known: Vec<&str> = project.actions.iter().map(|a| a.name.as_str()).collect();
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "run: {} declares no command named {name:?} (it declares: {known:?})",
+                    project.root.display()
+                ),
+            )
+        })?;
+    // Delivered as a PASTE — the same action the GUI palette uses, and bracketed so the whole line
+    // arrives as one inert unit at the prompt.
+    conn.call("scene/invoke", {
+        let mut params = scoped(pane_input_path(pane, PASTE_ACTION));
+        params["args"] = json!({ "text": action.command_line() });
+        params
+    })?;
+    eprintln!(
+        "sprag: typed {:?} at pane {pane}; press Enter there to run it",
+        action.command_line()
+    );
+    Ok(())
 }
 
 fn print_usage() {

@@ -39,29 +39,8 @@ use std::process::{Command, Stdio};
 use sprag_terminal::{PanePtyHandle, SshRemote};
 
 use crate::pane::paste;
+use crate::shellword::shell_quote;
 use crate::ssh::SshTarget;
-
-/// Characters that need no shell quoting: they expand to themselves in every POSIX shell, in any
-/// position of a path word. Everything else (a space, a quote, `~`, `!`, `*`, `$`, a newline…) sends
-/// the whole path through [`shell_quote`].
-const UNQUOTED: &str = "_-./=+:,@%";
-
-/// Shell-quote a path fragment for pasting: returned as-is when every character is
-/// [self-expanding](UNQUOTED), otherwise wrapped in single quotes with any embedded `'` closed and
-/// re-opened (`'` → `'\''`), the one escape POSIX single quoting allows.
-///
-/// Quoting only when needed keeps the common `/home/me/report.pdf` clean on the command line while
-/// still making `my report.pdf` — or a name containing `$(reboot)` — a single inert word.
-fn shell_quote(fragment: &str) -> String {
-    let safe = !fragment.is_empty()
-        && fragment
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || UNQUOTED.contains(ch));
-    if safe {
-        return fragment.to_owned();
-    }
-    format!("'{}'", fragment.replace('\'', r"'\''"))
-}
 
 /// The remote path an uploaded file lands at: `~/<basename>`, the basename shell-quoted.
 ///

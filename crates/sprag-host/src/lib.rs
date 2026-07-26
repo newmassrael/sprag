@@ -57,6 +57,9 @@ pub mod project;
 pub mod rpc;
 pub mod runs;
 pub mod scope;
+// A plain `//` (not `///`): an outer doc comment on a `mod` merges with the module's own `//!`
+// docs and resolves THEIR intra-doc links in this scope, which manufactures phantom errors.
+mod shellword;
 pub mod ssh;
 // Dropped-file delivery (paste a local path / `scp` it to a remote workspace first). Private: the
 // policy is reached ONLY through the `drop_file` action + `HostClient::drop_file`, so there is one

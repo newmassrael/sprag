@@ -44,6 +44,8 @@
 //! not offered when there is none ([`catalog`]), which is why [`Command::run`] can take the target
 //! it was built for and act.
 
+use sprag_host::ProjectAction;
+
 use crate::slotview::SlotView;
 
 /// One thing the client can be asked to do by name.
@@ -79,6 +81,12 @@ pub(crate) enum Command {
     SwitchSession(String),
     /// Switch back to the most recently used other session (`Ctrl+Shift+L`).
     LastSession,
+    /// A command the target pane's PROJECT declares in its `.sprag.toml`.
+    ///
+    /// Carries the whole action rather than its name, for the reason the dynamic window / session
+    /// rows carry names: the palette freezes its list at open time, and an index or a name would
+    /// have to be re-resolved against a project that may have been edited since.
+    Project(ProjectAction),
 }
 
 impl Command {
@@ -100,24 +108,33 @@ impl Command {
             Self::NewSession => "New session".to_owned(),
             Self::SwitchSession(name) => format!("Switch to session {name}"),
             Self::LastSession => "Switch to the last session".to_owned(),
+            // The project's own words. NOT prefixed with "Run" — a project titles its commands, and
+            // wrapping them would make a fuzzy query match sprag's phrasing instead of theirs.
+            Self::Project(action) => action.title.clone(),
         }
     }
 
-    /// The keyboard chord that runs this command without the palette, or `None` for one the palette
-    /// is the only way to reach.
+    /// What the row shows on its right — the SECOND column of a palette row, and two different
+    /// facts share it because they answer the same question ("what will this actually do?").
     ///
-    /// Shown at the end of the row: a palette that lists a command it shares with a chord should
-    /// teach that chord, or it trains the user to keep opening the palette for something one
-    /// keystroke already does. (The strings are the DISPLAY form of the bindings
-    /// [`crate::input`] recognizes — there is no chord table to derive them from, so a renamed
-    /// binding must be renamed here too.)
-    pub(crate) fn chord(&self) -> Option<&'static str> {
+    /// * For a built-in, the keyboard CHORD that runs it without the palette. A palette that lists a
+    ///   command it shares with a chord should teach that chord, or it trains the user to keep
+    ///   opening the palette for something one keystroke already does. (These strings are the DISPLAY
+    ///   form of the bindings [`crate::input`] recognizes — there is no chord table to derive them
+    ///   from, so a renamed binding must be renamed here too.)
+    /// * For a PROJECT action, the COMMAND LINE it would run. That is not decoration: a project's
+    ///   config arrives with a repository, so a row saying only "Run the tests" would be asking the
+    ///   user to trust a label. Showing `cargo test` is what makes the offer honest.
+    ///
+    /// `None` for a command with neither.
+    pub(crate) fn hint(&self) -> Option<String> {
         match self {
-            Self::Find => Some("Ctrl+Shift+F"),
-            Self::Copy => Some("Ctrl+Shift+C"),
-            Self::Paste => Some("Ctrl+Shift+V"),
-            Self::ToggleFloat => Some("Ctrl+Shift+Enter"),
-            Self::LastSession => Some("Ctrl+Shift+L"),
+            Self::Find => Some("Ctrl+Shift+F".to_owned()),
+            Self::Copy => Some("Ctrl+Shift+C".to_owned()),
+            Self::Paste => Some("Ctrl+Shift+V".to_owned()),
+            Self::ToggleFloat => Some("Ctrl+Shift+Enter".to_owned()),
+            Self::LastSession => Some("Ctrl+Shift+L".to_owned()),
+            Self::Project(action) => Some(action.command_line()),
             Self::SelectAll
             | Self::BreakOut
             | Self::NewWindow
@@ -142,7 +159,10 @@ impl Command {
             | Self::Paste
             | Self::SelectAll
             | Self::ToggleFloat
-            | Self::BreakOut => true,
+            | Self::BreakOut
+            // A project command is DELIVERED to a pane's prompt, so it needs one as much as a paste
+            // does — and the pane it needs is the one whose project declared it.
+            | Self::Project(_) => true,
             Self::NewWindow
             | Self::SelectWindow(_)
             | Self::NewSession
@@ -207,6 +227,15 @@ impl Command {
             }
             Self::SwitchSession(name) => slots.switch_session(name),
             Self::LastSession => slots.switch_to_last_session(),
+            // PASTED at the pane's prompt, without a trailing newline: the user presses Enter. The
+            // whole rationale (their shell runs it, so output/history/Ctrl-C behave; and a command
+            // named by a file in a repository must not execute on a repository's say-so) lives on
+            // `ProjectAction::command_line`. Bracketed paste keeps the whole line one inert unit.
+            Self::Project(action) => {
+                if let Some(pane) = target {
+                    let _ = slots.paste(pane, &action.command_line());
+                }
+            }
         }
     }
 }
@@ -220,6 +249,11 @@ const MAX_WINDOW_ROWS: usize = crate::wtabs::MAX_WINDOW_TABS;
 /// The cap on `Switch to session <name>` rows, for the same reason, against the session rail.
 const MAX_SESSION_ROWS: usize = 16;
 
+/// The cap on rows one PROJECT may contribute. The host already refuses a config declaring more than
+/// its own cap, so this is the client's independent bound on what it will paint — the file is
+/// untrusted input, and a client should not depend on the other end having checked.
+const MAX_PROJECT_ROWS: usize = sprag_host::project::MAX_ACTIONS;
+
 /// Every command offered RIGHT NOW, in the order a palette with an empty query lists them.
 ///
 /// Built from live state (the window and session lists) and from `target`, so it is a snapshot:
@@ -228,12 +262,42 @@ const MAX_SESSION_ROWS: usize = 16;
 /// under an open palette could move a row between the frame the user read and the `Enter` that
 /// runs it, so an activation would run a neighbour of the command they chose.
 ///
-/// Order is by kind, most-local first: the pane commands (which act on what the user is looking
-/// at), then the window commands, then the session ones. Within a kind, declaration order. An
-/// empty query therefore reads as a menu of the client's capabilities rather than an arbitrary
-/// permutation, and the fuzzy ranking takes over the moment anything is typed.
-pub(crate) fn catalog(target: Option<usize>, slots: &SlotView) -> Vec<Command> {
-    let mut out = vec![
+/// Order is by kind, MOST SPECIFIC FIRST: the target pane's PROJECT commands, then the pane
+/// commands (which act on what the user is looking at), then the window commands, then the session
+/// ones. Within a kind, declaration order — the project's own file order for its own commands.
+///
+/// The project going first is not a preference. The palette paints a bounded number of rows
+/// ([`MAX_VISIBLE_ROWS`](crate::palette)), so whatever sits at the END of an unfiltered list is
+/// INVISIBLE until something is typed — and the rows that must not be invisible are the ones a
+/// project deliberately declared, which exist nowhere else and which nothing else can reach. A
+/// built-in pushed past the cut still has its chord and its menu. (Learned from the live screenshot:
+/// with the project last, a config's second command could not be seen at all.)
+///
+/// The fuzzy ranking takes over the moment anything is typed, so this order only governs the
+/// just-opened palette.
+pub(crate) fn catalog(target: Option<usize>, slots: &SlotView) -> Catalog {
+    // The target pane's PROJECT commands first (see the fn docs). The read is the reason `catalog`
+    // is only ever called at OPEN time: it costs the host a filesystem walk (and, off a wire client,
+    // a socket round trip).
+    let mut project_error = None;
+    let mut out: Vec<Command> = Vec::new();
+    if let Some(pane) = target {
+        match slots.project(pane) {
+            None => {}
+            Some(Ok(project)) => out.extend(
+                project
+                    .actions
+                    .into_iter()
+                    .take(MAX_PROJECT_ROWS)
+                    .map(Command::Project),
+            ),
+            // A project whose config is unusable contributes NO rows and one message. Reporting it
+            // is the point: a client that showed an empty list would leave the config's author
+            // believing their file works (`sprag_host::project` carries the whole rationale).
+            Some(Err(error)) => project_error = Some(error.to_string()),
+        }
+    }
+    out.extend([
         Command::Find,
         Command::Copy,
         Command::Paste,
@@ -241,9 +305,10 @@ pub(crate) fn catalog(target: Option<usize>, slots: &SlotView) -> Vec<Command> {
         Command::ToggleFloat,
         Command::BreakOut,
         Command::NewWindow,
-    ];
+    ]);
     // A pane command with no pane to act on is not offered at all: a row that is guaranteed to do
-    // nothing is worse than a shorter list, because the user cannot tell the two apart.
+    // nothing is worse than a shorter list, because the user cannot tell the two apart. (A project
+    // command is only ever added WITH a target above, so this cannot strip one.)
     out.retain(|command| !command.needs_pane() || target.is_some());
 
     // One row per OTHER window: going to the window you are already in is not an action.
@@ -268,7 +333,23 @@ pub(crate) fn catalog(target: Option<usize>, slots: &SlotView) -> Vec<Command> {
             .map(|session| Command::SwitchSession(session.name.clone())),
     );
     out.push(Command::LastSession);
-    out
+    Catalog {
+        commands: out,
+        project_error,
+    }
+}
+
+/// What one [`catalog`] call answers: the commands to offer, and any report about the project that
+/// could not contribute to them.
+///
+/// A struct rather than a bare `Vec` because the error is NOT a command — it is something to SHOW,
+/// and folding it into the list as an unrunnable row would put a thing that cannot be run where
+/// every other row can be.
+pub(crate) struct Catalog {
+    /// The commands to offer, in the order an empty query lists them.
+    pub(crate) commands: Vec<Command>,
+    /// Why the target pane's project contributed nothing, when it exists and is broken.
+    pub(crate) project_error: Option<String>,
 }
 
 #[cfg(test)]
@@ -292,6 +373,8 @@ mod tests {
         new_sessions: usize,
         broken_panes: Vec<PaneId>,
         last_session: usize,
+        /// `(pane, text)` per paste — how a project command reaches a pane.
+        pasted: Vec<(PaneId, String)>,
     }
 
     /// A [`HostClient`] serving fixed window / session lists and RECORDING the actions
@@ -303,6 +386,8 @@ mod tests {
         sessions: Vec<String>,
         current: String,
         log: Rc<RefCell<Log>>,
+        /// What this host answers for a pane's project — the three outcomes the real host has.
+        project: Option<Result<sprag_host::Project, sprag_host::ProjectError>>,
     }
 
     impl HostClient for CatalogHost {
@@ -352,6 +437,16 @@ mod tests {
         fn kill_session(&self, _name: &str) {}
         fn switch_to_last_session(&self) {
             self.log.borrow_mut().last_session += 1;
+        }
+        fn project(
+            &self,
+            _id: PaneId,
+        ) -> Option<Result<sprag_host::Project, sprag_host::ProjectError>> {
+            self.project.clone()
+        }
+        fn paste(&self, id: PaneId, text: &str) -> bool {
+            self.log.borrow_mut().pasted.push((id, text.to_owned()));
+            true
         }
         fn pane_ids(&self) -> Vec<PaneId> {
             // A pane whose id is NOT its slot number, so a test asserting on the id it recorded
@@ -423,10 +518,132 @@ mod tests {
             sessions: sessions.iter().map(|s| (*s).to_owned()).collect(),
             current: current.to_owned(),
             log: Rc::clone(&log),
+            project: None,
         };
         let slots = SlotView::new(Box::new(host));
         slots.reconcile();
         (slots, log)
+    }
+
+    /// A `SlotView` whose host answers `project` with `answer`.
+    fn slots_with_project(
+        answer: Option<Result<sprag_host::Project, sprag_host::ProjectError>>,
+    ) -> (SlotView, Rc<RefCell<Log>>) {
+        let log: Rc<RefCell<Log>> = Rc::default();
+        let host = CatalogHost {
+            windows: vec![WindowInfo {
+                name: "main".to_owned(),
+                current: true,
+            }],
+            sessions: vec!["0".to_owned()],
+            current: "0".to_owned(),
+            log: Rc::clone(&log),
+            project: answer,
+        };
+        let slots = SlotView::new(Box::new(host));
+        slots.reconcile();
+        (slots, log)
+    }
+
+    /// One declared command, as the host would answer it.
+    fn one_action_project() -> sprag_host::Project {
+        sprag_host::Project {
+            root: std::path::PathBuf::from("/tmp/demo"),
+            actions: vec![sprag_host::ProjectAction {
+                name: "test".to_owned(),
+                title: "Run the suite".to_owned(),
+                run: vec!["cargo".to_owned(), "test".to_owned()],
+            }],
+        }
+    }
+
+    /// A project's declared commands join the catalog, titled in the project's OWN words, and each
+    /// row shows the command line it would run — the "show it before you run it" rule.
+    ///
+    /// REVERT-PROOF: drop the project arm from `catalog` and no row carries the title; drop
+    /// `hint()`'s `Project` arm and the command line stops being shown.
+    #[test]
+    fn a_projects_commands_join_the_catalog_showing_what_they_would_run() {
+        let (slots, _log) = slots_with_project(Some(Ok(one_action_project())));
+        let built = catalog(Some(0), &slots);
+
+        let action = built
+            .commands
+            .iter()
+            .find(|command| matches!(command, Command::Project(_)))
+            .expect("the project's command is offered");
+        assert_eq!(action.title(), "Run the suite", "the project's own title");
+        assert_eq!(
+            action.hint().as_deref(),
+            Some("cargo test"),
+            "the row shows the command line, so the offer is not a label to be trusted blindly"
+        );
+        assert!(built.project_error.is_none());
+    }
+
+    /// A project's commands come FIRST in an unfiltered catalog — the palette paints a bounded
+    /// number of rows, so the ones that exist nowhere else must not be the ones pushed past the cut.
+    ///
+    /// REVERT-PROOF: move the project block back after the built-ins and this fails.
+    #[test]
+    fn a_projects_commands_lead_the_unfiltered_catalog() {
+        let (slots, _log) = slots_with_project(Some(Ok(one_action_project())));
+        let built = catalog(Some(0), &slots);
+        assert!(
+            matches!(built.commands.first(), Some(Command::Project(_))),
+            "the project's own commands lead: {:?}",
+            built.commands.first()
+        );
+    }
+
+    /// A project command is DELIVERED to the pane's prompt as a pasted line, with NO trailing
+    /// newline — the user still presses Enter.
+    ///
+    /// REVERT-PROOF: make the `Project` arm of `run` send text with a `\n` and the assertion on the
+    /// exact payload fails; drop the arm and nothing is pasted at all.
+    #[test]
+    fn running_a_project_command_pastes_the_line_without_executing_it() {
+        let (slots, log) = slots_with_project(Some(Ok(one_action_project())));
+        let built = catalog(Some(0), &slots);
+        let action = built
+            .commands
+            .into_iter()
+            .find(|command| matches!(command, Command::Project(_)))
+            .expect("the project's command is offered");
+
+        action.run(Some(0), &slots);
+
+        let pasted = log.borrow().pasted.clone();
+        assert_eq!(
+            pasted,
+            vec![(PaneId(7), "cargo test".to_owned())],
+            "the line reaches the captured pane verbatim and WITHOUT a newline: {pasted:?}"
+        );
+    }
+
+    /// A project whose config is broken contributes NO rows and one report — never an empty list
+    /// that would leave the config's author thinking it worked.
+    ///
+    /// REVERT-PROOF: fold the error into the command list (or drop it) and this fails.
+    #[test]
+    fn a_broken_project_config_contributes_a_report_and_no_rows() {
+        let (slots, _log) = slots_with_project(Some(Err(sprag_host::ProjectError::Malformed(
+            "expected `]` at line 3".to_owned(),
+        ))));
+        let built = catalog(Some(0), &slots);
+
+        assert!(
+            !built
+                .commands
+                .iter()
+                .any(|command| matches!(command, Command::Project(_))),
+            "a broken config offers nothing to run"
+        );
+        let report = built.project_error.expect("...but it does report why");
+        assert!(
+            report.contains("expected `]`"),
+            "the report carries the parser's message: {report}"
+        );
     }
 
     #[test]
@@ -434,8 +651,8 @@ mod tests {
         // Built twice over the SAME host state, differing only in whether a pane was captured — so
         // the delta is exactly the pane commands.
         let (slots, _log) = slots_with(&[("0", true)], &["0"], "0");
-        let with_pane = catalog(Some(0), &slots);
-        let without = catalog(None, &slots);
+        let with_pane = catalog(Some(0), &slots).commands;
+        let without = catalog(None, &slots).commands;
 
         assert!(
             with_pane.contains(&Command::Find),
@@ -459,6 +676,7 @@ mod tests {
             "0",
         );
         let titles: Vec<String> = catalog(Some(0), &slots)
+            .commands
             .iter()
             .map(Command::title)
             .collect();
@@ -493,7 +711,7 @@ mod tests {
         let session_refs: Vec<&str> = sessions.iter().map(String::as_str).collect();
         let (slots, _log) = slots_with(&window_refs, &session_refs, "s0");
 
-        let built = catalog(Some(0), &slots);
+        let built = catalog(Some(0), &slots).commands;
         let windows_offered = built
             .iter()
             .filter(|c| matches!(c, Command::SelectWindow(_)))
@@ -548,7 +766,7 @@ mod tests {
         // The title is what a query matches and what the row paints; an empty one would be an
         // unreachable, invisible row.
         let (slots, _log) = slots_with(&[("main", true), ("build", false)], &["0", "work"], "0");
-        for command in catalog(Some(0), &slots) {
+        for command in catalog(Some(0), &slots).commands {
             assert!(
                 !command.title().trim().is_empty(),
                 "{command:?} paints and matches on its title"
