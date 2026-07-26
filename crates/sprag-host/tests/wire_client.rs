@@ -20,6 +20,7 @@ use sprag_host::wire::{
     JOIN_PANE_ACTION, KILL_SESSION_ACTION, LAYOUT_SLOT, LINKS_SLOT, NEW_SESSION_ACTION,
     NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
     SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
+    project_slot_for,
 };
 use sprag_host::{mux_action_path, pane_input_path};
 use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn};
@@ -1853,4 +1854,108 @@ impl Drop for DropFixture {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+/// A pane's PROJECT reaches a wire client: the daemon walks up from that pane's LIVE cwd, parses the
+/// `.sprag.toml` it finds, and serves the declared commands on the mux `project.<pane>` slot.
+///
+/// The daemon's `HOME` is pointed at the temporary project, because a birth pane with no explicit
+/// cwd starts in the home directory (portable-pty's default) — so this puts the boot pane INSIDE the
+/// project without driving a `cd` through its shell, which would be a race to wait on.
+///
+/// REVERT-PROOF: drop the `project.<pane>` arm from the mux `query` and the slot answers
+/// `UnknownPath` instead of the actions; make `project_value` ignore the pane's remote flag and the
+/// remote case below stops being `null`.
+#[test]
+fn a_panes_project_commands_reach_a_wire_client() {
+    let project = std::env::temp_dir().join(format!("sprag-wire-project-{}", std::process::id()));
+    std::fs::create_dir_all(project.join("sub")).expect("create the temp project");
+    std::fs::write(
+        project.join(sprag_host::PROJECT_FILE),
+        "[[command]]\nname = \"test\"\ntitle = \"Run the suite\"\nrun = [\"cargo\", \"test\"]\n",
+    )
+    .expect("write the project config");
+
+    let (_host, sock) = spawn_host_with(&["cat"], &[("HOME", &project.display().to_string())]);
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term");
+
+    let answer = conn
+        .call(
+            "scene/query",
+            json!({ "path": mux_action_path(&project_slot_for(0)) }),
+        )
+        .expect("project query");
+
+    assert_eq!(
+        answer["root"].as_str(),
+        Some(project.to_str().expect("utf-8 temp path")),
+        "the root is the directory holding the config: {answer}"
+    );
+    assert_eq!(
+        answer["actions"][0]["name"].as_str(),
+        Some("test"),
+        "the declared command's name reaches the client: {answer}"
+    );
+    assert_eq!(
+        answer["actions"][0]["title"].as_str(),
+        Some("Run the suite"),
+        "...and its title: {answer}"
+    );
+    assert_eq!(
+        answer["actions"][0]["run"],
+        json!(["cargo", "test"]),
+        "...and the ARGV it would run, so a client can show it before running it: {answer}"
+    );
+
+    // A pane that does not exist is `null`, not an error — the same "no project here" answer a pane
+    // outside any project gets, because neither is a fault to report.
+    let absent = conn
+        .call(
+            "scene/query",
+            json!({ "path": mux_action_path(&project_slot_for(9999)) }),
+        )
+        .expect("a query for an absent pane still answers");
+    assert!(absent.is_null(), "an unknown pane has no project: {absent}");
+
+    std::fs::remove_dir_all(&project).ok();
+}
+
+/// A project whose config is BROKEN is reported as an error, never as an empty command list — the
+/// author of a committed config needs to hear about their typo.
+///
+/// REVERT-PROOF: make `project_value` answer `Null` for a parse failure and this fails.
+#[test]
+fn a_broken_project_config_is_reported_rather_than_read_as_empty() {
+    let project = std::env::temp_dir().join(format!("sprag-wire-badproj-{}", std::process::id()));
+    std::fs::create_dir_all(&project).expect("create the temp project");
+    std::fs::write(
+        project.join(sprag_host::PROJECT_FILE),
+        "[[command]]\nname = \"test\"\nrun = [\n",
+    )
+    .expect("write a broken config");
+
+    let (_host, sock) = spawn_host_with(&["cat"], &[("HOME", &project.display().to_string())]);
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term");
+    let answer = conn
+        .call(
+            "scene/query",
+            json!({ "path": mux_action_path(&project_slot_for(0)) }),
+        )
+        .expect("project query");
+
+    let error = answer["error"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a broken config reports an error: {answer}"));
+    assert!(
+        error.contains(sprag_host::PROJECT_FILE),
+        "the report names the file: {error}"
+    );
+    assert!(
+        answer.get("actions").is_none(),
+        "and offers no actions to run: {answer}"
+    );
+
+    std::fs::remove_dir_all(&project).ok();
 }

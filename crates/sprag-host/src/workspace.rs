@@ -74,8 +74,8 @@ use crate::scope::SessionScope;
 use crate::wire::{
     BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DROP_FILE_ACTION, JOIN_PANE_ACTION,
     KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION, NEW_WINDOW_ACTION,
-    PANES_SLOT, RENAME_WINDOW_ACTION, RESIZE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
-    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, WINDOWS_SLOT,
+    PANES_SLOT, PROJECT_FIELD, RENAME_WINDOW_ACTION, RESIZE_ACTION, SELECT_WINDOW_ACTION,
+    SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, WINDOWS_SLOT,
 };
 
 /// The mux-management engine `External`: a control surface over the shared
@@ -749,6 +749,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                     SchemaField::new(SESSIONS_SLOT, "list"),
                     SchemaField::new(CLIENTS_SLOT, "list"),
                     SchemaField::new(WINDOWS_SLOT, "list"),
+                    PROJECT_FIELD,
                 ]
             },
         )
@@ -944,7 +945,13 @@ impl ExternalIntrospect for WorkspaceExternal {
                     }
                 }
             }
-            _ => None,
+            // The project governing ONE pane: the commands its `.sprag.toml` declares. Parametric,
+            // so it is matched after the fixed slots above (`project.<pane>`, see `PROJECT_FIELD`
+            // for why this lives on the mux external rather than the pane's own).
+            path => {
+                let pane = path.strip_prefix("project.")?.parse::<u64>().ok()?;
+                Some(project_value(self.workspace(), PaneId(pane)))
+            }
         }
     }
 
@@ -978,6 +985,52 @@ impl ExternalIntrospect for WorkspaceExternal {
             DROP_FILE_ACTION => self.drop_file(&args),
             _ => Err(InvokeError::UnknownPath),
         }
+    }
+}
+
+/// The `project.<pane>` answer for one pane: the commands the project it sits in declares.
+///
+/// Three outcomes, each distinct on the wire (see
+/// [`PROJECT_FIELD`](crate::wire::PROJECT_FIELD)): `null` for a pane in no project — or one whose
+/// cwd is not local, or that has since gone; the project object for a usable config; and
+/// `{error}` for a project whose config is unusable, because a typo must be reported rather than
+/// look like "this project declares nothing".
+///
+/// The workspace lock is taken ONLY to read the two facts the registry owns (is this pane remote,
+/// and where is it) and is DROPPED before the filesystem walk. A config read is IO — holding a
+/// registry lock across it would stall every other request behind someone else's slow disk, the
+/// same discipline the file-drop upload follows by handing its thread only a PTY handle.
+fn project_value(workspace: &Arc<Mutex<Workspace>>, pane: PaneId) -> IntrospectValue {
+    let cwd = {
+        let pool = lock(workspace);
+        let Some(pane) = pool.pane(pane) else {
+            // A pane the caller named that this window does not hold (closed, or another window's).
+            return IntrospectValue::Null;
+        };
+        if pane.remote().is_some() {
+            // A REMOTE workspace's working directory is on another machine, so walking THIS
+            // filesystem for a `.sprag.toml` would either find nothing or — worse — find the local
+            // project the daemon happens to sit in and offer its commands for a remote shell.
+            return IntrospectValue::Null;
+        }
+        pane.pty().cwd()
+    };
+    let Some(cwd) = cwd else {
+        // No readable cwd: the child has exited, or the platform has no `/proc`.
+        return IntrospectValue::Null;
+    };
+    match crate::project::load(&cwd) {
+        None => IntrospectValue::Null,
+        Some(Ok(project)) => match serde_json::to_value(&project) {
+            Ok(json) => IntrospectValue::Json(json),
+            Err(error) => {
+                tracing::error!(target: "sprag_host", %error, "project failed to serialise");
+                IntrospectValue::Null
+            }
+        },
+        Some(Err(error)) => IntrospectValue::Json(serde_json::json!({
+            "error": error.to_string(),
+        })),
     }
 }
 

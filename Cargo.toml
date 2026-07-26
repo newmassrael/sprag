@@ -119,6 +119,11 @@ unicode-width = "0.2"
 # so this is a direct name for a crate sprag-vt already builds. The engine's linear-time guarantee
 # is the reason a caller-supplied pattern is safe to run on the dispatch thread at all.
 regex = "1"
+# Per-project config (`.sprag.toml`): the commands a project declares for itself.
+# TOML rather than JSON because the file is HAND-WRITTEN and committed, and a config
+# a human maintains without comments is a real defect; it also matches this repo's own
+# convention (Cargo.toml, mnemosyne.toml). Confined to sprag-host, which owns the policy.
+toml = "1"
 
 # Grapheme-cluster segmentation (UAX#29) for DEC mode 2027 (grapheme
 # clustering): groups ZWJ emoji sequences, flags, and skin-tone / VS16

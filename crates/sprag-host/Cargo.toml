@@ -44,6 +44,10 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 # Building the read-only method-gate error response.
 serde_json = { workspace = true }
+# Parse `.sprag.toml`, the per-project command file (crate::project). Only the host reads
+# it: the host is the one process that knows every pane's live cwd, so one parse serves the
+# CLI, every attached GUI and the MCP surface alike.
+toml = { workspace = true }
 # serde derive for the wire DTOs (PaneScrollFacts + the pane cells-frame). The
 # GridBuffer's own serde comes from pinion-core; this is for sprag's frame types.
 serde = { workspace = true }

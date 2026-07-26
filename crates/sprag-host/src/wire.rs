@@ -332,6 +332,34 @@ pub const CLOSE_ACTION: &str = "close";
 pub const RESIZE_ACTION: &str = "resize";
 /// The mux control external query slot: the live pane list as JSON.
 pub const PANES_SLOT: &str = "panes";
+
+/// The arguments of [`PROJECT_FIELD`] — one pane `id`, `Open` (a pane id is minted by the host and
+/// never bounded by a list this schema publishes, the same reason [`IMAGE_DATA_ARGS`] is open).
+const PROJECT_ARGS: &[SchemaArg] = &[SchemaArg::open("pane", "int")];
+
+/// The mux control external query slot: the PROJECT governing one pane — the commands its
+/// `.sprag.toml` declares ([`Project`](crate::Project)), as
+/// `{root, actions:[{name,title,run}]}`; `{error}` when that project's config is unusable, and
+/// `null` when the pane is in no project at all.
+///
+/// Pane-PARAMETRIC but served on the MUX external rather than the pane's own, because the answer
+/// needs two facts only the registry holds together: the pane's live working directory (which
+/// decides WHICH project) and whether the pane is a REMOTE workspace (in which case that cwd is on
+/// another machine and no local walk can describe it, so the answer is `null`).
+///
+/// Read ON DEMAND — a client asks when it opens a palette or runs a command, never per frame, so a
+/// filesystem walk never lands on the paint path. The three outcomes are deliberately distinct:
+/// "no project" is not an error, and a project whose config has a typo must say so rather than look
+/// empty (the same rule the find bar's refused-pattern report follows).
+pub const PROJECT_FIELD: SchemaField =
+    SchemaField::parametric("project.<pane>", "object", PROJECT_ARGS);
+
+/// The `project.<pane>` query path for pane `id` — the ONE place that name is built, so a client and
+/// the host cannot spell it differently.
+#[must_use]
+pub fn project_slot_for(pane: u64) -> String {
+    format!("project.{pane}")
+}
 /// The mux control external query slot: the LOGICAL layout of the current window of the
 /// session the request is SCOPED to ([`SESSION_PARAM`]), plus the
 /// revision it is at ([`LayoutSnapshot`](sprag_terminal::LayoutSnapshot)) as JSON — the

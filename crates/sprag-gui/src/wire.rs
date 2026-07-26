@@ -86,11 +86,11 @@ use sprag_host::wire::{
     KILL_WINDOW_ACTION, LAYOUT_SLOT, MOUSE_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION,
     PANES_SLOT, PASTE_ACTION, PROMPT_MARKS_SLOT, RESIZE_ACTION, SELECT_WINDOW_ACTION,
     SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT,
-    cells_slot_at, find_slot_for, regex_slot_for,
+    cells_slot_at, find_slot_for, project_slot_for, regex_slot_for,
 };
 use sprag_host::{
     CellFrame, HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneNotification,
-    PaneScrollFacts, mux_action_path, pane_input_path,
+    PaneScrollFacts, Project, ProjectError, mux_action_path, pane_input_path,
 };
 use sprag_input::{Modifiers, MouseButton, MouseEventKind, MouseInput};
 use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn, runtime_path};
@@ -1488,6 +1488,29 @@ impl HostClient for WireHost {
         self.request("scene/query", params, "pane_find_regex")
             .and_then(|value| serde_json::from_value(value).ok())
             .unwrap_or_default()
+    }
+
+    /// The project governing pane `id`, over the mux `project.<pane>` slot. On demand (a palette
+    /// opening), never per frame — the answer costs a filesystem walk host-side.
+    ///
+    /// The host distinguishes three answers and so does this: `Null` is "no project here" (`None`),
+    /// an `{error}` object is a project whose config is unusable, and anything else deserialises
+    /// into the SAME [`Project`] the host serialised, so the two ends cannot drift on a field name.
+    /// An unparseable payload is reported as a malformed config rather than silently dropped, since
+    /// the alternative is a client that shows an empty command list for a project that has one.
+    fn project(&self, id: PaneId) -> Option<Result<Project, ProjectError>> {
+        let params = json!({ "path": mux_action_path(&project_slot_for(id.0)) });
+        let value = self.request("scene/query", params, "project")?;
+        if value.is_null() {
+            return None;
+        }
+        if let Some(message) = value.get("error").and_then(Value::as_str) {
+            return Some(Err(ProjectError::Invalid(message.to_owned())));
+        }
+        Some(
+            serde_json::from_value::<Project>(value)
+                .map_err(|error| ProjectError::Malformed(error.to_string())),
+        )
     }
 
     fn pane_prompt_positions(&self, id: PaneId) -> Vec<usize> {

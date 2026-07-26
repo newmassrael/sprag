@@ -463,6 +463,22 @@ pub trait HostClient {
         None
     }
 
+    /// The PROJECT governing pane `id` — the commands its `.sprag.toml` declares — or `None` when
+    /// the pane is in no project, its working directory is not local (a remote workspace), or no
+    /// window holds `id`.
+    ///
+    /// `Some(Err(_))` reports a project whose config is UNUSABLE, which a client must show rather
+    /// than treat as an empty list: a typo in a committed config is something its author needs to
+    /// hear about ([`crate::project`] has the whole rationale, including why nothing here runs).
+    ///
+    /// A READ that touches the filesystem, so it is asked ON DEMAND (a palette opening, a `sprag
+    /// run`) and never per frame. Defaulted to `None`, like [`break_pane`](Self::break_pane) — a
+    /// test double need not implement it.
+    fn project(&self, id: PaneId) -> Option<Result<crate::Project, crate::ProjectError>> {
+        let _ = id;
+        None
+    }
+
     /// Move the pane `id` into the window named `dst` of the scoped session (tmux `join-pane`),
     /// returning whether the source window was CLOSED (a join that emptied it) — or `None` if the
     /// move was refused (`id` already lives in `dst`, no window holds `id`, or `dst` names no
@@ -1296,6 +1312,25 @@ impl HostClient for Host {
         registry.break_pane(&session, id, name).ok()
     }
 
+    /// The project governing pane `id`, read from that pane's LIVE working directory.
+    ///
+    /// The lock scope ENDS before the config is read, like [`drop_file`](Self::drop_file)'s: a
+    /// filesystem walk under the pool lock would stall every other caller behind a slow disk. A
+    /// remote pane answers `None` — its cwd is on another machine, so a local walk would describe
+    /// the wrong filesystem.
+    fn project(&self, id: PaneId) -> Option<Result<crate::Project, crate::ProjectError>> {
+        let cwd = {
+            let workspace = self.workspace();
+            let workspace = lock(&workspace);
+            let pane = workspace.pane(id)?;
+            if pane.remote().is_some() {
+                return None;
+            }
+            pane.pty().cwd()?
+        };
+        crate::project::load(&cwd)
+    }
+
     /// Move the pane `id` into the window named `dst` of the default session (tmux `join-pane`),
     /// returning whether the emptied source window was closed. `None` if refused.
     fn join_pane(&self, id: PaneId, dst: &str) -> Option<bool> {
@@ -1387,6 +1422,78 @@ mod tests {
         command.arg("cat");
         command.env("TERM", "dumb");
         command
+    }
+
+    /// A temporary project holding one declared command, and its root.
+    fn temp_project(infix: &str) -> std::path::PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("sprag-host-project-{}-{infix}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("temp project");
+        std::fs::write(
+            root.join(crate::PROJECT_FILE),
+            "[[command]]\nname = \"test\"\nrun = [\"cargo\", \"test\"]\n",
+        )
+        .expect("write the config");
+        root
+    }
+
+    /// `cat`, started IN `cwd` — so the pane's live working directory is the project's root without
+    /// driving a `cd` through the shell.
+    fn cat_in(cwd: &std::path::Path) -> CommandBuilder {
+        let mut command = cat();
+        command.cwd(cwd);
+        command
+    }
+
+    /// The in-process arm reads a pane's project from that pane's OWN live cwd.
+    ///
+    /// REVERT-PROOF: point `Host::project` at the daemon's cwd instead of the pane's and this fails
+    /// (the test process does not run inside the temporary project).
+    #[test]
+    fn a_panes_project_is_read_from_that_panes_working_directory() {
+        let root = temp_project("local");
+        let host = Host::new((40, 6));
+        let id = host
+            .spawn(cat_in(&root), "cat".to_owned(), 40, 6, None, None)
+            .expect("spawn a pane inside the project");
+
+        let project = host
+            .project(id)
+            .expect("the pane sits in a project")
+            .expect("its config parses");
+        assert_eq!(project.root, root);
+        assert_eq!(project.actions[0].run, vec!["cargo", "test"]);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A REMOTE workspace has no LOCAL project, even when its pane's recorded cwd would resolve to
+    /// one on this machine: the shell is on another host, so offering the local repository's
+    /// commands would run them in the wrong place.
+    ///
+    /// REVERT-PROOF: drop the `remote().is_some()` guard from `Host::project` and this fails,
+    /// because the surrounding directory DOES hold a config.
+    #[test]
+    fn a_remote_pane_has_no_local_project() {
+        let root = temp_project("remote");
+        let host = Host::new((40, 6));
+        let id = host
+            .spawn(cat_in(&root), "cat".to_owned(), 40, 6, None, None)
+            .expect("spawn a pane inside the project");
+        // Mark it the way `sprag ssh` does once its birth pane exists.
+        lock(&host.workspace()).set_pane_remote(
+            id,
+            sprag_terminal::SshRemote {
+                user: None,
+                host: "elsewhere".to_owned(),
+                port: None,
+            },
+        );
+
+        assert!(
+            host.project(id).is_none(),
+            "a remote pane's cwd is on another machine, so no local project describes it"
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// The in-process `Host::sessions()` applies the SAME listability filter the wire `sessions`
