@@ -47,6 +47,9 @@
 
 use std::rc::Rc;
 
+use pinion_a11y::{
+    AccessNode, AccessValue, AriaRole, AutoComplete, ListOption, listbox_option_nodes,
+};
 use pinion_core::composite_tag::{send_activation_index, send_activation_key};
 use pinion_core::external::{
     Backend, BackendFallback, BackendSupport, External, ExternalIntrospect, InterveneError,
@@ -62,6 +65,7 @@ use pinion_core::style::{
 use pinion_core::theme::{ColorRole, Theme};
 use pinion_core::widget_core::ExtraExternal;
 use pinion_core::widgets::caret_blink::use_caret_blink;
+use pinion_core::widgets::listbox_item::ListboxItemState;
 use pinion_core::widgets::modal::{ModalState, modal_introspection_extra, use_modal};
 use pinion_core::widgets::text_edit::use_text_edit_state;
 use pinion_core::widgets::text_field::{TextFieldExternal, TextFieldState};
@@ -686,6 +690,116 @@ pub(crate) fn create_palette_externals() -> Vec<ExtraExternal> {
     ]
 }
 
+// ─── Accessibility ───────────────────────────────────────────────────────────────────────────────
+
+/// The palette's accessible tree, or nothing at all while it is closed.
+///
+/// Shape: a MODAL [`AriaRole::Dialog`] on the panel, holding the query field and the `listbox` of
+/// matching commands — `[dialog, combobox, listbox, option…]`, the flat `[parent, ...children]` list
+/// the session rail's own builder returns, with bounds left `None` for the shell to resolve from each
+/// tag's painted rect ([`crate::a11y`]'s discipline).
+///
+/// ## Why the field is an editable COMBOBOX
+///
+/// [`crate::a11y`] sets the test a role has to pass: never advertise an affordance the widget does not
+/// implement (it is why a pane is a `Group` and not a textbox). Run the editable-combobox contract
+/// against this surface and every clause holds — the field is a real [`TextFieldExternal`] with a
+/// caret, selection and IME; typing filters a popup list; the arrows move an ACTIVE option while focus
+/// stays in the field; `Enter` acts on that option. The one clause that does not hold is inline
+/// completion, which is exactly the difference between [`AutoComplete::List`] (declared) and
+/// `AutoComplete::Both` (not). So the role is earned rather than aspirational.
+///
+/// `aria-activedescendant` is expressed the way the rail expresses it: the CURSOR row is the option
+/// marked focused, and only while the field actually owns focus — an active descendant of a surface
+/// that does not have focus would be a lie about where the next keystroke goes.
+///
+/// ## The bound worth stating
+///
+/// The options are the PAINTED rows, so `aria-setsize` is the painted count
+/// ([`MAX_VISIBLE_ROWS`]) rather than the number of matches: with thirty matches an AT hears "1 of
+/// 10", which is what is on screen. Announcing a set the surface does not render — rows with no tag,
+/// no bounds and no way to be reached but by typing — would be the worse of the two inaccuracies.
+pub(crate) fn palette_access_nodes(focused: Option<&str>) -> Vec<AccessNode> {
+    if !is_open() {
+        return Vec::new();
+    }
+    let catalog = use_frozen_catalog().get();
+    let rows = visible_rows();
+    let cursor = cursor_in(rows.len());
+    let field_has_focus = focused == Some(PALETTE_FIELD_TAG);
+
+    // One option per PAINTED row, labelled with what the row says AND the chord it teaches, so an AT
+    // user hears the keyboard shortcut the sighted user reads in the right-hand column.
+    let labels: Vec<String> = rows
+        .iter()
+        .take(MAX_VISIBLE_ROWS)
+        .filter_map(|&index| catalog.get(index))
+        .map(|command| match command.hint() {
+            Some(hint) => format!("{}, {hint}", command.title()),
+            None => command.title(),
+        })
+        .collect();
+    let options: Vec<ListOption<'_>> = labels
+        .iter()
+        .enumerate()
+        .map(|(row, label)| ListOption {
+            tag: row_tag(row),
+            label: Some(label.as_str()),
+            // Idle, honestly: sprag paints no per-row hover or pressed posture for a palette row, so
+            // any other value would describe a state this surface does not have.
+            state: ListboxItemState::Idle,
+            selected: row == cursor,
+            focused: field_has_focus && row == cursor,
+        })
+        .collect();
+
+    let mut nodes = vec![
+        AccessNode::new(PALETTE_PANEL_TAG, AriaRole::Dialog)
+            .with_name(PALETTE_PLACEHOLDER)
+            .with_modal()
+            .with_child(PALETTE_FIELD_TAG)
+            .with_child(PALETTE_ROWS_TAG),
+        AccessNode::new(PALETTE_FIELD_TAG, AriaRole::EditableComboBox)
+            .with_name(PALETTE_PLACEHOLDER)
+            .with_value(AccessValue::Text(query()))
+            .with_auto_complete(AutoComplete::List)
+            .with_expanded(!options.is_empty())
+            .with_controls(PALETTE_ROWS_TAG)
+            .with_focused(field_has_focus),
+    ];
+    nodes.extend(listbox_option_nodes(
+        PALETTE_ROWS_TAG,
+        ROWS_LIST_NAME,
+        false,
+        &options,
+    ));
+    nodes
+}
+
+/// Visible row `row`'s tag — the composite the row PAINTS under, so the accessible node and the
+/// clickable node are one identity. Leaked as a `&'static str` because [`ListOption`] borrows its tag
+/// and the rows are a bounded set ([`MAX_VISIBLE_ROWS`]) of stable strings; the alternative is
+/// threading an owned `Vec<String>` through the builder purely to satisfy a lifetime.
+fn row_tag(row: usize) -> &'static str {
+    const TAGS: [&str; MAX_VISIBLE_ROWS] = [
+        "sprag_palette#0",
+        "sprag_palette#1",
+        "sprag_palette#2",
+        "sprag_palette#3",
+        "sprag_palette#4",
+        "sprag_palette#5",
+        "sprag_palette#6",
+        "sprag_palette#7",
+        "sprag_palette#8",
+        "sprag_palette#9",
+    ];
+    TAGS[row]
+}
+
+/// The `listbox`'s accessible name — what the list IS, distinct from the dialog's name (what the
+/// surface is FOR), so an AT walking in does not hear the same phrase twice.
+const ROWS_LIST_NAME: &str = "Matching commands";
+
 // ─── Paint ───────────────────────────────────────────────────────────────────────────────────────
 
 /// The query field's interaction posture, read out of the model scene (the `read_state` seam) —
@@ -791,16 +905,44 @@ pub(crate) fn view_palette(
                 .with_fg(theme.resolve(ColorRole::OnSurfaceMuted)),
         )));
     }
-    children.extend(
-        rows.iter()
-            .take(MAX_VISIBLE_ROWS)
-            .enumerate()
-            .filter_map(|(row, &index)| {
-                catalog
-                    .get(index)
-                    .map(|command| view_row(row, command, row == cursor, theme))
-            }),
-    );
+    // The rows live in a container of their OWN, tagged, rather than as further children of the
+    // panel. What it adds is a painted BOX for the `listbox` node of [`palette_access_nodes`] to
+    // resolve its bounds from, the same way the session rail's `tablist` hangs off its own painted
+    // sub-container: an a11y container with no painted peer has no bounds for the shell to resolve,
+    // which is why this is a paint change and not purely a tree one. Omitted entirely when nothing
+    // matches, so an empty palette grows no stray box (and no stray gap).
+    //
+    // It carries no style and no padding, and the CONTENT HEIGHT is unchanged: the panel used to hold
+    // N rows and N gaps, and now holds one gap plus a box of N rows and N-1 gaps. That equality is
+    // pinned by `the_rows_container_fits_inside_the_panel_at_every_paintable_count` rather than
+    // asserted here — and it is the arithmetic that is verified, not the pixels: the palette cannot be
+    // opened headlessly (its External has no `open` verb, and synthetic key input does not drain), so
+    // no pixel smoke reaches this panel. That gap is tracked, not papered over.
+    let row_nodes: Vec<Scene> = rows
+        .iter()
+        .take(MAX_VISIBLE_ROWS)
+        .enumerate()
+        .filter_map(|(row, &index)| {
+            catalog
+                .get(index)
+                .map(|command| view_row(row, command, row == cursor, theme))
+        })
+        .collect();
+    if !row_nodes.is_empty() {
+        children.push(Scene::Container(
+            ContainerNode::new(row_nodes)
+                .with_tag(PALETTE_ROWS_TAG)
+                .with_layout(
+                    LayoutStyle::new()
+                        .flex(FlexDirection::Column)
+                        .with_gap(ROW_GAP)
+                        .with_size(Size::px(
+                            PANEL_W - PANEL_PADDING * 2,
+                            painted_rows_height(rows.len()),
+                        )),
+                ),
+        ));
+    }
 
     let panel = Scene::Container(
         ContainerNode::new(children)
@@ -892,6 +1034,15 @@ fn panel_height(rows: usize) -> u32 {
     PANEL_PADDING * 2 + FIELD_H + ROW_GAP + painted * (ROW_H + ROW_GAP)
 }
 
+/// The height of the rows' own container — the painted rows and the gaps BETWEEN them (one fewer
+/// than the rows), the wrapper contributing no padding of its own. Derived from the same two
+/// constants [`panel_height`] uses, so the box the rows sit in cannot drift from the panel sized to
+/// hold it.
+fn painted_rows_height(rows: usize) -> u32 {
+    let painted = u32::try_from(rows.clamp(1, MAX_VISIBLE_ROWS)).unwrap_or(1);
+    painted * ROW_H + painted.saturating_sub(1) * ROW_GAP
+}
+
 /// The panel's width in logical pixels — wide enough for the longest command title plus its chord.
 const PANEL_W: u32 = 460;
 /// The panel's inner padding on every edge (M3 dialog-ish).
@@ -915,6 +1066,9 @@ const PROMPT_W: u32 = 20;
 const PROMPT_GLYPH: &str = "›";
 /// The input row's tag (the queryable anchor for the field's visible box).
 const PALETTE_INPUT_TAG: &str = "sprag_palette_input";
+/// The rows' own container tag — the painted box the `listbox` accessible node resolves its bounds
+/// from (see the note in [`view_palette`] where it is built).
+const PALETTE_ROWS_TAG: &str = "sprag_palette_rows";
 /// A row title's font size.
 const ROW_FONT_PX: u32 = 14;
 /// The right-hand hint's font size (a chord, or a project command's line) — smaller than the title,
@@ -1337,6 +1491,144 @@ mod tests {
             }
             _ => {}
         }
+    }
+
+    /// The rows' own container FITS inside the panel sized to hold it, at every row count the palette
+    /// can paint — the property that makes wrapping the rows a structural change and not a visual one.
+    ///
+    /// Asserted as arithmetic between the two sizing functions rather than on painted rects, because a
+    /// `Scene`'s rects are `Rect::default()` until the shell lays it out; the live geometry is checked
+    /// by the pixel smoke instead. REVERT-PROOF: give the wrapper a padding, or drop the `- 1` from
+    /// [`painted_rows_height`]'s gap count, and the fit fails at the top of the range.
+    #[test]
+    fn the_rows_container_fits_inside_the_panel_at_every_paintable_count() {
+        for rows in 1..=MAX_VISIBLE_ROWS {
+            let needed = PANEL_PADDING * 2 + FIELD_H + ROW_GAP + painted_rows_height(rows);
+            assert!(
+                needed <= panel_height(rows),
+                "{rows} rows need {needed} but the panel is {}",
+                panel_height(rows)
+            );
+        }
+    }
+
+    /// The hand-written row-tag table MUST equal the tag each row actually paints under. A rename of
+    /// [`PALETTE_TAG`] would otherwise leave the accessible nodes pointing at tags nothing paints —
+    /// nodes with no bounds, describing rows an AT could never reach.
+    ///
+    /// REVERT-PROOF: change one entry of the table (or `view_row`'s format) and this fails.
+    #[test]
+    fn every_accessible_row_tag_is_the_tag_that_row_paints_under() {
+        for row in 0..MAX_VISIBLE_ROWS {
+            assert_eq!(
+                row_tag(row),
+                format!("{PALETTE_TAG}#{row}"),
+                "row {row}'s accessible tag must be its painted tag"
+            );
+        }
+    }
+
+    /// The accessible tree: a MODAL dialog holding the query combobox and a `listbox` of the matching
+    /// commands, the cursor row carrying both `aria-selected` and the active-descendant focus, and
+    /// every option's label teaching the chord the sighted user reads.
+    ///
+    /// REVERT-PROOF: drop `with_modal` and the modal assertion fails; mark the wrong row selected and
+    /// the cursor assertions fail; drop the `hint` from the label and the chord assertion fails.
+    #[test]
+    fn the_accessible_tree_is_a_modal_dialog_over_a_listbox_of_commands() {
+        Owner::new().run(|| {
+            seed_one_pane();
+            assert!(
+                palette_access_nodes(Some(PALETTE_FIELD_TAG)).is_empty(),
+                "a closed palette advertises nothing at all"
+            );
+
+            open(Some(0));
+            use_text_edit_state(PALETTE_FIELD_TAG).set_text("find".to_owned());
+            let nodes = palette_access_nodes(Some(PALETTE_FIELD_TAG));
+
+            let dialog = &nodes[0];
+            assert_eq!(dialog.tag, PALETTE_PANEL_TAG);
+            assert_eq!(dialog.role, AriaRole::Dialog);
+            assert!(dialog.modal, "a palette is a modal boundary for an AT too");
+            assert_eq!(dialog.name.as_deref(), Some(PALETTE_PLACEHOLDER));
+
+            let field = &nodes[1];
+            assert_eq!(field.tag, PALETTE_FIELD_TAG);
+            assert_eq!(field.role, AriaRole::EditableComboBox);
+            assert!(field.state.focused, "the field owns the keyboard");
+            match &field.value {
+                Some(AccessValue::Text(text)) => assert_eq!(text, "find", "the live query"),
+                other => panic!("the combobox value is its text, got {other:?}"),
+            }
+
+            let list = nodes
+                .iter()
+                .find(|node| node.role == AriaRole::Listbox)
+                .expect("the matching commands are a listbox");
+            assert_eq!(list.tag, PALETTE_ROWS_TAG);
+
+            let options: Vec<&AccessNode> = nodes
+                .iter()
+                .filter(|node| node.role == AriaRole::ListBoxOption)
+                .collect();
+            assert_eq!(
+                options.len(),
+                visible_rows().len().min(MAX_VISIBLE_ROWS),
+                "one option per PAINTED row"
+            );
+            assert!(
+                options[0].selected == Some(true) && options[0].state.focused,
+                "the cursor row is the selected option and the active descendant"
+            );
+            assert!(
+                options
+                    .iter()
+                    .skip(1)
+                    .all(|node| node.selected != Some(true)),
+                "and it is the only selected one"
+            );
+            assert!(
+                options
+                    .iter()
+                    .any(|node| node
+                        .name
+                        .as_deref()
+                        .is_some_and(|name| name.contains("Find in scrollback")
+                            && name.contains("Ctrl+Shift+F"))),
+                "an option teaches the chord alongside the title: {:?}",
+                options
+                    .iter()
+                    .map(|n| n.name.as_deref())
+                    .collect::<Vec<_>>()
+            );
+        });
+    }
+
+    /// The active descendant is claimed ONLY while the field actually holds focus — an active option
+    /// on an unfocused surface would misreport where the next keystroke goes.
+    ///
+    /// REVERT-PROOF: drop the `field_has_focus &&` guard and this fails.
+    #[test]
+    fn no_option_is_active_while_the_field_does_not_hold_focus() {
+        Owner::new().run(|| {
+            seed_one_pane();
+            open(Some(0));
+            let elsewhere = palette_access_nodes(Some("sprag_gui.stablist"));
+            assert!(
+                elsewhere
+                    .iter()
+                    .filter(|node| node.role == AriaRole::ListBoxOption)
+                    .all(|node| !node.state.focused),
+                "no active descendant while focus is on another surface"
+            );
+            assert!(
+                elsewhere
+                    .iter()
+                    .any(|node| node.role == AriaRole::ListBoxOption && node.selected == Some(true)),
+                "...though the cursor row is still the SELECTED one"
+            );
+        });
     }
 
     #[test]

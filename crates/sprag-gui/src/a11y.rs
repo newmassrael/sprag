@@ -53,14 +53,43 @@ pub(crate) fn access_nodes_for_window(window_id: &str, focused: Option<&str>) ->
         // A stale undock id (its pane is gone): the docked set defensively — but NO sidebar, this is
         // not the main window.
         Some(_) => docked_panes(),
-        // The MAIN window: the session sidebar (main-window-only, since the rail paints only there)
-        // FIRST, then the docked panes.
+        // The MAIN window: the client's MODAL surfaces first (they paint only here, and they paint
+        // OVER everything — see below), then the session sidebar (main-window-only, since the rail
+        // paints only there), then the docked panes.
         None => {
-            let mut nodes = crate::stabs::session_sidebar_access_nodes(&terminal.slots, focused);
+            let mut nodes = modal_access_nodes(focused);
+            nodes.extend(crate::stabs::session_sidebar_access_nodes(
+                &terminal.slots,
+                focused,
+            ));
             nodes.extend(docked_panes());
             nodes
         }
     }
+}
+
+/// The client's MODAL surfaces, in painting order — the destructive-command prompt
+/// ([`crate::confirm`]) over the command palette ([`crate::palette`]) — or nothing when neither is up.
+///
+/// FIRST in the window's node list because they are last in the paint: each declares
+/// [`with_modal`](AccessNode::with_modal), which lowers to AccessKit's modal flag and confines an AT's
+/// virtual cursor to the dialog's own subtree. That flag is the ONE mechanism used for this. The
+/// alternative — suppressing the sidebar and pane nodes while a modal is up — would be a second
+/// authority over the same question, and the two would eventually disagree; the panes stay in the tree
+/// and the modal flag is what keeps a screen reader out of them, exactly as the visual scrim keeps a
+/// pointer out.
+///
+/// Both are advertised on the MAIN window only, like the session rail, because that is the only window
+/// they paint on (`view::view_for_window`'s main arm mounts them). An undock window's tree is therefore
+/// untouched by a modal opened over the tiling — which is honest: a floated pane keeps taking input
+/// while the palette is up, since the palette's scrim covers only its own window.
+///
+/// Ordered prompt-then-palette to match the layering, though the two are never up together: activating
+/// a destructive row CLOSES the palette before arming the prompt.
+fn modal_access_nodes(focused: Option<&str>) -> Vec<AccessNode> {
+    let mut nodes = crate::confirm::confirm_access_nodes(focused);
+    nodes.extend(crate::palette::palette_access_nodes(focused));
+    nodes
 }
 
 /// Build pane `i`'s accessible node from its live screen — the per-pane node
@@ -198,6 +227,49 @@ mod tests {
             !nodes[1].state.focused,
             "an unfocused pane's node is not focused"
         );
+    }
+
+    /// A client modal rides the MAIN window's tree — FIRST, and flagged `aria-modal` — and is
+    /// advertised on no other window, because main is the only window it paints on. The panes stay in
+    /// the tree beneath it: the modal flag is what keeps an AT out of them, not their absence.
+    ///
+    /// REVERT-PROOF: move `modal_access_nodes` after the sidebar and the leading assertion fails; drop
+    /// the call and both the dialog assertions do.
+    #[test]
+    fn a_modal_leads_the_main_windows_tree_and_appears_on_no_other_window() {
+        let owner = Owner::new();
+        owner.run(|| {
+            crate::split::sync_layout(&use_terminal().slots);
+            assert!(
+                access_nodes_for_window(crate::dock::MAIN_WINDOW_ID, None)
+                    .iter()
+                    .all(|node| node.role != AriaRole::Dialog),
+                "with nothing open there is no dialog to announce"
+            );
+
+            crate::palette::open(Some(0));
+            let main = access_nodes_for_window(crate::dock::MAIN_WINDOW_ID, None);
+            assert_eq!(
+                main.first().map(|node| node.role),
+                Some(AriaRole::Dialog),
+                "the modal LEADS the tree, as it leads the paint"
+            );
+            assert!(main[0].modal, "and declares itself a modal boundary");
+            assert!(
+                main.iter()
+                    .any(|node| crate::terminal::pane_index_of(&node.tag).is_some()),
+                "the panes remain in the tree — the modal flag confines the AT, not their removal"
+            );
+
+            crate::dock::toggle_pane_floating(1);
+            assert!(
+                access_nodes_for_window(&crate::dock::pane_window_id(1), None)
+                    .iter()
+                    .all(|node| node.role != AriaRole::Dialog),
+                "a modal painted on main is not advertised on a tear-off window"
+            );
+            crate::palette::close();
+        });
     }
 
     /// `access_nodes_for_window` partitions by window: the main window advertises the session

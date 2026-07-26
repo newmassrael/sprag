@@ -44,13 +44,15 @@
 //!   ([`reconcile`]).
 //! * **Name reuse is not closed**, because a name is the only window / session identity on the wire.
 //!   [`Command::target_still_exists`] states that bound; it is the session rail's, unchanged.
-//! * **No accessible tree yet.** Neither this modal nor the palette that opens it contributes
-//!   [`AccessNode`](pinion_a11y::AccessNode)s, so a screen reader sees the prompt only as painted
-//!   text. Announcing one modal and not the other would be the worse half-measure, so the two are a
-//!   single tracked increment rather than a silent gap here.
+//! * **A screen reader hears the prompt** ([`confirm_access_nodes`]) as a modal dialog whose NAME
+//!   carries the question AND its consequence — see that function for why the consequence is not an
+//!   `aria-describedby`. What it does NOT get is a live-region announcement at the moment of arming:
+//!   the dialog is announced when focus enters it, which is how the focus trap already behaves, so
+//!   there is nothing to add until a surface arms a prompt WITHOUT moving focus.
 
 use std::rc::Rc;
 
+use pinion_a11y::{AccessNode, AriaRole};
 use pinion_core::composite_tag::send_activation_key;
 use pinion_core::external::{
     Backend, BackendFallback, BackendSupport, External, ExternalIntrospect, InterveneError,
@@ -518,6 +520,61 @@ pub(crate) fn create_confirm_externals() -> Vec<ExtraExternal> {
     ]
 }
 
+// ─── Accessibility ───────────────────────────────────────────────────────────────────────────────
+
+/// The prompt's accessible tree, or nothing at all while nothing is armed.
+///
+/// A MODAL [`AriaRole::Dialog`] holding its two answers — `[dialog, button, button]`, the flat
+/// `[parent, ...children]` list the session rail's builder returns, bounds left `None` for the shell to
+/// resolve from each painted tag.
+///
+/// ## The consequence goes in the NAME, not a description
+///
+/// pinion offers [`describedby_region`](pinion_a11y::describedby_region) for an auxiliary description,
+/// and it is the wrong tool here. `aria-describedby` is announced at the AT's discretion — verbosity
+/// settings, mode, and how the user arrived all decide whether a description is read — and the
+/// consequence line is the one sentence that CHANGES the answer ("this ends the session", "this client
+/// detaches"). A destructive prompt may not leave that to a setting, so both sentences are the dialog's
+/// accessible NAME, which is announced when the dialog takes focus. The visual split (question in the
+/// surface ink, consequence in the error role) is preserved for a sighted reader; what an AT gets is one
+/// sentence with nothing optional in it.
+///
+/// A second reason to avoid the description path: it would need the consequence line to be a TAGGED
+/// painted node so the reference resolves, and a dangling `aria-describedby` — the state this prompt is
+/// in whenever there is no consequence — is an AT defect rather than a style choice (that helper's own
+/// docs say so). Folding it into the name has no absent case to get wrong.
+///
+/// The chosen button is marked focused: the panel owns real keyboard focus and the choice roves within
+/// it, so the choice is this dialog's active descendant, expressed exactly as the rail expresses its
+/// cursor row.
+pub(crate) fn confirm_access_nodes(focused: Option<&str>) -> Vec<AccessNode> {
+    let Some(armed) = use_armed().get() else {
+        return Vec::new();
+    };
+    let choice = use_choice().get();
+    let panel_has_focus = focused == Some(CONFIRM_PANEL_TAG);
+    let words = &armed.confirmation;
+    let name = match words.consequence.as_deref() {
+        Some(consequence) => format!("{} {consequence}", words.prompt),
+        None => words.prompt.clone(),
+    };
+    vec![
+        AccessNode::new(CONFIRM_PANEL_TAG, AriaRole::Dialog)
+            .with_name(name)
+            .with_modal()
+            .with_child(CONFIRM_DISMISS_TAG)
+            .with_child(CONFIRM_ACCEPT_TAG),
+        // Safe answer FIRST, as it is painted and as the keyboard reaches it — an AT walking the
+        // children in order meets the way out before the way through.
+        AccessNode::new(CONFIRM_DISMISS_TAG, AriaRole::Button)
+            .with_name(DISMISS_LABEL)
+            .with_focused(panel_has_focus && choice == Choice::Dismiss),
+        AccessNode::new(CONFIRM_ACCEPT_TAG, AriaRole::Button)
+            .with_name(words.verb.clone())
+            .with_focused(panel_has_focus && choice == Choice::Accept),
+    ]
+}
+
 // ─── Paint ───────────────────────────────────────────────────────────────────────────────────────
 
 /// The prompt: a scrim over the whole window centring a panel of the question, its consequence, and
@@ -697,6 +754,8 @@ const DISMISS_LABEL: &str = "Cancel";
 mod tests {
     use sprag_host::Host;
     use sprag_terminal::CommandBuilder;
+
+    use pinion_a11y::AriaRole;
 
     use super::*;
     use crate::command::catalog;
@@ -1120,6 +1179,105 @@ mod tests {
         Owner::new().run(|| {
             seed_one_pane();
             assert!(view_confirm(&Theme::dark(), (960, 600)).is_none());
+        });
+    }
+
+    /// The accessible tree: a MODAL dialog whose NAME carries the question AND the consequence, over
+    /// two named buttons, with the chosen one as the active descendant.
+    ///
+    /// The consequence being in the NAME is the assertion that matters — an `aria-describedby` would
+    /// leave the sentence that changes the answer to the AT's verbosity settings.
+    ///
+    /// REVERT-PROOF: fold the consequence out of the name and the first assertion fails; drop
+    /// `with_modal` and the modal one does; swap the two `choice ==` comparisons and the focus ones do.
+    #[test]
+    fn the_accessible_tree_is_a_modal_dialog_naming_the_whole_consequence() {
+        Owner::new().run(|| {
+            seed_one_pane();
+            assert!(
+                confirm_access_nodes(Some(CONFIRM_PANEL_TAG)).is_empty(),
+                "nothing armed advertises nothing at all"
+            );
+
+            let terminal = use_terminal();
+            let windows = terminal.slots.windows();
+            let only = windows[0].name.clone();
+            // The one-window case, so there IS a consequence to fold in.
+            run_or_arm(Command::KillWindow(only.clone()), None, &terminal.slots);
+            let nodes = confirm_access_nodes(Some(CONFIRM_PANEL_TAG));
+            assert_eq!(nodes.len(), 3, "dialog + two answers");
+
+            let dialog = &nodes[0];
+            assert_eq!(dialog.role, AriaRole::Dialog);
+            assert!(dialog.modal, "a destructive prompt is a modal boundary");
+            let name = dialog.name.as_deref().expect("the dialog is named");
+            assert!(
+                name.contains(&only) && name.contains("the session ends with it"),
+                "the NAME carries the question and the consequence in one announcement: {name}"
+            );
+
+            let safe = &nodes[1];
+            assert_eq!(safe.tag, CONFIRM_DISMISS_TAG);
+            assert_eq!(safe.role, AriaRole::Button);
+            assert_eq!(safe.name.as_deref(), Some(DISMISS_LABEL));
+            assert!(
+                safe.state.focused,
+                "the SAFE answer is the active descendant of a fresh prompt"
+            );
+            let accept = &nodes[2];
+            assert_eq!(accept.tag, CONFIRM_ACCEPT_TAG);
+            assert_eq!(
+                accept.name.as_deref(),
+                Some("Kill"),
+                "the command's own verb"
+            );
+            assert!(!accept.state.focused);
+
+            // ...and moving the choice moves the active descendant with it.
+            assert!(handle_key("ArrowRight"));
+            let moved = confirm_access_nodes(Some(CONFIRM_PANEL_TAG));
+            assert!(moved[2].state.focused && !moved[1].state.focused);
+            dismiss();
+        });
+    }
+
+    /// With no consequence the name is the question alone — no trailing fragment, and nothing invented
+    /// to fill the gap.
+    #[test]
+    fn a_prompt_with_no_consequence_names_only_the_question() {
+        Owner::new().run(|| {
+            seed_one_pane();
+            let terminal = use_terminal();
+            let spare = terminal.slots.new_window();
+            run_or_arm(Command::KillWindow(spare.clone()), None, &terminal.slots);
+
+            let nodes = confirm_access_nodes(Some(CONFIRM_PANEL_TAG));
+            assert_eq!(
+                nodes[0].name.as_deref(),
+                Some(format!("Kill window '{spare}'?").as_str()),
+                "the question, and only the question"
+            );
+            dismiss();
+        });
+    }
+
+    /// The active descendant is claimed only while the panel actually holds focus.
+    ///
+    /// REVERT-PROOF: drop the `panel_has_focus &&` guard and this fails.
+    #[test]
+    fn no_answer_is_active_while_the_panel_does_not_hold_focus() {
+        Owner::new().run(|| {
+            seed_one_pane();
+            let terminal = use_terminal();
+            let spare = terminal.slots.new_window();
+            run_or_arm(Command::KillWindow(spare), None, &terminal.slots);
+
+            let elsewhere = confirm_access_nodes(Some("sprag_gui.pane.0"));
+            assert!(
+                elsewhere.iter().all(|node| !node.state.focused),
+                "no active descendant while focus is elsewhere"
+            );
+            dismiss();
         });
     }
 
