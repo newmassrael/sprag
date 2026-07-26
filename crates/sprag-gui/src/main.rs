@@ -1184,7 +1184,31 @@ impl WidgetView for TerminalViewer {
         let delivered =
             dock::drop_target_pane(window_id).and_then(|pane| terminal.slots.drop_file(pane, path));
         tracing::debug!(target: "sprag_gui::input", window_id, path, ?delivered, "os file drop");
-        false
+        // The drag is over, so the affordance goes — and its removal IS a reactive change, unlike the
+        // delivery itself (which shows up as ordinary pane output). winit sends one drop per file, so
+        // a multi-file drop clears an already-cleared affordance: `clear_drop_target` is idempotent
+        // and reports no change, which is why the redraw request is its answer rather than `false`.
+        dock::clear_drop_target()
+    }
+
+    /// A file is being DRAGGED over `window_id` (pinion R770 §5.15, R1437 §5.16): raise the drop
+    /// affordance on the pane that would receive it ([`dock::hover_drop_target`]).
+    ///
+    /// Worth having precisely BECAUSE sprag cannot hit-test a drop: winit reports no position, so a
+    /// drop on the main window goes to the FOCUSED pane. Without an affordance the user has to know
+    /// that rule; with one they can see the answer before letting go — and can retarget by clicking a
+    /// pane first. The `path` is ignored: WHERE the file will land is what a drop zone must show, and
+    /// sprag's answer does not depend on which file it is.
+    fn on_file_hover(window_id: &str, _state: &Self::State, _path: &str) -> bool {
+        dock::hover_drop_target(window_id)
+    }
+
+    /// The drag left `window_id` without dropping: take the affordance down. Positionless and
+    /// path-less — the OS reports neither on cancel, which is all this needs, since it clears whatever
+    /// was raised rather than matching it against a target.
+    fn on_file_hover_cancel(window_id: &str, _state: &Self::State) -> bool {
+        let _ = window_id;
+        dock::clear_drop_target()
     }
 
     /// Suppress pinion's framework focus ring (R142) — the content-surface opt-out a
@@ -1468,6 +1492,87 @@ mod tests {
                 !terminal.slots.pane_full_text(0).contains(&path),
                 "the drop must reach ONLY the focused pane, never its unfocused sibling",
             );
+        });
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The hover HOOKS drive the affordance, and a DROP takes it down — the wiring, driven through the
+    /// same `WidgetView` entry points the shell calls.
+    ///
+    /// The drop's return value is the interesting one: it requests a redraw because the affordance
+    /// disappearing IS a reactive change, whereas the delivery itself is not (a pasted path arrives as
+    /// ordinary pane output, repainted by the pane's own change notification).
+    ///
+    /// REVERT-PROOF: leaving `on_file_drop` returning a bare `false` leaves the affordance raised over
+    /// a drag that already ended, failing both the cleared assertion and the redraw one.
+    #[test]
+    fn a_hover_raises_the_drop_affordance_and_the_drop_takes_it_down() {
+        let dir = std::env::temp_dir().join(format!("sprag-gui-hover-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create the drop dir");
+        let dropped = dir.join("dropped.txt");
+        std::fs::write(&dropped, b"payload").expect("write the dropped file");
+
+        let host = Host::new((DROP_PANE_COLS, 6));
+        host.spawn(
+            untitled_pane(),
+            "sh".to_owned(),
+            DROP_PANE_COLS,
+            6,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let owner = Owner::new();
+        owner.run(|| {
+            crate::terminal::seed_terminal(host);
+            Owner::current()
+                .expect("inside the owner scope")
+                .focused_tag_signal()
+                .set(Some(pane_tag(0).to_owned()));
+            let state = view::ViewState::default();
+
+            assert!(
+                <TerminalViewer as WidgetView>::on_file_hover(
+                    dock::MAIN_WINDOW_ID,
+                    &state,
+                    dropped.to_str().unwrap(),
+                ),
+                "the hover requests a redraw — the affordance appeared",
+            );
+            assert_eq!(
+                dock::use_drop_hover().get(),
+                Some(0),
+                "and it names the pane the file would land on",
+            );
+
+            assert!(
+                <TerminalViewer as WidgetView>::on_file_drop(
+                    dock::MAIN_WINDOW_ID,
+                    &state,
+                    dropped.to_str().unwrap(),
+                ),
+                "the drop requests a redraw: the affordance came down",
+            );
+            assert_eq!(
+                dock::use_drop_hover().get(),
+                None,
+                "a drag that ended leaves no affordance behind",
+            );
+
+            // The cancel path takes it down too, for a drag that leaves without dropping.
+            assert!(<TerminalViewer as WidgetView>::on_file_hover(
+                dock::MAIN_WINDOW_ID,
+                &state,
+                dropped.to_str().unwrap(),
+            ));
+            assert!(<TerminalViewer as WidgetView>::on_file_hover_cancel(
+                dock::MAIN_WINDOW_ID,
+                &state,
+            ));
+            assert_eq!(dock::use_drop_hover().get(), None, "the cancel cleared it");
         });
 
         let _ = std::fs::remove_dir_all(&dir);

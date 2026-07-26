@@ -145,6 +145,51 @@ pub(crate) fn drop_target_pane(window_id: &str) -> Option<usize> {
     }
 }
 
+/// `Owner::cache` key for the pane a file is currently hovering over.
+const DROP_HOVER_KEY: &str = "sprag_gui.drop_hover";
+
+/// The pane a dragged file would land on RIGHT NOW, or `None` when no drag is over this binding —
+/// the reactive half of the drop affordance, read by the paint (so raising and clearing it repaints).
+///
+/// This exists because sprag's drop routing is NOT "the pane under the cursor": winit's drop events
+/// carry no position, so within the main window the target is the FOCUSED pane
+/// ([`drop_target_pane`]). That rule is unguessable from the outside — which makes SHOWING the answer
+/// during the drag more important here than in a terminal that can hit-test, not less. The affordance
+/// turns a rule the user would have to know into one they can see.
+pub(crate) fn use_drop_hover() -> Signal<Option<usize>> {
+    Owner::current()
+        .expect("use_drop_hover() requires an active Owner scope")
+        .cache(DROP_HOVER_KEY, || Signal::new(None))
+        .as_ref()
+        .clone()
+}
+
+/// Raise the drop affordance for a drag now over `window_id`, returning whether anything CHANGED
+/// (which is exactly the redraw request pinion's hover hook wants).
+///
+/// Equality-skipped: the OS repeats the hover event as the pointer moves, and re-setting an unchanged
+/// value would request a repaint per motion event for a picture that is already correct.
+pub(crate) fn hover_drop_target(window_id: &str) -> bool {
+    let target = drop_target_pane(window_id);
+    let signal = use_drop_hover();
+    if signal.get() == target {
+        return false;
+    }
+    signal.set(target);
+    true
+}
+
+/// Clear the drop affordance — the drag left without dropping, or it landed. Returns whether anything
+/// changed, so a cancel for a drag that raised nothing costs no repaint.
+pub(crate) fn clear_drop_target() -> bool {
+    let signal = use_drop_hover();
+    if signal.get().is_none() {
+        return false;
+    }
+    signal.set(None);
+    true
+}
+
 /// The runtime window topology Signal — the floating SSOT. Cached in the root
 /// owner (the view fns + `windows_signal` resolve the same shared slot), seeded
 /// with just the main window. [`toggle_pane_floating`] pushes/removes undock
@@ -706,6 +751,54 @@ mod tests {
             // No focus at all: main has nothing to name.
             focus.set(None);
             assert_eq!(drop_target_pane(MAIN_WINDOW_ID), None);
+        });
+    }
+
+    /// The drop affordance follows the drag: it names the pane a file would land on, it is
+    /// equality-skipped so a stationary drag costs no repaint, and it clears on cancel.
+    ///
+    /// The repaint answers matter as much as the state — pinion's hover hook takes the return value as
+    /// "request a redraw", and the OS repeats the hover event as the pointer moves, so a hook that
+    /// always answered `true` would repaint per motion event for a picture already on screen.
+    ///
+    /// REVERT-PROOF: dropping the equality skip makes the second `hover_drop_target` return `true` and
+    /// fails the no-repaint assertion; clearing unconditionally makes the second `clear_drop_target`
+    /// return `true` and fails its pair.
+    #[test]
+    fn the_drop_affordance_tracks_the_drag_and_repaints_only_on_a_change() {
+        let owner = Owner::new();
+        owner.run(|| {
+            project_host_layout();
+            Owner::current()
+                .expect("inside the owner scope")
+                .focused_tag_signal()
+                .set(Some(crate::terminal::pane_tag(1).to_owned()));
+
+            assert!(use_drop_hover().get().is_none(), "nothing hovers at rest");
+
+            // A drag enters the MAIN window: the affordance names the focused pane — the answer the
+            // user could not otherwise guess, since winit reports no position to hit-test with.
+            assert!(
+                hover_drop_target(MAIN_WINDOW_ID),
+                "the first hover repaints"
+            );
+            assert_eq!(use_drop_hover().get(), Some(1));
+            assert!(
+                !hover_drop_target(MAIN_WINDOW_ID),
+                "a repeated hover over the same target changes nothing, so it must not repaint",
+            );
+
+            // ...and over a TEAR-OFF window it names THAT window's pane, focus notwithstanding.
+            toggle_pane_floating(0);
+            assert!(hover_drop_target(&pane_window_id(0)), "the target moved");
+            assert_eq!(use_drop_hover().get(), Some(0));
+
+            assert!(clear_drop_target(), "the cancel takes it down");
+            assert_eq!(use_drop_hover().get(), None);
+            assert!(
+                !clear_drop_target(),
+                "a cancel with nothing raised must not repaint",
+            );
         });
     }
 

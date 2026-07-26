@@ -476,8 +476,30 @@ fn build_pane_scene(tv: &TerminalView, i: usize, theme: &Theme) -> Scene {
     // is acked before this runs, so the ring only ever wears an inactive (already-dimmed) pane;
     // painting it AFTER `dim_inactive` puts it over the scrim. Reading the predicate here
     // subscribes the paint, so the ring follows a notification arriving / the pane being viewed.
-    if attention::pane_has_unseen_attention(&tv.slots, i) {
-        attention_ring(pane, theme)
+    let pane = if attention::pane_has_unseen_attention(&tv.slots, i) {
+        pane_ring(
+            pane,
+            "sprag_gui.pane_attention",
+            theme.resolve(ColorRole::Accent),
+        )
+    } else {
+        pane
+    };
+    // DROP TARGET — outline the pane a dragged file would land on, while a drag is over this binding
+    // (pinion R1437 gave the hover hooks the window id, which is what makes the target knowable).
+    // Painted LAST so it wears over the attention ring: during a drag, WHERE THE FILE GOES is the
+    // question on screen, and a pane can legitimately be both. A distinct role colour keeps the two
+    // readable — one says "look at me", the other "drop here" — and reading the signal subscribes the
+    // paint, so the outline follows the drag and vanishes on cancel or drop.
+    if crate::dock::use_drop_hover().get() == Some(i) {
+        // `InversePrimary`, not `Accent`: the palette's SECOND emphasis role, so the two rings stay in
+        // one family while remaining tellable apart on a pane that wears both. No colour is invented
+        // outside the theme, so a re-theme moves them together.
+        pane_ring(
+            pane,
+            "sprag_gui.pane_drop_target",
+            theme.resolve(ColorRole::InversePrimary),
+        )
     } else {
         pane
     }
@@ -516,26 +538,29 @@ fn dim_inactive(pane: Scene) -> Scene {
     }
 }
 
-/// The width (px) of the cmux [`attention_ring`] stroked around an inactive pane with an unseen
-/// notification — the sidebar cursor-row border convention ([`crate::stabs`]).
-const ATTENTION_RING_WIDTH: u32 = 2;
+/// The width (px) of a [`pane_ring`] — the sidebar cursor-row border convention ([`crate::stabs`]),
+/// shared by the attention and drop-target rings so the two read as one vocabulary.
+const PANE_RING_WIDTH: u32 = 2;
 
-/// Draw the cmux-parity ATTENTION RING around a pane whose child raised a notification this client
-/// has not yet viewed. Built exactly like [`dim_inactive`] — a `pointer_transparent` absolute
-/// overlay (never blocks click-to-focus / drag-select) at `Percent(100)` full cover, appended LAST
-/// so it paints over the pane content AND the dim scrim — but with a TRANSPARENT fill carrying an
-/// [`Accent`](ColorRole::Accent) [`Border`], so only the frame draws. The border rides the OVERLAY,
-/// not the pane container, so it adds no layout: a notification arriving never shifts or resizes the
-/// pane. Snapshot-visible like the dim scrim (same absolute-overlay path the RPC produce walks).
-fn attention_ring(pane: Scene, theme: &Theme) -> Scene {
+/// Outline a pane in `color` under `tag` — the ONE ring primitive, drawn for two reasons that must
+/// look like siblings rather than two hand-rolled frames: the cmux-parity ATTENTION ring (a child
+/// raised a notification this client has not viewed) and the DROP-TARGET ring (a dragged file would
+/// land here).
+///
+/// Built exactly like [`dim_inactive`] — a `pointer_transparent` absolute overlay (never blocks
+/// click-to-focus / drag-select) at `Percent(100)` full cover, appended LAST so it paints over the
+/// pane content AND the dim scrim — but with a TRANSPARENT fill carrying a [`Border`], so only the
+/// frame draws. The border rides the OVERLAY, not the pane container, so it adds no layout: a
+/// notification arriving (or a drag passing over) never shifts or resizes the pane. Snapshot-visible
+/// like the dim scrim (same absolute-overlay path the RPC produce walks), and the distinct `tag` is
+/// what lets a snapshot consumer — or a headless test — tell WHICH ring it is looking at.
+fn pane_ring(pane: Scene, tag: &'static str, color: pinion_core::style::Color) -> Scene {
     let ring = Scene::Container(
         ContainerNode::new(Vec::new())
-            .with_tag("sprag_gui.pane_attention")
+            .with_tag(tag)
             .with_style(
-                BoxStyle::filled(pinion_core::style::Color::TRANSPARENT).with_border(Border::new(
-                    theme.resolve(ColorRole::Accent),
-                    ATTENTION_RING_WIDTH,
-                )),
+                BoxStyle::filled(pinion_core::style::Color::TRANSPARENT)
+                    .with_border(Border::new(color, PANE_RING_WIDTH)),
             )
             .with_layout(
                 LayoutStyle::new()
@@ -744,14 +769,61 @@ mod tests {
     /// and pointer-transparent so it never blocks click-to-focus / drag-select (like the dim
     /// scrim). REVERT-PROOF: drop the `with_border` and the border assertion FAILs; drop the append
     /// and the last-child tag assertion FAILs.
+    /// The two rings are DISTINCT overlays: same primitive, different tag and different colour, so a
+    /// pane wearing both is still readable and a snapshot consumer can tell which is which.
+    ///
+    /// Tags rather than pixels are what this asserts, because the tag is the thing a headless client
+    /// (or an AI reading `scene/snapshot`) actually resolves — the colour is checked only for being
+    /// DIFFERENT, which is the property that matters and the one a careless re-theme would break.
+    ///
+    /// REVERT-PROOF: giving the drop ring the attention ring's tag fails the distinct-tag assertion;
+    /// giving it `Accent` fails the distinct-colour one.
+    #[test]
+    fn the_drop_target_ring_is_distinct_from_the_attention_ring() {
+        let owner = Owner::new();
+        let (attention, drop) = owner.run(|| {
+            let theme = use_theme(THEME_TAG).theme_animated();
+            let ring = |tag: &'static str, role| {
+                let pane = Scene::Container(ContainerNode::new(Vec::new()).with_tag("pane_stub"));
+                let Scene::Container(mut framed) = pane_ring(pane, tag, theme.resolve(role)) else {
+                    unreachable!("pane_ring returns the pane Container");
+                };
+                match framed.children.pop() {
+                    Some(Scene::Container(c)) => c,
+                    other => unreachable!("the ring is the pane's LAST child, got {other:?}"),
+                }
+            };
+            (
+                ring("sprag_gui.pane_attention", ColorRole::Accent),
+                ring("sprag_gui.pane_drop_target", ColorRole::InversePrimary),
+            )
+        });
+        assert_ne!(
+            attention.tag, drop.tag,
+            "each ring carries its OWN tag, so a snapshot says which one is showing",
+        );
+        assert_eq!(drop.tag.as_deref(), Some("sprag_gui.pane_drop_target"));
+        let colour = |c: &ContainerNode| c.style.border.as_ref().map(|b| b.color);
+        assert!(colour(&drop).is_some(), "the drop ring draws a border");
+        assert_ne!(
+            colour(&attention),
+            colour(&drop),
+            "and a DIFFERENT colour, so a pane wearing both is still readable",
+        );
+    }
+
     #[test]
     fn attention_ring_frames_the_pane_with_a_pointer_transparent_border() {
         let owner = Owner::new();
         let ring = owner.run(|| {
             let theme = use_theme(THEME_TAG).theme_animated();
             let pane = Scene::Container(ContainerNode::new(Vec::new()).with_tag("pane_stub"));
-            let Scene::Container(mut framed) = attention_ring(pane, &theme) else {
-                unreachable!("attention_ring returns the pane Container");
+            let Scene::Container(mut framed) = pane_ring(
+                pane,
+                "sprag_gui.pane_attention",
+                theme.resolve(ColorRole::Accent),
+            ) else {
+                unreachable!("pane_ring returns the pane Container");
             };
             match framed.children.pop() {
                 Some(Scene::Container(c)) => c,
