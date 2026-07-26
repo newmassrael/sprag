@@ -18,18 +18,32 @@
 //! * activating an item emits a `"command"` intent that the binding reducer routes to
 //!   [`handle_command`] -> the matching action.
 //!
-//! ## Why the item list is CAPTURED at open time
+//! ## What a row MEANS lives in the catalog, not here
 //!
-//! The `Move to <window>` items are one per OTHER window, so the menu's contents depend on the
+//! This module is the menu's PLUMBING — the External, the anchor, the paint, the intent, the
+//! open-time captures. What a row does is [`crate::command`]'s: [`menu_rows`] builds the rows and
+//! [`Command::run`](crate::command::Command::run) performs them, the same two functions the command
+//! palette goes through. So an action cannot mean one thing from a right-click and another from
+//! `Ctrl+Shift+P`, and adding one to the client does not mean writing it twice.
+//!
+//! What stays the menu's own is its editorial half: WHICH commands a pane-anchored popup offers, and
+//! the short wording it offers them in. That wording travels with the row rather than living on the
+//! command — [`crate::command`]'s module docs carry the reason it is deliberately not one shared
+//! string.
+//!
+//! ## Why the row list is CAPTURED at open time
+//!
+//! The `Move to <window>` rows are one per OTHER window, so the menu's contents depend on the
 //! live window list — which can change out from under an open popup (a second client, an agent).
-//! Like the target pane, the whole action list is SNAPSHOT when the menu opens ([`menu_actions`]),
-//! so [`overlay`]'s painted labels and [`handle_command`]'s index-to-action resolution read the
+//! Like the target pane, the whole row list is SNAPSHOT when the menu opens ([`captured_rows`]),
+//! so [`overlay`]'s painted labels and [`handle_command`]'s index-to-row resolution read the
 //! SAME list and cannot disagree: a click always runs the action the user saw, never a neighbour a
 //! mid-open reflow shifted into that row. This is the wtabs "resolve the click against the list it
 //! was painted from" rule, taken one step further by freezing the list for the popup's lifetime.
 //!
 //! Keyboard navigation (Arrow / Enter / Escape) and a11y are deferred (mouse-first).
 
+use crate::command::{MAX_MENU_ROWS, MenuRow, menu_rows};
 use crate::terminal::{focused_pane, use_terminal};
 use crate::{WINDOW_H, WINDOW_W};
 use pinion_core::external::IntrospectValue;
@@ -41,50 +55,14 @@ use pinion_core::{Intent, Scene};
 use pinion_widget_paint::barrier::dismiss_barrier;
 use pinion_widget_paint::menu::{ContextMenuPlacement, MenuStyle, view_context_menu};
 
-/// One row of the pane context menu — a semantic action, so paint (its [`label`](MenuAction::label))
-/// and the reducer (its effect in [`run_item`]) name the SAME thing rather than agreeing on a
-/// stringly-typed item order.
-#[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) enum MenuAction {
-    /// Copy the active selection (wherever it is).
-    Copy,
-    /// Paste into the target pane.
-    Paste,
-    /// Select the whole target pane.
-    SelectAll,
-    /// Break the target pane out into a new window (tmux `break-pane`).
-    BreakOut,
-    /// Move the target pane into the named window (tmux `join-pane`).
-    JoinInto(String),
-}
-
-impl MenuAction {
-    /// The row label painted for this action.
-    fn label(&self) -> String {
-        match self {
-            Self::Copy => "Copy".to_owned(),
-            Self::Paste => "Paste".to_owned(),
-            Self::SelectAll => "Select all".to_owned(),
-            Self::BreakOut => "Break out".to_owned(),
-            Self::JoinInto(window) => format!("Move to {window}"),
-        }
-    }
-}
-
-/// The fixed leading actions, always present in order; the `Move to <window>` items follow.
-const FIXED_ACTION_COUNT: usize = 4;
-
-/// The cap on `Move to <window>` items — one per window past the current, matching the tab strip's
-/// [`MAX_WINDOW_TABS`](crate::wtabs::MAX_WINDOW_TABS) practical ceiling. A session with more windows
-/// than this offers the CLI's `join-pane` for the overflow (an honest bound, like the tab strip's).
-const MAX_JOIN_TARGETS: usize = 16;
-
-/// The [`ContextMenuExternal`] row capacity — the MOST rows the menu can ever paint (the fixed
-/// actions plus the join-target cap). Registered ONCE at this count (pinion R689 preserves the live
-/// external by tag across the reconcile, so a per-open count change would discard it); [`overlay`]
-/// paints only the rows the live action list fills, exactly as the tab strip paints only its live
-/// windows under a fixed button cap.
-const MENU_CAPACITY: usize = FIXED_ACTION_COUNT + MAX_JOIN_TARGETS;
+/// The [`ContextMenuExternal`] row capacity — the MOST rows the menu can ever paint. Registered ONCE
+/// at this count (pinion R689 preserves the live external by tag across the reconcile, so a per-open
+/// count change would discard it); [`overlay`] paints only the rows the live list fills, exactly as
+/// the tab strip paints only its live windows under a fixed button cap.
+///
+/// TAKEN from the row builder rather than recomputed here, so the capacity cannot drift from the
+/// number of rows [`menu_rows`] is actually able to return.
+const MENU_CAPACITY: usize = MAX_MENU_ROWS;
 
 /// The [`ContextMenuExternal`] scope tag — the External handle, the painted popup
 /// panel, and the snapshot anchor share it; item rows paint as the composite
@@ -102,8 +80,8 @@ const COMMAND_INTENT_TAG: &str = "sprag_gui.ctxmenu.command";
 /// `Owner::cache` key for the [`use_target_pane`] capture.
 const TARGET_PANE_KEY: &str = "sprag_gui.ctxmenu.target_pane";
 
-/// `Owner::cache` key for the [`menu_actions`] capture.
-const MENU_ACTIONS_KEY: &str = "sprag_gui.ctxmenu.actions";
+/// `Owner::cache` key for the [`captured_rows`] capture.
+const MENU_ROWS_KEY: &str = "sprag_gui.ctxmenu.rows";
 
 /// The pane the menu's Paste / Select-all / Break out / Move to act on, CAPTURED when the menu
 /// opens (right-click time). Clicking a menu item afterwards blurs the pane focus, so the reducer
@@ -116,37 +94,15 @@ fn use_target_pane() -> Signal<Option<usize>> {
         .clone()
 }
 
-/// The menu's action list, CAPTURED when it opens (see the module docs) — the SSOT both the painted
+/// The menu's row list, CAPTURED when it opens (see the module docs) — the SSOT both the painted
 /// labels and the clicked-index resolution read, so a window list that changes under an open popup
 /// can never make a click run a different row than the one shown.
-fn menu_actions() -> Signal<Vec<MenuAction>> {
+fn captured_rows() -> Signal<Vec<MenuRow>> {
     Owner::current()
-        .expect("menu_actions() requires an active Owner scope")
-        .cache(MENU_ACTIONS_KEY, || Signal::new(Vec::new()))
+        .expect("captured_rows() requires an active Owner scope")
+        .cache(MENU_ROWS_KEY, || Signal::new(Vec::new()))
         .as_ref()
         .clone()
-}
-
-/// The action list for a menu opening NOW: the fixed actions, then a `Move to <window>` per window
-/// that is NOT the current one (the pane lives in the current window; a join moves it elsewhere).
-/// A single-window session offers only the fixed actions.
-fn build_actions() -> Vec<MenuAction> {
-    let mut actions = vec![
-        MenuAction::Copy,
-        MenuAction::Paste,
-        MenuAction::SelectAll,
-        MenuAction::BreakOut,
-    ];
-    for window in use_terminal()
-        .slots
-        .windows()
-        .into_iter()
-        .filter(|window| !window.current)
-        .take(MAX_JOIN_TARGETS)
-    {
-        actions.push(MenuAction::JoinInto(window.name));
-    }
-    actions
 }
 
 /// The binding [`State`](crate::TerminalViewer): the context menu's open anchor +
@@ -184,15 +140,15 @@ pub(crate) fn read_menu_state(scene: &Scene) -> MenuState {
 }
 
 /// Open (or re-anchor) the popup at the window-space press point — the
-/// `apply_secondary_click` body. Snapshots the target pane AND the action list (see the
+/// `apply_secondary_click` body. Snapshots the target pane AND the row list (see the
 /// module docs), locates the menu external in the model scene, and invokes its `open_at`;
 /// reports the External's open verdict.
 pub(crate) fn open_at(scene: &mut Scene, x: f32, y: f32) -> bool {
-    // Snapshot the target pane AND the action list NOW, while the pane still holds focus and the
+    // Snapshot the target pane AND the row list NOW, while the pane still holds focus and the
     // window list is the one the user is about to see — a subsequent click on a menu item blurs the
     // pane and could race a window-list change.
     use_target_pane().set(focused_pane());
-    menu_actions().set(build_actions());
+    captured_rows().set(menu_rows(&use_terminal().slots));
     let Some(node) = scene.find_external_with_tag_mut(CTXMENU_TAG) else {
         return false;
     };
@@ -212,8 +168,8 @@ pub(crate) fn open_at(scene: &mut Scene, x: f32, y: f32) -> bool {
 /// the barrier extent + placement clamp — the live size is not on the `Frame` (a
 /// resized-larger window under-covers the barrier; a v1 limit).
 ///
-/// The rows are the CAPTURED action list's labels (see the module docs), so the popup shows exactly
-/// what the reducer will act on.
+/// The rows are the CAPTURED list's labels (see the module docs), so the popup shows exactly what the
+/// reducer will act on.
 pub(crate) fn overlay(scene: Scene, menu: MenuState, theme: &Theme) -> Scene {
     let Some(anchor) = menu.open_at else {
         return scene;
@@ -223,8 +179,8 @@ pub(crate) fn overlay(scene: Scene, menu: MenuState, theme: &Theme) -> Scene {
     };
     // The labels are owned (a join target carries its window name); hold them so the `&[&str]` the
     // painter takes can borrow them.
-    let labels: Vec<String> = menu_actions().get().iter().map(MenuAction::label).collect();
-    let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+    let rows = captured_rows().get();
+    let label_refs: Vec<&str> = rows.iter().map(|row| row.label.as_str()).collect();
     root.children.push(dismiss_barrier(
         CTXMENU_BARRIER_TAG,
         (0, 0),
@@ -267,47 +223,39 @@ fn command_index(payload: &IntrospectValue) -> Option<usize> {
     }
 }
 
-/// Run the CAPTURED action at row `index`. Copy uses the active selection (wherever it is); the rest
-/// act on the pane snapshotted at open time (a right-click does not retarget focus, and the item
-/// click has since blurred it). Break out / Move to are silent no-ops on a refusal (the sole pane of
-/// a window cannot break; a pane already in the target cannot join) — the daemon is the authority.
+/// Run the CAPTURED row at `index`, through the one shared
+/// [`Command::run`](crate::command::Command::run).
+///
+/// `Copy` acts on the active selection wherever it lives; the rest act on the pane snapshotted at
+/// open time (a right-click does not retarget focus, and the item click has since blurred it). Break
+/// out / Move to are silent no-ops on a refusal (the sole pane of a window cannot break; a pane
+/// already in the target cannot join) — the daemon is the authority.
+///
+/// The one `debug` line replaces the five this function used to emit, one per action. The outcome
+/// each of those reported (did the copy find a selection, did the join empty the source window) is
+/// deliberately no longer available: [`Command::run`](crate::command::Command::run) drops those bools
+/// so that a refusal cannot be treated one way from the menu and another from the palette. What is
+/// logged is what this function itself decides — which command, against which pane.
 fn run_item(index: usize) {
-    let Some(action) = menu_actions().get().get(index).cloned() else {
+    let Some(row) = captured_rows().get().get(index).cloned() else {
         return;
     };
-    match action {
-        MenuAction::Copy => {
-            let copied = crate::selection::copy_selection();
-            tracing::debug!(target: "sprag_gui::input", copied, "ctxmenu copy");
-        }
-        MenuAction::Paste => {
-            let pane = use_target_pane().get();
-            let pasted = pane.is_some_and(crate::selection::paste_clipboard);
-            tracing::debug!(target: "sprag_gui::input", ?pane, pasted, "ctxmenu paste");
-        }
-        MenuAction::SelectAll => {
-            let pane = use_target_pane().get();
-            if let Some(p) = pane {
-                crate::selection::select_all(p);
-            }
-            tracing::debug!(target: "sprag_gui::input", ?pane, "ctxmenu select all");
-        }
-        MenuAction::BreakOut => {
-            let pane = use_target_pane().get();
-            let created = pane.and_then(|p| use_terminal().slots.break_pane(p, None));
-            tracing::debug!(target: "sprag_gui::input", ?pane, ?created, "ctxmenu break out");
-        }
-        MenuAction::JoinInto(window) => {
-            let pane = use_target_pane().get();
-            let closed = pane.and_then(|p| use_terminal().slots.join_pane(p, &window));
-            tracing::debug!(target: "sprag_gui::input", ?pane, window, ?closed, "ctxmenu join into");
-        }
-    }
+    let pane = use_target_pane().get();
+    tracing::debug!(
+        target: "sprag_gui::input",
+        command = ?row.command,
+        ?pane,
+        "ctxmenu command"
+    );
+    row.command.run(pane, &use_terminal().slots);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The catalog's own type, named here rather than at module scope: outside the tests this module
+    // reaches a command only through the rows `menu_rows` hands it.
+    use crate::command::Command;
     use crate::terminal::{seed_terminal, use_terminal};
     use sprag_host::Host;
     use sprag_terminal::CommandBuilder;
@@ -330,14 +278,15 @@ mod tests {
         Intent::new_static(COMMAND_INTENT_TAG, IntrospectValue::Text(index.to_string()))
     }
 
-    /// The row index of `action` in the CAPTURED action list (the same list [`overlay`] paints and
-    /// [`run_item`] resolves against), so a test names the row by MEANING, not a hard-coded offset.
-    fn row_of(action: &MenuAction) -> usize {
-        menu_actions()
+    /// The index of the row running `command` in the CAPTURED list (the same list [`overlay`] paints
+    /// and [`run_item`] resolves against), so a test names the row by MEANING, not a hard-coded
+    /// offset.
+    fn row_of(command: &Command) -> usize {
+        captured_rows()
             .get()
             .iter()
-            .position(|a| a == action)
-            .expect("the action list offers this row")
+            .position(|row| &row.command == command)
+            .expect("the menu offers a row running this command")
     }
 
     #[test]
@@ -357,36 +306,16 @@ mod tests {
         assert!(!handle_command(&tear));
     }
 
-    #[test]
-    fn each_action_labels_itself() {
-        assert_eq!(MenuAction::Copy.label(), "Copy");
-        assert_eq!(MenuAction::Paste.label(), "Paste");
-        assert_eq!(MenuAction::SelectAll.label(), "Select all");
-        assert_eq!(MenuAction::BreakOut.label(), "Break out");
-        // A join target carries its destination window's name in the label.
-        assert_eq!(
-            MenuAction::JoinInto("logs".to_owned()).label(),
-            "Move to logs"
-        );
-    }
-
-    #[test]
-    fn the_menu_capacity_covers_the_fixed_actions_plus_every_join_target() {
-        // The external is registered ONCE at this capacity; a live menu never paints more rows than
-        // the fixed actions plus one per join target, so a click index always lands in range.
-        assert_eq!(MENU_CAPACITY, FIXED_ACTION_COUNT + MAX_JOIN_TARGETS);
-        assert_eq!(
-            FIXED_ACTION_COUNT, 4,
-            "Copy / Paste / Select all / Break out"
-        );
-    }
-
     /// The `Break out` row drives a real `break-pane` end to end: activating it routes the menu
-    /// command through [`handle_command`] -> [`run_item`] -> [`SlotView::break_pane`] into the host,
-    /// which MOVES the target pane into a new window. Seeds an in-process two-pane / one-window host
-    /// (the [`seed_terminal`] seam the input-routing tests use), so the reducer wiring the live GUI
-    /// smoke exercises is pinned WITHOUT the shell / Xvfb. REVERT-PROOF: neutering the `BreakOut`
-    /// arm of [`run_item`] leaves the window count at one and this fails.
+    /// command through [`handle_command`] -> [`run_item`] -> the shared
+    /// [`Command::run`](crate::command::Command::run) -> `SlotView::break_pane` into the host, which
+    /// MOVES the target pane into a new window. Seeds an in-process two-pane / one-window host (the
+    /// [`seed_terminal`] seam the input-routing tests use), so the reducer wiring the live GUI smoke
+    /// exercises is pinned WITHOUT the shell / Xvfb.
+    ///
+    /// This is also the proof that the FOLD onto the catalog kept the menu working: nothing here
+    /// names a menu-local action any more. REVERT-PROOF: neutering the `BreakOut` arm of
+    /// [`Command::run`](crate::command::Command::run) leaves the window count at one and this fails.
     #[test]
     fn the_break_out_command_moves_the_target_pane_into_a_new_window() {
         let host = Host::new((40, 6));
@@ -400,11 +329,11 @@ mod tests {
             // Two panes boot into one window's two slots.
             assert_eq!(tv.slots.occupied_slots(), vec![0, 1]);
             assert_eq!(tv.slots.windows().len(), 1, "both panes share one window");
-            // Mirror `open_at`: capture the target pane AND the action list the reducer reads.
+            // Mirror `open_at`: capture the target pane AND the row list the reducer reads.
             use_target_pane().set(Some(0));
-            menu_actions().set(build_actions());
+            captured_rows().set(menu_rows(&tv.slots));
             assert!(
-                handle_command(&command_intent(row_of(&MenuAction::BreakOut))),
+                handle_command(&command_intent(row_of(&Command::BreakOut))),
                 "the menu command is handled"
             );
             assert_eq!(
@@ -416,11 +345,13 @@ mod tests {
     }
 
     /// The `Move to <window>` row drives a real `join-pane` end to end: with a second window present,
-    /// [`build_actions`] offers a join target, and activating it routes through [`handle_command`] ->
-    /// [`run_item`] -> [`SlotView::join_pane`], MOVING the pane into the named window and closing the
-    /// emptied source. The second window is set up by breaking the pane out first (cat panes only, no
-    /// `$SHELL` spawn), so this also confirms a broke-out pane can be joined straight back.
-    /// REVERT-PROOF: dropping the `JoinInto` arm leaves the window count at two and this fails.
+    /// [`menu_rows`] offers a join target, and activating it routes through [`handle_command`] ->
+    /// [`run_item`] -> the shared [`Command::run`](crate::command::Command::run) -> `join_pane`,
+    /// MOVING the pane into the named window and closing the emptied source. The second window is set
+    /// up by breaking the pane out first (cat panes only, no `$SHELL` spawn), so this also confirms a
+    /// broke-out pane can be joined straight back.
+    /// REVERT-PROOF: dropping the `JoinInto` arm of [`Command::run`](crate::command::Command::run)
+    /// leaves the window count at two and this fails.
     #[test]
     fn the_move_to_command_joins_the_target_pane_into_the_named_window() {
         let host = Host::new((40, 6));
@@ -446,12 +377,12 @@ mod tests {
             );
             // Mirror `open_at` for that pane: a second window now yields a `Move to` target.
             use_target_pane().set(Some(occupied[0]));
-            menu_actions().set(build_actions());
-            let join = menu_actions()
+            captured_rows().set(menu_rows(&tv.slots));
+            let join = captured_rows()
                 .get()
                 .iter()
-                .find_map(|a| match a {
-                    MenuAction::JoinInto(window) => Some(MenuAction::JoinInto(window.clone())),
+                .find_map(|row| match &row.command {
+                    Command::JoinInto(window) => Some(Command::JoinInto(window.clone())),
                     _ => None,
                 })
                 .expect("the second window offers a join target");

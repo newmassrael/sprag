@@ -2,24 +2,39 @@
 //!
 //! ## Why a catalog rather than one list per surface
 //!
-//! Every action sprag can perform was, until now, named where it is INVOKED — the context menu's
-//! [`MenuAction`](crate::ctxmenu) rows, the chord table in [`crate::input`], the buttons of the
-//! session rail and the window strip, the `sprag` CLI's verb `match`. That is fine while each
-//! surface offers a handful of actions the user reaches by pointing at it. A PALETTE is the first
-//! surface whose whole purpose is to name them ALL, so writing its rows out by hand would have
-//! created one more list to drift from the others: a renamed action would keep working from the
-//! menu and silently mis-describe itself in the palette.
+//! Every action sprag can perform was, until this module, named where it is INVOKED — the context
+//! menu's own action enum, the chord table in [`crate::input`], the buttons of the session rail and
+//! the window strip, the `sprag` CLI's verb `match`. That is fine while each surface offers a
+//! handful of actions the user reaches by pointing at it. A PALETTE is the first surface whose whole
+//! purpose is to name them ALL, so writing its rows out by hand would have created one more list to
+//! drift from the others: a renamed action would keep working from the menu and silently
+//! mis-describe itself in the palette.
 //!
 //! So a command is a VALUE here — its title, its keyboard equivalent, and what it does live
-//! together in one place, and [`crate::palette`] is a VIEW over that value rather than a parallel
-//! list of strings. The same shape the context menu already uses for its own rows ("a semantic
-//! action, so paint and the reducer name the SAME thing rather than agreeing on a stringly-typed
-//! item order") — lifted out of that one menu so a second surface can share it.
+//! together in one place, and a surface is a VIEW over that value rather than a parallel list of
+//! strings. The shape came from the context menu ("a semantic action, so paint and the reducer name
+//! the SAME thing rather than agreeing on a stringly-typed item order"), lifted out of that one menu
+//! so a second surface could share it — and the menu now reads it back: [`crate::ctxmenu`] paints
+//! the rows [`menu_rows`] builds and its reducer runs them through the same [`Command::run`] the
+//! palette calls. The client has ONE definition of what a named command DOES.
 //!
-//! **Honest residual:** the context menu's rows are still defined in [`crate::ctxmenu`], so today
-//! this catalog is the SSOT for what the PALETTE offers, not yet for every named action in the
-//! client. Folding the menu onto it is a follow-up; until that lands, an action offered by both
-//! surfaces is defined twice and this doc must not claim otherwise.
+//! ## What is deliberately NOT shared: the wording, and the row policy
+//!
+//! Two surfaces offering the same command still differ in two ways, and neither is drift:
+//!
+//! * **The wording.** A context-menu row is read ANCHORED on the pane it was opened over, so it can
+//!   drop the object — `Copy`, `Break out`. A palette row is read out of context, one line in a
+//!   ranked list, so it has to carry the noun a fuzzy query lands on — `Copy selection`, `Break pane
+//!   out to a new window`. One shared string would have to pick one of those, and either choice
+//!   damages the other surface. So [`Command::title`] is the PALETTE's phrasing, and a menu row
+//!   carries its own short [`label`](MenuRow::label) written beside the command it names in
+//!   [`menu_rows`] — where the menu's editorial decision belongs, and where no command the menu does
+//!   not offer needs a label at all.
+//! * **The row policy.** The palette does not offer a command it cannot run ([`catalog`] drops the
+//!   pane commands when no pane was captured), because in a long searched list a dead row is
+//!   indistinguishable from a live one. The menu keeps its fixed rows either way: it is a short
+//!   popup opened ON something, its refusals are already silent no-ops, and a menu that opened EMPTY
+//!   would be the worse failure.
 //!
 //! ## What is NOT in the catalog, and why
 //!
@@ -38,11 +53,12 @@
 //!
 //! ## The pane a command acts on
 //!
-//! Most of these act on ONE pane, and the palette cannot read the focused pane when a row is
-//! activated — opening the palette moves focus to its query field. So the target pane is captured
-//! when the palette OPENS and threaded in here as `target`; a command that needs a pane is simply
-//! not offered when there is none ([`catalog`]), which is why [`Command::run`] can take the target
-//! it was built for and act.
+//! Most of these act on ONE pane, and neither surface can read the focused pane at the moment a row
+//! is activated: opening the palette moves focus to its query field, and clicking a menu item blurs
+//! the pane the menu was opened over. So both surfaces capture the target pane when they OPEN and
+//! thread it in here as `target`. [`Command::run`] therefore acts on the pane it was handed, and
+//! each arm that needs one is total over its absence — see the note on [`Command::run`] for why that
+//! is the arm's job and not a gate at the top.
 
 use sprag_host::ProjectAction;
 
@@ -71,6 +87,8 @@ pub(crate) enum Command {
     ToggleFloat,
     /// Move the target pane into a new window of its own (tmux `break-pane`).
     BreakOut,
+    /// Move the target pane into the named window (tmux `join-pane`) — `BreakOut`'s inverse.
+    JoinInto(String),
     /// Create a window in the current session and select it.
     NewWindow,
     /// Select the named window of the current session.
@@ -103,6 +121,7 @@ impl Command {
             Self::SelectAll => "Select all in pane".to_owned(),
             Self::ToggleFloat => "Toggle floating pane".to_owned(),
             Self::BreakOut => "Break pane out to a new window".to_owned(),
+            Self::JoinInto(name) => format!("Move pane to window {name}"),
             Self::NewWindow => "New window".to_owned(),
             Self::SelectWindow(name) => format!("Go to window {name}"),
             Self::NewSession => "New session".to_owned(),
@@ -137,6 +156,7 @@ impl Command {
             Self::Project(action) => Some(action.command_line()),
             Self::SelectAll
             | Self::BreakOut
+            | Self::JoinInto(_)
             | Self::NewWindow
             | Self::SelectWindow(_)
             | Self::NewSession
@@ -144,9 +164,15 @@ impl Command {
         }
     }
 
-    /// Whether this command acts on a pane, and so is only offered when one is targetable.
+    /// Whether this command acts on a pane, and so is only OFFERED where one was captured.
     ///
-    /// This is the ONLY gate on a pane command. In particular neither `ToggleFloat` nor `BreakOut`
+    /// An OFFER predicate, not a precondition. It decides what [`catalog`] puts in front of the user;
+    /// [`Command::run`] deliberately does not consult it, because the two are different questions and
+    /// `Copy` is the proof — it is pointless to offer with no pane (there is nothing on screen to
+    /// have selected) and yet perfectly runnable without one, since it copies whatever selection is
+    /// active wherever it lives.
+    ///
+    /// Within offering, this is the ONLY gate. In particular neither `ToggleFloat` nor `BreakOut`
     /// is additionally gated on the pane being movable: floating the last docked pane is REFUSED by
     /// the dock primitive itself ([`crate::dock::toggle_pane_floating`], where the invariant lives),
     /// and breaking out the last pane of a window is perfectly legal — the emptied source window
@@ -160,6 +186,8 @@ impl Command {
             | Self::SelectAll
             | Self::ToggleFloat
             | Self::BreakOut
+            // A join needs the pane it MOVES, exactly as the break it inverts does.
+            | Self::JoinInto(_)
             // A project command is DELIVERED to a pane's prompt, so it needs one as much as a paste
             // does — and the pane it needs is the one whose project declared it.
             | Self::Project(_) => true,
@@ -179,14 +207,22 @@ impl Command {
     /// from the palette and another from the surface it already had. Nothing is re-implemented here.
     ///
     /// A `bool` an underlying call returns (a copy with no selection, a paste into a gone pane) is
-    /// deliberately dropped: those are already the action's own tolerated no-ops, and the palette
-    /// has no place to report one that the surface itself does not.
+    /// deliberately dropped: those are already the action's own tolerated no-ops, and neither surface
+    /// has a place to report one that the surface itself does not.
+    ///
+    /// ## Why there is no `needs_pane` gate at the top
+    ///
+    /// There was one, as a belt to [`catalog`]'s braces, while the palette was the only caller and so
+    /// the only way to reach `run` with a missing target was to build a command by hand. The menu
+    /// builds them by hand — from [`menu_rows`], whose row set is deliberately not filtered by
+    /// [`needs_pane`](Self::needs_pane) — so that gate would now be LIVE, and wrong: it would refuse
+    /// `Copy`, which the menu has always run against the active selection whether or not a pane held
+    /// focus at open time.
+    ///
+    /// Nothing is lost by removing it, because every arm below that needs a pane destructures
+    /// `target` itself and is therefore already total over its absence. The gate was never the guard
+    /// — the arms were.
     pub(crate) fn run(&self, target: Option<usize>, slots: &SlotView) {
-        // A pane command with no target cannot act. `catalog` does not offer one in that state, so
-        // this is the belt to that braces — reached only if a caller builds a command by hand.
-        if self.needs_pane() && target.is_none() {
-            return;
-        }
         match self {
             Self::Find => {
                 if let Some(pane) = target {
@@ -216,6 +252,11 @@ impl Command {
                     slots.break_pane(pane, None);
                 }
             }
+            Self::JoinInto(name) => {
+                if let Some(pane) = target {
+                    slots.join_pane(pane, name);
+                }
+            }
             Self::NewWindow => {
                 // Creates AND selects (the host action does both), like the strip's "+".
                 slots.new_window();
@@ -240,10 +281,11 @@ impl Command {
     }
 }
 
-/// The cap on `Go to window <name>` rows, matching the tab strip's own practical ceiling
-/// ([`MAX_WINDOW_TABS`](crate::wtabs::MAX_WINDOW_TABS)) so the palette offers exactly the windows
-/// the strip can show. A session with more windows than this reaches the overflow through
-/// `sprag select-window`, the same honest bound the strip and the context menu state.
+/// The cap on the rows named after a window — `Go to window <name>` and `Move pane to window <name>`
+/// alike — matching the tab strip's own practical ceiling
+/// ([`MAX_WINDOW_TABS`](crate::wtabs::MAX_WINDOW_TABS)) so a surface offers exactly the windows the
+/// strip can show. A session with more windows than this reaches the overflow through `sprag
+/// select-window` / `sprag join-pane`, the same honest bound the strip states.
 const MAX_WINDOW_ROWS: usize = crate::wtabs::MAX_WINDOW_TABS;
 
 /// The cap on `Switch to session <name>` rows, for the same reason, against the session rail.
@@ -313,13 +355,28 @@ pub(crate) fn catalog(target: Option<usize>, slots: &SlotView) -> Catalog {
 
     // One row per OTHER window: going to the window you are already in is not an action.
     let windows = slots.windows();
+    let elsewhere: Vec<&str> = windows
+        .iter()
+        .filter(|window| !window.current)
+        .take(MAX_WINDOW_ROWS)
+        .map(|window| window.name.as_str())
+        .collect();
     out.extend(
-        windows
+        elsewhere
             .iter()
-            .filter(|window| !window.current)
-            .take(MAX_WINDOW_ROWS)
-            .map(|window| Command::SelectWindow(window.name.clone())),
+            .map(|name| Command::SelectWindow((*name).to_owned())),
     );
+    // ...and, where a pane was captured, one row per window to MOVE it into. The SAME list serves
+    // both: a join's destination is any window except the one the pane already lives in, which is
+    // the current one (a slot addresses a pane of the current window), and the host refuses a join
+    // into the window the pane is already in anyway.
+    if target.is_some() {
+        out.extend(
+            elsewhere
+                .iter()
+                .map(|name| Command::JoinInto((*name).to_owned())),
+        );
+    }
 
     // ...and one per OTHER session, on the same terms.
     let current = slots.current_session();
@@ -352,6 +409,74 @@ pub(crate) struct Catalog {
     pub(crate) project_error: Option<String>,
 }
 
+/// One row of the pane context menu: the command it runs, and the SHORT wording it paints with.
+///
+/// The label is DATA here rather than a method on [`Command`] for the reason the module docs give.
+/// Only a handful of commands are ever offered in a menu, so a `menu_label()` on the enum would be
+/// mostly arms returning nothing, and the wording is the MENU's editorial decision — it belongs where
+/// the menu's row set is decided, which is [`menu_rows`]. Pairing the two in one value preserves the
+/// property the menu already depended on: [`crate::ctxmenu`] paints `label` and its reducer runs
+/// `command` out of the SAME captured row, so an activation cannot run a neighbour of what was read.
+/// (Serde-derived for the same reason [`Command`] is — the captured list lives in a reactive
+/// `Signal`, whose value type carries pinion's serialization bound.)
+#[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct MenuRow {
+    /// What activating this row does — the shared definition, performed by [`Command::run`].
+    pub(crate) command: Command,
+    /// What the row paints: the anchored, object-dropping phrasing (`Copy`, not `Copy selection`).
+    pub(crate) label: String,
+}
+
+impl MenuRow {
+    /// A row pairing `command` with the wording the menu paints for it.
+    fn new(command: Command, label: &str) -> Self {
+        Self {
+            command,
+            label: label.to_owned(),
+        }
+    }
+}
+
+/// The rows the menu offers regardless of live state, and so the floor of every menu.
+const FIXED_MENU_ROWS: usize = 4;
+
+/// The MOST rows [`menu_rows`] can ever return — the fixed rows plus one join target per window the
+/// cap allows.
+///
+/// Stated here, beside the builder, because the menu's `ContextMenuExternal` is registered ONCE at
+/// this capacity (pinion preserves the live handle by tag across the reconcile, so a per-open count
+/// would discard it). Re-deriving the same arithmetic at the registration site is exactly the kind of
+/// second definition this module exists to remove.
+pub(crate) const MAX_MENU_ROWS: usize = FIXED_MENU_ROWS + MAX_WINDOW_ROWS;
+
+/// The rows the pane context menu offers RIGHT NOW, in the order it paints them.
+///
+/// A snapshot, frozen when the menu opens, for the reason [`catalog`] is frozen when the palette
+/// opens: the join targets depend on the live window list, which a second client or an agent can
+/// change under an open popup.
+///
+/// Unlike [`catalog`] this takes no target and filters nothing — see the module docs on the row
+/// policy. The join targets are the same "every window but the current one" list, capped the same
+/// way ([`MAX_WINDOW_ROWS`]), that the palette's own `Move pane to window` rows are built from.
+pub(crate) fn menu_rows(slots: &SlotView) -> Vec<MenuRow> {
+    let mut rows = vec![
+        MenuRow::new(Command::Copy, "Copy"),
+        MenuRow::new(Command::Paste, "Paste"),
+        MenuRow::new(Command::SelectAll, "Select all"),
+        MenuRow::new(Command::BreakOut, "Break out"),
+    ];
+    for window in slots
+        .windows()
+        .into_iter()
+        .filter(|window| !window.current)
+        .take(MAX_WINDOW_ROWS)
+    {
+        let label = format!("Move to {}", window.name);
+        rows.push(MenuRow::new(Command::JoinInto(window.name), &label));
+    }
+    rows
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -372,6 +497,8 @@ mod tests {
         switched_sessions: Vec<String>,
         new_sessions: usize,
         broken_panes: Vec<PaneId>,
+        /// `(pane, destination window)` per join — `broken_panes`' inverse.
+        joined: Vec<(PaneId, String)>,
         last_session: usize,
         /// `(pane, text)` per paste — how a project command reaches a pane.
         pasted: Vec<(PaneId, String)>,
@@ -405,6 +532,10 @@ mod tests {
         fn break_pane(&self, id: PaneId, _name: Option<&str>) -> Option<String> {
             self.log.borrow_mut().broken_panes.push(id);
             Some("w".to_owned())
+        }
+        fn join_pane(&self, id: PaneId, dst: &str) -> Option<bool> {
+            self.log.borrow_mut().joined.push((id, dst.to_owned()));
+            Some(true)
         }
         fn sessions(&self) -> Vec<SessionInfo> {
             self.sessions
@@ -734,6 +865,7 @@ mod tests {
         Command::SelectWindow("build".to_owned()).run(Some(0), &slots);
         Command::NewWindow.run(Some(0), &slots);
         Command::BreakOut.run(Some(0), &slots);
+        Command::JoinInto("build".to_owned()).run(Some(0), &slots);
         Command::SwitchSession("work".to_owned()).run(None, &slots);
         Command::NewSession.run(None, &slots);
         Command::LastSession.run(None, &slots);
@@ -745,6 +877,11 @@ mod tests {
             log.broken_panes,
             vec![PaneId(7)],
             "break-out acts on the pane the captured SLOT maps to, by its host id"
+        );
+        assert_eq!(
+            log.joined,
+            vec![(PaneId(7), "build".to_owned())],
+            "a join carries BOTH the captured pane and the window it names"
         );
         assert_eq!(log.switched_sessions, vec!["work".to_owned()]);
         assert_eq!(log.new_sessions, 1);
@@ -759,6 +896,140 @@ mod tests {
         let (slots, log) = slots_with(&[("main", true)], &["0"], "0");
         Command::BreakOut.run(None, &slots);
         assert!(log.borrow().broken_panes.is_empty());
+    }
+
+    /// The palette offers `Move pane to window <name>` per other window — but only where a pane was
+    /// captured, since a join has nothing to move otherwise.
+    ///
+    /// REVERT-PROOF: drop the `JoinInto` block from `catalog` and the first assertion fails; drop its
+    /// `target.is_some()` guard and the last one does.
+    #[test]
+    fn a_move_row_is_offered_per_other_window_and_only_with_a_captured_pane() {
+        let (slots, _log) = slots_with(&[("main", true), ("build", false)], &["0"], "0");
+
+        let titles: Vec<String> = catalog(Some(0), &slots)
+            .commands
+            .iter()
+            .map(Command::title)
+            .collect();
+        assert!(titles.contains(&"Move pane to window build".to_owned()));
+        assert!(
+            !titles.contains(&"Move pane to window main".to_owned()),
+            "the pane already lives in the current window"
+        );
+
+        assert!(
+            !catalog(None, &slots)
+                .commands
+                .iter()
+                .any(|command| matches!(command, Command::JoinInto(_))),
+            "with no pane captured there is nothing to move"
+        );
+    }
+
+    /// THE point of this module: every row the context menu offers runs a command the palette also
+    /// knows. The two surfaces hold no separate definition of what an action does.
+    ///
+    /// Asserted with a pane captured, because that is the only state in which the palette offers the
+    /// pane commands at all (see the row-policy test below).
+    ///
+    /// REVERT-PROOF: give the menu back an action of its own — anything `catalog` does not build —
+    /// and this fails.
+    #[test]
+    fn every_menu_row_runs_a_command_the_palette_also_offers() {
+        let (slots, _log) = slots_with(&[("main", true), ("build", false)], &["0"], "0");
+        let offered = catalog(Some(0), &slots).commands;
+
+        let rows = menu_rows(&slots);
+        assert!(!rows.is_empty(), "the menu offers something to compare");
+        for row in &rows {
+            assert!(
+                offered.contains(&row.command),
+                "the menu's {:?} row is not a command the palette offers: {offered:?}",
+                row.command
+            );
+        }
+    }
+
+    /// The wording is deliberately NOT shared: a menu row is read anchored on a pane, so it drops the
+    /// object the palette's row has to carry. Every shared row is strictly shorter in the menu.
+    ///
+    /// REVERT-PROOF: paint the menu with `Command::title` (the "simplification" this test exists to
+    /// refuse) and every assertion here fails at once.
+    #[test]
+    fn the_menu_words_a_shared_command_shorter_than_the_palette_does() {
+        let (slots, _log) = slots_with(&[("main", true), ("build", false)], &["0"], "0");
+
+        for row in menu_rows(&slots) {
+            let title = row.command.title();
+            assert!(
+                row.label.len() < title.len(),
+                "the anchored wording must be the shorter one: {:?} vs {title:?}",
+                row.label
+            );
+        }
+
+        // The two exemplars, spelled out, so this test also documents the phrasings it protects.
+        let rows = menu_rows(&slots);
+        let copy = rows
+            .iter()
+            .find(|row| row.command == Command::Copy)
+            .expect("the menu offers copy");
+        assert_eq!(copy.label, "Copy");
+        assert_eq!(copy.command.title(), "Copy selection");
+        let break_out = rows
+            .iter()
+            .find(|row| row.command == Command::BreakOut)
+            .expect("the menu offers break-out");
+        assert_eq!(break_out.label, "Break out");
+        assert_eq!(
+            break_out.command.title(),
+            "Break pane out to a new window",
+            "a palette row is read out of context, so it names the whole gesture"
+        );
+    }
+
+    /// The other surviving difference: the palette hides a row it cannot run, the menu keeps its
+    /// fixed rows regardless.
+    ///
+    /// `Copy` is the case that matters, and the reason [`Command::run`] carries no `needs_pane` gate:
+    /// the palette will not offer it without a pane (nothing on screen to have selected), while the
+    /// menu offers it always — so a gate keyed on the OFFER predicate would refuse a row the menu
+    /// legitimately paints and has always run.
+    #[test]
+    fn the_menu_keeps_its_fixed_rows_where_the_palette_hides_a_row_it_cannot_run() {
+        let (slots, _log) = slots_with(&[("main", true)], &["0"], "0");
+
+        assert!(
+            !catalog(None, &slots).commands.contains(&Command::Copy),
+            "with no pane captured the palette does not offer a pane command"
+        );
+        assert!(
+            menu_rows(&slots)
+                .iter()
+                .any(|row| row.command == Command::Copy),
+            "the menu offers copy whether or not a pane held focus when it opened"
+        );
+    }
+
+    #[test]
+    fn the_menu_rows_stay_within_the_capacity_the_external_is_registered_at() {
+        // A single window contributes no join target, so the menu is exactly its fixed rows...
+        let (single, _log) = slots_with(&[("main", true)], &["0"], "0");
+        assert_eq!(menu_rows(&single).len(), FIXED_MENU_ROWS);
+
+        // ...and one more window than the cap allows saturates it without exceeding MAX_MENU_ROWS,
+        // which is the count the `ContextMenuExternal` is registered at — a row past it could not be
+        // painted, and its click index could not be resolved.
+        let windows: Vec<(String, bool)> = (0..=MAX_WINDOW_ROWS + 1)
+            .map(|i| (format!("w{i}"), i == 0))
+            .collect();
+        let window_refs: Vec<(&str, bool)> = windows
+            .iter()
+            .map(|(name, current)| (name.as_str(), *current))
+            .collect();
+        let (saturated, _log) = slots_with(&window_refs, &["0"], "0");
+        assert_eq!(menu_rows(&saturated).len(), MAX_MENU_ROWS);
     }
 
     #[test]
