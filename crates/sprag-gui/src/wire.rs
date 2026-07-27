@@ -143,6 +143,10 @@ struct WirePane {
     /// [`Self::notification`] — re-adopted each wake, kept SEPARATE from it (a bell carries no
     /// text) so the attention marker can combine the two.
     bell_seq: u64,
+    /// Whether the pane's child has EXITED, `false` while it runs. Host-authoritative and re-adopted
+    /// each wake like the rest, but ONE-WAY: a pane never comes back to life, so the only staleness
+    /// this can hold is a just-exited pane still reading live for one poll interval.
+    dead: bool,
     /// The pane's OSC 52 clipboard WRITE count, `0` if none. Host-authoritative + dynamic — the
     /// CHEAP detection counter (no payload); [`crate::clipboard_osc`] fetches the actual write via
     /// [`WireHost::pane_clipboard_write`] only when this grows past the ack.
@@ -1593,6 +1597,19 @@ impl HostClient for WireHost {
             .map_or(0, |pane| pane.bell_seq)
     }
 
+    /// Whether the child has exited, served from the same poll-refreshed mirror as
+    /// [`Self::pane_bell_seq`].
+    ///
+    /// A wake-stale answer here is benign in the one direction it can be wrong: liveness is
+    /// ONE-WAY, so the worst case is a just-exited pane still reading live for a poll interval —
+    /// never a live pane declared dead.
+    fn pane_is_dead(&self, id: PaneId) -> bool {
+        self.lock_cache()
+            .iter()
+            .find(|pane| pane.id == id)
+            .is_some_and(|pane| pane.dead)
+    }
+
     /// The child's mouse-tracking bit, served from the same poll-refreshed mirror as
     /// [`Self::pane_bell_seq`] (re-adopted each wake). The pane pointer oracle reads it per frame to
     /// gate pointer capture + decide drag / motion forwarding; the authoritative encode still
@@ -1782,6 +1799,9 @@ struct PaneSeed {
     /// The pane's tmux monitor-bell count, `0` when the wire omits the key (the child rang none,
     /// or an older daemon).
     bell_seq: u64,
+    /// Whether the pane's child has EXITED, `false` when the wire omits the key (it is live, or an
+    /// older daemon). One-way: a pane never comes back to life.
+    dead: bool,
     /// The pane's OSC 52 clipboard-write count, `0` when the wire omits the key (no write, or an
     /// older daemon).
     clipboard_write_seq: u64,
@@ -1816,6 +1836,8 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
             let title = pane["title"].as_str().map(str::to_owned);
             let notification = parse_notification(&pane["notification"]);
             let bell_seq = pane["bell_seq"].as_u64().unwrap_or(0);
+            // ADDITIVE: present only once the child has exited, so absent means live.
+            let dead = pane["dead"].as_bool().unwrap_or(false);
             let clipboard_write_seq = pane["clipboard_write_seq"].as_u64().unwrap_or(0);
             let clipboard_query = parse_clipboard_query(&pane["clipboard_query"]);
             let images = parse_images(&pane["images"]);
@@ -1830,6 +1852,7 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
                 title,
                 notification,
                 bell_seq,
+                dead,
                 clipboard_write_seq,
                 clipboard_query,
                 images,
@@ -2150,6 +2173,7 @@ fn merge_panes(
             // grows as the child raises more (and clears to None if the host ever drops it).
             notification: seed.notification.clone(),
             bell_seq: seed.bell_seq, // host-authoritative + dynamic, like the notification
+            dead: seed.dead,         // host-authoritative, and one-way once true
             // host-authoritative + dynamic like the notification: re-adopt the query's, so the
             // clipboard write count / read query reflect the child's latest for `clipboard_osc`.
             clipboard_write_seq: seed.clipboard_write_seq,
@@ -2310,6 +2334,10 @@ fn spawn_poll(
                                 // than dropping the attention badge on a transient query miss.
                                 notification: pane.notification.clone(),
                                 bell_seq: pane.bell_seq, // keep the last-known bell count too
+                                // Liveness is ONE-WAY, so a stale `true` can never become a lie —
+                                // and a stale `false` is only the pre-liveness reading, corrected
+                                // on the next successful query.
+                                dead: pane.dead,
                                 // keep the last-known clipboard signals across a transient miss
                                 clipboard_write_seq: pane.clipboard_write_seq,
                                 clipboard_query: pane.clipboard_query,
@@ -3390,6 +3418,7 @@ mod tests {
                 title: None,
                 notification: None,
                 bell_seq: 0,
+                dead: false,
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
@@ -3403,6 +3432,7 @@ mod tests {
                 title: None,
                 notification: None,
                 bell_seq: 0,
+                dead: false,
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
@@ -3421,6 +3451,7 @@ mod tests {
                 title: None,
                 notification: None,
                 bell_seq: 0,
+                dead: false,
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
@@ -3433,6 +3464,7 @@ mod tests {
                 title: None,
                 notification: None,
                 bell_seq: 0,
+                dead: false,
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
@@ -3445,6 +3477,7 @@ mod tests {
                 title: None,
                 notification: None,
                 bell_seq: 0,
+                dead: false,
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
@@ -3492,6 +3525,7 @@ mod tests {
             title: None,
             notification: None,
             bell_seq: 0,
+            dead: false,
             clipboard_write_seq: 0,
             clipboard_query: None,
             images: Vec::new(),
@@ -3505,6 +3539,7 @@ mod tests {
             title: None,
             notification: None,
             bell_seq: 0,
+            dead: false,
             clipboard_write_seq: 0,
             clipboard_query: None,
             images: Vec::new(),
@@ -3517,6 +3552,49 @@ mod tests {
             merged[0].frame.cells.cols(),
             3,
             "kept its last frame when the refetch missed (not dropped)"
+        );
+    }
+
+    /// LIVENESS is host-authoritative and re-adopted each wake, like the title beside it: the
+    /// mirror must take the host's answer, not keep the `false` it was born with. Without this a
+    /// pane's child could exit and the client would never notice — the exited marker would never
+    /// appear, however long the daemon reported it.
+    ///
+    /// REVERT-PROOF: pin `dead: false` in `merge_panes` and the exited assertion fails.
+    #[test]
+    fn merge_panes_readopts_the_hosts_liveness() {
+        let existing = vec![WirePane {
+            id: PaneId(10),
+            label: "cargo".to_owned(),
+            title: None,
+            notification: None,
+            bell_seq: 0,
+            dead: false, // last wake it was still running
+            clipboard_write_seq: 0,
+            clipboard_query: None,
+            images: Vec::new(),
+            mouse_protocol: MouseProtocol::None,
+            frame: frame(3),
+            dims: (80, 24),
+        }];
+        let seeds = vec![PaneSeed {
+            id: PaneId(10),
+            label: "cargo".to_owned(),
+            title: None,
+            notification: None,
+            bell_seq: 0,
+            dead: true, // ...and the host now says the child has exited
+            clipboard_write_seq: 0,
+            clipboard_query: None,
+            images: Vec::new(),
+            mouse_protocol: MouseProtocol::None,
+            dims: (80, 24),
+        }];
+
+        let merged = merge_panes(&existing, &seeds, &[]);
+        assert!(
+            merged[0].dead,
+            "the mirror adopts the host's liveness rather than keeping its own stale view"
         );
     }
 
@@ -3533,6 +3611,7 @@ mod tests {
                 title: Some("stale: vim README".to_owned()),
                 notification: None,
                 bell_seq: 0,
+                dead: false,
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
@@ -3546,6 +3625,7 @@ mod tests {
                 title: Some("about to be cleared".to_owned()),
                 notification: None,
                 bell_seq: 0,
+                dead: false,
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
@@ -3561,6 +3641,7 @@ mod tests {
                 title: Some("coin@host:~".to_owned()), // child retitled at the new prompt
                 notification: None,
                 bell_seq: 0,
+                dead: false,
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
@@ -3573,6 +3654,7 @@ mod tests {
                 title: None, // child cleared its title
                 notification: None,
                 bell_seq: 0,
+                dead: false,
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),

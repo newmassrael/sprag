@@ -792,6 +792,13 @@ impl ExternalIntrospect for WorkspaceExternal {
                         if p.bell_seq > 0 {
                             entry["bell_seq"] = serde_json::json!(p.bell_seq);
                         }
+                        // Whether the pane's child has EXITED. ADDITIVE and one-way: the key is
+                        // present only once it is true (a live pane is byte-identical to the
+                        // pre-liveness wire shape), and a pane never comes back to life, so a
+                        // client that has seen it needs no re-check.
+                        if p.dead {
+                            entry["dead"] = serde_json::json!(true);
+                        }
                         // Shell-integration (OSC 133) summary: the idle/running state and the last
                         // command's exit status. ADDITIVE — the state key is present only when the
                         // child emitted a mark (`wire_str` returns `None` for `Unknown`), and the
@@ -1733,6 +1740,57 @@ mod tests {
         };
         assert_eq!(ids(&mut work), vec![0]);
         assert_eq!(ids(&mut default), vec![1]);
+    }
+
+    /// The `dead` key is ADDITIVE and appears exactly when the child has exited: absent while it
+    /// runs (so a live pane's entry is byte-identical to the pre-liveness wire shape), present and
+    /// `true` afterwards. That key is the only thing on the wire that distinguishes a finished
+    /// command from a hung one — the pane itself stays either way.
+    ///
+    /// REVERT-PROOF: emit the key unconditionally and the live assertion fails; drop the emission
+    /// and the exited one does.
+    #[test]
+    fn the_panes_slot_reports_a_dead_child_additively() {
+        let reg = registry();
+        let (mut ext, _guard) = control(&reg);
+        // A child that exits at once, beside one that stays up.
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+            .unwrap();
+        ext.invoke(
+            SPAWN_ACTION,
+            IntrospectValue::Json(json!({"cmd": ["true"]})),
+        )
+        .unwrap();
+
+        let entry = |ext: &mut WorkspaceExternal, id: u64| -> Value {
+            let Some(IntrospectValue::Json(Value::Array(panes))) = ext.query(PANES_SLOT) else {
+                panic!("the panes slot answers with a JSON array");
+            };
+            panes
+                .into_iter()
+                .find(|p| p["id"].as_u64() == Some(id))
+                .expect("the pane is listed")
+        };
+
+        // Wait on the CONDITION the assertion reads, never on a timer.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while entry(&mut ext, 1).get("dead").is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the short-lived child never reported dead"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(entry(&mut ext, 1)["dead"], json!(true));
+        assert!(
+            entry(&mut ext, 1)["id"].as_u64() == Some(1),
+            "and it is still LISTED — a dead pane keeps its place"
+        );
+        assert!(
+            entry(&mut ext, 0).get("dead").is_none(),
+            "the live pane carries no key at all: {:?}",
+            entry(&mut ext, 0)
+        );
     }
 
     /// The session set is discoverable, so a client learns what it may name in `session` by

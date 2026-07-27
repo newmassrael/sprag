@@ -60,12 +60,34 @@ pub(crate) fn pane_display_title(slots: &SlotView, i: usize) -> String {
     // this client has not yet VIEWED — the tmux bell flag, shown on every title surface (tab,
     // dock header, floater, taskbar) so an unattended pane is visible without opening it. The
     // focused pane is acked before this runs, so it never wears its own marker.
-    if attention::pane_has_unseen_attention(slots, i) {
+    let title = if attention::pane_has_unseen_attention(slots, i) {
         format!("{}{title}", attention::ATTENTION_MARKER)
+    } else {
+        title
+    };
+    // ...and SUFFIX the exited marker when the pane's child is gone. A suffix rather than a second
+    // prefix because the two are not the same kind of fact and must not compete for the same
+    // position: attention is a transient flag the user CLEARS by looking, whereas this is a
+    // permanent statement about what the pane now is. Riding this one string is what puts it on
+    // every title surface at once — the dock header over the pane, the tab, the floater's OS title.
+    //
+    // Without it a finished command and a hung one are the same picture: a screen that stopped
+    // changing. That is the whole of what remain-on-exit costs a user who cannot see it, and sprag
+    // keeps every dead pane (nothing reaps one), so every one of them needs to say so.
+    if slots.pane_is_dead(i) {
+        format!("{title}{DEAD_MARKER}")
     } else {
         title
     }
 }
+
+/// What a title says about a pane whose child has exited.
+///
+/// Words, not a glyph, and the plain past tense: a screen reader reads it as-is (the attention
+/// marker needs a spoken translation precisely because it is a symbol), and "exited" describes what
+/// happened without claiming it went wrong — a `cargo test` that passed exits exactly like one that
+/// failed. tmux says "dead" here; that reads as a fault, and most of these are not.
+pub(crate) const DEAD_MARKER: &str = " (exited)";
 
 /// view-fn (§6.3): per-window paint. The **main** window tiles the DOCKED panes
 /// (those without an undock window); an **undock window** (`pane-{i}`) paints that

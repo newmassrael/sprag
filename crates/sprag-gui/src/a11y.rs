@@ -107,6 +107,7 @@ fn pane_node(terminal: &TerminalView, i: usize, focused: Option<&str>) -> Access
         text,
         focused == Some(pane_tag(i)),
         crate::attention::pane_has_unseen_attention(&terminal.slots, i),
+        terminal.slots.pane_is_dead(i),
     )
 }
 
@@ -132,15 +133,25 @@ fn terminal_a11y_node(
     text: String,
     focused: bool,
     attention: bool,
+    dead: bool,
 ) -> AccessNode {
     // Announce an unseen attention notification as SPOKEN words in the name — never the "●"
     // display glyph, which a screen reader would read as "black circle". The AT thus hears
     // "Attention — Terminal: bash" for a pane that raised one this client has not viewed.
-    let name = if attention {
+    let mut name = if attention {
         format!("Attention \u{2014} Terminal: {command_label}")
     } else {
         format!("Terminal: {command_label}")
     };
+    // ...and the exited state on the END of the name, mirroring where the sighted title carries it
+    // ([`crate::view::DEAD_MARKER`]) so the two surfaces describe one pane the same way round.
+    //
+    // In the NAME rather than as a description, for the reason the confirmation prompt's consequence
+    // is: a description is announced at the AT's discretion, and "nothing is running here" is the
+    // fact that decides whether typing into this pane will do anything at all.
+    if dead {
+        name.push_str(crate::view::DEAD_MARKER);
+    }
     AccessNode::new(tag, AriaRole::Group)
         .with_name(name)
         .with_value(AccessValue::Text(text))
@@ -160,6 +171,7 @@ mod tests {
             "line one\nline two".to_owned(),
             true,
             false,
+            false,
         );
         assert_eq!(
             node.tag,
@@ -175,7 +187,7 @@ mod tests {
         assert!(node.state.focused, "focused state flows through");
         // Unfocused: the AT focus follows the focus manager.
         assert!(
-            !terminal_a11y_node(pane_tag(0), "sh", String::new(), false, false)
+            !terminal_a11y_node(pane_tag(0), "sh", String::new(), false, false, false)
                 .state
                 .focused
         );
@@ -186,17 +198,59 @@ mod tests {
     /// non-attention node keeps the plain name, so the prefix is not unconditional.
     #[test]
     fn an_unseen_attention_pane_announces_it_in_the_accessible_name() {
-        let attention = terminal_a11y_node(pane_tag(1), "bash", String::new(), false, true);
+        let attention = terminal_a11y_node(pane_tag(1), "bash", String::new(), false, true, false);
         assert_eq!(
             attention.name.as_deref(),
             Some("Attention \u{2014} Terminal: bash"),
             "spoken words, not a glyph",
         );
-        let calm = terminal_a11y_node(pane_tag(1), "bash", String::new(), false, false);
+        let calm = terminal_a11y_node(pane_tag(1), "bash", String::new(), false, false, false);
         assert_eq!(
             calm.name.as_deref(),
             Some("Terminal: bash"),
             "no attention ⇒ the plain name",
+        );
+    }
+
+    /// A pane whose child has EXITED says so in its accessible name, on the END — where the sighted
+    /// title carries it — so an AT user learns that typing here will reach nothing.
+    ///
+    /// REVERT-PROOF: drop the `dead` push and the live and exited names become identical, which is
+    /// exactly the ambiguity the marker exists to remove.
+    #[test]
+    fn an_exited_pane_announces_it_at_the_end_of_the_accessible_name() {
+        let exited = terminal_a11y_node(pane_tag(1), "cargo", String::new(), false, false, true);
+        assert_eq!(
+            exited.name.as_deref(),
+            Some("Terminal: cargo (exited)"),
+            "the marker trails the name it qualifies",
+        );
+        let live = terminal_a11y_node(pane_tag(1), "cargo", String::new(), false, false, false);
+        assert_eq!(
+            live.name.as_deref(),
+            Some("Terminal: cargo"),
+            "a live pane says nothing extra",
+        );
+        // The two markers COMPOSE, each at its own end — the attention prefix is a transient flag,
+        // the exited suffix a permanent statement, so neither displaces the other.
+        let both = terminal_a11y_node(pane_tag(1), "cargo", String::new(), false, true, true);
+        assert_eq!(
+            both.name.as_deref(),
+            Some("Attention \u{2014} Terminal: cargo (exited)"),
+        );
+    }
+
+    /// The sighted title and the spoken name use ONE marker, so the two surfaces cannot drift into
+    /// describing the same pane differently.
+    #[test]
+    fn the_spoken_marker_is_the_same_string_the_title_paints() {
+        let spoken = terminal_a11y_node(pane_tag(0), "sh", String::new(), false, false, true);
+        assert!(
+            spoken
+                .name
+                .as_deref()
+                .is_some_and(|name| name.ends_with(crate::view::DEAD_MARKER)),
+            "the accessible name ends with the very constant the title appends"
         );
     }
 

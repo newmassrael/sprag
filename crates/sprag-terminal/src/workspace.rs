@@ -231,6 +231,14 @@ pub struct PaneInfo {
     /// desktop toast — it carries no text) so the two attention sources stay individually
     /// addressable; a viewer's "unseen attention" combines both. See [`sprag_vt::VtPort::bell_seq`].
     pub bell_seq: u64,
+    /// Whether the pane's CHILD has exited ([`PanePty::is_eof`](crate::PanePty::is_eof)).
+    ///
+    /// A dead pane is not removed — nothing reaps one, so it keeps its place and its final screen
+    /// (tmux's `remain-on-exit`, except that it is sprag's only behaviour rather than an option).
+    /// That is what makes running something in a pane and reading its output afterwards work at
+    /// all, and it is also why this fact has to travel: without it a finished command and a hung
+    /// one look identical, and the pane is the only thing on screen that could say which.
+    pub dead: bool,
     /// The pane's shell-integration state (OSC 133), `Unknown` without integration. Derived from
     /// the screen's prompt marks — the "idle at a prompt vs running a command" summary.
     pub shell_state: ShellState,
@@ -601,6 +609,7 @@ impl Workspace {
                     notification,
                     notification_seq,
                     bell_seq: p.bell_seq(),
+                    dead: p.pty.is_eof(),
                     shell_state,
                     last_exit_status,
                     mouse_protocol: p.mouse_protocol(),

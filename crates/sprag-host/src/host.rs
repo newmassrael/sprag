@@ -377,6 +377,20 @@ pub trait HostClient {
         self.send_text(id, text)
     }
 
+    /// Whether pane `id`'s CHILD has exited — the pane is still there, but nothing is running in
+    /// it. `false` for an absent id (nothing that is not there is dead).
+    ///
+    /// The pane survives its child ([`kill_pane`](Self::kill_pane) is what removes one), which is
+    /// what lets a command's output be read after it finishes — and is exactly why a client needs
+    /// this: a frozen screen means "done" or "hung", and only the host knows which.
+    ///
+    /// Defaulted to `false` — a client that cannot reach the authoritative liveness (and the test
+    /// doubles) reports every pane live, the pre-liveness behaviour.
+    fn pane_is_dead(&self, id: PaneId) -> bool {
+        let _ = id;
+        false
+    }
+
     /// Pane `id`'s full text (scrollback + visible) — the a11y text SSOT. Empty if
     /// `id` is absent.
     fn pane_full_text(&self, id: PaneId) -> String;
@@ -1388,6 +1402,11 @@ impl HostClient for Host {
     ///
     /// The pane adopts the workspace's default size: a client-created pane has no geometry of its
     /// own until the first reflow gives it its tile, exactly as a boot pane does not.
+    fn pane_is_dead(&self, id: PaneId) -> bool {
+        self.with_pane_id(id, |pane| pane.pty().is_eof())
+            .unwrap_or(false)
+    }
+
     fn new_pane(&self) -> Option<PaneId> {
         let (command, label) = sprag_terminal::default_shell_command();
         let on_dirty = self.pane_hooks.as_ref().and_then(|hooks| hooks());
@@ -1702,6 +1721,57 @@ mod tests {
         let host = Host::new((40, 6));
         assert!(host.new_pane().is_some());
         assert_eq!(host.pane_ids().len(), 1);
+    }
+
+    /// A pane whose child EXITS stays in the window, showing what it printed — the property a
+    /// run-in-a-new-pane target needs, asserted because the whole feature rests on it and nothing
+    /// else pins it.
+    #[test]
+    fn a_pane_whose_child_exits_keeps_its_place_and_its_output() {
+        let host = Host::new((40, 6));
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg("echo done-and-gone");
+        command.env("TERM", "dumb");
+        let id = host
+            .spawn(command, "sh".to_owned(), 40, 6, None, None)
+            .expect("spawn a short-lived child");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !lock(&host.workspace())
+            .pane(id)
+            .is_some_and(|pane| pane.pty().is_eof())
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the child never exited"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        assert_eq!(
+            host.pane_ids(),
+            vec![id],
+            "the pane is still a member after its child is gone"
+        );
+        assert!(
+            host.pane_full_text(id).contains("done-and-gone"),
+            "and still holds what the child printed: {:?}",
+            host.pane_full_text(id)
+        );
+        // ...and SAYS it is dead, which is the only way a client can tell this apart from a pane
+        // whose child is merely quiet. REVERT-PROOF: return `false` unconditionally from
+        // `pane_is_dead` and this fails.
+        assert!(host.pane_is_dead(id), "the client protocol reports it dead");
+
+        let live = host
+            .spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+            .expect("spawn a long-lived child");
+        assert!(!host.pane_is_dead(live), "a running child is not dead");
+        assert!(
+            !host.pane_is_dead(PaneId(999)),
+            "and neither is a pane that was never there"
+        );
     }
 
     #[test]

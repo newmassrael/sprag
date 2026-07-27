@@ -198,6 +198,12 @@ impl SlotView {
         self.host.kill_window(name);
     }
 
+    /// Whether slot `slot`'s child has EXITED — the pane is still here, nothing is running in it.
+    /// `false` for a hole, which is the honest answer: an empty slot has no child to have died.
+    pub(crate) fn pane_is_dead(&self, slot: usize) -> bool {
+        self.id(slot).is_some_and(|id| self.host.pane_is_dead(id))
+    }
+
     /// Create a pane in the current window (tmux `split-window`), returning whether one was born.
     ///
     /// The only write here that takes NO slot, because it addresses nothing that exists yet. Which
@@ -619,11 +625,16 @@ mod tests {
         notes: Option<std::rc::Rc<RefCell<std::collections::HashMap<PaneId, PaneNotification>>>>,
         /// Per-pane-id BELL count (tmux monitor-bell), for the bell-drives-the-marker test.
         bells: std::collections::HashMap<PaneId, u64>,
+        /// The pane ids whose child has EXITED, for the display-title / liveness tests.
+        dead: std::collections::HashSet<PaneId>,
     }
 
     impl HostClient for FakeHost {
         fn pane_ids(&self) -> Vec<PaneId> {
             self.ids.borrow().clone()
+        }
+        fn pane_is_dead(&self, id: PaneId) -> bool {
+            self.dead.contains(&id)
         }
         /// Inert: these tests drive the slot map / delta logic, which reads only
         /// `pane_ids` — the arrangement is a separate authority.
@@ -705,6 +716,7 @@ mod tests {
             notifications: std::collections::HashMap::new(),
             notes: None,
             bells: std::collections::HashMap::new(),
+            dead: std::collections::HashSet::new(),
         }))
     }
 
@@ -725,6 +737,7 @@ mod tests {
             notifications: std::collections::HashMap::new(),
             notes: None,
             bells: std::collections::HashMap::new(),
+            dead: std::collections::HashSet::new(),
         }));
 
         // `pane_display_title` reads the per-slot attention-ack Signal, so it runs in an Owner
@@ -739,6 +752,68 @@ mod tests {
             // A hole (no pane) still yields its stable panel id, never a panic.
             assert_eq!(crate::view::pane_display_title(&view, 7), "terminal-7");
         });
+    }
+
+    /// A pane whose child has EXITED wears the marker on its title, on every surface that reads
+    /// [`crate::view::pane_display_title`] — the one thing that distinguishes a finished command
+    /// from a hung one, since sprag keeps the dead pane and its final screen either way.
+    ///
+    /// REVERT-PROOF: drop the `pane_is_dead` branch in `pane_display_title` and the exited pane's
+    /// title is indistinguishable from its live sibling's, which is the whole defect.
+    #[test]
+    fn an_exited_pane_wears_the_marker_and_a_live_one_does_not() {
+        use crate::attention::{ATTENTION_MARKER, ack_focused};
+        use crate::view::DEAD_MARKER;
+
+        let ids = std::rc::Rc::new(RefCell::new(vec![pid(10), pid(11)]));
+        let view = SlotView::new(Box::new(FakeHost {
+            ids: std::rc::Rc::clone(&ids),
+            titles: [(pid(10), "cargo test".to_owned())].into_iter().collect(),
+            notifications: std::collections::HashMap::new(),
+            notes: None,
+            bells: [(pid(10), 1u64)].into_iter().collect(), // pane 10 also rang, so both markers ride
+            dead: [pid(10)].into_iter().collect(),          // ...and its child has exited
+        }));
+
+        Owner::new().run(|| {
+            let title = |i| crate::view::pane_display_title(&view, i);
+            assert!(
+                title(0).ends_with(DEAD_MARKER),
+                "the exited pane says so: {:?}",
+                title(0)
+            );
+            assert!(
+                title(0).starts_with(ATTENTION_MARKER),
+                "and the two markers COMPOSE, each at its own end: {:?}",
+                title(0)
+            );
+            assert!(
+                title(0).contains("cargo test"),
+                "without displacing the child's own title: {:?}",
+                title(0)
+            );
+            assert!(
+                !title(1).ends_with(DEAD_MARKER),
+                "a live sibling wears nothing: {:?}",
+                title(1)
+            );
+
+            // Viewing the pane clears the ATTENTION marker; the exited one is not a flag to clear.
+            ack_focused(&view, Some(0));
+            assert!(
+                !title(0).starts_with(ATTENTION_MARKER),
+                "attention is acknowledged by looking: {:?}",
+                title(0)
+            );
+            assert!(
+                title(0).ends_with(DEAD_MARKER),
+                "but looking at a dead pane does not bring it back: {:?}",
+                title(0)
+            );
+        });
+
+        // A HOLE has no child to have died — the graceful default every slot-mapped read keeps.
+        assert!(!view.pane_is_dead(7));
     }
 
     /// The attention feature end to end through its real consumer ([`crate::view::pane_display_title`]):
@@ -763,6 +838,7 @@ mod tests {
             notifications: std::collections::HashMap::new(),
             notes: Some(std::rc::Rc::clone(&notes)),
             bells: std::collections::HashMap::new(),
+            dead: std::collections::HashSet::new(),
         }));
 
         Owner::new().run(|| {
@@ -822,6 +898,7 @@ mod tests {
             notifications: std::collections::HashMap::new(), // NO notification on either pane
             notes: None,
             bells: [(pid(10), 2u64)].into_iter().collect(), // pane 10 rang the bell twice
+            dead: std::collections::HashSet::new(),
         }));
 
         Owner::new().run(|| {
