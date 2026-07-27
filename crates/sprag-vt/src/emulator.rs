@@ -3061,7 +3061,7 @@ fn image_within_cap(width: u32, height: u32) -> bool {
         .is_some_and(|bytes| bytes <= MAX_IMAGE_BYTES)
 }
 
-/// One in-flight Kitty CHUNKED transmission ([`Emulator::kitty_chunks`], Stage 4): the accumulated
+/// One in-flight Kitty CHUNKED transmission (`Emulator::kitty_chunk`, Stage 4): the accumulated
 /// base64 payload plus the FIRST chunk's format / dimensions / display intent.
 struct KittyChunk {
     base64: String,

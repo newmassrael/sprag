@@ -228,8 +228,8 @@ impl WorkspaceExternal {
     /// boot pane's does — a client's `scene/waitFor` wakes on it exactly as on the boot pane) and,
     /// under a daemon, the `on_pane_exit` death-signal (so THIS pane's death feeds the reaper). A
     /// fork/exec failure is `Rejected` — a WELL-FORMED request the OS could not honor (a broken
-    /// `$SHELL`, an argv it cannot `exec`), DISTINCT from the malformed request [`parse_spawn`]
-    /// already rejected. Does NOT bump the revision — the caller signals its set change once (a
+    /// `$SHELL`, an argv it cannot `exec`), DISTINCT from the malformed request
+    /// [`parse_spawn`](Self::parse_spawn) already rejected. Does NOT bump the revision — the caller signals its set change once (a
     /// plain `spawn`, or the create that births this pane), so the two never double-bump or drift.
     fn spawn_parsed(
         &self,
@@ -1019,9 +1019,9 @@ impl ExternalIntrospect for WorkspaceExternal {
 
 /// The `project.<pane>` answer for one pane: the commands the project it sits in declares.
 ///
-/// Three outcomes, each distinct on the wire (see
-/// [`PROJECT_FIELD`](crate::wire::PROJECT_FIELD)): `null` for a pane in no project — or one whose
-/// cwd is not local, or that has since gone; the project object for a usable config; and
+/// Three outcomes, each distinct on the wire (see [`PROJECT_FIELD`]): `null` for a pane in no
+/// project — or one whose cwd is not local, or that has since gone; the project object for a
+/// usable config; and
 /// `{error}` for a project whose config is unusable, because a typo must be reported rather than
 /// look like "this project declares nothing".
 ///

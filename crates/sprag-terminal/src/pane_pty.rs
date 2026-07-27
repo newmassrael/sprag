@@ -193,7 +193,8 @@ pub struct PanePty {
     /// High-water mark of the OSC 52 clipboard READ query this pane has ANSWERED, shared with
     /// every [`PanePtyHandle`]. When several display clients race to answer the same query (each
     /// has its own system clipboard), a CAS on this admits EXACTLY ONE reply to the PTY — the
-    /// child must not receive N conflicting `OSC 52` responses. See [`answer_clipboard_query`].
+    /// child must not receive N conflicting `OSC 52` responses. See
+    /// [`answer_clipboard_query`](PanePty::answer_clipboard_query).
     clipboard_answered: Arc<AtomicU64>,
     reader_thread: Option<JoinHandle<()>>,
     // The full winsize a resize applies: `(cols, rows, pixel_width, pixel_height)`. The pixel

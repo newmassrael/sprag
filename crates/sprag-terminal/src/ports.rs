@@ -13,7 +13,7 @@
 //! (the shell ran `npm run dev`), so the subtree — not the pane pid alone — is the honest scope.
 //! Off Linux the scan yields nothing (an honest empty, never a guess).
 //!
-//! One [`ProcScan`] is built per session-list read and SHARED across every session, so the cost is a
+//! One [`ProcScan`](crate::ports::ProcScan) is built per session-list read and SHARED across every session, so the cost is a
 //! single `/proc` pass — the LISTEN table and the whole pid→children map — not one pass per session.
 //! That per-read `/proc` walk is deliberate: this favours a live, never-stale, cache-free read (the
 //! same purity as the cwd/branch derivation) over the cheaper throttled-cache alternative. A cache
