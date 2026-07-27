@@ -801,6 +801,22 @@ impl ExternalIntrospect for WorkspaceExternal {
                         if p.dead {
                             entry["dead"] = serde_json::json!(true);
                         }
+                        // ...and HOW it exited, once the child has been reaped. A SECOND key rather
+                        // than a richer `dead`, because it is a second fact that arrives later and
+                        // may never arrive at all (a child that hands its pty on and lingers) — see
+                        // `PaneExit`. ADDITIVE on the same terms, and `code` is always written while
+                        // `signal` rides only a signalled death, so a plain exit stays two fields.
+                        //
+                        // `child_exit`, not `exit`, to keep it clear of `exit_status` below: that
+                        // one is the OSC 133 status of the last command the SHELL ran, and the two
+                        // answer opposite questions about a stopped pane.
+                        if let Some(exit) = &p.child_exit {
+                            let mut value = serde_json::json!({ "code": exit.code });
+                            if let Some(signal) = &exit.signal {
+                                value["signal"] = serde_json::json!(signal);
+                            }
+                            entry["child_exit"] = value;
+                        }
                         // Shell-integration (OSC 133) summary: the idle/running state and the last
                         // command's exit status. ADDITIVE — the state key is present only when the
                         // child emitted a mark (`wire_str` returns `None` for `Unknown`), and the
@@ -1819,6 +1835,65 @@ mod tests {
         assert!(
             entry(&mut ext, 0).get("dead").is_none(),
             "the live pane carries no key at all: {:?}",
+            entry(&mut ext, 0)
+        );
+    }
+
+    /// ...and HOW it exited follows, on its own key, once the host has reaped the child.
+    ///
+    /// A SECOND wait rather than an assertion folded into the one above, because the two facts are
+    /// published at different moments: `dead` lands when the output stream ends, `child_exit` when
+    /// `waitpid` returns. Asserting them together would be a race, and would also be a lie about
+    /// what the wire promises.
+    ///
+    /// REVERT-PROOF: drop the `child_exit` emission and this never converges; emit it for a live
+    /// pane too and the last assertion fails.
+    #[test]
+    fn the_panes_slot_reports_how_the_child_exited_once_it_is_reaped() {
+        let reg = registry();
+        let (mut ext, _guard) = control(&reg);
+        // One child that FAILS with a code worth reading, beside one that stays up.
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+            .unwrap();
+        ext.invoke(
+            SPAWN_ACTION,
+            IntrospectValue::Json(json!({"cmd": ["sh", "-c", "exit 7"]})),
+        )
+        .unwrap();
+
+        let entry = |ext: &mut WorkspaceExternal, id: u64| -> Value {
+            let Some(IntrospectValue::Json(Value::Array(panes))) = ext.query(PANES_SLOT) else {
+                panic!("the panes slot answers with a JSON array");
+            };
+            panes
+                .into_iter()
+                .find(|p| p["id"].as_u64() == Some(id))
+                .expect("the pane is listed")
+        };
+
+        // Wait on the CONDITION the assertion reads — the reap, not the EOF that precedes it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while entry(&mut ext, 1).get("child_exit").is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the failing child was never reaped: {:?}",
+                entry(&mut ext, 1)
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(
+            entry(&mut ext, 1)["child_exit"],
+            json!({ "code": 7 }),
+            "the code travels, and `signal` is absent for a process that returned normally",
+        );
+        assert_eq!(
+            entry(&mut ext, 1)["dead"],
+            json!(true),
+            "and the liveness bit is still there — the status refines it, never replaces it",
+        );
+        assert!(
+            entry(&mut ext, 0).get("child_exit").is_none(),
+            "a live pane carries no status: {:?}",
             entry(&mut ext, 0)
         );
     }

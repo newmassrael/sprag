@@ -518,6 +518,23 @@ pub trait HostClient {
         None
     }
 
+    /// HOW pane `id`'s child ended — its exit code, or the signal that killed it — and `None` while
+    /// it runs, before it has been reaped, or when no pane holds `id`.
+    ///
+    /// The refinement of [`pane_is_dead`](Self::pane_is_dead), and deliberately NOT a replacement
+    /// for it. `pane_is_dead` answers "is this finished?", which is what makes a stopped screen
+    /// readable; this answers "and did it work?", which only a reaped status can and which is
+    /// therefore sometimes unavailable ([`PaneExit`](sprag_terminal::PaneExit) has the full
+    /// distinction). Folding the two into one `Option` would have made "dead, status unknown"
+    /// unsayable — the state every dead pane passes through.
+    ///
+    /// Defaulted to `None`, like [`project`](Self::project): a test double, and a client that only
+    /// needs liveness, need not implement it.
+    fn pane_child_exit(&self, id: PaneId) -> Option<sprag_terminal::PaneExit> {
+        let _ = id;
+        None
+    }
+
     /// The PROJECT governing pane `id` — the commands its `.sprag.toml` declares — or `None` when
     /// the pane is in no project, its working directory is not local (a remote workspace), or no
     /// window holds `id`.
@@ -1414,9 +1431,27 @@ impl HostClient for Host {
         let _outcome = lock(&self.registry).kill_window(&session, name);
     }
 
-    /// Break the pane `id` out into a new window of the default session (tmux `break-pane`). The
-    /// pane is MOVED (already spawned — no birth here, unlike [`new_window`](Self::new_window)) and
-    /// the new window selected. `None` if the move was refused.
+    /// Read straight off the pane's own pty, so this arm is the authority the wire client's
+    /// poll-refreshed mirror is a copy of.
+    fn pane_is_dead(&self, id: PaneId) -> bool {
+        self.with_pane_id(id, |pane| pane.pty().is_eof())
+            .unwrap_or(false)
+    }
+
+    /// Read off the same pty as [`pane_is_dead`](Self::pane_is_dead), and separately from it: the
+    /// two are published at different moments by the pane's reader thread, so reading them together
+    /// here would only invent a consistency the fact itself does not have.
+    fn pane_child_exit(&self, id: PaneId) -> Option<sprag_terminal::PaneExit> {
+        self.with_pane_id(id, |pane| pane.pty().exit_status())
+            .flatten()
+    }
+
+    /// The user's config, read from disk on every call — the host holds no registry state for it,
+    /// which is why this arm and the wire client's answer the same thing with no session in sight.
+    fn global_commands(&self) -> Option<Result<crate::UserConfig, String>> {
+        Some(crate::config::load()?.map_err(|error| error.to_string()))
+    }
+
     /// Spawn a shell into the default session's CURRENT window, wired with whatever
     /// [`with_pane_hooks`](Self::with_pane_hooks) installed (nothing, for a test host).
     ///
@@ -1426,17 +1461,6 @@ impl HostClient for Host {
     ///
     /// The pane adopts the workspace's default size: a client-created pane has no geometry of its
     /// own until the first reflow gives it its tile, exactly as a boot pane does not.
-    fn pane_is_dead(&self, id: PaneId) -> bool {
-        self.with_pane_id(id, |pane| pane.pty().is_eof())
-            .unwrap_or(false)
-    }
-
-    /// The user's config, read from disk on every call — the host holds no registry state for it,
-    /// which is why this arm and the wire client's answer the same thing with no session in sight.
-    fn global_commands(&self) -> Option<Result<crate::UserConfig, String>> {
-        Some(crate::config::load()?.map_err(|error| error.to_string()))
-    }
-
     fn new_pane(&self) -> Option<PaneId> {
         let (command, label) = sprag_terminal::default_shell_command();
         let on_dirty = self.pane_hooks.as_ref().and_then(|hooks| hooks());
@@ -1456,6 +1480,9 @@ impl HostClient for Host {
         removed.is_some()
     }
 
+    /// Break the pane `id` out into a new window of the default session (tmux `break-pane`). The
+    /// pane is MOVED (already spawned — no birth here, unlike [`new_window`](Self::new_window)) and
+    /// the new window selected. `None` if the move was refused.
     fn break_pane(&self, id: PaneId, name: Option<&str>) -> Option<String> {
         let mut registry = lock(&self.registry);
         let session = registry.default_session().name().to_owned();

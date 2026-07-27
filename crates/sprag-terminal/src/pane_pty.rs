@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use portable_pty::{Child, PtySize, native_pty_system};
+use portable_pty::{ChildKiller, PtySize, native_pty_system};
 use sprag_vt::{
     ClipboardQuery, ClipboardWrite, Emulator, HistoryLimits, InputModes, MouseProtocol,
     Notification, Palette, Screen, ShellState, VtPort,
@@ -137,6 +137,37 @@ impl std::fmt::Display for PanePtyError {
 
 impl std::error::Error for PanePtyError {}
 
+/// How a pane's child ENDED — the status `waitpid` yielded once the process was reaped.
+///
+/// A DIFFERENT fact from [`PanePty::is_eof`], not a refinement of the same one, which is why the two
+/// are addressed separately everywhere they travel. EOF says the child's output stream closed;
+/// this says the process terminated and with what. They normally coincide, but the kernel closes a
+/// dying task's file descriptors before it becomes reapable, so there is always a window where EOF
+/// holds and this is not yet known — and a child that hands its pty to a grandchild and exits, or
+/// one whose grandchild outlives it, breaks the coincidence outright. So `is_eof` is the liveness
+/// bit and this is the ADDITIONAL, later fact. The one invariant that does hold, and that the
+/// reader thread's publication order enforces, is the implication: a known exit implies EOF.
+///
+/// Sprag's own type rather than `portable_pty::ExitStatus` re-exported, because it crosses the host
+/// wire — the PTY backend is an implementation detail of this seam ([`CommandBuilder`] is
+/// re-exported for the opposite reason: callers must build one).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaneExit {
+    /// The process's exit code (`0` for a clean exit). When [`signal`](Self::signal) is set this is
+    /// the platform's stand-in (`1`) rather than something the process chose, so a reader deciding
+    /// what to SHOW should consult the signal first.
+    pub code: u32,
+    /// The signal that killed the child, named as the platform spells it (`Terminated`,
+    /// `Killed`), or `None` for a process that returned normally. This is the difference between
+    /// "your build failed" and "the OOM killer took it", which no exit code can express.
+    pub signal: Option<String>,
+}
+
+/// The child's exit status, shared between the reader thread that reaps it and every reader of the
+/// [`PanePty`] that outlives its child. `None` until the reap publishes — see [`PaneExit`] for why
+/// that is a real state and not a transient to be papered over.
+type SharedExit = Arc<Mutex<Option<PaneExit>>>;
+
 /// A live terminal: a child process on a PTY, its output parsed into a
 /// queryable [`Screen`] that the reader thread keeps current.
 pub struct PanePty {
@@ -144,7 +175,17 @@ pub struct PanePty {
     // sole user), so resizes apply off the caller's thread and are debounced —
     // see [`run_resize_coalescer`]. The pty hands target sizes to it via
     // `resize_tx`.
-    child: Box<dyn Child + Send + Sync>,
+    // The CHILD is owned by the reader thread, which reaps it the moment its output ends — the only
+    // place that can block on `wait()` without stalling anything. What stays here is the ability to
+    // SIGNAL it (`clone_killer` exists for exactly this split) and the two facts a reaped child can
+    // no longer be asked for: its pid and its status.
+    killer: Box<dyn ChildKiller + Send + Sync>,
+    /// The child's OS pid, captured at spawn because the reader thread owns the handle that could
+    /// report it. Read out through [`pid`](PanePty::pid), which gates it on the child NOT having
+    /// been reaped — a reaped pid may be recycled onto an unrelated process, and the `/proc` walks
+    /// that consume it must never stray there.
+    pid: Option<u32>,
+    exit: SharedExit,
     writer: SharedWriter,
     emulator: Arc<Mutex<Emulator>>,
     raw_output: SharedRawCapture,
@@ -229,6 +270,11 @@ impl PanePty {
             .slave
             .spawn_command(command)
             .map_err(|e| PanePtyError::new("spawn command", &e))?;
+        // Split the handle before the child moves to the reader thread: the killer signals it, the
+        // pid answers `/proc` questions. `clone_killer`'s own contract is this exact split ("send it
+        // signals independently from a thread that may be blocked in `.wait`").
+        let killer = child.clone_killer();
+        let pid = child.process_id();
         // The child now holds the slave fd; drop ours so the master reads
         // EOF once the child exits (otherwise the reader blocks forever).
         drop(pair.slave);
@@ -250,15 +296,18 @@ impl PanePty {
         }
         let raw_output: SharedRawCapture = Arc::new(Mutex::new(RawCapture::new()));
         let eof = Arc::new(AtomicBool::new(false));
+        let exit: SharedExit = Arc::new(Mutex::new(None));
         let reader_emulator = Arc::clone(&emulator);
         let reader_raw = Arc::clone(&raw_output);
         let reader_eof = Arc::clone(&eof);
+        let reader_exit = Arc::clone(&exit);
         // The reader writes device RESPONSES (e.g. the Kitty `CSI ? u` flags reply) back to the
         // child; it shares the SAME writer the input path uses, so the two serialize on its mutex.
         let reader_writer = Arc::clone(&writer);
         let reader_thread = std::thread::Builder::new()
             .name("sprag-pty-reader".to_string())
             .spawn(move || {
+                let mut child = child;
                 let mut buf = [0u8; 8192];
                 loop {
                     match reader.read(&mut buf) {
@@ -316,6 +365,29 @@ impl PanePty {
                 if let Some(ref on_exit) = on_exit {
                     on_exit();
                 }
+                // Reap LAST, and only here. Two properties depend on the order:
+                //
+                // * `wait()` BLOCKS, and EOF does not prove the child has terminated (a grandchild
+                //   holding the slave keeps it running, and the kernel closes a dying task's fds
+                //   before it becomes reapable). Everything above must therefore already have run:
+                //   a pane whose output ended reads as finished at once, whatever the process does
+                //   afterwards. Nothing waits on this.
+                // * This thread is the ONLY reaper, so the pid cannot be recycled while another
+                //   thread still believes it owns it. `Drop` signals through the killer and joins
+                //   here rather than waiting itself.
+                if let Ok(status) = child.wait() {
+                    *lock(&reader_exit) = Some(PaneExit {
+                        code: status.exit_code(),
+                        signal: status.signal().map(str::to_owned),
+                    });
+                    // A second wake, because the status arrived after the one above: the title that
+                    // said "(exited)" can now say WHICH exit. For the overwhelmingly common clean
+                    // exit the rendering is unchanged, so this repaints nothing visible; it is the
+                    // failing command — the one the user needs to see — that gains its code here.
+                    if let Some(ref notify) = on_dirty {
+                        notify();
+                    }
+                }
             })
             .map_err(|e| PanePtyError::new("spawn reader thread", &e))?;
 
@@ -345,7 +417,9 @@ impl PanePty {
             .map_err(|e| PanePtyError::new("spawn resize thread", &e))?;
 
         Ok(Self {
-            child,
+            killer,
+            pid,
+            exit,
             writer,
             emulator,
             raw_output,
@@ -498,18 +572,37 @@ impl PanePty {
         lock(&self.emulator).history_epoch()
     }
 
-    /// The OS process id of the child on this pty's slave.
+    /// The OS process id of the child on this pty's slave — `None` once it has been reaped, or for
+    /// a backend that cannot report one.
     ///
-    /// The current backend (portable-pty over [`std::process::Child`]) reports the id for the whole
-    /// lifetime of this `PanePty` — it does NOT clear when the child exits — so a `Some` here is NOT
-    /// proof the child is still alive; a caller wanting liveness must consult
-    /// [`is_eof`](Self::is_eof). `None` is only the trait's allowance for a backend that cannot
-    /// report an id. Consumers that read a pid to inspect `/proc` (cwd, listening ports) rely on
-    /// only ever being handed a pid whose child is unreaped — see the note on the registry's
-    /// `window_pids`.
+    /// Gated on the reap, and that gate is a SAFETY property rather than tidiness. Every consumer
+    /// of this pid inspects `/proc` with it (the durability ring's cwd, the session rail's listening
+    /// ports), and a pid that has been waited for is free to be recycled onto an unrelated process —
+    /// at which point those walks would read a stranger's working directory and sockets. Because the
+    /// reader thread is the only reaper and publishes [`exit_status`](Self::exit_status) as it
+    /// reaps, "the status is known" is exactly "the pid may now be stale", so that is the gate. See
+    /// the note on the registry's `window_pids`, which asked for this the moment an in-place reap
+    /// existed.
+    ///
+    /// A `Some` still is not proof the child is ALIVE — a zombie has a pid and answers `/proc`
+    /// harmlessly — so a caller wanting liveness consults [`is_eof`](Self::is_eof).
     #[must_use]
     pub fn pid(&self) -> Option<u32> {
-        self.child.process_id()
+        if lock(&self.exit).is_some() {
+            return None;
+        }
+        self.pid
+    }
+
+    /// How the child ENDED, or `None` while it is still running — or has stopped producing output
+    /// but not yet terminated. See [`PaneExit`] for why that last state is real rather than a race
+    /// to be smoothed over.
+    ///
+    /// Published by the reader thread as it reaps, AFTER [`is_eof`](Self::is_eof), so `Some` here
+    /// implies EOF and a caller may treat the pair as a refinement in that one direction only.
+    #[must_use]
+    pub fn exit_status(&self) -> Option<PaneExit> {
+        lock(&self.exit).clone()
     }
 
     /// The child's current working directory, read LIVE from the OS.
@@ -525,7 +618,7 @@ impl PanePty {
     /// falls back to the daemon's own cwd).
     #[must_use]
     pub fn cwd(&self) -> Option<PathBuf> {
-        read_cwd(self.child.process_id()?)
+        read_cwd(self.pid()?)
     }
 
     /// Whether the child has closed the pseudoterminal (no more output).
@@ -843,10 +936,11 @@ impl Drop for PanePty {
         if let Some(handle) = self.resize_thread.take() {
             let _ = handle.join();
         }
-        // Stop the child so its slave fd closes, which unblocks the reader
-        // thread's `read()` with EOF; then reap it and join the thread.
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        // Stop the child so its slave fd closes, which unblocks the reader thread's `read()` with
+        // EOF; then JOIN that thread, which reaps as its last act. Signalling rather than waiting
+        // here is what keeps a single reaper: two threads calling `wait()` on one child race for the
+        // status, and the loser would leave `exit_status` empty for a pane that plainly had one.
+        let _ = self.killer.kill();
         if let Some(handle) = self.reader_thread.take() {
             let _ = handle.join();
         }
@@ -1084,6 +1178,102 @@ mod tests {
             sleep(Duration::from_millis(20));
         }
         assert!(pty.is_eof(), "child did not reach EOF in time");
+    }
+
+    /// Wait (bounded) until the reader thread has REAPED, and answer the status it published.
+    ///
+    /// A distinct wait from [`wait_eof`], on the condition the assertion actually reads, because
+    /// the two conditions are distinct: the reap happens strictly after EOF and can lag it (see
+    /// [`PaneExit`]). Waiting on EOF and then reading the status would be a race dressed as a test.
+    fn wait_exit(pty: &PanePty) -> PaneExit {
+        let start = Instant::now();
+        loop {
+            if let Some(exit) = pty.exit_status() {
+                return exit;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "child was not reaped in time",
+            );
+            sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Spawn `/bin/sh -c script` on a small pty, the shape every exit-status test wants.
+    fn sh(script: &str) -> PanePty {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg(script);
+        command.env("TERM", "dumb");
+        PanePty::spawn(command, 20, 4).expect("spawn a pty")
+    }
+
+    /// A child that FAILS reports its code, and that is the whole point of reaping: `dead` alone
+    /// says a command finished, and only the status says whether it worked.
+    ///
+    /// REVERT-PROOF: delete the `child.wait()` publication at the end of the reader thread and the
+    /// status stays `None` forever — the pane can then only ever say "(exited)", which is exactly
+    /// the bound this closes.
+    #[test]
+    fn a_failing_childs_exit_code_reaches_the_pane() {
+        let pty = sh("exit 3");
+        assert_eq!(
+            wait_exit(&pty),
+            PaneExit {
+                code: 3,
+                signal: None
+            },
+        );
+        assert!(
+            pty.is_eof(),
+            "and a known status always comes with EOF — the one implication that holds",
+        );
+    }
+
+    /// A child KILLED by a signal names the signal, where an exit code could only say `1`. This is
+    /// the difference between "your build failed" and "something killed it", which is precisely what
+    /// a user staring at a stopped screen cannot otherwise tell.
+    #[test]
+    fn a_signalled_child_names_the_signal_rather_than_a_code() {
+        // The shell signals ITSELF, so the child on the pty is the one that dies by signal (a
+        // `kill` of some other pid would prove nothing about this pane's own reaping).
+        let exit = wait_exit(&sh("kill -TERM $$"));
+        assert!(
+            exit.signal.is_some(),
+            "a signalled child reports its signal: {exit:?}",
+        );
+    }
+
+    /// A CLEAN exit is reported too — `code: 0`, not `None`. "Finished successfully" and "not yet
+    /// reaped" are different facts and a caller must be able to tell them apart, even though the
+    /// title deliberately renders both the same way.
+    #[test]
+    fn a_clean_exit_is_a_reported_status_not_an_absent_one() {
+        assert_eq!(
+            wait_exit(&sh("exit 0")),
+            PaneExit {
+                code: 0,
+                signal: None
+            },
+        );
+    }
+
+    /// Once the child is REAPED its pid is withheld — the safety gate [`PanePty::pid`] documents.
+    ///
+    /// A waited-for pid is free to be recycled onto an unrelated process, and every consumer of this
+    /// one walks `/proc` with it. Before the in-place reap existed nothing reaped a POOLED pane, so
+    /// the hazard could not arise; it can now, and this is the guard. `cwd` rides the same gate, so
+    /// it is asserted here rather than in a test of its own.
+    ///
+    /// REVERT-PROOF: return `self.pid` unconditionally and both asserts fail — the pane hands out a
+    /// recyclable pid.
+    #[test]
+    fn a_reaped_childs_pid_is_withheld_so_no_proc_walk_can_stray() {
+        let pty = sh("exit 0");
+        assert!(pty.pid().is_some(), "a live child has a usable pid");
+        wait_exit(&pty);
+        assert_eq!(pty.pid(), None, "a reaped one does not");
+        assert_eq!(pty.cwd(), None, "and neither does anything derived from it");
     }
 
     /// Wait (bounded) until the raw capture has latched `truncated` — the condition a truncation

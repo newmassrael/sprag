@@ -35,7 +35,7 @@ use sprag_host::{
     PaneScrollFacts, Project, ProjectError, UserConfig,
 };
 use sprag_input::{Modifiers, MouseInput};
-use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId, SessionInfo, WindowInfo};
+use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneExit, PaneId, SessionInfo, WindowInfo};
 use sprag_vt::{ClipboardTarget, MouseProtocol};
 
 use crate::terminal::MAX_PANES;
@@ -202,6 +202,13 @@ impl SlotView {
     /// `false` for a hole, which is the honest answer: an empty slot has no child to have died.
     pub(crate) fn pane_is_dead(&self, slot: usize) -> bool {
         self.id(slot).is_some_and(|id| self.host.pane_is_dead(id))
+    }
+
+    /// HOW slot `slot`'s child ended, or `None` while it runs, before the host has reaped it, or
+    /// for a hole. Never asked without [`pane_is_dead`](Self::pane_is_dead) first — the two are
+    /// separate facts and a `None` here does not mean the pane is alive.
+    pub(crate) fn pane_child_exit(&self, slot: usize) -> Option<PaneExit> {
+        self.host.pane_child_exit(self.id(slot)?)
     }
 
     /// Create a pane in the current window (tmux `split-window`), returning whether one was born.
@@ -636,6 +643,10 @@ mod tests {
         bells: std::collections::HashMap<PaneId, u64>,
         /// The pane ids whose child has EXITED, for the display-title / liveness tests.
         dead: std::collections::HashSet<PaneId>,
+        /// Per-pane-id exit STATUS, for the title tests that need a code. Deliberately independent
+        /// of `dead` so a test can build the real "died but not yet reaped" state — the one a
+        /// combined field would make unrepresentable.
+        exits: std::collections::HashMap<PaneId, PaneExit>,
     }
 
     impl HostClient for FakeHost {
@@ -644,6 +655,9 @@ mod tests {
         }
         fn pane_is_dead(&self, id: PaneId) -> bool {
             self.dead.contains(&id)
+        }
+        fn pane_child_exit(&self, id: PaneId) -> Option<PaneExit> {
+            self.exits.get(&id).cloned()
         }
         /// Inert: these tests drive the slot map / delta logic, which reads only
         /// `pane_ids` — the arrangement is a separate authority.
@@ -726,6 +740,7 @@ mod tests {
             notes: None,
             bells: std::collections::HashMap::new(),
             dead: std::collections::HashSet::new(),
+            exits: std::collections::HashMap::new(),
         }))
     }
 
@@ -747,6 +762,7 @@ mod tests {
             notes: None,
             bells: std::collections::HashMap::new(),
             dead: std::collections::HashSet::new(),
+            exits: std::collections::HashMap::new(),
         }));
 
         // `pane_display_title` reads the per-slot attention-ack Signal, so it runs in an Owner
@@ -782,6 +798,7 @@ mod tests {
             notes: None,
             bells: [(pid(10), 1u64)].into_iter().collect(), // pane 10 also rang, so both markers ride
             dead: [pid(10)].into_iter().collect(),          // ...and its child has exited
+            exits: std::collections::HashMap::new(),
         }));
 
         Owner::new().run(|| {
@@ -823,6 +840,103 @@ mod tests {
 
         // A HOLE has no child to have died — the graceful default every slot-mapped read keeps.
         assert!(!view.pane_is_dead(7));
+        assert_eq!(view.pane_child_exit(7), None, "...and no status either");
+    }
+
+    /// A pane whose child FAILED names its code on the title, and one that a signal killed names
+    /// the signal — the difference between "this finished badly" and "something took it", neither
+    /// of which a stopped screen can express on its own.
+    ///
+    /// The third pane is the state a combined `Option` could not represent: dead, not yet reaped.
+    /// It renders exactly like a clean exit, deliberately, so the reap window is invisible for the
+    /// common ending rather than a flicker every pane shows.
+    ///
+    /// REVERT-PROOF: have `pane_display_title` append the bare `DEAD_MARKER` again and the first
+    /// two assertions fail — a failing `cargo test` becomes indistinguishable from a passing one,
+    /// which is the whole reason to reap at all.
+    #[test]
+    fn an_exited_panes_title_names_its_code_or_the_signal_that_killed_it() {
+        use crate::view::DEAD_MARKER;
+
+        let ids = std::rc::Rc::new(RefCell::new(vec![pid(10), pid(11), pid(12)]));
+        let view = SlotView::new(Box::new(FakeHost {
+            ids: std::rc::Rc::clone(&ids),
+            titles: std::collections::HashMap::new(),
+            notifications: std::collections::HashMap::new(),
+            notes: None,
+            bells: std::collections::HashMap::new(),
+            // All three children are gone; only two of them have been reaped.
+            dead: [pid(10), pid(11), pid(12)].into_iter().collect(),
+            exits: [
+                (
+                    pid(10),
+                    PaneExit {
+                        code: 101,
+                        signal: None,
+                    },
+                ),
+                (
+                    pid(11),
+                    PaneExit {
+                        code: 1,
+                        signal: Some("Terminated".to_owned()),
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        }));
+
+        Owner::new().run(|| {
+            let title = |i| crate::view::pane_display_title(&view, i);
+            assert!(
+                title(0).ends_with(" (exited 101)"),
+                "a failing command reports its code: {:?}",
+                title(0)
+            );
+            assert!(
+                title(1).ends_with(" (killed: Terminated)"),
+                "a signalled one names the signal, not the stand-in code 1: {:?}",
+                title(1)
+            );
+            assert!(
+                title(2).ends_with(DEAD_MARKER),
+                "and one not yet reaped still says it is finished: {:?}",
+                title(2)
+            );
+        });
+    }
+
+    /// A CLEAN exit renders as the bare marker, not `(exited 0)`. The status is known — the client
+    /// simply declines to shout a zero on the commonest ending there is, and that choice is what
+    /// makes the unreaped window above invisible instead of a flicker on every pane.
+    #[test]
+    fn a_clean_exit_reads_the_same_as_one_not_yet_reaped() {
+        let ids = std::rc::Rc::new(RefCell::new(vec![pid(10)]));
+        let view = SlotView::new(Box::new(FakeHost {
+            ids: std::rc::Rc::clone(&ids),
+            titles: std::collections::HashMap::new(),
+            notifications: std::collections::HashMap::new(),
+            notes: None,
+            bells: std::collections::HashMap::new(),
+            dead: [pid(10)].into_iter().collect(),
+            exits: [(
+                pid(10),
+                PaneExit {
+                    code: 0,
+                    signal: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+        }));
+
+        Owner::new().run(|| {
+            assert!(
+                crate::view::pane_display_title(&view, 0).ends_with(crate::view::DEAD_MARKER),
+                "a clean exit is reported as finished, with no number to read",
+            );
+        });
     }
 
     /// The attention feature end to end through its real consumer ([`crate::view::pane_display_title`]):
@@ -848,6 +962,7 @@ mod tests {
             notes: Some(std::rc::Rc::clone(&notes)),
             bells: std::collections::HashMap::new(),
             dead: std::collections::HashSet::new(),
+            exits: std::collections::HashMap::new(),
         }));
 
         Owner::new().run(|| {
@@ -908,6 +1023,7 @@ mod tests {
             notes: None,
             bells: [(pid(10), 2u64)].into_iter().collect(), // pane 10 rang the bell twice
             dead: std::collections::HashSet::new(),
+            exits: std::collections::HashMap::new(),
         }));
 
         Owner::new().run(|| {

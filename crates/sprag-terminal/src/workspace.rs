@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use sprag_vt::{ClipboardQuery, ClipboardWrite, Image, MouseProtocol, Notification, ShellState};
 
-use crate::pane_pty::{CommandBuilder, PanePty, PanePtyError, PanePtyHandle};
+use crate::pane_pty::{CommandBuilder, PaneExit, PanePty, PanePtyError, PanePtyHandle};
 use crate::remote::SshRemote;
 
 /// A stable, monotonic identifier for a pane within a [`Workspace`].
@@ -239,6 +239,18 @@ pub struct PaneInfo {
     /// all, and it is also why this fact has to travel: without it a finished command and a hung
     /// one look identical, and the pane is the only thing on screen that could say which.
     pub dead: bool,
+    /// HOW the child ended — its exit code, or the signal that killed it — and `None` while it runs
+    /// or has not yet been reaped ([`PaneExit`] has the whole distinction).
+    ///
+    /// A SECOND fact beside [`Self::dead`], not a replacement for it: `dead` answers "is this
+    /// finished?", which is the question that makes a stopped screen readable at all, and this
+    /// answers "and did it work?", which only a status can. They are published in that order and
+    /// only that implication holds — a `Some` here always comes with `dead`, never the reverse.
+    /// Named for the CHILD, not for "exit", because [`Self::last_exit_status`] sits three fields
+    /// below and means something else entirely — the status of the last command the shell ran, which
+    /// says nothing about whether the shell itself is still there. One vocabulary carries the same
+    /// name to the wire key and the client method.
+    pub child_exit: Option<PaneExit>,
     /// The pane's shell-integration state (OSC 133), `Unknown` without integration. Derived from
     /// the screen's prompt marks — the "idle at a prompt vs running a command" summary.
     pub shell_state: ShellState,
@@ -610,6 +622,7 @@ impl Workspace {
                     notification_seq,
                     bell_seq: p.bell_seq(),
                     dead: p.pty.is_eof(),
+                    child_exit: p.pty.exit_status(),
                     shell_state,
                     last_exit_status,
                     mouse_protocol: p.mouse_protocol(),

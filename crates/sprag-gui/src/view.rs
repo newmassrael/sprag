@@ -28,6 +28,7 @@ use pinion_widget_paint::dock::{
     DockPanelChrome, DockPanelStyle, DockSplitState, WindowControlTags, dock_outer_zone_highlight,
     view_dock_panel_with_actions, view_dock_surface_chrome, view_window_controls,
 };
+use sprag_terminal::PaneExit;
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -73,9 +74,9 @@ pub(crate) fn pane_display_title(slots: &SlotView, i: usize) -> String {
     //
     // Without it a finished command and a hung one are the same picture: a screen that stopped
     // changing. That is the whole of what remain-on-exit costs a user who cannot see it, and sprag
-    // keeps every dead pane (nothing reaps one), so every one of them needs to say so.
+    // keeps every dead PANE (only its child is reaped), so every one of them needs to say so.
     if slots.pane_is_dead(i) {
-        format!("{title}{DEAD_MARKER}")
+        format!("{title}{}", dead_marker(slots.pane_child_exit(i).as_ref()))
     } else {
         title
     }
@@ -88,6 +89,34 @@ pub(crate) fn pane_display_title(slots: &SlotView, i: usize) -> String {
 /// happened without claiming it went wrong — a `cargo test` that passed exits exactly like one that
 /// failed. tmux says "dead" here; that reads as a fault, and most of these are not.
 pub(crate) const DEAD_MARKER: &str = " (exited)";
+
+/// [`DEAD_MARKER`], refined by HOW the child ended once the host has reaped it.
+///
+/// The SSOT both title surfaces render through — the sighted title and the a11y name — so the two
+/// cannot drift on wording the way two `format!` calls would.
+///
+/// Three renderings, and the editorial rule behind them is that a title reports what is WRONG:
+///
+/// * A signal is named (`(killed: Terminated)`). It is the one ending a user cannot deduce from the
+///   screen, and it is never something the program chose — "killed" rather than "exited" because
+///   that is the true verb, and it is the only case worth a different word.
+/// * A NON-ZERO code is shown (`(exited 1)`). This is the whole point of reaping: a stopped screen
+///   full of output cannot say whether the command it ran actually worked.
+/// * A CLEAN exit, and a death whose status is not known yet, both render as the bare
+///   [`DEAD_MARKER`]. Deliberately the same string, for two reinforcing reasons. `(exited 0)` is
+///   noise on the commonest ending there is — a shell the user typed `exit` into. And because they
+///   coincide, the gap between the pane dying and the host reaping it is INVISIBLE for a clean
+///   exit; only a failing command flickers, briefly, from `(exited)` to `(exited 1)`.
+pub(crate) fn dead_marker(exit: Option<&PaneExit>) -> String {
+    match exit {
+        Some(PaneExit {
+            signal: Some(signal),
+            ..
+        }) => format!(" (killed: {signal})"),
+        Some(PaneExit { code, .. }) if *code != 0 => format!(" (exited {code})"),
+        _ => DEAD_MARKER.to_owned(),
+    }
+}
 
 /// view-fn (§6.3): per-window paint. The **main** window tiles the DOCKED panes
 /// (those without an undock window); an **undock window** (`pane-{i}`) paints that

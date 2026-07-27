@@ -95,7 +95,7 @@ use sprag_host::{
 };
 use sprag_input::{Modifiers, MouseButton, MouseEventKind, MouseInput};
 use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn, runtime_path};
-use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId, SessionInfo, WindowInfo};
+use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneExit, PaneId, SessionInfo, WindowInfo};
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol};
 
 /// How long to wait for a just-spawned daemon's socket to accept — covers its bind race.
@@ -148,6 +148,10 @@ struct WirePane {
     /// each wake like the rest, but ONE-WAY: a pane never comes back to life, so the only staleness
     /// this can hold is a just-exited pane still reading live for one poll interval.
     dead: bool,
+    /// HOW the child ended, `None` until the host has reaped it — and possibly never, for a child
+    /// whose pty outlives it. Host-authoritative and one-way like [`Self::dead`], but it REFINES
+    /// rather than duplicates: `dead` alone cannot say whether the command worked.
+    child_exit: Option<PaneExit>,
     /// The pane's OSC 52 clipboard WRITE count, `0` if none. Host-authoritative + dynamic — the
     /// CHEAP detection counter (no payload); [`crate::clipboard_osc`] fetches the actual write via
     /// [`WireHost::pane_clipboard_write`] only when this grows past the ack.
@@ -1630,6 +1634,18 @@ impl HostClient for WireHost {
             .is_some_and(|pane| pane.dead)
     }
 
+    /// HOW the child ended, from the same mirror as [`Self::pane_is_dead`].
+    ///
+    /// Wake-stale in one benign direction too, and a NARROWER one: the status is published after
+    /// the liveness bit, so the worst case is a dead pane reading "(exited)" for a poll interval
+    /// before it names its code — never a code attributed to a pane that is still running.
+    fn pane_child_exit(&self, id: PaneId) -> Option<PaneExit> {
+        self.lock_cache()
+            .iter()
+            .find(|pane| pane.id == id)
+            .and_then(|pane| pane.child_exit.clone())
+    }
+
     /// The child's mouse-tracking bit, served from the same poll-refreshed mirror as
     /// [`Self::pane_bell_seq`] (re-adopted each wake). The pane pointer oracle reads it per frame to
     /// gate pointer capture + decide drag / motion forwarding; the authoritative encode still
@@ -1822,6 +1838,10 @@ struct PaneSeed {
     /// Whether the pane's child has EXITED, `false` when the wire omits the key (it is live, or an
     /// older daemon). One-way: a pane never comes back to life.
     dead: bool,
+    /// HOW the child ended, `None` when the wire omits the key — which covers a live pane, a dead
+    /// one the host has not reaped yet, and an older daemon alike. A client cannot tell those apart
+    /// and does not need to: all three mean "no status to show".
+    child_exit: Option<PaneExit>,
     /// The pane's OSC 52 clipboard-write count, `0` when the wire omits the key (no write, or an
     /// older daemon).
     clipboard_write_seq: u64,
@@ -1858,6 +1878,8 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
             let bell_seq = pane["bell_seq"].as_u64().unwrap_or(0);
             // ADDITIVE: present only once the child has exited, so absent means live.
             let dead = pane["dead"].as_bool().unwrap_or(false);
+            // ADDITIVE and LATER than `dead`: present only once the host reaped the child.
+            let child_exit = parse_child_exit(&pane["child_exit"]);
             let clipboard_write_seq = pane["clipboard_write_seq"].as_u64().unwrap_or(0);
             let clipboard_query = parse_clipboard_query(&pane["clipboard_query"]);
             let images = parse_images(&pane["images"]);
@@ -1873,6 +1895,7 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
                 notification,
                 bell_seq,
                 dead,
+                child_exit,
                 clipboard_write_seq,
                 clipboard_query,
                 images,
@@ -1881,6 +1904,18 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
             })
         })
         .collect()
+}
+
+/// Parse the additive `child_exit` object (`{code, signal?}`) back into a [`PaneExit`].
+///
+/// Absent, `null` or codeless is `None` — "no status to show" — rather than a defaulted `code: 0`,
+/// which would tell a user their still-running command had succeeded. The one field that may be
+/// missing from a WELL-FORMED object is `signal`, which rides only a signalled death.
+fn parse_child_exit(value: &Value) -> Option<PaneExit> {
+    Some(PaneExit {
+        code: u32::try_from(value["code"].as_u64()?).ok()?,
+        signal: value["signal"].as_str().map(str::to_owned),
+    })
 }
 
 /// Build the `mouse` action's wire args from a semantic [`MouseInput`] — the object shape the
@@ -2194,6 +2229,10 @@ fn merge_panes(
             notification: seed.notification.clone(),
             bell_seq: seed.bell_seq, // host-authoritative + dynamic, like the notification
             dead: seed.dead,         // host-authoritative, and one-way once true
+            // ...and the status, on the same terms. Re-adopted rather than kept, because unlike
+            // `dead` this one CHANGES after the pane dies: the reap lands a wake or two after the
+            // exit, and a kept value would freeze the pane at "(exited)" for good.
+            child_exit: seed.child_exit.clone(),
             // host-authoritative + dynamic like the notification: re-adopt the query's, so the
             // clipboard write count / read query reflect the child's latest for `clipboard_osc`.
             clipboard_write_seq: seed.clipboard_write_seq,
@@ -2358,6 +2397,9 @@ fn spawn_poll(
                                 // and a stale `false` is only the pre-liveness reading, corrected
                                 // on the next successful query.
                                 dead: pane.dead,
+                                // and the last-known status with it: a transient miss must not
+                                // retract a code the user has already been shown.
+                                child_exit: pane.child_exit.clone(),
                                 // keep the last-known clipboard signals across a transient miss
                                 clipboard_write_seq: pane.clipboard_write_seq,
                                 clipboard_query: pane.clipboard_query,
@@ -3439,6 +3481,7 @@ mod tests {
                 notification: None,
                 bell_seq: 0,
                 dead: false,
+                child_exit: None,
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
@@ -3453,6 +3496,7 @@ mod tests {
                 notification: None,
                 bell_seq: 0,
                 dead: false,
+                child_exit: None,
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
@@ -3472,6 +3516,7 @@ mod tests {
                 notification: None,
                 bell_seq: 0,
                 dead: false,
+                child_exit: None,
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
@@ -3485,6 +3530,7 @@ mod tests {
                 notification: None,
                 bell_seq: 0,
                 dead: false,
+                child_exit: None,
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
@@ -3498,6 +3544,7 @@ mod tests {
                 notification: None,
                 bell_seq: 0,
                 dead: false,
+                child_exit: None,
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
@@ -3546,6 +3593,7 @@ mod tests {
             notification: None,
             bell_seq: 0,
             dead: false,
+            child_exit: None,
             clipboard_write_seq: 0,
             clipboard_query: None,
             images: Vec::new(),
@@ -3560,6 +3608,7 @@ mod tests {
             notification: None,
             bell_seq: 0,
             dead: false,
+            child_exit: None,
             clipboard_write_seq: 0,
             clipboard_query: None,
             images: Vec::new(),
@@ -3580,7 +3629,12 @@ mod tests {
     /// pane's child could exit and the client would never notice — the exited marker would never
     /// appear, however long the daemon reported it.
     ///
-    /// REVERT-PROOF: pin `dead: false` in `merge_panes` and the exited assertion fails.
+    /// The STATUS rides the same rule and needs it more: it arrives strictly after the liveness bit
+    /// (the host reaps only once the child's output has ended), so a mirror that kept its
+    /// first-seen value would freeze every pane at "(exited)" and never show a single exit code.
+    ///
+    /// REVERT-PROOF: pin `dead: false` in `merge_panes` and the exited assertion fails; keep
+    /// `existing`'s `child_exit` instead of the seed's and the code assertion fails.
     #[test]
     fn merge_panes_readopts_the_hosts_liveness() {
         let existing = vec![WirePane {
@@ -3589,7 +3643,8 @@ mod tests {
             title: None,
             notification: None,
             bell_seq: 0,
-            dead: false, // last wake it was still running
+            dead: false,      // last wake it was still running
+            child_exit: None, // ...so of course nothing had reaped it
             clipboard_write_seq: 0,
             clipboard_query: None,
             images: Vec::new(),
@@ -3604,6 +3659,10 @@ mod tests {
             notification: None,
             bell_seq: 0,
             dead: true, // ...and the host now says the child has exited
+            child_exit: Some(PaneExit {
+                code: 101, // ...having reaped it, with cargo's own failure code
+                signal: None,
+            }),
             clipboard_write_seq: 0,
             clipboard_query: None,
             images: Vec::new(),
@@ -3615,6 +3674,11 @@ mod tests {
         assert!(
             merged[0].dead,
             "the mirror adopts the host's liveness rather than keeping its own stale view"
+        );
+        assert_eq!(
+            merged[0].child_exit.as_ref().map(|exit| exit.code),
+            Some(101),
+            "and the status the host learned AFTER that, which is the only way a code ever arrives",
         );
     }
 
@@ -3632,6 +3696,7 @@ mod tests {
                 notification: None,
                 bell_seq: 0,
                 dead: false,
+                child_exit: None,
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
@@ -3646,6 +3711,7 @@ mod tests {
                 notification: None,
                 bell_seq: 0,
                 dead: false,
+                child_exit: None,
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
@@ -3662,6 +3728,7 @@ mod tests {
                 notification: None,
                 bell_seq: 0,
                 dead: false,
+                child_exit: None,
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),
@@ -3675,6 +3742,7 @@ mod tests {
                 notification: None,
                 bell_seq: 0,
                 dead: false,
+                child_exit: None,
                 clipboard_write_seq: 0,
                 clipboard_query: None,
                 images: Vec::new(),

@@ -1188,12 +1188,15 @@ impl SessionRegistry {
     /// the roots [`ProcScan::listening_ports`](crate::ports::ProcScan::listening_ports) walks: a
     /// session's listening servers live in the pane process subtrees, not the pane pids themselves.
     ///
-    /// Only pids of STILL-POOLED panes are read here, and a pane's child is reaped only in
-    /// [`PanePty`](crate::pane_pty::PanePty)'s `Drop`, which runs AFTER `close` removes the pane from
-    /// its pool — so every pid returned belongs to a child that has not yet been waited. Its pid is
-    /// therefore live or a zombie, never recycled to an unrelated process, and the `/proc` fd walk
-    /// cannot stray into a foreign process's sockets. (A future in-place reap of a still-pooled pane
-    /// would break that and must gate `pid()` on liveness — see [`PanePty::pid`](crate::pane_pty::PanePty::pid).)
+    /// Only pids of STILL-POOLED panes are read here, and every pid returned belongs to a child that
+    /// has not yet been waited — so it is live or a zombie, never recycled to an unrelated process,
+    /// and the `/proc` fd walk cannot stray into a foreign process's sockets.
+    ///
+    /// A still-pooled pane IS reaped in place now (its reader thread waits the moment the child's
+    /// output ends, so an exit status can be reported), which is exactly the case the earlier note
+    /// here warned would break the property. It does not, because the reap and the withholding are
+    /// the same event: [`PanePty::pid`](crate::pane_pty::PanePty::pid) answers `None` from the
+    /// instant the status is published, so a reaped pid never reaches this filter.
     fn window_pids(pools: &[Arc<Mutex<Workspace>>]) -> Vec<u32> {
         pools
             .iter()

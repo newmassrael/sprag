@@ -31,7 +31,7 @@ pub use layout::{
     FloatHome, LayoutError, LayoutNode, LayoutNodeWire, LayoutSnapshot, LayoutTree, LayoutWire,
     SplitDir, SplitId, SplitSide,
 };
-pub use pane_pty::{CommandBuilder, PanePty, PanePtyError, PanePtyHandle, RawOutput};
+pub use pane_pty::{CommandBuilder, PaneExit, PanePty, PanePtyError, PanePtyHandle, RawOutput};
 pub use registry::{
     KillOutcome, PaneMoveError, Session, SessionError, SessionInfo, SessionRegistry, Window,
     WindowInfo, WindowKillOutcome,
