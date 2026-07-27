@@ -12,6 +12,10 @@
 #   2. `cargo clippy --workspace --all-targets`
 #      - only when a Cargo workspace exists (Cargo.toml present); dormant
 #        until sprag grows Rust crates.
+#   3. the rustdoc gate (`.githooks/doc-gate.sh`)
+#      - same condition as clippy, and re-run here for the same reason clippy
+#        is: an amend or a `--no-verify` bypass can put a dead link into the
+#        history that pre-commit never saw.
 #
 # Install via `git config core.hooksPath .githooks` (one-time per clone).
 set -euo pipefail
@@ -24,6 +28,9 @@ fi
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
+# shellcheck source-path=SCRIPTDIR
+. "$repo_root/.githooks/doc-gate.sh"
+
 echo "pre-push: mnemosyne-cli validate-workspace ..." >&2
 if ! mnemosyne-cli validate-workspace; then
     echo "pre-push: validate-workspace failed — fix violations before push" >&2
@@ -34,6 +41,11 @@ if [ -f Cargo.toml ]; then
     echo "pre-push: cargo clippy --workspace --all-targets ..." >&2
     if ! cargo clippy --workspace --all-targets; then
         echo "pre-push: clippy failed — fix violations before push" >&2
+        exit 1
+    fi
+
+    if ! doc_gate; then
+        echo "pre-push: rustdoc gate failed — fix the dead link before push" >&2
         exit 1
     fi
 fi

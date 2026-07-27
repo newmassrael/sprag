@@ -18,6 +18,12 @@
 #      - only runs when a Cargo workspace exists (Cargo.toml present) AND
 #        staged files include `*.rs`. docs/atomic-only commits stay cheap.
 #
+#   4. the rustdoc gate (`.githooks/doc-gate.sh`)
+#      - same condition as clippy. Catches a broken intra-doc link at the
+#        commit that writes it, which is the only cheap place to catch one:
+#        rustdoc is not run by any build, so before this gate existed the
+#        breakage accumulated silently (five links, across three crates).
+#
 # Install via:
 #   git config core.hooksPath .githooks
 # (one-time per clone; `.githooks/` is tracked, `.git/hooks/` is not)
@@ -32,6 +38,9 @@ fi
 # regardless of where `git commit` was invoked.
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
+
+# shellcheck source-path=SCRIPTDIR
+. "$repo_root/.githooks/doc-gate.sh"
 
 mnemosyne-cli validate-workspace
 
@@ -48,4 +57,6 @@ fi
 if [ -f Cargo.toml ] && git diff --cached --name-only --diff-filter=ACMR | grep -qE '\.rs$'; then
     echo "pre-commit: cargo clippy --workspace --all-targets ..." >&2
     cargo clippy --workspace --all-targets
+
+    doc_gate
 fi
