@@ -61,6 +61,11 @@ fn main() -> ExitCode {
         Ok(mut smoke) => {
             check_the_palette_opens_over_rpc(&mut smoke, &mut report);
             check_a_command_runs_from_a_palette_row(&mut smoke, &mut report);
+            // BEFORE any check that answers a confirmation, and that ordering is load-bearing: a
+            // confirmed row leaks a modal focus scope (PINION-PR77), after which nothing can be
+            // focused and every pane-scoped row stops being offered. This check needs a focused
+            // pane, so it has to run while the focus stack is still clean.
+            check_the_sole_docked_pane_locks_its_tear_off(&mut smoke, &mut report);
             check_a_pane_can_be_created_and_closed(&mut smoke, &mut report);
             check_a_window_closes_under_a_live_client(&mut smoke, &mut report);
             // LAST, and it must stay last: it destroys the session this client is attached to, so
@@ -234,6 +239,14 @@ fn check_a_pane_can_be_created_and_closed(smoke: &mut Smoke, report: &mut Report
         &format!("the window starts with {before} pane(s)"),
         before > 0,
     );
+    // `Kill pane` acts on the focused pane, so it is only OFFERED with one focused — and the pane
+    // set has moved under the client since anything last held focus ([`Smoke::focus_pane`]).
+    if let Some(&first) = smoke.docked_panes().first() {
+        report.check(
+            "a pane can be focused to be killed",
+            smoke.focus_pane(first),
+        );
+    }
 
     if !smoke.run_palette_row("Split into a new pane", report) {
         return;
@@ -348,6 +361,100 @@ fn check_a_window_closes_under_a_live_client(smoke: &mut Smoke, report: &mut Rep
 /// Killing the session this client is ATTACHED to ends the client — tmux's rule that a client leaves
 /// when it can no longer serve its session, under the default `detach-on-destroy`.
 ///
+/// A pane that may not be torn off says so on the LIVE dock panel, and says it after boot.
+///
+/// sprag locks the sole docked pane's header (tmux semantics: the main window keeps at least one
+/// terminal), and computes that lock per float/dock in `create_extra_externals`. The predicate had a
+/// unit test the whole time. What no unit test could see is that the computed flag never REACHED the
+/// panel: sprag's external tags are constant, so pinion's `reconcile_externals` took its steady-state
+/// early-return and discarded the rebuilt external, leaving the boot value in force — the lock was
+/// create-time-only for as long as it took PINION-PR42 to land, with a green test beside it.
+///
+/// So the claim under test is a TRANSITION, not a value: two docked panes are both movable, and
+/// floating one must flip the survivor to non-movable ON THE LIVE EXTERNAL. Reading the flag at boot
+/// would prove nothing — a create-time-only flag is correct at create time, which is exactly how this
+/// hid.
+///
+/// Which pane ends up docked is DISCOVERED from what the main window still paints, not predicted from
+/// which one the float acted on: a floated pane moves to its own OS window, so the dock membership is
+/// readable, and predicting it would re-derive the very routing that could be wrong.
+fn check_the_sole_docked_pane_locks_its_tear_off(smoke: &mut Smoke, report: &mut Report) {
+    // The float row acts on the FOCUSED pane, and headless there is none to start with
+    // ([`Smoke::focus_pane`] says why it must be driven rather than waited for).
+    report.check("a pane can be focused to act on", smoke.focus_pane(0));
+    if !smoke.run_palette_row("Split into a new pane", report) {
+        return;
+    }
+    let Ok(docked) = smoke.wait_for(|s| {
+        let panes = s.docked_panes();
+        (panes.len() == 2).then_some(panes)
+    }) else {
+        report.check("a second pane docks so either one may float", false);
+        return;
+    };
+    let movability: Vec<Option<bool>> = docked.iter().map(|&i| smoke.panel_is_movable(i)).collect();
+    report.check(
+        &format!("both docked panes start out movable ({movability:?})"),
+        movability.iter().all(|m| *m == Some(true)),
+    );
+
+    // Float one of them. The survivor is then the last docked pane. Which pane the float ACTS on is
+    // chosen here (the row acts on the focused pane); which one is left DOCKED is still read back
+    // from the paint below, because that is the routing the lock is computed from.
+    let focused = smoke.focus_pane(docked[1]);
+    let focusables = smoke.focusables();
+    report.check(
+        &format!(
+            "pane {} can be focused to be floated (focusable: {focusables:?})",
+            docked[1]
+        ),
+        focused,
+    );
+    if !smoke.run_palette_row("Toggle floating pane", report) {
+        return;
+    }
+    let Ok(remaining) = smoke.wait_for(|s| {
+        let panes = s.docked_panes();
+        (panes.len() == 1).then(|| panes[0])
+    }) else {
+        report.check("floating one pane leaves a single docked pane", false);
+        return;
+    };
+    let floated = docked
+        .iter()
+        .copied()
+        .find(|&i| i != remaining)
+        .expect("two docked panes, one of which is still docked");
+
+    // THE assertion: the flag moved after boot. A create-time-only flag answers `true` here.
+    let locked = smoke
+        .wait_for(|s| (s.panel_is_movable(remaining) == Some(false)).then_some(()))
+        .is_ok();
+    report.check(
+        &format!("the sole docked pane (pane {remaining}) locks its tear-off live"),
+        locked,
+    );
+    report.check(
+        &format!("and the floated pane (pane {floated}) stays movable"),
+        smoke.panel_is_movable(floated) == Some(true),
+    );
+
+    // Dock it back: the lock must LIFT as dynamically as it landed. A one-way latch would pass the
+    // assertion above and still leave a pane permanently unable to move. The toggle acts on the
+    // focused pane, so the FLOATED one is the one to put focus on.
+    smoke.focus_pane(floated);
+    if !smoke.run_palette_row("Toggle floating pane", report) {
+        return;
+    }
+    let lifted = smoke
+        .wait_for(|s| {
+            (s.docked_panes().len() == 2 && s.panel_is_movable(remaining) == Some(true))
+                .then_some(())
+        })
+        .is_ok();
+    report.check("re-docking lifts the lock again", lifted);
+}
+
 /// The last unproven step of the destroy arc. The poll thread's classification of a dead session was
 /// unit-tested against a fake socket; that a REAL rendering process, mid-frame, actually leaves — and
 /// does not sit painting a session that no longer exists — is a fact only a live client can settle.
@@ -540,19 +647,78 @@ impl Smoke {
         out
     }
 
-    /// How many pane tiles are painted.
+    /// Which pane tiles the MAIN window is painting, by index and in order.
     ///
-    /// Counts the pane's own tag and not its `#grid` child: a pane paints several tagged nodes under
+    /// Reads the pane's own tag and not its `#grid` child: a pane paints several tagged nodes under
     /// one composite prefix, so a naive prefix count moves by more than one per pane and would make
     /// "one more pane" unstateable.
-    fn pane_count(&mut self) -> usize {
-        self.tags()
+    ///
+    /// Main-window-scoped, which is what makes it the DOCKED set: a floated pane moves to its own
+    /// `pane-{i}` OS window and stops painting here, so this answers the dock membership the
+    /// tear-off lock is computed from — without asking the client for the very fact under test.
+    fn docked_panes(&mut self) -> Vec<usize> {
+        let mut indices: Vec<usize> = self
+            .tags()
             .keys()
-            .filter(|tag| {
-                tag.strip_prefix("sprag_gui.pane.")
-                    .is_some_and(|rest| rest.chars().all(|c| c.is_ascii_digit()))
+            .filter_map(|tag| tag.strip_prefix("sprag_gui.pane.")?.parse().ok())
+            .collect();
+        indices.sort_unstable();
+        indices
+    }
+
+    /// How many pane tiles the main window is painting.
+    fn pane_count(&mut self) -> usize {
+        self.docked_panes().len()
+    }
+
+    /// Put the within-app focus on pane `i`, so the palette's pane-scoped rows are offered.
+    ///
+    /// Driven rather than assumed, for the reason the boot check already records: a `focus_request`
+    /// needs a winit input tick to drain, and there is none headless — so any focus sprag ASKS for
+    /// (at boot, or on a window change) never arrives here. A check that needs a focused pane must
+    /// therefore set one, and that is setup, not the claim under test.
+    /// Verified by reading focus back: `focus/set` answers `Ok` for a tag the focus manager will
+    /// not actually hold (one outside the active enumeration), so the call's own result is not
+    /// evidence that anything moved.
+    fn focus_pane(&mut self, i: usize) -> bool {
+        let tag = format!("sprag_gui.pane.{i}");
+        let _ = self.call("focus/set", json!({ "tag": tag }));
+        self.focused().as_deref() == Some(tag.as_str())
+    }
+
+    /// The tag holding the within-app focus, if any.
+    fn focused(&mut self) -> Option<String> {
+        self.call("focus/get", json!({})).ok()?["focused"]
+            .as_str()
+            .map(str::to_owned)
+    }
+
+    /// Every tag the focus manager will accept, in Tab order — what a refused `focus/set` was
+    /// measured against.
+    fn focusables(&mut self) -> Vec<String> {
+        self.call("focus/get", json!({}))
+            .ok()
+            .and_then(|value| {
+                Some(
+                    value["tab_order"]
+                        .as_array()?
+                        .iter()
+                        .filter_map(|t| t.as_str().map(str::to_owned))
+                        .collect(),
+                )
             })
-            .count()
+            .unwrap_or_default()
+    }
+
+    /// Whether pane `i`'s LIVE dock panel says its header may start a drag.
+    ///
+    /// Read off the external pinion actually holds, not off sprag's predicate: the predicate was
+    /// right for a long time while the live panel kept its stale boot value, and only this address
+    /// can tell those apart.
+    fn panel_is_movable(&mut self, i: usize) -> Option<bool> {
+        self.query(&format!("terminal-{i}"), "movable")
+            .ok()?
+            .as_bool()
     }
 
     /// The window names the tab strip is PAINTING, in tab order.
@@ -608,7 +774,14 @@ impl Smoke {
             return false;
         }
         let Some(at) = self.row_named(title) else {
-            report.check(&format!("the palette offers `{title}`"), false);
+            // Say what WAS offered. A row can go missing because its command was withdrawn, because
+            // the catalog froze in a state that gates it out, or because the title moved — and those
+            // read identically as a bare "not offered".
+            let offered = self.row_titles();
+            report.check(
+                &format!("the palette offers `{title}` (offered: {offered:?})"),
+                false,
+            );
             let _ = self.invoke("sprag_palette", "send", json!("scrim:PointerUp"));
             return false;
         };
@@ -649,6 +822,23 @@ impl Smoke {
             }
             std::thread::sleep(POLL);
         }
+    }
+
+    /// Every palette row title the open palette is offering, in cursor order.
+    fn row_titles(&mut self) -> Vec<String> {
+        let count = self
+            .query("sprag_palette", "row_count")
+            .ok()
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        (0..count)
+            .filter_map(|i| {
+                self.query("sprag_palette", &format!("row.{i}"))
+                    .ok()?
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .collect()
     }
 
     /// The visible palette row whose title is `title`, by asking the palette itself rather than by

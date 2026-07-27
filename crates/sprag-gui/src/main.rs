@@ -497,16 +497,14 @@ impl WidgetCore for TerminalViewer {
                         .with_drop_preview(Rc::clone(&drop_preview))
                         // (pinion R1172 / R91) LOCK the sole docked pane's tear-off at the
                         // SOURCE: `movable=false` makes `begin_drag` return `None`, so a pane
-                        // that cannot float (the last docked one, tmux semantics) would start
-                        // NO drag — no misleading chip/preview. The factory re-runs per
-                        // float/dock (R70) and computes the live flag (diag `externals_rebuilt`
-                        // shows [false,true] once a pane floats). BLOCKED LIVE on PINION-PR42:
-                        // `reconcile_externals` early-returns on an unchanged tag set (sprag's
-                        // tags are constant), DISCARDING the rebuilt external, so this dynamic
-                        // `movable` is create-time-only and not applied after boot. Kept as the
-                        // correct forward seam (sprag change 0 when pinion re-applies per-panel
-                        // flags); until then the reducer/float gate keeps behavior correct while
-                        // the chip/preview still (wrongly) shows.
+                        // that cannot float (the last docked one, tmux semantics) starts NO
+                        // drag — no misleading chip/preview. The factory re-runs per float/dock
+                        // (R70) and computes the live flag (diag `externals_rebuilt` shows
+                        // [false,true] once a pane floats). LIVE since PINION-PR42: sprag's tags
+                        // are constant, so `reconcile_externals` still takes its steady-state
+                        // early-return, but that path now re-projects a preserved panel's
+                        // declarative policy (`External::reconcile_from`) instead of dropping
+                        // the rebuilt external — so this value reaches `begin_drag` after boot.
                         .with_movable(dock::pane_is_movable(i))
                         // (pinion R1116 / PINION-PR38 ②) Declare this pane's own floating
                         // window id, so a header drag INSIDE that window is a borderless

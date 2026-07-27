@@ -389,15 +389,19 @@ fn float_would_empty_the_dock(i: usize) -> bool {
 /// that cannot move), fixing the "why does a pane that can't move show a preview?"
 /// inconsistency the reducer-level refuse left.
 ///
-/// **NOT LIVE YET — blocked on PINION-PR42.** `reconcile_externals` early-returns on an
-/// unchanged tag set (sprag's tags are constant, R70), so the rebuilt external carrying
-/// `movable=false` is DISCARDED and the boot value (both panes movable) sticks — the flag
-/// is create-time-only. So today the chip/preview STILL (wrongly) shows; behavior stays
-/// correct only via the `float_would_empty_the_dock` gate in the float primitives. This
-/// predicate + wiring are the correct forward seam (sprag change 0 when PR-42 lands). The
-/// factory re-runs per float/dock (R70) and computes the right flag — with 2+ docked panes
-/// every pane is movable; float one and the sole pane computes non-movable — pinion just
-/// does not yet APPLY it after boot.
+/// **LIVE since PINION-PR42.** It was create-time-only for a long while: sprag's external
+/// tags are constant (R70), so `reconcile_externals` took its steady-state early-return and
+/// DISCARDED the rebuilt external, leaving the boot value (both panes movable) in force.
+/// The pinned pinion now re-projects a preserved panel's DECLARATIVE policy on that same
+/// path — `External::reconcile_from` copies `movable`/`floatable` off the fresh descriptor
+/// through the introspection channel, leaving in-flight gesture state (`dragging`, the
+/// lifecycle chart, `redock_pending`) on the live node. So the flag this returns now
+/// reaches `begin_drag` after boot, and the predicate + wiring needed no sprag change, as
+/// the handoff doc predicted. The factory re-runs per float/dock (R70): with 2+ docked
+/// panes every pane is movable; float one and the sole docked pane computes non-movable.
+/// Proven end-to-end (float a sibling, then read `movable` back off the LIVE external) by
+/// `sprag-smoke`'s sole-docked-pane check — the unit test below pins only the predicate,
+/// which stayed green through the whole create-time-only era.
 pub(crate) fn pane_is_movable(i: usize) -> bool {
     !float_would_empty_the_dock(i)
 }
@@ -878,11 +882,10 @@ mod tests {
     /// `DockPanelExternal::with_movable` so pinion's `begin_drag` returns `None` for a
     /// locked pane (no drag → no chip/preview). This guard pins the PREDICATE (both docked
     /// → both movable; float one → the sole pane computes non-movable; re-dock → restored).
-    /// NOTE: the LIVE source-level block is blocked on
-    /// PINION-PR42 — `reconcile_externals` early-returns on an unchanged tag set (sprag's
-    /// tags never change), discarding the rebuilt external, so the dynamic `movable=false`
-    /// is not applied after boot (create-time-only). Behavior stays correct via the
-    /// reducer/float gate; the misleading chip/preview needs the pinion fix.
+    /// It pins the PREDICATE ONLY, and deliberately so: it passed unchanged through the
+    /// whole era when pinion discarded the rebuilt external and the live flag never moved
+    /// (see [`pane_is_movable`]'s doc). Whether the computed flag REACHES the live panel is
+    /// a different claim, and only `sprag-smoke`'s sole-docked-pane check can make it.
     #[test]
     fn the_sole_docked_pane_computes_non_movable() {
         let owner = Owner::new();
