@@ -32,7 +32,7 @@ use std::collections::HashSet;
 use pinion_core::GridBuffer;
 use sprag_host::{
     HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneNotification,
-    PaneScrollFacts, Project, ProjectError, UserConfig,
+    PaneScrollFacts, Project, UserConfig,
 };
 use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneExit, PaneId, SessionInfo, WindowInfo};
@@ -244,11 +244,13 @@ impl SlotView {
 
     /// The project governing slot `slot`'s pane — the commands its `.sprag.toml` declares. `None`
     /// for a hole, a pane in no project, or a remote pane (whose cwd is on another machine).
-    /// `Some(Err(_))` is a project whose config is unusable and must be SHOWN as such.
+    /// `Some(Err(message))` is a project whose config is unusable, whose message already names the
+    /// file to fix — rendered host-side, like the user config's beside it, so this client never has
+    /// to guess which file a report is about.
     ///
     /// Slot-mapped like every other read here, and asked ON DEMAND (the palette opening) because the
     /// answer costs the host a filesystem walk and this client a socket round trip.
-    pub(crate) fn project(&self, slot: usize) -> Option<Result<Project, ProjectError>> {
+    pub(crate) fn project(&self, slot: usize) -> Option<Result<Project, String>> {
         self.host.project(self.id(slot)?)
     }
 

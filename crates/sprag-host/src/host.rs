@@ -543,10 +543,19 @@ pub trait HostClient {
     /// than treat as an empty list: a typo in a committed config is something its author needs to
     /// hear about ([`crate::project`] has the whole rationale, including why nothing here runs).
     ///
+    /// The error is the RENDERED report, a `String`, for the reason
+    /// [`global_commands`](Self::global_commands)'s is: the only consumer paints the sentence, and
+    /// only THIS end knows which file it is about. Carrying [`crate::ProjectError`] across the wire
+    /// meant re-rendering at the far end from a message that had already been rendered here — and
+    /// its `Display` prefixes the filename, so a wire client's report named `.sprag.toml` twice.
+    /// The type is still the right shape where it is BUILT (`project::load` distinguishes
+    /// unreadable / malformed / invalid, and its tests match on that); it is only the crossing that
+    /// wants a sentence.
+    ///
     /// A READ that touches the filesystem, so it is asked ON DEMAND (a palette opening, a `sprag
     /// run`) and never per frame. Defaulted to `None`, like [`break_pane`](Self::break_pane) — a
     /// test double need not implement it.
-    fn project(&self, id: PaneId) -> Option<Result<crate::Project, crate::ProjectError>> {
+    fn project(&self, id: PaneId) -> Option<Result<crate::Project, String>> {
         let _ = id;
         None
     }
@@ -1495,7 +1504,10 @@ impl HostClient for Host {
     /// filesystem walk under the pool lock would stall every other caller behind a slow disk. A
     /// remote pane answers `None` — its cwd is on another machine, so a local walk would describe
     /// the wrong filesystem.
-    fn project(&self, id: PaneId) -> Option<Result<crate::Project, crate::ProjectError>> {
+    ///
+    /// Renders the error here, where `.sprag.toml` is known, exactly as the wire slot does — so an
+    /// in-process client and a wire client read the same sentence rather than two spellings of it.
+    fn project(&self, id: PaneId) -> Option<Result<crate::Project, String>> {
         let cwd = {
             let workspace = self.workspace();
             let workspace = lock(&workspace);
@@ -1505,7 +1517,7 @@ impl HostClient for Host {
             }
             pane.pty().cwd()?
         };
-        crate::project::load(&cwd)
+        Some(crate::project::load(&cwd)?.map_err(|error| error.to_string()))
     }
 
     /// Move the pane `id` into the window named `dst` of the default session (tmux `join-pane`),

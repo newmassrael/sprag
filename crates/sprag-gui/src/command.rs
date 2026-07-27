@@ -566,7 +566,11 @@ pub(crate) fn catalog(target: Option<usize>, slots: &SlotView) -> Catalog {
             // A project whose config is unusable contributes NO rows and one message. Reporting it
             // is the point: a client that showed an empty list would leave the config's author
             // believing their file works (`sprag_host::project` carries the whole rationale).
-            Some(Err(error)) => errors.push(error.to_string()),
+            //
+            // Pushed VERBATIM, like the global one below: the message arrives already rendered by
+            // the end that knows which file it describes, and re-rendering it here is exactly how
+            // a wire client's report came to name `.sprag.toml` twice.
+            Some(Err(message)) => errors.push(message),
         }
     }
     // ...then the USER's own commands, which are offered wherever the pane is — including in no
@@ -818,7 +822,7 @@ mod tests {
         current: String,
         log: Rc<RefCell<Log>>,
         /// What this host answers for a pane's project — the three outcomes the real host has.
-        project: Option<Result<sprag_host::Project, sprag_host::ProjectError>>,
+        project: Option<Result<sprag_host::Project, String>>,
         /// What this host answers for the USER's config — the same three outcomes, independently.
         global: Option<Result<sprag_host::UserConfig, String>>,
         /// The live pane set. Ids are deliberately NOT their slot numbers, so a test asserting on a
@@ -882,10 +886,7 @@ mod tests {
         fn switch_to_last_session(&self) {
             self.log.borrow_mut().last_session += 1;
         }
-        fn project(
-            &self,
-            _id: PaneId,
-        ) -> Option<Result<sprag_host::Project, sprag_host::ProjectError>> {
+        fn project(&self, _id: PaneId) -> Option<Result<sprag_host::Project, String>> {
             self.project.clone()
         }
         fn global_commands(&self) -> Option<Result<sprag_host::UserConfig, String>> {
@@ -994,7 +995,7 @@ mod tests {
 
     /// A `SlotView` whose host answers `project` with `answer`.
     fn slots_with_project(
-        answer: Option<Result<sprag_host::Project, sprag_host::ProjectError>>,
+        answer: Option<Result<sprag_host::Project, String>>,
     ) -> (SlotView, Rc<RefCell<Log>>) {
         let log: Rc<RefCell<Log>> = Rc::default();
         let host = CatalogHost {
@@ -1018,7 +1019,7 @@ mod tests {
     /// test can drive the two config sources independently — which is the whole point of their being
     /// two.
     fn slots_with_configs(
-        project: Option<Result<sprag_host::Project, sprag_host::ProjectError>>,
+        project: Option<Result<sprag_host::Project, String>>,
         global: Option<Result<sprag_host::UserConfig, String>>,
     ) -> SlotView {
         let host = CatalogHost {
@@ -1132,9 +1133,7 @@ mod tests {
     #[test]
     fn a_broken_project_and_a_broken_user_config_are_reported_independently() {
         let slots = slots_with_configs(
-            Some(Err(sprag_host::ProjectError::Malformed(
-                "expected `]` at line 3".to_owned(),
-            ))),
+            Some(Err(broken_project_report())),
             Some(Err(
                 "config.toml: the command \"a\" has an empty `run`".to_owned()
             )),
@@ -1164,6 +1163,58 @@ mod tests {
                 .any(|e| e.contains("config.toml") && e.contains("empty `run`")),
             "and the user config's report names ITS file: {:?}",
             built.config_errors
+        );
+    }
+
+    /// A broken project's report, RENDERED the way the host renders it.
+    ///
+    /// Through `ProjectError`'s own `Display` rather than a hand-typed sentence, so this double
+    /// carries whatever the real host would send — including the file name, which is the part that
+    /// used to be applied twice.
+    fn broken_project_report() -> String {
+        sprag_host::ProjectError::Malformed("expected `]` at line 3".to_owned()).to_string()
+    }
+
+    /// A config report names its file ONCE.
+    ///
+    /// The project slot used to send a rendered message and have the wire client re-wrap it in a
+    /// `ProjectError`, whose `Display` prefixed the file name a second time — so a GUI over the wire
+    /// showed `.sprag.toml: .sprag.toml is not valid TOML: …`. Both slots now carry the rendered
+    /// sentence and the client passes it through, which is what makes this countable at all.
+    ///
+    /// REVERT-PROOF: re-render either report in `catalog` (wrap it back into a `ProjectError` and
+    /// `to_string()` it) and the count for that file becomes 2.
+    #[test]
+    fn a_config_report_names_its_file_exactly_once() {
+        let slots = slots_with_configs(
+            Some(Err(broken_project_report())),
+            Some(Err(sprag_host::ConfigError(
+                sprag_host::ProjectError::Malformed("expected `]` at line 1".to_owned()),
+            )
+            .to_string())),
+        );
+
+        let built = catalog(Some(0), &slots);
+        let count = |report: &str, file: &str| report.matches(file).count();
+        let project = built
+            .config_errors
+            .iter()
+            .find(|report| report.contains(sprag_host::PROJECT_FILE))
+            .expect("the project's report");
+        assert_eq!(
+            count(project, sprag_host::PROJECT_FILE),
+            1,
+            "the project report names its file once: {project:?}",
+        );
+        let user = built
+            .config_errors
+            .iter()
+            .find(|report| report.contains(sprag_host::CONFIG_FILE))
+            .expect("the user config's report");
+        assert_eq!(
+            count(user, sprag_host::CONFIG_FILE),
+            1,
+            "and so does the user config's: {user:?}",
         );
     }
 
@@ -1249,9 +1300,7 @@ mod tests {
     /// REVERT-PROOF: fold the error into the command list (or drop it) and this fails.
     #[test]
     fn a_broken_project_config_contributes_a_report_and_no_rows() {
-        let (slots, _log) = slots_with_project(Some(Err(sprag_host::ProjectError::Malformed(
-            "expected `]` at line 3".to_owned(),
-        ))));
+        let (slots, _log) = slots_with_project(Some(Err(broken_project_report())));
         let built = catalog(Some(0), &slots);
 
         assert!(

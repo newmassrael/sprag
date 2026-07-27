@@ -91,7 +91,7 @@ use sprag_host::wire::{
 };
 use sprag_host::{
     CellFrame, HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneNotification,
-    PaneScrollFacts, Project, ProjectError, UserConfig, mux_action_path, pane_input_path,
+    PaneScrollFacts, Project, UserConfig, mux_action_path, pane_input_path,
 };
 use sprag_input::{Modifiers, MouseButton, MouseEventKind, MouseInput};
 use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn, runtime_path};
@@ -1536,19 +1536,20 @@ impl HostClient for WireHost {
     /// into the SAME [`Project`] the host serialised, so the two ends cannot drift on a field name.
     /// An unparseable payload is reported as a malformed config rather than silently dropped, since
     /// the alternative is a client that shows an empty command list for a project that has one.
-    fn project(&self, id: PaneId) -> Option<Result<Project, ProjectError>> {
+    ///
+    /// The error travels ALREADY RENDERED and is passed through verbatim, exactly like
+    /// [`Self::global_commands`]'s: the host is the end that knows the file is `.sprag.toml`, so
+    /// re-wrapping it in a `ProjectError` here only re-prefixed a name the sentence already had.
+    fn project(&self, id: PaneId) -> Option<Result<Project, String>> {
         let params = json!({ "path": mux_action_path(&project_slot_for(id.0)) });
         let value = self.request("scene/query", params, "project")?;
         if value.is_null() {
             return None;
         }
         if let Some(message) = value.get("error").and_then(Value::as_str) {
-            return Some(Err(ProjectError::Invalid(message.to_owned())));
+            return Some(Err(message.to_owned()));
         }
-        Some(
-            serde_json::from_value::<Project>(value)
-                .map_err(|error| ProjectError::Malformed(error.to_string())),
-        )
+        Some(serde_json::from_value::<Project>(value).map_err(|error| error.to_string()))
     }
 
     /// The user's declared commands, over the mux `commands` slot. On demand (a palette opening),
