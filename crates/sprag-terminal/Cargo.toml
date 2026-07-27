@@ -18,6 +18,13 @@ portable-pty = { workspace = true }
 # detach/reattach arc), so it derives serde HERE — the one definition of the
 # layout's field set, shared by the host's wire and every client.
 serde = { workspace = true }
+# The producer's one reporting channel. A pane teardown that cannot complete is
+# invisible by construction (a destructor returns nothing), so the anomaly has to
+# be LOGGED to exist at all — env-filtered levels, never eprintln.
+tracing = { workspace = true }
+# `SIGKILL`. `portable-pty`'s cloned killer offers only a polite `SIGHUP`, which a
+# child may ignore; closing a pane needs a signal that cannot be refused.
+libc = { workspace = true }
 
 [dev-dependencies]
 # The layout's wire round-trip proof (the detach/reattach fidelity guarantee).

@@ -3702,10 +3702,12 @@ dependencies = [
 name = "sprag-terminal"
 version = "0.0.1"
 dependencies = [
+ "libc",
  "portable-pty",
  "serde",
  "serde_json",
  "sprag-vt",
+ "tracing",
 ]
 
 [[package]]

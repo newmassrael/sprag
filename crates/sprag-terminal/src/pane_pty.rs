@@ -197,6 +197,10 @@ pub struct PanePty {
     /// [`answer_clipboard_query`](PanePty::answer_clipboard_query).
     clipboard_answered: Arc<AtomicU64>,
     reader_thread: Option<JoinHandle<()>>,
+    /// Disconnects when the reader thread has run its whole tail — apply, EOF, `on_exit`, reap,
+    /// publish. [`Drop`](PanePty::drop) waits on THIS to decide whether the hangup worked, because
+    /// a join cannot be asked "are you done yet". See [`HANGUP_GRACE`].
+    reader_done: Receiver<()>,
     // The full winsize a resize applies: `(cols, rows, pixel_width, pixel_height)`. The pixel
     // extents are derived host-side (`cols * cell_w`, `rows * cell_h`) from the display's cell
     // metric so a child reads a real `TIOCGWINSZ` `ws_xpixel` / `ws_ypixel` (0 while unknown).
@@ -305,9 +309,14 @@ impl PanePty {
         // The reader writes device RESPONSES (e.g. the Kitty `CSI ? u` flags reply) back to the
         // child; it shares the SAME writer the input path uses, so the two serialize on its mutex.
         let reader_writer = Arc::clone(&writer);
+        // The reader's "I am finished" edge. Moved IN and never sent on: the disconnect its drop
+        // causes is the signal, so it fires however the closure ends — normal return or panic — and
+        // cannot be forgotten on a future early-exit path.
+        let (reader_done_tx, reader_done) = mpsc::channel::<()>();
         let reader_thread = std::thread::Builder::new()
             .name("sprag-pty-reader".to_string())
             .spawn(move || {
+                let _reader_done_tx = reader_done_tx;
                 let mut child = child;
                 let mut buf = [0u8; 8192];
                 loop {
@@ -427,6 +436,7 @@ impl PanePty {
             eof,
             clipboard_answered: Arc::new(AtomicU64::new(0)),
             reader_thread: Some(reader_thread),
+            reader_done,
             resize_tx: Some(resize_tx),
             resize_thread: Some(resize_thread),
         })
@@ -894,6 +904,28 @@ fn write_input(
 /// Debouncing to the LATEST size after a brief quiet collapses the storm.
 const RESIZE_DEBOUNCE: Duration = Duration::from_millis(40);
 
+/// How long [`PanePty::drop`] lets the polite hangup work before it stops asking and kills.
+///
+/// A pane close hangs its child up ([`ChildKiller`], one `SIGHUP`) and then has to wait for the
+/// reader thread, because that thread is the only reaper. The wait is the problem: `SIGHUP` is a
+/// REQUEST. `kill(2)` reporting success means the signal was raised, not that it did anything — a
+/// signal whose disposition is `SIG_IGN` at the moment of delivery is DISCARDED outright, leaving
+/// no pending bit and no trace, and a shell passes through windows during its own startup where
+/// that is true. When the request is lost the child keeps the slave open, the master read never
+/// ends, the reader never returns, and an unbounded join here never returns either.
+///
+/// That is not theoretical. Under concurrent pane teardown a `cargo test` run of the GUI suite hung
+/// in roughly one run in five, always inside this join; the stuck pane's shell was still alive
+/// holding its own pty, with NO pending signal and `SIGHUP` by then neither blocked nor ignored —
+/// the request had been discarded — and a `SIGHUP` sent by hand killed it instantly and released
+/// the join. So the close cannot rest on a signal the child is free to drop.
+///
+/// Long enough that an ordinary exit is never hurried (a child that honours the hangup is gone in
+/// milliseconds and never reaches this), short enough that a lost one costs a closing window a
+/// pause instead of the process. A child still running when it expires is one that did not take the
+/// hint, and closing a pane is not a negotiation.
+const HANGUP_GRACE: Duration = Duration::from_secs(2);
+
 /// The resize coalescer loop (runs on its own thread, which OWNS the PTY
 /// master — `resize` is the master's only user, so no sharing is needed).
 /// Trailing debounce: every request resets the quiet timer and overwrites the
@@ -937,13 +969,67 @@ impl Drop for PanePty {
         if let Some(handle) = self.resize_thread.take() {
             let _ = handle.join();
         }
-        // Stop the child so its slave fd closes, which unblocks the reader thread's `read()` with
-        // EOF; then JOIN that thread, which reaps as its last act. Signalling rather than waiting
-        // here is what keeps a single reaper: two threads calling `wait()` on one child race for the
-        // status, and the loser would leave `exit_status` empty for a pane that plainly had one.
+        // Hang the child up so its slave fd closes, which unblocks the reader thread's `read()`
+        // with EOF; then wait for that thread, which reaps as its last act. Signalling rather than
+        // waiting here is what keeps a single reaper: two threads calling `wait()` on one child race
+        // for the status, and the loser would leave `exit_status` empty for a pane that plainly had
+        // one.
         let _ = self.killer.kill();
-        if let Some(handle) = self.reader_thread.take() {
-            let _ = handle.join();
+        let Some(handle) = self.reader_thread.take() else {
+            return;
+        };
+        // Then CHECK, because the hangup is a request the child may never have received (see
+        // [`HANGUP_GRACE`]). `Disconnected` is the reader's own end hanging up — it is finished, so
+        // the join below returns at once. Only `Timeout` means the request did not land, and the
+        // answer to that is a signal nothing can refuse.
+        if self.reader_done.recv_timeout(HANGUP_GRACE) == Err(RecvTimeoutError::Timeout) {
+            self.kill_hard();
+        }
+        let _ = handle.join();
+    }
+}
+
+impl PanePty {
+    /// `SIGKILL` the pane's whole process GROUP, for the one case [`Drop`](Self::drop) cannot talk
+    /// its way out of.
+    ///
+    /// The GROUP, not the child, and that distinction is the difference between working and not.
+    /// EOF on the master needs EVERY holder of the slave to let go, and the child's descendants hold
+    /// it too — its stdio is theirs by inheritance. Killing only the child leaves a foreground job
+    /// running on the pty and the close is exactly as stuck as before (measured: with a `sleep`
+    /// still on the pty, the reader returned only when that `sleep` did). Taking the group is also
+    /// the right MEANING: closing a pane ends the pane's job, not just the shell that launched it.
+    ///
+    /// Addressing the group by the child's pid is exact rather than lucky: `portable-pty` puts the
+    /// child through `setsid` before `exec`, so it leads its own session AND its own group — the
+    /// negated pid names precisely this pane's processes and nothing else.
+    ///
+    /// Gated on the child NOT having been reaped, for the same reason [`pid`](Self::pid) is: the
+    /// instant a status publishes, that pid is free to be recycled, and a group id built from a
+    /// recycled pid would name a stranger's processes. `exit` is that gate — the reader publishes it
+    /// as it reaps — so `None` here means the id is still this pane's to signal. (A reaped child is
+    /// also one whose reader has finished, so this is unreachable in that state; the check makes it
+    /// unreachable by construction rather than by argument.)
+    fn kill_hard(&self) {
+        if lock(&self.exit).is_some() {
+            return;
+        }
+        let Some(pid) = self.pid else {
+            return;
+        };
+        let Ok(pid): Result<libc::pid_t, _> = pid.try_into() else {
+            return;
+        };
+        tracing::warn!(
+            target: "sprag_terminal::pane_pty",
+            pid,
+            grace = ?HANGUP_GRACE,
+            "the pane's child ignored its hangup; killing its process group so the pty can close",
+        );
+        // SAFETY: `kill` is async-signal-safe and takes no pointers. `-pid` is this pane's own
+        // process group (the child leads it — see above), and the child is unreaped, checked above.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
         }
     }
 }
@@ -977,6 +1063,64 @@ mod tests {
         });
         assert!(row0.starts_with("hi"), "row0 = {row0:?}");
         assert_eq!(pty.dimensions(), (20, 4));
+    }
+
+    /// Closing a pane whose child IGNORES the hangup still completes.
+    ///
+    /// This is the wild failure made deterministic. A pane close asks its child to hang up with a
+    /// single `SIGHUP`, and a signal that is ignored at the moment of delivery is discarded — no
+    /// pending bit, no effect, and `kill(2)` still reports success. `trap "" HUP` puts the child in
+    /// exactly that state on purpose; in the wild it was a shell that happened to be there while
+    /// starting up, which is why it struck about one `cargo test` run in five and never with
+    /// `--test-threads=1`.
+    ///
+    /// Before the close escalated, this did not FAIL here, it HUNG: the child kept the slave open,
+    /// so the master read never ended, so the reader thread never returned, so the join never did.
+    /// The child also leaves a `sleep` of its own on the pty, which is why the escalation has to
+    /// take the process GROUP — killing the child alone leaves that `sleep` holding the slave and
+    /// the close stays stuck until it finishes on its own.
+    ///
+    /// The LOWER bound matters as much as the upper one: a close that returned immediately would
+    /// mean the child took the hint after all and the escalation path was never exercised.
+    #[test]
+    fn a_pane_whose_child_ignores_the_hangup_still_closes() {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        // Announce readiness ON the pty, so the close is driven only once the trap is demonstrably
+        // installed — waiting on that condition rather than on a timer.
+        command.arg(r#"trap "" HUP; printf DEAF; sleep 60"#);
+        command.env("TERM", "dumb");
+        let pty = PanePty::spawn(command, 20, 4).expect("spawn a pty");
+
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(10) {
+            let row0 = pty.with_screen(|screen| {
+                (0..screen.cols())
+                    .filter_map(|col| screen.cell(col, 0).map(|cell| cell.cluster.to_string()))
+                    .collect::<String>()
+            });
+            if row0.starts_with("DEAF") {
+                break;
+            }
+            sleep(Duration::from_millis(20));
+        }
+        assert!(
+            !pty.is_eof(),
+            "the child is alive with the hangup trapped, so there can be no EOF yet",
+        );
+
+        let closing = Instant::now();
+        drop(pty);
+        let took = closing.elapsed();
+        assert!(
+            took >= HANGUP_GRACE,
+            "the close should have gone through the grace and escalated (took {took:?}) — \
+             returning early would mean the child honoured the hangup and this proves nothing",
+        );
+        assert!(
+            took < HANGUP_GRACE * 3,
+            "the close must be bounded by the grace, not by the child (took {took:?})",
+        );
     }
 
     /// Synchronized output (DEC 2026) end-to-end: a child wraps its writes in an atomic-frame
