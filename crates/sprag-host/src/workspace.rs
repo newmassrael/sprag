@@ -423,15 +423,15 @@ impl WorkspaceExternal {
         // Create the empty session shell under the registry authority, then clone its pool Arc OUT
         // (via `workspace_of`, the one helper for exactly this) so the birth pane spawns OFF the
         // registry lock — the established registry->workspace order, never nested across a
-        // fork/exec that would otherwise stall every other request on the registry lock. This
-        // narrows the once-a-round-trip empty-session window to two in-handler lock ops. The
-        // residual — an unrelated last pane dying between them, self-exiting the daemon under a
-        // just-connecting client — is the INHERENT "zero live panes ⇒ exit" race: fail-safe (no
-        // corruption — the birth pane either wins the pool lock and the daemon survives, or the
-        // daemon SIGTERMs and this call returns `UnexpectedEof`). It is NOT recovered here: the
-        // joining client's boot fails hard, and only a fresh relaunch's connect-or-spawn brings up
-        // the next daemon. It closes fully once a just-created session can pin liveness (increment).
-        let (allocated, pool) = {
+        // fork/exec that would otherwise stall every other request on the registry lock.
+        //
+        // The session is EMPTY until the spawn below lands, and an empty session reads as "nothing
+        // live" to the daemon's reaper — so an unrelated last pane dying in that gap used to end
+        // the daemon under the client that had just asked for the session. A [`BirthPin`] taken
+        // under THIS lock (never after it, which would leave the same gap narrower) says a pane is
+        // on its way; it is released when `pin` falls at the end of this call, spawned or not, and
+        // its release nudges the reaper so a birth that FAILED still lets an idle daemon go.
+        let (allocated, pool, pin) = {
             let mut registry = lock(&self.registry);
             let allocated = registry.new_session(name).map_err(|error| {
                 tracing::debug!(target: "sprag_host", %error, "refused to create a session");
@@ -442,7 +442,12 @@ impl WorkspaceExternal {
             let pool = registry
                 .workspace_of(&allocated)
                 .expect("the session just created resolves");
-            (allocated, pool)
+            let pin = crate::BirthPin::taken(
+                &self.registry,
+                &mut registry,
+                self.on_pane_exit.as_ref().map(crate::pane_exit_hook),
+            );
+            (allocated, pool, pin)
         };
         // Birth the pane. Only a RUNTIME fork/exec failure reaches here (a broken `$SHELL`, an argv
         // the OS cannot `exec`) — the malformed request was already rejected above. It is logged,
@@ -460,6 +465,10 @@ impl WorkspaceExternal {
         // The session SET changed AND (on success) it now holds a live pane: wake a client
         // watching the surface once, the way it learns of any pane-set change.
         self.revision.bump();
+        // Explicit, because the ORDER matters and a lexical drop would not say so: the claim must
+        // outlive the spawn above (that is its whole job) and must fall before this call answers,
+        // so the client's next request meets a daemon whose liveness is settled either way.
+        drop(pin);
         Ok(IntrospectValue::Json(Value::String(allocated)))
     }
 
@@ -2123,6 +2132,51 @@ mod tests {
         assert!(
             lock(&pool(&reg)).panes().is_empty(),
             "the default session is untouched — a create births a pane in the NEW session",
+        );
+    }
+
+    /// A create CLAIMS the daemon's life across its own empty window, and hands it back afterwards
+    /// — whether the birth pane made it or not.
+    ///
+    /// The claim is what stops an unrelated last pane's death from ending the daemon between the
+    /// session existing and its shell existing ([`sprag_host::BirthPin`]). The failing half is the
+    /// one worth pinning: a birth that cannot fork/exec is deliberately non-fatal, so a claim that
+    /// only released on success would trade a daemon that exits too eagerly for one that never
+    /// exits at all.
+    ///
+    /// REVERT-PROOF: hold the pin past the end of `new_session` (bind it in a `static`, or take it
+    /// without a guard) and both assertions fail.
+    #[test]
+    fn a_create_releases_its_claim_however_the_birth_ends() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        assert!(
+            ext.invoke(
+                NEW_SESSION_ACTION,
+                IntrospectValue::Json(json!({"name": "work", "cmd": ["cat"]})),
+            )
+            .is_ok(),
+        );
+        assert!(
+            !lock(&reg).birth_in_flight(),
+            "a born session claims nothing once its pane exists",
+        );
+
+        // A `cmd` the OS cannot exec: the session is created and left EMPTY (the one tolerated
+        // non-fatal path), which is exactly when a leaked claim would be invisible and permanent.
+        assert!(
+            ext.invoke(
+                NEW_SESSION_ACTION,
+                IntrospectValue::Json(
+                    json!({"name": "broken", "cmd": ["/nonexistent/sprag-no-such-program"]})
+                ),
+            )
+            .is_ok(),
+            "a runtime exec failure is non-fatal — the session still exists",
+        );
+        assert!(
+            !lock(&reg).birth_in_flight(),
+            "and a birth that FAILED releases its claim too, or the daemon never exits",
         );
     }
 

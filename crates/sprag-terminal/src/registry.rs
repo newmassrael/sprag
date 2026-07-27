@@ -936,6 +936,9 @@ pub struct SessionRegistry {
     /// removes) the last — so at least one always remains, which is what makes
     /// [`default_session`](Self::default_session) total.
     sessions: Vec<Session>,
+    /// How many BIRTHS are in flight — sessions (or a whole restored registry) that exist here
+    /// while the panes that populate them do not exist yet. See [`pin_birth`](Self::pin_birth).
+    births: usize,
 }
 
 impl SessionRegistry {
@@ -947,7 +950,46 @@ impl SessionRegistry {
     pub fn new(default_size: (u16, u16)) -> Self {
         Self {
             sessions: vec![Session::new("0", Workspace::new(default_size))],
+            births: 0,
         }
+    }
+
+    /// Claim that a BIRTH is in flight: a session exists here whose first pane does not exist yet.
+    ///
+    /// The claim answers a question the registry alone can answer and the pane pools cannot. A
+    /// daemon's life is tied to its LIVE PANES ("zero live panes ⇒ exit"), and an empty session
+    /// holds none — vacuously so. That is the right reading at rest and the wrong one mid-create:
+    /// between a session being made and its shell being spawned, an unrelated last pane dying
+    /// elsewhere finds every pool empty and ends the daemon under the very client that asked for
+    /// the session. The claim says "one is coming", and only the registry knows it, because the
+    /// pane that would prove it has not been born.
+    ///
+    /// It must be taken under the SAME lock as the create it covers. A claim taken after that lock
+    /// is released leaves exactly the gap it exists to close, only narrower.
+    ///
+    /// Counted rather than boolean: two clients may be creating at once, and a shared flag would
+    /// let the first one to finish drop the second one's claim. Paired with
+    /// [`release_birth`](Self::release_birth) — the host wraps the pair in a guard so a birth that
+    /// FAILS releases it too, since a claim nothing ever drops is a daemon that never exits.
+    pub fn pin_birth(&mut self) {
+        self.births += 1;
+    }
+
+    /// Release one claim taken by [`pin_birth`](Self::pin_birth).
+    ///
+    /// Saturating, so an unbalanced release can only ever under-claim (a daemon that exits when it
+    /// should) rather than wrap to a permanent claim (a daemon that never does). Neither is
+    /// reachable through the host's guard; the saturation is what keeps the failure mode the
+    /// recoverable one if some future caller pairs them by hand.
+    pub fn release_birth(&mut self) {
+        self.births = self.births.saturating_sub(1);
+    }
+
+    /// Whether any birth claimed by [`pin_birth`](Self::pin_birth) is still in flight — read by
+    /// the daemon's reaper before it concludes that nothing is live.
+    #[must_use]
+    pub fn birth_in_flight(&self) -> bool {
+        self.births > 0
     }
 
     /// Rebuild a registry's STRUCTURE from a durability [`Snapshot`], returning it paired with the
@@ -1052,7 +1094,16 @@ impl SessionRegistry {
                 current_window,
             });
         }
-        Ok((Self { sessions }, RestorePlan { panes: plan }))
+        // `births: 0` — a rebuilt registry claims nothing on its own. The restore that ADOPTS it
+        // holds the claim across its re-spawn loop, because it is the caller that knows the plan's
+        // panes are still coming; this constructor only knows the shape.
+        Ok((
+            Self {
+                sessions,
+                births: 0,
+            },
+            RestorePlan { panes: plan },
+        ))
     }
 
     /// All sessions, in creation order.

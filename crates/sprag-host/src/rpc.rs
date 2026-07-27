@@ -26,7 +26,7 @@
 use std::io::{self, BufRead, Write};
 use std::ops::ControlFlow;
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use pinion_core::SceneRevision;
 use pinion_rpc::preview::PreviewLedger;
@@ -261,16 +261,20 @@ pub fn pane_exit_hook(signal: &Arc<dyn Fn() + Send + Sync>) -> Box<dyn Fn() + Se
 /// pane, so on the common path (some pane alive) it stops at once.
 ///
 /// **A session with no panes counts as having no LIVE ones** (`[].all(..)` is vacuously
-/// true). So an EMPTY session does not keep the daemon alive: if the last pane elsewhere dies
-/// while a freshly-created, not-yet-populated session exists, the daemon still exits and that
-/// session is discarded. This matches the owner's "zero live panes ⇒ exit" policy (the
-/// daemon's lifetime is tied to live panes, not to session existence — session-close
-/// semantics are a later increment), but a client that `new_session`s should spawn into it
-/// promptly. The unscoped-default totality this rests on is noted on
+/// true), and that is the right reading AT REST: the daemon's lifetime is tied to live panes,
+/// not to session existence, so an idle empty session does not keep it up. It is the wrong
+/// reading MID-CREATE, which is what [`BirthPin`] exists for — a session whose first pane is
+/// still being spawned reads as empty here while a pane is genuinely on its way, and the claim
+/// is the only thing that can tell the two apart. So the birth check comes FIRST, under the same
+/// lock the pool collection takes. The unscoped-default totality the empty-session reading rests
+/// on is noted on
 /// [`SessionRegistry::default_session`](sprag_terminal::SessionRegistry::default_session).
 fn no_live_panes(registry: &Arc<Mutex<SessionRegistry>>) -> bool {
     let pools: Vec<Arc<Mutex<Workspace>>> = {
         let reg = lock(registry);
+        if reg.birth_in_flight() {
+            return false;
+        }
         reg.sessions()
             .iter()
             .flat_map(|session| session.windows().iter())
@@ -280,6 +284,67 @@ fn no_live_panes(registry: &Arc<Mutex<SessionRegistry>>) -> bool {
     pools
         .iter()
         .all(|pool| lock(pool).panes().iter().all(|pane| pane.pty().is_eof()))
+}
+
+/// A claim on the daemon's life, held for as long as a session exists without the pane that is
+/// meant to populate it — the "zero live panes ⇒ exit" policy's blind spot, closed.
+///
+/// The policy reads liveness off the pane pools, and a session between its create and its birth
+/// spawn has none. An unrelated last pane dying in that gap therefore found a registry that looked
+/// finished and ended the daemon under the client that had just asked for the session — which saw
+/// its next request fail on `UnexpectedEof` and had no way to tell that from a daemon that was
+/// never there. The gap is inherent to reading liveness off panes; the claim is the fact the panes
+/// cannot carry.
+///
+/// **Take it under the lock the create holds.** [`taken`](Self::taken) demands the guard rather
+/// than the `Mutex`, so "you already hold it" is a type-level requirement instead of a comment to
+/// forget — a claim taken after the lock is released re-opens the same gap, only narrower.
+///
+/// **Dropping it NUDGES the reaper**, and that half is the easy one to miss. While the claim stood,
+/// a death that found nothing live was answered "not yet", and no further death is coming: the
+/// pane that would have signalled is precisely the one that failed to be born. Without the nudge a
+/// daemon whose birth failed would sit forever with nothing running in it — trading a daemon that
+/// exits too eagerly for one that never exits at all.
+///
+/// **Never drop it while holding the registry lock**: `Drop` takes that lock to release the claim.
+pub struct BirthPin {
+    /// The registry the claim is recorded in — an `Arc` because `Drop` must re-lock it after the
+    /// create's own guard is long gone.
+    registry: Arc<Mutex<SessionRegistry>>,
+    /// The daemon's death-signal ([`spawn_reaper`]), fired on release so the reaper re-reads a
+    /// liveness question that may have been answered "not yet" while the claim stood. `None` off a
+    /// daemon (a GUI's in-process host, the tests), where nothing reaps and nothing needs waking.
+    ///
+    /// The same `Box` shape a pane's `on_exit` takes ([`pane_exit_hook`]), because it IS one more
+    /// death-signal: the release is the moment a birth stops being pending, which is exactly the
+    /// kind of event the reaper's one question is asked on.
+    signal: Option<Box<dyn Fn() + Send>>,
+}
+
+impl BirthPin {
+    /// Claim a birth on a registry the caller ALREADY holds the lock on, so the claim and the
+    /// create it covers are one critical section.
+    #[must_use]
+    pub fn taken(
+        registry: &Arc<Mutex<SessionRegistry>>,
+        held: &mut MutexGuard<'_, SessionRegistry>,
+        signal: Option<Box<dyn Fn() + Send>>,
+    ) -> Self {
+        held.pin_birth();
+        Self {
+            registry: Arc::clone(registry),
+            signal,
+        }
+    }
+}
+
+impl Drop for BirthPin {
+    fn drop(&mut self) {
+        lock(&self.registry).release_birth();
+        if let Some(signal) = &self.signal {
+            signal();
+        }
+    }
 }
 
 /// The methods the headless host answers: pure reads over the pane scene
@@ -786,6 +851,97 @@ mod tests {
         assert!(
             no_live_panes(host.registry()),
             "the sole pane's child exited, so nothing is live",
+        );
+    }
+
+    /// A claimed birth outranks an empty registry: the daemon does NOT conclude it is finished
+    /// while a session it just made is still waiting for its shell.
+    ///
+    /// This is the race the policy could not see. Liveness is read off the pane pools, and a
+    /// session between its create and its birth spawn has none — so an unrelated last pane dying
+    /// in that gap read as "everything is over" and ended the daemon under the client that had
+    /// just asked for the session. Driven against a registry whose sole pane HAS exited, which is
+    /// exactly the state the race presents.
+    ///
+    /// REVERT-PROOF: drop the `birth_in_flight` early return from `no_live_panes` and the first
+    /// assertion fails — the daemon calls itself finished with a birth still pending.
+    #[test]
+    fn a_pending_birth_keeps_the_daemon_alive() {
+        let host = Host::new((40, 6));
+        let id = host
+            .spawn(sh("exec true"), "true".into(), 40, 6, None, None)
+            .expect("spawn true");
+        wait_for_eof(&host, id);
+        assert!(
+            no_live_panes(host.registry()),
+            "precondition: with nothing claimed, the dead pane leaves nothing live",
+        );
+
+        let pin = {
+            let mut held = lock(host.registry());
+            BirthPin::taken(host.registry(), &mut held, None)
+        };
+        assert!(
+            !no_live_panes(host.registry()),
+            "a pane is on its way, so the daemon is not finished",
+        );
+
+        drop(pin);
+        assert!(
+            no_live_panes(host.registry()),
+            "and the claim releases — it holds the daemon open, it does not pin it open",
+        );
+    }
+
+    /// Releasing a claim NUDGES the reaper, so a birth that FAILED still lets an idle daemon go.
+    ///
+    /// The half that is easy to miss, and the one that would turn this fix into a worse bug: while
+    /// the claim stands, a death that finds nothing live is answered "not yet" — and no further
+    /// death is coming, because the pane that would have signalled is the one that failed to be
+    /// born. Without the nudge the daemon would sit forever with nothing running in it.
+    ///
+    /// REVERT-PROOF: drop the `signal()` call from `BirthPin::drop` and this times out at zero
+    /// fires — the daemon never learns the question changed.
+    #[test]
+    fn releasing_a_claim_re_asks_the_reaper() {
+        use std::sync::atomic::Ordering;
+
+        let host = Host::new((40, 6));
+        let (signal, fired) = recording_reaper(host.registry());
+        // A pane that dies WHILE the claim stands: the reaper scans, finds the claim, and holds off.
+        let pin = {
+            let mut held = lock(host.registry());
+            BirthPin::taken(host.registry(), &mut held, Some(pane_exit_hook(&signal)))
+        };
+        let dying = host
+            .spawn(
+                sh("exec true"),
+                "true".into(),
+                40,
+                6,
+                None,
+                Some(pane_exit_hook(&signal)),
+            )
+            .expect("spawn true");
+        wait_for_eof(&host, dying);
+        sleep(Duration::from_millis(200)); // ample for the reaper to have scanned, had it fired
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            0,
+            "the claim stands, so the death is answered `not yet`",
+        );
+
+        // The birth fails (nothing else spawns) and the claim falls. Nothing else will ever signal,
+        // so the release must — or this daemon is immortal.
+        drop(pin);
+        let start = Instant::now();
+        while fired.load(Ordering::SeqCst) == 0 && start.elapsed() < Duration::from_secs(5) {
+            sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            1,
+            "releasing the claim re-asks the question, and this time the answer is yes",
         );
     }
 

@@ -919,8 +919,20 @@ impl Host {
     ) -> Result<usize, SnapshotError> {
         // Build the new shape FIRST (fallible), so a bad snapshot leaves the boot registry intact.
         let (registry, plan) = SessionRegistry::from_snapshot(snapshot)?;
-        // Swap the CONTENTS, preserving the Arc the reaper already holds a clone of.
-        *lock(&self.registry) = registry;
+        // Swap the CONTENTS, preserving the Arc the reaper already holds a clone of, and claim the
+        // birth in the same breath. The restored registry describes sessions whose panes are still
+        // being spawned one at a time below, so it reads as "nothing live" for the whole loop: the
+        // first restored pane to die instantly (a shell that execs and exits) would otherwise end
+        // the daemon while the rest were still coming back. The claim is taken AFTER the swap
+        // because the swap replaces the whole registry, claims included. Released when `pin` falls
+        // at the end of this call, whatever the loop achieved. Its nudge is one more death-signal,
+        // so it comes from the same `on_exit` factory every restored pane's does — one extra `Box`,
+        // not a second notion of "tell the reaper".
+        let pin = {
+            let mut held = lock(&self.registry);
+            *held = registry;
+            crate::BirthPin::taken(&self.registry, &mut held, on_exit())
+        };
 
         let mut restored = 0usize;
         for pane in plan.panes {
@@ -971,6 +983,11 @@ impl Host {
                 ),
             }
         }
+        // Explicit, for the same reason `new_session`'s is: the claim's job is to outlive the loop
+        // above, and only a named drop says where it ends. Its nudge re-asks the liveness question
+        // once the restore is settled — so a restore where every pane failed still lets the daemon
+        // go, rather than leaving one running with nothing in it.
+        drop(pin);
         Ok(restored)
     }
 
@@ -1924,6 +1941,59 @@ mod tests {
                 .contains(&format!("output of pane {id}")),
             "the restored pane's screen: {:?}",
             restored.pane_full_text(id),
+        );
+    }
+
+    /// A restore CLAIMS the daemon's life for the whole re-spawn loop, and hands it back at the end.
+    ///
+    /// A restored registry describes sessions whose panes are being spawned one at a time, so for
+    /// the length of that loop it reads as "nothing live" — and the first restored pane to exit
+    /// instantly (a shell that execs and dies) would end the daemon while the rest were still
+    /// coming back. Same blind spot as a `new_session`'s empty window, same claim closes it.
+    ///
+    /// Observed from INSIDE the loop through the injected `history` closure, which runs once per
+    /// pane: that is deterministic, where racing a real early death against the remaining spawns
+    /// would not be. A test that cannot fail on demand is not evidence.
+    ///
+    /// REVERT-PROOF: drop the `BirthPin` in `restore` and the in-loop assertion fails on the first
+    /// pane.
+    #[test]
+    fn a_restore_claims_the_daemon_for_the_whole_respawn_loop() {
+        let live = Host::new((80, 24));
+        live.spawn(cat(), "sh".to_owned(), 80, 24, None, None)
+            .unwrap();
+        live.spawn(cat(), "sh".to_owned(), 80, 24, None, None)
+            .unwrap();
+        let snap = sprag_terminal::snapshot(live.registry());
+
+        let restored = Host::new((80, 24));
+        let seen = std::cell::Cell::new(0usize);
+        let n = restored
+            .restore(
+                snap,
+                &std::collections::HashSet::new(),
+                || None,
+                || None,
+                |_| {
+                    seen.set(seen.get() + 1);
+                    assert!(
+                        lock(restored.registry()).birth_in_flight(),
+                        "mid-loop, with panes still to come, the daemon is not finished",
+                    );
+                    Vec::new()
+                },
+            )
+            .expect("a valid snapshot restores");
+
+        assert_eq!(n, 2, "both panes came back");
+        assert_eq!(
+            seen.get(),
+            2,
+            "the claim was read on every pane, not just one"
+        );
+        assert!(
+            !lock(restored.registry()).birth_in_flight(),
+            "and the claim is handed back once the loop is done",
         );
     }
 
