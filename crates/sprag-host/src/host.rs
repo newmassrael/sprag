@@ -925,13 +925,19 @@ impl Host {
         // first restored pane to die instantly (a shell that execs and exits) would otherwise end
         // the daemon while the rest were still coming back. The claim is taken AFTER the swap
         // because the swap replaces the whole registry, claims included. Released when `pin` falls
-        // at the end of this call, whatever the loop achieved. Its nudge is one more death-signal,
-        // so it comes from the same `on_exit` factory every restored pane's does — one extra `Box`,
-        // not a second notion of "tell the reaper".
+        // at the end of this call, whatever the loop achieved.
+        //
+        // It releases WITHOUT a nudge, unlike `new_session`'s, and the asymmetry is the point. A
+        // create happens on a daemon that already had live panes, so the claim held off an exit
+        // that was genuinely due and the release must re-ask. A restore runs at BOOT, where zero
+        // panes is the daemon's legitimate resting state — a daemon with no snapshot at all boots
+        // exactly like this and waits for a client. Nudging here would make a restore that brought
+        // nothing back exit instead, so the client that just spawned this daemon would find it
+        // gone: the very failure the claim exists to prevent, moved one step earlier.
         let pin = {
             let mut held = lock(&self.registry);
             *held = registry;
-            crate::BirthPin::taken(&self.registry, &mut held, on_exit())
+            crate::BirthPin::taken(&self.registry, &mut held, None)
         };
 
         let mut restored = 0usize;
@@ -984,9 +990,7 @@ impl Host {
             }
         }
         // Explicit, for the same reason `new_session`'s is: the claim's job is to outlive the loop
-        // above, and only a named drop says where it ends. Its nudge re-asks the liveness question
-        // once the restore is settled — so a restore where every pane failed still lets the daemon
-        // go, rather than leaving one running with nothing in it.
+        // above, and only a named drop says where it ends.
         drop(pin);
         Ok(restored)
     }
@@ -1994,6 +1998,51 @@ mod tests {
         assert!(
             !lock(restored.registry()).birth_in_flight(),
             "and the claim is handed back once the loop is done",
+        );
+    }
+
+    /// A restore that brings NOTHING back leaves the daemon standing, waiting for a client.
+    ///
+    /// The other half of the claim, and the one that is easy to get backwards: zero panes at BOOT
+    /// is the daemon's legitimate resting state — a daemon with no snapshot at all boots exactly
+    /// like this. If releasing the claim re-asked the liveness question here, an empty restore
+    /// would end the daemon that a client had just spawned, which is the same failure the claim
+    /// exists to prevent moved one step earlier.
+    ///
+    /// REVERT-PROOF: pass `on_exit()` instead of `None` as the restore pin's signal and this fires.
+    #[test]
+    fn an_empty_restore_leaves_the_daemon_standing() {
+        // A snapshot of a registry that has a session and a window but no panes — the shape a
+        // daemon whose recorded panes all failed to come back is left holding.
+        let empty = sprag_terminal::snapshot(Host::new((80, 24)).registry());
+
+        let restored = Host::new((80, 24));
+        let fired = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&fired);
+        let signal = crate::spawn_reaper(
+            Arc::clone(restored.registry()),
+            Arc::new(move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+
+        let n = restored
+            .restore(
+                empty,
+                &std::collections::HashSet::new(),
+                || None,
+                || Some(crate::pane_exit_hook(&signal)),
+                |_| Vec::new(),
+            )
+            .expect("a valid snapshot restores");
+        assert_eq!(n, 0, "there was nothing to bring back");
+
+        // Ample for the reaper thread to have scanned, had anything woken it.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            0,
+            "an empty restore is a daemon waiting for a client, not one that has outlived its work",
         );
     }
 

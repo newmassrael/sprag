@@ -57,7 +57,6 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
@@ -132,17 +131,17 @@ fn main() -> io::Result<()> {
     // not up yet at boot). Deleting on it would let a TRANSIENT exit destroy the very session the
     // ring exists to preserve. So the daemon lifecycle PRESERVES the snapshot (the next daemon
     // restores it — the cmux-durable model); only an explicit `sprag kill-server --purge` destroys
-    // the saved workspace (CLI-side). The reaper also does NOT exit
-    // while a restore is IN FLIGHT (`restoring`): a re-run program that exits fast must not kill
-    // the daemon mid-loop, before the rest of the session is re-spawned.
-    let restoring = Arc::new(AtomicBool::new(false));
-    let reaper_restoring = Arc::clone(&restoring);
+    // the saved workspace (CLI-side).
+    //
+    // "Do not exit mid-restore" is NOT stated here. It used to be — an `AtomicBool` this closure
+    // read — and that was one binary teaching itself a rule the library also needed for a plain
+    // `new_session`. `Host::restore` now holds a `BirthPin` across its re-spawn loop, which says
+    // the same thing where every caller inherits it, and says the half the flag could not: a
+    // restore that spawned NOTHING releases the claim and re-asks, instead of leaving a daemon
+    // running with an empty registry.
     let on_pane_exit = spawn_reaper(
         Arc::clone(host.registry()),
         Arc::new(move || {
-            if reaper_restoring.load(Ordering::Acquire) {
-                return; // a restore is spawning panes — a mid-loop exit must not end the daemon
-            }
             let _ = signal_hook::low_level::raise(SIGTERM);
         }),
     );
@@ -162,9 +161,9 @@ fn main() -> io::Result<()> {
     let hist_limits = history_limits();
     if args.daemon {
         if let Some(snapshot) = load_snapshot(&snap_path) {
-            // Gate the reaper across the restore loop, then run it with the exact-command allowlist
-            // (read once from the environment here, injected so the host does not touch it).
-            restoring.store(true, Ordering::Release);
+            // Run it with the exact-command allowlist (read once from the environment here,
+            // injected so the host does not touch it). The reaper needs no gate from this side:
+            // `restore` claims the daemon's life for the length of its own loop.
             let outcome = host.restore(
                 snapshot,
                 &sprag_host::restore_allowlist(),
@@ -175,7 +174,6 @@ fn main() -> io::Result<()> {
                     _ => load_pane_history(&hist_dir, id),
                 },
             );
-            restoring.store(false, Ordering::Release);
             match outcome {
                 Ok(n) => tracing::info!(
                     target: "sprag_host::durability",

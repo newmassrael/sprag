@@ -300,11 +300,16 @@ fn no_live_panes(registry: &Arc<Mutex<SessionRegistry>>) -> bool {
 /// than the `Mutex`, so "you already hold it" is a type-level requirement instead of a comment to
 /// forget — a claim taken after the lock is released re-opens the same gap, only narrower.
 ///
-/// **Dropping it NUDGES the reaper**, and that half is the easy one to miss. While the claim stood,
-/// a death that found nothing live was answered "not yet", and no further death is coming: the
-/// pane that would have signalled is precisely the one that failed to be born. Without the nudge a
-/// daemon whose birth failed would sit forever with nothing running in it — trading a daemon that
-/// exits too eagerly for one that never exits at all.
+/// **Dropping it NUDGES the reaper** when the caller supplies a `signal`, and that half is the easy
+/// one to miss. While the claim stood, a death that found nothing live was answered "not yet", and
+/// no further death is coming: the pane that would have signalled is precisely the one that failed
+/// to be born. Without the nudge a daemon whose birth failed would sit forever with nothing running
+/// in it — trading a daemon that exits too eagerly for one that never exits at all.
+///
+/// A caller passes `None` when zero panes is a legitimate resting state at that moment rather than
+/// a daemon that has outlived its work — which is exactly the difference between a create (the
+/// daemon was serving; the claim deferred a due exit) and a boot-time restore (the daemon has never
+/// served; an empty one waits for a client, as a daemon with no snapshot does).
 ///
 /// **Never drop it while holding the registry lock**: `Drop` takes that lock to release the claim.
 pub struct BirthPin {
