@@ -254,6 +254,38 @@ impl SlotView {
     /// side-effect-free view pinion re-derives the enumeration from (its retry for a node this
     /// dispatch just made paintable) already paints the incoming panes, so the requested tag is one
     /// it can find. Without it the request is silently dropped whenever the target slot is a hole.
+    /// The BACKSTOP for the invariant [`reseed_pane_focus`](Self::reseed_pane_focus) keeps on the
+    /// ops: if NOTHING holds the keyboard and this client has a pane, ask for one. Called from the
+    /// pre-view frame hook, where the slot map is already current.
+    ///
+    /// **Its own reason to exist** is the pane-set change that happens on the PAINT path, where
+    /// there is no dispatch for an op-site re-seed to live in: the poll thread flags a session lost
+    /// out of band, and [`reconcile_lost_session`](Self::reconcile_lost_session) resolves it by
+    /// switching the client to another session — a total pane swap, reached through the host client
+    /// directly rather than through [`switch_session`](Self::switch_session). No shell change can
+    /// give that path a dispatch, so this is the only seam it has.
+    ///
+    /// **It also currently covers a path that is upstream's, not ours** (PINION-PR78): a palette
+    /// row closes its dialog in the same dispatch as the command it runs, and pinion's modal pop
+    /// RESTORES the tag focused when the palette opened — after the op's own request, because the
+    /// drain order is focus-then-modal — so a palette-driven window change ends with the ring on a
+    /// pane the incoming window does not have. Measured, not assumed: the live smoke's palette leg
+    /// fails without this and passes with it. That coverage is symptom relief and should retire
+    /// when the pin carrying PR-78 lands; this method stays for the paragraph above.
+    ///
+    /// The cost is the ONE input event a request written from the paint path cannot beat: pinion
+    /// drains the mailbox at the end of a DISPATCH, never after a paint, so the ring lands on the
+    /// next event to arrive — a keystroke, a pointer move, an RPC call — instead of before it. On
+    /// every path sprag CAN reach in-dispatch the op re-seeds instead and nothing is lost, which is
+    /// why this is the backstop and not the mechanism.
+    pub(crate) fn reseed_pane_focus_if_idle(&self) {
+        if pinion_core::focus_state::focused().is_none()
+            && let Some(slot) = self.occupied_slots().first().copied()
+        {
+            pinion_core::focus_request::request(crate::terminal::pane_tag(slot));
+        }
+    }
+
     fn reseed_pane_focus(&self) {
         self.remap();
         let ring = match pinion_core::focus_state::focused() {

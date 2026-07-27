@@ -550,6 +550,29 @@ fn check_focus_survives_a_window_change(smoke: &mut Smoke, report: &mut Report) 
         &format!("and coming home leaves a live pane holding it too ({back:?})"),
         back.is_ok(),
     );
+
+    // The same window change, driven from the PALETTE — the other real user path, and the one with
+    // a modal in it. A palette row closes its dialog in the same dispatch as the command, and
+    // pinion's modal pop RESTORES the tag that was focused when the palette opened; the drain order
+    // is focus-then-modal, so that restore lands after the op's own request whatever the op asked
+    // for. Asserted rather than reasoned about, because "the shell will override it" is exactly the
+    // kind of claim that reads as certain and turns out to depend on which arm of `focus_set` ran.
+    report.check(
+        &format!("the ring parks on pane {parked} again for the palette path"),
+        smoke.focus_pane(parked),
+    );
+    if !smoke.run_palette_row("New window", report) {
+        return;
+    }
+    let after = smoke.wait_for(|s| {
+        let focused = s.focused()?;
+        let index: usize = focused.strip_prefix("sprag_gui.pane.")?.parse().ok()?;
+        s.docked_panes().contains(&index).then_some(focused)
+    });
+    report.check(
+        &format!("a live pane holds the keyboard after a PALETTE window change ({after:?})"),
+        after.is_ok(),
+    );
 }
 
 /// The last unproven step of the destroy arc. The poll thread's classification of a dead session was
