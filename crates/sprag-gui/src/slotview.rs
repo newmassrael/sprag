@@ -65,6 +65,16 @@ pub(crate) struct SlotView {
     /// [`RefCell`] because [`reconcile`](Self::reconcile) mutates the mapping each frame
     /// through the shared `Rc<TerminalView>` (UI-thread only — see the module docs).
     slots: RefCell<Vec<Option<PaneId>>>,
+    /// Slots freed by every [`remap`](Self::remap) since the last [`reconcile`](Self::reconcile)
+    /// claimed them, ascending and without repeats.
+    ///
+    /// The delta is ACCUMULATED rather than returned by whoever happens to re-map, because the two
+    /// are separate concerns with separate owners: any caller may need the map current (a window op
+    /// does, before it can name the slot the new pane will use), but only the pre-view frame hook
+    /// owns what FREEING a slot entails — dropping its floating window, resetting its per-slot
+    /// reactive state. Accumulating means an extra re-map can never swallow a cleanup the way a
+    /// second `reconcile` used to; the hook still sees every slot that freed.
+    freed: RefCell<Vec<usize>>,
 }
 
 impl SlotView {
@@ -74,18 +84,35 @@ impl SlotView {
         let view = Self {
             host,
             slots: RefCell::new((0..MAX_PANES).map(|_| None).collect()),
+            freed: RefCell::new(Vec::new()),
         };
         let _boot = view.reconcile(); // boot is all-added, no frees; nothing to reset yet
         view
     }
 
+    /// Re-map slots to the host's current pane set and CLAIM the accumulated membership delta —
+    /// what the pre-view frame hook calls, because it is the one that owns freeing a slot.
+    ///
+    /// The returned [`SlotDelta`] covers every slot freed since the last claim, not merely the ones
+    /// this call freed, so a [`remap`](Self::remap) between two frames cannot lose a cleanup.
+    pub(crate) fn reconcile(&self) -> SlotDelta {
+        self.remap();
+        SlotDelta {
+            freed: std::mem::take(&mut self.freed.borrow_mut()),
+        }
+    }
+
     /// Re-map slots to the host's current pane set — the ONE place slot membership
     /// changes. Frees the slot of every mapped pane no longer present, allocates the
-    /// lowest free slot to each new host pane, and returns the [`SlotDelta`] so the caller
-    /// resets each freed slot's per-slot GUI state. No IO: the host owns the frame data,
+    /// lowest free slot to each new host pane, and RECORDS the freed slots for the next
+    /// [`reconcile`](Self::reconcile) to claim. No IO: the host owns the frame data,
     /// this owns only the mapping. `&self` (interior-mutable) so it runs through the shared
     /// `Rc<TerminalView>`.
-    pub(crate) fn reconcile(&self) -> SlotDelta {
+    ///
+    /// Separate from `reconcile` so a caller that needs the map CURRENT — a window op, which
+    /// cannot name the slot the incoming pane will take until the map has moved — does not have to
+    /// claim a delta it has no business acting on.
+    pub(crate) fn remap(&self) {
         let host_ids = self.host.pane_ids();
         let mut slots = self.slots.borrow_mut();
         let (freed, adds, overflow) = plan_slots(&slots, &host_ids);
@@ -103,7 +130,12 @@ impl SlotView {
                 "host pane set exceeds the slot cap; extra panes not shown",
             );
         }
-        SlotDelta { freed }
+        if !freed.is_empty() {
+            let mut pending = self.freed.borrow_mut();
+            pending.extend(freed);
+            pending.sort_unstable();
+            pending.dedup();
+        }
     }
 
     /// The occupied display slots, ascending — the set consumers ITERATE instead of
@@ -184,18 +216,53 @@ impl SlotView {
     /// Make the window named `name` current (tmux `select-window`) — a tab click.
     pub(crate) fn select_window(&self, name: &str) {
         self.host.select_window(name);
+        self.reseed_pane_focus();
     }
 
     /// Create + select a window, born with a shell (tmux `new-window`), returning its name — the
     /// "+" tab.
     pub(crate) fn new_window(&self) -> String {
-        self.host.new_window()
+        let name = self.host.new_window();
+        self.reseed_pane_focus();
+        name
     }
 
     /// Kill the window named `name` (tmux `kill-window`) — a tab's close affordance. The
     /// session's last window ends the session.
     pub(crate) fn kill_window(&self, name: &str) {
         self.host.kill_window(name);
+        self.reseed_pane_focus();
+    }
+
+    /// Leave the keyboard on a live pane after an op that may have REPLACED this client's pane set.
+    ///
+    /// A window's panes belong to that window alone, so selecting another one swaps every pane this
+    /// client shows — and pinion drops the focus ring the moment the focused tag stops being
+    /// painted (`FocusManager::update_focusable_tags`), with nothing on the window path asking for
+    /// it back. The window then arrives looking perfectly normal and simply does not answer the
+    /// keyboard until the user clicks a pane. tmux always has an active pane; so must this.
+    ///
+    /// **Why on the ops and not on the per-frame reconcile.** pinion drains a focus request at the
+    /// end of the DISPATCH that wrote it, so a request written from the paint path sits in the
+    /// mailbox until the next input arrives — long enough to swallow the user's first keystroke,
+    /// which is the bug in a quieter costume. Every caller of these ops is inside a dispatch (a tab
+    /// click, a palette row, a keyboard chord), so a request made here is applied before the next
+    /// frame.
+    ///
+    /// **Why [`remap`](Self::remap) first.** pinion resolves a focus request against the painted
+    /// scene, and the paint that adopts the new pane set has not run. Re-mapping means the
+    /// side-effect-free view pinion re-derives the enumeration from (its retry for a node this
+    /// dispatch just made paintable) already paints the incoming panes, so the requested tag is one
+    /// it can find. Without it the request is silently dropped whenever the target slot is a hole.
+    fn reseed_pane_focus(&self) {
+        self.remap();
+        let ring = match pinion_core::focus_state::focused() {
+            None => Ring::Nowhere,
+            Some(tag) => crate::terminal::pane_index_of(&tag).map_or(Ring::Elsewhere, Ring::Pane),
+        };
+        if let Some(slot) = reseed_target(ring, &self.occupied_slots()) {
+            pinion_core::focus_request::request(crate::terminal::pane_tag(slot));
+        }
     }
 
     /// Whether slot `slot`'s child has EXITED — the pane is still here, nothing is running in it.
@@ -305,12 +372,15 @@ impl SlotView {
     /// row click.
     pub(crate) fn switch_session(&self, name: &str) {
         self.host.switch_session(name);
+        self.reseed_pane_focus();
     }
 
     /// Create a fresh session and switch to it (tmux `new-session`), returning its name — the "+"
     /// of the session sidebar.
     pub(crate) fn new_session(&self) -> String {
-        self.host.new_session()
+        let name = self.host.new_session();
+        self.reseed_pane_focus();
+        name
     }
 
     /// Kill the session named `name` (tmux `kill-session`) — a sidebar row's "×" close affordance.
@@ -318,6 +388,7 @@ impl SlotView {
     /// one serving. NOT slot-mapped: sessions are addressed by NAME, like the other session ops.
     pub(crate) fn kill_session(&self, name: &str) {
         self.host.kill_session(name);
+        self.reseed_pane_focus();
     }
 
     /// Resolve a session lost OUT OF BAND (killed by another client / the CLI) against the
@@ -333,6 +404,7 @@ impl SlotView {
     /// in-process host (no visit history).
     pub(crate) fn switch_to_last_session(&self) {
         self.host.switch_to_last_session();
+        self.reseed_pane_focus();
     }
 
     /// Slot `slot`'s cell DATA at `offset_lines` (a `1x1` placeholder for a hole).
@@ -517,6 +589,38 @@ impl SlotView {
     }
 }
 
+/// Where this client's keyboard focus ring sits when a window / session op finishes — the input to
+/// [`reseed_target`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ring {
+    /// On nothing at all: pinion dropped it when the tag it was on stopped being painted, or it was
+    /// never seeded (a client that has not been typed into yet).
+    Nowhere,
+    /// On the pane tile at this display slot.
+    Pane(usize),
+    /// On some other widget of this client — the find bar's field, the palette's query, the session
+    /// rail. A pane is not what has the keyboard.
+    Elsewhere,
+}
+
+/// The display slot to RE-SEED the focus ring on after an op that may have replaced this client's
+/// pane set, or `None` to leave the ring where it is.
+///
+/// `occupied` is the slot set the op left behind (ascending), so the answer is the client's first
+/// live pane — the seat a swapped-in window fills first, and the same one the boot seed uses.
+///
+/// Re-seeds in exactly two cases: the ring is on NOTHING (pinion dropped it, or nothing ever
+/// seeded it), or it was on a pane the op did not leave standing. It deliberately does NOT re-seed
+/// when the ring sits `Elsewhere` — switching windows is no reason to yank the caret out of the
+/// find bar mid-search, and a client with no panes left has nothing to offer either.
+fn reseed_target(ring: Ring, occupied: &[usize]) -> Option<usize> {
+    match ring {
+        Ring::Elsewhere => None,
+        Ring::Pane(slot) if occupied.contains(&slot) => None,
+        Ring::Nowhere | Ring::Pane(_) => occupied.first().copied(),
+    }
+}
+
 /// The PURE slot-allocation plan behind [`SlotView::reconcile`] (so the allocator is
 /// unit-tested without a host): from each slot's current occupant (`None` = a hole) and
 /// the host's live id list (host order), compute the slots to FREE (occupant vanished),
@@ -625,6 +729,72 @@ mod tests {
             vec![pid(999)],
             "the specific overflowed id is reported"
         );
+    }
+
+    #[test]
+    fn a_remap_between_frames_does_not_swallow_the_freed_slot() {
+        // The delta belongs to whoever OWNS freeing a slot (dropping its floating window, resetting
+        // its per-slot state), not to whoever happened to move the map. A window op re-maps mid
+        // dispatch so it can name the incoming pane's slot; the frame hook must still be told what
+        // freed, or a torn-off window outlives the pane it showed.
+        //
+        // REVERT-PROOF: have `reconcile` compute its own frees instead of claiming the accumulator
+        // and this reports an empty delta — the shape the bug takes.
+        let ids = std::rc::Rc::new(RefCell::new(vec![pid(10), pid(11)]));
+        let view = view_over(&ids);
+        assert_eq!(view.occupied_slots(), vec![0, 1]);
+
+        *ids.borrow_mut() = vec![pid(10)];
+        view.remap(); // the window op's re-map — it claims nothing
+        assert_eq!(view.occupied_slots(), vec![0], "the map moved");
+
+        let delta = view.reconcile(); // the frame hook, one paint later
+        assert_eq!(
+            delta.freed,
+            vec![1],
+            "the frame hook is still told slot 1 freed",
+        );
+        assert!(
+            view.reconcile().freed.is_empty(),
+            "and claiming it once is enough — a steady frame reports nothing",
+        );
+    }
+
+    #[test]
+    fn a_swapped_out_pane_hands_the_ring_to_the_first_live_one() {
+        // The window-change case: the ring was on slot 2, whose pane left with its window, and the
+        // incoming window filled slots 0..1. The ring goes to the first live pane, not nowhere.
+        assert_eq!(reseed_target(Ring::Pane(2), &[0, 1]), Some(0));
+    }
+
+    #[test]
+    fn a_ring_on_nothing_is_seeded() {
+        // The rescue case, and the reason the predicate reads the ring rather than only comparing
+        // pane sets: pinion has ALREADY dropped focus by the time some paths get here, so there is
+        // no pane left to notice the loss of.
+        assert_eq!(reseed_target(Ring::Nowhere, &[1, 3]), Some(1));
+    }
+
+    #[test]
+    fn a_surviving_pane_keeps_the_ring() {
+        // Killing some OTHER window leaves this client's panes alone; moving the ring off the pane
+        // the user is typing in would be a bug of its own.
+        assert_eq!(reseed_target(Ring::Pane(1), &[0, 1, 2]), None);
+    }
+
+    #[test]
+    fn the_find_bar_keeps_the_ring_through_a_window_change() {
+        // `Elsewhere` is not a pane that vanished — it is the find field, the palette query, the
+        // session rail. Seeding here would yank the caret out mid-search.
+        assert_eq!(reseed_target(Ring::Elsewhere, &[0, 1]), None);
+    }
+
+    #[test]
+    fn a_client_with_no_panes_left_seeds_nothing() {
+        // The last window of a session closing: there is no pane to hand the keyboard to, and
+        // naming one anyway would request a tag nothing paints.
+        assert_eq!(reseed_target(Ring::Nowhere, &[]), None);
+        assert_eq!(reseed_target(Ring::Pane(0), &[]), None);
     }
 
     /// A [`HostClient`] whose pane-id list the test controls (shared via `Rc<RefCell<..>>`),

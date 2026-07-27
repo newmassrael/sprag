@@ -66,6 +66,7 @@ fn main() -> ExitCode {
             // focused and every pane-scoped row stops being offered. This check needs a focused
             // pane, so it has to run while the focus stack is still clean.
             check_the_sole_docked_pane_locks_its_tear_off(&mut smoke, &mut report);
+            check_focus_survives_a_window_change(&mut smoke, &mut report);
             check_a_pane_can_be_created_and_closed(&mut smoke, &mut report);
             check_a_window_closes_under_a_live_client(&mut smoke, &mut report);
             // LAST, and it must stay last: it destroys the session this client is attached to, so
@@ -300,10 +301,13 @@ fn check_a_pane_can_be_created_and_closed(smoke: &mut Smoke, report: &mut Report
 /// the client shows rather than re-deriving the host's naming scheme — which is the thing a smoke is
 /// for, and the thing a re-derivation would quietly get wrong.
 fn check_a_window_closes_under_a_live_client(smoke: &mut Smoke, report: &mut Report) {
+    // Whatever the strip holds NOW is the baseline — the focus check above deliberately leaves the
+    // window it opened standing, so a hard-coded count here would be asserting the order of the
+    // checks rather than anything about windows.
     let before = smoke.tabs();
     report.check(
-        &format!("the strip starts with one tab ({before:?})"),
-        before.len() == 1,
+        &format!("the strip has a tab to start from ({before:?})"),
+        !before.is_empty(),
     );
 
     if !smoke.run_palette_row("New window", report) {
@@ -455,6 +459,99 @@ fn check_the_sole_docked_pane_locks_its_tear_off(smoke: &mut Smoke, report: &mut
     report.check("re-docking lifts the lock again", lifted);
 }
 
+/// A window change leaves a PANE holding the keyboard, instead of leaving the user with nothing to
+/// type into.
+///
+/// The panes of a window belong to that window alone, so selecting another one replaces this
+/// client's whole pane set — and pinion drops focus to `None` the moment the focused tag stops being
+/// painted. Nothing on the window path asked for it back, so after a switch every keystroke went
+/// nowhere until the user clicked a pane. The symptom does not name its cause: the window arrives
+/// looking perfectly normal and simply does not answer the keyboard.
+///
+/// The ring is parked on the HIGHEST docked slot on purpose. A swap refills slots from 0, so a ring
+/// left on slot 0 would land on the new window's first pane by coincidence and prove nothing; only a
+/// slot the new window does not reach can tell a real re-seed from an accident.
+///
+/// Driven through the strip's "+" BUTTON rather than the palette's `New window` row, and that is the
+/// difference between measuring this and measuring something else: a palette row closes a modal in
+/// the same dispatch, and the modal's focus RESTORE (pinion re-focuses the invoker on pop) would
+/// decide the outcome instead of the window op. The button is the same user gesture with none of
+/// that in the way.
+///
+/// Both directions are asserted, because they are not the same claim: leaving a window is a swap
+/// onto a NEWBORN pane set, while coming back is a swap onto one whose slots this client has
+/// already used.
+///
+/// It leaves the window it created standing (killing it would need the confirmation whose modal
+/// leak, PINION-PR77, ends every later check's ability to focus anything), which is why the check
+/// below reads its tab count instead of assuming one.
+fn check_focus_survives_a_window_change(smoke: &mut Smoke, report: &mut Report) {
+    let docked = smoke.docked_panes();
+    let Some(&parked) = docked.last() else {
+        report.check("a docked pane to park the focus ring on", false);
+        return;
+    };
+    report.check(
+        &format!("the ring parks on the highest docked pane (pane {parked} of {docked:?})"),
+        smoke.focus_pane(parked) && parked > 0,
+    );
+    let home = smoke.tabs();
+
+    report.check(
+        "the strip's + button activates",
+        smoke
+            .invoke(NEW_WINDOW_TAG, "send", json!("KeyboardActivate"))
+            .is_ok(),
+    );
+    let Ok(grown) = smoke.wait_for(|s| {
+        let tabs = s.tabs();
+        (tabs.len() > home.len()).then_some(tabs)
+    }) else {
+        report.check("the + button opened a window", false);
+        return;
+    };
+
+    // THE assertion. Waited on rather than read once: the swap lands over several frames (the op,
+    // the slot reconcile, the paint that re-enumerates), and reading between them would report a
+    // transient as the verdict.
+    let landed = smoke.wait_for(|s| {
+        let focused = s.focused()?;
+        let index: usize = focused.strip_prefix("sprag_gui.pane.")?.parse().ok()?;
+        s.docked_panes().contains(&index).then_some(focused)
+    });
+    report.check(
+        &format!("a live pane still holds the keyboard in the new window ({landed:?})"),
+        landed.is_ok(),
+    );
+
+    // ...and coming back. The home tab is found by NAME in the grown strip, so this selects the
+    // window it means rather than a position that moved when the new tab appeared.
+    let Some(at) = grown.iter().position(|name| home.first() == Some(name)) else {
+        report.check("the home window still has a tab to come back to", false);
+        return;
+    };
+    report.check(
+        &format!("the home tab activates ({at})"),
+        smoke
+            .invoke(
+                &format!("sprag_gui.wtab.{at}"),
+                "send",
+                json!("KeyboardActivate"),
+            )
+            .is_ok(),
+    );
+    let back = smoke.wait_for(|s| {
+        let focused = s.focused()?;
+        let index: usize = focused.strip_prefix("sprag_gui.pane.")?.parse().ok()?;
+        (s.docked_panes().contains(&index) && s.docked_panes().len() == docked.len())
+            .then_some(focused)
+    });
+    report.check(
+        &format!("and coming home leaves a live pane holding it too ({back:?})"),
+        back.is_ok(),
+    );
+}
+
 /// The last unproven step of the destroy arc. The poll thread's classification of a dead session was
 /// unit-tested against a fake socket; that a REAL rendering process, mid-frame, actually leaves — and
 /// does not sit painting a session that no longer exists — is a fact only a live client can settle.
@@ -517,6 +614,9 @@ const ROW_H: u32 = 28;
 const ROW_GAP: u32 = 4;
 /// The most rows the palette paints at once.
 const MAX_VISIBLE_ROWS: usize = 10;
+/// The window strip's "+" (new window) button tag — the same gesture a user clicks, addressed
+/// symbolically because a synthesised pointer coordinate never lands headless.
+const NEW_WINDOW_TAG: &str = "sprag_gui.wnew";
 
 // ─── The harness ─────────────────────────────────────────────────────────────────────────────────
 
