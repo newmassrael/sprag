@@ -62,6 +62,10 @@ fn main() -> ExitCode {
             check_the_palette_opens_over_rpc(&mut smoke, &mut report);
             check_a_command_runs_from_a_palette_row(&mut smoke, &mut report);
             check_a_pane_can_be_created_and_closed(&mut smoke, &mut report);
+            check_a_window_closes_under_a_live_client(&mut smoke, &mut report);
+            // LAST, and it must stay last: it destroys the session this client is attached to, so
+            // the client leaves and every check after it would be asserting against a dead socket.
+            check_killing_the_attached_session_ends_the_client(&mut smoke, &mut report);
         }
         Err(error) => {
             eprintln!("FAIL  the smoke could not boot: {error}");
@@ -271,6 +275,122 @@ fn check_a_pane_can_be_created_and_closed(smoke: &mut Smoke, report: &mut Report
     );
 }
 
+/// A WINDOW opening and closing reaches the tab strip a live client is painting.
+///
+/// The window vertical was wire-proven long before this: the registry, the wire actions and the CLI
+/// all had tests. What none of them could answer is whether an ATTACHED, rendering client notices —
+/// the client mirrors the window list on a poll, and a mirror that failed to re-adopt it would leave
+/// a tab for a window that no longer exists, with every test still green. Only a real GUI painting
+/// real tabs closes that.
+///
+/// The new window's name is DISCOVERED from the strip rather than predicted, so this asserts what
+/// the client shows rather than re-deriving the host's naming scheme — which is the thing a smoke is
+/// for, and the thing a re-derivation would quietly get wrong.
+fn check_a_window_closes_under_a_live_client(smoke: &mut Smoke, report: &mut Report) {
+    let before = smoke.tabs();
+    report.check(
+        &format!("the strip starts with one tab ({before:?})"),
+        before.len() == 1,
+    );
+
+    if !smoke.run_palette_row("New window", report) {
+        return;
+    }
+    let Ok(grown) = smoke.wait_for(|s| {
+        let tabs = s.tabs();
+        (tabs.len() > before.len()).then_some(tabs)
+    }) else {
+        report.check("the new window reaches the client's tab strip", false);
+        return;
+    };
+    report.check(
+        &format!("the new window painted its own tab ({grown:?})"),
+        true,
+    );
+
+    let Some(born) = grown.iter().find(|name| !before.contains(name)).cloned() else {
+        report.check("the new tab carries a name of its own", false);
+        return;
+    };
+
+    // Kill it BY NAME through the palette — the same destructive arc a pane kill takes, so the
+    // confirmation is proven for a window target too and not just assumed to behave alike.
+    if !smoke.run_palette_row(&format!("Kill window {born}"), report) {
+        return;
+    }
+    report.check(
+        "killing a window asks first",
+        smoke
+            .query("sprag_confirm", "prompt")
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .is_some_and(|prompt| prompt.contains(&born)),
+    );
+    report.check(
+        "and nothing closed by the asking",
+        smoke.tabs().len() == grown.len(),
+    );
+    report.check(
+        "the prompt is answerable over RPC",
+        smoke.invoke("sprag_confirm", "accept", Value::Null).is_ok(),
+    );
+
+    let shrunk = smoke.wait_for(|s| {
+        let tabs = s.tabs();
+        (!tabs.contains(&born)).then_some(tabs)
+    });
+    report.check(
+        &format!("the closed window left the live client's strip ({shrunk:?})"),
+        shrunk.is_ok_and(|tabs| tabs == before),
+    );
+}
+
+/// Killing the session this client is ATTACHED to ends the client — tmux's rule that a client leaves
+/// when it can no longer serve its session, under the default `detach-on-destroy`.
+///
+/// The last unproven step of the destroy arc. The poll thread's classification of a dead session was
+/// unit-tested against a fake socket; that a REAL rendering process, mid-frame, actually leaves — and
+/// does not sit painting a session that no longer exists — is a fact only a live client can settle.
+///
+/// The assertion is on the PROCESS, deliberately. There is no pixel to read here: the correct
+/// outcome is that there are no more pixels, and a window that lingers empty would look identical to
+/// one still working over any scene query this tool could make.
+///
+/// The session is DISCOVERED ([`Smoke::attached_session`]), never assumed to be the first one the
+/// palette lists — the daemon has its own boot session and a GUI gets a second, so the first
+/// `Kill session` row belongs to somebody else. That mistake is a convincing false alarm: the
+/// client keeps running, exactly as it should, and the check calls it a failure to detach.
+fn check_killing_the_attached_session_ends_the_client(smoke: &mut Smoke, report: &mut Report) {
+    let Some(mine) = smoke.attached_session() else {
+        report.check("the client says which session it is attached to", false);
+        return;
+    };
+    // `run_palette_row` already reports whether the row was offered and whether it ran, so the
+    // discovered name needs no assertion of its own beyond appearing in those lines.
+    if !smoke.run_palette_row(&format!("Kill session {mine}"), report) {
+        return;
+    }
+    report.check(
+        "killing a session asks first, like every other destructive row",
+        smoke
+            .query("sprag_confirm", "prompt")
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .is_some_and(|prompt| prompt.contains('?')),
+    );
+    report.check(
+        "the client is still alive while the prompt stands",
+        !smoke.gui_exited(),
+    );
+
+    // From here the socket is expected to die, so nothing may assert through it again.
+    let _ = smoke.invoke("sprag_confirm", "accept", Value::Null);
+    report.check(
+        "the client LEFT when its session was destroyed",
+        smoke.wait_for(|s| s.gui_exited().then_some(())).is_ok(),
+    );
+}
+
 // ─── The paint constants the assertions predict ──────────────────────────────────────────────────
 //
 // Spelled here rather than imported: sprag-gui is a BIN crate with no library to import them from,
@@ -433,6 +553,45 @@ impl Smoke {
                     .is_some_and(|rest| rest.chars().all(|c| c.is_ascii_digit()))
             })
             .count()
+    }
+
+    /// The window names the tab strip is PAINTING, in tab order.
+    ///
+    /// Read off the tabs' own text rather than asked of the host: the claim under test is that the
+    /// client's mirror reaches its pixels, and querying the host would answer with the very fact the
+    /// mirror might have failed to adopt.
+    fn tabs(&mut self) -> Vec<String> {
+        let painted = self.tags();
+        (0..)
+            .map_while(|i| painted.get(&format!("sprag_gui.wtab.{i}")))
+            .filter_map(|node| node.text.first().cloned())
+            .collect()
+    }
+
+    /// Whether the GUI process has exited, without blocking on it.
+    fn gui_exited(&mut self) -> bool {
+        matches!(self.gui.try_wait(), Ok(Some(_)))
+    }
+
+    /// The name of the session this client is ATTACHED to.
+    ///
+    /// Read off the session rail's WAI-ARIA tablist — the tab carrying `selected` is the attached
+    /// one — because the client is the only thing that knows. A daemon serves several sessions at
+    /// once and a GUI gets its OWN, so the daemon's boot session is emphatically not it: pressing
+    /// `Kill session 0` here kills a session this client never had, the client rightly keeps
+    /// running, and a check that assumed otherwise reports a bug that is its own.
+    ///
+    /// The tab's accessible name leads with the session name and continues into its window count
+    /// and directory (`1, 1 window, sprag`), so the name is the part before the first comma.
+    fn attached_session(&mut self) -> Option<String> {
+        self.access()
+            .into_iter()
+            .filter(|(tag, _)| tag.starts_with("sprag_gui.stab."))
+            .find(|(_, node)| node["selected"] == json!(true))
+            .and_then(|(_, node)| {
+                let name = node["name"].as_str()?;
+                Some(name.split(',').next().unwrap_or(name).trim().to_owned())
+            })
     }
 
     /// Open the palette, put the cursor on the row titled `title`, and activate it.
