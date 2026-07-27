@@ -354,6 +354,19 @@ const PROJECT_ARGS: &[SchemaArg] = &[SchemaArg::open("pane", "int")];
 pub const PROJECT_FIELD: SchemaField =
     SchemaField::parametric("project.<pane>", "object", PROJECT_ARGS);
 
+/// The mux control external query slot: the USER's own declared commands ([`crate::UserConfig`]),
+/// as `{path, commands:[{name,title,run}]}`; `{error}` when that config is unusable, and `null` when
+/// the user has written none.
+///
+/// A SIBLING of [`PROJECT_FIELD`], deliberately not folded into it. The two answer different
+/// questions with different lifetimes — one is a function of a pane's working directory, the other of
+/// the host's user — and a pane in NO project must still be offered the user's commands, which a
+/// pane-parametric slot returning `null` could never do. Keeping them apart is also what lets a
+/// client report WHICH config has a typo when both are broken.
+///
+/// Read ON DEMAND (a palette opening), never per frame: like the project read, it touches the disk.
+pub const GLOBAL_COMMANDS_SLOT: &str = "commands";
+
 /// The `project.<pane>` query path for pane `id` — the ONE place that name is built, so a client and
 /// the host cannot spell it differently.
 #[must_use]

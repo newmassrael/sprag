@@ -72,10 +72,11 @@ use crate::scope::SessionScope;
 // The mux control action names + query slots are the shared wire ABI vocabulary
 // ([`crate::wire`]) — the SAME consts a client addresses for pane lifecycle.
 use crate::wire::{
-    BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DROP_FILE_ACTION, JOIN_PANE_ACTION,
-    KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION, NEW_WINDOW_ACTION,
-    PANES_SLOT, PROJECT_FIELD, RENAME_WINDOW_ACTION, RESIZE_ACTION, SELECT_WINDOW_ACTION,
-    SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, WINDOWS_SLOT,
+    BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DROP_FILE_ACTION, GLOBAL_COMMANDS_SLOT,
+    JOIN_PANE_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION,
+    NEW_WINDOW_ACTION, PANES_SLOT, PROJECT_FIELD, RENAME_WINDOW_ACTION, RESIZE_ACTION,
+    SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION,
+    WINDOWS_SLOT,
 };
 
 /// The mux-management engine `External`: a control surface over the shared
@@ -749,6 +750,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                     SchemaField::new(SESSIONS_SLOT, "list"),
                     SchemaField::new(CLIENTS_SLOT, "list"),
                     SchemaField::new(WINDOWS_SLOT, "list"),
+                    SchemaField::new(GLOBAL_COMMANDS_SLOT, "object"),
                     PROJECT_FIELD,
                 ]
             },
@@ -952,6 +954,10 @@ impl ExternalIntrospect for WorkspaceExternal {
                     }
                 }
             }
+            // The USER's own declared commands — no pane, no session, no scope: this answer is the
+            // same for every request the host serves, which is exactly why it is a fixed slot beside
+            // the parametric project one rather than a variant of it.
+            GLOBAL_COMMANDS_SLOT => Some(global_commands_value()),
             // The project governing ONE pane: the commands its `.sprag.toml` declares. Parametric,
             // so it is matched after the fixed slots above (`project.<pane>`, see `PROJECT_FIELD`
             // for why this lives on the mux external rather than the pane's own).
@@ -1032,6 +1038,30 @@ fn project_value(workspace: &Arc<Mutex<Workspace>>, pane: PaneId) -> IntrospectV
             Ok(json) => IntrospectValue::Json(json),
             Err(error) => {
                 tracing::error!(target: "sprag_host", %error, "project failed to serialise");
+                IntrospectValue::Null
+            }
+        },
+        Some(Err(error)) => IntrospectValue::Json(serde_json::json!({
+            "error": error.to_string(),
+        })),
+    }
+}
+
+/// Serialise the USER's declared commands for the wire — the same three-way answer
+/// [`project_value`] gives, over the user's config instead of a pane's project: `null` for "no
+/// config written", an `{error}` object for one that cannot be used, and the config itself
+/// otherwise.
+///
+/// The error is RENDERED here rather than sent structurally, exactly as the project's is, because
+/// what a client needs is the sentence to show — and rendering it host-side is what makes it name
+/// `config.toml` ([`crate::ConfigError`]) rather than whichever file the client guessed.
+fn global_commands_value() -> IntrospectValue {
+    match crate::config::load() {
+        None => IntrospectValue::Null,
+        Some(Ok(config)) => match serde_json::to_value(&config) {
+            Ok(json) => IntrospectValue::Json(json),
+            Err(error) => {
+                tracing::error!(target: "sprag_host", %error, "user config failed to serialise");
                 IntrospectValue::Null
             }
         },

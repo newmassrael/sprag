@@ -82,15 +82,16 @@ use pinion_core::{GridBuffer, QuitSink};
 use serde_json::{Value, json};
 use sprag_host::wire::{
     BREAK_PANE_ACTION, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT, CLOSE_ACTION,
-    DROP_FILE_ACTION, FOCUS_ACTION, FULL_TEXT_SLOT, JOIN_PANE_ACTION, KEY_ACTION,
-    KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, MOUSE_ACTION, NEW_SESSION_ACTION,
-    NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, PROMPT_MARKS_SLOT, RESIZE_ACTION,
-    SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION,
-    TEXT_ACTION, WINDOWS_SLOT, cells_slot_at, find_slot_for, project_slot_for, regex_slot_for,
+    DROP_FILE_ACTION, FOCUS_ACTION, FULL_TEXT_SLOT, GLOBAL_COMMANDS_SLOT, JOIN_PANE_ACTION,
+    KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, MOUSE_ACTION,
+    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, PROMPT_MARKS_SLOT,
+    RESIZE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
+    SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at, find_slot_for, project_slot_for,
+    regex_slot_for,
 };
 use sprag_host::{
     CellFrame, HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneNotification,
-    PaneScrollFacts, Project, ProjectError, mux_action_path, pane_input_path,
+    PaneScrollFacts, Project, ProjectError, UserConfig, mux_action_path, pane_input_path,
 };
 use sprag_input::{Modifiers, MouseButton, MouseEventKind, MouseInput};
 use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn, runtime_path};
@@ -1544,6 +1545,25 @@ impl HostClient for WireHost {
             serde_json::from_value::<Project>(value)
                 .map_err(|error| ProjectError::Malformed(error.to_string())),
         )
+    }
+
+    /// The user's declared commands, over the mux `commands` slot. On demand (a palette opening),
+    /// never per frame — the answer costs a file read host-side.
+    ///
+    /// Three answers, like the project slot's: `Null` is "no config written", an `{error}` object is
+    /// one that cannot be used, and anything else deserialises into the SAME [`UserConfig`] the host
+    /// serialised. The error travels ALREADY RENDERED and is passed through verbatim — the host is
+    /// the end that knows which file it is about, so this one does not re-word it.
+    fn global_commands(&self) -> Option<Result<UserConfig, String>> {
+        let params = json!({ "path": mux_action_path(GLOBAL_COMMANDS_SLOT) });
+        let value = self.request("scene/query", params, "global_commands")?;
+        if value.is_null() {
+            return None;
+        }
+        if let Some(message) = value.get("error").and_then(Value::as_str) {
+            return Some(Err(message.to_owned()));
+        }
+        Some(serde_json::from_value::<UserConfig>(value).map_err(|error| error.to_string()))
     }
 
     fn pane_prompt_positions(&self, id: PaneId) -> Vec<usize> {

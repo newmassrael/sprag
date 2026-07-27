@@ -534,6 +534,30 @@ pub trait HostClient {
         None
     }
 
+    /// The USER's own declared commands — the ones available in every pane — or `None` when no
+    /// config has been written.
+    ///
+    /// Takes no pane, which is the whole difference from [`project`](Self::project): these do not
+    /// depend on where any shell happens to be, so they are offered even in a pane that is in no
+    /// project at all. A client shows BOTH lists; which one a name belongs to is the client's
+    /// ordering decision, not a fact this hides.
+    ///
+    /// `Some(Err(_))` is a config that EXISTS and is unusable, reported rather than swallowed for
+    /// the reason a project's is — and its message names `config.toml`, so a user reading it in a
+    /// palette beside a project's error knows which file to open.
+    ///
+    /// The error is the RENDERED report, a `String`, not a typed error — deliberately. Only one
+    /// consumer exists and it paints the sentence; carrying a type would mean re-rendering it at the
+    /// far end of the wire, and the side that receives it does not know which file it is about. (The
+    /// project slot beside this one does re-render, and consequently names its file twice in a
+    /// wire-client's report — the defect this shape exists to not repeat.)
+    ///
+    /// A READ that touches the filesystem, so it is asked ON DEMAND (a palette opening), never per
+    /// frame. Defaulted to `None` — a test double need not implement it.
+    fn global_commands(&self) -> Option<Result<crate::UserConfig, String>> {
+        None
+    }
+
     /// Move the pane `id` into the window named `dst` of the scoped session (tmux `join-pane`),
     /// returning whether the source window was CLOSED (a join that emptied it) — or `None` if the
     /// move was refused (`id` already lives in `dst`, no window holds `id`, or `dst` names no
@@ -1407,6 +1431,12 @@ impl HostClient for Host {
             .unwrap_or(false)
     }
 
+    /// The user's config, read from disk on every call — the host holds no registry state for it,
+    /// which is why this arm and the wire client's answer the same thing with no session in sight.
+    fn global_commands(&self) -> Option<Result<crate::UserConfig, String>> {
+        Some(crate::config::load()?.map_err(|error| error.to_string()))
+    }
+
     fn new_pane(&self) -> Option<PaneId> {
         let (command, label) = sprag_terminal::default_shell_command();
         let on_dirty = self.pane_hooks.as_ref().and_then(|hooks| hooks());
@@ -1772,6 +1802,45 @@ mod tests {
             !host.pane_is_dead(PaneId(999)),
             "and neither is a pane that was never there"
         );
+    }
+
+    /// The in-process arm serves the USER's config — the same three answers the wire client gets,
+    /// over the same loader, so the two clients cannot disagree about what the user declared.
+    ///
+    /// REVERT-PROOF: return `None` unconditionally and both the declared and the broken cases fail.
+    #[test]
+    fn the_client_protocol_serves_the_users_own_commands() {
+        let host = Host::new((40, 6));
+
+        crate::config::with_config(None, || {
+            assert!(
+                host.global_commands().is_none(),
+                "no config written is not an error"
+            );
+        });
+
+        crate::config::with_config(
+            Some("[[command]]\nname = \"top\"\nrun = [\"htop\"]\n"),
+            || {
+                let config = host
+                    .global_commands()
+                    .expect("a config exists")
+                    .expect("it parses");
+                assert_eq!(config.commands.len(), 1);
+                assert_eq!(config.commands[0].name, "top");
+            },
+        );
+
+        crate::config::with_config(Some("[[command]]\nname = \"a\"\nrun = []\n"), || {
+            let report = host
+                .global_commands()
+                .expect("the file exists")
+                .expect_err("and is refused");
+            assert!(
+                report.contains(crate::config::CONFIG_FILE),
+                "the report reaches the client ALREADY naming its own file: {report:?}"
+            );
+        });
     }
 
     #[test]

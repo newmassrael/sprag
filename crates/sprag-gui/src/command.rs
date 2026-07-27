@@ -122,12 +122,21 @@ pub(crate) enum Command {
     KillWindow(String),
     /// Kill the named session (tmux `kill-session`). DESTRUCTIVE — see [`Command::confirmation`].
     KillSession(String),
-    /// A command the target pane's PROJECT declares in its `.sprag.toml`.
+    /// A command DECLARED in a config file — the target pane's project (`.sprag.toml`) or the user's
+    /// own (`config.toml`).
+    ///
+    /// ONE variant for both sources on purpose. What a declared command IS, and what activating it
+    /// does, are identical: it is pasted at the pane's prompt for the user's own `Enter`. A second
+    /// variant would duplicate every arm to record a distinction nothing acts on — the trust
+    /// difference between the two files (one arrives with a repository, one the user wrote) is
+    /// answered by that shared treatment, not by branching on origin. If a future affordance ever
+    /// runs one WITHOUT the user's keystroke, that is when the origin starts to matter and this
+    /// splits.
     ///
     /// Carries the whole action rather than its name, for the reason the dynamic window / session
     /// rows carry names: the palette freezes its list at open time, and an index or a name would
-    /// have to be re-resolved against a project that may have been edited since.
-    Project(ProjectAction),
+    /// have to be re-resolved against a config that may have been edited since.
+    Declared(ProjectAction),
 }
 
 impl Command {
@@ -163,7 +172,7 @@ impl Command {
             Self::KillSession(name) => format!("Kill session {name}"),
             // The project's own words. NOT prefixed with "Run" — a project titles its commands, and
             // wrapping them would make a fuzzy query match sprag's phrasing instead of theirs.
-            Self::Project(action) => action.title.clone(),
+            Self::Declared(action) => action.title.clone(),
         }
     }
 
@@ -187,7 +196,7 @@ impl Command {
             Self::Paste => Some("Ctrl+Shift+V".to_owned()),
             Self::ToggleFloat => Some("Ctrl+Shift+Enter".to_owned()),
             Self::LastSession => Some("Ctrl+Shift+L".to_owned()),
-            Self::Project(action) => Some(action.command_line()),
+            Self::Declared(action) => Some(action.command_line()),
             Self::SelectAll
             | Self::BreakOut
             | Self::JoinInto(_)
@@ -290,7 +299,7 @@ impl Command {
             // A project command is NOT destructive as an activation: it is PASTED at the pane's
             // prompt without a newline, so the user's own Enter is already the confirmation, and
             // the line they are agreeing to is the one the row showed them.
-            | Self::Project(_) => None,
+            | Self::Declared(_) => None,
         }
     }
 
@@ -326,7 +335,7 @@ impl Command {
             | Self::NewSession
             | Self::SwitchSession(_)
             | Self::LastSession
-            | Self::Project(_) => true,
+            | Self::Declared(_) => true,
         }
     }
 
@@ -356,7 +365,7 @@ impl Command {
             | Self::JoinInto(_)
             // A project command is DELIVERED to a pane's prompt, so it needs one as much as a paste
             // does — and the pane it needs is the one whose project declared it.
-            | Self::Project(_)
+            | Self::Declared(_)
             // A kill of THE pane needs the pane, unlike the two name-addressed kills below it.
             | Self::KillPane => true,
             // Creating a pane needs no pane: it goes into the CURRENT WINDOW, which exists whether
@@ -469,7 +478,7 @@ impl Command {
             // whole rationale (their shell runs it, so output/history/Ctrl-C behave; and a command
             // named by a file in a repository must not execute on a repository's say-so) lives on
             // `ProjectAction::command_line`. Bracketed paste keeps the whole line one inert unit.
-            Self::Project(action) => {
+            Self::Declared(action) => {
                 if let Some(pane) = target {
                     let _ = slots.paste(pane, &action.command_line());
                 }
@@ -542,23 +551,44 @@ pub(crate) fn catalog(target: Option<usize>, slots: &SlotView) -> Catalog {
     // The target pane's PROJECT commands first (see the fn docs). The read is the reason `catalog`
     // is only ever called at OPEN time: it costs the host a filesystem walk (and, off a wire client,
     // a socket round trip).
-    let mut project_error = None;
+    let mut errors: Vec<String> = Vec::new();
     let mut out: Vec<Command> = Vec::new();
+    let mut declared: Vec<String> = Vec::new();
     if let Some(pane) = target {
         match slots.project(pane) {
             None => {}
-            Some(Ok(project)) => out.extend(
-                project
-                    .actions
-                    .into_iter()
-                    .take(MAX_PROJECT_ROWS)
-                    .map(Command::Project),
-            ),
+            Some(Ok(project)) => {
+                for action in project.actions.into_iter().take(MAX_PROJECT_ROWS) {
+                    declared.push(action.name.clone());
+                    out.push(Command::Declared(action));
+                }
+            }
             // A project whose config is unusable contributes NO rows and one message. Reporting it
             // is the point: a client that showed an empty list would leave the config's author
             // believing their file works (`sprag_host::project` carries the whole rationale).
-            Some(Err(error)) => project_error = Some(error.to_string()),
+            Some(Err(error)) => errors.push(error.to_string()),
         }
+    }
+    // ...then the USER's own commands, which are offered wherever the pane is — including in no
+    // project at all, the case the block above cannot serve.
+    //
+    // SECOND, and shadowed by name: a project's command wins over a global one it collides with,
+    // which is the same nearest-wins rule that makes an inner `.sprag.toml` beat an outer one. A
+    // name is an address (`sprag run <name>`), so two rows answering to one name would be a palette
+    // the user cannot read and a CLI call nobody can resolve.
+    match slots.global_commands() {
+        None => {}
+        Some(Ok(config)) => out.extend(
+            config
+                .commands
+                .into_iter()
+                .filter(|action| !declared.contains(&action.name))
+                .take(MAX_PROJECT_ROWS)
+                .map(Command::Declared),
+        ),
+        // Reported the same way, and SEPARATELY: both configs can be broken at once, and each
+        // message names its own file, so the user learns which to open.
+        Some(Err(message)) => errors.push(message),
     }
     out.extend([
         Command::Find,
@@ -652,7 +682,7 @@ pub(crate) fn catalog(target: Option<usize>, slots: &SlotView) -> Catalog {
     );
     Catalog {
         commands: out,
-        project_error,
+        config_errors: errors,
     }
 }
 
@@ -665,8 +695,10 @@ pub(crate) fn catalog(target: Option<usize>, slots: &SlotView) -> Catalog {
 pub(crate) struct Catalog {
     /// The commands to offer, in the order an empty query lists them.
     pub(crate) commands: Vec<Command>,
-    /// Why the target pane's project contributed nothing, when it exists and is broken.
-    pub(crate) project_error: Option<String>,
+    /// Why a config contributed nothing, one message per broken file (the pane's project, the
+    /// user's own, or both). A `Vec` rather than an `Option` because the two are independent: one
+    /// being broken says nothing about the other, and a user with two problems needs to see two.
+    pub(crate) config_errors: Vec<String>,
 }
 
 /// One row of the pane context menu: the command it runs, and the SHORT wording it paints with.
@@ -787,6 +819,8 @@ mod tests {
         log: Rc<RefCell<Log>>,
         /// What this host answers for a pane's project — the three outcomes the real host has.
         project: Option<Result<sprag_host::Project, sprag_host::ProjectError>>,
+        /// What this host answers for the USER's config — the same three outcomes, independently.
+        global: Option<Result<sprag_host::UserConfig, String>>,
         /// The live pane set. Ids are deliberately NOT their slot numbers, so a test asserting on a
         /// recorded id proves the slot→id mapping was applied rather than an accidental identity.
         panes: Vec<PaneId>,
@@ -853,6 +887,9 @@ mod tests {
             _id: PaneId,
         ) -> Option<Result<sprag_host::Project, sprag_host::ProjectError>> {
             self.project.clone()
+        }
+        fn global_commands(&self) -> Option<Result<sprag_host::UserConfig, String>> {
+            self.global.clone()
         }
         fn paste(&self, id: PaneId, text: &str) -> bool {
             self.log.borrow_mut().pasted.push((id, text.to_owned()));
@@ -946,6 +983,7 @@ mod tests {
             current: current.to_owned(),
             log: Rc::clone(&log),
             project: None,
+            global: None,
             // Offset so no id equals its slot (see the field's own note).
             panes: (0..panes).map(|i| PaneId(7 + i as u64)).collect(),
         };
@@ -968,11 +1006,165 @@ mod tests {
             current: "0".to_owned(),
             log: Rc::clone(&log),
             project: answer,
+            global: None,
             panes: vec![PaneId(7)],
         };
         let slots = SlotView::new(Box::new(host));
         slots.reconcile();
         (slots, log)
+    }
+
+    /// A `SlotView` over a host answering `project` for the pane AND `global` for the user, so a
+    /// test can drive the two config sources independently — which is the whole point of their being
+    /// two.
+    fn slots_with_configs(
+        project: Option<Result<sprag_host::Project, sprag_host::ProjectError>>,
+        global: Option<Result<sprag_host::UserConfig, String>>,
+    ) -> SlotView {
+        let host = CatalogHost {
+            windows: vec![WindowInfo {
+                name: "main".to_owned(),
+                current: true,
+            }],
+            sessions: vec!["0".to_owned()],
+            current: "0".to_owned(),
+            log: Rc::default(),
+            project,
+            global,
+            panes: vec![PaneId(7)],
+        };
+        let slots = SlotView::new(Box::new(host));
+        slots.reconcile();
+        slots
+    }
+
+    /// A user config declaring `names`, each running a program of the same name.
+    fn user_config(names: &[&str]) -> sprag_host::UserConfig {
+        sprag_host::UserConfig {
+            path: std::path::PathBuf::from("/home/u/.config/sprag/config.toml"),
+            commands: names
+                .iter()
+                .map(|name| sprag_host::ProjectAction {
+                    name: (*name).to_owned(),
+                    title: format!("User: {name}"),
+                    run: vec![(*name).to_owned()],
+                })
+                .collect(),
+        }
+    }
+
+    /// The user's own commands are offered in EVERY pane — including one in no project at all, which
+    /// is exactly the case a project config cannot serve — and they sit after the project's rows but
+    /// before the built-ins, since neither has a chord to be reached by once past the visible cut.
+    ///
+    /// REVERT-PROOF: drop the `global_commands` block and the rows vanish; move it after the
+    /// built-ins and the ordering assertion fails.
+    #[test]
+    fn the_users_own_commands_are_offered_wherever_the_pane_is() {
+        let slots = slots_with_configs(None, Some(Ok(user_config(&["top"]))));
+
+        let commands = catalog(Some(0), &slots).commands;
+        let user = commands
+            .iter()
+            .position(|c| matches!(c, Command::Declared(a) if a.name == "top"))
+            .expect("the user's command is offered with no project in sight");
+        let built_in = commands
+            .iter()
+            .position(|c| *c == Command::Find)
+            .expect("the built-ins are there too");
+        assert!(
+            user < built_in,
+            "a user command has no chord, so it must not be the row pushed past the cut"
+        );
+
+        // It still NEEDS a pane, though — for the same reason a project command does, and this is
+        // the one thing the two share that the wording "available everywhere" could mislead about: a
+        // declared command is DELIVERED by pasting at a prompt, so with no pane captured there is
+        // nowhere to deliver it and the row is not offered at all.
+        assert!(
+            !catalog(None, &slots)
+                .commands
+                .iter()
+                .any(|c| matches!(c, Command::Declared(_))),
+            "a declared command with no pane to paste into is not a row"
+        );
+    }
+
+    /// A project's command SHADOWS a user command of the same name — the nearest-wins rule that
+    /// already makes an inner `.sprag.toml` beat an outer one, applied one level further out.
+    ///
+    /// REVERT-PROOF: drop the `declared.contains` filter and `test` is offered twice, which is a
+    /// palette the user cannot read and a `sprag run test` nobody can resolve.
+    #[test]
+    fn a_project_command_shadows_the_users_command_of_the_same_name() {
+        let slots = slots_with_configs(
+            Some(Ok(one_action_project())), // declares "test", titled "Run the suite"
+            Some(Ok(user_config(&["test", "top"]))),
+        );
+
+        let commands = catalog(Some(0), &slots).commands;
+        let declared: Vec<&sprag_host::ProjectAction> = commands
+            .iter()
+            .filter_map(|c| match c {
+                Command::Declared(action) => Some(action),
+                _ => None,
+            })
+            .collect();
+
+        let named_test: Vec<&&sprag_host::ProjectAction> =
+            declared.iter().filter(|a| a.name == "test").collect();
+        assert_eq!(named_test.len(), 1, "a name addresses exactly one command");
+        assert_eq!(
+            named_test[0].title, "Run the suite",
+            "and the PROJECT's is the one that survives — the nearer config wins"
+        );
+        assert!(
+            declared.iter().any(|a| a.name == "top"),
+            "a user command the project does not shadow is still offered"
+        );
+    }
+
+    /// Both configs can be broken at once, and each is reported SEPARATELY — a user with two
+    /// problems must see two, each naming the file to open.
+    ///
+    /// REVERT-PROOF: collapse the reports back into one `Option` and the second is lost, sending the
+    /// user to fix one file while the other stays broken and unexplained.
+    #[test]
+    fn a_broken_project_and_a_broken_user_config_are_reported_independently() {
+        let slots = slots_with_configs(
+            Some(Err(sprag_host::ProjectError::Malformed(
+                "expected `]` at line 3".to_owned(),
+            ))),
+            Some(Err(
+                "config.toml: the command \"a\" has an empty `run`".to_owned()
+            )),
+        );
+
+        let built = catalog(Some(0), &slots);
+        assert!(
+            !built
+                .commands
+                .iter()
+                .any(|c| matches!(c, Command::Declared(_))),
+            "neither broken config offers anything to run"
+        );
+        assert_eq!(built.config_errors.len(), 2, "{:?}", built.config_errors);
+        assert!(
+            built
+                .config_errors
+                .iter()
+                .any(|e| e.contains("expected `]`")),
+            "the project's parser message survives: {:?}",
+            built.config_errors
+        );
+        assert!(
+            built
+                .config_errors
+                .iter()
+                .any(|e| e.contains("config.toml") && e.contains("empty `run`")),
+            "and the user config's report names ITS file: {:?}",
+            built.config_errors
+        );
     }
 
     /// One declared command, as the host would answer it.
@@ -1000,7 +1192,7 @@ mod tests {
         let action = built
             .commands
             .iter()
-            .find(|command| matches!(command, Command::Project(_)))
+            .find(|command| matches!(command, Command::Declared(_)))
             .expect("the project's command is offered");
         assert_eq!(action.title(), "Run the suite", "the project's own title");
         assert_eq!(
@@ -1008,7 +1200,7 @@ mod tests {
             Some("cargo test"),
             "the row shows the command line, so the offer is not a label to be trusted blindly"
         );
-        assert!(built.project_error.is_none());
+        assert!(built.config_errors.is_empty());
     }
 
     /// A project's commands come FIRST in an unfiltered catalog — the palette paints a bounded
@@ -1020,7 +1212,7 @@ mod tests {
         let (slots, _log) = slots_with_project(Some(Ok(one_action_project())));
         let built = catalog(Some(0), &slots);
         assert!(
-            matches!(built.commands.first(), Some(Command::Project(_))),
+            matches!(built.commands.first(), Some(Command::Declared(_))),
             "the project's own commands lead: {:?}",
             built.commands.first()
         );
@@ -1038,7 +1230,7 @@ mod tests {
         let action = built
             .commands
             .into_iter()
-            .find(|command| matches!(command, Command::Project(_)))
+            .find(|command| matches!(command, Command::Declared(_)))
             .expect("the project's command is offered");
 
         action.run(Some(0), &slots);
@@ -1066,13 +1258,14 @@ mod tests {
             !built
                 .commands
                 .iter()
-                .any(|command| matches!(command, Command::Project(_))),
+                .any(|command| matches!(command, Command::Declared(_))),
             "a broken config offers nothing to run"
         );
-        let report = built.project_error.expect("...but it does report why");
+        assert_eq!(built.config_errors.len(), 1, "...but it does report why");
         assert!(
-            report.contains("expected `]`"),
-            "the report carries the parser's message: {report}"
+            built.config_errors[0].contains("expected `]`"),
+            "the report carries the parser's message: {:?}",
+            built.config_errors
         );
     }
 

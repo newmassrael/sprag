@@ -32,7 +32,7 @@ use std::collections::HashSet;
 use pinion_core::GridBuffer;
 use sprag_host::{
     HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneNotification,
-    PaneScrollFacts, Project, ProjectError,
+    PaneScrollFacts, Project, ProjectError, UserConfig,
 };
 use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId, SessionInfo, WindowInfo};
@@ -243,6 +243,15 @@ impl SlotView {
     /// answer costs the host a filesystem walk and this client a socket round trip.
     pub(crate) fn project(&self, slot: usize) -> Option<Result<Project, ProjectError>> {
         self.host.project(self.id(slot)?)
+    }
+
+    /// The USER's own declared commands — offered in every pane, whatever project it is in (or none).
+    /// `None` when no config has been written; `Some(Err(message))` a config that is unusable, whose
+    /// message already names the file to fix.
+    ///
+    /// The one read here that takes NO slot, because the answer depends on no pane.
+    pub(crate) fn global_commands(&self) -> Option<Result<UserConfig, String>> {
+        self.host.global_commands()
     }
 
     /// Deliver a file dropped on the window to slot `slot`'s pane, returning the path the pane was

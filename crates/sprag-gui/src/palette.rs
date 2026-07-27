@@ -119,7 +119,7 @@ const PALETTE_TARGET_KEY: &str = "sprag_gui.palette.target";
 /// `Owner::cache` key for the cursor's index within the VISIBLE (filtered) rows.
 const PALETTE_CURSOR_KEY: &str = "sprag_gui.palette.cursor";
 /// `Owner::cache` key for the report about a project whose config could not be used.
-const PALETTE_PROJECT_ERROR_KEY: &str = "sprag_gui.palette.project_error";
+const PALETTE_CONFIG_ERRORS_KEY: &str = "sprag_gui.palette.config_errors";
 
 /// The query field's ACCESSIBLE NAME. Not a placeholder: `view_field` takes this only for
 /// `with_aria_label` and paints no hint text, which is why the visible affordance is the prompt
@@ -141,12 +141,14 @@ fn use_frozen_catalog() -> Signal<Rc<Vec<Command>>> {
         .clone()
 }
 
-/// Why the target pane's project contributed no commands, captured with the catalog it could not
-/// contribute to. `None` when there is no project or its config is fine.
-fn use_project_error() -> Signal<Option<Rc<str>>> {
+/// Why a config contributed no commands, captured with the catalog it could not contribute to —
+/// one report per broken file. Empty when every config that exists is fine.
+fn use_config_errors() -> Signal<Rc<Vec<String>>> {
     Owner::current()
-        .expect("use_project_error() requires an active Owner scope")
-        .cache(PALETTE_PROJECT_ERROR_KEY, || Signal::new(None))
+        .expect("use_config_errors() requires an active Owner scope")
+        .cache(PALETTE_CONFIG_ERRORS_KEY, || {
+            Signal::new(Rc::new(Vec::new()))
+        })
         .as_ref()
         .clone()
 }
@@ -268,7 +270,7 @@ pub(crate) fn open(target: Option<usize>) {
     let slots = &use_terminal().slots;
     use_target_pane().set(target);
     let catalog = command::catalog(target, slots);
-    use_project_error().set(catalog.project_error.map(Rc::from));
+    use_config_errors().set(Rc::new(catalog.config_errors));
     use_frozen_catalog().set(Rc::new(catalog.commands));
     use_cursor().set(0);
     use_text_edit_state(PALETTE_FIELD_TAG).set_text(String::new());
@@ -284,7 +286,7 @@ pub(crate) fn open(target: Option<usize>) {
 pub(crate) fn close() {
     use_palette_modal().close();
     use_frozen_catalog().set(Rc::new(Vec::new()));
-    use_project_error().set(None);
+    use_config_errors().set(Rc::new(Vec::new()));
     use_cursor().set(0);
 }
 
@@ -955,9 +957,9 @@ pub(crate) fn view_palette(
     // A project whose config is broken gets a line of its own, above the rows: it is a REPORT, not a
     // command, so it never becomes a row that looks runnable. Painted in the error role so it does
     // not read as one more thing to pick.
-    if let Some(report) = use_project_error().get() {
+    for report in use_config_errors().get().iter() {
         children.push(Scene::Text(TextNode::styled(
-            format!("{report}"),
+            report.clone(),
             Rect::default(),
             TextStyle::new()
                 .with_size_px(CHORD_FONT_PX)

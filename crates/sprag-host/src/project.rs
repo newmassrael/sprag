@@ -191,7 +191,7 @@ fn read_project(file: &Path) -> Result<Project, ProjectError> {
         .to_path_buf();
     Ok(Project {
         root,
-        actions: validate(parsed.command)?,
+        actions: validate_declared(parsed.command)?,
     })
 }
 
@@ -200,7 +200,9 @@ fn read_project(file: &Path) -> Result<Project, ProjectError> {
 /// Refusing the FILE rather than skipping the bad entry is the deliberate choice: a client that
 /// silently dropped one action would offer a list the project's author cannot explain, and the
 /// author is the person who can fix it.
-fn validate(declared: Vec<DeclaredAction>) -> Result<Vec<ProjectAction>, ProjectError> {
+pub(crate) fn validate_declared(
+    declared: Vec<DeclaredAction>,
+) -> Result<Vec<ProjectAction>, ProjectError> {
     if declared.len() > MAX_ACTIONS {
         return Err(ProjectError::Invalid(format!(
             "{} commands declared; at most {MAX_ACTIONS} are supported",
@@ -276,10 +278,11 @@ struct ProjectFile {
     command: Vec<DeclaredAction>,
 }
 
-/// One `[[command]]` entry as written.
+/// One `[[command]]` entry as written. Shared with [`crate::config`]: the user's own config
+/// declares commands in exactly this shape, so a user who has written one file can write the other.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct DeclaredAction {
+pub(crate) struct DeclaredAction {
     name: String,
     title: Option<String>,
     run: Vec<String>,

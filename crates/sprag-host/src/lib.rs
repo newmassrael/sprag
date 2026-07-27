@@ -47,6 +47,7 @@
 //! rect via `pinion_runtime::compute_layout`.
 
 pub mod attach;
+pub mod config;
 pub mod durability;
 mod external;
 pub mod history;
@@ -70,6 +71,7 @@ pub mod wire;
 pub mod workspace;
 
 pub use attach::{AttachOutcome, AttachmentRegistry, ClientId, ClientInfo};
+pub use config::{CONFIG_FILE, ConfigError, UserConfig};
 pub use durability::{
     load_snapshot, reconnect_command, restore_allowlist, restore_command, save_if_changed,
     save_snapshot, snapshot_path,
