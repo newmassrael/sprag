@@ -70,9 +70,13 @@ fn main() -> ExitCode {
             // the first confirmation because one leaked the palette's modal scope for good.
             check_a_confirmed_row_leaves_the_focus_stack_clean(&mut smoke, &mut report);
             check_a_window_closes_under_a_live_client(&mut smoke, &mut report);
-            // LAST, and it must stay last: it destroys the session this client is attached to, so
-            // the client leaves and every check after it would be asserting against a dead socket.
+            // LAST over the WIRE, and it must stay last: it destroys the session this client is
+            // attached to, so the client leaves and every check after it would be asserting against
+            // a dead socket.
             check_killing_the_attached_session_ends_the_client(&mut smoke, &mut report);
+            // After it, deliberately: this one reads the log the departed client left behind, so
+            // running it here covers every frame of the whole run and needs nothing alive.
+            check_every_painted_frame_settled(&smoke, &mut report);
         }
         Err(error) => {
             eprintln!("FAIL  the smoke could not boot: {error}");
@@ -670,6 +674,49 @@ fn check_killing_the_attached_session_ends_the_client(smoke: &mut Smoke, report:
     );
 }
 
+/// Every frame this client painted reached a FIXED POINT before it was presented.
+///
+/// pinion R1458 re-runs `view` + layout until a pass moves nothing, because a layout pass writes
+/// state the view reads back — a scroll bound, a pane's measured rect — so the scene a pass just
+/// laid out can already be stale, and the honest one to present is the scene a pass no longer
+/// changes. A binding whose two sides disagree about a value each derives from the other converges
+/// never; the shell then paints the last pass it has, requests another frame, and WARNS.
+///
+/// sprag is exactly the binding that could do that: the pane-viewport publish drives a PTY resize
+/// whose reflow changes the grid the next pass lays out, and `reconcile_frame` grows each pane's
+/// scroll bound from an off-thread producer. So "sprag's frames settle" is a claim about SPRAG, and
+/// nothing else in this repo makes it.
+///
+/// It is read from the client's log rather than over the wire because it is not on the wire: the
+/// pass budget and the settled verdict are shell-owned, and a scene query answers with the scene
+/// that was painted, never with how many passes it cost. Same shape as the modal-stack claim next
+/// door — when the state lives in the shell, its own diagnostic is the only witness sprag has.
+fn check_every_painted_frame_settled(smoke: &Smoke, report: &mut Report) {
+    let log = smoke.gui_log();
+    // Non-vacuity, and it comes FIRST: an absent warning is evidence only if a present one would
+    // have arrived. A check that reads a channel nothing could ever reach passes forever and means
+    // nothing, so the channel is asserted before what it carries.
+    let lines = log.lines().count();
+    report.check(
+        &format!("the client's own diagnostics reached the smoke ({lines} lines)"),
+        lines > 0,
+    );
+    let unsettled: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains("did not settle"))
+        .collect();
+    report.check(
+        &format!(
+            "every painted frame settled within the pass budget ({} unsettled)",
+            unsettled.len()
+        ),
+        unsettled.is_empty(),
+    );
+    for line in unsettled.iter().take(3) {
+        println!("        {line}");
+    }
+}
+
 // ─── The paint constants the assertions predict ──────────────────────────────────────────────────
 //
 // Spelled here rather than imported: sprag-gui is a BIN crate with no library to import them from,
@@ -719,6 +766,10 @@ struct Smoke {
     host_sock: PathBuf,
     /// The isolated state dir, removed on the way out.
     state: PathBuf,
+    /// Everything the GUI wrote to stderr for the whole run — the diagnostics it emits about
+    /// ITSELF, which no scene query can answer. Lives under [`Self::state`], so the teardown that
+    /// removes the run's directory takes it too; read it before the `Smoke` drops.
+    gui_log: PathBuf,
 }
 
 impl Smoke {
@@ -736,9 +787,24 @@ impl Smoke {
         let state = PathBuf::from(format!("/tmp/sp{unique}state"));
         std::fs::create_dir_all(&state)?;
 
-        let daemon = spawn(&target.join("sprag-term"), &host_sock, &gui_sock, &state)?;
+        let daemon_log = state.join("daemon.log");
+        let gui_log = state.join("gui.log");
+
+        let daemon = spawn(
+            &target.join("sprag-term"),
+            &host_sock,
+            &gui_sock,
+            &state,
+            &daemon_log,
+        )?;
         wait_for_path(&host_sock)?;
-        let gui = spawn(&target.join("sprag-gui"), &host_sock, &gui_sock, &state)?;
+        let gui = spawn(
+            &target.join("sprag-gui"),
+            &host_sock,
+            &gui_sock,
+            &state,
+            &gui_log,
+        )?;
         wait_for_path(&gui_sock)?;
         let conn = HostConn::connect(&gui_sock, PATIENCE)?;
 
@@ -749,6 +815,7 @@ impl Smoke {
             gui_sock,
             host_sock,
             state,
+            gui_log,
         };
         // The OS-focus gate: without this `os_focused_window` is null under Xvfb and anything that
         // reads it describes an unfocused window.
@@ -1016,6 +1083,12 @@ impl Smoke {
             .collect()
     }
 
+    /// Everything the GUI has written to stderr so far. Missing / unreadable reads as empty, which
+    /// the caller must treat as "no evidence", never as "no problem".
+    fn gui_log(&self) -> String {
+        std::fs::read_to_string(&self.gui_log).unwrap_or_default()
+    }
+
     /// The visible palette row whose title is `title`, by asking the palette itself rather than by
     /// reading the paint — the External's row list and the painted rows are one derivation, and this
     /// is the address `select` speaks.
@@ -1046,11 +1119,19 @@ impl Drop for Smoke {
     }
 }
 
-/// Spawn `binary` with the smoke's isolated environment.
+/// Spawn `binary` with the smoke's isolated environment, its stderr captured into `log`.
 ///
-/// Output is discarded: a daemon's tracing on stderr would bury the checks, and anything that
-/// matters is observable through the RPC surface — which is the point of a scene-as-data client.
-fn spawn(binary: &Path, host: &Path, gui: &Path, state: &Path) -> io::Result<Child> {
+/// Stdout is discarded and stderr goes to a FILE rather than to the terminal: a child's tracing
+/// interleaved with the check lines would bury them, but discarding it outright would put the one
+/// class of claim that never reaches the RPC surface out of reach — a diagnostic the app emits
+/// ABOUT itself. `pinion::shell`'s unsettled-frame warning is exactly that, and
+/// [`check_every_painted_frame_settled`] is the reader.
+///
+/// `SPRAG_LOG` is left unset on purpose: the default filter is already `warn`, which is the level
+/// that carries a diagnostic, and naming a directive here would silently decide what the next
+/// reader of this log is allowed to see.
+fn spawn(binary: &Path, host: &Path, gui: &Path, state: &Path, log: &Path) -> io::Result<Child> {
+    let log = std::fs::File::create(log)?;
     Command::new(binary)
         .env("SPRAG_HOST_RPC_SOCK", host)
         .env("SPRAG_GUI_HOST_SOCK", host)
@@ -1065,7 +1146,7 @@ fn spawn(binary: &Path, host: &Path, gui: &Path, state: &Path) -> io::Result<Chi
         .env("WGPU_BACKEND", "vulkan")
         .env("SPRAG_GUI_PANES", "1")
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(log)
         .spawn()
 }
 
