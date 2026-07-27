@@ -70,6 +70,9 @@ fn main() -> ExitCode {
             // the first confirmation because one leaked the palette's modal scope for good.
             check_a_confirmed_row_leaves_the_focus_stack_clean(&mut smoke, &mut report);
             check_a_window_closes_under_a_live_client(&mut smoke, &mut report);
+            // Needs the client ALIVE — it asks the client what its own last frame cost, so it cannot
+            // join the log-reading check below the session kill.
+            check_the_frames_report_their_settle_work(&mut smoke, &mut report);
             // LAST over the WIRE, and it must stay last: it destroys the session this client is
             // attached to, so the client leaves and every check after it would be asserting against
             // a dead socket.
@@ -608,11 +611,14 @@ fn check_focus_survives_a_window_change(smoke: &mut Smoke, report: &mut Report) 
     );
 
     // The same window change, driven from the PALETTE — the other real user path, and the one with
-    // a modal in it. A palette row closes its dialog in the same dispatch as the command, and
-    // pinion's modal pop RESTORES the tag that was focused when the palette opened; the drain order
-    // is focus-then-modal, so that restore lands after the op's own request whatever the op asked
-    // for. Asserted rather than reasoned about, because "the shell will override it" is exactly the
-    // kind of claim that reads as certain and turns out to depend on which arm of `focus_set` ran.
+    // a modal in it. A palette row closes its dialog in the same dispatch as the command, so two
+    // things race for the ring: pinion's modal pop, which RESTORES the tag focused when the palette
+    // opened, and the window op's own request. pinion R1462 settled the race in the request's favour
+    // (the modal batch applies first, the request last) — but only for an op that actually makes
+    // one, and this leg is what caught sprag not making it: the op saw a ring on the closing
+    // palette's field, read it as "a live widget holds the caret", and asked for nothing. Asserted
+    // rather than reasoned about, because both halves of that — what the shell does with two
+    // requests, and whether sprag files the second — read as certain and were not.
     report.check(
         &format!("the ring parks on pane {parked} again for the palette path"),
         smoke.focus_pane(parked),
@@ -674,6 +680,55 @@ fn check_killing_the_attached_session_ends_the_client(smoke: &mut Smoke, report:
     );
 }
 
+/// The settle verdict as a NUMBER the client will hand over, not as a warning it failed to print.
+///
+/// pinion R1459 puts `settle_passes` + `settled` on `scene/frame_timings`, which is the half
+/// [`check_every_painted_frame_settled`] could not have: that one reads a diagnostic, so it can only
+/// ever report an ABSENCE, and an absence is the same shape whether the frames converged or the
+/// warning never had a chance to fire. This asks the client directly and gets a count back.
+///
+/// The two are kept side by side because neither covers the other. The log check spans every frame
+/// of the whole run and answers "did any frame give up"; this one spans the LAST frame only and
+/// answers "what did a frame actually cost" — a positive fact, non-vacuous by construction, since a
+/// number either arrives or the check fails.
+///
+/// `settle_passes` is asserted against a RANGE rather than the `1` sprag measures today. One pass is
+/// what a binding whose view and layout agree spends, and sprag does agree — but a second pass is a
+/// legitimate frame, not a defect (a pane-viewport publish that moves a rect the next pass reads
+/// back), and pinning the literal would turn a correct frame into a red smoke. What is NOT
+/// legitimate is exhausting the budget, and `settled` is the field that says so: a frame that
+/// converges exactly on the budget and one that gave up report the same count, so both are read.
+///
+/// The budget is spelled here rather than imported for the reason the paint constants above are —
+/// and for one more: `pinion-runtime` is a DEV-dependency of `sprag-gui`, which a bin cannot reach.
+fn check_the_frames_report_their_settle_work(smoke: &mut Smoke, report: &mut Report) {
+    /// pinion's `SETTLE_PASS_BUDGET` — the passes a paint may spend before it gives up.
+    const SETTLE_PASS_BUDGET: u64 = 4;
+
+    let timings = match smoke.call("scene/frame_timings", json!({})) {
+        Ok(value) => value,
+        Err(error) => {
+            report.check(
+                &format!("the client reports its frame work ({error})"),
+                false,
+            );
+            return;
+        }
+    };
+    // Non-vacuity first, as next door: a settle verdict about zero frames is not evidence.
+    let frames = timings["frame_count"].as_u64().unwrap_or(0);
+    report.check(
+        &format!("the client has painted frames to report on ({frames})"),
+        frames > 0,
+    );
+    let passes = timings["last"]["settle_passes"].as_u64();
+    let settled = timings["last"]["settled"].as_bool();
+    report.check(
+        &format!("the last frame settled inside the pass budget (passes: {passes:?}, settled: {settled:?})"),
+        passes.is_some_and(|p| (1..=SETTLE_PASS_BUDGET).contains(&p)) && settled == Some(true),
+    );
+}
+
 /// Every frame this client painted reached a FIXED POINT before it was presented.
 ///
 /// pinion R1458 re-runs `view` + layout until a pass moves nothing, because a layout pass writes
@@ -687,10 +742,11 @@ fn check_killing_the_attached_session_ends_the_client(smoke: &mut Smoke, report:
 /// scroll bound from an off-thread producer. So "sprag's frames settle" is a claim about SPRAG, and
 /// nothing else in this repo makes it.
 ///
-/// It is read from the client's log rather than over the wire because it is not on the wire: the
-/// pass budget and the settled verdict are shell-owned, and a scene query answers with the scene
-/// that was painted, never with how many passes it cost. Same shape as the modal-stack claim next
-/// door — when the state lives in the shell, its own diagnostic is the only witness sprag has.
+/// It is read from the client's LOG, and that is still the right channel for this claim even though
+/// pinion R1459 has since put the verdict on the wire as well. The wire answers for the last frame
+/// only ([`check_the_frames_report_their_settle_work`] asks it); the diagnostic is the only witness
+/// to every OTHER frame, including the ones painted while nothing was polling. A run's worth of
+/// frames and the most recent frame are different claims, so both are made.
 fn check_every_painted_frame_settled(smoke: &Smoke, report: &mut Report) {
     let log = smoke.gui_log();
     // Non-vacuity, and it comes FIRST: an absent warning is evidence only if a present one would
