@@ -1412,10 +1412,18 @@ mod tests {
     ///
     /// REVERT-PROOF: return `self.pid` unconditionally and both asserts fail — the pane hands out a
     /// recyclable pid.
+    ///
+    /// The child BLOCKS until this test tells it to end, and that is load-bearing: a child whose
+    /// whole script is `exit 0` may already have run, exited and been reaped in place before the
+    /// first assertion executes, and then the live-pid half fails — on a loaded machine, sometimes,
+    /// while proving nothing about the withholding it is there to guard. Waiting on the condition
+    /// each half needs (alive for the first, reaped for the second) is the fix; a longer-running
+    /// script would only have widened the window it raced in.
     #[test]
     fn a_reaped_childs_pid_is_withheld_so_no_proc_walk_can_stray() {
-        let pty = sh("exit 0");
+        let pty = sh("read line");
         assert!(pty.pid().is_some(), "a live child has a usable pid");
+        pty.write(b"\n").expect("end the child's read");
         wait_exit(&pty);
         assert_eq!(pty.pid(), None, "a reaped one does not");
         assert_eq!(pty.cwd(), None, "and neither does anything derived from it");
