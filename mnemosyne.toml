@@ -15,6 +15,32 @@ entry_id_prefix = ""
 [style]
 locale = "en"
 
+# Mnemosyne Round 783 scan-coverage gate: every `.rs` in the workspace must be
+# either scanned by `paths` or declared in `scan_exclusions`, so a tree that is
+# simply missing is loud and only a tree someone wrote down is quiet.
+#
+# sprag scans ALL of it. Every Rust file lives under `crates/` (workspace
+# members, their `build.rs`, their `tests/`), so one path covers the tree and
+# there is nothing to exclude — sprag vendors no submodule, and a source whose
+# comments cite this workspace's own sections is exactly what the gate is for.
+[plugins.set_equality_validator]
+paths = ["crates/"]
+comment_only = true
+scan_exclusions = []
+# Severities are STATED, not inherited, so this file records sprag's stance
+# rather than whatever the CLI defaults to next.
+#
+# `warn`, not pinion's `reject`, and the number is why: measured at reject on
+# 2026-07-28 the tree reports 22 hallucination-class citations, all
+# SectionMissing (Missing=0) — source comments naming `§` sections the atomic
+# store does not have (`§6.3`, `§5.49`, `§1/`, and the `§1`-`§5` family cited
+# before those sections were written). That is real debt of the same class the
+# rustdoc gate found in its five dead links, and it is a cleanup front of its
+# own: promoting this to `reject` today would block every commit on work
+# unrelated to the one being made. Promote once the 22 are resolved.
+severity_missing = "warn"
+severity_binding = "info"
+
 # Audit row for a publishable/atomic divergence (mnemosyne-cli
 # emit-publishable-override-ledger-draft). Round 24's atomic decision_summary
 # was a placeholder written by a CLI flag-probe slip; the frozen ledger is
