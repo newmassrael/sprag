@@ -52,6 +52,7 @@ pub mod durability;
 mod external;
 pub mod history;
 pub mod host;
+pub mod notify;
 pub mod pane;
 pub mod plugins;
 pub mod project;
@@ -85,6 +86,7 @@ pub use host::{
     Host, HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneMatch,
     PaneNotification, PaneScrollFacts,
 };
+pub use notify::ChannelRegistry;
 pub use pane::{CellFrame, SpragPaneExternal, focus, mouse, paste, send_key, send_text};
 pub use plugins::PluginsExternal;
 pub use project::{PROJECT_FILE, Project, ProjectAction, ProjectError};
@@ -103,7 +105,7 @@ use std::sync::{Arc, Mutex};
 
 use pinion_core::scene::{ContainerNode, ExternalNode, TextGridNode};
 use pinion_core::style::{LayoutStyle, Size, SizeValue};
-use pinion_core::{CellMetric, GridBuffer, Scene, SceneRevision};
+use pinion_core::{CellMetric, GridBuffer, Scene};
 use sprag_terminal::{PaneId, PanePty, SessionRegistry};
 use sprag_vt::{Palette, Screen};
 
@@ -342,7 +344,7 @@ pub fn workspace_scene(
     scope: &SessionScope,
     registry: &Arc<Mutex<SessionRegistry>>,
     runs: &Arc<Mutex<RunRegistry>>,
-    revision: &Arc<SceneRevision>,
+    channels: &Arc<ChannelRegistry>,
     on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
     attachments: Option<Arc<Mutex<AttachmentRegistry>>>,
 ) -> Scene {
@@ -364,7 +366,7 @@ pub fn workspace_scene(
         ExternalNode::new(Box::new(workspace::WorkspaceExternal::new(
             Arc::clone(registry),
             scope.clone(),
-            Arc::clone(revision),
+            Arc::clone(channels),
             on_pane_exit.clone(),
             attachments,
         )))

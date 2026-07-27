@@ -39,6 +39,7 @@ use sprag_terminal::{SessionRegistry, Workspace};
 use crate::attach::{AttachOutcome, AttachmentRegistry};
 use crate::external::lock;
 use crate::host::Host;
+use crate::notify::ChannelRegistry;
 use crate::runs::RunRegistry;
 use crate::scope::{ScopeError, SessionScope};
 use crate::wire::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM};
@@ -51,22 +52,21 @@ use crate::wire::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM};
 ///
 /// ## Change-notification (PR-50 §6.3, R115a)
 ///
-/// The [`SceneRevision`] is the ONE scene-version token, shared (`Arc`) with the
-/// pane `on_dirty` hooks: a pane's output [`bump`](SceneRevision::bump)s it, which
-/// (a) advances the OCC token and (b) fires the wake observer installed in
-/// [`new`](Self::new) — `move |n| waiters.wake(n)` — so any parked async
-/// `scene/waitFor` reply fires. A wire client thus blocks on `scene/waitFor`
-/// until a pane produces output *it did not cause*, instead of busy-polling
-/// `scene/snapshot`. The registry parks no version counter of its own; the
-/// revision is the single source of truth (pinion's [`WaiterRegistry`] contract).
+/// Every session has its OWN scene-version token and its own parked `scene/waitFor` replies
+/// ([`ChannelRegistry`]): a pane's output [`bump`](SceneRevision::bump)s the token its session
+/// owns, which (a) advances that session's OCC token and (b) fires the wake observer the channel
+/// installed, so the replies parked on THAT session fire and no others. A wire client thus blocks
+/// on `scene/waitFor` until its own session changes, instead of busy-polling `scene/snapshot` —
+/// and, since the grain became the session, instead of waking on every other session's traffic.
+/// No version counter is parked here; each channel's revision is the single source of truth
+/// (pinion's [`WaiterRegistry`] contract).
 pub struct HostState {
     host: Host,
     runs: Arc<Mutex<RunRegistry>>,
     previews: PreviewLedger,
-    /// The one scene-version token, shared with the pane `on_dirty` bumpers.
-    revision: Arc<SceneRevision>,
-    /// Parked async `scene/waitFor` replies, woken off `revision`'s observer.
-    waiters: Arc<WaiterRegistry>,
+    /// Per-session scene-version tokens + parked waits — shared (`Arc`) with the mux control
+    /// surface, which announces a session's changes on it and closes a killed session's channel.
+    channels: Arc<ChannelRegistry>,
     /// Per-client session attachment (R-PR67 Stage 1): `conn -> client -> attached session`,
     /// fed by the `client/hello` + `client/attach` intercepts and the transport's `on_disconnect`
     /// (all on this one dispatch thread), read when the `sessions` slot is served to fill each
@@ -84,11 +84,15 @@ pub struct HostState {
 }
 
 impl HostState {
-    /// Build host state over a booted [`Host`], sharing `revision` — the ONE
-    /// scene-version token the pane `on_dirty` hooks bump. Installs the async
-    /// `scene/waitFor` wake observer on it (`move |n| waiters.wake(n)`), so a
-    /// revision bump (a pane's output) wakes every parked waiter. A fresh run
-    /// registry and waiter registry are created here.
+    /// Build host state over a booted [`Host`], sharing `channels` — the per-session scene-version
+    /// tokens the pane `on_dirty` hooks bump. Each channel installs its own async `scene/waitFor`
+    /// wake observer when it is minted, so a bump on a session's token wakes exactly the waits
+    /// parked on that session. A fresh run registry is created here.
+    ///
+    /// `channels` is passed IN rather than made here because the caller wires the boot pane's
+    /// bumper before this state exists, and that pane's output must announce on the very channel
+    /// this state later parks waits against — two registries would leave the boot pane bumping a
+    /// token nobody waits on.
     ///
     /// `on_pane_exit` is the self-cleaning daemon's death-signal hook ([`spawn_reaper`]),
     /// carried to each mux/plugin-spawned pane's `on_exit`; `None` off a daemon (the GUI's
@@ -96,34 +100,14 @@ impl HostState {
     #[must_use]
     pub fn new(
         host: Host,
-        revision: Arc<SceneRevision>,
+        channels: Arc<ChannelRegistry>,
         on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Self {
-        let waiters = Arc::new(WaiterRegistry::new());
-        // The wake half of the no-lost-wakeup discipline: a revision bump (an OCC
-        // mutation OR a pane's external output via on_dirty) fires this, draining
-        // and replying to every waiter the new revision surpassed.
-        let wake = Arc::clone(&waiters);
-        // `set_observer` is install-once (pinion): the FIRST caller wins, later ones
-        // no-op and return false. This wake seam is the ONLY thing that fires parked
-        // `scene/waitFor` replies, so a silent install-failure would hang every wait
-        // forever with no error. Assert we won the install — a fresh revision per
-        // HostState makes this always true today; the assert catches a future refactor
-        // that reuses an already-observed revision (exactly the silent-failure class
-        // the textbook bar wants caught at the wiring point).
-        assert!(
-            revision.set_observer(move |n| {
-                wake.wake(n);
-            }),
-            "HostState requires a fresh SceneRevision: its wake observer must install \
-             (an already-observed revision would leave scene/waitFor parked forever)",
-        );
         Self {
             host,
             runs: Arc::new(Mutex::new(RunRegistry::default())),
             previews: PreviewLedger::default(),
-            revision,
-            waiters,
+            channels,
             on_pane_exit,
             attachments: Arc::new(Mutex::new(AttachmentRegistry::default())),
         }
@@ -151,16 +135,27 @@ impl HostState {
         &self.runs
     }
 
-    /// The one scene-version token (the async `scene/waitFor` / OCC baseline).
+    /// The per-session change channels — the async `scene/waitFor` tokens and waiter sets.
     #[must_use]
-    pub fn revision(&self) -> &SceneRevision {
-        &self.revision
+    pub fn channels(&self) -> &Arc<ChannelRegistry> {
+        &self.channels
     }
 
-    /// The async `scene/waitFor` waiter registry.
+    /// `session`'s scene-version token (its async `scene/waitFor` / OCC baseline).
+    ///
+    /// Named by SESSION, because a revision number means nothing without one: two sessions'
+    /// counters advance independently, so a `since` read under one scope is not a baseline under
+    /// another. The one client that waits reads its baseline on the connection it has already
+    /// scoped, which is what keeps that contract kept.
     #[must_use]
-    pub fn waiters(&self) -> &WaiterRegistry {
-        &self.waiters
+    pub fn revision(&self, session: &str) -> Arc<SceneRevision> {
+        self.channels.revision(session)
+    }
+
+    /// `session`'s parked async `scene/waitFor` replies.
+    #[must_use]
+    pub fn waiters(&self, session: &str) -> Arc<WaiterRegistry> {
+        self.channels.waiters(session)
     }
 
     /// The per-client attachment map (R-PR67 Stage 1), for the scene assembly to read the
@@ -174,11 +169,17 @@ impl HostState {
 /// The pane `on_dirty` hook that bumps `revision` on every batch of PTY output —
 /// the change-notification recipe a wire server boots each pane with. Passed as the
 /// `on_dirty` of [`Host::spawn`](crate::Host::spawn); the bump advances the OCC
-/// token AND wakes any parked async `scene/waitFor` (the observer [`HostState::new`]
-/// installs). The single home for this closure so the "a pane's output bumps THIS
+/// token AND wakes the async `scene/waitFor` replies parked on it (the observer that token's
+/// channel installed). The single home for this closure so the "a pane's output bumps THIS
 /// revision" invariant is not hand-rewritten per boot site (the server binary and
 /// the tests share it); a client that spawns a pane against a different revision than
-/// the one `HostState` observes would silently never wake, so it lives in one place.
+/// the one its session's waits park on would silently never wake, so it lives in one place.
+///
+/// `revision` must be the token of the session the pane is being spawned INTO
+/// ([`ChannelRegistry::revision`]). Capturing it once here is sound because a pane cannot change
+/// session: `break_pane` / `join_pane` move one between WINDOWS of a session and nothing moves one
+/// between sessions, so the answer this closure bakes cannot go stale. The `crate::notify` module
+/// docs record that dependency, because it is the reason the grain is the session.
 #[must_use]
 pub fn bump_on_dirty(revision: &Arc<SceneRevision>) -> Box<dyn Fn() + Send> {
     let revision = Arc::clone(revision);
@@ -387,11 +388,12 @@ pub fn handle_request(state: &HostState, request_json: &str) -> Option<String> {
                 &scope,
                 state.registry(),
                 &state.runs,
-                &state.revision,
+                &state.channels,
                 state.on_pane_exit(),
                 Some(Arc::clone(state.attachments())),
             );
-            let mut ctx = DispatchContext::new(&mut scene, &state.previews, state.revision());
+            let revision = state.revision(scope.session());
+            let mut ctx = DispatchContext::new(&mut scene, &state.previews, &revision);
             dispatch(&mut ctx, request_json)
         }
     }
@@ -433,11 +435,16 @@ fn handle_scoped(state: &HostState, scope: &SessionScope, request: Request) -> O
         scope,
         state.registry(),
         &state.runs,
-        &state.revision,
+        &state.channels,
         state.on_pane_exit(),
         Some(Arc::clone(state.attachments())),
     );
-    let mut ctx = DispatchContext::new(&mut scene, &state.previews, state.revision());
+    // The SCOPED session's token, which is what makes pinion's own OCC bump land in the right
+    // place: it advances the revision it is handed after every mutating handler returns `Ok`, from
+    // inside its dispatcher, so handing it this session's token is what attributes that bump — and
+    // wakes that session's waits — without any call site here having to remember to.
+    let revision = state.revision(scope.session());
+    let mut ctx = DispatchContext::new(&mut scene, &state.previews, &revision);
     if SUPPORTED_METHODS.contains(&request.method.as_str()) {
         dispatch_parsed(&mut ctx, request)
     } else {
@@ -535,13 +542,20 @@ fn handle_attach(
             request,
             format!("{CLIENT_ATTACH_METHOD} requires {CLIENT_HELLO_METHOD} first"),
         ),
-        AttachOutcome::Changed => {
+        AttachOutcome::Changed { previous } => {
             tracing::info!(
                 target: "sprag_host::attach",
                 session = %scope.session(),
                 "client attached"
             );
-            state.revision().bump();
+            // BOTH sides of a switch: the session gained a viewer, and (on a switch rather than a
+            // first attach) the one it left lost one. Each announces on its own channel, so a
+            // client watching the session being left learns its badge fell — which the single
+            // registry-wide token used to deliver as a side effect of waking everybody.
+            state.channels().bump(scope.session());
+            if let Some(left) = previous.filter(|left| left != scope.session()) {
+                state.channels().bump(&left);
+            }
             lifecycle_ok(request)
         }
         AttachOutcome::Unchanged => lifecycle_ok(request),
@@ -623,7 +637,7 @@ pub fn dispatch_frames(state: &HostState, rx: Receiver<IngressEvent>) {
                         %session,
                         "client detached (connection closed)"
                     );
-                    state.revision().bump();
+                    state.channels().bump(&session);
                 }
             }
         }
@@ -655,15 +669,13 @@ pub fn dispatch_frames(state: &HostState, rx: Receiver<IngressEvent>) {
 /// scar hid in. Resolving here covers every method by construction rather than by each one
 /// remembering.
 ///
-/// **v1 bound, honest and documented rather than silent:** a waitFor's scope is CHECKED but
-/// not yet HONORED — the revision is one token for the whole registry, so a client scoped to
-/// `work` is woken when any session moves. The contract it can rely on is therefore "you are
-/// woken AT LEAST when your session changes": the wake is a hint to re-read, and the re-read
-/// is scoped and exact. Over-reporting is safe by construction here (`park_if_current` only
-/// ever answers early; nothing reads the revision as a write precondition), so tightening
-/// this to "only when" strengthens the contract without breaking a client built on it. That
-/// is why a scoped waitFor is accepted rather than refused — refusing would force every
-/// client to special-case the one method it scopes uniformly, and buy nothing.
+/// The scope is also HONORED, not merely checked. It was checked-and-ignored for as long as the
+/// daemon had one registry-wide revision: a client scoped to `work` woke whenever ANY session
+/// moved, re-read its own, found nothing, and re-parked. Safe (the wake was a hint and the re-read
+/// was exact) but it made the cost of a change scale with the number of ATTACHED clients rather
+/// than with the number that could care. Each session now owns its token and its parked replies
+/// ([`ChannelRegistry`]), so the wait sleeps through every other session's traffic — a strictly
+/// tighter contract than the "at least when your session changes" clients were built on.
 fn dispatch_one(state: &HostState, frame: RpcFrame) {
     // R-PR67: keep the frame's originating connection id — the client-lifecycle intercepts below
     // attribute `client/hello` + `client/attach` to it. Every other method ignores it (a stateless
@@ -702,7 +714,12 @@ fn dispatch_one(state: &HostState, frame: RpcFrame) {
                 }
                 return;
             }
-            match try_async_wait_for(&parsed, state.revision(), state.waiters(), reply) {
+            // Parked against the SCOPED session's channel — the half `scene/waitFor` used to check
+            // and then ignore. The scope was resolved above, so the wait sleeps on the session it
+            // named and no other session's traffic can reach it.
+            let revision = state.revision(scope.session());
+            let waiters = state.waiters(scope.session());
+            match try_async_wait_for(&parsed, &revision, &waiters, reply) {
                 // Parked (or answered immediately) by the registry — nothing more to do.
                 ControlFlow::Break(()) => {}
                 // Not an async waitFor: dispatch the ALREADY-parsed request (no re-parse).
@@ -775,25 +792,29 @@ mod tests {
         command
     }
 
+    /// The name of the session a boot pane lands in and an unscoped request resolves to.
+    const BOOT: &str = "0";
+
     /// Host state with one initial pane running `script`, wired the way a wire
-    /// server boots: the pane's `on_dirty` bumps the shared [`SceneRevision`], so
-    /// its output wakes any parked async `scene/waitFor` (the change-notification
-    /// path R115a serves).
+    /// server boots: the pane's `on_dirty` bumps its SESSION's [`SceneRevision`], so
+    /// its output wakes the parked async `scene/waitFor` replies on that session (the
+    /// change-notification path R115a serves).
     fn host_with(script: &str, cols: u16, rows: u16) -> HostState {
-        let revision = Arc::new(SceneRevision::new());
+        let channels = Arc::new(ChannelRegistry::default());
         let host = Host::new((cols, rows));
         // The SAME boot recipe prod uses (sprag-term.rs) — the shared `bump_on_dirty`
-        // helper, so the test exercises the real "pane output bumps THIS revision" wire.
+        // helper over the boot session's own token, so the test exercises the real
+        // "pane output bumps ITS SESSION's revision" wire.
         host.spawn(
             sh(script),
             "sh".to_string(),
             cols,
             rows,
-            Some(bump_on_dirty(&revision)),
+            Some(bump_on_dirty(&channels.revision(BOOT))),
             None,
         )
         .expect("spawn pane");
-        HostState::new(host, revision, None)
+        HostState::new(host, channels, None)
     }
 
     /// One request through the dispatch path (no serve loop / shutdown join), so
@@ -1880,7 +1901,7 @@ mod tests {
     #[test]
     fn a_wait_for_with_an_unhonorable_scope_is_refused_and_never_parks() {
         let state = host_with("cat", 20, 4);
-        let since = state.revision().current();
+        let since = state.revision(BOOT).current();
         for (scope, why) in [
             ("42", "a non-string scope"),
             (r#""ghost""#, "an unknown session"),
@@ -1894,7 +1915,7 @@ mod tests {
                 &sink,
             );
             assert_eq!(
-                state.waiters().parked_count(),
+                state.waiters(BOOT).parked_count(),
                 0,
                 "{why} must be refused BEFORE the async park, not parked and ignored",
             );
@@ -1916,7 +1937,7 @@ mod tests {
             &sink,
         );
         assert_eq!(
-            state.waiters().parked_count(),
+            state.waiters(BOOT).parked_count(),
             1,
             "a well-scoped waitFor against the current revision parks normally",
         );
@@ -1924,6 +1945,92 @@ mod tests {
             sink.lock().unwrap().is_empty(),
             "...and is not answered while parked",
         );
+    }
+
+    /// A `scene/waitFor` sleeps through ANOTHER session's changes and wakes on its own — the scope
+    /// HONORED, not merely checked, through the real `dispatch_one`.
+    ///
+    /// The check above proves an unhonorable scope is refused. This proves the honorable one is
+    /// obeyed, which is the half that was missing: with one registry-wide token every attached
+    /// client woke on every session's output, re-read its own, found nothing, and re-parked. The
+    /// wake was safe (a hint to re-read, and the re-read was scoped and exact) and its cost scaled
+    /// with the number of ATTACHED clients rather than with the number that could care.
+    ///
+    /// Both halves are asserted in one test on purpose. "Did not wake" alone is satisfied by a
+    /// waiter that can never wake at all — a park against a token nothing bumps looks identical —
+    /// so the second half is what makes the first mean anything.
+    ///
+    /// REVERT-PROOF: park against `state.waiters(BOOT)` / `state.revision(BOOT)` in `dispatch_one`
+    /// (the one-token behaviour) and the first assertion fails on `work`'s wait being answered by
+    /// the default session's bump.
+    #[test]
+    fn a_wait_sleeps_through_another_sessions_changes() {
+        let state = host_with("cat", 20, 4);
+        // A second session, born with its own pane — the state where two sessions can move
+        // independently, which is the only state in which this claim is stateable.
+        let created = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_mux/external/new_session","args":{"name":"work"}}}"#,
+        );
+        assert_eq!(
+            created["result"], "work",
+            "the second session exists: {created}"
+        );
+
+        // Park a wait scoped to `work`, against `work`'s OWN baseline. The baseline is read under
+        // that name for the same reason a client re-reads `scene/revision` after re-scoping: two
+        // sessions' counters advance independently, so a number from one is not a baseline in the
+        // other.
+        let since = state.revision("work").current();
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        dispatch_recording(
+            &state,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":7,"method":"scene/waitFor","params":{{"since":{since},"session":"work"}}}}"#
+            ),
+            &sink,
+        );
+        assert_eq!(
+            state.waiters("work").parked_count(),
+            1,
+            "the wait parked on its own session",
+        );
+
+        // The DEFAULT session moves — a real mutation through the real dispatch, so pinion's own
+        // OCC bump is what advances that session's token, not a hand-written bump this test could
+        // have aimed anywhere it liked.
+        let spawned = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":2,"method":"scene/invoke","params":{"path":"/sprag_mux/external/spawn","args":{}}}"#,
+        );
+        assert!(
+            spawned["error"].is_null(),
+            "the default session moved: {spawned}"
+        );
+        assert!(
+            sink.lock().unwrap().is_empty(),
+            "another session's change is not this client's business",
+        );
+        assert_eq!(
+            state.waiters("work").parked_count(),
+            1,
+            "and it is still asleep, not woken-and-re-parked",
+        );
+
+        // ...and its OWN session moving reaches it.
+        let own = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":3,"method":"scene/invoke","params":{"path":"/sprag_mux/external/spawn","args":{},"session":"work"}}"#,
+        );
+        assert!(own["error"].is_null(), "work moved: {own}");
+        let answered = sink.lock().unwrap();
+        assert_eq!(
+            answered.len(),
+            1,
+            "the wait was answered by its own session"
+        );
+        let v: serde_json::Value = serde_json::from_str(&answered[0]).unwrap();
+        assert_eq!(v["result"]["changed"], true, "{v}");
     }
 
     /// A pane of another session is not addressable — not refused by a check, but absent
@@ -1973,7 +2080,7 @@ mod tests {
             .expect("a numeric revision");
         assert_eq!(
             reported,
-            state.revision().current(),
+            state.revision(BOOT).current(),
             "reads the one shared token"
         );
     }
@@ -1985,7 +2092,7 @@ mod tests {
         // HostState installed fires the parked reply on the next bump. Deterministic
         // (a direct bump stands in for a pane's on_dirty), no pane-timing.
         let state = host_with("cat", 20, 4);
-        let since = state.revision().current();
+        let since = state.revision(BOOT).current();
         let sink = Arc::new(Mutex::new(Vec::new()));
         dispatch_recording(
             &state,
@@ -1995,15 +2102,15 @@ mod tests {
             &sink,
         );
         assert_eq!(
-            state.waiters().parked_count(),
+            state.waiters(BOOT).parked_count(),
             1,
             "parked at the current revision"
         );
         assert!(sink.lock().unwrap().is_empty(), "not answered while parked");
 
-        let new = state.revision().bump();
+        let new = state.revision(BOOT).bump();
         assert_eq!(
-            state.waiters().parked_count(),
+            state.waiters(BOOT).parked_count(),
             0,
             "the bump drained the parked waiter"
         );
@@ -2020,8 +2127,8 @@ mod tests {
         // A stale baseline (`since` < current) is answered at dispatch, not parked —
         // so a client that fell behind catches up without blocking.
         let state = host_with("cat", 20, 4);
-        state.revision().bump();
-        let current = state.revision().current();
+        state.revision(BOOT).bump();
+        let current = state.revision(BOOT).current();
         let sink = Arc::new(Mutex::new(Vec::new()));
         dispatch_recording(
             &state,
@@ -2029,7 +2136,7 @@ mod tests {
             &sink,
         );
         assert_eq!(
-            state.waiters().parked_count(),
+            state.waiters(BOOT).parked_count(),
             0,
             "a stale baseline does not park"
         );
@@ -2046,7 +2153,7 @@ mod tests {
         // shared revision, and the parked reply fires — the change-driven repaint
         // signal a wire GUI long-polls. Bounded poll (no wall-clock assertion).
         let state = host_with("sleep 0.2; printf X", 20, 4);
-        let since = state.revision().current();
+        let since = state.revision(BOOT).current();
         let sink = Arc::new(Mutex::new(Vec::new()));
         dispatch_recording(
             &state,
@@ -2084,7 +2191,7 @@ mod tests {
         // Deterministic: the spawn's set-change bump fires the parked reply
         // synchronously on this thread, so no pane-timing / wall-clock is involved.
         let state = host_with("cat", 20, 4);
-        let since = state.revision().current();
+        let since = state.revision(BOOT).current();
         let sink = Arc::new(Mutex::new(Vec::new()));
         dispatch_recording(
             &state,
@@ -2094,7 +2201,7 @@ mod tests {
             &sink,
         );
         assert_eq!(
-            state.waiters().parked_count(),
+            state.waiters(BOOT).parked_count(),
             1,
             "parked at the current revision"
         );
@@ -2106,7 +2213,7 @@ mod tests {
         );
         assert!(spawned.get("error").is_none(), "spawn error: {spawned}");
         assert_eq!(
-            state.waiters().parked_count(),
+            state.waiters(BOOT).parked_count(),
             0,
             "the spawn's set-change bump drained the parked waiter"
         );
@@ -2355,13 +2462,13 @@ mod tests {
     fn a_find_query_does_not_bump_the_revision() {
         let state = host_with("printf hit", 20, 4);
         wait_for_pane0_eof(&state);
-        let before = state.revision.current();
+        let before = state.revision(BOOT).current();
         for _ in 0..5 {
             let answer = query_pane0(&state, &crate::wire::find_slot_for("hit"));
             assert!(answer.get("error").is_none(), "find error: {answer}");
         }
         assert_eq!(
-            state.revision.current(),
+            state.revision(BOOT).current(),
             before,
             "a search changes nothing about the pane, so it wakes no waiter",
         );

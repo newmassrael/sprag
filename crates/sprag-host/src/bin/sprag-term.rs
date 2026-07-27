@@ -62,7 +62,6 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
-use pinion_core::SceneRevision;
 use signal_hook::consts::{SIGINT, SIGTERM};
 use sprag_host::{
     FrameIngress, Host, HostState, RunRegistry, SavedHistory, bump_on_dirty, dispatch_frames,
@@ -73,6 +72,11 @@ use sprag_rpc::HOST_SOCKET;
 use sprag_terminal::{CommandBuilder, PaneId, SessionRegistry, Snapshot};
 use sprag_vt::HistoryLimits;
 use tracing_subscriber::{EnvFilter, fmt};
+
+/// The session a standalone boot pane lands in — the registry's boot session, the one an
+/// unscoped request resolves to. Named here because its pane's change-notification token must be
+/// looked up by that name before `HostState` exists to answer for it.
+const BOOT_SESSION: &str = "0";
 
 fn main() -> io::Result<()> {
     let args = parse_args();
@@ -109,11 +113,12 @@ fn main() -> io::Result<()> {
     // The one Workspace owner (shared with the GUI as a code component): boot the
     // initial pane through it, then wrap it in HostState to serve the RPC surface.
     //
-    // The initial pane's `on_dirty` bumps the shared scene-version token, so its
-    // output wakes any parked async `scene/waitFor` (the change-notification a wire
-    // client long-polls instead of busy-polling snapshots). The revision is created
-    // BEFORE the spawn so the bumper and HostState share the one token.
-    let revision = Arc::new(SceneRevision::new());
+    // The initial pane's `on_dirty` bumps ITS SESSION's scene-version token, so its output wakes
+    // the parked async `scene/waitFor` replies on that session (the change-notification a wire
+    // client long-polls instead of busy-polling snapshots) and no others. The channels are created
+    // BEFORE the spawn so the bumper and HostState share the one registry — two would leave the
+    // boot pane announcing on a token nobody ever waits on.
+    let channels = Arc::new(sprag_host::ChannelRegistry::default());
     let host = Host::new((args.cols, args.rows));
     // The persistent snapshot path, used only in the daemon arms below.
     let snap_path = snapshot_path(&sock);
@@ -167,7 +172,7 @@ fn main() -> io::Result<()> {
             let outcome = host.restore(
                 snapshot,
                 &sprag_host::restore_allowlist(),
-                || Some(bump_on_dirty(&revision)),
+                |session| Some(bump_on_dirty(&channels.revision(session))),
                 || Some(pane_exit_hook(&on_pane_exit)),
                 |id| match hist_limits.lines {
                     0 => Vec::new(),
@@ -200,12 +205,12 @@ fn main() -> io::Result<()> {
             args.label,
             args.cols,
             args.rows,
-            Some(bump_on_dirty(&revision)),
+            Some(bump_on_dirty(&channels.revision(BOOT_SESSION))),
             Some(pane_exit_hook(&on_pane_exit)),
         )
         .map_err(io::Error::other)?;
     }
-    let state = HostState::new(host, revision, Some(on_pane_exit));
+    let state = HostState::new(host, channels, Some(on_pane_exit));
 
     // One dispatch owner (this thread) serialises all dispatch; the always-on
     // socket and stdin are producers of RpcFrames into it, so a socket client

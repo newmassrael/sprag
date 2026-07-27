@@ -890,8 +890,14 @@ impl Host {
     /// passes [`crate::restore_allowlist`].
     ///
     /// Hooks are FACTORIES — a fresh `Box` per pane (a `Box<dyn Fn>` cannot be reused) — so the
-    /// daemon passes `|| Some(bump_on_dirty(&revision))` and
+    /// daemon passes `|session| Some(bump_on_dirty(&channels.revision(session)))` and
     /// `|| Some(pane_exit_hook(&on_pane_exit))`, the same hooks its boot pane gets.
+    ///
+    /// `on_dirty` is handed the SESSION each pane is being restored into, because change
+    /// notification is per session: a pane restored into `work` must announce on `work`'s token or
+    /// a client waiting there sleeps through its output. Only the plan knows which session each
+    /// pane belongs to, so the name is passed rather than left for the caller to guess — a factory
+    /// that ignored it would silently wire every restored pane to one session's channel.
     ///
     /// `history` supplies each pane's recorded scrollback as replayable terminal bytes, replayed
     /// into its fresh emulator before the child can write a byte. Injected for the same reason the
@@ -913,7 +919,7 @@ impl Host {
         &self,
         snapshot: Snapshot,
         allowlist: &std::collections::HashSet<String>,
-        mut on_dirty: impl FnMut() -> Option<Box<dyn Fn() + Send>>,
+        mut on_dirty: impl FnMut(&str) -> Option<Box<dyn Fn() + Send>>,
         mut on_exit: impl FnMut() -> Option<Box<dyn Fn() + Send>>,
         history: impl Fn(PaneId) -> Vec<u8>,
     ) -> Result<usize, SnapshotError> {
@@ -968,7 +974,7 @@ impl Host {
                 command,
                 label,
                 size: (pane.cols, pane.rows),
-                on_dirty: on_dirty(),
+                on_dirty: on_dirty(&pane.session),
                 on_exit: on_exit(),
                 history: history(pane.id),
             });
@@ -1932,7 +1938,7 @@ mod tests {
             .restore(
                 snap,
                 &std::collections::HashSet::new(),
-                || None,
+                |_| None,
                 || None,
                 |pane| format!("output of pane {pane}\r\n").into_bytes(),
             )
@@ -1976,7 +1982,7 @@ mod tests {
             .restore(
                 snap,
                 &std::collections::HashSet::new(),
-                || None,
+                |_| None,
                 || None,
                 |_| {
                     seen.set(seen.get() + 1);
@@ -2030,7 +2036,7 @@ mod tests {
             .restore(
                 empty,
                 &std::collections::HashSet::new(),
-                || None,
+                |_| None,
                 || Some(crate::pane_exit_hook(&signal)),
                 |_| Vec::new(),
             )
@@ -2061,7 +2067,7 @@ mod tests {
             .restore(
                 snap,
                 &std::collections::HashSet::new(),
-                || None,
+                |_| None,
                 || None,
                 |_| Vec::new(),
             )
@@ -2105,7 +2111,7 @@ mod tests {
             .restore(
                 snap,
                 &std::collections::HashSet::new(),
-                || None,
+                |_| None,
                 || None,
                 |_| Vec::new(),
             )
@@ -2182,7 +2188,7 @@ mod tests {
             .restore(
                 snap,
                 &std::collections::HashSet::new(),
-                || None,
+                |_| None,
                 || None,
                 |_| Vec::new(),
             )
@@ -2237,7 +2243,7 @@ mod tests {
 
         let host = Host::new((80, 24));
         assert_eq!(
-            host.restore(snap, &allow, || None, || None, |_| Vec::new())
+            host.restore(snap, &allow, |_| None, || None, |_| Vec::new())
                 .expect("restores"),
             1,
         );
@@ -2303,7 +2309,7 @@ mod tests {
 
         let host = Host::new((80, 24));
         assert_eq!(
-            host.restore(snap, &allow, || None, || None, |_| Vec::new())
+            host.restore(snap, &allow, |_| None, || None, |_| Vec::new())
                 .expect("restores"),
             2,
         );

@@ -55,7 +55,6 @@ use std::fmt;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use pinion_core::SceneRevision;
 use pinion_core::external::{
     ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError, SchemaField,
 };
@@ -67,6 +66,7 @@ use sprag_terminal::{
 
 use crate::bump_on_dirty;
 use crate::external::{as_object, lock, opt_dim, require_pane_id, rpc_external_impl};
+use crate::notify::ChannelRegistry;
 use crate::scope::SessionScope;
 
 // The mux control action names + query slots are the shared wire ABI vocabulary
@@ -83,8 +83,8 @@ use crate::wire::{
 /// [`SessionRegistry`]. Holds `Arc<Mutex<SessionRegistry>>` so its `scene/invoke`
 /// handlers mutate the live pane pool of the CURRENT window (which the serve loop also
 /// reads to assemble the scene) and its `layout` slot can serve that window's
-/// arrangement, plus the shared [`SceneRevision`] so a pane-lifecycle mutation wakes any
-/// parked `scene/waitFor`.
+/// arrangement, plus the per-session change channels ([`ChannelRegistry`]) so a pane-lifecycle
+/// mutation wakes the `scene/waitFor` replies parked on the session it happened in.
 pub struct WorkspaceExternal {
     registry: Arc<Mutex<SessionRegistry>>,
     /// The session this surface may act on — the request's own, resolved once at the door.
@@ -96,18 +96,15 @@ pub struct WorkspaceExternal {
     /// whichever one happened to be the default — the silent cross-session write, which is
     /// the exact failure the scope param exists to prevent.
     scope: SessionScope,
-    /// The shared scene-version token ([`crate::HostState`]'s). Two roles:
-    /// each pane this surface SPAWNS is wired with a `bump_on_dirty(&revision)`
-    /// hook (so its output wakes waiters, like the boot pane), and a spawn /
-    /// close bumps it directly (so a pane-set change wakes a waiter before the
-    /// new pane's first output). Cloned per scene-assembly from the ONE token
-    /// [`crate::HostState`] observes, so a mux-spawned pane can never be wired
-    /// to a revision no waiter watches.
-    ///
-    /// **v1 bound:** ONE token for the whole registry, so a spawn in one session wakes
-    /// clients attached to every other, which re-read and find nothing changed. Waste, not
-    /// error — see [`crate::workspace_scene`].
-    revision: Arc<SceneRevision>,
+    /// The per-session change channels ([`crate::HostState`]'s). Two roles: each pane this surface
+    /// SPAWNS is wired with a `bump_on_dirty` hook over ITS SESSION's token (so its output wakes
+    /// the waits on that session, like the boot pane), and a spawn / close announces on that
+    /// session directly (so a pane-set change wakes a waiter before the new pane's first output).
+    /// The whole registry is cloned per scene-assembly rather than one session's token, because
+    /// two actions announce somewhere other than this request's scope — a `new_session` births a
+    /// pane in a session that did not exist when the scope was resolved, and a `kill_session`
+    /// closes one.
+    channels: Arc<ChannelRegistry>,
     /// The self-cleaning daemon's pane-`on_exit` death-signal hook ([`crate::spawn_reaper`]),
     /// or `None` off a daemon (a GUI's in-process host, the unit tests). Wired into each pane
     /// this surface SPAWNS so its death feeds the reaper. Injected (not named here) so this
@@ -146,14 +143,14 @@ impl WorkspaceExternal {
     pub fn new(
         registry: Arc<Mutex<SessionRegistry>>,
         scope: SessionScope,
-        revision: Arc<SceneRevision>,
+        channels: Arc<ChannelRegistry>,
         on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
         attachments: Option<Arc<Mutex<crate::AttachmentRegistry>>>,
     ) -> Self {
         Self {
             registry,
             scope,
-            revision,
+            channels,
             on_pane_exit,
             attachments,
         }
@@ -164,6 +161,18 @@ impl WorkspaceExternal {
     /// taken to reach it, so it cannot nest with the workspace lock.
     fn workspace(&self) -> &Arc<Mutex<Workspace>> {
         self.scope.workspace()
+    }
+
+    /// Announce that the SCOPED session changed: advance its token, waking the `scene/waitFor`
+    /// replies parked on that session and no others.
+    ///
+    /// Every action here acts on the session the request named, so the scope IS the answer to
+    /// "whose scene moved" — which is why this takes no argument. The two places that announce
+    /// somewhere ELSE ([`new_session`](Self::new_session), which births a pane in a session that
+    /// did not exist when this scope was resolved, and [`kill_session`](Self::kill_session), which
+    /// ends one) say so explicitly rather than through this.
+    fn announce(&self) {
+        self.channels.bump(self.scope.session());
     }
 
     /// Parse + VALIDATE the `{cmd?, cols?, rows?}` spawn spec — the REQUEST-validation half of a
@@ -252,7 +261,7 @@ impl WorkspaceExternal {
                 label,
                 cols.unwrap_or(default_cols),
                 rows.unwrap_or(default_rows),
-                Some(bump_on_dirty(&self.revision)),
+                Some(bump_on_dirty(&self.channels.revision(self.scope.session()))),
                 on_exit,
             )
             .map_err(|_| InvokeError::Rejected)?;
@@ -277,7 +286,7 @@ impl WorkspaceExternal {
         // A NEW pane changed the set: wake parked waiters now, before its first output, so a
         // mirror learns the pane exists immediately (the pane-set change-notification, distinct
         // from the per-pane output bump the hook fires).
-        self.revision.bump();
+        self.announce();
         Ok(IntrospectValue::Int(
             i64::try_from(id.0).unwrap_or(i64::MAX),
         ))
@@ -294,7 +303,7 @@ impl WorkspaceExternal {
             // tile promptly. `removed` (the reaped `Pane`) is still bound, so its
             // blocking `Drop` (kill/wait/join) runs after this returns, outside the
             // lock — the bump only signals the already-completed removal.
-            self.revision.bump();
+            self.announce();
             Ok(IntrospectValue::Null)
         } else {
             Err(InvokeError::Rejected) // no such pane
@@ -361,7 +370,7 @@ impl WorkspaceExternal {
                 .ok_or(InvokeError::Rejected)?;
         // The arrangement changed: wake parked waiters so another attached client
         // re-projects promptly, exactly as a pane-set change does.
-        self.revision.bump();
+        self.announce();
         layout_value(snapshot).ok_or(InvokeError::Rejected)
     }
 
@@ -376,7 +385,7 @@ impl WorkspaceExternal {
             .ok_or(InvokeError::TypeMismatch)?;
         let snapshot = crate::host::set_floating(&self.registry, &self.scope, id, floating)
             .ok_or(InvokeError::Rejected)?;
-        self.revision.bump();
+        self.announce();
         layout_value(snapshot).ok_or(InvokeError::Rejected)
     }
 
@@ -462,9 +471,12 @@ impl WorkspaceExternal {
                 "the birth pane could not spawn; the session was created empty",
             );
         }
-        // The session SET changed AND (on success) it now holds a live pane: wake a client
-        // watching the surface once, the way it learns of any pane-set change.
-        self.revision.bump();
+        // Two sessions changed, and only one of them is this request's scope. The NEW session now
+        // holds a live pane — announced on its OWN channel, because a client that asked for it will
+        // scope its next wait there and would otherwise sleep through its own birth pane's first
+        // output. The scoped session's list of sessions grew, which is a change to what IT shows.
+        self.channels.bump(&allocated);
+        self.announce();
         // Explicit, because the ORDER matters and a lexical drop would not say so: the claim must
         // outlive the spawn above (that is its whole job) and must fall before this call answers,
         // so the client's next request meets a daemon whose liveness is settled either way.
@@ -511,8 +523,16 @@ impl WorkspaceExternal {
     /// [`kill_window`](Self::kill_window), so the two cannot drift.
     fn handle_session_kill(&self, outcome: KillOutcome) {
         match outcome {
-            KillOutcome::Removed(_removed) => {
-                self.revision.bump();
+            KillOutcome::Removed(removed) => {
+                // CLOSE the dead session's channel before announcing on this one. A client parked
+                // on `scene/waitFor` for the session that just went is waiting on a token nothing
+                // can ever advance again — no pane of it survives to produce output and no request
+                // will be scoped to it — so closing is what releases it to re-read, meet the scope
+                // refusal, and detach. The name comes off the removed session itself rather than
+                // from the caller's argument: the last-window escalation reaches here with no name
+                // in hand, and one of the two paths guessing would be the one that leaked.
+                self.channels.close(removed.name());
+                self.announce();
             }
             KillOutcome::KilledServer(_drained) => {
                 if let Some(on_pane_exit) = &self.on_pane_exit {
@@ -577,7 +597,7 @@ impl WorkspaceExternal {
                 "the window's birth pane could not spawn; the window was created empty",
             );
         }
-        self.revision.bump();
+        self.announce();
         Ok(IntrospectValue::Json(Value::String(created)))
     }
 
@@ -594,7 +614,7 @@ impl WorkspaceExternal {
                 tracing::debug!(target: "sprag_host", %error, "refused to select a window");
                 InvokeError::Rejected
             })?;
-        self.revision.bump();
+        self.announce();
         Ok(IntrospectValue::Json(Value::Null))
     }
 
@@ -613,7 +633,7 @@ impl WorkspaceExternal {
                 tracing::debug!(target: "sprag_host", %error, "refused to rename a window");
                 InvokeError::Rejected
             })?;
-        self.revision.bump();
+        self.announce();
         Ok(IntrospectValue::Json(Value::Null))
     }
 
@@ -630,7 +650,7 @@ impl WorkspaceExternal {
             Ok(WindowKillOutcome::Removed(_panes)) => {
                 // A non-last window: its drained panes drop here, off-lock; wake clients watching
                 // the windows list.
-                self.revision.bump();
+                self.announce();
             }
             Ok(WindowKillOutcome::Session(kill)) => self.handle_session_kill(kill),
             Err(error) => {
@@ -664,7 +684,7 @@ impl WorkspaceExternal {
                 // pane) — the same shape a refused window op reports.
                 InvokeError::Rejected
             })?;
-        self.revision.bump();
+        self.announce();
         Ok(IntrospectValue::Json(Value::String(created)))
     }
 
@@ -689,7 +709,7 @@ impl WorkspaceExternal {
                 tracing::debug!(target: "sprag_host", %error, "refused to join a pane");
                 InvokeError::Rejected
             })?;
-        self.revision.bump();
+        self.announce();
         Ok(IntrospectValue::Json(
             serde_json::json!({ "closed_source": closed }),
         ))
@@ -1135,6 +1155,7 @@ fn build_command(argv: &[Value]) -> Result<(CommandBuilder, String), InvokeError
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pinion_core::SceneRevision;
     use serde_json::json;
     use sprag_terminal::PaneId;
 
@@ -1166,10 +1187,10 @@ mod tests {
     }
 
     /// A control surface over `reg` scoped to the DEFAULT session (what an unscoped request
-    /// gets), sharing a fresh revision (returned so a test can
-    /// assert the pane-lifecycle bumps). No `HostState` / observer is installed —
-    /// [`SceneRevision::bump`] advances [`current`](SceneRevision::current) either
-    /// way, which is all these tests read.
+    /// gets), plus the SCOPED session's token (returned so a test can assert the pane-lifecycle
+    /// bumps). The token is read out of the channels by NAME, which is also what a test asserting
+    /// a bump has to do now: a bump lands on one session's counter, so reading "the revision"
+    /// without saying whose would be reading the wrong one.
     fn control(reg: &Arc<Mutex<SessionRegistry>>) -> (WorkspaceExternal, Arc<SceneRevision>) {
         let scope = SessionScope::unscoped(reg);
         scoped_control(reg, scope)
@@ -1181,9 +1202,10 @@ mod tests {
         reg: &Arc<Mutex<SessionRegistry>>,
         scope: SessionScope,
     ) -> (WorkspaceExternal, Arc<SceneRevision>) {
-        let revision = Arc::new(SceneRevision::new());
+        let channels = Arc::new(ChannelRegistry::default());
+        let revision = channels.revision(scope.session());
         (
-            WorkspaceExternal::new(Arc::clone(reg), scope, Arc::clone(&revision), None, None),
+            WorkspaceExternal::new(Arc::clone(reg), scope, channels, None, None),
             revision,
         )
     }
@@ -2001,7 +2023,7 @@ mod tests {
         let ext = WorkspaceExternal::new(
             Arc::clone(&reg),
             SessionScope::unscoped(&reg),
-            Arc::new(SceneRevision::new()),
+            Arc::new(ChannelRegistry::default()),
             None,
             Some(attachments),
         );
@@ -2365,7 +2387,7 @@ mod tests {
         let mut ext = WorkspaceExternal::new(
             Arc::clone(&reg),
             SessionScope::unscoped(&reg),
-            Arc::new(SceneRevision::new()),
+            Arc::new(ChannelRegistry::default()),
             Some(signal),
             None,
         );
@@ -2508,7 +2530,7 @@ mod tests {
         let mut ext = WorkspaceExternal::new(
             Arc::clone(&reg),
             SessionScope::unscoped(&reg),
-            Arc::new(SceneRevision::new()),
+            Arc::new(ChannelRegistry::default()),
             Some(signal),
             None,
         );
@@ -2738,7 +2760,7 @@ mod tests {
         let mut ext = WorkspaceExternal::new(
             Arc::clone(&reg),
             SessionScope::unscoped(&reg),
-            Arc::new(SceneRevision::new()),
+            Arc::new(ChannelRegistry::default()),
             Some(signal),
             None,
         );

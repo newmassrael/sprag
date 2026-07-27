@@ -52,13 +52,18 @@ pub struct ClientInfo {
 
 /// What an [`attach`](AttachmentRegistry::attach) did, so the caller knows whether the per-session
 /// counts moved (and the scene must be bumped so other clients' long-polls re-read the badge).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum AttachOutcome {
     /// The connection never sent [`crate::wire::CLIENT_HELLO_METHOD`] — a protocol error; the
     /// caller refuses the request rather than inventing a client.
     NoClient,
     /// The client's attached session changed (a first attach, or a switch): the counts moved.
-    Changed,
+    ///
+    /// `previous` names the session it LEFT, `None` on a first attach. Carried rather than
+    /// discarded because a switch moves TWO badges, and each session announces its own changes: a
+    /// client watching the session being left has to be told its viewer count fell, and only this
+    /// value can say which session that was.
+    Changed { previous: Option<String> },
     /// The client was already attached to that session: an idempotent re-send, counts unmoved.
     Unchanged,
 }
@@ -92,8 +97,8 @@ impl AttachmentRegistry {
         match self.client_session.get(&client) {
             Some(prev) if *prev == session => AttachOutcome::Unchanged,
             _ => {
-                self.client_session.insert(client, session);
-                AttachOutcome::Changed
+                let previous = self.client_session.insert(client, session);
+                AttachOutcome::Changed { previous }
             }
         }
     }
@@ -163,7 +168,11 @@ mod tests {
         let mut reg = AttachmentRegistry::default();
         let c = conn(1);
         reg.hello(c, "client-a".to_owned());
-        assert_eq!(reg.attach(c, "work".to_owned()), AttachOutcome::Changed);
+        assert_eq!(
+            reg.attach(c, "work".to_owned()),
+            AttachOutcome::Changed { previous: None },
+            "a FIRST attach left no session behind",
+        );
         assert_eq!(reg.attached_count("work"), 1);
         assert_eq!(reg.attached_count("other"), 0);
     }
@@ -190,7 +199,10 @@ mod tests {
         let mut reg = AttachmentRegistry::default();
         let c = conn(1);
         reg.hello(c, "client-a".to_owned());
-        assert_eq!(reg.attach(c, "work".to_owned()), AttachOutcome::Changed);
+        assert_eq!(
+            reg.attach(c, "work".to_owned()),
+            AttachOutcome::Changed { previous: None }
+        );
         assert_eq!(
             reg.attach(c, "work".to_owned()),
             AttachOutcome::Unchanged,
@@ -204,7 +216,13 @@ mod tests {
         let c = conn(1);
         reg.hello(c, "client-a".to_owned());
         reg.attach(c, "one".to_owned());
-        assert_eq!(reg.attach(c, "two".to_owned()), AttachOutcome::Changed);
+        assert_eq!(
+            reg.attach(c, "two".to_owned()),
+            AttachOutcome::Changed {
+                previous: Some("one".to_owned())
+            },
+            "a SWITCH names the session it left, so that one's badge can be announced too",
+        );
         assert_eq!(reg.attached_count("one"), 0, "left the old session");
         assert_eq!(reg.attached_count("two"), 1, "on the new session");
     }
