@@ -12,6 +12,14 @@ publish = false
 name = "sprag-gui"
 path = "src/main.rs"
 
+# The LIVE headless smoke, as a tool rather than a script re-derived each round. Declared
+# explicitly beside the GUI (the crate whose surface it drives) rather than auto-discovered, so the
+# two targets are visible in one place. NOT a `cargo test`: it needs a built binary, an X display
+# and a software Vulkan stack, so the gate must not depend on it.
+[[bin]]
+name = "sprag-smoke"
+path = "src/bin/sprag-smoke.rs"
+
 [dependencies]
 # The host's per-pane cell DATA query (pane_cells) + the Screen-free node
 # assembly (pane_view_scene_from_cells) + scene tags — the topology-B wire seam
