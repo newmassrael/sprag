@@ -295,7 +295,17 @@ pub(crate) fn use_terminal() -> Rc<TerminalView> {
             // Escape hatch (`SPRAG_GUI_HOST=inprocess`): the Workspace lives IN the
             // GUI process. Kept for tests / debugging; NOT the default. Each pane's
             // `on_dirty` repaints the window directly (the R23 -> R999 seam).
-            let host = Host::new((cols, rows));
+            // The pane-hook factory is installed BEFORE the boot spawns so a pane created later
+            // through the client protocol (a palette `Split into a new pane`) repaints this window
+            // exactly as a boot pane does — `HostClient::new_pane` takes no arguments, so this is
+            // the only place the display concern can be stated.
+            let host = {
+                let sink = sink.clone();
+                Host::new((cols, rows)).with_pane_hooks(move || {
+                    let sink = sink.clone();
+                    Some(Box::new(move || sink.request_repaint()))
+                })
+            };
             for _ in 0..pane_count() {
                 let sink = sink.clone();
                 let (command, label) = pane_command();

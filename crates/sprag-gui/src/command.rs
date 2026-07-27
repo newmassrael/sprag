@@ -57,10 +57,13 @@
 //!
 //! * **Commands that need an ARGUMENT** (`rename-window`). The palette's field holds a query, and
 //!   a second field for a value is a mode this surface does not have yet.
-//! * **Creating and closing PANES.** Not a policy call — the client genuinely cannot do it yet:
-//!   [`HostClient`](sprag_host::HostClient) exposes no `spawn` / `close`, so there is no live path
-//!   to offer. The wire actions exist and the boot path already drives them, so this is an additive
-//!   host-client capability, filed as its own increment rather than faked here.
+//!
+//! Creating and closing PANES used to be listed here too — not as a policy call but because the
+//! client genuinely could not do it: [`HostClient`](sprag_host::HostClient) exposed no pane
+//! create / close, so there was no live path to offer. It does now
+//! ([`new_pane`](sprag_host::HostClient::new_pane) / [`kill_pane`](sprag_host::HostClient::kill_pane)),
+//! and both rows are in the catalog — the kill among the destructive ones, since it ends a running
+//! program.
 //!
 //! ## The pane a command acts on
 //!
@@ -100,6 +103,10 @@ pub(crate) enum Command {
     BreakOut,
     /// Move the target pane into the named window (tmux `join-pane`) — `BreakOut`'s inverse.
     JoinInto(String),
+    /// Create a pane in the current window (tmux `split-window`).
+    NewPane,
+    /// Close the target pane (tmux `kill-pane`). DESTRUCTIVE — see [`Command::confirmation`].
+    KillPane,
     /// Create a window in the current session and select it.
     NewWindow,
     /// Select the named window of the current session.
@@ -138,13 +145,20 @@ impl Command {
             Self::ToggleFloat => "Toggle floating pane".to_owned(),
             Self::BreakOut => "Break pane out to a new window".to_owned(),
             Self::JoinInto(name) => format!("Move pane to window {name}"),
+            // "Split" is the word every terminal multiplexer uses for this and the one a user will
+            // type; "new pane" is what it actually produces and what a query of "new" should also
+            // reach. The title carries both rather than choosing.
+            Self::NewPane => "Split into a new pane".to_owned(),
             Self::NewWindow => "New window".to_owned(),
             Self::SelectWindow(name) => format!("Go to window {name}"),
             Self::NewSession => "New session".to_owned(),
             Self::SwitchSession(name) => format!("Switch to session {name}"),
             Self::LastSession => "Switch to the last session".to_owned(),
             // The verb LEADS, so a query of "kill" collects every destructive row in one place —
-            // the one search a user makes when they are about to do something irreversible.
+            // the one search a user makes when they are about to do something irreversible. Which
+            // is also why the pane's row is `Kill pane` and not `Close pane`: it belongs in that
+            // one search, and what it does to a running program is a kill by any honest name.
+            Self::KillPane => "Kill pane".to_owned(),
             Self::KillWindow(name) => format!("Kill window {name}"),
             Self::KillSession(name) => format!("Kill session {name}"),
             // The project's own words. NOT prefixed with "Run" — a project titles its commands, and
@@ -177,6 +191,7 @@ impl Command {
             Self::SelectAll
             | Self::BreakOut
             | Self::JoinInto(_)
+            | Self::NewPane
             | Self::NewWindow
             | Self::SelectWindow(_)
             | Self::NewSession
@@ -184,6 +199,7 @@ impl Command {
             // A kill deliberately advertises no chord: there is none, and this column is also where
             // the eye looks for one. What it WOULD say is on the confirmation prompt instead, which
             // is the only place a consequence can be read in time to change the outcome.
+            | Self::KillPane
             | Self::KillWindow(_)
             | Self::KillSession(_) => None,
         }
@@ -207,8 +223,42 @@ impl Command {
     /// [`confirm::arm`](crate::confirm::run_or_arm)) so the prompt cannot be re-derived out from
     /// under the person reading it — the same discipline the session rail's captured-name kill
     /// keeps, extended from the name to the whole sentence.
-    pub(crate) fn confirmation(&self, slots: &SlotView) -> Option<Confirmation> {
+    /// Takes `target` for the same reason [`run`](Self::run) does, and it is not symmetry for its own
+    /// sake: a destructive command addressed by the CAPTURED pane rather than by a name can only
+    /// describe what it is about to destroy if it is told which pane that is. [`Self::KillPane`] is
+    /// the case — its escalation (this is the window's last pane) is a fact about the target, and
+    /// without the argument the prompt would have to fall back to a sentence that is true of every
+    /// pane and therefore useful about none.
+    pub(crate) fn confirmation(
+        &self,
+        target: Option<usize>,
+        slots: &SlotView,
+    ) -> Option<Confirmation> {
         match self {
+            // Named by what it RUNS, not by an index: "pane 2" is a display slot the user never
+            // chose and cannot see, whereas the program in it is what they are looking at. Falls
+            // back to the bare question when the label is empty (a pane whose command is unknown),
+            // rather than painting an empty quotation.
+            Self::KillPane => Some(Confirmation {
+                prompt: match target.map(|pane| slots.pane_command_label(pane)) {
+                    Some(label) if !label.is_empty() => format!("Kill pane running '{label}'?"),
+                    _ => "Kill this pane?".to_owned(),
+                },
+                // The two escalations compose, and the WINDOW one only escalates further when the
+                // window is also the session's last — the same chain `KillWindow` states one link
+                // further along, arrived at from the pane end.
+                consequence: match (
+                    slots.occupied_slots().len() <= 1,
+                    slots.windows().len() <= 1,
+                ) {
+                    (true, true) => Some(
+                        "It is this window's last pane and this session's last window.".to_owned(),
+                    ),
+                    (true, false) => Some("It is this window's last pane.".to_owned()),
+                    (false, _) => None,
+                },
+                verb: KILL_VERB.to_owned(),
+            }),
             Self::KillWindow(name) => Some(Confirmation {
                 prompt: format!("Kill window '{name}'?"),
                 // The escalation the name alone does not carry: `kill-window` on the last window is
@@ -231,6 +281,7 @@ impl Command {
             | Self::ToggleFloat
             | Self::BreakOut
             | Self::JoinInto(_)
+            | Self::NewPane
             | Self::NewWindow
             | Self::SelectWindow(_)
             | Self::NewSession
@@ -253,8 +304,13 @@ impl Command {
     /// The residual this does NOT close is name REUSE, and it is inherent: a name is the only window
     /// / session identity on the wire, so a captured name whose bearer was killed and replaced reads
     /// as live. That is the same bound the session rail's own auto-disarm states, unchanged here.
-    pub(crate) fn target_still_exists(&self, slots: &SlotView) -> bool {
+    pub(crate) fn target_still_exists(&self, target: Option<usize>, slots: &SlotView) -> bool {
         match self {
+            // The pane's own case is the one this check is STRONGEST for: a pane is the thing most
+            // likely to vanish under an open prompt, because its child can simply exit. And unlike a
+            // window or session name, a slot cannot be reused out from under the capture within a
+            // frame — the reconcile that frees a slot is the same one this runs beside.
+            Self::KillPane => target.is_some_and(|pane| slots.is_pane_occupied(pane)),
             Self::KillWindow(name) => slots.windows().iter().any(|window| &window.name == name),
             Self::KillSession(name) => slots.sessions().iter().any(|session| &session.name == name),
             Self::Find
@@ -264,6 +320,7 @@ impl Command {
             | Self::ToggleFloat
             | Self::BreakOut
             | Self::JoinInto(_)
+            | Self::NewPane
             | Self::NewWindow
             | Self::SelectWindow(_)
             | Self::NewSession
@@ -299,8 +356,13 @@ impl Command {
             | Self::JoinInto(_)
             // A project command is DELIVERED to a pane's prompt, so it needs one as much as a paste
             // does — and the pane it needs is the one whose project declared it.
-            | Self::Project(_) => true,
-            Self::NewWindow
+            | Self::Project(_)
+            // A kill of THE pane needs the pane, unlike the two name-addressed kills below it.
+            | Self::KillPane => true,
+            // Creating a pane needs no pane: it goes into the CURRENT WINDOW, which exists whether
+            // or not anything in it holds focus — the same reason `NewWindow` beside it needs none.
+            Self::NewPane
+            | Self::NewWindow
             | Self::SelectWindow(_)
             | Self::NewSession
             | Self::SwitchSession(_)
@@ -374,6 +436,16 @@ impl Command {
             Self::JoinInto(name) => {
                 if let Some(pane) = target {
                     slots.join_pane(pane, name);
+                }
+            }
+            Self::NewPane => {
+                // No target: the pane joins the CURRENT WINDOW, and the arrangement places it (the
+                // layout reconciles against the live pane set, so nothing here says where).
+                slots.new_pane();
+            }
+            Self::KillPane => {
+                if let Some(pane) = target {
+                    slots.close_pane(pane);
                 }
             }
             Self::NewWindow => {
@@ -495,6 +567,10 @@ pub(crate) fn catalog(target: Option<usize>, slots: &SlotView) -> Catalog {
         Command::SelectAll,
         Command::ToggleFloat,
         Command::BreakOut,
+        // Between the pane rows and the window ones because that is what it is: a pane command that
+        // needs no pane. It sits AFTER the rows that act on the pane you are looking at and BEFORE
+        // the ones that leave it.
+        Command::NewPane,
         Command::NewWindow,
     ]);
     // A pane command with no pane to act on is not offered at all: a row that is guaranteed to do
@@ -555,6 +631,13 @@ pub(crate) fn catalog(target: Option<usize>, slots: &SlotView) -> Catalog {
     // be deliberate — a palette opened by accident must not have `Kill session 0` under the cursor.
     // Typing "kill" collects them all (see [`Command::title`]), which is the only way they are meant
     // to be found, and the confirmation is still asked afterwards regardless.
+    // Narrowest first WITHIN the tail, mirroring the catalog's own most-specific-first rule: the one
+    // pane, then its window, then the session. Added HERE rather than in the block above — where its
+    // `needs_pane` would have been honoured by the `retain` — because a destructive row belongs past
+    // the cut with its siblings, so the guard is spelled out instead.
+    if target.is_some() {
+        out.push(Command::KillPane);
+    }
     out.extend(
         windows
             .iter()
@@ -676,6 +759,11 @@ mod tests {
         broken_panes: Vec<PaneId>,
         /// `(pane, destination window)` per join — `broken_panes`' inverse.
         joined: Vec<(PaneId, String)>,
+        /// How many panes were created (tmux `split-window`).
+        new_panes: usize,
+        /// The panes a kill removed — recorded, not no-op'd, for the reason the killed WINDOWS are:
+        /// a mis-addressed destructive command cannot be walked back.
+        killed_panes: Vec<PaneId>,
         last_session: usize,
         /// `(pane, text)` per paste — how a project command reaches a pane.
         pasted: Vec<(PaneId, String)>,
@@ -699,6 +787,9 @@ mod tests {
         log: Rc<RefCell<Log>>,
         /// What this host answers for a pane's project — the three outcomes the real host has.
         project: Option<Result<sprag_host::Project, sprag_host::ProjectError>>,
+        /// The live pane set. Ids are deliberately NOT their slot numbers, so a test asserting on a
+        /// recorded id proves the slot→id mapping was applied rather than an accidental identity.
+        panes: Vec<PaneId>,
     }
 
     impl HostClient for CatalogHost {
@@ -768,9 +859,15 @@ mod tests {
             true
         }
         fn pane_ids(&self) -> Vec<PaneId> {
-            // A pane whose id is NOT its slot number, so a test asserting on the id it recorded
-            // proves the slot→id mapping was applied rather than an accidental identity.
-            vec![PaneId(7)]
+            self.panes.clone()
+        }
+        fn new_pane(&self) -> Option<PaneId> {
+            self.log.borrow_mut().new_panes += 1;
+            Some(PaneId(99))
+        }
+        fn kill_pane(&self, id: PaneId) -> bool {
+            self.log.borrow_mut().killed_panes.push(id);
+            true
         }
         fn pane_cells(&self, _id: PaneId, _off: usize) -> GridBuffer {
             GridBuffer::new(1, 1)
@@ -825,6 +922,17 @@ mod tests {
         sessions: &[&str],
         current: &str,
     ) -> (SlotView, Rc<RefCell<Log>>) {
+        slots_with_panes(windows, sessions, current, 1)
+    }
+
+    /// The same, over `panes` live panes — the dimension a pane-addressed destructive command reads
+    /// (killing the LAST pane of a window says something extra), so a test can drive both branches.
+    fn slots_with_panes(
+        windows: &[(&str, bool)],
+        sessions: &[&str],
+        current: &str,
+        panes: usize,
+    ) -> (SlotView, Rc<RefCell<Log>>) {
         let log: Rc<RefCell<Log>> = Rc::default();
         let host = CatalogHost {
             windows: windows
@@ -838,6 +946,8 @@ mod tests {
             current: current.to_owned(),
             log: Rc::clone(&log),
             project: None,
+            // Offset so no id equals its slot (see the field's own note).
+            panes: (0..panes).map(|i| PaneId(7 + i as u64)).collect(),
         };
         let slots = SlotView::new(Box::new(host));
         slots.reconcile();
@@ -858,6 +968,7 @@ mod tests {
             current: "0".to_owned(),
             log: Rc::clone(&log),
             project: answer,
+            panes: vec![PaneId(7)],
         };
         let slots = SlotView::new(Box::new(host));
         slots.reconcile();
@@ -1282,18 +1393,18 @@ mod tests {
 
         let first_kill = commands
             .iter()
-            .position(|command| command.confirmation(&slots).is_some())
+            .position(|command| command.confirmation(Some(0), &slots).is_some())
             .expect("the catalog offers destructive commands");
         let last_safe = commands
             .iter()
-            .rposition(|command| command.confirmation(&slots).is_none())
+            .rposition(|command| command.confirmation(Some(0), &slots).is_none())
             .expect("...and safe ones");
         assert!(
             first_kill > last_safe,
             "every destructive row sits after every safe one: kill at {first_kill}, safe at {last_safe}"
         );
         assert!(
-            !matches!(commands.first(), Some(command) if command.confirmation(&slots).is_some()),
+            !matches!(commands.first(), Some(command) if command.confirmation(Some(0), &slots).is_some()),
             "and never at the cursor's opening position"
         );
     }
@@ -1308,8 +1419,11 @@ mod tests {
         let (slots, _log) = slots_with(&[("main", true), ("build", false)], &["0", "work"], "0");
 
         for command in catalog(Some(0), &slots).commands {
-            let destructive = matches!(command, Command::KillWindow(_) | Command::KillSession(_));
-            let asks = command.confirmation(&slots);
+            let destructive = matches!(
+                command,
+                Command::KillPane | Command::KillWindow(_) | Command::KillSession(_)
+            );
+            let asks = command.confirmation(Some(0), &slots);
             assert_eq!(
                 asks.is_some(),
                 destructive,
@@ -1336,7 +1450,7 @@ mod tests {
         // One window: killing it ends the session. Attached session "0": killing it detaches.
         let (single, _log) = slots_with(&[("main", true)], &["0", "work"], "0");
         let last_window = Command::KillWindow("main".to_owned())
-            .confirmation(&single)
+            .confirmation(Some(0), &single)
             .expect("a kill asks");
         assert!(
             last_window
@@ -1346,7 +1460,7 @@ mod tests {
             "the last window's prompt names the escalation: {last_window:?}"
         );
         let attached = Command::KillSession("0".to_owned())
-            .confirmation(&single)
+            .confirmation(Some(0), &single)
             .expect("a kill asks");
         assert!(
             attached
@@ -1360,7 +1474,7 @@ mod tests {
         let (several, _log) = slots_with(&[("main", true), ("build", false)], &["0", "work"], "0");
         assert!(
             Command::KillWindow("build".to_owned())
-                .confirmation(&several)
+                .confirmation(Some(0), &several)
                 .expect("a kill asks")
                 .consequence
                 .is_none(),
@@ -1368,7 +1482,7 @@ mod tests {
         );
         assert!(
             Command::KillSession("work".to_owned())
-                .confirmation(&several)
+                .confirmation(Some(0), &several)
                 .expect("a kill asks")
                 .consequence
                 .is_none(),
@@ -1385,13 +1499,145 @@ mod tests {
     fn only_a_command_naming_a_destroyable_target_can_report_it_gone() {
         let (slots, _log) = slots_with(&[("main", true)], &["0"], "0");
 
-        assert!(Command::KillWindow("main".to_owned()).target_still_exists(&slots));
-        assert!(!Command::KillWindow("gone".to_owned()).target_still_exists(&slots));
-        assert!(Command::KillSession("0".to_owned()).target_still_exists(&slots));
-        assert!(!Command::KillSession("gone".to_owned()).target_still_exists(&slots));
+        assert!(Command::KillWindow("main".to_owned()).target_still_exists(None, &slots));
+        assert!(!Command::KillWindow("gone".to_owned()).target_still_exists(None, &slots));
+        assert!(Command::KillSession("0".to_owned()).target_still_exists(None, &slots));
+        assert!(!Command::KillSession("gone".to_owned()).target_still_exists(None, &slots));
         assert!(
-            Command::NewWindow.target_still_exists(&slots),
+            Command::NewWindow.target_still_exists(None, &slots),
             "a command that names nothing destroyable is always targetable"
+        );
+        // The pane's case is target-addressed, so its answer moves with the ARGUMENT, not with a
+        // name — the whole reason `target_still_exists` gained one.
+        assert!(Command::KillPane.target_still_exists(Some(0), &slots));
+        assert!(
+            !Command::KillPane.target_still_exists(Some(3), &slots),
+            "an empty slot is a pane that has gone"
+        );
+        assert!(
+            !Command::KillPane.target_still_exists(None, &slots),
+            "and a kill armed with no pane at all can never still be targetable"
+        );
+    }
+
+    /// The two pane commands reach the HOST — a split creates, a kill removes THE captured pane —
+    /// and the kill is addressed by the pane's host id, not by its display slot.
+    ///
+    /// REVERT-PROOF: drop either arm of [`Command::run`] and its assertion fails; address the kill
+    /// by the slot number instead of `SlotView`'s mapping and the recorded id is 0, not 8.
+    #[test]
+    fn the_pane_commands_reach_the_host_and_the_kill_is_slot_mapped() {
+        let (slots, log) = slots_with_panes(&[("main", true)], &["0"], "0", 2);
+
+        Command::NewPane.run(None, &slots);
+        assert_eq!(
+            log.borrow().new_panes,
+            1,
+            "a split reaches the host with no target — it goes into the current window"
+        );
+
+        Command::KillPane.run(Some(1), &slots);
+        assert_eq!(
+            log.borrow().killed_panes,
+            vec![PaneId(8)],
+            "slot 1 is host pane 8 — the kill is addressed by id, never by the display slot"
+        );
+
+        // Total over an absent target, like every other pane arm: nothing runs, nothing panics.
+        Command::KillPane.run(None, &slots);
+        assert_eq!(
+            log.borrow().killed_panes.len(),
+            1,
+            "a kill armed with no pane touches nothing"
+        );
+    }
+
+    /// A pane kill names the PROGRAM it is about to end, and escalates only when the pane is the
+    /// last one — composing with the window escalation when it is also the last window.
+    ///
+    /// REVERT-PROOF: drop the `occupied_slots` condition and the two-pane case grows a consequence;
+    /// drop the `windows` condition and the last-pane case stops mentioning the session.
+    #[test]
+    fn a_pane_kill_states_only_the_escalation_it_actually_has() {
+        // Two panes: nothing extra to say, whatever the window count.
+        let (roomy, _log) = slots_with_panes(&[("main", true), ("build", false)], &["0"], "0", 2);
+        assert!(
+            Command::KillPane
+                .confirmation(Some(0), &roomy)
+                .expect("a pane kill asks")
+                .consequence
+                .is_none(),
+            "a pane with a sibling takes nothing else down with it"
+        );
+
+        // The last pane of a window that is NOT the last window: the window goes, the session stays.
+        let (last_pane, _log) =
+            slots_with_panes(&[("main", true), ("build", false)], &["0"], "0", 1);
+        let words = Command::KillPane
+            .confirmation(Some(0), &last_pane)
+            .expect("a pane kill asks");
+        let line = words
+            .consequence
+            .as_deref()
+            .expect("the escalation is said");
+        assert!(
+            line.contains("last pane"),
+            "it names the pane escalation: {line}"
+        );
+        assert!(
+            !line.contains("session"),
+            "and does NOT claim the session ends when another window survives: {line}"
+        );
+
+        // The last pane of the last window: both escalations, in one sentence.
+        let (last_of_all, _log) = slots_with_panes(&[("main", true)], &["0"], "0", 1);
+        let line = Command::KillPane
+            .confirmation(Some(0), &last_of_all)
+            .expect("a pane kill asks")
+            .consequence
+            .expect("the escalation is said");
+        assert!(
+            line.contains("last pane") && line.contains("last window"),
+            "the two escalations compose: {line}"
+        );
+    }
+
+    /// The two pane rows are OFFERED on the terms their kinds set: the split needs no pane (it
+    /// creates one in the current window), the kill needs the pane it destroys — and the kill trails
+    /// the list with the other destructive rows while the split sits among the safe ones.
+    ///
+    /// REVERT-PROOF: make `NewPane::needs_pane` true and it vanishes from the pane-less catalog;
+    /// drop the `target.is_some()` guard on the kill and it is offered with nothing to kill.
+    #[test]
+    fn the_pane_rows_are_offered_on_the_terms_their_kinds_set() {
+        let (slots, _log) = slots_with(&[("main", true)], &["0"], "0");
+
+        let with_pane = catalog(Some(0), &slots).commands;
+        assert!(
+            with_pane.contains(&Command::NewPane) && with_pane.contains(&Command::KillPane),
+            "a captured pane offers both: {with_pane:?}"
+        );
+        let split = with_pane
+            .iter()
+            .position(|c| *c == Command::NewPane)
+            .expect("the split is offered");
+        let kill = with_pane
+            .iter()
+            .position(|c| *c == Command::KillPane)
+            .expect("the kill is offered");
+        assert!(
+            split < kill,
+            "the split sits with the safe rows and the kill trails with the destructive ones"
+        );
+
+        let without = catalog(None, &slots).commands;
+        assert!(
+            without.contains(&Command::NewPane),
+            "a split is still offered with no pane captured — it needs none: {without:?}"
+        );
+        assert!(
+            !without.contains(&Command::KillPane),
+            "but a kill with nothing to kill is not a row: {without:?}"
         );
     }
 

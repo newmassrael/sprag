@@ -198,6 +198,23 @@ impl SlotView {
         self.host.kill_window(name);
     }
 
+    /// Create a pane in the current window (tmux `split-window`), returning whether one was born.
+    ///
+    /// The only write here that takes NO slot, because it addresses nothing that exists yet. Which
+    /// slot the new pane lands in is not this call's answer either: the host appends it to the
+    /// arrangement and the next [`reconcile`](Self::reconcile) maps it, exactly as it maps a pane a
+    /// second client or a plugin created.
+    pub(crate) fn new_pane(&self) -> bool {
+        self.host.new_pane().is_some()
+    }
+
+    /// Close slot `slot`'s pane (tmux `kill-pane`), returning whether one was removed — `false` for
+    /// a hole. DESTRUCTIVE: the pane's child is killed and its scrollback goes with it. The asking
+    /// happens above, in [`confirm`](crate::confirm); this is the performer.
+    pub(crate) fn close_pane(&self, slot: usize) -> bool {
+        self.id(slot).is_some_and(|id| self.host.kill_pane(id))
+    }
+
     /// Break slot `slot`'s pane out into a NEW window (tmux `break-pane`), returning the new
     /// window's name — `None` for a hole, or when the daemon refuses (the pane is its window's
     /// only one). Slot-mapped: the reducer knows the pane the user acted on by its slot, and the

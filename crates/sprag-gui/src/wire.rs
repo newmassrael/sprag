@@ -81,12 +81,12 @@ use base64::engine::general_purpose::STANDARD;
 use pinion_core::{GridBuffer, QuitSink};
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    BREAK_PANE_ACTION, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT, DROP_FILE_ACTION,
-    FOCUS_ACTION, FULL_TEXT_SLOT, JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION,
-    KILL_WINDOW_ACTION, LAYOUT_SLOT, MOUSE_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION,
-    PANES_SLOT, PASTE_ACTION, PROMPT_MARKS_SLOT, RESIZE_ACTION, SELECT_WINDOW_ACTION,
-    SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT,
-    cells_slot_at, find_slot_for, project_slot_for, regex_slot_for,
+    BREAK_PANE_ACTION, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT, CLOSE_ACTION,
+    DROP_FILE_ACTION, FOCUS_ACTION, FULL_TEXT_SLOT, JOIN_PANE_ACTION, KEY_ACTION,
+    KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, MOUSE_ACTION, NEW_SESSION_ACTION,
+    NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, PROMPT_MARKS_SLOT, RESIZE_ACTION,
+    SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION,
+    TEXT_ACTION, WINDOWS_SLOT, cells_slot_at, find_slot_for, project_slot_for, regex_slot_for,
 };
 use sprag_host::{
     CellFrame, HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneNotification,
@@ -1098,6 +1098,35 @@ impl HostClient for WireHost {
         {
             self.refresh_view();
         }
+    }
+
+    /// Create a pane in the scoped session's current window over the wire, returning its host id.
+    ///
+    /// Args are EMPTY on purpose: `cmd` absent is what makes the daemon apply its own `$SHELL`
+    /// default, so the program a client-created pane runs is decided in one place (the host) rather
+    /// than being a string this client also has an opinion about.
+    fn new_pane(&self) -> Option<PaneId> {
+        let params = invoke(&mux_action_path(SPAWN_ACTION), json!({}));
+        let born = self
+            .request("scene/invoke", params, "new_pane")
+            .and_then(|value| value.as_u64())
+            .map(PaneId);
+        if born.is_some() {
+            self.refresh_view();
+        }
+        born
+    }
+
+    /// Close pane `id` over the wire. The daemon answers `Rejected` for an absent pane, which
+    /// arrives here as the absent request result — so "no such pane" and "the socket failed" are
+    /// both `false`, which is the same conflation every other write on this client accepts.
+    fn kill_pane(&self, id: PaneId) -> bool {
+        let params = invoke(&mux_action_path(CLOSE_ACTION), json!({ "id": id.0 }));
+        let killed = self.request("scene/invoke", params, "kill_pane").is_some();
+        if killed {
+            self.refresh_view();
+        }
+        killed
     }
 
     /// Break the pane `id` out into a new window (tmux `break-pane`) over the wire, returning the

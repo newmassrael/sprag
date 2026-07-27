@@ -451,6 +451,47 @@ pub trait HostClient {
     /// LAST window ends the session. A no-op for an unknown name.
     fn kill_window(&self, name: &str);
 
+    /// Create a pane in the scoped session's CURRENT window, born with a shell (tmux
+    /// `split-window`), returning its id — or `None` if the child could not be started.
+    ///
+    /// Named for its EFFECT in this trait's own vocabulary (`new_window` / `new_session` above),
+    /// not for tmux's verb: what "splits" is the ARRANGEMENT, and that happens by itself. A window's
+    /// [`LayoutTree`](sprag_terminal::LayoutTree) reconciles against the live pane set, so a pane
+    /// born here is appended to the arrangement on the next read with nothing said about it —
+    /// which is why this takes no position and returns no layout.
+    ///
+    /// Takes no argv: the pane is born with `$SHELL`, the same default the `spawn` wire action
+    /// applies to a request that names no `cmd`. A client that wants a specific program is asking
+    /// for something else (a run-in-a-new-pane target), which needs remain-on-exit first.
+    ///
+    /// Defaulted to `None` — a display client that never creates panes (and the test doubles) need
+    /// not implement it; the in-process [`Host`] and the wire client override it.
+    fn new_pane(&self) -> Option<PaneId> {
+        None
+    }
+
+    /// Close pane `id` — kill its child and drop it from the window (tmux `kill-pane`), returning
+    /// whether a pane was actually removed (`false` for an absent id).
+    ///
+    /// DESTRUCTIVE and unconditional: it ends a running program and takes that pane's scrollback
+    /// with it. Asking first is a CLIENT's job — this is the performer, exactly as
+    /// [`kill_window`](Self::kill_window) is.
+    ///
+    /// This is the ONE way a pane leaves a live window, and it is worth saying what it is NOT: a
+    /// child that exits on its own does **not** remove its pane. Nothing reaps an EOF pane — the
+    /// daemon's reaper reads
+    /// [`is_eof`](sprag_terminal::PanePty::is_eof) only to decide whether ANY pane is still live —
+    /// so an exited pane stays in the pool showing its last screen, and this is what removes it.
+    ///
+    /// The window emptied by the last pane is not closed either: the arrangement reconciles to an
+    /// empty tree and the window remains, exactly as a window whose panes all ran `exit` does.
+    ///
+    /// Defaulted to `false`, like [`new_pane`](Self::new_pane).
+    fn kill_pane(&self, id: PaneId) -> bool {
+        let _ = id;
+        false
+    }
+
     /// Break the pane `id` out of its window into a NEW window of the scoped session (tmux
     /// `break-pane`), returning the new window's name — or `None` if the move was refused (the
     /// pane's window has only that pane, an explicit `name` is already taken, or no window holds
@@ -698,7 +739,16 @@ pub trait HostClient {
 /// `Arc<Mutex<Workspace>>` and never learn about the tree above them.
 pub struct Host {
     registry: Arc<Mutex<SessionRegistry>>,
+    /// How a pane born through [`HostClient::new_pane`] is wired to its client — see
+    /// [`with_pane_hooks`](Self::with_pane_hooks). `None` leaves such a pane unwired.
+    pane_hooks: Option<PaneHooks>,
 }
+
+/// The `on_dirty` FACTORY a [`Host`] wires each client-created pane with: a fresh hook per pane,
+/// because a `Box<dyn Fn>` cannot be reused. The same shape [`Host::restore`] takes per call — the
+/// difference being that a restore's caller is present to supply one and
+/// [`HostClient::new_pane`]'s is not, so this is held instead of passed.
+type PaneHooks = Arc<dyn Fn() -> Option<Box<dyn Fn() + Send>> + Send + Sync>;
 
 impl Host {
     /// A new host over a registry with one empty session / window whose dimension-less
@@ -707,7 +757,30 @@ impl Host {
     pub fn new(default_size: (u16, u16)) -> Self {
         Self {
             registry: Arc::new(Mutex::new(SessionRegistry::new(default_size))),
+            pane_hooks: None,
         }
+    }
+
+    /// Install the `on_dirty` factory every pane born through [`HostClient::new_pane`] is wired
+    /// with — the in-process equivalent of the hook a caller passes [`spawn`](Self::spawn) for a
+    /// boot pane.
+    ///
+    /// It is HELD rather than passed because the trait method that needs it takes no arguments and
+    /// must not: `new_pane` is a mux operation, and how a pane wakes its display is not something a
+    /// palette row (or any other caller of the client protocol) knows or should have to say. So the
+    /// one place that DOES know — whoever built this host beside its display — states it once here.
+    ///
+    /// Without it a client-created pane is born unwired: its output still reaches its emulator, but
+    /// nothing asks the display to repaint, so it appears to stall until something else does. That
+    /// is the right default for a test (which polls) and the wrong one for a window, which is
+    /// exactly why the window's builder calls this and a test does not.
+    #[must_use]
+    pub fn with_pane_hooks(
+        mut self,
+        on_dirty: impl Fn() -> Option<Box<dyn Fn() + Send>> + Send + Sync + 'static,
+    ) -> Self {
+        self.pane_hooks = Some(Arc::new(on_dirty));
+        self
     }
 
     /// Spawn a boot pane running `command` (labelled `label`) at `cols x rows`,
@@ -1306,6 +1379,34 @@ impl HostClient for Host {
     /// Break the pane `id` out into a new window of the default session (tmux `break-pane`). The
     /// pane is MOVED (already spawned — no birth here, unlike [`new_window`](Self::new_window)) and
     /// the new window selected. `None` if the move was refused.
+    /// Spawn a shell into the default session's CURRENT window, wired with whatever
+    /// [`with_pane_hooks`](Self::with_pane_hooks) installed (nothing, for a test host).
+    ///
+    /// `$SHELL` through [`default_shell_command`](sprag_terminal::default_shell_command) — the same
+    /// SSOT the `spawn` wire action's `cmd`-less default resolves, so an in-process client and a
+    /// wire client are born with the same program rather than two ideas of "a shell".
+    ///
+    /// The pane adopts the workspace's default size: a client-created pane has no geometry of its
+    /// own until the first reflow gives it its tile, exactly as a boot pane does not.
+    fn new_pane(&self) -> Option<PaneId> {
+        let (command, label) = sprag_terminal::default_shell_command();
+        let on_dirty = self.pane_hooks.as_ref().and_then(|hooks| hooks());
+        let workspace = self.workspace();
+        let mut workspace = lock(&workspace);
+        let (cols, rows) = workspace.default_size();
+        workspace
+            .spawn_with_dirty(command, label, cols, rows, on_dirty, None)
+            .ok()
+    }
+
+    /// Remove the pane, bound so the pool guard drops FIRST and the reaped `Pane`'s blocking `Drop`
+    /// (kill / wait / join the reader) runs outside the lock — the discipline the `close` wire
+    /// action keeps for the same reason.
+    fn kill_pane(&self, id: PaneId) -> bool {
+        let removed = lock(&self.workspace()).close(id);
+        removed.is_some()
+    }
+
     fn break_pane(&self, id: PaneId, name: Option<&str>) -> Option<String> {
         let mut registry = lock(&self.registry);
         let session = registry.default_session().name().to_owned();
@@ -1413,6 +1514,8 @@ const DEFAULT_ALWAYS_RESOLVES: &str = "the default session resolves by construct
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
 
     /// A long-lived `cat` pane (echoes stdin, keeps the PTY open across assertions).
@@ -1525,6 +1628,80 @@ mod tests {
             .unwrap();
         assert_eq!(host.pane_ids(), vec![id]);
         assert_eq!(host.pane_grid_size(id), (40, 6));
+    }
+
+    /// The client-protocol pane pair: `new_pane` grows the CURRENT window's set with a shell, and
+    /// `kill_pane` removes exactly the pane named — answering `false` for one that is not there.
+    ///
+    /// REVERT-PROOF: have `new_pane` return `None` without spawning and the set never grows; have
+    /// `kill_pane` ignore its answer and the absent-id assertion fails, which is the difference
+    /// between "I closed it" and "there was nothing to close".
+    #[test]
+    fn the_client_protocol_creates_and_closes_panes_in_the_current_window() {
+        let host = Host::new((40, 6));
+        assert!(host.pane_ids().is_empty());
+
+        let first = host.new_pane().expect("a shell is born");
+        let second = host.new_pane().expect("and a second");
+        assert_eq!(
+            host.pane_ids(),
+            vec![first, second],
+            "both join the current window's pane set, in birth order"
+        );
+
+        assert!(host.kill_pane(first), "the named pane is removed");
+        assert_eq!(host.pane_ids(), vec![second], "and only that one");
+        assert!(
+            !host.kill_pane(first),
+            "closing it again reports that there was nothing to close"
+        );
+        assert!(host.kill_pane(second), "the window's LAST pane closes too");
+        assert!(
+            host.pane_ids().is_empty(),
+            "leaving an empty window rather than refusing"
+        );
+    }
+
+    /// A pane born through the client protocol is wired with the hooks the host was BUILT with —
+    /// the seam that keeps a client-created pane as live as a boot pane, since `new_pane` takes no
+    /// arguments and so has nowhere to be handed one.
+    ///
+    /// Asserts the factory was CONSULTED (a pane cannot be asked whether it holds a hook), which is
+    /// the whole of what this seam owes: `spawn_with_dirty` is what installs it, and its own tests
+    /// cover the firing.
+    ///
+    /// REVERT-PROOF: pass `None` instead of `self.pane_hooks` in `new_pane` and the count stays 0.
+    #[test]
+    fn a_client_created_pane_is_wired_with_the_hosts_own_pane_hooks() {
+        let asked = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&asked);
+        let host = Host::new((40, 6)).with_pane_hooks(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            None
+        });
+
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            0,
+            "nothing asked before a spawn"
+        );
+        host.new_pane().expect("a shell is born");
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            1,
+            "the factory is consulted once, per pane"
+        );
+        host.new_pane().expect("and again for the next");
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+    }
+
+    /// A host built WITHOUT hooks still creates panes — the test / headless default, and the reason
+    /// the field is an `Option` rather than a required constructor argument.
+    #[test]
+    fn a_host_with_no_pane_hooks_still_creates_panes() {
+        let host = Host::new((40, 6));
+        assert!(host.new_pane().is_some());
+        assert_eq!(host.pane_ids().len(), 1);
     }
 
     #[test]

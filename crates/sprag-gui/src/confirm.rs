@@ -194,7 +194,7 @@ pub(crate) fn is_open() -> bool {
 /// docs. A caller does not learn which branch was taken and does not need to: both mean "the user's
 /// activation has been dealt with".
 pub(crate) fn run_or_arm(command: Command, target: Option<usize>, slots: &SlotView) {
-    match command.confirmation(slots) {
+    match command.confirmation(target, slots) {
         Some(confirmation) => arm(command, target, confirmation),
         None => command.run(target, slots),
     }
@@ -258,7 +258,7 @@ fn activate_choice(slots: &SlotView) {
 /// host no-op — the confirmation equivalent of a dialog for a file that has been deleted.
 pub(crate) fn reconcile(slots: &SlotView) {
     if let Some(armed) = use_armed().get()
-        && !armed.command.target_still_exists(slots)
+        && !armed.command.target_still_exists(armed.target, slots)
     {
         dismiss();
     }
@@ -1331,7 +1331,7 @@ mod tests {
 
             let destructive: Vec<Command> = offered
                 .into_iter()
-                .filter(|command| command.confirmation(&terminal.slots).is_some())
+                .filter(|command| command.confirmation(Some(0), &terminal.slots).is_some())
                 .collect();
             assert!(
                 !destructive.is_empty(),
