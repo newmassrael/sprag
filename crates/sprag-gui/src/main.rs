@@ -711,8 +711,8 @@ impl WidgetCore for TerminalViewer {
         // (2b) Keep a pane on the keyboard. The window / session ops re-seed the focus ring
         // themselves (inside their own dispatch, so nothing is lost); this is the BACKSTOP for the
         // pane-set changes that reach this hook with no dispatch to live in — the poll thread's
-        // lost-session switch above — plus, until the pin carrying PINION-PR78 lands, the palette
-        // path, whose modal pop overrides the op's request. See
+        // lost-session switch above. It used to carry the palette path too, on loan from upstream;
+        // pinion R1462 plus the classifier fix gave that path its own in-dispatch answer. See
         // [`SlotView::reseed_pane_focus_if_idle`] for why it costs one input event and the op-site
         // seam does not.
         terminal.slots.reseed_pane_focus_if_idle();

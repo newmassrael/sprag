@@ -265,13 +265,17 @@ impl SlotView {
     /// directly rather than through [`switch_session`](Self::switch_session). No shell change can
     /// give that path a dispatch, so this is the only seam it has.
     ///
-    /// **It also currently covers a path that is upstream's, not ours** (PINION-PR78): a palette
-    /// row closes its dialog in the same dispatch as the command it runs, and pinion's modal pop
-    /// RESTORES the tag focused when the palette opened — after the op's own request, because the
-    /// drain order is focus-then-modal — so a palette-driven window change ends with the ring on a
-    /// pane the incoming window does not have. Measured, not assumed: the live smoke's palette leg
-    /// fails without this and passes with it. That coverage is symptom relief and should retire
-    /// when the pin carrying PR-78 lands; this method stays for the paragraph above.
+    /// **It no longer covers the palette path, and how that ended is worth the paragraph.** PINION-
+    /// PR78 landed as pinion R1462: the dispatch tail now applies the modal batch first and the
+    /// focus request last, so an op's request outranks the pop's restore. That did NOT by itself
+    /// fix anything here — measured with this backstop disabled, the smoke's palette leg still timed
+    /// out, 3 runs of 3, at the pin carrying the fix. The reason is that the op was not asking: a
+    /// palette row closes its dialog before running its command, so the op read a ring parked on a
+    /// field that no longer existed, called it `Elsewhere`, and declined ([`ring_of`] now draws that
+    /// distinction). Fixing the classifier is what closes the path, and R1462 is what makes fixing
+    /// it WORK — with the same fix on the previous pin the leg still failed, because the restore was
+    /// drained after the request and overwrote it. Upstream removed the veto; sprag had to start
+    /// asking. This method stays for the paragraph above.
     ///
     /// The cost is the ONE input event a request written from the paint path cannot beat: pinion
     /// drains the mailbox at the end of a DISPATCH, never after a paint, so the ring lands on the
@@ -288,10 +292,12 @@ impl SlotView {
 
     fn reseed_pane_focus(&self) {
         self.remap();
-        let ring = match pinion_core::focus_state::focused() {
-            None => Ring::Nowhere,
-            Some(tag) => crate::terminal::pane_index_of(&tag).map_or(Ring::Elsewhere, Ring::Pane),
-        };
+        let focused = pinion_core::focus_state::focused();
+        let ring = ring_of(
+            focused.as_deref(),
+            focused.as_deref().and_then(crate::terminal::pane_index_of),
+            focused.as_deref().is_none_or(surface_is_up),
+        );
         if let Some(slot) = reseed_target(ring, &self.occupied_slots()) {
             pinion_core::focus_request::request(crate::terminal::pane_tag(slot));
         }
@@ -630,9 +636,50 @@ enum Ring {
     Nowhere,
     /// On the pane tile at this display slot.
     Pane(usize),
-    /// On some other widget of this client — the find bar's field, the palette's query, the session
-    /// rail. A pane is not what has the keyboard.
+    /// On some other widget of this client that is STILL UP — the find bar's field, the session
+    /// rail. A pane is not what has the keyboard, and something the user is using still wants it.
     Elsewhere,
+}
+
+/// Classify the focus ring for [`reseed_target`] from the tag that holds it, the pane slot that tag
+/// names (if any), and whether the surface owning it is still up.
+///
+/// Split out from [`SlotView::reseed_pane_focus`] and given the third argument as DATA because the
+/// distinction it draws is the whole point, and it was wrong for as long as this code existed:
+/// `Elsewhere` used to mean nothing more than "the tag is not a pane", which quietly fused two
+/// different facts — *a live widget holds the caret* (decline; yanking it mid-search is a bug) and
+/// *the tag is not a pane* (which a dismissed modal also satisfies, one frame before pinion notices).
+///
+/// The palette is the case that exposed it. A row CLOSES the palette and then runs its command in
+/// the same dispatch, so a window op reads a ring still parked on `sprag_palette_query` — a field
+/// that stops being painted at the very next frame. Reading that as `Elsewhere` made the op decline
+/// to ask for anything, so the window changed with no focus request in flight at all, and the client
+/// came up answering no keys. MEASURED, not reasoned: with the frame-hook backstop disabled the live
+/// smoke's palette leg timed out 3 runs out of 3, and the probe that found it read
+/// `ring=Elsewhere occupied=[0] target=None` on exactly that op.
+fn ring_of(focused: Option<&str>, pane: Option<usize>, holder_is_up: bool) -> Ring {
+    match (focused, pane) {
+        (None, _) => Ring::Nowhere,
+        (Some(_), Some(slot)) => Ring::Pane(slot),
+        // A ring on a surface that has already gone is not a caret to protect. `Nowhere` rather than
+        // a new variant: it IS nowhere — pinion drops the ring to `None` at the next paint, and this
+        // only declines to wait for that paint to say so.
+        (Some(_), None) if !holder_is_up => Ring::Nowhere,
+        (Some(_), None) => Ring::Elsewhere,
+    }
+}
+
+/// Whether the client surface that owns `tag` is still up.
+///
+/// Only the palette is asked, because it is the only surface that dismisses itself in the same
+/// dispatch as the op that reads the ring — `run_cursor_row` closes and then activates, deliberately
+/// ([`crate::palette`] documents why the order is that way round). The find bar and the session rail
+/// are still on screen when a window op runs, so they answer `true` here by falling through, which
+/// is the same answer this predicate would give if it knew about them. A tag this does not recognise
+/// is therefore treated as a LIVE holder — the conservative arm, since declining to re-seed leaves
+/// the keyboard where the user put it.
+fn surface_is_up(tag: &str) -> bool {
+    !crate::palette::is_palette_focus(tag) || crate::palette::is_open()
 }
 
 /// The display slot to RE-SEED the focus ring on after an op that may have replaced this client's
@@ -816,9 +863,56 @@ mod tests {
 
     #[test]
     fn the_find_bar_keeps_the_ring_through_a_window_change() {
-        // `Elsewhere` is not a pane that vanished — it is the find field, the palette query, the
-        // session rail. Seeding here would yank the caret out mid-search.
+        // `Elsewhere` is not a pane that vanished — it is the find field or the session rail, STILL
+        // UP. Seeding here would yank the caret out mid-search. The palette's query field used to be
+        // named in this list too, and that was the defect `ring_of` fixes: a palette that has closed
+        // is not a widget with a claim on the keyboard.
         assert_eq!(reseed_target(Ring::Elsewhere, &[0, 1]), None);
+    }
+
+    #[test]
+    fn a_ring_on_a_dismissed_surface_is_nowhere_not_elsewhere() {
+        // THE case the live smoke measured: a palette row closes the palette and runs a window op in
+        // one dispatch, so the op reads a ring on a field that is already gone. Classified
+        // `Elsewhere` the op asks for nothing and the new window answers no keys.
+        assert_eq!(
+            ring_of(Some("sprag_palette_query"), None, false),
+            Ring::Nowhere
+        );
+        // ...and the rescue is real: `Nowhere` is what makes the op name a pane.
+        assert_eq!(
+            reseed_target(ring_of(Some("sprag_palette_query"), None, false), &[0]),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn a_ring_on_a_live_surface_is_left_alone() {
+        // The find bar mid-search: same shape as above — not a pane, focus held — and the opposite
+        // answer, which is why the holder's liveness is an argument rather than an assumption.
+        assert_eq!(
+            ring_of(Some("sprag_find_query"), None, true),
+            Ring::Elsewhere
+        );
+    }
+
+    #[test]
+    fn a_ring_on_a_pane_names_its_slot_whatever_the_holder_says() {
+        // A pane IS the holder, so the third argument cannot reach this arm — asserted so a future
+        // edit that reorders the match has to notice.
+        assert_eq!(
+            ring_of(Some("sprag_gui.pane.2"), Some(2), true),
+            Ring::Pane(2)
+        );
+        assert_eq!(
+            ring_of(Some("sprag_gui.pane.2"), Some(2), false),
+            Ring::Pane(2)
+        );
+    }
+
+    #[test]
+    fn no_focus_at_all_is_nowhere() {
+        assert_eq!(ring_of(None, None, true), Ring::Nowhere);
     }
 
     #[test]
