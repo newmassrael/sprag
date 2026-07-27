@@ -101,6 +101,20 @@ use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol};
 /// How long to wait for a just-spawned daemon's socket to accept — covers its bind race.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long a UI-thread request may wait for the daemon's reply before this client gives up on
+/// the connection ([`HostConn::set_read_deadline`]).
+///
+/// These calls run on the reducer, so the window paints nothing while one is outstanding, and the
+/// daemon is a local process answering from memory — a reply that has not arrived in seconds is
+/// not slow, it is not coming. Without a bound a daemon that accepts and then stops answering
+/// (wedged, stopped, mid-crash) freezes the GUI for as long as it stays that way, with no way out
+/// but killing the window. Generous enough that a loaded machine mid-`switch-client` — the
+/// heaviest of these, a connect plus a read per pane — never trips it.
+///
+/// Emphatically NOT applied to the long-poll connection: `scene/waitFor` parks until a pane
+/// produces output, so waiting forever is its contract rather than a hazard.
+const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
+
 /// Env override: the host socket path to connect-or-spawn on, instead of the well-known
 /// `sprag-host.sock` (a test's private socket, or an operator-run host).
 const HOST_SOCK_ENV: &str = "SPRAG_GUI_HOST_SOCK";
@@ -689,6 +703,19 @@ impl WireHost {
                 HostConn::connect(&sock, CONNECT_TIMEOUT)?
             }
         };
+        // Bound every UI-thread reply from here on ([`REQUEST_DEADLINE`]). This is the ONE request
+        // connection for the client's whole life — `attach_in_place` re-scopes it rather than
+        // replacing it — so setting the deadline once here covers every later request, including
+        // the switch-client path that named this hazard. A socket that refuses the option is not a
+        // reason to abandon the boot: the client is then exactly as exposed as it was before, which
+        // is worse than the bound but no worse than shipping without it.
+        if let Err(error) = conn.set_read_deadline(Some(REQUEST_DEADLINE)) {
+            tracing::warn!(
+                target: "sprag_gui::wire",
+                %error,
+                "could not bound the request connection's reads; a wedged daemon can stall the UI",
+            );
+        }
 
         // Resolve WHICH session this client acts on before booting panes, and scope every
         // request to it (both this connection and the poll one below), so a request can never

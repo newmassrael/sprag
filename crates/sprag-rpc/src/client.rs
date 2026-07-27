@@ -79,6 +79,9 @@ pub struct HostConn {
     /// client's several connections (its request stream and its long-poll) cannot address
     /// different sessions.
     session: Option<String>,
+    /// Set once a read deadline expired mid-reply. See [`set_read_deadline`](Self::set_read_deadline)
+    /// for why a timed-out connection can never be used again.
+    timed_out: bool,
 }
 
 impl HostConn {
@@ -113,7 +116,34 @@ impl HostConn {
             reader,
             next_id: 1,
             session: None,
+            timed_out: false,
         })
+    }
+
+    /// Bound how long a [`call`](Self::call) on this connection may wait for its reply, or `None`
+    /// (the default) to wait forever.
+    ///
+    /// Per connection, deliberately, because the two things a client does with one are opposites.
+    /// A REQUEST connection asks a local daemon a question it answers immediately, so waiting
+    /// without limit buys nothing and costs everything: the GUI issues these from its reducer, on
+    /// the UI thread, and a daemon that accepts but never answers freezes the window for as long as
+    /// it stays that way. A LONG-POLL connection parks on `scene/waitFor` precisely so it can wait
+    /// indefinitely — a deadline there would be a bug, not a safeguard. One knob, set by whoever
+    /// knows which kind of connection this is.
+    ///
+    /// A connection that trips the deadline is FINISHED: the reply may still arrive afterwards, and
+    /// a `HostConn` carries one outstanding request at a time with no way to tell a late answer
+    /// from the next one, so reading it later would attribute one call's result to another. Every
+    /// subsequent `call` therefore fails immediately with [`ErrorKind::TimedOut`] and the owner must
+    /// reconnect. Silently desynchronising would be far worse than a connection that says it is
+    /// done.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the socket rejects the timeout (which includes a zero `Duration`, since that means
+    /// "block forever" to the OS and is never what a caller asking for a deadline meant).
+    pub fn set_read_deadline(&mut self, deadline: Option<Duration>) -> io::Result<()> {
+        self.reader.get_ref().set_read_timeout(deadline)
     }
 
     /// Scope every subsequent request on this connection to the session named `session`, by
@@ -172,6 +202,12 @@ impl HostConn {
     /// I/O failure writing the request or reading the reply, a malformed reply, or
     /// a JSON-RPC `error` object in the response.
     pub fn call(&mut self, method: &str, params: Value) -> io::Result<Value> {
+        if self.timed_out {
+            return Err(io::Error::new(
+                ErrorKind::TimedOut,
+                "connection abandoned after a read deadline expired",
+            ));
+        }
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
         let request = json!({
@@ -188,7 +224,16 @@ impl HostConn {
         let mut line = String::new();
         loop {
             line.clear();
-            if self.reader.read_line(&mut line)? == 0 {
+            let read = self.reader.read_line(&mut line).inspect_err(|error| {
+                // A deadline that expires here has left the reply stream at an unknown offset (the
+                // partial line is already consumed), so the connection is retired rather than
+                // retried — see `set_read_deadline`. Both spellings the platforms use for "the
+                // timeout elapsed" mean the same thing to this loop.
+                if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) {
+                    self.timed_out = true;
+                }
+            })?;
+            if read == 0 {
                 return Err(io::Error::new(
                     ErrorKind::UnexpectedEof,
                     "host closed the connection",
@@ -267,6 +312,57 @@ mod tests {
         assert_eq!(conn.call("scene/echo", json!(42)).unwrap(), json!(42));
 
         drop(control);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A host that ACCEPTS and then never answers costs the caller its deadline, not its life —
+    /// and the connection retires rather than pretending it can be used again.
+    ///
+    /// The listener here answers nothing on purpose, which is precisely the state a real wedged
+    /// daemon presents: the socket is up, the connect succeeds, and the reply never comes. That is
+    /// why the connect timeout was never a defence — it had already succeeded. Without the
+    /// deadline the first `call` below would block until this test binary was killed.
+    #[test]
+    fn a_host_that_never_answers_costs_the_deadline_and_retires_the_connection() {
+        let path = std::env::temp_dir().join(format!(
+            "sprag-rpc-deadline-test-{}.sock",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind the test socket");
+        // HOLD the accepted stream: dropping it would close the connection and the read would end
+        // with EOF, which is the very outcome this test must not be able to pass by.
+        let accepted = thread::spawn(move || listener.accept().map(|(stream, _)| stream));
+
+        let mut conn =
+            HostConn::connect(&path, Duration::from_secs(2)).expect("connect to the socket");
+        let deadline = Duration::from_millis(200);
+        conn.set_read_deadline(Some(deadline))
+            .expect("bound the reads");
+
+        let start = Instant::now();
+        let error = conn
+            .call("scene/never", json!({}))
+            .expect_err("a host that never answers must not answer");
+        let waited = start.elapsed();
+        assert!(
+            matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut),
+            "the failure must say it timed out, not something a caller would retry: {error:?}",
+        );
+        assert!(
+            waited >= deadline && waited < deadline * 20,
+            "the call must return AT the deadline, not before it and not much after ({waited:?})",
+        );
+
+        // Retired: a second call cannot go out, because a reply arriving late would be read as its
+        // answer. It fails on the connection's own state, without touching the socket.
+        let after = conn
+            .call("scene/never", json!({}))
+            .expect_err("a timed-out connection is finished");
+        assert_eq!(after.kind(), ErrorKind::TimedOut, "{after:?}");
+
+        drop(conn);
+        let _ = accepted.join();
         let _ = std::fs::remove_file(&path);
     }
 
