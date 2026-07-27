@@ -304,15 +304,18 @@ pub(crate) fn close() {
 /// restore-on-close must not land after that. Activating into a closed palette is safe — the command
 /// reads the pane that was captured, not the live focus.
 ///
-/// **BLOCKED BOUND — PINION-PR77.** That close-then-open pair is a modal HANDOFF, and the shell
-/// cannot currently perform one: `modal_scope_request`'s mailbox is a single last-write-wins slot
-/// drained once per dispatch frame, so the `Close` this `close()` posts is OVERWRITTEN by the
-/// confirmation's `Open` and never pops. The focus stack keeps a scope for a palette that is no
-/// longer painted, and answering the prompt pops only the prompt's — so after ONE confirmed row this
-/// client can never focus a pane again, and every pane-scoped row silently stops being offered.
-/// The order here is the intended one and stays; the fix is upstream (the handoff doc asks for a
-/// queued mailbox, sprag consumption cost 0). Until then `sprag-smoke` must run any check that needs
-/// a focused pane BEFORE any check that answers a confirmation.
+/// That close-then-open pair is a modal HANDOFF — two stack edits from one user action, hence one
+/// dispatch frame — and it is expressible only because the shell keeps every request a frame writes.
+/// `modal_scope_request`'s mailbox was a single last-write-wins slot until pinion R1456, so the
+/// `Close` this `close()` posts was OVERWRITTEN by the confirmation's `Open` and never popped: the
+/// focus stack kept a scope for a palette that was no longer painted, and answering the prompt
+/// popped only the prompt's, so after ONE confirmed row the client could never focus a pane again
+/// and every pane-scoped row silently stopped being offered. The mailbox is an ordered queue now
+/// (pop, then push), and the order written here — which never changed, because it was always the
+/// intended one — is what it applies. `sprag-smoke`'s
+/// `check_a_confirmed_row_leaves_the_focus_stack_clean` is what holds that, from outside the
+/// process: a binding can read `focus_state::focused()` and nothing of the stack beneath it, so
+/// sprag could not have detected the leak from in here even had it wanted to.
 fn run_cursor_row() -> Option<Command> {
     let catalog = use_frozen_catalog().get();
     let rows = visible_rows();

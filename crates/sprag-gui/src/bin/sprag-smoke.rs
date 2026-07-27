@@ -61,13 +61,14 @@ fn main() -> ExitCode {
         Ok(mut smoke) => {
             check_the_palette_opens_over_rpc(&mut smoke, &mut report);
             check_a_command_runs_from_a_palette_row(&mut smoke, &mut report);
-            // BEFORE any check that answers a confirmation, and that ordering is load-bearing: a
-            // confirmed row leaks a modal focus scope (PINION-PR77), after which nothing can be
-            // focused and every pane-scoped row stops being offered. This check needs a focused
-            // pane, so it has to run while the focus stack is still clean.
             check_the_sole_docked_pane_locks_its_tear_off(&mut smoke, &mut report);
             check_focus_survives_a_window_change(&mut smoke, &mut report);
             check_a_pane_can_be_created_and_closed(&mut smoke, &mut report);
+            // AFTER a check that answers a confirmation, and THAT ordering is load-bearing: the
+            // state a confirmed row leaves behind is the whole claim. It replaces the opposite
+            // constraint this list used to carry, when every focus-needing check had to run before
+            // the first confirmation because one leaked the palette's modal scope for good.
+            check_a_confirmed_row_leaves_the_focus_stack_clean(&mut smoke, &mut report);
             check_a_window_closes_under_a_live_client(&mut smoke, &mut report);
             // LAST, and it must stay last: it destroys the session this client is attached to, so
             // the client leaves and every check after it would be asserting against a dead socket.
@@ -289,6 +290,58 @@ fn check_a_pane_can_be_created_and_closed(smoke: &mut Smoke, report: &mut Report
     );
 }
 
+/// A row that was CONFIRMED leaves the focus stack exactly as it found it.
+///
+/// The palette closes itself and the confirmation opens in the same dispatch — a modal HANDOFF, two
+/// stack edits from one user action. Until pinion R1456 the shell's mailbox was a single
+/// last-write-wins slot, so the palette's `Close` was overwritten and its scope stayed on the stack
+/// for the life of the process: from the first confirmed row on, `focus/set` was refused for every
+/// pane and every pane-scoped row stopped being offered. sprag could neither work around it nor —
+/// the part that made it expensive — DETECT it, because a binding can read
+/// `focus_state::focused()` and nothing of the stack beneath it.
+///
+/// So it is measured from OUTSIDE the process, in the three shapes the leak took: the enumeration
+/// the focus manager will accept, a pane accepting focus, and a pane-scoped row still being
+/// offered. The third is the one a user meets, and it is why the leak went unnoticed so long — the
+/// symptom does not resemble its cause, it reads as commands quietly going missing.
+fn check_a_confirmed_row_leaves_the_focus_stack_clean(smoke: &mut Smoke, report: &mut Report) {
+    // Read BEFORE opening anything. A leaked scope IS the active enumeration, so opening the
+    // palette here would install a fresh trap over the very state under test.
+    let focusables = smoke.focusables();
+    report.check(
+        &format!("the focus enumeration is the app's own again ({focusables:?})"),
+        focusables
+            .iter()
+            .any(|tag| tag.starts_with("sprag_gui.pane.")),
+    );
+
+    let Some(&pane) = smoke.docked_panes().first() else {
+        report.check("a docked pane to put the keyboard back on", false);
+        return;
+    };
+    report.check(
+        &format!("a pane still takes the keyboard after a confirmation (pane {pane})"),
+        smoke.focus_pane(pane),
+    );
+
+    // And the symptom a user would actually report. `Kill pane` is pane-scoped, so it is offered
+    // only while a pane holds the focus — under the leak it was simply absent from the catalog.
+    if smoke.invoke("sprag_palette", "open", Value::Null).is_err()
+        || smoke.wait_for_tag("sprag_palette_panel").is_err()
+    {
+        report.check("the palette re-opens after a confirmation", false);
+        return;
+    }
+    let offered = smoke.row_titles();
+    report.check(
+        &format!("the palette still offers its pane-scoped rows ({offered:?})"),
+        offered.iter().any(|title| title == "Kill pane"),
+    );
+    // Dismissed, not left standing: the next check opens the palette itself, and a surface left
+    // open would have it asserting about this one's leftovers.
+    let _ = smoke.invoke("sprag_palette", "send", json!("scrim:PointerUp"));
+}
+
 /// A WINDOW opening and closing reaches the tab strip a live client is painting.
 ///
 /// The window vertical was wire-proven long before this: the registry, the wire actions and the CLI
@@ -482,9 +535,8 @@ fn check_the_sole_docked_pane_locks_its_tear_off(smoke: &mut Smoke, report: &mut
 /// onto a NEWBORN pane set, while coming back is a swap onto one whose slots this client has
 /// already used.
 ///
-/// It leaves the window it created standing (killing it would need the confirmation whose modal
-/// leak, PINION-PR77, ends every later check's ability to focus anything), which is why the check
-/// below reads its tab count instead of assuming one.
+/// It leaves the window it created standing — closing it is the NEXT check's claim, not this one's
+/// — which is why that check reads the strip's tab count instead of assuming one.
 fn check_focus_survives_a_window_change(smoke: &mut Smoke, report: &mut Report) {
     let docked = smoke.docked_panes();
     let Some(&parked) = docked.last() else {
