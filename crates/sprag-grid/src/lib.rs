@@ -97,6 +97,69 @@ pub fn project(screen: &Screen, palette: &Palette) -> GridBuffer {
         .with_hyperlinks(interner.table)
 }
 
+/// Everything [`project`] reads, in a form small enough to put on the wire and compare — so a
+/// consumer can tell whether re-fetching a pane's cells would tell it anything new.
+///
+/// ## Why the fields are these
+///
+/// A whole-screen projection is expensive and a display client re-fetches every pane on every
+/// wake, including panes nothing has happened in. Skipping that fetch is only safe against a token
+/// that moves whenever the projection WOULD differ — so this carries the projection's inputs
+/// themselves rather than a summary of them:
+///
+/// * **`row_generations`** — the producer's per-row damage stamps, the very values [`project`]
+///   writes into the buffer. Carrying the vector rather than a maximum or a hash is deliberate: it
+///   is exact, it cannot collide, and it needs no monotonic accumulator to be maintained correctly
+///   somewhere else. They are already load-bearing (pinion's `TextGrid` re-rasterizes only rows
+///   whose stamp advanced), so this inherits an invariant the system must already satisfy instead
+///   of adding a second one beside it.
+/// * **`cursor`** — built by the projection's OWN `project_cursor`, so the two cannot disagree.
+///   This is the field that carries the axes no damage stamp covers: a bare cursor MOVE touches no
+///   cell, and an `OSC 12` cursor colour is explicitly documented in the emulator as needing no
+///   cell damage — yet both change what [`project`] returns.
+/// * **`screen`**, **`cols`**, **`scrollback_len`** — an alternate-screen switch, a resize (which
+///   COPIES surviving rows' stamps, so the generations alone would not notice a width change), and
+///   history growth, which the frame reports alongside the cells.
+///
+/// The row count is `row_generations.len()`, so it is not a separate field.
+///
+/// ## What it does NOT promise
+///
+/// Only one direction. Equal token ⇒ equal projection is the SAFETY property and is what a skip
+/// may rely on. The converse does not hold and must not be assumed: writing a character over an
+/// identical one stamps its row, so the token moves while the projection does not. That costs a
+/// redundant fetch, never a stale pane.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ProjectionToken {
+    /// Per-row damage stamps, in row order — the values [`project`] copies into the buffer.
+    pub row_generations: Vec<u64>,
+    /// The cursor exactly as [`project`] would emit it, colour included.
+    pub cursor: GridCursor,
+    /// Main vs alternate screen.
+    pub screen: PinScreenKind,
+    /// Columns; the row count is `row_generations.len()`.
+    pub cols: u16,
+    /// Retained history depth, which rides with the cells in the frame a client fetches.
+    pub scrollback_len: usize,
+}
+
+/// Summarise what [`project`] would read from `screen` and `palette` — see [`ProjectionToken`] for
+/// what the summary covers and the one direction it promises.
+///
+/// Cheap by construction: it walks the rows once to copy their stamps and touches no cell.
+#[must_use]
+pub fn projection_token(screen: &Screen, palette: &Palette) -> ProjectionToken {
+    ProjectionToken {
+        row_generations: (0..screen.rows())
+            .map(|row| screen.row_generation(row).unwrap_or_default())
+            .collect(),
+        cursor: project_cursor(screen.cursor(), palette),
+        screen: screen_kind(screen.screen_kind()),
+        cols: screen.cols(),
+        scrollback_len: screen.scrollback_len(),
+    }
+}
+
 /// Project a screen into a `GridBuffer` scrolled up by `offset_lines` rows of
 /// history. `offset_lines == 0` is the live view, byte-identical to [`project`].
 ///

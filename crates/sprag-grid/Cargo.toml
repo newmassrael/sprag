@@ -11,3 +11,7 @@ publish = false
 [dependencies]
 sprag-vt = { workspace = true }
 pinion-core = { workspace = true }
+# `ProjectionToken` crosses the wire between the host's pane list and a display
+# client's fetch gate, so it is one serde-able type here rather than two hand-kept
+# spellings at the two ends.
+serde = { workspace = true, features = ["derive"] }

@@ -1250,6 +1250,50 @@ fn check_the_host_projects_panes_only_for_a_grid_reader(smoke: &mut Smoke, repor
             && cells == total
             && !cells.is_multiple_of(one),
     );
+
+    // -- And the CLIENT's half. R217 measured an idle window at one whole pane set, because a poll
+    // wake re-fetched every pane whether or not anything had happened in it. Now a wake fetches
+    // only the panes whose projection token MOVED, so driving output into ONE pane must cost that
+    // pane's area and nothing else -- the same divisibility argument as above, run the other way
+    // round: a multiple of the DRIVEN pane, never of the set.
+    let Some(before) = grid_work(&mut daemon, &session) else {
+        report.check("the host reports its meter before the drive", false);
+        return;
+    };
+    let needle = "l3-damage-driven";
+    let driven = daemon.call(
+        "scene/invoke",
+        json!({
+            "path": format!("/pane_{named}/sprag_input/external/text"),
+            "args": { "text": format!("echo {needle}\n") },
+            "session": session,
+        }),
+    );
+    let painted = smoke
+        .wait_for(|s| {
+            (0..s.pane_count())
+                .any(|pane| s.pane_rows(pane).iter().any(|row| row.contains(needle)))
+                .then_some(())
+        })
+        .is_ok();
+    let Some(after) = grid_work(&mut daemon, &session) else {
+        report.check("the host reports its meter after the drive", false);
+        return;
+    };
+    let (projections, cells) = (after.0 - before.0, after.1 - before.1);
+    // Non-vacuity first: a window in which nothing was painted prices nothing, and the
+    // divisibility test below is trivially true of zero.
+    report.check(
+        &format!("the driven line reached the client's painted grid ({driven:?})"),
+        painted && cells > 0,
+    );
+    report.check(
+        &format!(
+            "only the pane that CHANGED was re-fetched ({projections} projections, {cells} cells is {}x pane_{named}'s {one}, not a multiple of the {total}-cell set)",
+            cells / one.max(1)
+        ),
+        cells.is_multiple_of(one) && !cells.is_multiple_of(total),
+    );
 }
 
 /// Whether `areas` can say which panes were projected, given the one a request `named`.

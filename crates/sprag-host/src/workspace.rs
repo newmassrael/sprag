@@ -790,7 +790,24 @@ impl ExternalIntrospect for WorkspaceExternal {
     fn query(&self, path: &str) -> Option<IntrospectValue> {
         match path {
             PANES_SLOT => {
-                let panes = lock(self.workspace()).list();
+                // The DTOs and each pane's PROJECTION TOKEN, read under ONE workspace lock so the
+                // token a client compares describes the same moment as the rest of its entry. A
+                // token read later than the pane list could only ever be NEWER than the frame the
+                // client goes on to fetch, which is the one direction that serves a stale pane.
+                let (panes, tokens) = {
+                    let guard = lock(self.workspace());
+                    let tokens: std::collections::HashMap<u64, sprag_grid::ProjectionToken> = guard
+                        .panes()
+                        .iter()
+                        .map(|pane| {
+                            (
+                                pane.id().0,
+                                pane.pty().with_screen_palette(sprag_grid::projection_token),
+                            )
+                        })
+                        .collect();
+                    (guard.list(), tokens)
+                };
                 let entries = panes
                     .iter()
                     .map(|p| {
@@ -913,6 +930,19 @@ impl ExternalIntrospect for WorkspaceExternal {
                                 })
                                 .collect();
                             entry["images"] = Value::Array(images);
+                        }
+                        // What a fetch of this pane's CELLS would depend on
+                        // ([`sprag_grid::ProjectionToken`]) — the per-row damage stamps, the
+                        // cursor (colour included), the screen kind, the width and the history
+                        // depth. A display client that already holds a frame for this pane and
+                        // sees an unchanged token can SKIP the fetch: the frame it would receive
+                        // is the one it has. ADDITIVE, and its absence means "fetch anyway", so an
+                        // older daemon — or a token that failed to serialize — costs a redundant
+                        // fetch and never a stale pane.
+                        if let Some(token) =
+                            tokens.get(&p.id).and_then(|t| serde_json::to_value(t).ok())
+                        {
+                            entry["projection"] = token;
                         }
                         entry
                     })
@@ -1381,6 +1411,28 @@ mod tests {
         );
     }
 
+    /// The pane-list entries with the per-pane PROJECTION TOKEN lifted out — so a test can assert
+    /// the stable wire shape exactly, while the token (whose `row_generations` are as long as the
+    /// pane is tall) is checked for what it must contain rather than transcribed.
+    fn panes_without_projection(value: Option<IntrospectValue>) -> (Value, Vec<Value>) {
+        let IntrospectValue::Json(Value::Array(entries)) = value.expect("a pane list") else {
+            panic!("the pane list is a JSON array");
+        };
+        let mut tokens = Vec::new();
+        let stripped: Vec<Value> = entries
+            .into_iter()
+            .map(|mut entry| {
+                let token = entry
+                    .as_object_mut()
+                    .and_then(|map| map.remove("projection"))
+                    .expect("every pane entry carries a projection token");
+                tokens.push(token);
+                entry
+            })
+            .collect();
+        (Value::Array(stripped), tokens)
+    }
+
     #[test]
     fn query_panes_lists_metadata() {
         let reg = registry();
@@ -1390,14 +1442,18 @@ mod tests {
             IntrospectValue::Json(json!({"cmd": ["cat"], "cols": 40, "rows": 12})),
         )
         .unwrap();
-        let panes = ext.query(PANES_SLOT).unwrap();
+        let (panes, tokens) = panes_without_projection(ext.query(PANES_SLOT));
         assert_eq!(
             panes,
             // `title` is null until the child sets an OSC 0/2 window title (R128).
-            IntrospectValue::Json(
-                json!([{"id": 0, "cols": 40, "rows": 12, "command": "cat", "title": null}])
-            )
+            json!([{"id": 0, "cols": 40, "rows": 12, "command": "cat", "title": null}])
         );
+        // ...and the token beside it describes the pane a client would fetch: one damage stamp per
+        // row, at the pane's own width. A client compares it whole; this asserts it is not a stub.
+        let token: sprag_grid::ProjectionToken =
+            serde_json::from_value(tokens[0].clone()).expect("the token round-trips");
+        assert_eq!(token.cols, 40);
+        assert_eq!(token.row_generations.len(), 12);
     }
 
     /// The child's `OSC 2` window title reaches the WIRE (R128) — the pane-list query is
@@ -2158,10 +2214,8 @@ mod tests {
         // The birth pane runs the request's cmd at its size — the caller's first pane, exact.
         let (work, _w) = scoped_control(&reg, scope_of(&reg, "work"));
         assert_eq!(
-            work.query(PANES_SLOT),
-            Some(IntrospectValue::Json(json!([
-                {"id": 0, "cols": 40, "rows": 12, "command": "cat", "title": null}
-            ]))),
+            panes_without_projection(work.query(PANES_SLOT)).0,
+            json!([{"id": 0, "cols": 40, "rows": 12, "command": "cat", "title": null}]),
             "the birth pane runs the request's cmd at its size",
         );
         assert!(

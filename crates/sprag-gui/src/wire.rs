@@ -80,6 +80,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use pinion_core::{GridBuffer, QuitSink};
 use serde_json::{Value, json};
+use sprag_grid::ProjectionToken;
 use sprag_host::wire::{
     BREAK_PANE_ACTION, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT, CLOSE_ACTION,
     DROP_FILE_ACTION, FOCUS_ACTION, FULL_TEXT_SLOT, GLOBAL_COMMANDS_SLOT, JOIN_PANE_ACTION,
@@ -148,6 +149,10 @@ const DETACH_ON_DESTROY_ENV: &str = "SPRAG_DETACH_ON_DESTROY";
 /// by the poll thread on each host change), and the GUI-tracked grid size.
 struct WirePane {
     id: PaneId,
+    /// The projection token that was current when [`Self::frame`] was taken — the value the next
+    /// wake compares against to decide whether re-fetching would tell it anything new. `None`
+    /// keeps this pane on the unconditional-fetch path.
+    projection: Option<ProjectionToken>,
     label: String,
     /// The child's live `OSC 0`/`OSC 2` window title, `None` until it sets one.
     /// Host-authoritative like [`Self::label`] (re-read on every poll re-query, since a
@@ -859,7 +864,7 @@ impl WireHost {
             send_attach(&mut conn);
             let since0 = read_revision(&mut conn)?;
             let seeds = query_panes(&mut conn)?;
-            let fetched = fetch_frames(&mut conn, &seeds);
+            let fetched = fetch_frames(&mut conn, &pane_ids_of(&seeds));
             let window_list = query_windows(&mut conn)?;
             let current = current_window_name(&window_list).unwrap_or_default();
             let layout_snapshot = query_layout(&mut conn)?;
@@ -1873,6 +1878,10 @@ struct PaneSeed {
     /// ([`MouseProtocol::from_wire_str`]); `None` when the key is omitted (no tracking / older daemon).
     mouse_protocol: MouseProtocol,
     dims: (u16, u16),
+    /// What a fetch of this pane's CELLS would depend on, as the host reported it
+    /// ([`sprag_grid::ProjectionToken`]). `None` when the wire omits the key — an older daemon, or
+    /// a token the host could not serialize — which means "fetch anyway".
+    projection: Option<ProjectionToken>,
 }
 
 /// Query the host's pane list (`/sprag_mux/external/panes`), returning a [`PaneSeed`]
@@ -1908,6 +1917,10 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
             let mouse_protocol = MouseProtocol::from_wire_str(pane["mouse"].as_str());
             let cols = u16::try_from(pane["cols"].as_u64().unwrap_or(1)).unwrap_or(1);
             let rows = u16::try_from(pane["rows"].as_u64().unwrap_or(1)).unwrap_or(1);
+            // ADDITIVE: absent (or unparseable) reads as `None`, which makes this pane fetch
+            // unconditionally — the safe direction, since a skipped fetch is what freezes a pane.
+            let projection =
+                serde_json::from_value::<ProjectionToken>(pane["projection"].clone()).ok();
             Ok(PaneSeed {
                 id: PaneId(id),
                 label,
@@ -1921,6 +1934,7 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
                 images,
                 mouse_protocol,
                 dims: (cols, rows),
+                projection,
             })
         })
         .collect()
@@ -2144,14 +2158,14 @@ fn boot_panes(
 /// aborting; the caller's [`merge_panes`] then drops a frameless NEWCOMER (retried next
 /// wake) or keeps a SURVIVOR's last frame, so the client never mirrors a frameless pane and
 /// [`pane_ids`](HostClient::pane_ids) omits it until it has one.
-fn fetch_frames(conn: &mut HostConn, seeds: &[PaneSeed]) -> Vec<(PaneId, CellFrame)> {
-    let mut fetched = Vec::with_capacity(seeds.len());
-    for seed in seeds {
-        match fetch_frame(conn, seed.id.0) {
-            Ok(frame) => fetched.push((seed.id, frame)),
+fn fetch_frames(conn: &mut HostConn, ids: &[PaneId]) -> Vec<(PaneId, CellFrame)> {
+    let mut fetched = Vec::with_capacity(ids.len());
+    for &id in ids {
+        match fetch_frame(conn, id.0) {
+            Ok(frame) => fetched.push((id, frame)),
             Err(error) => tracing::debug!(
                 target: "sprag_gui::wire",
-                pane = seed.id.0,
+                pane = id.0,
                 %error,
                 "pane frame fetch failed; not mirrored this wake (retried next)",
             ),
@@ -2167,8 +2181,14 @@ fn fetch_frames(conn: &mut HostConn, seeds: &[PaneSeed]) -> Vec<(PaneId, CellFra
 /// shared drop-if-frameless rule; the dock topology projects from `SlotView`'s occupied
 /// slots, not a count, so a mid-boot close orphans nothing).
 fn build_cache(conn: &mut HostConn, seeds: Vec<PaneSeed>) -> Vec<WirePane> {
-    let fetched = fetch_frames(conn, &seeds);
+    let fetched = fetch_frames(conn, &pane_ids_of(&seeds));
     merge_panes(&[], &seeds, &fetched)
+}
+
+/// Every seed's id — the BOOT / re-attach case of the fetch set, where there is no cache to
+/// compare a token against and so nothing to skip.
+fn pane_ids_of(seeds: &[PaneSeed]) -> Vec<PaneId> {
+    seeds.iter().map(|seed| seed.id).collect()
 }
 
 /// Fetch one pane's LIVE cell frame — [`cells_slot_at(0)`](cells_slot_at), the live member
@@ -2198,11 +2218,51 @@ fn fetch_frame(conn: &mut HostConn, id: u64) -> io::Result<CellFrame> {
 /// (transient), a NEWCOMER is skipped this wake (retried next), so the GUI never mirrors a
 /// frameless pane, and [`pane_ids`](HostClient::pane_ids) omits it until it has a frame.
 fn refresh_to_set(conn: &mut HostConn, cache: &Cache, seeds: &[PaneSeed]) {
-    let fetched = fetch_frames(conn, seeds); // off the lock (never a socket call while locked)
+    // Decide WHAT to fetch under a short lock, then fetch off it (never a socket call while
+    // locked). Deciding first is the whole point: a pane nothing has happened in costs one
+    // comparison instead of a whole-screen projection on the host and a grid on the wire.
+    let stale = {
+        let guard = lock_cache(cache);
+        stale_panes(&guard, seeds)
+    };
+    let fetched = fetch_frames(conn, &stale);
     // Rebuild the cache in host order under one lock (the pure merge is `merge_panes`).
     let mut guard = lock_cache(cache);
     let rebuilt = merge_panes(&guard, seeds, &fetched);
     *guard = rebuilt;
+}
+
+/// Which panes this wake must actually re-fetch the cells of — PURE, so the policy that decides
+/// whether a client can go on painting a frame it already holds is unit-tested without a socket.
+///
+/// Three reasons to fetch, and the residue is the win:
+///
+/// * a **newcomer** has no frame at all, so there is nothing to keep;
+/// * a pane with **no token** on either side — an older daemon, a token the host could not
+///   serialize, or a frame taken before this client learned to record one — is fetched
+///   unconditionally, because "I cannot tell" must never resolve to "assume unchanged";
+/// * a pane whose token **moved** since the frame we hold: by
+///   [`ProjectionToken`]'s contract an unequal token is the only thing that can mean the frame
+///   differs, and an equal one guarantees it does not.
+///
+/// The asymmetry is deliberate and is the reason this is safe: the token can be stale-but-equal
+/// only if it was read BEFORE the frame it labels, which the host and [`merge_panes`] between them
+/// rule out — the host reads it under the same lock as the pane list, and the merge stores it only
+/// beside a frame this wake fetched. Every other imprecision costs a redundant fetch.
+fn stale_panes(existing: &[WirePane], seeds: &[PaneSeed]) -> Vec<PaneId> {
+    seeds
+        .iter()
+        .filter(|seed| {
+            let Some(prior) = existing.iter().find(|pane| pane.id == seed.id) else {
+                return true; // newcomer: no frame to keep
+            };
+            match (&prior.projection, &seed.projection) {
+                (Some(held), Some(current)) => held != current,
+                _ => true, // cannot tell: fetch
+            }
+        })
+        .map(|seed| seed.id)
+        .collect()
 }
 
 /// Merge the re-queried host pane list into the cache — PURE, so the dims/label authority +
@@ -2232,11 +2292,12 @@ fn merge_panes(
     let mut rebuilt = Vec::with_capacity(seeds.len());
     for seed in seeds {
         let prior = existing.iter().find(|pane| pane.id == seed.id);
-        let frame = fetched
+        let fresh = fetched
             .iter()
             .find(|(id, _)| *id == seed.id)
-            .map(|(_, frame)| frame.clone())
-            .or_else(|| prior.map(|pane| pane.frame.clone()));
+            .map(|(_, frame)| frame.clone());
+        let refetched = fresh.is_some();
+        let frame = fresh.or_else(|| prior.map(|pane| pane.frame.clone()));
         let Some(frame) = frame else {
             continue; // a brand-new pane whose first frame is not here yet — next wake
         };
@@ -2262,6 +2323,16 @@ fn merge_panes(
             // host-authoritative + dynamic: re-adopt the query's mouse-tracking level each wake, so
             // the capture gate + drag/motion forwarding track the child enabling / disabling reporting.
             mouse_protocol: seed.mouse_protocol,
+            // The token is stored ONLY beside a frame this wake actually fetched. A survivor whose
+            // fetch was skipped keeps the token its frame was taken under, and a survivor whose
+            // fetch was ATTEMPTED and missed keeps it too — adopting the query's token beside an
+            // older frame is the one move that would freeze the pane. The token is therefore never
+            // newer than the frame it labels; at worst it is older, which costs a redundant fetch.
+            projection: if refetched {
+                seed.projection.clone()
+            } else {
+                prior.and_then(|pane| pane.projection.clone())
+            },
             frame,
             dims: prior.map_or(seed.dims, |pane| pane.dims), // GUI-authoritative — keep tracked
         });
@@ -2426,6 +2497,10 @@ fn spawn_poll(
                                 images: pane.images.clone(), // keep last-known images too
                                 mouse_protocol: pane.mouse_protocol, // keep last-known tracking level too
                                 dims: pane.dims,
+                                // Keep the token the held frame was taken under: the re-query
+                                // failed, so the host's current one is unknown, and inventing one
+                                // either way would either freeze the pane or force a full refetch.
+                                projection: pane.projection.clone(),
                             })
                             .collect();
                         refresh_to_set(&mut conn, &cache, &seeds);
@@ -3479,6 +3554,121 @@ mod tests {
         assert_eq!(lock_layout(&mirror).layout.revision, 7);
     }
 
+    /// A projection token distinguishable by its single row generation, so a test can say
+    /// "the same screen" or "a changed one" without building an emulator.
+    fn token(generation: u64) -> ProjectionToken {
+        ProjectionToken {
+            row_generations: vec![generation],
+            cursor: pinion_core::GridCursor::default(),
+            screen: pinion_core::ScreenKind::Main,
+            cols: 80,
+            scrollback_len: 0,
+        }
+    }
+
+    /// A cached pane holding `frame(3)`, taken under `held`.
+    fn cached(id: u64, held: Option<ProjectionToken>) -> WirePane {
+        WirePane {
+            id: PaneId(id),
+            projection: held,
+            label: "bash".to_owned(),
+            title: None,
+            notification: None,
+            bell_seq: 0,
+            dead: false,
+            child_exit: None,
+            clipboard_write_seq: 0,
+            clipboard_query: None,
+            images: Vec::new(),
+            mouse_protocol: MouseProtocol::None,
+            frame: frame(3),
+            dims: (80, 24),
+        }
+    }
+
+    /// A host pane-list entry for `id`, reporting `current`.
+    fn seeded(id: u64, current: Option<ProjectionToken>) -> PaneSeed {
+        PaneSeed {
+            id: PaneId(id),
+            label: "bash".to_owned(),
+            title: None,
+            notification: None,
+            bell_seq: 0,
+            dead: false,
+            child_exit: None,
+            clipboard_write_seq: 0,
+            clipboard_query: None,
+            images: Vec::new(),
+            mouse_protocol: MouseProtocol::None,
+            dims: (80, 24),
+            projection: current,
+        }
+    }
+
+    /// THE fetch gate: a pane whose projection token has not moved is not re-fetched, and every
+    /// other case is. The skip is the whole point of the token; the three fetches are why it is
+    /// safe, since each is a case where "unchanged" cannot be established rather than one where it
+    /// is known to be false.
+    #[test]
+    fn only_a_pane_whose_projection_moved_is_refetched() {
+        let cache = vec![
+            cached(10, Some(token(7))), // unchanged since its frame
+            cached(11, Some(token(7))), // moved on
+            cached(12, None),           // frame predates the token
+        ];
+        let seeds = vec![
+            seeded(10, Some(token(7))),
+            seeded(11, Some(token(8))),
+            seeded(12, Some(token(7))),
+            seeded(13, Some(token(7))), // a newcomer, with no frame at all
+            seeded(14, None),           // the host reported no token
+        ];
+        assert_eq!(
+            stale_panes(&cache, &seeds),
+            vec![PaneId(11), PaneId(12), PaneId(13), PaneId(14)],
+            "only the pane whose token still matches its frame is skipped",
+        );
+    }
+
+    /// A pane the wake did NOT re-fetch keeps the token its held frame was taken under — it must
+    /// NOT adopt the query's. Adopting it would label an old frame with a new token, and the next
+    /// wake would compare equal and skip again, forever: the exact shape of a frozen pane.
+    #[test]
+    fn a_skipped_pane_keeps_the_token_its_frame_was_taken_under() {
+        let existing = vec![cached(10, Some(token(7)))];
+        // The host has moved on, but this wake fetched nothing for pane 10.
+        let seeds = vec![seeded(10, Some(token(9)))];
+        let merged = merge_panes(&existing, &seeds, &[]);
+        assert_eq!(
+            merged[0].projection,
+            Some(token(7)),
+            "an unfetched pane keeps the token its frame belongs to",
+        );
+        // ...so the very next wake still sees it as stale and fetches. Without that, the missed
+        // fetch above would be permanent.
+        assert_eq!(stale_panes(&merged, &seeds), vec![PaneId(10)]);
+    }
+
+    /// A pane the wake DID re-fetch adopts the query's token, which is what lets the next wake
+    /// skip it. The pair with the test above is the whole invariant: the stored token is never
+    /// newer than the frame it labels.
+    #[test]
+    fn a_refetched_pane_adopts_the_token_that_came_with_the_query() {
+        let existing = vec![cached(10, Some(token(7)))];
+        let seeds = vec![seeded(10, Some(token(9)))];
+        let merged = merge_panes(&existing, &seeds, &[(PaneId(10), frame(9))]);
+        assert_eq!(merged[0].projection, Some(token(9)));
+        assert_eq!(
+            merged[0].frame.cells.cols(),
+            9,
+            "and the fetched frame with it"
+        );
+        assert!(
+            stale_panes(&merged, &seeds).is_empty(),
+            "so the next wake skips it",
+        );
+    }
+
     /// A cell frame `n` cols wide, so a test can tell frames apart by `cells.cols()`.
     fn frame(cols: u16) -> CellFrame {
         CellFrame {
@@ -3506,6 +3696,7 @@ mod tests {
                 clipboard_query: None,
                 images: Vec::new(),
                 mouse_protocol: MouseProtocol::None,
+                projection: None,
                 frame: frame(3),
                 dims: (80, 24),
             },
@@ -3521,6 +3712,7 @@ mod tests {
                 clipboard_query: None,
                 images: Vec::new(),
                 mouse_protocol: MouseProtocol::None,
+                projection: None,
                 frame: frame(3),
                 dims: (40, 12),
             },
@@ -3541,6 +3733,7 @@ mod tests {
                 clipboard_query: None,
                 images: Vec::new(),
                 mouse_protocol: MouseProtocol::None,
+                projection: None,
                 dims: (100, 30),
             },
             PaneSeed {
@@ -3555,6 +3748,7 @@ mod tests {
                 clipboard_query: None,
                 images: Vec::new(),
                 mouse_protocol: MouseProtocol::None,
+                projection: None,
                 dims: (80, 24),
             },
             PaneSeed {
@@ -3569,6 +3763,7 @@ mod tests {
                 clipboard_query: None,
                 images: Vec::new(),
                 mouse_protocol: MouseProtocol::None,
+                projection: None,
                 dims: (80, 24),
             },
         ];
@@ -3619,6 +3814,7 @@ mod tests {
             images: Vec::new(),
             mouse_protocol: MouseProtocol::None,
             frame: frame(3),
+            projection: None,
             dims: (80, 24),
         }];
         let seeds = vec![PaneSeed {
@@ -3633,6 +3829,7 @@ mod tests {
             clipboard_query: None,
             images: Vec::new(),
             mouse_protocol: MouseProtocol::None,
+            projection: None,
             dims: (80, 24),
         }];
         let merged = merge_panes(&existing, &seeds, &[]); // fetch missed this wake
@@ -3670,6 +3867,7 @@ mod tests {
             images: Vec::new(),
             mouse_protocol: MouseProtocol::None,
             frame: frame(3),
+            projection: None,
             dims: (80, 24),
         }];
         let seeds = vec![PaneSeed {
@@ -3687,6 +3885,7 @@ mod tests {
             clipboard_query: None,
             images: Vec::new(),
             mouse_protocol: MouseProtocol::None,
+            projection: None,
             dims: (80, 24),
         }];
 
@@ -3721,6 +3920,7 @@ mod tests {
                 clipboard_query: None,
                 images: Vec::new(),
                 mouse_protocol: MouseProtocol::None,
+                projection: None,
                 frame: frame(3),
                 dims: (80, 24),
             },
@@ -3736,6 +3936,7 @@ mod tests {
                 clipboard_query: None,
                 images: Vec::new(),
                 mouse_protocol: MouseProtocol::None,
+                projection: None,
                 frame: frame(3),
                 dims: (80, 24),
             },
@@ -3753,6 +3954,7 @@ mod tests {
                 clipboard_query: None,
                 images: Vec::new(),
                 mouse_protocol: MouseProtocol::None,
+                projection: None,
                 dims: (80, 24),
             },
             PaneSeed {
@@ -3767,6 +3969,7 @@ mod tests {
                 clipboard_query: None,
                 images: Vec::new(),
                 mouse_protocol: MouseProtocol::None,
+                projection: None,
                 dims: (80, 24),
             },
         ];
