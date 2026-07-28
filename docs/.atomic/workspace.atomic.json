@@ -5832,6 +5832,54 @@
         "Two harness facts found by measuring: the palette has no dismiss verb (UnknownInvokePath), and a TextFieldExternal is written through scene/intervene {path,value}, not scene/invoke set_text."
       ]
     },
+    "R216": {
+      "decision_summary": "R216: give the last unread frame_timings producer a reader, and answer the question R215 could not. `last.shape_misses` is the PER-FRAME half of pinion's shaping instrument; `mirror.*` and `produce.*` got readers at R215 but the frame's own count did not, and R215's carry-forward recorded that what its green tick demonstrably priced was sprag's CHROME, leaving \"a terminal's biggest text surface is its cells\" an untested assumption. The decision was to answer it by MEASUREMENT rather than to reason from the grid's shape. Two facts were measured before any check was written, and the first one dictated the whole design: a mutating scene RPC stores its mirror SYNCHRONOUSLY in the dispatch, and that store walks the same text and warms the same LayoutCache -- so text written over the scene socket is already shaped by the time a frame paints it and the frame reports zero. Every RPC-driven driver therefore produces a green tick that prices the mirror, not the paint. The driver has to reach the DAEMON instead and let the client find out on its own poll, which is why this one check drives the `sprag` CLI and a second connection to the host socket while every other check in the file drives the client's scene. The claim landed: novel terminal OUTPUT reaches the painted grid across twelve independent frames without handing pinion's shaper a single run, while one novel window name costs 2. What the claim does NOT say is that the cells are free -- sprag paints its grid from the rows the host serialises rather than from text nodes pinion lays out, so this instrument cannot see whatever that path costs; it says terminal output does not scale the cost pinion R1454 measured at 18.5us a miss against a 118ns hit.",
+      "changes_bullets": [
+        "crates/sprag-gui/src/bin/sprag-smoke.rs: new live check `check_terminal_output_never_reaches_the_shaper` -- the reader for `last.shape_misses`, the last frame_timings producer with none. Detector before claim, as at R215, but the detector is a HOST-driven window rename (novel chrome text over the CLI) rather than a scene write, because a scene write pre-warms the paint and would make the claim vacuous.",
+        "Harness: `Painted::rows` + `subtree_rows` give the smoke its first ability to read what a terminal pane is SHOWING (the grid's serialised rows, not text nodes); `Smoke::pane_rows`, `Smoke::frame_count`, `Smoke::cli` (the `sprag` CLI against this run's daemon) and `Smoke::daemon` (a second connection to the host socket, the only place a pane's input external lives) are the new ingresses; `daemon_panes` discovers pane ids from the daemon's own scene instead of guessing a mapping from tile indices.",
+        "`FrameWatch` samples every frame across a change and reports `contiguous`: a frame number that jumps means one was painted and never read, so a claim quantified over \"every frame\" refuses to cover a frame it does not have. Misses stay `Option`, so an absent field can never read as a zero. Module docs corrected to `cargo build -p sprag-gui -p sprag-host`, since the smoke now spawns and drives three binaries."
+      ],
+      "verification_bullets": [
+        "Live smoke 78 passed / 0 failed, eight runs across the round (was 72). Every run: detector frame reports Some(2), the twelve claim frames report Some(0), contiguous true, daemon [5] / painted [0].",
+        "MEASURED BEFORE WRITING, and both measurements changed the design: novel text written over `scene/intervene` moved `mirror.shape_misses_total` by +4 while every frame that painted it reported `last.shape_misses` 0 -- the mirror store pre-warms the paint, so an RPC-driven check would have priced the wrong half. The daemon-driven path moved the frame counter and left the mirror counter still, which is the inverse and is what makes the claim about the paint.",
+        "NON-VACUITY IS ON THE WIRE, not inferred: the novel line is read back out of `scene/snapshot from: paint` as a painted grid ROW before the frame counts are judged, so \"shaped nothing\" cannot be true of a pane that never printed.",
+        "REVERT-PROVED BY TWO INDUCED FAULTS. (1) Aim the same watcher at chrome -- twelve CLI renames instead of twelve pane writes -- and exactly the claim line fails, 12/12 frames reporting Some(2), with every detector and non-vacuity guard still green; that also proves the sampler catches a per-frame miss on every one of twelve consecutive frames. (2) Misspell the field and BOTH the detector and the claim fail with None, never a silent pass.",
+        "Gates green: fmt, clippy --all-targets --all-features -D warnings, rustdoc --document-private-items, workspace 1115 tests (unchanged on purpose -- these are live smoke checks, not unit tests)."
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "R215's open question is CLOSED in one direction only: terminal output does not reach PINION's shaper. What the grid path itself costs is unmeasured and no counter on this wire can see it -- sprag serialises rows and paints them, so pricing that is a sprag-side instrument nobody has built.",
+        "The claim covers the frames the sampler SAW. `contiguous` makes a missed frame fail the check rather than hide, and eight runs missed none at ~4fps under lavapipe, but a client painting far faster than the poll would fail this check rather than lie -- the honest failure mode, and the one to remember if it ever goes red on faster hardware.",
+        "Every frame_timings producer now has a reader. The next unread instrument, if one is wanted, has to come from a new pinion round rather than from this block.",
+        "The WebKit browser panel remains the one genuinely unstarted front."
+      ],
+      "publishable_decision_summary": "R216: give the last unread frame_timings producer a reader, and answer the question R215 could not. `last.shape_misses` is the PER-FRAME half of pinion's shaping instrument; `mirror.*` and `produce.*` got readers at R215 but the frame's own count did not, and R215's carry-forward recorded that what its green tick demonstrably priced was sprag's CHROME, leaving \"a terminal's biggest text surface is its cells\" an untested assumption. The decision was to answer it by MEASUREMENT rather than to reason from the grid's shape. Two facts were measured before any check was written, and the first one dictated the whole design: a mutating scene RPC stores its mirror SYNCHRONOUSLY in the dispatch, and that store walks the same text and warms the same LayoutCache -- so text written over the scene socket is already shaped by the time a frame paints it and the frame reports zero. Every RPC-driven driver therefore produces a green tick that prices the mirror, not the paint. The driver has to reach the DAEMON instead and let the client find out on its own poll, which is why this one check drives the `sprag` CLI and a second connection to the host socket while every other check in the file drives the client's scene. The claim landed: novel terminal OUTPUT reaches the painted grid across twelve independent frames without handing pinion's shaper a single run, while one novel window name costs 2. What the claim does NOT say is that the cells are free -- sprag paints its grid from the rows the host serialises rather than from text nodes pinion lays out, so this instrument cannot see whatever that path costs; it says terminal output does not scale the cost pinion R1454 measured at 18.5us a miss against a 118ns hit.",
+      "publishable_changes_bullets": [
+        "crates/sprag-gui/src/bin/sprag-smoke.rs: new live check `check_terminal_output_never_reaches_the_shaper` -- the reader for `last.shape_misses`, the last frame_timings producer with none. Detector before claim, as at R215, but the detector is a HOST-driven window rename (novel chrome text over the CLI) rather than a scene write, because a scene write pre-warms the paint and would make the claim vacuous.",
+        "Harness: `Painted::rows` + `subtree_rows` give the smoke its first ability to read what a terminal pane is SHOWING (the grid's serialised rows, not text nodes); `Smoke::pane_rows`, `Smoke::frame_count`, `Smoke::cli` (the `sprag` CLI against this run's daemon) and `Smoke::daemon` (a second connection to the host socket, the only place a pane's input external lives) are the new ingresses; `daemon_panes` discovers pane ids from the daemon's own scene instead of guessing a mapping from tile indices.",
+        "`FrameWatch` samples every frame across a change and reports `contiguous`: a frame number that jumps means one was painted and never read, so a claim quantified over \"every frame\" refuses to cover a frame it does not have. Misses stay `Option`, so an absent field can never read as a zero. Module docs corrected to `cargo build -p sprag-gui -p sprag-host`, since the smoke now spawns and drives three binaries."
+      ],
+      "publishable_verification_bullets": [
+        "Live smoke 78 passed / 0 failed, eight runs across the round (was 72). Every run: detector frame reports Some(2), the twelve claim frames report Some(0), contiguous true, daemon [5] / painted [0].",
+        "MEASURED BEFORE WRITING, and both measurements changed the design: novel text written over `scene/intervene` moved `mirror.shape_misses_total` by +4 while every frame that painted it reported `last.shape_misses` 0 -- the mirror store pre-warms the paint, so an RPC-driven check would have priced the wrong half. The daemon-driven path moved the frame counter and left the mirror counter still, which is the inverse and is what makes the claim about the paint.",
+        "NON-VACUITY IS ON THE WIRE, not inferred: the novel line is read back out of `scene/snapshot from: paint` as a painted grid ROW before the frame counts are judged, so \"shaped nothing\" cannot be true of a pane that never printed.",
+        "REVERT-PROVED BY TWO INDUCED FAULTS. (1) Aim the same watcher at chrome -- twelve CLI renames instead of twelve pane writes -- and exactly the claim line fails, 12/12 frames reporting Some(2), with every detector and non-vacuity guard still green; that also proves the sampler catches a per-frame miss on every one of twelve consecutive frames. (2) Misspell the field and BOTH the detector and the claim fail with None, never a silent pass.",
+        "Gates green: fmt, clippy --all-targets --all-features -D warnings, rustdoc --document-private-items, workspace 1115 tests (unchanged on purpose -- these are live smoke checks, not unit tests)."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "R215's open question is CLOSED in one direction only: terminal output does not reach PINION's shaper. What the grid path itself costs is unmeasured and no counter on this wire can see it -- sprag serialises rows and paints them, so pricing that is a sprag-side instrument nobody has built.",
+        "The claim covers the frames the sampler SAW. `contiguous` makes a missed frame fail the check rather than hide, and eight runs missed none at ~4fps under lavapipe, but a client painting far faster than the poll would fail this check rather than lie -- the honest failure mode, and the one to remember if it ever goes red on faster hardware.",
+        "Every frame_timings producer now has a reader. The next unread instrument, if one is wanted, has to come from a new pinion round rather than from this block.",
+        "The WebKit browser panel remains the one genuinely unstarted front."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
@@ -9830,5 +9878,5 @@
   "parameter_deltas": {},
   "parameter_gates": {},
   "fact_counts": {},
-  "schema_version": 43
+  "schema_version": 44
 }
