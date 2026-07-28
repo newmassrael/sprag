@@ -10,9 +10,13 @@
 //! ## Running it
 //!
 //! ```text
-//! cargo build -p sprag-gui                       # REBUILD FIRST: cargo test does not refresh the binary
+//! cargo build -p sprag-gui -p sprag-host         # REBUILD FIRST: cargo test does not refresh the binaries
 //! xvfb-run -a ./target/debug/sprag-smoke
 //! ```
+//!
+//! Both packages, and not for tidiness: the smoke spawns `sprag-term` and drives it with the `sprag`
+//! CLI, which live in sprag-host. A stale one of those is the failure that reports PASS against code
+//! nobody just changed.
 //!
 //! Xvfb is the caller's to provide, not this tool's to spawn: a smoke that manages its own display
 //! server hides the one failure that matters most (the renderer could not start), and `xvfb-run`
@@ -83,6 +87,11 @@ fn main() -> ExitCode {
             // paint shapes everything, and either would report a startup cost as a steady state.
             check_an_agents_read_costs_no_scene_rederive(&mut smoke, &mut report);
             check_the_mirror_reshapes_nothing_it_has_shaped(&mut smoke, &mut report);
+            // The per-frame half of the same instrument, and the only check here that drives the
+            // DAEMON rather than the client: it needs a change with no scene RPC of ours in front of
+            // it (see the function docs), so it must run while both are alive and the session it
+            // renames a window in still exists.
+            check_terminal_output_never_reaches_the_shaper(&mut smoke, &mut report);
             // LAST over the WIRE, and it must stay last: it destroys the session this client is
             // attached to, so the client leaves and every check after it would be asserting against
             // a dead socket.
@@ -955,6 +964,175 @@ fn check_the_mirror_reshapes_nothing_it_has_shaped(smoke: &mut Smoke, report: &m
     );
 }
 
+/// Novel terminal OUTPUT reaches a user's pixels without costing pinion's shaper a single run.
+///
+/// This is the per-frame half of the shaping instrument and the question R215 left open. The
+/// cumulative counter next door demonstrably prices sprag's CHROME — its detector writes a text
+/// FIELD, and a field is chrome — while "a terminal's biggest text surface is its cells" stayed an
+/// assumption nothing had tested. `last.shape_misses` is the field that can answer it, because the
+/// grid is the one surface that repaints with no scene RPC of ours in front of it.
+///
+/// That ordering is why this check is shaped the way it is, and it was MEASURED before a line of it
+/// was written: a mutating scene RPC stores its mirror synchronously in the dispatch, and that store
+/// walks the same text and warms the same `LayoutCache` — so text written over RPC is already shaped
+/// by the time a frame paints it, and the frame reports zero. Driving this from the scene socket
+/// would have produced a green tick that priced the mirror rather than the paint. The driver has to
+/// reach the DAEMON and let the client find out on its own poll, which is why the CLI and a second
+/// connection appear in this check and nowhere else in this file.
+///
+/// The detector is asserted before the claim, and proves three things at once: a window renamed over
+/// the CLI paints a novel tab, the frame that paints it reports misses where the steady state
+/// reports none — so the field is live, chrome text DOES reach the shaper, and nothing on this path
+/// pre-warmed it. Without it a green claim would be indistinguishable from a counter that never
+/// moves, which is the failure mode this project keeps re-learning.
+///
+/// What the claim does NOT say is that the cells are free. sprag paints its grid from the rows the
+/// host serialises rather than from text nodes pinion lays out, so this instrument cannot see
+/// whatever that path costs. It says that terminal output does not scale PINION's shaper — the cost
+/// pinion R1454 measured at 18.5us a miss against a 118ns hit, which is the reason the question was
+/// worth answering at all.
+///
+/// The frames are SAMPLED, because `last` is the last frame and no cumulative per-paint counter
+/// exists. `contiguous` is what keeps that honest: a frame number that jumps means one slipped
+/// between two samples, and "not one frame shaped" would then be a claim about a frame never read.
+fn check_terminal_output_never_reaches_the_shaper(smoke: &mut Smoke, report: &mut Report) {
+    /// A window name no shaper on this machine has seen, in three scripts so it cannot collide with
+    /// anything the UI already paints.
+    const NOVEL_WINDOW: &str = "zqxjvw\u{03a9}\u{4e00}\u{4e8c}\u{4e09}";
+    /// How many novel lines the pane is made to print. More than one, because a single line could
+    /// be shaped in a frame the sampler happened to be between.
+    const LINES: usize = 12;
+
+    let Some(session) = smoke.attached_session() else {
+        report.check("the client says which session to drive", false);
+        return;
+    };
+    let Ok(mut daemon) = smoke.daemon() else {
+        report.check("the daemon takes a second connection to drive it by", false);
+        return;
+    };
+    // Both sides are asked, and both must answer ONE — the daemon addresses a pane by id and the
+    // client paints it by index, and nothing on the wire maps one to the other. With a single pane
+    // on each side the correspondence is not a guess; with more it would be, and this says so
+    // instead of driving whichever pane the ids happen to favour.
+    let ids = daemon_panes(&mut daemon, &session);
+    let painted = smoke.docked_panes();
+    report.check(
+        &format!(
+            "the daemon and the client agree on ONE pane to drive (daemon {ids:?}, painted {painted:?})"
+        ),
+        matches!((ids.as_slice(), painted.as_slice()), ([_], [_])),
+    );
+    // Nothing below may run on a guess: with the correspondence unproven, driving whichever pane the
+    // ids happen to favour would let the claim pass or fail on which pane got the text.
+    let ([id], [index]) = (ids.as_slice(), painted.as_slice()) else {
+        return;
+    };
+    let (id, index) = (*id, *index);
+
+    // ── The detector: novel CHROME text, over the same host path, before anything is claimed.
+    let from = smoke.frame_count();
+    let renamed = smoke.cli(&["rename-window", NOVEL_WINDOW, "-t", &session]);
+    let watch = smoke.watch_frames(from, |s| s.tabs().iter().any(|name| name == NOVEL_WINDOW));
+    report.check(
+        &format!("a host-driven rename reaches the client's painted strip ({renamed:?})"),
+        watch.arrived,
+    );
+    report.check(
+        &format!(
+            "novel CHROME text DOES reach the shaper ({:?})",
+            watch.misses()
+        ),
+        watch.shaped(),
+    );
+
+    // ── The claim: novel OUTPUT, arriving the one way nothing of ours precedes.
+    //
+    // One line per drive rather than one burst of twelve, because a burst lands in a single frame
+    // under a software rasteriser and a claim about "every frame" would then rest on one. Twelve
+    // drives are twelve independent frames, each painting text no shaper has been handed before.
+    let mut watch = FrameWatch::span();
+    let mut printed = Ok(Value::Null);
+    for line in (0..LINES).map(pane_line) {
+        let from = smoke.frame_count();
+        printed = daemon.call(
+            "scene/invoke",
+            json!({
+                "path": format!("/pane_{id}/sprag_input/external/text"),
+                "args": { "text": format!("echo {line}\n") },
+                "session": session,
+            }),
+        );
+        watch.absorb(smoke.watch_frames(from, |s| {
+            s.pane_rows(index).iter().any(|row| row.contains(&line))
+        }));
+        if !watch.arrived {
+            break;
+        }
+    }
+    // Non-vacuity, and it comes first: frames that shaped nothing while nothing arrived are not
+    // evidence about a grid, they are evidence that the pane never printed.
+    report.check(
+        &format!("the novel output reached the PAINTED grid ({printed:?})"),
+        watch.arrived,
+    );
+    report.check(
+        &format!(
+            "and every frame it took was seen ({} frames, contiguous: {})",
+            watch.frames.len(),
+            watch.contiguous
+        ),
+        !watch.frames.is_empty() && watch.contiguous,
+    );
+    report.check(
+        &format!(
+            "not one of them handed the shaper a run ({:?})",
+            watch.misses()
+        ),
+        watch.frames.iter().all(|(_, misses)| *misses == Some(0)),
+    );
+}
+
+/// One line of the novel output, `i` distinguishing it from its siblings.
+///
+/// Takes the index as a DISPLAY so the same function spells both the `printf` format the pane runs
+/// and the needle the assertion looks for — two spellings of one string is how a check ends up
+/// waiting for text it never asked for.
+fn pane_line(i: impl std::fmt::Display) -> String {
+    format!("zqxjvw\u{03a8}{i}\u{4e03}\u{516b}\u{4e5d}")
+}
+
+/// Which panes the DAEMON says `session`'s current window holds, by id.
+///
+/// Asked of the daemon's own scene rather than derived from the client's tile indices: the ids are
+/// minted host-side and the client never paints them, so any mapping computed out here would be a
+/// guess dressed as an address.
+fn daemon_panes(daemon: &mut HostConn, session: &str) -> Vec<u32> {
+    let Ok(tree) = daemon.call("scene/snapshot", json!({ "path": "", "session": session })) else {
+        return Vec::new();
+    };
+    let mut tags = Vec::new();
+    collect_tags(&tree, &mut tags);
+    let mut ids: Vec<u32> = tags
+        .iter()
+        .filter_map(|tag| tag.strip_prefix("pane_")?.parse().ok())
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+/// Every tag in a scene tree, in document order.
+fn collect_tags(node: &Value, out: &mut Vec<String>) {
+    if let Some(tag) = node["tag"].as_str() {
+        out.push(tag.to_owned());
+    }
+    if let Some(children) = node["children"].as_array() {
+        for child in children {
+            collect_tags(child, out);
+        }
+    }
+}
+
 /// Every frame this client painted reached a FIXED POINT before it was presented.
 ///
 /// pinion R1458 re-runs `view` + layout until a pass moves nothing, because a layout pass writes
@@ -1035,6 +1213,13 @@ struct Painted {
     /// the `content` of an untagged `Text` CHILD, so reading `content` off the matched node itself
     /// finds nothing. That shape cost an iteration once; collecting the subtree is the fix.
     text: Vec<String>,
+    /// What a terminal GRID in this node's subtree is showing, one string per row.
+    ///
+    /// Separate from [`Self::text`] because it arrives by a different route entirely: a pane's cells
+    /// are not text nodes pinion laid out, they are rows the host serialised and the grid paints
+    /// itself. Reading them is how a check can tell "the output reached the pixels" from "the pane
+    /// never printed", which nothing in this file could do before.
+    rows: Vec<String>,
 }
 
 /// A booted daemon + GUI, and the scene connection to drive them.
@@ -1048,6 +1233,9 @@ struct Smoke {
     host_sock: PathBuf,
     /// The isolated state dir, removed on the way out.
     state: PathBuf,
+    /// Where this run's binaries live — the daemon and client it spawned, and the CLI it drives the
+    /// daemon with. Taken from the smoke's OWN path so a run always drives the build it came from.
+    target: PathBuf,
     /// Everything the GUI wrote to stderr for the whole run — the diagnostics it emits about
     /// ITSELF, which no scene query can answer. Lives under [`Self::state`], so the teardown that
     /// removes the run's directory takes it too; read it before the `Smoke` drops.
@@ -1097,6 +1285,7 @@ impl Smoke {
             gui_sock,
             host_sock,
             state,
+            target,
             gui_log,
         };
         // The OS-focus gate: without this `os_focused_window` is null under Xvfb and anything that
@@ -1371,6 +1560,98 @@ impl Smoke {
         std::fs::read_to_string(&self.gui_log).unwrap_or_default()
     }
 
+    /// What pane tile `i` is SHOWING, one string per painted row.
+    fn pane_rows(&mut self, i: usize) -> Vec<String> {
+        self.tags()
+            .remove(&format!("sprag_gui.pane.{i}"))
+            .map(|pane| pane.rows)
+            .unwrap_or_default()
+    }
+
+    /// How many frames the client has presented.
+    fn frame_count(&mut self) -> u64 {
+        self.call("scene/frame_timings", json!({}))
+            .ok()
+            .and_then(|timings| timings["frame_count"].as_u64())
+            .unwrap_or_default()
+    }
+
+    /// Run the `sprag` CLI against THIS run's daemon, answering what it printed.
+    ///
+    /// A genuinely different ingress from the scene socket everything else here drives: it reaches
+    /// the daemon, and the client learns of it on its own poll with no dispatch of ours in front.
+    /// That is the whole point where a per-frame cost is concerned — see
+    /// [`check_terminal_output_never_reaches_the_shaper`] — and it is also the plain user path, so a
+    /// check driven this way exercises the chain a person actually uses.
+    fn cli(&mut self, args: &[&str]) -> Result<String, String> {
+        let output = Command::new(self.target.join("sprag"))
+            .env("SPRAG_HOST_RPC_SOCK", &self.host_sock)
+            .args(args)
+            .output()
+            .map_err(|error| format!("sprag {args:?}: {error}"))?;
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        } else {
+            Err(format!(
+                "sprag {args:?} exited {:?}: {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ))
+        }
+    }
+
+    /// A second connection, to the DAEMON's own socket rather than to the client's scene.
+    ///
+    /// The daemon serves a scene of its own — the session's panes, addressed by the ids it minted —
+    /// and it is the only place a pane's INPUT can be written: the client's socket answers
+    /// `NoExternalAtPath` for the same path, because the input external belongs to the host.
+    fn daemon(&self) -> Result<HostConn, String> {
+        HostConn::connect(&self.host_sock, PATIENCE).map_err(|error| error.to_string())
+    }
+
+    /// Watch every frame the client paints, from the one standing at `from` until `arrived`.
+    ///
+    /// Sampled rather than summed, because the per-frame count is only ever the LAST frame's. The
+    /// loop reads the cheap counter continuously and the expensive arrival condition only when a new
+    /// frame appears — which keeps the sampling dense enough for [`FrameWatch::contiguous`] to be a
+    /// real guarantee rather than an optimistic one, and keeps a snapshot from landing between every
+    /// pair of samples.
+    ///
+    /// Nothing in here can disturb what it measures: a read is served from the stored scene, so the
+    /// polling neither re-derives nor stores a mirror nor damages anything into a frame.
+    fn watch_frames(
+        &mut self,
+        from: u64,
+        mut arrived: impl FnMut(&mut Self) -> bool,
+    ) -> FrameWatch {
+        let mut watch = FrameWatch {
+            frames: Vec::new(),
+            arrived: false,
+            contiguous: true,
+        };
+        let mut last = from;
+        let deadline = Instant::now() + PATIENCE;
+        loop {
+            if let Ok(timings) = self.call("scene/frame_timings", json!({})) {
+                let count = timings["frame_count"].as_u64().unwrap_or(last);
+                if count != last {
+                    watch.contiguous &= count == last + 1;
+                    last = count;
+                    watch
+                        .frames
+                        .push((count, timings["last"]["shape_misses"].as_i64()));
+                    if arrived(self) {
+                        watch.arrived = true;
+                        return watch;
+                    }
+                }
+            }
+            if Instant::now() >= deadline {
+                return watch;
+            }
+        }
+    }
+
     /// The visible palette row whose title is `title`, by asking the palette itself rather than by
     /// reading the paint — the External's row list and the painted rows are one derivation, and this
     /// is the address `select` speaks.
@@ -1455,6 +1736,7 @@ fn walk(node: &Value, out: &mut std::collections::HashMap<String, Painted>) {
             Painted {
                 rect: rect_of(&node["rect"]),
                 text: subtree_text(node),
+                rows: subtree_rows(node),
             },
         );
     }
@@ -1485,6 +1767,80 @@ fn subtree_text(node: &Value) -> Vec<String> {
         }
     }
     found
+}
+
+/// Every grid row painted anywhere in `node`'s subtree (see [`Painted::rows`]).
+///
+/// The subtree for the same reason the text walk uses it: the pane's tag is on a container and the
+/// rows hang off its grid child, so a node matched by pane tag carries none of them itself.
+fn subtree_rows(node: &Value) -> Vec<String> {
+    let mut found = Vec::new();
+    if let Some(rows) = node["grid_rows"].as_array() {
+        found.extend(
+            rows.iter()
+                .filter_map(|row| row["text"].as_str().map(str::to_owned)),
+        );
+    }
+    if let Some(children) = node["children"].as_array() {
+        for child in children {
+            found.extend(subtree_rows(child));
+        }
+    }
+    found
+}
+
+/// The frames a client painted across one change, and what each spent on the shaper.
+///
+/// A run of samples rather than a total, because the per-frame count is the LAST frame's and pinion
+/// keeps no cumulative paint-side sum. Everything a caller needs to know how far to trust it is
+/// here: which frames were seen, whether any were missed, and whether the change arrived at all.
+struct FrameWatch {
+    /// `(frame_count, last.shape_misses)` for every frame seen, in order.
+    ///
+    /// The miss count is an OPTION and stays one: an absent field must never read as a zero, or the
+    /// day upstream renames it every claim in sight passes for free.
+    frames: Vec<(u64, Option<i64>)>,
+    /// Whether the change under test reached the paint before the patience ran out.
+    arrived: bool,
+    /// Whether every frame in the span was actually seen.
+    ///
+    /// A `frame_count` that advances by more than one between samples means a frame was painted and
+    /// never read — so a claim quantified over "every frame" is covering one it does not have. The
+    /// sampler cannot prevent that; it can refuse to hide it.
+    contiguous: bool,
+}
+
+impl FrameWatch {
+    /// An empty span, to fold several drives' worth of watching into.
+    ///
+    /// `arrived` starts TRUE because folding is a conjunction — a span of many drives arrived only
+    /// if each of them did, and an accumulator that started false could never say so.
+    fn span() -> Self {
+        Self {
+            frames: Vec::new(),
+            arrived: true,
+            contiguous: true,
+        }
+    }
+
+    /// Fold one drive's watch into this span.
+    fn absorb(&mut self, other: Self) {
+        self.frames.extend(other.frames);
+        self.arrived &= other.arrived;
+        self.contiguous &= other.contiguous;
+    }
+
+    /// Whether any frame in the span handed the shaper a run.
+    fn shaped(&self) -> bool {
+        self.frames
+            .iter()
+            .any(|(_, misses)| misses.is_some_and(|count| count > 0))
+    }
+
+    /// What each frame spent, for the report line.
+    fn misses(&self) -> Vec<Option<i64>> {
+        self.frames.iter().map(|&(_, misses)| misses).collect()
+    }
 }
 
 /// What the run found.
