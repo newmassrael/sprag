@@ -94,7 +94,10 @@ use sprag_host::{
     PaneScrollFacts, Project, UserConfig, mux_action_path, pane_input_path,
 };
 use sprag_input::{Modifiers, MouseButton, MouseEventKind, MouseInput};
-use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn, runtime_path};
+use sprag_rpc::{
+    CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn, new_gui_client_id,
+    runtime_path,
+};
 use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneExit, PaneId, SessionInfo, WindowInfo};
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol};
 
@@ -340,17 +343,6 @@ fn query_sessions(conn: &mut HostConn) -> io::Result<Vec<SessionInfo>> {
     serde_json::from_value(value).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
-/// A process-unique CLIENT id for this GUI (R-PR67), shared by its request + poll connections. pid
-/// plus the launch instant is unique across concurrent GUIs and stable for this one's whole life;
-/// it is an opaque lifecycle token the daemon groups a client's connections by, never identity.
-fn new_client_id() -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("gui-{}-{nanos}", std::process::id())
-}
-
 /// Announce `conn`'s CLIENT id to the daemon (`client/hello`, R-PR67) — the group key a client's
 /// several connections share, so the daemon counts one GUI as one attached client, not one per
 /// connection. BEST-EFFORT: attachment drives only the sidebar viewer badge, and a daemon that does
@@ -571,7 +563,7 @@ pub(crate) struct WireHost {
     /// This GUI's opaque CLIENT id (R-PR67), shared by its request + poll connections so the daemon
     /// counts one window as ONE attached client, not one per connection. Announced on every
     /// connection ([`send_hello`]) and used to attach ([`send_attach`]) on boot and each switch;
-    /// minted once per process ([`new_client_id`]). A lifecycle token, not identity.
+    /// minted once per process ([`new_gui_client_id`]). A lifecycle token, not identity.
     client_id: String,
     /// The session this client is CURRENTLY attached to — a client-local fact (the wire's
     /// per-session `attached` COUNT is a different thing: how many clients view each session, not
@@ -739,7 +731,7 @@ impl WireHost {
         // on the request conn and attach it to its session, so the daemon counts this window as a
         // viewer (the sidebar badge). Done before the `since0` baseline below so the attach's own
         // scene bump is folded into the baseline, not a spurious first poll wake.
-        let client_id = new_client_id();
+        let client_id = new_gui_client_id();
         send_hello(&mut conn, &client_id);
         send_attach(&mut conn);
         let seeds = boot_panes(&mut conn, argv.as_deref(), cols, rows, n_panes, created)?;

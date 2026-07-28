@@ -486,6 +486,55 @@ fn the_cli_attach_preflights_then_launches_the_gui_scoped_to_the_session() {
     );
 }
 
+/// `--no-wait` returns on the window ATTACHING, not on merely having been spawned — so a window
+/// that dies on startup is still this command's failure. That is the whole reason the flag waits
+/// for the daemon to witness the client rather than exiting 0 the moment `spawn` succeeds.
+///
+/// `/usr/bin/env` is the stand-in for exactly that failure: it starts, prints, and exits without
+/// ever speaking to the daemon — indistinguishable, from the CLI's side, from a real window that
+/// cannot open a display. The pass condition is that the CLI NOTICES.
+///
+/// The success path needs a window that really attaches, so it is proven live rather than here
+/// (a stand-in that speaks the client handshake would be asserting against a mock of the thing
+/// under test); measured 4/4 attaching in 0.13-0.22s.
+#[test]
+fn attach_no_wait_reports_a_window_that_exits_before_attaching() {
+    let (_host, sock) = spawn_host();
+    assert!(sprag(&sock, &["new", "work"]).ok, "a session to attach to");
+
+    let run = sprag_env(
+        &sock,
+        &["attach", "work", "--no-wait"],
+        &[("SPRAG_GUI_BIN", "/usr/bin/env")],
+    );
+    assert!(
+        !run.ok,
+        "a window that never attached is a FAILURE, not a silent exit 0: {}",
+        run.stdout,
+    );
+    assert!(
+        run.stderr.contains("before its window attached"),
+        "and it is diagnosed as such, not as a timeout: {}",
+        run.stderr,
+    );
+}
+
+/// An unknown flag is refused rather than swallowed as the session name — otherwise a typo
+/// (`--nowait`) would attach to a session by that name, or fail with a confusing "no session".
+#[test]
+fn attach_refuses_an_unknown_argument() {
+    let (_host, sock) = spawn_host();
+    assert!(sprag(&sock, &["new", "work"]).ok, "a session to attach to");
+
+    let run = sprag(&sock, &["attach", "work", "--nowait"]);
+    assert!(!run.ok, "a misspelled flag fails");
+    assert!(
+        run.stderr.contains("unexpected argument"),
+        "named as the argument error it is: {}",
+        run.stderr,
+    );
+}
+
 /// `list-clients` + the `ls` attached count, END TO END over the real socket (R-PR67): the CLI
 /// reads the daemon's live per-client attachment state, so this pins the CLI's parse + wire read +
 /// formatting against a REAL attached client — not a mocked slot.

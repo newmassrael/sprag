@@ -59,6 +59,39 @@ pub const CLIENT_ATTACH_METHOD: &str = "client/attach";
 /// The [`CLIENT_HELLO_METHOD`] params key carrying the opaque client id.
 pub const CLIENT_PARAM: &str = "client";
 
+/// Mint a `sprag-gui` window's client id: `gui-<pid>-<launch nanos>`, process-unique and stable
+/// for that window's whole life, shared by its request and poll connections.
+///
+/// Opaque TO THE HOST, which only ever groups connections by it — but not opaque to whoever
+/// LAUNCHED the window, and that is why the shape lives here rather than in the GUI that mints it.
+/// `sprag attach --no-wait` has to recognise the window IT spawned among every attached client, and
+/// it knows only the pid it got back from the spawn; matching on [`gui_client_prefix`] answers that
+/// without inventing a second identity channel. Minted here and matched here, so the two halves
+/// cannot drift the way they would with the format spelled out at each end (mirroring
+/// [`SESSION_PARAM`] and `HOST_SOCKET_NAME`).
+///
+/// The nanos are what make it unique rather than merely distinct: a pid is recyclable, so two
+/// GUIs launched far apart could share one, and the launch instant separates them.
+#[must_use]
+pub fn new_gui_client_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    format!("gui-{}-{nanos}", std::process::id())
+}
+
+/// The prefix every [`new_gui_client_id`] minted by process `pid` begins with — the test a launcher
+/// applies to find ITS window in the daemon's client list.
+///
+/// The TRAILING DASH is load-bearing, not decoration: without it `gui-123` is a prefix of
+/// `gui-1234-…`, so a launcher would accept a stranger's window whose pid merely starts with its
+/// own digits and report success for a window that never came up.
+#[must_use]
+pub fn gui_client_prefix(pid: u32) -> String {
+    format!("gui-{pid}-")
+}
+
 /// A blocking JSON-RPC connection to a host socket — the client end of the wire.
 ///
 /// One request/response at a time (see the module docs). Construct with
@@ -256,6 +289,33 @@ impl HostConn {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The two halves that must not drift, pinned in ONE place: what a window MINTS is what its
+    /// launcher MATCHES. Split across crates this is a convention nothing checks.
+    #[test]
+    fn a_minted_gui_client_id_matches_this_process_prefix() {
+        let id = new_gui_client_id();
+        assert!(
+            id.starts_with(&gui_client_prefix(std::process::id())),
+            "a window's launcher recognises the id that window mints: {id}",
+        );
+    }
+
+    /// The trailing dash earning its keep: pid 123 must not accept pid 1234's window. Without it
+    /// a launcher reports success for a window that is not its own and never came up.
+    #[test]
+    fn a_pid_prefix_does_not_match_a_longer_pid() {
+        let longer = "gui-1234-99999";
+        assert!(
+            !longer.starts_with(&gui_client_prefix(123)),
+            "gui-123- must not swallow {longer}",
+        );
+        assert!(
+            longer.starts_with(&gui_client_prefix(1234)),
+            "but its own pid still matches",
+        );
+    }
+
     use pinion_rpc::{RpcFrame, RpcIngress};
     use pinion_rpc_transport::UnixSocketTransport;
     use std::sync::Arc;

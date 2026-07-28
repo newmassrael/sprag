@@ -27,6 +27,7 @@ use pinion_rpc_transport::{TransportControl, UnixSocketTransport};
 pub mod client;
 pub use client::{
     CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn, SESSION_PARAM,
+    gui_client_prefix, new_gui_client_id,
 };
 
 /// The well-known host socket file name — the endpoint a `sprag-term` daemon binds and a

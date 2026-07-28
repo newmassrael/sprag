@@ -14,7 +14,9 @@
 //! sprag run [NAME] [-t SESSION] [--pane N]  list the commands the pane's project declares
 //!                          (its `.sprag.toml`), or, given NAME, TYPE that command at the pane's
 //!                          prompt without running it — the Enter is the user's
-//! sprag attach NAME        open a sprag-gui window attached to a session (tmux attach-session)
+//! sprag attach NAME [--no-wait]  open a sprag-gui window attached to a session (tmux
+//!                          attach-session). Blocks until the window closes; --no-wait returns
+//!                          once the window has attached (still reporting one that fails to)
 //! sprag kill-session NAME   kill a session (the last one ends the daemon)
 //! sprag kill-server [--purge]  kill every session, ending the daemon; --purge also deletes the
 //!                              durability snapshot AND every pane's saved scrollback (destroy
@@ -83,7 +85,7 @@ fn run() -> io::Result<()> {
         Some("ssh") => ssh(args.collect()),
         Some("find") => find(args.collect()),
         Some("run") => run_project(args.collect()),
-        Some("attach") => attach(args.next()),
+        Some("attach") => attach(args.collect()),
         Some("kill-session") => kill_session(args.next()),
         Some("kill-server") => kill_server(args.collect()),
         Some("windows") => windows(args.collect()),
@@ -238,7 +240,8 @@ fn run_project(args: Vec<String>) -> io::Result<()> {
 
 fn print_usage() {
     eprintln!(
-        "usage: sprag <ls | list-clients [-t SESSION] | new [name] | attach NAME\n\
+        "usage: sprag <ls | list-clients [-t SESSION] | new [name]\n\
+         \x20             | attach NAME [--no-wait]\n\
          \x20             | ssh [user@]host [-p PORT] [-L FWD]… [--tmux[=NAME]] [-- command…]\n\
          \x20             | find NEEDLE [-t SESSION] [--pane N] [--regex]\n\
          \x20             | kill-session NAME | kill-server [--purge]>\n\
@@ -625,12 +628,37 @@ fn ssh(args: Vec<String>) -> io::Result<()> {
 /// it `SPRAG_GUI_SESSION=NAME` (the attach env its `resolve_session` consumes → adopt the session's
 /// live panes) and `SPRAG_GUI_HOST_SOCK` pinned to the EXACT socket this CLI reached — so the
 /// window joins the daemon we just checked, never a different default it might connect-or-spawn.
-/// Foreground (tmux's attach holds the terminal until the client leaves), but the window runs in
-/// a session of its OWN ([`own_session`]) — closing that terminal must not close the window.
-fn attach(name: Option<String>) -> io::Result<()> {
-    let name = name.ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "attach needs a session name")
-    })?;
+/// Whichever way it returns, the window runs in a session of its OWN ([`own_session`]) — closing
+/// the launching terminal must not close the window.
+///
+/// ## Blocking or returning is the CALLER's choice, because neither answer is right for everyone
+///
+/// Default: hold the terminal until the window closes, tmux's `attach-session` shape, and the
+/// reading under which the window's exit status IS this command's. `--no-wait` returns as soon as
+/// the window is up, the shape of launching a GUI from a shell you want back.
+///
+/// `--no-wait` is NOT "spawn and hope". It returns only once the DAEMON has witnessed the window
+/// as an attached client ([`await_window`]), so a window that dies on startup — no display, a
+/// broken binary — is still this command's failure rather than a silent exit 0 and a prompt that
+/// looks fine. That check costs almost nothing: spawn-to-attached measured 0.13-0.22s, far under
+/// what a person reads as a pause. It is also something neither tmux nor cmux can offer, for a
+/// structural reason rather than an oversight — it needs a daemon that can SEE its clients as data
+/// and a client id the launcher can recognise ([`sprag_rpc::gui_client_prefix`]).
+///
+/// Not spelled `-d`: tmux's `attach-session -d` means "detach every OTHER client", a different
+/// thing entirely, and one this flag would silently shadow for anyone with the muscle memory.
+fn attach(args: Vec<String>) -> io::Result<()> {
+    let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
+    let mut name: Option<String> = None;
+    let mut wait = true;
+    for arg in args {
+        match arg.as_str() {
+            "--no-wait" => wait = false,
+            _ if name.is_none() => name = Some(arg),
+            other => return Err(bad(format!("attach: unexpected argument {other:?}"))),
+        }
+    }
+    let name = name.ok_or_else(|| bad("attach needs a session name".to_owned()))?;
     let sock = socket_path(HOST_SOCKET);
     let mut conn = connect()?;
     if !session_exists(&mut conn, &name)? {
@@ -645,7 +673,13 @@ fn attach(name: Option<String>) -> io::Result<()> {
     command
         .env("SPRAG_GUI_SESSION", &name)
         .env("SPRAG_GUI_HOST_SOCK", &sock);
-    let status = own_session(&mut command).status().map_err(|error| {
+    let mut child = own_session(&mut command).spawn().map_err(|error| {
+        io::Error::new(error.kind(), format!("could not launch sprag-gui: {error}"))
+    })?;
+    if !wait {
+        return await_window(&mut conn, &mut child);
+    }
+    let status = child.wait().map_err(|error| {
         io::Error::new(error.kind(), format!("could not launch sprag-gui: {error}"))
     })?;
     if status.success() {
@@ -654,6 +688,68 @@ fn attach(name: Option<String>) -> io::Result<()> {
         Err(io::Error::other(format!("sprag-gui exited with {status}")))
     }
 }
+
+/// How long [`await_window`] gives a window to reach the daemon before calling it a failure.
+///
+/// Generous against the measured cost — spawn-to-attached runs 0.13-0.22s — because the thing it
+/// must not do is fail a window that is merely slow: a first launch on a cold GPU driver pays for
+/// shader and pipeline setup that a warm one does not, and a false failure here would send someone
+/// hunting a bug that is not there. Overshooting only delays the report of a genuine failure.
+const WINDOW_ATTACH_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Wait until `child`'s window is ATTACHED to the daemon, then return, leaving it running.
+///
+/// The success condition is the daemon's own client list, not the child still being alive, and the
+/// difference is the point: a process that started and then failed to reach the daemon is exactly
+/// the failure a caller wants reported, and only the daemon can tell us it never arrived. The
+/// window is matched by [`sprag_rpc::gui_client_prefix`] on the pid we just spawned, so a
+/// concurrently-launched window of someone else's cannot be mistaken for ours.
+///
+/// Three outcomes, all of them honest: it attached (`Ok`), it exited first (`Err`, carrying the
+/// status, since that is the diagnosis), or it never arrived within [`WINDOW_ATTACH_TIMEOUT`]
+/// (`Err`, and the window is deliberately left alone — we spawned it into its own session, and
+/// killing something that may simply be slow to paint would be the more destructive guess).
+fn await_window(conn: &mut HostConn, child: &mut std::process::Child) -> io::Result<()> {
+    let prefix = sprag_rpc::gui_client_prefix(child.id());
+    let deadline = std::time::Instant::now() + WINDOW_ATTACH_TIMEOUT;
+    loop {
+        // The child FIRST: a window that has already exited will never appear in the client list,
+        // so asking the daemon again would only spend the whole timeout to reach a worse message.
+        if let Some(status) = child.try_wait()? {
+            return Err(io::Error::other(format!(
+                "sprag-gui exited with {status} before its window attached"
+            )));
+        }
+        let clients: Value = conn.call(
+            "scene/query",
+            json!({ "path": mux_action_path(CLIENTS_SLOT) }),
+        )?;
+        if clients
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|client| client["client"].as_str())
+            .any(|client| client.starts_with(&prefix))
+        {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "the window did not attach within {}s; it is still running, so check it \
+                     with `sprag list-clients`",
+                    WINDOW_ATTACH_TIMEOUT.as_secs()
+                ),
+            ));
+        }
+        std::thread::sleep(WINDOW_ATTACH_POLL);
+    }
+}
+
+/// The gap between [`await_window`]'s checks — short enough that the common case (a window up in
+/// ~0.15s) is not rounded up into a visible pause, long enough not to spin the daemon.
+const WINDOW_ATTACH_POLL: Duration = Duration::from_millis(25);
 
 /// Give `cmd`'s child a session of its own (`setsid` between `fork` and `exec`), so a hangup on
 /// the terminal that ran this CLI cannot reach it.
