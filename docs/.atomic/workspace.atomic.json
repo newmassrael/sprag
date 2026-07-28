@@ -5657,6 +5657,48 @@
         "Ctrl-C in the launching terminal no longer reaches the window - a deliberate behaviour change, the same trade the daemon and the pane children already make."
       ]
     },
+    "R212": {
+      "decision_summary": "R212 = attach's remaining half, decided by the owner and built as a CHOICE rather than a new default: blocking stays the default (tmux-faithful, and the reading under which the window's exit status IS the command's), and --no-wait returns once the window is up. The design turned on a measurement rather than a preference. A pure spawn-and-return would have silently dropped the one thing blocking was buying - a window that dies on startup, no display or a broken binary, would exit 0 with a prompt that looks fine - so --no-wait instead returns on the DAEMON having witnessed the window as an attached client. That was affordable only because it was measured: spawn-to-attached runs 0.13-0.22s, far under what a person reads as a pause, so the honest option costs nothing over the naive one. It is also something neither tmux nor cmux can offer, for a structural reason rather than an oversight: it needs a daemon that can see its clients as data plus a client id the launcher can recognise. That recognition forced the second half of the round. The id shape gui-<pid>-<nanos> was minted in sprag-gui and would have been matched by a hardcoded copy in the CLI - two spellings of one wire fact, the exact drift HOST_SOCKET_NAME and SESSION_PARAM are centralised to prevent - so new_gui_client_id and gui_client_prefix moved to sprag-rpc, minted and matched through one definition, with the invariant pinned by a test that can only live where both halves do. Not spelled -d: tmux's attach-session -d means detach every OTHER client, and shadowing that would mislead anyone with the muscle memory.",
+      "changes_bullets": [
+        "sprag.rs: attach parses flags (--no-wait, an unknown argument refused rather than swallowed as the session name) and spawns rather than blocks; new await_window polls the daemon's clients slot for the prefix of the pid it just spawned, with three honest outcomes - attached, exited first (carrying the status, which is the diagnosis), or timed out with the window deliberately left running.",
+        "sprag-rpc client.rs: new_gui_client_id and gui_client_prefix, the mint and match halves of the window client id, defined together and re-exported; the trailing dash is load-bearing so pid 123 cannot accept pid 1234's window.",
+        "sprag-gui wire.rs: its private new_client_id deleted for the shared one, so the format has one home."
+      ],
+      "verification_bullets": [
+        "Live, real GUI: --no-wait returned rc=0 in 0.13-0.24s 4/4 with the window still running and one attached client; the default still blocks (a 5s timeout fired, rc=124); a window that cannot start reports \"exited with exit status: 0 before its window attached\", rc=1.",
+        "Two sprag-rpc unit tests pin the mint/match invariant in the one crate that owns both: a minted id matches this process's prefix, and gui_client_prefix(123) rejects gui-1234-99999 while gui_client_prefix(1234) accepts it.",
+        "Two CLI integration tests: a window that exits before attaching FAILS with that diagnosis (not a timeout), and a misspelled flag is an argument error rather than a session name.",
+        "Gates GREEN: fmt, clippy --workspace --all-targets -D warnings, the rustdoc private-items gate, workspace tests 1112 passed / 0 failed (was 1108)."
+      ],
+      "impact_refs": [
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "attach-polish (register item C) is now fully CLOSED: the resize half by measurement, the terminal-kill half at R211, and the block-vs-return half here as a user choice.",
+        "The 10s attach timeout is a judgement, not a measurement: it is ~50x the observed 0.13-0.22s to leave room for a cold GPU driver's first-launch shader setup, which was NOT measured on this machine.",
+        "--no-wait leaves a timed-out window RUNNING rather than killing it; if that proves confusing, the fix is a clearer message, not a kill, since we spawned it into its own session."
+      ],
+      "publishable_decision_summary": "R212 = attach's remaining half, decided by the owner and built as a CHOICE rather than a new default: blocking stays the default (tmux-faithful, and the reading under which the window's exit status IS the command's), and --no-wait returns once the window is up. The design turned on a measurement rather than a preference. A pure spawn-and-return would have silently dropped the one thing blocking was buying - a window that dies on startup, no display or a broken binary, would exit 0 with a prompt that looks fine - so --no-wait instead returns on the DAEMON having witnessed the window as an attached client. That was affordable only because it was measured: spawn-to-attached runs 0.13-0.22s, far under what a person reads as a pause, so the honest option costs nothing over the naive one. It is also something neither tmux nor cmux can offer, for a structural reason rather than an oversight: it needs a daemon that can see its clients as data plus a client id the launcher can recognise. That recognition forced the second half of the round. The id shape gui-<pid>-<nanos> was minted in sprag-gui and would have been matched by a hardcoded copy in the CLI - two spellings of one wire fact, the exact drift HOST_SOCKET_NAME and SESSION_PARAM are centralised to prevent - so new_gui_client_id and gui_client_prefix moved to sprag-rpc, minted and matched through one definition, with the invariant pinned by a test that can only live where both halves do. Not spelled -d: tmux's attach-session -d means detach every OTHER client, and shadowing that would mislead anyone with the muscle memory.",
+      "publishable_changes_bullets": [
+        "sprag.rs: attach parses flags (--no-wait, an unknown argument refused rather than swallowed as the session name) and spawns rather than blocks; new await_window polls the daemon's clients slot for the prefix of the pid it just spawned, with three honest outcomes - attached, exited first (carrying the status, which is the diagnosis), or timed out with the window deliberately left running.",
+        "sprag-rpc client.rs: new_gui_client_id and gui_client_prefix, the mint and match halves of the window client id, defined together and re-exported; the trailing dash is load-bearing so pid 123 cannot accept pid 1234's window.",
+        "sprag-gui wire.rs: its private new_client_id deleted for the shared one, so the format has one home."
+      ],
+      "publishable_verification_bullets": [
+        "Live, real GUI: --no-wait returned rc=0 in 0.13-0.24s 4/4 with the window still running and one attached client; the default still blocks (a 5s timeout fired, rc=124); a window that cannot start reports \"exited with exit status: 0 before its window attached\", rc=1.",
+        "Two sprag-rpc unit tests pin the mint/match invariant in the one crate that owns both: a minted id matches this process's prefix, and gui_client_prefix(123) rejects gui-1234-99999 while gui_client_prefix(1234) accepts it.",
+        "Two CLI integration tests: a window that exits before attaching FAILS with that diagnosis (not a timeout), and a misspelled flag is an argument error rather than a session name.",
+        "Gates GREEN: fmt, clippy --workspace --all-targets -D warnings, the rustdoc private-items gate, workspace tests 1112 passed / 0 failed (was 1108)."
+      ],
+      "publishable_impact_refs": [
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "attach-polish (register item C) is now fully CLOSED: the resize half by measurement, the terminal-kill half at R211, and the block-vs-return half here as a user choice.",
+        "The 10s attach timeout is a judgement, not a measurement: it is ~50x the observed 0.13-0.22s to leave room for a cold GPU driver's first-launch shader setup, which was NOT measured on this machine.",
+        "--no-wait leaves a timed-out window RUNNING rather than killing it; if that proves confusing, the fix is a clearer message, not a kill, since we spawned it into its own session."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
