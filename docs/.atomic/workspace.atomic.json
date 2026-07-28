@@ -4225,6 +4225,1312 @@
         "NEXT: no-detached / attachment behind PINION-PR67; OSC notifications, WebKit panel, SSH, Skills"
       ]
     },
+    "R180": {
+      "decision_summary": "R180 = per-client session attachment (R-PR67), the fact tmux calls \"attached\", carried end to end. The daemon keeps a conn->client->session map fed by client/hello and client/attach intercepts, and releases it from on_disconnect on the frame FIFO so a crashed client cannot leak a hold. SessionInfo gained an additive attached field on the wire; sprag-gui attaches on boot and on every switch, and the sidebar paints an \"N viewing\" badge - the first surface in sprag that shows another client exists at all. Stage 2 made destroy-time behaviour follow from it: a client switches only to a session no other client is viewing, and detaches otherwise (MRU-preferred, list-order fallback). CLI surface is sprag list-clients [-t SESSION] plus an (N attached) count in ls. Arrived alongside the pinion pin fc5f47ac -> fff2359c (R1393), whose RpcFrame gained conn: ConnId - stdin stamps one id and dispatch drops it.",
+      "changes_bullets": [
+        "R180 = per-client session attachment, the fact tmux calls \"attached\" (R-PR67)",
+        "daemon keeps a conn->client->session map; client/hello + client/attach intercepts",
+        "on_disconnect on the frame FIFO releases it, so a crashed client cannot leak a hold",
+        "SessionInfo.attached goes on the wire, additive; sprag-gui attaches on boot + switch",
+        "sidebar paints an \"N viewing\" badge, the first surface to show another client exists",
+        "detach-on-destroy Stage 2: switch only to a session no other client views, else detach",
+        "sprag list-clients [-t SESSION]; ls shows (N attached) per session"
+      ],
+      "verification_bullets": [
+        "unit tests for the attachment map + the MRU-preferred / list-order fallback",
+        "clients wire slot asserted over the REAL socket, not a fake",
+        "CLI end-to-end: list-clients and ls attached counts against a live daemon",
+        "live multi-GUI smoke covering all three outcomes: detach vs off-switch vs free",
+        "pin fc5f47ac -> fff2359c (R1393) in the same arc; SCE unchanged at 9a0a650c",
+        "RpcFrame gained conn: ConnId — stdin stamps one id, dispatch drops it"
+      ],
+      "impact_refs": [
+        "2",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "attachment is the daemon-side half; the sidebar badge is the only client surface yet"
+      ],
+      "publishable_decision_summary": "R180 = per-client session attachment (R-PR67), the fact tmux calls \"attached\", carried end to end. The daemon keeps a conn->client->session map fed by client/hello and client/attach intercepts, and releases it from on_disconnect on the frame FIFO so a crashed client cannot leak a hold. SessionInfo gained an additive attached field on the wire; sprag-gui attaches on boot and on every switch, and the sidebar paints an \"N viewing\" badge - the first surface in sprag that shows another client exists at all. Stage 2 made destroy-time behaviour follow from it: a client switches only to a session no other client is viewing, and detaches otherwise (MRU-preferred, list-order fallback). CLI surface is sprag list-clients [-t SESSION] plus an (N attached) count in ls. Arrived alongside the pinion pin fc5f47ac -> fff2359c (R1393), whose RpcFrame gained conn: ConnId - stdin stamps one id and dispatch drops it.",
+      "publishable_changes_bullets": [
+        "R180 = per-client session attachment, the fact tmux calls \"attached\" (R-PR67)",
+        "daemon keeps a conn->client->session map; client/hello + client/attach intercepts",
+        "on_disconnect on the frame FIFO releases it, so a crashed client cannot leak a hold",
+        "SessionInfo.attached goes on the wire, additive; sprag-gui attaches on boot + switch",
+        "sidebar paints an \"N viewing\" badge, the first surface to show another client exists",
+        "detach-on-destroy Stage 2: switch only to a session no other client views, else detach",
+        "sprag list-clients [-t SESSION]; ls shows (N attached) per session"
+      ],
+      "publishable_verification_bullets": [
+        "unit tests for the attachment map + the MRU-preferred / list-order fallback",
+        "clients wire slot asserted over the REAL socket, not a fake",
+        "CLI end-to-end: list-clients and ls attached counts against a live daemon",
+        "live multi-GUI smoke covering all three outcomes: detach vs off-switch vs free",
+        "pin fc5f47ac -> fff2359c (R1393) in the same arc; SCE unchanged at 9a0a650c",
+        "RpcFrame gained conn: ConnId — stdin stamps one id, dispatch drops it"
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "attachment is the daemon-side half; the sidebar badge is the only client surface yet"
+      ]
+    },
+    "R181": {
+      "decision_summary": "R181 = a pane can raise its hand. The emulator latches OSC 9, OSC 777;notify and OSC 99 (kitty) as a Notification {title, body, seq}, and counts bare BELs as a separate bell_seq with OSC terminators excluded - deliberately two facts, because tmux distinguishes monitor-bell from an application notification and so must sprag. Both propagate vt -> terminal -> host -> gui -> mcp. The client mirrors pane_notification with a per-slot seq-ack cleared on view, so an unattended pane is marked and looking at it is what clears the mark. The marker rides pane_display_title, which puts it on every title surface at once, and the a11y name announces it in WORDS rather than as a glyph a screen reader would have to guess at.",
+      "changes_bullets": [
+        "emulator latches OSC 9 / 777;notify / 99 (kitty) as a Notification {title, body, seq}",
+        "BEL counted as a distinct bell_seq, OSC terminators excluded (tmux monitor-bell)",
+        "both propagate vt -> terminal -> host -> gui -> mcp; panes slot + list_panes additive",
+        "client mirrors pane_notification with a per-slot seq-ack that CLEARS ON VIEW",
+        "the marker rides pane_display_title, so every title surface shows it from one string",
+        "a11y announces the marker in words; the gui marker sums notif + bell seqs"
+      ],
+      "verification_bullets": [
+        "emulator unit tests plus a CHILD-emitted OSC driven over the real socket",
+        "headless smoke: the marker shows on OSC and clears on view",
+        "bell path unit + real-socket wire tests, asserted as distinct from notifications"
+      ],
+      "impact_refs": [
+        "4",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "the seq-ack model later carried the attention RING (R190) with no change"
+      ],
+      "publishable_decision_summary": "R181 = a pane can raise its hand. The emulator latches OSC 9, OSC 777;notify and OSC 99 (kitty) as a Notification {title, body, seq}, and counts bare BELs as a separate bell_seq with OSC terminators excluded - deliberately two facts, because tmux distinguishes monitor-bell from an application notification and so must sprag. Both propagate vt -> terminal -> host -> gui -> mcp. The client mirrors pane_notification with a per-slot seq-ack cleared on view, so an unattended pane is marked and looking at it is what clears the mark. The marker rides pane_display_title, which puts it on every title surface at once, and the a11y name announces it in WORDS rather than as a glyph a screen reader would have to guess at.",
+      "publishable_changes_bullets": [
+        "emulator latches OSC 9 / 777;notify / 99 (kitty) as a Notification {title, body, seq}",
+        "BEL counted as a distinct bell_seq, OSC terminators excluded (tmux monitor-bell)",
+        "both propagate vt -> terminal -> host -> gui -> mcp; panes slot + list_panes additive",
+        "client mirrors pane_notification with a per-slot seq-ack that CLEARS ON VIEW",
+        "the marker rides pane_display_title, so every title surface shows it from one string",
+        "a11y announces the marker in words; the gui marker sums notif + bell seqs"
+      ],
+      "publishable_verification_bullets": [
+        "emulator unit tests plus a CHILD-emitted OSC driven over the real socket",
+        "headless smoke: the marker shows on OSC and clears on view",
+        "bell path unit + real-socket wire tests, asserted as distinct from notifications"
+      ],
+      "publishable_impact_refs": [
+        "4",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "the seq-ack model later carried the attention RING (R190) with no change"
+      ]
+    },
+    "R182": {
+      "decision_summary": "R182 = the in-line editing and scroll-region halves of the VT audit, both driven through the real parser rather than a hand-built state. ICH / DCH / ECH / REP give row-local insert, delete, erase and repeat; DECSC / DECRC (ESC 7/8 and CSI s/u) save and restore position AND pen together, because a half-restored cursor is worse than none; DECSCUSR carries shape. The scroll region followed in the same arc: DECSTBM margins with a region-aware line feed, IND and reverse index, region-bounded IL/DL that home the column, and SU/SD. The revert-proof that mattered was on line_feed - breaking its region check fails the tests, which is what proves the margins are actually consulted rather than merely stored.",
+      "changes_bullets": [
+        "ICH / DCH / ECH / REP: row-local char insert, delete, erase, repeat",
+        "DECSC / DECRC (ESC 7/8 + CSI s/u) save and restore position AND pen; DECSCUSR shape",
+        "DECSTBM margins with a region-aware line feed; IND and reverse index",
+        "IL / DL region-bounded and column-homing; SU / SD via scroll_region_up/down"
+      ],
+      "verification_bullets": [
+        "7 tests for the editing half and 10 for the region half, all via the REAL parser",
+        "revert-proof: breaking line_feed's region check fails, so margins are consulted"
+      ],
+      "impact_refs": [
+        "4",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "the audit's remaining gaps were enumerated and closed later in R193 and R195"
+      ],
+      "publishable_decision_summary": "R182 = the in-line editing and scroll-region halves of the VT audit, both driven through the real parser rather than a hand-built state. ICH / DCH / ECH / REP give row-local insert, delete, erase and repeat; DECSC / DECRC (ESC 7/8 and CSI s/u) save and restore position AND pen together, because a half-restored cursor is worse than none; DECSCUSR carries shape. The scroll region followed in the same arc: DECSTBM margins with a region-aware line feed, IND and reverse index, region-bounded IL/DL that home the column, and SU/SD. The revert-proof that mattered was on line_feed - breaking its region check fails the tests, which is what proves the margins are actually consulted rather than merely stored.",
+      "publishable_changes_bullets": [
+        "ICH / DCH / ECH / REP: row-local char insert, delete, erase, repeat",
+        "DECSC / DECRC (ESC 7/8 + CSI s/u) save and restore position AND pen; DECSCUSR shape",
+        "DECSTBM margins with a region-aware line feed; IND and reverse index",
+        "IL / DL region-bounded and column-homing; SU / SD via scroll_region_up/down"
+      ],
+      "publishable_verification_bullets": [
+        "7 tests for the editing half and 10 for the region half, all via the REAL parser",
+        "revert-proof: breaking line_feed's region check fails, so margins are consulted"
+      ],
+      "publishable_impact_refs": [
+        "4",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "the audit's remaining gaps were enumerated and closed later in R193 and R195"
+      ]
+    },
+    "R183": {
+      "decision_summary": "R183 = OSC 133 shell integration, and the two agent-facing capabilities it unlocks. The emulator parses the A / C / D marks and keeps them PER ROW so they survive scroll, scrollback and reflow - a mark that moved with its text is the whole point. Shell state (idle / running) and the last exit code are DERIVED from the marks rather than stored beside them, so there is one truth. Screen::last_command slices command / output / exit at the A..C..D boundaries and becomes the fifth MCP tool, read_last_command: an AI in a pane can now read what the last command was, what it printed, and whether it worked. Screen::prompt_positions plus an on-demand host prompt_marks slot gives the human half - Ctrl+Shift+Arrow scrolls to the previous or next prompt.",
+      "changes_bullets": [
+        "emulator parses OSC 133 A/C/D; marks are PER ROW and survive scroll/scrollback/reflow",
+        "shell state (idle/running) + last exit DERIVED from the marks, not stored beside them",
+        "Screen::last_command slices command/output/exit at the A..C..D boundaries",
+        "host last_command pane slot -> read_last_command, the 5th MCP tool",
+        "Screen::prompt_positions + an on-demand host prompt_marks slot",
+        "JumpPrompt chord (Ctrl+Shift+Arrow) scrolls to the prev/next prompt via jump_target"
+      ],
+      "verification_bullets": [
+        "vt unit + real-socket wire tests for the marks and the derived state",
+        "mcp tests over the real socket; revert-proof on the C..D slice boundaries",
+        "vt + host wire + gui chord/jump tests; the jump DIRECTION is revert-proofed"
+      ],
+      "impact_refs": [
+        "1",
+        "4"
+      ],
+      "carry_forward_bullets": [
+        "prompt_positions became the logical-line axis find-in-scrollback answers in (R197)"
+      ],
+      "publishable_decision_summary": "R183 = OSC 133 shell integration, and the two agent-facing capabilities it unlocks. The emulator parses the A / C / D marks and keeps them PER ROW so they survive scroll, scrollback and reflow - a mark that moved with its text is the whole point. Shell state (idle / running) and the last exit code are DERIVED from the marks rather than stored beside them, so there is one truth. Screen::last_command slices command / output / exit at the A..C..D boundaries and becomes the fifth MCP tool, read_last_command: an AI in a pane can now read what the last command was, what it printed, and whether it worked. Screen::prompt_positions plus an on-demand host prompt_marks slot gives the human half - Ctrl+Shift+Arrow scrolls to the previous or next prompt.",
+      "publishable_changes_bullets": [
+        "emulator parses OSC 133 A/C/D; marks are PER ROW and survive scroll/scrollback/reflow",
+        "shell state (idle/running) + last exit DERIVED from the marks, not stored beside them",
+        "Screen::last_command slices command/output/exit at the A..C..D boundaries",
+        "host last_command pane slot -> read_last_command, the 5th MCP tool",
+        "Screen::prompt_positions + an on-demand host prompt_marks slot",
+        "JumpPrompt chord (Ctrl+Shift+Arrow) scrolls to the prev/next prompt via jump_target"
+      ],
+      "publishable_verification_bullets": [
+        "vt unit + real-socket wire tests for the marks and the derived state",
+        "mcp tests over the real socket; revert-proof on the C..D slice boundaries",
+        "vt + host wire + gui chord/jump tests; the jump DIRECTION is revert-proofed"
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "4"
+      ],
+      "publishable_carry_forward_bullets": [
+        "prompt_positions became the logical-line axis find-in-scrollback answers in (R197)"
+      ]
+    },
+    "R184": {
+      "decision_summary": "R184 = the underline axis, and the pin bump that carried it. SGR 4:x turned Attrs.underline from a bool into a five-valued UnderlineStyle, and SGR 58/59 added underline_color as a THIRD Cell colour channel - a peer of fg and bg, not a modifier of fg, because a terminal can and does colour an underline independently of its text. The pin moved fff2359c -> a8bfd58a (pinion R1399) in the same arc, since CellAttrs.underline became the same axis upstream; sprag-grid's preedit tests moved to underline.is_on(). The revert-proof is the useful record here: collapsing the axis back to a bool fails, and so does dropping underline_color from DECRC - two independent ways to be wrong, both caught.",
+      "changes_bullets": [
+        "Attrs.underline: bool -> UnderlineStyle, the five SGR 4:x styles",
+        "underline_color = a THIRD Cell colour channel, peer of fg/bg (SGR 58/59)",
+        "pin fff2359c -> a8bfd58a (pinion R1399); SCE unchanged at 9a0a650c",
+        "CellAttrs.underline is the same axis upstream; preedit tests read underline.is_on()"
+      ],
+      "verification_bullets": [
+        "vt + grid tests; gate green (check / clippy -D / fmt / doc -D)",
+        "revert-proof, two independent failures: axis collapsed to bool, and DECRC dropping the colour"
+      ],
+      "impact_refs": [
+        "3",
+        "4"
+      ],
+      "carry_forward_bullets": [
+        "the third colour channel is what later let the cursor carry its own colour (R199)"
+      ],
+      "publishable_decision_summary": "R184 = the underline axis, and the pin bump that carried it. SGR 4:x turned Attrs.underline from a bool into a five-valued UnderlineStyle, and SGR 58/59 added underline_color as a THIRD Cell colour channel - a peer of fg and bg, not a modifier of fg, because a terminal can and does colour an underline independently of its text. The pin moved fff2359c -> a8bfd58a (pinion R1399) in the same arc, since CellAttrs.underline became the same axis upstream; sprag-grid's preedit tests moved to underline.is_on(). The revert-proof is the useful record here: collapsing the axis back to a bool fails, and so does dropping underline_color from DECRC - two independent ways to be wrong, both caught.",
+      "publishable_changes_bullets": [
+        "Attrs.underline: bool -> UnderlineStyle, the five SGR 4:x styles",
+        "underline_color = a THIRD Cell colour channel, peer of fg/bg (SGR 58/59)",
+        "pin fff2359c -> a8bfd58a (pinion R1399); SCE unchanged at 9a0a650c",
+        "CellAttrs.underline is the same axis upstream; preedit tests read underline.is_on()"
+      ],
+      "publishable_verification_bullets": [
+        "vt + grid tests; gate green (check / clippy -D / fmt / doc -D)",
+        "revert-proof, two independent failures: axis collapsed to bool, and DECRC dropping the colour"
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "4"
+      ],
+      "publishable_carry_forward_bullets": [
+        "the third colour channel is what later let the cursor carry its own colour (R199)"
+      ]
+    },
+    "R185": {
+      "decision_summary": "R185 = two protocols that both hinge on refusing to lie. OSC 52 clipboard: the emulator records set and query, the host arbitrates exactly ONE reply per read, the GUI applies writes and answers reads, and SPRAG_OSC52 gates policy with read DENIED by default - a terminal that hands a page's clipboard read to any child is a data-exfiltration surface, so the safe arm is the default and the write payload is fetched on demand with acks primed against a stale clobber. The Kitty keyboard protocol added CSI >/</=/? u negotiation with the query reply riding a new device-response path, and the encoder emitting CSI u for Esc and the Ctrl/Alt/Super keys. Its flags are MASKED to what sprag actually supports (disambiguate) before the query answers, so the reply can never claim a capability the encoder does not have.",
+      "changes_bullets": [
+        "OSC 52: emulator records set/query; host arbitrates ONE reply per read",
+        "GUI applies writes and answers reads; SPRAG_OSC52 policy, read-DENY by default",
+        "write payload fetched on demand; acks primed against a stale clobber",
+        "Kitty keyboard: CSI >/</=/? u negotiation, query reply on a new device-response path",
+        "encoder emits CSI u for Esc and the Ctrl/Alt/Super keys",
+        "flags MASKED to the supported set (disambiguate) so the query never over-claims"
+      ],
+      "verification_bullets": [
+        "emulator unit tests for both protocols plus real-socket wire coverage",
+        "the OSC 52 default is asserted as DENY, so a policy regression is a failing test"
+      ],
+      "impact_refs": [
+        "4",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "the device-response path added here carried DA/DSR and XtSmGraphics in R192"
+      ],
+      "publishable_decision_summary": "R185 = two protocols that both hinge on refusing to lie. OSC 52 clipboard: the emulator records set and query, the host arbitrates exactly ONE reply per read, the GUI applies writes and answers reads, and SPRAG_OSC52 gates policy with read DENIED by default - a terminal that hands a page's clipboard read to any child is a data-exfiltration surface, so the safe arm is the default and the write payload is fetched on demand with acks primed against a stale clobber. The Kitty keyboard protocol added CSI >/</=/? u negotiation with the query reply riding a new device-response path, and the encoder emitting CSI u for Esc and the Ctrl/Alt/Super keys. Its flags are MASKED to what sprag actually supports (disambiguate) before the query answers, so the reply can never claim a capability the encoder does not have.",
+      "publishable_changes_bullets": [
+        "OSC 52: emulator records set/query; host arbitrates ONE reply per read",
+        "GUI applies writes and answers reads; SPRAG_OSC52 policy, read-DENY by default",
+        "write payload fetched on demand; acks primed against a stale clobber",
+        "Kitty keyboard: CSI >/</=/? u negotiation, query reply on a new device-response path",
+        "encoder emits CSI u for Esc and the Ctrl/Alt/Super keys",
+        "flags MASKED to the supported set (disambiguate) so the query never over-claims"
+      ],
+      "publishable_verification_bullets": [
+        "emulator unit tests for both protocols plus real-socket wire coverage",
+        "the OSC 52 default is asserted as DENY, so a policy regression is a failing test"
+      ],
+      "publishable_impact_refs": [
+        "4",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "the device-response path added here carried DA/DSR and XtSmGraphics in R192"
+      ]
+    },
+    "R186": {
+      "decision_summary": "R186 = OSC 8 hyperlinks, all the way from the pen to a click. The emulator's OSC 8 pen stamps cells and the Arc rides scroll, scrollback and reflow, so a link scrolled out and back is still the same link. sprag-grid interns them into pinion's HyperlinkId table and the snapshot carries the uri, which is what makes read_pane_links possible - an agent reads link TARGETS as data, something tmux capture cannot do because it flattens OSC 8 away. The human half is a per-pane hover oracle External co-tagged at pane_tag: it lights the whole id-group at once (wrap segments together, since one link split across two rows is still one link), captures a press only over a link so text selection still works everywhere else, shows a hand cursor, and opens through a scheme-gated platform opener. Two pin bumps carried it: b74b42c8 (pinion R1403) and 26436228 (R1404 images, R1405 link interaction).",
+      "changes_bullets": [
+        "emulator OSC-8 pen stamps cells; the Arc rides scroll, scrollback and reflow",
+        "sprag-grid interns links into pinion's HyperlinkId table; snapshot carries the uri",
+        "MCP read_pane_links reads link targets as DATA (tmux capture flattens OSC 8)",
+        "overlay_hyperlink_hover reverse-videos a hovered id-group; None is a no-op",
+        "the WHOLE group lights, so wrap segments highlight together",
+        "per-pane hover oracle co-tagged at pane_tag; press captured only over a link",
+        "click opens via a SCHEME-GATED platform opener; hand cursor on hover",
+        "pins b74b42c8 (R1403) and 26436228 (R1404/R1405) carried the seams"
+      ],
+      "verification_bullets": [
+        "vt + grid unit tests; MCP link read asserted over the real socket",
+        "selection coexistence asserted: a press off a link still selects",
+        "the hyperlink test was later fixed so it no longer spawns the REAL opener"
+      ],
+      "impact_refs": [
+        "3",
+        "4"
+      ],
+      "carry_forward_bullets": [
+        "the hover oracle's drain seam later carried the mouse-tracking reports (R191)"
+      ],
+      "publishable_decision_summary": "R186 = OSC 8 hyperlinks, all the way from the pen to a click. The emulator's OSC 8 pen stamps cells and the Arc rides scroll, scrollback and reflow, so a link scrolled out and back is still the same link. sprag-grid interns them into pinion's HyperlinkId table and the snapshot carries the uri, which is what makes read_pane_links possible - an agent reads link TARGETS as data, something tmux capture cannot do because it flattens OSC 8 away. The human half is a per-pane hover oracle External co-tagged at pane_tag: it lights the whole id-group at once (wrap segments together, since one link split across two rows is still one link), captures a press only over a link so text selection still works everywhere else, shows a hand cursor, and opens through a scheme-gated platform opener. Two pin bumps carried it: b74b42c8 (pinion R1403) and 26436228 (R1404 images, R1405 link interaction).",
+      "publishable_changes_bullets": [
+        "emulator OSC-8 pen stamps cells; the Arc rides scroll, scrollback and reflow",
+        "sprag-grid interns links into pinion's HyperlinkId table; snapshot carries the uri",
+        "MCP read_pane_links reads link targets as DATA (tmux capture flattens OSC 8)",
+        "overlay_hyperlink_hover reverse-videos a hovered id-group; None is a no-op",
+        "the WHOLE group lights, so wrap segments highlight together",
+        "per-pane hover oracle co-tagged at pane_tag; press captured only over a link",
+        "click opens via a SCHEME-GATED platform opener; hand cursor on hover",
+        "pins b74b42c8 (R1403) and 26436228 (R1404/R1405) carried the seams"
+      ],
+      "publishable_verification_bullets": [
+        "vt + grid unit tests; MCP link read asserted over the real socket",
+        "selection coexistence asserted: a press off a link still selects",
+        "the hyperlink test was later fixed so it no longer spawns the REAL opener"
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "4"
+      ],
+      "publishable_carry_forward_bullets": [
+        "the hover oracle's drain seam later carried the mouse-tracking reports (R191)"
+      ]
+    },
+    "R187": {
+      "decision_summary": "R187 = inline images, delivered in five staged slices under pinion R1404 and finished as a capability tmux simply does not have. Stage 1 decoded Kitty a=T RGB/RGBA single-chunk (16 MiB cap) and composited it as a pinion Scene::Image over memory://. Stage 2 added Sixel raster (6-bit vertical bands, palette, repeat) riding Stage 1's store, wire and composite UNCHANGED - which is the evidence the Stage 1 seam was cut in the right place - and fixed images being dropped on resize. Stage 3 gave them a lifecycle: scroll shifts an anchor with its region, off-edge evicts, an ED over the anchor row drops the image, reflow keeps it. Stage 4 completed the Kitty protocol - m=1 chunk reassembly (single in-flight, 24 MiB cap), a=d delete, a=q support ack written back over the pty, f=100 PNG decode. Stage 5 made transport on-demand: the panes slot carries only {id,w,h,anchor,seq} and the GUI fetches RGBA per (id,seq), with MCP read_pane_images reporting images as data.",
+      "changes_bullets": [
+        "S1 Kitty a=T RGB/RGBA single-chunk decode (16 MiB cap) -> Scene::Image over memory://",
+        "S2 Sixel raster (6-bit vertical bands, palette, repeat) on Stage 1's seams UNCHANGED",
+        "S2 also fixed images being dropped on resize/reflow",
+        "S3 lifecycle: scroll shifts the anchor, off-edge evicts, ED over the anchor row drops",
+        "S4 m=1 chunk reassembly (single in-flight, 24 MiB cap), a=d delete, a=q pty write-back ack",
+        "S4 f=100 PNG decode to RGBA",
+        "S5 on-demand transport: panes slot carries {id,w,h,anchor,seq}, GUI fetches per (id,seq)",
+        "MCP read_pane_images reports images as data; tmux shows none"
+      ],
+      "verification_bullets": [
+        "headless PIXEL smoke at every stage, not just unit tests - these are pixels or nothing",
+        "S3 smoke: the image moves up with scroll and the anchor tracks the grid",
+        "S4 smoke: a chunked image renders, then a=d removes it",
+        "S5 smoke verified the on-demand render path end to end"
+      ],
+      "impact_refs": [
+        "4",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "the display half stayed unguarded until R200 added a test for it"
+      ],
+      "publishable_decision_summary": "R187 = inline images, delivered in five staged slices under pinion R1404 and finished as a capability tmux simply does not have. Stage 1 decoded Kitty a=T RGB/RGBA single-chunk (16 MiB cap) and composited it as a pinion Scene::Image over memory://. Stage 2 added Sixel raster (6-bit vertical bands, palette, repeat) riding Stage 1's store, wire and composite UNCHANGED - which is the evidence the Stage 1 seam was cut in the right place - and fixed images being dropped on resize. Stage 3 gave them a lifecycle: scroll shifts an anchor with its region, off-edge evicts, an ED over the anchor row drops the image, reflow keeps it. Stage 4 completed the Kitty protocol - m=1 chunk reassembly (single in-flight, 24 MiB cap), a=d delete, a=q support ack written back over the pty, f=100 PNG decode. Stage 5 made transport on-demand: the panes slot carries only {id,w,h,anchor,seq} and the GUI fetches RGBA per (id,seq), with MCP read_pane_images reporting images as data.",
+      "publishable_changes_bullets": [
+        "S1 Kitty a=T RGB/RGBA single-chunk decode (16 MiB cap) -> Scene::Image over memory://",
+        "S2 Sixel raster (6-bit vertical bands, palette, repeat) on Stage 1's seams UNCHANGED",
+        "S2 also fixed images being dropped on resize/reflow",
+        "S3 lifecycle: scroll shifts the anchor, off-edge evicts, ED over the anchor row drops",
+        "S4 m=1 chunk reassembly (single in-flight, 24 MiB cap), a=d delete, a=q pty write-back ack",
+        "S4 f=100 PNG decode to RGBA",
+        "S5 on-demand transport: panes slot carries {id,w,h,anchor,seq}, GUI fetches per (id,seq)",
+        "MCP read_pane_images reports images as data; tmux shows none"
+      ],
+      "publishable_verification_bullets": [
+        "headless PIXEL smoke at every stage, not just unit tests - these are pixels or nothing",
+        "S3 smoke: the image moves up with scroll and the anchor tracks the grid",
+        "S4 smoke: a chunked image renders, then a=d removes it",
+        "S5 smoke verified the on-demand render path end to end"
+      ],
+      "publishable_impact_refs": [
+        "4",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "the display half stayed unguarded until R200 added a test for it"
+      ]
+    },
+    "R188": {
+      "decision_summary": "R188 = reflow, which is where sprag stops matching tmux and starts beating it. Scrollback and the visible screen reflow as ONE stream on resize, and a grow reclaims what a shrink wrapped - tmux reflows neither. The retention cap moved to LOGICAL lines, which is width-independent and therefore the only cap that means the same thing before and after a resize, with a physical ceiling behind it because tmux has no memory ceiling at all. Inline image anchors are tracked through all three reflow passes to their new cell, an image whose anchor reflows above the visible window is evicted, and next_image_seq is carried so a post-resize re-transmit stays monotonic. The subtle one is the resize-redraw window: a shell that redraws across several batches needs its CR-LF soft-wrap persisted across them while OSC 133 says it is at a prompt, and VtPort::note_input ends that epoch on user input. A non-integrated shell keeps the single-batch fallback, so nothing regressed for shells without OSC 133.",
+      "changes_bullets": [
+        "scrollback + visible reflow as ONE stream; a grow reclaims what a shrink wrapped",
+        "retention cap by LOGICAL lines (width-independent) with a physical ceiling behind it",
+        "image anchors tracked through all 3 reflow passes; off-window anchors evict",
+        "next_image_seq carried so a post-resize re-transmit stays monotonic",
+        "resize-redraw epoch: CR-LF soft-wrap persists across batches while OSC 133 says prompt",
+        "VtPort::note_input ends the epoch on user input; the transport calls it",
+        "non-integrated shells keep the single-batch fallback, so no regression"
+      ],
+      "verification_bullets": [
+        "vt unit tests across the three passes, including the grow-reclaims case",
+        "the multi-batch redraw asserted with and without OSC 133 integration"
+      ],
+      "impact_refs": [
+        "4",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "reflow-safe marks and links were prerequisites for the scrollback front (R197-R200)"
+      ],
+      "publishable_decision_summary": "R188 = reflow, which is where sprag stops matching tmux and starts beating it. Scrollback and the visible screen reflow as ONE stream on resize, and a grow reclaims what a shrink wrapped - tmux reflows neither. The retention cap moved to LOGICAL lines, which is width-independent and therefore the only cap that means the same thing before and after a resize, with a physical ceiling behind it because tmux has no memory ceiling at all. Inline image anchors are tracked through all three reflow passes to their new cell, an image whose anchor reflows above the visible window is evicted, and next_image_seq is carried so a post-resize re-transmit stays monotonic. The subtle one is the resize-redraw window: a shell that redraws across several batches needs its CR-LF soft-wrap persisted across them while OSC 133 says it is at a prompt, and VtPort::note_input ends that epoch on user input. A non-integrated shell keeps the single-batch fallback, so nothing regressed for shells without OSC 133.",
+      "publishable_changes_bullets": [
+        "scrollback + visible reflow as ONE stream; a grow reclaims what a shrink wrapped",
+        "retention cap by LOGICAL lines (width-independent) with a physical ceiling behind it",
+        "image anchors tracked through all 3 reflow passes; off-window anchors evict",
+        "next_image_seq carried so a post-resize re-transmit stays monotonic",
+        "resize-redraw epoch: CR-LF soft-wrap persists across batches while OSC 133 says prompt",
+        "VtPort::note_input ends the epoch on user input; the transport calls it",
+        "non-integrated shells keep the single-batch fallback, so no regression"
+      ],
+      "publishable_verification_bullets": [
+        "vt unit tests across the three passes, including the grow-reclaims case",
+        "the multi-batch redraw asserted with and without OSC 133 integration"
+      ],
+      "publishable_impact_refs": [
+        "4",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "reflow-safe marks and links were prerequisites for the scrollback front (R197-R200)"
+      ]
+    },
+    "R189": {
+      "decision_summary": "R189 = break-pane and join-pane, tmux's move-a-pane-between-windows, on every surface at once. Session-side the moves live on WorkspaceExternal as BREAK_PANE_ACTION / JOIN_PANE_ACTION, with HostClient::break_pane / join_pane defaulted to None so a client that cannot do it says so rather than silently failing, and Host overriding. A pane is addressed by its registry-unique id and the SOURCE window is derived rather than passed - the caller cannot name a wrong source. CLI is break-pane PANE [name] and join-pane PANE WINDOW, both -t SESSION. The GUI got context-menu items whose action list is captured AT OPEN, so what was painted and what a click runs cannot disagree. The closing test is the interesting one: it drives the ctxmenu reducer against a seeded in-process host and asserts the window count moves 1 <-> 2, which closed the GUI context-menu smoke gap WITHOUT needing a shell or Xvfb.",
+      "changes_bullets": [
+        "BREAK_PANE_ACTION / JOIN_PANE_ACTION dispatch on WorkspaceExternal",
+        "HostClient::break_pane / join_pane defaulted None; Host overrides",
+        "a pane is addressed by registry-unique id; the SOURCE window is derived, not passed",
+        "CLI: break-pane PANE [name], join-pane PANE WINDOW, both -t SESSION",
+        "GUI ctxmenu \"Break out\" + \"Move to <window>\"; action list captured AT OPEN",
+        "WireHost / SlotView carry break_pane / join_pane over the wire"
+      ],
+      "verification_bullets": [
+        "real-socket test moves a pane and closes the emptied source window",
+        "CLI integration test covers both moves AND the refusals",
+        "ctxmenu reducer test on a seeded in-process host: window count 1 <-> 2, revert-proof",
+        "that test closed the GUI ctxmenu smoke gap with no shell and no Xvfb"
+      ],
+      "impact_refs": [
+        "2",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "break_pane / join_pane being Session methods is why a per-session focus revision is safe"
+      ],
+      "publishable_decision_summary": "R189 = break-pane and join-pane, tmux's move-a-pane-between-windows, on every surface at once. Session-side the moves live on WorkspaceExternal as BREAK_PANE_ACTION / JOIN_PANE_ACTION, with HostClient::break_pane / join_pane defaulted to None so a client that cannot do it says so rather than silently failing, and Host overriding. A pane is addressed by its registry-unique id and the SOURCE window is derived rather than passed - the caller cannot name a wrong source. CLI is break-pane PANE [name] and join-pane PANE WINDOW, both -t SESSION. The GUI got context-menu items whose action list is captured AT OPEN, so what was painted and what a click runs cannot disagree. The closing test is the interesting one: it drives the ctxmenu reducer against a seeded in-process host and asserts the window count moves 1 <-> 2, which closed the GUI context-menu smoke gap WITHOUT needing a shell or Xvfb.",
+      "publishable_changes_bullets": [
+        "BREAK_PANE_ACTION / JOIN_PANE_ACTION dispatch on WorkspaceExternal",
+        "HostClient::break_pane / join_pane defaulted None; Host overrides",
+        "a pane is addressed by registry-unique id; the SOURCE window is derived, not passed",
+        "CLI: break-pane PANE [name], join-pane PANE WINDOW, both -t SESSION",
+        "GUI ctxmenu \"Break out\" + \"Move to <window>\"; action list captured AT OPEN",
+        "WireHost / SlotView carry break_pane / join_pane over the wire"
+      ],
+      "publishable_verification_bullets": [
+        "real-socket test moves a pane and closes the emptied source window",
+        "CLI integration test covers both moves AND the refusals",
+        "ctxmenu reducer test on a seeded in-process host: window count 1 <-> 2, revert-proof",
+        "that test closed the GUI ctxmenu smoke gap with no shell and no Xvfb"
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "break_pane / join_pane being Session methods is why a per-session focus revision is safe"
+      ]
+    },
+    "R190": {
+      "decision_summary": "R190 = four smaller corrections that share a theme: making a resting state honest. The attention RING gives a pane with an unseen notification an Accent Border overlay keyed on pane_has_unseen_attention - pointer-transparent over the dim scrim and causing no layout shift, clearing on focus-ack; cmux has this and tmux offers only a title bell. Bracketed paste (DEC 2004) tracks the mode and wraps ESC[200~..201~ at the paste seam, FILTERING an embedded end marker so a pasted payload cannot break out of its own bracket. Session listings stopped showing the resting empty anchor: SessionInfo.panes plus is_listable means a session lists iff panes > 0 or attached > 0, which is tmux parity at rest and better than tmux when a client is viewing an empty session. And a flaky raw_output cap test was fixed properly - scroll_region_up/down now rotate the cell slice with zero heap allocation, and the test waits on the CONDITION it asserts (the cap latching) instead of on child EOF.",
+      "changes_bullets": [
+        "attention ring: Accent Border overlay keyed on pane_has_unseen_attention",
+        "pointer-transparent over the dim scrim, no layout shift, clears on focus-ack",
+        "bracketed paste (DEC 2004): the paste seam wraps ESC[200~..201~ when the mode is on",
+        "an embedded end marker is FILTERED so a paste cannot break its own bracket",
+        "SessionInfo.panes + is_listable: list iff panes > 0 or attached > 0",
+        "scroll_region_up/down rotate the cell slice in place: zero heap allocation"
+      ],
+      "verification_bullets": [
+        "the de-flaked test now waits the tested condition (cap latched), not child EOF",
+        "GUI paste and the wire client both routed through the mode-aware host seam and asserted",
+        "an empty session a client VIEWS still lists, which tmux cannot do - asserted"
+      ],
+      "impact_refs": [
+        "4",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "\"wait the condition, not a timer\" became the standing rule for every later smoke"
+      ],
+      "publishable_decision_summary": "R190 = four smaller corrections that share a theme: making a resting state honest. The attention RING gives a pane with an unseen notification an Accent Border overlay keyed on pane_has_unseen_attention - pointer-transparent over the dim scrim and causing no layout shift, clearing on focus-ack; cmux has this and tmux offers only a title bell. Bracketed paste (DEC 2004) tracks the mode and wraps ESC[200~..201~ at the paste seam, FILTERING an embedded end marker so a pasted payload cannot break out of its own bracket. Session listings stopped showing the resting empty anchor: SessionInfo.panes plus is_listable means a session lists iff panes > 0 or attached > 0, which is tmux parity at rest and better than tmux when a client is viewing an empty session. And a flaky raw_output cap test was fixed properly - scroll_region_up/down now rotate the cell slice with zero heap allocation, and the test waits on the CONDITION it asserts (the cap latching) instead of on child EOF.",
+      "publishable_changes_bullets": [
+        "attention ring: Accent Border overlay keyed on pane_has_unseen_attention",
+        "pointer-transparent over the dim scrim, no layout shift, clears on focus-ack",
+        "bracketed paste (DEC 2004): the paste seam wraps ESC[200~..201~ when the mode is on",
+        "an embedded end marker is FILTERED so a paste cannot break its own bracket",
+        "SessionInfo.panes + is_listable: list iff panes > 0 or attached > 0",
+        "scroll_region_up/down rotate the cell slice in place: zero heap allocation"
+      ],
+      "publishable_verification_bullets": [
+        "the de-flaked test now waits the tested condition (cap latched), not child EOF",
+        "GUI paste and the wire client both routed through the mode-aware host seam and asserted",
+        "an empty session a client VIEWS still lists, which tmux cannot do - asserted"
+      ],
+      "publishable_impact_refs": [
+        "4",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "\"wait the condition, not a timer\" became the standing rule for every later smoke"
+      ]
+    },
+    "R191": {
+      "decision_summary": "R191 = xterm mouse tracking, staged, with the GUI capture layer built on the hover oracle from R186. Stage 1 reports left press/release when the child tracks the mouse, adds WireHost::mouse and a pane_mouse_active bit, and turns text selection off over a tracking pane; decoding the composite send payload here also fixed native clicks. Stage 2 sends xterm wheel 64/65 to a tracking grid with Shift bypassing to sprag's own scroll, and folds sub-line touchpad pans into whole notches so a trackpad does not emit a hundred reports per gesture. Stage 4 adds drag and motion (1002/1003) forwarded PER CELL, replacing the bool gate with pane_mouse_protocol. Stage 5 adds focus reporting (1004): the pane focus edge sends ESC[I / ESC[O, gated host-side by encode_focus. Pin 09da00e (pinion R1418, PR72) then delivered the raw pointer stream, so the oracle owns raw L/M/R with each edge carrying its real modifiers and a drag using the held button. MCP surfaces the tracking level per pane, so an agent can see what a pane is listening for.",
+      "changes_bullets": [
+        "S1 left press/release when the child tracks; WireHost::mouse + pane_mouse_active bit",
+        "S1 selection disabled over a tracking pane; composite send payload decode fixed native clicks",
+        "S2 xterm wheel 64/65 to a tracking grid, Shift bypasses; host encodes at the PTY",
+        "S2 wheel_reports folds sub-line touchpad pans into whole notches",
+        "S4 drag + motion (1002/1003) forwarded per cell; pane_mouse_protocol replaces the bool gate",
+        "S5 focus reporting (1004): ESC[I / ESC[O on the pane focus edge, gated by encode_focus",
+        "pin R1418 (PINION-PR72) raw pointer: oracle owns L/M/R, each edge with its real mods",
+        "MCP list_panes reports the 1000/1002/1003 level and the 1004 bit per pane"
+      ],
+      "verification_bullets": [
+        "vt mode tests, oracle drag/motion tests, and real-PTY wire tests at every stage",
+        "live headless smoke proven per stage, not once at the end",
+        "e2e router test proves PR72 routing AND the GUI-default suppression",
+        "live smoke: sprag-mcp shows tracking clicks, drag, and focus"
+      ],
+      "impact_refs": [
+        "3",
+        "4"
+      ],
+      "carry_forward_bullets": [
+        "the 1004 gate needed OS-window focus to be truthful, which R192 supplied"
+      ],
+      "publishable_decision_summary": "R191 = xterm mouse tracking, staged, with the GUI capture layer built on the hover oracle from R186. Stage 1 reports left press/release when the child tracks the mouse, adds WireHost::mouse and a pane_mouse_active bit, and turns text selection off over a tracking pane; decoding the composite send payload here also fixed native clicks. Stage 2 sends xterm wheel 64/65 to a tracking grid with Shift bypassing to sprag's own scroll, and folds sub-line touchpad pans into whole notches so a trackpad does not emit a hundred reports per gesture. Stage 4 adds drag and motion (1002/1003) forwarded PER CELL, replacing the bool gate with pane_mouse_protocol. Stage 5 adds focus reporting (1004): the pane focus edge sends ESC[I / ESC[O, gated host-side by encode_focus. Pin 09da00e (pinion R1418, PR72) then delivered the raw pointer stream, so the oracle owns raw L/M/R with each edge carrying its real modifiers and a drag using the held button. MCP surfaces the tracking level per pane, so an agent can see what a pane is listening for.",
+      "publishable_changes_bullets": [
+        "S1 left press/release when the child tracks; WireHost::mouse + pane_mouse_active bit",
+        "S1 selection disabled over a tracking pane; composite send payload decode fixed native clicks",
+        "S2 xterm wheel 64/65 to a tracking grid, Shift bypasses; host encodes at the PTY",
+        "S2 wheel_reports folds sub-line touchpad pans into whole notches",
+        "S4 drag + motion (1002/1003) forwarded per cell; pane_mouse_protocol replaces the bool gate",
+        "S5 focus reporting (1004): ESC[I / ESC[O on the pane focus edge, gated by encode_focus",
+        "pin R1418 (PINION-PR72) raw pointer: oracle owns L/M/R, each edge with its real mods",
+        "MCP list_panes reports the 1000/1002/1003 level and the 1004 bit per pane"
+      ],
+      "publishable_verification_bullets": [
+        "vt mode tests, oracle drag/motion tests, and real-PTY wire tests at every stage",
+        "live headless smoke proven per stage, not once at the end",
+        "e2e router test proves PR72 routing AND the GUI-default suppression",
+        "live smoke: sprag-mcp shows tracking clicks, drag, and focus"
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "4"
+      ],
+      "publishable_carry_forward_bullets": [
+        "the 1004 gate needed OS-window focus to be truthful, which R192 supplied"
+      ]
+    },
+    "R192": {
+      "decision_summary": "R192 = device reports, and making one of them stop lying. CSI c / > c answer through the existing device-response channel, CSI 5 n reports ready and CSI 6 n the live 1-based cursor. The primary DA is deliberately TRUTHFUL - VT220 plus sixel plus ansi colour, nothing over-claimed - and that immediately exposed a gap: DA advertised sixel while XtSmGraphics went unanswered, so the handshake stalled half-done. Answering CSI ? 1/2 S with 65536 registers and 2048px geometry closes it. The window-focus half came with pin 6f9344c (pinion R1421, PR73): DEC 1004 focus reports are now intersected with window_focus_state::os_focused_window, so a blurred window emits ESC[O and a refocus ESC[I, matched per window identity. Without that gate a pane \"focused\" inside a window the user had alt-tabbed away from would keep telling its child it had focus.",
+      "changes_bullets": [
+        "CSI c / > c reply on the existing device-response channel",
+        "CSI 5 n -> ready; CSI 6 n -> the live 1-based cursor (CPR)",
+        "primary DA is truthful: VT220 + sixel + ansi colour, no over-claim",
+        "XtSmGraphics CSI ? 1/2 S answered: 65536 registers, 2048px geometry",
+        "pin R1421 (PINION-PR73) window focus; DEC 1004 intersected with os_focused_window",
+        "window blur emits ESC[O, refocus ESC[I, matched per window identity"
+      ],
+      "verification_bullets": [
+        "real-PTY test proves a DSR reply actually reaches the child (stty raw)",
+        "os_gated_focus SSOT plus 3 unit tests",
+        "live headless smoke drives GAIN / LOSE / GAIN"
+      ],
+      "impact_refs": [
+        "3",
+        "4"
+      ],
+      "carry_forward_bullets": [
+        "the truthful-DA rule is why the sixel claim was findable at all"
+      ],
+      "publishable_decision_summary": "R192 = device reports, and making one of them stop lying. CSI c / > c answer through the existing device-response channel, CSI 5 n reports ready and CSI 6 n the live 1-based cursor. The primary DA is deliberately TRUTHFUL - VT220 plus sixel plus ansi colour, nothing over-claimed - and that immediately exposed a gap: DA advertised sixel while XtSmGraphics went unanswered, so the handshake stalled half-done. Answering CSI ? 1/2 S with 65536 registers and 2048px geometry closes it. The window-focus half came with pin 6f9344c (pinion R1421, PR73): DEC 1004 focus reports are now intersected with window_focus_state::os_focused_window, so a blurred window emits ESC[O and a refocus ESC[I, matched per window identity. Without that gate a pane \"focused\" inside a window the user had alt-tabbed away from would keep telling its child it had focus.",
+      "publishable_changes_bullets": [
+        "CSI c / > c reply on the existing device-response channel",
+        "CSI 5 n -> ready; CSI 6 n -> the live 1-based cursor (CPR)",
+        "primary DA is truthful: VT220 + sixel + ansi colour, no over-claim",
+        "XtSmGraphics CSI ? 1/2 S answered: 65536 registers, 2048px geometry",
+        "pin R1421 (PINION-PR73) window focus; DEC 1004 intersected with os_focused_window",
+        "window blur emits ESC[O, refocus ESC[I, matched per window identity"
+      ],
+      "publishable_verification_bullets": [
+        "real-PTY test proves a DSR reply actually reaches the child (stty raw)",
+        "os_gated_focus SSOT plus 3 unit tests",
+        "live headless smoke drives GAIN / LOSE / GAIN"
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "4"
+      ],
+      "publishable_carry_forward_bullets": [
+        "the truthful-DA rule is why the sixel claim was findable at all"
+      ]
+    },
+    "R193": {
+      "decision_summary": "R193 = the colour and mode half of the VT long-tail audit, worked from the emulator's own `_ => {}` gaps rather than from a wish list - the gap list IS the spec here. OSC 10/11 set, query and render the default fg/bg; OSC 4/104 give the indexed palette, and a re-colour bumps ROW DAMAGE so the change actually repaints rather than waiting for the next write to that row. OSC 12 holds cursor colour state and answers its query (the render half needed PINION-PR74 and landed later). Modes: DECAWM autowrap (7) and DECOM origin (6); RIS hard reset (ESC c) and DECSTR soft reset (CSI ! p), which are different resets and were implemented as different resets; SCS character sets with DEC line drawing; IRM insert/replace (CSI 4 h/l); DECRQM request-mode reports (CSI Ps $ p); XTSAVE / XTRESTORE DEC private-mode registers; and LNM new-line mode (SM/RM 20) in BOTH halves - the input half and the output half, since a terminal that honours LNM on only one side is worse than one that ignores it.",
+      "changes_bullets": [
+        "OSC 10/11 default fg/bg: set, query, render",
+        "OSC 4/104 indexed palette; a re-colour bumps row damage so it repaints",
+        "OSC 12 cursor-colour state + query (the render half waited on PINION-PR74)",
+        "DECAWM autowrap (7) and DECOM origin mode (6)",
+        "RIS hard reset (ESC c) and DECSTR soft reset (CSI ! p), as DIFFERENT resets",
+        "SCS character sets with DEC line drawing; IRM insert/replace (CSI 4 h/l)",
+        "DECRQM request-mode reports (CSI Ps $ p); XTSAVE / XTRESTORE mode registers",
+        "LNM new-line mode (SM/RM 20), both the input and the output half"
+      ],
+      "verification_bullets": [
+        "every item driven through the REAL parser, not a synthesised state",
+        "the audit was scoped from the emulator's own `_ => {}` arms, so coverage is checkable"
+      ],
+      "impact_refs": [
+        "4",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "OSC 12's render half landed in R199 once PINION-PR74 delivered the cursor colour"
+      ],
+      "publishable_decision_summary": "R193 = the colour and mode half of the VT long-tail audit, worked from the emulator's own `_ => {}` gaps rather than from a wish list - the gap list IS the spec here. OSC 10/11 set, query and render the default fg/bg; OSC 4/104 give the indexed palette, and a re-colour bumps ROW DAMAGE so the change actually repaints rather than waiting for the next write to that row. OSC 12 holds cursor colour state and answers its query (the render half needed PINION-PR74 and landed later). Modes: DECAWM autowrap (7) and DECOM origin (6); RIS hard reset (ESC c) and DECSTR soft reset (CSI ! p), which are different resets and were implemented as different resets; SCS character sets with DEC line drawing; IRM insert/replace (CSI 4 h/l); DECRQM request-mode reports (CSI Ps $ p); XTSAVE / XTRESTORE DEC private-mode registers; and LNM new-line mode (SM/RM 20) in BOTH halves - the input half and the output half, since a terminal that honours LNM on only one side is worse than one that ignores it.",
+      "publishable_changes_bullets": [
+        "OSC 10/11 default fg/bg: set, query, render",
+        "OSC 4/104 indexed palette; a re-colour bumps row damage so it repaints",
+        "OSC 12 cursor-colour state + query (the render half waited on PINION-PR74)",
+        "DECAWM autowrap (7) and DECOM origin mode (6)",
+        "RIS hard reset (ESC c) and DECSTR soft reset (CSI ! p), as DIFFERENT resets",
+        "SCS character sets with DEC line drawing; IRM insert/replace (CSI 4 h/l)",
+        "DECRQM request-mode reports (CSI Ps $ p); XTSAVE / XTRESTORE mode registers",
+        "LNM new-line mode (SM/RM 20), both the input and the output half"
+      ],
+      "publishable_verification_bullets": [
+        "every item driven through the REAL parser, not a synthesised state",
+        "the audit was scoped from the emulator's own `_ => {}` arms, so coverage is checkable"
+      ],
+      "publishable_impact_refs": [
+        "4",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "OSC 12's render half landed in R199 once PINION-PR74 delivered the cursor colour"
+      ]
+    },
+    "R194": {
+      "decision_summary": "R194 = the print-path allocation debt, repaid and MEASURED - and the measurement is the lesson. Cell.cluster moved from String to a smol_str SSO string so a one-character cluster stays inline with no heap allocation, char_columns went through UnicodeWidthChar, and Print became an alloc-free print_char. Printing 256 KiB of 'a' went from 1.59M allocations to 20K, a 98.7% cut, with the NUL parser floor unchanged so the number is attributable to this change and not to the harness. It was counted with the global allocator rather than timed, because wall-clock on this machine drifted more than 20% run to run and would have hidden the result either way. The Cell.cluster hypothesis alone was also INCOMPLETE - the profile named more than one source - which is the standing reminder to measure before believing a cause.",
+      "changes_bullets": [
+        "Cell.cluster: String -> smol_str SSO, so a 1-char cluster stays inline",
+        "char_columns via UnicodeWidthChar; Print became an alloc-free print_char"
+      ],
+      "verification_bullets": [
+        "256 KiB of 'a': 1.59M allocations -> 20K (98.7%), NUL parser floor unchanged",
+        "counted with the GLOBAL ALLOCATOR, not timed: wall-clock drifted >20% run to run"
+      ],
+      "impact_refs": [
+        "4",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "measure before believing a cause: the Cell.cluster hypothesis alone was incomplete"
+      ],
+      "publishable_decision_summary": "R194 = the print-path allocation debt, repaid and MEASURED - and the measurement is the lesson. Cell.cluster moved from String to a smol_str SSO string so a one-character cluster stays inline with no heap allocation, char_columns went through UnicodeWidthChar, and Print became an alloc-free print_char. Printing 256 KiB of 'a' went from 1.59M allocations to 20K, a 98.7% cut, with the NUL parser floor unchanged so the number is attributable to this change and not to the harness. It was counted with the global allocator rather than timed, because wall-clock on this machine drifted more than 20% run to run and would have hidden the result either way. The Cell.cluster hypothesis alone was also INCOMPLETE - the profile named more than one source - which is the standing reminder to measure before believing a cause.",
+      "publishable_changes_bullets": [
+        "Cell.cluster: String -> smol_str SSO, so a 1-char cluster stays inline",
+        "char_columns via UnicodeWidthChar; Print became an alloc-free print_char"
+      ],
+      "publishable_verification_bullets": [
+        "256 KiB of 'a': 1.59M allocations -> 20K (98.7%), NUL parser floor unchanged",
+        "counted with the GLOBAL ALLOCATOR, not timed: wall-clock drifted >20% run to run"
+      ],
+      "publishable_impact_refs": [
+        "4",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "measure before believing a cause: the Cell.cluster hypothesis alone was incomplete"
+      ]
+    },
+    "R195": {
+      "decision_summary": "R195 = the rest of the VT tail, several items of which tmux and cmux implement none of. Synchronized output (DEC 2026) gives atomic frames. XTWINOPS answers 18t/19t cell size and 11t state from the grid and push/pops the title on 22t/23t, while the title REPORT (21t) stays deliberately gated off - a terminal that reads its own title back to the child is an injection vector. DECRQSS answers DCS $q for the SGR pen, cursor style and scroll region, serialising the pen to a self-contained 0-led SGR string, and replies DCS 0$r to an unknown request rather than dropping it. Reverse wraparound (DEC 45) backs a left-margin BS up only over a REAL soft wrap and never across a hard break. Grapheme clustering (DEC 2027) via UAX #29 clusters ZWJ emoji, flags and keycaps into one cell on the ON path while the OFF path stays byte-identical per scalar. VT420 rectangular editing (DECFRA/DECERA/DECCRA) does a snapshot-correct overlapping copy. DECSCA protected areas make DECSED/DECSEL/DECSERA skip protected cells while the non-selective erases still clear everything, VT220-style. Finally real pixel geometry: the GUI cell metric is carried through resize to the daemon emulator, so XTWINOPS 14t/15t/16t and the PTY winsize xpixel/ypixel stopped being zeroes.",
+      "changes_bullets": [
+        "synchronized output (DEC 2026) atomic frames",
+        "XTWINOPS 18t/19t/11t answered from the grid; 22t/23t title stack",
+        "title report 21t stays GATED OFF as an injection vector; pixel reports 0 when unknown",
+        "DECRQSS DCS $q for SGR pen / cursor style / scroll region; unknown -> DCS 0$r, never dropped",
+        "reverse wraparound (DEC 45): BS backs over a real soft wrap only, never a hard break",
+        "grapheme clustering (DEC 2027, UAX #29); OFF path byte-identical per scalar",
+        "VT420 DECFRA / DECERA / DECCRA, snapshot-correct on overlapping copies",
+        "DECSCA protected areas; DECSED/DECSEL/DECSERA skip, non-selective erases do not",
+        "real pixel geometry: the GUI cell metric reaches the daemon emulator through resize"
+      ],
+      "verification_bullets": [
+        "8 units for DECSCA alone, including DECSC saving it and DECSTR / RIS clearing it",
+        "DEC 45, 2027 and the mode registers all round-trip through DECRQM / XTSAVE / RIS",
+        "host-set geometry asserted to survive RIS and a metric-less resize",
+        "rectangular editing parsed from termwiz Unspecified via the $ intermediate"
+      ],
+      "impact_refs": [
+        "4",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "closed the VT long-tail audit; only the principled DECRQCRA non-impl remains"
+      ],
+      "publishable_decision_summary": "R195 = the rest of the VT tail, several items of which tmux and cmux implement none of. Synchronized output (DEC 2026) gives atomic frames. XTWINOPS answers 18t/19t cell size and 11t state from the grid and push/pops the title on 22t/23t, while the title REPORT (21t) stays deliberately gated off - a terminal that reads its own title back to the child is an injection vector. DECRQSS answers DCS $q for the SGR pen, cursor style and scroll region, serialising the pen to a self-contained 0-led SGR string, and replies DCS 0$r to an unknown request rather than dropping it. Reverse wraparound (DEC 45) backs a left-margin BS up only over a REAL soft wrap and never across a hard break. Grapheme clustering (DEC 2027) via UAX #29 clusters ZWJ emoji, flags and keycaps into one cell on the ON path while the OFF path stays byte-identical per scalar. VT420 rectangular editing (DECFRA/DECERA/DECCRA) does a snapshot-correct overlapping copy. DECSCA protected areas make DECSED/DECSEL/DECSERA skip protected cells while the non-selective erases still clear everything, VT220-style. Finally real pixel geometry: the GUI cell metric is carried through resize to the daemon emulator, so XTWINOPS 14t/15t/16t and the PTY winsize xpixel/ypixel stopped being zeroes.",
+      "publishable_changes_bullets": [
+        "synchronized output (DEC 2026) atomic frames",
+        "XTWINOPS 18t/19t/11t answered from the grid; 22t/23t title stack",
+        "title report 21t stays GATED OFF as an injection vector; pixel reports 0 when unknown",
+        "DECRQSS DCS $q for SGR pen / cursor style / scroll region; unknown -> DCS 0$r, never dropped",
+        "reverse wraparound (DEC 45): BS backs over a real soft wrap only, never a hard break",
+        "grapheme clustering (DEC 2027, UAX #29); OFF path byte-identical per scalar",
+        "VT420 DECFRA / DECERA / DECCRA, snapshot-correct on overlapping copies",
+        "DECSCA protected areas; DECSED/DECSEL/DECSERA skip, non-selective erases do not",
+        "real pixel geometry: the GUI cell metric reaches the daemon emulator through resize"
+      ],
+      "publishable_verification_bullets": [
+        "8 units for DECSCA alone, including DECSC saving it and DECSTR / RIS clearing it",
+        "DEC 45, 2027 and the mode registers all round-trip through DECRQM / XTSAVE / RIS",
+        "host-set geometry asserted to survive RIS and a metric-less resize",
+        "rectangular editing parsed from termwiz Unspecified via the $ intermediate"
+      ],
+      "publishable_impact_refs": [
+        "4",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "closed the VT long-tail audit; only the principled DECRQCRA non-impl remains"
+      ]
+    },
+    "R196": {
+      "decision_summary": "R196 = SSH workspaces, the cmux-parity front, in five slices. A workspace is a session whose BIRTH ARGV is `ssh -t host [cmd]`, built by an SshTarget SSOT and riding the existing new_session {cmd} - so there is no wire change and no daemon change, and the CLI verb is thin over a library parse. Port forwarding (-L) and a --tmux remote-tmux preset followed. The slice that mattered for durability is reconnect-on-restore: a structured SshRemote persists, so a restore RECONNECTS BY INTENT rather than by replaying an argv, which also means it bypasses the argv allowlist that would otherwise refuse it. Drag-to-upload closed the loop - a dropped file is scp'd to the remote pane, targeting the focused pane, running off-thread so the UI does not block.",
+      "changes_bullets": [
+        "an SSH workspace = a session whose birth argv is `ssh -t host [cmd]` via an SshTarget SSOT",
+        "rides new_session {cmd}: NO wire change, NO daemon change, CLI thin over a lib parse",
+        "sprag ssh -L port forwarding; sprag ssh --tmux remote-tmux preset",
+        "a structured SshRemote persists, so restore RECONNECTS BY INTENT, bypassing the argv allowlist",
+        "drop_file action scp's a local path to a remote pane, off-thread, targeting the focused pane"
+      ],
+      "verification_bullets": [
+        "14 units on the target parse; cli e2e proves the ssh argv reaches PTY exec via a stand-in ssh",
+        "a racy argv wait in the ssh cli e2e was fixed properly: exists != written"
+      ],
+      "impact_refs": [
+        "2",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "reconnect-by-intent is the pattern any future structured birth (containers) should follow"
+      ],
+      "publishable_decision_summary": "R196 = SSH workspaces, the cmux-parity front, in five slices. A workspace is a session whose BIRTH ARGV is `ssh -t host [cmd]`, built by an SshTarget SSOT and riding the existing new_session {cmd} - so there is no wire change and no daemon change, and the CLI verb is thin over a library parse. Port forwarding (-L) and a --tmux remote-tmux preset followed. The slice that mattered for durability is reconnect-on-restore: a structured SshRemote persists, so a restore RECONNECTS BY INTENT rather than by replaying an argv, which also means it bypasses the argv allowlist that would otherwise refuse it. Drag-to-upload closed the loop - a dropped file is scp'd to the remote pane, targeting the focused pane, running off-thread so the UI does not block.",
+      "publishable_changes_bullets": [
+        "an SSH workspace = a session whose birth argv is `ssh -t host [cmd]` via an SshTarget SSOT",
+        "rides new_session {cmd}: NO wire change, NO daemon change, CLI thin over a lib parse",
+        "sprag ssh -L port forwarding; sprag ssh --tmux remote-tmux preset",
+        "a structured SshRemote persists, so restore RECONNECTS BY INTENT, bypassing the argv allowlist",
+        "drop_file action scp's a local path to a remote pane, off-thread, targeting the focused pane"
+      ],
+      "publishable_verification_bullets": [
+        "14 units on the target parse; cli e2e proves the ssh argv reaches PTY exec via a stand-in ssh",
+        "a racy argv wait in the ssh cli e2e was fixed properly: exists != written"
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "reconnect-by-intent is the pattern any future structured birth (containers) should follow"
+      ]
+    },
+    "R197": {
+      "decision_summary": "R197 = find-in-scrollback, and the design question it settled was WHERE search lives. It lives in sprag-vt, beside the CELLS, because a match's columns are derivable only there - a search done anywhere downstream has already lost the grid it would need to report a column against. It answers in the prompt_positions LOGICAL-LINE axis that R183's OSC 133 marks established, so a hit is reported in the same coordinate space the jump-to-prompt chord already used. The needle rides the RPC path VERBATIM - no normalisation, no reinterpretation - and the query is a READ, which matters because a read must not bump the scene revision and wake every other attached client. Three surfaces came out of one core: a GUI find bar with match highlight, a sprag find CLI, and a find_in_pane MCP tool.",
+      "changes_bullets": [
+        "search lives in sprag-vt beside the cells: columns are derivable only there",
+        "answers in the prompt_positions logical-line axis (the OSC 133 coordinate space)",
+        "the needle rides the RPC path VERBATIM; no normalisation on the way in",
+        "the query is a READ, so it does not bump the scene revision or wake other clients",
+        "GUI find bar with match highlight; sprag find CLI; find_in_pane MCP tool"
+      ],
+      "verification_bullets": [
+        "vt unit tests on the match + column derivation; wire tests over the real socket",
+        "CLI and MCP surfaces exercised end to end against a live daemon"
+      ],
+      "impact_refs": [
+        "1",
+        "4"
+      ],
+      "carry_forward_bullets": [
+        "later gained --pane narrowing and regex-as-a-distinct-query (R198)"
+      ],
+      "publishable_decision_summary": "R197 = find-in-scrollback, and the design question it settled was WHERE search lives. It lives in sprag-vt, beside the CELLS, because a match's columns are derivable only there - a search done anywhere downstream has already lost the grid it would need to report a column against. It answers in the prompt_positions LOGICAL-LINE axis that R183's OSC 133 marks established, so a hit is reported in the same coordinate space the jump-to-prompt chord already used. The needle rides the RPC path VERBATIM - no normalisation, no reinterpretation - and the query is a READ, which matters because a read must not bump the scene revision and wake every other attached client. Three surfaces came out of one core: a GUI find bar with match highlight, a sprag find CLI, and a find_in_pane MCP tool.",
+      "publishable_changes_bullets": [
+        "search lives in sprag-vt beside the cells: columns are derivable only there",
+        "answers in the prompt_positions logical-line axis (the OSC 133 coordinate space)",
+        "the needle rides the RPC path VERBATIM; no normalisation on the way in",
+        "the query is a READ, so it does not bump the scene revision or wake other clients",
+        "GUI find bar with match highlight; sprag find CLI; find_in_pane MCP tool"
+      ],
+      "publishable_verification_bullets": [
+        "vt unit tests on the match + column derivation; wire tests over the real socket",
+        "CLI and MCP surfaces exercised end to end against a live daemon"
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "4"
+      ],
+      "publishable_carry_forward_bullets": [
+        "later gained --pane narrowing and regex-as-a-distinct-query (R198)"
+      ]
+    },
+    "R198": {
+      "decision_summary": "R198 = scrollback that survives a reboot - the CONTENT half of the durability ring, which is the axis cmux has and tmux does not (tmux's daemon outlives a client; only disk serialisation outlives a restart). A pane's history is encoded as REPLAYABLE TERMINAL BYTES rather than as a parsed structure, which is what lets a restore reuse the emulator it already has instead of needing a second decoder. The store sits beside the durability snapshot, per pane. Two query refinements landed with it: sprag find --pane narrows the sweep to one pane, and regex search is a DISTINCT query beside the literal find rather than a flag that reinterprets the same needle - the same principle R197 set when it made the needle ride verbatim.",
+      "changes_bullets": [
+        "pane history encoded as REPLAYABLE TERMINAL BYTES, so restore reuses the one emulator",
+        "a per-pane scrollback store beside the durability snapshot",
+        "restore brings a pane's scrollback back across a daemon restart",
+        "sprag find --pane narrows the sweep to one pane",
+        "regex search as a DISTINCT query beside the literal find, never a reinterpreting flag"
+      ],
+      "verification_bullets": [
+        "restore asserted across a real daemon restart, not a simulated one",
+        "the encode/replay round trip asserted at the byte level"
+      ],
+      "impact_refs": [
+        "2",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "three deferrals were left and all three closed in R200"
+      ],
+      "publishable_decision_summary": "R198 = scrollback that survives a reboot - the CONTENT half of the durability ring, which is the axis cmux has and tmux does not (tmux's daemon outlives a client; only disk serialisation outlives a restart). A pane's history is encoded as REPLAYABLE TERMINAL BYTES rather than as a parsed structure, which is what lets a restore reuse the emulator it already has instead of needing a second decoder. The store sits beside the durability snapshot, per pane. Two query refinements landed with it: sprag find --pane narrows the sweep to one pane, and regex search is a DISTINCT query beside the literal find rather than a flag that reinterprets the same needle - the same principle R197 set when it made the needle ride verbatim.",
+      "publishable_changes_bullets": [
+        "pane history encoded as REPLAYABLE TERMINAL BYTES, so restore reuses the one emulator",
+        "a per-pane scrollback store beside the durability snapshot",
+        "restore brings a pane's scrollback back across a daemon restart",
+        "sprag find --pane narrows the sweep to one pane",
+        "regex search as a DISTINCT query beside the literal find, never a reinterpreting flag"
+      ],
+      "publishable_verification_bullets": [
+        "restore asserted across a real daemon restart, not a simulated one",
+        "the encode/replay round trip asserted at the byte level"
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "three deferrals were left and all three closed in R200"
+      ]
+    },
+    "R199": {
+      "decision_summary": "R199 = pin 701653a6 -> 4ff0b35f, consuming three delivered pinion PRs, plus a pre-existing flake fixed at its cause. PR-74 gave the cursor its OSC 12 colour and PR-75 the DECSCUSR blink on BOTH axes; PR-76 put the window id on the file-drop hooks, which is what lets a drop land on the window it was actually dropped on (a tear-off gets its own pane; the main window gets the focused pane, unless that pane is floating, in which case none). Two design corrections came out of consumption that the PR estimates had missed: Palette.cursor had to become Option<Rgb>, because pinion's None means \"derive from the cell\" and passing Some unconditionally would paint every cursor the seed grey; and CursorStyle::Default (CSI 0 SP q) is a RESET, so it is (Block, false) - the sketch had it blinking, which would make a reset SET something. The flake was a history wait clearing on the atomic write's .tmp file rather than on the real one.",
+      "changes_bullets": [
+        "pin 701653a6 -> 4ff0b35f; consumed PINION-PR74, PR75 (both axes) and PR76",
+        "a file drop lands on the window it was dropped on; a floating focused pane takes none",
+        "the cursor carries its OSC 12 colour and its DECSCUSR blink",
+        "Palette.cursor became Option<Rgb>: pinion's None means \"derive from the cell\"",
+        "CursorStyle::Default (CSI 0 SP q) is a RESET, so (Block, false), not blinking",
+        "blink is excluded from SavedCursor: mode 12 is a user preference, not app state",
+        "fixed a history wait that cleared on the atomic write's .tmp instead of the real file"
+      ],
+      "verification_bullets": [
+        "gate green: fmt / clippy -D --all-targets / strict doc / workspace 963 passed",
+        "full suite repeated 8 times with 0 failures",
+        "the repaint question was answered by reading the code, not assumed: no damage bump needed,",
+        "since the cursor is a per-frame overlay and the reader wakes the host after every batch"
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "a sketch is not a design: two PR estimates were wrong in ways only consumption found"
+      ],
+      "publishable_decision_summary": "R199 = pin 701653a6 -> 4ff0b35f, consuming three delivered pinion PRs, plus a pre-existing flake fixed at its cause. PR-74 gave the cursor its OSC 12 colour and PR-75 the DECSCUSR blink on BOTH axes; PR-76 put the window id on the file-drop hooks, which is what lets a drop land on the window it was actually dropped on (a tear-off gets its own pane; the main window gets the focused pane, unless that pane is floating, in which case none). Two design corrections came out of consumption that the PR estimates had missed: Palette.cursor had to become Option<Rgb>, because pinion's None means \"derive from the cell\" and passing Some unconditionally would paint every cursor the seed grey; and CursorStyle::Default (CSI 0 SP q) is a RESET, so it is (Block, false) - the sketch had it blinking, which would make a reset SET something. The flake was a history wait clearing on the atomic write's .tmp file rather than on the real one.",
+      "publishable_changes_bullets": [
+        "pin 701653a6 -> 4ff0b35f; consumed PINION-PR74, PR75 (both axes) and PR76",
+        "a file drop lands on the window it was dropped on; a floating focused pane takes none",
+        "the cursor carries its OSC 12 colour and its DECSCUSR blink",
+        "Palette.cursor became Option<Rgb>: pinion's None means \"derive from the cell\"",
+        "CursorStyle::Default (CSI 0 SP q) is a RESET, so (Block, false), not blinking",
+        "blink is excluded from SavedCursor: mode 12 is a user preference, not app state",
+        "fixed a history wait that cleared on the atomic write's .tmp instead of the real file"
+      ],
+      "publishable_verification_bullets": [
+        "gate green: fmt / clippy -D --all-targets / strict doc / workspace 963 passed",
+        "full suite repeated 8 times with 0 failures",
+        "the repaint question was answered by reading the code, not assumed: no damage bump needed,",
+        "since the cursor is a per-frame overlay and the reader wakes the host after every batch"
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "a sketch is not a design: two PR estimates were wrong in ways only consumption found"
+      ]
+    },
+    "R200": {
+      "decision_summary": "R200 = the scrollback front closed, which meant clearing R198's three deferrals under an explicit owner directive to ignore cost and take the long-term-correct option. The find bar gained the regex language as a SEPARATE seam (pane_find_regex, not a mode argument), with the toggle a real pinion CheckboxExternal so it is focusable, AT-named and drivable by intent - testable without pixels - and a rejected pattern showing the engine's own message rather than a bare \"no matches\". The idle re-encode was killed by Screen::content_epoch, and the sketch that memory carried was REFUTED by revert-proof: an epoch counting only scrollback fails, because encoding covers visible rows too, and the epoch has to live on the SCREEN so an alt-screen app cannot disturb main's. Inline images were restored as Kitty bytes in the SAME .hist file - no second file, no second decoder - placed at the anchor cell by the same walk that emits the text, so no CUP and no dependence on final layout, with SPRAG_RESTORE_IMAGE_BYTES bounding the raster because a screen can hold 256 images of 16 MiB.",
+      "changes_bullets": [
+        "GUI find bar can search in the regex language: pane_find_regex is a distinct seam",
+        "the toggle is a real pinion CheckboxExternal - focusable, AT-named, intent-drivable",
+        "a rejected pattern shows the engine's message, not a misleading \"no matches\"",
+        "Screen::content_epoch kills the idle re-encode",
+        "inline images restored as Kitty bytes in the SAME .hist: no second file, no second decoder",
+        "placed at the anchor cell by the text walk, so no CUP and no layout dependence",
+        "SPRAG_RESTORE_IMAGE_BYTES bounds the raster; a drop affordance and the image display half guarded"
+      ],
+      "verification_bullets": [
+        "gate green: fmt / clippy -D --all-targets / strict doc / workspace 976 passed",
+        "full suite 5 runs and cli 12 runs, 0 failures",
+        "12 revert-proofs measured this round",
+        "the scrollback-only epoch sketch was REFUTED by revert-proof, not by argument"
+      ],
+      "impact_refs": [
+        "4",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "image restore is a sprag-only axis: tmux/cmux restore no images, ghostty has no persistence"
+      ],
+      "publishable_decision_summary": "R200 = the scrollback front closed, which meant clearing R198's three deferrals under an explicit owner directive to ignore cost and take the long-term-correct option. The find bar gained the regex language as a SEPARATE seam (pane_find_regex, not a mode argument), with the toggle a real pinion CheckboxExternal so it is focusable, AT-named and drivable by intent - testable without pixels - and a rejected pattern showing the engine's own message rather than a bare \"no matches\". The idle re-encode was killed by Screen::content_epoch, and the sketch that memory carried was REFUTED by revert-proof: an epoch counting only scrollback fails, because encoding covers visible rows too, and the epoch has to live on the SCREEN so an alt-screen app cannot disturb main's. Inline images were restored as Kitty bytes in the SAME .hist file - no second file, no second decoder - placed at the anchor cell by the same walk that emits the text, so no CUP and no dependence on final layout, with SPRAG_RESTORE_IMAGE_BYTES bounding the raster because a screen can hold 256 images of 16 MiB.",
+      "publishable_changes_bullets": [
+        "GUI find bar can search in the regex language: pane_find_regex is a distinct seam",
+        "the toggle is a real pinion CheckboxExternal - focusable, AT-named, intent-drivable",
+        "a rejected pattern shows the engine's message, not a misleading \"no matches\"",
+        "Screen::content_epoch kills the idle re-encode",
+        "inline images restored as Kitty bytes in the SAME .hist: no second file, no second decoder",
+        "placed at the anchor cell by the text walk, so no CUP and no layout dependence",
+        "SPRAG_RESTORE_IMAGE_BYTES bounds the raster; a drop affordance and the image display half guarded"
+      ],
+      "publishable_verification_bullets": [
+        "gate green: fmt / clippy -D --all-targets / strict doc / workspace 976 passed",
+        "full suite 5 runs and cli 12 runs, 0 failures",
+        "12 revert-proofs measured this round",
+        "the scrollback-only epoch sketch was REFUTED by revert-proof, not by argument"
+      ],
+      "publishable_impact_refs": [
+        "4",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "image restore is a sprag-only axis: tmux/cmux restore no images, ghostty has no persistence"
+      ]
+    },
+    "R201": {
+      "decision_summary": "R201 = the command palette and per-project config, four slices. A Command is defined ONCE and offered by two surfaces (the palette and the context menu), which is what makes \"does this command need a pane?\" answerable in one place - needs_pane serves as both the OFFER predicate and the RUN precondition. A project declares its own commands in .sprag.toml, parsed host-side where the policy belongs, and the palette offers them beside the built-ins. The wording split between an anchored menu row and an out-of-context palette row is PRINCIPLED rather than cosmetic: a row the user reached from a pane can say \"this pane\", a row typed into a search box cannot. A clipboard seam was extracted so a copy path can be asserted at all. The reusable technique this front found: pre-filling an Owner::cache slot IS the injection seam for a test that needs a surface's state without driving its UI.",
+      "changes_bullets": [
+        "one definition of a named Command, offered by two surfaces (palette + context menu)",
+        "needs_pane is both the OFFER predicate and the RUN precondition",
+        ".sprag.toml lets a project declare its own commands; parsed host-side",
+        "the palette offers project commands beside the built-ins",
+        "the menu-row vs palette-row wording split is principled: anchored vs out-of-context",
+        "a clipboard seam extracted so the copy path can be asserted"
+      ],
+      "verification_bullets": [
+        "gate green; workspace 1021 passed",
+        "pre-filling an Owner::cache slot used as the injection seam for surface state",
+        "a cfg(test) item is invisible to rustdoc, which is why the doc gate stayed quiet on them"
+      ],
+      "impact_refs": [
+        "2",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "its PaletteExternal shipped the is_dirty defect R202 found: the row-click path was DEAD"
+      ],
+      "publishable_decision_summary": "R201 = the command palette and per-project config, four slices. A Command is defined ONCE and offered by two surfaces (the palette and the context menu), which is what makes \"does this command need a pane?\" answerable in one place - needs_pane serves as both the OFFER predicate and the RUN precondition. A project declares its own commands in .sprag.toml, parsed host-side where the policy belongs, and the palette offers them beside the built-ins. The wording split between an anchored menu row and an out-of-context palette row is PRINCIPLED rather than cosmetic: a row the user reached from a pane can say \"this pane\", a row typed into a search box cannot. A clipboard seam was extracted so a copy path can be asserted at all. The reusable technique this front found: pre-filling an Owner::cache slot IS the injection seam for a test that needs a surface's state without driving its UI.",
+      "publishable_changes_bullets": [
+        "one definition of a named Command, offered by two surfaces (palette + context menu)",
+        "needs_pane is both the OFFER predicate and the RUN precondition",
+        ".sprag.toml lets a project declare its own commands; parsed host-side",
+        "the palette offers project commands beside the built-ins",
+        "the menu-row vs palette-row wording split is principled: anchored vs out-of-context",
+        "a clipboard seam extracted so the copy path can be asserted"
+      ],
+      "publishable_verification_bullets": [
+        "gate green; workspace 1021 passed",
+        "pre-filling an Owner::cache slot used as the injection seam for surface state",
+        "a cfg(test) item is invisible to rustdoc, which is why the doc gate stayed quiet on them"
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "its PaletteExternal shipped the is_dirty defect R202 found: the row-click path was DEAD"
+      ]
+    },
+    "R202": {
+      "decision_summary": "R202 = destructive commands ask before they act, and the round found a dead code path while proving it. confirm.rs is the ONE guarded door - run_or_arm - that every surface activates through, so \"is this destructive?\" is answered by the command itself rather than once per surface, and the prompt's WORDING is data on Command. Both client modals are real modal Dialogs, with_modal() is the single AT-confinement mechanism, and the confirm's consequence rides the dialog NAME rather than aria-describedby, because a name is what an AT announces on focus. THE finding: a hand-written emitting External must implement is_dirty or the runtime never drains it - the palette's row-click / RPC path had been DEAD since it landed, and stayed invisible because its unit tests drove the seam DOWNSTREAM of that runtime gate. Roughly ten green tests had passed over a path that could not run. The palette also gained an open verb, which is what made it reachable at all in a headless smoke, since a chord cannot be synthesised there.",
+      "changes_bullets": [
+        "confirm.rs run_or_arm is the ONE guarded door every surface activates through",
+        "the prompt's wording is DATA on Command, not a per-surface string",
+        "both client modals are modal Dialogs; with_modal() is the one AT-confinement mechanism",
+        "the consequence rides the dialog NAME, not aria-describedby",
+        "FIX: a hand-written emitting External must implement is_dirty or it is never drained",
+        "the palette's row-click / RPC path had been dead since it landed",
+        "the window strip's one-click kill fixed; the palette gained an `open` verb"
+      ],
+      "verification_bullets": [
+        "gate green; workspace 1044 then 1052; 14 revert-proofs, then 8 more for the a11y half",
+        "live scene/access smoke run 5 times",
+        "the dead path had survived ~10 green tests: they drove the seam BELOW the runtime gate"
+      ],
+      "impact_refs": [
+        "2",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "standing rule: reproduce the runtime gate in the harness, or the test proves only the seam"
+      ],
+      "publishable_decision_summary": "R202 = destructive commands ask before they act, and the round found a dead code path while proving it. confirm.rs is the ONE guarded door - run_or_arm - that every surface activates through, so \"is this destructive?\" is answered by the command itself rather than once per surface, and the prompt's WORDING is data on Command. Both client modals are real modal Dialogs, with_modal() is the single AT-confinement mechanism, and the confirm's consequence rides the dialog NAME rather than aria-describedby, because a name is what an AT announces on focus. THE finding: a hand-written emitting External must implement is_dirty or the runtime never drains it - the palette's row-click / RPC path had been DEAD since it landed, and stayed invisible because its unit tests drove the seam DOWNSTREAM of that runtime gate. Roughly ten green tests had passed over a path that could not run. The palette also gained an open verb, which is what made it reachable at all in a headless smoke, since a chord cannot be synthesised there.",
+      "publishable_changes_bullets": [
+        "confirm.rs run_or_arm is the ONE guarded door every surface activates through",
+        "the prompt's wording is DATA on Command, not a per-surface string",
+        "both client modals are modal Dialogs; with_modal() is the one AT-confinement mechanism",
+        "the consequence rides the dialog NAME, not aria-describedby",
+        "FIX: a hand-written emitting External must implement is_dirty or it is never drained",
+        "the palette's row-click / RPC path had been dead since it landed",
+        "the window strip's one-click kill fixed; the palette gained an `open` verb"
+      ],
+      "publishable_verification_bullets": [
+        "gate green; workspace 1044 then 1052; 14 revert-proofs, then 8 more for the a11y half",
+        "live scene/access smoke run 5 times",
+        "the dead path had survived ~10 green tests: they drove the seam BELOW the runtime gate"
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "standing rule: reproduce the runtime gate in the harness, or the test proves only the seam"
+      ]
+    },
+    "R203": {
+      "decision_summary": "R203 = the everything-remaining front, closing four leftover items, and it corrected a false premise that had shaped an entire earlier design. sprag ALREADY kept dead panes - only the child is reaped - so the \"no remain-on-exit\" assumption R201's front had been built around was simply untrue. With that corrected, a pane whose child exited says so on every surface at once, through the one display-title SSOT. HostClient gained new_pane / kill_pane so the split and kill palette rows have something real to call. A global config.toml lets the user declare commands for every pane, beside the per-project .sprag.toml. And the live headless smoke stopped being a script rewritten from memory each round and became a committed Rust tool, sprag-smoke, which encodes the lavapipe renderer, the three socket variables, the args-key requirement and the paint-vs-state snapshot distinction once.",
+      "changes_bullets": [
+        "CORRECTION: sprag already kept dead panes; only the child is reaped",
+        "a pane whose child exited says so on every surface, via the display-title SSOT",
+        "HostClient::new_pane / kill_pane, so the split and kill palette rows call something real",
+        "a global config.toml declares commands for every pane, beside per-project .sprag.toml",
+        "the live headless smoke became a committed Rust tool (sprag-smoke), not a script"
+      ],
+      "verification_bullets": [
+        "gate green; workspace 1077 (was 1052); 30 revert-proofs measured",
+        "live smoke 5 runs / 26 checks / 0 fail",
+        "the smoke tool encodes lavapipe, the three sockets, the args key, paint-vs-state"
+      ],
+      "impact_refs": [
+        "2",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "a premise a memory carries as settled can be false; this one had shaped a whole front"
+      ],
+      "publishable_decision_summary": "R203 = the everything-remaining front, closing four leftover items, and it corrected a false premise that had shaped an entire earlier design. sprag ALREADY kept dead panes - only the child is reaped - so the \"no remain-on-exit\" assumption R201's front had been built around was simply untrue. With that corrected, a pane whose child exited says so on every surface at once, through the one display-title SSOT. HostClient gained new_pane / kill_pane so the split and kill palette rows have something real to call. A global config.toml lets the user declare commands for every pane, beside the per-project .sprag.toml. And the live headless smoke stopped being a script rewritten from memory each round and became a committed Rust tool, sprag-smoke, which encodes the lavapipe renderer, the three socket variables, the args-key requirement and the paint-vs-state snapshot distinction once.",
+      "publishable_changes_bullets": [
+        "CORRECTION: sprag already kept dead panes; only the child is reaped",
+        "a pane whose child exited says so on every surface, via the display-title SSOT",
+        "HostClient::new_pane / kill_pane, so the split and kill palette rows call something real",
+        "a global config.toml declares commands for every pane, beside per-project .sprag.toml",
+        "the live headless smoke became a committed Rust tool (sprag-smoke), not a script"
+      ],
+      "publishable_verification_bullets": [
+        "gate green; workspace 1077 (was 1052); 30 revert-proofs measured",
+        "live smoke 5 runs / 26 checks / 0 fail",
+        "the smoke tool encodes lavapipe, the three sockets, the args key, paint-vs-state"
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "a premise a memory carries as settled can be false; this one had shaped a whole front"
+      ]
+    },
+    "R204": {
+      "decision_summary": "R204 = the exit-status front: a pane now reports HOW its child ended, not merely that it did. A title shows (exited 101) or (killed: Terminated), with a clean exit and a not-yet-reaped death rendering identically as the bare marker - deliberately, because (exited 0) is noise on the commonest ending there is, and their coinciding makes the reap gap invisible except for a failing command. THE finding is about reaping order: reaping a still-pooled pane makes its pid RECYCLABLE, so every /proc walk that consumes it could stray onto a stranger's process - and window_pids had written the exact fix into a comment before the code existed. Also closed: a doubled filename in the config-error report, and FIVE broken private-doc links where the register had claimed two. The rustdoc gate itself was finally AUTOMATED in the hooks, because nothing had ever run rustdoc, which is precisely how five dead links accumulated unseen.",
+      "changes_bullets": [
+        "a dead pane reports HOW its child ended: (exited 101) / (killed: Terminated)",
+        "a clean exit and an unreaped death share the bare marker on purpose",
+        "reaping a still-pooled pane makes its pid RECYCLABLE; every /proc walk must not consume it",
+        "the doubled filename in the config-error report fixed",
+        "FIVE broken private-doc links repaired; the register had recorded two",
+        "the rustdoc gate wired into pre-commit and pre-push - nothing had ever run rustdoc",
+        "the live smoke gained a window close and a session kill"
+      ],
+      "verification_bullets": [
+        "gate green; workspace 1086; 8 revert-proofs",
+        "live smoke 10 runs / 38 checks / 0 fail",
+        "a GUI gets its OWN session, so the first \"Kill session\" palette row is the DAEMON's -",
+        "pressing it produces a convincing false alarm, which is why the smoke discovers the session"
+      ],
+      "impact_refs": [
+        "2",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "a warning nothing reads is how debt accumulates; the same shape recurred at R208"
+      ],
+      "publishable_decision_summary": "R204 = the exit-status front: a pane now reports HOW its child ended, not merely that it did. A title shows (exited 101) or (killed: Terminated), with a clean exit and a not-yet-reaped death rendering identically as the bare marker - deliberately, because (exited 0) is noise on the commonest ending there is, and their coinciding makes the reap gap invisible except for a failing command. THE finding is about reaping order: reaping a still-pooled pane makes its pid RECYCLABLE, so every /proc walk that consumes it could stray onto a stranger's process - and window_pids had written the exact fix into a comment before the code existed. Also closed: a doubled filename in the config-error report, and FIVE broken private-doc links where the register had claimed two. The rustdoc gate itself was finally AUTOMATED in the hooks, because nothing had ever run rustdoc, which is precisely how five dead links accumulated unseen.",
+      "publishable_changes_bullets": [
+        "a dead pane reports HOW its child ended: (exited 101) / (killed: Terminated)",
+        "a clean exit and an unreaped death share the bare marker on purpose",
+        "reaping a still-pooled pane makes its pid RECYCLABLE; every /proc walk must not consume it",
+        "the doubled filename in the config-error report fixed",
+        "FIVE broken private-doc links repaired; the register had recorded two",
+        "the rustdoc gate wired into pre-commit and pre-push - nothing had ever run rustdoc",
+        "the live smoke gained a window close and a session kill"
+      ],
+      "publishable_verification_bullets": [
+        "gate green; workspace 1086; 8 revert-proofs",
+        "live smoke 10 runs / 38 checks / 0 fail",
+        "a GUI gets its OWN session, so the first \"Kill session\" palette row is the DAEMON's -",
+        "pressing it produces a convincing false alarm, which is why the smoke discovers the session"
+      ],
+      "publishable_impact_refs": [
+        "2",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "a warning nothing reads is how debt accumulates; the same shape recurred at R208"
+      ]
+    },
+    "R205": {
+      "decision_summary": "R205 = the focus / birth-pin / per-session waitFor front, closing three ledger items. THE finding is about WHERE a focus re-seed belongs: pinion drains a focus request only on the DISPATCH that wrote it, never after a paint, so the obvious reconcile_frame rescue would swallow the user's first keystroke. The re-seed belongs on the window / session OPS, after a remap() so pinion's retry can find the tag in a scene that already paints the incoming panes. A frame-hook backstop stays only for the pane-set changes that reach the hook with no dispatch to live in. The daemon binary had already grown an ad-hoc HALF of the birth pin as a bare AtomicBool; that became one owner. scene/waitFor learned to honour the session it is scoped to, and a per-session revision is safe precisely because break_pane and join_pane are Session methods - nothing moves a pane between sessions. Two hangs were fixed at their causes: a pane close refused by an ignored SIGHUP now escalates to SIGKILL on the process GROUP, and a daemon that stops answering no longer freezes the window. The attach-polish resize half closed with NO code - this machine had a real desktop all along.",
+      "changes_bullets": [
+        "a focus re-seed belongs on the window / session OPS, inside their own dispatch",
+        "remap() first, so pinion's retry resolves the tag against a scene that paints the new panes",
+        "the frame-hook backstop stays only for pane-set changes with no dispatch to live in",
+        "one owner for \"do not exit mid-birth\"; the daemon's ad-hoc AtomicBool half retired",
+        "scene/waitFor honours the session it is scoped to; per-session revision",
+        "a refused pane close escalates to SIGKILL on the process GROUP instead of hanging",
+        "a daemon that stops answering no longer freezes the window (per-connection read deadline)"
+      ],
+      "verification_bullets": [
+        "gate green; workspace 1103; live smoke 56 checks / 0 fail; 5 revert-proofs",
+        "the pane-close hang reproduced ~1 run in 5, then 0/20 after the fix; revert-proof 3/15",
+        "SIGHUP is a REQUEST: ignored at delivery it is DISCARDED while kill(2) still returns 0",
+        "a per-session revision is safe because break_pane / join_pane are Session methods"
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "PINION-PR78 written here after an unmeasured claim was challenged; measured 55/1 -> 56/0"
+      ],
+      "publishable_decision_summary": "R205 = the focus / birth-pin / per-session waitFor front, closing three ledger items. THE finding is about WHERE a focus re-seed belongs: pinion drains a focus request only on the DISPATCH that wrote it, never after a paint, so the obvious reconcile_frame rescue would swallow the user's first keystroke. The re-seed belongs on the window / session OPS, after a remap() so pinion's retry can find the tag in a scene that already paints the incoming panes. A frame-hook backstop stays only for the pane-set changes that reach the hook with no dispatch to live in. The daemon binary had already grown an ad-hoc HALF of the birth pin as a bare AtomicBool; that became one owner. scene/waitFor learned to honour the session it is scoped to, and a per-session revision is safe precisely because break_pane and join_pane are Session methods - nothing moves a pane between sessions. Two hangs were fixed at their causes: a pane close refused by an ignored SIGHUP now escalates to SIGKILL on the process GROUP, and a daemon that stops answering no longer freezes the window. The attach-polish resize half closed with NO code - this machine had a real desktop all along.",
+      "publishable_changes_bullets": [
+        "a focus re-seed belongs on the window / session OPS, inside their own dispatch",
+        "remap() first, so pinion's retry resolves the tag against a scene that paints the new panes",
+        "the frame-hook backstop stays only for pane-set changes with no dispatch to live in",
+        "one owner for \"do not exit mid-birth\"; the daemon's ad-hoc AtomicBool half retired",
+        "scene/waitFor honours the session it is scoped to; per-session revision",
+        "a refused pane close escalates to SIGKILL on the process GROUP instead of hanging",
+        "a daemon that stops answering no longer freezes the window (per-connection read deadline)"
+      ],
+      "publishable_verification_bullets": [
+        "gate green; workspace 1103; live smoke 56 checks / 0 fail; 5 revert-proofs",
+        "the pane-close hang reproduced ~1 run in 5, then 0/20 after the fix; revert-proof 3/15",
+        "SIGHUP is a REQUEST: ignored at delivery it is DISCARDED while kill(2) still returns 0",
+        "a per-session revision is safe because break_pane / join_pane are Session methods"
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "PINION-PR78 written here after an unmeasured claim was challenged; measured 55/1 -> 56/0"
+      ]
+    },
+    "R206": {
+      "decision_summary": "R206 = pin 4ff0b35f -> 6099c418, consuming PINION-PR77. SCE step 3 was NOT a no-op this time (9a0a650c -> 201783c4, because pinion R1444 moved its own), and getting that wrong would split SCE into two packages and clash sce_rust_runtime::Engine. PR-77 was delivered as the recommended option (A): the modal mailbox became an ordered queue, so a close-then-open handoff in one frame applies both edits in the order written instead of the Open overwriting the Close. sprag's consumption cost really was 0 lines - palette::run_cursor_row's close()-then-activate order never needed to change, because it was always the intended one. THE finding: when consumption costs no code, the work IS the measurement, and here only a LIVE measurement was possible - a binding can read focus_state::focused() and nothing of the modal stack beneath it, so no unit test can witness the fix, which is exactly why sprag could never have detected the leak either.",
+      "changes_bullets": [
+        "pin 4ff0b35f -> 6099c418; SCE 9a0a650c -> 201783c4, step 3 NOT a no-op",
+        "PINION-PR77 delivered as recommended option (A): an ordered-queue modal mailbox",
+        "sprag consumption cost 0 lines: close()-then-activate was always the intended order",
+        "the smoke's reverse ordering constraint was lifted and a stack-cleanliness check put in its place"
+      ],
+      "verification_bullets": [
+        "gate green; workspace 1103 unchanged ON PURPOSE - shell-owned state, no unit witness",
+        "live smoke 59 checks / 0 fail (was 56); 3 revert-proofs measured on the old pin",
+        "reverting to 4ff0b35f breaks exactly those 3 checks in the shape the PR predicted"
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "PINION-PR78 re-verified as undelivered at this pin; the backstop and its notes stayed"
+      ],
+      "publishable_decision_summary": "R206 = pin 4ff0b35f -> 6099c418, consuming PINION-PR77. SCE step 3 was NOT a no-op this time (9a0a650c -> 201783c4, because pinion R1444 moved its own), and getting that wrong would split SCE into two packages and clash sce_rust_runtime::Engine. PR-77 was delivered as the recommended option (A): the modal mailbox became an ordered queue, so a close-then-open handoff in one frame applies both edits in the order written instead of the Open overwriting the Close. sprag's consumption cost really was 0 lines - palette::run_cursor_row's close()-then-activate order never needed to change, because it was always the intended one. THE finding: when consumption costs no code, the work IS the measurement, and here only a LIVE measurement was possible - a binding can read focus_state::focused() and nothing of the modal stack beneath it, so no unit test can witness the fix, which is exactly why sprag could never have detected the leak either.",
+      "publishable_changes_bullets": [
+        "pin 4ff0b35f -> 6099c418; SCE 9a0a650c -> 201783c4, step 3 NOT a no-op",
+        "PINION-PR77 delivered as recommended option (A): an ordered-queue modal mailbox",
+        "sprag consumption cost 0 lines: close()-then-activate was always the intended order",
+        "the smoke's reverse ordering constraint was lifted and a stack-cleanliness check put in its place"
+      ],
+      "publishable_verification_bullets": [
+        "gate green; workspace 1103 unchanged ON PURPOSE - shell-owned state, no unit witness",
+        "live smoke 59 checks / 0 fail (was 56); 3 revert-proofs measured on the old pin",
+        "reverting to 4ff0b35f breaks exactly those 3 checks in the shape the PR predicted"
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "PINION-PR78 re-verified as undelivered at this pin; the backstop and its notes stayed"
+      ]
+    },
+    "R207": {
+      "decision_summary": "R207 = pin 6099c418 -> c6cdf6a4, taking pinion R1458's frame settle loop. SCE step 3 WAS a no-op this time, checked rather than assumed. Zero break sites: the whole public delta is an added const. The consumption risk was never the build - sprag is exactly the kind of binding that could fail to converge, since a pane-viewport publish drives a PTY resize whose reflow changes the grid the next pass lays out. What makes it safe is that reconcile_frame runs OUTSIDE the loop, so its side effects still happen once per paint and only the pure view repeats; that is the thing to check first on any future bump touching the paint loop. THE finding is about proving a claim with no wire: the settled verdict is shell-owned, so the smoke reads the client's stderr instead, and NON-VACUITY is asserted first (an absent warning is evidence only if a present one would have arrived). The old-pin revert-proof was IMPOSSIBLE here, because the warning did not exist before R1458. Inducing the real condition also FAILED - a temporary counter measured one view pass per frame - so what got proven was the DETECTOR, by planting the warn line and watching exactly that check fail.",
+      "changes_bullets": [
+        "pin 6099c418 -> c6cdf6a4 (R1457 docs, R1458 fix); SCE no-op at 201783c4, checked",
+        "zero break sites: the public delta is the added SETTLE_PASS_BUDGET const",
+        "sprag-smoke captures each child's stderr to a file in its own run directory",
+        "check_every_painted_frame_settled reads it AFTER the client leaves, covering the whole run",
+        "a pane_pty test fixed: its child now lives until told to end, so no reap can race the assert"
+      ],
+      "verification_bullets": [
+        "gate green; workspace 1103 unchanged; live smoke 61 checks / 0 fail, 3 identical runs",
+        "non-vacuity asserted BEFORE the claim: 54 log lines present",
+        "the old-pin revert-proof is impossible - the warning did not exist before R1458",
+        "inducing non-convergence FAILED: 5 paints / 5 view runs in 12s = one pass per frame",
+        "the DETECTOR was proven instead: planting the warn line gave 60 passed / 1 failed",
+        "the pane_pty race would not reproduce (40 single + 12 full runs), so the justification",
+        "is the MECHANISM, not a reproduction; the fixed form has no window at all"
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "reconcile_frame runs outside the settle loop: check that first on any paint-loop bump"
+      ],
+      "publishable_decision_summary": "R207 = pin 6099c418 -> c6cdf6a4, taking pinion R1458's frame settle loop. SCE step 3 WAS a no-op this time, checked rather than assumed. Zero break sites: the whole public delta is an added const. The consumption risk was never the build - sprag is exactly the kind of binding that could fail to converge, since a pane-viewport publish drives a PTY resize whose reflow changes the grid the next pass lays out. What makes it safe is that reconcile_frame runs OUTSIDE the loop, so its side effects still happen once per paint and only the pure view repeats; that is the thing to check first on any future bump touching the paint loop. THE finding is about proving a claim with no wire: the settled verdict is shell-owned, so the smoke reads the client's stderr instead, and NON-VACUITY is asserted first (an absent warning is evidence only if a present one would have arrived). The old-pin revert-proof was IMPOSSIBLE here, because the warning did not exist before R1458. Inducing the real condition also FAILED - a temporary counter measured one view pass per frame - so what got proven was the DETECTOR, by planting the warn line and watching exactly that check fail.",
+      "publishable_changes_bullets": [
+        "pin 6099c418 -> c6cdf6a4 (R1457 docs, R1458 fix); SCE no-op at 201783c4, checked",
+        "zero break sites: the public delta is the added SETTLE_PASS_BUDGET const",
+        "sprag-smoke captures each child's stderr to a file in its own run directory",
+        "check_every_painted_frame_settled reads it AFTER the client leaves, covering the whole run",
+        "a pane_pty test fixed: its child now lives until told to end, so no reap can race the assert"
+      ],
+      "publishable_verification_bullets": [
+        "gate green; workspace 1103 unchanged; live smoke 61 checks / 0 fail, 3 identical runs",
+        "non-vacuity asserted BEFORE the claim: 54 log lines present",
+        "the old-pin revert-proof is impossible - the warning did not exist before R1458",
+        "inducing non-convergence FAILED: 5 paints / 5 view runs in 12s = one pass per frame",
+        "the DETECTOR was proven instead: planting the warn line gave 60 passed / 1 failed",
+        "the pane_pty race would not reproduce (40 single + 12 full runs), so the justification",
+        "is the MECHANISM, not a reproduction; the fixed form has no window at all"
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "reconcile_frame runs outside the settle loop: check that first on any paint-loop bump"
+      ]
+    },
+    "R208": {
+      "decision_summary": "R208 = pin c6cdf6a4 -> c237da6e (pinion R1459-R1462), and the round's finding is that a DELIVERED upstream fix did not fix the symptom. PINION-PR78 landed as R1462 exactly as asked - the two focus drains became one drain_focus_mailboxes applying the modal batch first and the request last - and two sprag comments said the local backstop \"retires when PR-78 lands\". Rewriting them from that reading would have committed a falsehood. Measured with the backstop disabled, the palette leg still failed 3 runs of 3. A probe printed the cause in one line: ring=Elsewhere occupied=[0] target=None. The pane set was correctly current, refuting a plausible staleness hypothesis; the real defect was that Ring::Elsewhere fused two facts - a live widget holds the caret, and the tag is not a pane - and a DISMISSED palette satisfies the second. A palette row closes before it runs its command, so the op read a ring on a field about to vanish and asked for nothing. There was never a request for the new ordering to order. The fix is a pure classifier, ring_of. R1459's other half put settle_passes and settled on scene/frame_timings, so the settle verdict became data. The round also cleared the citation gate: all 22 SectionMissing turned out to be live pinion sections or a matcher artifact, and the deeper defect was that nothing ran the citation check at all.",
+      "changes_bullets": [
+        "pin c6cdf6a4 -> c237da6e; SCE no-op at 201783c4, checked; zero break sites",
+        "ring_of(focused, pane, holder_is_up) splits \"a live widget has the caret\" from \"not a pane\"",
+        "surface_is_up asks only the palette, the one surface that dismisses itself in the op's dispatch",
+        "check_the_frames_report_their_settle_work reads settle_passes + settled off the wire",
+        "the log check STAYS: the wire answers for the last frame, the log for every other one",
+        "all 22 SectionMissing were live pinion sections or the matcher reading \"§1/§3\" as an id",
+        "every cross-workspace cite now names its workspace: \"pinion §5.39 (R1020)\"",
+        "validate-code-refs wired into pre-commit and pre-push; severity_missing promoted to reject"
+      ],
+      "verification_bullets": [
+        "gate green; workspace 1107 (1103 + 4 classifier units); live smoke 63 / 0, four runs",
+        "REVERT-PROOF 1: the same classifier fix on c6cdf6a4 still fails, so R1462 is NECESSARY",
+        "REVERT-PROOF 2: settle_passes / settled read None on the old pin while frame_count (78) passes",
+        "measured Some(1) / true, so the \"one pass per frame\" R207 counted by hand is now data",
+        "the un-wired citation gate was proven, not assumed: a planted §9.99 left validate-workspace",
+        "at exit 0, and after wiring it the same plant blocks the commit"
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "upstream removed the veto; sprag had to start ASKING - a delivery is not a fix",
+        "this entry begins the backfill: the store had stopped at R179, 131 commits behind"
+      ],
+      "publishable_decision_summary": "R208 = pin c6cdf6a4 -> c237da6e (pinion R1459-R1462), and the round's finding is that a DELIVERED upstream fix did not fix the symptom. PINION-PR78 landed as R1462 exactly as asked - the two focus drains became one drain_focus_mailboxes applying the modal batch first and the request last - and two sprag comments said the local backstop \"retires when PR-78 lands\". Rewriting them from that reading would have committed a falsehood. Measured with the backstop disabled, the palette leg still failed 3 runs of 3. A probe printed the cause in one line: ring=Elsewhere occupied=[0] target=None. The pane set was correctly current, refuting a plausible staleness hypothesis; the real defect was that Ring::Elsewhere fused two facts - a live widget holds the caret, and the tag is not a pane - and a DISMISSED palette satisfies the second. A palette row closes before it runs its command, so the op read a ring on a field about to vanish and asked for nothing. There was never a request for the new ordering to order. The fix is a pure classifier, ring_of. R1459's other half put settle_passes and settled on scene/frame_timings, so the settle verdict became data. The round also cleared the citation gate: all 22 SectionMissing turned out to be live pinion sections or a matcher artifact, and the deeper defect was that nothing ran the citation check at all.",
+      "publishable_changes_bullets": [
+        "pin c6cdf6a4 -> c237da6e; SCE no-op at 201783c4, checked; zero break sites",
+        "ring_of(focused, pane, holder_is_up) splits \"a live widget has the caret\" from \"not a pane\"",
+        "surface_is_up asks only the palette, the one surface that dismisses itself in the op's dispatch",
+        "check_the_frames_report_their_settle_work reads settle_passes + settled off the wire",
+        "the log check STAYS: the wire answers for the last frame, the log for every other one",
+        "all 22 SectionMissing were live pinion sections or the matcher reading \"§1/§3\" as an id",
+        "every cross-workspace cite now names its workspace: \"pinion §5.39 (R1020)\"",
+        "validate-code-refs wired into pre-commit and pre-push; severity_missing promoted to reject"
+      ],
+      "publishable_verification_bullets": [
+        "gate green; workspace 1107 (1103 + 4 classifier units); live smoke 63 / 0, four runs",
+        "REVERT-PROOF 1: the same classifier fix on c6cdf6a4 still fails, so R1462 is NECESSARY",
+        "REVERT-PROOF 2: settle_passes / settled read None on the old pin while frame_count (78) passes",
+        "measured Some(1) / true, so the \"one pass per frame\" R207 counted by hand is now data",
+        "the un-wired citation gate was proven, not assumed: a planted §9.99 left validate-workspace",
+        "at exit 0, and after wiring it the same plant blocks the commit"
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "upstream removed the veto; sprag had to start ASKING - a delivery is not a fix",
+        "this entry begins the backfill: the store had stopped at R179, 131 commits behind"
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
@@ -8223,5 +9529,5 @@
   "parameter_deltas": {},
   "parameter_gates": {},
   "fact_counts": {},
-  "schema_version": 37
+  "schema_version": 43
 }
