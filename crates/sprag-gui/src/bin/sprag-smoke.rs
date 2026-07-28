@@ -96,7 +96,7 @@ fn main() -> ExitCode {
             // exactly ONE pane to make the daemon-to-client pane correspondence unambiguous, and
             // this one SPLITS until the pane set can attribute its own cost. It also leaves those
             // panes standing, so nothing that counts panes may follow it.
-            check_the_host_projects_panes_in_whole_sets(&mut smoke, &mut report);
+            check_the_host_projects_panes_only_for_a_grid_reader(&mut smoke, &mut report);
             // LAST over the WIRE, and it must stay last: it destroys the session this client is
             // attached to, so the client leaves and every check after it would be asserting against
             // a dead socket.
@@ -1098,42 +1098,39 @@ fn check_terminal_output_never_reaches_the_shaper(smoke: &mut Smoke, report: &mu
     );
 }
 
-/// A single REQUEST to the host re-projects every pane's entire grid — silent panes included.
+/// A request pays the grid only when it can READ the grid — over a real socket, from a real client.
 ///
-/// This is the other half of the question R216 answered. That round proved terminal output never
-/// reaches pinion's shaper — true, and only half an answer, because sprag does not paint its cells
-/// through pinion's text path at all. It projects a whole `GridBuffer` per served frame, and what
-/// THAT costs was unmeasurable from outside the process until `sprag_grid::work` put the count on
-/// the wire.
+/// R217 built `sprag_grid::work` and found that ANY call on the daemon's socket re-projected every
+/// pane's entire grid, silent panes included: `scene/revision`, which mutates nothing and reports
+/// one integer, cost the same whole-screen walk per pane that a snapshot did. This check was
+/// written then, and it asserted exactly that — twenty spaced reads, twenty-one pane sets.
 ///
-/// What the meter found is not what the question expected. The projection is not driven by output
-/// at all: it is driven by REQUESTS. Any call on the daemon's socket — measured with
-/// `scene/revision`, which mutates nothing and merely reports a number — wakes the attached
-/// client's poll, and the wake re-fetches every pane, whole. Measured in the steady state: an idle
-/// window costs one pane set, twenty spaced reads cost twenty-one. The same twenty reads driven at
-/// the CLIENT's socket cost nothing, which is what pins the cost to the daemon hop rather than to
-/// polling in general. That matters for sprag specifically, because the `sprag-mcp` tools an AI in
-/// a pane drives its siblings with talk to exactly this socket.
+/// R218's projection gate (`sprag_host::rpc::pane_cells_for`) removed the cost, so the checks below
+/// now assert its ABSENCE. That inversion is the point: they were true measurements of a real
+/// defect, and the way a measurement earns its keep is by turning red when the defect goes. What
+/// changed is the host, not the instrument.
 ///
-/// The claim is made by DIVISIBILITY, which is how an aggregate counter attributes work it does not
-/// label. Each projection adds one pane's whole area, so a host that re-projected only the pane a
-/// request concerned would leave a total that is a multiple of THAT pane's area and never of the
-/// whole set's. Measured, it is the exact opposite.
+/// Two halves, and neither stands alone:
 ///
-/// **The arithmetic only separates those two worlds when the set is ASYMMETRIC**, so this splits
-/// until it is and then asserts that it is, rather than assuming a layout. Two equal panes make
-/// "both projected once" and "one projected twice" the same number, and a check that cannot tell
-/// them apart would be reporting a coincidence as a finding.
+/// * **The claim** — a window of pure reads moves the meter by nothing at all. Zero is a strong
+///   assertion here rather than a weak one, because the same window used to cost a pane set per
+///   call, and because the client is attached and parked throughout: a stray wake would fetch every
+///   pane and show up immediately.
+/// * **The positive control** — `scene/snapshot`, the one method that genuinely reads every pane's
+///   grid, must still pay for every pane's grid. Without it the zero above would also be reported
+///   by a meter that had simply stopped counting, or by a host that had stopped projecting at all.
 ///
-/// The instrument PERTURBS what it measures, and the check is built on that rather than around it:
-/// reading the meter is itself a request, so it costs a pane set of its own. That is harmless here
-/// precisely because the perturbation has the same shape as the claim — a whole set — so it moves
-/// the count without ever breaking the divisibility the verdict rests on.
+/// The control keeps R217's DIVISIBILITY argument, which is how an aggregate counter attributes
+/// work it does not label: each projection adds one pane's whole area, so a host that projected
+/// only the pane a request named would leave a total that is a multiple of THAT pane's area and
+/// never of the whole set's. **The arithmetic only separates those two worlds when the set is
+/// ASYMMETRIC**, so this splits until it is and then asserts that it is, rather than assuming a
+/// layout — two equal panes make "both projected once" and "one projected twice" the same number.
 ///
-/// What this does NOT say is that the projection is wrong. It is a measurement. Whether the fix is
-/// a damage-driven fetch, a per-pane cache keyed on the row generations the host already sends, or
-/// nothing at all, is a decision this number is the input to.
-fn check_the_host_projects_panes_in_whole_sets(smoke: &mut Smoke, report: &mut Report) {
+/// One R217 bound is GONE and worth recording: the instrument no longer perturbs what it measures.
+/// Reading the meter is a `scene/query`, which after the gate projects nothing, so these numbers
+/// are exact rather than exact-modulo-a-pane-set.
+fn check_the_host_projects_panes_only_for_a_grid_reader(smoke: &mut Smoke, report: &mut Report) {
     /// How many times to split looking for a set whose areas can attribute their own work.
     const SPLITS: usize = 3;
     /// Reads to price. Spaced, so each one's fan-out lands before the next is sent.
@@ -1218,31 +1215,40 @@ fn check_the_host_projects_panes_in_whole_sets(smoke: &mut Smoke, report: &mut R
         ),
         pane_areas(&mut daemon, &session) == areas,
     );
-    // Non-vacuity, first: a meter that never moved is a claim about nothing, and every divisibility
-    // test below is trivially true of zero.
+    // THE claim: a read that cannot reach a grid does not pay for one. This used to be one whole
+    // pane set per call — `{READS} reads` cost `{READS}` sets — and is now nothing whatsoever.
     report.check(
         &format!(
-            "{READS} reads of a NUMBER moved the meter ({projections} projections, {cells} cells)"
+            "{READS} reads of a NUMBER cost the grid nothing ({projections} projections, {cells} cells)"
         ),
-        cells > 0 && projections > 0,
+        projections == 0 && cells == 0,
     );
-    // The claim. `% total == 0` says the work arrives in whole sets; `% one != 0` is the half that
-    // cannot be true of a host that re-projected only the pane a caller named.
+
+    // The positive control, without which the zero above is equally well explained by a meter that
+    // stopped counting. The ONE method that reads every pane's grid must still pay for every pane's
+    // grid — measured on the same connection, in the same window, against the same set.
+    let Some(before) = grid_work(&mut daemon, &session) else {
+        report.check("the host reports its meter before the snapshot", false);
+        return;
+    };
+    let snapped = daemon
+        .call("scene/snapshot", json!({ "path": "", "session": session }))
+        .is_ok();
+    let Some(after) = grid_work(&mut daemon, &session) else {
+        report.check("the host reports its meter after the snapshot", false);
+        return;
+    };
+    let (projections, cells) = (after.0 - before.0, after.1 - before.1);
+    report.check("the daemon answered a snapshot to price it", snapped);
+    // Exact, because nothing here perturbs any more; and divisible by the SET while not by the
+    // named pane, which is the half that rules out "one pane projected several times".
     report.check(
         &format!(
-            "the panes NOTHING happened in were re-projected too ({cells} cells is {}x the {total}-cell set, and not a multiple of pane_{named}'s {one})",
-            cells / total
+            "a snapshot still projects every pane, whole ({projections} projections, {cells} cells = the {total}-cell set, not a multiple of pane_{named}'s {one})"
         ),
-        cells.is_multiple_of(total) && !cells.is_multiple_of(one),
-    );
-    // And the rate, which is the number this instrument exists to produce: a read is not free, it
-    // is a whole re-projection of everything on screen.
-    report.check(
-        &format!(
-            "one read costs about one whole set ({} sets for {READS} reads)",
-            cells / total
-        ),
-        cells / total >= READS,
+        projections == areas.len() as u64
+            && cells == total
+            && !cells.is_multiple_of(one),
     );
 }
 
