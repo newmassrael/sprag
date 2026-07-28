@@ -27,7 +27,7 @@ const SESSION_KEY: &str = "sprag_gui.terminal";
 /// (each pane shrinks toward unreadable), so a small cap is the honest bound, not
 /// a limitation to design around. Dynamic pane creation (a deferred round) keeps
 /// this cap. (The Tab-order refresh that dynamic panes need is no longer a gap:
-/// pinion R1020 §5.39 derives the focusable set per frame from the paint scene
+/// pinion §5.39 (R1020) derives the focusable set per frame from the paint scene
 /// — [`Scene::collect_focusable_tags`](pinion_core::Scene::collect_focusable_tags)
 /// — so a pane appearing / disappearing joins / leaves the Tab order on its own.)
 pub(crate) const MAX_PANES: usize = 8;
@@ -40,7 +40,7 @@ pub(crate) const MAX_PANES: usize = 8;
 ///   [`create_extra_externals`](crate::TerminalViewer)), the scene-derived focus
 ///   tag (the pane Container is `with_focusable`, so the shell's per-frame
 ///   [`Scene::collect_focusable_tags`](pinion_core::Scene::collect_focusable_tags)
-///   picks it up — pinion R1020 §5.39), the paint-scene pane Container
+///   picks it up — pinion §5.39 (R1020)), the paint-scene pane Container
 ///   ([`sprag_host::pane_view_scene_from_cells`] — the R1012
 ///   [`use_pane_viewport_size`](pinion_core::use_pane_viewport_size) rect target +
 ///   focus ring + click anchor), and the per-pane reflow Effect tag.

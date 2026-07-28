@@ -1,4 +1,4 @@
-//! The pure view-fn (§6.3): read the producer-authoritative pane screen each
+//! The pure view-fn (pinion §6.3): read the producer-authoritative pane screen each
 //! frame and project it (live, or a scrollback window) into the surface-filled
 //! paint root. The PTY producer thread lives in `create_extra_externals`, not
 //! here. See the crate-root module docs.
@@ -118,7 +118,7 @@ pub(crate) fn dead_marker(exit: Option<&PaneExit>) -> String {
     }
 }
 
-/// view-fn (§6.3): per-window paint. The **main** window tiles the DOCKED panes
+/// view-fn (pinion §6.3): per-window paint. The **main** window tiles the DOCKED panes
 /// (those without an undock window); an **undock window** (`pane-{i}`) paints that
 /// one pane as a single [`view_dock_panel_with_actions`]
 /// — a draggable header (the drag source the same per-pane `DockPanelExternal` routes
@@ -376,7 +376,7 @@ fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
 /// PURE read: the scroll bound + tail-follow are reconciled OUT of this view by
 /// [`TerminalViewer::reconcile_frame`](crate::TerminalViewer) (pinion R1047's
 /// pre-view hook), which runs first, so `offset_y` is already current here — the
-/// view fn never writes a `Signal` (the §6.3 `dry_run` purity guarantee).
+/// view fn never writes a `Signal` (the pinion §6.3 `dry_run` purity guarantee).
 /// The `memory://` store key + `Scene::Image` tag suffix for pane `i`'s image `id`.
 fn image_store_key(i: usize, id: u32) -> String {
     format!("pane{i}.img{id}")

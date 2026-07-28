@@ -5,7 +5,7 @@
 //! snapshot (else empty; see below) — and serves
 //! pinion's scene-as-data wire -- panes +
 //! the `/sprag_mux` control surface + the `/sprag_plugins` platform -- over two
-//! transports at once (DESIGN.md §1/§3): the process stdin/stdout (one
+//! transports at once (DESIGN.md §1 + §3): the process stdin/stdout (one
 //! JSON-RPC request per line) AND an always-on Unix domain socket. The socket
 //! is there no matter how the process was launched, so an AI peer reaches the
 //! platform without wiring fd 0/1. Both transports funnel into one dispatch

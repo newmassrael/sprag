@@ -4,7 +4,7 @@
 //! resolving each request's [`SessionScope`] and assembling that session's current-window
 //! live [`Workspace`] panes into a fresh scene. This is the runnable form of the headless
 //! data path
-//! (DESIGN.md §1/§3): an external AI peer reads the terminals as data and
+//! (DESIGN.md §1 + §3): an external AI peer reads the terminals as data and
 //! drives input / pane lifecycle, with no GPU and no shell event loop.
 //!
 //! ## Method boundary (enforced, not incidental)
@@ -50,7 +50,7 @@ use crate::wire::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM};
 /// Bundled so the per-request handler signature stays stable as future control
 /// surfaces are added.
 ///
-/// ## Change-notification (PR-50 §6.3, R115a)
+/// ## Change-notification (pinion §6.3, PR-50, R115a)
 ///
 /// Every session has its OWN scene-version token and its own parked `scene/waitFor` replies
 /// ([`ChannelRegistry`]): a pane's output [`bump`](SceneRevision::bump)s the token its session

@@ -257,7 +257,7 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
 /// ## The contract, copied from pinion's own precedent
 ///
 /// pinion carries the same shape for its display windows (`Request::window_scope`, R890.1
-/// §5.49 — a different concept that merely shares the word "window"), and sprag mirrors it
+/// pinion §5.49 — a different concept that merely shares the word "window"), and sprag mirrors it
 /// deliberately rather than inventing a second convention for one idea:
 ///
 /// * **absent** → the default scope ([`SessionRegistry::default_session`](sprag_terminal::SessionRegistry::default_session));

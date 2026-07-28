@@ -324,7 +324,7 @@ pub struct CellFrame {
 impl fmt::Debug for SpragPaneExternal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // `PanePtyHandle` wraps un-`Debug` PTY/emulator handles; the engine
-        // is identified structurally (External: Debug is required by §5.2).
+        // is identified structurally (External: Debug is required by pinion §5.2).
         f.debug_struct("SpragPaneExternal").finish_non_exhaustive()
     }
 }

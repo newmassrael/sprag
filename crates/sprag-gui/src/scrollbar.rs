@@ -17,7 +17,7 @@
 //! so the boundary conversion [`offset_lines_from_top`] (`scrollback_len -
 //! offset_y`) is computed fresh per frame — never a second stored value.
 //!
-//! ## Row-unit scrollbar (R1032 §5.45 seam)
+//! ## Row-unit scrollbar (pinion §5.45 seam, R1032)
 //!
 //! pinion's [`ScrollState`] is unit-neutral (an `i32` offset/max holder), so the
 //! row IS the scroll quantum end-to-end: keyboard scroll, drag, and wheel all move

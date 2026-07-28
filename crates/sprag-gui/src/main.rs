@@ -26,7 +26,7 @@
 //! [`use_pane_viewport_size`](pinion_core::use_pane_viewport_size) rect target +
 //! framework focus ring + click-focus anchor), and its per-pane reflow Effect tag
 //! — one string so input / focus / measure / paint can never address different
-//! panes. Keyboard focusability is **scene-derived** (pinion R1020 §5.39): the
+//! panes. Keyboard focusability is **scene-derived** (pinion §5.39, R1020): the
 //! pane's paint Container is marked `with_focusable(true)` in
 //! [`sprag_host::pane_view_scene_from_cells`] and the shell collects the Tab order each frame
 //! via [`Scene::collect_focusable_tags`](pinion_core::Scene::collect_focusable_tags)
@@ -449,7 +449,7 @@ impl WidgetCore for TerminalViewer {
         // on the same terms, and readable over RPC while nothing is armed so "is this client asking
         // about anything?" has an address rather than being inferred from the tree.
         externals.extend(confirm::create_confirm_externals());
-        // Drag-to-dock / tear-off (pinion R1081/R1084/R1094 §5.51, P2/PR-31): one R742
+        // Drag-to-dock / tear-off (pinion §5.51, R1081/R1084/R1094, P2/PR-31): one R742
         // `DockPanelExternal` per pane, registered at the panel ROOT tag
         // (`split::panel_id(i)` = the `view_dock_panel` root the `view_dock_surface_chrome`
         // walker emits — NOT the `#header` composite; the R51.42 dispatch splits at `#`
@@ -884,7 +884,7 @@ impl WidgetCore for TerminalViewer {
     }
 
     /// Reducer — pinion routes external-drained intents through `WidgetCore::update`
-    /// (R51.168 §5.23). sprag consumes the dock-panel **tear-off** family a
+    /// (pinion §5.23, R51.168). sprag consumes the dock-panel **tear-off** family a
     /// [`DockPanelExternal`] emits while a header is dragged, mapping the panel id
     /// back to its tile ([`split::pane_index_of_panel`]) and driving the [`dock`]
     /// window/topology SSOT — so the drag tear-off and the `Ctrl+Shift+Enter` key
@@ -1112,7 +1112,7 @@ impl WidgetCore for TerminalViewer {
     }
 
     // Keyboard focus enumeration is no longer a binding-side method: pinion R1020
-    // §5.39 removed `WidgetCore::focusable_tags()` and DERIVES the Tab order each
+    // pinion §5.39 removed `WidgetCore::focusable_tags()` and DERIVES the Tab order each
     // frame from the paint scene via `Scene::collect_focusable_tags` — the
     // `focusable`-marked, tagged nodes. Each pane declares itself a Tab stop where
     // it is painted: `sprag_host::pane_view_scene_from_cells` marks the pane Container
@@ -1198,7 +1198,7 @@ impl WidgetView for TerminalViewer {
         selection::drag(scene, x, y)
     }
 
-    /// OS file drop (pinion R770 §5.15, R1437 §5.16): a file dragged from the desktop onto a sprag
+    /// OS file drop (pinion §5.15 R770, pinion §5.16 R1437): a file dragged from the desktop onto a
     /// window is delivered to the pane that window addresses — pasted as a local path, or
     /// `scp`-uploaded first when that pane is a `sprag ssh` remote workspace and then pasted as its
     /// REMOTE path. The host owns that decision ([`sprag_host::HostClient::drop_file`]); this end
@@ -1229,7 +1229,7 @@ impl WidgetView for TerminalViewer {
         dock::clear_drop_target()
     }
 
-    /// A file is being DRAGGED over `window_id` (pinion R770 §5.15, R1437 §5.16): raise the drop
+    /// A file is being DRAGGED over `window_id` (pinion §5.15 R770, pinion §5.16 R1437): raise the
     /// affordance on the pane that would receive it ([`dock::hover_drop_target`]).
     ///
     /// Worth having precisely BECAUSE sprag cannot hit-test a drop: winit reports no position, so a
@@ -2106,7 +2106,7 @@ mod tests {
         );
     }
 
-    /// R1020 §5.39 scene-derived focus: the REAL viewer's paint scene marks every
+    /// pinion §5.39 (R1020) scene-derived focus: the REAL viewer's paint scene marks every
     /// tiled pane Container `with_focusable(true)`, so the shell's per-frame
     /// [`Scene::collect_focusable_tags`](pinion_core::Scene::collect_focusable_tags)
     /// walk enumerates both pane tags as Tab stops. Since R179 the session sidebar
@@ -2154,7 +2154,7 @@ mod tests {
         );
     }
 
-    /// R1020 §5.39 boot focus: [`create_extra_externals`](TerminalViewer::create_extra_externals)
+    /// pinion §5.39 (R1020) boot focus: [`create_extra_externals`](TerminalViewer::create_extra_externals)
     /// requests focus on pane 0 at boot; once the dispatch tail drains
     /// ([`ShellCore::finalize_frame`]), that request lands on `pane_tag(0)` — the
     /// drain re-derives the focusable set from the painted scene (where the pane is

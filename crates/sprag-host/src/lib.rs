@@ -199,7 +199,7 @@ pub fn pane_cells(pty: &PanePty, offset_lines: usize) -> GridBuffer {
 /// The node is a tagged, **focus-stop** Container wrapping the pane's grid. The
 /// Container's only own layout is the pinion R1020 `focusable` flag
 /// ([`LayoutStyle::with_focusable`](pinion_core::style::LayoutStyle::with_focusable)),
-/// declaring the pane a scene-derived keyboard Tab stop (§5.39). Its SIZE/FLEX
+/// declaring the pane a scene-derived keyboard Tab stop (pinion §5.39). Its SIZE/FLEX
 /// come from the GUI's arrangement (`view_splitter` drag ratio for a tiled pane;
 /// `Percent(100)` for a lone / undocked pane); those mutators edit the size/flex
 /// fields in place, preserving the `focusable` flag set here. The inner grid
