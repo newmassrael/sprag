@@ -20,8 +20,9 @@
 //! Pipeline (DESIGN.md §5): the producer's [`Workspace`](sprag_terminal::Workspace)
 //! holds the panes (those of the current window of the session a request is SCOPED to,
 //! resolved out of the [`SessionRegistry`] — see [`SessionScope`]);
-//! [`workspace_scene`] assembles the tree (refreshing each grid from its live
-//! screen, handing engines their `PanePtyHandle`); [`snapshot`] reads one
+//! [`workspace_scene`] assembles the tree (handing engines their `PanePtyHandle`, and
+//! refreshing each grid from its live screen only when the request can READ one —
+//! [`PaneCells`]); [`snapshot`] reads one
 //! grid back as the [`TextGridSnapshot`] an AI consumer sees; [`dispatch_frames`]
 //! runs the single-owner JSON-RPC dispatch loop (R104).
 //!
@@ -281,22 +282,51 @@ pub fn scene_with_metric(screen: &Screen, palette: &Palette, metric: CellMetric)
     Scene::TextGrid(text_grid_node(screen, palette, metric))
 }
 
+/// Whether an assembled scene's panes carry their projected cells.
+///
+/// Projecting a pane's grid is the most expensive thing an assembly does — one whole-screen
+/// walk per pane, metered by [`sprag_grid::work`] — and [`workspace_scene`] used to pay it for
+/// every request whatever the request was going to read. It is worth paying only when the
+/// dispatched method can actually reach a `TextGrid` node; the decision itself is
+/// `rpc::pane_cells_for`, which derives it from the METHOD (see there for why the method, and
+/// not the path, is the honest discriminator).
+///
+/// [`Omitted`](Self::Omitted) keeps the tree's exact SHAPE — the pane still carries its
+/// `TextGrid` child, tagged as always, holding an empty `0 x 0` buffer. Nothing about
+/// resolution changes, so the only observable difference between the two modes is cell
+/// content, which is what makes the equivalence guard in `rpc`'s tests a sharp instrument
+/// rather than a shape comparison.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneCells {
+    /// Project every pane's live screen into its grid — what a reader of the cells needs.
+    Projected,
+    /// Leave every pane's grid empty. Reads no screen and takes no screen lock.
+    Omitted,
+}
+
 /// Build one pane's `Scene::Container` (tagged `pane_<id>`) — the R1.7
-/// data/engine split: a `TextGrid` projected from the pane's live screen,
-/// and a [`SpragPaneExternal`] input engine holding the pane's
+/// data/engine split: a `TextGrid` (projected from the pane's live screen, or empty per
+/// `cells`), and a [`SpragPaneExternal`] input engine holding the pane's
 /// [`PanePtyHandle`](sprag_terminal::PanePtyHandle) so `scene/invoke` reaches
 /// that pane's PTY.
-fn pane_container(id: PaneId, pty: &PanePty) -> Scene {
-    let children = pty.with_screen_palette(|screen, palette| {
-        vec![
-            Scene::TextGrid(text_grid_node(screen, palette, CellMetric::DEFAULT)),
-            Scene::External(
-                ExternalNode::new(Box::new(pane::SpragPaneExternal::new(pty.handle())))
-                    .with_tag(INPUT_TAG),
-            ),
-        ]
-    });
-    Scene::Container(ContainerNode::new(children).with_tag(wire::pane_container_tag(id.0)))
+///
+/// The input engine is built from the pane's HANDLE alone, so an
+/// [`Omitted`](PaneCells::Omitted) assembly touches the screen not at all — it neither
+/// projects nor takes the screen lock, which is the whole cost of a pane child.
+fn pane_container(id: PaneId, pty: &PanePty, cells: PaneCells) -> Scene {
+    let grid = match cells {
+        PaneCells::Projected => pty.with_screen_palette(|screen, palette| {
+            text_grid_node(screen, palette, CellMetric::DEFAULT)
+        }),
+        PaneCells::Omitted => grid_node(GRID_TAG, CellMetric::DEFAULT, GridBuffer::new(0, 0)),
+    };
+    let input = Scene::External(
+        ExternalNode::new(Box::new(pane::SpragPaneExternal::new(pty.handle()))).with_tag(INPUT_TAG),
+    );
+    Scene::Container(
+        ContainerNode::new(vec![Scene::TextGrid(grid), input])
+            .with_tag(wire::pane_container_tag(id.0)),
+    )
 }
 
 /// Assemble the window of the session `scope` names as a `Scene::Container` of its panes
@@ -339,6 +369,14 @@ fn pane_container(id: PaneId, pty: &PanePty) -> Scene {
 /// waste, not error — a shared revision can only over-report (`park_if_current` answers a
 /// stale baseline and parks a current one; nothing consults it as a write precondition), so
 /// no session's request is ever refused or mis-answered because another was busy.
+///
+/// ## `cells` is the assembly's whole cost
+///
+/// Everything else here is `Arc` clones and handles; the panes' [`PaneCells`] are the one
+/// term that scales with the screen. A caller that cannot read a `TextGrid` passes
+/// [`Omitted`](PaneCells::Omitted) and the assembly stops being proportional to the pane set
+/// at all — see `rpc::pane_cells_for` for which callers those are and why the answer is
+/// decidable from the method alone.
 #[must_use]
 pub fn workspace_scene(
     scope: &SessionScope,
@@ -347,6 +385,7 @@ pub fn workspace_scene(
     channels: &Arc<ChannelRegistry>,
     on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
     attachments: Option<Arc<Mutex<AttachmentRegistry>>>,
+    cells: PaneCells,
 ) -> Scene {
     // The scoped session's pool, resolved when the scope was (never re-derived here — one
     // question, one answer). The registry lock is not held, so taking the workspace lock
@@ -357,7 +396,7 @@ pub fn workspace_scene(
         guard
             .panes()
             .iter()
-            .map(|pane| pane_container(pane.id(), pane.pty()))
+            .map(|pane| pane_container(pane.id(), pane.pty(), cells))
             .collect()
     };
     // The mux control plane speaks the REGISTRY (sessions / windows / layout are mux

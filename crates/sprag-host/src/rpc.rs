@@ -36,6 +36,7 @@ use pinion_rpc::{
 };
 use sprag_terminal::{SessionRegistry, Workspace};
 
+use crate::PaneCells;
 use crate::attach::{AttachOutcome, AttachmentRegistry};
 use crate::external::lock;
 use crate::host::Host;
@@ -367,6 +368,41 @@ pub const SUPPORTED_METHODS: &[&str] = &[
     "scene/waitFor",
 ];
 
+/// Whether a request for `method` needs the assembled scene's panes to carry their projected
+/// cells — the one place that decides it, and the reason a read of a single integer no longer
+/// costs a whole-screen walk per pane.
+///
+/// ## Why the METHOD is the honest discriminator, and not the path
+///
+/// Exactly one supported method can reach a `TextGrid` node:
+///
+/// * `scene/snapshot` reads the whole tree, and pinion's `snapshot` REQUIRES an empty scene
+///   path (a tail is `UnsupportedPath`), so it can neither be narrowed to one pane nor served
+///   without every pane's cells;
+/// * `scene/query` and `scene/invoke` resolve to an `External` — a path that names anything
+///   else answers `NoExternalAtPath`, so no grid is ever read through them;
+/// * `scene/revision` and `scene/waitFor` read the revision token and never walk the scene.
+///
+/// So the answer follows from ONE field this layer already holds. Deciding it from the request
+/// PATH instead would mean re-implementing pinion's resolution here, and a second spelling of
+/// someone else's rule is how the two come to disagree — the same reason `handle_parsed`
+/// refuses to guess what a malformed-scope request "probably meant".
+///
+/// ## The fallback direction is deliberate
+///
+/// An unrecognised method PROJECTS. The cheap answer is the one that can be silently wrong (a
+/// method that does read a grid, served an empty one, reports blank cells rather than an
+/// error), so it is opt-in per method and never the default. A method added to
+/// [`SUPPORTED_METHODS`] later is merely slow until someone classifies it.
+#[must_use]
+pub fn pane_cells_for(method: &str) -> PaneCells {
+    match method {
+        "scene/snapshot" => PaneCells::Projected,
+        "scene/query" | "scene/invoke" | "scene/revision" | "scene/waitFor" => PaneCells::Omitted,
+        _ => PaneCells::Projected,
+    }
+}
+
 /// Answer one JSON-RPC `request_json` string against the workspace's current
 /// panes, returning the response JSON (`None` for a notification with no reply).
 ///
@@ -382,7 +418,8 @@ pub fn handle_request(state: &HostState, request_json: &str) -> Option<String> {
         Err(_) => {
             // Malformed: assemble a ctx only for the canonical parse-error reply. It cannot
             // carry a scope (there is no parsed request to read one off), and it does not
-            // need one — the reply is about the envelope, not about any session.
+            // need one — the reply is about the envelope, not about any session. Nor does it
+            // need any pane's cells: a reply about the envelope reads no node at all.
             let scope = SessionScope::unscoped(state.registry());
             let mut scene = crate::workspace_scene(
                 &scope,
@@ -391,6 +428,7 @@ pub fn handle_request(state: &HostState, request_json: &str) -> Option<String> {
                 &state.channels,
                 state.on_pane_exit(),
                 Some(Arc::clone(state.attachments())),
+                PaneCells::Omitted,
             );
             let revision = state.revision(scope.session());
             let mut ctx = DispatchContext::new(&mut scene, &state.previews, &revision);
@@ -431,6 +469,25 @@ pub fn handle_parsed(state: &HostState, request: Request) -> Option<String> {
 /// of one fact is how they come to disagree.
 #[must_use]
 fn handle_scoped(state: &HostState, scope: &SessionScope, request: Request) -> Option<String> {
+    let cells = pane_cells_for(&request.method);
+    handle_scoped_with_cells(state, scope, request, cells)
+}
+
+/// [`handle_scoped`] with the projection policy supplied rather than derived — the dispatch
+/// body, split off so the policy is APPLIED at exactly one call site (above) while a test can
+/// drive the same body both ways and compare the answers.
+///
+/// That comparison is the guard the split exists for: every method must answer identically
+/// under either policy except `scene/snapshot`, which must differ. Without a seam that can
+/// force the policy, the guard could only be written against whatever `pane_cells_for`
+/// currently says — which would make it a restatement of the policy instead of a check on it.
+#[must_use]
+fn handle_scoped_with_cells(
+    state: &HostState,
+    scope: &SessionScope,
+    request: Request,
+    cells: PaneCells,
+) -> Option<String> {
     let mut scene = crate::workspace_scene(
         scope,
         state.registry(),
@@ -438,6 +495,7 @@ fn handle_scoped(state: &HostState, scope: &SessionScope, request: Request) -> O
         &state.channels,
         state.on_pane_exit(),
         Some(Arc::clone(state.attachments())),
+        cells,
     );
     // The SCOPED session's token, which is what makes pinion's own OCC bump land in the right
     // place: it advances the revision it is handed after every mutating handler returns `Ok`, from
@@ -1146,6 +1204,173 @@ mod tests {
         false
     }
 
+    /// The projection policy is a decision PER METHOD, and its fallback projects.
+    ///
+    /// The length assertion is the exhaustiveness check a `&[&str]` table cannot give
+    /// structurally: the arms below name every supported method, so adding one to
+    /// [`SUPPORTED_METHODS`] without deciding what it reads fails here rather than silently
+    /// inheriting the fallback.
+    #[test]
+    fn the_projection_policy_is_decided_per_method_and_fails_safe() {
+        assert_eq!(
+            pane_cells_for("scene/snapshot"),
+            PaneCells::Projected,
+            "the one method that reads a TextGrid — and it reads every pane's",
+        );
+        for method in [
+            "scene/query",
+            "scene/invoke",
+            "scene/revision",
+            "scene/waitFor",
+        ] {
+            assert_eq!(
+                pane_cells_for(method),
+                PaneCells::Omitted,
+                "{method} resolves to an External (or to no node at all), never to a grid",
+            );
+        }
+        assert_eq!(
+            SUPPORTED_METHODS.len(),
+            5,
+            "a newly supported method needs its own projection decision above",
+        );
+        assert_eq!(
+            pane_cells_for("scene/somethingLater"),
+            PaneCells::Projected,
+            "an unclassified method is merely slow; it must never be served empty cells",
+        );
+    }
+
+    /// Dispatch one request through the SAME dispatch body twice — cells projected, then
+    /// omitted — and return both responses.
+    fn serve_both_policies(
+        state: &HostState,
+        request_json: &str,
+    ) -> (serde_json::Value, serde_json::Value) {
+        let once = |cells| {
+            let request = parse_request(request_json).expect("a well-formed request");
+            let scope =
+                SessionScope::resolve(state.registry(), &request).expect("a resolvable scope");
+            let response =
+                handle_scoped_with_cells(state, &scope, request, cells).expect("a response");
+            serde_json::from_str::<serde_json::Value>(response.trim())
+                .expect("valid json-rpc response")
+        };
+        (once(PaneCells::Projected), once(PaneCells::Omitted))
+    }
+
+    /// THE guard on the projection gate: omitting the panes' cells changes what
+    /// `scene/snapshot` reports, and changes NOTHING else.
+    ///
+    /// Both halves are load-bearing. The equality half is the safety claim — if pinion ever
+    /// let a `scene/query` reach a `TextGrid`, an omitted grid would answer blank cells
+    /// instead of erroring, and this fails at the pin bump rather than in production. The
+    /// inequality half is the non-vacuity: without it the guard would still pass if
+    /// `PaneCells` did nothing whatsoever.
+    ///
+    /// The pane's child has EXITED before any comparison, so its screen, its revision and its
+    /// scroll facts are frozen — the two dispatches of one request cannot differ because live
+    /// output landed between them. That is also why the mutating `scene/invoke` case is
+    /// comparable at all: on an EOF'd PTY both runs take the identical branch.
+    #[test]
+    fn omitting_the_panes_cells_changes_only_what_a_snapshot_reports() {
+        let state = host_with("printf hi", 20, 4);
+        assert!(
+            wait_for_snapshot(&state, "hi"),
+            "pane 0 printed before the comparison",
+        );
+        wait_for_pane0_eof(&state);
+
+        for request in [
+            // The client's steady-state hot path: a pane's cells, read through its External.
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/query","params":{"path":"/pane_0/sprag_input/external/cells.0"}}"#,
+            // Pane CONTENT through the External — the read most likely to be confused with a grid read.
+            r#"{"jsonrpc":"2.0","id":2,"method":"scene/query","params":{"path":"/pane_0/sprag_input/external/full_text"}}"#,
+            // The mux surface, which reaches past the pool.
+            r#"{"jsonrpc":"2.0","id":3,"method":"scene/query","params":{"path":"/sprag_mux/external/panes"}}"#,
+            // The read that used to cost a whole pane set to answer with one integer.
+            r#"{"jsonrpc":"2.0","id":4,"method":"scene/revision","params":{}}"#,
+        ] {
+            let (with, without) = serve_both_policies(&state, request);
+            assert!(
+                with.get("error").is_none(),
+                "the guard is vacuous unless the path resolves: {with}",
+            );
+            assert_eq!(
+                with, without,
+                "an omitted grid changed the answer to {request}"
+            );
+        }
+
+        // The mutating method, kept separate because its outcome is a rejection on a dead PTY
+        // rather than a result — identical either way, which is the claim, but no evidence
+        // that any path resolved.
+        let (with, without) = serve_both_policies(
+            &state,
+            r#"{"jsonrpc":"2.0","id":5,"method":"scene/invoke","params":{"path":"/pane_0/sprag_input/external/key","args":{"key":"a"}}}"#,
+        );
+        assert_eq!(
+            with, without,
+            "an omitted grid changed a scene/invoke outcome"
+        );
+
+        // ...and the one method that CAN read a grid must see the difference.
+        let (with, without) = serve_both_policies(
+            &state,
+            r#"{"jsonrpc":"2.0","id":6,"method":"scene/snapshot","params":{"path":""}}"#,
+        );
+        assert_ne!(
+            with, without,
+            "omitting the cells must change what a snapshot reports",
+        );
+        assert!(
+            snapshot_grid_text(&with["result"]).contains("hi"),
+            "the projected snapshot's GRID carries the pane's text",
+        );
+        assert_eq!(
+            snapshot_grid_text(&without["result"]),
+            "",
+            "an omitted grid contributes no cells to the snapshot",
+        );
+    }
+
+    /// Every `grid_rows` text a snapshot result carries, concatenated — the CELLS half of a
+    /// snapshot, located STRUCTURALLY rather than by searching the response for a string.
+    ///
+    /// The distinction is not pedantry: a snapshot serializes each `External`'s introspect
+    /// fields too, and a pane's include `full_text`, so its screen text appears in the JSON a
+    /// second time by a path that has nothing to do with the grid. A `result.contains("hi")`
+    /// check therefore passes even with the cells removed entirely — which is exactly the
+    /// false negative this walk exists to avoid.
+    fn snapshot_grid_text(result: &serde_json::Value) -> String {
+        let mut text = String::new();
+        fn walk(value: &serde_json::Value, out: &mut String) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    if let Some(serde_json::Value::Array(rows)) = map.get("grid_rows") {
+                        for row in rows {
+                            if let Some(line) = row.get("text").and_then(serde_json::Value::as_str)
+                            {
+                                out.push_str(line);
+                            }
+                        }
+                    }
+                    for nested in map.values() {
+                        walk(nested, out);
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for item in items {
+                        walk(item, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        walk(result, &mut text);
+        text
+    }
+
     #[test]
     fn serve_answers_scene_snapshot_with_live_screen() {
         let state = host_with("printf hi", 20, 4);
@@ -1156,10 +1381,12 @@ mod tests {
         );
         assert_eq!(value["id"], 1);
         assert!(value.get("error").is_none(), "unexpected error: {value}");
-        // The grid text nests under workspace -> pane_0 -> TextGrid.
+        // Read out of the GRID rows specifically. A `result.contains("hi")` check — which this
+        // test used to make — is satisfied by the pane External's `full_text` introspect field
+        // alone, so it passed whether or not the cells were there at all.
         assert!(
-            value["result"].to_string().contains("hi"),
-            "expected 'hi' in result, got: {}",
+            snapshot_grid_text(&value["result"]).contains("hi"),
+            "expected 'hi' in the projected grid, got: {}",
             value["result"]
         );
     }
