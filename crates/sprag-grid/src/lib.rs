@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use pinion_core::style::Color as PinColor;
 use pinion_core::{
@@ -20,6 +21,50 @@ use sprag_vt::{
     Attrs, Cell, Color, ColorTarget, Cursor, CursorShape, Hyperlink, Palette, Screen, ScreenKind,
     UnderlineStyle, Width,
 };
+
+/// How many whole-screen projections have run, process-wide.
+static PROJECTIONS: AtomicU64 = AtomicU64::new(0);
+/// How many CELLS those projections came to, process-wide.
+static CELLS: AtomicU64 = AtomicU64::new(0);
+
+/// What this crate has cost the process so far — the meter for the one thing it does.
+///
+/// Counts, not timings, and that choice is deliberate: sprag has measured this path before and
+/// wall-clock drifted more than 20% run to run, so the round that repaid the emulator's throughput
+/// debt counted allocations instead and got a number it could hold anyone to. A count is
+/// reproducible, is unaffected by what else the machine is doing, and answers the question that
+/// actually matters here — whether the work scales with what CHANGED or with how big the screen is.
+///
+/// Both totals are monotonic and process-wide. A caller reads them twice and takes the DELTA; a
+/// single reading means nothing on its own, because it includes every projection since boot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GridWork {
+    /// Whole-screen projections run — the FAN-OUT. One per [`project`] / [`project_scrolled`]
+    /// call that actually built a buffer.
+    pub projections_total: u64,
+    /// Cells those projections produced — the VOLUME, `cols * rows` per projection. This is the
+    /// number that grows with the size of the screen rather than with the size of the change.
+    pub cells_total: u64,
+}
+
+/// Read the meter. See [`GridWork`] for why the answer is only meaningful as a delta.
+#[must_use]
+pub fn work() -> GridWork {
+    GridWork {
+        projections_total: PROJECTIONS.load(Ordering::Relaxed),
+        cells_total: CELLS.load(Ordering::Relaxed),
+    }
+}
+
+/// Account one whole-screen projection of `cols` x `rows`.
+///
+/// Called from the projection functions themselves rather than from their callers, so the cost
+/// cannot be paid without being counted — a meter a caller has to remember to call measures the
+/// callers that remembered.
+fn meter(cols: u16, rows: u16) {
+    PROJECTIONS.fetch_add(1, Ordering::Relaxed);
+    CELLS.fetch_add(u64::from(cols) * u64::from(rows), Ordering::Relaxed);
+}
 
 /// Project a screen into a fresh pinion `GridBuffer`, resolving each cell's colour
 /// against the terminal's live [`Palette`] (the OSC-colour SSOT).
@@ -34,6 +79,7 @@ use sprag_vt::{
 pub fn project(screen: &Screen, palette: &Palette) -> GridBuffer {
     let cols = screen.cols();
     let rows = screen.rows();
+    meter(cols, rows);
     let mut buffer = GridBuffer::new(cols, rows);
     let mut interner = HyperlinkInterner::default();
 
@@ -83,6 +129,9 @@ pub fn project_scrolled(screen: &Screen, offset_lines: usize, palette: &Palette)
     // (offset <= scrollback_len, so this never underflows).
     let top = scrollback_len - offset;
 
+    // Metered HERE and not at the top of the function: both early returns delegate to `project`,
+    // which meters itself, so an unconditional count at entry would double every live-view call.
+    meter(cols, rows);
     let mut buffer = GridBuffer::new(cols, rows);
     let mut interner = HyperlinkInterner::default();
     for display in 0..rows {

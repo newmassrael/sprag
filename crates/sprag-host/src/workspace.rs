@@ -73,10 +73,10 @@ use crate::scope::SessionScope;
 // ([`crate::wire`]) — the SAME consts a client addresses for pane lifecycle.
 use crate::wire::{
     BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DROP_FILE_ACTION, GLOBAL_COMMANDS_SLOT,
-    JOIN_PANE_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION,
-    NEW_WINDOW_ACTION, PANES_SLOT, PROJECT_FIELD, RENAME_WINDOW_ACTION, RESIZE_ACTION,
-    SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION,
-    WINDOWS_SLOT,
+    GRID_WORK_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
+    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PROJECT_FIELD, RENAME_WINDOW_ACTION,
+    RESIZE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
+    SPAWN_ACTION, WINDOWS_SLOT,
 };
 
 /// The mux-management engine `External`: a control surface over the shared
@@ -778,6 +778,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                     SchemaField::new(LAYOUT_SLOT, "tree"),
                     SchemaField::new(SESSIONS_SLOT, "list"),
                     SchemaField::new(CLIENTS_SLOT, "list"),
+                    SchemaField::new(GRID_WORK_SLOT, "object"),
                     SchemaField::new(WINDOWS_SLOT, "list"),
                     SchemaField::new(GLOBAL_COMMANDS_SLOT, "object"),
                     PROJECT_FIELD,
@@ -980,6 +981,18 @@ impl ExternalIntrospect for WorkspaceExternal {
                         None
                     }
                 }
+            }
+            // What this host has paid to project its cells. Read straight off the meter rather
+            // than recomputed, and UNSCOPED on purpose: the counters are process-wide, so scoping
+            // them to the request's session would name a session for work every session shares.
+            // Serialised by hand rather than through the type, so the wire keys are spelled once
+            // in the place the schema declares them.
+            GRID_WORK_SLOT => {
+                let work = sprag_grid::work();
+                Some(IntrospectValue::Json(serde_json::json!({
+                    "projections_total": work.projections_total,
+                    "cells_total": work.cells_total,
+                })))
             }
             // The SCOPED session's windows — each window's name and whether it is the CURRENT
             // one — how a tabbed client learns which tabs to draw and which is active. Scoped

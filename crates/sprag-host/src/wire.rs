@@ -324,6 +324,24 @@ pub const NEW_SESSION_ACTION: &str = "new_session";
 /// never reach the client (the socket closes as the daemon exits).
 pub const KILL_SESSION_ACTION: &str = "kill_session";
 
+/// The mux control external query slot: what this host has paid to PROJECT its cells
+/// (`{projections_total, cells_total}`) — [`sprag_grid::work`], on the wire.
+///
+/// Registry-WIDE like [`SESSIONS_SLOT`], and for a stronger reason than convenience: the counters
+/// are process-wide, so hanging them off any one pane would invite a reader to attribute the whole
+/// host's work to that pane.
+///
+/// Served because sprag's grid is the ONE surface no other instrument can see. pinion prices its
+/// own side on `scene/frame_timings`, and sprag R216 read that wire to prove terminal output never
+/// reaches pinion's shaper — true, and only half an answer, because sprag does not paint its cells
+/// through pinion's text path at all. It projects a whole `GridBuffer` per served frame, and what
+/// THAT costs was unmeasurable from outside this process. This slot is that measurement, in the
+/// form the rest of the surface uses: data a peer asks for, not a log line it has to be running to
+/// catch.
+///
+/// Both totals are monotonic since boot, so a reader takes a DELTA across whatever it is pricing.
+pub const GRID_WORK_SLOT: &str = "grid_work";
+
 /// The mux control external invoke action that spawns a pane, returning its id.
 pub const SPAWN_ACTION: &str = "spawn";
 /// The mux control external invoke action that closes a pane.
