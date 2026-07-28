@@ -73,6 +73,11 @@ fn main() -> ExitCode {
             // Needs the client ALIVE — it asks the client what its own last frame cost, so it cannot
             // join the log-reading check below the session kill.
             check_the_frames_report_their_settle_work(&mut smoke, &mut report);
+            // Both need the client alive AND need the run's work already done: one asserts that
+            // mirrors were stored, the other that focus requests were made, and every check above
+            // is what does both. Placed here rather than earlier so neither can pass vacuously.
+            check_the_agent_mirror_settles_like_the_paint(&mut smoke, &mut report);
+            check_sprag_focus_requests_reach_the_re_derive(&mut smoke, &mut report);
             // LAST over the WIRE, and it must stay last: it destroys the session this client is
             // attached to, so the client leaves and every check after it would be asserting against
             // a dead socket.
@@ -726,6 +731,78 @@ fn check_the_frames_report_their_settle_work(smoke: &mut Smoke, report: &mut Rep
     report.check(
         &format!("the last frame settled inside the pass budget (passes: {passes:?}, settled: {settled:?})"),
         passes.is_some_and(|p| (1..=SETTLE_PASS_BUDGET).contains(&p)) && settled == Some(true),
+    );
+}
+
+/// The scene an AGENT reads settled, the same way a painted frame does.
+///
+/// pinion R1465: a stored paint scene ran ONE pass and left its dirty bit unread, so the mirror an
+/// out-of-process reader gets could be a scene a further pass would still have changed — while the
+/// pixels a human saw were settled. sprag is the reason that matters: `scene/snapshot` is how the
+/// CLI, the MCP surface and this smoke see anything at all, so an unsettled mirror is not a
+/// cosmetic difference for us, it is every assertion in this file reading a scene the client had
+/// not finished deriving.
+///
+/// R1465 prices it (`mirror.*`) instead of leaving it a claim, and this is the reader. The order
+/// matters as much as the assertion: `scenes_total` is checked FIRST because `unsettled_total == 0`
+/// is trivially true when no mirror was ever stored, and a smoke that passes by not doing the work
+/// is the failure mode this project keeps re-learning. By the time this runs, every check above has
+/// taken snapshots, so a zero here would itself be the bug.
+fn check_the_agent_mirror_settles_like_the_paint(smoke: &mut Smoke, report: &mut Report) {
+    let timings = match smoke.call("scene/frame_timings", json!({})) {
+        Ok(value) => value,
+        Err(error) => {
+            report.check(
+                &format!("the client prices its mirror work ({error})"),
+                false,
+            );
+            return;
+        }
+    };
+    let mirror = &timings["mirror"];
+    let scenes = mirror["scenes_total"].as_u64().unwrap_or(0);
+    let passes = mirror["passes_total"].as_u64();
+    let unsettled = mirror["unsettled_total"].as_u64();
+    report.check(
+        &format!(
+            "the agent-facing mirror was actually stored ({scenes} scenes, {passes:?} passes)"
+        ),
+        scenes > 0,
+    );
+    report.check(
+        &format!("every scene an agent read had settled ({unsettled:?} unsettled)"),
+        unsettled == Some(0),
+    );
+}
+
+/// sprag's focus REQUESTS reach pinion's re-derive, as a count rather than an inference.
+///
+/// This is the number sprag's R1462 round had to dig out with a temporary `eprintln` in
+/// `reseed_pane_focus`, because a binding can see that it asked for focus and cannot see whether
+/// anything downstream enumerated the windows to honour it. pinion R1464 puts the enumeration's own
+/// total on the wire (R1463 having made the re-derive span every painted window), so the question is
+/// answerable from out here now.
+///
+/// Asserted as PRESENCE, not as a budget. What sprag needs to know is that its requests are not
+/// falling into a path that never runs — the R1462 failure mode exactly, where the palette leg made
+/// no request at all and every downstream fix was therefore irrelevant. A specific count would be
+/// pinning pinion's internals, which is not sprag's to fix if it moves.
+fn check_sprag_focus_requests_reach_the_re_derive(smoke: &mut Smoke, report: &mut Report) {
+    let timings = match smoke.call("scene/frame_timings", json!({})) {
+        Ok(value) => value,
+        Err(error) => {
+            report.check(
+                &format!("the client reports its focus work ({error})"),
+                false,
+            );
+            return;
+        }
+    };
+    let derivations = timings["focus"]["derivations_total"].as_u64();
+    let retries = timings["focus"]["retries_total"].as_u64();
+    report.check(
+        &format!("sprag's focus requests reached the re-derive ({derivations:?} derivations, {retries:?} retries)"),
+        derivations.is_some_and(|total| total > 0),
     );
 }
 
