@@ -5744,6 +5744,50 @@
         "R1464's focus-enumeration totals and R1465's mirror pricing are new scene/frame_timings fields sprag does not read; if a focus or snapshot-staleness question comes back, that wire is already there."
       ]
     },
+    "R214": {
+      "decision_summary": "R214 = the owner rejected the evidence R213 rested on - \"grep and read do not prove it, a test does\" - and testing overturned two of its claims. R213 said the other seven pinion rounds needed no sprag consumption, and it said so from READING commit subjects. Querying scene/frame_timings live instead showed two new blocks sprag was ignoring: mirror{scenes_total,passes_total,shape_misses_total,unsettled_total} from R1465 and focus{derivations_total,retries_total} from R1464. So R1465's \"sprag benefits passively\" was not a passive benefit at all, it was an unread instrument, and the claim that nothing needed consuming was simply wrong. Two smoke checks now read them. The mirror one matters most for sprag specifically: scene/snapshot is how the CLI, the MCP surface and the smoke itself see anything, so an unsettled mirror is not cosmetic here, it is every assertion in the smoke reading a scene the client had not finished deriving - measured 52 scenes stored, 0 unsettled. The focus one turns the number R1462's round dug out with a temporary eprintln into a standing check, asserted as PRESENCE rather than a budget because the R1462 failure mode was a leg that made no request at all. Both are ordered late in the run so neither can pass vacuously, and scenes_total is checked BEFORE unsettled_total because zero-unsettled is trivially true when no mirror was ever stored. Separately, R213's \"SCE unchanged, checked\" rested on grepping pinion's Cargo.toml, which only re-states what was typed; the resolved LOCKFILE is the honest witness, since it is the lock and not the manifest that decides how many copies get linked. Three tests now assert one pinion rev, one SCE rev, and full-length shas.",
+      "changes_bullets": [
+        "sprag-rpc tests/pins.rs: three tests over the resolved Cargo.lock - one pinion revision, one SCE revision, full-length hex shas - turning the \"bump all nine plus SCE\" ritual note into a gate.",
+        "sprag-smoke: check_the_agent_mirror_settles_like_the_paint reads R1465's mirror block (non-vacuity on scenes_total first), and check_sprag_focus_requests_reach_the_re_derive reads R1464's focus block.",
+        "sprag-smoke: a doc comment carried [[R1462]], the memory store's wiki-link syntax, which rustdoc read as an intra-doc link; the doc gate rejected the commit and it is now plain text."
+      ],
+      "verification_bullets": [
+        "Live smoke 66 passed / 0 failed, three runs (was 63) - the three added checks report 52 scenes stored / 0 unsettled and 5 focus derivations, so they carry numbers rather than booleans.",
+        "DETECTOR PROVED on the old pin: rebuilt at c237da6e (with the PR-48 consumption reverted, since it cannot compile there) and all three new checks FAIL with None while the other 63 still pass - so they read R1464/R1465's added fields specifically, not a dead wire.",
+        "Both pin tests revert-proofed by inducing the real fault: leaving one pinion crate at the old rev fails with both revisions named, and drifting the SCE rev fails naming both. The SCE proof exposed a defect in the test's own parser - a lock names a git source with a trailing paren ONLY when two revisions make a name ambiguous, exactly the case the test exists to catch - so it parsed fine every day and mis-diagnosed the one run that mattered. Fixed and re-proved.",
+        "Gates GREEN: fmt, clippy --workspace --all-targets -D warnings, the rustdoc private-items gate, workspace tests 1115 passed / 0 failed (was 1112)."
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "The method lesson generalises past this round: a claim sourced from a commit subject or a manifest read is a hypothesis, and the wire or the lockfile is the witness. R213 shipped two such claims and both were wrong.",
+        "mirror.shape_misses_total and produce.* are still unread; if a snapshot-shape question arises, that wire already exists.",
+        "The pin tests assert CONSISTENCY, not currency - they cannot tell that a pin is stale, only that the nine plus SCE agree with each other."
+      ],
+      "publishable_decision_summary": "R214 = the owner rejected the evidence R213 rested on - \"grep and read do not prove it, a test does\" - and testing overturned two of its claims. R213 said the other seven pinion rounds needed no sprag consumption, and it said so from READING commit subjects. Querying scene/frame_timings live instead showed two new blocks sprag was ignoring: mirror{scenes_total,passes_total,shape_misses_total,unsettled_total} from R1465 and focus{derivations_total,retries_total} from R1464. So R1465's \"sprag benefits passively\" was not a passive benefit at all, it was an unread instrument, and the claim that nothing needed consuming was simply wrong. Two smoke checks now read them. The mirror one matters most for sprag specifically: scene/snapshot is how the CLI, the MCP surface and the smoke itself see anything, so an unsettled mirror is not cosmetic here, it is every assertion in the smoke reading a scene the client had not finished deriving - measured 52 scenes stored, 0 unsettled. The focus one turns the number R1462's round dug out with a temporary eprintln into a standing check, asserted as PRESENCE rather than a budget because the R1462 failure mode was a leg that made no request at all. Both are ordered late in the run so neither can pass vacuously, and scenes_total is checked BEFORE unsettled_total because zero-unsettled is trivially true when no mirror was ever stored. Separately, R213's \"SCE unchanged, checked\" rested on grepping pinion's Cargo.toml, which only re-states what was typed; the resolved LOCKFILE is the honest witness, since it is the lock and not the manifest that decides how many copies get linked. Three tests now assert one pinion rev, one SCE rev, and full-length shas.",
+      "publishable_changes_bullets": [
+        "sprag-rpc tests/pins.rs: three tests over the resolved Cargo.lock - one pinion revision, one SCE revision, full-length hex shas - turning the \"bump all nine plus SCE\" ritual note into a gate.",
+        "sprag-smoke: check_the_agent_mirror_settles_like_the_paint reads R1465's mirror block (non-vacuity on scenes_total first), and check_sprag_focus_requests_reach_the_re_derive reads R1464's focus block.",
+        "sprag-smoke: a doc comment carried [[R1462]], the memory store's wiki-link syntax, which rustdoc read as an intra-doc link; the doc gate rejected the commit and it is now plain text."
+      ],
+      "publishable_verification_bullets": [
+        "Live smoke 66 passed / 0 failed, three runs (was 63) - the three added checks report 52 scenes stored / 0 unsettled and 5 focus derivations, so they carry numbers rather than booleans.",
+        "DETECTOR PROVED on the old pin: rebuilt at c237da6e (with the PR-48 consumption reverted, since it cannot compile there) and all three new checks FAIL with None while the other 63 still pass - so they read R1464/R1465's added fields specifically, not a dead wire.",
+        "Both pin tests revert-proofed by inducing the real fault: leaving one pinion crate at the old rev fails with both revisions named, and drifting the SCE rev fails naming both. The SCE proof exposed a defect in the test's own parser - a lock names a git source with a trailing paren ONLY when two revisions make a name ambiguous, exactly the case the test exists to catch - so it parsed fine every day and mis-diagnosed the one run that mattered. Fixed and re-proved.",
+        "Gates GREEN: fmt, clippy --workspace --all-targets -D warnings, the rustdoc private-items gate, workspace tests 1115 passed / 0 failed (was 1112)."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "The method lesson generalises past this round: a claim sourced from a commit subject or a manifest read is a hypothesis, and the wire or the lockfile is the witness. R213 shipped two such claims and both were wrong.",
+        "mirror.shape_misses_total and produce.* are still unread; if a snapshot-shape question arises, that wire already exists.",
+        "The pin tests assert CONSISTENCY, not currency - they cannot tell that a pin is stale, only that the nine plus SCE agree with each other."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
