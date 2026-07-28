@@ -27,12 +27,39 @@
 //! sprag select-window -t SESSION NAME     make NAME the session's current window
 //! sprag rename-window -t SESSION [win] NEW rename a window (default: the current one) to NEW
 //! sprag kill-window -t SESSION [win]      kill a window (default: the current one); the last ends the session
+//!
+//! sprag panes [-t SESSION]                        list the current window's panes (tmux list-panes)
+//! sprag split-window [-t SESSION] [-- command…]   add a pane to the current window; print its id
+//! sprag kill-pane [-t SESSION] PANE               close a pane (tmux kill-pane)
+//! sprag resize-pane [-t SESSION] PANE -x COLS -y ROWS  resize a pane's PTY + emulator
+//! sprag send-keys [-t SESSION] PANE [-l] KEY…     send W3C key names (or, with -l, literal text)
+//! sprag capture-pane [-t SESSION] PANE [-p]       print a pane's retained output to stdout
 //! ```
 //!
-//! The window commands take a `-t SESSION` target because a window lives IN a session and the
-//! daemon holds several — the same out-of-band `session` scope the GUI sends. They pre-flight the
-//! session's existence (like [`attach`]) so an unknown session is a clean error, then drive the
-//! SCOPED mux window actions.
+//! ## Which commands take `-t`, and why the two answers differ
+//!
+//! A WINDOW command's `-t SESSION` is REQUIRED, because a window lives IN a session, the daemon
+//! holds several, and there is no useful default for "which session's window list did you mean".
+//! They pre-flight the session's existence (like [`attach`]) so an unknown session is a clean
+//! error, then drive the SCOPED mux window actions.
+//!
+//! A PANE command's `-t SESSION` is OPTIONAL, because an unscoped request already HAS a scope —
+//! the daemon's default session ([`sprag_host::wire::SESSION_PARAM`]) — so a one-session workspace
+//! never has to spell it. That is the rule [`find`] and [`run_project`] already followed; the pane
+//! verbs join them rather than inventing a third convention. Both kinds pass the same out-of-band
+//! `session` param the GUI sends, so there is one scoping vocabulary, not a CLI-only one.
+//!
+//! ## What the pane verbs deliberately do NOT offer
+//!
+//! * **`split-window -h` / `-v`.** sprag's `spawn` APPENDS a pane to the window; the direction a
+//!   pane splits in is a layout gesture a display client authors and installs
+//!   ([`sprag_host::wire::SET_LAYOUT_ACTION`]), and the daemon has no "split pane P in direction D"
+//!   op at all. Accepting the flags and ignoring them would be a lie, and authoring the tree here
+//!   would put a second layout author beside the GUI's. So they are REFUSED with the reason.
+//! * **`select-pane`.** There is no active-pane concept in the daemon to select: the pane-input
+//!   `focus` action reports a focus EDGE to the child (DEC private mode 1004) on behalf of a client
+//!   whose own focus moved — it does not make a pane current, and nothing reads such a fact. A
+//!   `select-pane` built on it would send a program a focus-in report while no client focused it.
 //!
 //! It drives the daemon over the SAME always-on socket the GUI connect-or-spawns
 //! (`$XDG_RUNTIME_DIR/sprag-host.sock`, override `SPRAG_HOST_RPC_SOCK`) via the SAME mux
@@ -57,10 +84,10 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    BREAK_PANE_ACTION, CLIENTS_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION,
-    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, RENAME_WINDOW_ACTION,
-    SELECT_WINDOW_ACTION, SESSIONS_SLOT, WINDOWS_SLOT, find_slot_for, project_slot_for,
-    regex_slot_for,
+    BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, FULL_TEXT_SLOT, JOIN_PANE_ACTION, KEY_ACTION,
+    KILL_SESSION_ACTION, KILL_WINDOW_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT,
+    PASTE_ACTION, RENAME_WINDOW_ACTION, RESIZE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
+    SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, find_slot_for, project_slot_for, regex_slot_for,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{HOST_SOCKET, HostConn, socket_path};
@@ -95,6 +122,12 @@ fn run() -> io::Result<()> {
         Some("kill-window") => kill_window(args.collect()),
         Some("break-pane") => break_pane(args.collect()),
         Some("join-pane") => join_pane(args.collect()),
+        Some("panes") => panes(args.collect()),
+        Some("split-window") => split_window(args.collect()),
+        Some("kill-pane") => kill_pane(args.collect()),
+        Some("resize-pane") => resize_pane(args.collect()),
+        Some("send-keys") => send_keys(args.collect()),
+        Some("capture-pane") => capture_pane(args.collect()),
         Some("-h" | "--help" | "help") | None => {
             print_usage();
             Ok(())
@@ -153,29 +186,15 @@ fn run_project(args: Vec<String>) -> io::Result<()> {
     if let Some(session) = &session {
         require_session(&mut conn, session)?;
     }
-    let scoped = |path: String| match &session {
-        Some(name) => json!({ "session": name, "path": path }),
-        None => json!({ "path": path }),
-    };
+    let scoped = |path: String| scoped_params(session.as_deref(), path);
 
     // Resolve the pane to read the project of.
-    let listed: Value = conn.call("scene/query", scoped(mux_action_path(PANES_SLOT)))?;
-    let panes: Vec<u64> = listed
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|pane| pane["id"].as_u64())
-        .collect();
     let pane = match pane {
-        Some(only) if !panes.contains(&only) => {
-            let where_ = session.as_deref().unwrap_or("the current session");
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("run: no pane {only} in {where_} (panes: {panes:?})"),
-            ));
+        Some(only) => {
+            require_pane(&mut conn, session.as_deref(), only, "run")?;
+            only
         }
-        Some(only) => only,
-        None => *panes
+        None => *pane_ids(&mut conn, session.as_deref())?
             .first()
             .ok_or_else(|| bad("run: the window holds no pane".to_owned()))?,
     };
@@ -247,7 +266,10 @@ fn print_usage() {
          \x20             | kill-session NAME | kill-server [--purge]>\n\
          \x20      sprag <windows | new-window [name] | select-window NAME\n\
          \x20             | rename-window [window] NAME | kill-window [window]\n\
-         \x20             | break-pane PANE [name] | join-pane PANE WINDOW> -t SESSION"
+         \x20             | break-pane PANE [name] | join-pane PANE WINDOW> -t SESSION\n\
+         \x20      sprag <panes | split-window [-- command…] | kill-pane PANE\n\
+         \x20             | resize-pane PANE -x COLS -y ROWS\n\
+         \x20             | send-keys PANE [-l] KEY… | capture-pane PANE [-p]> [-t SESSION]"
     );
 }
 
@@ -411,25 +433,10 @@ fn find(args: Vec<String>) -> io::Result<()> {
     if let Some(session) = &session {
         require_session(&mut conn, session)?;
     }
-    let scoped = |path: String| match &session {
-        Some(name) => json!({ "session": name, "path": path }),
-        None => json!({ "path": path }),
-    };
-    let listed: Value = conn.call("scene/query", scoped(mux_action_path(PANES_SLOT)))?;
-    let mut panes: Vec<u64> = listed
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|pane| pane["id"].as_u64())
-        .collect();
+    let scoped = |path: String| scoped_params(session.as_deref(), path);
+    let mut panes = pane_ids(&mut conn, session.as_deref())?;
     if let Some(only) = only {
-        if !panes.contains(&only) {
-            let where_ = session.as_deref().unwrap_or("the current session");
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("find: no pane {only} in {where_} (panes: {panes:?})"),
-            ));
-        }
+        require_pane(&mut conn, session.as_deref(), only, "find")?;
         panes.retain(|pane| *pane == only);
     }
     let mut truncated = false;
@@ -950,6 +957,513 @@ fn target_and_rest(args: Vec<String>, command: &str) -> io::Result<(String, Vec<
     Ok((session, rest))
 }
 
+/// The request params addressing `path`, carrying the out-of-band `session` scope when the caller
+/// named one — the ONE place a scoped request is shaped, so every command spells the scope the same
+/// way the GUI does ([`sprag_host::wire::SESSION_PARAM`]).
+///
+/// `None` sends NO `session` key rather than a name this CLI guessed: absent means "the daemon's
+/// default session", which is a decision the daemon owns and can move, and inventing a name here
+/// would freeze today's answer into the wire.
+fn scoped_params(session: Option<&str>, path: String) -> Value {
+    match session {
+        Some(name) => json!({ "session": name, "path": path }),
+        None => json!({ "path": path }),
+    }
+}
+
+/// [`scoped_params`] plus an action's `args` — the invoke shape, kept beside the query shape so the
+/// two cannot drift.
+fn scoped_invoke(session: Option<&str>, path: String, args: Value) -> Value {
+    let mut params = scoped_params(session, path);
+    params["args"] = args;
+    params
+}
+
+/// Split a PANE-subject subcommand's args into its OPTIONAL `-t SESSION` scope and everything else,
+/// which the verb then parses itself.
+///
+/// The optionality is the whole difference from [`target_and_rest`], and it is principled rather
+/// than lenient: see the module docs' "which commands take `-t`". Scanning STOPS at a bare `--`,
+/// which is passed through with everything after it — a command run in a new pane may perfectly
+/// well contain `-t`, and it belongs to that command, not to this parse.
+fn scope_and_rest(args: Vec<String>, command: &str) -> io::Result<(Option<String>, Vec<String>)> {
+    let mut session = None;
+    let mut rest = Vec::new();
+    let mut it = args.into_iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "-t" | "--target" => {
+                session = Some(it.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("{command}: -t needs a session name"),
+                    )
+                })?);
+            }
+            "--" => {
+                rest.push(arg);
+                rest.extend(it.by_ref());
+            }
+            _ => rest.push(arg),
+        }
+    }
+    Ok((session, rest))
+}
+
+/// Connect, and pre-flight an explicitly named session so a typo is a clean error rather than a
+/// raw scope refusal — the pane verbs' shared opening, mirroring the window verbs'
+/// [`require_session`]. An ABSENT scope is not checked: the default session is whatever the daemon
+/// says it is, and a client that names nothing cannot have named it wrong.
+fn connect_scoped(session: Option<&str>) -> io::Result<HostConn> {
+    let mut conn = connect()?;
+    if let Some(session) = session {
+        require_session(&mut conn, session)?;
+    }
+    Ok(conn)
+}
+
+/// Name the scope in an error message: the session the caller asked for, or the honest stand-in for
+/// the one they did not name.
+fn scope_name(session: Option<&str>) -> &str {
+    session.unwrap_or("the default session")
+}
+
+/// The ids of the panes the scoped session's CURRENT window holds — the one read behind every
+/// pane-id check and the `panes` listing, so a client and the daemon cannot disagree on which panes
+/// are addressable.
+fn pane_ids(conn: &mut HostConn, session: Option<&str>) -> io::Result<Vec<u64>> {
+    let listed: Value = conn.call(
+        "scene/query",
+        scoped_params(session, mux_action_path(PANES_SLOT)),
+    )?;
+    Ok(listed
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|pane| pane["id"].as_u64())
+        .collect())
+}
+
+/// Refuse cleanly if the scoped session's current window holds no pane `pane`, naming what IS
+/// there — the pane-command pre-flight, and the pane-level peer of [`require_session`].
+///
+/// An absent pane is an ERROR rather than an empty result for the same reason `find --pane`'s is:
+/// the caller named a specific pane, and answering as if it were merely quiet would be an answer to
+/// a question they did not ask. It matters most for the verbs that address a pane's OWN external by
+/// path ([`send_keys`], [`capture_pane`]) — there a wrong id is an unknown ADDRESS, whose raw
+/// refusal says nothing about panes, unlike the mux actions' pane-level `Rejected`.
+fn require_pane(
+    conn: &mut HostConn,
+    session: Option<&str>,
+    pane: u64,
+    command: &str,
+) -> io::Result<()> {
+    let panes = pane_ids(conn, session)?;
+    if panes.contains(&pane) {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!(
+            "{command}: no pane {pane} in {} (panes: {panes:?})",
+            scope_name(session)
+        ),
+    ))
+}
+
+/// `panes [-t SESSION]`: one line per pane of the scoped session's CURRENT window — tmux
+/// `list-panes`. `ID: COLSxROWS  COMMAND`, plus the child's own window title in brackets when it
+/// has set one.
+///
+/// The pane ID leads the line because it is what every other pane verb takes, so `sprag panes`
+/// is the discovery step that makes the rest usable from a shell — `cut -d: -f1` yields exactly the
+/// ids they accept. tmux prints a per-window INDEX and marks the active pane; sprag's id is
+/// registry-unique (so it needs no window prefix) and there is no active pane to mark.
+fn panes(args: Vec<String>) -> io::Result<()> {
+    let (session, rest) = scope_and_rest(args, "panes")?;
+    if let Some(other) = rest.first() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("panes: unexpected argument {other:?} (only -t SESSION is accepted)"),
+        ));
+    }
+    let mut conn = connect_scoped(session.as_deref())?;
+    let listed: Value = conn.call(
+        "scene/query",
+        scoped_params(session.as_deref(), mux_action_path(PANES_SLOT)),
+    )?;
+    // The whole entry, not just the id — this is the one command whose subject is the LIST, so it
+    // reads the slot directly rather than through `pane_ids`.
+    for pane in listed.as_array().into_iter().flatten() {
+        let id = pane["id"].as_u64().unwrap_or_default();
+        let cols = pane["cols"].as_u64().unwrap_or(0);
+        let rows = pane["rows"].as_u64().unwrap_or(0);
+        let command = pane["command"].as_str().unwrap_or("?");
+        // The child's live OSC 0/2 title, absent until it sets one — a DISPLAY name, never
+        // identity, so it trails the command rather than replacing it.
+        let title = match pane["title"].as_str() {
+            Some(title) if !title.is_empty() => format!("  [{title}]"),
+            _ => String::new(),
+        };
+        println!("{id}: {cols}x{rows}  {command}{title}");
+    }
+    Ok(())
+}
+
+/// `split-window [-t SESSION] [-- command…]`: add a pane to the scoped session's current window and
+/// print its id — tmux `split-window`, minus the direction it cannot yet mean.
+///
+/// `--` introduces the argv the pane runs; absent, it is born with `$SHELL`, exactly as tmux's
+/// bare `split-window`. The id is printed on stdout because it is the argument every other pane
+/// verb takes, so a script can capture it (`pane=$(sprag split-window)`).
+///
+/// `-h` / `-v` are REFUSED rather than accepted-and-ignored — see the module docs for the reason:
+/// the daemon has no direction-taking split, so honouring the flag would mean authoring a layout
+/// tree here, beside the GUI's. The refusal names the gap so a caller learns what sprag lacks
+/// instead of wondering why their pane landed sideways.
+fn split_window(args: Vec<String>) -> io::Result<()> {
+    let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
+    let (session, rest) = scope_and_rest(args, "split-window")?;
+    let mut command: Option<Vec<String>> = None;
+    let mut it = rest.into_iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--" => command = Some(it.by_ref().collect()),
+            "-h" | "-v" => {
+                return Err(bad(format!(
+                    "split-window: {arg} is not supported — sprag appends the pane to the \
+                     window's tiling, and the direction a pane splits in is a layout gesture a \
+                     display client installs (there is no direction-taking split on the wire)"
+                )));
+            }
+            other => {
+                return Err(bad(format!(
+                    "split-window: unexpected argument {other:?} (a command goes after `--`)"
+                )));
+            }
+        }
+    }
+    let action_args = match &command {
+        Some(command) if command.is_empty() => {
+            return Err(bad("split-window: `--` needs a command".to_owned()));
+        }
+        Some(command) => json!({ "cmd": command }),
+        None => json!({}),
+    };
+    let mut conn = connect_scoped(session.as_deref())?;
+    let answer = conn.call(
+        "scene/invoke",
+        scoped_invoke(
+            session.as_deref(),
+            mux_action_path(SPAWN_ACTION),
+            action_args,
+        ),
+    );
+    match answer {
+        Ok(answer) => match answer.as_u64() {
+            Some(id) => {
+                println!("{id}");
+                Ok(())
+            }
+            None => Err(io::Error::other(
+                "split-window did not answer with a pane id",
+            )),
+        },
+        // The one refusal a well-formed spawn can meet is the OS declining the fork/exec — a
+        // broken `$SHELL`, or an argv it cannot run.
+        Err(error) if error.kind() == io::ErrorKind::Other => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            match &command {
+                Some(command) => {
+                    format!("split-window: the pane's command could not be run: {command:?}")
+                }
+                None => "split-window: the pane's shell could not be run (check $SHELL)".to_owned(),
+            },
+        )),
+        Err(error) => Err(error),
+    }
+}
+
+/// `kill-pane [-t SESSION] PANE`: close the pane with id PANE — tmux `kill-pane`.
+///
+/// Closing the LAST live pane drains the daemon, so the reply can be cut short by its exit; that is
+/// success, the same `server_gone` reading `kill-session` and `kill-window` make.
+fn kill_pane(args: Vec<String>) -> io::Result<()> {
+    let (session, rest) = scope_and_rest(args, "kill-pane")?;
+    let mut rest = rest.into_iter();
+    let pane = parse_pane_id(rest.next(), "kill-pane")?;
+    if let Some(other) = rest.next() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("kill-pane: unexpected argument {other:?}"),
+        ));
+    }
+    let mut conn = connect_scoped(session.as_deref())?;
+    let answer = conn.call(
+        "scene/invoke",
+        scoped_invoke(
+            session.as_deref(),
+            mux_action_path(CLOSE_ACTION),
+            json!({ "id": pane }),
+        ),
+    );
+    match answer {
+        Ok(_) => {
+            println!("killed pane {pane}");
+            Ok(())
+        }
+        Err(error) if server_gone(&error) => {
+            println!("killed pane {pane} (server ended)");
+            Ok(())
+        }
+        // The session was pre-flighted, so the only refusal left is an unknown pane.
+        Err(error) if error.kind() == io::ErrorKind::Other => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "kill-pane: no pane {pane} in {}",
+                scope_name(session.as_deref())
+            ),
+        )),
+        Err(error) => Err(error),
+    }
+}
+
+/// `resize-pane [-t SESSION] PANE -x COLS -y ROWS`: resize a pane's PTY and emulator — tmux
+/// `resize-pane -x -y`.
+///
+/// BOTH dimensions are required, because the wire action takes both and a terminal has no notion of
+/// "the other one, unchanged" that this CLI could honestly supply: reading the pane's current size
+/// and sending it back would race any client resizing the same pane. tmux's relative forms
+/// (`-U`/`-D`/`-L`/`-R`) are absent for the same reason `split-window -h` is — they move a DIVIDER,
+/// which is layout the daemon does not model as an op.
+///
+/// No `cell_width`/`cell_height` is sent: those carry a display's font metric so the PTY's pixel
+/// winsize and XTWINOPS reports are truthful, and a shell has none. Omitting them leaves the pane's
+/// last-known cell geometry untouched, which is the honest answer rather than a zeroed guess.
+fn resize_pane(args: Vec<String>) -> io::Result<()> {
+    let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
+    let (session, rest) = scope_and_rest(args, "resize-pane")?;
+    let mut pane: Option<u64> = None;
+    let mut cols: Option<u64> = None;
+    let mut rows: Option<u64> = None;
+    let mut it = rest.into_iter();
+    while let Some(arg) = it.next() {
+        let mut dimension = |name: &str, flag: &str| -> io::Result<u64> {
+            let value = it
+                .next()
+                .ok_or_else(|| bad(format!("resize-pane: {flag} needs a {name} count")))?;
+            match value.parse::<u64>() {
+                Ok(0) | Err(_) => Err(bad(format!(
+                    "resize-pane: {flag} {value:?} is not a positive {name} count"
+                ))),
+                Ok(count) => Ok(count),
+            }
+        };
+        match arg.as_str() {
+            "-x" | "--width" => cols = Some(dimension("column", "-x")?),
+            "-y" | "--height" => rows = Some(dimension("row", "-y")?),
+            _ if pane.is_none() => pane = Some(parse_pane_id(Some(arg), "resize-pane")?),
+            other => return Err(bad(format!("resize-pane: unexpected argument {other:?}"))),
+        }
+    }
+    let pane = pane.ok_or_else(|| bad("resize-pane needs a pane id".to_owned()))?;
+    let (Some(cols), Some(rows)) = (cols, rows) else {
+        return Err(bad(
+            "resize-pane needs both dimensions (-x COLS -y ROWS)".to_owned()
+        ));
+    };
+    let mut conn = connect_scoped(session.as_deref())?;
+    conn.call(
+        "scene/invoke",
+        scoped_invoke(
+            session.as_deref(),
+            mux_action_path(RESIZE_ACTION),
+            json!({ "id": pane, "cols": cols, "rows": rows }),
+        ),
+    )
+    .map(|_: Value| ())
+    // The session was pre-flighted, so a refusal is an unknown pane or a winsize the kernel
+    // declined — reported together because the wire does not distinguish them.
+    .map_err(|error| {
+        if error.kind() == io::ErrorKind::Other {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "resize-pane: no pane {pane} in {}, or {cols}x{rows} was refused",
+                    scope_name(session.as_deref())
+                ),
+            )
+        } else {
+            error
+        }
+    })?;
+    println!("resized pane {pane} to {cols}x{rows}");
+    Ok(())
+}
+
+/// `send-keys [-t SESSION] PANE [-l] [--] KEY…`: deliver keystrokes to a pane — tmux `send-keys`.
+///
+/// Two languages, chosen by `-l`, exactly as tmux does. By default each argument is a KEY: a W3C
+/// `KeyboardEvent.key` name (`Enter`, `Escape`, `Tab`, `ArrowUp`, `F5`) or a single character, and
+/// tmux's `C-` / `M-` / `S-` prefixes apply modifiers ([`parse_key_token`]) — the host encodes it
+/// against the pane's LIVE input modes (DECCKM, the Kitty protocol, newline mode), which is why the
+/// encoding cannot live here. With `-l` each argument is LITERAL UTF-8, written as typed with no
+/// key lookup and no Enter appended.
+///
+/// A key name the encoder does not recognise is a clean error naming the vocabulary, because the
+/// host rejects it rather than injecting nothing: sending a keystroke that silently vanished is the
+/// one outcome a script cannot detect.
+///
+/// Literal text is sent as `text`, not `paste`: it stands for typing, and only a paste is wrapped
+/// in bracketed-paste markers. `sprag run` remains the command that PASTES, and it says so.
+fn send_keys(args: Vec<String>) -> io::Result<()> {
+    let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
+    let (session, rest) = scope_and_rest(args, "send-keys")?;
+    let mut pane: Option<u64> = None;
+    let mut literal = false;
+    let mut tokens: Vec<String> = Vec::new();
+    let mut it = rest.into_iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "-l" | "--literal" => literal = true,
+            // Everything after `--` is payload, so a literal `-l` or a key named `-t` can be sent.
+            "--" => tokens.extend(it.by_ref()),
+            _ if pane.is_none() => pane = Some(parse_pane_id(Some(arg), "send-keys")?),
+            _ => tokens.push(arg),
+        }
+    }
+    let pane = pane.ok_or_else(|| bad("send-keys needs a pane id".to_owned()))?;
+    if tokens.is_empty() {
+        return Err(bad(format!(
+            "send-keys needs at least one {}",
+            if literal { "string" } else { "key name" }
+        )));
+    }
+    let mut conn = connect_scoped(session.as_deref())?;
+    // This verb addresses the PANE's own external, so a wrong id is an unknown ADDRESS rather than
+    // a pane-level refusal — pre-flight it so the error is about panes.
+    require_pane(&mut conn, session.as_deref(), pane, "send-keys")?;
+    for token in &tokens {
+        let (path, action_args) = if literal {
+            (TEXT_ACTION, json!({ "text": token }))
+        } else {
+            let (key, mods) = parse_key_token(token)?;
+            let (ctrl, alt, shift) = mods;
+            (
+                KEY_ACTION,
+                json!({ "key": key, "ctrl": ctrl, "alt": alt, "shift": shift }),
+            )
+        };
+        conn.call(
+            "scene/invoke",
+            scoped_invoke(session.as_deref(), pane_input_path(pane, path), action_args),
+        )
+        .map(|_: Value| ())
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::Other {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    if literal {
+                        // The pane was pre-flighted and literal text needs no encoding, so the
+                        // only refusal left is the PTY itself declining the write (a child that
+                        // died between the check and this send).
+                        format!("send-keys: pane {pane}'s PTY refused the text {token:?}")
+                    } else {
+                        format!(
+                            "send-keys: pane {pane} refused {token:?} — a key is a W3C key name \
+                             (Enter, Escape, Tab, ArrowUp, F5) or a single character, optionally \
+                             prefixed C- / M- / S-"
+                        )
+                    },
+                )
+            } else {
+                error
+            }
+        })?;
+    }
+    println!(
+        "sent {} {} to pane {pane}",
+        tokens.len(),
+        if literal { "string(s)" } else { "key(s)" }
+    );
+    Ok(())
+}
+
+/// Split a `send-keys` token into its W3C key name and `(ctrl, alt, shift)` modifiers, reading
+/// tmux's `C-` / `M-` / `S-` prefixes.
+///
+/// The prefixes are unambiguous rather than a heuristic: no W3C key name contains a hyphen, so a
+/// leading `C-` can only be the modifier. They stack (`C-M-x`), and the remainder is passed through
+/// UNTRANSLATED — this maps tmux's modifier spelling onto the wire's, and deliberately does not
+/// invent a tmux→W3C name table (`Up` → `ArrowUp` and its ~40 siblings), because a half-right
+/// table would turn a clean "unknown key" refusal into a key the caller did not ask for.
+///
+/// A token that is nothing but prefixes (`C-`) names no key, and is refused here rather than sent
+/// as an empty key the host would reject with less to say.
+fn parse_key_token(token: &str) -> io::Result<(String, (bool, bool, bool))> {
+    let (mut ctrl, mut alt, mut shift) = (false, false, false);
+    let mut rest = token;
+    loop {
+        let flag = match rest.get(..2) {
+            Some("C-") => &mut ctrl,
+            Some("M-") => &mut alt,
+            Some("S-") => &mut shift,
+            _ => break,
+        };
+        *flag = true;
+        rest = &rest[2..];
+    }
+    if rest.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("send-keys: {token:?} names no key (only modifier prefixes)"),
+        ));
+    }
+    Ok((rest.to_owned(), (ctrl, alt, shift)))
+}
+
+/// `capture-pane [-t SESSION] PANE [-p]`: print a pane's retained output — its scrollback and its
+/// visible screen — to stdout. tmux `capture-pane -p`.
+///
+/// **stdout is the only destination, and `-p` is accepted as saying so.** tmux writes to a paste
+/// BUFFER unless `-p` is given, and sprag has no buffers (tmux's `set-buffer` / `paste-buffer` /
+/// `list-buffers` family is unbuilt), so there is nowhere else the output could go. Accepting the
+/// flag costs a tmux user nothing and claims nothing false — what would be false is accepting the
+/// buffer-naming `-b`, which is therefore not accepted.
+///
+/// The text is the host's [`FULL_TEXT_SLOT`], the same read the `read_pane` MCP tool makes, so an
+/// agent and a shell see one definition of what a pane's output IS rather than two.
+fn capture_pane(args: Vec<String>) -> io::Result<()> {
+    let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
+    let (session, rest) = scope_and_rest(args, "capture-pane")?;
+    let mut pane: Option<u64> = None;
+    for arg in rest {
+        match arg.as_str() {
+            // tmux's "print to stdout", which is the only thing this can do; see the doc above.
+            "-p" | "--print" => {}
+            _ if pane.is_none() => pane = Some(parse_pane_id(Some(arg), "capture-pane")?),
+            other => return Err(bad(format!("capture-pane: unexpected argument {other:?}"))),
+        }
+    }
+    let pane = pane.ok_or_else(|| bad("capture-pane needs a pane id".to_owned()))?;
+    let mut conn = connect_scoped(session.as_deref())?;
+    // Pre-flighted like `send-keys` and for the same reason: this addresses the pane's OWN
+    // external, so a wrong id would surface as an unknown address rather than as "no such pane".
+    // Printing nothing and exiting 0 would be worse still — it would claim the pane exists and had
+    // said nothing.
+    require_pane(&mut conn, session.as_deref(), pane, "capture-pane")?;
+    let answer: Value = conn.call(
+        "scene/query",
+        scoped_params(session.as_deref(), pane_input_path(pane, FULL_TEXT_SLOT)),
+    )?;
+    let text = answer.as_str().unwrap_or_default();
+    print!("{text}");
+    if !text.is_empty() && !text.ends_with('\n') {
+        println!();
+    }
+    Ok(())
+}
+
 /// Refuse cleanly if the daemon holds no session named `session` — the window-command pre-flight
 /// (like [`attach`]'s), so an unknown session is a clear error rather than a raw scope-refusal, and
 /// any later action refusal can be reported as the window-level problem it then must be.
@@ -1260,6 +1774,87 @@ mod tests {
         assert_eq!(
             child_sid, pid,
             "it LEADS its own session, which is what makes the hangup unreachable",
+        );
+    }
+
+    /// tmux's modifier spelling maps onto the wire's flags, and the KEY NAME passes through
+    /// untouched — the two halves of [`parse_key_token`]'s contract.
+    ///
+    /// The pass-through is the half worth pinning: `Up` stays `Up` rather than becoming `ArrowUp`,
+    /// because a tmux→W3C name table would have to be right about ~40 names to be worth having, and
+    /// a half-right one turns a clean "unknown key" refusal into a key nobody asked for.
+    #[test]
+    fn a_key_token_reads_tmux_modifier_prefixes_and_keeps_the_name() {
+        assert_eq!(
+            parse_key_token("Enter").unwrap(),
+            ("Enter".to_owned(), (false, false, false)),
+            "an unprefixed token is the key name, verbatim",
+        );
+        assert_eq!(
+            parse_key_token("C-c").unwrap(),
+            ("c".to_owned(), (true, false, false)),
+            "C- is ctrl",
+        );
+        assert_eq!(
+            parse_key_token("M-x").unwrap(),
+            ("x".to_owned(), (false, true, false)),
+            "M- is alt",
+        );
+        assert_eq!(
+            parse_key_token("C-M-S-Tab").unwrap(),
+            ("Tab".to_owned(), (true, true, true)),
+            "the prefixes stack, and the remainder is still a whole key name",
+        );
+        assert_eq!(
+            parse_key_token("Up").unwrap().0,
+            "Up",
+            "no tmux->W3C name translation happens here",
+        );
+    }
+
+    /// A token that is nothing but prefixes names no key, and says so here rather than travelling
+    /// as an empty key the host would refuse with less to say.
+    #[test]
+    fn a_key_token_of_only_modifiers_is_refused_locally() {
+        let error = parse_key_token("C-M-").expect_err("modifiers alone name no key");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(
+            error.to_string().contains("names no key"),
+            "and it says why: {error}",
+        );
+    }
+
+    /// `-t` is OPTIONAL for a pane command (the module docs' rule), and everything after a bare
+    /// `--` is payload — so a command run in a new pane may contain `-t` without this parse
+    /// claiming it.
+    #[test]
+    fn a_pane_commands_scope_is_optional_and_stops_at_a_double_dash() {
+        let split = |args: &[&str]| {
+            scope_and_rest(args.iter().map(|a| (*a).to_owned()).collect(), "test").unwrap()
+        };
+
+        assert_eq!(
+            split(&["7"]),
+            (None, vec!["7".to_owned()]),
+            "no -t is the default scope, not an error",
+        );
+        assert_eq!(
+            split(&["-t", "work", "7"]),
+            (Some("work".to_owned()), vec!["7".to_owned()]),
+            "a named scope is taken out of the positionals",
+        );
+        assert_eq!(
+            split(&["-t", "work", "--", "ssh", "-t", "host"]),
+            (
+                Some("work".to_owned()),
+                vec![
+                    "--".to_owned(),
+                    "ssh".to_owned(),
+                    "-t".to_owned(),
+                    "host".to_owned()
+                ]
+            ),
+            "the -t AFTER `--` belongs to the command being run, not to this parse",
         );
     }
 }

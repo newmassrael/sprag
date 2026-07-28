@@ -1435,3 +1435,236 @@ fn wait_for_pane_text(sock: &Path, needle: &str) -> String {
     }
     panic!("pane 0 never showed {needle:?}; last text was {last:?}");
 }
+
+/// The pane lifecycle over the CLI: list, split, list again, kill, and the refusals on either side
+/// of it. Drives the real daemon, so a break in the wire vocabulary these verbs share with it —
+/// `spawn`, `close`, the `panes` slot — fails here rather than in someone's shell.
+///
+/// The listing is checked for the SHAPE a script slices (`ID: COLSxROWS  COMMAND`), not just for
+/// the id being present: `cut -d: -f1` is the documented way to feed these ids to the other verbs,
+/// so the colon is part of the contract.
+#[test]
+fn the_cli_splits_lists_and_kills_panes_over_the_socket() {
+    let (_host, sock) = spawn_host();
+
+    // The boot window holds exactly its one pane, listed id-first.
+    let listed = sprag(&sock, &["panes"]);
+    assert!(listed.ok, "panes succeeded: {}", listed.stderr);
+    let first: Vec<&str> = listed.stdout.lines().collect();
+    assert_eq!(first.len(), 1, "one boot pane: {:?}", listed.stdout);
+    assert!(
+        first[0].starts_with("0: ") && first[0].contains('x') && first[0].contains("cat"),
+        "ID: COLSxROWS  COMMAND: {:?}",
+        first[0],
+    );
+    // The scope is OPTIONAL for a pane command, and naming it explicitly means the same thing.
+    assert_eq!(
+        sprag(&sock, &["panes", "-t", "0"]).stdout,
+        listed.stdout,
+        "-t 0 and the default scope are the same session here",
+    );
+
+    // split-window: a new pane in the same window, its id printed for a script to capture.
+    let split = sprag(&sock, &["split-window", "--", "cat"]);
+    assert!(split.ok, "split-window succeeded: {}", split.stderr);
+    let new_pane = split.stdout.trim().to_owned();
+    assert!(
+        new_pane.parse::<u64>().is_ok(),
+        "it prints the new pane id: {new_pane:?}",
+    );
+    let listed = sprag(&sock, &["panes"]);
+    assert_eq!(
+        listed.stdout.lines().count(),
+        2,
+        "the window now holds two panes: {:?}",
+        listed.stdout,
+    );
+    assert!(
+        listed
+            .stdout
+            .lines()
+            .any(|line| line.starts_with(&format!("{new_pane}: "))),
+        "including the one just made: {:?}",
+        listed.stdout,
+    );
+
+    // kill-pane: it goes, and the boot pane stays.
+    let killed = sprag(&sock, &["kill-pane", &new_pane]);
+    assert!(killed.ok, "kill-pane succeeded: {}", killed.stderr);
+    assert!(
+        killed.stdout.contains(&format!("killed pane {new_pane}")),
+        "it confirms which: {:?}",
+        killed.stdout,
+    );
+    let listed = sprag(&sock, &["panes"]);
+    assert_eq!(
+        listed.stdout.lines().count(),
+        1,
+        "back to the boot pane: {:?}",
+        listed.stdout,
+    );
+
+    // Killing it again is a clean "no such pane", not a silent success.
+    let again = sprag(&sock, &["kill-pane", &new_pane]);
+    assert!(!again.ok, "a second kill fails");
+    assert!(
+        again.stderr.contains(&format!("no pane {new_pane}")),
+        "and names the miss: {}",
+        again.stderr,
+    );
+
+    // Argument errors are local, before any request goes out.
+    let noid = sprag(&sock, &["kill-pane"]);
+    assert!(
+        !noid.ok && noid.stderr.contains("needs a pane id"),
+        "arg error: {}",
+        noid.stderr,
+    );
+}
+
+/// `split-window -h` / `-v` are REFUSED, and the refusal names the gap.
+///
+/// This is the honesty guard for the whole verb: sprag has no direction-taking split, so the two
+/// wrong answers are accepting the flag and ignoring it (the pane lands somewhere the caller did
+/// not ask for, silently) or authoring a layout tree in the CLI (a second layout author beside the
+/// GUI's). Revert-proof by construction — make either flag a no-op and this fails.
+#[test]
+fn split_window_refuses_a_direction_flag_and_says_why() {
+    let (_host, sock) = spawn_host();
+    for flag in ["-h", "-v"] {
+        let run = sprag(&sock, &["split-window", flag]);
+        assert!(!run.ok, "{flag} is refused, not ignored");
+        assert!(
+            run.stderr.contains("direction") && run.stderr.contains("layout"),
+            "and the refusal names the gap: {}",
+            run.stderr,
+        );
+        assert_eq!(
+            sprag(&sock, &["panes"]).stdout.lines().count(),
+            1,
+            "a refused split spawns nothing",
+        );
+    }
+}
+
+/// `resize-pane -x -y` reaches the pane's PTY: the daemon reports the new geometry back through
+/// the same `panes` slot the listing reads.
+///
+/// Both dimensions are required, and a zero is refused — the two argument rules that keep this
+/// verb from sending a size no terminal can hold.
+#[test]
+fn the_cli_resizes_a_pane_and_the_daemon_reports_the_new_size() {
+    let (_host, sock) = spawn_host();
+
+    let resized = sprag(&sock, &["resize-pane", "0", "-x", "100", "-y", "30"]);
+    assert!(resized.ok, "resize-pane succeeded: {}", resized.stderr);
+    assert!(
+        sprag(&sock, &["panes"]).stdout.contains("100x30"),
+        "the daemon reports the new size: {:?}",
+        sprag(&sock, &["panes"]).stdout,
+    );
+
+    // One dimension is not enough: there is no honest "the other one, unchanged" to send.
+    let half = sprag(&sock, &["resize-pane", "0", "-x", "80"]);
+    assert!(!half.ok, "one dimension is refused");
+    assert!(
+        half.stderr.contains("both dimensions"),
+        "and says so: {}",
+        half.stderr,
+    );
+
+    // A zero column count is not a resize; it is rejected locally.
+    let zero = sprag(&sock, &["resize-pane", "0", "-x", "0", "-y", "30"]);
+    assert!(!zero.ok, "a zero dimension is refused");
+    assert!(
+        zero.stderr.contains("positive"),
+        "with a clear reason: {}",
+        zero.stderr,
+    );
+
+    // An absent pane names what IS there rather than failing obscurely.
+    let ghost = sprag(&sock, &["resize-pane", "9999", "-x", "80", "-y", "24"]);
+    assert!(
+        !ghost.ok && ghost.stderr.contains("9999"),
+        "an absent pane fails, naming it: {}",
+        ghost.stderr,
+    );
+}
+
+/// The strongest chain the CLI can prove without a display: `send-keys` reaches the pane's CHILD
+/// through the real PTY, and `capture-pane` reads back what the child did with it.
+///
+/// The fixture is `cat`, which makes the two languages distinguishable. Literal text is ECHOED by
+/// the terminal once, and stays one copy while the line is unfinished; the `Enter` KEY completes
+/// `cat`'s line-buffered read, so it writes the line back and a SECOND copy appears. One assertion
+/// therefore separates "the text arrived" from "the keystroke arrived", which a single combined
+/// send could not. (The same mechanism `sprag run`'s test relies on, read in the other direction.)
+#[test]
+fn send_keys_reaches_the_child_and_capture_pane_reads_it_back() {
+    let (_host, sock) = spawn_host();
+
+    // -l: literal text, typed, no Enter appended.
+    let typed = sprag(&sock, &["send-keys", "0", "-l", "marker-one"]);
+    assert!(typed.ok, "send-keys -l succeeded: {}", typed.stderr);
+    let echoed = wait_for_pane_text(&sock, "marker-one");
+    assert_eq!(
+        echoed.matches("marker-one").count(),
+        1,
+        "the terminal echoed it once and `cat` has not seen a line yet: {echoed:?}",
+    );
+
+    // capture-pane reads the same text the daemon holds, through the CLI.
+    let captured = sprag(&sock, &["capture-pane", "0"]);
+    assert!(captured.ok, "capture-pane succeeded: {}", captured.stderr);
+    assert!(
+        captured.stdout.contains("marker-one"),
+        "capture-pane prints the pane's output: {:?}",
+        captured.stdout,
+    );
+    // tmux's `-p` says "to stdout", which is the only thing this can do — same output.
+    assert_eq!(
+        sprag(&sock, &["capture-pane", "0", "-p"]).stdout,
+        captured.stdout,
+        "-p is accepted and means what it says",
+    );
+
+    // The KEY language: Enter finishes the line, so `cat` writes it back and a second copy lands.
+    let entered = sprag(&sock, &["send-keys", "0", "Enter"]);
+    assert!(entered.ok, "send-keys Enter succeeded: {}", entered.stderr);
+    let doubled = wait_for(Duration::from_secs(5), || {
+        sprag(&sock, &["capture-pane", "0"])
+            .stdout
+            .matches("marker-one")
+            .count()
+            == 2
+    });
+    assert!(
+        doubled,
+        "the Enter reached the child, which echoed the line back: {:?}",
+        sprag(&sock, &["capture-pane", "0"]).stdout,
+    );
+
+    // A key name the encoder does not know is a clean refusal naming the vocabulary — never a
+    // keystroke that silently vanished, which is the one outcome a script cannot detect.
+    let unknown = sprag(&sock, &["send-keys", "0", "NotAKey"]);
+    assert!(!unknown.ok, "an unknown key name fails");
+    assert!(
+        unknown.stderr.contains("W3C key name"),
+        "and names the vocabulary: {}",
+        unknown.stderr,
+    );
+
+    // Both pane-addressed verbs pre-flight the id, so a wrong one is about PANES, not addresses.
+    for args in [
+        vec!["send-keys", "9999", "Enter"],
+        vec!["capture-pane", "9999"],
+    ] {
+        let ghost = sprag(&sock, &args);
+        assert!(!ghost.ok, "{args:?} fails on an absent pane");
+        assert!(
+            ghost.stderr.contains("no pane 9999"),
+            "naming it: {}",
+            ghost.stderr,
+        );
+    }
+}
