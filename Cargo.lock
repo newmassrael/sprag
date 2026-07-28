@@ -3609,6 +3609,7 @@ version = "0.0.1"
 dependencies = [
  "pinion-core",
  "serde",
+ "serde_json",
  "sprag-vt",
 ]
 

@@ -23,6 +23,12 @@ use sprag_vt::{
     UnderlineStyle, Width,
 };
 
+// The other direction of the same boundary — how a projected `GridBuffer` is written to and read
+// from the wire. Documented in the module itself and NOT here: an outer doc comment on the
+// declaration merges into the module's own docs and drags the whole merged block's link resolution
+// into THIS scope, so every `[`decode`]` inside wire.rs would break.
+pub mod wire;
+
 /// How many whole-screen projections have run, process-wide.
 static PROJECTIONS: AtomicU64 = AtomicU64::new(0);
 /// How many CELLS those projections came to, process-wide.

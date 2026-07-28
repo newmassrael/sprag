@@ -313,7 +313,16 @@ impl SpragPaneExternal {
 /// SSOT the R116 review established for the facts, here extended to the envelope).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CellFrame {
-    /// The projected paint-authoritative cell buffer (serde-able since PINION-PR49).
+    /// The projected paint-authoritative cell buffer (serde-able since PINION-PR49), written in
+    /// [`sprag_grid::wire`]'s run-length form rather than through its derived `Serialize`.
+    ///
+    /// The derived shape spells every cell in full — R221 measured it at **297 bytes per cell,
+    /// 570,583 for one 80x24 pane** — and the reply's size is what the request's time is made of:
+    /// building the `serde_json::Value` for it cost 2.2-3.0 ms of a ~4 ms fetch, because a DOM's
+    /// cost is its node count. The attribute changes only how the field crosses the wire; the
+    /// field is the same [`GridBuffer`] to every reader on both ends, so nothing downstream of
+    /// here knows the difference.
+    #[serde(with = "sprag_grid::wire")]
     pub cells: GridBuffer,
     /// The non-cell per-frame facts, flattened so `scrollback_len` / `visible_rows`
     /// are top-level wire keys (their names come from [`PaneScrollFacts`], the SSOT).

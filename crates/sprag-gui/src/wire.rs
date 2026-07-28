@@ -2158,11 +2158,27 @@ fn boot_panes(
 /// aborting; the caller's [`merge_panes`] then drops a frameless NEWCOMER (retried next
 /// wake) or keeps a SURVIVOR's last frame, so the client never mirrors a frameless pane and
 /// [`pane_ids`](HostClient::pane_ids) omits it until it has one.
+///
+/// A frame the host answered but this client could not READ is reported at a different level,
+/// because it is a different fact. The tolerated case is transient and self-correcting: the pane
+/// closed, the next wake will not ask about it. A payload that does not deserialize means the two
+/// ends disagree about the frame's wire shape — which sprag has no protocol version handshake to
+/// catch — and it is neither transient nor self-correcting: every wake will fail the same way and
+/// the window will show nothing at all. Logging both at `debug` made the second one look like the
+/// first, so the shape change in R222 that made the skew reachable is the reason for the split.
 fn fetch_frames(conn: &mut HostConn, ids: &[PaneId]) -> Vec<(PaneId, CellFrame)> {
     let mut fetched = Vec::with_capacity(ids.len());
     for &id in ids {
         match fetch_frame(conn, id.0) {
             Ok(frame) => fetched.push((id, frame)),
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => tracing::error!(
+                target: "sprag_gui::wire",
+                pane = id.0,
+                %error,
+                "pane frame did not deserialize; this client and the running daemon disagree \
+                 about the frame's wire shape (a daemon older than this build will not be \
+                 readable — restart it), so no pane will be mirrored",
+            ),
             Err(error) => tracing::debug!(
                 target: "sprag_gui::wire",
                 pane = id.0,

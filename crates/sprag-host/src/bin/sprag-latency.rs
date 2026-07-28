@@ -263,7 +263,7 @@ fn paired(
     let subject = measure(body);
     let bytes = bytes.map_or_else(|| "-".to_string(), |count| count.to_string());
     println!(
-        "{name:<36} {:>10.3} {:>10.3} {:>9.2} {:>7} {:>8} {:>8.3}",
+        "{name:<38} {:>10.3} {:>10.3} {:>9.2} {:>7} {:>8} {:>8.3}",
         micros(subject.min),
         micros(subject.median),
         subject.min.as_secs_f64() / control.min.as_secs_f64(),
@@ -404,7 +404,7 @@ fn main() -> ExitCode {
          that walks memory, a machine-scale rather than a precision claim for a row that allocates.\n"
     );
     println!(
-        "{:<36} {:>10} {:>10} {:>9} {:>7} {:>8} {:>8}",
+        "{:<38} {:>10} {:>10} {:>9} {:>7} {:>8} {:>8}",
         "subject", "min us", "med us", "xctl", "reps", "bytes", "% frame"
     );
 
@@ -471,6 +471,30 @@ fn main() -> ExitCode {
         encode_bytes,
         || {
             black_box(serde_json::to_string(black_box(&frame)).expect("a frame encodes"));
+        },
+    );
+
+    // THE COMPARISON R222 EXISTS FOR, and it is taken INSIDE one run because that is the only
+    // reproducible quantity this instrument has: the same cells encoded through pinion's derived
+    // `Serialize` — the shape `cells.<offset>` answered until R222 — against the run-length form
+    // it answers in now. Like for like: both are the grid alone, without the frame's facts.
+    let derived = serde_json::to_string(&frame.cells).expect("a buffer encodes");
+    let compact = serde_json::to_string(&sprag_grid::wire::encode(&frame.cells))
+        .expect("a wire form encodes");
+    let derived_to_string = paired(
+        "serde_json::to_string (pre-R222 cells)",
+        &mut controls,
+        Some(derived.len()),
+        || {
+            black_box(serde_json::to_string(black_box(&frame.cells)).expect("a buffer encodes"));
+        },
+    );
+    let derived_to_value = paired(
+        "serde_json::to_value (pre-R222 cells)",
+        &mut controls,
+        Some(derived.len()),
+        || {
+            black_box(serde_json::to_value(black_box(&frame.cells)).expect("a buffer serialises"));
         },
     );
 
@@ -550,6 +574,35 @@ fn main() -> ExitCode {
         encoded.len() as f64 / cells_in_pane as f64,
     );
     println!("    {}...", &encoded[..encoded.len().min(150)]);
+
+    println!("\nMEASURED — R222's encoding against the one it replaced, both taken in THIS run:");
+    println!(
+        "  pre-R222, pinion's derived cell shape: {:>7} bytes, {:>3.0} per cell",
+        derived.len(),
+        derived.len() as f64 / cells_in_pane as f64,
+    );
+    println!(
+        "  now, the run-length form:              {:>7} bytes, {:>3.0} per cell  -> {:.0}x smaller",
+        compact.len(),
+        compact.len() as f64 / cells_in_pane as f64,
+        derived.len() as f64 / compact.len() as f64,
+    );
+    println!(
+        "  the DOM that size is paid through:     {:>7.1} us -> {:>5.1} us     -> {:.0}x cheaper",
+        micros(derived_to_value.min),
+        micros(to_value.min),
+        derived_to_value.min.as_secs_f64() / to_value.min.as_secs_f64(),
+    );
+    println!(
+        "  printing the cells alone:              {:>7.1} us -> {:>5.1} us     -> {:.0}x cheaper",
+        micros(derived_to_string.min),
+        micros(direct_to_string.min),
+        derived_to_string.min.as_secs_f64() / direct_to_string.min.as_secs_f64(),
+    );
+    println!(
+        "  BYTES ARE COUNTS and repeat to the digit; the two microsecond rows are ratios taken\n  \
+         inside one run, which is the only form a duration on this box survives in."
+    );
 
     println!("\nMEASURED — a display client's poll wake over {PANE_COUNT} panes, one changed:");
     budget("now: panes slot + 1 cells fetch", panes.min + cells.min);

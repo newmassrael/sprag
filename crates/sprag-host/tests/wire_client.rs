@@ -22,7 +22,7 @@ use sprag_host::wire::{
     SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
     project_slot_for,
 };
-use sprag_host::{mux_action_path, pane_input_path};
+use sprag_host::{CellFrame, mux_action_path, pane_input_path};
 use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn};
 
 /// Kills + reaps the spawned host on scope exit (including a test panic), so a failed
@@ -133,9 +133,12 @@ fn wire_client_drives_a_real_sprag_term_host() {
         frame["visible_rows"], 6,
         "visible rows = the boot size: {frame}"
     );
-    let cells: pinion_core::GridBuffer =
-        serde_json::from_value(frame["cells"].clone()).expect("cells deserialize to a GridBuffer");
-    assert_eq!((cells.cols(), cells.rows()), (40, 6));
+    // Read back through the ONE shared type rather than by reaching into `cells` with pinion's own
+    // deserializer: the grid's wire shape is `sprag_grid::wire`'s since R222, and a test that
+    // spells it a second time is testing a shape nothing on the real path uses.
+    let frame: CellFrame =
+        serde_json::from_value(frame).expect("the frame deserializes through the one wire type");
+    assert_eq!((frame.cells.cols(), frame.cells.rows()), (40, 6));
 
     // The livelock regression guard (R152): reading the live frame must NOT advance the
     // scene revision. The poll loop re-reads this frame on every `scene/waitFor` wake, so

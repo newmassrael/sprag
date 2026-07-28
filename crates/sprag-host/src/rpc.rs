@@ -2701,32 +2701,54 @@ mod tests {
         );
     }
 
+    /// The reply to a `cells.<offset>` query, read back through the ONE wire type both ends
+    /// share — the same [`CellFrame`](crate::CellFrame) `sprag-gui`'s `WireHost` deserializes.
+    ///
+    /// Deliberately NOT `serde_json::from_value::<GridBuffer>(result["cells"])`: that reaches past
+    /// the frame's own definition and spells the grid's wire shape a second time, which is exactly
+    /// what broke when R222 replaced that shape with a run-length encoding. Going through
+    /// `CellFrame` means the host end and the client end of this test are the same code the
+    /// daemon and the display client are.
+    fn cells_frame_typed(state: &HostState, offset: usize) -> crate::CellFrame {
+        let answer = cells_frame(state, offset);
+        assert!(answer.get("error").is_none(), "frame error: {answer}");
+        serde_json::from_value(answer["result"].clone())
+            .expect("the frame deserializes through the one wire type")
+    }
+
     #[test]
     fn the_cells_family_returns_a_deserializable_grid_frame() {
-        // The wire client's per-frame read: `cells.0` returns a JSON frame whose `cells`
-        // deserialize back into the EXACT GridBuffer the host projected (PR-49 round-trip),
-        // carrying the pane content, plus the scroll facts that ride with it.
+        // The wire client's per-frame read: `cells.0` returns a JSON frame that deserializes back
+        // into the EXACT GridBuffer the host projected, carrying the pane content, plus the scroll
+        // facts that ride with it as top-level keys.
         let state = host_with("printf hi", 20, 4);
         wait_for_pane0_eof(&state);
-        let frame = cells_frame(&state, 0);
-        assert!(frame.get("error").is_none(), "frame error: {frame}");
-        let result = &frame["result"];
+        let answer = cells_frame(&state, 0);
+        assert!(answer.get("error").is_none(), "frame error: {answer}");
+        let result = &answer["result"];
+        // The facts are asserted on the RAW keys, because being top-level is the whole of what
+        // `#[serde(flatten)]` buys and a typed read would not notice it moving.
         assert!(
             result["scrollback_len"].is_u64(),
             "scroll facts present: {result}"
         );
         assert_eq!(result["visible_rows"], 4);
 
-        let cells: pinion_core::GridBuffer = serde_json::from_value(result["cells"].clone())
-            .expect("GridBuffer deserializes off the wire");
+        let frame = cells_frame_typed(&state, 0);
         assert_eq!(
-            (cells.cols(), cells.rows()),
+            (frame.cells.cols(), frame.cells.rows()),
             (20, 4),
             "buffer dims match the pane"
         );
         // "hi" is on row 0 — the wire buffer carries the exact projected content.
-        assert_eq!(cells.cell(0, 0).map(|c| c.cluster.as_ref()), Some("h"));
-        assert_eq!(cells.cell(1, 0).map(|c| c.cluster.as_ref()), Some("i"));
+        assert_eq!(
+            frame.cells.cell(0, 0).map(|c| c.cluster.as_ref()),
+            Some("h")
+        );
+        assert_eq!(
+            frame.cells.cell(1, 0).map(|c| c.cluster.as_ref()),
+            Some("i")
+        );
     }
 
     #[test]
@@ -2737,20 +2759,15 @@ mod tests {
         let state = host_with("seq 1 40", 20, 4);
         wait_for_pane0_eof(&state);
 
-        let live = cells_frame(&state, 0);
+        let live = cells_frame_typed(&state, 0);
         assert!(
-            live["result"]["scrollback_len"].as_u64().unwrap() > 0,
-            "lines scrolled off into history: {live}",
+            live.facts.scrollback_len > 0,
+            "lines scrolled off into history",
         );
-        let live_cells: pinion_core::GridBuffer =
-            serde_json::from_value(live["result"]["cells"].clone()).unwrap();
-
-        let scrolled = cells_frame(&state, 20);
-        let scrolled_cells: pinion_core::GridBuffer =
-            serde_json::from_value(scrolled["result"]["cells"].clone()).unwrap();
 
         assert_ne!(
-            live_cells, scrolled_cells,
+            live.cells,
+            cells_frame_typed(&state, 20).cells,
             "a scrollback offset changes the projected buffer",
         );
     }
