@@ -43,8 +43,8 @@
 //! `pinion-shell` `compute_paint_scene_internal`, "R1021 … published for EVERY painted
 //! window"), so the floated pane's existing [`crate::reflow`] Effect (it subscribes to
 //! `use_pane_viewport_size(pane_tag(i))`) fires on the secondary window's rect and
-//! `TIOCSWINSZ`-reflows the PTY. This is the consumer of
-//! `claudedocs/PINION-PR10-PER-WINDOW-VIEWPORT.md` (DELIVERED). R74 wraps the lone pane
+//! `TIOCSWINSZ`-reflows the PTY. This is the consumer of that ungating, delivered as
+//! pinion R1021 (requested as PINION-PR10). R74 wraps the lone pane
 //! in a [`view_dock_panel`](pinion_widget_paint::dock::view_dock_panel) header (the
 //! drag-back source) with its content given a definite extent via `view`'s
 //! `fill_definite_shrinkable`. **WIDTH and HEIGHT both reflow, including BELOW the pane's
@@ -63,8 +63,8 @@
 //! reflows larger) AND SHRINK it below the open size (reflows smaller) — both axes.
 //! `Fixed` would pin the floor at the open size (shrink blocked); `OpenResizable`
 //! decouples the open size from the floor, which is what a plain resizable window
-//! wants. This consumes `claudedocs/PINION-PR23-RESIZABLE-WINDOW-MIN-FLOOR.md`
-//! (DELIVERED as pinion R1059). Verified end-to-end with the live-surface capture
+//! wants. This consumes pinion R1059 (requested as PINION-PR23), whose `min_inner_floor`
+//! SSOT is what decouples the two. Verified end-to-end with the live-surface capture
 //! `scene/screenshot` (PINION-PR24, R1060–R1062): an undock window grown to 600×900
 //! and shrunk to 300×360 reflows + renders with no white slack.
 

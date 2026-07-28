@@ -151,7 +151,7 @@
       "rationale_bullets": [
         "pinion 5.41 (d9f8d39) delivered the TextGrid data model and scene/snapshot introspection",
         "The hard blocker (cell-grid primitive) is resolved; remaining work is the sprag-side connection",
-        "Human-readable detail lives in claudedocs/PINION-REQUIREMENTS.md as a derived artifact"
+        "Round-by-round detail lives in this store's own changelog, backfilled through R208"
       ],
       "caveats_bullets": [
         "Delivered R1.1-1.3/1.5/1.7 and winsize R1.4; deferred scrollback, glyph paint R1.6, hit-test R1.8",
@@ -164,7 +164,10 @@
         "R17 reconciled the AI layer: RunContext cancel seam, poll_until, cost guardrail, lossless capture.",
         "R18-R20: real token cost (raw-stdout tap); AgentReply rename; Dialogue --resume (~half tokens).",
         "R21: typed Cost{Bytes,Tokens} (one unit/plugin, byte proxy retired); PaneRawCapture sub-trait.",
-        "pinion R1.6 GPU glyph paint LANDED (R991); sprag windowed-host pending (cursor + TUI gaps)."
+        "pinion R1.6 GPU glyph paint LANDED (R991); sprag windowed-host pending (cursor + TUI gaps).",
+        "UPSTREAM OPEN: PINION-PR48 socket-disabled-at-bind, MINOR; sprag needs no workaround",
+        "UPSTREAM OPEN: PINION-PR71 TextGrid has no hyperlink hover/click; sprag ships its own oracle",
+        "UPSTREAM OPEN: MNEMO-GAP-002 a slash is eaten into a section id; sprag spaces the pair"
       ],
       "alternatives_rejected": [
         {
