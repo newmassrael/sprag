@@ -33,7 +33,8 @@ sprag-rpc = { workspace = true }
 # SIGINT/SIGTERM graceful shutdown in the server binary (cancel+join runs).
 signal-hook = { workspace = true }
 # `--daemon` self-daemonize (fork/setsid), stdio redirect, and the single-instance
-# advisory flock in the server binary. Unix-only, matching the rest of the host.
+# advisory flock in the server binary; and the `sprag` CLI's `setsid` before `exec`, so the
+# window `attach` launches outlives the terminal that ran it. Unix-only, matching the host.
 libc = { workspace = true }
 # Production logging facade (level/target control). The library emits events; the
 # frontend (GUI) and now the `sprag-term` daemon install the subscriber.

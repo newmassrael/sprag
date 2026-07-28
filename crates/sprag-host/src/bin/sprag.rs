@@ -48,7 +48,9 @@
 #![allow(rustdoc::private_intra_doc_links)]
 
 use std::io;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
+use std::process::Command;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -623,7 +625,8 @@ fn ssh(args: Vec<String>) -> io::Result<()> {
 /// it `SPRAG_GUI_SESSION=NAME` (the attach env its `resolve_session` consumes → adopt the session's
 /// live panes) and `SPRAG_GUI_HOST_SOCK` pinned to the EXACT socket this CLI reached — so the
 /// window joins the daemon we just checked, never a different default it might connect-or-spawn.
-/// Foreground (tmux's attach holds the terminal until the client leaves); background it with `&`.
+/// Foreground (tmux's attach holds the terminal until the client leaves), but the window runs in
+/// a session of its OWN ([`own_session`]) — closing that terminal must not close the window.
 fn attach(name: Option<String>) -> io::Result<()> {
     let name = name.ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "attach needs a session name")
@@ -638,17 +641,57 @@ fn attach(name: Option<String>) -> io::Result<()> {
     }
     // Hand the window the session to adopt and the exact socket we reached; do NOT let it fall
     // back to its own default, which could be a different daemon.
-    let status = std::process::Command::new(gui_bin())
+    let mut command = Command::new(gui_bin());
+    command
         .env("SPRAG_GUI_SESSION", &name)
-        .env("SPRAG_GUI_HOST_SOCK", &sock)
-        .status()
-        .map_err(|error| {
-            io::Error::new(error.kind(), format!("could not launch sprag-gui: {error}"))
-        })?;
+        .env("SPRAG_GUI_HOST_SOCK", &sock);
+    let status = own_session(&mut command).status().map_err(|error| {
+        io::Error::new(error.kind(), format!("could not launch sprag-gui: {error}"))
+    })?;
     if status.success() {
         Ok(())
     } else {
         Err(io::Error::other(format!("sprag-gui exited with {status}")))
+    }
+}
+
+/// Give `cmd`'s child a session of its own (`setsid` between `fork` and `exec`), so a hangup on
+/// the terminal that ran this CLI cannot reach it.
+///
+/// A tty hangup SIGHUPs the foreground process group of that tty's session, and a plain spawn
+/// leaves the child sitting in it — so closing the launching terminal killed a window the user
+/// never asked to close, while the session it viewed lived on in the daemon. Two windows, and
+/// shutting one destroyed the other: tmux is spared this only because its client IS the terminal,
+/// so there is just the one.
+///
+/// MEASURED against a real PTY hangup: before, the window died 5/5 within 0.1s of the hangup;
+/// after, it survived 4/4 across a 20s watch AND was still an ATTACHED CLIENT of the daemon
+/// (`sprag list-clients`) — alive as a client, not merely undead as a process. Changing only this
+/// call in an otherwise identical harness flipped the outcome, so it is the whole cause.
+///
+/// The window is not detached in any OTHER way, on purpose. It keeps the inherited stdio, so a
+/// window that fails to come up still says so where the user is looking, and the CLI still blocks
+/// on it, so a window that dies is still reported as this command's failure. What it gives up is
+/// the launching terminal's job control — Ctrl-C there no longer reaches the window, because that
+/// too is addressed to the tty's foreground group.
+///
+/// The third spawn site to want this and the only one that lacked it: `sprag-term`'s `daemonize`
+/// claims a session as its first act, and a pane's child gets one from `portable-pty` before
+/// `exec` (`sprag_terminal::pane_pty`, which relies on it to address the pane's group).
+fn own_session(cmd: &mut Command) -> &mut Command {
+    // SAFETY: the closure runs in the forked child between `fork` and `exec`, where only
+    // async-signal-safe work is permitted. `setsid` is async-signal-safe and takes no pointers,
+    // and `last_os_error` only wraps `errno` — no allocation, no lock to inherit held. The one
+    // documented failure (the caller already leads a process group) is unreachable here: the child
+    // is freshly forked, so its pid cannot be the group id it inherited, and reporting the Err is
+    // an honest floor rather than a path relied on.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        })
     }
 }
 
@@ -1085,5 +1128,42 @@ fn join_pane(args: Vec<String>) -> io::Result<()> {
             ),
         )),
         Err(error) => Err(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The property the whole of [`own_session`] exists for, asserted where it can be seen without
+    /// a display: the spawned child LEADS a session of its own, so the hangup that goes to the
+    /// launching terminal's foreground group has no path to it. Revert-proof by construction —
+    /// drop the `pre_exec` and the child inherits this process's session, failing both asserts.
+    ///
+    /// A `sleep` stands in for the window: `own_session` configures a spawn and knows nothing of
+    /// what is spawned, so the stand-in only has to outlive the read.
+    #[test]
+    fn a_launched_window_leads_a_session_of_its_own() {
+        let mut command = Command::new("/bin/sleep");
+        command.arg("30");
+        let mut child = own_session(&mut command)
+            .spawn()
+            .expect("spawn the stand-in for the window");
+        let pid = i32::try_from(child.id()).expect("a pid fits in pid_t");
+        // SAFETY: `getsid` takes no pointers and reads a plain id. The child has not been waited
+        // on yet, so its pid is still its own rather than free to be recycled onto a stranger.
+        let (child_sid, own_sid) = unsafe { (libc::getsid(pid), libc::getsid(0)) };
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert_ne!(child_sid, -1, "read the child's session id");
+        assert_ne!(
+            child_sid, own_sid,
+            "the window does not share the launching terminal's session",
+        );
+        assert_eq!(
+            child_sid, pid,
+            "it LEADS its own session, which is what makes the hangup unreachable",
+        );
     }
 }
