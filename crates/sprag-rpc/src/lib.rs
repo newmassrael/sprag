@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use pinion_rpc::RpcIngress;
-use pinion_rpc_transport::{TransportControl, UnixSocketTransport};
+use pinion_rpc_transport::{Exposure, TransportControl, UnixSocketTransport};
 
 pub mod client;
 pub use client::{
@@ -74,15 +74,33 @@ pub struct SocketOpts {
 static ENDPOINT: OnceLock<TransportControl> = OnceLock::new();
 
 /// Mount the always-on RPC socket for `ingress` under `opts`. Binds the
-/// fixed-path Unix socket, applies the boot on/off policy, installs the
+/// fixed-path Unix socket AT its boot exposure, installs the
 /// SIGUSR1(enable)/SIGUSR2(disable) runtime control, and hands the control to
 /// its process-lifetime owner.
+///
+/// The boot policy is declared to the BIND ([`Exposure`], pinion R1469
+/// delivering PINION-PR48) rather than applied after it. The difference is not
+/// cosmetic: `serve` armed the accept loop already serving, so between it and a
+/// post-bind withdraw there was a window, and a client landing in it was not
+/// exposed for that instant -- it was accepted WHILE SERVING, and withdrawing
+/// deliberately leaves in-flight connections alone, so it stayed served for its
+/// whole session by an endpoint the operator asked to be withdrawn.
+///
+/// The guarantee is STRUCTURAL, and saying so is the honest report: racing a
+/// client against the bind could not witness the window from out here -- 30
+/// trials refused 30/30 with the old post-bind withdraw and 30/30 with this,
+/// on a harness proven able to see the difference (the same race against a
+/// boot-SERVING endpoint reports 30/30 served). So this bought correctness by
+/// construction plus a call site that finally says what it means, not a
+/// reproduced bug fixed. Do not go looking for a failing case to pin it with;
+/// there is no external witness to find.
 ///
 /// Non-fatal on bind failure (logged at `warn`; the caller's other transports,
 /// e.g. stdin, are unaffected). Call once per process.
 pub fn mount(ingress: Arc<dyn RpcIngress>, opts: SocketOpts) {
     let path = socket_path(opts);
-    let control = match UnixSocketTransport::serve(&path, ingress) {
+    let exposure = Exposure::from_serving(boot_enabled(opts));
+    let control = match UnixSocketTransport::serve_with_exposure(&path, ingress, exposure) {
         Ok(control) => control,
         Err(error) => {
             tracing::warn!(
@@ -95,7 +113,6 @@ pub fn mount(ingress: Arc<dyn RpcIngress>, opts: SocketOpts) {
             return;
         }
     };
-    control.set_enabled(boot_enabled(opts));
     let enabled = control.is_enabled();
     // Owner set BEFORE the control thread, so the socket is bound-and-owned
     // even if the thread never spawns. `set` only fails on an impossible
