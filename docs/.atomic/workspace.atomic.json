@@ -5617,6 +5617,46 @@
         "accept-then-check means the backlog defines the window, not elapsed time"
       ]
     },
+    "R211": {
+      "decision_summary": "R211 = the window \"sprag attach\" launches was dying with the terminal that ran it, and the measurement is what turned this from a UX preference into a defect. Measured before touching anything, under a real PTY hangup: the window died 5/5 within 0.1s, while the daemon, the session and its window all survived and list-clients came back empty - so this was viewer loss, not work loss, and a re-attach recovered. The cause was isolated by changing exactly ONE thing in an otherwise identical harness: setsid on the spawned child flipped 3/3 dead to 3/3 alive. The fix is that one call, own_session, claiming a session for the child between fork and exec - the same claim sprag-term's daemonize makes as its first act and the same one portable-pty makes for a pane's child, so attach was the THIRD spawn site to need it and the only one that lacked it. tmux is spared this because its client IS the terminal; sprag has two windows, and shutting one was destroying the other. Scope was deliberately held to the defect: whether attach should RETURN instead of blocking - the other half of the old attach-polish ledger item - is untouched and stays an owner decision, because the measurement showed the two halves are independent. The window keeps inherited stdio, so a startup failure still lands where the user is looking, and the CLI still blocks, so a window that dies is still this command's failure; what it gives up is Ctrl-C from the launching terminal.",
+      "changes_bullets": [
+        "sprag.rs: new own_session sets setsid via pre_exec between fork and exec, and attach launches the GUI through it. Its doc carries the measurement, the trade it makes (no job control from the launching terminal) and the two sibling spawn sites that already claim a session.",
+        "attach's doc no longer advises \"background it with &\": that advice was never measured, and with setsid the window's survival no longer depends on it.",
+        "sprag-host Cargo.toml: the libc dependency comment now names the CLI's setsid beside the daemon's, so the dependency's reason stays complete."
+      ],
+      "verification_bullets": [
+        "Unit test a_launched_window_leads_a_session_of_its_own: the spawned child leads its own session (sid equals its own pid, and differs from this process's). Revert-proof MEASURED, not assumed - removing the pre_exec fails it with left == right == the parent's sid.",
+        "Real-path verification after the fix: sprag attach under a PTY hangup survived 4/4 across a 20s watch AND was still an ATTACHED CLIENT per list-clients - alive as a client, not merely undead as a process.",
+        "Gates GREEN: fmt, clippy --workspace --all-targets -D warnings, the rustdoc private-items gate, and workspace tests 1108 passed / 0 failed (was 1107; the one new test)."
+      ],
+      "impact_refs": [
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Whether sprag attach should return instead of blocking is STILL open and still an owner UX call; setsid closed the defect half without deciding it.",
+        "Whether backgrounding with & survives a terminal close was NOT measured; bash forwards SIGHUP to its jobs, so the dropped advice may have been wrong even before this fix.",
+        "Ctrl-C in the launching terminal no longer reaches the window - a deliberate behaviour change, the same trade the daemon and the pane children already make."
+      ],
+      "publishable_decision_summary": "R211 = the window \"sprag attach\" launches was dying with the terminal that ran it, and the measurement is what turned this from a UX preference into a defect. Measured before touching anything, under a real PTY hangup: the window died 5/5 within 0.1s, while the daemon, the session and its window all survived and list-clients came back empty - so this was viewer loss, not work loss, and a re-attach recovered. The cause was isolated by changing exactly ONE thing in an otherwise identical harness: setsid on the spawned child flipped 3/3 dead to 3/3 alive. The fix is that one call, own_session, claiming a session for the child between fork and exec - the same claim sprag-term's daemonize makes as its first act and the same one portable-pty makes for a pane's child, so attach was the THIRD spawn site to need it and the only one that lacked it. tmux is spared this because its client IS the terminal; sprag has two windows, and shutting one was destroying the other. Scope was deliberately held to the defect: whether attach should RETURN instead of blocking - the other half of the old attach-polish ledger item - is untouched and stays an owner decision, because the measurement showed the two halves are independent. The window keeps inherited stdio, so a startup failure still lands where the user is looking, and the CLI still blocks, so a window that dies is still this command's failure; what it gives up is Ctrl-C from the launching terminal.",
+      "publishable_changes_bullets": [
+        "sprag.rs: new own_session sets setsid via pre_exec between fork and exec, and attach launches the GUI through it. Its doc carries the measurement, the trade it makes (no job control from the launching terminal) and the two sibling spawn sites that already claim a session.",
+        "attach's doc no longer advises \"background it with &\": that advice was never measured, and with setsid the window's survival no longer depends on it.",
+        "sprag-host Cargo.toml: the libc dependency comment now names the CLI's setsid beside the daemon's, so the dependency's reason stays complete."
+      ],
+      "publishable_verification_bullets": [
+        "Unit test a_launched_window_leads_a_session_of_its_own: the spawned child leads its own session (sid equals its own pid, and differs from this process's). Revert-proof MEASURED, not assumed - removing the pre_exec fails it with left == right == the parent's sid.",
+        "Real-path verification after the fix: sprag attach under a PTY hangup survived 4/4 across a 20s watch AND was still an ATTACHED CLIENT per list-clients - alive as a client, not merely undead as a process.",
+        "Gates GREEN: fmt, clippy --workspace --all-targets -D warnings, the rustdoc private-items gate, and workspace tests 1108 passed / 0 failed (was 1107; the one new test)."
+      ],
+      "publishable_impact_refs": [
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Whether sprag attach should return instead of blocking is STILL open and still an owner UX call; setsid closed the defect half without deciding it.",
+        "Whether backgrounding with & survives a terminal close was NOT measured; bash forwards SIGHUP to its jobs, so the dropped advice may have been wrong even before this fix.",
+        "Ctrl-C in the launching terminal no longer reaches the window - a deliberate behaviour change, the same trade the daemon and the pane children already make."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
