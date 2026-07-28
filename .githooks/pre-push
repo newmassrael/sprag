@@ -37,6 +37,16 @@ if ! mnemosyne-cli validate-workspace; then
     exit 1
 fi
 
+# The citation gate — a DIFFERENT command from the one above, which checks only
+# scan coverage and not the citations (see the pre-commit note). Re-run here for
+# the reason clippy is: an amend or a `--no-verify` bypass can put a dead `§`
+# reference into the history that pre-commit never saw.
+echo "pre-push: mnemosyne-cli validate-code-refs ..." >&2
+if ! mnemosyne-cli validate-code-refs >/dev/null; then
+    echo "pre-push: validate-code-refs failed — fix the dead citation before push" >&2
+    exit 1
+fi
+
 if [ -f Cargo.toml ]; then
     echo "pre-push: cargo clippy --workspace --all-targets ..." >&2
     if ! cargo clippy --workspace --all-targets; then

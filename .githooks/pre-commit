@@ -44,6 +44,19 @@ cd "$repo_root"
 
 mnemosyne-cli validate-workspace
 
+# The CITATION gate, and a separate command on purpose: `validate-workspace`
+# runs only the Round 783 *coverage* check (is every `.rs` scanned or declared),
+# never the citations themselves. Measured, not assumed — a planted `§9.99` in a
+# module header left `validate-workspace` at exit 0. So `severity_missing =
+# "reject"` in mnemosyne.toml enforced NOTHING until this line existed, which is
+# how the rustdoc gate's five dead links accumulated before it was wired in too.
+#
+# Unconditional, unlike clippy below: a citation breaks from EITHER side — a
+# comment naming a section that is gone, or a store edit that removes one — and
+# the second touches no `*.rs` at all. It costs ~16ms.
+echo "pre-commit: mnemosyne-cli validate-code-refs ..." >&2
+mnemosyne-cli validate-code-refs >/dev/null
+
 # rustfmt gate — only the STAGED *.rs files, so it is sprag-scoped: a pinion
 # path-dep file cannot be staged from here, while `cargo fmt --all` WOULD walk
 # into pinion. Blocks on any unformatted staged file.

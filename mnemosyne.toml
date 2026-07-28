@@ -30,16 +30,23 @@ scan_exclusions = []
 # Severities are STATED, not inherited, so this file records sprag's stance
 # rather than whatever the CLI defaults to next.
 #
-# `warn`, not pinion's `reject`, and the number is why: measured at reject on
-# 2026-07-28 the tree reports 22 hallucination-class citations, all
-# SectionMissing (Missing=0) — source comments naming `§` sections the atomic
-# store does not have (`§6.3`, `§5.49`, `§1/`, and the `§1`-`§5` family cited
-# before those sections were written). That is real debt of the same class the
-# rustdoc gate found in its five dead links, and it is a cleanup front of its
-# own: promoting this to `reject` today would block every commit on work
-# unrelated to the one being made. Promote once the 22 are resolved.
-severity_missing = "warn"
+# `reject` for the hallucination class, which the tree is at zero of. It first
+# measured 22, and what they turned out to be is the reason the prefixes below
+# exist: NOT ONE was a dead citation. Twenty named real pinion sections (§5.39
+# focus model, §6.3 async model, §5.15/§5.16, §5.2, §5.23, §5.45, §5.49,
+# §5.51) and two were the matcher reading `§1/§3` as an id called `§1/`. The
+# gate was right to flag them anyway: sprag's own sections are the flat §1-§5,
+# so a bare `§6.3` in sprag source pointed at a section this workspace does
+# not have and never would — the citation was true and unreadable at once.
+severity_missing = "reject"
 severity_binding = "info"
+# Every cross-workspace citation now names its workspace immediately before
+# the `§`, which is the form the bare matcher resolves AND the form a reader
+# needs: `pinion §5.39 (R1020)`, not `pinion R1020 §5.39` (the numeric form
+# does not match an `R<n>` doc-number — measured, 0 of 22 cleared by config
+# alone). Round provenance moves after the section rather than being dropped.
+external_section_prefixes = ["pinion"]
+external_section_prefixes_bare = ["pinion"]
 
 # Audit row for a publishable/atomic divergence (mnemosyne-cli
 # emit-publishable-override-ledger-draft). Round 24's atomic decision_summary
