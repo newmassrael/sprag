@@ -168,7 +168,9 @@
         "UPSTREAM OPEN: PINION-PR48 socket-disabled-at-bind, MINOR; sprag needs no workaround",
         "UPSTREAM OPEN: PINION-PR71 TextGrid has no hyperlink hover/click; sprag ships its own oracle",
         "UPSTREAM OPEN: MNEMO-GAP-002 a slash is eaten into a section id; sprag spaces the pair",
-        "MNEMO-GAP-002 above is CLOSED: mnemosyne R799+R800; only the CLI needed reinstalling"
+        "MNEMO-GAP-002 above is CLOSED: mnemosyne R799+R800; only the CLI needed reinstalling",
+        "PINION-PR71 above was WRONG when written: pinion R1405 delivered it on 2026-07-21",
+        "pinion-widget-paint has no hyperlink code BY DESIGN; the hover oracle is a co-tagged External"
       ],
       "alternatives_rejected": [
         {
@@ -5573,6 +5575,46 @@
       ],
       "publishable_carry_forward_bullets": [
         "a generalisation from inputs you cannot see is the shape of the (A) misjudgement"
+      ]
+    },
+    "R210": {
+      "decision_summary": "R210 = the two remaining upstream items checked against the live pin, with opposite verdicts. PINION-PR48 is still genuinely open: at pin c237da6e the transport's serve() still hardcodes AtomicBool::new(true) and spawns the accept thread inside the same call, no serve_with_enabled or serve_disabled exists, and sprag-rpc's mount still serves and then sets the boot state - unchanged since the 2026-07-09 filing. Reading the accept loop sharpened the report rather than confirming it: accept() runs BEFORE the enabled check, and the kernel backlog queues connections regardless of the flag, so the exposure window is defined by what sits in the backlog when the loop first turns, not by elapsed microseconds. PINION-PR71 is the opposite. pinion R1405 delivered it on 2026-07-21 and sprag consumed it the same day, so the UPSTREAM OPEN caveat added to §5 one round ago was wrong on the day it was written, not merely stale. The delivered SHAPE is why it could read as open: the owner chose a hover oracle External co-tagged with the grid over a TextGrid paint hook, so pinion-widget-paint carrying no hyperlink code is the delivered design and not the gap - exactly the observation that would invite a re-file. A mechanical census of the doc status banners was attempted and discarded: it matched the undelivered marker inside CLOSED banners, the trap already recorded against this doc set, so both verdicts were taken from live source instead.",
+      "changes_bullets": [
+        "§5 caveat: PINION-PR71 marked wrong-when-written, superseding the OPEN line",
+        "a second caveat pins the delivered shape so the closed gap is not re-filed",
+        "no code touched; PINION-PR48 stays open and stays upstream's to close"
+      ],
+      "verification_bullets": [
+        "pin c237da6e: serve() hardcodes AtomicBool::new(true), no disabled-at-bind ctor",
+        "sprag-rpc mount still calls serve then set_enabled(boot_enabled) - gap intact",
+        "PR-71 symbols live at the pin: cell_hyperlink, frac_to_px, wants_hover_move",
+        "sprag consumes them: sprag-gui hyperlink.rs oracle + sprag-grid hover overlay"
+      ],
+      "impact_refs": [
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "an UPSTREAM OPEN caveat is a claim about the PIN; check the pin, not the doc",
+        "accept-then-check means the backlog defines the window, not elapsed time"
+      ],
+      "publishable_decision_summary": "R210 = the two remaining upstream items checked against the live pin, with opposite verdicts. PINION-PR48 is still genuinely open: at pin c237da6e the transport's serve() still hardcodes AtomicBool::new(true) and spawns the accept thread inside the same call, no serve_with_enabled or serve_disabled exists, and sprag-rpc's mount still serves and then sets the boot state - unchanged since the 2026-07-09 filing. Reading the accept loop sharpened the report rather than confirming it: accept() runs BEFORE the enabled check, and the kernel backlog queues connections regardless of the flag, so the exposure window is defined by what sits in the backlog when the loop first turns, not by elapsed microseconds. PINION-PR71 is the opposite. pinion R1405 delivered it on 2026-07-21 and sprag consumed it the same day, so the UPSTREAM OPEN caveat added to §5 one round ago was wrong on the day it was written, not merely stale. The delivered SHAPE is why it could read as open: the owner chose a hover oracle External co-tagged with the grid over a TextGrid paint hook, so pinion-widget-paint carrying no hyperlink code is the delivered design and not the gap - exactly the observation that would invite a re-file. A mechanical census of the doc status banners was attempted and discarded: it matched the undelivered marker inside CLOSED banners, the trap already recorded against this doc set, so both verdicts were taken from live source instead.",
+      "publishable_changes_bullets": [
+        "§5 caveat: PINION-PR71 marked wrong-when-written, superseding the OPEN line",
+        "a second caveat pins the delivered shape so the closed gap is not re-filed",
+        "no code touched; PINION-PR48 stays open and stays upstream's to close"
+      ],
+      "publishable_verification_bullets": [
+        "pin c237da6e: serve() hardcodes AtomicBool::new(true), no disabled-at-bind ctor",
+        "sprag-rpc mount still calls serve then set_enabled(boot_enabled) - gap intact",
+        "PR-71 symbols live at the pin: cell_hyperlink, frac_to_px, wants_hover_move",
+        "sprag consumes them: sprag-gui hyperlink.rs oracle + sprag-grid hover overlay"
+      ],
+      "publishable_impact_refs": [
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "an UPSTREAM OPEN caveat is a claim about the PIN; check the pin, not the doc",
+        "accept-then-check means the backlog defines the window, not elapsed time"
       ]
     },
     "Round 1": {
