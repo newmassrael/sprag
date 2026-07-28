@@ -92,6 +92,11 @@ fn main() -> ExitCode {
             // it (see the function docs), so it must run while both are alive and the session it
             // renames a window in still exists.
             check_terminal_output_never_reaches_the_shaper(&mut smoke, &mut report);
+            // AFTER it, and that ordering is load-bearing twice over: the check above needs
+            // exactly ONE pane to make the daemon-to-client pane correspondence unambiguous, and
+            // this one SPLITS until the pane set can attribute its own cost. It also leaves those
+            // panes standing, so nothing that counts panes may follow it.
+            check_the_host_projects_panes_in_whole_sets(&mut smoke, &mut report);
             // LAST over the WIRE, and it must stay last: it destroys the session this client is
             // attached to, so the client leaves and every check after it would be asserting against
             // a dead socket.
@@ -1091,6 +1096,222 @@ fn check_terminal_output_never_reaches_the_shaper(smoke: &mut Smoke, report: &mu
         ),
         watch.frames.iter().all(|(_, misses)| *misses == Some(0)),
     );
+}
+
+/// A single REQUEST to the host re-projects every pane's entire grid — silent panes included.
+///
+/// This is the other half of the question R216 answered. That round proved terminal output never
+/// reaches pinion's shaper — true, and only half an answer, because sprag does not paint its cells
+/// through pinion's text path at all. It projects a whole `GridBuffer` per served frame, and what
+/// THAT costs was unmeasurable from outside the process until `sprag_grid::work` put the count on
+/// the wire.
+///
+/// What the meter found is not what the question expected. The projection is not driven by output
+/// at all: it is driven by REQUESTS. Any call on the daemon's socket — measured with
+/// `scene/revision`, which mutates nothing and merely reports a number — wakes the attached
+/// client's poll, and the wake re-fetches every pane, whole. Measured in the steady state: an idle
+/// window costs one pane set, twenty spaced reads cost twenty-one. The same twenty reads driven at
+/// the CLIENT's socket cost nothing, which is what pins the cost to the daemon hop rather than to
+/// polling in general. That matters for sprag specifically, because the `sprag-mcp` tools an AI in
+/// a pane drives its siblings with talk to exactly this socket.
+///
+/// The claim is made by DIVISIBILITY, which is how an aggregate counter attributes work it does not
+/// label. Each projection adds one pane's whole area, so a host that re-projected only the pane a
+/// request concerned would leave a total that is a multiple of THAT pane's area and never of the
+/// whole set's. Measured, it is the exact opposite.
+///
+/// **The arithmetic only separates those two worlds when the set is ASYMMETRIC**, so this splits
+/// until it is and then asserts that it is, rather than assuming a layout. Two equal panes make
+/// "both projected once" and "one projected twice" the same number, and a check that cannot tell
+/// them apart would be reporting a coincidence as a finding.
+///
+/// The instrument PERTURBS what it measures, and the check is built on that rather than around it:
+/// reading the meter is itself a request, so it costs a pane set of its own. That is harmless here
+/// precisely because the perturbation has the same shape as the claim — a whole set — so it moves
+/// the count without ever breaking the divisibility the verdict rests on.
+///
+/// What this does NOT say is that the projection is wrong. It is a measurement. Whether the fix is
+/// a damage-driven fetch, a per-pane cache keyed on the row generations the host already sends, or
+/// nothing at all, is a decision this number is the input to.
+fn check_the_host_projects_panes_in_whole_sets(smoke: &mut Smoke, report: &mut Report) {
+    /// How many times to split looking for a set whose areas can attribute their own work.
+    const SPLITS: usize = 3;
+    /// Reads to price. Spaced, so each one's fan-out lands before the next is sent.
+    const READS: u64 = 8;
+
+    let Some(session) = smoke.attached_session() else {
+        report.check("the client says which session to price", false);
+        return;
+    };
+    let Ok(mut daemon) = smoke.daemon() else {
+        report.check("the daemon takes a connection to read its meter", false);
+        return;
+    };
+    let Some(&first) = daemon_panes(&mut daemon, &session).first() else {
+        report.check("there is a pane to name as the driven one", false);
+        return;
+    };
+    let named = u64::from(first);
+
+    // Split until the set can attribute its own cost — see the docs for why a symmetric set
+    // cannot. Reported below rather than trusted, so a layout change that breaks it says so.
+    let mut areas = settled_pane_areas(smoke, &mut daemon, &session);
+    for _ in 0..SPLITS {
+        if attributable(&areas, named) {
+            break;
+        }
+        if !smoke.run_palette_row("Split into a new pane", report) {
+            break;
+        }
+        let panes = areas.len() + 1;
+        let _ = smoke.wait_for(|s| (s.pane_count() >= panes).then_some(()));
+        areas = settled_pane_areas(smoke, &mut daemon, &session);
+    }
+    let total: u64 = areas.values().sum();
+    let one = areas.get(&named).copied().unwrap_or_default();
+    report.check(
+        &format!(
+            "the pane set can attribute its own work (pane_{named} is {one} of {total} cells over {} panes)",
+            areas.len()
+        ),
+        attributable(&areas, named),
+    );
+    if !attributable(&areas, named) {
+        return;
+    }
+
+    // Let the split's own resize churn end before the window opens. It is the ONE stretch whose
+    // projections are not whole sets — panes are changing size, so a buffer built mid-resize
+    // belongs to an area no pane has any more, and a window containing one is offset by a
+    // non-multiple for good. Waited out on the CLIENT's revision, which is the one signal here
+    // that costs nothing to read.
+    let mut previous = None;
+    let quiet = smoke.wait_for(|s| {
+        let now = s.call("scene/revision", json!({})).ok()?;
+        let still = previous.as_ref() == Some(&now);
+        previous = Some(now.clone());
+        still.then_some(())
+    });
+    report.check("the client settles after the splits", quiet.is_ok());
+
+    // ── The window: nothing but reads. No keystroke, no output, no resize.
+    let Some(before) = grid_work(&mut daemon, &session) else {
+        report.check("the host reports what it has projected", false);
+        return;
+    };
+    for _ in 0..READS {
+        let _ = daemon.call("scene/revision", json!({ "session": session }));
+        std::thread::sleep(POLL);
+    }
+    let Some(after) = grid_work(&mut daemon, &session) else {
+        report.check("the host still reports what it has projected", false);
+        return;
+    };
+    let (projections, cells) = (after.0 - before.0, after.1 - before.1);
+
+    // The geometry must not have moved under the measurement, or the areas the arithmetic rests on
+    // describe a set that no longer exists. Asserted, not hoped for.
+    report.check(
+        &format!(
+            "the pane geometry held still while it was priced ({total} cells over {} panes)",
+            areas.len()
+        ),
+        pane_areas(&mut daemon, &session) == areas,
+    );
+    // Non-vacuity, first: a meter that never moved is a claim about nothing, and every divisibility
+    // test below is trivially true of zero.
+    report.check(
+        &format!(
+            "{READS} reads of a NUMBER moved the meter ({projections} projections, {cells} cells)"
+        ),
+        cells > 0 && projections > 0,
+    );
+    // The claim. `% total == 0` says the work arrives in whole sets; `% one != 0` is the half that
+    // cannot be true of a host that re-projected only the pane a caller named.
+    report.check(
+        &format!(
+            "the panes NOTHING happened in were re-projected too ({cells} cells is {}x the {total}-cell set, and not a multiple of pane_{named}'s {one})",
+            cells / total
+        ),
+        cells.is_multiple_of(total) && !cells.is_multiple_of(one),
+    );
+    // And the rate, which is the number this instrument exists to produce: a read is not free, it
+    // is a whole re-projection of everything on screen.
+    report.check(
+        &format!(
+            "one read costs about one whole set ({} sets for {READS} reads)",
+            cells / total
+        ),
+        cells / total >= READS,
+    );
+}
+
+/// Whether `areas` can say which panes were projected, given the one a request `named`.
+///
+/// True exactly when the set's total is NOT a multiple of that pane's own area: only then does "a
+/// multiple of the set" rule out "a multiple of the named pane". A single pane is never
+/// attributable, and neither are two equal ones.
+fn attributable(areas: &std::collections::HashMap<u64, u64>, named: u64) -> bool {
+    let total: u64 = areas.values().sum();
+    let one = areas.get(&named).copied().unwrap_or_default();
+    one > 0 && !total.is_multiple_of(one)
+}
+
+/// Each pane's cell area, by pane id, off the host's own pane list.
+///
+/// Read from the wire rather than computed from the client's tiles: the host projects what the
+/// HOST thinks a pane measures, and the arithmetic here has to use the same number.
+fn pane_areas(daemon: &mut HostConn, session: &str) -> std::collections::HashMap<u64, u64> {
+    let mut areas = std::collections::HashMap::new();
+    if let Ok(list) = daemon.call(
+        "scene/query",
+        json!({ "path": "/sprag_mux/external/panes", "session": session }),
+    ) {
+        for pane in list.as_array().into_iter().flatten() {
+            if let (Some(id), Some(cols), Some(rows)) = (
+                pane["id"].as_u64(),
+                pane["cols"].as_u64(),
+                pane["rows"].as_u64(),
+            ) {
+                areas.insert(id, cols * rows);
+            }
+        }
+    }
+    areas
+}
+
+/// Each pane's area, once the layout has stopped moving.
+///
+/// A split resizes, and areas read mid-resize describe a set that will not exist by the time
+/// anything is measured against it.
+fn settled_pane_areas(
+    smoke: &mut Smoke,
+    daemon: &mut HostConn,
+    session: &str,
+) -> std::collections::HashMap<u64, u64> {
+    let mut previous = None;
+    smoke
+        .wait_for(|_| {
+            let now = pane_areas(daemon, session);
+            let still = !now.is_empty() && previous.as_ref() == Some(&now);
+            previous = Some(now.clone());
+            still.then_some(now)
+        })
+        .unwrap_or_default()
+}
+
+/// The host's projection meter — `(projections_total, cells_total)`, both monotonic since boot.
+fn grid_work(daemon: &mut HostConn, session: &str) -> Option<(u64, u64)> {
+    let value = daemon
+        .call(
+            "scene/query",
+            json!({ "path": "/sprag_mux/external/grid_work", "session": session }),
+        )
+        .ok()?;
+    Some((
+        value["projections_total"].as_u64()?,
+        value["cells_total"].as_u64()?,
+    ))
 }
 
 /// One line of the novel output, `i` distinguishing it from its siblings.
