@@ -170,7 +170,8 @@
         "UPSTREAM OPEN: MNEMO-GAP-002 a slash is eaten into a section id; sprag spaces the pair",
         "MNEMO-GAP-002 above is CLOSED: mnemosyne R799+R800; only the CLI needed reinstalling",
         "PINION-PR71 above was WRONG when written: pinion R1405 delivered it on 2026-07-21",
-        "pinion-widget-paint has no hyperlink code BY DESIGN; the hover oracle is a co-tagged External"
+        "pinion-widget-paint has no hyperlink code BY DESIGN; the hover oracle is a co-tagged External",
+        "PINION-PR48 above is CLOSED: pinion R1469 declared exposure at bind; sprag consumes it at R213"
       ],
       "alternatives_rejected": [
         {
@@ -5697,6 +5698,50 @@
         "attach-polish (register item C) is now fully CLOSED: the resize half by measurement, the terminal-kill half at R211, and the block-vs-return half here as a user choice.",
         "The 10s attach timeout is a judgement, not a measurement: it is ~50x the observed 0.13-0.22s to leave room for a cold GPU driver's first-launch shader setup, which was NOT measured on this machine.",
         "--no-wait leaves a timed-out window RUNNING rather than killing it; if that proves confusing, the fix is a clearer message, not a kill, since we spawned it into its own session."
+      ]
+    },
+    "R213": {
+      "decision_summary": "R213 = pin bump c237da6e -> 89f39fbd (pinion R1463-R1470), taken because R1469 delivers PINION-PR48, the last upstream item sprag had open - filed 2026-07-09 and re-verified still open only five days ago at R210. Zero break sites across the whole delta: pinion added serve_with_exposure and an Exposure enum while keeping serve, set_enabled and is_enabled, so the bump alone compiled untouched. SCE step 3 was a no-op, CHECKED rather than assumed: pinion at 89f39fbd pins 201783c4, the rev sprag already had. sprag's consumption is one call - mount now declares Exposure::from_serving(boot_enabled(opts)) TO the bind instead of serving first and withdrawing after. THE FINDING IS ABOUT WHAT COULD NOT BE PROVEN. The old shape's hazard was real and upstream states it plainly: a client landing between serve and the withdraw is accepted WHILE SERVING, and withdrawing deliberately leaves in-flight connections alone, so it stays served for its whole session by an endpoint the operator asked to be withdrawn. But racing a client against the bind could not witness that window from sprag's side - 30 trials refused 30/30 with the old post-bind withdraw and 30/30 with the new declared bind. That number only means something because the harness was proven able to see the difference: the same race against a boot-SERVING endpoint reports 30/30 SERVED. So what this bought is correctness BY CONSTRUCTION plus a call site that says what it means, not a reproduced bug fixed, and the code comment says exactly that so no future round goes hunting for a failing case that does not exist. The other seven rounds need no sprag code: R1463/R1464 (a focus request reaches every painted window, and the enumeration is now reported), R1465 (the mirror an agent reads settles like its paint - sprag's scene/snapshot path benefits passively), R1467/R1468 (chrome and viewport geometry), R1470 (a paint assertion no longer opens an audio device).",
+      "changes_bullets": [
+        "Cargo.toml + Cargo.lock: all nine pinion-* revs c237da6e -> 89f39fbd; the SCE block stays 201783c4, matching pinion@89f39fbd's own workspace pin.",
+        "sprag-rpc mount(): UnixSocketTransport::serve_with_exposure with Exposure::from_serving(boot_enabled(opts)), replacing serve followed by control.set_enabled. The doc records both the hazard the old shape carried and the honest fact that sprag cannot externally witness it.",
+        "docs §5: a correcting caveat appended - the UPSTREAM OPEN line for PINION-PR48 is superseded, since the store is append-only and the stale line stays readable beside its correction."
+      ],
+      "verification_bullets": [
+        "Consumption measured, and its LIMIT measured too: boot-withdrawn refused 30/30 both before and after the change, on a harness whose detector was proven by a boot-serving run reporting 30/30 SERVED. No revert-proof exists for the window itself and none is claimed.",
+        "Live headless smoke 63 passed / 0 failed, three runs identical - the same 63/0 as the previous pin, so eight upstream rounds moved nothing sprag observes.",
+        "Gates GREEN: fmt, clippy --workspace --all-targets -D warnings, the rustdoc private-items gate, workspace tests 1112 passed / 0 failed (unmoved by the bump).",
+        "Zero break sites confirmed by building the whole workspace on the new pin BEFORE any consumption edit."
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "sprag now has NO open upstream item against pinion. PINION-PR48 was the last one; PR-71 and MNEMO-GAP-002 closed at R209/R210.",
+        "The WebKit browser panel is now the only genuinely unstarted front, and the only place cmux still leads.",
+        "R1464's focus-enumeration totals and R1465's mirror pricing are new scene/frame_timings fields sprag does not read; if a focus or snapshot-staleness question comes back, that wire is already there."
+      ],
+      "publishable_decision_summary": "R213 = pin bump c237da6e -> 89f39fbd (pinion R1463-R1470), taken because R1469 delivers PINION-PR48, the last upstream item sprag had open - filed 2026-07-09 and re-verified still open only five days ago at R210. Zero break sites across the whole delta: pinion added serve_with_exposure and an Exposure enum while keeping serve, set_enabled and is_enabled, so the bump alone compiled untouched. SCE step 3 was a no-op, CHECKED rather than assumed: pinion at 89f39fbd pins 201783c4, the rev sprag already had. sprag's consumption is one call - mount now declares Exposure::from_serving(boot_enabled(opts)) TO the bind instead of serving first and withdrawing after. THE FINDING IS ABOUT WHAT COULD NOT BE PROVEN. The old shape's hazard was real and upstream states it plainly: a client landing between serve and the withdraw is accepted WHILE SERVING, and withdrawing deliberately leaves in-flight connections alone, so it stays served for its whole session by an endpoint the operator asked to be withdrawn. But racing a client against the bind could not witness that window from sprag's side - 30 trials refused 30/30 with the old post-bind withdraw and 30/30 with the new declared bind. That number only means something because the harness was proven able to see the difference: the same race against a boot-SERVING endpoint reports 30/30 SERVED. So what this bought is correctness BY CONSTRUCTION plus a call site that says what it means, not a reproduced bug fixed, and the code comment says exactly that so no future round goes hunting for a failing case that does not exist. The other seven rounds need no sprag code: R1463/R1464 (a focus request reaches every painted window, and the enumeration is now reported), R1465 (the mirror an agent reads settles like its paint - sprag's scene/snapshot path benefits passively), R1467/R1468 (chrome and viewport geometry), R1470 (a paint assertion no longer opens an audio device).",
+      "publishable_changes_bullets": [
+        "Cargo.toml + Cargo.lock: all nine pinion-* revs c237da6e -> 89f39fbd; the SCE block stays 201783c4, matching pinion@89f39fbd's own workspace pin.",
+        "sprag-rpc mount(): UnixSocketTransport::serve_with_exposure with Exposure::from_serving(boot_enabled(opts)), replacing serve followed by control.set_enabled. The doc records both the hazard the old shape carried and the honest fact that sprag cannot externally witness it.",
+        "docs §5: a correcting caveat appended - the UPSTREAM OPEN line for PINION-PR48 is superseded, since the store is append-only and the stale line stays readable beside its correction."
+      ],
+      "publishable_verification_bullets": [
+        "Consumption measured, and its LIMIT measured too: boot-withdrawn refused 30/30 both before and after the change, on a harness whose detector was proven by a boot-serving run reporting 30/30 SERVED. No revert-proof exists for the window itself and none is claimed.",
+        "Live headless smoke 63 passed / 0 failed, three runs identical - the same 63/0 as the previous pin, so eight upstream rounds moved nothing sprag observes.",
+        "Gates GREEN: fmt, clippy --workspace --all-targets -D warnings, the rustdoc private-items gate, workspace tests 1112 passed / 0 failed (unmoved by the bump).",
+        "Zero break sites confirmed by building the whole workspace on the new pin BEFORE any consumption edit."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "sprag now has NO open upstream item against pinion. PINION-PR48 was the last one; PR-71 and MNEMO-GAP-002 closed at R209/R210.",
+        "The WebKit browser panel is now the only genuinely unstarted front, and the only place cmux still leads.",
+        "R1464's focus-enumeration totals and R1465's mirror pricing are new scene/frame_timings fields sprag does not read; if a focus or snapshot-staleness question comes back, that wire is already there."
       ]
     },
     "Round 1": {
