@@ -167,7 +167,8 @@
         "pinion R1.6 GPU glyph paint LANDED (R991); sprag windowed-host pending (cursor + TUI gaps).",
         "UPSTREAM OPEN: PINION-PR48 socket-disabled-at-bind, MINOR; sprag needs no workaround",
         "UPSTREAM OPEN: PINION-PR71 TextGrid has no hyperlink hover/click; sprag ships its own oracle",
-        "UPSTREAM OPEN: MNEMO-GAP-002 a slash is eaten into a section id; sprag spaces the pair"
+        "UPSTREAM OPEN: MNEMO-GAP-002 a slash is eaten into a section id; sprag spaces the pair",
+        "MNEMO-GAP-002 above is CLOSED: mnemosyne R799+R800; only the CLI needed reinstalling"
       ],
       "alternatives_rejected": [
         {
@@ -5532,6 +5533,46 @@
       "publishable_carry_forward_bullets": [
         "upstream removed the veto; sprag had to start ASKING - a delivery is not a fix",
         "this entry begins the backfill: the store had stopped at R179, 131 commits behind"
+      ]
+    },
+    "R209": {
+      "decision_summary": "R209 = MNEMO-GAP-002 confirmed closed, and the confirmation corrected the report's own recommendation. mnemosyne delivered it as R799 (close the reported slash) plus R800 (generalise to the whole separator class), and rejected sprag's recommended option (A) - closing the section-id charset to digits and dots - for a reason sprag could not see: mnemosyne's OWN store contains a slash-bearing id (code-citation-defense/bidirectional-binding), documented as \"kebab + slash slugs\" and pinned by a test. Taking (A) would have traded one false SectionMissing for another. The generalisation from a reported instance to its class is the finding worth keeping: R799 closed only `/` while `§1-§3` (a range) is commoner in prose than a slash pair, so the one-character fix was half a fix. Verified here rather than taken on report - the CLI was reinstalled from the committed rev and the original four-line table re-run, plus hyphen and underscore forms that were never in the report. sprag's own gates stayed green under the new validator.",
+      "changes_bullets": [
+        "mnemosyne-cli reinstalled from the committed HEAD (2bc44906 -> ad519820)",
+        "the installed binary had been a `-dirty` build from an uncommitted tree",
+        "MNEMO-GAP-002 doc closed; §5 gained a superseding caveat beside the OPEN one",
+        "`DESIGN.md §1 + §3` stays, now a style choice rather than a workaround"
+      ],
+      "verification_bullets": [
+        "re-ran the report's table: `§1/§3` -> §1 + §3, `(§2/§4)` -> §2 + §4, both fixed",
+        "measured beyond the report: `§1-§3` and `§1_§3` also split correctly (R800's class rule)",
+        "`§1/x` is still one id - a documented limitation, not a regression",
+        "sprag under the new validator: validate-workspace and validate-code-refs both exit 0"
+      ],
+      "impact_refs": [
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "a generalisation from inputs you cannot see is the shape of the (A) misjudgement"
+      ],
+      "publishable_decision_summary": "R209 = MNEMO-GAP-002 confirmed closed, and the confirmation corrected the report's own recommendation. mnemosyne delivered it as R799 (close the reported slash) plus R800 (generalise to the whole separator class), and rejected sprag's recommended option (A) - closing the section-id charset to digits and dots - for a reason sprag could not see: mnemosyne's OWN store contains a slash-bearing id (code-citation-defense/bidirectional-binding), documented as \"kebab + slash slugs\" and pinned by a test. Taking (A) would have traded one false SectionMissing for another. The generalisation from a reported instance to its class is the finding worth keeping: R799 closed only `/` while `§1-§3` (a range) is commoner in prose than a slash pair, so the one-character fix was half a fix. Verified here rather than taken on report - the CLI was reinstalled from the committed rev and the original four-line table re-run, plus hyphen and underscore forms that were never in the report. sprag's own gates stayed green under the new validator.",
+      "publishable_changes_bullets": [
+        "mnemosyne-cli reinstalled from the committed HEAD (2bc44906 -> ad519820)",
+        "the installed binary had been a `-dirty` build from an uncommitted tree",
+        "MNEMO-GAP-002 doc closed; §5 gained a superseding caveat beside the OPEN one",
+        "`DESIGN.md §1 + §3` stays, now a style choice rather than a workaround"
+      ],
+      "publishable_verification_bullets": [
+        "re-ran the report's table: `§1/§3` -> §1 + §3, `(§2/§4)` -> §2 + §4, both fixed",
+        "measured beyond the report: `§1-§3` and `§1_§3` also split correctly (R800's class rule)",
+        "`§1/x` is still one id - a documented limitation, not a regression",
+        "sprag under the new validator: validate-workspace and validate-code-refs both exit 0"
+      ],
+      "publishable_impact_refs": [
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "a generalisation from inputs you cannot see is the shape of the (A) misjudgement"
       ]
     },
     "Round 1": {
