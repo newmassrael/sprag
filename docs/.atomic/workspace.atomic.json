@@ -5788,6 +5788,50 @@
         "The pin tests assert CONSISTENCY, not currency - they cannot tell that a pin is stale, only that the nine plus SCE agree with each other."
       ]
     },
+    "R215": {
+      "decision_summary": "R215 = the carry-forward R214 left - mirror.shape_misses_total and produce.* are still unread - closed by measuring, and measuring killed two hypotheses I held before writing a line. First: I expected scene/snapshot from:state to run the RPC scene producer, since upstream says only from:paint is served from the committed frame. It does not; both from-values read a STORED scene, and across six calls each the producer stayed at zero. Second: I expected scene/layout {width,height} to be the clean read-only producer driver, because a hypothetical viewport cannot be answered from a stored scene. It measured zero across six calls too, so it would have proved nothing. The only driver that actually re-derives is PATH RESOLUTION - scene/click {path} - at exactly +1 per call, and that is what makes the zero a measurement instead of a dead counter. The finding for sprag is that its whole agent surface reads for free: the CLI, the sprag-mcp tools an AI in a pane drives its siblings with, and every assertion in the smoke go through scene/snapshot, and none of them costs a view+layout settle. The mirror half is the other consumer-honoured bound. A shape miss is a LayoutCache miss at 18.5us against a 118ns hit, and upstream says plainly that a binding which ignores the bound still measures every row and nothing notices - this is what notices. Measured flat at 76 while four mirrors were genuinely stored, and moving +2 to +4 the moment novel text is written, so sprag re-shapes nothing it has already shaped. The miss is accounted SYNCHRONOUSLY in the dispatch, so neither check contains a sleep, a wait or any timing at all. What the checks do NOT establish is stated in the code: the detector writes a field, and a field is chrome, so the terminal cells are unproven either way.",
+      "changes_bullets": [
+        "sprag-smoke: check_an_agents_read_costs_no_scene_rederive reads R1460's produce block - the delta across a scene/snapshot, which is the one call the CLI, the sprag-mcp tools and the smoke all stand on.",
+        "sprag-smoke: check_the_mirror_reshapes_nothing_it_has_shaped reads R1465's mirror.shape_misses_total - the shaping cost of the re-store fan-out a mutating dispatch leaves behind for from:paint.",
+        "sprag-smoke: frame_work() factored out so a check can sample scene/frame_timings three times to take a delta, which is what upstream says these cumulative totals are for."
+      ],
+      "verification_bullets": [
+        "Live smoke 72 passed / 0 failed, three runs (was 66). Measured: an agent's read costs 0 producer passes while a path-addressed call costs +1; mirrors store at 55 -> 56 scenes with 0 added shape misses; novel text costs +2 to +4.",
+        "BOTH CLAIM CHECKS REVERT-PROVED by induced fault: swap the snapshot for a path-addressed call and the steady-state store for a novel-text write, and exactly those two fail (Some(1) -> Some(2) and Some(83) -> Some(85)) while every detector and non-vacuity guard still passes.",
+        "DETECTORS PROVED IN-BAND, not once: each check drives its counter before asserting the zero, so a dead wire fails the run rather than passing it. This is the R214 shape moved inside the check.",
+        "Gates GREEN: fmt, clippy --workspace --all-targets -D warnings, rustdoc private-items, workspace tests 1115 (unchanged on purpose - these are live smoke checks, not unit tests)."
+      ],
+      "impact_refs": [
+        "3",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Whether pane CONTENT reaches the shaper is UNPROVEN either way. The pointers say no (two new windows moved the counter by zero, and pinion sizes a grid off a CellMetric lattice rather than shaping rows) but no check drives novel text into a pane, so a green tick here is not coverage of the terminal cells.",
+        "last.shape_misses, the PER-FRAME count, is still unread. The mirror and produce groups now have readers; the frame's own does not.",
+        "Two harness facts found by measuring: the palette has no dismiss verb (UnknownInvokePath), and a TextFieldExternal is written through scene/intervene {path,value}, not scene/invoke set_text."
+      ],
+      "publishable_decision_summary": "R215 = the carry-forward R214 left - mirror.shape_misses_total and produce.* are still unread - closed by measuring, and measuring killed two hypotheses I held before writing a line. First: I expected scene/snapshot from:state to run the RPC scene producer, since upstream says only from:paint is served from the committed frame. It does not; both from-values read a STORED scene, and across six calls each the producer stayed at zero. Second: I expected scene/layout {width,height} to be the clean read-only producer driver, because a hypothetical viewport cannot be answered from a stored scene. It measured zero across six calls too, so it would have proved nothing. The only driver that actually re-derives is PATH RESOLUTION - scene/click {path} - at exactly +1 per call, and that is what makes the zero a measurement instead of a dead counter. The finding for sprag is that its whole agent surface reads for free: the CLI, the sprag-mcp tools an AI in a pane drives its siblings with, and every assertion in the smoke go through scene/snapshot, and none of them costs a view+layout settle. The mirror half is the other consumer-honoured bound. A shape miss is a LayoutCache miss at 18.5us against a 118ns hit, and upstream says plainly that a binding which ignores the bound still measures every row and nothing notices - this is what notices. Measured flat at 76 while four mirrors were genuinely stored, and moving +2 to +4 the moment novel text is written, so sprag re-shapes nothing it has already shaped. The miss is accounted SYNCHRONOUSLY in the dispatch, so neither check contains a sleep, a wait or any timing at all. What the checks do NOT establish is stated in the code: the detector writes a field, and a field is chrome, so the terminal cells are unproven either way.",
+      "publishable_changes_bullets": [
+        "sprag-smoke: check_an_agents_read_costs_no_scene_rederive reads R1460's produce block - the delta across a scene/snapshot, which is the one call the CLI, the sprag-mcp tools and the smoke all stand on.",
+        "sprag-smoke: check_the_mirror_reshapes_nothing_it_has_shaped reads R1465's mirror.shape_misses_total - the shaping cost of the re-store fan-out a mutating dispatch leaves behind for from:paint.",
+        "sprag-smoke: frame_work() factored out so a check can sample scene/frame_timings three times to take a delta, which is what upstream says these cumulative totals are for."
+      ],
+      "publishable_verification_bullets": [
+        "Live smoke 72 passed / 0 failed, three runs (was 66). Measured: an agent's read costs 0 producer passes while a path-addressed call costs +1; mirrors store at 55 -> 56 scenes with 0 added shape misses; novel text costs +2 to +4.",
+        "BOTH CLAIM CHECKS REVERT-PROVED by induced fault: swap the snapshot for a path-addressed call and the steady-state store for a novel-text write, and exactly those two fail (Some(1) -> Some(2) and Some(83) -> Some(85)) while every detector and non-vacuity guard still passes.",
+        "DETECTORS PROVED IN-BAND, not once: each check drives its counter before asserting the zero, so a dead wire fails the run rather than passing it. This is the R214 shape moved inside the check.",
+        "Gates GREEN: fmt, clippy --workspace --all-targets -D warnings, rustdoc private-items, workspace tests 1115 (unchanged on purpose - these are live smoke checks, not unit tests)."
+      ],
+      "publishable_impact_refs": [
+        "3",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Whether pane CONTENT reaches the shaper is UNPROVEN either way. The pointers say no (two new windows moved the counter by zero, and pinion sizes a grid off a CellMetric lattice rather than shaping rows) but no check drives novel text into a pane, so a green tick here is not coverage of the terminal cells.",
+        "last.shape_misses, the PER-FRAME count, is still unread. The mirror and produce groups now have readers; the frame's own does not.",
+        "Two harness facts found by measuring: the palette has no dismiss verb (UnknownInvokePath), and a TextFieldExternal is written through scene/intervene {path,value}, not scene/invoke set_text."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
