@@ -78,6 +78,11 @@ fn main() -> ExitCode {
             // is what does both. Placed here rather than earlier so neither can pass vacuously.
             check_the_agent_mirror_settles_like_the_paint(&mut smoke, &mut report);
             check_sprag_focus_requests_reach_the_re_derive(&mut smoke, &mut report);
+            // The last two producers with no reader. Both take DELTAS, so they must run after the
+            // work above has warmed the client — a cold client's first read re-derives and its first
+            // paint shapes everything, and either would report a startup cost as a steady state.
+            check_an_agents_read_costs_no_scene_rederive(&mut smoke, &mut report);
+            check_the_mirror_reshapes_nothing_it_has_shaped(&mut smoke, &mut report);
             // LAST over the WIRE, and it must stay last: it destroys the session this client is
             // attached to, so the client leaves and every check after it would be asserting against
             // a dead socket.
@@ -803,6 +808,150 @@ fn check_sprag_focus_requests_reach_the_re_derive(smoke: &mut Smoke, report: &mu
     report.check(
         &format!("sprag's focus requests reached the re-derive ({derivations:?} derivations, {retries:?} retries)"),
         derivations.is_some_and(|total| total > 0),
+    );
+}
+
+/// One `scene/frame_timings` sample, with a failed call reported rather than swallowed.
+///
+/// The two producer-work checks below each read the reply three times or more to take a DELTA, which
+/// is what upstream says these cumulative totals are for — so they need the sample as a value, not
+/// as the once-per-check inline match the older readers use.
+fn frame_work(smoke: &mut Smoke, what: &str, report: &mut Report) -> Option<Value> {
+    match smoke.call("scene/frame_timings", json!({})) {
+        Ok(value) => Some(value),
+        Err(error) => {
+            report.check(&format!("{what} ({error})"), false);
+            None
+        }
+    }
+}
+
+/// An AGENT's read of this client re-derives no scene.
+///
+/// `scene/snapshot` is the one call sprag's whole agent surface stands on — the CLI, the `sprag-mcp`
+/// tools an AI in a pane drives its siblings with, and every assertion in this file. pinion R1460
+/// prices it: a read served from the committed frame never reaches the RPC scene producer, while one
+/// that cannot be served runs a full view + layout settle. Which of those sprag pays, per call, was
+/// unanswerable from out here before the counter existed and is a real number for a client an agent
+/// polls in a loop.
+///
+/// **The detector is asserted BEFORE the claim**, because "the delta is zero" is also what a dead
+/// counter says, and a check that cannot fail is the failure mode this project keeps re-learning. A
+/// path-addressed call is the driver: resolving a tag to a point needs a scene laid out at the live
+/// viewport, which the stored one cannot answer for, so it must produce. Measured +1 per call against
+/// a snapshot's +0, and `scene/layout` is NOT an alternative — it reads as a re-derive and measured
+/// zero, so it would have proved nothing.
+///
+/// The click that drives it is inert beyond the resolve (synthetic pointer input does not drain
+/// headless), but this check does not rest on that: it reads counters only, and pane 0 already holds
+/// the ring, so a landing click would change nothing it or anything after it asserts.
+fn check_an_agents_read_costs_no_scene_rederive(smoke: &mut Smoke, report: &mut Report) {
+    let Some(start) = frame_work(smoke, "the client prices its producer work", report) else {
+        return;
+    };
+    let idle = start["produce"]["passes_total"].as_u64();
+
+    let resolved = smoke.call("scene/click", json!({ "path": "sprag_gui.pane.0" }));
+    let Some(driven) = frame_work(smoke, "the client re-prices after a re-derive", report) else {
+        return;
+    };
+    let derived = driven["produce"]["passes_total"].as_u64();
+    report.check(
+        &format!(
+            "a path-addressed call DOES re-derive the scene ({idle:?} -> {derived:?}, {resolved:?})"
+        ),
+        matches!((idle, derived), (Some(before), Some(after)) if after > before),
+    );
+
+    // The claim, now that a zero can be told from a counter that never moves.
+    let _ = smoke.call(
+        "scene/snapshot",
+        json!({ "path": "/window[main]", "from": "paint" }),
+    );
+    let Some(read) = frame_work(smoke, "the client re-prices after a read", report) else {
+        return;
+    };
+    let after_read = read["produce"]["passes_total"].as_u64();
+    report.check(
+        &format!("an agent's read re-derives NOTHING ({derived:?} -> {after_read:?})"),
+        after_read.is_some() && after_read == derived,
+    );
+}
+
+/// sprag's re-store fan-out hands the shaper no text it has already shaped.
+///
+/// A `shape_miss` is a `LayoutCache` MISS — a text run handed to the shaper — and pinion R1454
+/// measured one at 18.5us against a 118ns hit, so a pass that re-shapes its whole working set every
+/// time is a third of a 60fps frame at 300 strings. R1454 bounded the worst offender, but upstream is
+/// explicit that the bound is **consumer-honoured**: *"a binding that ignores it still measures every
+/// row, and nothing noticed. This is what notices."* sprag is a consumer that pays this on every
+/// MUTATING call, not merely per frame — each one leaves a stored mirror behind for `from: paint`,
+/// one side-effect-free view + layout per painted window.
+///
+/// What this check DEMONSTRATES it prices is sprag's CHROME: the detector moves the counter by
+/// writing a field, and a field is chrome. Whether pane CONTENT reaches the shaper is a separate
+/// question and nothing here answers it — the pointers say no (two new windows, each with a fresh
+/// grid, moved this number by zero, and pinion sizes a grid off a `CellMetric` lattice rather than
+/// shaping rows), but no check drives novel text into a pane, so the grid is unproven either way.
+/// Recorded because "a terminal's biggest text surface is its cells" is the natural assumption, and a
+/// future round reading a green tick here as coverage of pane content would be reading in a claim
+/// that was never made.
+///
+/// Detector first again, and it is the harder half: every steady-state number in this run is zero, so
+/// the only way to know the counter is alive is to make it move. Novel text into a painted field does
+/// it (+2 per string, measured), and the miss is accounted SYNCHRONOUSLY in the dispatch — no sleep,
+/// no wait, so the check has no timing in it at all.
+fn check_the_mirror_reshapes_nothing_it_has_shaped(smoke: &mut Smoke, report: &mut Report) {
+    // The detector writes into the find bar, which an earlier check opened. Asserted rather than
+    // assumed: with the field unpainted the write would change no painted text, the counter would sit
+    // still, and the detector would read as broken when it was only unreachable.
+    report.check(
+        "the find field is painted to drive novel text through",
+        smoke.tags().contains_key("sprag_find"),
+    );
+    let Some(start) = frame_work(smoke, "the client prices its mirror shaping", report) else {
+        return;
+    };
+    let cold = start["mirror"]["shape_misses_total"].as_u64();
+
+    // Text no shaper on this machine has seen: two scripts and a nonsense run, so it cannot collide
+    // with a label the UI already painted.
+    let wrote = smoke.call(
+        "scene/intervene",
+        json!({
+            "path": "/sprag_find/external/text",
+            "value": "zqxjvwkbp \u{4e2d}\u{6587}\u{6d4b}\u{8bd5} \u{0416}\u{0439}\u{0446}",
+        }),
+    );
+    let Some(shaped) = frame_work(smoke, "the client re-prices after novel text", report) else {
+        return;
+    };
+    let warm = shaped["mirror"]["shape_misses_total"].as_u64();
+    report.check(
+        &format!("novel text DOES reach the shaper ({cold:?} -> {warm:?}, {wrote:?})"),
+        matches!((cold, warm), (Some(before), Some(after)) if after > before),
+    );
+
+    // The claim. A mutating call with nothing new on screen must store its mirrors for free.
+    let scenes_before = shaped["mirror"]["scenes_total"].as_u64();
+    let _ = smoke.call("scene/click", json!({ "path": "sprag_gui.pane.0" }));
+    let Some(steady) = frame_work(smoke, "the client re-prices a steady-state store", report)
+    else {
+        return;
+    };
+    let scenes_after = steady["mirror"]["scenes_total"].as_u64();
+    let misses_after = steady["mirror"]["shape_misses_total"].as_u64();
+    // Non-vacuity before the verdict, exactly as next door: no mirror stored means no shaping to
+    // account, and a zero delta would then be true of a call that did nothing at all.
+    report.check(
+        &format!(
+            "a mirror was actually re-stored to price ({scenes_before:?} -> {scenes_after:?})"
+        ),
+        matches!((scenes_before, scenes_after), (Some(before), Some(after)) if after > before),
+    );
+    report.check(
+        &format!("and it re-shaped nothing ({warm:?} -> {misses_after:?})"),
+        misses_after.is_some() && misses_after == warm,
     );
 }
 
