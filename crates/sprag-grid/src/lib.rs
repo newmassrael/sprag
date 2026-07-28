@@ -7,6 +7,7 @@
 //! Because both sides model the same axes, this is a flat mapping rather
 //! than a translation.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -407,8 +408,12 @@ pub fn overlay_hyperlink_hover(buffer: GridBuffer, hovered: Option<HyperlinkId>)
 /// highlights the active cell; the underline distinguishes the rest of the
 /// composing run from committed text.
 fn preedit_cell(ch: char) -> TermCell {
-    TermCell::new(ch.to_string(), TermColor::Default, TermColor::Default)
-        .with_attrs(CellAttrs::empty().with_underline(true))
+    TermCell::new(
+        cluster(ch.encode_utf8(&mut [0u8; 4])),
+        TermColor::Default,
+        TermColor::Default,
+    )
+    .with_attrs(CellAttrs::empty().with_underline(true))
 }
 
 /// Build a scrolled-back (history) row's `TermCell`s from its STORED cells,
@@ -520,9 +525,50 @@ impl HyperlinkInterner {
     }
 }
 
+/// Every printable-ASCII cluster, in code-point order, as ONE `'static` string — so a cell whose
+/// glyph is a single ASCII byte can BORROW its cluster out of this instead of allocating.
+///
+/// One literal rather than a table of 95, because a table is 95 chances to mistype an entry and
+/// this is one contiguous run whose indexing a single test verifies exhaustively.
+const PRINTABLE_ASCII: &str = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+
+/// Resolve a producer cluster into pinion's [`Cow<'static, str>`], BORROWING whenever the value is
+/// one this crate can name at compile time.
+///
+/// The producer's [`Cell::cluster`] is a `SmolStr` — inline, so O(1) to clone — but pinion's
+/// [`TermCell::cluster`] is a `Cow<'static, str>`, and the obvious `to_string()` always lands in
+/// the `Owned` arm. That is ONE HEAP ALLOCATION PER CELL, on a path that runs per pane per served
+/// frame, and it charges the same price for a blank space as for an emoji. Since a terminal's
+/// cells are overwhelmingly blanks and printable ASCII, naming that range statically removes
+/// essentially all of it.
+///
+/// It removes it from CLONING too, which is the half that reaches past this crate: a borrowed
+/// `Cow` clones by copying a pointer, so the display client's per-frame deep copy of a mirrored
+/// `GridBuffer` stops allocating per cell as well.
+///
+/// The result is byte-for-byte the value `to_string()` produced — `Cow` compares, hashes and
+/// serializes by CONTENT — so nothing downstream can observe which arm a cell took. Anything
+/// outside the range (a wide CJK glyph, an emoji, a combining cluster) still owns its string,
+/// which is the honest boundary: this borrows what it can name, not what it hopes.
+fn cluster(text: &str) -> Cow<'static, str> {
+    // `byte - b' '` indexes the run; a control byte underflows to `None` and DEL (0x7f) runs off
+    // its end, so both fall through to the owned arm rather than borrowing a wrong glyph.
+    if let [byte] = text.as_bytes()
+        && let Some(index) = byte.checked_sub(b' ').map(usize::from)
+        && let Some(one) = PRINTABLE_ASCII.get(index..index + 1)
+    {
+        return Cow::Borrowed(one);
+    }
+    if text.is_empty() {
+        // A wide cluster's trailer column, which pinion also spells as a borrowed empty string.
+        return Cow::Borrowed("");
+    }
+    Cow::Owned(text.to_owned())
+}
+
 fn term_cell(cell: &Cell, interner: &mut HyperlinkInterner, palette: &Palette) -> TermCell {
     let mut tc = TermCell::new(
-        cell.cluster.to_string(),
+        cluster(&cell.cluster),
         term_color(cell.fg, ColorTarget::Foreground, palette),
         term_color(cell.bg, ColorTarget::Background, palette),
     )
@@ -653,6 +699,60 @@ mod tests {
     /// The default (un-mutated) xterm palette these projection tests resolve against.
     fn palette() -> Palette {
         Palette::xterm_default()
+    }
+
+    /// The static run indexes to itself at every position — the one mechanical check that a
+    /// 95-code-point literal carries no gap, transposition or escape mistake. Written as a loop
+    /// over the range rather than as spot checks, because a hand-audited literal is exactly the
+    /// thing that looks right and is not.
+    #[test]
+    fn the_printable_ascii_run_maps_every_code_point_to_itself() {
+        assert_eq!(PRINTABLE_ASCII.len(), 95, "0x20..=0x7e is 95 code points");
+        for byte in b' '..=b'~' {
+            let glyph = (byte as char).to_string();
+            assert_eq!(cluster(&glyph), glyph.as_str(), "byte {byte:#04x}");
+            assert!(
+                matches!(cluster(&glyph), Cow::Borrowed(_)),
+                "byte {byte:#04x} must borrow, not allocate",
+            );
+        }
+    }
+
+    /// What borrows and what does not — the boundary as a test rather than as a comment, and the
+    /// value is identical either way, which is what makes the arm unobservable downstream.
+    #[test]
+    fn a_cluster_borrows_exactly_what_this_crate_can_name() {
+        // A blank, a wide cluster's trailer, and ordinary printable text.
+        for borrowed in [" ", "", "x", "0", "~", "!"] {
+            assert!(
+                matches!(cluster(borrowed), Cow::Borrowed(_)),
+                "{borrowed:?} is nameable and must borrow",
+            );
+            assert_eq!(cluster(borrowed), borrowed);
+        }
+        // Outside the named range — a wide glyph, an emoji, a combining cluster, DEL, and a C0
+        // control. Still exact, still owned; the borrow never guesses past what it can name.
+        for owned in ["世", "🦀", "e\u{301}", "\u{7f}", "\u{1}"] {
+            assert!(
+                matches!(cluster(owned), Cow::Owned(_)),
+                "{owned:?} is not nameable and must own",
+            );
+            assert_eq!(cluster(owned), owned);
+        }
+    }
+
+    /// The projection's cells carry the borrow through — the property the allocation claim in
+    /// `tests/allocs.rs` rests on, asserted here at the arm rather than only at the cost.
+    #[test]
+    fn a_projected_ascii_cell_borrows_its_cluster() {
+        let screen = screen_from(b"hi", 8, 1);
+        let buffer = project(&screen, &palette());
+        for col in 0..buffer.cols() {
+            assert!(
+                matches!(buffer.cell(col, 0).unwrap().cluster, Cow::Borrowed(_)),
+                "col {col} (text and the blanks after it) must borrow",
+            );
+        }
     }
 
     #[test]
