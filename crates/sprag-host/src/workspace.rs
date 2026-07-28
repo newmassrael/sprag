@@ -2380,10 +2380,18 @@ mod tests {
         let reg = registry();
         let fired = Arc::new(AtomicUsize::new(0));
         let f = Arc::clone(&fired);
-        let on_empty: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+        // The signal is counted DIRECTLY rather than through [`crate::spawn_reaper`], and that is
+        // what makes this test sound. Routed through the reaper, the observable is `on_empty`,
+        // which fires only when a signal is DRAINED while the workspace happens to be empty — and
+        // draining is asynchronous, so the count is at-least-once and attributable to no particular
+        // sender. Measured both ways: asserting `== 1` on it failed about 1 full-suite run in 5
+        // (two signals drained after the death, 15us apart), and relaxing to `>= 1` made the guard
+        // VACUOUS — unhooking the pane still passed, because the [`crate::BirthPin`]'s own release
+        // signal was drained late and fired instead. Counting sends removes both problems: a send
+        // is synchronous and each one is attributable.
+        let signal: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
             f.fetch_add(1, Ordering::SeqCst);
         });
-        let signal = crate::spawn_reaper(Arc::clone(&reg), on_empty);
         let mut ext = WorkspaceExternal::new(
             Arc::clone(&reg),
             SessionScope::unscoped(&reg),
@@ -2391,22 +2399,41 @@ mod tests {
             Some(signal),
             None,
         );
-        // The birth pane EXITS immediately and is the only pane in the registry (the default "0"
-        // is empty), so its death must self-clean the daemon — which happens ONLY if the pane
-        // fed the reaper.
-        ext.invoke(
-            NEW_SESSION_ACTION,
-            IntrospectValue::Json(json!({"cmd": ["true"]})),
-        )
-        .expect("new_session births a pane");
+        // `new_session` sends exactly one signal by itself: the [`crate::BirthPin`] it takes fires
+        // on release, deliberately, so a birth that FAILED still lets an idle daemon go. A BLOCKING
+        // birth (`cat` waits on stdin) keeps the pane's own signal out of that count until this
+        // test asks for it, which is what separates the two senders.
+        let born = ext
+            .invoke(
+                NEW_SESSION_ACTION,
+                IntrospectValue::Json(json!({"cmd": ["cat"]})),
+            )
+            .expect("new_session births a pane");
+        let IntrospectValue::Json(Value::String(name)) = born else {
+            panic!("new_session answers the allocated session name");
+        };
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            1,
+            "the pin's release is the one signal a birth sends on its own",
+        );
+
+        // Now end the pane. A SECOND signal can come from one place only — the `on_exit` the birth
+        // spawn hooked onto it — so this is the assertion the test is named for: unhook the pane
+        // and the count stays at the pin's 1 forever.
+        let pool = lock(&reg)
+            .workspace_of(&name)
+            .expect("the born session resolves");
+        let id = lock(&pool).panes().first().expect("the birth pane").id();
+        drop(lock(&pool).close(id));
         let start = Instant::now();
-        while fired.load(Ordering::SeqCst) == 0 && start.elapsed() < Duration::from_secs(5) {
+        while fired.load(Ordering::SeqCst) < 2 && start.elapsed() < Duration::from_secs(5) {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(
             fired.load(Ordering::SeqCst),
-            1,
-            "the birth pane's death self-cleans the daemon, proving it was hooked — a \
+            2,
+            "the birth pane's death fed the death-signal, proving it was hooked — a \
              registry-side birth would feed no reaper and leave a lingering daemon",
         );
     }
