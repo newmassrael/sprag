@@ -13,13 +13,15 @@
 //! in. The first half is [`sprag_client`] and is shared verbatim with the GUI — the same
 //! [`WireHost`](sprag_client::WireHost), the same [`HostClient`](sprag_host::HostClient) protocol,
 //! the same addresses. This crate is only the second half, and it is deliberately small:
-//! [`grid_changes`] turns cells into [`Change`](termwiz::surface::Change)s, [`wire_key`] turns this
-//! terminal's keystrokes back into the names the wire carries, and a binary owns a terminal to do
-//! both against.
+//! [`tile`] says which cells belong to which pane, [`pane_changes`] turns those cells into
+//! [`Change`](termwiz::surface::Change)s, [`wire_key`] turns this terminal's keystrokes back into
+//! the names the wire carries, and a binary owns a terminal to do all three against.
 //!
-//! Those two functions are inverses of each other in spirit — one carries a pane's output OUT to a
-//! screen, the other carries a user's input IN to a pane — and they are the whole of what a
-//! terminal frontend adds to a client that already knows how to talk to a host.
+//! Output and input are inverses of each other in spirit — one carries a pane's cells OUT to a
+//! screen, the other carries a user's keystrokes IN to a pane — and between them sits the only
+//! thing a MULTI-pane client needs that a single-pane one does not: an answer to "which pane is
+//! this cell", which is [`tile`]. That is the whole of what a terminal frontend adds to a client
+//! that already knows how to talk to a host.
 //!
 //! That split is the reason `sprag-client` was extracted before any of this was written. A
 //! terminal client that re-spelled the wire would be a second definition of an ABI whose whole
@@ -34,7 +36,9 @@
 //! [`sprag_client`], and both are needed — a dependency added HERE would never reach that one.
 
 mod key;
+mod layout;
 mod paint;
 
 pub use key::{WireKey, wire_key};
-pub use paint::{cell_attributes, grid_changes};
+pub use layout::{Divider, PaneRect, Rect, Tiling, tile};
+pub use paint::{cell_attributes, cursor_changes, divider_changes, pane_changes};

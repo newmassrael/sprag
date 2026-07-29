@@ -26,7 +26,7 @@
 //!   own emulator, which is what makes the collapse lossless in practice rather than in principle.
 //! * **Column width.** pinion's [`CellWidth`] and termwiz's own measurement of a cluster are
 //!   computed by DIFFERENT unicode tables (`unicode-width` in `sprag-vt`, termwiz's `widechar_width`
-//!   here), so they can disagree. [`grid_changes`] does not assume they agree — it checks, and
+//!   here), so they can disagree. [`pane_changes`] does not assume they agree — it checks, and
 //!   re-anchors the cursor when they do not.
 //!
 //! Everything else — the six underline styles, the three colour forms, the six cursor shapes,
@@ -36,6 +36,7 @@
 
 use std::sync::Arc;
 
+use crate::layout::{Divider, Rect};
 use pinion_core::style::Color as PinColor;
 use pinion_core::{
     CellWidth, CursorShape as PinCursorShape, GridBuffer, Hyperlink as PinHyperlink, HyperlinkId,
@@ -46,20 +47,32 @@ use termwiz::color::{ColorAttribute, SrgbaTuple};
 use termwiz::hyperlink::Hyperlink;
 use termwiz::surface::{Change, CursorShape, CursorVisibility, Position};
 
-/// The whole of `grid` as terminal changes, ready for
+use sprag_terminal::SplitDir;
+
+/// What a cell prints when the buffer has nothing to say about it — a blank that still occupies
+/// its column, which is the rule every gap in this module follows (see [`printed`]).
+const BLANK: &str = " ";
+
+/// `grid` as terminal changes covering `area` exactly, ready for
 /// [`Surface::add_changes`](termwiz::surface::Surface::add_changes).
 ///
-/// Every cell of the buffer is written, so no clear is needed and none is emitted: a
-/// [`Change::ClearScreen`] would fight the surface's own diffing, repainting rows that did not
-/// change. **The changes cover the buffer's OWN extent and nothing outside it** — a surface larger
-/// than the grid keeps whatever it already held there, because only the caller knows what belongs
-/// in the remainder (another pane, once the layouter of slice 4 exists; a blank margin until then).
+/// Every cell of the rectangle is written and nothing outside it is touched, so no clear is needed
+/// and none is emitted: a [`Change::ClearScreen`] would fight the surface's own diffing, repainting
+/// rows that did not change — and with more than one pane on screen it would blank the others.
+/// Because [`tile`](crate::tile) partitions the terminal exactly, a caller that paints every pane
+/// and every divider has written every cell, which is what makes clearing unnecessary rather than
+/// merely cheap.
 ///
-/// The cursor is emitted last, so the terminal's real cursor comes to rest where the PANE's cursor
-/// is — which is what makes the view read as a terminal rather than a picture of one. A cursor
-/// position outside the buffer is reported HIDDEN rather than clamped: pinion's `GridCursor` docs
-/// say the producer's position may briefly fall outside during an in-flight resize, and a clamped
-/// cursor would draw an authoritative-looking block in a cell the producer never named.
+/// **The rectangle is the authority, not the buffer.** A pane's grid catches up to a resize one
+/// poll-wake behind the layouter, so the two disagree routinely and in both directions:
+///
+/// * a grid SHORTER or narrower than its rectangle leaves cells this function BLANKS, because what
+///   is under them is the previous frame's — another pane's content, at the old arrangement;
+/// * a grid LARGER than its rectangle is clipped, and a wide cluster that would straddle the right
+///   edge is blanked rather than half-drawn, since its second column belongs to the divider.
+///
+/// The cursor is deliberately NOT emitted here — see [`cursor_changes`], which the caller runs last
+/// and only for the pane that has focus.
 ///
 /// # Runs, and the column check inside them
 ///
@@ -77,9 +90,8 @@ use termwiz::surface::{Change, CursorShape, CursorVisibility, Position};
 /// disagreement to the single cell that caused it: the corrective write comes AFTER the wide
 /// cluster that clobbered its neighbour, so the surface ends up right either way.
 #[must_use]
-pub fn grid_changes(grid: &GridBuffer) -> Vec<Change> {
-    let (cols, rows) = (grid.cols(), grid.rows());
-    if cols == 0 || rows == 0 {
+pub fn pane_changes(grid: &GridBuffer, area: Rect) -> Vec<Change> {
+    if area.is_empty() {
         return Vec::new();
     }
 
@@ -88,33 +100,54 @@ pub fn grid_changes(grid: &GridBuffer) -> Vec<Change> {
     // than one per cell — the table is interned on the producer's side for the same reason.
     let mut interned: Option<(HyperlinkId, Arc<Hyperlink>)> = None;
 
-    for row in 0..rows {
+    for row in 0..area.rows {
         // Every row is anchored absolutely rather than by trusting where the previous row's text
         // left the cursor: a row whose cells fill the last column would otherwise depend on the
-        // terminal's autowrap setting, which is not this crate's to assume.
-        let mut run = Run::new(row, 0);
+        // terminal's autowrap setting, which is not this crate's to assume. With several panes on
+        // one screen it is also the only correct anchor — the previous row's text ended at THIS
+        // pane's right edge, not at the screen's.
+        let mut run = Run::new(area.row + row, area.col);
         // Whether the previous cell was a wide HEAD, which is what makes the next cell's
         // `Trailer` its second column rather than a column of its own. Per row, because a wide
         // cluster never straddles a row boundary.
         let mut after_wide = false;
-        for col in 0..cols {
-            let Some(cell) = grid.cell(col, row) else {
-                continue;
+        for col in 0..area.cols {
+            let follows_wide = std::mem::replace(&mut after_wide, false);
+            // How many columns of the rectangle are left, which is what decides whether a wide
+            // cluster can be drawn here at all.
+            let room = usize::from(area.cols - col);
+            let (text, columns, attrs) = match grid.cell(col, row) {
+                Some(cell) => {
+                    let Some((text, columns)) = printed(cell, follows_wide) else {
+                        // A trailer behind its own head: the head's cluster already occupies this
+                        // column, and its attributes are the head's by construction (pinion's
+                        // `TermCell::trailer` copies them), so writing anything here would draw a
+                        // glyph nobody asked for.
+                        continue;
+                    };
+                    let link = cell
+                        .hyperlink
+                        .and_then(|id| grid.hyperlink(id).map(|link| (id, link)));
+                    let attrs = cell_attributes(cell, resolve_link(&mut interned, link));
+                    if columns > room {
+                        // A wide cluster in the rectangle's last column. Its second half belongs to
+                        // the divider or to the pane beyond it, so the cluster is dropped and its
+                        // column blanked — the same substitution a terminal makes at its own right
+                        // margin, and the alternative is a glyph bleeding into a neighbour.
+                        (BLANK, 1, attrs)
+                    } else {
+                        after_wide = cell.width == CellWidth::Wide;
+                        (text, columns, attrs)
+                    }
+                }
+                // Inside the rectangle, outside the buffer: the pane has not caught up to its
+                // size yet. Blanked rather than skipped, because whatever is under it belongs to
+                // the arrangement this frame replaced.
+                None => (BLANK, 1, CellAttributes::default()),
             };
-            let follows_wide = std::mem::replace(&mut after_wide, cell.width == CellWidth::Wide);
-            let Some((text, columns)) = printed(cell, follows_wide) else {
-                // A trailer behind its own head: the head's cluster already occupies this column,
-                // and its attributes are the head's by construction (pinion's `TermCell::trailer`
-                // copies them), so writing anything here would draw a glyph nobody asked for.
-                continue;
-            };
-            let link = cell
-                .hyperlink
-                .and_then(|id| grid.hyperlink(id).map(|link| (id, link)));
-            let attrs = cell_attributes(cell, resolve_link(&mut interned, link));
             if run.attrs.as_ref() != Some(&attrs) {
                 run.flush(&mut changes);
-                run.restart(col, attrs);
+                run.restart(area.col + col, attrs);
             }
             run.text.push_str(text);
             run.span += columns;
@@ -126,7 +159,7 @@ pub fn grid_changes(grid: &GridBuffer) -> Vec<Change> {
                 let attrs = run.attrs.clone();
                 run.flush(&mut changes);
                 run.restart(
-                    col.saturating_add(u16::try_from(columns).unwrap_or(1)),
+                    (area.col + col).saturating_add(u16::try_from(columns).unwrap_or(1)),
                     attrs.unwrap_or_default(),
                 );
             }
@@ -134,14 +167,45 @@ pub fn grid_changes(grid: &GridBuffer) -> Vec<Change> {
         run.flush(&mut changes);
     }
 
-    changes.extend(cursor_changes(grid));
+    changes
+}
+
+/// The glyphs of one divider — the line of cells between two panes.
+///
+/// A `Horizontal` split lays its panes side by side, so what separates them is a VERTICAL line, and
+/// a `Vertical` split's is horizontal. The vocabulary is the host's and tmux's (`-h` names the
+/// layout, not the line), so the inversion is stated here once rather than at each call site.
+///
+/// Junctions are deliberately not drawn: where a divider meets another at a T, both cells keep
+/// their own straight glyph rather than becoming a box-drawing tee. tmux draws the tee; the line
+/// reads correctly without it, and inferring a junction means asking what the NEIGHBOURING cells
+/// hold, which is a second pass over a partition this function is handed one piece of.
+#[must_use]
+pub fn divider_changes(divider: &Divider) -> Vec<Change> {
+    if divider.area.is_empty() {
+        return Vec::new();
+    }
+    let glyph = match divider.dir {
+        SplitDir::Horizontal => "\u{2502}",
+        SplitDir::Vertical => "\u{2500}",
+    };
+    // Its own attributes, not whatever the last pane's run left set: a divider inheriting a
+    // program's reverse-video would read as a selection.
+    let mut changes = vec![Change::AllAttributes(CellAttributes::default())];
+    for row in 0..divider.area.rows {
+        changes.push(Change::CursorPosition {
+            x: Position::Absolute(usize::from(divider.area.col)),
+            y: Position::Absolute(usize::from(divider.area.row + row)),
+        });
+        changes.push(Change::Text(glyph.repeat(usize::from(divider.area.cols))));
+    }
     changes
 }
 
 /// What a cell prints and how many columns that print is supposed to occupy, or `None` when the
 /// cell prints nothing because a preceding wide cluster already covers it.
 ///
-/// The column count is what the width cross-check in [`grid_changes`] compares termwiz's own
+/// The column count is what the width cross-check in [`pane_changes`] compares termwiz's own
 /// measurement against, so it must be the count pinion INTENDED, never a measurement of the text:
 /// a wide head claims BOTH of its columns here, which is why its trailer claims none.
 ///
@@ -340,18 +404,35 @@ fn underline(style: PinUnderlineStyle) -> Underline {
     }
 }
 
-/// The buffer's cursor as changes: colour, shape, visibility, then position.
+/// The cursor of the pane occupying `area`: colour, shape, visibility, then position.
+///
+/// **Only the pane with FOCUS may call this, and it must be the last thing painted.** A terminal
+/// has one cursor, so every pane emitting its own would leave whichever painted last in charge,
+/// which is not the same thing as whichever the user is typing into. And [`Change::Text`] moves the
+/// surface's cursor as it writes, so a cursor emitted before another pane's cells ends up trailing
+/// that pane's last run. Both failures look like a cursor in the wrong place; only the second is
+/// intermittent.
+///
+/// The other panes therefore show no cursor at all, which is also what tmux does and what makes the
+/// focused pane identifiable without a border colour.
 ///
 /// pinion splits the cursor's SHAPE from its BLINK mode (`shape` + `blink`); termwiz folds the two
 /// into one seven-variant enum. Three shapes times two modes is exactly six of those variants, so
 /// the fold is a bijection — the seventh, `Default`, is the "whatever the terminal prefers" value
 /// no producer-reported cursor means.
-fn cursor_changes(grid: &GridBuffer) -> Vec<Change> {
+#[must_use]
+pub fn cursor_changes(grid: &GridBuffer, area: Rect) -> Vec<Change> {
     let cursor = grid.cursor();
-    // Outside the buffer the cursor is not a position this client can honour — see the note in
-    // [`grid_changes`]. Reporting it hidden is the truthful rendering of "the producer has not
-    // told us where it is yet".
-    let visible = cursor.visible && cursor.col < grid.cols() && cursor.row < grid.rows();
+    // Outside the buffer the cursor is not a position this client can honour: pinion's `GridCursor`
+    // docs say the producer's position may briefly fall outside during an in-flight resize, and a
+    // clamped cursor would draw an authoritative-looking block in a cell the producer never named.
+    // Outside the RECTANGLE it is a position belonging to another pane, which is worse — so both
+    // are reported hidden, which is the truthful rendering of "not here".
+    let visible = cursor.visible
+        && cursor.col < grid.cols()
+        && cursor.row < grid.rows()
+        && cursor.col < area.cols
+        && cursor.row < area.rows;
     let mut changes = vec![
         Change::CursorColor(
             cursor
@@ -376,8 +457,8 @@ fn cursor_changes(grid: &GridBuffer) -> Vec<Change> {
     ];
     if visible {
         changes.push(Change::CursorPosition {
-            x: Position::Absolute(usize::from(cursor.col)),
-            y: Position::Absolute(usize::from(cursor.row)),
+            x: Position::Absolute(usize::from(area.col + cursor.col)),
+            y: Position::Absolute(usize::from(area.row + cursor.row)),
         });
     }
     changes
@@ -389,11 +470,24 @@ mod tests {
     use pinion_core::{CellAttrs, GridCursor};
     use termwiz::surface::Surface;
 
-    /// Paint a buffer onto a surface of its own size — the composition every test here asserts
-    /// through, so none of them assert on the change LIST when what matters is the screen.
+    /// Paint a buffer onto a surface of its own size, as the sole focused pane — the composition
+    /// every test here asserts through, so none of them assert on the change LIST when what matters
+    /// is the screen.
     fn painted(grid: &GridBuffer) -> Surface {
-        let mut surface = Surface::new(usize::from(grid.cols()), usize::from(grid.rows()));
-        surface.add_changes(grid_changes(grid));
+        painted_in(
+            grid,
+            Rect::screen(grid.cols(), grid.rows()),
+            grid.cols(),
+            grid.rows(),
+        )
+    }
+
+    /// Paint a buffer into `area` on a `cols` x `rows` surface, cursor and all — the multi-pane
+    /// composition, with the one pane that has focus.
+    fn painted_in(grid: &GridBuffer, area: Rect, cols: u16, rows: u16) -> Surface {
+        let mut surface = Surface::new(usize::from(cols), usize::from(rows));
+        surface.add_changes(pane_changes(grid, area));
+        surface.add_changes(cursor_changes(grid, area));
         surface
     }
 
@@ -521,7 +615,7 @@ mod tests {
     /// on (the emulator-driven battery found none, including ZWJ families and ambiguous-width
     /// characters).
     ///
-    /// REVERT-PROOF, measured: delete the `unicode_column_width` check in [`grid_changes`] and
+    /// REVERT-PROOF, measured: delete the `unicode_column_width` check in [`pane_changes`] and
     /// this fails — `c` lands at column 2 instead of column 1, and in a full row every remaining
     /// cell would follow it. That is the failure the guard buys, and it is a whole line of garbage
     /// from one character.
@@ -622,10 +716,220 @@ mod tests {
         assert_eq!(surface.cursor_visibility(), CursorVisibility::Hidden);
     }
 
-    /// A zero-sized buffer paints nothing at all — not even a cursor change, which would be a
-    /// claim about a screen that does not exist.
+    /// A rectangle with no cells paints nothing at all — a claim about a screen that does not
+    /// exist. Reachable: the layouter hands one out for a terminal that reports no size.
+    ///
+    /// An empty BUFFER is the opposite case and is asserted beside it: a pane whose first frame has
+    /// not arrived still owns its rectangle, so it paints — blank.
     #[test]
-    fn an_empty_buffer_paints_nothing() {
-        assert!(grid_changes(&GridBuffer::new(0, 0)).is_empty());
+    fn an_empty_rectangle_paints_nothing_but_an_empty_buffer_still_blanks_its_own() {
+        assert!(pane_changes(&GridBuffer::new(4, 1), Rect::screen(0, 0)).is_empty());
+        assert!(!pane_changes(&GridBuffer::new(0, 0), Rect::screen(4, 1)).is_empty());
+    }
+
+    /// A pane paints at its OWN origin, not the screen's — the whole of what multi-pane adds to the
+    /// mapping, and the thing a single-pane test can never catch because there the two coincide.
+    ///
+    /// REVERT-PROOF, measured: drop the `area.col +` from the run's restart and `hi` lands at
+    /// column 0 of row 0 — on top of whichever pane owns the screen's top-left corner.
+    #[test]
+    fn a_pane_paints_at_its_own_origin() {
+        let grid = row(2, "hi".chars().map(|c| cell(c.to_string())).collect());
+        let mut surface = painted_in(&grid, Rect::new(10, 3, 2, 1), 20, 5);
+        let cells = surface.screen_cells();
+        assert_eq!(cells[3][10].str(), "h");
+        assert_eq!(cells[3][11].str(), "i");
+        assert_eq!(
+            cells[0][0].str(),
+            " ",
+            "and nothing was written at the origin"
+        );
+    }
+
+    /// A grid the arrangement has outgrown BLANKS the rest of its rectangle. Without it the cells
+    /// the pane no longer covers keep the previous frame — which after a split is the other pane's
+    /// content, sitting inside this pane's border until the resize catches up.
+    ///
+    /// REVERT-PROOF, measured: make the out-of-buffer arm `continue` instead of blanking and the
+    /// planted `XXXX` survives the paint.
+    #[test]
+    fn a_grid_shorter_than_its_rectangle_blanks_the_remainder() {
+        let mut surface = Surface::new(8, 2);
+        surface.add_change(Change::Text("XXXXXXXX".to_owned()));
+        // A 2x1 pane painted into a 4x2 rectangle: six of the eight cells are the buffer's absence.
+        surface.add_changes(pane_changes(
+            &row(2, vec![cell("o"), cell("k")]),
+            Rect::screen(4, 2),
+        ));
+        let cells = surface.screen_cells();
+        assert_eq!(cells[0][0].str(), "o");
+        assert_eq!(cells[0][2].str(), " ", "past the buffer's last column");
+        assert_eq!(cells[0][3].str(), " ");
+        assert_eq!(cells[1][0].str(), " ", "past the buffer's last row");
+        assert_eq!(
+            cells[0][4].str(),
+            "X",
+            "and nothing outside the rectangle moved"
+        );
+    }
+
+    /// A grid the rectangle has outgrown is CLIPPED: the cells past the edge are not written, so
+    /// they stay whatever their real owner put there.
+    #[test]
+    fn a_grid_larger_than_its_rectangle_is_clipped() {
+        let mut surface = Surface::new(6, 1);
+        surface.add_change(Change::Text("......".to_owned()));
+        let grid = row(6, "abcdef".chars().map(|c| cell(c.to_string())).collect());
+        surface.add_changes(pane_changes(&grid, Rect::screen(3, 1)));
+        let cells = surface.screen_cells();
+        assert_eq!(cells[0][2].str(), "c", "the last column inside");
+        assert_eq!(
+            cells[0][3].str(),
+            ".",
+            "and the first one outside is untouched"
+        );
+    }
+
+    /// **THE EDGE GUARD.** A wide cluster in the rectangle's last column is blanked rather than
+    /// drawn, because its second column is the divider's cell — and a glyph written there is a
+    /// pane bleeding through the line that is supposed to contain it.
+    ///
+    /// REVERT-PROOF, measured: delete the `columns > room` arm and column 2 holds `한` while column
+    /// 3 — outside the pane entirely — goes from the planted `.` to the cluster's trailing half.
+    /// Both cells are wrong, and the second is in someone else's rectangle.
+    #[test]
+    fn a_wide_cluster_at_the_right_edge_is_blanked_rather_than_bleeding() {
+        let wide = TermCell::new("한", TermColor::Default, TermColor::Default).wide();
+        let grid = row(4, vec![cell("a"), cell("b"), wide.clone(), wide.trailer()]);
+        let mut surface = Surface::new(4, 1);
+        surface.add_change(Change::Text("....".to_owned()));
+        surface.add_changes(pane_changes(&grid, Rect::screen(3, 1)));
+        let cells = surface.screen_cells();
+        assert_eq!(
+            cells[0][2].str(),
+            " ",
+            "the cluster does not fit, so it is not drawn"
+        );
+        assert_eq!(
+            cells[0][3].str(),
+            ".",
+            "and the cell beyond the pane is untouched"
+        );
+    }
+
+    /// The focused pane's cursor lands at the pane's origin plus its own position — so the terminal
+    /// cursor rests where the user is typing, in the pane they are typing into.
+    ///
+    /// REVERT-PROOF, measured: drop the `area.col +` / `area.row +` from the cursor's position and
+    /// it comes to rest at (1, 0) — inside whichever pane holds the screen's corner.
+    #[test]
+    fn the_cursor_lands_at_the_panes_own_origin() {
+        let cursor = GridCursor::new(1, 0, PinCursorShape::Block, true);
+        let grid = GridBuffer::new(4, 2).with_cursor(cursor);
+        let surface = painted_in(&grid, Rect::new(6, 4, 4, 2), 20, 8);
+        assert_eq!(surface.cursor_position(), (7, 4));
+        assert_eq!(surface.cursor_visibility(), CursorVisibility::Visible);
+    }
+
+    /// A cursor the producer has placed outside the pane's RECTANGLE is hidden, not drawn over the
+    /// neighbour it would land in. Reachable during a resize: the grid still carries the old size's
+    /// cursor while the rectangle has already shrunk.
+    ///
+    /// REVERT-PROOF, measured: drop the `cursor.col < area.cols` bound and the surface reports
+    /// `Visible` at `(6, 0)` — two columns past a four-column pane, inside the pane next door.
+    #[test]
+    fn a_cursor_outside_the_rectangle_is_hidden() {
+        let cursor = GridCursor::new(6, 0, PinCursorShape::Block, true);
+        let grid = GridBuffer::new(8, 1).with_cursor(cursor);
+        let surface = painted_in(&grid, Rect::new(0, 0, 4, 1), 20, 4);
+        assert_eq!(surface.cursor_visibility(), CursorVisibility::Hidden);
+    }
+
+    /// A HORIZONTAL split lays its panes side by side, so the line between them is VERTICAL — the
+    /// inversion the host's and tmux's `-h` vocabulary carries, asserted rather than argued.
+    #[test]
+    fn a_horizontal_splits_divider_is_a_vertical_line() {
+        let divider = Divider {
+            area: Rect::new(2, 0, 1, 3),
+            dir: SplitDir::Horizontal,
+        };
+        let mut surface = Surface::new(4, 3);
+        surface.add_changes(divider_changes(&divider));
+        let cells = surface.screen_cells();
+        for (row, line) in cells.iter().enumerate() {
+            assert_eq!(line[2].str(), "\u{2502}", "row {row}");
+            assert_eq!(line[1].str(), " ", "and only its own column");
+        }
+    }
+
+    /// ...and a VERTICAL split's divider is a horizontal line, spanning its region's width.
+    #[test]
+    fn a_vertical_splits_divider_is_a_horizontal_line() {
+        let divider = Divider {
+            area: Rect::new(0, 1, 4, 1),
+            dir: SplitDir::Vertical,
+        };
+        let mut surface = Surface::new(4, 3);
+        surface.add_changes(divider_changes(&divider));
+        assert_eq!(
+            surface.screen_chars_to_string().lines().nth(1),
+            Some("\u{2500}\u{2500}\u{2500}\u{2500}"),
+        );
+    }
+
+    /// **THE COMPOSITION RULE, executable.** With two panes on screen, the cursor comes to rest in
+    /// the FOCUSED one — even when the other pane paints after it.
+    ///
+    /// This is the ordering [`cursor_changes`]'s docs state, and the reason it needs a test rather
+    /// than a comment: [`Change::Text`] moves the surface's cursor as it writes, so a composition
+    /// that emitted the focused pane's cursor while walking the panes would leave it trailing
+    /// whichever pane came last. The focused pane here is deliberately the FIRST one, which is the
+    /// arrangement where the bug exists — with the focused pane last, a wrong composition and a
+    /// right one agree.
+    #[test]
+    fn the_cursor_rests_in_the_focused_pane_even_when_another_paints_after_it() {
+        let focused = row(2, vec![cell("a"), cell("b")]).with_cursor(GridCursor::new(
+            1,
+            0,
+            PinCursorShape::Block,
+            true,
+        ));
+        let other = row(2, vec![cell("y"), cell("z")]);
+        let (left, right) = (Rect::new(0, 0, 2, 1), Rect::new(3, 0, 2, 1));
+        let mut surface = Surface::new(5, 1);
+        // The composition the client makes: every pane's cells, then the focused pane's cursor.
+        surface.add_changes(pane_changes(&focused, left));
+        surface.add_changes(pane_changes(&other, right));
+        surface.add_changes(cursor_changes(&focused, left));
+        assert_eq!(surface.cursor_position(), (1, 0));
+        // ...and the wrong order, to show the assertion above is not vacuous: emitting the cursor
+        // before the other pane's cells leaves it wherever that pane's text ended.
+        let mut wrong = Surface::new(5, 1);
+        wrong.add_changes(pane_changes(&focused, left));
+        wrong.add_changes(cursor_changes(&focused, left));
+        wrong.add_changes(pane_changes(&other, right));
+        assert_eq!(wrong.cursor_position(), (5, 0), "trailing the other pane");
+    }
+
+    /// A divider carries its OWN attributes rather than inheriting the last pane's run — a line
+    /// that picked up a program's reverse-video would read as a selection.
+    #[test]
+    fn a_divider_does_not_inherit_the_last_panes_attributes() {
+        let reverse = cell("x").with_attrs(CellAttrs::empty().with_reverse(true));
+        let mut surface = Surface::new(3, 1);
+        surface.add_changes(pane_changes(
+            &row(2, vec![reverse.clone(), reverse]),
+            Rect::screen(2, 1),
+        ));
+        surface.add_changes(divider_changes(&Divider {
+            area: Rect::new(2, 0, 1, 1),
+            dir: SplitDir::Horizontal,
+        }));
+        let cells = surface.screen_cells();
+        assert!(
+            cells[0][0].attrs().reverse(),
+            "the pane's own cells keep it"
+        );
+        assert!(!cells[0][2].attrs().reverse(), "the divider does not");
     }
 }

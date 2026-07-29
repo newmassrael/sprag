@@ -485,6 +485,37 @@ pub trait HostClient {
         None
     }
 
+    /// Divide `target`'s cell in the scoped session's current window and put a new shell in the
+    /// half it opens (tmux `split-window -h` / `-v`), returning the new pane's id — or `None` if
+    /// the split was refused.
+    ///
+    /// [`new_pane`](Self::new_pane) with a PLACE, and the distinction is the whole reason this
+    /// exists. An append states where only by CONVENTION (the rightmost spine), which is all a
+    /// client with a pointer needs — it can rearrange afterwards by writing a whole tree back
+    /// through [`set_layout`](Self::set_layout). A client that draws in character cells has no such
+    /// gesture, so "put a shell below this one" has to be sayable in one request or it is not
+    /// sayable at all.
+    ///
+    /// `dir` names how the two halves are LAID OUT, not which way the line between them is drawn:
+    /// `Horizontal` puts the new pane to the RIGHT of `target`, `Vertical` BELOW it — the host's
+    /// [`SplitDir`] vocabulary and tmux's `-h`/`-v`, so one word means one thing from the keystroke
+    /// to the tree. `before` puts it on the other side instead (left of, or above), which is tmux's
+    /// `-b`.
+    ///
+    /// `target` is required and has no default, because the daemon has no active-pane concept to
+    /// mean "here": a direction is meaningless without the pane it is relative to.
+    ///
+    /// **`None` means the split did not happen** — the target holds no leaf in the current window
+    /// (it exited, it is floating, or it belongs to another window), or the child could not be
+    /// started. It never silently appends: a direction the user spelled is a request, and appending
+    /// instead would be the same lie as accepting `-h` and ignoring it.
+    ///
+    /// Defaulted to `None`, like [`new_pane`](Self::new_pane) — the wire client overrides it.
+    fn split(&self, target: PaneId, dir: SplitDir, before: bool) -> Option<PaneId> {
+        let (_, _, _) = (target, dir, before);
+        None
+    }
+
     /// Close pane `id` — kill its child and drop it from the window (tmux `kill-pane`), returning
     /// whether a pane was actually removed (`false` for an absent id).
     ///

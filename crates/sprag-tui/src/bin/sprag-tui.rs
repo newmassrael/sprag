@@ -22,28 +22,42 @@
 //! this client's own commands live behind a PREFIX, which is tmux's answer and the one a user
 //! already has in their fingers — [`PREFIX_KEY`] then a command key.
 //!
-//! Slice 3 binds exactly one command, `d` for detach, because that is the one a client cannot do
-//! without: something has to give the terminal back. `prefix prefix` types a literal prefix into
-//! the pane (tmux's `send-prefix`), which is what makes the prefix key itself reachable by the
-//! program running there. Slice 4 grows the table; H2 makes it configurable. Until then the choice
-//! of `Ctrl-B` is a default, not a decision anyone can change.
+//! The table is `d` to detach, `%` and `"` to split, `o` to move between panes, and
+//! `prefix prefix` to type a literal prefix into the pane (tmux's `send-prefix`, which is what
+//! keeps the prefix key itself reachable by the program running there). Every one of those is
+//! tmux's own spelling, because the point of a prefix table is that a user already has it in their
+//! fingers. H2 makes it configurable; until then the choice of `Ctrl-B` is a default, not a
+//! decision anyone can change.
+//!
+//! # Which pane the keys go to is THIS CLIENT's question
+//!
+//! The daemon has no active-pane concept — that is the same fact that makes tmux's `select-pane`
+//! unbuilt here — so focus is client state, and it has to be. Two clients attached to one session
+//! are looking at two terminals, and a user typing into the left pane of one has said nothing about
+//! where the other's keystrokes should land. What the daemon IS told is the EDGE
+//! ([`HostClient::focus`]), because a program that enabled DEC 1004 asked to know when it gained or
+//! lost the user's attention, and that is exactly what moving focus here means.
 //!
 //! # What it deliberately does not do yet
 //!
-//! * **One pane.** The first pane of the session. The character-cell layouter that tiles the rest
-//!   is slice 4, and it needs a wire action the daemon does not have yet.
-//! * **Latest attach wins the pane's size.** Attaching resizes the pane to this terminal, and so
-//!   does every later window change. With one client that is simply correct; with several it is a
-//!   POLICY, and the same one tmux spells `window-size latest`. The alternatives tmux also offers
-//!   (smallest attached client, or a per-client viewport over a larger pane) need a client-size
-//!   registry the daemon does not have, and choosing between them is H2's, not this slice's.
+//! * **Latest attach wins the pane's size.** Attaching resizes each pane to the rectangle this
+//!   terminal gives it, and so does every later window change. With one client that is simply
+//!   correct; with several it is a POLICY, and the same one tmux spells `window-size latest`. The
+//!   alternatives tmux also offers (smallest attached client, or a per-client viewport over a
+//!   larger pane) need a client-size registry the daemon does not have, and choosing between them
+//!   is H2's, not this slice's.
 //! * **No mouse, and it is turned OFF rather than left on.** The wire carries a semantic
 //!   [`MouseInput`](sprag_input::MouseInput) that the host gates against the pane's tracking mode,
-//!   so the path exists and slice 4 will use it. Until then this client asks termwiz NOT to enable
-//!   mouse reporting on the local terminal (see [`local_capabilities`]) — because termwiz's
-//!   `set_raw_mode` enables it by default, and a client that captures the mouse and then discards
-//!   every report has taken click-drag selection and wheel scrolling away from the user's own
-//!   terminal emulator in exchange for nothing.
+//!   and [`Tiling`](sprag_tui::Tiling) now answers which pane a cell belongs to — so both halves of
+//!   a click path exist and neither is wired to the other. Until they are, this client asks termwiz
+//!   NOT to enable mouse reporting on the local terminal (see [`local_capabilities`]), because
+//!   termwiz's `set_raw_mode` enables it by default, and a client that captures the mouse and then
+//!   discards every report has taken click-drag selection and wheel scrolling away from the user's
+//!   own terminal emulator in exchange for nothing.
+//! * **No pane is closed from here.** `exit` in the shell does it, and the destructive verb is the
+//!   one that would want a confirmation prompt this client has nowhere to draw.
+//! * **No divider is dragged.** A split opens at an even share and keeps it; resizing one needs a
+//!   relative `resize-pane`, which the daemon does not have either.
 //! * **Type-ahead before the client is up is lost.** `set_raw_mode` sets the termios with
 //!   `TCSAFLUSH`, which purges whatever was typed before the client got there. That is what every
 //!   full-screen program does and it is not this client's to change, but it is a real thing a user
@@ -58,8 +72,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use pinion_core::QuitSink;
 use sprag_client::WireHost;
 use sprag_host::HostClient;
-use sprag_terminal::PaneId;
-use sprag_tui::{WireKey, grid_changes, wire_key};
+use sprag_terminal::{PaneId, SplitDir};
+use sprag_tui::{
+    Rect, Tiling, WireKey, cursor_changes, divider_changes, pane_changes, tile, wire_key,
+};
 use termwiz::caps::{Capabilities, ProbeHints};
 use termwiz::color::ColorAttribute;
 use termwiz::input::{InputEvent, KeyCode, KeyEvent, Modifiers};
@@ -87,7 +103,13 @@ fn main() -> std::process::ExitCode {
 /// diagnostic nobody can read inside an alternate screen that is about to be torn down.
 fn run() -> Result<(), Box<dyn Error>> {
     let mut terminal = SystemTerminal::new(local_capabilities()?)?;
-    let (cols, rows) = screen_size(&mut terminal)?;
+    // The rectangle every pane's is carved out of. Mutable because a window change replaces it, and
+    // kept as ONE value rather than a pair so that every reader of "how big is the screen" — the
+    // layouter, the surface, the pane resizes — is reading the same fact.
+    let mut screen_area = {
+        let (cols, rows) = screen_size(&mut terminal)?;
+        Rect::screen(cols, rows)
+    };
 
     // The two edges the client is woken by, each a flag plus a wake of the one blocking poll.
     // The flags carry WHICH edge fired; the wake only says that one did.
@@ -98,8 +120,8 @@ fn run() -> Result<(), Box<dyn Error>> {
     let host = WireHost::spawn_or_attach(
         // No argv: the host's own `$SHELL`, the same default `sprag attach` gives the GUI.
         None,
-        cols,
-        rows,
+        screen_area.cols,
+        screen_area.rows,
         1,
         Arc::new({
             let (repaint, waker) = (Arc::clone(&repaint), waker.clone());
@@ -124,17 +146,21 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut screen = BufferedTerminal::new(terminal)?;
     // `BufferedTerminal::new` sizes its surface from the terminal's raw answer, so the fallback
     // has to be applied here too or a terminal that reports nothing paints into a 0x0 surface.
-    screen.resize(usize::from(cols), usize::from(rows));
+    screen.resize(usize::from(screen_area.cols), usize::from(screen_area.rows));
 
-    // The pane this client attached to was sized by whoever created it, which is this client only
-    // when it created the session too. Matching it to the terminal HERE — before the first paint,
-    // through the same call a window change uses — is what makes an attach over ssh show a pane
-    // shaped like the window it is being shown in.
-    resize_pane(&host, cols, rows);
+    // Which pane the user is typing into. `None` until the arrangement is read, which is the
+    // honest starting value: the client cannot name a pane before it has been told of one.
+    let mut focus = None;
+    // The panes this client attached to were sized by whoever created them, which is this client
+    // only when it created the session too. Matching each to the rectangle it was given HERE —
+    // before the first paint, through the same call a window change uses — is what makes an attach
+    // over ssh show panes shaped like the window they are being shown in.
+    let mut tiling = reconcile(&host, screen_area, &mut focus);
 
     // The first paint clears, because the surface starts blank but the terminal underneath it does
-    // not, and because the pane is almost never exactly the size of this window.
-    paint(&mut screen, &host, Clear::Yes)?;
+    // not. Later ones do not need to: the tiling PARTITIONS the screen, so every cell has an author
+    // and a repaint cannot leave a hole for the previous frame to show through.
+    paint(&mut screen, &host, &tiling, focus, Clear::Yes)?;
 
     // Where the next key goes. Starts at the pane: the prefix is a departure from the steady
     // state, not the other way round.
@@ -146,7 +172,26 @@ fn run() -> Result<(), Box<dyn Error>> {
             Some(InputEvent::Key(event)) => match command(&mut keys, &event) {
                 Command::Detach => break,
                 Command::Swallow => {}
-                Command::ToPane(key) => send_key(&host, &key),
+                Command::ToPane(key) => send_key(&host, focus, &key),
+                // A split and a focus move both change what is on screen without the host
+                // necessarily waking this loop, so each repaints on the spot rather than waiting
+                // for a notification that may only arrive with the new shell's first prompt.
+                Command::Split(dir, before) => {
+                    if let Some(pane) = focus.and_then(|pane| host.split(pane, dir, before)) {
+                        // tmux puts a new pane in the foreground, and so does this: the user asked
+                        // for a shell and would otherwise have to ask again to reach it.
+                        set_focus(&host, &mut focus, Some(pane));
+                    }
+                    tiling = reconcile(&host, screen_area, &mut focus);
+                    paint(&mut screen, &host, &tiling, focus, Clear::No)?;
+                }
+                Command::NextPane => {
+                    let next = focus.and_then(|pane| tiling.next_after(pane));
+                    set_focus(&host, &mut focus, next.or_else(|| tiling.first_pane()));
+                    // Only the CURSOR moved, and it is painted from the tiling this loop already
+                    // holds — so the repaint is the whole point and the reconcile is not needed.
+                    paint(&mut screen, &host, &tiling, focus, Clear::No)?;
+                }
             },
             // A bracketed paste arrives as ONE event rather than a key per character, and this arm
             // is REACHED: termwiz's `set_raw_mode` enables DEC private mode 2004 on the local
@@ -157,19 +202,20 @@ fn run() -> Result<(), Box<dyn Error>> {
             // brackets it if — and only if — the pane's CHILD asked for bracketing, which is a mode
             // only the host can see. A shell that wanted to see a multi-line paste as one edit
             // still does; one that did not still runs it line by line.
-            Some(InputEvent::Paste(text)) => paste(&host, &text),
-            // A window change resizes both ends: the local surface, so the view is not cropped,
-            // and the PANE, so the program inside it reflows. Clearing is what keeps the margin
-            // honest — the region the pane does not cover holds whatever the old, differently
-            // shaped screen left there.
+            Some(InputEvent::Paste(text)) => paste(&host, focus, &text),
+            // A window change resizes both ends: the local surface, so the view is not cropped, and
+            // every PANE, so the programs inside them reflow into their new rectangles. Clearing is
+            // what keeps a shrunken screen honest — a partition of the OLD size says nothing about
+            // cells the new one does not have.
             Some(InputEvent::Resized { .. }) => {
                 // Re-read through `screen_size` rather than trusting the event's payload or
                 // `BufferedTerminal::check_for_resize`: both take the terminal's raw answer, so a
                 // terminal that reports 0 would undo the boot fallback and leave a 0x0 surface.
                 let (cols, rows) = screen_size(screen.terminal())?;
+                screen_area = Rect::screen(cols, rows);
                 screen.resize(usize::from(cols), usize::from(rows));
-                resize_pane(&host, cols, rows);
-                paint(&mut screen, &host, Clear::Yes)?;
+                tiling = reconcile(&host, screen_area, &mut focus);
+                paint(&mut screen, &host, &tiling, focus, Clear::Yes)?;
             }
             // `Wake` carries no payload by design — which edge fired is in the flags below.
             Some(_) | None => {}
@@ -180,7 +226,12 @@ fn run() -> Result<(), Box<dyn Error>> {
         // `swap` rather than `load` + `store`: a change landing DURING the paint must leave the
         // flag set, so the next iteration repaints instead of showing a frame one behind.
         if repaint.swap(false, Ordering::AcqRel) {
-            paint(&mut screen, &host, Clear::No)?;
+            // Reconciled, not merely repainted: the host's notification covers the ARRANGEMENT as
+            // well as the cells, so a split made from another client — or a pane whose shell just
+            // exited and was closed — changes which rectangles exist. Painting the old tiling would
+            // put the new pane nowhere and leave the closed one's cells on screen.
+            tiling = reconcile(&host, screen_area, &mut focus);
+            paint(&mut screen, &host, &tiling, focus, Clear::No)?;
         }
     }
 
@@ -201,48 +252,101 @@ enum Clear {
     No,
 }
 
-/// Paint the session's first pane onto `screen` and flush the difference to the terminal.
+/// Paint every tiled pane, the lines between them, and the focused pane's cursor onto `screen`,
+/// then flush the difference to the terminal.
 ///
-/// Reading the pane list every frame rather than caching an id is deliberate and free: both
-/// [`HostClient::pane_ids`] and a live [`HostClient::pane_cells`] read
-/// [`WireHost`](sprag_client::WireHost)'s poll-maintained cache with no socket call, and a cached
-/// id would go stale the moment the pane it names is closed from another client.
+/// **The cursor is emitted LAST and by ONE pane**, which is not an ordering preference: a terminal
+/// has a single cursor, [`Change::Text`] moves it as it writes, and the pane that should own it is
+/// the one the user is typing into rather than the one that happened to paint last. The other panes
+/// show no cursor at all — the same thing tmux does, and what makes the focused pane identifiable
+/// without a coloured border.
+///
+/// Reading the cells every frame rather than caching them is deliberate and free: a live
+/// [`HostClient::pane_cells`] reads [`WireHost`](sprag_client::WireHost)'s poll-maintained cache
+/// with no socket call.
 fn paint(
     screen: &mut BufferedTerminal<SystemTerminal>,
     host: &WireHost,
+    tiling: &Tiling,
+    focus: Option<PaneId>,
     clear: Clear,
 ) -> Result<(), Box<dyn Error>> {
-    let Some(pane) = first_pane(host) else {
+    if tiling.panes.is_empty() {
         // No panes is a legitimate transient state (the last one just closed), not an error: the
-        // host will either grow one or go away, and both wake this loop.
+        // host will either grow one or go away, and both wake this loop. The last frame stays on
+        // screen rather than being blanked, because a user whose shell just exited is owed the
+        // output it exited with.
         return Ok(());
-    };
+    }
     if clear == Clear::Yes {
         screen.add_change(Change::ClearScreen(ColorAttribute::Default));
     }
-    screen.add_changes(grid_changes(&host.pane_cells(pane, 0)));
+    let mut cursor = Vec::new();
+    for held in &tiling.panes {
+        let cells = host.pane_cells(held.pane, 0);
+        screen.add_changes(pane_changes(&cells, held.area));
+        if focus == Some(held.pane) {
+            cursor = cursor_changes(&cells, held.area);
+        }
+    }
+    for divider in &tiling.dividers {
+        screen.add_changes(divider_changes(divider));
+    }
+    screen.add_changes(cursor);
     screen.flush()?;
     Ok(())
 }
 
-/// The pane this client shows: the session's first, in host order.
+/// Lay the host's arrangement out over `area`, keep `focus` on a pane that is actually shown, and
+/// match every pane's PTY to the rectangle it was given.
 ///
-/// One pane is slice 2's whole scope, so "which one" has exactly one defensible answer until the
-/// layouter exists — and picking the first keeps it the same pane across repaints, which a
-/// most-recently-changed rule would not.
-fn first_pane(host: &WireHost) -> Option<PaneId> {
-    host.pane_ids().first().copied()
+/// The three belong together because each depends on the tiling the other two would otherwise
+/// recompute — and because getting them out of step is what a partial update looks like: a focus on
+/// a pane that no longer has a rectangle sends keys into a program nobody can see, and a pane whose
+/// PTY still holds the old rectangle's size reflows to the wrong width.
+fn reconcile(host: &WireHost, area: Rect, focus: &mut Option<PaneId>) -> Tiling {
+    let tiling = tile(&host.layout().tree, area);
+    // Keep the pane the user chose if it is still shown; fall back to the first otherwise. The
+    // fallback is reached by a pane exiting, by another client closing one, and by this terminal
+    // shrinking below what the arrangement needs — all of which leave a focus naming nothing.
+    let held = focus.filter(|pane| tiling.area_of(*pane).is_some());
+    set_focus(host, focus, held.or_else(|| tiling.first_pane()));
+    for pane in &tiling.panes {
+        resize_pane(host, pane.pane, pane.area);
+    }
+    tiling
 }
 
-/// Send one decoded key to the pane this client shows.
+/// Move focus to `next`, telling the panes on both ends of the move.
+///
+/// The host is told because a child that enabled DEC 1004 asked to be: an editor that reloads a
+/// changed file when it regains attention is reacting to exactly this edge, and a client that
+/// moved focus silently would leave it reacting to nothing. A no-op when focus does not move, so
+/// the callers can be blunt about calling it.
+fn set_focus(host: &WireHost, focus: &mut Option<PaneId>, next: Option<PaneId>) {
+    if *focus == next {
+        return;
+    }
+    // The leaving edge first, so no program is ever told it has focus while another still believes
+    // it does. A refused edge (the pane is gone, 1004 is off) is not this client's to report.
+    if let Some(leaving) = *focus {
+        let _ = host.focus(leaving, false);
+    }
+    if let Some(arriving) = next {
+        let _ = host.focus(arriving, true);
+    }
+    *focus = next;
+}
+
+/// Send one decoded key to the focused pane.
 ///
 /// A key the host declines is logged, not surfaced: the only place this client could report it is
 /// the screen it is painting a pane onto, and a viewer that scribbled diagnostics over a user's
 /// program would be worse than the dropped key. `false` covers a key `sprag-input` has no encoding
 /// for (F13 upward) and a pane that closed between the poll and the send — neither is this
 /// client's to fix.
-fn send_key(host: &WireHost, key: &WireKey) {
-    let Some(pane) = first_pane(host) else {
+fn send_key(host: &WireHost, focus: Option<PaneId>, key: &WireKey) {
+    let Some(pane) = focus else {
         return;
     };
     let mut scratch = [0u8; 4];
@@ -252,9 +356,9 @@ fn send_key(host: &WireHost, key: &WireKey) {
     }
 }
 
-/// Forward pasted text to the pane, letting the host decide whether it is bracketed.
-fn paste(host: &WireHost, text: &str) {
-    let Some(pane) = first_pane(host) else {
+/// Forward pasted text to the focused pane, letting the host decide whether it is bracketed.
+fn paste(host: &WireHost, focus: Option<PaneId>, text: &str) {
+    let Some(pane) = focus else {
         return;
     };
     if !host.paste(pane, text) {
@@ -270,20 +374,20 @@ fn paste(host: &WireHost, text: &str) {
 /// `ws_xpixel` / `ws_ypixel` reports even while a TUI is the one resizing it.
 const CELL_PX_UNKNOWN: (u16, u16) = (0, 0);
 
-/// Resize the pane this client shows to `cols` x `rows` — the reflow the program inside it sees.
+/// Resize `pane` to the rectangle the layouter gave it — the reflow the program inside it sees.
 ///
-/// The no-op guard reads [`WireHost`]'s poll-maintained cache rather than the socket, so the
-/// common case (a resize event that did not change the character grid, which is every pixel-level
-/// drag in a GUI terminal emulator) costs no RPC and no reflow. It is a guard against WORK, not
-/// against correctness: `RESIZE_ACTION` is idempotent.
-fn resize_pane(host: &WireHost, cols: u16, rows: u16) {
-    let Some(pane) = first_pane(host) else {
-        return;
-    };
-    if host.pane_grid_size(pane) == (cols, rows) {
+/// The rectangle, not the terminal: with more than one pane on screen those are different numbers,
+/// and a program told it has the whole window would wrap its lines at a column the user cannot see.
+///
+/// The no-op guard reads [`WireHost`]'s poll-maintained cache rather than the socket, so the common
+/// case (a repaint that did not move any boundary, which is every one of them in the steady state)
+/// costs no RPC and no reflow. It is a guard against WORK, not against correctness: `RESIZE_ACTION`
+/// is idempotent, and the layouter never hands out an empty rectangle for the host to refuse.
+fn resize_pane(host: &WireHost, pane: PaneId, area: Rect) {
+    if host.pane_grid_size(pane) == (area.cols, area.rows) {
         return;
     }
-    host.resize(pane, cols, rows, CELL_PX_UNKNOWN);
+    host.resize(pane, area.cols, area.rows, CELL_PX_UNKNOWN);
 }
 
 /// The client's prefix key: `Ctrl-B`, tmux's default (see the module docs for why a prefix exists
@@ -310,6 +414,11 @@ enum Command {
     ToPane(WireKey),
     /// Give the terminal back and leave the session running.
     Detach,
+    /// Divide the focused pane and put a new shell in the half it opens. The `bool` is tmux's
+    /// `-b`: put it on the near side (left of, or above) instead of the far one.
+    Split(SplitDir, bool),
+    /// Move focus to the next pane in paint order.
+    NextPane,
     /// Nothing — the key was the prefix itself, an unbound command, or one the wire cannot spell.
     Swallow,
 }
@@ -330,13 +439,27 @@ fn command(keys: &mut Keys, event: &KeyEvent) -> Command {
             // One command key, whatever it turns out to be: the prefix is a one-key mode, so the
             // reset happens here rather than in each arm, where a new binding could forget it.
             *keys = Keys::ToPane;
-            match event.key {
+            // Every binding is the BARE letter or symbol: a modifier on a command key means the
+            // user's finger slipped, and tmux's own table reads the same way. `Ctrl-D` in
+            // particular is a program's end-of-file and must never be a detach.
+            if is_prefix(event) {
                 // `prefix prefix` types a literal prefix — tmux's `send-prefix`, and what keeps
                 // `Ctrl-B` reachable by the program running in the pane.
-                _ if is_prefix(event) => wire_key(event).map_or(Command::Swallow, Command::ToPane),
-                // `Ctrl-D` is a program's end-of-file and must not be a detach; the binding is the
-                // bare letter, exactly as tmux spells it.
-                KeyCode::Char('d') if !event.modifiers.contains(Modifiers::CTRL) => Command::Detach,
+                return wire_key(event).map_or(Command::Swallow, Command::ToPane);
+            }
+            if event.modifiers.intersects(Modifiers::CTRL | Modifiers::ALT) {
+                return Command::Swallow;
+            }
+            match event.key {
+                KeyCode::Char('d') => Command::Detach,
+                // tmux's two split keys, and its inversion with them: `%` runs `split-window -h`,
+                // which lays the panes side by SIDE. The flag names the layout, not the line drawn
+                // between them, and this is the one place in the client where the two could be
+                // confused — so the mapping is spelled against tmux's verb rather than against
+                // what the divider looks like.
+                KeyCode::Char('%') => Command::Split(SplitDir::Horizontal, false),
+                KeyCode::Char('"') => Command::Split(SplitDir::Vertical, false),
+                KeyCode::Char('o') => Command::NextPane,
                 _ => Command::Swallow,
             }
         }
@@ -553,5 +676,66 @@ mod tests {
         assert_eq!(command(&mut keys, &typed(CTRL_B)), Command::Swallow);
         assert_eq!(command(&mut keys, &typed(b"z")), Command::Swallow);
         assert_eq!(keys, Keys::ToPane, "and the mode still ends");
+    }
+
+    /// **THE INVERSION, pinned at the keyboard.** tmux's `%` is `split-window -h`, which lays the
+    /// panes side by SIDE — so it must reach the wire as `Horizontal`, and `"` as `Vertical`.
+    ///
+    /// Asserted as a pair in one test because the failure this guards against is the two being
+    /// SWAPPED, which either assertion alone would let through: a client that mapped both keys to
+    /// the same direction, or exchanged them, still splits and still shows two panes. R227 recorded
+    /// exactly this — a test that ran each form and counted panes would have passed a CLI that
+    /// mapped `-v` to horizontal.
+    #[test]
+    fn the_two_split_keys_carry_tmuxs_directions_and_not_each_others() {
+        let mut keys = Keys::ToPane;
+        assert_eq!(command(&mut keys, &typed(CTRL_B)), Command::Swallow);
+        assert_eq!(
+            command(&mut keys, &typed(b"%")),
+            Command::Split(SplitDir::Horizontal, false),
+        );
+        assert_eq!(keys, Keys::ToPane, "and the mode is one key long");
+        assert_eq!(command(&mut keys, &typed(CTRL_B)), Command::Swallow);
+        assert_eq!(
+            command(&mut keys, &typed(b"\"")),
+            Command::Split(SplitDir::Vertical, false),
+        );
+    }
+
+    /// `prefix o` moves to the next pane — tmux's `select-pane -t :.+`, and the only way to reach a
+    /// pane this client has just made.
+    #[test]
+    fn the_prefix_then_o_moves_to_the_next_pane() {
+        let mut keys = Keys::ToPane;
+        assert_eq!(command(&mut keys, &typed(CTRL_B)), Command::Swallow);
+        assert_eq!(command(&mut keys, &typed(b"o")), Command::NextPane);
+    }
+
+    /// The split keys are the client's only BEHIND the prefix. Typed bare they are ordinary
+    /// characters, and they are characters a shell sees constantly — `%` in a prompt, `"` around
+    /// every quoted string.
+    ///
+    /// REVERT-PROOF for the prefix gate itself: route these without it and typing a quoted argument
+    /// would split the window mid-word.
+    #[test]
+    fn the_split_keys_are_ordinary_characters_without_the_prefix() {
+        let mut keys = Keys::ToPane;
+        assert_eq!(routed(&mut keys, b"%").as_deref(), Some("%"));
+        assert_eq!(routed(&mut keys, b"\"").as_deref(), Some("\""));
+        assert_eq!(routed(&mut keys, b"o").as_deref(), Some("o"));
+    }
+
+    /// A command key with a modifier on it is a slip, not a command — the rule `Ctrl-D` already
+    /// forced, applied to the whole table rather than to the one binding that noticed it.
+    ///
+    /// `Ctrl-O` is the case that makes it more than tidiness: it is readline's `operate-and-get-
+    /// next`, so a user running through a history with it would find their focus moving instead.
+    #[test]
+    fn a_modified_command_key_is_swallowed() {
+        let mut keys = Keys::ToPane;
+        assert_eq!(command(&mut keys, &typed(CTRL_B)), Command::Swallow);
+        // Ctrl-O, the C0 byte.
+        assert_eq!(command(&mut keys, &typed(&[0x0f])), Command::Swallow);
+        assert_eq!(keys, Keys::ToPane);
     }
 }

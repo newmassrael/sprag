@@ -90,8 +90,8 @@ use sprag_host::wire::{
     KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, MOUSE_ACTION,
     NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, PROMPT_MARKS_SLOT,
     RESIZE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
-    SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at, find_slot_for, project_slot_for,
-    regex_slot_for,
+    SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at, find_slot_for,
+    project_slot_for, regex_slot_for,
 };
 use sprag_host::{
     CellFrame, HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneNotification,
@@ -102,7 +102,9 @@ use sprag_rpc::{
     CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn, new_gui_client_id,
     runtime_path,
 };
-use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneExit, PaneId, SessionInfo, WindowInfo};
+use sprag_terminal::{
+    LayoutSnapshot, LayoutWire, PaneExit, PaneId, SessionInfo, SplitDir, WindowInfo,
+};
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol};
 
 /// How long to wait for a just-spawned daemon's socket to accept — covers its bind race.
@@ -1148,6 +1150,45 @@ impl HostClient for WireHost {
             .and_then(|value| value.as_u64())
             .map(PaneId);
         if born.is_some() {
+            self.refresh_view();
+        }
+        born
+    }
+
+    /// Divide `target` and spawn into the half it opens, over the wire.
+    ///
+    /// `cmd` is absent for the same reason [`new_pane`](HostClient::new_pane)'s args are empty: the
+    /// program a client-created pane runs is the host's `$SHELL` default, decided in one place.
+    /// `before` is sent only when it is true, so the common request carries the two facts the
+    /// daemon needs and nothing it would have defaulted anyway.
+    ///
+    /// Both refusals the daemon can make — an unreachable target and a child that would not start —
+    /// arrive as the same absent result, which is the conflation every write on this client accepts.
+    /// The caller's recourse is identical either way: the arrangement is unchanged, so re-reading it
+    /// costs nothing and shows the truth.
+    fn split(&self, target: PaneId, dir: SplitDir, before: bool) -> Option<PaneId> {
+        let mut args = json!({
+            "pane": target.0,
+            "dir": match dir {
+                SplitDir::Horizontal => "horizontal",
+                SplitDir::Vertical => "vertical",
+            },
+        });
+        if before {
+            args["before"] = json!(true);
+        }
+        let born = self
+            .request(
+                "scene/invoke",
+                invoke(&mux_action_path(SPLIT_ACTION), args),
+                "split",
+            )
+            .and_then(|value| value.as_u64())
+            .map(PaneId);
+        if born.is_some() {
+            // Both the pane SET and the ARRANGEMENT moved, and this client mirrors each separately
+            // — so a repaint that re-read only the panes would tile a new pane the layout mirror
+            // has never heard of, and drop it.
             self.refresh_view();
         }
         born

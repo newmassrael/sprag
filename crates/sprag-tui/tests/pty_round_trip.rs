@@ -51,7 +51,7 @@ use portable_pty::{
     Child as PtyChild, CommandBuilder, ExitStatus, MasterPty, PtySize, native_pty_system,
 };
 use serde_json::{Value, json};
-use sprag_host::wire::{FULL_TEXT_SLOT, PANES_SLOT, SESSIONS_SLOT};
+use sprag_host::wire::{FULL_TEXT_SLOT, PANES_SLOT, SESSIONS_SLOT, SPLIT_ACTION};
 use sprag_host::{mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
 use sprag_vt::{Emulator, InputModes, MouseProtocol, VtPort};
@@ -198,6 +198,47 @@ fn pane_size(conn: &mut HostConn, session: &str) -> Option<(u16, u16)> {
     let pane = panes.as_array()?.first()?.clone();
     let dim = |key: &str| u16::try_from(pane[key].as_u64()?).ok();
     Some((dim("cols")?, dim("rows")?))
+}
+
+/// The `(cols, rows)` of EVERY pane of `session`, in the daemon's own order.
+///
+/// The multi-pane assertion, and it is made against the daemon rather than the screen for the same
+/// reason [`pane_size`] is: a client that tiled its surface correctly while telling both children
+/// they still had the whole terminal would paint a picture that looks right and wrap every line in
+/// the wrong column.
+fn pane_sizes(conn: &mut HostConn, session: &str) -> Vec<(u16, u16)> {
+    let Ok(panes) = conn.call(
+        "scene/query",
+        json!({ "session": session, "path": mux_action_path(PANES_SLOT) }),
+    ) else {
+        return Vec::new();
+    };
+    panes
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|pane| {
+                    let dim = |key: &str| u16::try_from(pane[key].as_u64()?).ok();
+                    Some((dim("cols")?, dim("rows")?))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The ids of `session`'s panes, in the daemon's own order — what a caller naming a split's target
+/// needs, and a fact only the host has.
+fn pane_ids(conn: &mut HostConn, session: &str) -> Vec<u64> {
+    let Ok(panes) = conn.call(
+        "scene/query",
+        json!({ "session": session, "path": mux_action_path(PANES_SLOT) }),
+    ) else {
+        return Vec::new();
+    };
+    panes
+        .as_array()
+        .map(|rows| rows.iter().filter_map(|pane| pane["id"].as_u64()).collect())
+        .unwrap_or_default()
 }
 
 /// What the DAEMON says pane 0 of the session holds — scrollback and visible text together.
@@ -415,6 +456,43 @@ impl Tui {
             .to_owned()
     }
 
+    /// The character painted at `(col, row)`, or `None` past the end of that row.
+    ///
+    /// UNtrimmed, unlike [`Tui::row`]: a divider's column is exactly what the padding question is
+    /// about here, so the blanks have to still be there to count through. Sound for these
+    /// assertions because everything to the left of a divider in these tests is ASCII or blank —
+    /// one char per column — and a wide cluster would break the correspondence.
+    fn cell(&self, col: u16, row: u16) -> Option<char> {
+        let emulator = self.screen.lock().expect("the screen mutex");
+        VtPort::screen(&*emulator)
+            .row_text(row)
+            .chars()
+            .nth(usize::from(col))
+    }
+
+    /// Columns `cols` of one row, trailing blanks trimmed — one PANE's share of a row.
+    ///
+    /// The multi-pane form of [`Tui::row`], and the distinction is not pedantry: `row` trims from
+    /// the screen's right edge, so with two panes side by side it stops at the DIVIDER and returns
+    /// the left pane's text with the padding and the line still attached. Asserting a pane's content
+    /// means asserting inside that pane's own columns.
+    fn span(&self, row: u16, cols: std::ops::Range<u16>) -> String {
+        let text: String = cols.map(|col| self.cell(col, row).unwrap_or(' ')).collect();
+        text.trim_end().to_owned()
+    }
+
+    /// The column `col` read down every row of the screen — how a divider is asserted, and the
+    /// diagnostic when one is not where it should be.
+    fn column(&self, col: u16) -> String {
+        let rows = {
+            let emulator = self.screen.lock().expect("the screen mutex");
+            VtPort::screen(&*emulator).rows()
+        };
+        (0..rows)
+            .map(|row| self.cell(col, row).unwrap_or(' '))
+            .collect()
+    }
+
     /// Whether the client is still running, for a diagnostic — a client that has EXITED left the
     /// alternate screen on its way out, so its last painted frame is not what a reader sees.
     fn liveness(&mut self) -> String {
@@ -598,6 +676,222 @@ fn a_window_change_reaches_the_panes_pty() {
                 )
             })
         },
+    );
+}
+
+/// The prefix key, as the byte a terminal sends for `Ctrl-B`.
+const PREFIX: &[u8] = &[0x02];
+
+/// What an 80x24 terminal divides into, computed the way the layouter computes it so the numbers in
+/// the tests below are derived rather than copied: one cell for the divider, the remainder split
+/// with the odd cell on the far side.
+///
+/// Written out because these are the assertions that would otherwise be four magic numbers, and a
+/// magic number in a geometry test is indistinguishable from the geometry being wrong.
+const fn halves(extent: u16) -> (u16, u16) {
+    let avail = extent - 1;
+    (avail / 2, avail - avail / 2)
+}
+
+/// **THE multi-pane gate.** `prefix %` divides the pane, and both halves reach their CHILDREN at the
+/// sizes the layouter gave them.
+///
+/// Three claims, and the first two are the ones a screenshot could not make:
+///
+/// * the daemon reports two panes whose sizes are the two halves of 80 columns with a divider
+///   column taken out — so the layouter's arithmetic reached two real PTYs, not just a surface;
+/// * the pane that was there keeps what its child said, painted in the half it now occupies;
+/// * a VERTICAL line stands between them, which is what `-h` means and the one thing that would
+///   still look right if the direction were inverted everywhere else consistently.
+#[test]
+fn a_split_gives_each_child_its_own_half_of_the_terminal() {
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client();
+
+    // Typed BEFORE the split, so the assertion after it is that content SURVIVED being re-tiled —
+    // an empty pane agreeing with an empty pane would prove nothing.
+    tui.type_bytes(b"left");
+    wait_for("the typed text to come back painted", || {
+        painted(&mut tui, "left")
+    });
+
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"%");
+
+    let (near, far) = halves(BOOT_PTY.0);
+    wait_for("both panes to reach their own half's size", || {
+        settled(
+            pane_sizes(&mut conn, &session),
+            &vec![(near, BOOT_PTY.1), (far, BOOT_PTY.1)],
+        )
+    });
+
+    wait_for("a divider to stand between the two panes", || {
+        let column = tui.column(near);
+        if column.chars().all(|glyph| glyph == '\u{2502}') {
+            Ok(())
+        } else {
+            Err(format!("column {near} reads {column:?}: {:?}", tui.rows()))
+        }
+    });
+
+    assert_eq!(
+        tui.span(0, 0..near),
+        "left",
+        "the pane that was there keeps what its child said, inside its own columns now",
+    );
+}
+
+/// ...and `prefix "` divides the ROWS instead, which is the assertion that makes the one above mean
+/// something.
+///
+/// **Neither test alone can catch the two keys being swapped**, and that is the whole reason this
+/// one exists: a client that mapped both to the same direction, or exchanged them, still splits and
+/// still shows two panes. R227 recorded exactly this failure one layer down — a CLI test that ran
+/// each form and counted panes would have passed a CLI that mapped `-v` to horizontal.
+#[test]
+fn the_other_split_key_divides_rows_instead_of_columns() {
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client();
+
+    tui.type_bytes(b"top");
+    wait_for("the typed text to come back painted", || {
+        painted(&mut tui, "top")
+    });
+
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"\"");
+
+    let (near, far) = halves(BOOT_PTY.1);
+    wait_for("both panes to reach their own half's size", || {
+        settled(
+            pane_sizes(&mut conn, &session),
+            &vec![(BOOT_PTY.0, near), (BOOT_PTY.0, far)],
+        )
+    });
+
+    wait_for("a divider to stand between the two panes", || {
+        let row = tui.row(near);
+        if !row.is_empty() && row.chars().all(|glyph| glyph == '\u{2500}') {
+            Ok(())
+        } else {
+            Err(format!("row {near} reads {row:?}: {:?}", tui.rows()))
+        }
+    });
+}
+
+/// Keys follow the focus the prefix moves, which is the whole of what focus MEANS in a client the
+/// daemon has no active pane for.
+///
+/// The measurement is made at the pane that can be read unambiguously: pane 0 runs `cat`, so
+/// anything reaching it comes back. After a split, focus is on the NEW pane (tmux's behaviour), so
+/// what is typed must NOT appear in pane 0 — and after `prefix o` wraps focus back, it must. Both
+/// directions are needed: a client that sent every key to pane 0 regardless would pass the second
+/// assertion alone, and one that sent them nowhere would pass the first.
+#[test]
+fn keys_follow_the_focus_the_prefix_moves() {
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client();
+
+    tui.type_bytes(b"before");
+    wait_for("the typed text to come back painted", || {
+        painted(&mut tui, "before")
+    });
+
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"%");
+    let (near, far) = halves(BOOT_PTY.0);
+    wait_for("the split to settle", || {
+        settled(
+            pane_sizes(&mut conn, &session),
+            &vec![(near, BOOT_PTY.1), (far, BOOT_PTY.1)],
+        )
+    });
+
+    // Into the NEW pane, which is not `cat`. It must not reach pane 0.
+    tui.type_bytes(b"elsewhere");
+    // Then back to pane 0, where `cat` will echo whatever arrives.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"o");
+    tui.type_bytes(b"back");
+
+    wait_for(
+        "the keys typed after the focus moved back to reach pane 0",
+        || {
+            let held = pane_text(&mut conn, &session);
+            if held.contains("back") {
+                Ok(())
+            } else {
+                Err(format!("pane 0 holds {held:?}"))
+            }
+        },
+    );
+
+    // The negative half, checked only once the positive one has landed: `back` arriving is proof
+    // that everything typed before it has been delivered too, so an absent `elsewhere` is a
+    // decision rather than a race.
+    let held = pane_text(&mut conn, &session);
+    assert!(
+        !held.contains("elsewhere"),
+        "what was typed while the new pane had focus must not reach pane 0: {held:?}",
+    );
+}
+
+/// An arrangement changed by ANOTHER client reaches this one — the property that makes a
+/// multiplexer's clients views of one session rather than three unrelated programs.
+///
+/// The split is made over the observer's connection, which is exactly what `sprag split-window` or
+/// a second attached client does; nothing is typed at the terminal at all. The client learns of it
+/// through the host's change notification and must RE-TILE, not merely repaint: painting the old
+/// arrangement would leave the new pane nowhere and both children at the wrong size.
+///
+/// `cmd` is named here where the client's own `%` does not name one, because this test is the
+/// second client rather than the first: `cat` keeps the new pane's PTY open and makes the pane's
+/// arrival observable without depending on whatever `$SHELL` is on the machine running the suite.
+#[test]
+fn a_split_made_by_another_client_re_tiles_this_one() {
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client();
+
+    tui.type_bytes(b"mine");
+    wait_for("the typed text to come back painted", || {
+        painted(&mut tui, "mine")
+    });
+
+    let first = pane_ids(&mut conn, &session);
+    assert_eq!(
+        first.len(),
+        1,
+        "one pane before the outside split: {first:?}"
+    );
+    conn.call(
+        "scene/invoke",
+        json!({
+            "session": session,
+            "path": mux_action_path(SPLIT_ACTION),
+            "args": { "pane": first[0], "dir": "horizontal", "cmd": ["cat"] },
+        }),
+    )
+    .expect("the outside split answers");
+
+    let (near, far) = halves(BOOT_PTY.0);
+    wait_for(
+        "the client to re-tile around a split it did not make",
+        || {
+            settled(
+                pane_sizes(&mut conn, &session),
+                &vec![(near, BOOT_PTY.1), (far, BOOT_PTY.1)],
+            )
+        },
+    );
+    wait_for("a divider to appear without a key being typed", || {
+        let column = tui.column(near);
+        if column.chars().all(|glyph| glyph == '\u{2502}') {
+            Ok(())
+        } else {
+            Err(format!("column {near} reads {column:?}: {:?}", tui.rows()))
+        }
+    });
+    assert_eq!(
+        tui.span(0, 0..near),
+        "mine",
+        "and the pane this client was showing keeps its content",
     );
 }
 

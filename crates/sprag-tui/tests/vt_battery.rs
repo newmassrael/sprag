@@ -1,7 +1,7 @@
 //! The slice-2 verification: a VT battery through the REAL chain, asserted on cells.
 //!
 //! `escape sequences -> sprag_vt::Emulator -> sprag_grid::project -> GridBuffer ->
-//! sprag_tui::grid_changes -> termwiz Surface`, with no terminal and no daemon anywhere in it.
+//! sprag_tui::pane_changes -> termwiz Surface`, with no terminal and no daemon anywhere in it.
 //!
 //! # Why the battery is driven and not hand-built
 //!
@@ -18,7 +18,7 @@
 
 use pinion_core::GridBuffer;
 use sprag_grid::project;
-use sprag_tui::grid_changes;
+use sprag_tui::{Rect, cursor_changes, pane_changes};
 use sprag_vt::{Emulator, VtPort};
 use termwiz::cell::{Blink, Intensity, Underline};
 use termwiz::color::{ColorAttribute, SrgbaTuple};
@@ -32,10 +32,13 @@ fn pane(bytes: &[u8], cols: u16, rows: u16) -> GridBuffer {
     project(VtPort::screen(&emulator), VtPort::palette(&emulator))
 }
 
-/// Paint a projected pane onto a surface of its own size.
+/// Paint a projected pane onto a surface of its own size, as the sole focused pane — the
+/// single-pane composition the client makes when a session has one pane.
 fn painted(grid: &GridBuffer) -> Surface {
+    let area = Rect::screen(grid.cols(), grid.rows());
     let mut surface = Surface::new(usize::from(grid.cols()), usize::from(grid.rows()));
-    surface.add_changes(grid_changes(grid));
+    surface.add_changes(pane_changes(grid, area));
+    surface.add_changes(cursor_changes(grid, area));
     surface
 }
 
