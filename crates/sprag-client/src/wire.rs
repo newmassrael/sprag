@@ -1438,15 +1438,7 @@ impl HostClient for WireHost {
     fn resize(&self, id: PaneId, cols: u16, rows: u16, cell_px: (u16, u16)) {
         let params = invoke(
             &mux_action_path(RESIZE_ACTION),
-            // Carry the display's cell pixel geometry so the daemon's PTY winsize and XTWINOPS pixel
-            // reports are truthful. The host treats `0` as "unknown" and keeps the last-known metric.
-            json!({
-                "id": id.0,
-                "cols": cols,
-                "rows": rows,
-                "cell_width": cell_px.0,
-                "cell_height": cell_px.1,
-            }),
+            resize_args(id, cols, rows, cell_px),
         );
         // Advance the tracked size only on a SUCCESSFUL resize (else it is retried, not
         // latched). Addressed by IDENTITY: the write-back finds the pane by `id`, so a
@@ -1793,6 +1785,32 @@ impl Drop for WireHost {
 /// `scene/invoke` params: the addressed `path` + its `args`.
 fn invoke(path: &str, args: Value) -> Value {
     json!({ "path": path, "args": args })
+}
+
+/// The `resize` action's arguments — the pane, the new character grid, and OPTIONALLY the
+/// display's cell pixel geometry.
+///
+/// **An unknown cell metric is spelled by OMITTING the two keys, never by sending a zero**, and
+/// that is a hard requirement rather than a tidiness preference. The action reads them with the
+/// host's `opt_dim`, which accepts only a POSITIVE dimension and rejects a present zero outright —
+/// so a client that helpfully sent `(0, 0)` had its WHOLE resize refused, `cols` and `rows`
+/// included, and got back an invoke error naming nothing about a cell.
+///
+/// It was not hypothetical. It is how the terminal client's every resize failed on its first run,
+/// silently, with the pane left at the size whoever created it chose. The GUI could never see it —
+/// a font metric is never zero — and `sprag resize-pane` had always omitted the keys, so the wire
+/// client was the one caller spelling "unknown" the way the host refuses. `(0, 0)` remains the
+/// TRAIT's spelling ([`HostClient::resize`]); this is where it is translated into the wire's.
+///
+/// A HALF-known metric is treated as unknown for the same reason the trait carries a pair: a cell
+/// has two dimensions, and a width with no height describes nothing the emulator could use.
+fn resize_args(id: PaneId, cols: u16, rows: u16, cell_px: (u16, u16)) -> Value {
+    let mut args = json!({ "id": id.0, "cols": cols, "rows": rows });
+    if cell_px.0 > 0 && cell_px.1 > 0 {
+        args["cell_width"] = json!(cell_px.0);
+        args["cell_height"] = json!(cell_px.1);
+    }
+    args
 }
 
 /// Read the host's current scene revision (the async `scene/waitFor` baseline).
@@ -3523,6 +3541,40 @@ mod tests {
         let params = invoke(&pane_input_path(0, KEY_ACTION), json!({ "key": "a" }));
         assert_eq!(params["path"], "/pane_0/sprag_input/external/key");
         assert_eq!(params["args"]["key"], "a");
+    }
+
+    /// A client with a real font metric sends it, and a client with none OMITS the keys rather than
+    /// zeroing them — the distinction the host's `opt_dim` makes between "absent" and "invalid".
+    ///
+    /// REVERT-PROOF: write the two keys unconditionally (the shape this carried until the terminal
+    /// client found it) and the second half fails. The end-to-end consequence — a resize that is
+    /// refused whole, leaving the pane at its old size — is `sprag-tui`'s PTY gate, because that is
+    /// the only place a REFUSAL is observable; from in here a wrong argument still looks like JSON.
+    #[test]
+    fn an_unknown_cell_metric_is_absent_from_a_resize_not_zero() {
+        let with_metric = resize_args(PaneId(3), 100, 30, (9, 18));
+        assert_eq!(with_metric["id"], 3);
+        assert_eq!(with_metric["cols"], 100);
+        assert_eq!(with_metric["rows"], 30);
+        assert_eq!(with_metric["cell_width"], 9);
+        assert_eq!(with_metric["cell_height"], 18);
+
+        let without = resize_args(PaneId(3), 100, 30, (0, 0));
+        assert_eq!(without["cols"], 100, "the grid is still sent");
+        assert_eq!(without["rows"], 30);
+        assert!(
+            without.get("cell_width").is_none() && without.get("cell_height").is_none(),
+            "an unknown metric is absent, not zero: {without}",
+        );
+
+        // A half-known metric is no metric: neither key is sent rather than one.
+        for half in [(9, 0), (0, 18)] {
+            let args = resize_args(PaneId(3), 100, 30, half);
+            assert!(
+                args.get("cell_width").is_none() && args.get("cell_height").is_none(),
+                "{half:?} describes no cell: {args}",
+            );
+        }
     }
 
     /// The layout mirror is WINDOW-AWARE: a store for a DIFFERENT window RESETS unconditionally
