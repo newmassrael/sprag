@@ -56,7 +56,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use pinion_core::external::{
-    ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError, SchemaField,
+    ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError, RawJson,
+    SchemaField,
 };
 use serde_json::{Map, Value};
 use sprag_terminal::{
@@ -1042,13 +1043,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                 // `tmux ls` at rest. Applied HERE, after `attached` is filled, because that is the
                 // one place both facts the rule needs are known (see `SessionInfo::is_listable`).
                 infos.retain(SessionInfo::is_listable);
-                match serde_json::to_value(&infos) {
-                    Ok(json) => Some(IntrospectValue::Json(json)),
-                    Err(error) => {
-                        tracing::error!(target: "sprag_host", %error, "sessions failed to serialise");
-                        None
-                    }
-                }
+                encoded_answer(&infos, "sessions")
             }
             // Every currently-attached client and the session it views — tmux `list-clients`.
             // Registry-WIDE like `sessions` (its subject is the set of clients), and filled from
@@ -1060,13 +1055,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                     Some(attachments) => lock(attachments).clients(),
                     None => Vec::new(),
                 };
-                match serde_json::to_value(&clients) {
-                    Ok(json) => Some(IntrospectValue::Json(json)),
-                    Err(error) => {
-                        tracing::error!(target: "sprag_host", %error, "clients failed to serialise");
-                        None
-                    }
-                }
+                encoded_answer(&clients, "clients")
             }
             // What this host has paid to project its cells. Read straight off the meter rather
             // than recomputed, and UNSCOPED on purpose: the counters are process-wide, so scoping
@@ -1090,13 +1079,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                 let infos = registry.session(self.scope.session())?.window_infos();
                 // One `WindowInfo` shape, shared with a client's mirror and the in-process arm —
                 // serialised here the way the `layout` slot serialises its snapshot.
-                match serde_json::to_value(&infos) {
-                    Ok(json) => Some(IntrospectValue::Json(json)),
-                    Err(error) => {
-                        tracing::error!(target: "sprag_host", %error, "windows failed to serialise");
-                        None
-                    }
-                }
+                encoded_answer(&infos, "windows")
             }
             // The USER's own declared commands — no pane, no session, no scope: this answer is the
             // same for every request the host serves, which is exactly why it is a fixed slot beside
@@ -1179,13 +1162,7 @@ fn project_value(workspace: &Arc<Mutex<Workspace>>, pane: PaneId) -> IntrospectV
     };
     match crate::project::load(&cwd) {
         None => IntrospectValue::Null,
-        Some(Ok(project)) => match serde_json::to_value(&project) {
-            Ok(json) => IntrospectValue::Json(json),
-            Err(error) => {
-                tracing::error!(target: "sprag_host", %error, "project failed to serialise");
-                IntrospectValue::Null
-            }
-        },
+        Some(Ok(project)) => encoded_answer(&project, "project").unwrap_or(IntrospectValue::Null),
         Some(Err(error)) => IntrospectValue::Json(serde_json::json!({
             "error": error.to_string(),
         })),
@@ -1203,13 +1180,7 @@ fn project_value(workspace: &Arc<Mutex<Workspace>>, pane: PaneId) -> IntrospectV
 fn global_commands_value() -> IntrospectValue {
     match crate::config::load() {
         None => IntrospectValue::Null,
-        Some(Ok(config)) => match serde_json::to_value(&config) {
-            Ok(json) => IntrospectValue::Json(json),
-            Err(error) => {
-                tracing::error!(target: "sprag_host", %error, "user config failed to serialise");
-                IntrospectValue::Null
-            }
-        },
+        Some(Ok(config)) => encoded_answer(&config, "user config").unwrap_or(IntrospectValue::Null),
         Some(Err(error)) => IntrospectValue::Json(serde_json::json!({
             "error": error.to_string(),
         })),
@@ -1225,10 +1196,30 @@ fn global_commands_value() -> IntrospectValue {
 /// silently answered as "unknown slot" — this file's own "the swallow is honest, not
 /// silent" bar.
 fn layout_value(snapshot: LayoutSnapshot) -> Option<IntrospectValue> {
-    match serde_json::to_value(&snapshot) {
-        Ok(json) => Some(IntrospectValue::Json(json)),
+    encoded_answer(&snapshot, "layout")
+}
+
+/// Answer `subject` with JSON text encoded ONCE, or trace the failure and answer absence.
+///
+/// The ONE place this file turns a serialisable answer into an [`IntrospectValue`], for the
+/// reason `crate::pane`'s `cells` arm states: [`IntrospectValue::Raw`] (pinion R1480, delivering
+/// PINION-PR79) carries text the producer already holds and `scene/query` splices it into the
+/// reply, so nothing here builds a `serde_json::Value` tree for the dispatch to walk and encode a
+/// second time. **The wire bytes do not change** — only how many times they are produced.
+///
+/// [`RawJson::encode`] rather than [`IntrospectValue::raw`] on purpose: the convenience
+/// constructor degrades a failure to `Null` SILENTLY, and every caller here already had an error
+/// channel it was using. Keeping the `Result` keeps this file's "the swallow is honest, not
+/// silent" bar — the trace names which answer failed, and absence stays distinguishable from a
+/// present-but-empty one.
+fn encoded_answer<T: ?Sized + serde::Serialize>(
+    value: &T,
+    subject: &str,
+) -> Option<IntrospectValue> {
+    match RawJson::encode(value) {
+        Ok(raw) => Some(IntrospectValue::Raw(raw)),
         Err(error) => {
-            tracing::error!(target: "sprag_host", %error, "layout failed to serialise");
+            tracing::error!(target: "sprag_host", %error, subject, "answer failed to serialise");
             None
         }
     }
@@ -1586,10 +1577,8 @@ mod tests {
         let reg = registry();
         let (mut ext, _rev) = control(&reg);
         assert_eq!(
-            ext.query(LAYOUT_SLOT),
-            Some(IntrospectValue::Json(
-                json!({"revision": 0, "tree": {"root": null}, "floating": []})
-            )),
+            answer_doc(ext.query(LAYOUT_SLOT)),
+            json!({"revision": 0, "tree": {"root": null}, "floating": []}),
             "an empty window has no arrangement — and the wire carries no minting counter",
         );
 
@@ -1616,12 +1605,72 @@ mod tests {
         );
     }
 
+    /// The DOCUMENT a structural answer carries, whichever way it is encoded.
+    ///
+    /// A `Raw` answer and a `Json` answer holding the same document are INDISTINGUISHABLE on the
+    /// wire — the dispatch splices one and serialises the other to the same bytes — so a test
+    /// whose subject is the CONTENT must not accidentally also be an assertion about which
+    /// encoding produced it. Every content test below reads through here; the one test whose
+    /// subject IS the encoding asserts the variant directly and is named for it
+    /// (`a_structural_answer_is_encoded_text_not_a_dom`).
+    fn answer_doc(value: Option<IntrospectValue>) -> Value {
+        match value.expect("the slot answers") {
+            IntrospectValue::Json(v) => v,
+            IntrospectValue::Raw(raw) => raw.to_value().expect("an encoded answer is valid JSON"),
+            other => panic!("the slot answered a non-structural value: {other:?}"),
+        }
+    }
+
+    /// [`answer_doc`]'s sibling for the WRITE channel: the layout writes answer with the
+    /// arrangement now in force, built by the same `layout_value`, so they carry the same
+    /// encoding and their tests must read it the same way.
+    fn write_doc(result: Result<IntrospectValue, InvokeError>) -> Value {
+        answer_doc(Some(result.expect("the write answers")))
+    }
+
+    /// THE ENCODING, which every content test above is deliberately blind to.
+    ///
+    /// `answer_doc` reads through both variants BECAUSE the wire cannot tell them apart — which
+    /// is the point of the change and also what makes it invisible: revert the consumption and
+    /// every other assertion in this file still passes. So the claim "this file's structural
+    /// answers are encoded once, not built as a `serde_json::Value` for the dispatch to walk and
+    /// encode again" gets the one test that can fail for it.
+    #[test]
+    fn a_structural_answer_is_encoded_text_not_a_dom() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+            .unwrap();
+
+        for slot in [SESSIONS_SLOT, CLIENTS_SLOT, WINDOWS_SLOT, LAYOUT_SLOT] {
+            let answer = ext.query(slot).expect("the slot answers");
+            assert!(
+                answer.as_raw().is_some(),
+                "`{slot}` still builds a serde_json::Value DOM for the dispatch to re-encode; \
+                 the answer was {answer:?}",
+            );
+        }
+    }
+
+    /// The reason these callers use [`RawJson::encode`] and not the `IntrospectValue::raw`
+    /// convenience: the convenience degrades a failure to `Null` SILENTLY, and every caller here
+    /// had an error channel worth keeping. A value serde_json refuses (a map whose keys are not
+    /// strings) answers ABSENCE — distinguishable from a present-but-empty `Null` — and is traced.
+    #[test]
+    fn an_unserialisable_answer_is_absent_rather_than_a_silent_null() {
+        let refused: std::collections::BTreeMap<[u8; 2], u8> = [([1, 2], 3)].into_iter().collect();
+        assert!(
+            encoded_answer(&refused, "a test value").is_none(),
+            "a refusal must not be spelled as a present answer",
+        );
+        // The control: an ordinary value DOES answer, so the assertion above is about the
+        // serialization failure and not about the helper never answering at all.
+        assert!(encoded_answer(&json!({"ok": true}), "a test value").is_some());
+    }
+
     /// The mux `layout` slot as JSON (the shape a client actually parses).
     fn query_layout(ext: &mut WorkspaceExternal) -> Value {
-        let Some(IntrospectValue::Json(layout)) = ext.query(LAYOUT_SLOT) else {
-            panic!("the layout slot answers with JSON");
-        };
-        layout
+        answer_doc(ext.query(LAYOUT_SLOT))
     }
 
     /// The write half through the control surface: a client's settled arrangement installs,
@@ -1643,7 +1692,7 @@ mod tests {
         let at = query_layout(&mut ext)["revision"]
             .as_u64()
             .expect("a revision");
-        let Ok(IntrospectValue::Json(answer)) = ext.invoke(
+        let answer = write_doc(ext.invoke(
             SET_LAYOUT_ACTION,
             IntrospectValue::Json(
                 json!({ "expected_revision": at, "tree": { "root": { "split": {
@@ -1653,9 +1702,7 @@ mod tests {
                 "second": { "leaf": 0 },
             } } } }),
             ),
-        ) else {
-            panic!("the write answers with JSON");
-        };
+        ));
 
         assert_eq!(answer["tree"]["root"]["split"]["dir"], "vertical");
         assert_eq!(answer["tree"]["root"]["split"]["ratio"], 0.75);
@@ -1689,12 +1736,10 @@ mod tests {
                 .unwrap();
         }
 
-        let Ok(IntrospectValue::Json(answer)) = ext.invoke(
+        let answer = write_doc(ext.invoke(
             SET_FLOATING_ACTION,
             IntrospectValue::Json(json!({ "id": 1, "floating": true })),
-        ) else {
-            panic!("the float write answers with JSON");
-        };
+        ));
         assert_eq!(
             answer["tree"]["root"]["leaf"], 0,
             "the floated pane's leaf collapsed; its sibling reclaimed the space",
@@ -1739,7 +1784,7 @@ mod tests {
 
         // The same pane twice, at a ratio that is not a share.
         let at = good["revision"].as_u64().expect("a revision");
-        let Ok(IntrospectValue::Json(answer)) = ext.invoke(
+        let answer = write_doc(ext.invoke(
             SET_LAYOUT_ACTION,
             IntrospectValue::Json(
                 json!({ "expected_revision": at, "tree": { "root": { "split": {
@@ -1749,9 +1794,7 @@ mod tests {
                 "second": { "leaf": 0 },
             } } } }),
             ),
-        ) else {
-            panic!("a rejected write still answers with the truth to project");
-        };
+        ));
         assert_eq!(answer, good, "the arrangement in force is untouched");
 
         // A tree that does not even deserialise is a malformed REQUEST, not a bad
@@ -1864,7 +1907,7 @@ mod tests {
         let at = query_layout(&mut work)["revision"]
             .as_u64()
             .expect("a revision");
-        let Ok(IntrospectValue::Json(answer)) = work.invoke(
+        let answer = write_doc(work.invoke(
             SET_LAYOUT_ACTION,
             IntrospectValue::Json(
                 json!({ "expected_revision": at, "tree": { "root": { "split": {
@@ -1874,9 +1917,7 @@ mod tests {
                 "second": { "leaf": 0 },
             } } } }),
             ),
-        ) else {
-            panic!("the write answers with JSON");
-        };
+        ));
         assert_eq!(answer["tree"]["root"]["split"]["ratio"], 0.75);
         assert_eq!(
             answer["tree"]["root"]["split"]["first"]["leaf"], 1,
@@ -2065,7 +2106,7 @@ mod tests {
         // depend on where the birth pane happens to run and on the host's git state, which is
         // orthogonal to what this slot promises (which sessions exist, and which is the default).
         let structural = |value: Option<IntrospectValue>| -> Vec<(String, u64, bool)> {
-            let Some(IntrospectValue::Json(Value::Array(items))) = value else {
+            let Value::Array(items) = answer_doc(value) else {
                 panic!("the sessions slot answers with a JSON array");
             };
             items
@@ -2129,7 +2170,7 @@ mod tests {
     #[test]
     fn an_empty_session_a_client_is_attached_to_still_lists() {
         let session_names = |value: Option<IntrospectValue>| -> Vec<String> {
-            let Some(IntrospectValue::Json(Value::Array(items))) = value else {
+            let Value::Array(items) = answer_doc(value) else {
                 panic!("the sessions slot answers with a JSON array");
             };
             items
@@ -2743,11 +2784,11 @@ mod tests {
 
         // The windows slot (read fresh) shows two, the new one current.
         assert_eq!(
-            ext.query(WINDOWS_SLOT),
-            Some(IntrospectValue::Json(json!([
+            answer_doc(ext.query(WINDOWS_SLOT)),
+            json!([
                 {"name": "0", "current": false},
                 {"name": "1", "current": true},
-            ]))),
+            ]),
         );
 
         // The birth pane landed in the NEW window: a fresh scope to the session (now current =
@@ -2781,11 +2822,11 @@ mod tests {
         );
         assert!(rev.current() > before, "a select wakes waiters to re-read");
         assert_eq!(
-            ext.query(WINDOWS_SLOT),
-            Some(IntrospectValue::Json(json!([
+            answer_doc(ext.query(WINDOWS_SLOT)),
+            json!([
                 {"name": "0", "current": true},
                 {"name": "logs", "current": false},
-            ]))),
+            ]),
         );
 
         // A target is required, and an unknown one is a rejection (well-formed, unhonorable).
@@ -2829,11 +2870,11 @@ mod tests {
         // The rename took and "logs" kept its name; the slot reads the session fresh, so "current"
         // reflects reality ("logs", which new_window selected).
         assert_eq!(
-            ext.query(WINDOWS_SLOT),
-            Some(IntrospectValue::Json(json!([
+            answer_doc(ext.query(WINDOWS_SLOT)),
+            json!([
                 {"name": "main", "current": false},
                 {"name": "logs", "current": true},
-            ]))),
+            ]),
         );
     }
 
@@ -2855,10 +2896,8 @@ mod tests {
         );
         assert!(rev.current() > before, "a window kill wakes waiters");
         assert_eq!(
-            ext.query(WINDOWS_SLOT),
-            Some(IntrospectValue::Json(
-                json!([{"name": "0", "current": true}])
-            )),
+            answer_doc(ext.query(WINDOWS_SLOT)),
+            json!([{"name": "0", "current": true}]),
             "logs is gone and the current fell back to the surviving window",
         );
         assert_eq!(
@@ -2945,20 +2984,18 @@ mod tests {
 
         let (default_ext, _d) = control(&reg);
         assert_eq!(
-            default_ext.query(WINDOWS_SLOT),
-            Some(IntrospectValue::Json(
-                json!([{"name": "0", "current": true}])
-            )),
+            answer_doc(default_ext.query(WINDOWS_SLOT)),
+            json!([{"name": "0", "current": true}]),
             "the default session sees only its own one window",
         );
 
         let (work, _w) = scoped_control(&reg, scope_of(&reg, "work"));
         assert_eq!(
-            work.query(WINDOWS_SLOT),
-            Some(IntrospectValue::Json(json!([
+            answer_doc(work.query(WINDOWS_SLOT)),
+            json!([
                 {"name": "0", "current": false},
                 {"name": "logs", "current": true},
-            ]))),
+            ]),
             "work sees its two windows, logs current",
         );
     }
@@ -2989,23 +3026,17 @@ mod tests {
 
         // Naming a window OTHER than the scoped one is refused: the arrangement in force is
         // untouched, and the answer is that truth for the client to re-project.
-        let Ok(IntrospectValue::Json(answer)) = ext.invoke(
+        let answer = write_doc(ext.invoke(
             SET_LAYOUT_ACTION,
             IntrospectValue::Json(gesture("elsewhere")),
-        ) else {
-            panic!("a refused write still answers with the truth");
-        };
+        ));
         assert_eq!(
             answer, good,
             "a window mismatch refused it; window 0 kept its arrangement"
         );
 
         // Control: naming the ACTUAL scoped window lets the SAME gesture through.
-        let Ok(IntrospectValue::Json(answer)) =
-            ext.invoke(SET_LAYOUT_ACTION, IntrospectValue::Json(gesture("0")))
-        else {
-            panic!("the accepted write answers with JSON");
-        };
+        let answer = write_doc(ext.invoke(SET_LAYOUT_ACTION, IntrospectValue::Json(gesture("0"))));
         assert_eq!(
             answer["tree"]["root"]["split"]["ratio"], 0.75,
             "naming the current window applied the gesture",

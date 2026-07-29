@@ -367,9 +367,18 @@ impl ExternalIntrospect for SpragPaneExternal {
             // wrong answer" — a false dichotomy that skipped the third option pinion
             // specifies. Absence was the quiet wrong answer: it denied the surface owned an
             // address it advertises.
+            // ENCODED ONCE, not built as a DOM and re-encoded. `IntrospectValue::raw` (pinion
+            // R1480, delivering PINION-PR79) carries JSON TEXT the producer already holds, and
+            // `scene/query` splices those bytes into the reply instead of walking a tree — so a
+            // frame is serialized exactly once, here. The wire bytes are UNCHANGED; only the way
+            // they are produced is. `Null` on a serialization failure is the same degradation
+            // `to_value(..).map_or(Null, Json)` had, so the answer taxonomy above still holds.
+            //
+            // This is the answer R222 measured at 297 -> 5 B/cell; the DOM this removes was the
+            // 25-30% of the request that survived that round, and the reason it could not be
+            // removed then was upstream, not here.
             return Some(cells_offset(arg).map_or(IntrospectValue::Null, |offset| {
-                serde_json::to_value(self.frame_at(offset))
-                    .map_or(IntrospectValue::Null, IntrospectValue::Json)
+                IntrospectValue::raw(&self.frame_at(offset))
             }));
         }
         // Every literal match of a needle in the pane's retained output, read ON DEMAND (a find
@@ -386,10 +395,9 @@ impl ExternalIntrospect for SpragPaneExternal {
                 &self.pty.with_screen(|screen| screen.find(needle)),
             );
             // Serialized from the SHARED wire type, not a hand-built object: the client
-            // deserializes that same type, so the keys are symmetric by construction.
-            return Some(
-                serde_json::to_value(&found).map_or(IntrospectValue::Null, IntrospectValue::Json),
-            );
+            // deserializes that same type, so the keys are symmetric by construction. Encoded
+            // once and spliced, for the reason the `cells` arm above states.
+            return Some(IntrospectValue::raw(&found));
         }
         // The same search over a REGULAR EXPRESSION — a separate address because a needle and a
         // pattern are separate languages, so one string cannot be allowed to mean both depending on
@@ -405,9 +413,7 @@ impl ExternalIntrospect for SpragPaneExternal {
                 Ok(found) => crate::PaneFind::from_screen_result(&found),
                 Err(bad) => crate::PaneFind::refused(&bad),
             };
-            return Some(
-                serde_json::to_value(&found).map_or(IntrospectValue::Null, IntrospectValue::Json),
-            );
+            return Some(IntrospectValue::raw(&found));
         }
         // One inline image's RGBA as base64, fetched ON DEMAND (R1404 Stage 5) — the RGBA can be
         // megabytes, so it does not ride the per-poll panes slot (only the `{id,seq}` summary
@@ -693,6 +699,70 @@ mod tests {
 
     fn json_args(v: serde_json::Value) -> IntrospectValue {
         IntrospectValue::Json(v)
+    }
+
+    /// A quiescent pane and the surface over it — a child that blocks on its PTY and never
+    /// writes, so the frame these tests read cannot change under them.
+    fn surface() -> (sprag_terminal::Workspace, SpragPaneExternal) {
+        let mut workspace = sprag_terminal::Workspace::new((20, 4));
+        let mut command = sprag_terminal::CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg("exec cat");
+        command.env("TERM", "dumb");
+        let id = workspace
+            .spawn(command, "cat".to_owned(), 20, 4)
+            .expect("a pane spawns");
+        let external = SpragPaneExternal::new(
+            workspace
+                .pane(id)
+                .expect("the pane is there")
+                .pty()
+                .handle(),
+        );
+        (workspace, external)
+    }
+
+    /// THE ENCODING ITSELF — the one claim no other test in this crate can see.
+    ///
+    /// The consumption of PINION-PR79 deliberately changes NOTHING observable: a `Raw` answer
+    /// and the `Json` answer it replaced reach the wire as the same bytes in the same order, so
+    /// every test that reads a decoded frame stays green whether the change is present or
+    /// reverted. That makes the usual "assert the behaviour" discipline blind here — the claim
+    /// is "the frame is serialized ONCE, not built as a tree and encoded again", and the only
+    /// witness to it is the VARIANT the surface answers with.
+    ///
+    /// The three parametric reads are covered together because they share one reason to exist:
+    /// each answers a whole structure the producer has already built, and each was a
+    /// `to_value(..).map_or(Null, Json)` before.
+    #[test]
+    fn a_panes_structural_answers_are_encoded_text_not_a_dom() {
+        let (_workspace, external) = surface();
+        for path in ["cells.0", "find.a", "regex.a"] {
+            let answer = external.query(path).expect("the surface owns the address");
+            assert!(
+                answer.as_raw().is_some(),
+                "`{path}` still builds a serde_json::Value DOM for the dispatch to re-encode; \
+                 the answer was {answer:?}",
+            );
+        }
+    }
+
+    /// The other half of the same claim: encoded-once must not mean encoded-DIFFERENTLY.
+    ///
+    /// A `RawJson` carries text the producer wrote, and nothing downstream re-checks it against
+    /// the type it came from — so the guard that the bytes still say what the DOM path said has
+    /// to be here. Parsed back, the answer is exactly `to_value` of the frame the SAME surface
+    /// produces, rather than of a frame this test built a second way.
+    #[test]
+    fn an_encoded_answer_carries_the_document_the_dom_would_have() {
+        let (_workspace, external) = surface();
+        let answer = external.query("cells.0").expect("the surface answers");
+        let encoded = answer.as_raw().expect("an encoded answer");
+        assert_eq!(
+            encoded.to_value().expect("the text is valid JSON"),
+            serde_json::to_value(external.frame_at(0)).expect("the frame serialises"),
+            "the spliced text and the DOM path describe the same frame",
+        );
     }
 
     #[test]

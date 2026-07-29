@@ -435,10 +435,15 @@ fn main() -> ExitCode {
         black_box(projection_token(black_box(&ascii), &palette));
     });
 
-    // The ENCODE path: what the reply to a cells fetch is made of. The pane external answers the
-    // `cells.<offset>` family with `serde_json::to_value(frame)`, so the reply is built as a DOM
-    // and then printed — two costs, measured apart, because only the split says whether the
-    // encoding is expensive or the intermediate is.
+    // The ENCODE path: what the reply to a cells fetch is made of.
+    //
+    // R230 CHANGED WHICH OF THESE THE REQUEST ACTUALLY PAYS. The pane external answered the
+    // `cells.<offset>` family with `serde_json::to_value(frame)` until PINION-PR79 was delivered
+    // (pinion R1480); it now answers `IntrospectValue::raw`, which encodes straight to text that
+    // the dispatch splices. So `direct_to_string` is the live cost and the two DOM rows below are
+    // kept as the PRICE OF WHAT WAS REMOVED — a comparison, no longer an attribution. Reading
+    // them as parts of the request is what made this instrument's own subtraction go negative
+    // the first time it was run against the change.
     let frame = CellFrame {
         cells: project(&ascii, &palette),
         facts: PaneScrollFacts {
@@ -546,21 +551,26 @@ fn main() -> ExitCode {
 
     println!("\nMEASURED — where a one-pane cells fetch, the client's steady-state read, goes:");
     budget("the projection the request is named for", projection.min);
-    budget("building the reply's serde_json Value DOM", to_value.min);
-    budget("printing that DOM to the reply string", dom_to_string.min);
+    budget("encoding the reply, straight to text", direct_to_string.min);
     budget("the whole request, in-process", cells.min);
     budget(
         "  of which this instrument cannot yet attribute",
         cells
             .min
-            .saturating_sub(projection.min + to_value.min + dom_to_string.min),
+            .saturating_sub(projection.min + direct_to_string.min),
     );
     println!(
         "  the projection is {:.2}% of the request that carries it.",
         projection.min.as_secs_f64() / cells.min.as_secs_f64() * 100.0,
     );
     println!(
-        "  encoding the same frame WITHOUT the DOM: {:.2} us, {:.1}x cheaper than through it.",
+        "\n  the DOM this request NO LONGER BUILDS (PINION-PR79, consumed R230), priced in this\n  \
+         same run: {:.2} us to build + {:.2} us to print = {:.2} us, against {:.2} us straight to\n  \
+         text — {:.1}x. That saving is why the projection's share above moved without the\n  \
+         projection itself changing, which is the same lesson R222 recorded one layer up.",
+        micros(to_value.min),
+        micros(dom_to_string.min),
+        micros(to_value.min + dom_to_string.min),
         micros(direct_to_string.min),
         (to_value.min + dom_to_string.min).as_secs_f64() / direct_to_string.min.as_secs_f64(),
     );
