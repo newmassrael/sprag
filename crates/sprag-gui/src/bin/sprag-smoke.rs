@@ -121,9 +121,13 @@ fn main() -> ExitCode {
 /// and synthetic key input does not drain headless — so before the verb existed, nothing in this
 /// function could run.
 fn check_the_palette_opens_over_rpc(smoke: &mut Smoke, report: &mut Report) {
+    // `is_ok_and`, not `map_or(true, ..)`: this is the assertion an unreadable tree used to PASS
+    // for the wrong reason, because "no palette node" and "no answer" were the same value.
     report.check(
         "the palette starts unpainted",
-        !smoke.tags().contains_key("sprag_palette_panel"),
+        smoke
+            .tags()
+            .is_ok_and(|painted| !painted.contains_key("sprag_palette_panel")),
     );
 
     // Drive real focus first. The GUI's boot focus request never drains under Xvfb (no winit input
@@ -267,14 +271,24 @@ fn check_a_command_runs_from_a_palette_row(smoke: &mut Smoke, report: &mut Repor
 /// The kill half is the whole destructive arc end to end: the row activates into a CONFIRMATION,
 /// nothing is destroyed until it is answered, and answering it is what closes the pane.
 fn check_a_pane_can_be_created_and_closed(smoke: &mut Smoke, report: &mut Report) {
-    let before = smoke.pane_count();
+    // Every count below is a DELTA against this one, so an unreadable tree here is not a pane
+    // count of zero — it is a baseline this whole check would otherwise measure against.
+    let Ok(before) = smoke.pane_count() else {
+        report.check(
+            "the client's painted tree answers a pane count to start from",
+            false,
+        );
+        return;
+    };
     report.check(
         &format!("the window starts with {before} pane(s)"),
         before > 0,
     );
     // `Kill pane` acts on the focused pane, so it is only OFFERED with one focused — and the pane
     // set has moved under the client since anything last held focus ([`Smoke::focus_pane`]).
-    if let Some(&first) = smoke.docked_panes().first() {
+    if let Ok(panes) = smoke.docked_panes()
+        && let Some(&first) = panes.first()
+    {
         report.check(
             "a pane can be focused to be killed",
             smoke.focus_pane(first),
@@ -284,7 +298,12 @@ fn check_a_pane_can_be_created_and_closed(smoke: &mut Smoke, report: &mut Report
     if !smoke.run_palette_row("Split into a new pane", report) {
         return;
     }
-    let grown = smoke.wait_for(|s| (s.pane_count() > before).then(|| s.pane_count()));
+    // In a wait, an unreadable tree is honestly NOT YET: the next poll re-asks, and a tree that
+    // stays unreadable becomes a timeout rather than a wrong count.
+    let grown = smoke.wait_for(|s| {
+        let count = s.pane_count().ok()?;
+        (count > before).then_some(count)
+    });
     report.check(
         &format!("the split reached the client's tiling ({grown:?})"),
         grown.is_ok(),
@@ -307,14 +326,17 @@ fn check_a_pane_can_be_created_and_closed(smoke: &mut Smoke, report: &mut Report
     );
     report.check(
         "and nothing is destroyed by the asking",
-        smoke.pane_count() > before,
+        smoke.pane_count().is_ok_and(|count| count > before),
     );
 
     report.check(
         "the prompt is answerable over RPC",
         smoke.invoke("sprag_confirm", "accept", Value::Null).is_ok(),
     );
-    let shrunk = smoke.wait_for(|s| (s.pane_count() == before).then(|| s.pane_count()));
+    let shrunk = smoke.wait_for(|s| {
+        let count = s.pane_count().ok()?;
+        (count == before).then_some(count)
+    });
     report.check(
         &format!("answering it closed the pane ({shrunk:?})"),
         shrunk.is_ok(),
@@ -346,7 +368,11 @@ fn check_a_confirmed_row_leaves_the_focus_stack_clean(smoke: &mut Smoke, report:
             .any(|tag| tag.starts_with("sprag_gui.pane.")),
     );
 
-    let Some(&pane) = smoke.docked_panes().first() else {
+    let Some(pane) = smoke
+        .docked_panes()
+        .ok()
+        .and_then(|panes| panes.first().copied())
+    else {
         report.check("a docked pane to put the keyboard back on", false);
         return;
     };
@@ -388,7 +414,13 @@ fn check_a_window_closes_under_a_live_client(smoke: &mut Smoke, report: &mut Rep
     // Whatever the strip holds NOW is the baseline — the focus check above deliberately leaves the
     // window it opened standing, so a hard-coded count here would be asserting the order of the
     // checks rather than anything about windows.
-    let before = smoke.tabs();
+    let Ok(before) = smoke.tabs() else {
+        report.check(
+            "the client's painted tree answers a tab strip to start from",
+            false,
+        );
+        return;
+    };
     report.check(
         &format!("the strip has a tab to start from ({before:?})"),
         !before.is_empty(),
@@ -398,7 +430,7 @@ fn check_a_window_closes_under_a_live_client(smoke: &mut Smoke, report: &mut Rep
         return;
     }
     let Ok(grown) = smoke.wait_for(|s| {
-        let tabs = s.tabs();
+        let tabs = s.tabs().ok()?;
         (tabs.len() > before.len()).then_some(tabs)
     }) else {
         report.check("the new window reaches the client's tab strip", false);
@@ -429,7 +461,7 @@ fn check_a_window_closes_under_a_live_client(smoke: &mut Smoke, report: &mut Rep
     );
     report.check(
         "and nothing closed by the asking",
-        smoke.tabs().len() == grown.len(),
+        smoke.tabs().is_ok_and(|tabs| tabs.len() == grown.len()),
     );
     report.check(
         "the prompt is answerable over RPC",
@@ -437,7 +469,7 @@ fn check_a_window_closes_under_a_live_client(smoke: &mut Smoke, report: &mut Rep
     );
 
     let shrunk = smoke.wait_for(|s| {
-        let tabs = s.tabs();
+        let tabs = s.tabs().ok()?;
         (!tabs.contains(&born)).then_some(tabs)
     });
     report.check(
@@ -474,7 +506,7 @@ fn check_the_sole_docked_pane_locks_its_tear_off(smoke: &mut Smoke, report: &mut
         return;
     }
     let Ok(docked) = smoke.wait_for(|s| {
-        let panes = s.docked_panes();
+        let panes = s.docked_panes().ok()?;
         (panes.len() == 2).then_some(panes)
     }) else {
         report.check("a second pane docks so either one may float", false);
@@ -502,7 +534,7 @@ fn check_the_sole_docked_pane_locks_its_tear_off(smoke: &mut Smoke, report: &mut
         return;
     }
     let Ok(remaining) = smoke.wait_for(|s| {
-        let panes = s.docked_panes();
+        let panes = s.docked_panes().ok()?;
         (panes.len() == 1).then(|| panes[0])
     }) else {
         report.check("floating one pane leaves a single docked pane", false);
@@ -536,8 +568,9 @@ fn check_the_sole_docked_pane_locks_its_tear_off(smoke: &mut Smoke, report: &mut
     }
     let lifted = smoke
         .wait_for(|s| {
-            (s.docked_panes().len() == 2 && s.panel_is_movable(remaining) == Some(true))
-                .then_some(())
+            (s.docked_panes().is_ok_and(|panes| panes.len() == 2)
+                && s.panel_is_movable(remaining) == Some(true))
+            .then_some(())
         })
         .is_ok();
     report.check("re-docking lifts the lock again", lifted);
@@ -569,7 +602,10 @@ fn check_the_sole_docked_pane_locks_its_tear_off(smoke: &mut Smoke, report: &mut
 /// It leaves the window it created standing — closing it is the NEXT check's claim, not this one's
 /// — which is why that check reads the strip's tab count instead of assuming one.
 fn check_focus_survives_a_window_change(smoke: &mut Smoke, report: &mut Report) {
-    let docked = smoke.docked_panes();
+    let Ok(docked) = smoke.docked_panes() else {
+        report.check("the client's painted tree answers a docked pane set", false);
+        return;
+    };
     let Some(&parked) = docked.last() else {
         report.check("a docked pane to park the focus ring on", false);
         return;
@@ -578,7 +614,10 @@ fn check_focus_survives_a_window_change(smoke: &mut Smoke, report: &mut Report) 
         &format!("the ring parks on the highest docked pane (pane {parked} of {docked:?})"),
         smoke.focus_pane(parked) && parked > 0,
     );
-    let home = smoke.tabs();
+    let Ok(home) = smoke.tabs() else {
+        report.check("the client's painted tree answers a tab strip", false);
+        return;
+    };
 
     report.check(
         "the strip's + button activates",
@@ -587,7 +626,7 @@ fn check_focus_survives_a_window_change(smoke: &mut Smoke, report: &mut Report) 
             .is_ok(),
     );
     let Ok(grown) = smoke.wait_for(|s| {
-        let tabs = s.tabs();
+        let tabs = s.tabs().ok()?;
         (tabs.len() > home.len()).then_some(tabs)
     }) else {
         report.check("the + button opened a window", false);
@@ -600,7 +639,7 @@ fn check_focus_survives_a_window_change(smoke: &mut Smoke, report: &mut Report) 
     let landed = smoke.wait_for(|s| {
         let focused = s.focused()?;
         let index: usize = focused.strip_prefix("sprag_gui.pane.")?.parse().ok()?;
-        s.docked_panes().contains(&index).then_some(focused)
+        s.docked_panes().ok()?.contains(&index).then_some(focused)
     });
     report.check(
         &format!("a live pane still holds the keyboard in the new window ({landed:?})"),
@@ -626,8 +665,8 @@ fn check_focus_survives_a_window_change(smoke: &mut Smoke, report: &mut Report) 
     let back = smoke.wait_for(|s| {
         let focused = s.focused()?;
         let index: usize = focused.strip_prefix("sprag_gui.pane.")?.parse().ok()?;
-        (s.docked_panes().contains(&index) && s.docked_panes().len() == docked.len())
-            .then_some(focused)
+        let panes = s.docked_panes().ok()?;
+        (panes.contains(&index) && panes.len() == docked.len()).then_some(focused)
     });
     report.check(
         &format!("and coming home leaves a live pane holding it too ({back:?})"),
@@ -653,7 +692,7 @@ fn check_focus_survives_a_window_change(smoke: &mut Smoke, report: &mut Report) 
     let after = smoke.wait_for(|s| {
         let focused = s.focused()?;
         let index: usize = focused.strip_prefix("sprag_gui.pane.")?.parse().ok()?;
-        s.docked_panes().contains(&index).then_some(focused)
+        s.docked_panes().ok()?.contains(&index).then_some(focused)
     });
     report.check(
         &format!("a live pane holds the keyboard after a PALETTE window change ({after:?})"),
@@ -921,7 +960,9 @@ fn check_the_mirror_reshapes_nothing_it_has_shaped(smoke: &mut Smoke, report: &m
     // still, and the detector would read as broken when it was only unreachable.
     report.check(
         "the find field is painted to drive novel text through",
-        smoke.tags().contains_key("sprag_find"),
+        smoke
+            .tags()
+            .is_ok_and(|painted| painted.contains_key("sprag_find")),
     );
     let Some(start) = frame_work(smoke, "the client prices its mirror shaping", report) else {
         return;
@@ -1020,16 +1061,34 @@ fn check_terminal_output_never_reaches_the_shaper(smoke: &mut Smoke, report: &mu
     // client paints it by index, and nothing on the wire maps one to the other. With a single pane
     // on each side the correspondence is not a guess; with more it would be, and this says so
     // instead of driving whichever pane the ids happen to favour.
+    //
+    // WAITED ON, not sampled once. The client learns of the pane set on its own poll, so the frame
+    // this reads may be one taken before the previous check's teardown had landed — and a single
+    // sample of a set that is still settling reported `painted []` about one run in ten, which is
+    // the flake this replaced. `.ok()?` makes an unreadable tree a retry rather than a count of
+    // zero; if it stays unreadable, the failure below prints WHY instead of a bare empty list.
     let ids = daemon_panes(&mut daemon, &session);
-    let painted = smoke.docked_panes();
+    let one_each = smoke.wait_for(|s| {
+        let painted = s.docked_panes().ok()?;
+        matches!((ids.as_slice(), painted.as_slice()), ([_], [_])).then_some(painted)
+    });
+    // On failure the tree is read ONE more time for the message, so the diagnostic carries what was
+    // finally there — an empty set, or the snapshot error that used to be indistinguishable from it.
+    let last = match &one_each {
+        Ok(painted) => Ok(painted.clone()),
+        Err(_) => smoke.docked_panes(),
+    };
     report.check(
         &format!(
-            "the daemon and the client agree on ONE pane to drive (daemon {ids:?}, painted {painted:?})"
+            "the daemon and the client agree on ONE pane to drive (daemon {ids:?}, painted {last:?})"
         ),
-        matches!((ids.as_slice(), painted.as_slice()), ([_], [_])),
+        one_each.is_ok(),
     );
     // Nothing below may run on a guess: with the correspondence unproven, driving whichever pane the
     // ids happen to favour would let the claim pass or fail on which pane got the text.
+    let Ok(painted) = one_each else {
+        return;
+    };
     let ([id], [index]) = (ids.as_slice(), painted.as_slice()) else {
         return;
     };
@@ -1038,7 +1097,10 @@ fn check_terminal_output_never_reaches_the_shaper(smoke: &mut Smoke, report: &mu
     // ── The detector: novel CHROME text, over the same host path, before anything is claimed.
     let from = smoke.frame_count();
     let renamed = smoke.cli(&["rename-window", NOVEL_WINDOW, "-t", &session]);
-    let watch = smoke.watch_frames(from, |s| s.tabs().iter().any(|name| name == NOVEL_WINDOW));
+    let watch = smoke.watch_frames(from, |s| {
+        s.tabs()
+            .is_ok_and(|tabs| tabs.iter().any(|name| name == NOVEL_WINDOW))
+    });
     report.check(
         &format!("a host-driven rename reaches the client's painted strip ({renamed:?})"),
         watch.arrived,
@@ -1068,8 +1130,13 @@ fn check_terminal_output_never_reaches_the_shaper(smoke: &mut Smoke, report: &mu
                 "session": session,
             }),
         );
+        // `is_ok_and(|rows| rows.iter()..)`, NOT `pane_rows(..).iter()..`: `Result` has an `iter`
+        // too, of zero-or-one `Vec<String>`, so the shorter chain compiles and quietly asks whether
+        // the row LIST equals the line rather than whether any ROW contains it. It was written that
+        // way for one build here and the grid check caught it on the first run.
         watch.absorb(smoke.watch_frames(from, |s| {
-            s.pane_rows(index).iter().any(|row| row.contains(&line))
+            s.pane_rows(index)
+                .is_ok_and(|rows| rows.iter().any(|row| row.contains(&line)))
         }));
         if !watch.arrived {
             break;
@@ -1161,7 +1228,7 @@ fn check_the_host_projects_panes_only_for_a_grid_reader(smoke: &mut Smoke, repor
             break;
         }
         let panes = areas.len() + 1;
-        let _ = smoke.wait_for(|s| (s.pane_count() >= panes).then_some(()));
+        let _ = smoke.wait_for(|s| (s.pane_count().ok()? >= panes).then_some(()));
         areas = settled_pane_areas(smoke, &mut daemon, &session);
     }
     let total: u64 = areas.values().sum();
@@ -1271,8 +1338,11 @@ fn check_the_host_projects_panes_only_for_a_grid_reader(smoke: &mut Smoke, repor
     );
     let painted = smoke
         .wait_for(|s| {
-            (0..s.pane_count())
-                .any(|pane| s.pane_rows(pane).iter().any(|row| row.contains(needle)))
+            (0..s.pane_count().ok()?)
+                .any(|pane| {
+                    s.pane_rows(pane)
+                        .is_ok_and(|rows| rows.iter().any(|row| row.contains(needle)))
+                })
                 .then_some(())
         })
         .is_ok();
@@ -1599,20 +1669,35 @@ impl Smoke {
         )
     }
 
-    /// Every tagged node in the main window's PAINTED tree.
+    /// Every tagged node in the main window's PAINTED tree, or WHY the tree could not be read.
     ///
     /// `from: "paint"` is the displayed frame — real pixels; `"state"` is the pre-paint tree and
     /// would let a check pass on geometry that was never shown. The path is `/window[main]` with an
     /// EMPTY scene tail: a snapshot is a whole-tree dump, so a bare tag (or even `"/"`) is refused.
-    fn tags(&mut self) -> std::collections::HashMap<String, Painted> {
-        let mut out = std::collections::HashMap::new();
-        if let Ok(value) = self.call(
+    ///
+    /// # The `Result` is the point, and it is here because collapsing it cost a green tick
+    ///
+    /// This read used to swallow a failed `scene/snapshot` into an EMPTY map, which made "the client
+    /// answered, and paints nothing" and "the client did not answer" the same value everywhere
+    /// downstream — and the two are opposite diagnoses. It produced both failure modes a swallowed
+    /// error can produce, one round apart:
+    ///
+    /// * a FALSE FAILURE — [`check_terminal_output_never_reaches_the_shaper`] reported `painted []`
+    ///   as a pane-correspondence disagreement, roughly one run in ten;
+    /// * a FALSE PASS, which is worse — "the palette starts unpainted" is `!contains_key`, so an
+    ///   unanswered snapshot would have PASSED it while proving nothing at all.
+    ///
+    /// So every reader below propagates rather than defaults, and each caller states which meaning
+    /// it wants: inside a [`Smoke::wait_for`] closure an unreadable tree is honestly "not yet"
+    /// (`.ok()?`), and in a one-shot assertion it is a failure that names itself.
+    fn tags(&mut self) -> Result<std::collections::HashMap<String, Painted>, String> {
+        let value = self.call(
             "scene/snapshot",
             json!({ "path": "/window[main]", "from": "paint" }),
-        ) {
-            walk(value.get("scene").unwrap_or(&value), &mut out);
-        }
-        out
+        )?;
+        let mut out = std::collections::HashMap::new();
+        walk(value.get("scene").unwrap_or(&value), &mut out);
+        Ok(out)
     }
 
     /// The accessible tree, keyed by tag. Default-valued fields are OMITTED by the serializer, so an
@@ -1640,19 +1725,19 @@ impl Smoke {
     /// Main-window-scoped, which is what makes it the DOCKED set: a floated pane moves to its own
     /// `pane-{i}` OS window and stops painting here, so this answers the dock membership the
     /// tear-off lock is computed from — without asking the client for the very fact under test.
-    fn docked_panes(&mut self) -> Vec<usize> {
+    fn docked_panes(&mut self) -> Result<Vec<usize>, String> {
         let mut indices: Vec<usize> = self
-            .tags()
+            .tags()?
             .keys()
             .filter_map(|tag| tag.strip_prefix("sprag_gui.pane.")?.parse().ok())
             .collect();
         indices.sort_unstable();
-        indices
+        Ok(indices)
     }
 
     /// How many pane tiles the main window is painting.
-    fn pane_count(&mut self) -> usize {
-        self.docked_panes().len()
+    fn pane_count(&mut self) -> Result<usize, String> {
+        Ok(self.docked_panes()?.len())
     }
 
     /// Put the within-app focus on pane `i`, so the palette's pane-scoped rows are offered.
@@ -1710,12 +1795,12 @@ impl Smoke {
     /// Read off the tabs' own text rather than asked of the host: the claim under test is that the
     /// client's mirror reaches its pixels, and querying the host would answer with the very fact the
     /// mirror might have failed to adopt.
-    fn tabs(&mut self) -> Vec<String> {
-        let painted = self.tags();
-        (0..)
+    fn tabs(&mut self) -> Result<Vec<String>, String> {
+        let painted = self.tags()?;
+        Ok((0..)
             .map_while(|i| painted.get(&format!("sprag_gui.wtab.{i}")))
             .filter_map(|node| node.text.first().cloned())
-            .collect()
+            .collect())
     }
 
     /// Whether the GUI process has exited, without blocking on it.
@@ -1782,7 +1867,7 @@ impl Smoke {
     ) -> Result<std::collections::HashMap<String, Painted>, String> {
         let wanted = tag.to_owned();
         self.wait_for(move |smoke| {
-            let tags = smoke.tags();
+            let tags = smoke.tags().ok()?;
             tags.contains_key(&wanted).then_some(tags)
         })
         .map_err(|_| format!("timed out waiting for {tag}"))
@@ -1832,11 +1917,16 @@ impl Smoke {
     }
 
     /// What pane tile `i` is SHOWING, one string per painted row.
-    fn pane_rows(&mut self, i: usize) -> Vec<String> {
-        self.tags()
+    ///
+    /// An ABSENT tile answers an empty vec — that tile is genuinely painting nothing here, which is
+    /// what a floated pane looks like — while an unreadable TREE is an error, because then nothing
+    /// is known about any tile.
+    fn pane_rows(&mut self, i: usize) -> Result<Vec<String>, String> {
+        Ok(self
+            .tags()?
             .remove(&format!("sprag_gui.pane.{i}"))
             .map(|pane| pane.rows)
-            .unwrap_or_default()
+            .unwrap_or_default())
     }
 
     /// How many frames the client has presented.
