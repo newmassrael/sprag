@@ -19,8 +19,8 @@ use sprag_host::wire::{
     BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DROP_FILE_ACTION, FULL_TEXT_SLOT,
     JOIN_PANE_ACTION, KILL_SESSION_ACTION, LAYOUT_SLOT, LINKS_SLOT, NEW_SESSION_ACTION,
     NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
-    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
-    project_slot_for,
+    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT,
+    cells_slot_at, project_slot_for,
 };
 use sprag_host::{CellFrame, mux_action_path, pane_input_path};
 use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn};
@@ -608,6 +608,80 @@ fn a_floated_pane_docks_back_at_its_home_across_the_real_socket() {
         layout.panes(),
         panes,
         "the pane came home to the middle, not to the end",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// A DIRECTIONAL split reaches a real daemon over a real socket and puts the pane where the
+/// caller named — the op that makes a split expressible by a client that draws nothing.
+///
+/// THREE panes, and the FIRST one divided, for the same reason the float test floats the middle:
+/// against a two-pane window, or against the last pane, "beside the target" and "at the end" are
+/// the same position, and the test could not tell the split from the append it replaces. The
+/// placement is asserted through [`LayoutTree::leaf_home`], the tree's own reciprocal reader, so
+/// what is checked is the daemon agreeing with the request rather than a shape this test drew.
+#[test]
+fn a_directional_split_lands_where_the_caller_named_across_the_real_socket() {
+    let (_host, sock) = spawn_host();
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term host");
+
+    // Boot pane + two more: `0 | 1 | 2`.
+    for _ in 0..2 {
+        conn.call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(SPAWN_ACTION), "args": { "cmd": ["cat"] } }),
+        )
+        .expect("spawn a pane");
+    }
+    let (_, layout) = read_layout(&mut conn);
+    let panes = layout.panes();
+    assert_eq!(panes.len(), 3, "three panes tiled: {panes:?}");
+
+    // Divide the FIRST pane, vertically. An append would put the new pane last.
+    let answer = conn
+        .call(
+            "scene/invoke",
+            json!({
+                "path": mux_action_path(SPLIT_ACTION),
+                "args": { "pane": panes[0].0, "dir": "vertical", "cmd": ["cat"] },
+            }),
+        )
+        .expect("the split answers");
+    let fresh = sprag_terminal::PaneId(answer.as_u64().expect("a pane id"));
+
+    let (_, layout) = read_layout(&mut conn);
+    assert_eq!(
+        layout.panes(),
+        vec![panes[0], fresh, panes[1], panes[2]],
+        "the new pane landed under pane 0, not appended after pane 2",
+    );
+    assert_eq!(
+        layout.leaf_home(fresh),
+        Some(sprag_terminal::LeafHome::beside(
+            panes[0],
+            sprag_terminal::SplitSide::Second,
+            sprag_terminal::SplitDir::Vertical,
+        )),
+        "on the axis and the side the request named",
+    );
+
+    // A target the window does not tile is REFUSED, and refused before anything is forked.
+    let refused = conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(SPLIT_ACTION),
+            "args": { "pane": 9999, "dir": "horizontal", "cmd": ["cat"] },
+        }),
+    );
+    assert!(refused.is_err(), "an unreachable target is refused");
+    let (_, layout) = read_layout(&mut conn);
+    assert_eq!(
+        layout.panes().len(),
+        4,
+        "and a refused split spawns no pane: {:?}",
+        layout.panes(),
     );
 
     let _ = std::fs::remove_file(&sock);

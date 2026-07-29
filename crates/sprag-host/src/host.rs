@@ -50,7 +50,8 @@ use pinion_core::GridBuffer;
 use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{
     CommandBuilder, LayoutSnapshot, LayoutWire, Pane, PaneId, PanePtyError, PanePtyHandle,
-    PaneRebirth, SessionInfo, SessionRegistry, Snapshot, SnapshotError, WindowInfo, Workspace,
+    PaneRebirth, SessionInfo, SessionRegistry, Snapshot, SnapshotError, SplitDir, SplitSide,
+    WindowInfo, Workspace,
 };
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol, Screen, osc52_reply};
 
@@ -432,7 +433,7 @@ pub trait HostClient {
     ///
     /// Floating collapses the pane's leaf host-side, so the siblings reclaim its space. A
     /// pane docked back with no gesture to place it returns to the place its float captured
-    /// (`sprag_terminal::FloatHome`): the pane SEQUENCE comes home, and the shares come home
+    /// (`sprag_terminal::LeafHome`): the pane SEQUENCE comes home, and the shares come home
     /// too when its sibling was a bare leaf. It falls back to the arrangement's END only when
     /// the home cannot be honored — its sibling has since exited, or been floated out itself.
     /// WHERE a floating pane's window then sits on screen is the client's own business.
@@ -1159,6 +1160,50 @@ pub(crate) fn set_layout(
         }
     }
     reconciled_layout(registry, scope)
+}
+
+/// The panes the scoped window currently TILES, reconciled first — what a caller needs to ask
+/// "is this pane there to be divided?" and get an answer about the tiling as it is rather than as
+/// it was when someone last read it.
+///
+/// An unknown window tiles nothing, which is the honest answer for a caller that is about to
+/// refuse anyway.
+pub(crate) fn tiled_panes(
+    registry: &Arc<Mutex<SessionRegistry>>,
+    scope: &SessionScope,
+) -> Vec<PaneId> {
+    let panes: Vec<PaneId> = lock(scope.workspace())
+        .panes()
+        .iter()
+        .map(Pane::id)
+        .collect();
+    let mut registry = lock(registry);
+    registry
+        .window_mut(scope.session(), scope.window())
+        .map_or_else(Vec::new, |window| window.reconcile_layout(&panes).panes())
+}
+
+/// Divide `target`'s cell in the scoped window and put `pane` in the half on `side` — the ONE
+/// place a directional split lands (see [`crate::wire::SPLIT_ACTION`]).
+///
+/// Returns whether the target was there to divide. The pool is read under the WORKSPACE lock and
+/// handed down, so the two locks stay sequential as everywhere else.
+pub(crate) fn split_pane(
+    registry: &Arc<Mutex<SessionRegistry>>,
+    scope: &SessionScope,
+    pane: PaneId,
+    target: PaneId,
+    side: SplitSide,
+    dir: SplitDir,
+) -> bool {
+    let panes: Vec<PaneId> = lock(scope.workspace())
+        .panes()
+        .iter()
+        .map(Pane::id)
+        .collect();
+    lock(registry)
+        .window_mut(scope.session(), scope.window())
+        .is_some_and(|window| window.split_pane(pane, target, side, dir, &panes))
 }
 
 /// Take a pane out of the tiling or put it back, then answer with the resulting

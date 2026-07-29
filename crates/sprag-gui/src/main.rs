@@ -1014,7 +1014,7 @@ impl WidgetCore for TerminalViewer {
             // preview==result). Only the main window bears the dock topology; a non-main
             // window gate above keeps a non-slot target out.
             // Order (R149, reversed): REDOCK first — the host puts the pane back into the
-            // tiling (at its captured FloatHome since R156) and we adopt that — THEN relocate
+            // tiling (at its captured LeafHome since R156) and we adopt that — THEN relocate
             // the now-present leaf to the resolved zone, which `sync_layout` writes back once
             // the gesture settles. So the pane lands where it was DROPPED: a gesture outranks
             // the memo, because the gesture is applied second and is what gets written.

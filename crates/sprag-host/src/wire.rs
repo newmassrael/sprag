@@ -344,6 +344,31 @@ pub const GRID_WORK_SLOT: &str = "grid_work";
 
 /// The mux control external invoke action that spawns a pane, returning its id.
 pub const SPAWN_ACTION: &str = "spawn";
+/// The mux control external invoke action that DIVIDES a named pane and spawns the new one into
+/// the half it opens (`{pane, dir, before?, cmd?, cols?, rows?, remote?}`), returning the new
+/// pane's id — tmux `split-window -h` / `-v`.
+///
+/// [`SPAWN_ACTION`] with a PLACE. A spawn appends, which states where only by convention, so
+/// every directional split had to be expressed as a spawn plus a whole rewritten tree
+/// ([`SET_LAYOUT_ACTION`]) — an author with pixels and a gesture can do that, and a shell script
+/// or a terminal client cannot. This is the op that makes "put a shell below pane 3" sayable by
+/// a caller that draws nothing.
+///
+/// `dir` is `"horizontal"` (the new pane goes RIGHT of `pane`) or `"vertical"` (BELOW it) — it
+/// names how the two halves are LAID OUT, not which way the divider is drawn, exactly as
+/// [`SplitDir`](sprag_terminal::SplitDir) and tmux's own `-h` / `-v` do, so one vocabulary spans
+/// the wire and the tree. `before` (default `false`) puts the new pane on the other side
+/// instead — left of, or above — which is tmux's `-b`.
+///
+/// `pane` is REQUIRED and has no default, because the daemon has no active-pane concept to mean
+/// "here" (the same fact that makes `select-pane` unbuilt): a direction is meaningless without
+/// the pane it is relative to, so the caller must name one.
+///
+/// REFUSED — with nothing spawned and the arrangement untouched — when `pane` holds no leaf in
+/// the scoped session's current window: it exited, it is floating, or it is another window's. A
+/// split that cannot reach its target must not quietly become an append, which is the same lie as
+/// accepting `-h` and ignoring it.
+pub const SPLIT_ACTION: &str = "split";
 /// The mux control external invoke action that closes a pane.
 pub const CLOSE_ACTION: &str = "close";
 /// The mux control external invoke action that resizes a pane's PTY + emulator.

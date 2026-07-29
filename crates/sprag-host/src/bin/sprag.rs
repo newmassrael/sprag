@@ -29,7 +29,9 @@
 //! sprag kill-window -t SESSION [win]      kill a window (default: the current one); the last ends the session
 //!
 //! sprag panes [-t SESSION]                        list the current window's panes (tmux list-panes)
-//! sprag split-window [-t SESSION] [-- command…]   add a pane to the current window; print its id
+//! sprag split-window [-t SESSION] [-h|-v [-b] PANE] [-- command…]
+//!                                         divide PANE right (-h) / below (-v), or append with
+//!                                         neither; print the new pane's id (tmux split-window)
 //! sprag kill-pane [-t SESSION] PANE               close a pane (tmux kill-pane)
 //! sprag resize-pane [-t SESSION] PANE -x COLS -y ROWS  resize a pane's PTY + emulator
 //! sprag send-keys [-t SESSION] PANE [-l] KEY…     send W3C key names (or, with -l, literal text)
@@ -51,11 +53,11 @@
 //!
 //! ## What the pane verbs deliberately do NOT offer
 //!
-//! * **`split-window -h` / `-v`.** sprag's `spawn` APPENDS a pane to the window; the direction a
-//!   pane splits in is a layout gesture a display client authors and installs
-//!   ([`sprag_host::wire::SET_LAYOUT_ACTION`]), and the daemon has no "split pane P in direction D"
-//!   op at all. Accepting the flags and ignoring them would be a lie, and authoring the tree here
-//!   would put a second layout author beside the GUI's. So they are REFUSED with the reason.
+//! * **tmux's BARE `split-window -h` / `-v`** (the flag with no pane). The flags themselves are
+//!   built — they drive [`sprag_host::wire::SPLIT_ACTION`], which divides a pane the caller names
+//!   — but tmux's bare form means "split the CURRENT pane", and the daemon has no current pane to
+//!   mean (the same fact that leaves `select-pane` below unbuilt). So the pane is named
+//!   positionally and asking for a direction without one is refused with the reason.
 //! * **`select-pane`.** There is no active-pane concept in the daemon to select: the pane-input
 //!   `focus` action reports a focus EDGE to the child (DEC private mode 1004) on behalf of a client
 //!   whose own focus moved — it does not make a pane current, and nothing reads such a fact. A
@@ -87,7 +89,8 @@ use sprag_host::wire::{
     BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, FULL_TEXT_SLOT, JOIN_PANE_ACTION, KEY_ACTION,
     KILL_SESSION_ACTION, KILL_WINDOW_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT,
     PASTE_ACTION, RENAME_WINDOW_ACTION, RESIZE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
-    SPAWN_ACTION, TEXT_ACTION, WINDOWS_SLOT, find_slot_for, project_slot_for, regex_slot_for,
+    SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, find_slot_for, project_slot_for,
+    regex_slot_for,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{HOST_SOCKET, HostConn, socket_path};
@@ -267,7 +270,8 @@ fn print_usage() {
          \x20      sprag <windows | new-window [name] | select-window NAME\n\
          \x20             | rename-window [window] NAME | kill-window [window]\n\
          \x20             | break-pane PANE [name] | join-pane PANE WINDOW> -t SESSION\n\
-         \x20      sprag <panes | split-window [-- command…] | kill-pane PANE\n\
+         \x20      sprag <panes | split-window [-h|-v [-b] PANE] [-- command…]\n\
+         \x20             | kill-pane PANE\n\
          \x20             | resize-pane PANE -x COLS -y ROWS\n\
          \x20             | send-keys PANE [-l] KEY… | capture-pane PANE [-p]> [-t SESSION]"
     );
@@ -1110,54 +1114,112 @@ fn panes(args: Vec<String>) -> io::Result<()> {
     Ok(())
 }
 
-/// `split-window [-t SESSION] [-- command…]`: add a pane to the scoped session's current window and
-/// print its id — tmux `split-window`, minus the direction it cannot yet mean.
+/// `split-window [-t SESSION] [-h|-v [-b] PANE] [-- command…]`: add a pane to the scoped session's
+/// current window and print its id — tmux `split-window`.
 ///
 /// `--` introduces the argv the pane runs; absent, it is born with `$SHELL`, exactly as tmux's
 /// bare `split-window`. The id is printed on stdout because it is the argument every other pane
-/// verb takes, so a script can capture it (`pane=$(sprag split-window)`).
+/// verb takes, so a script can capture it (`pane=$(sprag split-window -v 3)`).
 ///
-/// `-h` / `-v` are REFUSED rather than accepted-and-ignored — see the module docs for the reason:
-/// the daemon has no direction-taking split, so honouring the flag would mean authoring a layout
-/// tree here, beside the GUI's. The refusal names the gap so a caller learns what sprag lacks
-/// instead of wondering why their pane landed sideways.
+/// The direction and the pane it divides are INSEPARABLE here, which is the one place this
+/// diverges from tmux and the divergence is forced: tmux's bare `-h` splits the CURRENT pane, and
+/// sprag's daemon has no current-pane concept to mean (the same fact that leaves `select-pane`
+/// unbuilt). So `-h` / `-v` take the pane POSITIONALLY — the convention `kill-pane PANE` and
+/// `resize-pane PANE` already set — and naming neither is the direction-less append tmux's bare
+/// form gives. Asking for one without the other is refused with the reason rather than guessed at.
+///
+/// `-b` puts the new pane BEFORE its target (left of, or above) — tmux `-b`.
 fn split_window(args: Vec<String>) -> io::Result<()> {
     let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
     let (session, rest) = scope_and_rest(args, "split-window")?;
     let mut command: Option<Vec<String>> = None;
+    let mut dir: Option<&'static str> = None;
+    let mut before = false;
+    let mut pane: Option<u64> = None;
     let mut it = rest.into_iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--" => command = Some(it.by_ref().collect()),
             "-h" | "-v" => {
-                return Err(bad(format!(
-                    "split-window: {arg} is not supported — sprag appends the pane to the \
-                     window's tiling, and the direction a pane splits in is a layout gesture a \
-                     display client installs (there is no direction-taking split on the wire)"
-                )));
+                if dir.is_some() {
+                    return Err(bad(
+                        "split-window: -h and -v name one axis; give only one".to_owned()
+                    ));
+                }
+                dir = Some(if arg == "-h" {
+                    "horizontal"
+                } else {
+                    "vertical"
+                });
             }
+            "-b" => before = true,
             other => {
-                return Err(bad(format!(
-                    "split-window: unexpected argument {other:?} (a command goes after `--`)"
-                )));
+                // Anything left is the pane to divide. Parsed here rather than by position so the
+                // flags may come in any order, and refused as a NUMBER error when it is not one —
+                // which is what a mistyped flag looks like from here.
+                if pane.is_some() {
+                    return Err(bad(format!(
+                        "split-window: unexpected argument {other:?} (a command goes after `--`)"
+                    )));
+                }
+                pane = Some(other.parse::<u64>().map_err(|_| {
+                    bad(format!(
+                        "split-window: {other:?} is neither a flag nor a pane id"
+                    ))
+                })?);
             }
         }
     }
-    let action_args = match &command {
+    // The two halves of a directional split arrive together or not at all: a direction with no
+    // pane has nothing to be relative to, and a pane with no direction has nothing to ask for.
+    let placement = match (dir, pane) {
+        (Some(dir), Some(pane)) => Some((dir, pane)),
+        (None, None) => None,
+        (Some(dir), None) => {
+            return Err(bad(format!(
+                "split-window: {dir_flag} needs the pane to divide (sprag has no current pane): \
+                 sprag split-window {dir_flag} PANE",
+                dir_flag = if dir == "horizontal" { "-h" } else { "-v" },
+            )));
+        }
+        (None, Some(pane)) => {
+            return Err(bad(format!(
+                "split-window: pane {pane} needs an axis to be divided on — -h (right) or -v \
+                 (below); omit both to append instead"
+            )));
+        }
+    };
+    if before && placement.is_none() {
+        return Err(bad(
+            "split-window: -b names which side of a target, so it needs -h or -v with a pane"
+                .to_owned(),
+        ));
+    }
+    let mut action_args = match &command {
         Some(command) if command.is_empty() => {
             return Err(bad("split-window: `--` needs a command".to_owned()));
         }
         Some(command) => json!({ "cmd": command }),
         None => json!({}),
     };
+    // A directional split is a DIFFERENT action from an append, not the same one with a flag: the
+    // daemon divides a pane the caller names, and refuses when it cannot reach it.
+    let action = match placement {
+        Some((dir, pane)) => {
+            let map = action_args.as_object_mut().expect("json! built an object");
+            map.insert("pane".to_owned(), json!(pane));
+            map.insert("dir".to_owned(), json!(dir));
+            if before {
+                map.insert("before".to_owned(), json!(true));
+            }
+            SPLIT_ACTION
+        }
+        None => SPAWN_ACTION,
+    };
     let mut conn = connect_scoped(session.as_deref())?;
     let answer = conn.call(
         "scene/invoke",
-        scoped_invoke(
-            session.as_deref(),
-            mux_action_path(SPAWN_ACTION),
-            action_args,
-        ),
+        scoped_invoke(session.as_deref(), mux_action_path(action), action_args),
     );
     match answer {
         Ok(answer) => match answer.as_u64() {
@@ -1169,15 +1231,23 @@ fn split_window(args: Vec<String>) -> io::Result<()> {
                 "split-window did not answer with a pane id",
             )),
         },
-        // The one refusal a well-formed spawn can meet is the OS declining the fork/exec — a
-        // broken `$SHELL`, or an argv it cannot run.
+        // A well-formed request meets one refusal per action: a spawn's is the OS declining the
+        // fork/exec, and a split's is additionally an unreachable target — which is the likelier
+        // of the two to be the caller's own mistake, so it is named first.
         Err(error) if error.kind() == io::ErrorKind::Other => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            match &command {
-                Some(command) => {
+            match (placement, &command) {
+                (Some((_, pane)), _) => format!(
+                    "split-window: pane {pane} is not in the window's tiling (it exited, it is \
+                     floating, or it belongs to another window), or the pane's command could not \
+                     be run"
+                ),
+                (None, Some(command)) => {
                     format!("split-window: the pane's command could not be run: {command:?}")
                 }
-                None => "split-window: the pane's shell could not be run (check $SHELL)".to_owned(),
+                (None, None) => {
+                    "split-window: the pane's shell could not be run (check $SHELL)".to_owned()
+                }
             },
         )),
         Err(error) => Err(error),

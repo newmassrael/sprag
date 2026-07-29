@@ -61,7 +61,7 @@ use pinion_core::external::{
 use serde_json::{Map, Value};
 use sprag_terminal::{
     CommandBuilder, KillOutcome, LayoutSnapshot, LayoutWire, PaneId, SessionInfo, SessionRegistry,
-    SshRemote, WindowKillOutcome, Workspace,
+    SplitDir, SplitSide, SshRemote, WindowKillOutcome, Workspace,
 };
 
 use crate::bump_on_dirty;
@@ -76,7 +76,7 @@ use crate::wire::{
     GRID_WORK_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
     NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PROJECT_FIELD, RENAME_WINDOW_ACTION,
     RESIZE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
-    SPAWN_ACTION, WINDOWS_SLOT,
+    SPAWN_ACTION, SPLIT_ACTION, WINDOWS_SLOT,
 };
 
 /// The mux-management engine `External`: a control surface over the shared
@@ -286,6 +286,61 @@ impl WorkspaceExternal {
         // A NEW pane changed the set: wake parked waiters now, before its first output, so a
         // mirror learns the pane exists immediately (the pane-set change-notification, distinct
         // from the per-pane output bump the hook fires).
+        self.announce();
+        Ok(IntrospectValue::Int(
+            i64::try_from(id.0).unwrap_or(i64::MAX),
+        ))
+    }
+
+    /// `split {pane, dir, before?, cmd?, cols?, rows?, remote?}` action: divide `pane` and spawn
+    /// the new one into the half that opens, answering with its id — see
+    /// [`crate::wire::SPLIT_ACTION`].
+    ///
+    /// Ordered PRE-FLIGHT, spawn, place. The pre-flight is what lets a caller's mistake — a pane
+    /// id that names nothing, a floating pane, another window's — be refused with no child
+    /// forked, which matters because the alternative is to fork the user's shell and then have to
+    /// kill it. The placement is what actually decides the outcome, and it is checked again there
+    /// because the two cannot be one atomic step: the spawn needs the workspace lock and the
+    /// placement needs the registry's, and this codebase never nests them.
+    ///
+    /// If the target exits in that window — between the pre-flight and the placement — the pane
+    /// is already born and lands APPENDED instead, and the id is still returned. Killing a shell
+    /// the user just asked for would be the worse answer, and the arrangement is readable
+    /// ([`crate::wire::LAYOUT_SLOT`]), so the outcome is reported rather than guessed at. It is
+    /// the same degradation an unhonorable [`LeafHome`](sprag_terminal::LeafHome) already takes.
+    fn split(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let map = as_object(args)?;
+        let target = require_pane_id(map, "pane")?;
+        let dir = match map.get("dir").and_then(Value::as_str) {
+            Some("horizontal") => SplitDir::Horizontal,
+            Some("vertical") => SplitDir::Vertical,
+            _ => return Err(InvokeError::TypeMismatch),
+        };
+        // Absent is the common side (right / below); a non-bool is malformed rather than
+        // silently defaulted, the same rule every other optional flag on this external follows.
+        let side = match map.get("before") {
+            None | Some(Value::Null) | Some(Value::Bool(false)) => SplitSide::Second,
+            Some(Value::Bool(true)) => SplitSide::First,
+            Some(_) => return Err(InvokeError::TypeMismatch),
+        };
+        // The birth spec is validated BEFORE the target is looked up, so a request that is
+        // malformed in two ways reports the malformed-request error rather than the refusal.
+        let spec = Self::parse_spawn(map)?;
+        if !crate::host::tiled_panes(&self.registry, &self.scope).contains(&target) {
+            return Err(InvokeError::Rejected);
+        }
+        let id = self.spawn_parsed(self.workspace(), spec)?;
+        if !crate::host::split_pane(&self.registry, &self.scope, id, target, side, dir) {
+            tracing::warn!(
+                target: "sprag_host",
+                %id,
+                %target,
+                session = self.scope.session(),
+                "the split's target left the tiling while its pane was being born; appended it",
+            );
+        }
+        // Both the pane set and the arrangement changed: one announce covers both, exactly as a
+        // plain spawn's does for the set alone.
         self.announce();
         Ok(IntrospectValue::Int(
             i64::try_from(id.0).unwrap_or(i64::MAX),
@@ -761,6 +816,7 @@ impl ExternalIntrospect for WorkspaceExternal {
             const {
                 &[
                     SchemaField::new(SPAWN_ACTION, "action"),
+                    SchemaField::new(SPLIT_ACTION, "action"),
                     SchemaField::new(CLOSE_ACTION, "action"),
                     SchemaField::new(RESIZE_ACTION, "action"),
                     SchemaField::new(SET_LAYOUT_ACTION, "action"),
@@ -1071,6 +1127,7 @@ impl ExternalIntrospect for WorkspaceExternal {
     ) -> Result<IntrospectValue, InvokeError> {
         match path {
             SPAWN_ACTION => self.spawn(&args),
+            SPLIT_ACTION => self.split(&args),
             CLOSE_ACTION => self.close(&args),
             RESIZE_ACTION => self.resize(&args),
             SET_LAYOUT_ACTION => self.set_layout(&args),

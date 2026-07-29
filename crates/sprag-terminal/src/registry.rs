@@ -42,7 +42,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::PaneId;
-use crate::layout::{FloatHome, LayoutError, LayoutTree, LayoutWire};
+use crate::layout::{LayoutError, LayoutTree, LayoutWire, LeafHome, SplitDir, SplitSide};
 use crate::snapshot::{PaneRestore, RestorePlan, SNAPSHOT_VERSION, Snapshot, SnapshotError};
 use crate::workspace::{Pane, Workspace};
 
@@ -73,7 +73,7 @@ pub struct Window {
     /// floating pane that exits leaves no entry behind.
     floating: HashSet<PaneId>,
     /// Where each floated pane came FROM, so it docks back into its own place rather than
-    /// at the end ([`FloatHome`]).
+    /// at the end ([`LeafHome`]).
     ///
     /// A sidecar, not an authority: `floating` alone says which panes are out, and a missing
     /// or unhonorable home costs an append, never correctness. It is deliberately NOT the
@@ -82,7 +82,7 @@ pub struct Window {
     /// [`reconcile_layout`](Self::reconcile_layout) LATER than the moment it stops floating.
     /// Keyed in one map, the dock-back that clears the float flag would drop the home on the
     /// floor before the leaf it was captured for could be placed.
-    homes: HashMap<PaneId, FloatHome>,
+    homes: HashMap<PaneId, LeafHome>,
     layout_revision: u64,
 }
 
@@ -178,7 +178,7 @@ impl Window {
     /// leaf, and prunes float entries whose pane has exited — the float set is a view of
     /// the pool, never an authority over it.
     ///
-    /// A pane that is tiled again lands at the [`FloatHome`] its float captured, if that home
+    /// A pane that is tiled again lands at the [`LeafHome`] its float captured, if that home
     /// is still honorable; this is the one place a leaf moves, so it is also the one place a
     /// home is spent.
     ///
@@ -264,6 +264,37 @@ impl Window {
         Ok(())
     }
 
+    /// Divide `target`'s cell and put `pane` in the half on `side`, along `dir` — tmux
+    /// `split-window -h` / `-v`. Returns whether `target` was there to divide.
+    ///
+    /// RECONCILES FIRST, against the `panes` the caller resolved under the workspace lock, for
+    /// two reasons that are really one: the pane being placed was just spawned and is not in the
+    /// tree yet, and the target must be judged against the tiling as it IS rather than as it was
+    /// when someone last read it. Doing both inside this one `&mut Window` call is what makes the
+    /// placement atomic — [`reconcile_layout`](Self::reconcile_layout) is the only other thing
+    /// that moves a leaf, and it needs the same borrow, so no reconcile can land in between and
+    /// append the pane behind the split's back.
+    ///
+    /// `false` leaves the window's arrangement exactly as the reconcile left it: the target is
+    /// gone, floating, or another window's. The caller REFUSES on that — a direction the user
+    /// spelled is a request, not a hint, so a split that cannot reach its target must not
+    /// quietly become an append.
+    pub fn split_pane(
+        &mut self,
+        pane: PaneId,
+        target: PaneId,
+        side: SplitSide,
+        dir: SplitDir,
+        panes: &[PaneId],
+    ) -> bool {
+        self.reconcile_layout(panes);
+        let mut placed = false;
+        self.bump_if_changed(|window| {
+            placed = window.layout.split_beside(pane, target, side, dir);
+        });
+        placed
+    }
+
     /// Take `pane` out of the tiling (`floating == true`) or put it back.
     ///
     /// The tree is not touched here: the leaf appears or collapses on the next
@@ -275,7 +306,7 @@ impl Window {
     /// one revision-bumping seam is what makes that structural: a caller
     /// cannot leave this window claiming a revision that predates its own float set.
     ///
-    /// **Floating CAPTURES the pane's place** ([`FloatHome`]) before the leaf collapses, so
+    /// **Floating CAPTURES the pane's place** ([`LeafHome`]) before the leaf collapses, so
     /// docking it back returns it there rather than to the end: float the middle of `0|1|2`,
     /// detach, reattach, dock back, and it is `0|1|2` again, at the share the user dragged.
     /// The home is read here because here is the last moment it exists — once the tiling
@@ -2005,6 +2036,79 @@ mod tests {
         assert!(
             window.homes.is_empty(),
             "a tiled pane's home is spent; a stale memo could only fight its real position",
+        );
+    }
+
+    /// A split places a pane the tree has never seen — the case that exists because a spawn
+    /// puts a pane in the POOL and only a reconcile puts it in the tiling. Placing it and
+    /// reconciling it are one call, so nothing can land in between.
+    #[test]
+    fn a_split_places_a_pane_the_tiling_has_not_seen_yet() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let ws = pool(&reg);
+        let ids: Vec<_> = (0..2)
+            .map(|_| lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap())
+            .collect();
+        let panes: Vec<_> = lock(&ws).panes().iter().map(Pane::id).collect();
+        let window = default_window(&mut reg);
+        window.reconcile_layout(&panes);
+        assert_eq!(
+            window.layout().panes(),
+            ids,
+            "the tiling starts as the pool"
+        );
+
+        // The spawn a split follows: in the pool, absent from the tree.
+        let fresh = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
+        let panes: Vec<_> = lock(&ws).panes().iter().map(Pane::id).collect();
+        let window = default_window(&mut reg);
+        let before = window.layout_revision();
+
+        assert!(window.split_pane(fresh, ids[0], SplitSide::Second, SplitDir::Vertical, &panes));
+
+        assert_eq!(
+            window.layout().panes(),
+            vec![ids[0], fresh, ids[1]],
+            "the fresh pane landed BELOW pane 0, not appended after pane 1",
+        );
+        assert!(
+            window.layout_revision() > before,
+            "the tiling moved, so every attached client must re-read it",
+        );
+    }
+
+    /// The reconcile inside `split_pane` is what makes the target judged against the tiling as
+    /// it IS: a pane that has EXITED still holds a leaf until something reconciles, and a split
+    /// aimed at that stale leaf must be refused rather than dividing a ghost.
+    ///
+    /// Revert-proof: drop `split_pane`'s `reconcile_layout` call and this split SUCCEEDS,
+    /// putting the new pane beside a pane that is gone.
+    #[test]
+    fn a_split_refuses_a_target_that_has_exited_even_before_anyone_reconciled() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let ws = pool(&reg);
+        let ids: Vec<_> = (0..3)
+            .map(|_| lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap())
+            .collect();
+        let panes: Vec<_> = lock(&ws).panes().iter().map(Pane::id).collect();
+        let window = default_window(&mut reg);
+        window.reconcile_layout(&panes);
+        assert!(window.layout().panes().contains(&ids[1]), "pane 1 is tiled");
+
+        // Pane 1 exits. Nothing has reconciled since, so its leaf is still in the tree.
+        let gone = lock(&ws).close(ids[1]);
+        drop(gone);
+        let fresh = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
+        let panes: Vec<_> = lock(&ws).panes().iter().map(Pane::id).collect();
+        let window = default_window(&mut reg);
+
+        assert!(
+            !window.split_pane(fresh, ids[1], SplitSide::Second, SplitDir::Vertical, &panes),
+            "a split cannot divide a pane that is gone",
+        );
+        assert!(
+            !window.layout().panes().contains(&ids[1]),
+            "and the reconcile it ran first dropped the ghost's leaf",
         );
     }
 

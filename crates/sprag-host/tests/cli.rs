@@ -1522,29 +1522,142 @@ fn the_cli_splits_lists_and_kills_panes_over_the_socket() {
     );
 }
 
-/// `split-window -h` / `-v` are REFUSED, and the refusal names the gap.
+/// `split-window -h` / `-v` divide the pane the caller names, from the shell.
 ///
-/// This is the honesty guard for the whole verb: sprag has no direction-taking split, so the two
-/// wrong answers are accepting the flag and ignoring it (the pane lands somewhere the caller did
-/// not ask for, silently) or authoring a layout tree in the CLI (a second layout author beside the
-/// GUI's). Revert-proof by construction — make either flag a no-op and this fails.
+/// The verb's FOUR forms are exercised because they are four different requests and only running
+/// each proves the dispatch: bare (append — the `spawn` action), `-h PANE` and `-v PANE` (divide —
+/// the `split` action), and `-b` (the other side).
+///
+/// Each one's ARRANGEMENT is then read off the daemon, which is the assertion that could not be
+/// skipped: a CLI that mapped `-v` to `"horizontal"`, or dropped `-b`, would spawn a pane and
+/// print an id exactly like a correct one. Counting panes proves the request arrived; only the
+/// layout proves it arrived meaning what the user typed.
 #[test]
-fn split_window_refuses_a_direction_flag_and_says_why() {
+fn split_window_divides_the_pane_it_is_given_from_the_shell() {
     let (_host, sock) = spawn_host();
-    for flag in ["-h", "-v"] {
-        let run = sprag(&sock, &["split-window", flag]);
-        assert!(!run.ok, "{flag} is refused, not ignored");
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the host");
+
+    // Bare: no direction, no target — the append tmux's bare `split-window` gives.
+    let appended = split_id(&sock, &["split-window", "--", "cat"]);
+    assert_eq!(
+        tiled(&mut conn),
+        vec![0, appended],
+        "a bare split appends, as it always has",
+    );
+
+    // Each directional form, against the SAME target, read back through the daemon's own layout.
+    for (args, side, dir) in [
+        (
+            vec!["split-window", "-h", "0", "--", "cat"],
+            sprag_terminal::SplitSide::Second,
+            sprag_terminal::SplitDir::Horizontal,
+        ),
+        (
+            vec!["split-window", "-v", "0", "--", "cat"],
+            sprag_terminal::SplitSide::Second,
+            sprag_terminal::SplitDir::Vertical,
+        ),
+        (
+            vec!["split-window", "-v", "-b", "0", "--", "cat"],
+            sprag_terminal::SplitSide::First,
+            sprag_terminal::SplitDir::Vertical,
+        ),
+    ] {
+        let fresh = split_id(&sock, &args);
+        assert_eq!(
+            layout_of(&mut conn).leaf_home(sprag_terminal::PaneId(fresh)),
+            Some(sprag_terminal::LeafHome::beside(
+                sprag_terminal::PaneId(0),
+                side,
+                dir
+            )),
+            "{args:?} put pane {fresh} beside pane 0 on the axis and side it named",
+        );
+    }
+}
+
+/// Run a `split-window` form and return the pane id it printed.
+fn split_id(sock: &Path, args: &[&str]) -> u64 {
+    let run = sprag(sock, args);
+    assert!(run.ok, "{args:?} succeeded: {}", run.stderr);
+    run.stdout
+        .trim()
+        .parse::<u64>()
+        .unwrap_or_else(|_| panic!("{args:?} prints the new pane id: {:?}", run.stdout))
+}
+
+/// The scoped window's arrangement, as the daemon serves it.
+fn layout_of(conn: &mut HostConn) -> sprag_terminal::LayoutTree {
+    let value = conn
+        .call(
+            "scene/query",
+            json!({ "path": mux_action_path(sprag_host::wire::LAYOUT_SLOT) }),
+        )
+        .expect("the layout query answers");
+    let snapshot: sprag_terminal::LayoutSnapshot =
+        serde_json::from_value(value).expect("the layout deserialises off the wire");
+    let mut tree = sprag_terminal::LayoutTree::new();
+    tree.set_from_wire(snapshot.tree)
+        .expect("a served arrangement is well-formed");
+    tree
+}
+
+/// The tiled pane ids, in paint order.
+fn tiled(conn: &mut HostConn) -> Vec<u64> {
+    layout_of(conn)
+        .panes()
+        .into_iter()
+        .map(|pane| pane.0)
+        .collect()
+}
+
+/// The verb's two halves arrive together or not at all, and each refusal NAMES what is missing.
+///
+/// This is the honesty guard the old direction-flag refusal became. sprag's daemon has no current
+/// pane, so tmux's bare `-h` cannot be honoured — and the two wrong answers are the ones this
+/// checks against: guessing a pane (the user's shell would land somewhere they never named) and
+/// accepting a pane with no axis (nothing to ask for). A refused request must also cost nothing,
+/// so each case re-counts the panes.
+#[test]
+fn split_window_refuses_a_direction_without_a_pane_and_a_pane_without_a_direction() {
+    let (_host, sock) = spawn_host();
+
+    for (args, expected) in [
+        (vec!["split-window", "-h"], "needs the pane to divide"),
+        (vec!["split-window", "-v"], "needs the pane to divide"),
+        (vec!["split-window", "0"], "needs an axis"),
+        (vec!["split-window", "-b"], "needs -h or -v"),
+        (vec!["split-window", "-h", "-v", "0"], "only one"),
+        (vec!["split-window", "nope"], "neither a flag nor a pane id"),
+    ] {
+        let run = sprag(&sock, &args);
+        assert!(!run.ok, "{args:?} is refused, not guessed at");
         assert!(
-            run.stderr.contains("direction") && run.stderr.contains("layout"),
-            "and the refusal names the gap: {}",
+            run.stderr.contains(expected),
+            "{args:?} names what is missing (want {expected:?}): {}",
             run.stderr,
         );
         assert_eq!(
             sprag(&sock, &["panes"]).stdout.lines().count(),
             1,
-            "a refused split spawns nothing",
+            "{args:?} spawned nothing",
         );
     }
+
+    // A pane the window does not hold is the daemon's refusal, not the parser's — and it too
+    // must leave nothing behind.
+    let missing = sprag(&sock, &["split-window", "-v", "9999"]);
+    assert!(!missing.ok, "an unreachable target is refused");
+    assert!(
+        missing.stderr.contains("9999") && missing.stderr.contains("tiling"),
+        "and the refusal names the pane and the reason: {}",
+        missing.stderr,
+    );
+    assert_eq!(
+        sprag(&sock, &["panes"]).stdout.lines().count(),
+        1,
+        "a refused split spawns nothing",
+    );
 }
 
 /// `resize-pane -x -y` reaches the pane's PTY: the daemon reports the new geometry back through

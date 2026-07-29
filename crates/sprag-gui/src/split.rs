@@ -758,7 +758,7 @@ const REORGANIZER_KEY: &str = "sprag_gui.dock_reorganizer";
 /// keeping us off it is not documented anywhere else.
 ///
 /// `Collapse`'s other half — pinion's "restore to the captured home anchor on dock-back" — is
-/// now honored too, HOST-side (`Window::set_floating` captures a `FloatHome`; the next
+/// now honored too, HOST-side (`Window::set_floating` captures a `LeafHome`; the next
 /// reconcile re-splits the sibling it recorded). sprag cannot reuse pinion's
 /// `DockLeafAnchor` for it: the home must survive a detach, so it is session state, and
 /// `sprag-terminal` is pinion-free by rule. Honest bounds, both the host's: a home whose
@@ -1215,7 +1215,7 @@ mod tests {
     /// happened. When this was written that was DURABLE damage — the float HOME ANCHOR was
     /// unimplemented, so the accidental float plus a dock-back relocated the pane for good
     /// (`0|1|2` → `0|2|1` forever). The anchor is now implemented host-side
-    /// (`Window::set_floating` captures a `FloatHome`), which is the answer pinion pointed at:
+    /// (`Window::set_floating` captures a `LeafHome`), which is the answer pinion pointed at:
     /// it was explicit that suppressing only the band's float would restore the asymmetry
     /// R1348 removed, so the fix was the anchor and never a local veto. What remains is an
     /// accidental float being SURPRISING, not lossy — dock it back and the pane is where the

@@ -28,7 +28,7 @@ pub mod workspace;
 
 pub use command::{command_from_parts, default_shell_command};
 pub use layout::{
-    FloatHome, LayoutError, LayoutNode, LayoutNodeWire, LayoutSnapshot, LayoutTree, LayoutWire,
+    LayoutError, LayoutNode, LayoutNodeWire, LayoutSnapshot, LayoutTree, LayoutWire, LeafHome,
     SplitDir, SplitId, SplitSide,
 };
 pub use pane_pty::{CommandBuilder, PaneExit, PanePty, PanePtyError, PanePtyHandle, RawOutput};

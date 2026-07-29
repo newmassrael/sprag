@@ -35,7 +35,7 @@
 //!
 //! ## Homes are not persisted (a documented bound)
 //!
-//! A window's [`FloatHome`](crate::layout::FloatHome) sidecar — where a floated pane docks back —
+//! A window's [`LeafHome`](crate::layout::LeafHome) sidecar — where a floated pane docks back —
 //! is a non-authoritative memo with a defined graceful fallback (dock back at the END). It is
 //! deliberately left out of the snapshot in slice 1: the pane's FLOAT membership survives, so the
 //! user's choice to float it does; only the exact dock-back slot degrades to an append after a
