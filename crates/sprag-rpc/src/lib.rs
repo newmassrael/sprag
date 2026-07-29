@@ -70,7 +70,15 @@ pub struct SocketOpts {
 /// thread reads the control to switch exposure -- one owner serves both, so no
 /// `Arc` is needed and liveness does not depend on the control thread having
 /// spawned. Never dropped; a stale socket file is reclaimed by the next
-/// `serve` (it removes the path before binding). One endpoint per process.
+/// `serve`. One endpoint per process.
+///
+/// The reclaim is CONDITIONAL as of pinion R1478: `serve` no longer unlinks the
+/// path unconditionally, it `connect`s on `EADDRINUSE` and reclaims only a path
+/// nobody answers on -- a LIVE endpoint is refused rather than displaced. That
+/// refusal is unreachable for the daemon, which takes its single-instance
+/// `flock` before it ever mounts and exits quietly when it loses (see
+/// `sprag-term.rs`), so the two guards agree: the flock decides who serves, and
+/// the bind can no longer overrule it.
 static ENDPOINT: OnceLock<TransportControl> = OnceLock::new();
 
 /// Mount the always-on RPC socket for `ingress` under `opts`. Binds the
