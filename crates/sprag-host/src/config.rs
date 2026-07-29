@@ -1,4 +1,5 @@
-//! The USER's own configuration: the commands available in every pane, everywhere.
+//! The USER's own configuration: the commands available in every pane, and the keys a client
+//! answers to.
 //!
 //! [`crate::project`]'s `.sprag.toml` answers "what does THIS repository want run"; this answers
 //! "what do *I* want run, wherever I am" — `lazygit`, `htop`, a personal deploy script. cmux ships
@@ -29,8 +30,22 @@
 //! to a hostile repository — they are what makes a declared command legible — so they hold here too,
 //! and a single treatment means neither surface has to ask where a row came from before acting.
 
+//! ## Two settings, two readers, ONE file shape
+//!
+//! [`load`] answers the commands question and [`keymap`] answers the keys one, because they have
+//! different consumers: a declared command is PASTED INTO A PANE, which is a daemon operation, so
+//! [`UserConfig`] crosses the wire to the palette — while a keybinding is what one client does with
+//! one keyboard, which the daemon has no reason to hold and two clients may legitimately disagree
+//! about. Putting the keymap in the wire DTO would send it somewhere it is not wanted.
+//!
+//! What they share is ONE private description of the file's shape. That sharing is not an
+//! optimisation: it is what keeps `deny_unknown_fields` honest. A `[keys]` table the commands
+//! reader had never heard of would make the whole file invalid for a user who only wanted to
+//! rebind a key.
+
 use std::path::{Path, PathBuf};
 
+use crate::keymap::{KeyError, KeySpec, Keymap};
 use crate::project::{ProjectAction, ProjectError, validate_declared};
 
 /// The user's config file name, under [`config_dir`].
@@ -85,6 +100,11 @@ pub struct UserConfig {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ConfigError(pub ProjectError);
 
+/// So a caller that reports errors through `Box<dyn Error>` — every binary here — can carry one
+/// without restating its message. The `source` is deliberately absent: [`ProjectError`] is the
+/// payload, not a cause, and `Display` already says which file and what is wrong with it.
+impl std::error::Error for ConfigError {}
+
 impl std::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.0 {
@@ -114,18 +134,74 @@ pub fn load() -> Option<Result<UserConfig, ConfigError>> {
 
 /// Read + validate the user config at `path`.
 fn read_config(path: &Path) -> Result<UserConfig, ConfigError> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|error| ConfigError(ProjectError::Unreadable(error.to_string())))?;
-    let parsed: UserConfigFile = toml::from_str(&text)
-        .map_err(|error| ConfigError(ProjectError::Malformed(error.to_string())))?;
     Ok(UserConfig {
         path: path.to_path_buf(),
-        commands: validate_declared(parsed.command).map_err(ConfigError)?,
+        commands: validate_declared(read_file(path)?.command).map_err(ConfigError)?,
     })
 }
 
+/// The user's KEYMAP: [`Keymap::default`] with whatever [`CONFIG_FILE`] declares layered over it.
+///
+/// The defaults are the answer when there is no file, when there is no `HOME` to find one under,
+/// and when the file declares no keys — all three are "the user has not said otherwise", which is
+/// not a condition to report. A file that EXISTS and is broken is reported, exactly as [`load`]
+/// reports it, and reported WHOLE: a keymap assembled from the half of a file that parsed would be a
+/// table the user never wrote.
+///
+/// # Errors
+///
+/// [`ConfigError`] when the file exists and cannot be read, is not valid TOML, or declares a key,
+/// an action, or a bind/unbind pair that cannot be used.
+pub fn keymap() -> Result<Keymap, ConfigError> {
+    let Some(path) = config_path() else {
+        return Ok(Keymap::default());
+    };
+    if !path.is_file() {
+        return Ok(Keymap::default());
+    }
+    build_keymap(&read_file(&path)?)
+}
+
+/// Layer a file's declarations over the default keymap.
+fn build_keymap(file: &UserConfigFile) -> Result<Keymap, ConfigError> {
+    let invalid = |error: KeyError| ConfigError(ProjectError::Invalid(error.to_string()));
+    let mut keymap = Keymap::default();
+    if let Some(prefix) = file.keys.as_ref().and_then(|keys| keys.prefix.as_deref()) {
+        keymap.set_prefix(prefix).map_err(invalid)?;
+    }
+    for bind in &file.bind {
+        keymap.bind(&bind.key, &bind.action).map_err(invalid)?;
+    }
+    for unbind in &file.unbind {
+        // Refused rather than resolved by precedence. Applying binds before unbinds is one
+        // defensible order and applying them in file order is another, so a file that says both
+        // about one key has not said what it wants — and a user who has to remember which array
+        // wins has been given a puzzle instead of a keymap.
+        let key = KeySpec::parse(&unbind.key).map_err(invalid)?;
+        if file
+            .bind
+            .iter()
+            .any(|bind| KeySpec::parse(&bind.key).is_ok_and(|bound| bound == key))
+        {
+            return Err(invalid(KeyError::BoundAndUnbound(key.to_string())));
+        }
+        keymap.unbind(&unbind.key).map_err(invalid)?;
+    }
+    Ok(keymap)
+}
+
+/// Read + parse [`CONFIG_FILE`] at `path`, without interpreting any of its tables.
+///
+/// Shared by both readers so the file is parsed under ONE shape: `deny_unknown_fields` means a table
+/// one reader did not know about would invalidate the file for the other.
+fn read_file(path: &Path) -> Result<UserConfigFile, ConfigError> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| ConfigError(ProjectError::Unreadable(error.to_string())))?;
+    toml::from_str(&text).map_err(|error| ConfigError(ProjectError::Malformed(error.to_string())))
+}
+
 /// The file's shape as written by a human — the same `[[command]]` entries a project declares, so a
-/// user who has written one config can write the other.
+/// user who has written one config can write the other, plus the keymap's three tables.
 ///
 /// `deny_unknown_fields` for the reason the project file has it: a typo'd table that silently did
 /// nothing would leave the author believing their config was accepted.
@@ -135,6 +211,46 @@ struct UserConfigFile {
     /// `[[command]]` entries; defaulted, so a config that declares none is valid.
     #[serde(default)]
     command: Vec<crate::project::DeclaredAction>,
+    /// The `[keys]` table — client-wide key settings that are not a binding.
+    #[serde(default)]
+    keys: Option<DeclaredKeys>,
+    /// `[[bind]]` entries, layered over the defaults in file order.
+    #[serde(default)]
+    bind: Vec<DeclaredBind>,
+    /// `[[unbind]]` entries, removing a default.
+    #[serde(default)]
+    unbind: Vec<DeclaredUnbind>,
+}
+
+/// The `[keys]` table.
+///
+/// A table rather than a bare `prefix = "C-b"` at the file's top level, because the top level is
+/// where the file's SECTIONS live: a setting with no table would be the one thing a reader could not
+/// tell apart from a typo'd table name.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeclaredKeys {
+    /// The key that says "the next keystroke is the client's" — tmux's `prefix`. Absent means the
+    /// default, `C-b`.
+    prefix: Option<String>,
+}
+
+/// One `[[bind]]` entry — tmux's `bind-key key command`.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeclaredBind {
+    /// The key spec, e.g. `%` or `C-o`.
+    key: String,
+    /// The action, spelled as the shell spells it, e.g. `split-window -h`.
+    action: String,
+}
+
+/// One `[[unbind]]` entry — tmux's `unbind-key key`.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeclaredUnbind {
+    /// The key spec to remove.
+    key: String,
 }
 
 /// Point `XDG_CONFIG_HOME` at a fresh temporary directory holding `text` as the user config
@@ -176,6 +292,8 @@ pub(crate) fn with_config<T>(text: Option<&str>, body: impl FnOnce() -> T) -> T 
 
 #[cfg(test)]
 mod tests {
+    use sprag_input::Modifiers;
+
     use super::*;
 
     #[test]
@@ -281,5 +399,124 @@ mod tests {
                 .expect("an empty config is valid");
             assert!(config.commands.is_empty());
         });
+    }
+
+    /// No file, and a file that declares no keys, both mean the DEFAULT keymap — not an error and
+    /// not an empty table.
+    #[test]
+    fn a_user_who_has_said_nothing_about_keys_gets_the_defaults() {
+        with_config(None, || {
+            assert_eq!(
+                keymap().expect("no file is not an error"),
+                Keymap::default()
+            );
+        });
+        with_config(Some("[[command]]\nname = \"a\"\nrun = [\"x\"]\n"), || {
+            assert_eq!(
+                keymap().expect("a keyless config is valid"),
+                Keymap::default()
+            );
+        });
+    }
+
+    /// **The cross-reader test.** A user who only wanted to rebind a key must not break the palette:
+    /// `deny_unknown_fields` means an unknown table invalidates the WHOLE file, so the commands
+    /// reader has to know the keymap's tables exist even though it ignores them.
+    ///
+    /// REVERT-PROOF: drop `keys`/`bind`/`unbind` from `UserConfigFile` and `load()` fails here with
+    /// "unknown field", i.e. rebinding a key would empty the user's command palette.
+    #[test]
+    fn declaring_keys_does_not_invalidate_the_commands_half() {
+        let text = "[keys]\nprefix = \"C-a\"\n\n[[bind]]\nkey = \"c\"\naction = \"split-window -h\"\n\n\
+                    [[unbind]]\nkey = \"o\"\n\n[[command]]\nname = \"top\"\nrun = [\"htop\"]\n";
+        with_config(Some(text), || {
+            let config = load().expect("the file exists").expect("and is valid");
+            assert_eq!(config.commands.len(), 1, "the commands still read");
+            let keymap = keymap().expect("and so do the keys");
+            assert_eq!(keymap.prefix().to_string(), "C-a");
+            assert!(
+                keymap.action("c", Modifiers::default()).is_some(),
+                "the declared bind is there",
+            );
+            assert_eq!(
+                keymap.action("o", Modifiers::default()),
+                None,
+                "the unbound default is gone",
+            );
+            assert_eq!(
+                keymap.action("d", Modifiers::default()),
+                Some(crate::keymap::BoundAction::DetachClient),
+                "and every default the file did not mention survives",
+            );
+        });
+    }
+
+    /// Within `[[bind]]`, file order is total and the later entry wins — the rule that makes a
+    /// declarative file behave like tmux's sequence of `bind-key` commands.
+    #[test]
+    fn the_later_binding_of_one_key_wins() {
+        let text = "[[bind]]\nkey = \"x\"\naction = \"detach-client\"\n\
+                    [[bind]]\nkey = \"x\"\naction = \"select-pane -t :.+\"\n";
+        with_config(Some(text), || {
+            assert_eq!(
+                keymap().expect("valid").action("x", Modifiers::default()),
+                Some(crate::keymap::BoundAction::SelectNextPane),
+            );
+        });
+    }
+
+    /// A key both bound and unbound is REFUSED rather than resolved by precedence — the file has not
+    /// said what it wants, and the report names the key and the file to fix.
+    #[test]
+    fn a_key_both_bound_and_unbound_is_refused() {
+        let text = "[[bind]]\nkey = \"C-o\"\naction = \"detach-client\"\n\
+                    [[unbind]]\nkey = \"^o\"\n";
+        with_config(Some(text), || {
+            let message = keymap().expect_err("contradictory").to_string();
+            assert!(message.contains(CONFIG_FILE), "{message:?}");
+            assert!(
+                message.contains("C-o") && message.contains("both bound and unbound"),
+                "the report names the key: {message:?}",
+            );
+        });
+    }
+
+    /// A broken KEY or ACTION is refused whole, and the report names `config.toml` — the same
+    /// contract the commands half already has, through the same wrapper.
+    #[test]
+    fn a_broken_key_or_action_is_refused_and_the_report_names_this_file() {
+        for (text, expected) in [
+            ("[keys]\nprefix = \"C-\"\n", "is not a key"),
+            (
+                "[[bind]]\nkey = \"Up\"\naction = \"detach-client\"\n",
+                "is not a key",
+            ),
+            (
+                "[[bind]]\nkey = \"x\"\naction = \"kill-server\"\n",
+                "is not an action",
+            ),
+            (
+                "[[bind]]\nkey = \"x\"\naction = \"split-window\"\n",
+                "needs -h",
+            ),
+            ("[[unbind]]\nkey = \"BSpace\"\n", "is not a key"),
+            (
+                "[[bind]]\nkey = \"x\"\naciton = \"detach-client\"\n",
+                "not valid TOML",
+            ),
+        ] {
+            with_config(Some(text), || {
+                let message = keymap().expect_err("is refused").to_string();
+                assert!(message.contains(CONFIG_FILE), "{message:?}");
+                assert!(
+                    !message.contains(crate::project::PROJECT_FILE),
+                    "and never the OTHER config: {message:?}"
+                );
+                assert!(
+                    message.contains(expected),
+                    "...and says what is wrong: {message:?} should mention {expected:?}"
+                );
+            });
+        }
     }
 }

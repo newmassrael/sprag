@@ -353,9 +353,19 @@ impl Drop for Tui {
 impl Tui {
     /// Start `sprag-tui` on a fresh pseudoterminal, attached to `session` on `sock`.
     fn attach(sock: &Path, session: &str) -> Self {
+        Self::attach_with_env(sock, session, &[])
+    }
+
+    /// [`Tui::attach`] with EXTRA env vars — the keymap test points `XDG_CONFIG_HOME` at a config it
+    /// wrote, because a keymap the BINARY reads at startup is the one thing a unit test over
+    /// `command()` cannot prove.
+    fn attach_with_env(sock: &Path, session: &str, envs: &[(&str, &str)]) -> Self {
         let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_sprag-tui"));
         command.env("SPRAG_GUI_HOST_SOCK", sock);
         command.env("SPRAG_GUI_SESSION", session);
+        for (key, value) in envs {
+            command.env(key, value);
+        }
         Self::start(command)
     }
 
@@ -590,7 +600,7 @@ fn attached_client_via(launch: fn(&Path, &str) -> Tui) -> (Daemon, PathBuf, Host
 /// [`attached_client_via`] whose boot pane runs `program` — the mouse tests need a child that ASKS
 /// for tracking, and `cat` never does.
 fn attached_client_with(
-    launch: fn(&Path, &str) -> Tui,
+    launch: impl FnOnce(&Path, &str) -> Tui,
     program: &[&str],
 ) -> (Daemon, PathBuf, HostConn, String, Tui) {
     let (daemon, sock) = spawn_daemon_running(program);
@@ -1328,5 +1338,88 @@ fn a_divider_drag_moves_the_boundary_and_both_children() {
         } else {
             Err(format!("pane 0 holds {text:?}"))
         }
+    });
+}
+
+/// A temporary `$XDG_CONFIG_HOME` holding `text` as the user's `config.toml`, removed on drop —
+/// including on a panicked assertion, so a failed run leaves no directory behind.
+///
+/// Unique per CALL for the reason [`socket_path`] is: these tests run as parallel threads of one
+/// binary, and a shared directory would have them reading each other's config.
+struct ConfigHome(PathBuf);
+
+impl Drop for ConfigHome {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+impl ConfigHome {
+    fn new(text: &str) -> Self {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("sprag-tui-cfg-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sprag")).expect("temp config dir");
+        std::fs::write(dir.join("sprag").join("config.toml"), text).expect("write config");
+        Self(dir)
+    }
+
+    fn as_str(&self) -> &str {
+        self.0.to_str().expect("a utf-8 temp path")
+    }
+}
+
+/// **THE GATE for H2: a keymap in the user's file reaches the SHIPPED BINARY.**
+///
+/// Every other test of this round drives `command()` with a keymap handed to it, which proves the
+/// routing and says nothing about whether `run()` ever reads a config — the seam where the whole
+/// feature can be absent while every unit test stays green. Only running the real client against a
+/// real `config.toml` on a real pseudoterminal can tell them apart.
+///
+/// Two claims, and the FIRST is the one that discriminates:
+///
+/// * With `prefix = "C-a"`, the OLD prefix is an ordinary keystroke: `C-b` then `d` reaches the
+///   pane, `cat` echoes it, and the letter appears on screen. A binary that ignored the config would
+///   have taken `C-b` as its prefix and DETACHED on the `d`, so nothing would ever paint — which is
+///   exactly this assertion timing out.
+/// * The declared prefix then works: `C-a d` detaches, and the daemon releases the client.
+///
+/// The expected row is `live^Bd`, and the `^B` is not noise to be explained away — it is the
+/// PANE's line discipline echoing `0x02` in caret notation (`echoctl`), which is what a control
+/// character reaching a canonical PTY looks like. Its presence is a second, independent statement
+/// that the byte travelled: a client that had swallowed `C-b` as its prefix would show neither the
+/// caret nor the `d`.
+#[test]
+fn a_prefix_declared_in_the_users_config_reaches_the_client() {
+    let config = ConfigHome::new("[keys]\nprefix = \"C-a\"\n");
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client_with(
+        |sock, session| {
+            Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", config.as_str())])
+        },
+        &["cat"],
+    );
+
+    // Typed first, so what follows is proven to act on a client that was WORKING.
+    tui.type_bytes(b"live");
+    wait_for("the client to be painting", || painted(&mut tui, "live"));
+
+    // The OLD prefix is now just a key: both bytes reach `cat`, which echoes them back.
+    tui.type_bytes(&[0x02]);
+    tui.type_bytes(b"d");
+    wait_for(
+        "the old prefix to reach the pane as an ordinary key",
+        || painted(&mut tui, "live^Bd"),
+    );
+
+    // ...and the DECLARED prefix is the one that opens the table.
+    tui.type_bytes(&[0x01]); // C-a
+    tui.type_bytes(b"d"); // detach-client
+    let status = tui.wait();
+    assert!(
+        status.success(),
+        "the client exits successfully on the configured detach, not {status:?}",
+    );
+    wait_for("the daemon to release the client", || {
+        settled(attached(&mut conn, &session), &0)
     });
 }

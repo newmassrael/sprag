@@ -293,6 +293,62 @@ mod tests {
         assert!(!mods.alt && !mods.shift && !mods.sup);
     }
 
+    /// **THE DRIFT GUARD between this decoder and the vocabulary a config binds against.**
+    ///
+    /// A user binds a key by NAME ([`sprag_input::NAMED_KEYS`]), and a binding fires only when this
+    /// decoder produces that same name. So a name this table can emit but the vocabulary does not
+    /// list is a key nobody can bind, and a name the vocabulary lists but this table never emits is
+    /// a binding that parses and then waits forever — both failures are silent, and neither crate's
+    /// own tests can see them, because the two tables live on either side of the crate boundary.
+    ///
+    /// Enumerated over every [`KeyCode`] this module maps rather than over a list of names, so a
+    /// new arm added to `key_name` is covered the moment someone adds its code here.
+    #[test]
+    fn every_name_this_decoder_produces_is_in_the_wires_vocabulary() {
+        let mut codes = vec![
+            KeyCode::Char('a'),
+            KeyCode::Char('%'),
+            KeyCode::Enter,
+            KeyCode::Tab,
+            KeyCode::Backspace,
+            KeyCode::Escape,
+            KeyCode::UpArrow,
+            KeyCode::DownArrow,
+            KeyCode::RightArrow,
+            KeyCode::LeftArrow,
+            KeyCode::ApplicationUpArrow,
+            KeyCode::ApplicationDownArrow,
+            KeyCode::ApplicationRightArrow,
+            KeyCode::ApplicationLeftArrow,
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+            KeyCode::KeyPadHome,
+            KeyCode::KeyPadEnd,
+            KeyCode::KeyPadPageUp,
+            KeyCode::KeyPadPageDown,
+            KeyCode::Insert,
+            KeyCode::Delete,
+            KeyCode::Numpad0,
+            KeyCode::Numpad9,
+            KeyCode::Multiply,
+            KeyCode::Add,
+            KeyCode::Subtract,
+            KeyCode::Decimal,
+            KeyCode::Divide,
+        ];
+        codes.extend((1..=24).map(KeyCode::Function));
+        for code in codes {
+            let (name, _) = decoded(code, LocalModifiers::NONE)
+                .unwrap_or_else(|| panic!("{code:?} decodes to a name"));
+            assert!(
+                sprag_input::is_key_name(&name),
+                "{code:?} decodes to {name:?}, which no config could bind",
+            );
+        }
+    }
+
     /// The virtual bits wezterm uses for its own key tables are not modifiers a PTY has heard of.
     #[test]
     fn the_virtual_modifier_bits_do_not_reach_the_wire() {

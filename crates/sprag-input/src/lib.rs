@@ -92,6 +92,85 @@ pub fn encode(key: &str, mods: Modifiers, modes: InputModes) -> Option<Vec<u8>> 
     }
 }
 
+/// The W3C `KeyboardEvent.key` names this crate's vocabulary spells — the multi-character half of
+/// it, since a character key's name is the character itself.
+///
+/// # Why the list is here and not at either end that uses it
+///
+/// Two places need to know whether a string names a key, and neither may own the answer. A CLIENT
+/// decodes its own keyboard into these names (`sprag-tui`'s `wire_key`, pinion's `KeyboardEvent`),
+/// and [`encode`] turns them back into bytes — but a THIRD reader arrived with the keymap: a user's
+/// `config.toml` binds a key by NAME, and a name nothing can ever produce has to be refused when the
+/// file is read rather than left as a binding that silently never fires. A list in the keymap would
+/// be a second vocabulary that drifts from this one; a list in a client would be that client's.
+///
+/// # It is deliberately WIDER than what [`encode`] accepts
+///
+/// `F13` upward are named here and encode to nothing. That is the same asymmetry `sprag-tui`'s key
+/// decoder already documents from the other side: naming a key is the vocabulary's job, deciding
+/// what bytes a name becomes — or that it becomes none — is the encoder's. A binding to `F13` is
+/// therefore legitimate (it addresses a CLIENT command, which never reaches a PTY) even though
+/// sending `F13` to a pane is not.
+pub const NAMED_KEYS: &[&str] = &[
+    "Enter",
+    "Tab",
+    "Backspace",
+    "Escape",
+    // The spacebar's W3C `key` is the single space, so `" "` is already a character key here.
+    // `Space` is its `code`-style spelling, accepted by `encode_named` because an IME delivers it
+    // that way — and the ONLY spelling available to a config file, where a lone space is invisible.
+    "Space",
+    "ArrowUp",
+    "ArrowDown",
+    "ArrowRight",
+    "ArrowLeft",
+    "Home",
+    "End",
+    "PageUp",
+    "PageDown",
+    "Insert",
+    "Delete",
+    "F1",
+    "F2",
+    "F3",
+    "F4",
+    "F5",
+    "F6",
+    "F7",
+    "F8",
+    "F9",
+    "F10",
+    "F11",
+    "F12",
+    "F13",
+    "F14",
+    "F15",
+    "F16",
+    "F17",
+    "F18",
+    "F19",
+    "F20",
+    "F21",
+    "F22",
+    "F23",
+    "F24",
+];
+
+/// Whether `key` names a key in the wire's vocabulary — one of [`NAMED_KEYS`], or any single
+/// Unicode scalar (whose W3C name IS the character).
+///
+/// The two-branch shape is [`encode`]'s own: it splits on exactly this test before choosing between
+/// the character path and the named path, so a string this accepts is one `encode` will route
+/// somewhere rather than reject for being unspellable.
+#[must_use]
+pub fn is_key_name(key: &str) -> bool {
+    let mut chars = key.chars();
+    if chars.next().is_some() && chars.next().is_none() {
+        return true;
+    }
+    NAMED_KEYS.contains(&key)
+}
+
 /// Encode a single character key: its UTF-8 bytes, transformed to a C0
 /// control code under `Ctrl` and prefixed with `ESC` under `Alt`.
 fn encode_char(c: char, mods: Modifiers) -> Vec<u8> {
@@ -1015,5 +1094,47 @@ mod tests {
             encode("Enter", CTRL, newline_modes(false)),
             Some(b"\x0d".to_vec())
         );
+    }
+
+    /// **The drift guard between the vocabulary and the encoder**, stated as the exact boundary
+    /// rather than as a one-way containment: every [`NAMED_KEYS`] entry encodes EXCEPT the function
+    /// keys past F12, which are named for a client to bind and have no PTY encoding.
+    ///
+    /// Asserted as an equality so it fails from either side. Adding a name to the vocabulary that
+    /// nothing encodes fails it; teaching `encode` F13 fails it too — and that second failure is the
+    /// point, since it is the one a containment test would have let through silently.
+    #[test]
+    fn the_vocabulary_and_the_encoder_agree_on_exactly_the_function_keys_past_f12() {
+        let unencodable: Vec<&str> = NAMED_KEYS
+            .iter()
+            .copied()
+            .filter(|key| encode(key, Modifiers::default(), modes(false)).is_none())
+            .collect();
+        assert_eq!(
+            unencodable,
+            vec![
+                "F13", "F14", "F15", "F16", "F17", "F18", "F19", "F20", "F21", "F22", "F23", "F24"
+            ],
+            "the vocabulary is wider than the encoder by exactly F13-F24 and nothing else",
+        );
+    }
+
+    /// A character key needs no table: its W3C name IS the character, so the vocabulary accepts any
+    /// single scalar and rejects a multi-character string that is not a named key.
+    ///
+    /// The empty string is the case worth pinning — `chars().next()` on it is `None`, and a
+    /// vocabulary that accepted `""` would let a config bind a key no keyboard can press.
+    #[test]
+    fn the_vocabulary_accepts_any_single_scalar_and_no_invented_name() {
+        for key in ["a", "%", "\"", " ", "가", "☃"] {
+            assert!(is_key_name(key), "{key:?} is a character key");
+        }
+        assert!(!is_key_name(""), "the empty string names no key");
+        // tmux's OWN named keys, which sprag deliberately does not adopt: it spells these
+        // `ArrowUp` / `Backspace` / `Delete` / `PageDown`, and accepting both would be two
+        // vocabularies with a mapping table between them.
+        for key in ["Up", "BSpace", "DC", "IC", "NPage", "PgDn"] {
+            assert!(!is_key_name(key), "{key:?} is tmux's spelling, not sprag's");
+        }
     }
 }

@@ -53,6 +53,7 @@ pub mod durability;
 mod external;
 pub mod history;
 pub mod host;
+pub mod keymap;
 pub mod notify;
 pub mod pane;
 pub mod plugins;
@@ -87,6 +88,7 @@ pub use host::{
     Host, HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneMatch,
     PaneNotification, PaneScrollFacts,
 };
+pub use keymap::{BoundAction, KeyError, KeySpec, Keymap};
 pub use notify::ChannelRegistry;
 pub use pane::{CellFrame, SpragPaneExternal, focus, mouse, paste, send_key, send_text};
 pub use plugins::PluginsExternal;

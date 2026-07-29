@@ -38,6 +38,10 @@
 //! sprag resize-pane [-t SESSION] PANE -x COLS -y ROWS  resize a pane's PTY + emulator
 //! sprag send-keys [-t SESSION] PANE [-l] KEY…     send W3C key names (or, with -l, literal text)
 //! sprag capture-pane [-t SESSION] PANE [-p]       print a pane's retained output to stdout
+//!
+//! sprag list-keys          print the client keymap `config.toml` produces (tmux list-keys).
+//!                          The ONE verb here that needs no daemon: a keybinding is a client's,
+//!                          not a server's, so it answers while nothing is running
 //! ```
 //!
 //! ## Which commands take `-t`, and why the two answers differ
@@ -133,6 +137,7 @@ fn run() -> io::Result<()> {
         Some("resize-pane") => resize_pane(args.collect()),
         Some("send-keys") => send_keys(args.collect()),
         Some("capture-pane") => capture_pane(args.collect()),
+        Some("list-keys") => list_keys(args.collect()),
         Some("-h" | "--help" | "help") | None => {
             print_usage();
             Ok(())
@@ -262,6 +267,44 @@ fn run_project(args: Vec<String>) -> io::Result<()> {
     Ok(())
 }
 
+/// `list-keys`: print the client keymap `config.toml` produces — tmux `list-keys`.
+///
+/// **This is the one verb here that needs no daemon**, and that is not an accident: a keybinding is
+/// what a CLIENT does with a keyboard, so it lives in the user's config file rather than in the
+/// server. tmux's `list-keys` has to start a server to answer; sprag's answers on a machine with no
+/// session running at all, which is exactly when a user is editing their config.
+///
+/// The output is tmux's own shape (`bind-key -T prefix KEY COMMAND`) so a tmux user reads it
+/// without learning anything, and every line after the first begins with `bind-key` so a script can
+/// filter for them. The PREFIX gets the first line on its own, because sprag's prefix is a field of
+/// the keymap rather than a server option — tmux answers that question with `show-options -g
+/// prefix`, and sprag has no options table to put it in.
+fn list_keys(args: Vec<String>) -> io::Result<()> {
+    if let Some(unexpected) = args.first() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("list-keys: unexpected argument {unexpected:?} (it takes none)"),
+        ));
+    }
+    let keymap = sprag_host::config::keymap().map_err(|error| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("list-keys: {error}"))
+    })?;
+    println!("prefix {}", keymap.prefix());
+    // Aligned on the widest key so the actions read as a column. Measured in CHARACTERS rather than
+    // bytes: a key spec is a user's string and `%` is not the only thing they may bind.
+    let width = keymap
+        .binds()
+        .map(|(key, _)| key.to_string().chars().count())
+        .max()
+        .unwrap_or(0);
+    for (key, action) in keymap.binds() {
+        let key = key.to_string();
+        let pad = " ".repeat(width - key.chars().count());
+        println!("bind-key -T prefix {key}{pad}  {action}");
+    }
+    Ok(())
+}
+
 fn print_usage() {
     eprintln!(
         "usage: sprag <ls | list-clients [-t SESSION] | new [name]\n\
@@ -275,7 +318,8 @@ fn print_usage() {
          \x20      sprag <panes | split-window [-h|-v [-b] PANE] [-- command…]\n\
          \x20             | kill-pane PANE\n\
          \x20             | resize-pane PANE -x COLS -y ROWS\n\
-         \x20             | send-keys PANE [-l] KEY… | capture-pane PANE [-p]> [-t SESSION]"
+         \x20             | send-keys PANE [-l] KEY… | capture-pane PANE [-p]> [-t SESSION]\n\
+         \x20      sprag list-keys"
     );
 }
 

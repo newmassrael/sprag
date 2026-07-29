@@ -1921,3 +1921,97 @@ fn send_keys_reaches_the_child_and_capture_pane_reads_it_back() {
         );
     }
 }
+
+/// A temporary `$XDG_CONFIG_HOME` holding `text` as the user config, cleaned up on drop —
+/// including on a panicked assertion, so a failed run leaks no directory.
+struct ConfigHome(PathBuf);
+impl Drop for ConfigHome {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+impl ConfigHome {
+    /// Unique per CALL, like [`socket_path`]: these tests run in parallel threads of one binary and
+    /// a shared directory would have them reading each other's config.
+    fn new(text: &str) -> Self {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("sprag-cli-cfg-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sprag")).expect("temp config dir");
+        std::fs::write(dir.join("sprag").join("config.toml"), text).expect("write config");
+        Self(dir)
+    }
+
+    fn as_str(&self) -> &str {
+        self.0.to_str().expect("a utf-8 temp path")
+    }
+}
+
+/// `list-keys` answers from the user's config with **NO DAEMON RUNNING**, and a file's declarations
+/// reach the table a client would use.
+///
+/// The no-daemon half is the point of the verb, not a convenience: a keybinding is what a CLIENT
+/// does with a keyboard, so it lives in the config file rather than in the server — which is why
+/// this test names a socket that was never bound and still expects success. tmux's `list-keys`
+/// starts a server to answer the same question.
+///
+/// REVERT-PROOF for the no-daemon claim: route this through `connect()` like every other verb and it
+/// fails with "no server running", i.e. a user could not read their own keymap while editing it.
+#[test]
+fn list_keys_reads_the_users_config_with_no_daemon() {
+    let config = ConfigHome::new(
+        "[keys]\nprefix = \"C-a\"\n\n\
+         [[bind]]\nkey = \"|\"\naction = \"split-window -h\"\n\n\
+         [[unbind]]\nkey = \"%\"\n",
+    );
+    let absent = socket_path();
+    assert!(!absent.exists(), "the socket was never bound");
+    let run = sprag_env(
+        &absent,
+        &["list-keys"],
+        &[("XDG_CONFIG_HOME", config.as_str())],
+    );
+    assert!(run.ok, "no daemon is not an error: {}", run.stderr);
+    let lines: Vec<&str> = run.stdout.lines().collect();
+    assert_eq!(lines.first().copied(), Some("prefix C-a"));
+    let binds: Vec<String> = lines[1..]
+        .iter()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect();
+    assert!(
+        binds.contains(&"bind-key -T prefix | split-window -h".to_owned()),
+        "the declared bind is there: {binds:?}",
+    );
+    assert!(
+        !binds.iter().any(|line| line.contains(" % ")),
+        "the unbound default is gone: {binds:?}",
+    );
+    assert!(
+        binds.contains(&"bind-key -T prefix d detach-client".to_owned()),
+        "and every default the file did not mention survives: {binds:?}",
+    );
+    // The self-send followed the prefix, so `prefix prefix` still types it.
+    assert!(
+        binds.contains(&"bind-key -T prefix C-a send-prefix".to_owned()),
+        "the self-send follows the prefix: {binds:?}",
+    );
+}
+
+/// A broken config is a clean refusal that names the file and what is wrong — never a silently
+/// default table, which would leave a user believing their config was accepted.
+#[test]
+fn list_keys_refuses_a_broken_config_and_names_it() {
+    let config = ConfigHome::new("[[bind]]\nkey = \"x\"\naction = \"kill-server\"\n");
+    let run = sprag_env(
+        &socket_path(),
+        &["list-keys"],
+        &[("XDG_CONFIG_HOME", config.as_str())],
+    );
+    assert!(!run.ok, "a broken config fails");
+    assert!(
+        run.stderr.contains("config.toml") && run.stderr.contains("is not an action"),
+        "naming the file and the fault: {}",
+        run.stderr,
+    );
+}

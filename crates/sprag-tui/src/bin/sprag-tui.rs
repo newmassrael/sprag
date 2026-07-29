@@ -15,19 +15,26 @@
 //! That is the event loop the H1 design called for, and it needed no new machinery because
 //! termwiz's waker exists for exactly this.
 //!
-//! # Keys belong to the pane, so the client needs a prefix
+//! # Keys belong to the pane, so the client needs a prefix — and the prefix is the USER's
 //!
 //! Once keystrokes reach the child, every key is spoken for: `q` is a program's quit, `Ctrl-C` is
 //! a program's interrupt, and raw mode means the client cannot fall back on a signal either. So
 //! this client's own commands live behind a PREFIX, which is tmux's answer and the one a user
-//! already has in their fingers — [`PREFIX_KEY`] then a command key.
+//! already has in their fingers — the prefix, then a command key.
 //!
-//! The table is `d` to detach, `%` and `"` to split, `o` to move between panes, and
-//! `prefix prefix` to type a literal prefix into the pane (tmux's `send-prefix`, which is what
-//! keeps the prefix key itself reachable by the program running there). Every one of those is
-//! tmux's own spelling, because the point of a prefix table is that a user already has it in their
-//! fingers. H2 makes it configurable; until then the choice of `Ctrl-B` is a default, not a
-//! decision anyone can change.
+//! Both halves are read from the user's [`Keymap`] rather than written here. `Ctrl-B` and the table
+//! `d` / `%` / `"` / `o` are still what a user who has said nothing gets, because those are tmux's
+//! own defaults — but they are now [`Keymap::default`]'s, layered over by `config.toml`, and this
+//! binary spells none of them.
+//!
+//! The keymap is loaded FIRST, before the daemon is reached and long before the terminal is taken:
+//! a config with a typo in it is a message a user has to be able to read, and the only screen that
+//! can show one is the one this client has not yet replaced.
+//!
+//! Exact-modifier matching is what makes the table a table. The hardcoded version needed a rule of
+//! its own — "a command key with a modifier on it is a slip" — so that `Ctrl-D` could not detach and
+//! `Ctrl-O` could not move focus; a keymap gets that for free, because `Ctrl-D` is simply not the
+//! key `d` is bound to. It also makes `C-o` bindable, which the special case could not express.
 //!
 //! # Which pane the keys go to is THIS CLIENT's question
 //!
@@ -62,8 +69,9 @@
 //!   terminal gives it, and so does every later window change. With one client that is simply
 //!   correct; with several it is a POLICY, and the same one tmux spells `window-size latest`. The
 //!   alternatives tmux also offers (smallest attached client, or a per-client viewport over a
-//!   larger pane) need a client-size registry the daemon does not have, and choosing between them
-//!   is H2's, not this slice's.
+//!   larger pane) need a client-size registry the daemon does not have. Still unbuilt after H2's
+//!   keybinding slice: `window-size` is an OPTION, and sprag has no options table for one to live
+//!   in — the config file grew a keymap, not a `set-option`.
 //! * **No pane is closed from here.** `exit` in the shell does it, and the destructive verb is the
 //!   one that would want a confirmation prompt this client has nowhere to draw.
 //! * **Type-ahead before the client is up is lost.** `set_raw_mode` sets the termios with
@@ -81,8 +89,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use pinion_core::QuitSink;
 use sprag_client::WireHost;
 use sprag_host::HostClient;
-use sprag_input::{MouseEventKind, MouseInput};
-use sprag_terminal::{PaneId, SplitDir, SplitId};
+use sprag_host::keymap::{BoundAction, Keymap};
+use sprag_input::{Modifiers, MouseEventKind, MouseInput};
+use sprag_terminal::{PaneId, SplitId};
 use sprag_tui::{
     Divider, MouseEdges, Rect, Tiling, WireKey, cursor_changes, divider_changes, pane_changes,
     tile, wire_key, with_ratio,
@@ -91,7 +100,7 @@ use sprag_vt::MouseProtocol;
 use termwiz::caps::{Capabilities, ProbeHints};
 use termwiz::color::ColorAttribute;
 use termwiz::escape::csi::{CSI, DecPrivateMode, DecPrivateModeCode, Mode};
-use termwiz::input::{InputEvent, KeyCode, KeyEvent, Modifiers};
+use termwiz::input::{InputEvent, KeyEvent};
 use termwiz::surface::Change;
 use termwiz::terminal::buffered::BufferedTerminal;
 use termwiz::terminal::{SystemTerminal, Terminal, TerminalWaker};
@@ -115,6 +124,11 @@ fn main() -> std::process::ExitCode {
 /// failure to reach the daemon prints an ordinary error on an ordinary screen instead of a
 /// diagnostic nobody can read inside an alternate screen that is about to be torn down.
 fn run() -> Result<(), Box<dyn Error>> {
+    // FIRST, before the daemon is reached and long before the terminal is taken. A config error is
+    // a message the user has to read, and every later step either replaces the screen it would be
+    // printed on or gives them something else to think about. It also costs one file read, so
+    // there is nothing to gain by deferring it.
+    let keymap = sprag_host::config::keymap()?;
     // This client OPENS the controlling terminal rather than letting termwiz do it, and keeps the
     // handle: the mouse modes have to be turned on and off as the panes' children ask for them
     // ([`MouseMirror`]), and `Terminal` offers no way to say so — `set_raw_mode` decides once, from
@@ -201,14 +215,22 @@ fn run() -> Result<(), Box<dyn Error>> {
         // `None` blocks until the terminal has something OR the waker fires — the select this
         // client's whole idle cost rests on.
         match screen.terminal().poll_input(None)? {
-            Some(InputEvent::Key(event)) => match command(&mut keys, &event) {
-                Command::Detach => break,
+            Some(InputEvent::Key(event)) => match command(&mut keys, &keymap, &event) {
+                Command::Act(BoundAction::DetachClient) => break,
                 Command::Swallow => {}
-                Command::ToPane(key) => send_key(&host, focus, &key),
+                Command::ToPane(key) => {
+                    let mut scratch = [0u8; 4];
+                    send_key(&host, focus, key.name(&mut scratch), key.mods());
+                }
+                // The PREFIX, not the key that was pressed: a user who binds `send-prefix` to some
+                // other key means that key to send the prefix, not to send itself.
+                Command::Act(BoundAction::SendPrefix) => {
+                    send_key(&host, focus, keymap.prefix().name(), keymap.prefix().mods());
+                }
                 // A split and a focus move both change what is on screen without the host
                 // necessarily waking this loop, so each repaints on the spot rather than waiting
                 // for a notification that may only arrive with the new shell's first prompt.
-                Command::Split(dir, before) => {
+                Command::Act(BoundAction::SplitWindow { dir, before }) => {
                     if let Some(pane) = focus.and_then(|pane| host.split(pane, dir, before)) {
                         // tmux puts a new pane in the foreground, and so does this: the user asked
                         // for a shell and would otherwise have to ask again to reach it.
@@ -218,7 +240,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                     mouse.follow(&host, &tiling);
                     paint(&mut screen, &host, &tiling, focus, Clear::No)?;
                 }
-                Command::NextPane => {
+                Command::Act(BoundAction::SelectNextPane) => {
                     let next = focus.and_then(|pane| tiling.next_after(pane));
                     set_focus(&host, &mut focus, next.or_else(|| tiling.first_pane()));
                     // Only the CURSOR moved, and it is painted from the tiling this loop already
@@ -453,20 +475,24 @@ fn set_focus(host: &WireHost, focus: &mut Option<PaneId>, next: Option<PaneId>) 
     *focus = next;
 }
 
-/// Send one decoded key to the focused pane.
+/// Send one key, named in the wire's vocabulary, to the focused pane.
+///
+/// Takes the name and modifiers rather than a [`WireKey`] because two callers reach it with the same
+/// pair spelled differently: a keystroke this terminal decoded, and the
+/// [`KeySpec`](sprag_host::keymap::KeySpec) a `send-prefix` binding has to deliver. Both are "a key
+/// the wire can address", and the host's own
+/// [`HostClient::send_key`] takes exactly this pair.
 ///
 /// A key the host declines is logged, not surfaced: the only place this client could report it is
 /// the screen it is painting a pane onto, and a viewer that scribbled diagnostics over a user's
 /// program would be worse than the dropped key. `false` covers a key `sprag-input` has no encoding
 /// for (F13 upward) and a pane that closed between the poll and the send — neither is this
 /// client's to fix.
-fn send_key(host: &WireHost, focus: Option<PaneId>, key: &WireKey) {
+fn send_key(host: &WireHost, focus: Option<PaneId>, name: &str, mods: Modifiers) {
     let Some(pane) = focus else {
         return;
     };
-    let mut scratch = [0u8; 4];
-    let name = key.name(&mut scratch);
-    if !host.send_key(pane, name, key.mods()) {
+    if !host.send_key(pane, name, mods) {
         tracing::debug!(target: "sprag_tui::input", key = name, "the host did not encode this key");
     }
 }
@@ -505,10 +531,6 @@ fn resize_pane(host: &WireHost, pane: PaneId, area: Rect) {
     host.resize(pane, area.cols, area.rows, CELL_PX_UNKNOWN);
 }
 
-/// The client's prefix key: `Ctrl-B`, tmux's default (see the module docs for why a prefix exists
-/// at all, and why this is a default rather than a decision).
-const PREFIX_KEY: char = 'b';
-
 /// Where the next keystroke goes.
 ///
 /// Two states rather than a `bool` because the prefix is not a modifier — it is a mode the client
@@ -527,68 +549,44 @@ enum Keys {
 enum Command {
     /// Send it to the pane.
     ToPane(WireKey),
-    /// Give the terminal back and leave the session running.
-    Detach,
-    /// Divide the focused pane and put a new shell in the half it opens. The `bool` is tmux's
-    /// `-b`: put it on the near side (left of, or above) instead of the far one.
-    Split(SplitDir, bool),
-    /// Move focus to the next pane in paint order.
-    NextPane,
+    /// Carry out a bound command of this client's own.
+    Act(BoundAction),
     /// Nothing — the key was the prefix itself, an unbound command, or one the wire cannot spell.
     Swallow,
 }
 
-/// Route one key through the prefix table, advancing `keys`.
+/// Route one key through `keymap`, advancing `keys`.
+///
+/// The keystroke is decoded into the wire's vocabulary ONCE, and everything downstream asks about
+/// that: whether it is the prefix, what it is bound to, and what reaches the pane. A key the wire
+/// has no spelling for is therefore not a key a binding could have named either, which is why the
+/// one decode can serve all three.
 ///
 /// An unbound command key is SWALLOWED rather than passed through to the pane, which is tmux's
 /// behaviour and the safer of the two: a user who typed the prefix meant to address the client, so
 /// delivering their mistake to a shell would run something they did not ask for.
-fn command(keys: &mut Keys, event: &KeyEvent) -> Command {
-    match *keys {
-        Keys::ToPane if is_prefix(event) => {
-            *keys = Keys::AfterPrefix;
-            Command::Swallow
-        }
-        Keys::ToPane => wire_key(event).map_or(Command::Swallow, Command::ToPane),
-        Keys::AfterPrefix => {
-            // One command key, whatever it turns out to be: the prefix is a one-key mode, so the
-            // reset happens here rather than in each arm, where a new binding could forget it.
-            *keys = Keys::ToPane;
-            // Every binding is the BARE letter or symbol: a modifier on a command key means the
-            // user's finger slipped, and tmux's own table reads the same way. `Ctrl-D` in
-            // particular is a program's end-of-file and must never be a detach.
-            if is_prefix(event) {
-                // `prefix prefix` types a literal prefix — tmux's `send-prefix`, and what keeps
-                // `Ctrl-B` reachable by the program running in the pane.
-                return wire_key(event).map_or(Command::Swallow, Command::ToPane);
-            }
-            if event.modifiers.intersects(Modifiers::CTRL | Modifiers::ALT) {
-                return Command::Swallow;
-            }
-            match event.key {
-                KeyCode::Char('d') => Command::Detach,
-                // tmux's two split keys, and its inversion with them: `%` runs `split-window -h`,
-                // which lays the panes side by SIDE. The flag names the layout, not the line drawn
-                // between them, and this is the one place in the client where the two could be
-                // confused — so the mapping is spelled against tmux's verb rather than against
-                // what the divider looks like.
-                KeyCode::Char('%') => Command::Split(SplitDir::Horizontal, false),
-                KeyCode::Char('"') => Command::Split(SplitDir::Vertical, false),
-                KeyCode::Char('o') => Command::NextPane,
-                _ => Command::Swallow,
-            }
-        }
+fn command(keys: &mut Keys, keymap: &Keymap, event: &KeyEvent) -> Command {
+    // The prefix is a ONE-KEY mode, so it ends here — before anything looks at what the key is —
+    // rather than in each outcome, where a new binding could forget it. Taking the old mode out in
+    // the same move is what leaves exactly one place that can put it back.
+    let mode = std::mem::replace(keys, Keys::ToPane);
+    let Some(key) = wire_key(event) else {
+        // A key the wire cannot spell reaches neither a pane nor the table. It still ENDS the
+        // prefix mode, because the mode is one key long whatever that key turns out to be.
+        return Command::Swallow;
+    };
+    let mut scratch = [0u8; 4];
+    let name = key.name(&mut scratch);
+    if mode == Keys::AfterPrefix {
+        return keymap
+            .action(name, key.mods())
+            .map_or(Command::Swallow, Command::Act);
     }
-}
-
-/// Whether `event` is the prefix.
-///
-/// Both cases of the letter are accepted because they are two spellings of one keystroke: a
-/// terminal sends `Ctrl-B` as the C0 byte `0x02`, which termwiz reports as lowercase, while a
-/// terminal using the `CSI u` encoding reports whichever case the layout produced.
-fn is_prefix(event: &KeyEvent) -> bool {
-    event.modifiers.contains(Modifiers::CTRL)
-        && matches!(event.key, KeyCode::Char(c) if c.eq_ignore_ascii_case(&PREFIX_KEY))
+    if keymap.is_prefix(name, key.mods()) {
+        *keys = Keys::AfterPrefix;
+        return Command::Swallow;
+    }
+    Command::ToPane(key)
 }
 
 /// The [`QuitSink`] the wire client pulls when the daemon is definitively gone — the tmux
@@ -849,13 +847,23 @@ mod tests {
 
     /// The name a routed key would be sent to the pane under, or `None` if it goes nowhere.
     fn routed(keys: &mut Keys, bytes: &[u8]) -> Option<String> {
-        match command(keys, &typed(bytes)) {
+        routed_with(&Keymap::default(), keys, bytes)
+    }
+
+    /// [`routed`] against a keymap other than the default.
+    fn routed_with(keymap: &Keymap, keys: &mut Keys, bytes: &[u8]) -> Option<String> {
+        match command(keys, keymap, &typed(bytes)) {
             Command::ToPane(key) => {
                 let mut scratch = [0u8; 4];
                 Some(key.name(&mut scratch).to_owned())
             }
             _ => None,
         }
+    }
+
+    /// Route one keystroke through the DEFAULT keymap — what a user who has written no config gets.
+    fn acted(keys: &mut Keys, bytes: &[u8]) -> Command {
+        command(keys, &Keymap::default(), &typed(bytes))
     }
 
     const CTRL_B: &[u8] = &[0x02];
@@ -883,9 +891,12 @@ mod tests {
     #[test]
     fn the_prefix_then_d_detaches() {
         let mut keys = Keys::ToPane;
-        assert_eq!(command(&mut keys, &typed(CTRL_B)), Command::Swallow);
+        assert_eq!(acted(&mut keys, CTRL_B), Command::Swallow);
         assert_eq!(keys, Keys::AfterPrefix, "the prefix arms the next key");
-        assert_eq!(command(&mut keys, &typed(b"d")), Command::Detach);
+        assert_eq!(
+            acted(&mut keys, b"d"),
+            Command::Act(BoundAction::DetachClient)
+        );
         assert_eq!(keys, Keys::ToPane, "the mode is one key long");
     }
 
@@ -899,11 +910,14 @@ mod tests {
 
     /// `Ctrl-D` after the prefix is not a detach — the binding is the bare letter, and a program's
     /// end-of-file must survive a slip of the Ctrl key.
+    ///
+    /// Under a keymap this is no longer a rule but a CONSEQUENCE of matching modifiers exactly, so
+    /// the assertion is unchanged while the mechanism under it lost a special case.
     #[test]
     fn ctrl_d_after_the_prefix_is_not_a_detach() {
         let mut keys = Keys::ToPane;
-        assert_eq!(command(&mut keys, &typed(CTRL_B)), Command::Swallow);
-        assert_eq!(command(&mut keys, &typed(&[0x04])), Command::Swallow);
+        assert_eq!(acted(&mut keys, CTRL_B), Command::Swallow);
+        assert_eq!(acted(&mut keys, &[0x04]), Command::Swallow);
         assert_eq!(keys, Keys::ToPane);
     }
 
@@ -912,15 +926,42 @@ mod tests {
     #[test]
     fn the_prefix_twice_types_a_literal_prefix() {
         let mut keys = Keys::ToPane;
-        assert_eq!(command(&mut keys, &typed(CTRL_B)), Command::Swallow);
-        let sent = command(&mut keys, &typed(CTRL_B));
-        let Command::ToPane(key) = sent else {
-            panic!("the second prefix reaches the pane: {sent:?}");
-        };
-        let mut scratch = [0u8; 4];
-        assert_eq!(key.name(&mut scratch), "b");
-        assert!(key.mods().ctrl, "and it is still a Ctrl-B");
+        assert_eq!(acted(&mut keys, CTRL_B), Command::Swallow);
+        assert_eq!(
+            acted(&mut keys, CTRL_B),
+            Command::Act(BoundAction::SendPrefix),
+            "the second prefix is the send-prefix binding",
+        );
         assert_eq!(keys, Keys::ToPane);
+        // ...and what that binding sends is the PREFIX itself, read from the keymap rather than
+        // from the key that triggered it.
+        let keymap = Keymap::default();
+        assert_eq!(keymap.prefix().name(), "b");
+        assert!(keymap.prefix().mods().ctrl, "and it is still a Ctrl-B");
+    }
+
+    /// **`send-prefix` sends the PREFIX, not the key that was pressed.** Bound to `a`, `prefix a`
+    /// must type `Ctrl-B` into the pane — the distinction only a rebindable table can even have.
+    ///
+    /// REVERT-PROOF: forward the triggering event instead (which is what the hardcoded version did,
+    /// correctly, because there the only key that could trigger it WAS the prefix) and this sends
+    /// `a` — a letter into the user's shell instead of the control byte their program is waiting on.
+    #[test]
+    fn send_prefix_bound_elsewhere_still_sends_the_prefix() {
+        let mut keymap = Keymap::default();
+        keymap.bind("a", "send-prefix").expect("binds");
+        let mut keys = Keys::ToPane;
+        assert_eq!(
+            command(&mut keys, &keymap, &typed(CTRL_B)),
+            Command::Swallow
+        );
+        assert_eq!(
+            command(&mut keys, &keymap, &typed(b"a")),
+            Command::Act(BoundAction::SendPrefix),
+        );
+        // The loop reads the prefix off the keymap for this action; assert the pair it would send.
+        assert_eq!(keymap.prefix().name(), "b");
+        assert!(keymap.prefix().mods().ctrl);
     }
 
     /// An unbound command key is dropped rather than delivered — a user who typed the prefix meant
@@ -928,9 +969,62 @@ mod tests {
     #[test]
     fn an_unbound_command_key_is_swallowed() {
         let mut keys = Keys::ToPane;
-        assert_eq!(command(&mut keys, &typed(CTRL_B)), Command::Swallow);
-        assert_eq!(command(&mut keys, &typed(b"z")), Command::Swallow);
+        assert_eq!(acted(&mut keys, CTRL_B), Command::Swallow);
+        assert_eq!(acted(&mut keys, b"z"), Command::Swallow);
         assert_eq!(keys, Keys::ToPane, "and the mode still ends");
+    }
+
+    /// A rebound PREFIX moves the gate, and the old prefix becomes the program's again.
+    ///
+    /// This is the whole point of the round, stated at the keyboard: `Ctrl-A` opens the table and
+    /// `Ctrl-B` is now just a keystroke — which is what a user who lives in `screen`'s bindings, or
+    /// who needs `Ctrl-B` for their editor, actually asked for.
+    #[test]
+    fn a_rebound_prefix_moves_the_gate_and_frees_the_old_one() {
+        let mut keymap = Keymap::default();
+        keymap.set_prefix("C-a").expect("sets");
+        const CTRL_A: &[u8] = &[0x01];
+        let mut keys = Keys::ToPane;
+        assert_eq!(
+            routed_with(&keymap, &mut keys, CTRL_B).as_deref(),
+            Some("b")
+        );
+        assert_eq!(keys, Keys::ToPane, "the old prefix arms nothing");
+        assert_eq!(
+            command(&mut keys, &keymap, &typed(CTRL_A)),
+            Command::Swallow
+        );
+        assert_eq!(keys, Keys::AfterPrefix, "the new one does");
+        assert_eq!(
+            command(&mut keys, &keymap, &typed(b"d")),
+            Command::Act(BoundAction::DetachClient),
+        );
+    }
+
+    /// A user's own binding reaches the same routing the defaults do, and an unbound DEFAULT stops
+    /// meaning anything — the two directions a config has to work in.
+    #[test]
+    fn a_users_binding_is_routed_and_an_unbound_default_is_not() {
+        let mut keymap = Keymap::default();
+        keymap.bind("C-o", "detach-client").expect("binds");
+        keymap.unbind("o").expect("unbinds");
+        let mut keys = Keys::ToPane;
+        assert_eq!(acted(&mut keys, CTRL_B), Command::Swallow);
+        // Ctrl-O, the C0 byte — unreachable under the hardcoded table's "a modified command key is
+        // a slip" rule, and bindable now.
+        assert_eq!(
+            command(&mut keys, &keymap, &typed(&[0x0f])),
+            Command::Act(BoundAction::DetachClient),
+        );
+        assert_eq!(
+            command(&mut keys, &keymap, &typed(CTRL_B)),
+            Command::Swallow
+        );
+        assert_eq!(
+            command(&mut keys, &keymap, &typed(b"o")),
+            Command::Swallow,
+            "the unbound default is swallowed, not passed to the pane",
+        );
     }
 
     /// **THE INVERSION, pinned at the keyboard.** tmux's `%` is `split-window -h`, which lays the
@@ -943,17 +1037,25 @@ mod tests {
     /// mapped `-v` to horizontal.
     #[test]
     fn the_two_split_keys_carry_tmuxs_directions_and_not_each_others() {
+        use sprag_terminal::SplitDir;
+
         let mut keys = Keys::ToPane;
-        assert_eq!(command(&mut keys, &typed(CTRL_B)), Command::Swallow);
+        assert_eq!(acted(&mut keys, CTRL_B), Command::Swallow);
         assert_eq!(
-            command(&mut keys, &typed(b"%")),
-            Command::Split(SplitDir::Horizontal, false),
+            acted(&mut keys, b"%"),
+            Command::Act(BoundAction::SplitWindow {
+                dir: SplitDir::Horizontal,
+                before: false
+            }),
         );
         assert_eq!(keys, Keys::ToPane, "and the mode is one key long");
-        assert_eq!(command(&mut keys, &typed(CTRL_B)), Command::Swallow);
+        assert_eq!(acted(&mut keys, CTRL_B), Command::Swallow);
         assert_eq!(
-            command(&mut keys, &typed(b"\"")),
-            Command::Split(SplitDir::Vertical, false),
+            acted(&mut keys, b"\""),
+            Command::Act(BoundAction::SplitWindow {
+                dir: SplitDir::Vertical,
+                before: false
+            }),
         );
     }
 
@@ -962,8 +1064,11 @@ mod tests {
     #[test]
     fn the_prefix_then_o_moves_to_the_next_pane() {
         let mut keys = Keys::ToPane;
-        assert_eq!(command(&mut keys, &typed(CTRL_B)), Command::Swallow);
-        assert_eq!(command(&mut keys, &typed(b"o")), Command::NextPane);
+        assert_eq!(acted(&mut keys, CTRL_B), Command::Swallow);
+        assert_eq!(
+            acted(&mut keys, b"o"),
+            Command::Act(BoundAction::SelectNextPane)
+        );
     }
 
     /// The split keys are the client's only BEHIND the prefix. Typed bare they are ordinary
@@ -988,9 +1093,31 @@ mod tests {
     #[test]
     fn a_modified_command_key_is_swallowed() {
         let mut keys = Keys::ToPane;
-        assert_eq!(command(&mut keys, &typed(CTRL_B)), Command::Swallow);
+        assert_eq!(acted(&mut keys, CTRL_B), Command::Swallow);
         // Ctrl-O, the C0 byte.
-        assert_eq!(command(&mut keys, &typed(&[0x0f])), Command::Swallow);
+        assert_eq!(acted(&mut keys, &[0x0f]), Command::Swallow);
         assert_eq!(keys, Keys::ToPane);
+    }
+
+    /// A key the wire cannot spell still ENDS the prefix mode — it is one key long whatever that
+    /// key turns out to be.
+    ///
+    /// Reached with a hand-built event because no terminal sends a bare modifier; `wire_key` drops
+    /// it, and a client that left the mode armed would treat the user's NEXT keystroke as a command.
+    #[test]
+    fn an_unspellable_key_after_the_prefix_still_ends_the_mode() {
+        let mut keys = Keys::ToPane;
+        assert_eq!(acted(&mut keys, CTRL_B), Command::Swallow);
+        let bare_shift = KeyEvent {
+            key: termwiz::input::KeyCode::Shift,
+            modifiers: termwiz::input::Modifiers::NONE,
+        };
+        assert_eq!(
+            command(&mut keys, &Keymap::default(), &bare_shift),
+            Command::Swallow
+        );
+        assert_eq!(keys, Keys::ToPane, "the mode ended");
+        // ...and the very next ordinary key is the program's again, not a command.
+        assert_eq!(routed(&mut keys, b"d").as_deref(), Some("d"));
     }
 }
