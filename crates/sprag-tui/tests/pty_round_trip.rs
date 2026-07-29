@@ -141,16 +141,19 @@ fn socket_path() -> PathBuf {
     std::env::temp_dir().join(format!("sprag-tui-pty-{}-{n}.sock", std::process::id()))
 }
 
-/// Spawn a daemon whose boot pane runs `cat` — an echo that keeps its PTY open, so a keystroke that
-/// arrives comes straight back and a pane that is idle stays alive.
-fn spawn_daemon() -> (Daemon, PathBuf) {
+/// Spawn a daemon whose boot pane runs `program`.
+///
+/// Usually `cat` — an echo that keeps its PTY open, so a keystroke that arrives comes straight back
+/// and a pane that is idle stays alive. The mouse tests pass something else, because their claim
+/// needs a child that ASKS for tracking and `cat` never does.
+fn spawn_daemon_running(program: &[&str]) -> (Daemon, PathBuf) {
     let sock = socket_path();
     let _ = std::fs::remove_file(&sock);
     let child = Command::new(sprag_term_bin())
         .arg("--size")
         .arg(format!("{}x{}", BOOT_PANE.0, BOOT_PANE.1))
         .arg("--")
-        .arg("cat")
+        .args(program)
         .env("SPRAG_HOST_RPC_SOCK", &sock)
         .env("SPRAG_HOST_RPC", "1")
         .stdin(Stdio::null())
@@ -262,9 +265,15 @@ fn pane_ids(conn: &mut HostConn, session: &str) -> Vec<u64> {
 /// The other half of every screen diagnostic: a client painting nothing and a pane holding nothing
 /// look identical from the client's terminal, and they are opposite bugs.
 fn pane_text(conn: &mut HostConn, session: &str) -> String {
+    pane_text_of(conn, session, 0)
+}
+
+/// [`pane_text`] for a pane named by ID — what a test that SPLIT needs, since the pane it created
+/// is not pane 0 and reading pane 0 would answer about the wrong child entirely.
+fn pane_text_of(conn: &mut HostConn, session: &str, pane: u64) -> String {
     conn.call(
         "scene/query",
-        json!({ "session": session, "path": pane_input_path(0, FULL_TEXT_SLOT) }),
+        json!({ "session": session, "path": pane_input_path(pane, FULL_TEXT_SLOT) }),
     )
     .ok()
     .and_then(|value| value.as_str().map(str::to_owned))
@@ -566,7 +575,7 @@ impl Tui {
 /// 3. The pane has reached the terminal's size — an attach RESIZES the pane, and a test that began
 ///    asserting before that landed would be racing a reflow it never asked for.
 fn attached_client() -> (Daemon, PathBuf, HostConn, String, Tui) {
-    attached_client_via(Tui::attach)
+    attached_client_with(Tui::attach, &["cat"])
 }
 
 /// [`attached_client`] with the client started by `launch` — the seam the CLI-launch test needs.
@@ -575,7 +584,16 @@ fn attached_client() -> (Daemon, PathBuf, HostConn, String, Tui) {
 /// and a second arrangement that settled on its own waits could differ from this one in ways that
 /// look like the launcher's doing.
 fn attached_client_via(launch: fn(&Path, &str) -> Tui) -> (Daemon, PathBuf, HostConn, String, Tui) {
-    let (daemon, sock) = spawn_daemon();
+    attached_client_with(launch, &["cat"])
+}
+
+/// [`attached_client_via`] whose boot pane runs `program` — the mouse tests need a child that ASKS
+/// for tracking, and `cat` never does.
+fn attached_client_with(
+    launch: fn(&Path, &str) -> Tui,
+    program: &[&str],
+) -> (Daemon, PathBuf, HostConn, String, Tui) {
+    let (daemon, sock) = spawn_daemon_running(program);
     let mut conn = observe(&sock);
     let session = boot_session(&mut conn);
     let tui = launch(&sock, &session);
@@ -1007,5 +1025,213 @@ fn the_prefix_detaches_and_the_session_lives_on() {
         pane_size(&mut conn, &session),
         Some(BOOT_PTY),
         "the session and its pane outlive the client that was viewing them",
+    );
+}
+
+/// The child that ASKS for the mouse: button-event tracking (1002) with the SGR encoding (1006),
+/// then an echo that makes what it receives visible.
+///
+/// Three things the `stty` does, and each was found by the fixture failing without it:
+///
+/// * **`-icanon min 1 time 0`** — a pane's PTY starts CANONICAL, so the line discipline holds every
+///   byte until a newline, and a mouse report has none. MEASURED: with the pane left canonical the
+///   report reached the child only when a `\r` was typed after it, which is what proved the rest of
+///   the chain was already working. Every real mouse-tracking program (an editor, a pager) puts its
+///   terminal in raw mode for the same reason, so this is the faithful arrangement rather than a
+///   concession to the test.
+/// * **`-echo`** — otherwise the line discipline echoes the report back RAW, and raw is an escape
+///   sequence the pane's emulator would INTERPRET instead of print, leaving nothing to assert on.
+/// * **`cat -v`** — renders the report's ESC as `^[`, so what the child received arrives in the
+///   pane's grid as the literal text it is.
+const MOUSE_CHILD: [&str; 3] = [
+    "sh",
+    "-c",
+    "stty -echo -icanon min 1 time 0; printf '\\033[?1002h\\033[?1006h'; exec cat -v",
+];
+
+/// The client's terminal reports the mouse EXACTLY WHEN a pane's child has asked it to, and at the
+/// level the child asked for.
+///
+/// This is the whole design of [`MouseMirror`](sprag-tui's binary): the local terminal is made to
+/// behave as it would have if the child were running in it directly. Capturing the pointer takes
+/// the user's own click-drag selection and wheel away, so doing it while nothing wants the reports
+/// would be a cost with nothing on the other side — and doing it at ANY-EVENT when the child asked
+/// for button-event would put a wire message on every pointer movement for the host to discard.
+///
+/// The OFF half of this claim is `the_client_takes_the_paste_and_leaves_the_mouse`, whose pane runs
+/// `cat`: same client, same terminal, a child that never asks, and the mouse stays the user's.
+/// Neither test means much without the other — one arrangement each.
+#[test]
+fn the_local_terminal_tracks_the_mouse_only_because_a_child_asked() {
+    let (_daemon, _sock, _conn, _session, tui) = attached_client_with(Tui::attach, &MOUSE_CHILD);
+
+    wait_for("the client to mirror the child's tracking level", || {
+        let modes = tui.local_modes();
+        settled(modes.mouse_protocol, &MouseProtocol::ButtonEvent)
+    });
+}
+
+/// A click on this terminal reaches the CHILD PROCESS in the pane it landed on, as a report.
+///
+/// The full chain, and every link is a real one: an SGR report written to the pty master →
+/// termwiz's parser → the client's edge decoder → the pane under the cell → the wire's `mouse`
+/// action → the host's mode gate → `encode_mouse` → the pane's PTY → the child. What comes back is
+/// read off the pane's own text as the DAEMON holds it, so nothing about the client's painting can
+/// make it pass.
+///
+/// The coordinates ROUND TRIP, and that is the assertion's edge: the report goes in 1-based
+/// (protocol), is carried 0-based ([`MouseInput`](sprag_input::MouseInput)), and is encoded 1-based
+/// again — so the numbers that come back must be the numbers that went in. A decoder that forgot
+/// the conversion would return `5;4` for a `4;3` click, which reads as a click one cell away rather
+/// than as a broken pipeline.
+#[test]
+fn a_click_reaches_the_child_as_a_report_at_the_cell_it_landed_on() {
+    let (_daemon, _sock, mut conn, session, mut tui) =
+        attached_client_with(Tui::attach, &MOUSE_CHILD);
+
+    // Tracking must be ON before the click, or the host's gate would drop it and this test would be
+    // measuring the gate rather than the path.
+    wait_for(
+        "the child's tracking to reach the client's terminal",
+        || {
+            settled(
+                tui.local_modes().mouse_protocol,
+                &MouseProtocol::ButtonEvent,
+            )
+        },
+    );
+
+    // A left press at column 4, row 3 — the terminal's own 1-based spelling, exactly as an emulator
+    // would send it.
+    tui.type_bytes(b"\x1b[<0;4;3M");
+
+    wait_for("the report to reach the child and be echoed back", || {
+        let text = pane_text(&mut conn, &session);
+        if text.contains("[<0;4;3M") {
+            Ok(())
+        } else {
+            Err(format!("the pane holds {text:?}"))
+        }
+    });
+}
+
+/// A wheel notch reaches the child too, as the press xterm spells it — and the pane it is addressed
+/// to is the one under the pointer.
+///
+/// Separate from the click because the wheel is the one edge that is NOT a button state: xterm
+/// reports it as pseudo-button 64/65 with no release, so a decoder that read it off the button mask
+/// would both mis-name it and invent a release for it. The unit tests pin that reasoning; this pins
+/// that the result of it survives the wire.
+#[test]
+fn a_wheel_notch_reaches_the_child_as_the_press_it_is() {
+    let (_daemon, _sock, mut conn, session, mut tui) =
+        attached_client_with(Tui::attach, &MOUSE_CHILD);
+
+    wait_for(
+        "the child's tracking to reach the client's terminal",
+        || {
+            settled(
+                tui.local_modes().mouse_protocol,
+                &MouseProtocol::ButtonEvent,
+            )
+        },
+    );
+
+    tui.type_bytes(b"\x1b[<64;7;5M");
+
+    wait_for("the notch to reach the child", || {
+        let text = pane_text(&mut conn, &session);
+        if text.contains("[<64;7;5M") {
+            Ok(())
+        } else {
+            Err(format!("the pane holds {text:?}"))
+        }
+    });
+}
+
+/// A click in the SECOND pane arrives in that pane's own columns — the half of the click path that
+/// a single-pane arrangement cannot test at all.
+///
+/// **MEASURED as the reason this test exists**: forwarding the SCREEN cell instead of the
+/// pane-local one leaves every other test in this file green, because the only pane a single-pane
+/// client has starts at the origin, where the two coordinate spaces are the same numbers. The
+/// subtraction is invisible until a pane begins somewhere else, and then it is wrong for every
+/// click in it.
+///
+/// The arithmetic is derived rather than copied: [`halves`] gives the divider's column, the second
+/// pane starts one past it, and the fifth column of that pane is therefore `near + 1 + 4` on the
+/// screen. The report goes in naming the SCREEN column and must come back naming `5` — the child's
+/// own — so a client that forwarded the screen cell would echo `45` and fail on the number.
+#[test]
+fn a_click_in_the_second_pane_arrives_in_that_panes_own_columns() {
+    // BOTH panes track, and the boot one does so from birth. That is what makes the divider
+    // assertion below mean anything: with a non-tracking pane on the divider's left, the host's own
+    // gate would discard a misdirected report and the guard under test would be unobservable.
+    let (_daemon, _sock, mut conn, session, mut tui) =
+        attached_client_with(Tui::attach, &MOUSE_CHILD);
+
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"%");
+    wait_for("the split to reach both children", || {
+        settled(pane_sizes(&mut conn, &session).len(), &2)
+    });
+    let second = *pane_ids(&mut conn, &session)
+        .get(1)
+        .expect("the split made a second pane");
+
+    // The split focuses the new pane, so this types into IT: the shell there is put in the raw,
+    // mouse-tracking state a real editor would put it in. The command is typed rather than made the
+    // pane's birth argv because a split spawns the host's `$SHELL` and takes no command.
+    tui.type_bytes(
+        b"stty -echo -icanon min 1 time 0; printf '\x5c033[?1002h\x5c033[?1006h'; exec cat -v\r",
+    );
+    wait_for("the second pane's child to ask for the mouse", || {
+        settled(
+            tui.local_modes().mouse_protocol,
+            &MouseProtocol::ButtonEvent,
+        )
+    });
+
+    // A whole click on the DIVIDER first — press AND release. It is nobody's cell, so nothing may
+    // be forwarded anywhere, and what makes that assertable is the click AFTER it: once the real
+    // one has arrived, the divider's has had every chance to.
+    //
+    // The release is not decoration. MEASURED without it: the child received `\x1b[<32;5;3M` — a
+    // DRAG — because two presses with movement between them and no release IS a drag, and the
+    // decoder read the sequence exactly right. A terminal never sends that, so the test was the
+    // thing that was wrong. The button state is tracked even for events that reach no pane, which
+    // is also correct: the pointer belongs to the terminal, not to whatever it happens to be over.
+    let (near, _far) = halves(BOOT_PTY.0);
+    tui.type_bytes(format!("\x1b[<0;{};3M", near + 1).as_bytes());
+    tui.type_bytes(format!("\x1b[<0;{};3m", near + 1).as_bytes());
+
+    // Then the second pane's fifth column, on the screen, 1-based as the protocol spells it.
+    let screen_col = near + 1 + 4 + 1;
+    tui.type_bytes(format!("\x1b[<0;{screen_col};3M").as_bytes());
+
+    wait_for(
+        "the report to arrive in the second pane's OWN columns",
+        || {
+            let text = pane_text_of(&mut conn, &session, second);
+            if text.contains("[<0;5;3M") {
+                Ok(())
+            } else {
+                Err(format!("pane {second} holds {text:?}"))
+            }
+        },
+    );
+    let text = pane_text_of(&mut conn, &session, second);
+    assert_eq!(
+        text.matches("[<0;").count(),
+        1,
+        "exactly the one report reached this child — pane {second} holds {text:?}",
+    );
+    // ...and NOTHING reached the pane on the divider's left, which is where a lookup written as
+    // "the last pane starting at or before this column" would have sent it.
+    let neighbour = pane_text_of(&mut conn, &session, 0);
+    assert!(
+        !neighbour.contains("[<0;"),
+        "a click on the divider column belongs to no pane and is not handed to the one beside \
+         it — pane 0 holds {neighbour:?}",
     );
 }

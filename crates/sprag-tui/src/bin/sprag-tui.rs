@@ -38,6 +38,19 @@
 //! ([`HostClient::focus`]), because a program that enabled DEC 1004 asked to know when it gained or
 //! lost the user's attention, and that is exactly what moving focus here means.
 //!
+//! # The pointer goes where it IS, and the terminal reports it only when a child asked
+//!
+//! A keystroke belongs to the focused pane; a mouse report belongs to the pane under the pointer,
+//! because that is the only reading a program can make sense of. A press also MOVES the focus
+//! there, so the two never drift into two answers to "where am I". The cell is translated into the
+//! pane's own coordinates on the way ([`Tiling::pane_at`](sprag_tui::Tiling::pane_at)), since a
+//! child knows only its own grid.
+//!
+//! Whether this terminal reports the mouse at all is not this client's preference — it is a MIRROR
+//! of what the panes' children have asked for ([`MouseMirror`]). Capturing the pointer takes
+//! click-drag selection and wheel scrolling away from the user's own emulator, which is a cost
+//! worth paying exactly when there is a program to hand the reports to, and never otherwise.
+//!
 //! # What it deliberately does not do yet
 //!
 //! * **Latest attach wins the pane's size.** Attaching resizes each pane to the rectangle this
@@ -46,14 +59,6 @@
 //!   alternatives tmux also offers (smallest attached client, or a per-client viewport over a
 //!   larger pane) need a client-size registry the daemon does not have, and choosing between them
 //!   is H2's, not this slice's.
-//! * **No mouse, and it is turned OFF rather than left on.** The wire carries a semantic
-//!   [`MouseInput`](sprag_input::MouseInput) that the host gates against the pane's tracking mode,
-//!   and [`Tiling`](sprag_tui::Tiling) now answers which pane a cell belongs to — so both halves of
-//!   a click path exist and neither is wired to the other. Until they are, this client asks termwiz
-//!   NOT to enable mouse reporting on the local terminal (see [`local_capabilities`]), because
-//!   termwiz's `set_raw_mode` enables it by default, and a client that captures the mouse and then
-//!   discards every report has taken click-drag selection and wheel scrolling away from the user's
-//!   own terminal emulator in exchange for nothing.
 //! * **No pane is closed from here.** `exit` in the shell does it, and the destructive verb is the
 //!   one that would want a confirmation prompt this client has nowhere to draw.
 //! * **No divider is dragged.** A split opens at an even share and keeps it; resizing one needs a
@@ -65,6 +70,7 @@
 //!   not arrive.
 
 use std::error::Error;
+use std::fmt::Write as _;
 use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -72,12 +78,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use pinion_core::QuitSink;
 use sprag_client::WireHost;
 use sprag_host::HostClient;
+use sprag_input::{MouseEventKind, MouseInput};
 use sprag_terminal::{PaneId, SplitDir};
 use sprag_tui::{
-    Rect, Tiling, WireKey, cursor_changes, divider_changes, pane_changes, tile, wire_key,
+    MouseEdges, Rect, Tiling, WireKey, cursor_changes, divider_changes, pane_changes, tile,
+    wire_key,
 };
+use sprag_vt::MouseProtocol;
 use termwiz::caps::{Capabilities, ProbeHints};
 use termwiz::color::ColorAttribute;
+use termwiz::escape::csi::{CSI, DecPrivateMode, DecPrivateModeCode, Mode};
 use termwiz::input::{InputEvent, KeyCode, KeyEvent, Modifiers};
 use termwiz::surface::Change;
 use termwiz::terminal::buffered::BufferedTerminal;
@@ -102,7 +112,19 @@ fn main() -> std::process::ExitCode {
 /// failure to reach the daemon prints an ordinary error on an ordinary screen instead of a
 /// diagnostic nobody can read inside an alternate screen that is about to be torn down.
 fn run() -> Result<(), Box<dyn Error>> {
-    let mut terminal = SystemTerminal::new(local_capabilities()?)?;
+    // This client OPENS the controlling terminal rather than letting termwiz do it, and keeps the
+    // handle: the mouse modes have to be turned on and off as the panes' children ask for them
+    // ([`MouseMirror`]), and `Terminal` offers no way to say so — `set_raw_mode` decides once, from
+    // the capabilities, and `Change::Text` renders control characters inert by contract. The one
+    // seam that does exist is `new_with`, which is documented for exactly this. `/dev/tty` is the
+    // same file `SystemTerminal::new` would have opened, so nothing about which terminal is taken
+    // changes — including the failure when there is no controlling terminal to take.
+    let tty = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")?;
+    let mut terminal = SystemTerminal::new_with(local_capabilities()?, &tty, &tty)?;
+    let mut mouse = MouseMirror::new(tty);
     // The rectangle every pane's is carved out of. Mutable because a window change replaces it, and
     // kept as ONE value rather than a pair so that every reader of "how big is the screen" — the
     // layouter, the surface, the pane resizes — is reading the same fact.
@@ -156,6 +178,10 @@ fn run() -> Result<(), Box<dyn Error>> {
     // before the first paint, through the same call a window change uses — is what makes an attach
     // over ssh show panes shaped like the window they are being shown in.
     let mut tiling = reconcile(&host, screen_area, &mut focus);
+    mouse.follow(&host, &tiling);
+    // The pointer's state, kept across events because the wire wants EDGES and this terminal
+    // reports a state (see [`MouseEdges`]).
+    let mut pointer = MouseEdges::default();
 
     // The first paint clears, because the surface starts blank but the terminal underneath it does
     // not. Later ones do not need to: the tiling PARTITIONS the screen, so every cell has an author
@@ -183,6 +209,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                         set_focus(&host, &mut focus, Some(pane));
                     }
                     tiling = reconcile(&host, screen_area, &mut focus);
+                    mouse.follow(&host, &tiling);
                     paint(&mut screen, &host, &tiling, focus, Clear::No)?;
                 }
                 Command::NextPane => {
@@ -203,6 +230,28 @@ fn run() -> Result<(), Box<dyn Error>> {
             // only the host can see. A shell that wanted to see a multi-line paste as one edit
             // still does; one that did not still runs it line by line.
             Some(InputEvent::Paste(text)) => paste(&host, focus, &text),
+            // The pointer is addressed by WHERE IT IS, not by what has the keyboard: a report
+            // belongs to the pane under it, which is the only reading a program can make sense of.
+            // A press ALSO moves the keyboard there, so the two never drift apart — a client that
+            // clicked into one pane while typing into another would hold two answers to "where am
+            // I", which is the split-authority shape the layouter already had to settle once.
+            Some(InputEvent::Mouse(event)) => {
+                for edge in pointer.edges(&event) {
+                    let Some((pane, col, row)) = tiling.pane_at(edge.col, edge.row) else {
+                        // A divider column, or a cell outside every rectangle. Not forwarded
+                        // anywhere: there is no child whose grid contains it.
+                        continue;
+                    };
+                    if edge.kind == MouseEventKind::Press && focus != Some(pane) {
+                        set_focus(&host, &mut focus, Some(pane));
+                        paint(&mut screen, &host, &tiling, focus, Clear::No)?;
+                    }
+                    // Pane-LOCAL cells: `pane_at` has already subtracted the rectangle's origin.
+                    // The host re-gates this against the pane's own tracking mode, so a report the
+                    // child did not ask for costs a message and reaches nothing.
+                    let _ = host.mouse(pane, MouseInput { col, row, ..edge });
+                }
+            }
             // A window change resizes both ends: the local surface, so the view is not cropped, and
             // every PANE, so the programs inside them reflow into their new rectangles. Clearing is
             // what keeps a shrunken screen honest — a partition of the OLD size says nothing about
@@ -215,6 +264,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 screen_area = Rect::screen(cols, rows);
                 screen.resize(usize::from(cols), usize::from(rows));
                 tiling = reconcile(&host, screen_area, &mut focus);
+                mouse.follow(&host, &tiling);
                 paint(&mut screen, &host, &tiling, focus, Clear::Yes)?;
             }
             // `Wake` carries no payload by design — which edge fired is in the flags below.
@@ -231,9 +281,14 @@ fn run() -> Result<(), Box<dyn Error>> {
             // exited and was closed — changes which rectangles exist. Painting the old tiling would
             // put the new pane nowhere and leave the closed one's cells on screen.
             tiling = reconcile(&host, screen_area, &mut focus);
+            // A child that just enabled tracking woke this client the same way its output would,
+            // so the mirror is re-read here and not on a timer.
+            mouse.follow(&host, &tiling);
             paint(&mut screen, &host, &tiling, focus, Clear::No)?;
         }
     }
+    // Before the terminal is given back: see [`MouseMirror::release`].
+    mouse.release();
 
     // `BufferedTerminal`'s inner terminal restores the termios, the cursor and the alternate
     // screen on drop, so the normal exit path needs nothing here beyond letting it drop.
@@ -496,6 +551,145 @@ impl QuitSink for HostGone {
     }
 }
 
+/// This terminal's mouse reporting, kept a MIRROR of what the panes' children have asked for.
+///
+/// # Why mirror rather than simply capture
+///
+/// Turning mouse reporting on takes the pointer away from the user's own emulator: click-drag
+/// selection and wheel scrolling stop working in their window and arrive here instead. That is a
+/// real cost, and one every full-screen program already imposes — running `vim` with `set mouse=a`
+/// in a bare terminal does exactly the same thing. What would be unreasonable is imposing it when
+/// nothing wants it, which is what a client that captured for its whole life would do: in a plain
+/// shell there is no program to give the reports to, and the host's encoder would drop every one.
+///
+/// So the rule is that this terminal reports what a pane's child would have made it report had the
+/// child been running here directly. A user in a shell keeps their selection; the moment an editor
+/// asks for tracking, tracking is on; when it exits, it is off again. The LEVEL is mirrored too
+/// (1000 / 1002 / 1003), not just the on-off: capturing at any-event when a pane asked for
+/// button-event would put a report on the wire for every pointer movement across the window, all
+/// of which the host would then discard — over ssh, for nothing.
+///
+/// The maximum over the panes is what is set, because there is one pointer and one terminal: two
+/// panes cannot be tracked at different levels, and the pane wanting more would otherwise be
+/// starved by the one wanting less. The host still gates each report against the pane it is
+/// addressed to, so the extra events a lower-wanting pane sees are dropped THERE — the mirror
+/// widens what arrives, never what a child is told.
+///
+/// # Why this writes the sequences itself
+///
+/// `Terminal::set_raw_mode` enables mouse reporting from the CAPABILITIES, once, and there is no
+/// method to change it afterwards. `Change::Text` cannot carry an escape sequence — it renders
+/// control characters inert by contract. So the client holds its own handle on the terminal (see
+/// [`run`]) and writes `CSI` values built with termwiz's own escape vocabulary rather than
+/// hand-spelled bytes; the modes are named, not numbered, at every point in this file.
+struct MouseMirror {
+    /// The controlling terminal, the same file the [`SystemTerminal`] was built over.
+    tty: std::fs::File,
+    /// The level currently enabled on it — what a DECRST would have to undo.
+    active: MouseProtocol,
+}
+
+impl MouseMirror {
+    /// A mirror over `tty`, reflecting nothing: a client that has not yet read an arrangement has
+    /// been told of no pane that wants the pointer.
+    fn new(tty: std::fs::File) -> Self {
+        Self {
+            tty,
+            active: MouseProtocol::None,
+        }
+    }
+
+    /// Set this terminal's reporting to the highest level any pane of `tiling` is asking for.
+    ///
+    /// Called from [`reconcile`]'s callers rather than from `reconcile` itself, because the tracking
+    /// mode is a fact about the PANES that arrives on the same host notification as everything else:
+    /// a child enabling tracking wakes this client exactly as its output does.
+    fn follow(&mut self, host: &WireHost, tiling: &Tiling) {
+        let wanted = tiling
+            .panes
+            .iter()
+            .map(|held| host.pane_mouse_protocol(held.pane))
+            .max_by_key(|protocol| tracking_rank(*protocol))
+            .unwrap_or(MouseProtocol::None);
+        self.set(wanted);
+    }
+
+    /// Turn reporting off, whatever it was — the exit path.
+    ///
+    /// Not left to `Drop` on the terminal: termwiz restores only what IT set, and it did not set
+    /// this. A client that exited with 1003 still on would leave the user's shell forwarding mouse
+    /// reports to a prompt, which prints them as garbage on every movement.
+    fn release(&mut self) {
+        self.set(MouseProtocol::None);
+    }
+
+    /// Move the terminal to `wanted`, writing only when something actually changes.
+    ///
+    /// Every level is DECRST first and the wanted one DECSET after, rather than toggling only the
+    /// difference: the three tracking modes are independent DEC private modes, not an enum, so a
+    /// terminal left with both 1002 and 1003 set reports at the higher of them. Clearing all three
+    /// makes the terminal's state a function of `wanted` alone.
+    ///
+    /// A write that fails is dropped: the only place this client could report it is the screen it
+    /// is painting a user's panes onto, and a terminal that will not take a mode sequence is not
+    /// going to take a diagnostic either.
+    fn set(&mut self, wanted: MouseProtocol) {
+        if self.active == wanted {
+            return;
+        }
+        self.active = wanted;
+        let mut out = String::new();
+        for code in [
+            DecPrivateModeCode::MouseTracking,
+            DecPrivateModeCode::ButtonEventMouse,
+            DecPrivateModeCode::AnyEventMouse,
+            DecPrivateModeCode::SGRMouse,
+        ] {
+            let _ = write!(
+                out,
+                "{}",
+                CSI::Mode(Mode::ResetDecPrivateMode(DecPrivateMode::Code(code)))
+            );
+        }
+        if let Some(code) = tracking_code(wanted) {
+            // SGR (1006) LAST and only alongside a tracking mode: it selects the ENCODING of the
+            // reports, and it is what keeps a coordinate past column 223 reportable at all — the
+            // legacy form runs out of byte there.
+            for code in [code, DecPrivateModeCode::SGRMouse] {
+                let _ = write!(
+                    out,
+                    "{}",
+                    CSI::Mode(Mode::SetDecPrivateMode(DecPrivateMode::Code(code)))
+                );
+            }
+        }
+        let _ = self.tty.write_all(out.as_bytes());
+        let _ = self.tty.flush();
+    }
+}
+
+/// The DEC private mode that turns `protocol` on, or `None` for no tracking at all.
+fn tracking_code(protocol: MouseProtocol) -> Option<DecPrivateModeCode> {
+    match protocol {
+        MouseProtocol::None => None,
+        MouseProtocol::Click => Some(DecPrivateModeCode::MouseTracking),
+        MouseProtocol::ButtonEvent => Some(DecPrivateModeCode::ButtonEventMouse),
+        MouseProtocol::AnyEvent => Some(DecPrivateModeCode::AnyEventMouse),
+    }
+}
+
+/// How much a protocol asks for, so the panes' levels can be compared. `MouseProtocol` carries no
+/// ordering of its own, and the containment IS total: any-event reports everything button-event
+/// does, which reports everything click does.
+fn tracking_rank(protocol: MouseProtocol) -> u8 {
+    match protocol {
+        MouseProtocol::None => 0,
+        MouseProtocol::Click => 1,
+        MouseProtocol::ButtonEvent => 2,
+        MouseProtocol::AnyEvent => 3,
+    }
+}
+
 /// Restore the terminal from a panic hook, BEFORE the panic message is printed.
 ///
 /// `UnixTerminal`'s own `Drop` already restores the termios, the cursor and the alternate screen,
@@ -524,12 +718,13 @@ fn install_restore_hook() {
 ///
 /// [`Terminal::set_raw_mode`] does not only set the termios — it also turns on every input mode the
 /// capabilities claim, which by default includes ANY-EVENT mouse reporting (`DECSET 1003` + the
-/// SGR encoding `1006`). Enabling that is a decision, not a detail: once it is on, the user's
-/// terminal emulator stops handling the mouse itself and forwards reports here instead, so
-/// click-drag selection and wheel scrolling stop working in their window. A client that then
-/// discarded every report — which is all this one can do until the pane-addressed
-/// [`MouseInput`](sprag_input::MouseInput) path of slice 4 exists — would be taking that away for
-/// nothing.
+/// SGR encoding `1006`), for the client's whole life and at a level nothing here chose. The mouse
+/// IS wanted now, but as a mirror of what the panes' children ask for ([`MouseMirror`]) — so what
+/// is declined here is termwiz's one-shot decision, not the reporting.
+///
+/// Declining it does NOT stop the reports being understood: termwiz's `InputParser` is built with
+/// no capabilities at all, so it decodes a mouse report whenever one arrives. Only the ENABLING is
+/// this client's to place, which is exactly what the mirror needs.
 ///
 /// Bracketed paste is deliberately LEFT ON: this client handles the [`InputEvent::Paste`] it
 /// produces, and it is what lets a paste reach the pane as one edit rather than as a burst of

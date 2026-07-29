@@ -163,6 +163,31 @@ impl Tiling {
         }
         .map(|held| held.pane)
     }
+
+    /// Which pane holds screen cell `(col, row)`, and where that cell is INSIDE it.
+    ///
+    /// The inverse of the whole module: [`tile`] answers where a pane goes, and a pointer arrives
+    /// as a screen cell needing the question asked backwards. `None` for a cell that belongs to no
+    /// pane — a DIVIDER column, or a cell outside every rectangle — and those are not the same
+    /// thing to the caller only in that neither may be forwarded to a child.
+    ///
+    /// The answer is unambiguous because the tiling is an exact PARTITION (see [`tile`]): every
+    /// cell has one author. That is the same property that lets a repaint skip clearing, used here
+    /// for a different purpose, and it is why this can return the first match rather than having to
+    /// define a stacking order the way a pixel client must.
+    ///
+    /// The returned cell is pane-LOCAL and 0-based, which is the coordinate space
+    /// [`MouseInput`](sprag_input::MouseInput) is defined in: a child knows only its own grid, and
+    /// handing it a screen coordinate would put every click in the wrong place by exactly the
+    /// pane's origin — invisibly so for the pane at (0, 0), which is the one a single-pane test
+    /// would use.
+    #[must_use]
+    pub fn pane_at(&self, col: u16, row: u16) -> Option<(PaneId, u16, u16)> {
+        self.panes
+            .iter()
+            .find(|held| held.area.holds(col, row))
+            .map(|held| (held.pane, col - held.area.col, row - held.area.row))
+    }
 }
 
 /// Lay `tree` out over `area` — the whole of the character-cell projection.
@@ -593,5 +618,58 @@ mod tests {
         assert!(!rect.holds(13, 6), "one past the right edge");
         assert!(!rect.holds(12, 7), "one past the bottom edge");
         assert!(!rect.holds(9, 5) && !rect.holds(10, 4));
+    }
+
+    /// A screen cell resolves to a pane AND to that pane's own coordinates — and the second half is
+    /// only visible off the origin.
+    ///
+    /// **The pane at (0, 0) cannot fail this**, which is exactly why the assertion is made against
+    /// the SECOND one: there, screen and pane coordinates coincide, so a client that forwarded the
+    /// screen cell unchanged would look correct in every single-pane arrangement and put every
+    /// click in the wrong place the moment a split appeared. The subtraction is the whole content
+    /// of [`Tiling::pane_at`] beyond the lookup.
+    #[test]
+    fn a_cell_names_its_pane_and_its_place_inside_it() {
+        // 21 columns: 10 | divider | 10, the partition the rounding test above pins.
+        let tree = split(SplitDir::Horizontal, 0.5, leaf(0), leaf(1));
+        let tiling = tile(&tree, Rect::screen(21, 5));
+
+        assert_eq!(
+            tiling.pane_at(0, 0),
+            Some((PaneId(0), 0, 0)),
+            "the origin is the first pane's own origin",
+        );
+        assert_eq!(
+            tiling.pane_at(9, 4),
+            Some((PaneId(0), 9, 4)),
+            "the first pane's far corner",
+        );
+        assert_eq!(
+            tiling.pane_at(11, 0),
+            Some((PaneId(1), 0, 0)),
+            "the SECOND pane's first column is screen column 11, and it must arrive as 0",
+        );
+        assert_eq!(
+            tiling.pane_at(20, 3),
+            Some((PaneId(1), 9, 3)),
+            "and its far corner is pane-local (9, 3), not screen (20, 3)",
+        );
+    }
+
+    /// A divider column belongs to no pane, and neither does a cell off the arrangement. Both
+    /// answer `None` because neither can be forwarded: there is no child whose grid holds them.
+    ///
+    /// The divider is the one worth pinning. It sits BETWEEN two rectangles, so a lookup written as
+    /// "the last pane starting at or before this column" would hand it to the pane on the left and
+    /// deliver a click one column outside that child's own grid.
+    #[test]
+    fn a_divider_cell_belongs_to_no_pane() {
+        let tree = split(SplitDir::Horizontal, 0.5, leaf(0), leaf(1));
+        let tiling = tile(&tree, Rect::screen(21, 5));
+
+        assert_eq!(tiling.pane_at(10, 2), None, "the divider column");
+        assert_eq!(tiling.pane_at(21, 0), None, "one past the right edge");
+        assert_eq!(tiling.pane_at(0, 5), None, "one past the bottom edge");
+        assert_eq!(Tiling::default().pane_at(0, 0), None, "nothing is tiled");
     }
 }

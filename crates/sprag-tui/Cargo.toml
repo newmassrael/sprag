@@ -27,6 +27,13 @@ sprag-terminal = { workspace = true }
 # encoder, so it necessarily speaks its vocabulary. GPU-free: a producer-layer crate whose
 # only dependency is sprag-vt.
 sprag-input = { workspace = true }
+# `MouseProtocol` — the pane's mouse TRACKING LEVEL, which the client mirrors onto the
+# local terminal. Already a public type of the HostClient protocol above
+# (`pane_mouse_protocol` answers with it), so this is a direct use of something already
+# in the tree rather than a new edge. Promoted OUT of [dev-dependencies], where it was
+# for the paint tests: a production `use` from a dev-only dependency does not build.
+# GPU-free: sprag-vt is the emulator, and the paint tests already depended on it.
+sprag-vt = { workspace = true }
 # GridBuffer (the cells this crate paints) + QuitSink (the client's quit edge, which
 # the poll thread pulls when the daemon is gone). GPU-FREE: pinion's data layer.
 pinion-core = { workspace = true }
@@ -39,11 +46,9 @@ termwiz = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-# The VT battery: the paint tests drive real escape sequences through the real
-# emulator rather than hand-building cells, so the mapping is measured against what
-# a pane actually produces.
-sprag-vt = { workspace = true }
-# ...and through the real projection, which is what turns those cells into the
+# (sprag-vt is a normal dependency above — the VT battery the paint tests drive real
+# escape sequences through is the same crate the mouse mirror reads its levels from.)
+# The real projection, which is what turns those cells into the
 # GridBuffer a client receives.
 sprag-grid = { workspace = true }
 # The PTY gate (tests/pty_round_trip.rs) needs a real pseudoterminal to run the shipped
