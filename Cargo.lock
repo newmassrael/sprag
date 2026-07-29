@@ -3604,6 +3604,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "sprag-client"
+version = "0.0.1"
+dependencies = [
+ "base64",
+ "pinion-core",
+ "serde",
+ "serde_json",
+ "sprag-grid",
+ "sprag-host",
+ "sprag-input",
+ "sprag-rpc",
+ "sprag-terminal",
+ "sprag-vt",
+ "tracing",
+]
+
+[[package]]
 name = "sprag-grid"
 version = "0.0.1"
 dependencies = [
@@ -3627,6 +3644,7 @@ dependencies = [
  "pinion-widget-paint",
  "serde",
  "serde_json",
+ "sprag-client",
  "sprag-grid",
  "sprag-host",
  "sprag-input",

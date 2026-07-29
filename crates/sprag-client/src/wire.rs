@@ -1,17 +1,20 @@
-//! `WireHost` — the GUI as a pure wire client of a `sprag-term` host process
+//! `WireHost` — a display client as a pure wire client of a `sprag-term` host process
 //! (topology B).
 //!
 //! [`WireHost`] implements the same [`HostClient`] protocol the in-process
 //! [`Host`](sprag_host::Host) does — addressing panes by their host [`PaneId`] — but
 //! reaches them over an RPC socket to a `sprag-term` host PROCESS instead of an
-//! in-process `Workspace`. The GUI wraps it in a [`SlotView`](crate::slotview::SlotView),
-//! the GUI-side slot↔`PaneId` adapter that maps the consumers' display slots onto host
-//! ids, so both this wire client and the in-process `Host` stay pure identity clients and
-//! the "slot" concept lives in ONE GUI place — the R109 seam across the process boundary.
+//! in-process `Workspace`. A frontend wraps it in its own slot↔`PaneId` adapter (the GUI's
+//! `SlotView`) that maps that frontend's display slots onto host ids, so both this wire client
+//! and the in-process `Host` stay pure identity clients and the "slot" concept lives in ONE
+//! per-frontend place — the R109 seam across the process boundary.
+//!
+//! Written for the GUI and now shared: it says "a client" rather than "the GUI" wherever the
+//! statement is about the wire, and names the GUI only where the fact really is the GUI's.
 //!
 //! ## What runs where
 //!
-//! * A `sprag-term` DAEMON owns the `Workspace` + PTYs. The GUI CONNECT-OR-SPAWNS it on the
+//! * A `sprag-term` DAEMON owns the `Workspace` + PTYs. A client CONNECT-OR-SPAWNS it on the
 //!   well-known socket: join the one already running, or spawn a detached `--daemon` (which
 //!   the GUI does NOT own — no kill, no `PR_SET_PDEATHSIG`) and connect. Closing the GUI
 //!   leaves the daemon and the user's shells running; a fresh GUI reattaches. The tmux/mosh
@@ -175,15 +178,15 @@ struct WirePane {
     /// rather than duplicates: `dead` alone cannot say whether the command worked.
     child_exit: Option<PaneExit>,
     /// The pane's OSC 52 clipboard WRITE count, `0` if none. Host-authoritative + dynamic — the
-    /// CHEAP detection counter (no payload); [`crate::clipboard_osc`] fetches the actual write via
-    /// [`WireHost::pane_clipboard_write`] only when this grows past the ack.
+    /// CHEAP detection counter (no payload); a frontend's clipboard policy fetches the actual
+    /// write via [`WireHost::pane_clipboard_write`] only when this grows past the ack.
     clipboard_write_seq: u64,
     /// The pane's pending OSC 52 clipboard READ query (selection + seq), `None` if none. Host-
-    /// authoritative + dynamic — [`crate::clipboard_osc`] answers it (subject to policy) when the
-    /// seq grows.
+    /// authoritative + dynamic — a frontend answers it (subject to its policy) when the seq grows.
     clipboard_query: Option<PaneClipboardQuery>,
     /// The pane's inline images (Kitty graphics, R1404), empty if none. Host-authoritative +
-    /// dynamic — re-adopted each wake, composited over the grid by [`crate::view`].
+    /// dynamic — re-adopted each wake, composited over the grid by whichever frontend can show
+    /// one (the GUI does; a terminal client does not).
     images: Vec<Image>,
     /// The pane's live mouse-tracking protocol level (None / Click / ButtonEvent / AnyEvent — the
     /// wire `mouse` key carries the level token, present only while tracking). Host-authoritative +
@@ -543,7 +546,7 @@ fn push_mru(stack: &mut Vec<String>, name: &str) {
 }
 
 /// The GUI's wire client of a `sprag-term` host. See the module docs.
-pub(crate) struct WireHost {
+pub struct WireHost {
     /// The pane data cache ([`Cache`]) in host order: identity + live frame + tracked
     /// dims per pane. The UI thread reads it under a brief lock; the poll thread refreshes
     /// each pane's frame under the same lock. Addressed by [`PaneId`] — the GUI's
@@ -671,10 +674,10 @@ impl WireHost {
     ///
     /// # Errors
     ///
-    /// Any failure to spawn the daemon, connect to its socket within [`CONNECT_TIMEOUT`], or
+    /// Any failure to spawn the daemon, connect to its socket within `CONNECT_TIMEOUT`, or
     /// resolve the session / boot the panes over RPC. The daemon is NOT reaped on failure —
     /// it is a detached process this GUI does not own.
-    pub(crate) fn spawn_or_attach(
+    pub fn spawn_or_attach(
         argv: Option<Vec<String>>,
         cols: u16,
         rows: u16,
@@ -1051,7 +1054,7 @@ impl HostClient for WireHost {
     }
 
     /// The mirrored arrangement — a lock and a clone, never a socket call, so the paint
-    /// path can read it every frame to notice its projection is stale (see [`LayoutMirror`]).
+    /// path can read it every frame to notice its projection is stale (see `LayoutMirror`).
     ///
     /// Booted from a real read and kept current by the poll thread; a transient wire failure
     /// leaves the LAST KNOWN arrangement standing rather than reporting an empty one, since
@@ -1092,7 +1095,7 @@ impl HostClient for WireHost {
     }
 
     /// The mirrored window list — a lock and a clone, never a socket call, so the paint path can
-    /// draw the tab strip every frame (see [`WindowsMirror`]).
+    /// draw the tab strip every frame (see `WindowsMirror`).
     fn windows(&self) -> Vec<WindowInfo> {
         lock_windows(&self.windows).clone()
     }
@@ -1199,7 +1202,7 @@ impl HostClient for WireHost {
     /// Hand a file dropped on this window to pane `id` over the wire, returning the path the pane
     /// was given — or `None` if the daemon refused it.
     ///
-    /// No [`refresh_view`](Self::refresh_view): nothing in the pane SET changed. The pasted path
+    /// No `refresh_view`: nothing in the pane SET changed. The pasted path
     /// arrives as ordinary pane output (and, for an upload, only when the transfer finishes), so the
     /// pane's own change notification is what repaints it — the same path a keystroke's echo takes.
     fn drop_file(&self, id: PaneId, path: &str) -> Option<String> {
@@ -1212,7 +1215,7 @@ impl HostClient for WireHost {
     }
 
     /// The mirrored session list — a lock and a clone, never a socket call, so the paint path can
-    /// draw the switcher every frame (see [`SessionsMirror`]).
+    /// draw the switcher every frame (see `SessionsMirror`).
     fn sessions(&self) -> Vec<SessionInfo> {
         lock_sessions(&self.sessions).clone()
     }
@@ -1225,7 +1228,7 @@ impl HostClient for WireHost {
 
     /// Switch this client to the session named `name` IN PLACE (tmux `switch-client`): stop the
     /// running poll thread — joined FIRST, so it can never refresh a mirror out from under the swap
-    /// — then re-attach to `name` ([`attach_in_place`](WireHost::attach_in_place)). A no-op for the
+    /// — then re-attach to `name` (`attach_in_place`). A no-op for the
     /// already-current session. On failure, fall back to the session we were on so the window keeps
     /// serving; if THAT is gone too (killed while we tried to switch), detach — the tmux rule when a
     /// client can serve no session.
@@ -1294,7 +1297,7 @@ impl HostClient for WireHost {
 
     /// Kill the session named `name` on the host (tmux `kill-session`). Three outcomes, split on
     /// whether it is THIS client's own attached session and — if so — the
-    /// [`detach_on_destroy`](Self::detach_on_destroy) policy:
+    /// `detach_on_destroy` policy:
     ///
     /// * **Own session, a successor exists** → SWITCH: under a `next`/`previous` policy, re-point this
     ///   client at the neighbouring session ([`switch_session`](HostClient::switch_session)) instead
@@ -1303,12 +1306,12 @@ impl HostClient for WireHost {
     ///   alive, so its reply returns and the following `switch_session`'s scoped reads succeed.
     /// * **Own session, nothing to switch to** → DETACH: the `on` default, or `name` was the last
     ///   session — ask the shell to quit, the immediate form of the tmux rule that a client whose
-    ///   session is destroyed leaves (the poll thread's [`detach_reason`] is the backstop and the
+    ///   session is destroyed leaves (the poll thread's `detach_reason` is the backstop and the
     ///   out-of-band path). We detach whether the reply came back or was severed: killing the LAST
     ///   session ends the daemon, so the reply can be cut off (EOF/reset), indistinguishable from
     ///   success here — and either way this client is leaving.
     /// * **Another session** → keep serving ours; drop the killed row from the sidebar at once with a
-    ///   [`refresh_sessions`](WireHost::refresh_sessions) (the poll thread's revision-bump re-read is
+    ///   `refresh_sessions` (the poll thread's revision-bump re-read is
     ///   the backstop for the same change arriving out of band).
     ///
     /// The invoke's answer is intentionally ignored (see the detach note); a genuine refusal — only
@@ -1365,22 +1368,22 @@ impl HostClient for WireHost {
     }
 
     /// Resolve a session lost OUT OF BAND (another client / the `sprag` CLI killed THIS client's
-    /// attached session) under the [`detach_on_destroy`](Self::detach_on_destroy) policy — the second
+    /// attached session) under the `detach_on_destroy` policy — the second
     /// destroy trigger, sharing the same switch-vs-detach decision as
     /// [`kill_session`](HostClient::kill_session)'s own-kill handling. The poll thread cannot switch
-    /// (a UI-thread op), so it sets [`lost_session`](Self::lost_session) + repaints; this runs on the
+    /// (a UI-thread op), so it sets `lost_session` + repaints; this runs on the
     /// UI thread each frame and, when the flag is set, switches-to-next or detaches.
     ///
     /// Swap-claim the flag so it fires ONCE. The session mirror still lists the just-lost session —
     /// the poll broke on the scoped-read refusal BEFORE its next registry-wide sessions re-read — so
-    /// [`destroy_successor`] finds it and returns a live neighbour; `None` (it was the last session,
+    /// `destroy_successor` finds it and returns a live neighbour; `None` (it was the last session,
     /// or already gone from the mirror) detaches. `switch_session` joins the now-broken poll and
     /// attaches to the neighbour (whose own commit re-clears the flag).
     ///
     /// COVERAGE: the end-to-end switch here and in [`kill_session`](HostClient::kill_session)'s own
     /// branch is NOT unit-tested — both drive [`switch_session`](HostClient::switch_session) /
-    /// [`request`](Self::request), which need a live daemon. The testable pieces ARE covered (the pure
-    /// [`destroy_successor`] pick and the poll thread's flag+repaint), and
+    /// `request`, which need a live daemon. The testable pieces ARE covered (the pure
+    /// `destroy_successor` pick and the poll thread's flag+repaint), and
     /// [`switch_session`](HostClient::switch_session) itself is live-smoke-proven (R170); this is the
     /// same accepted live-smoke gap the session-sidebar rounds carry.
     fn reconcile_lost_session(&self) {
@@ -1400,7 +1403,7 @@ impl HostClient for WireHost {
     }
 
     /// Switch to the LAST session — the most-recent OTHER session this client visited that is still
-    /// live (tmux `switch-client -l`), walking the MRU stack ([`mru_live_other`]). A no-op when the
+    /// live (tmux `switch-client -l`), walking the MRU stack (`mru_live_other`). A no-op when the
     /// client has visited no other surviving session (a fresh client that never switched, or all its
     /// prior sessions are gone) — matching tmux, which also no-ops with no last session.
     fn switch_to_last_session(&self) {

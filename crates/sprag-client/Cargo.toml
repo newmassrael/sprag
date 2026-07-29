@@ -1,0 +1,43 @@
+[package]
+name = "sprag-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "The DISPLAY-INDEPENDENT half of a sprag display client: everything whose subject is the relationship with a sprag-term host rather than what is drawn. Holds WireHost, the topology-B wire client (poll thread, session scoping, the fetch gate, the compact frame decode) that both frontends share. GPU-free BY GATE, not by habit — see the crate docs."
+publish = false
+
+[dependencies]
+# The wire ABI vocabulary + the HostClient protocol this crate implements. The ONE
+# definition of the address grammar; this crate builds every path from its builders
+# rather than spelling an address itself.
+sprag-host = { workspace = true }
+# ProjectionToken: the per-pane fetch gate (R220) — a client refetches only the panes
+# whose token moved.
+sprag-grid = { workspace = true }
+# Modifiers / MouseInput: the typed input args a client hands the host, which owns the
+# encoding against the pane's live modes.
+sprag-input = { workspace = true }
+# PaneId + the layout/session/window DTOs the host serves.
+sprag-terminal = { workspace = true }
+# ClipboardTarget / Image / MouseProtocol: the OSC 52 + Kitty-graphics types the host's
+# per-pane facts carry.
+sprag-vt = { workspace = true }
+# GridBuffer (the paint buffer a client renders) + QuitSink (the frontend's quit edge,
+# injected as a trait object). GPU-FREE: this is pinion's data layer, not its shell.
+pinion-core = { workspace = true }
+# The shared RPC transport: HostConn + the socket-path policy. PR-47's reusable adapter.
+sprag-rpc = { workspace = true }
+# Build the scene/invoke args and read the scene/query answers.
+serde_json = { workspace = true }
+# Deserialize the host's `cells` wire frame through CellFrame (R222's run-length codec).
+serde = { workspace = true }
+# Decode the panes-slot inline-image RGBA the host carries (R1404).
+base64 = { workspace = true }
+# Production logging (memory: production-logging-tracing).
+tracing = { workspace = true }
+
+[dev-dependencies]
+# The wire tests boot a real `sprag-term` over a socket, so they need the daemon binary.
+sprag-host = { workspace = true }

@@ -6,9 +6,13 @@
 //! terminal as *data*) is the headless `sprag-host` RPC path, which needs none of
 //! this. This binding is a faithful pixel projection of the *same* cell data the
 //! AI reads — it is a CLIENT of the host ([`HostClient`](sprag_host::HostClient)):
-//! by default a wire client of a `sprag-term` host PROCESS ([`wire::WireHost`], the
-//! topology-B default), or an in-process [`Host`](sprag_host::Host) under
-//! `SPRAG_GUI_HOST=inprocess`. It reads each pane's cell DATA through that client,
+//! by default a wire client of a `sprag-term` host PROCESS
+//! ([`WireHost`](sprag_client::WireHost), the topology-B default), or an in-process
+//! [`Host`](sprag_host::Host) under `SPRAG_GUI_HOST=inprocess`. That wire client is no longer
+//! this crate's: it moved to [`sprag_client`] in H1 slice 1, because nothing about a client's
+//! relationship with the host was ever GUI-specific and sprag's second frontend — a terminal
+//! client, so a session can be attached over ssh — must share it rather than re-spell the wire.
+//! It reads each pane's cell DATA through that client,
 //! assembles the node itself ([`sprag_host::pane_view_scene_from_cells`], the
 //! Screen-free wire seam), arranges the panes (the interactive [`split`] layout —
 //! reactive ratios the headless host has no use for), and routes keystrokes as
@@ -224,7 +228,6 @@ mod split;
 mod stabs;
 mod terminal;
 mod view;
-mod wire;
 mod wtabs;
 
 use pinion_a11y::AccessNode;

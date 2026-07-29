@@ -21,6 +21,10 @@ members = [
     "crates/sprag-host",
     "crates/sprag-plugin",
     "crates/sprag-rpc",
+    # The display-INDEPENDENT half of a display client (H1 slice 1): the wire
+    # client both frontends share, so the terminal client that lets a session be
+    # attached over ssh does not have to re-spell the wire. GPU-free by gate.
+    "crates/sprag-client",
     # The GPU windowed host (read-only terminal viewer). The ONLY crate that
     # depends on pinion-shell/vello — the headless RPC path stays GPU-free.
     "crates/sprag-gui",
@@ -173,3 +177,7 @@ sprag-plugin = { path = "crates/sprag-plugin", version = "0.0.1" }
 # Frontend-agnostic RPC transport policy (always-on Unix socket + SIGUSR1/2
 # control) over pinion's PR-47 seam; shared by sprag-gui and the headless host.
 sprag-rpc = { path = "crates/sprag-rpc", version = "0.0.1" }
+# The display-independent half of a display client: WireHost and everything else
+# whose subject is the host relationship rather than what is drawn. Shared by
+# sprag-gui and (H1) the terminal client; GPU-free by its own gate test.
+sprag-client = { path = "crates/sprag-client", version = "0.0.1" }

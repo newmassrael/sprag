@@ -3,11 +3,11 @@
 //! at boot off the pure `view`. See the crate-root module docs for the seams.
 
 use crate::slotview::SlotView;
-use crate::wire::WireHost;
 use crate::{WINDOW_H, WINDOW_W};
 use pinion_core::CellMetric;
 use pinion_core::reactive::Owner;
 use pinion_core::{use_quit_sink, use_repaint_sink};
+use sprag_client::WireHost;
 use sprag_host::{Host, HostClient};
 use sprag_terminal::CommandBuilder;
 use std::rc::Rc;
