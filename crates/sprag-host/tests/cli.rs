@@ -535,6 +535,146 @@ fn attach_refuses_an_unknown_argument() {
     );
 }
 
+/// `attach --tui` PRE-FLIGHTS like the window client, then launches the TERMINAL client with the
+/// same session + socket env. `/usr/bin/env` stands in for `sprag-tui` (prints its env, exits 0),
+/// which is what makes the launch provable without a terminal to take.
+///
+/// `SPRAG_GUI_BIN` is pointed at `/bin/false` throughout, and that is the half of this test that
+/// distinguishes "the flag chose the terminal client" from "a client was launched" — a pass here
+/// cannot be produced by launching the wrong one. MEASURED, by making the launch resolve
+/// `SPRAG_GUI_BIN` whatever the flag says: exit 1 with NOTHING on either stream, because `exec`
+/// leaves no CLI behind to say what it launched. The silence is the point — the flag is not
+/// something a diagnostic could recover from being wrong about.
+#[test]
+fn the_cli_attach_tui_launches_the_terminal_client_scoped_to_the_session() {
+    let (_host, sock) = spawn_host();
+    assert!(
+        sprag(&sock, &["new", "work"]).ok,
+        "created a session to attach to"
+    );
+    let clients = [
+        ("SPRAG_TUI_BIN", "/usr/bin/env"),
+        ("SPRAG_GUI_BIN", "/bin/false"),
+    ];
+
+    // The pre-flight is the terminal client's too: a missing session is the "no session" error,
+    // NOT a launch failure — which is what proves nothing was exec'd on a bad name.
+    let bad = sprag_env(&sock, &["attach", "ghost", "--tui"], &clients);
+    assert!(!bad.ok, "attach --tui to a missing session fails");
+    assert!(
+        bad.stderr.contains("no session named"),
+        "clean pre-flight error, no client launched: {}",
+        bad.stderr,
+    );
+
+    let ok = sprag_env(&sock, &["attach", "work", "--tui"], &clients);
+    assert!(
+        ok.ok,
+        "attach --tui to a real session launches the terminal client: {} / {}",
+        ok.stdout, ok.stderr,
+    );
+    assert!(
+        ok.stdout.contains("SPRAG_GUI_SESSION=work"),
+        "the terminal client is handed the session to adopt: {}",
+        ok.stdout,
+    );
+    assert!(
+        ok.stdout
+            .contains(&format!("SPRAG_GUI_HOST_SOCK={}", sock.display())),
+        "and pinned to THIS daemon's socket, not a default: {}",
+        ok.stdout,
+    );
+}
+
+/// `--no-wait` is refused with `--tui`, by NAME, rather than accepted and ignored.
+///
+/// The flag exists to hand a shell back once a window is up. A terminal client holds this terminal
+/// until it detaches, so there is no such moment — and accepting it silently would promise a
+/// prompt that never returns.
+#[test]
+fn attach_tui_refuses_no_wait() {
+    let (_host, sock) = spawn_host();
+    assert!(sprag(&sock, &["new", "work"]).ok, "a session to attach to");
+
+    let run = sprag_env(
+        &sock,
+        &["attach", "work", "--tui", "--no-wait"],
+        &[("SPRAG_TUI_BIN", "/usr/bin/env")],
+    );
+    assert!(!run.ok, "--no-wait with a terminal client fails");
+    assert!(
+        run.stderr
+            .contains("--no-wait belongs to the window client"),
+        "refused by name, with the reason: {}",
+        run.stderr,
+    );
+}
+
+/// `attach --remote HOST NAME` runs the terminal client ON HOST: it execs
+/// `ssh -t HOST sprag attach --tui NAME` and never opens a local connection.
+///
+/// Both halves are asserted by ONE arrangement — no daemon is spawned at all, and the session
+/// named exists nowhere. If the local pre-flight ran, this could only fail (there is no daemon on
+/// that socket to answer, and no session by that name if there were), so reaching the recorded
+/// argv IS the proof that `--remote` is answered before any of it.
+///
+/// The argv is compared as an exact SEQUENCE rather than a set of tokens: `sprag attach --tui
+/// ghost` and `sprag --tui attach ghost` carry the same tokens and only one of them is a command.
+/// It needs no polling either — `exec` makes the stand-in this process, so the CLI run returning
+/// IS the stand-in having finished writing.
+#[test]
+fn the_cli_attach_remote_execs_ssh_and_never_touches_a_local_daemon() {
+    let (_tmp, dir, argv_file) = stub_ssh("attach-remote", |_| "exit 0".to_owned());
+    let path = format!(
+        "{}:{}",
+        dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    // A socket nothing serves: the local daemon is not merely unused here, it does not exist.
+    let sock = socket_path();
+
+    let run = sprag_env(
+        &sock,
+        &["attach", "ghost", "--remote", "me@server"],
+        &[("PATH", path.as_str())],
+    );
+    assert!(
+        run.ok,
+        "attach --remote needs no local daemon and no local session: {}",
+        run.stderr,
+    );
+
+    let recorded: Vec<String> = std::fs::read_to_string(&argv_file)
+        .expect("the stand-in ssh recorded its argv")
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        recorded,
+        vec!["-t", "me@server", "sprag", "attach", "--tui", "ghost"],
+        "the remote command is the terminal client, named, under a forced pty",
+    );
+    assert!(
+        !sock.exists(),
+        "no daemon was connected to or spawned on the local socket",
+    );
+}
+
+/// `--remote` with no host is a clean argument error, not a host silently read off the next thing
+/// in the line (which would be the session name, producing an ssh to a machine named for it).
+#[test]
+fn attach_remote_needs_a_host() {
+    let (_host, sock) = spawn_host();
+
+    let run = sprag(&sock, &["attach", "work", "--remote"]);
+    assert!(!run.ok, "a valueless --remote fails");
+    assert!(
+        run.stderr.contains("--remote needs a host"),
+        "with a message naming the missing value: {}",
+        run.stderr,
+    );
+}
+
 /// `list-clients` + the `ls` attached count, END TO END over the real socket (R-PR67): the CLI
 /// reads the daemon's live per-client attachment state, so this pins the CLI's parse + wire read +
 /// formatting against a REAL attached client — not a mocked slot.

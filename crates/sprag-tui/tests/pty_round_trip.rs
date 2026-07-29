@@ -100,15 +100,31 @@ impl Drop for Daemon {
 /// rather than a skip. A skipped gate is a green tick over an untested claim, which is the failure
 /// mode this whole file exists to prevent.
 fn sprag_term_bin() -> PathBuf {
+    sibling_bin("sprag-term")
+}
+
+/// The `sprag` management CLI, for the one test whose subject is how that CLI LAUNCHES this client
+/// (`sprag attach --tui`) rather than what the client then does.
+fn sprag_cli_bin() -> PathBuf {
+    sibling_bin("sprag")
+}
+
+/// A `sprag-host` binary beside the `sprag-tui` cargo built for this test.
+///
+/// Cargo sets `CARGO_BIN_EXE_*` only for binaries of the package under test, and these belong to
+/// `sprag-host` — so the path is derived rather than given, and its ABSENCE is a loud failure
+/// rather than a skip. A skipped gate is a green tick over an untested claim, which is the failure
+/// mode this whole file exists to prevent.
+fn sibling_bin(name: &str) -> PathBuf {
     let path = PathBuf::from(env!("CARGO_BIN_EXE_sprag-tui"))
         .parent()
         .expect("the built sprag-tui has a directory")
-        .join("sprag-term");
+        .join(name);
     assert!(
         path.exists(),
-        "{} is not built. This test drives the daemon binary, which belongs to another package, \
-         so cargo does not build it for `-p sprag-tui` alone — run `cargo test --workspace`, or \
-         `cargo build -p sprag-host --bin sprag-term` first.",
+        "{} is not built. This test drives a binary that belongs to another package, so cargo \
+         does not build it for `-p sprag-tui` alone — run `cargo test --workspace`, or \
+         `cargo build -p sprag-host --bin {name}` first.",
         path.display(),
     );
     path
@@ -328,6 +344,29 @@ impl Drop for Tui {
 impl Tui {
     /// Start `sprag-tui` on a fresh pseudoterminal, attached to `session` on `sock`.
     fn attach(sock: &Path, session: &str) -> Self {
+        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_sprag-tui"));
+        command.env("SPRAG_GUI_HOST_SOCK", sock);
+        command.env("SPRAG_GUI_SESSION", session);
+        Self::start(command)
+    }
+
+    /// The same client, reached the way a USER reaches it: `sprag attach --tui SESSION`.
+    ///
+    /// The session and the socket are NOT set here — naming them is the CLI's job, and a test that
+    /// pre-set them would pass whether or not the CLI passed anything on. What is set is
+    /// `SPRAG_TUI_BIN`, so the `sprag` under test launches the `sprag-tui` under test rather than
+    /// an installed one, and `SPRAG_HOST_RPC_SOCK`, so the CLI's own pre-flight reaches this
+    /// test's daemon.
+    fn attach_via_cli(sock: &Path, session: &str) -> Self {
+        let mut command = CommandBuilder::new(sprag_cli_bin());
+        command.args(["attach", session, "--tui"]);
+        command.env("SPRAG_HOST_RPC_SOCK", sock);
+        command.env("SPRAG_TUI_BIN", env!("CARGO_BIN_EXE_sprag-tui"));
+        Self::start(command)
+    }
+
+    /// Put `command` on a fresh pseudoterminal and start reading what it paints.
+    fn start(mut command: CommandBuilder) -> Self {
         let pair = native_pty_system()
             .openpty(PtySize {
                 cols: BOOT_PTY.0,
@@ -337,11 +376,8 @@ impl Tui {
             })
             .expect("open a pseudoterminal");
 
-        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_sprag-tui"));
-        command.env("SPRAG_GUI_HOST_SOCK", sock);
-        command.env("SPRAG_GUI_SESSION", session);
-        // Hermetic: if the connect above ever failed, the client would spawn a daemon of its own,
-        // and it must be THIS build's rather than whatever is on the tester's PATH.
+        // Hermetic: if the connect ever failed, the client would spawn a daemon of its own, and it
+        // must be THIS build's rather than whatever is on the tester's PATH.
         command.env("SPRAG_GUI_HOST_BIN", sprag_term_bin());
         // The client loads terminfo from `TERM`; naming one keeps the sequences it writes
         // independent of the terminal the test suite happens to be running in.
@@ -530,10 +566,19 @@ impl Tui {
 /// 3. The pane has reached the terminal's size — an attach RESIZES the pane, and a test that began
 ///    asserting before that landed would be racing a reflow it never asked for.
 fn attached_client() -> (Daemon, PathBuf, HostConn, String, Tui) {
+    attached_client_via(Tui::attach)
+}
+
+/// [`attached_client`] with the client started by `launch` — the seam the CLI-launch test needs.
+///
+/// Parameterised rather than copied because the four waits below are what "attached" MEANS here,
+/// and a second arrangement that settled on its own waits could differ from this one in ways that
+/// look like the launcher's doing.
+fn attached_client_via(launch: fn(&Path, &str) -> Tui) -> (Daemon, PathBuf, HostConn, String, Tui) {
     let (daemon, sock) = spawn_daemon();
     let mut conn = observe(&sock);
     let session = boot_session(&mut conn);
-    let tui = Tui::attach(&sock, &session);
+    let tui = launch(&sock, &session);
     wait_for(
         "the daemon to count the client as attached",
         || match attached(&mut conn, &session) {
@@ -676,6 +721,43 @@ fn a_window_change_reaches_the_panes_pty() {
                 )
             })
         },
+    );
+}
+
+/// `sprag attach --tui SESSION` lands a WORKING client on this terminal, and a window change still
+/// reaches it.
+///
+/// The CLI's own suite pins the flag parse and the env it exports, but its client is a stand-in
+/// that prints that env and exits — so it cannot see either claim here, and both need a real
+/// terminal to be true or false:
+///
+/// 1. **The exported env reaches a real client.** Nothing in [`Tui::attach_via_cli`] names the
+///    session or the socket to `sprag-tui`; only the CLI does. A pane that ends up shaped like
+///    this pseudoterminal therefore could not have been scoped any other way.
+/// 2. **A window change still reaches it** — the client is live on a real terminal, not merely
+///    started.
+///
+/// MEASURED, by giving the terminal client the WINDOW client's launch (`own_session` + spawn +
+/// wait): this test fails at the FIRST wait — `0 attached clients` for the whole 15s deadline —
+/// because `setsid` leaves the child with no controlling terminal and `/dev/tty` is exactly the
+/// name for the one it no longer has. The client dies on its first line with ENXIO, having
+/// connected to nothing. That is why the CLI `exec`s this client where it spawns the window.
+#[test]
+fn the_cli_launches_a_client_a_window_change_still_reaches() {
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client_via(Tui::attach_via_cli);
+
+    // `attached_client_via` has already settled the pane at BOOT_PTY, which is claim 1: the CLI
+    // named the session and the socket, or there would be no attached client to have sized.
+    assert_ne!(
+        BOOT_PANE, BOOT_PTY,
+        "the pane must start at a size the terminal is not, or nothing above is a measurement",
+    );
+
+    let resized = (100, 30);
+    tui.resize(resized.0, resized.1);
+    wait_for(
+        "the window change to reach a client the CLI launched",
+        || settled(pane_size(&mut conn, &session), &Some(resized)),
     );
 }
 

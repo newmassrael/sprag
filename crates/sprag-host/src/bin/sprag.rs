@@ -14,9 +14,11 @@
 //! sprag run [NAME] [-t SESSION] [--pane N]  list the commands the pane's project declares
 //!                          (its `.sprag.toml`), or, given NAME, TYPE that command at the pane's
 //!                          prompt without running it — the Enter is the user's
-//! sprag attach NAME [--no-wait]  open a sprag-gui window attached to a session (tmux
-//!                          attach-session). Blocks until the window closes; --no-wait returns
-//!                          once the window has attached (still reporting one that fails to)
+//! sprag attach NAME [--no-wait | --tui | --remote HOST]  attach a client to a session (tmux
+//!                          attach-session). Default: a sprag-gui window, blocking until it
+//!                          closes; --no-wait returns once the window has attached (still
+//!                          reporting one that fails to). --tui runs sprag-tui in THIS terminal;
+//!                          --remote runs it on HOST over ssh, where that session lives
 //! sprag kill-session NAME   kill a session (the last one ends the daemon)
 //! sprag kill-server [--purge]  kill every session, ending the daemon; --purge also deletes the
 //!                              durability snapshot AND every pane's saved scrollback (destroy
@@ -263,7 +265,7 @@ fn run_project(args: Vec<String>) -> io::Result<()> {
 fn print_usage() {
     eprintln!(
         "usage: sprag <ls | list-clients [-t SESSION] | new [name]\n\
-         \x20             | attach NAME [--no-wait]\n\
+         \x20             | attach NAME [--no-wait | --tui | --remote HOST]\n\
          \x20             | ssh [user@]host [-p PORT] [-L FWD]… [--tmux[=NAME]] [-- command…]\n\
          \x20             | find NEEDLE [-t SESSION] [--pane N] [--regex]\n\
          \x20             | kill-session NAME | kill-server [--purge]>\n\
@@ -279,8 +281,14 @@ fn print_usage() {
 
 /// Env override: the `sprag-gui` binary [`attach`] launches (else the sibling of this exe — they
 /// install together — else `sprag-gui` on `PATH`). Mirrors the GUI's own `SPRAG_GUI_HOST_BIN`
-/// discovery of `sprag-term`.
+/// discovery of `sprag-term`. Resolved by [`client_bin`].
 const GUI_BIN_ENV: &str = "SPRAG_GUI_BIN";
+
+/// Env override: the `sprag-tui` binary [`attach`] `--tui` execs, resolved the same three ways as
+/// [`GUI_BIN_ENV`] by [`client_bin`]. Separate from it because the two clients are separate
+/// artifacts a caller may want to point somewhere else independently — a test standing in for one
+/// must not silently redirect the other.
+const TUI_BIN_ENV: &str = "SPRAG_TUI_BIN";
 
 /// Delete the durability state for the daemon on this socket — its snapshot AND every pane's saved
 /// scrollback — the EXPLICIT "start fresh", reached ONLY by `kill-server --purge`.
@@ -631,16 +639,62 @@ fn ssh(args: Vec<String>) -> io::Result<()> {
     }
 }
 
-/// `attach NAME`: open a `sprag-gui` window attached to session NAME — tmux `attach-session -t`.
+/// `attach NAME`: attach a client to session NAME — tmux `attach-session -t`.
+///
+/// Three clients, chosen by flag, and the flag decides far more than which binary runs:
+///
+/// | | `attach NAME` | `--tui` | `--remote HOST` |
+/// |---|---|---|---|
+/// | client | a `sprag-gui` window | `sprag-tui`, in this terminal | `sprag-tui`, on HOST |
+/// | launched by | spawn + [`own_session`] | [`CommandExt::exec`] | `exec ssh -t` |
+/// | pre-flight | this daemon | this daemon | none — the session is HOST's |
 ///
 /// The PRE-FLIGHT is connect-only, like every other command: it verifies NAME exists on the
-/// running daemon FIRST, so a typo is a clean "no session" error, not a GUI window that flashes
-/// open and dies on its first (failed) scoped read. Only then does it launch `sprag-gui`, handing
-/// it `SPRAG_GUI_SESSION=NAME` (the attach env its `resolve_session` consumes → adopt the session's
-/// live panes) and `SPRAG_GUI_HOST_SOCK` pinned to the EXACT socket this CLI reached — so the
-/// window joins the daemon we just checked, never a different default it might connect-or-spawn.
-/// Whichever way it returns, the window runs in a session of its OWN ([`own_session`]) — closing
-/// the launching terminal must not close the window.
+/// running daemon FIRST, so a typo is a clean "no session" error, not a client that starts and
+/// dies on its first (failed) scoped read. Only then is the client launched, handed
+/// `SPRAG_GUI_SESSION=NAME` (the attach env `sprag_client`'s `resolve_session` consumes → adopt
+/// the session's live panes) and `SPRAG_GUI_HOST_SOCK` pinned to the EXACT socket this CLI
+/// reached — so the client joins the daemon we just checked, never a different default it might
+/// connect-or-spawn. (Both env vars are named for the GUI and are now read by two clients; the
+/// rename is a compatibility change owed to `sprag-client`, `sprag-gui`, `sprag-smoke` and this
+/// CLI together, not to `attach` alone.)
+///
+/// ## The window is SPAWNED, the terminal client EXEC'd — opposite relationships to this terminal
+///
+/// A window is a second thing on screen and must OUTLIVE the shell that opened it, so it is
+/// spawned into a session of its own ([`own_session`]) and a hangup here cannot reach it.
+///
+/// A terminal client is the exact opposite: it IS this terminal's foreground program, and
+/// `own_session` does not merely inconvenience it — it makes the client IMPOSSIBLE. `setsid`
+/// leaves the child with no CONTROLLING terminal, and a terminal client acquires its terminal by
+/// opening `/dev/tty`, which is precisely the name for "the controlling terminal of this process".
+/// MEASURED, both arms inside one real pty: run directly the client takes the terminal (it emits
+/// its cursor sequences); run through `setsid` it prints `No such device or address (os error 6)`
+/// — ENXIO, from termwiz's `SystemTerminal::new`, on the client's very FIRST line, before it has
+/// connected to anything. (A second consequence would follow if that one did not fire first: the
+/// kernel delivers SIGWINCH to the foreground process group OF THE TTY, so a client outside this
+/// session would never be told the window changed.)
+///
+/// So the terminal client keeps this session, this process group, and this pid, by REPLACING the
+/// process image rather than spawning at all. `exec` is what makes "keeps" exact: job control
+/// (`Ctrl-Z`, `Ctrl-C`) addresses the client itself, its exit status IS this command's without
+/// anything having to wait for it, and no parent is left sitting on the tty to get any of that
+/// subtly wrong.
+///
+/// That is also why `--no-wait` is REFUSED with `--tui` / `--remote` rather than accepted and
+/// ignored: it exists to give a shell back, and a client that holds the terminal until it
+/// detaches has no moment at which it could.
+///
+/// ## `--remote HOST` does not pre-flight, and cannot
+///
+/// The host socket is `AF_UNIX` — there is no wire off this machine, deliberately (a TCP listener
+/// is a separate front with its own threat model). So "attach to a session on HOST" can only mean
+/// "run a client on HOST", which is why `--remote` implies `--tui`: `ssh -t HOST sprag attach
+/// --tui NAME`. The session named is HOST's, held by HOST's daemon, so checking it here would
+/// refuse a perfectly good remote name — or, worse, accept a local session that merely shares it.
+/// `SPRAG_GUI_HOST_SOCK` is likewise a path meaningful only on this machine, so it is not exported
+/// either; the remote CLI resolves the remote default. `--remote` therefore never opens a local
+/// connection at all and works with no local daemon running.
 ///
 /// ## Blocking or returning is the CALLER's choice, because neither answer is right for everyone
 ///
@@ -662,14 +716,36 @@ fn attach(args: Vec<String>) -> io::Result<()> {
     let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
     let mut name: Option<String> = None;
     let mut wait = true;
-    for arg in args {
+    let mut tui = false;
+    let mut remote: Option<String> = None;
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
         match arg.as_str() {
             "--no-wait" => wait = false,
+            "--tui" => tui = true,
+            // The destination is the NEXT token, as `sprag ssh` spells `-p` and `-L`, rather than
+            // a `--remote=HOST` of its own — one convention for "flag takes a value" in this CLI.
+            "--remote" => {
+                remote = Some(
+                    args.next()
+                        .ok_or_else(|| bad("attach --remote needs a host".to_owned()))?,
+                );
+            }
             _ if name.is_none() => name = Some(arg),
             other => return Err(bad(format!("attach: unexpected argument {other:?}"))),
         }
     }
     let name = name.ok_or_else(|| bad("attach needs a session name".to_owned()))?;
+    if !wait && (tui || remote.is_some()) {
+        return Err(bad(
+            "attach --no-wait belongs to the window client; a terminal client IS this terminal, \
+             so there is nothing to return to"
+                .to_owned(),
+        ));
+    }
+    if let Some(destination) = remote {
+        return attach_remote(&destination, &name);
+    }
     let sock = socket_path(HOST_SOCKET);
     let mut conn = connect()?;
     if !session_exists(&mut conn, &name)? {
@@ -678,12 +754,22 @@ fn attach(args: Vec<String>) -> io::Result<()> {
             format!("no session named {name:?}"),
         ));
     }
-    // Hand the window the session to adopt and the exact socket we reached; do NOT let it fall
+    // Hand the client the session to adopt and the exact socket we reached; do NOT let it fall
     // back to its own default, which could be a different daemon.
-    let mut command = Command::new(gui_bin());
+    let mut command = Command::new(client_bin(
+        if tui { TUI_BIN_ENV } else { GUI_BIN_ENV },
+        if tui { "sprag-tui" } else { "sprag-gui" },
+    ));
     command
         .env("SPRAG_GUI_SESSION", &name)
         .env("SPRAG_GUI_HOST_SOCK", &sock);
+    if tui {
+        // The pre-flight's connection belongs to a process that is about to stop existing. Close
+        // it HERE rather than leave the daemon's client accounting resting on the descriptor's
+        // close-on-exec flag, which is a property of how the socket was opened, not of this code.
+        drop(conn);
+        return Err(exec_client(&mut command, "sprag-tui"));
+    }
     let mut child = own_session(&mut command).spawn().map_err(|error| {
         io::Error::new(error.kind(), format!("could not launch sprag-gui: {error}"))
     })?;
@@ -816,19 +902,62 @@ fn session_exists(conn: &mut HostConn, name: &str) -> io::Result<bool> {
         .any(|session| session["name"].as_str() == Some(name)))
 }
 
-/// The `sprag-gui` binary [`attach`] launches: [`GUI_BIN_ENV`] if set, else the sibling of this
-/// exe (installed together), else `sprag-gui` on `PATH` — mirroring the GUI's own `host_bin`.
-fn gui_bin() -> PathBuf {
-    if let Some(path) = std::env::var_os(GUI_BIN_ENV) {
+/// `attach --remote HOST NAME`: run this client on HOST instead, over ssh.
+///
+/// The argv is built by [`SshTarget::ssh_argv`] — the SAME author `sprag ssh` uses — so there is
+/// one spelling of "how sprag invokes ssh" rather than two that can drift apart, and `--remote
+/// me@host` gets the `user@` split for free. `-t` comes from that builder and is load-bearing
+/// here: ssh allocates a remote pty automatically only when NO command is given, and the command
+/// given here is a full-screen client, which without a terminal cannot even set raw mode.
+///
+/// `--tui` is spelled out in the remote argv rather than left to the remote's default, because
+/// the remote `sprag` is a DIFFERENT build: an argv that names the client it wants cannot be
+/// re-read by a version whose default is something else. (Nothing yet negotiates that skew — see
+/// the version-handshake debt; naming the client is the cheap half that does not need it.)
+fn attach_remote(destination: &str, name: &str) -> io::Result<()> {
+    let mut target = SshTarget::parse(destination)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    target.remote_command = vec![
+        "sprag".to_owned(),
+        "attach".to_owned(),
+        "--tui".to_owned(),
+        name.to_owned(),
+    ];
+    let argv = target.ssh_argv();
+    let (program, rest) = argv
+        .split_first()
+        .expect("ssh_argv always names the program");
+    let mut command = Command::new(program);
+    command.args(rest);
+    Err(exec_client(&mut command, program))
+}
+
+/// Replace THIS process with `command` — how both terminal clients are launched (see [`attach`]).
+///
+/// Returns only on failure, and so returns the error itself rather than a `Result` whose `Ok` is
+/// unreachable: on success there is no longer a process here to return into.
+fn exec_client(command: &mut Command, what: &str) -> io::Error {
+    let error = command.exec();
+    io::Error::new(error.kind(), format!("could not launch {what}: {error}"))
+}
+
+/// The client binary [`attach`] launches: `env_override` if set, else the sibling of this exe,
+/// else `bin` on `PATH` — mirroring the GUI's own `host_bin` discovery of `sprag-term`.
+///
+/// The SIBLING step is what makes a build tree work uninstalled: `target/debug/sprag` finds the
+/// `target/debug/sprag-gui` beside it, where `PATH` alone would find nothing — or, worse, an
+/// installed client of a different version against this daemon.
+fn client_bin(env_override: &str, bin: &str) -> PathBuf {
+    if let Some(path) = std::env::var_os(env_override) {
         return PathBuf::from(path);
     }
     if let Ok(exe) = std::env::current_exe()
-        && let Some(sibling) = exe.parent().map(|dir| dir.join("sprag-gui"))
+        && let Some(sibling) = exe.parent().map(|dir| dir.join(bin))
         && sibling.exists()
     {
         return sibling;
     }
-    PathBuf::from("sprag-gui")
+    PathBuf::from(bin)
 }
 
 /// `kill-session NAME`: kill one session. Killing the LAST one ends the daemon, so its reply may
