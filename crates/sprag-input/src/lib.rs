@@ -344,6 +344,20 @@ pub enum MouseButton {
     WheelUp,
     /// Wheel scrolled down / toward — xterm pseudo-button 65.
     WheelDown,
+    /// Horizontal wheel, xterm pseudo-button 66 (its button 6).
+    ///
+    /// # The NAME is a reading; the report is not
+    ///
+    /// xterm's ctlseqs define buttons 6 and 7 as pseudo-buttons and leave which way each points to
+    /// convention, and these names follow the common one. **Nothing in sprag depends on the reading
+    /// being right**: a display client observes its own terminal's direction flag and this encoder
+    /// reproduces the same button number, so a swapped name would be a wrong LABEL in this file and
+    /// never a wrong report at a child. The place it would matter is a client that SYNTHESISED a
+    /// horizontal scroll from something other than a horizontal wheel, and none does.
+    WheelLeft,
+    /// Horizontal wheel the other way — xterm pseudo-button 67 (its button 7). See
+    /// [`MouseButton::WheelLeft`] for why the name is a reading and the report is not.
+    WheelRight,
     /// No button held — the "button" of a bare motion event (any-event tracking).
     None,
 }
@@ -434,6 +448,8 @@ fn mouse_button_code(button: MouseButton, kind: MouseEventKind) -> u8 {
         MouseButton::None => 3,
         MouseButton::WheelUp => 64,
         MouseButton::WheelDown => 65,
+        MouseButton::WheelLeft => 66,
+        MouseButton::WheelRight => 67,
     };
     let motion = match kind {
         MouseEventKind::Drag | MouseEventKind::Motion => 32,

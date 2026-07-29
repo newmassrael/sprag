@@ -636,7 +636,8 @@ fn parse_key_args(args: &IntrospectValue) -> Result<Option<(String, Modifiers)>,
 
 /// Parse the `mouse` action's args `{button, kind, col, row, ctrl?, alt?, shift?}` into a
 /// [`MouseInput`]. Only the object form is accepted (a machine wire, never hand-typed). `button` is
-/// `left`/`middle`/`right`/`wheelup`/`wheeldown`/`none`, `kind` is `press`/`release`/`drag`/
+/// `left`/`middle`/`right`/`wheelup`/`wheeldown`/`wheelleft`/`wheelright`/`none`, `kind` is
+/// `press`/`release`/`drag`/
 /// `motion`, and `col`/`row` are 0-based cells. A missing/ill-typed field is an
 /// [`InvokeError::TypeMismatch`].
 fn parse_mouse_args(args: &IntrospectValue) -> Result<MouseInput, InvokeError> {
@@ -649,6 +650,8 @@ fn parse_mouse_args(args: &IntrospectValue) -> Result<MouseInput, InvokeError> {
         Some("right") => MouseButton::Right,
         Some("wheelup") => MouseButton::WheelUp,
         Some("wheeldown") => MouseButton::WheelDown,
+        Some("wheelleft") => MouseButton::WheelLeft,
+        Some("wheelright") => MouseButton::WheelRight,
         Some("none") => MouseButton::None,
         _ => return Err(InvokeError::TypeMismatch),
     };

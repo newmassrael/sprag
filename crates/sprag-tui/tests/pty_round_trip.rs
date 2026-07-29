@@ -1147,6 +1147,22 @@ fn a_wheel_notch_reaches_the_child_as_the_press_it_is() {
             Err(format!("the pane holds {text:?}"))
         }
     });
+
+    // The HORIZONTAL wheel, which is a different pseudo-button on the same direction flag. Sent
+    // after the vertical one and asserted beside it, because the two are told apart by an axis bit
+    // that a decoder could read for one and not the other: 66 in must be 66 out, not 64.
+    tui.type_bytes(b"\x1b[<66;7;5M");
+    wait_for(
+        "a horizontal notch to reach the child as ITS button",
+        || {
+            let text = pane_text(&mut conn, &session);
+            if text.contains("[<66;7;5M") {
+                Ok(())
+            } else {
+                Err(format!("the pane holds {text:?}"))
+            }
+        },
+    );
 }
 
 /// A click in the SECOND pane arrives in that pane's own columns — the half of the click path that
@@ -1234,4 +1250,83 @@ fn a_click_in_the_second_pane_arrives_in_that_panes_own_columns() {
         "a click on the divider column belongs to no pane and is not handed to the one beside \
          it — pane 0 holds {neighbour:?}",
     );
+}
+
+/// Dragging a divider moves the boundary AND reaches both children's PTYs.
+///
+/// The claim a screenshot could not make: the sizes are read from the DAEMON, so a client that
+/// merely redrew the line in a new column while leaving both children on their old winsize would
+/// fail here — the same distinction `a_window_change_reaches_the_panes_pty` exists for, one gesture
+/// down.
+///
+/// The gesture is a real one: press ON the divider, drag to a new column, release. The press is
+/// what claims the drag, and it has to be, because the pointer leaves the divider the moment the
+/// drag begins — a client recognising the divider on every event would resize once and then start
+/// clicking into whichever pane the pointer had entered.
+#[test]
+fn a_divider_drag_moves_the_boundary_and_both_children() {
+    // The boot pane tracks so the client captures the pointer at all; the pane the split creates
+    // runs a plain shell, which is enough — the drag is the CLIENT's gesture, not a child's input.
+    let (_daemon, _sock, mut conn, session, mut tui) =
+        attached_client_with(Tui::attach, &MOUSE_CHILD);
+    wait_for(
+        "the child's tracking to reach the client's terminal",
+        || {
+            settled(
+                tui.local_modes().mouse_protocol,
+                &MouseProtocol::ButtonEvent,
+            )
+        },
+    );
+
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"%");
+    let (near, far) = halves(BOOT_PTY.0);
+    wait_for("both panes to reach their own half's size", || {
+        settled(
+            pane_sizes(&mut conn, &session),
+            &vec![(near, BOOT_PTY.1), (far, BOOT_PTY.1)],
+        )
+    });
+
+    // Drag the divider ten columns left. 1-based on the wire, so the divider sitting at 0-based
+    // column `near` is `near + 1` to the protocol.
+    let moved = near - 10;
+    tui.type_bytes(format!("\x1b[<0;{};3M", near + 1).as_bytes());
+    tui.type_bytes(format!("\x1b[<32;{};3M", moved + 1).as_bytes());
+    tui.type_bytes(format!("\x1b[<0;{};3m", moved + 1).as_bytes());
+
+    // Both children, at the sizes the moved boundary implies — asked of the daemon.
+    let (want_near, want_far) = (moved, BOOT_PTY.0 - moved - 1);
+    wait_for("the drag to reach both children's PTYs", || {
+        settled(
+            pane_sizes(&mut conn, &session),
+            &vec![(want_near, BOOT_PTY.1), (want_far, BOOT_PTY.1)],
+        )
+    });
+
+    // ...and the line the user is pointing at is drawn where they dragged it.
+    wait_for("the divider to be painted in its new column", || {
+        let column = tui.column(moved);
+        if column.chars().all(|glyph| glyph == '\u{2502}') {
+            Ok(())
+        } else {
+            Err(format!("column {moved} reads {column:?}: {:?}", tui.rows()))
+        }
+    });
+
+    // THE RELEASE ENDED IT. A click afterwards must reach the child again, and this is the only
+    // assertion that can say so — MEASURED: recognising the divider on every event instead of
+    // claiming it on the press passes everything above, because by the time the release arrives the
+    // divider has MOVED UNDER THE POINTER, so the release re-claims the drag instead of ending it
+    // and the client swallows every click from then on.
+    tui.type_bytes(b"\x1b[<0;3;3M");
+    wait_for("a click after the drag to reach the child again", || {
+        let text = pane_text(&mut conn, &session);
+        if text.contains("[<0;3;3M") {
+            Ok(())
+        } else {
+            Err(format!("pane 0 holds {text:?}"))
+        }
+    });
 }

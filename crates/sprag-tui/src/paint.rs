@@ -852,6 +852,8 @@ mod tests {
         let divider = Divider {
             area: Rect::new(2, 0, 1, 3),
             dir: SplitDir::Horizontal,
+            id: None,
+            region: Rect::screen(4, 3),
         };
         let mut surface = Surface::new(4, 3);
         surface.add_changes(divider_changes(&divider));
@@ -868,6 +870,8 @@ mod tests {
         let divider = Divider {
             area: Rect::new(0, 1, 4, 1),
             dir: SplitDir::Vertical,
+            id: None,
+            region: Rect::screen(4, 3),
         };
         let mut surface = Surface::new(4, 3);
         surface.add_changes(divider_changes(&divider));
@@ -924,6 +928,8 @@ mod tests {
         surface.add_changes(divider_changes(&Divider {
             area: Rect::new(2, 0, 1, 1),
             dir: SplitDir::Horizontal,
+            id: None,
+            region: Rect::screen(3, 1),
         }));
         let cells = surface.screen_cells();
         assert!(

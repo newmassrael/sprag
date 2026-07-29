@@ -32,7 +32,7 @@
 //! a pane, and the host is right to refuse a resize to one — but the pane is still ALIVE and still
 //! the session's, so a client that shrinks below its arrangement loses the view, never the work.
 
-use sprag_terminal::{LayoutNodeWire, LayoutWire, PaneId, SplitDir};
+use sprag_terminal::{LayoutNodeWire, LayoutWire, PaneId, SplitDir, SplitId};
 
 /// A rectangle of character cells in the local terminal's coordinates, `col`/`row` counted from the
 /// top-left of the screen.
@@ -108,6 +108,20 @@ pub struct Divider {
     pub area: Rect,
     /// The split this divider belongs to, which is what decides the glyph drawn in those cells.
     pub dir: SplitDir,
+    /// The split's durable identity, or `None` for one the host has not named yet.
+    ///
+    /// Carried so a client can act on the divider it is POINTING AT rather than on a position in a
+    /// walk: the tree is re-read every frame, and an index into it means a different node the
+    /// moment anything splits or closes. The wire's own docs call this out — a client "keys its
+    /// live drag ratio on them" — so identity was always the intended handle, and this is the
+    /// reader that finally needs it.
+    pub id: Option<SplitId>,
+    /// The whole region this split divides, which is what a new ratio is measured AGAINST.
+    ///
+    /// Not derivable from [`Divider::area`]: the divider is one cell thick and says nothing about
+    /// how far its region extends on either side. A drag needs both — where the pointer is, and
+    /// what fraction of what.
+    pub region: Rect,
 }
 
 /// Where every pane of an arrangement goes on this terminal, and what separates them.
@@ -188,6 +202,101 @@ impl Tiling {
             .find(|held| held.area.holds(col, row))
             .map(|held| (held.pane, col - held.area.col, row - held.area.row))
     }
+
+    /// The divider on screen cell `(col, row)`, if the cell is one.
+    ///
+    /// The other half of [`Tiling::pane_at`], and the reason both can be total: the tiling is an
+    /// exact partition, so a cell answers one of these two and never both.
+    #[must_use]
+    pub fn divider_at(&self, col: u16, row: u16) -> Option<Divider> {
+        self.dividers
+            .iter()
+            .copied()
+            .find(|line| line.area.holds(col, row))
+    }
+}
+
+impl Divider {
+    /// The ratio that would put this divider's cell at `(col, row)` — what a drag to that cell
+    /// means, or `None` when the cell is off the axis or the region cannot hold the move.
+    ///
+    /// # It is defined as the INVERSE of the layouter's division, not as a fraction of the region
+    ///
+    /// The obvious spelling — the pointer's distance along the region over the region's extent — is
+    /// wrong by up to a cell, because the division floors and reserves the divider's own column. The
+    /// ratio computed here is the one that places the divider exactly where the
+    /// pointer is, which is the only definition under which a drag TRACKS the pointer rather than
+    /// drifting away from it a cell at a time.
+    ///
+    /// The half-cell is what makes the inverse robust: the layouter computes `floor(avail * ratio)`, so
+    /// asking for `(near + 0.5) / avail` lands strictly inside the interval that floors to `near`
+    /// rather than on its edge, where a float's last bit decides the answer.
+    ///
+    /// Both sides keep at least one cell, so a drag to the region's own edge stops at the last
+    /// arrangement that is still two panes rather than collapsing one to nothing.
+    #[must_use]
+    pub fn ratio_at(&self, col: u16, row: u16) -> Option<f32> {
+        let (extent, along, origin) = match self.dir {
+            SplitDir::Horizontal => (self.region.cols, col, self.region.col),
+            SplitDir::Vertical => (self.region.rows, row, self.region.row),
+        };
+        // One cell for the divider and at least one for each child: below three there is no move
+        // to make, and `divide` would already be refusing to show two panes.
+        let avail = extent.checked_sub(1).filter(|avail| *avail >= 2)?;
+        let near = along.checked_sub(origin)?.clamp(1, avail - 1);
+        Some((f32::from(near) + 0.5) / f32::from(avail))
+    }
+}
+
+/// `tree` with the split identified by `id` set to `ratio`, or `None` when no node carries that id.
+///
+/// Answering `None` rather than returning the tree unchanged is what keeps a caller honest: a drag
+/// that found no node has lost the divider it was moving — the arrangement changed under it — and
+/// writing an unmodified tree back would be a WRITE that looks like a successful move.
+///
+/// Pure, and a copy rather than an in-place edit, because the tree a client holds is the host's
+/// last answer: mutating it would leave the client believing an arrangement the host may refuse.
+#[must_use]
+pub fn with_ratio(tree: &LayoutWire, id: SplitId, ratio: f32) -> Option<LayoutWire> {
+    fn edit(node: &LayoutNodeWire, id: SplitId, ratio: f32) -> Option<LayoutNodeWire> {
+        let LayoutNodeWire::Split {
+            id: node_id,
+            dir,
+            ratio: was,
+            first,
+            second,
+        } = node
+        else {
+            return None;
+        };
+        if *node_id == Some(id) {
+            return Some(LayoutNodeWire::Split {
+                id: *node_id,
+                dir: *dir,
+                ratio,
+                first: first.clone(),
+                second: second.clone(),
+            });
+        }
+        let rebuild = |first: Box<LayoutNodeWire>, second: Box<LayoutNodeWire>| {
+            Some(LayoutNodeWire::Split {
+                id: *node_id,
+                dir: *dir,
+                ratio: *was,
+                first,
+                second,
+            })
+        };
+        if let Some(edited) = edit(first, id, ratio) {
+            return rebuild(Box::new(edited), second.clone());
+        }
+        edit(second, id, ratio).and_then(|edited| rebuild(first.clone(), Box::new(edited)))
+    }
+
+    let root = tree.root.as_ref()?;
+    Some(LayoutWire {
+        root: Some(edit(root, id, ratio)?),
+    })
 }
 
 /// Lay `tree` out over `area` — the whole of the character-cell projection.
@@ -219,11 +328,11 @@ fn tile_node(node: &LayoutNodeWire, area: Rect, tiling: &mut Tiling) {
     match node {
         LayoutNodeWire::Leaf(pane) => tiling.panes.push(PaneRect { pane: *pane, area }),
         LayoutNodeWire::Split {
+            id,
             dir,
             ratio,
             first,
             second,
-            ..
         } => {
             let extent = match dir {
                 SplitDir::Horizontal => area.cols,
@@ -255,6 +364,8 @@ fn tile_node(node: &LayoutNodeWire, area: Rect, tiling: &mut Tiling) {
             tiling.dividers.push(Divider {
                 area: divider,
                 dir: *dir,
+                id: *id,
+                region: area,
             });
             tile_node(second, second_area, tiling);
         }
@@ -324,6 +435,30 @@ mod tests {
                 ratio,
                 first: Box::new(first),
                 second: Box::new(second),
+            }),
+        }
+    }
+
+    /// `tree` with its root split carrying `id` — the shape a HOST-sent tree has, since a client
+    /// mints nodes without one and the host names them.
+    fn identified(tree: &LayoutWire, id: SplitId) -> LayoutWire {
+        let Some(LayoutNodeWire::Split {
+            dir,
+            ratio,
+            first,
+            second,
+            ..
+        }) = tree.root.clone()
+        else {
+            panic!("the fixture's root is a split");
+        };
+        LayoutWire {
+            root: Some(LayoutNodeWire::Split {
+                id: Some(id),
+                dir,
+                ratio,
+                first,
+                second,
             }),
         }
     }
@@ -404,6 +539,8 @@ mod tests {
             vec![Divider {
                 area: Rect::new(40, 0, 1, 24),
                 dir: SplitDir::Horizontal,
+                id: None,
+                region: Rect::screen(81, 24),
             }],
         );
     }
@@ -435,6 +572,8 @@ mod tests {
             vec![Divider {
                 area: Rect::new(0, 12, 80, 1),
                 dir: SplitDir::Vertical,
+                id: None,
+                region: Rect::screen(80, 25),
             }],
         );
     }
@@ -654,6 +793,105 @@ mod tests {
             Some((PaneId(1), 9, 3)),
             "and its far corner is pane-local (9, 3), not screen (20, 3)",
         );
+    }
+
+    /// A drag to a cell yields the ratio that puts the divider ON that cell — the property that
+    /// makes a drag TRACK the pointer instead of drifting away from it a cell at a time.
+    ///
+    /// Asserted by ROUND TRIP through [`tile`] rather than against a number, because the number is
+    /// not the claim: any ratio is "correct" until you ask where it lands. Every reachable column
+    /// is checked, so an off-by-one at either end has nowhere to hide.
+    #[test]
+    fn a_drag_puts_the_divider_where_the_pointer_is() {
+        let tree = split(SplitDir::Horizontal, 0.5, leaf(0), leaf(1));
+        let screen = Rect::screen(21, 5);
+        let divider = tile(&tree, screen).dividers[0];
+        let id = SplitId(7);
+
+        for column in 1..=19 {
+            let ratio = divider
+                .ratio_at(column, 0)
+                .expect("a column inside the region has a ratio");
+            let moved = tile(
+                &with_ratio(&identified(&tree, id), id, ratio).expect("the split is there"),
+                screen,
+            );
+            assert_eq!(
+                moved.dividers[0].area.col, column,
+                "a drag to column {column} lands there (ratio {ratio})",
+            );
+        }
+    }
+
+    /// A drag past either edge stops at the last arrangement that is still TWO panes: the clamp is
+    /// what keeps a careless gesture from collapsing a pane to nothing, which the layouter would
+    /// then drop from the tiling entirely.
+    #[test]
+    fn a_drag_off_the_end_stops_at_one_cell() {
+        let tree = split(SplitDir::Horizontal, 0.5, leaf(0), leaf(1));
+        let screen = Rect::screen(21, 5);
+        let divider = tile(&tree, screen).dividers[0];
+        let id = SplitId(7);
+        let landed = |col| {
+            let ratio = divider.ratio_at(col, 0).expect("a ratio");
+            tile(
+                &with_ratio(&identified(&tree, id), id, ratio).expect("the split is there"),
+                screen,
+            )
+            .dividers[0]
+                .area
+                .col
+        };
+        assert_eq!(landed(0), 1, "the far left keeps the first pane a column");
+        assert_eq!(landed(20), 19, "and the far right keeps the second one");
+    }
+
+    /// The edit finds the split by IDENTITY, and answers `None` when the tree does not carry it —
+    /// which is what tells a caller its divider is gone rather than letting it write an unchanged
+    /// tree back and read that as a successful move.
+    #[test]
+    fn a_ratio_is_written_by_identity_or_not_at_all() {
+        let id = SplitId(3);
+        let tree = identified(&split(SplitDir::Vertical, 0.5, leaf(0), leaf(1)), id);
+        let moved = with_ratio(&tree, id, 0.25).expect("the split is there");
+        let Some(LayoutNodeWire::Split { ratio, .. }) = moved.root else {
+            panic!("the root is still a split");
+        };
+        assert!((ratio - 0.25).abs() < f32::EPSILON, "the ratio moved");
+        assert!(
+            with_ratio(&tree, SplitId(99), 0.25).is_none(),
+            "a split this tree does not carry is not silently a no-op",
+        );
+    }
+
+    /// A NESTED split is reachable too — the edit walks, it does not only look at the root.
+    #[test]
+    fn a_ratio_reaches_a_nested_split() {
+        let inner = SplitId(11);
+        let tree = LayoutWire {
+            root: Some(LayoutNodeWire::Split {
+                id: Some(SplitId(10)),
+                dir: SplitDir::Horizontal,
+                ratio: 0.5,
+                first: Box::new(leaf(0)),
+                second: Box::new(LayoutNodeWire::Split {
+                    id: Some(inner),
+                    dir: SplitDir::Vertical,
+                    ratio: 0.5,
+                    first: Box::new(leaf(1)),
+                    second: Box::new(leaf(2)),
+                }),
+            }),
+        };
+        let moved = with_ratio(&tree, inner, 0.8).expect("the nested split is there");
+        let Some(LayoutNodeWire::Split { first, second, .. }) = moved.root else {
+            panic!("the root is still a split");
+        };
+        assert_eq!(*first, leaf(0), "the untouched sibling is carried through");
+        let LayoutNodeWire::Split { ratio, .. } = *second else {
+            panic!("the second child is still a split");
+        };
+        assert!((ratio - 0.8).abs() < f32::EPSILON);
     }
 
     /// A divider column belongs to no pane, and neither does a cell off the arrangement. Both

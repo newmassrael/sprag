@@ -51,6 +51,11 @@
 //! click-drag selection and wheel scrolling away from the user's own emulator, which is a cost
 //! worth paying exactly when there is a program to hand the reports to, and never otherwise.
 //!
+//! A press on a DIVIDER is the client's own gesture rather than any child's: it claims the drag,
+//! and the moves that follow rewrite that split's ratio on the host. Claimed on the press because
+//! the pointer leaves the divider the instant it starts moving — recognising the line on every
+//! event instead would resize once and then swallow every click that followed.
+//!
 //! # What it deliberately does not do yet
 //!
 //! * **Latest attach wins the pane's size.** Attaching resizes each pane to the rectangle this
@@ -61,8 +66,6 @@
 //!   is H2's, not this slice's.
 //! * **No pane is closed from here.** `exit` in the shell does it, and the destructive verb is the
 //!   one that would want a confirmation prompt this client has nowhere to draw.
-//! * **No divider is dragged.** A split opens at an even share and keeps it; resizing one needs a
-//!   relative `resize-pane`, which the daemon does not have either.
 //! * **Type-ahead before the client is up is lost.** `set_raw_mode` sets the termios with
 //!   `TCSAFLUSH`, which purges whatever was typed before the client got there. That is what every
 //!   full-screen program does and it is not this client's to change, but it is a real thing a user
@@ -79,10 +82,10 @@ use pinion_core::QuitSink;
 use sprag_client::WireHost;
 use sprag_host::HostClient;
 use sprag_input::{MouseEventKind, MouseInput};
-use sprag_terminal::{PaneId, SplitDir};
+use sprag_terminal::{PaneId, SplitDir, SplitId};
 use sprag_tui::{
-    MouseEdges, Rect, Tiling, WireKey, cursor_changes, divider_changes, pane_changes, tile,
-    wire_key,
+    Divider, MouseEdges, Rect, Tiling, WireKey, cursor_changes, divider_changes, pane_changes,
+    tile, wire_key, with_ratio,
 };
 use sprag_vt::MouseProtocol;
 use termwiz::caps::{Capabilities, ProbeHints};
@@ -182,6 +185,9 @@ fn run() -> Result<(), Box<dyn Error>> {
     // The pointer's state, kept across events because the wire wants EDGES and this terminal
     // reports a state (see [`MouseEdges`]).
     let mut pointer = MouseEdges::default();
+    // The divider a press claimed, held until the release that ends the drag. `None` is the steady
+    // state: the pointer is over panes, not between them.
+    let mut dragging: Option<(SplitId, Divider)> = None;
 
     // The first paint clears, because the surface starts blank but the terminal underneath it does
     // not. Later ones do not need to: the tiling PARTITIONS the screen, so every cell has an author
@@ -237,9 +243,39 @@ fn run() -> Result<(), Box<dyn Error>> {
             // I", which is the split-authority shape the layouter already had to settle once.
             Some(InputEvent::Mouse(event)) => {
                 for edge in pointer.edges(&event) {
+                    // A divider DRAG outranks everything below, and it is claimed on the PRESS
+                    // rather than recognised on each move: once a drag is under way the pointer
+                    // leaves the divider immediately (that is what moving it means), so a client
+                    // that asked "is this cell a divider" every event would resize once and then
+                    // start clicking into whichever pane the pointer had entered.
+                    if edge.kind == MouseEventKind::Press
+                        && let Some(divider) = tiling.divider_at(edge.col, edge.row)
+                    {
+                        dragging = divider.id.map(|id| (id, divider));
+                        continue;
+                    }
+                    if let Some((id, divider)) = dragging {
+                        match edge.kind {
+                            MouseEventKind::Release => dragging = None,
+                            MouseEventKind::Drag => {
+                                if let Some(ratio) = divider.ratio_at(edge.col, edge.row) {
+                                    tiling =
+                                        drag_divider(&host, screen_area, &mut focus, id, ratio);
+                                    // Repainted here rather than left to the host's notification:
+                                    // a divider that lags the pointer by a round trip is what a
+                                    // user reads as a heavy client.
+                                    paint(&mut screen, &host, &tiling, focus, Clear::Yes)?;
+                                }
+                            }
+                            // A press cannot reach here (it is claimed above) and a bare motion
+                            // while a button is held is reported as a drag, so nothing else can.
+                            _ => {}
+                        }
+                        continue;
+                    }
                     let Some((pane, col, row)) = tiling.pane_at(edge.col, edge.row) else {
-                        // A divider column, or a cell outside every rectangle. Not forwarded
-                        // anywhere: there is no child whose grid contains it.
+                        // A divider column nobody is dragging by, or a cell outside every
+                        // rectangle. Not forwarded anywhere: there is no child whose grid holds it.
                         continue;
                     };
                     if edge.kind == MouseEventKind::Press && focus != Some(pane) {
@@ -370,6 +406,30 @@ fn reconcile(host: &WireHost, area: Rect, focus: &mut Option<PaneId>) -> Tiling 
         resize_pane(host, pane.pane, pane.area);
     }
     tiling
+}
+
+/// Write `ratio` onto the split `id` and re-tile from what the host answers.
+///
+/// The host's reply is used rather than the tree this client just sent, and that is the whole
+/// discipline of a layout write: the arrangement is the HOST's, `set_layout` takes the epoch this
+/// client last saw, and a write made against a stale one is refused. Re-tiling from the answer is
+/// therefore correct whether the write landed or was declined — in both cases it is what the
+/// arrangement now IS.
+///
+/// The panes are resized through the same [`reconcile`] every other path uses, so a dragged
+/// boundary reaches the children's PTYs exactly as a split or a window change does.
+fn drag_divider(
+    host: &WireHost,
+    area: Rect,
+    focus: &mut Option<PaneId>,
+    id: SplitId,
+    ratio: f32,
+) -> Tiling {
+    let snapshot = host.layout();
+    if let Some(tree) = with_ratio(&snapshot.tree, id, ratio) {
+        host.set_layout(tree, snapshot.revision);
+    }
+    reconcile(host, area, focus)
 }
 
 /// Move focus to `next`, telling the panes on both ends of the move.

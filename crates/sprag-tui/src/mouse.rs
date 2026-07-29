@@ -58,12 +58,12 @@ impl MouseEdges {
     /// what its name says. The drag-or-motion decision at the end reads `held` as "is a button
     /// down", and that reading is only sound while a wheel notch cannot leave a bit in it.
     ///
-    /// # What is dropped, and why dropping is right
+    /// # Both axes, by the same flag
     ///
-    /// A HORIZONTAL wheel (xterm's buttons 6/7) has no [`MouseButton`] to become. Inventing one
-    /// here would mean encoding a report the host cannot describe; the honest fix is a variant in
-    /// `sprag-input` and an encoder arm beside it, which is a change to the shared vocabulary
-    /// rather than to this client.
+    /// A horizontal notch is xterm's button 6 or 7, and it is read exactly as the vertical one is:
+    /// termwiz reports the axis as a bit and the direction as `WHEEL_POSITIVE`, and
+    /// [`MouseButton`] has a variant for each corner. Neither this module nor the encoder has to
+    /// decide what "left" means — the number that arrives is the number that leaves.
     pub fn edges(&mut self, event: &MouseEvent) -> Vec<MouseInput> {
         // `MouseButtons` is a bitflags set that is not `Copy` in this termwiz, so the masks are
         // cloned rather than moved out of the borrowed event; the arithmetic below is unchanged by
@@ -89,12 +89,25 @@ impl MouseEdges {
 
         // The wheel first and on its own: it is a notch, not a state, so it neither reads from nor
         // writes to `held`.
+        //
+        // The direction flag is read the same way on both axes, which is the whole reason the
+        // horizontal one needs no judgement here: termwiz sets `WHEEL_POSITIVE` for the report it
+        // read as button 4 (vertical) or 6 (horizontal), and `sprag-input` encodes those back as
+        // 64 and 66. The number that arrives is the number that leaves.
+        let positive = event.mouse_buttons.contains(MouseButtons::WHEEL_POSITIVE);
         if event.mouse_buttons.contains(MouseButtons::VERT_WHEEL) {
-            let up = event.mouse_buttons.contains(MouseButtons::WHEEL_POSITIVE);
-            let button = if up {
+            let button = if positive {
                 MouseButton::WheelUp
             } else {
                 MouseButton::WheelDown
+            };
+            out.push(edge(button, MouseEventKind::Press));
+        }
+        if event.mouse_buttons.contains(MouseButtons::HORZ_WHEEL) {
+            let button = if positive {
+                MouseButton::WheelLeft
+            } else {
+                MouseButton::WheelRight
             };
             out.push(edge(button, MouseEventKind::Press));
         }
@@ -275,6 +288,36 @@ mod tests {
             again.is_empty(),
             "nothing moved and nothing changed: {again:?}"
         );
+    }
+
+    /// A horizontal notch is its own button, on the same direction flag as the vertical one.
+    ///
+    /// Asserted as a PAIR with the vertical case rather than alone: the two share `WHEEL_POSITIVE`,
+    /// so a decoder that read the axis bit and forgot the direction — or read the direction and
+    /// forgot the axis — would still answer plausibly for one of them.
+    #[test]
+    fn a_horizontal_notch_is_its_own_button_on_the_same_flag() {
+        let mut edges = MouseEdges::default();
+        let left = edges.edges(&at(
+            MouseButtons::HORZ_WHEEL | MouseButtons::WHEEL_POSITIVE,
+            3,
+            3,
+        ));
+        assert_eq!(left.len(), 1, "one edge: {left:?}");
+        assert_eq!(left[0].button, MouseButton::WheelLeft);
+        assert_eq!(left[0].kind, MouseEventKind::Press);
+
+        let right = edges.edges(&at(MouseButtons::HORZ_WHEEL, 3, 3));
+        assert_eq!(right.len(), 1, "one edge: {right:?}");
+        assert_eq!(right[0].button, MouseButton::WheelRight);
+
+        // The same flag, the other axis — so neither reading can be right by luck.
+        let up = edges.edges(&at(
+            MouseButtons::VERT_WHEEL | MouseButtons::WHEEL_POSITIVE,
+            3,
+            3,
+        ));
+        assert_eq!(up[0].button, MouseButton::WheelUp);
     }
 
     /// The modifiers ride along, because the report carries them and a program reads them: a

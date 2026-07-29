@@ -2041,6 +2041,8 @@ fn mouse_button_wire(button: MouseButton) -> &'static str {
         MouseButton::Right => "right",
         MouseButton::WheelUp => "wheelup",
         MouseButton::WheelDown => "wheeldown",
+        MouseButton::WheelLeft => "wheelleft",
+        MouseButton::WheelRight => "wheelright",
         MouseButton::None => "none",
     }
 }

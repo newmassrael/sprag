@@ -41,6 +41,6 @@ mod mouse;
 mod paint;
 
 pub use key::{WireKey, wire_key};
-pub use layout::{Divider, PaneRect, Rect, Tiling, tile};
+pub use layout::{Divider, PaneRect, Rect, Tiling, tile, with_ratio};
 pub use mouse::MouseEdges;
 pub use paint::{cell_attributes, cursor_changes, divider_changes, pane_changes};
