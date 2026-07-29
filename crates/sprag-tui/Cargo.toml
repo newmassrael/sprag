@@ -1,0 +1,43 @@
+[package]
+name = "sprag-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "sprag's TERMINAL frontend: a client that attaches to a sprag-term session and paints its panes as escape sequences instead of pixels, so a session can be attached over ssh. The character-cell half of a display client — sprag-client owns the host relationship and knows nothing about cells, exactly as it knows nothing about pixels. GPU-free BY GATE (tests/gpu_free.rs), because the machine this runs on is the one that has no GPU."
+publish = false
+
+[[bin]]
+name = "sprag-tui"
+path = "src/bin/sprag-tui.rs"
+
+[dependencies]
+# The host relationship, shared with sprag-gui: WireHost is the whole topology-B
+# client (poll thread, session scoping, the fetch gate, the frame decode). This
+# crate adds a UNIT (character cells) to it and nothing else.
+sprag-client = { workspace = true }
+# The HostClient protocol both frontends consume — the trait WireHost implements,
+# and the ONE definition of what a client may ask a host for.
+sprag-host = { workspace = true }
+# PaneId: the pane address a client reads cells at.
+sprag-terminal = { workspace = true }
+# GridBuffer (the cells this crate paints) + QuitSink (the client's quit edge, which
+# the poll thread pulls when the daemon is gone). GPU-FREE: pinion's data layer.
+pinion-core = { workspace = true }
+# The terminal toolkit: Surface + its terminfo renderer (paint), and the local
+# terminal's raw/alternate-screen control. NOT a new dependency — sprag-vt already
+# parses what panes EMIT with it, and this crate writes what a terminal DISPLAYS.
+termwiz = { workspace = true }
+# Production logging (memory: production-logging-tracing). No subscriber is installed
+# by the binary; see its docs for why a TUI must not write to its own screen.
+tracing = { workspace = true }
+
+[dev-dependencies]
+# The VT battery: the paint tests drive real escape sequences through the real
+# emulator rather than hand-building cells, so the mapping is measured against what
+# a pane actually produces.
+sprag-vt = { workspace = true }
+# ...and through the real projection, which is what turns those cells into the
+# GridBuffer a client receives.
+sprag-grid = { workspace = true }

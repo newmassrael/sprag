@@ -3732,6 +3732,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "sprag-tui"
+version = "0.0.1"
+dependencies = [
+ "pinion-core",
+ "sprag-client",
+ "sprag-grid",
+ "sprag-host",
+ "sprag-terminal",
+ "sprag-vt",
+ "termwiz",
+ "tracing",
+]
+
+[[package]]
 name = "sprag-vt"
 version = "0.0.1"
 dependencies = [

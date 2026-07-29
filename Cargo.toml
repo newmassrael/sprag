@@ -25,6 +25,10 @@ members = [
     # client both frontends share, so the terminal client that lets a session be
     # attached over ssh does not have to re-spell the wire. GPU-free by gate.
     "crates/sprag-client",
+    # The TERMINAL frontend (H1 slice 2): the same wire client painted as escape
+    # sequences instead of pixels, so a session can be attached over ssh. GPU-free
+    # by its own gate — this is the binary that runs on the box without a GPU.
+    "crates/sprag-tui",
     # The GPU windowed host (read-only terminal viewer). The ONLY crate that
     # depends on pinion-shell/vello — the headless RPC path stays GPU-free.
     "crates/sprag-gui",
@@ -181,3 +185,7 @@ sprag-rpc = { path = "crates/sprag-rpc", version = "0.0.1" }
 # whose subject is the host relationship rather than what is drawn. Shared by
 # sprag-gui and (H1) the terminal client; GPU-free by its own gate test.
 sprag-client = { path = "crates/sprag-client", version = "0.0.1" }
+# The CHARACTER-CELL half of a display client: pinion cells rendered as escape
+# sequences, and the binary that owns a terminal to write them to. sprag-gui's
+# peer, one unit down.
+sprag-tui = { path = "crates/sprag-tui", version = "0.0.1" }
