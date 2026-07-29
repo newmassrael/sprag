@@ -22,6 +22,11 @@ sprag-client = { workspace = true }
 sprag-host = { workspace = true }
 # PaneId: the pane address a client reads cells at.
 sprag-terminal = { workspace = true }
+# `Modifiers` — the four-flag modifier set `HostClient::send_key` carries, defined in the
+# crate that ENCODES keys at the PTY boundary. The key decoder produces the input to that
+# encoder, so it necessarily speaks its vocabulary. GPU-free: a producer-layer crate whose
+# only dependency is sprag-vt.
+sprag-input = { workspace = true }
 # GridBuffer (the cells this crate paints) + QuitSink (the client's quit edge, which
 # the poll thread pulls when the daemon is gone). GPU-FREE: pinion's data layer.
 pinion-core = { workspace = true }
@@ -41,3 +46,12 @@ sprag-vt = { workspace = true }
 # ...and through the real projection, which is what turns those cells into the
 # GridBuffer a client receives.
 sprag-grid = { workspace = true }
+# The PTY gate (tests/pty_round_trip.rs) needs a real pseudoterminal to run the shipped
+# binary on — the same abstraction the producer gives every pane, used here from the
+# other side. NOT a runtime dependency: this client owns a terminal, it never makes one.
+portable-pty = { workspace = true }
+# The gate's observer connection: the assertions the SCREEN cannot make (how big the
+# pane's pty is, whether the daemon still counts the client) are asked over the wire.
+sprag-rpc = { workspace = true }
+# ...and the JSON those queries are spelled in.
+serde_json = { workspace = true }

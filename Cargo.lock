@@ -3736,9 +3736,13 @@ name = "sprag-tui"
 version = "0.0.1"
 dependencies = [
  "pinion-core",
+ "portable-pty",
+ "serde_json",
  "sprag-client",
  "sprag-grid",
  "sprag-host",
+ "sprag-input",
+ "sprag-rpc",
  "sprag-terminal",
  "sprag-vt",
  "termwiz",

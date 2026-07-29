@@ -13,8 +13,13 @@
 //! in. The first half is [`sprag_client`] and is shared verbatim with the GUI — the same
 //! [`WireHost`](sprag_client::WireHost), the same [`HostClient`](sprag_host::HostClient) protocol,
 //! the same addresses. This crate is only the second half, and it is deliberately small:
-//! [`grid_changes`] turns cells into [`Change`](termwiz::surface::Change)s, and a binary owns a
-//! terminal to write them to.
+//! [`grid_changes`] turns cells into [`Change`](termwiz::surface::Change)s, [`wire_key`] turns this
+//! terminal's keystrokes back into the names the wire carries, and a binary owns a terminal to do
+//! both against.
+//!
+//! Those two functions are inverses of each other in spirit — one carries a pane's output OUT to a
+//! screen, the other carries a user's input IN to a pane — and they are the whole of what a
+//! terminal frontend adds to a client that already knows how to talk to a host.
 //!
 //! That split is the reason `sprag-client` was extracted before any of this was written. A
 //! terminal client that re-spelled the wire would be a second definition of an ABI whose whole
@@ -28,6 +33,8 @@
 //! a GPU stack today" is not a property, it is a coincidence. The same gate guards
 //! [`sprag_client`], and both are needed — a dependency added HERE would never reach that one.
 
+mod key;
 mod paint;
 
+pub use key::{WireKey, wire_key};
 pub use paint::{cell_attributes, grid_changes};
