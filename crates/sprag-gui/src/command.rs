@@ -1188,7 +1188,7 @@ mod tests {
     fn a_config_report_names_its_file_exactly_once() {
         let slots = slots_with_configs(
             Some(Err(broken_project_report())),
-            Some(Err(sprag_host::ConfigError(
+            Some(Err(sprag_host::ConfigError::Content(
                 sprag_host::ProjectError::Malformed("expected `]` at line 1".to_owned()),
             )
             .to_string())),

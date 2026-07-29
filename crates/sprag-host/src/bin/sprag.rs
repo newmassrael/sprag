@@ -39,9 +39,12 @@
 //! sprag send-keys [-t SESSION] PANE [-l] KEY…     send W3C key names (or, with -l, literal text)
 //! sprag capture-pane [-t SESSION] PANE [-p]       print a pane's retained output to stdout
 //!
-//! sprag list-keys          print the client keymap `config.toml` produces (tmux list-keys).
-//!                          The ONE verb here that needs no daemon: a keybinding is a client's,
-//!                          not a server's, so it answers while nothing is running
+//! sprag list-keys                          print the client keymap `config.toml` produces
+//! sprag bind-key [-T prefix] KEY ACTION…   give a key a meaning (tmux bind-key)
+//! sprag unbind-key [-T prefix] KEY         take a key's meaning away (tmux unbind-key)
+//!                          The three verbs here that need NO DAEMON: a keybinding is a client's,
+//!                          not a server's, so they answer while nothing is running. Unlike
+//!                          tmux's, the two editing verbs WRITE `config.toml` — see [`bind_key`]
 //! ```
 //!
 //! ## Which commands take `-t`, and why the two answers differ
@@ -91,6 +94,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use serde_json::{Value, json};
+use sprag_host::keymap::{BoundAction, KeySpec};
 use sprag_host::wire::{
     BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, FULL_TEXT_SLOT, JOIN_PANE_ACTION, KEY_ACTION,
     KILL_SESSION_ACTION, KILL_WINDOW_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT,
@@ -138,6 +142,8 @@ fn run() -> io::Result<()> {
         Some("send-keys") => send_keys(args.collect()),
         Some("capture-pane") => capture_pane(args.collect()),
         Some("list-keys") => list_keys(args.collect()),
+        Some("bind-key") => bind_key(args.collect()),
+        Some("unbind-key") => unbind_key(args.collect()),
         Some("-h" | "--help" | "help") | None => {
             print_usage();
             Ok(())
@@ -305,6 +311,108 @@ fn list_keys(args: Vec<String>) -> io::Result<()> {
     Ok(())
 }
 
+/// The only key table sprag has, and tmux's own name for it.
+///
+/// Accepted as `-T prefix` so a tmux user's spelling works; anything else is refused BY NAME rather
+/// than ignored. `-T root` in particular is slice 4's — a binding with no prefix competes with the
+/// pane for every keystroke, and accepting the flag would promise arbitration nothing performs.
+const PREFIX_TABLE: &str = "prefix";
+
+/// `bind-key [-T prefix] KEY ACTION…`: give a key a meaning — tmux `bind-key`.
+///
+/// **This EDITS `config.toml`, which tmux's `bind-key` does not**, and the difference is the whole
+/// of slice 2's design. tmux's config is an imperative script that a runtime fact cannot be written
+/// back into, so its binds are transient and the user has to remember to write them down; sprag's
+/// is declarative TOML, so the file simply IS the live table. A client attached right now re-reads
+/// it, `list-keys` prints it, and the next attach still has it — one answer rather than three.
+///
+/// Like `list-keys`, it needs NO DAEMON: a keybinding is a client's, so binding one on a machine
+/// with nothing running is exactly as meaningful as binding it with a session up.
+///
+/// The ACTION is the rest of the line, JOINED — so both tmux's unquoted `bind-key c split-window
+/// -h` and a shell-quoted `bind-key c "split-window -h"` arrive as the same string, which is the
+/// one `BoundAction` parses.
+fn bind_key(args: Vec<String>) -> io::Result<()> {
+    let mut rest = strip_key_table("bind-key", args)?.into_iter();
+    let key = rest.next().ok_or_else(|| {
+        bad_input("bind-key: needs a key and an action, e.g. `bind-key c \"split-window -h\"`")
+    })?;
+    let action = rest.collect::<Vec<String>>().join(" ");
+    if action.is_empty() {
+        return Err(bad_input(&format!(
+            "bind-key: {key:?} needs an action (there are: detach-client, send-prefix, \
+             split-window -h|-v [-b], select-pane -t :.+)"
+        )));
+    }
+    // Parsed HERE, so a typo in an argument is reported as one. Rendering it through
+    // `ConfigError` would prefix the message with `config.toml` and send the user to fix a file
+    // that is fine.
+    let key = KeySpec::parse(&key).map_err(|error| bad_input(&format!("bind-key: {error}")))?;
+    let action =
+        BoundAction::parse(&action).map_err(|error| bad_input(&format!("bind-key: {error}")))?;
+    let path = sprag_host::config::bind_key(&key, action).map_err(|error| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("bind-key: {error}"))
+    })?;
+    // Named on stderr because it is the SURPRISING half: a tmux user expects a runtime bind to
+    // vanish, and one that has quietly been written to a file they maintain deserves to be told
+    // where. stdout stays empty so a script can pipe this without filtering.
+    eprintln!("sprag: bound in {}", path.display());
+    Ok(())
+}
+
+/// `unbind-key [-T prefix] KEY`: take a key's meaning away — tmux `unbind-key`.
+///
+/// Removes the user's own binding, and — only when the DEFAULT keymap binds the key — records an
+/// `[[unbind]]` so the default stays suppressed. See [`sprag_host::config::unbind_key`] for why
+/// that condition is load-bearing rather than tidiness.
+fn unbind_key(args: Vec<String>) -> io::Result<()> {
+    let mut rest = strip_key_table("unbind-key", args)?.into_iter();
+    let key = rest
+        .next()
+        .ok_or_else(|| bad_input("unbind-key: needs a key, e.g. `unbind-key o`"))?;
+    if let Some(extra) = rest.next() {
+        return Err(bad_input(&format!(
+            "unbind-key: unexpected argument {extra:?} (it takes one key)"
+        )));
+    }
+    let key = KeySpec::parse(&key).map_err(|error| bad_input(&format!("unbind-key: {error}")))?;
+    let path = sprag_host::config::unbind_key(&key).map_err(|error| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("unbind-key: {error}"))
+    })?;
+    eprintln!("sprag: unbound in {}", path.display());
+    Ok(())
+}
+
+/// Strip a leading `-T TABLE` from `args`, refusing any table but [`PREFIX_TABLE`].
+///
+/// The table itself is not returned, because with exactly one of them the flag carries no
+/// information — it is a spelling a tmux user's fingers produce, and what this has to do is make
+/// that spelling work while refusing the one (`-T root`) that would promise slice 4's arbitration.
+fn strip_key_table(verb: &str, args: Vec<String>) -> io::Result<Vec<String>> {
+    let mut rest = args.into_iter();
+    let Some(first) = rest.next() else {
+        return Ok(Vec::new());
+    };
+    if first != "-T" {
+        return Ok(std::iter::once(first).chain(rest).collect());
+    }
+    let table = rest
+        .next()
+        .ok_or_else(|| bad_input(&format!("{verb}: -T needs a table name")))?;
+    if table != PREFIX_TABLE {
+        return Err(bad_input(&format!(
+            "{verb}: {table:?} is not a key table sprag has (there is one: {PREFIX_TABLE:?}); \
+             a binding with no prefix is not built"
+        )));
+    }
+    Ok(rest.collect())
+}
+
+/// An argument the CLI will not take, as the error every verb here reports.
+fn bad_input(message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, message.to_owned())
+}
+
 fn print_usage() {
     eprintln!(
         "usage: sprag <ls | list-clients [-t SESSION] | new [name]\n\
@@ -319,7 +427,8 @@ fn print_usage() {
          \x20             | kill-pane PANE\n\
          \x20             | resize-pane PANE -x COLS -y ROWS\n\
          \x20             | send-keys PANE [-l] KEY… | capture-pane PANE [-p]> [-t SESSION]\n\
-         \x20      sprag list-keys"
+         \x20      sprag <list-keys | bind-key [-T prefix] KEY ACTION…\n\
+         \x20             | unbind-key [-T prefix] KEY>"
     );
 }
 

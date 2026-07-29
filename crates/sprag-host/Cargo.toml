@@ -49,6 +49,10 @@ serde_json = { workspace = true }
 # it: the host is the one process that knows every pane's live cwd, so one parse serves the
 # CLI, every attached GUI and the MCP surface alike.
 toml = { workspace = true }
+# Edit the user's `config.toml` in place for `sprag bind-key` / `unbind-key` (crate::config). The
+# read path above deserializes into a struct, which is a one-way trip: it cannot put a binding back
+# without discarding every comment the user wrote around it.
+toml_edit = { workspace = true }
 # serde derive for the wire DTOs (PaneScrollFacts + the pane cells-frame). The
 # GridBuffer's own serde comes from pinion-core; this is for sprag's frame types.
 serde = { workspace = true }

@@ -2015,3 +2015,126 @@ fn list_keys_refuses_a_broken_config_and_names_it() {
         run.stderr,
     );
 }
+
+/// The text `config` currently holds, for the editing verbs' tests.
+fn config_text(config: &ConfigHome) -> String {
+    std::fs::read_to_string(std::path::Path::new(config.as_str()).join("sprag/config.toml"))
+        .expect("the config file")
+}
+
+/// **`bind-key` and `unbind-key` need NO DAEMON either, and they WRITE the file.**
+///
+/// The write is the whole of slice 2's design and the one thing tmux's `bind-key` does not do:
+/// tmux's config is an imperative script a runtime fact cannot be written back into, so its binds
+/// are transient and the user has to remember to record them. sprag's is declarative TOML, so the
+/// file simply IS the live table — which it also has to be, because `list-keys` reads that file
+/// with no server and a binding living anywhere else would make it print a table nobody uses.
+///
+/// Asserted through `list-keys` rather than by reading the file, because the claim is about what a
+/// CLIENT would do, and `list-keys` is the same reader a client uses.
+///
+/// REVERT-PROOF for the no-daemon claim: route either verb through `connect()` and it fails against
+/// this never-bound socket — a user could not bind a key while no session was running, which is
+/// exactly when they are setting one up.
+#[test]
+fn bind_key_writes_the_users_config_with_no_daemon() {
+    let config = ConfigHome::new("# mine\n[[command]]\nname = \"top\"\nrun = [\"htop\"]\n");
+    let absent = socket_path();
+    assert!(!absent.exists(), "the socket was never bound");
+    let env = [("XDG_CONFIG_HOME", config.as_str())];
+
+    // tmux's own unquoted spelling: the action is the rest of the line.
+    let run = sprag_env(&absent, &["bind-key", "c", "split-window", "-h"], &env);
+    assert!(run.ok, "no daemon is not an error: {}", run.stderr);
+    assert!(
+        run.stdout.is_empty(),
+        "stdout stays clean for a script: {:?}",
+        run.stdout
+    );
+
+    let run = sprag_env(&absent, &["unbind-key", "o"], &env);
+    assert!(run.ok, "{}", run.stderr);
+
+    let listed = sprag_env(&absent, &["list-keys"], &env);
+    assert!(listed.ok, "{}", listed.stderr);
+    let binds: Vec<String> = listed
+        .stdout
+        .lines()
+        .skip(1)
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect();
+    assert!(
+        binds.contains(&"bind-key -T prefix c split-window -h".to_owned()),
+        "the bound key is in the table a client would read: {binds:?}",
+    );
+    assert!(
+        !binds.iter().any(|line| line.contains(" o ")),
+        "and the unbound default is gone: {binds:?}",
+    );
+    // The user's own file is still theirs.
+    let text = config_text(&config);
+    assert!(text.contains("# mine"), "the comment survived: {text:?}");
+    assert!(text.contains("[[command]]"), "and the commands: {text:?}");
+}
+
+/// A key or action the USER TYPED is reported as an argument, naming NO file — while a broken FILE
+/// still names `config.toml`. Both messages exist to send someone to the right place, and a
+/// `config.toml:` prefix on a command-line typo sends them to a file that is fine.
+///
+/// REVERT-PROOF: parse the argument inside `config::bind_key` and render the failure through
+/// `ConfigError`, and the first assertion's `config.toml` check fires.
+#[test]
+fn a_mistyped_argument_names_no_file_and_a_broken_file_still_does() {
+    let config = ConfigHome::new("");
+    let env = [("XDG_CONFIG_HOME", config.as_str())];
+    let run = sprag_env(&socket_path(), &["bind-key", "Up", "detach-client"], &env);
+    assert!(!run.ok, "a key nothing can produce is refused");
+    assert!(
+        run.stderr.contains("is not a key") && !run.stderr.contains("config.toml"),
+        "the argument is the fault, not the file: {}",
+        run.stderr,
+    );
+    assert_eq!(config_text(&config), "", "and nothing was written");
+
+    let broken = ConfigHome::new("[[bind]]\nkey = \"x\"\naction = \"kill-server\"\n");
+    let run = sprag_env(
+        &socket_path(),
+        &["bind-key", "c", "detach-client"],
+        &[("XDG_CONFIG_HOME", broken.as_str())],
+    );
+    assert!(!run.ok, "an unusable file is refused");
+    assert!(
+        run.stderr.contains("config.toml"),
+        "the file IS the fault here: {}",
+        run.stderr,
+    );
+}
+
+/// `-T prefix` is accepted so a tmux user's spelling works; any other table is refused BY NAME.
+///
+/// `-T root` is the one that matters: a binding with no prefix competes with the pane for every
+/// keystroke, and accepting the flag would promise arbitration nothing performs. Refusing it names
+/// what sprag has instead of silently binding into the only table there is.
+#[test]
+fn only_the_prefix_key_table_is_accepted() {
+    let config = ConfigHome::new("");
+    let env = [("XDG_CONFIG_HOME", config.as_str())];
+    let run = sprag_env(
+        &socket_path(),
+        &["bind-key", "-T", "prefix", "c", "detach-client"],
+        &env,
+    );
+    assert!(run.ok, "tmux's own spelling works: {}", run.stderr);
+
+    let run = sprag_env(
+        &socket_path(),
+        &["bind-key", "-T", "root", "c", "detach-client"],
+        &env,
+    );
+    assert!(!run.ok, "the root table is not built");
+    assert!(
+        run.stderr.contains("root") && run.stderr.contains("prefix"),
+        "naming what was asked for and what exists: {}",
+        run.stderr,
+    );
+}

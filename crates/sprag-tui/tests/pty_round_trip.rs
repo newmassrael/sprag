@@ -1423,3 +1423,98 @@ fn a_prefix_declared_in_the_users_config_reaches_the_client() {
         settled(attached(&mut conn, &session), &0)
     });
 }
+
+/// Rewrite this config home's `config.toml`, for the runtime-rebind gate.
+impl ConfigHome {
+    fn path(&self) -> PathBuf {
+        self.0.join("sprag").join("config.toml")
+    }
+}
+
+/// Run the shipped `sprag` CLI against `config`, with NO socket — the editing key verbs need no
+/// daemon, which is half of what makes them a client's rather than a server's.
+fn sprag_keys(config: &ConfigHome, args: &[&str]) -> std::process::Output {
+    let out = Command::new(sprag_cli_bin())
+        .args(args)
+        .env("XDG_CONFIG_HOME", config.as_str())
+        .output()
+        .expect("run the sprag CLI");
+    assert!(
+        out.status.success(),
+        "sprag {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    out
+}
+
+/// **THE GATE for H2 slice 2: `sprag bind-key` reaches a client that is ALREADY RUNNING.**
+///
+/// Every unit test of this round drives the table directly, or drives a `KeymapFile` in-process.
+/// None of them can say whether the shipped client ever looks at the file again after it starts —
+/// which is the seam where "at runtime" can be entirely absent while everything stays green. Only
+/// the real binary, attached to a real daemon through a real pseudoterminal, with the real CLI
+/// editing the real file underneath it, can tell them apart.
+///
+/// Three claims, in the order that makes the middle one discriminating:
+///
+/// * **Before the bind, `prefix c` does NOTHING.** `c` is unbound, so the client swallows it — and
+///   the pane must not receive it either. Establishing this first is what stops the last claim
+///   passing for the wrong reason: a client that detached on any unbound key would satisfy it.
+/// * `sprag bind-key c detach-client` writes the file while the client holds the terminal.
+/// * **`prefix c` now detaches**, and the daemon's attached count falls. There is no reattach
+///   anywhere in this test.
+///
+/// REVERT-PROOF: make `refreshed` return the loaded table without calling `refresh` (i.e. read the
+/// config once at startup, as slice 1 did) and the third claim times out — the client keeps
+/// swallowing `c` forever while `sprag list-keys` prints it bound, which is exactly the divergence
+/// between the printed table and the live one that this design exists to make impossible.
+#[test]
+fn a_bind_key_run_while_attached_reaches_the_running_client() {
+    let config = ConfigHome::new("");
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client_with(
+        |sock, session| {
+            Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", config.as_str())])
+        },
+        &["cat"],
+    );
+
+    // Typed first, so everything after this is proven to act on a client that was WORKING.
+    tui.type_bytes(b"live");
+    wait_for("the client to be painting", || painted(&mut tui, "live"));
+
+    // `prefix c` with `c` unbound: swallowed by the client, and NOT delivered to the child.
+    tui.type_bytes(&[0x02]);
+    tui.type_bytes(b"c");
+    // A second, ordinary keystroke that DOES reach the pane, so the absence above is read from a
+    // screen that has since been repainted rather than from one that simply had not caught up.
+    tui.type_bytes(b"x");
+    wait_for("the following ordinary key to reach the pane", || {
+        painted(&mut tui, "livex")
+    });
+    assert!(
+        !pane_text(&mut conn, &session).contains('c'),
+        "an unbound command key must not be delivered to the child: {:?}",
+        pane_text(&mut conn, &session),
+    );
+
+    // The edit, by the shipped CLI, into the file the running client read at startup.
+    sprag_keys(&config, &["bind-key", "c", "detach-client"]);
+    assert!(
+        std::fs::read_to_string(config.path())
+            .expect("the CLI wrote it")
+            .contains("detach-client"),
+        "the file really changed",
+    );
+
+    // ...and the same two keystrokes now mean what the file says, with no reattach.
+    tui.type_bytes(&[0x02]);
+    tui.type_bytes(b"c");
+    let status = tui.wait();
+    assert!(
+        status.success(),
+        "the client detaches on the newly bound key, not {status:?}",
+    );
+    wait_for("the daemon to release the client", || {
+        settled(attached(&mut conn, &session), &0)
+    });
+}

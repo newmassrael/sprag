@@ -3674,6 +3674,7 @@ dependencies = [
  "sprag-terminal",
  "sprag-vt",
  "toml",
+ "toml_edit",
  "tracing",
  "tracing-subscriber",
 ]
@@ -4072,6 +4073,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 

@@ -132,6 +132,11 @@ regex = "1"
 # a human maintains without comments is a real defect; it also matches this repo's own
 # convention (Cargo.toml, mnemosyne.toml). Confined to sprag-host, which owns the policy.
 toml = "1"
+# EDITING the user's `config.toml` in place (`sprag bind-key` / `unbind-key`), which the
+# serialize-from-a-struct path above cannot do: a keymap edit lands in a file the user maintains
+# BY HAND, so their comments, ordering and unrelated tables have to survive it. Already in the
+# lock as a transitive dependency, so naming it directly adds no new crate to the graph.
+toml_edit = "0.25"
 
 # Grapheme-cluster segmentation (UAX#29) for DEC mode 2027 (grapheme
 # clustering): groups ZWJ emoji sequences, flags, and skin-tone / VS16

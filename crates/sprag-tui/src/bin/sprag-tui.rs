@@ -31,6 +31,12 @@
 //! a config with a typo in it is a message a user has to be able to read, and the only screen that
 //! can show one is the one this client has not yet replaced.
 //!
+//! It is then re-read WHENEVER THE FILE MOVES ([`refreshed`]), which is what makes `sprag bind-key`
+//! a runtime command and hands `source-file` to anyone who edits their config in an editor. The
+//! file is the live table rather than some runtime copy of it, because `sprag list-keys` reads that
+//! file with no daemon — a binding living anywhere else would make that verb print a table nobody
+//! is using.
+//!
 //! Exact-modifier matching is what makes the table a table. The hardcoded version needed a rule of
 //! its own — "a command key with a modifier on it is a slip" — so that `Ctrl-D` could not detach and
 //! `Ctrl-O` could not move focus; a keymap gets that for free, because `Ctrl-D` is simply not the
@@ -128,7 +134,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     // a message the user has to read, and every later step either replaces the screen it would be
     // printed on or gives them something else to think about. It also costs one file read, so
     // there is nothing to gain by deferring it.
-    let keymap = sprag_host::config::keymap()?;
+    let mut keymap = sprag_host::config::KeymapFile::load()?;
     // This client OPENS the controlling terminal rather than letting termwiz do it, and keeps the
     // handle: the mouse modes have to be turned on and off as the panes' children ask for them
     // ([`MouseMirror`]), and `Terminal` offers no way to say so — `set_raw_mode` decides once, from
@@ -215,39 +221,45 @@ fn run() -> Result<(), Box<dyn Error>> {
         // `None` blocks until the terminal has something OR the waker fires — the select this
         // client's whole idle cost rests on.
         match screen.terminal().poll_input(None)? {
-            Some(InputEvent::Key(event)) => match command(&mut keys, &keymap, &event) {
-                Command::Act(BoundAction::DetachClient) => break,
-                Command::Swallow => {}
-                Command::ToPane(key) => {
-                    let mut scratch = [0u8; 4];
-                    send_key(&host, focus, key.name(&mut scratch), key.mods());
-                }
-                // The PREFIX, not the key that was pressed: a user who binds `send-prefix` to some
-                // other key means that key to send the prefix, not to send itself.
-                Command::Act(BoundAction::SendPrefix) => {
-                    send_key(&host, focus, keymap.prefix().name(), keymap.prefix().mods());
-                }
-                // A split and a focus move both change what is on screen without the host
-                // necessarily waking this loop, so each repaints on the spot rather than waiting
-                // for a notification that may only arrive with the new shell's first prompt.
-                Command::Act(BoundAction::SplitWindow { dir, before }) => {
-                    if let Some(pane) = focus.and_then(|pane| host.split(pane, dir, before)) {
-                        // tmux puts a new pane in the foreground, and so does this: the user asked
-                        // for a shell and would otherwise have to ask again to reach it.
-                        set_focus(&host, &mut focus, Some(pane));
+            // The table is re-read HERE, and only here, because this is the one moment its answer
+            // is used: a repaint cannot change what a key means. Routed in a `let` before the match
+            // so the borrow the re-read takes ends before an arm reads the prefix back out.
+            Some(InputEvent::Key(event)) => {
+                match command(&mut keys, refreshed(&mut keymap), &event) {
+                    Command::Act(BoundAction::DetachClient) => break,
+                    Command::Swallow => {}
+                    Command::ToPane(key) => {
+                        let mut scratch = [0u8; 4];
+                        send_key(&host, focus, key.name(&mut scratch), key.mods());
                     }
-                    tiling = reconcile(&host, screen_area, &mut focus);
-                    mouse.follow(&host, &tiling);
-                    paint(&mut screen, &host, &tiling, focus, Clear::No)?;
+                    // The PREFIX, not the key that was pressed: a user who binds `send-prefix` to some
+                    // other key means that key to send the prefix, not to send itself.
+                    Command::Act(BoundAction::SendPrefix) => {
+                        let prefix = keymap.keymap().prefix();
+                        send_key(&host, focus, prefix.name(), prefix.mods());
+                    }
+                    // A split and a focus move both change what is on screen without the host
+                    // necessarily waking this loop, so each repaints on the spot rather than waiting
+                    // for a notification that may only arrive with the new shell's first prompt.
+                    Command::Act(BoundAction::SplitWindow { dir, before }) => {
+                        if let Some(pane) = focus.and_then(|pane| host.split(pane, dir, before)) {
+                            // tmux puts a new pane in the foreground, and so does this: the user asked
+                            // for a shell and would otherwise have to ask again to reach it.
+                            set_focus(&host, &mut focus, Some(pane));
+                        }
+                        tiling = reconcile(&host, screen_area, &mut focus);
+                        mouse.follow(&host, &tiling);
+                        paint(&mut screen, &host, &tiling, focus, Clear::No)?;
+                    }
+                    Command::Act(BoundAction::SelectNextPane) => {
+                        let next = focus.and_then(|pane| tiling.next_after(pane));
+                        set_focus(&host, &mut focus, next.or_else(|| tiling.first_pane()));
+                        // Only the CURSOR moved, and it is painted from the tiling this loop already
+                        // holds — so the repaint is the whole point and the reconcile is not needed.
+                        paint(&mut screen, &host, &tiling, focus, Clear::No)?;
+                    }
                 }
-                Command::Act(BoundAction::SelectNextPane) => {
-                    let next = focus.and_then(|pane| tiling.next_after(pane));
-                    set_focus(&host, &mut focus, next.or_else(|| tiling.first_pane()));
-                    // Only the CURSOR moved, and it is painted from the tiling this loop already
-                    // holds — so the repaint is the whole point and the reconcile is not needed.
-                    paint(&mut screen, &host, &tiling, focus, Clear::No)?;
-                }
-            },
+            }
             // A bracketed paste arrives as ONE event rather than a key per character, and this arm
             // is REACHED: termwiz's `set_raw_mode` enables DEC private mode 2004 on the local
             // terminal, so a paste into this window comes back as `Paste` and would be silently
@@ -529,6 +541,30 @@ fn resize_pane(host: &WireHost, pane: PaneId, area: Rect) {
         return;
     }
     host.resize(pane, area.cols, area.rows, CELL_PX_UNKNOWN);
+}
+
+/// The user's keymap, re-read first if [`CONFIG_FILE`](sprag_host::CONFIG_FILE) has changed since
+/// it was last looked at.
+///
+/// **This is what makes `sprag bind-key` a RUNTIME command.** The file is the live table — it has
+/// to be, because `sprag list-keys` reads it with no daemon — so a client acts on an edit by
+/// noticing the file moved, and the same mechanism hands the user who edits their config in an
+/// EDITOR the reload tmux spells `source-file`, with nothing to invoke.
+///
+/// Called from the KEY arm alone, which is both the cheapest place and the only correct one: the
+/// table decides nothing else, so a check anywhere earlier would be work the answer never uses. The
+/// cost is one `metadata` call per keystroke, against a routing decision that follows it and a
+/// repaint that costs orders of magnitude more. **No timer, no thread, no watch** — the loop stays
+/// the pure `select` R226 measured.
+///
+/// A broken save keeps the last good table and is LOGGED, because the only screen this client could
+/// print on is the one it is painting a user's panes onto — and taking their bindings away over a
+/// typo in an editor would be a worse answer than carrying on with the table they had.
+fn refreshed(keymap: &mut sprag_host::config::KeymapFile) -> &Keymap {
+    if let Err(error) = keymap.refresh() {
+        tracing::warn!(target: "sprag_tui::keys", %error, "the edited config was not usable; keeping the loaded keymap");
+    }
+    keymap.keymap()
 }
 
 /// Where the next keystroke goes.
