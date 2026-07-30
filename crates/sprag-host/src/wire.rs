@@ -504,8 +504,22 @@ pub const RENAME_WINDOW_ACTION: &str = "rename_window";
 pub const KILL_WINDOW_ACTION: &str = "kill_window";
 
 /// The mux control external invoke action that PINS the size of a window of the SCOPED session
-/// (`{window?, cols?, rows?}`) — tmux `resize-window`. `window` absent ⇒ the current one; `cols`
-/// and `rows` together pin that size, and BOTH absent un-pins the window.
+/// (`{window?, cols?, rows?, adjust_cols?, adjust_rows?, from?}`) — tmux `resize-window`. `window`
+/// absent ⇒ the current one.
+///
+/// Four ways to NAME one rectangle, and exactly one of them per request:
+///
+/// * `cols` + `rows` — that rectangle (tmux `-x`/`-y`). Both or neither; half is refused.
+/// * `adjust_cols` / `adjust_rows` — SIGNED, relative to the window's current size (tmux
+///   `-L`/`-R`/`-U`/`-D`). Either alone leaves the other edge.
+/// * `from` — a `window-size` policy name to fold the attached clients under (tmux `-a`/`-A`).
+/// * none of them — un-pin.
+///
+/// The last three are DESCRIPTIONS, not rectangles, and the daemon resolves them
+/// (`sprag_host::window::SizeRequest`) because their inputs — the window's current size and the
+/// clients' reported areas — are facts only it holds. A caller reading those back to do the
+/// arithmetic itself would be a second geometry model in a client, which is the defect
+/// `sprag_host::window` exists to remove.
 ///
 /// It writes a stored fact and nothing else: whether the pinned size is what the panes are laid out
 /// over is the `window-size` option's answer ([`crate::options::WINDOW_SIZE`]), which the daemon

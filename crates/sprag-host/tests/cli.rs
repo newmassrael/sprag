@@ -1935,8 +1935,53 @@ fn the_cli_pins_a_window_size_and_reports_when_the_policy_ignores_it() {
     );
 }
 
-/// `resize-window`'s argument rules: both dimensions or neither, no zero, `-u` is exclusive, and an
-/// unknown window is named. Each refusal happens with nothing written.
+/// A RELATIVE resize reads the window's current size on the DAEMON side and answers the rectangle it
+/// produced — the one form a CLI could almost have computed for itself, and deliberately does not.
+///
+/// The direction convention is what a reader gets wrong, so it is asserted rather than described:
+/// each flag names an EDGE and pushes it, so `-R` widens and `-U` SHORTENS. A gate written to "up
+/// means taller" fails here.
+#[test]
+fn the_cli_resizes_a_window_relative_to_the_size_it_has() {
+    let config = ConfigHome::new("[options]\nwindow-size = \"manual\"\n");
+    let env = [("XDG_CONFIG_HOME", config.as_str())];
+    let (_host, sock) = spawn_host_env(&env);
+
+    sprag_env(
+        &sock,
+        &["resize-window", "-t", "0", "-x", "100", "-y", "30"],
+        &env,
+    );
+    let moved = sprag_env(
+        &sock,
+        &["resize-window", "-t", "0", "-R", "20", "-U", "5"],
+        &env,
+    );
+    assert!(moved.ok, "{}", moved.stderr);
+    assert!(
+        moved.stdout.contains("120x25"),
+        "the daemon answered the rectangle it worked out: {:?}",
+        moved.stdout,
+    );
+    assert!(
+        sprag(&sock, &["panes"]).stdout.contains("120x25"),
+        "and the panes took it: {:?}",
+        sprag(&sock, &["panes"]).stdout,
+    );
+
+    // The clamp: past the bottom is the smallest window, never a wrapped one.
+    let floored = sprag_env(&sock, &["resize-window", "-t", "0", "-L", "9999"], &env);
+    assert!(
+        floored.ok && floored.stdout.contains("1x25"),
+        "a huge narrowing saturates: {:?} {}",
+        floored.stdout,
+        floored.stderr,
+    );
+}
+
+/// `resize-window`'s argument rules: both dimensions or neither, no zero, the five spellings mutually
+/// exclusive, opposing edges on one axis refused, a relative count required, an unresolvable fold
+/// refused, and an unknown window named. Each refusal happens with nothing written.
 #[test]
 fn the_cli_refuses_a_half_window_a_zero_and_a_contradiction() {
     let (_host, sock) = spawn_host();
@@ -1955,18 +2000,6 @@ fn the_cli_refuses_a_half_window_a_zero_and_a_contradiction() {
         zero.stderr
     );
 
-    // -u means "no rectangle", so a rectangle alongside it is a contradiction rather than a
-    // precedence puzzle this verb gets to resolve silently.
-    let both = sprag(
-        &sock,
-        &["resize-window", "-t", "0", "-u", "-x", "80", "-y", "24"],
-    );
-    assert!(
-        !both.ok && both.stderr.contains("no dimensions"),
-        "{}",
-        both.stderr
-    );
-
     let ghost = sprag(
         &sock,
         &["resize-window", "-t", "0", "ghost", "-x", "80", "-y", "24"],
@@ -1975,6 +2008,81 @@ fn the_cli_refuses_a_half_window_a_zero_and_a_contradiction() {
         !ghost.ok && ghost.stderr.contains("ghost"),
         "{}",
         ghost.stderr
+    );
+
+    // The five spellings name ONE rectangle, so two of them is a caller who has not decided. Every
+    // pair is refused rather than ordered by a precedence rule the user never stated.
+    for pair in [
+        vec!["-x", "80", "-y", "24", "-A"],
+        vec!["-x", "80", "-y", "24", "-u"],
+        vec!["-A", "-R", "4"],
+        vec!["-u", "-R", "4"],
+    ] {
+        let mut args = vec!["resize-window", "-t", "0"];
+        args.extend(pair.iter().copied());
+        let mixed = sprag(&sock, &args);
+        assert!(
+            !mixed.ok && mixed.stderr.contains("five ways to name one size"),
+            "{pair:?}: {}",
+            mixed.stderr,
+        );
+    }
+
+    // `-a -A` is the one contradiction the mode count CANNOT see, because both spellings land in one
+    // slot — and this assertion is why it is caught at all: it first failed with the daemon's
+    // no-basis refusal, which is the shape of `-A` having silently won.
+    let folds = sprag(&sock, &["resize-window", "-t", "0", "-a", "-A"]);
+    assert!(
+        !folds.ok && folds.stderr.contains("opposite folds"),
+        "{}",
+        folds.stderr,
+    );
+
+    // Both directions on ONE axis is a contradiction, not a net movement: `-L 5 -R 3` could only be
+    // read as "2 narrower" by arithmetic nobody asked for.
+    for axis in [vec!["-L", "5", "-R", "3"], vec!["-U", "2", "-D", "9"]] {
+        let mut args = vec!["resize-window", "-t", "0"];
+        args.extend(axis.iter().copied());
+        let opposed = sprag(&sock, &args);
+        assert!(
+            !opposed.ok && opposed.stderr.contains("opposite ways"),
+            "{axis:?}: {}",
+            opposed.stderr,
+        );
+    }
+
+    // A call naming NOTHING is refused rather than read as `-u`: an empty command line has stated no
+    // intent, and treating it as an un-pin would throw a decision away.
+    let silent = sprag(&sock, &["resize-window", "-t", "0"]);
+    assert!(
+        !silent.ok && silent.stderr.contains("needs a size"),
+        "{}",
+        silent.stderr,
+    );
+
+    // A relative flag's count is REQUIRED and positive — the direction carries the sign, so there is
+    // no negative adjustment to spell and no default to guess (see the verb's docs on why sprag
+    // cannot copy tmux's bare `-U`).
+    let bare = sprag(&sock, &["resize-window", "-t", "0", "-R"]);
+    assert!(
+        !bare.ok && bare.stderr.contains("needs a column count"),
+        "{}",
+        bare.stderr
+    );
+    let nought = sprag(&sock, &["resize-window", "-t", "0", "-D", "0"]);
+    assert!(
+        !nought.ok && nought.stderr.contains("positive"),
+        "{}",
+        nought.stderr
+    );
+
+    // `-A` with no client that has reported an area names no rectangle. The refusal must NOT be read
+    // as "no size", which would un-pin the window the user was trying to resize.
+    let unfoldable = sprag(&sock, &["resize-window", "-t", "0", "-A"]);
+    assert!(
+        !unfoldable.ok && unfoldable.stderr.contains("reported an area"),
+        "{}",
+        unfoldable.stderr,
     );
 
     // A window command's -t is required, so a missing one is refused before any connection.

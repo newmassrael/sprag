@@ -59,7 +59,7 @@ use pinion_core::external::{
     ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError, RawJson,
     SchemaField,
 };
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use sprag_terminal::{
     CommandBuilder, KillOutcome, LayoutSnapshot, LayoutWire, PaneId, SessionInfo, SessionRegistry,
     SplitDir, SplitSide, SshRemote, WindowKillOutcome, Workspace,
@@ -70,6 +70,7 @@ use crate::bump_on_dirty;
 use crate::external::{as_object, lock, opt_dim, require_pane_id, rpc_external_impl};
 use crate::notify::ChannelRegistry;
 use crate::scope::SessionScope;
+use crate::window::{SizeRequest, WindowSize};
 
 // The mux control action names + query slots are the shared wire ABI vocabulary
 // ([`crate::wire`]) — the SAME consts a client addresses for pane lifecycle.
@@ -722,21 +723,37 @@ impl WorkspaceExternal {
         Ok(IntrospectValue::Json(Value::Null))
     }
 
-    /// `resize_window {window?, cols?, rows?}` action: PIN the size of a window of THIS request's
-    /// session, or un-pin it — tmux `resize-window`. `window` absent ⇒ the current one.
+    /// `resize_window {window?, cols?, rows?, adjust_cols?, adjust_rows?, from?}` action: PIN the
+    /// size of a window of THIS request's session, or un-pin it — tmux `resize-window`. `window`
+    /// absent ⇒ the current one.
     ///
-    /// Both dimensions together, or NEITHER. Both pin that size; neither un-pins the window and
-    /// hands it back to whichever policy derives one from the attached clients. HALF of a size is
-    /// refused rather than completed from somewhere, the rule `client/size` already follows: a
-    /// caller that sent one number has a bug worth naming, and a window whose height came from a
-    /// different decision than its width is a rectangle nobody chose.
+    /// The four spellings are [`SizeRequest`]'s, and every one of them is RESOLVED here rather than
+    /// by the caller, because three of them are descriptions that only become a rectangle against
+    /// facts this process holds — the window's current size and its clients' reported areas. A CLI
+    /// that read those back and did the arithmetic would be a second geometry model in a client,
+    /// which is the defect this module exists to remove.
+    ///
+    /// * `cols` + `rows` — exactly that (tmux `-x`/`-y`). Both together or NEITHER: HALF of a size is
+    ///   refused rather than completed from somewhere, the rule `client/size` already follows, since a
+    ///   window whose height came from a different decision than its width is a rectangle nobody
+    ///   chose.
+    /// * `adjust_cols` / `adjust_rows` — signed, relative to what the window currently IS (tmux
+    ///   `-L`/`-R`/`-U`/`-D`). Either alone is fine: an unnamed axis is not half a decision, it is
+    ///   "leave that edge".
+    /// * `from` — a [`WindowSize`] name to fold the clients under (tmux `-a`/`-A`). `manual` is
+    ///   refused here: it is the one policy that folds no clients, so as a SOURCE it names nothing.
+    /// * none of the above — un-pin.
+    ///
+    /// Mixing two spellings is refused. They are four ways to name one rectangle, so a request
+    /// carrying two is a caller that has not decided, and picking one for them silently is how a
+    /// resize ends up somewhere nobody asked for.
     ///
     /// It stores and announces; it resizes nothing itself. The panes follow through the invoke
     /// BOUNDARY's re-derivation, the same one a split and a client's attach go through, so a pinned
     /// window and a derived one reach the panes by ONE path.
     ///
     /// **The announce is NOT independently falsifiable, and measuring said so.** Removing it leaves
-    /// the whole PTY suite green, including the two tests written for this action — because the
+    /// the whole PTY suite green, including the tests written for this action — because the
     /// re-derivation resizes panes, a pane resize marks it dirty, and the dirty path bumps. That is
     /// R241's finding about `client/size` repeating one action along: the wake arrives either way, a
     /// reflow late, over a chain nobody states as a contract (it holds only while a window change
@@ -746,11 +763,32 @@ impl WorkspaceExternal {
     fn resize_window(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let map = as_object(args)?;
         let window = self.window_target(map)?.to_owned();
-        let size = match (opt_dim(map, "cols")?, opt_dim(map, "rows")?) {
-            (Some(cols), Some(rows)) => Some((cols, rows)),
-            (None, None) => None,
-            _ => return Err(InvokeError::TypeMismatch),
-        };
+        let request = size_request(map)?;
+        // The reports FIRST and off the registry lock, then the pin under it — attachments before
+        // registry, never nested, the lock order `retile` keeps so neither path can invert the other.
+        let reports = self.client_areas();
+        let pinned = lock(&self.registry)
+            .window(self.scope.session(), &window)
+            .and_then(sprag_terminal::Window::manual_size)
+            .map(|(cols, rows)| ClientSize { cols, rows });
+        // What a relative request moves: what the window IS — the same derivation every client reads,
+        // so "wider" means wider than what is on their screen — falling back to the PIN when the
+        // window has no derived size at all.
+        //
+        // The fallback is not a guess. With a pin stored under a policy that does not read it and no
+        // client attached, the arbitration honestly answers "no window", and yet the pin is the one
+        // rectangle anybody has declared for this window; refusing to move it would make
+        // `resize-window -x 100 -y 30` followed by `resize-window -R 20` fail on a detached session,
+        // which is the plainest use there is. Under `manual` the two are the same value anyway.
+        let current =
+            crate::window::arbitrate(crate::config::window_size(), &reports, pinned).or(pinned);
+        let size = request
+            .resolve(current, &reports)
+            .map_err(|error| {
+                tracing::debug!(target: "sprag_host", %error, "refused to resize a window");
+                InvokeError::Rejected
+            })?
+            .map(|size| (size.cols, size.rows));
         lock(&self.registry)
             .resize_window(self.scope.session(), &window, size)
             .map_err(|error| {
@@ -758,7 +796,24 @@ impl WorkspaceExternal {
                 InvokeError::Rejected
             })?;
         self.announce();
-        Ok(IntrospectValue::Json(Value::Null))
+        // ANSWER with the rectangle that was pinned, `null` for an un-pin. Three of the four
+        // spellings are descriptions the caller cannot resolve — that is why they are resolved here —
+        // so a caller told only "accepted" would have to guess what it had asked for, or read the
+        // window back and race the next change. The resolver knows; it says.
+        Ok(IntrospectValue::Json(match size {
+            Some((cols, rows)) => json!({ "cols": cols, "rows": rows }),
+            None => Value::Null,
+        }))
+    }
+
+    /// The cell areas this request's session's clients have reported — the arbitration's inputs, or
+    /// empty for a host that tracks no wire clients (the in-process one, which has a single surface
+    /// and never needed arbitrating).
+    fn client_areas(&self) -> Vec<ClientSize> {
+        self.attachments
+            .as_ref()
+            .map(|attachments| lock(attachments).sizes(self.scope.session()))
+            .unwrap_or_default()
     }
 
     /// `break_pane {pane, name?}` action: move a pane out of its window into a NEW window of THIS
@@ -1342,6 +1397,62 @@ fn build_command(argv: &[Value]) -> Result<(CommandBuilder, String), InvokeError
         *program,
         rest.iter().copied(),
     ))
+}
+
+/// Read a [`SizeRequest`] out of a `resize_window` action's args — the ONE place the four spellings
+/// are told apart.
+///
+/// Exactly one spelling, or none (which is [`SizeRequest::Clear`]). Two is refused rather than
+/// ordered by precedence: they are four ways to name one rectangle, so a caller sending two has not
+/// decided, and a precedence rule would resolve that silently into a size nobody asked for.
+fn size_request(map: &Map<String, Value>) -> Result<SizeRequest, InvokeError> {
+    let exact = match (opt_dim(map, "cols")?, opt_dim(map, "rows")?) {
+        (Some(cols), Some(rows)) => Some(ClientSize { cols, rows }),
+        (None, None) => None,
+        // Half a rectangle. Refused whole, never completed from the other decision's numbers.
+        _ => return Err(InvokeError::TypeMismatch),
+    };
+    let adjust = match (
+        opt_delta(map, "adjust_cols")?,
+        opt_delta(map, "adjust_rows")?,
+    ) {
+        (None, None) => None,
+        // An unnamed axis is not half a decision: it is "leave that edge where it is".
+        (cols, rows) => Some(SizeRequest::Adjust {
+            cols: cols.unwrap_or(0),
+            rows: rows.unwrap_or(0),
+        }),
+    };
+    let from = match map.get("from") {
+        None => None,
+        Some(Value::String(name)) => match WindowSize::parse(name) {
+            // `manual` reads a stored size rather than folding clients, so as a SOURCE for a new
+            // stored size it names nothing — a request to pin the window to whatever it is pinned to.
+            Some(WindowSize::Manual) | None => return Err(InvokeError::TypeMismatch),
+            Some(policy) => Some(policy),
+        },
+        Some(_) => return Err(InvokeError::TypeMismatch),
+    };
+    match (exact, adjust, from) {
+        (None, None, None) => Ok(SizeRequest::Clear),
+        (Some(size), None, None) => Ok(SizeRequest::Exact(size)),
+        (None, Some(adjust), None) => Ok(adjust),
+        (None, None, Some(policy)) => Ok(SizeRequest::Clients(policy)),
+        _ => Err(InvokeError::TypeMismatch),
+    }
+}
+
+/// A SIGNED cell delta from an action's args — [`opt_dim`]'s counterpart for a relative resize,
+/// where zero and negative are both meaningful and only an out-of-range magnitude is a bug.
+fn opt_delta(map: &Map<String, Value>, key: &str) -> Result<Option<i32>, InvokeError> {
+    match map.get(key) {
+        None => Ok(None),
+        Some(value) => value
+            .as_i64()
+            .and_then(|n| i32::try_from(n).ok())
+            .map(Some)
+            .ok_or(InvokeError::TypeMismatch),
+    }
 }
 
 #[cfg(test)]
@@ -2983,6 +3094,63 @@ mod tests {
                 {"name": "logs", "current": true},
             ]),
         );
+    }
+
+    /// `resize_window`'s ACTION-level argument rules, which no CLI test can reach: the `sprag` verb
+    /// refuses these combinations before they ever cross the wire, so without this the guard is
+    /// unfalsifiable — and the wire is a public surface a GUI or an agent addresses directly.
+    ///
+    /// Measured: replacing the exclusivity arm with a precedence order left the whole suite green.
+    #[test]
+    fn resize_window_refuses_two_spellings_of_one_rectangle() {
+        let reg = registry();
+        let (mut ext, _r) = control(&reg); // scope window "0"
+
+        // The four legal spellings, so the refusals below are about MIXING rather than about any one
+        // of them being unreadable. `from` folds no clients here (none are attached), so it refuses
+        // for its own honest reason — which is itself the distinction that keeps an unresolvable
+        // request from silently becoming an un-pin.
+        assert_eq!(
+            ext.invoke(
+                RESIZE_WINDOW_ACTION,
+                IntrospectValue::Json(json!({"cols": 100, "rows": 30})),
+            ),
+            Ok(IntrospectValue::Json(json!({"cols": 100, "rows": 30}))),
+            "an exact rectangle is answered with itself",
+        );
+        assert_eq!(
+            ext.invoke(
+                RESIZE_WINDOW_ACTION,
+                IntrospectValue::Json(json!({"adjust_cols": -20})),
+            ),
+            Ok(IntrospectValue::Json(json!({"cols": 80, "rows": 30}))),
+            "a relative request moves the pin and leaves the unnamed axis",
+        );
+        assert_eq!(
+            ext.invoke(RESIZE_WINDOW_ACTION, IntrospectValue::Json(json!({}))),
+            Ok(IntrospectValue::Json(Value::Null)),
+            "nothing named is an un-pin, answered as `null`",
+        );
+
+        for args in [
+            json!({"cols": 80, "rows": 24, "adjust_cols": 4}),
+            json!({"cols": 80, "rows": 24, "from": "largest"}),
+            json!({"adjust_rows": 2, "from": "smallest"}),
+            // Half a rectangle, which is its own rule rather than a mixing one.
+            json!({"cols": 80}),
+            json!({"rows": 24}),
+            // `manual` folds no clients, so as a SOURCE it names nothing.
+            json!({"from": "manual"}),
+            json!({"from": "nonsense"}),
+            json!({"from": 7}),
+            json!({"adjust_cols": "wide"}),
+        ] {
+            assert_eq!(
+                ext.invoke(RESIZE_WINDOW_ACTION, IntrospectValue::Json(args.clone())),
+                Err(InvokeError::TypeMismatch),
+                "{args} must be refused",
+            );
+        }
     }
 
     /// Killing a NON-last window over the wire removes it, keeps the current window valid, and

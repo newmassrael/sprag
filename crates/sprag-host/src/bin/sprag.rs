@@ -29,12 +29,14 @@
 //! sprag select-window -t SESSION NAME     make NAME the session's current window
 //! sprag rename-window -t SESSION [win] NEW rename a window (default: the current one) to NEW
 //! sprag kill-window -t SESSION [win]      kill a window (default: the current one); the last ends the session
-//! sprag resize-window -t SESSION [win] -x COLS -y ROWS | -u
+//! sprag resize-window -t SESSION [win] <-x COLS -y ROWS | -a | -A | -L/-R/-U/-D N | -u>
 //!                                         PIN a window's size so it stops following the clients
-//!                                         attached to it, or -u to un-pin it (tmux
-//!                                         resize-window). Takes effect while `window-size` is
-//!                                         `manual`; the size is stored either way and survives a
-//!                                         reboot
+//!                                         attached to it (tmux resize-window). -x/-y an exact
+//!                                         size; -a/-A the smallest/largest attached client;
+//!                                         -L/-R narrower/wider and -U/-D shorter/taller by N
+//!                                         (relative to the size it has now); -u un-pins it.
+//!                                         Takes effect while `window-size` is `manual`; the size
+//!                                         is stored either way and survives a reboot
 //!
 //! sprag panes [-t SESSION]                        list the current window's panes (tmux list-panes)
 //! sprag split-window [-t SESSION] [-h|-v [-b] PANE] [-- command…]
@@ -632,7 +634,8 @@ fn print_usage() {
          \x20             | kill-session NAME | kill-server [--purge]>\n\
          \x20      sprag <windows | new-window [name] | select-window NAME\n\
          \x20             | rename-window [window] NAME | kill-window [window]\n\
-         \x20             | resize-window [window] <-x COLS -y ROWS | -u>\n\
+         \x20             | resize-window [window]\n\
+         \x20                 <-x COLS -y ROWS | -a | -A | -L/-R/-U/-D N | -u>\n\
          \x20             | break-pane PANE [name] | join-pane PANE WINDOW> -t SESSION\n\
          \x20      sprag <panes | split-window [-h|-v [-b] PANE] [-- command…]\n\
          \x20             | kill-pane PANE\n\
@@ -2196,22 +2199,40 @@ fn kill_window(args: Vec<String>) -> io::Result<()> {
     }
 }
 
-/// `resize-window -t SESSION [window] {-x COLS -y ROWS | -u}`: PIN a window's size, or un-pin it —
-/// tmux `resize-window`. Default window: the current one.
+/// `resize-window -t SESSION [window] {-x COLS -y ROWS | -a | -A | -L/-R/-U/-D N | -u}`: PIN a
+/// window's size, or un-pin it — tmux `resize-window`. Default window: the current one.
 ///
-/// BOTH dimensions or NEITHER, for the reason [`resize_pane`] gives and one more. There, "the other
-/// one, unchanged" could not be supplied honestly because reading a pane's size back would race a
-/// client resizing it. Here the stored size has exactly one writer — this verb — so no race, and the
-/// answer is still no: a window is a rectangle somebody chose, and completing half of one from what
-/// happens to be pinned would produce a shape nobody decided on. `-u` is the explicit way to say
-/// "no rectangle at all", spelled as `set-option -u` spells the same idea.
+/// Five ways to say it, exactly one per call:
 ///
-/// tmux's relative forms (`-U`/`-D`/`-L`/`-R` with an adjustment) and its `-a`/`-A` (take the
-/// smallest / largest client) are NOT offered, and the reason is one fact rather than a size
-/// preference: each would have to compute a new rectangle from a current one, and this CLI holds
-/// neither input. Reading them here and sending back a result is a SECOND arbitration living in a
-/// client — the defect this whole front has been removing. They belong in the action, where the
-/// stored size and the clients' reports both already are, and they are not built.
+/// * `-x COLS -y ROWS` — that rectangle. BOTH or neither: a window is a shape somebody chose, and
+///   completing half of one from whatever happens to be pinned would produce one nobody decided on.
+///   A zero is refused here, where it was typed.
+/// * `-a` / `-A` — the SMALLEST / LARGEST attached client, folded per dimension. What a user means by
+///   "pin what I have right now", without reading numbers off `list-clients` and typing them back.
+/// * `-L N` / `-R N` / `-U N` / `-D N` — relative. Each names an EDGE and how far to push it, so
+///   `-L`/`-U` SHRINK the window (the left edge moves right; the top edge moves down) and `-R`/`-D`
+///   grow it — `resize-pane`'s own convention, under tmux's flag names. Two axes may be named
+///   together (`-R 4 -U 2`); two directions on ONE axis is a contradiction and is refused.
+/// * `-u` — no rectangle at all. Spelled as `set-option -u` spells the same idea.
+///
+/// A call naming NOTHING is refused rather than treated as `-u`: an argument-less resize has named no
+/// intent, and reading it as "un-pin" would throw a decision away on an empty command line.
+///
+/// # Why the CLI computes none of them
+///
+/// The last three are DESCRIPTIONS, and they become a rectangle only against the window's current
+/// size and its clients' reported areas — facts the daemon holds. Reading those back to do the
+/// arithmetic here would put a SECOND geometry model in a client, which is the defect this front has
+/// spent three rounds removing. So the description crosses the wire and the ACTION resolves it
+/// (`sprag_host::window::SizeRequest`), which is also why this prints the rectangle the DAEMON
+/// answered rather than one computed locally — for `-a` and a relative form there is nothing to
+/// compute locally, and for `-x`/`-y` printing back the request would be a guess that happened to be
+/// right.
+///
+/// The adjustment is REQUIRED with its flag (`-U 2`, never a bare `-U`). tmux's bare form defaults to
+/// 1 and takes its count as a trailing positional, which sprag cannot copy: the window target here is
+/// a leading positional and window names are integers by default, so `resize-window -U 5` would be
+/// genuinely ambiguous between "5 shorter" and "window 5".
 ///
 /// # It pins; it does not switch to pinning
 ///
@@ -2227,68 +2248,149 @@ fn resize_window(args: Vec<String>) -> io::Result<()> {
     let mut window: Option<String> = None;
     let mut cols: Option<u64> = None;
     let mut rows: Option<u64> = None;
+    // One slot per DIRECTION rather than a running total, so `-L 5 -R 3` is caught as the
+    // contradiction it is instead of quietly becoming "2 narrower".
+    let mut edges: [Option<u64>; 4] = [None; 4];
+    const LEFT: usize = 0;
+    const RIGHT: usize = 1;
+    const UP: usize = 2;
+    const DOWN: usize = 3;
+    let mut from: Option<&'static str> = None;
     let mut unpin = false;
     let mut it = rest.into_iter();
     while let Some(arg) = it.next() {
-        let mut dimension = |name: &str, flag: &str| -> io::Result<u64> {
+        let mut count = |what: &str, flag: &str| -> io::Result<u64> {
             let value = it
                 .next()
-                .ok_or_else(|| bad(format!("resize-window: {flag} needs a {name} count")))?;
+                .ok_or_else(|| bad(format!("resize-window: {flag} needs a {what}")))?;
             match value.parse::<u64>() {
                 Ok(0) | Err(_) => Err(bad(format!(
-                    "resize-window: {flag} {value:?} is not a positive {name} count"
+                    "resize-window: {flag} {value:?} is not a positive {what}"
                 ))),
                 Ok(count) => Ok(count),
             }
         };
         match arg.as_str() {
-            "-x" | "--width" => cols = Some(dimension("column", "-x")?),
-            "-y" | "--height" => rows = Some(dimension("row", "-y")?),
+            "-x" | "--width" => cols = Some(count("column count", "-x")?),
+            "-y" | "--height" => rows = Some(count("row count", "-y")?),
+            "-L" => edges[LEFT] = Some(count("column count", "-L")?),
+            "-R" => edges[RIGHT] = Some(count("column count", "-R")?),
+            "-U" => edges[UP] = Some(count("row count", "-U")?),
+            "-D" => edges[DOWN] = Some(count("row count", "-D")?),
+            // Two folds are a contradiction, not a last-writer-wins: caught HERE rather than by the
+            // mode count below, because both spellings land in one slot and a second would otherwise
+            // overwrite the first in silence. A test found exactly that.
+            "-a" | "-A" if from.is_some() => {
+                return Err(bad(
+                    "resize-window: -a and -A name opposite folds — use one".to_owned(),
+                ));
+            }
+            "-a" => from = Some("smallest"),
+            "-A" => from = Some("largest"),
             "-u" | "--unset" => unpin = true,
             _ if window.is_none() => window = Some(arg),
             other => return Err(bad(format!("resize-window: unexpected argument {other:?}"))),
         }
     }
-    let size = match (unpin, cols, rows) {
-        (true, None, None) => None,
-        (true, _, _) => {
+    for (one, other, axis) in [(LEFT, RIGHT, "-L and -R"), (UP, DOWN, "-U and -D")] {
+        if edges[one].is_some() && edges[other].is_some() {
+            return Err(bad(format!(
+                "resize-window: {axis} move the same edge opposite ways — name one"
+            )));
+        }
+    }
+    let delta = |less: usize, more: usize| -> Option<i64> {
+        match (edges[less], edges[more]) {
+            (None, None) => None,
+            // A `u64` count reaches the wire as an `i32` delta; a count past that range is a typo,
+            // not a resize, and the clamp at the far end is the resolver's business, not this cast's.
+            (less, more) => Some(
+                i64::from(i32::try_from(more.unwrap_or(0)).unwrap_or(i32::MAX))
+                    - i64::from(i32::try_from(less.unwrap_or(0)).unwrap_or(i32::MAX)),
+            ),
+        }
+    };
+    let (adjust_cols, adjust_rows) = (delta(LEFT, RIGHT), delta(UP, DOWN));
+
+    // Exactly one spelling. Counted rather than matched, because five modes make a tuple match a wall
+    // of arms that all mean the same thing, and the message a user needs is the same one either way.
+    let named = [
+        (cols.is_some() || rows.is_some()) as u8,
+        (adjust_cols.is_some() || adjust_rows.is_some()) as u8,
+        from.is_some() as u8,
+        unpin as u8,
+    ];
+    match named.iter().sum::<u8>() {
+        0 => {
             return Err(bad(
-                "resize-window: -u un-pins the window, so it takes no dimensions".to_owned(),
+                "resize-window needs a size: -x COLS -y ROWS, -a, -A, -L/-R/-U/-D N, or -u to \
+                 un-pin"
+                    .to_owned(),
             ));
         }
-        (false, Some(cols), Some(rows)) => Some((cols, rows)),
-        (false, _, _) => {
+        1 => {}
+        _ => {
+            return Err(bad(
+                "resize-window: -x/-y, -a, -A, -L/-R/-U/-D and -u are five ways to name one size \
+                 — use one"
+                    .to_owned(),
+            ));
+        }
+    }
+    // Half a rectangle, checked after the mode so the message is about the dimensions rather than
+    // about mixing spellings.
+    if from.is_none() && adjust_cols.is_none() && adjust_rows.is_none() && !unpin {
+        let (Some(_), Some(_)) = (cols, rows) else {
             return Err(bad(
                 "resize-window needs both dimensions (-x COLS -y ROWS), or -u to un-pin".to_owned(),
             ));
-        }
-    };
+        };
+    }
+
     let mut conn = connect()?;
     require_session(&mut conn, &session)?;
     let mut action_args = json!({});
     if let Some(window) = &window {
         action_args["window"] = json!(window);
     }
-    if let Some((cols, rows)) = size {
+    if let (Some(cols), Some(rows)) = (cols, rows) {
         action_args["cols"] = json!(cols);
         action_args["rows"] = json!(rows);
     }
+    if let Some(delta) = adjust_cols {
+        action_args["adjust_cols"] = json!(delta);
+    }
+    if let Some(delta) = adjust_rows {
+        action_args["adjust_rows"] = json!(delta);
+    }
+    if let Some(policy) = from {
+        action_args["from"] = json!(policy);
+    }
     let target = window.as_deref().unwrap_or("the current window");
-    scoped_window_action(
+    let answer = scoped_window_action(
         &mut conn,
         &session,
         RESIZE_WINDOW_ACTION,
         action_args,
-        &format!("resize-window: no window named {target:?} in session {session:?}"),
+        // Two causes in one message, because the wire does not distinguish them — the same honesty
+        // `resize_pane` already practises. Named in the order a user can act on: the size is what
+        // they just typed, the window name is what they typed before it.
+        &format!(
+            "resize-window: could not resize {target} of session {session:?} — that size could not \
+             be worked out (-a/-A need an attached client that has reported an area; -L/-R/-U/-D \
+             need a window that already has one), or no window is named {target:?}"
+        ),
     )?;
-    match size {
-        Some((cols, rows)) => println!("pinned {target} to {cols}x{rows}"),
-        None => println!("un-pinned {target}"),
+    // What the DAEMON pinned, not what was asked for: the two differ for every spelling but -x/-y,
+    // and printing the request would be this CLI quietly claiming to have done the arithmetic.
+    match (answer["cols"].as_u64(), answer["rows"].as_u64()) {
+        (Some(cols), Some(rows)) => println!("pinned {target} to {cols}x{rows}"),
+        _ => println!("un-pinned {target}"),
     }
     // The gap between storing a size and USING one, named the moment it exists rather than left for
     // the user to discover as "I resized and nothing moved". Read from the user's file here, the way
     // every option verb reads it — the daemon was never asked what it thinks the policy is.
-    if size.is_some() {
+    if !unpin {
         let policy = sprag_host::config::window_size();
         if policy != sprag_host::WindowSize::Manual {
             eprintln!(
@@ -2310,12 +2412,11 @@ fn scoped_window_action(
     action: &str,
     action_args: Value,
     message: &str,
-) -> io::Result<()> {
+) -> io::Result<Value> {
     conn.call(
         "scene/invoke",
         json!({ "session": session, "path": mux_action_path(action), "args": action_args }),
     )
-    .map(|_: Value| ())
     .map_err(|error| {
         if error.kind() == io::ErrorKind::Other {
             io::Error::new(io::ErrorKind::NotFound, message.to_owned())

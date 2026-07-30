@@ -129,6 +129,110 @@ impl WindowSize {
     }
 }
 
+/// How a caller NAMES the rectangle `resize-window` is to pin — tmux's `resize-window` flags, as a
+/// type.
+///
+/// # Why this is resolved HERE and not in the caller
+///
+/// Three of these four are not rectangles; they are descriptions that become one only against facts
+/// this daemon holds — the window's CURRENT size and the areas its clients reported. A CLI that
+/// resolved them would have to read both back over the wire and do the arithmetic itself, which is a
+/// second geometry model in a client: exactly the defect this module was written to remove, arriving
+/// by the back door as a convenience. So the wire carries the DESCRIPTION and the daemon answers it.
+///
+/// That the descriptions reduce to [`arbitrate`] is the point rather than a saving:
+/// [`Clients`](Self::Clients) IS an arbitration, and [`Adjust`](Self::Adjust) moves whatever the
+/// arbitration currently says. Neither introduces geometry of its own.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SizeRequest {
+    /// Exactly this rectangle — tmux `-x`/`-y`.
+    Exact(ClientSize),
+    /// The window's CURRENT size moved by these signed amounts, per dimension — tmux's `-U`/`-D`
+    /// (rows) and `-L`/`-R` (columns), which name an EDGE and how far to push it.
+    ///
+    /// Relative to what the window currently IS, not to what it was pinned to, because that is what
+    /// the user can see: under a derived policy with nothing pinned, "a bit wider" means wider than
+    /// the rectangle on their screen. A window with no current size has nothing to be relative to,
+    /// and that is [`NoBasis`].
+    Adjust { cols: i32, rows: i32 },
+    /// Whatever the attached clients fold to under this policy — tmux's `-a` (smallest) and `-A`
+    /// (largest), which exist so a user can pin "what I have right now" without reading numbers off
+    /// `list-clients` and typing them back.
+    Clients(WindowSize),
+    /// No rectangle at all: un-pin the window and hand it back to whichever policy derives one.
+    Clear,
+}
+
+/// A [`SizeRequest`] that named no rectangle a caller could have meant: an [`Adjust`](SizeRequest::Adjust)
+/// with no current size to move, or a [`Clients`](SizeRequest::Clients) with no client reporting an area.
+///
+/// A distinct outcome from [`SizeRequest::Clear`] on purpose. Both could be spelled "no size", and
+/// collapsing them would make `resize-window -R 10` on a window nobody is watching silently UN-PIN
+/// it — the opposite of what was asked, which is the class of thing this front keeps finding.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct NoBasis;
+
+impl std::fmt::Display for NoBasis {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("this window has no size to resize: nothing is pinned and no client has reported an area")
+    }
+}
+
+impl std::error::Error for NoBasis {}
+
+/// The smallest window a resize may produce. One cell, not zero: a zero-column window is not a
+/// window, and [`tile`] already states what happens as a window shrinks past what its panes need —
+/// it DROPS panes rather than shrinking them past nothing, which is its rule and not a decision
+/// taken here.
+const MIN_WINDOW: u16 = 1;
+
+impl SizeRequest {
+    /// The rectangle this request names — `Ok(None)` to un-pin.
+    ///
+    /// `current` is the window's arbitrated size right now and `reports` the areas its clients gave;
+    /// both are the daemon's, which is the whole reason this resolution lives on this side of the
+    /// wire.
+    ///
+    /// # Clamping, and why the ABSOLUTE form refuses instead
+    ///
+    /// An [`Adjust`](Self::Adjust) saturates at one cell rather than failing, because it names a
+    /// DIRECTION and a distance: at the edge, the honest answer to "narrower" is the narrowest, which
+    /// is what a user holding a repeat key means. `-x 0` is a different act — a caller naming a
+    /// rectangle that does not exist — and it is refused at the CLI, where the value was typed.
+    ///
+    /// # Errors
+    ///
+    /// [`NoBasis`] when the description cannot be resolved: an adjustment with no current size, or a
+    /// client fold with no client reporting one.
+    pub fn resolve(
+        self,
+        current: Option<ClientSize>,
+        reports: &[ClientSize],
+    ) -> Result<Option<ClientSize>, NoBasis> {
+        match self {
+            Self::Clear => Ok(None),
+            Self::Exact(size) => Ok(Some(size)),
+            Self::Clients(policy) => arbitrate(policy, reports, None).map(Some).ok_or(NoBasis),
+            Self::Adjust { cols, rows } => {
+                let base = current.ok_or(NoBasis)?;
+                Ok(Some(ClientSize {
+                    cols: adjusted(base.cols, cols),
+                    rows: adjusted(base.rows, rows),
+                }))
+            }
+        }
+    }
+}
+
+/// One dimension moved by a signed amount and held at `MIN_WINDOW` — saturating at BOTH ends, so
+/// neither a huge adjustment nor a huge current size can wrap a `u16` into a window nobody asked for.
+fn adjusted(extent: u16, by: i32) -> u16 {
+    let moved = i64::from(extent) + i64::from(by);
+    u16::try_from(moved.clamp(i64::from(MIN_WINDOW), i64::from(u16::MAX)))
+        .unwrap_or(MIN_WINDOW)
+        .max(MIN_WINDOW)
+}
+
 /// The window `sizes` add up to under `policy`, or `None` when the question has no answer — which
 /// is `manual` with nothing pinned and no client reporting, or any other policy with no client
 /// reporting.
@@ -400,6 +504,103 @@ mod tests {
     #[test]
     fn default_is_latest_because_that_is_what_the_code_already_did() {
         assert_eq!(WindowSize::DEFAULT, WindowSize::Latest);
+    }
+
+    /// A relative request moves what the window IS, per dimension and independently, and an unnamed
+    /// axis stays put.
+    #[test]
+    fn an_adjustment_moves_the_current_size_one_axis_at_a_time() {
+        let now = Some(size(80, 24));
+        let go = |cols, rows| {
+            SizeRequest::Adjust { cols, rows }
+                .resolve(now, &[])
+                .expect("a current size is a basis")
+        };
+        assert_eq!(go(10, 0), Some(size(90, 24)), "wider, same height");
+        assert_eq!(go(0, -4), Some(size(80, 20)), "shorter, same width");
+        assert_eq!(go(-10, 6), Some(size(70, 30)), "both edges at once");
+        assert_eq!(go(0, 0), Some(size(80, 24)), "a zero adjustment is a no-op");
+    }
+
+    /// The clamp is at BOTH ends, and it saturates rather than wrapping — a `u16` that wrapped would
+    /// answer a huge window to a request for a smaller one.
+    #[test]
+    fn an_adjustment_saturates_instead_of_wrapping() {
+        let request = |cols, rows| SizeRequest::Adjust { cols, rows };
+        assert_eq!(
+            request(-1000, -1000).resolve(Some(size(80, 24)), &[]),
+            Ok(Some(size(MIN_WINDOW, MIN_WINDOW))),
+            "past the bottom is the smallest window, not a wrapped one"
+        );
+        assert_eq!(
+            request(i32::MAX, i32::MAX).resolve(Some(size(80, 24)), &[]),
+            Ok(Some(size(u16::MAX, u16::MAX))),
+            "past the top is the largest, not a wrapped one"
+        );
+        assert_eq!(
+            request(i32::MIN, i32::MIN).resolve(Some(size(u16::MAX, u16::MAX)), &[]),
+            Ok(Some(size(MIN_WINDOW, MIN_WINDOW))),
+            "the widest window shrunk by the most negative delta"
+        );
+    }
+
+    /// `-a` / `-A` ARE arbitrations: the request folds the clients through the same function a policy
+    /// does, so there is no second rule for "the largest client" to disagree with.
+    #[test]
+    fn a_client_fold_request_is_the_arbitration_itself() {
+        let clients = [size(80, 50), size(120, 24)];
+        for policy in [
+            WindowSize::Largest,
+            WindowSize::Smallest,
+            WindowSize::Latest,
+        ] {
+            assert_eq!(
+                SizeRequest::Clients(policy).resolve(Some(size(9, 9)), &clients),
+                Ok(arbitrate(policy, &clients, None)),
+                "{} as a SOURCE must answer exactly what it answers as a POLICY",
+                policy.name()
+            );
+        }
+        // ...and it ignores whatever the window currently is, which is what makes it a fold of the
+        // clients rather than an adjustment of the pin.
+        assert_eq!(
+            SizeRequest::Clients(WindowSize::Largest).resolve(None, &clients),
+            Ok(Some(size(120, 50)))
+        );
+    }
+
+    /// THE distinction that keeps a resize from becoming an un-pin: a request that cannot be resolved
+    /// is an ERROR, not "no size". Collapsing the two would make `resize-window -R 10` on a window
+    /// nobody is watching silently un-pin it.
+    #[test]
+    fn an_unresolvable_request_is_refused_and_is_not_a_clear() {
+        assert_eq!(
+            SizeRequest::Adjust { cols: 10, rows: 0 }.resolve(None, &[]),
+            Err(NoBasis),
+            "an adjustment with no current size has nothing to move"
+        );
+        assert_eq!(
+            SizeRequest::Clients(WindowSize::Largest).resolve(Some(size(80, 24)), &[]),
+            Err(NoBasis),
+            "a fold of no clients is not the window's current size either"
+        );
+        assert_eq!(
+            SizeRequest::Clear.resolve(None, &[]),
+            Ok(None),
+            "and the request that really does mean `no size` still says so"
+        );
+    }
+
+    /// An exact request is the one spelling that needs nothing from the daemon, and it must not pick
+    /// anything up from what happens to be around.
+    #[test]
+    fn an_exact_request_ignores_the_window_and_its_clients() {
+        let want = size(111, 33);
+        assert_eq!(
+            SizeRequest::Exact(want).resolve(Some(size(80, 24)), &[size(60, 20)]),
+            Ok(Some(want))
+        );
+        assert_eq!(SizeRequest::Exact(want).resolve(None, &[]), Ok(Some(want)));
     }
 
     #[test]

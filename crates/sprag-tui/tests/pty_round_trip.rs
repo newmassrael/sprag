@@ -61,7 +61,21 @@ use sprag_vt::{Emulator, InputModes, MouseProtocol, VtPort};
 /// Generous on purpose: it is a deadline for a HANG, not a guess at how long the work takes. Every
 /// wait returns the instant its condition holds, so raising this costs a passing run nothing and
 /// only buys a loaded machine room to finish.
-const DEADLINE: Duration = Duration::from_secs(15);
+///
+/// **15s was not generous, and it was measured rather than argued.** The slowest legitimate wait in
+/// this file is `a_click_in_the_second_pane_arrives_in_that_panes_own_columns`, which types an
+/// 88-character command into a pane's shell and waits for the echo: 9–13 seconds in ISOLATION, on a
+/// quiet machine, of a 15-second cap. It passed only because it happened to fit. Adding tests to this
+/// binary — which run in parallel — pushed it over, so a green suite turned amber for a reason that
+/// had nothing to do with what any of the tests assert.
+///
+/// The cost is in one place, and it is worth recording where: typed input is delivered at roughly
+/// **100–124ms per character** in bulk (measured with a throwaway probe: 1 char 222ms, 10 chars
+/// 384ms, 20 chars 2.1s, 40 chars 5.0s), so 88 keystrokes are ~8 of that test's ~10 seconds. That is
+/// a real property of the input path rather than of this harness, and it is the thing to fix; a
+/// deadline is not the place to hold the line on it. Until then this is set where a HANG is still
+/// caught promptly and a slow-but-working wait is not called a failure.
+const DEADLINE: Duration = Duration::from_secs(45);
 
 /// How often a condition is re-checked while waiting.
 const POLL: Duration = Duration::from_millis(20);
@@ -1978,5 +1992,286 @@ fn un_pinning_hands_the_window_back_to_the_attached_client() {
     sprag_on(&sock, &config, &["resize-window", "-t", &session, "-u"]);
     wait_for("the client's own area to become the window again", || {
         settled(pane_size(&mut conn, &session), &Some(MANUAL_CLIENT))
+    });
+}
+
+// ----- resize-window's DERIVED and RELATIVE forms -----
+
+/// The two clients the derived-form gate attaches. CROSSED — the wider one is the shorter one — so
+/// `-a` and `-A` each fold to a rectangle that is NEITHER client's own area, and a daemon that
+/// answered by picking a whole client is caught rather than accidentally right.
+const FOLD_FIRST: (u16, u16) = (100, 24);
+const FOLD_SECOND: (u16, u16) = (80, 30);
+
+/// **THE GATE for `resize-window -a` / `-A`**: the CLI names a rule and the DAEMON answers the
+/// rectangle.
+///
+/// This is the claim that made these forms worth building where they are built. `-A` over a 100x24
+/// and an 80x30 client is 100x30 — a rectangle NEITHER client reported — so it can only come from
+/// folding per dimension, which is `arbitrate`, which lives beside the reports. A CLI computing it
+/// would need both clients' areas over the wire and its own fold: a second geometry model, which is
+/// the defect this front spent three rounds removing.
+///
+/// The pin is then INDEPENDENT of the clients that produced it, which is the difference between
+/// `resize-window -A` and `window-size largest`: the second client resizes and the window does not
+/// follow it.
+fn resize_window_fold_case(flag: &str, want: (u16, u16)) {
+    let config = ConfigHome::new("[options]\nwindow-size = \"manual\"\n");
+    let (_daemon, sock) = spawn_daemon_with_config(&["cat"], Some(config.as_str()));
+    let mut conn = observe(&sock);
+    let session = boot_session(&mut conn);
+
+    let mut first = Tui::attach(&sock, &session);
+    wait_for("the first client", || match attached(&mut conn, &session) {
+        0 => Err("nobody".to_owned()),
+        _ => Ok(()),
+    });
+    first.resize(FOLD_FIRST.0, FOLD_FIRST.1);
+    let mut second = Tui::attach(&sock, &session);
+    wait_for("both clients", || match attached(&mut conn, &session) {
+        2 => Ok(()),
+        n => Err(format!("{n} attached")),
+    });
+    second.resize(FOLD_SECOND.0, FOLD_SECOND.1);
+    // Both reports have to have LANDED before a fold of them means anything.
+    wait_for("both areas to reach the daemon", || {
+        let listing = String::from_utf8_lossy(
+            &sprag_on(&sock, &config, &["list-clients", "-t", &session]).stdout,
+        )
+        .into_owned();
+        let ok = [FOLD_FIRST, FOLD_SECOND]
+            .iter()
+            .all(|(cols, rows)| listing.contains(&format!("[{cols}x{rows}]")));
+        if ok {
+            Ok(())
+        } else {
+            Err(format!("{listing:?}"))
+        }
+    });
+
+    // THE claim, and the CLI's own line is part of it: the daemon answers the rectangle, and the CLI
+    // prints what it was told rather than anything it worked out.
+    let printed = String::from_utf8_lossy(
+        &sprag_on(&sock, &config, &["resize-window", "-t", &session, flag]).stdout,
+    )
+    .into_owned();
+    assert!(
+        printed.contains(&format!("{}x{}", want.0, want.1)),
+        "sprag resize-window {flag} printed {printed:?}, not the {want:?} the fold gives"
+    );
+    wait_for(&format!("{flag} to pin {want:?}"), || {
+        settled(pane_size(&mut conn, &session), &Some(want))
+    });
+
+    // ...and the pin does not follow the clients it came FROM. That is the whole difference between
+    // this and setting the matching `window-size` policy, and a daemon that had merely switched
+    // policies would move here.
+    second.resize(FOLD_SECOND.0 - 10, FOLD_SECOND.1 - 5);
+    std::thread::sleep(Duration::from_millis(400));
+    assert_eq!(
+        pane_size(&mut conn, &session),
+        Some(want),
+        "the pin followed the client it was folded from"
+    );
+}
+
+#[test]
+fn resize_window_takes_the_largest_client_per_dimension() {
+    resize_window_fold_case(
+        "-A",
+        (
+            FOLD_FIRST.0.max(FOLD_SECOND.0),
+            FOLD_FIRST.1.max(FOLD_SECOND.1),
+        ),
+    );
+}
+
+#[test]
+fn resize_window_takes_the_smallest_client_per_dimension() {
+    resize_window_fold_case(
+        "-a",
+        (
+            FOLD_FIRST.0.min(FOLD_SECOND.0),
+            FOLD_FIRST.1.min(FOLD_SECOND.1),
+        ),
+    );
+}
+
+/// **A relative resize moves what the window IS, not what it was pinned to.**
+///
+/// The discriminating fixture is a window with NOTHING pinned under a DERIVED policy: the window is
+/// the attached client's area, so `-R`/`-D` must answer that plus the delta. A resolver that took its
+/// basis from the stored pin would have no basis at all here and refuse — which is exactly what it
+/// should do when there is no window either, and the test after this one holds that line.
+#[test]
+fn a_relative_resize_starts_from_the_window_the_clients_gave_it() {
+    // `latest`, not `manual` — so the basis can only be the DERIVED window.
+    let config = ConfigHome::new("[options]\nwindow-size = \"latest\"\n");
+    let (_daemon, sock) = spawn_daemon_with_config(&["cat"], Some(config.as_str()));
+    let mut conn = observe(&sock);
+    let session = boot_session(&mut conn);
+
+    let mut client = Tui::attach(&sock, &session);
+    wait_for("the client", || match attached(&mut conn, &session) {
+        0 => Err("nobody".to_owned()),
+        _ => Ok(()),
+    });
+    let base = (90, 28);
+    client.resize(base.0, base.1);
+    wait_for("the client's area to become the window", || {
+        settled(pane_size(&mut conn, &session), &Some(base))
+    });
+
+    let printed = String::from_utf8_lossy(
+        &sprag_on(
+            &sock,
+            &config,
+            &["resize-window", "-t", &session, "-R", "12", "-U", "6"],
+        )
+        .stdout,
+    )
+    .into_owned();
+    let want = (base.0 + 12, base.1 - 6);
+    assert!(
+        printed.contains(&format!("{}x{}", want.0, want.1)),
+        "printed {printed:?}: -R 12 -U 6 off a {base:?} window is {want:?} (-U SHORTENS)"
+    );
+
+    // The panes do not move, because the policy in force is not `manual` — the pin is stored and
+    // inert. Switching the policy is what makes the SAME stored rectangle live, with nothing re-sent.
+    assert_eq!(
+        pane_size(&mut conn, &session),
+        Some(base),
+        "a pin took effect under `latest`"
+    );
+    sprag_config(&config, &["set-option", "window-size", "manual"]);
+    // A mux action is what re-derives; a file write wakes nobody (R241).
+    sprag_on(
+        &sock,
+        &config,
+        &["resize-pane", "-t", &session, "0", "-x", "40", "-y", "10"],
+    );
+    wait_for("the stored rectangle to become the window", || {
+        settled(pane_size(&mut conn, &session), &Some(want))
+    });
+}
+
+/// **A description that cannot be resolved is REFUSED, and refusing is not un-pinning.**
+///
+/// The pair `-a` and `-R` with no basis: no client has reported an area and nothing is pinned, so
+/// neither names a rectangle. A resolver that answered "no size" for these would UN-PIN the window —
+/// the opposite of what was asked — so the pin standing afterwards is the assertion.
+#[test]
+fn an_unresolvable_resize_window_is_refused_and_leaves_the_pin_alone() {
+    let config = ConfigHome::new("[options]\nwindow-size = \"manual\"\n");
+    let (_daemon, sock) = spawn_daemon_with_config(&["cat"], Some(config.as_str()));
+    let mut conn = observe(&sock);
+    let session = boot_session(&mut conn);
+
+    let pinned = (77, 21);
+    sprag_on(
+        &sock,
+        &config,
+        &[
+            "resize-window",
+            "-t",
+            &session,
+            "-x",
+            &pinned.0.to_string(),
+            "-y",
+            &pinned.1.to_string(),
+        ],
+    );
+    wait_for("the pin", || {
+        settled(pane_size(&mut conn, &session), &Some(pinned))
+    });
+
+    // `-a` folds the clients, and there are none — a pinned window is not a substitute for a report.
+    let refused = Command::new(sprag_cli_bin())
+        .args(["resize-window", "-t", &session, "-a"])
+        .env("SPRAG_HOST_RPC_SOCK", &sock)
+        .env("XDG_CONFIG_HOME", config.as_str())
+        .output()
+        .expect("run the sprag CLI");
+    assert!(
+        !refused.status.success(),
+        "a fold of no clients was accepted: {}",
+        String::from_utf8_lossy(&refused.stdout)
+    );
+    assert_eq!(
+        pane_size(&mut conn, &session),
+        Some(pinned),
+        "a REFUSED resize un-pinned the window"
+    );
+}
+
+/// **The claim that stands in for tmux's per-WINDOW `window-size` option: it is already expressible.**
+///
+/// sprag has ONE global `window-size` value, where tmux's is a window option. That looks like a
+/// missing tier, and the reason it is not is a consequence of `manual`'s deferral rather than an
+/// argument — so it is measured here instead of asserted in a doc.
+///
+/// Under one global `manual`: a window with a pin holds it, and a SIBLING window with no pin defers
+/// to the default policy and follows the attached client. So "this window is fixed, that one follows
+/// my terminal" — the thing a per-window option would be for — is reachable today, per window,
+/// through the pin that is already per window.
+///
+/// Switching between them is what makes it observable, and it also exercises the path that would
+/// break if the pin were read off the wrong window: `select-window` re-derives at the action
+/// boundary, and each window must get ITS OWN answer.
+#[test]
+fn one_global_manual_still_gives_each_window_its_own_size() {
+    let config = ConfigHome::new("[options]\nwindow-size = \"manual\"\n");
+    let (_daemon, sock) = spawn_daemon_with_config(&["cat"], Some(config.as_str()));
+    let mut conn = observe(&sock);
+    let session = boot_session(&mut conn);
+
+    // Window "0" is current and gets a pin no client will ever report.
+    let pinned = (111, 33);
+    sprag_on(
+        &sock,
+        &config,
+        &[
+            "resize-window",
+            "-t",
+            &session,
+            "-x",
+            &pinned.0.to_string(),
+            "-y",
+            &pinned.1.to_string(),
+        ],
+    );
+    // A SECOND window, born current and un-pinned.
+    let born =
+        String::from_utf8_lossy(&sprag_on(&sock, &config, &["new-window", "-t", &session]).stdout)
+            .trim()
+            .to_owned();
+    assert_ne!(born, "0", "the new window has its own name: {born:?}");
+
+    let client = (60, 20);
+    let mut tui = Tui::attach(&sock, &session);
+    wait_for("the client", || match attached(&mut conn, &session) {
+        0 => Err("nobody".to_owned()),
+        _ => Ok(()),
+    });
+    tui.resize(client.0, client.1);
+
+    // The un-pinned window follows the client: `manual` with nothing pinned defers to the default
+    // policy, which is the decision this test is really about. Answering `None` instead would leave
+    // this window to whatever the client sized its own panes to, which is last round's defect.
+    wait_for("the un-pinned window to follow the client", || {
+        settled(pane_size(&mut conn, &session), &Some(client))
+    });
+
+    // ...and its PINNED sibling, under the very same global value, does not.
+    sprag_on(&sock, &config, &["select-window", "-t", &session, "0"]);
+    wait_for("the pinned window to keep its own size", || {
+        settled(pane_size(&mut conn, &session), &Some(pinned))
+    });
+
+    // Back again, so the two answers are not one lucky ordering.
+    sprag_on(&sock, &config, &["select-window", "-t", &session, &born]);
+    wait_for("the un-pinned window to follow the client again", || {
+        settled(pane_size(&mut conn, &session), &Some(client))
     });
 }
