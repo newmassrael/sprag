@@ -42,7 +42,7 @@
 //! sprag list-keys                          print the client keymap `config.toml` produces
 //! sprag bind-key [-T prefix] KEY ACTION…   give a key a meaning (tmux bind-key)
 //! sprag unbind-key [-T prefix] KEY         take a key's meaning away (tmux unbind-key)
-//! sprag show-options [-g]                  print every option and its value (tmux show-options)
+//! sprag show-options [-g] [-v] [NAME]      print the options and their values (tmux show-options)
 //! sprag set-option [-g] NAME VALUE         set one client option (tmux set-option)
 //! sprag set-option [-g] -u NAME            put one back to its default (tmux set-option -u)
 //!                          The verbs here that need NO DAEMON: a keybinding and a client option
@@ -402,26 +402,57 @@ fn unbind_key(args: Vec<String>) -> io::Result<()> {
 /// `-T root` and for the same reason.
 const GLOBAL_SCOPE: &str = "-g";
 
-/// `show-options [-g]`: print every option and the value in force — tmux `show-options`.
+/// `show-options [-g] [-v] [NAME]`: print the options and the values in force — tmux
+/// `show-options`, and with a NAME its `show-option` / herdr's singular.
 ///
 /// **Needs no daemon**, like `list-keys`, and for the same reason: every option here is what one
 /// CLIENT does with one attachment, so it lives in the user's config file rather than in the server.
 ///
-/// EVERY option is printed, set or not — which is the whole point of having a table. A user who does
-/// not already know an option's name cannot find it in a file that does not mention it, and tmux
-/// answers the same question the same way. The shape is tmux's (`name value`, sorted) so a script
-/// written against one reads the other.
+/// With no NAME, EVERY option is printed, set or not — which is the whole point of having a table. A
+/// user who does not already know an option's name cannot find it in a file that does not mention it,
+/// and tmux answers the same question the same way. The shape is tmux's (`name value`, sorted) so a
+/// script written against one reads the other.
+///
+/// `-v` prints the VALUE alone, which is what a script actually wants: `$(sprag show-options -v
+/// prefix)` needs no `cut`, and a value that never shares a line cannot be mis-split by one.
 fn show_options(args: Vec<String>) -> io::Result<()> {
-    let rest = strip_option_scope("show-options", args)?;
-    if let Some(unexpected) = rest.first() {
+    let (bare, rest) = strip_show_options_flags(args)?;
+    let mut rest = rest.into_iter();
+    let name = rest.next();
+    if let Some(extra) = rest.next() {
         return Err(bad_input(&format!(
-            "show-options: unexpected argument {unexpected:?} (it takes none, or {GLOBAL_SCOPE})"
+            "show-options: unexpected argument {extra:?} (it takes at most one option name)"
+        )));
+    }
+    // Refused rather than defaulted to "all values, one per line": `-v` exists so a caller can read
+    // ONE value without parsing, and answering it with a list would hand a script the very ambiguity
+    // the flag was asked for to remove.
+    if bare && name.is_none() {
+        return Err(bad_input(&format!(
+            "show-options: -v prints one option's value, so it needs a name (there are: {})",
+            sprag_host::options::names()
         )));
     }
     let options = sprag_host::config::options().map_err(|error| {
         io::Error::new(io::ErrorKind::InvalidData, format!("show-options: {error}"))
     })?;
-    for (name, value) in options.iter() {
+    let Some(name) = name else {
+        for (name, value) in options.iter() {
+            println!("{name} {value}");
+        }
+        return Ok(());
+    };
+    // Refused with the list, like `set-option`'s: a name-keyed table is only usable if a mistyped
+    // name answers with the real ones.
+    let value = options.get(&name).ok_or_else(|| {
+        bad_input(&format!(
+            "show-options: {}",
+            sprag_host::options::OptionError::Unknown(name.clone())
+        ))
+    })?;
+    if bare {
+        println!("{value}");
+    } else {
         println!("{name} {value}");
     }
     Ok(())
@@ -517,25 +548,32 @@ fn strip_set_option_flags(args: Vec<String>) -> io::Result<(bool, Vec<String>)> 
     Ok((unset, rest))
 }
 
-/// Strip a leading [`GLOBAL_SCOPE`] from `args` — the read verb's half of
-/// [`strip_set_option_flags`].
-fn strip_option_scope(verb: &str, args: Vec<String>) -> io::Result<Vec<String>> {
+/// Split `show-options`' flags off its positional argument: whether `-v` was given, and the rest.
+///
+/// The read verb's half of [`strip_set_option_flags`], with the same shape (flags until the first
+/// non-flag) and the same refusal of a scope that has no members.
+fn strip_show_options_flags(args: Vec<String>) -> io::Result<(bool, Vec<String>)> {
+    let mut bare = false;
+    let mut rest = Vec::new();
     let mut args = args.into_iter();
-    let Some(first) = args.next() else {
-        return Ok(Vec::new());
-    };
-    match first.as_str() {
-        GLOBAL_SCOPE => Ok(args.collect()),
-        "-w" | "-p" => Err(bad_input(&format!(
-            "{verb}: {first} names a per-window / per-pane option table, and sprag has one client \
-             table — only {GLOBAL_SCOPE} (or no flag) applies"
-        ))),
-        _ => {
-            let mut rest = vec![first];
-            rest.extend(args);
-            Ok(rest)
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            GLOBAL_SCOPE => {}
+            "-v" => bare = true,
+            "-w" | "-p" => {
+                return Err(bad_input(&format!(
+                    "show-options: {arg} names a per-window / per-pane option table, and sprag has \
+                     one client table — only {GLOBAL_SCOPE} (or no flag) applies"
+                )));
+            }
+            _ => {
+                rest.push(arg);
+                rest.extend(args);
+                break;
+            }
         }
     }
+    Ok((bare, rest))
 }
 
 /// Strip a leading `-T TABLE` from `args`, refusing any table but [`PREFIX_TABLE`].
@@ -584,7 +622,7 @@ fn print_usage() {
          \x20             | send-keys PANE [-l] KEY… | capture-pane PANE [-p]> [-t SESSION]\n\
          \x20      sprag <list-keys | bind-key [-T prefix] KEY ACTION…\n\
          \x20             | unbind-key [-T prefix] KEY>\n\
-         \x20      sprag <show-options | set-option [-u] NAME [VALUE]> [-g]"
+         \x20      sprag <show-options [-v] [NAME] | set-option [-u] NAME [VALUE]> [-g]"
     );
 }
 

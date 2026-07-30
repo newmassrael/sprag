@@ -50,10 +50,9 @@ use crate::keymap::KeySpec;
 
 /// The values an option accepts, which is also how one is VALIDATED.
 ///
-/// Two kinds because sprag has two shapes of setting, and each carries its vocabulary with it: a key
-/// is whatever [`KeySpec`] parses (so the option space and the keymap can never drift apart), and a
-/// choice is a fixed list (so a bad value can be answered with the alternatives rather than with a
-/// type name).
+/// Each kind carries its vocabulary WITH it, so a bad value can be answered with the alternatives
+/// rather than with a type name: a key is whatever [`KeySpec`] parses (the option space and the keymap
+/// therefore cannot drift apart), a choice is a fixed list, and a number is a positive integer.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum OptionKind {
     /// A keystroke spec — `C-a`, `%`, `F1`. Validated by [`KeySpec::parse`], so this option's
@@ -61,6 +60,15 @@ pub enum OptionKind {
     Key,
     /// One of a fixed set of names, matched case-insensitively and stored lowercase.
     Choice(&'static [&'static str]),
+    /// A positive integer. Zero is refused rather than treated as "unset", because an option always
+    /// HAS a value in force and a caller asking for it must never be handed a size, count or limit of
+    /// nothing.
+    ///
+    /// No upper bound: a bound nothing measures is taste, and the one candidate here (a glyph so large
+    /// the boot grid is empty) cannot happen — the GUI's `grid_dims` floors at 1x1. A value too large
+    /// for a `u32` is refused as not being a number, which is the type's own bound and not an invented
+    /// one.
+    Number,
 }
 
 impl OptionKind {
@@ -69,8 +77,8 @@ impl OptionKind {
     ///
     /// # Errors
     ///
-    /// The reason, phrased to be read after `NAME: ` — [`KeySpec`]'s own complaint for a key, and the
-    /// list of alternatives for a choice.
+    /// The reason, phrased to be read after `NAME: ` — [`KeySpec`]'s own complaint for a key, the list
+    /// of alternatives for a choice, and what a number has to be.
     pub fn canonicalise(self, value: &str) -> Result<String, String> {
         match self {
             Self::Key => KeySpec::parse(value)
@@ -84,6 +92,12 @@ impl OptionKind {
                     .map(|choice| (*choice).to_owned())
                     .ok_or_else(|| format!("{value:?} is not one of: {}", choices.join(", ")))
             }
+            // Re-rendered from the PARSE rather than trimmed, so `007` and ` 7 ` are stored as `7` —
+            // the same rule a key follows, and what keeps one value one string in the file.
+            Self::Number => match value.trim().parse::<u32>() {
+                Ok(0) | Err(_) => Err(format!("{value:?} is not a number above zero")),
+                Ok(number) => Ok(number.to_string()),
+            },
         }
     }
 }
@@ -115,6 +129,13 @@ pub const PREFIX: &str = "prefix";
 /// How a client reacts when its own attached session is destroyed — tmux's `detach-on-destroy`.
 pub const DETACH_ON_DESTROY: &str = "detach-on-destroy";
 
+/// The windowed client's glyph size in pixels.
+///
+/// `gui-`prefixed because it governs ONE frontend and tmux has no twin: a terminal client's font is
+/// its terminal emulator's, not sprag's. The prefix is what keeps that legible in a flat namespace —
+/// a user reading `show-options` can see which of their clients a setting reaches.
+pub const GUI_FONT: &str = "gui-font";
+
 /// [`DETACH_ON_DESTROY`]'s values, in tmux's documented order.
 ///
 /// The vocabulary lives HERE and the policy lives in the client that acts on it (`sprag-client`
@@ -134,6 +155,11 @@ pub const OPTIONS: &[OptionSpec] = &[
         name: DETACH_ON_DESTROY,
         kind: OptionKind::Choice(DETACH_ON_DESTROY_VALUES),
         default: "on",
+    },
+    OptionSpec {
+        name: GUI_FONT,
+        kind: OptionKind::Number,
+        default: "20",
     },
     OptionSpec {
         name: PREFIX,
@@ -237,6 +263,18 @@ impl OptionSetting {
     pub fn value(&self) -> &str {
         &self.value
     }
+
+    /// The value as a NUMBER when this option takes one, so a writer can put `20` in the file rather
+    /// than `"20"`.
+    ///
+    /// That distinction is the user's, not the parser's: the file is hand-maintained and a quoted
+    /// number is not how a person writes one. The reader accepts both spellings for the same reason.
+    #[must_use]
+    pub fn as_number(&self) -> Option<u32> {
+        matches!(self.spec.kind, OptionKind::Number)
+            .then(|| self.value.parse().ok())
+            .flatten()
+    }
 }
 
 /// The options IN FORCE: every [`OPTIONS`] entry's default, with whatever the user's file declares
@@ -282,6 +320,20 @@ impl Options {
         let setting = OptionSetting::parse(name, value)?;
         self.values.insert(setting.spec.name, setting.value);
         Ok(())
+    }
+
+    /// The value in force for a [`OptionKind::Number`] option, or `None` when `name` is not one.
+    ///
+    /// Cannot fail for a Number option: every stored value came through
+    /// [`canonicalise`](OptionKind::canonicalise), which parsed it, and the registry's own default is
+    /// checked by `every_option_default_is_a_value_that_option_accepts`. A caller still handles `None`
+    /// rather than unwrapping, because a windowed client must not lose its window over an internal
+    /// inconsistency a test already forbids.
+    #[must_use]
+    pub fn number(&self, name: &str) -> Option<u32> {
+        matches!(spec(name)?.kind, OptionKind::Number)
+            .then(|| self.get(name)?.parse().ok())
+            .flatten()
     }
 
     /// Every option and its value in force, sorted by name — what `show-options` prints.
@@ -389,5 +441,44 @@ mod tests {
             Some("on"),
             "a refused set must leave the previous value in force",
         );
+    }
+    #[test]
+    fn a_number_is_stored_as_the_parse_renders_it() {
+        let mut options = Options::default();
+        options.set(GUI_FONT, "  028 ").expect("028 is a number");
+        assert_eq!(
+            options.get(GUI_FONT),
+            Some("28"),
+            "padding and leading zeroes are the user's spelling, not the value",
+        );
+        assert_eq!(options.number(GUI_FONT), Some(28));
+    }
+
+    #[test]
+    fn a_number_option_refuses_zero_and_anything_that_is_not_one() {
+        let mut options = Options::default();
+        for refused in ["0", "-4", "huge", "", "1.5", "4px"] {
+            let error = options
+                .set(GUI_FONT, refused)
+                .expect_err("{refused} is not a size");
+            assert!(
+                error.to_string().contains("above zero"),
+                "{refused:?} must be refused as a number: {error}",
+            );
+        }
+        assert_eq!(
+            options.number(GUI_FONT),
+            Some(20),
+            "and none of them displaced the default",
+        );
+    }
+
+    #[test]
+    fn only_a_number_option_answers_as_a_number() {
+        // A caller asking the wrong KIND for a number gets `None` rather than a parse of a key spec.
+        let options = Options::default();
+        assert_eq!(options.number(PREFIX), None);
+        assert_eq!(options.number(DETACH_ON_DESTROY), None);
+        assert_eq!(options.number("not-an-option"), None);
     }
 }

@@ -95,6 +95,10 @@ fn main() -> ExitCode {
             // The keymap gate, HERE because it splits: after the check above, which needs exactly one
             // pane, and before the one below, which leaves several standing.
             check_the_gui_follows_the_users_keymap(&mut smoke, &mut report);
+            // AFTER every check that needs the client this run booted, because it REPLACES that
+            // client twice. Before the session kill, which is happy to kill whichever session the
+            // client it finds is attached to.
+            check_the_gui_follows_the_users_font(&mut smoke, &mut report);
             // AFTER it, and that ordering is load-bearing twice over: the check above needs
             // exactly ONE pane to make the daemon-to-client pane correspondence unambiguous, and
             // this one SPLITS until the pane set can attribute its own cost. It also leaves those
@@ -1176,6 +1180,80 @@ fn check_terminal_output_never_reaches_the_shaper(smoke: &mut Smoke, report: &mu
     );
 }
 
+/// **THE GATE for a setting a window adopts at BIRTH**: `gui-font` reaches the shipped client, and
+/// the glyph size it names is the one every pane's grid is measured at.
+///
+/// A boot-adopted option cannot be gated the way a keymap is. Writing the file under a running window
+/// proves nothing here — the client is not supposed to notice, so the check would pass identically
+/// against one that never read the option at all. So this LAUNCHES two clients and compares what the
+/// daemon was told, which is the only observation that separates them.
+///
+/// The claim is quantitative and fails in the right direction: a doubled glyph in the same window is
+/// FEWER columns, and a client ignoring the option reports the same number twice. Read through
+/// `sprag panes`, so the value is the one the PTY was actually sized to rather than anything this file
+/// computed.
+///
+/// Each launch gets its own session (a GUI creates one), so both readings are of a single boot pane at
+/// the full window — the comparison the earlier checks cannot offer, since they leave panes tiled.
+///
+/// REVERT-PROOF: return `FONT_SIZE_PX` from `font_size_px` (i.e. never read the option) and the two
+/// readings are equal.
+fn check_the_gui_follows_the_users_font(smoke: &mut Smoke, report: &mut Report) {
+    // The reference launch: no `gui-font`, so the registry default is in force.
+    if smoke.write_user_config("").is_err() {
+        report.check("the user config can be cleared", false);
+        return;
+    }
+    let Some(default_cols) = boot_pane_cols(smoke, report, "at the default glyph size") else {
+        return;
+    };
+    // ...and the same client again, with the option set to twice it.
+    if smoke
+        .write_user_config("[options]\ngui-font = 40\n")
+        .is_err()
+    {
+        report.check("a gui-font can be written", false);
+        return;
+    }
+    let Some(large_cols) = boot_pane_cols(smoke, report, "at a doubled glyph size") else {
+        return;
+    };
+    report.check(
+        &format!(
+            "a bigger gui-font measures a NARROWER grid ({default_cols} -> {large_cols} columns)"
+        ),
+        // Not merely `<`: an off-by-one would satisfy that, and what a doubled glyph must produce is
+        // roughly half the columns. Two thirds is the loose bound the exact cell metric may land in.
+        large_cols * 3 < default_cols * 2,
+    );
+}
+
+/// Relaunch the client and answer the columns its BOOT pane was sized to, or `None` after reporting.
+fn boot_pane_cols(smoke: &mut Smoke, report: &mut Report, when: &str) -> Option<u16> {
+    if let Err(error) = smoke.relaunch_gui() {
+        report.check(&format!("the client relaunches {when} ({error})"), false);
+        return None;
+    }
+    let session = smoke.attached_session();
+    let listed = session
+        .as_deref()
+        .map(|session| smoke.cli(&["panes", "-t", session]));
+    // `id: COLSxROWS  command` — the first line is the boot pane, the only one a fresh session has.
+    let cols = listed
+        .as_ref()
+        .and_then(|listed| listed.as_ref().ok())
+        .and_then(|listed| listed.lines().next())
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|dims| dims.split('x').next())
+        .and_then(|cols| cols.parse::<u16>().ok())
+        .filter(|cols| *cols > 0);
+    report.check(
+        &format!("the relaunched client's boot pane reports a grid {when} ({cols:?})"),
+        cols.is_some(),
+    );
+    cols
+}
+
 /// **THE GATE for the GUI's half of the user keymap.** Every other test of it either seeds a table or
 /// drives `route_key` in-process, and none can say whether the SHIPPED client ever looks at the user's
 /// file — the seam where the whole feature can be absent with a green suite. This is the one place the
@@ -1749,6 +1827,8 @@ struct Smoke {
     /// ITSELF, which no scene query can answer. Lives under [`Self::state`], so the teardown that
     /// removes the run's directory takes it too; read it before the `Smoke` drops.
     gui_log: PathBuf,
+    /// The logs of the clients this run has ALREADY replaced — see [`Smoke::gui_log`].
+    prior_gui_logs: Vec<PathBuf>,
 }
 
 impl Smoke {
@@ -1796,6 +1876,7 @@ impl Smoke {
             state,
             target,
             gui_log,
+            prior_gui_logs: Vec::new(),
         };
         // The OS-focus gate: without this `os_focused_window` is null under Xvfb and anything that
         // reads it describes an unfocused window.
@@ -2110,10 +2191,19 @@ impl Smoke {
             .collect()
     }
 
-    /// Everything the GUI has written to stderr so far. Missing / unreadable reads as empty, which
-    /// the caller must treat as "no evidence", never as "no problem".
+    /// Everything EVERY GUI this run started has written to stderr. Missing / unreadable reads as
+    /// empty, which the caller must treat as "no evidence", never as "no problem".
+    ///
+    /// Every log, not the newest: [`relaunch_gui`](Self::relaunch_gui) starts a second client, and a
+    /// reader that saw only its log would narrow a claim about "every painted frame" to the last
+    /// client's frames while still reading like a claim about the run.
     fn gui_log(&self) -> String {
-        std::fs::read_to_string(&self.gui_log).unwrap_or_default()
+        self.prior_gui_logs
+            .iter()
+            .chain(std::iter::once(&self.gui_log))
+            .map(|path| std::fs::read_to_string(path).unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// What pane tile `i` is SHOWING, one string per painted row.
@@ -2135,6 +2225,46 @@ impl Smoke {
             .ok()
             .and_then(|timings| timings["frame_count"].as_u64())
             .unwrap_or_default()
+    }
+
+    /// Kill this run's GUI and start a fresh one against the same daemon, reconnecting to its scene.
+    ///
+    /// **The only way to gate a setting a window adopts at BIRTH.** `gui-font` is one: the glyph size
+    /// decides the measured cell, which decides every pane's grid, so changing it live is the resize
+    /// path plus a wake the client deliberately does not have. A check that merely wrote the file
+    /// under a running window would therefore be asserting nothing — and would pass just as well
+    /// against a client that never read the option at all.
+    ///
+    /// The stale socket file is removed first. `serve` reclaims a path nobody answers on, so the new
+    /// client would come up anyway; removing it is what makes [`wait_for_path`] mean "the new one is
+    /// listening" rather than "the dead one's file is still there".
+    ///
+    /// Its log goes to a SECOND file, so a failure after this can still be read against the first
+    /// launch's output — `spawn` creates the log, and reusing the path would truncate it.
+    fn relaunch_gui(&mut self) -> Result<(), String> {
+        let _ = self.gui.kill();
+        let _ = self.gui.wait();
+        let _ = std::fs::remove_file(&self.gui_sock);
+        self.prior_gui_logs.push(self.gui_log.clone());
+        self.gui_log = self
+            .state
+            .join(format!("gui-relaunch-{}.log", self.prior_gui_logs.len()));
+        self.gui = spawn(
+            &self.target.join("sprag-gui"),
+            &self.host_sock,
+            &self.gui_sock,
+            &self.state,
+            &self.gui_log,
+        )
+        .map_err(|error| format!("relaunch the gui: {error}"))?;
+        wait_for_path(&self.gui_sock).map_err(|error| error.to_string())?;
+        self.conn =
+            HostConn::connect(&self.gui_sock, PATIENCE).map_err(|error| error.to_string())?;
+        // The OS-focus gate `boot` applies to the first launch: without it `os_focused_window` is null
+        // under Xvfb and anything reading the focused pane reads nothing.
+        self.call("scene/window_focus", json!({ "focused": true }))
+            .map_err(|error| format!("focus the relaunched window: {error}"))?;
+        Ok(())
     }
 
     /// Run the `sprag` CLI against THIS run's daemon, answering what it printed.

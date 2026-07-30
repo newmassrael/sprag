@@ -2348,3 +2348,85 @@ fn the_prefix_reads_the_same_through_both_verbs() {
         assert!(from_options.is_some(), "and both printed one");
     }
 }
+
+/// `show-options NAME` prints one option, and `-v` prints its value ALONE — tmux's `show-options -v`,
+/// and the singular read herdr spells `show-option`.
+///
+/// `-v` is what a script wants: `$(sprag show-options -v prefix)` needs no `cut`, and a value on a
+/// line of its own cannot be mis-split by one.
+#[test]
+fn show_options_reads_one_option_by_name() {
+    let config = ConfigHome::new("[options]\nprefix = \"C-a\"\n");
+    let absent = socket_path();
+    let env = [("XDG_CONFIG_HOME", config.as_str())];
+
+    let named = sprag_env(&absent, &["show-options", "prefix"], &env);
+    assert!(named.ok, "{}", named.stderr);
+    assert_eq!(named.stdout.trim(), "prefix C-a", "the tmux shape");
+
+    let bare = sprag_env(&absent, &["show-options", "-v", "prefix"], &env);
+    assert!(bare.ok, "{}", bare.stderr);
+    assert_eq!(bare.stdout.trim(), "C-a", "the value alone");
+
+    // An option the file never mentions still answers, with the default in force — the whole reason
+    // the registry holds a default rather than the file.
+    let unset = sprag_env(&absent, &["show-options", "-v", "detach-on-destroy"], &env);
+    assert_eq!(unset.stdout.trim(), "on");
+
+    // A mistyped name is refused with the list, like `set-option`'s.
+    let unknown = sprag_env(&absent, &["show-options", "prefixx"], &env);
+    assert!(!unknown.ok, "a mistyped name is refused");
+    assert!(
+        unknown.stderr.contains("gui-font") && !unknown.stderr.contains("config.toml"),
+        "listing the real options and naming no file: {}",
+        unknown.stderr,
+    );
+
+    // `-v` with nothing to read is refused rather than answered with every value: the flag exists so a
+    // caller can read ONE without parsing, and a list would hand back the ambiguity it removes.
+    let vague = sprag_env(&absent, &["show-options", "-v"], &env);
+    assert!(!vague.ok, "-v needs a name");
+    assert!(vague.stderr.contains("needs a name"), "{}", vague.stderr);
+}
+
+/// A NUMBER option is written unquoted and read back from either spelling.
+///
+/// `gui-font = 20` is how a person writes a size in a file they maintain by hand; demanding `"20"`
+/// would be the parser's convenience imposed on the user. Both spellings are accepted BECAUSE the
+/// writer emits one of them — a file this CLI edited and a file a human wrote must not differ.
+#[test]
+fn a_number_option_is_written_as_a_number() {
+    let config = ConfigHome::new("");
+    let absent = socket_path();
+    let env = [("XDG_CONFIG_HOME", config.as_str())];
+
+    assert!(sprag_env(&absent, &["set-option", "gui-font", "28"], &env).ok);
+    let text = config_text(&config);
+    assert!(
+        text.contains("gui-font = 28") && !text.contains("\"28\""),
+        "written unquoted, as a person writes a size: {text:?}",
+    );
+
+    // The QUOTED spelling a user may have written by hand reads back the same.
+    let quoted = ConfigHome::new("[options]\ngui-font = \"28\"\n");
+    let read = sprag_env(
+        &absent,
+        &["show-options", "-v", "gui-font"],
+        &[("XDG_CONFIG_HOME", quoted.as_str())],
+    );
+    assert_eq!(read.stdout.trim(), "28", "either spelling is one value");
+
+    // A TOML type no option takes names the option — not just the type serde wanted.
+    let wrong = ConfigHome::new("[options]\ngui-font = 1.5\n");
+    let refused = sprag_env(
+        &absent,
+        &["show-options"],
+        &[("XDG_CONFIG_HOME", wrong.as_str())],
+    );
+    assert!(!refused.ok, "a float is not a value an option takes");
+    assert!(
+        refused.stderr.contains("gui-font") && refused.stderr.contains("config.toml"),
+        "naming the option AND the file: {}",
+        refused.stderr,
+    );
+}

@@ -13,8 +13,13 @@ use sprag_terminal::CommandBuilder;
 use std::rc::Rc;
 use std::sync::Arc;
 
-/// Default glyph size (logical px) — the font-size SSOT the cell is measured
-/// from. `SPRAG_GUI_FONT=<px>` overrides it live (larger ⇒ bigger).
+/// Default glyph size (logical px) — the font-size SSOT the cell is measured from. The user's
+/// `gui-font` option overrides it ([`font_size_px`]).
+///
+/// Spelled here as well as in [`OPTIONS`](sprag_host::options::OPTIONS) because a `const` table
+/// cannot compute a default this crate owns, and this crate must have one to fall back on when the
+/// registry cannot answer. Nothing in the type system holds the two together; the drift guard
+/// `the_registry_default_is_this_crates_own` does.
 const FONT_SIZE_PX: u32 = 20;
 
 /// `Owner::cache` key for the live terminal (created once at boot).
@@ -155,20 +160,33 @@ pub(crate) fn pane_count() -> usize {
     )
 }
 
-/// Parse a `SPRAG_GUI_FONT` spec into a glyph px size. Absent / malformed /
-/// zero falls back to `default`. Pure (no env) so it is unit-testable.
-fn parse_font_size(spec: Option<&str>, default: u32) -> u32 {
-    spec.and_then(|s| s.trim().parse::<u32>().ok())
-        .filter(|&px| px > 0)
-        .unwrap_or(default)
-}
-
-/// The glyph size: `SPRAG_GUI_FONT=<px>` overrides [`FONT_SIZE_PX`] live.
+/// The glyph size: the user's `gui-font` option, else [`FONT_SIZE_PX`].
+///
+/// # Why this reads the file with no holder
+///
+/// [`crate::keys`] holds the ONE live view of `config.toml` and re-reads it where a keystroke's
+/// meaning is decided. This is not a second one: it is a single read at the moment the value is USED,
+/// which for a glyph size is the birth of a window. A held copy would add a staleness verdict for a
+/// value that is adopted once — the shape `sprag-client`'s destroy policy also avoids.
+///
+/// # Why the option does not take effect on a RUNNING window
+///
+/// The glyph size decides the measured cell, which decides every pane's grid, which is the size its
+/// PTY was told. Changing it live is the RESIZE path plus a wake that says "the config moved" — and
+/// this client has no such wake by design (no thread, no timer, no watcher; a keystroke is what wakes
+/// the keymap re-read, and a font that changed on the next keypress would be worse than one that
+/// changed at the next window). So the file is the authority and a window adopts it at birth. That is
+/// honest in a way the env var could not be: `sprag show-options` prints what the next window will
+/// use, where an env var could not be printed at all.
+///
+/// A config that cannot be READ falls back to the registry's defaults and says nothing here, because
+/// the same file's problem is already reported through [`crate::keys::ClientKeys::report`] — twice
+/// would be two lines about one typo.
 fn font_size_px() -> u32 {
-    parse_font_size(
-        std::env::var("SPRAG_GUI_FONT").ok().as_deref(),
-        FONT_SIZE_PX,
-    )
+    sprag_host::config::options()
+        .unwrap_or_default()
+        .number(sprag_host::options::GUI_FONT)
+        .unwrap_or(FONT_SIZE_PX)
 }
 
 /// Split a `SPRAG_GUI_CMD` spec into `(program, args)` on whitespace (no shell
@@ -397,14 +415,38 @@ pub(crate) fn seed_terminal(host: Host) {
 mod tests {
     use super::*;
 
+    /// The drift guard [`FONT_SIZE_PX`] names: the registry's `gui-font` default and this crate's
+    /// fallback are one number spelled twice, and only this holds them together.
+    ///
+    /// A disagreement would be invisible in every ordinary run — the option is always answered, so the
+    /// fallback is only reached if the registry cannot answer — and would then boot a window at a size
+    /// `sprag show-options` does not print. The trim / zero-rejection / malformed rules this test used
+    /// to check are now `OptionKind::Number`'s, tested where the validation lives.
     #[test]
-    fn parse_font_size_clamps_and_falls_back() {
-        assert_eq!(parse_font_size(None, FONT_SIZE_PX), FONT_SIZE_PX);
-        assert_eq!(parse_font_size(Some("28"), FONT_SIZE_PX), 28);
-        assert_eq!(parse_font_size(Some("  16 "), FONT_SIZE_PX), 16); // trims
-        assert_eq!(parse_font_size(Some("0"), FONT_SIZE_PX), FONT_SIZE_PX); // zero rejected
-        assert_eq!(parse_font_size(Some("huge"), FONT_SIZE_PX), FONT_SIZE_PX); // malformed
-        assert_eq!(parse_font_size(Some(""), FONT_SIZE_PX), FONT_SIZE_PX);
+    fn the_registry_default_is_this_crates_own() {
+        let spec = sprag_host::options::spec(sprag_host::options::GUI_FONT)
+            .expect("gui-font is a registered option");
+        assert_eq!(
+            spec.default,
+            FONT_SIZE_PX.to_string(),
+            "the registry's gui-font default must be this crate's fallback",
+        );
+    }
+
+    /// The option in force is what the glyph size follows, including the default when the user is
+    /// silent — the mapping [`font_size_px`] performs, driven without touching the environment.
+    #[test]
+    fn the_glyph_size_follows_the_option() {
+        let mut options = sprag_host::options::Options::default();
+        assert_eq!(
+            options.number(sprag_host::options::GUI_FONT),
+            Some(FONT_SIZE_PX),
+            "a silent user gets this crate's own size",
+        );
+        options
+            .set(sprag_host::options::GUI_FONT, "31")
+            .expect("31 is a size");
+        assert_eq!(options.number(sprag_host::options::GUI_FONT), Some(31));
     }
 
     #[test]

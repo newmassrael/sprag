@@ -426,6 +426,25 @@ impl ClientConfig {
     }
 }
 
+/// One declared option value as the text [`OptionKind::canonicalise`](crate::options::OptionKind)
+/// reads, or why this is not a value at all.
+///
+/// A string and an integer are the two spellings a person uses (`prefix = "C-a"`, `gui-font = 20`),
+/// and both reach the same validation — so the option's KIND decides what is acceptable, not the TOML
+/// type the user happened to write. Anything else (a float, a bool, an array, a table) is refused
+/// while NAMING the option, because serde's own "invalid type" message would say which type it wanted
+/// without saying which setting it was reading.
+fn declared_value(name: &str, value: &toml::Value) -> Result<String, String> {
+    match value {
+        toml::Value::String(text) => Ok(text.clone()),
+        toml::Value::Integer(number) => Ok(number.to_string()),
+        other => Err(format!(
+            "{name}: a {} is not a value an option takes (write a string or a number)",
+            other.type_str()
+        )),
+    }
+}
+
 /// Everything a CLIENT reads out of the file: the options in force, and the keymap they help produce.
 ///
 /// ONE function because it is ONE act of validation. A caller able to get a keymap out of a file
@@ -438,8 +457,9 @@ fn build(file: &UserConfigFile) -> Result<(Options, Keymap), ConfigError> {
     let invalid = |why: String| ConfigError::Content(ProjectError::Invalid(why));
     let mut options = Options::default();
     for (name, value) in &file.options {
+        let value = declared_value(name, value).map_err(invalid)?;
         options
-            .set(name, value)
+            .set(name, &value)
             .map_err(|error| invalid(error.to_string()))?;
     }
     let mut keymap = Keymap::default();
@@ -601,7 +621,14 @@ const OPTIONS_TABLE: &str = "options";
 /// [`ConfigError::Unwritable`] when it cannot be replaced.
 pub fn set_option(setting: &OptionSetting) -> Result<PathBuf, ConfigError> {
     edit_config(|doc| {
-        table_mut(doc, OPTIONS_TABLE)?[setting.spec().name] = value(setting.value());
+        let table = table_mut(doc, OPTIONS_TABLE)?;
+        // A number is written UNQUOTED, because that is how a person writes one in a file they
+        // maintain by hand — and because the reader accepts both, a writer that quoted it would make
+        // every edited file differ from every hand-written one for no reason a user could see.
+        table[setting.spec().name] = match setting.as_number() {
+            Some(number) => value(i64::from(number)),
+            None => value(setting.value()),
+        };
         Ok(())
     })
 }
@@ -819,8 +846,14 @@ struct UserConfigFile {
     /// `deny_unknown_fields` cannot police a map's keys, so an unknown option NAME is refused by
     /// [`Options::set`] instead — which answers with the real names, rather than with serde's
     /// "unknown field".
+    ///
+    /// The VALUES are `toml::Value` rather than `String` because a number is written as a number:
+    /// `gui-font = 20` is how a person writes a size, and demanding `"20"` would be the parser's
+    /// convenience imposed on a hand-maintained file. [`declared_value`] renders the two spellings
+    /// this accepts into the one string [`OptionKind::canonicalise`](crate::options::OptionKind)
+    /// takes, and refuses the rest by NAMING the option.
     #[serde(default)]
-    options: std::collections::BTreeMap<String, String>,
+    options: std::collections::BTreeMap<String, toml::Value>,
     /// `[[bind]]` entries, layered over the defaults in file order.
     #[serde(default)]
     bind: Vec<DeclaredBind>,
