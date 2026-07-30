@@ -24,27 +24,30 @@
 //! derived fact rather than a setting, and a client that reads it needs to know nothing about which
 //! policy produced it.
 //!
-//! # What arbitrates, and what does not YET
+//! # What arbitrates, and who applies the answer
 //!
 //! The arbitration is over the clients that REPORT an area
-//! ([`crate::wire::CLIENT_SIZE_METHOD`]). `sprag-tui` does; **`sprag-gui` does not yet**, so a GUI
-//! window is not counted here and keeps deriving its own panes' sizes from its own pixels.
+//! ([`crate::wire::CLIENT_SIZE_METHOD`]), and that is BOTH frontends. `sprag-tui` reports its
+//! terminal. `sprag-gui` cannot report its window — its chrome is PER PANE (every dock panel
+//! carries its own header, above a tab strip and beside a session sidebar), so the cells available
+//! to the ARRANGEMENT depend on the shape of the tiling rather than on the size of the window — so
+//! it reports what its panes MEASURED, folded back into one window by
+//! [`sprag_terminal::fit_window`].
 //!
-//! That is a mechanism gap, not an oversight. A cell-exact shared window needs each client to say
-//! how many cells it can give the ARRANGEMENT, and for the GUI that number is not its window: its
-//! chrome is PER PANE (every dock panel carries its own header, above a tab strip and beside a
-//! session sidebar), so the area available to the arrangement is not one rectangle minus a constant
-//! — it depends on the shape of the tiling it is about to lay out. Handing the GUI this module's
-//! answer without that subtraction would size every pane's grid taller than the widget drawn for it
-//! and clip the bottom rows off each one. Reconciling sprag's GUI chrome with a cell-exact window
-//! is its own design question.
-//!
-//! So today: two terminal clients of one session agree, which is the case that was broken. A GUI
-//! attached alongside still writes its own pane sizes, and the option's reach stops there.
+//! What comes out is applied by `retile`, HERE, once per session. Both inputs to a pane's size
+//! are this daemon's — the tree it owns and the window it just arbitrated — so the size is derived
+//! where they live rather than in each client. A client writes a pane's size only when this daemon
+//! has no window to derive one from, which is the honest fallback and what both did before any of
+//! this existed.
+
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
+use sprag_terminal::{Rect, SessionRegistry, tile};
 
-use crate::attach::ClientSize;
+use crate::attach::{AttachmentRegistry, ClientSize};
+use crate::lock;
+use crate::scope::SessionScope;
 
 /// The policy that decides a session's window size from its attached clients — tmux's
 /// `window-size` option.
@@ -130,6 +133,81 @@ pub fn arbitrate(policy: WindowSize, sizes: &[ClientSize]) -> Option<ClientSize>
         }),
     })
 }
+
+/// Give every TILED pane of `session` the size the session's window says it has — the derivation
+/// that makes a pane's `(cols, rows)` one number instead of one per client.
+///
+/// # Why the daemon does this rather than each client
+///
+/// A pane's size is `tile(tree, window)`. The TREE is this daemon's (it owns the arrangement) and
+/// the WINDOW is this daemon's (it arbitrates one from every client's report), so the size is a
+/// DERIVED fact of two things only this process holds. A client computing it is re-deriving, and
+/// two re-derivations are the defect this front keeps finding: before this, `sprag-gui` sized its
+/// panes from its own pixels while `sprag-tui` sized them from the window, so attaching a terminal
+/// to a session a window was showing silently left the GUI painting a grid whose real dimensions it
+/// had never been told.
+///
+/// It also puts the derivation where the TRIGGERS are. A client can only re-derive when something
+/// it can see changes; the window moves when ANOTHER client attaches, resizes or detaches, and
+/// `sprag-gui` has no seam that observes any of those (its poll thread requests a repaint; its view
+/// is pure). Here, every one of those moments is already a call site.
+///
+/// # What it does not touch
+///
+/// * A FLOATING pane has no leaf in the tree, so no tiling ever names it: its window is its own
+///   surface and its size stays that surface's business.
+/// * `None` from [`arbitrate`] — no attached client has reported an area — resizes nothing. That is
+///   the rule the `window_size` slot already states: nobody has said how big this is, so the panes
+///   keep the size they have rather than reflowing every program to a number nobody chose.
+/// * A pane the window is too small to show is absent from the tiling and so keeps its size, which
+///   is [`tile`]'s own stated rule rather than a decision taken here.
+///
+/// `cell_px` is `(0, 0)` — "unknown", which leaves the pane's last-known pixel geometry alone. A
+/// cell's pixel size is a property of a client's FONT; this daemon has none and must not invent
+/// one, and it does not have to, because the client that last set it still owns it.
+pub(crate) fn retile(
+    registry: &Arc<Mutex<SessionRegistry>>,
+    attachments: &Arc<Mutex<AttachmentRegistry>>,
+    session: &str,
+) {
+    // Each lock is taken and released in turn — attachments, then registry, then the pool — so this
+    // never holds two at once and cannot invert an order some other path takes.
+    let sizes = lock(attachments).sizes(session);
+    let Some(window) = arbitrate(crate::config::window_size(), &sizes) else {
+        return;
+    };
+    let Some(scope) = SessionScope::of(&lock(registry), session) else {
+        return;
+    };
+    let Some(layout) = crate::host::reconciled_layout(registry, &scope) else {
+        return;
+    };
+    let tiling = tile(&layout.tree, Rect::screen(window.cols, window.rows));
+    let pool = lock(scope.workspace());
+    for held in &tiling.panes {
+        // The no-op guard is against WORK, not against correctness: a resize is idempotent, but in
+        // the steady state every one of these calls would be a redundant ioctl and a SIGWINCH the
+        // program in the pane would have to answer.
+        if pool.pane(held.pane).map(|pane| pane.pty().dimensions())
+            == Some((held.area.cols, held.area.rows))
+        {
+            continue;
+        }
+        if let Err(error) = pool.resize(held.pane, held.area.cols, held.area.rows, CELL_PX_UNKNOWN)
+        {
+            tracing::warn!(
+                target: "sprag_host::window",
+                pane = held.pane.0,
+                %error,
+                "could not resize a pane to its share of the window"
+            );
+        }
+    }
+}
+
+/// The `cell_px` a daemon-side reflow carries: unknown, so the pane keeps whatever pixel geometry
+/// the client that last resized it established. See [`retile`].
+const CELL_PX_UNKNOWN: (u16, u16) = (0, 0);
 
 #[cfg(test)]
 mod tests {

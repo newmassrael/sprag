@@ -18,6 +18,11 @@
 //! panes as pixels through pinion's dock, `sprag-tui` places them as cells on a terminal. Neither
 //! places them in a size of its own choosing.
 //!
+//! Nor does either APPLY the result any more. A pane's size is `tile(tree, window)` and both
+//! arguments are the daemon's, so the daemon derives it (`sprag_host::window::retile`) and a client
+//! sizes a pane only when the daemon has no window to derive one from. What a client contributes is
+//! the other direction: how many cells IT can give the arrangement, which is [`fit_window`].
+//!
 //! # The window is not the client's screen
 //!
 //! The area passed in is the session's arbitrated window (`sprag_host::WindowSize`, tmux's
@@ -465,6 +470,115 @@ fn divide(extent: u16, ratio: f32) -> Option<(u16, u16)> {
     let near = (f32::from(avail) * ratio).floor() as u16;
     let near = near.clamp(1, avail - 1);
     Some((near, avail - near))
+}
+
+/// The largest window whose tiling gives every pane of `tree` no more cells than `measured` says
+/// that pane's surface can hold — what a client REPORTS as the area it has to give an arrangement.
+///
+/// `None` when the tree holds no pane, when a pane has no measurement yet, or when no window at all
+/// satisfies the tree (a surface too small to show every pane).
+///
+/// # Why a client cannot just report its surface
+///
+/// A terminal can: its whole screen is cells, so the arrangement gets the screen and the only
+/// subtraction is the divider [`tile`] already reserves. A GUI cannot, because its chrome is PER
+/// PANE — every dock panel carries a header, and a scrollbar, and the number of those along an axis
+/// depends on the shape of the tiling rather than on the window. So the cells a GUI has to give the
+/// arrangement are not its surface minus a constant, and reporting the surface would size every
+/// pane's grid larger than the widget drawn for it and clip what does not fit.
+///
+/// What such a client CAN state is what each pane's own surface measured. This folds those back
+/// into the one number the arbitration takes, and it does so through [`tile`] itself: the answer is
+/// defined by the same function that will consume it, so there is no second geometry model here to
+/// drift out of step with the first.
+///
+/// # The search, and why it is a walk DOWN rather than a halving
+///
+/// One dimension at a time, because [`tile`] keeps them independent: a horizontal split divides
+/// the columns and passes the rows through, and a vertical one the reverse. So the columns are
+/// searched with the rows held at the bound, and then the rows at the columns that answered.
+///
+/// The obvious halving is WRONG here, and the reason is a property of [`tile`] worth stating: a
+/// window too small to hold both children of a split does not shrink them, it DROPS one and gives
+/// its region to the survivor — which then holds more cells than it did at the larger window. So
+/// "every pane fits its measurement" is not downward-closed; it is true at the answer, false just
+/// below it where a pane is dropped and its sibling swells, and true again at the very bottom. A
+/// bisection can land in that hole. Walking down from the bound returns the first window that
+/// satisfies the property, which IS the largest one, with no monotonicity assumed at all — and the
+/// bound is a few hundred cells, so the walk costs less than the layout that triggered it.
+///
+/// The upper bound is the fold of the measurements themselves — a window that hands each pane
+/// exactly what it measured, plus a cell per divider. Nothing above it can fit: the panes and
+/// dividers partition the window exactly, so one more cell in the window is one more cell in some
+/// pane than its surface has.
+#[must_use]
+pub fn fit_window(tree: &LayoutWire, measured: &[(PaneId, (u16, u16))]) -> Option<(u16, u16)> {
+    let root = tree.root.as_ref()?;
+    let cells = |pane: PaneId| {
+        measured
+            .iter()
+            .find(|(held, _)| *held == pane)
+            .map(|(_, cells)| *cells)
+    };
+    let bound = fold_window(root, &cells)?;
+    let panes = tree.panes().len();
+    // A pane the window cannot hold is absent from the tiling, so "every pane is present" is part
+    // of the question rather than a check to run after it: a window that shows two of three panes
+    // is not an area this client can give the arrangement, however well those two fit.
+    let holds = |window: (u16, u16), axis: fn(Rect) -> u16, limit: fn((u16, u16)) -> u16| {
+        let tiling = tile(tree, Rect::screen(window.0, window.1));
+        tiling.panes.len() == panes
+            && tiling
+                .panes
+                .iter()
+                .all(|held| cells(held.pane).is_some_and(|c| axis(held.area) <= limit(c)))
+    };
+    let cols = walk_down(bound.0, |cols| {
+        holds((cols, bound.1), |area| area.cols, |cells| cells.0)
+    })?;
+    let rows = walk_down(bound.1, |rows| {
+        holds((cols, rows), |area| area.rows, |cells| cells.1)
+    })?;
+    Some((cols, rows))
+}
+
+/// The largest `value` in `1..=bound` for which `fits` holds, or `None` when none does.
+///
+/// Downward, one at a time, and deliberately not a halving — see [`fit_window`] for the property
+/// of [`tile`] that puts a hole in this predicate.
+fn walk_down(bound: u16, fits: impl Fn(u16) -> bool) -> Option<u16> {
+    (1..=bound).rev().find(|value| fits(*value))
+}
+
+/// A window that hands every pane under `node` exactly what it measured — [`fit_window`]'s upper
+/// bound, and `None` if any pane has no measurement.
+///
+/// A split's window is its children's along the axis it divides, plus the one cell [`tile`] reserves
+/// for the divider; across that axis it is the SMALLER of the two, since a window wider than the
+/// narrower child would over-fill it.
+fn fold_window(
+    node: &LayoutNodeWire,
+    cells: &impl Fn(PaneId) -> Option<(u16, u16)>,
+) -> Option<(u16, u16)> {
+    match node {
+        LayoutNodeWire::Leaf(pane) => cells(*pane),
+        LayoutNodeWire::Split {
+            dir, first, second, ..
+        } => {
+            let first = fold_window(first, cells)?;
+            let second = fold_window(second, cells)?;
+            Some(match dir {
+                SplitDir::Horizontal => (
+                    first.0.saturating_add(1).saturating_add(second.0),
+                    first.1.min(second.1),
+                ),
+                SplitDir::Vertical => (
+                    first.0.min(second.0),
+                    first.1.saturating_add(1).saturating_add(second.1),
+                ),
+            })
+        }
+    }
 }
 
 #[cfg(test)]
@@ -988,6 +1102,181 @@ mod tests {
         assert_eq!(
             Rect::new(0, 0, 40, 12).intersect(screen),
             Some(Rect::new(0, 0, 40, 12))
+        );
+    }
+
+    /// What every `fit_window` case must be able to say: lay the tree out over the answer and no
+    /// pane got more cells than its surface measured, and none was dropped.
+    fn every_pane_fits(tree: &LayoutWire, measured: &[(PaneId, (u16, u16))], window: (u16, u16)) {
+        let tiling = tile(tree, Rect::screen(window.0, window.1));
+        assert_eq!(
+            tiling.panes.len(),
+            measured.len(),
+            "a window that drops a pane is not one this client can give the arrangement"
+        );
+        for held in &tiling.panes {
+            let (cols, rows) = measured
+                .iter()
+                .find(|(pane, _)| *pane == held.pane)
+                .expect("the tiling holds only panes of the tree")
+                .1;
+            assert!(
+                held.area.cols <= cols && held.area.rows <= rows,
+                "pane {:?} was given {}x{} for a surface measuring {cols}x{rows}",
+                held.pane,
+                held.area.cols,
+                held.area.rows
+            );
+        }
+    }
+
+    #[test]
+    fn a_lone_pane_reports_exactly_what_it_measured() {
+        // No divider, no sibling to be the smaller of: the one pane's surface IS the window, which
+        // is the case that must not move a solo user's panes.
+        let tree = LayoutWire {
+            root: Some(leaf(1)),
+        };
+        let measured = [(PaneId(1), (38, 17))];
+        assert_eq!(fit_window(&tree, &measured), Some((38, 17)));
+    }
+
+    #[test]
+    fn two_side_by_side_report_the_divider_between_them() {
+        // The measured GUI: two 380x510 grids at a 10x30 cell, a 28px header each, side by side.
+        // 38 + 38 is not the answer — the divider's cell is part of the window, and a client that
+        // forgot it would be handed back 37 columns for a pane it measured at 38.
+        let tree = split(SplitDir::Horizontal, 0.5, leaf(1), leaf(2));
+        let measured = [(PaneId(1), (38, 17)), (PaneId(2), (38, 17))];
+        assert_eq!(fit_window(&tree, &measured), Some((77, 17)));
+        // And laying that back out returns each pane to EXACTLY what it measured, which is the
+        // round trip that makes a solo GUI's panes identical to what its own pixels gave them.
+        let tiling = tile(&tree, Rect::screen(77, 17));
+        assert_eq!(tiling.panes[0].area, Rect::new(0, 0, 38, 17));
+        assert_eq!(tiling.panes[1].area, Rect::new(39, 0, 38, 17));
+    }
+
+    #[test]
+    fn the_smaller_child_decides_the_axis_the_split_does_not_divide() {
+        // A horizontal split shares the columns and PASSES THE ROWS THROUGH, so a window taller
+        // than the shorter pane would over-fill it. 17 and 9 is 9, not 17 and not 13.
+        let tree = split(SplitDir::Horizontal, 0.5, leaf(1), leaf(2));
+        let measured = [(PaneId(1), (38, 17)), (PaneId(2), (38, 9))];
+        assert_eq!(fit_window(&tree, &measured), Some((77, 9)));
+        every_pane_fits(&tree, &measured, (77, 9));
+    }
+
+    #[test]
+    fn a_vertical_split_stacks_the_rows_the_same_way() {
+        // The case R241 gave as the reason a GUI cannot report its surface: two stacked panes lose
+        // TWO headers, and the window's rows are the two grids plus the divider — a number that
+        // depends on the shape of the tiling, which is why it is folded rather than subtracted.
+        let tree = split(SplitDir::Vertical, 0.5, leaf(1), leaf(2));
+        let measured = [(PaneId(1), (38, 7)), (PaneId(2), (38, 7))];
+        assert_eq!(fit_window(&tree, &measured), Some((38, 15)));
+        every_pane_fits(&tree, &measured, (38, 15));
+    }
+
+    #[test]
+    fn the_answer_is_the_largest_window_that_fits() {
+        // "Fits" alone would be satisfied by 1x1. The report is the LARGEST such window, because a
+        // client that under-reports gives the session fewer cells than it can actually show — so
+        // one more cell in either dimension must break the property.
+        let tree = split(SplitDir::Horizontal, 0.5, leaf(1), leaf(2));
+        let measured = [(PaneId(1), (38, 17)), (PaneId(2), (38, 17))];
+        let (cols, rows) = fit_window(&tree, &measured).expect("both panes are measured");
+        every_pane_fits(&tree, &measured, (cols, rows));
+        for bigger in [(cols + 1, rows), (cols, rows + 1)] {
+            let tiling = tile(&tree, Rect::screen(bigger.0, bigger.1));
+            assert!(
+                tiling.panes.iter().any(|held| {
+                    let (c, r) = measured
+                        .iter()
+                        .find(|(pane, _)| *pane == held.pane)
+                        .expect("the tiling holds only panes of the tree")
+                        .1;
+                    held.area.cols > c || held.area.rows > r
+                }),
+                "{bigger:?} fits too, so {cols}x{rows} was not the largest"
+            );
+        }
+    }
+
+    #[test]
+    fn every_ratio_and_every_shape_round_trips() {
+        // The property, over the rounding that is this module's whole difficulty: whatever the
+        // ratio and whatever the measurements, the reported window never hands a pane more cells
+        // than its surface has. A fold that trusted its own arithmetic (rather than asking `tile`)
+        // is off by one wherever `floor` lands, and this is the case that says so.
+        for ratio in [0.1, 0.25, 0.33, 0.5, 0.67, 0.75, 0.9] {
+            for (first, second) in [
+                ((38, 17), (38, 17)),
+                ((12, 17), (64, 17)),
+                ((64, 9), (12, 40)),
+                ((1, 1), (80, 24)),
+            ] {
+                for dir in [SplitDir::Horizontal, SplitDir::Vertical] {
+                    let tree = split(dir, ratio, leaf(1), leaf(2));
+                    let measured = [(PaneId(1), first), (PaneId(2), second)];
+                    let window = fit_window(&tree, &measured)
+                        .unwrap_or_else(|| panic!("{dir:?} at {ratio} over {first:?} {second:?}"));
+                    every_pane_fits(&tree, &measured, window);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_nested_tree_folds_through_both_axes() {
+        // Three panes: one tall pane beside two stacked ones — the shape where a single subtraction
+        // could not work, since the right column loses two headers and the left loses one.
+        let tree = LayoutWire {
+            root: Some(LayoutNodeWire::Split {
+                id: None,
+                dir: SplitDir::Horizontal,
+                ratio: 0.5,
+                first: Box::new(leaf(1)),
+                second: Box::new(LayoutNodeWire::Split {
+                    id: None,
+                    dir: SplitDir::Vertical,
+                    ratio: 0.5,
+                    first: Box::new(leaf(2)),
+                    second: Box::new(leaf(3)),
+                }),
+            }),
+        };
+        let measured = [
+            (PaneId(1), (38, 17)),
+            (PaneId(2), (38, 7)),
+            (PaneId(3), (38, 7)),
+        ];
+        // Columns: 38 + divider + 38. Rows: the LEFT pane can show 17, but the right column can
+        // only stack 7 + divider + 7, so the window is 15 — the shorter side of the tree decides.
+        assert_eq!(fit_window(&tree, &measured), Some((77, 15)));
+        every_pane_fits(&tree, &measured, (77, 15));
+    }
+
+    #[test]
+    fn an_unmeasured_pane_has_no_answer_at_all() {
+        // pinion publishes (0, 0) for a pane before the first layout. A report is a CLAIM about
+        // what this client can show, and a client that has not been laid out has none to make —
+        // reporting the panes it does know would name a window missing a pane's worth of cells.
+        let tree = split(SplitDir::Horizontal, 0.5, leaf(1), leaf(2));
+        assert_eq!(fit_window(&tree, &[(PaneId(1), (38, 17))]), None);
+        assert_eq!(fit_window(&tree, &[]), None);
+        // An empty arrangement is the same answer for the same reason: nothing to give cells to.
+        assert_eq!(fit_window(&LayoutWire { root: None }, &[]), None);
+    }
+
+    #[test]
+    fn a_surface_too_small_to_show_every_pane_reports_nothing() {
+        // A pane whose surface holds no cells at all (a panel collapsed to its chrome): there is no
+        // window in which all three are present, and the honest answer is to stay out of the
+        // arbitration rather than to report a window that would drop one.
+        let tree = split(SplitDir::Horizontal, 0.5, leaf(1), leaf(2));
+        assert_eq!(
+            fit_window(&tree, &[(PaneId(1), (0, 17)), (PaneId(2), (38, 17))]),
+            None
         );
     }
 }

@@ -42,5 +42,5 @@ pub use snapshot::{
     PaneHistory, PaneRestore, PaneSnapshot, RestorePlan, SNAPSHOT_VERSION, SessionSnapshot,
     Snapshot, SnapshotError, WindowSnapshot, pane_histories, snapshot,
 };
-pub use tiling::{Divider, PaneRect, Rect, Tiling, tile, with_ratio};
+pub use tiling::{Divider, PaneRect, Rect, Tiling, fit_window, tile, with_ratio};
 pub use workspace::{Pane, PaneId, PaneInfo, PaneRebirth, Workspace};

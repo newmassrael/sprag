@@ -575,6 +575,22 @@ fn lifecycle_invalid(request: &Request, message: String) -> Option<String> {
     )
 }
 
+/// A client lifecycle event moved `session`'s window: re-derive every tiled pane's size, then wake
+/// the clients watching it.
+///
+/// The three ways a window moves without the arrangement changing are all here — a client REPORTED
+/// a new area, one ATTACHED, one DETACHED — and each changes the set [`crate::window::arbitrate`]
+/// folds. (The fourth way, the arrangement itself changing, is re-derived at the mux action
+/// boundary instead, where the tree is written.)
+///
+/// Re-derive BEFORE the bump, deliberately: the bump wakes every parked `scene/waitFor`, and a
+/// client woken by it should read a scene whose panes are already the size the new window gives
+/// them, rather than the previous one and then a second wake later.
+fn window_moved(state: &HostState, session: &str) {
+    crate::window::retile(state.registry(), state.attachments(), session);
+    state.channels().bump(session);
+}
+
 /// `client/hello` — register this connection under the client id its params carry, so the daemon
 /// groups a client's several connections into one attached unit. Identity only: no session, so it
 /// moves no attachment count and needs no scene bump.
@@ -639,7 +655,7 @@ fn handle_size(state: &HostState, conn: ConnId, request: &Request) -> Option<Str
             let session = attachments.session_of(conn).map(str::to_owned);
             drop(attachments);
             if let Some(session) = session {
-                state.channels().bump(&session);
+                window_moved(state, &session);
             }
             lifecycle_ok(request)
         }
@@ -652,7 +668,12 @@ fn handle_attach(
     scope: &SessionScope,
     request: &Request,
 ) -> Option<String> {
-    match lock(state.attachments()).attach(conn, scope.session().to_owned()) {
+    // Bound and RELEASED before the arms run. A `lock(..)` written into the `match` scrutinee lives
+    // for the whole match, and an arm below re-derives the window — which reads this same map. It
+    // deadlocked the daemon's dispatch thread outright, and that is the honest failure mode: a
+    // re-entrant lock is not a race that shows up occasionally, it is every attach, forever.
+    let outcome = lock(state.attachments()).attach(conn, scope.session().to_owned());
+    match outcome {
         AttachOutcome::NoClient => lifecycle_invalid(
             request,
             format!("{CLIENT_ATTACH_METHOD} requires {CLIENT_HELLO_METHOD} first"),
@@ -667,9 +688,11 @@ fn handle_attach(
             // first attach) the one it left lost one. Each announces on its own channel, so a
             // client watching the session being left learns its badge fell — which the single
             // registry-wide token used to deliver as a side effect of waking everybody.
-            state.channels().bump(scope.session());
+            window_moved(state, scope.session());
+            // A SWITCH left a session too, and that session's window lost a reporter — so it is a
+            // window that moved for the same reason, not merely a badge that fell.
             if let Some(left) = previous.filter(|left| left != scope.session()) {
-                state.channels().bump(&left);
+                window_moved(state, &left);
             }
             lifecycle_ok(request)
         }
@@ -752,7 +775,7 @@ pub fn dispatch_frames(state: &HostState, rx: Receiver<IngressEvent>) {
                         %session,
                         "client detached (connection closed)"
                     );
-                    state.channels().bump(&session);
+                    window_moved(state, &session);
                 }
             }
         }

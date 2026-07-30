@@ -1124,7 +1124,39 @@ impl ExternalIntrospect for WorkspaceExternal {
         Err(InterveneError::UnknownPath)
     }
 
+    /// Dispatch a mux action, then give every tiled pane the size the session's window says it has
+    /// (`window::retile`).
+    ///
+    /// Re-derived HERE, at the boundary, rather than inside each action: every action above can
+    /// move the arrangement — a split adds a share, a close returns one, a `set_layout` re-weights
+    /// them, a `select_window` changes which tree is showing — and a derivation some actions
+    /// performed and others forgot is the asymmetry R237 named. One site cannot forget.
+    ///
+    /// It runs after the action's own work has returned, so no pool lock is held across it: the
+    /// re-derivation takes the attachment, registry and pool locks in turn, and taking one here
+    /// while an action still held another is the deadlock this placement avoids by construction.
+    ///
+    /// Only on SUCCESS. A refused action changed nothing, and re-deriving after it would answer a
+    /// question that was never asked.
     fn invoke(
+        &mut self,
+        path: &str,
+        args: IntrospectValue,
+    ) -> Result<IntrospectValue, InvokeError> {
+        let answer = self.dispatch(path, args);
+        if answer.is_ok()
+            && let Some(attachments) = self.attachments.as_ref()
+        {
+            crate::window::retile(&self.registry, attachments, self.scope.session());
+        }
+        answer
+    }
+}
+
+impl WorkspaceExternal {
+    /// The action table itself — [`Self::invoke`]'s match, split out so the boundary can act on
+    /// what an action answered without wrapping every arm.
+    fn dispatch(
         &mut self,
         path: &str,
         args: IntrospectValue,

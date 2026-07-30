@@ -503,6 +503,21 @@ impl SlotView {
         }
     }
 
+    /// Tell the host how many CELLS this client has to give the session's arrangement — the input
+    /// its `window-size` policy arbitrates over ([`crate::reflow`]).
+    ///
+    /// Not a slot's business, so it takes none: the report is about this CLIENT, and the number is
+    /// folded from every tiled pane's measured surface rather than read off any one of them.
+    pub(crate) fn report_client_size(&self, cols: u16, rows: u16) {
+        self.host.report_client_size(cols, rows);
+    }
+
+    /// The session's arbitrated window in cells, or `None` when nothing has been arbitrated — an
+    /// in-process host (one surface) or a daemon no client has reported an area to yet.
+    pub(crate) fn window_size(&self) -> Option<(u16, u16)> {
+        self.host.window_size()
+    }
+
     /// Send a key to slot `slot`'s pane; `false` for a hole / unencodable / failed send.
     #[must_use]
     pub(crate) fn send_key(&self, slot: usize, key: &str, mods: Modifiers) -> bool {

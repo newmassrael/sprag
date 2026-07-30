@@ -733,6 +733,33 @@ pub struct LayoutWire {
     pub root: Option<LayoutNodeWire>,
 }
 
+impl LayoutWire {
+    /// Every pane this arrangement TILES, in paint order (left-to-right, top-to-bottom) — the same
+    /// order [`LayoutTree::panes`] and a [`Tiling`](crate::Tiling) report.
+    ///
+    /// A floating pane is absent, because it has no leaf here: the host removes one from the tree
+    /// when it floats, so "tiled" is not a flag to filter on but the shape of this structure. That
+    /// is what makes this the honest set for a caller asking which panes a WINDOW is divided
+    /// between — a client's own pane list would answer with the floating ones too.
+    #[must_use]
+    pub fn panes(&self) -> Vec<PaneId> {
+        fn walk(node: &LayoutNodeWire, out: &mut Vec<PaneId>) {
+            match node {
+                LayoutNodeWire::Leaf(pane) => out.push(*pane),
+                LayoutNodeWire::Split { first, second, .. } => {
+                    walk(first, out);
+                    walk(second, out);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        if let Some(root) = self.root.as_ref() {
+            walk(root, &mut out);
+        }
+        out
+    }
+}
+
 /// One node of an arrangement in transit — the wire twin of [`LayoutNode`] (see
 /// [`LayoutWire`]).
 #[derive(Clone, PartialEq, Debug, serde::Serialize, serde::Deserialize)]

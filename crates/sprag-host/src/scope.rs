@@ -147,6 +147,18 @@ impl SessionScope {
         Self::of_session(registry.default_session())
     }
 
+    /// The scope of the session NAMED, or `None` for a name this registry does not hold.
+    ///
+    /// For a caller that has a session name but no request to resolve one from — the daemon's own
+    /// `window::retile`, reached from the client-lifecycle methods, which carry a
+    /// connection rather than a `session` param. Goes through the same
+    /// `of_session` as every other scope, so a scope minted here addresses the
+    /// same window a client's would.
+    #[must_use]
+    pub fn of(registry: &SessionRegistry, name: &str) -> Option<Self> {
+        registry.session(name).map(Self::of_session)
+    }
+
     /// The scope of `session`'s CURRENT window — the ONE construction of a scope, reading the
     /// window's NAME and its pool off the SAME [`Window`](sprag_terminal::Window) so they cannot
     /// come apart. Both [`resolve`](Self::resolve) (a named session) and

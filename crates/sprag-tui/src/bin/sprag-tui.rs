@@ -468,8 +468,15 @@ fn reconcile(host: &WireHost, screen: Rect, focus: &mut Option<PaneId>) -> Tilin
     // shrinking below what the arrangement needs — all of which leave a focus naming nothing.
     let held = focus.filter(|pane| tiling.area_of(*pane).is_some());
     set_focus(host, focus, held.or_else(|| tiling.first_pane()));
-    for pane in &tiling.panes {
-        resize_pane(host, pane.pane, pane.area);
+    // A pane of a session with an arbitrated window is sized by the DAEMON, which holds both inputs
+    // (`tile(tree, window)`) and re-derives whenever either moves. This client writes a size only
+    // when the host has no window to derive from — an older daemon, or one nothing has reported an
+    // area to — which is the same fallback `window_area` above states for its own screen, and what
+    // this did before either existed.
+    if host.window_size().is_none() {
+        for pane in &tiling.panes {
+            resize_pane(host, pane.pane, pane.area);
+        }
     }
     tiling
 }

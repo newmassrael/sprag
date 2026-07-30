@@ -203,8 +203,10 @@ pub const DETACH_ON_DESTROY_VALUES: &[&str] = &["on", "off", "no-detached", "nex
 /// fact about every client at once, so no one client can decide it. What crosses the wire is the
 /// arbitrated SIZE ([`crate::wire::WINDOW_SIZE_SLOT`]), never this setting.
 ///
-/// It arbitrates over the clients that report an area, which today means `sprag-tui` and not
-/// `sprag-gui` — see [`WindowSize`] for the mechanism that gap is waiting on.
+/// It arbitrates over the clients that report an area, which is BOTH of them: `sprag-tui` reports
+/// its terminal, and `sprag-gui` reports the cells its tiled panes measured
+/// (`sprag_terminal::fit_window` — its chrome is per pane, so its surface is not the answer). So
+/// this option reaches a window as well as a terminal, which it did not when it was first written.
 pub const WINDOW_SIZE: &str = "window-size";
 
 /// [`WINDOW_SIZE`]'s values — [`WindowSize`]'s own names, taken from the enum rather than re-spelled

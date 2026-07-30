@@ -95,6 +95,11 @@ fn main() -> ExitCode {
             // The keymap gate, HERE because it splits: after the check above, which needs exactly one
             // pane, and before the one below, which leaves several standing.
             check_the_gui_follows_the_users_keymap(&mut smoke, &mut report);
+            // HERE for the same reason as the keymap gate above: it needs exactly ONE pane, so the
+            // pane the daemon reports and the grid this window paints are unambiguously the same
+            // one. It attaches a second CLIENT and takes it away again, leaving the pane set as it
+            // found it.
+            check_a_window_and_a_terminal_agree_on_one_pane_size(&mut smoke, &mut report);
             // AFTER every check that needs the client this run booted, because it REPLACES that
             // client twice. Before the session kill, which is happy to kill whichever session the
             // client it finds is attached to.
@@ -1623,6 +1628,244 @@ fn attributable(areas: &std::collections::HashMap<u64, u64>, named: u64) -> bool
     one > 0 && !total.is_multiple_of(one)
 }
 
+/// A window and a TERMINAL client viewing one session give its pane ONE size — the defect this
+/// check exists for, measured before it was fixed.
+///
+/// Before: the window sized its panes from its own pixels and a terminal client sized the same
+/// panes from the session's arbitrated window, so attaching one to a session a window was showing
+/// changed the pane underneath it — measured at 38x17 becoming 49x30 while the window went on
+/// painting 38x17 of it, thirteen rows and eleven columns off screen with nothing to say so.
+///
+/// The three claims, in the order a user meets them:
+///
+/// 1. This window REPORTS an area, so the arbitration can see it at all. Without this, no
+///    `window-size` value the user could set would reach a GUI.
+/// 2. Under `smallest`, attaching a 100x30 terminal leaves the pane at the size the window had
+///    ALONE. That is the defect's exact negation.
+/// 3. Under `largest`, the pane takes the terminal's area — the window then shows part of it, which
+///    is what the user asked for by naming the policy, and is what tmux says of any client smaller
+///    than the window.
+///
+/// Then the terminal DETACHES, and the pane returns to the window's own size. That one is the
+/// subtlest of the four and the reason the derivation lives in the daemon: a departing client
+/// changes the window, and the client that remains has no seam that could notice.
+///
+/// The sizes are asserted as RELATIONS (against what this window measured for itself, read live)
+/// rather than as literals, because the cell metric depends on the font this run happens to
+/// resolve — a check written to `38x17` would be asserting the fixture's font.
+fn check_a_window_and_a_terminal_agree_on_one_pane_size(smoke: &mut Smoke, report: &mut Report) {
+    let Some(session) = smoke.attached_session() else {
+        report.check("the window names its session", false);
+        return;
+    };
+    let Ok(mut daemon) = smoke.daemon() else {
+        report.check("the smoke reaches the daemon", false);
+        return;
+    };
+
+    // What this window alone makes of the session: the panes it is showing, and the window the
+    // daemon arbitrated from its report. Read rather than assumed, because the cell metric depends
+    // on the font this run resolved and the pane set on the checks that ran before this one.
+    let solo = settled_pane_dims(smoke, &mut daemon, &session);
+    let alone = window_size(&mut daemon, &session);
+    report.check("the window's session holds panes", !solo.is_empty());
+
+    // CLAIM 0, and the one that gates the FOLD: alone, this window hides nothing. Its report is the
+    // only input to the window, so a report larger than what it can draw comes straight back as
+    // panes too big for their widgets — which is R241's stated reason a GUI could not simply be
+    // handed the arbitrated window, and it would be silent without this line.
+    report.check(
+        "alone, the window paints every pane WHOLE",
+        smoke
+            .wait_for(|smoke| {
+                let grids = smoke.grid_facts();
+                (!grids.is_empty() && grids.iter().all(|(painted, buffer)| painted == buffer))
+                    .then_some(())
+            })
+            .is_ok(),
+    );
+
+    // CLAIM 1: this window is IN the arbitration, which it can only be by reporting — and as the
+    // only client, its report IS the window. Before this round it reported nothing, and no
+    // `window-size` value a user could set would have reached it.
+    report.check(
+        "the window reports its own cell area",
+        client_sizes(&mut daemon, &session)
+            .iter()
+            .any(|size| size.is_some()),
+    );
+    report.check(
+        "the session's window is what this client reported",
+        alone.is_some()
+            && client_sizes(&mut daemon, &session)
+                .iter()
+                .all(|size| *size == alone),
+    );
+
+    if let Err(error) = smoke.write_user_config("[options]\nwindow-size = \"smallest\"\n") {
+        report.check("the smoke writes window-size", false);
+        eprintln!("      {error}");
+        return;
+    }
+
+    let terminal = match smoke.attach_terminal(&session, 100, 30) {
+        Ok(terminal) => terminal,
+        Err(error) => {
+            report.check("a terminal client attaches to the window's session", false);
+            eprintln!("      {error}");
+            return;
+        }
+    };
+    report.check(
+        "a terminal client attaches to the window's session",
+        smoke
+            .wait_for(|_| (client_sizes(&mut daemon, &session).len() == 2).then_some(()))
+            .is_ok(),
+    );
+
+    // CLAIM 2: under `smallest` this window is the smaller client, so the window does not move and
+    // NOTHING under it does either. That is the measured defect's exact negation — before, the
+    // terminal's 100x30 became the panes' size and this window went on painting its own.
+    report.check(
+        "under `smallest` the window does not move",
+        window_size(&mut daemon, &session) == alone,
+    );
+    report.check(
+        "under `smallest` every pane keeps the size this window gave it",
+        settled_pane_dims(smoke, &mut daemon, &session) == solo,
+    );
+
+    // CLAIM 3: the policy reaches the panes. The terminal is RESIZED rather than the config merely
+    // rewritten, because a policy is read when a window is re-derived and nothing re-derives on a
+    // file write — a check that only edited the file would pass against a daemon that never read it.
+    let _ = smoke.write_user_config("[options]\nwindow-size = \"largest\"\n");
+    let larger = (120, 40);
+    if let Err(error) = terminal.resize(larger.0, larger.1, (0, 0)) {
+        eprintln!("      could not resize the terminal client: {error}");
+    }
+    report.check(
+        "under `largest` the window takes the terminal's area",
+        smoke
+            .wait_for(|_| (window_size(&mut daemon, &session) == Some(larger)).then_some(()))
+            .is_ok(),
+    );
+    let grown = settled_pane_dims(smoke, &mut daemon, &session);
+    report.check(
+        "and every pane grew with it",
+        !grown.is_empty()
+            && grown.iter().all(|(pane, (cols, rows))| {
+                solo.get(pane)
+                    .is_some_and(|(was, tall)| cols >= was && rows >= tall)
+            })
+            && grown != solo,
+    );
+
+    // And this window is now showing PART of a pane — the crop the policy asked for, which is only
+    // honest because the other policy would have chosen this client's own area instead.
+    report.check(
+        "the window paints part of every pane, which are now larger than it",
+        smoke
+            .wait_for(|smoke| {
+                let grids = smoke.grid_facts();
+                (!grids.is_empty()
+                    && grids
+                        .iter()
+                        .all(|(painted, buffer)| painted.0 < buffer.0 && painted.1 < buffer.1))
+                .then_some(())
+            })
+            .is_ok(),
+    );
+
+    // The detach: a client leaving moves the window as surely as one arriving, and the client that
+    // REMAINS has no seam that could notice — which is why the derivation is the daemon's.
+    drop(terminal);
+    report.check(
+        "the panes return to this window's own size when the terminal leaves",
+        smoke
+            .wait_for(|_| {
+                let dims = pane_dims(&mut daemon, &session);
+                (!dims.is_empty() && dims == solo).then_some(())
+            })
+            .is_ok(),
+    );
+
+    // Leave the file as this check found it, so a later one reads its own settings and not these.
+    let _ = smoke.write_user_config("");
+}
+
+/// The session's arbitrated window, straight off the daemon — the derived answer every client is
+/// meant to agree with, and the one number a policy change is visible in.
+fn window_size(daemon: &mut HostConn, session: &str) -> Option<(u16, u16)> {
+    let value = daemon
+        .call(
+            "scene/query",
+            json!({ "path": "/sprag_mux/external/window_size", "session": session }),
+        )
+        .ok()?;
+    Some((
+        u16::try_from(value["cols"].as_u64()?).ok()?,
+        u16::try_from(value["rows"].as_u64()?).ok()?,
+    ))
+}
+
+/// Every attached client's reported area, in the daemon's own client list.
+fn client_sizes(daemon: &mut HostConn, session: &str) -> Vec<Option<(u16, u16)>> {
+    daemon
+        .call(
+            "scene/query",
+            json!({ "path": "/sprag_mux/external/clients", "session": session }),
+        )
+        .ok()
+        .into_iter()
+        .flat_map(|list| list.as_array().cloned().unwrap_or_default())
+        .filter(|client| client["session"].as_str() == Some(session))
+        .map(|client| {
+            Some((
+                u16::try_from(client["size"]["cols"].as_u64()?).ok()?,
+                u16::try_from(client["size"]["rows"].as_u64()?).ok()?,
+            ))
+        })
+        .collect()
+}
+
+/// Each pane's `(cols, rows)`, by pane id, off the host's own pane list.
+fn pane_dims(daemon: &mut HostConn, session: &str) -> std::collections::HashMap<u64, (u64, u64)> {
+    let mut dims = std::collections::HashMap::new();
+    if let Ok(list) = daemon.call(
+        "scene/query",
+        json!({ "path": "/sprag_mux/external/panes", "session": session }),
+    ) {
+        for pane in list.as_array().into_iter().flatten() {
+            if let (Some(id), Some(cols), Some(rows)) = (
+                pane["id"].as_u64(),
+                pane["cols"].as_u64(),
+                pane["rows"].as_u64(),
+            ) {
+                dims.insert(id, (cols, rows));
+            }
+        }
+    }
+    dims
+}
+
+/// Each pane's `(cols, rows)` once they have stopped moving — a size read mid-reflow describes a
+/// pane that will not exist by the time anything is measured against it.
+fn settled_pane_dims(
+    smoke: &mut Smoke,
+    daemon: &mut HostConn,
+    session: &str,
+) -> std::collections::HashMap<u64, (u64, u64)> {
+    let mut previous = None;
+    smoke
+        .wait_for(|_| {
+            let now = pane_dims(daemon, session);
+            let still = !now.is_empty() && previous.as_ref() == Some(&now);
+            previous = Some(now.clone());
+            still.then_some(now)
+        })
+        .unwrap_or_default()
+}
+
 /// Each pane's cell area, by pane id, off the host's own pane list.
 ///
 /// Read from the wire rather than computed from the client's tiles: the host projects what the
@@ -1947,6 +2190,55 @@ impl Smoke {
         let mut out = std::collections::HashMap::new();
         walk(value.get("scene").unwrap_or(&value), &mut out);
         Ok(out)
+    }
+
+    /// What a painted `TextGrid` shows and what it holds: `(painted, buffer)`, each `(cols, rows)`.
+    ///
+    /// The two are the whole of the crop question. A grid whose painted size is smaller than its
+    /// buffer is showing PART of its pane — which is either the honest consequence of a policy the
+    /// user chose, or the silent truncation this round's gate exists to catch, and the numbers are
+    /// the same either way. Only the snapshot can answer it: the client's own scene carries both,
+    /// and no daemon query knows what a window drew.
+    fn grid_facts(&mut self) -> Vec<GridFacts> {
+        let Ok(value) = self.call(
+            "scene/snapshot",
+            json!({ "path": "/window[main]", "from": "paint" }),
+        ) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        collect_grids(value.get("scene").unwrap_or(&value), &mut out);
+        out
+    }
+
+    /// Attach a real `sprag-tui` to `session` on a real pseudoterminal of `cols` x `rows`.
+    ///
+    /// A PTY rather than a pipe, and the binary rather than a stand-in, because everything this
+    /// gates is downstream of a terminal client being one: it reads its window size from the tty,
+    /// reports THAT to the daemon, and a client whose size came from anywhere else would prove
+    /// nothing about the arbitration. Spawned through sprag's own [`PanePty`](sprag_terminal::PanePty), so the harness runs
+    /// the same PTY authority a pane does.
+    ///
+    /// The environment is spelled out rather than inherited: the client must reach THIS run's
+    /// daemon and read THIS run's config, and a stray `SPRAG_*` in the developer's shell reaching a
+    /// child here is the class of leak an isolated run exists to prevent.
+    ///
+    /// Dropping the returned handle kills the client, which is how the detach half is driven.
+    fn attach_terminal(
+        &self,
+        session: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<sprag_terminal::PanePty, String> {
+        let mut command = sprag_terminal::CommandBuilder::new(self.target.join("sprag-tui"));
+        command.env("SPRAG_GUI_SESSION", session);
+        command.env("SPRAG_GUI_HOST_SOCK", &self.host_sock);
+        command.env("SPRAG_HOST_RPC_SOCK", &self.host_sock);
+        command.env("XDG_STATE_HOME", &self.state);
+        command.env("XDG_CONFIG_HOME", self.state.join("config"));
+        command.env("TERM", "xterm-256color");
+        sprag_terminal::PanePty::spawn(command, cols, rows)
+            .map_err(|error| format!("could not attach a terminal client: {error}"))
     }
 
     /// The accessible tree, keyed by tag. Default-valued fields are OMITTED by the serializer, so an
@@ -2422,6 +2714,37 @@ fn wait_for_path(path: &Path) -> io::Result<()> {
         std::thread::sleep(POLL);
     }
     Ok(())
+}
+
+/// What one painted pane grid SHOWS and what it HOLDS, each `(cols, rows)`.
+///
+/// The pair is the whole of the crop question, which is why it travels as one value: a grid whose
+/// painted size is smaller than its buffer is showing part of its pane, and either number alone
+/// says nothing about that.
+type GridFacts = ((u64, u64), (u64, u64));
+
+/// Every painted pane grid in `node`'s subtree, as [`GridFacts`].
+///
+/// Found by SHAPE rather than by a slot number, and that is not fussiness: a slot is a display
+/// position this run's earlier checks move panes in and out of, so `sprag_gui.pane.0` names an
+/// empty slot after a kill and a check written to it asserts about nothing.
+fn collect_grids(node: &Value, out: &mut Vec<GridFacts>) {
+    let named = node["tag"]
+        .as_str()
+        .is_some_and(|tag| tag.starts_with("sprag_gui.pane.") && tag.ends_with("#grid"));
+    if named
+        && let (Some(cols), Some(rows), Some(buffer_cols), Some(buffer_rows)) = (
+            node["cols"].as_u64(),
+            node["rows"].as_u64(),
+            node["buffer_cols"].as_u64(),
+            node["buffer_rows"].as_u64(),
+        )
+    {
+        out.push(((cols, rows), (buffer_cols, buffer_rows)));
+    }
+    for child in node["children"].as_array().into_iter().flatten() {
+        collect_grids(child, out);
+    }
 }
 
 /// Flatten a snapshot subtree into `out`, keyed by tag.

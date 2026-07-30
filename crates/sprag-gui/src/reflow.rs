@@ -7,6 +7,7 @@
 use crate::terminal::{TerminalView, grid_dims, pane_cache_key, pane_tag, use_terminal};
 use pinion_core::CellMetric;
 use pinion_core::reactive::{Effect, Owner};
+use sprag_terminal::fit_window;
 use std::rc::Rc;
 
 /// `Owner::cache` key for pane `index`'s reflow [`Effect`] (kept alive across
@@ -71,9 +72,100 @@ pub(crate) fn install_reflow() {
     // (the registry, another cache slot), but only at RUN time — the factory
     // itself stays cache-free.
     let terminal = use_terminal();
+    install_report(&owner, &terminal);
     for index in terminal.slots.occupied_slots() {
         install_pane_reflow(&owner, &terminal, index);
     }
+}
+
+/// `Owner::cache` key for the client-size report [`Effect`] — one per client, not one per pane,
+/// because what it reports is this CLIENT's area.
+const REPORT_KEY: &str = "sprag_gui.client_size_report";
+
+/// Holds the client-size report [`Effect`] so the `Owner::cache` keeps it alive across frames.
+pub(crate) struct ReportMarker {
+    _effect: Effect,
+}
+
+/// The cells this client can give the session's ARRANGEMENT, or `None` while it cannot say.
+///
+/// Not the window, and not the dock surface either. sprag's chrome is PER PANE — every dock panel
+/// carries a header, and a scrollbar beside its grid — so the cells available to the arrangement
+/// depend on the shape of the tiling rather than on the size of the window: two stacked panes lose
+/// two headers where two side-by-side ones lose one. Reporting the surface would hand the session a
+/// window larger than this client can draw, and every pane's grid would be sized past the widget
+/// holding it.
+///
+/// So it reports what it MEASURED. pinion publishes each pane's laid-out rect (R1012), which is the
+/// grid area with the header, the scrollbar, the divider and the rounding already taken out by
+/// pinion's own layout — this client therefore models none of its chrome. Those measurements fold
+/// back into one window through [`fit_window`], the inverse of the tiler that will consume it.
+///
+/// `None` when the host tiles nothing, or while any tiled pane is still at pinion's `(0, 0)`
+/// pre-layout sentinel: a report is a CLAIM about what this client can show, and a client that has
+/// not been laid out yet has none to make. Reporting only the panes it happens to know would name a
+/// window missing a pane's worth of cells.
+fn reported_window(terminal: &TerminalView) -> Option<(u16, u16)> {
+    let layout = terminal.slots.layout();
+    let mut measured = Vec::new();
+    for pane in layout.tree.panes() {
+        let slot = terminal.slots.slot_of(pane)?;
+        // A TRACKED read, and the reason this Effect re-runs: any pane's rect moving can change
+        // what this client can give the arrangement.
+        let rect = pinion_core::use_pane_viewport_size(pane_tag(slot));
+        measured.push((pane, reflow_target(rect, terminal.metric)?));
+    }
+    fit_window(&layout.tree, &measured)
+}
+
+/// Install (once) the [`Effect`] that keeps the host told how big this client is.
+///
+/// One Effect for the client rather than one per pane: the answer is folded from EVERY tiled pane's
+/// rect, so a per-pane Effect would compute the same number once per pane and report it as many
+/// times. It re-runs whenever any of those rects moves, which is exactly when the answer can move —
+/// an OS window resize, a splitter drag settling, a pane arriving or leaving.
+///
+/// The host ignores a repeat of the same numbers, so a run that folds to what was already reported
+/// costs one call and wakes nobody.
+fn install_report(owner: &Owner, terminal: &Rc<TerminalView>) {
+    if owner.cache_contains::<ReportMarker>(REPORT_KEY.to_owned()) {
+        return;
+    }
+    let terminal = Rc::clone(terminal);
+    let effect = Effect::new(owner, move || {
+        if let Some((cols, rows)) = reported_window(&terminal) {
+            terminal.slots.report_client_size(cols, rows);
+        }
+    });
+    owner.cache(REPORT_KEY.to_owned(), move || ReportMarker {
+        _effect: effect,
+    });
+}
+
+/// Whether the pane in slot `index` is one the SESSION sizes, so this client must not.
+///
+/// True for a TILED pane of a session with an arbitrated window: its `(cols, rows)` is
+/// `tile(tree, window)`, both of which are the daemon's, and the daemon derives it. A client
+/// writing its own answer there is the second authority this front exists to remove — it is how a
+/// GUI came to size a pane from its pixels while a terminal client sized the same pane from the
+/// window, leaving whichever wrote last in force and the other painting a grid it had the wrong
+/// dimensions for.
+///
+/// False in the two cases where the session says nothing, and then this client's own pixels are the
+/// only fact available — the same fallback `sprag-tui` states for its own screen:
+///
+/// * A FLOATING pane. It has no leaf in the arrangement, so no tiling ever names it; its window is
+///   its own surface and its size is that surface's business.
+/// * A host with NO arbitrated window: an in-process host (one surface, so there is nothing to
+///   arbitrate) or a daemon no client has reported an area to yet.
+fn owns_its_own_size(terminal: &TerminalView, index: usize) -> bool {
+    if terminal.slots.window_size().is_none() {
+        return false;
+    }
+    terminal
+        .slots
+        .pane_at(index)
+        .is_some_and(|pane| terminal.slots.layout().tree.panes().contains(&pane))
 }
 
 /// Install pane `index`'s reflow [`Effect`] exactly once (idempotent via the
@@ -93,6 +185,9 @@ fn install_pane_reflow(owner: &Owner, terminal: &Rc<TerminalView>, index: usize)
         let Some(target) = reflow_target(measured, terminal.metric) else {
             return; // pane unmeasured (boot, before layout) — no reflow
         };
+        if owns_its_own_size(&terminal, index) {
+            return;
+        }
         // Reflow only on a real change, so an unchanged frame issues no ioctl.
         // Both the PTY-size read and the resize go through the host client.
         if terminal.slots.pane_grid_size(index) != target {
