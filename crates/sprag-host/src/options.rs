@@ -30,13 +30,22 @@
 //! never disagree about what the user chose — the rule
 //! [`bind_key`](crate::config::bind_key) already follows for a key.
 //!
-//! ## Why every option here is the CLIENT's
+//! ## No option crosses the WIRE — each process reads the file itself
 //!
-//! The daemon has no reason to hold one, for the reason [`crate::config`] gives for a keybinding: a
-//! prefix key, a detach policy and a font size are what ONE client does with one keyboard, one
-//! attachment and one window, and two clients may legitimately differ. So nothing here crosses the
-//! wire, and `sprag show-options` answers on a machine with no session running — the property
-//! `list-keys` has, and for the same reason.
+//! Most of these are one CLIENT's: a prefix key, a detach policy and a font size are what one client
+//! does with one keyboard, one attachment and one window, and two clients may legitimately differ. But
+//! [`DEFAULT_COMMAND`] is the DAEMON's, because that is where a pane is born, and an option about what
+//! a pane runs cannot live anywhere else.
+//!
+//! So the invariant is not "every option is a client's" — an earlier version of this doc said that,
+//! and `default-command` is the counter-example that corrected it. The invariant that actually holds,
+//! and the one worth keeping, is that **nothing here crosses the wire**: every process that needs an
+//! option reads the user's file itself. The daemon already does exactly that for `[[command]]`
+//! ([`Host::global_commands`](crate::HostClient::global_commands), read from disk on every call), so
+//! this adds a READER to a file it was reading, not a dependency it did not have.
+//!
+//! What that buys is the property `list-keys` has: `sprag show-options` answers on a machine with no
+//! session running, and no verb here has to ask a daemon what it thinks a setting is.
 //!
 //! An option is NOT the place for an operator's control. `SPRAG_RESTORE_HISTORY` bounds what a pane's
 //! output writes to disk and `SPRAG_OSC52` decides whether a program may read the user's clipboard;
@@ -69,6 +78,18 @@ pub enum OptionKind {
     /// for a `u32` is refused as not being a number, which is the type's own bound and not an invented
     /// one.
     Number,
+    /// A shell COMMAND LINE, empty for none.
+    ///
+    /// The one kind whose vocabulary is genuinely open, and saying so is the honest thing rather than
+    /// a gap: the grammar is the user's SHELL's, and a validator of ours would be a second, poorer
+    /// one. Whether the command exists is the shell's answer too, and it lands in the pane where the
+    /// user reads it — which is a better report than any refusal here could be.
+    ///
+    /// Empty is VALID and means "no command", the state tmux's own `default-command` uses to mean
+    /// "run the shell". So this is the kind where an empty value is a value, and the reason
+    /// [`Number`](Self::Number) refusing zero is not the same rule: a size of nothing is not a size,
+    /// while a command of nothing is a decision.
+    Command,
 }
 
 impl OptionKind {
@@ -98,6 +119,26 @@ impl OptionKind {
                 Ok(0) | Err(_) => Err(format!("{value:?} is not a number above zero")),
                 Ok(number) => Ok(number.to_string()),
             },
+            // Trimmed and otherwise untouched: the INSIDE of the line is the shell's grammar, so
+            // normalising any of it would be this table editing a command it does not parse.
+            Self::Command => Ok(value.trim().to_owned()),
+        }
+    }
+
+    /// `value` as `show-options` should PRINT it in the `name value` form.
+    ///
+    /// A [`Command`](Self::Command) is shell-quoted, which is how tmux prints a string option and the
+    /// only way an empty one can appear at all: `default-command ''` says something, while a line
+    /// ending in a space says nothing a reader can see. Every other kind is a single bare word by
+    /// construction, so quoting it would only add noise.
+    ///
+    /// `show-options -v` deliberately does NOT use this: a script reading one value wants the value,
+    /// not a rendering of it.
+    #[must_use]
+    pub fn render(self, value: &str) -> String {
+        match self {
+            Self::Command => crate::shellword::shell_quote(value),
+            _ => value.to_owned(),
         }
     }
 }
@@ -129,6 +170,14 @@ pub const PREFIX: &str = "prefix";
 /// How a client reacts when its own attached session is destroyed — tmux's `detach-on-destroy`.
 pub const DETACH_ON_DESTROY: &str = "detach-on-destroy";
 
+/// What a pane runs when no command was specified — tmux's `default-command`.
+///
+/// The FIRST option a daemon reads, and the reason the invariant in this module's docs is about the
+/// WIRE rather than about clients: a pane is born in the daemon, so a setting about what it runs has
+/// to be read there. Nothing crosses the wire for it — the daemon reads the user's file itself, as it
+/// already does for `[[command]]`.
+pub const DEFAULT_COMMAND: &str = "default-command";
+
 /// The windowed client's glyph size in pixels.
 ///
 /// `gui-`prefixed because it governs ONE frontend and tmux has no twin: a terminal client's font is
@@ -151,6 +200,14 @@ pub const DETACH_ON_DESTROY_VALUES: &[&str] = &["on", "off", "no-detached", "nex
 /// not absent because the table cannot hold them; they are absent because sprag has no behaviour for
 /// them to govern yet.
 pub const OPTIONS: &[OptionSpec] = &[
+    OptionSpec {
+        name: DEFAULT_COMMAND,
+        kind: OptionKind::Command,
+        // Empty, exactly as tmux's is: with nothing said, a pane runs the user's shell. The default
+        // is therefore not "a shell" spelled here — `$SHELL` is `default_shell_command`'s, and
+        // spelling it twice would put this table in the business of naming a program it never reads.
+        default: "",
+    },
     OptionSpec {
         name: DETACH_ON_DESTROY,
         kind: OptionKind::Choice(DETACH_ON_DESTROY_VALUES),

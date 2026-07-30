@@ -374,7 +374,9 @@ fn parse_args() -> BootArgs {
         }
     }
 
-    let (command, label) = command.unwrap_or_else(sprag_terminal::default_shell_command);
+    // No `--` command: the user's `default-command`, then `$SHELL` — the same resolver every other
+    // pane birth uses.
+    let (command, label) = command.unwrap_or_else(sprag_host::config::default_pane_command);
     BootArgs {
         cols,
         rows,

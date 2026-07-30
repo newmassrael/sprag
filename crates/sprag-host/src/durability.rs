@@ -525,4 +525,25 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+    /// A RESTORED pane whose recorded program is refused gets a SHELL — never the user's
+    /// `default-command`.
+    ///
+    /// The deliberate exclusion, pinned so a later round cannot "fix" it into consistency. This
+    /// fallback is not "no command was specified" (which
+    /// [`default_pane_command`](crate::config::default_pane_command) answers); it is "the recorded
+    /// command is REFUSED", a decision about not re-running what a pane was doing. Answering it with a
+    /// user's default would run a program on the strength of a security refusal.
+    #[test]
+    fn a_refused_restore_gets_a_shell_not_the_users_default_command() {
+        crate::config::with_config(Some("[options]\ndefault-command = \"exec htop\"\n"), || {
+            let allow = HashSet::new();
+            let argv = vec!["rm".to_owned(), "-rf".to_owned(), "/".to_owned()];
+            let (_command, label) = restore_command(&argv, None, &allow);
+            let (_shell, shell_label) = sprag_terminal::default_shell_command();
+            assert_eq!(
+                label, shell_label,
+                "a refused command falls to the SHELL, not to an option about new panes",
+            );
+        });
+    }
 }

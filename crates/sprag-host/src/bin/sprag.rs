@@ -438,7 +438,7 @@ fn show_options(args: Vec<String>) -> io::Result<()> {
     })?;
     let Some(name) = name else {
         for (name, value) in options.iter() {
-            println!("{name} {value}");
+            println!("{name} {}", rendered(name, value));
         }
         return Ok(());
     };
@@ -451,11 +451,21 @@ fn show_options(args: Vec<String>) -> io::Result<()> {
         ))
     })?;
     if bare {
+        // RAW: a script asked for the value, not a rendering of it.
         println!("{value}");
     } else {
-        println!("{name} {value}");
+        println!("{name} {}", rendered(&name, value));
     }
     Ok(())
+}
+
+/// `value` as the `name value` form prints it — see
+/// [`OptionKind::render`](sprag_host::options::OptionKind::render).
+///
+/// A name with no spec cannot reach here (both callers looked it up), but the fallback is the value
+/// itself rather than a panic: a listing is not the place to die over a table inconsistency.
+fn rendered(name: &str, value: &str) -> String {
+    sprag_host::options::spec(name).map_or_else(|| value.to_owned(), |spec| spec.kind.render(value))
 }
 
 /// `set-option [-g] NAME VALUE` / `set-option [-g] -u NAME`: change one client option — tmux

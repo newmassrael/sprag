@@ -2430,3 +2430,105 @@ fn a_number_option_is_written_as_a_number() {
         refused.stderr,
     );
 }
+
+/// **THE GATE for the first DAEMON-side option**: a pane the daemon births with no command runs the
+/// user's `default-command`.
+///
+/// Every other option in this table is one client's, and the daemon reads none of them. This one it
+/// must, because a pane is born THERE — so the claim can only be made against a real daemon reading a
+/// real `config.toml`, which is what this does. It covers TWO birth paths, and they are separate code:
+/// the standalone boot pane (`sprag-term` with no `--` command) and a pane created through the wire
+/// `spawn` action (`split-window`, which every other daemon-side birth shares a spec parser with).
+///
+/// The claim discriminates: with `default-command = "cat"` the label is `cat`, where a daemon ignoring
+/// the option labels the pane with `$SHELL`'s own name. Read through `sprag panes`, so it is the label
+/// the daemon actually recorded.
+///
+/// REVERT-PROOF: put `default_shell_command()` back in `parse_spawn` and the split's line fails while
+/// the boot pane's still passes — the two paths are asserted separately for exactly that reason.
+#[test]
+fn a_daemon_born_pane_runs_the_users_default_command() {
+    let config = ConfigHome::new("[options]\ndefault-command = \"cat\"\n");
+    // NO `--` command, so the boot pane has none of its own to prefer. `cat` blocks on its PTY, which
+    // is what keeps the session alive for the rest of the test.
+    let (_host, sock) = spawn_host_with(&[], &[("XDG_CONFIG_HOME", config.as_str())]);
+
+    // Polled, because the boot pane is spawned after the bind: an unpopulated first read would be a
+    // false failure rather than a claim about the option.
+    let mut boot = String::new();
+    let born = wait_for(Duration::from_secs(5), || {
+        boot = sprag(&sock, &["panes"])
+            .stdout
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        !boot.is_empty()
+    });
+    assert!(born, "the boot pane appears");
+    assert!(
+        boot.ends_with("cat"),
+        "the boot pane runs the user's default-command, not a shell: {boot:?}",
+    );
+
+    // ...and so does a pane born through the wire spawn action.
+    let split = sprag(&sock, &["split-window", "-h", "0"]);
+    assert!(split.ok, "split: {}", split.stderr);
+    let listed = sprag(&sock, &["panes"]);
+    assert!(listed.ok, "{}", listed.stderr);
+    let labels: Vec<&str> = listed
+        .stdout
+        .lines()
+        .filter_map(|line| line.split_whitespace().last())
+        .collect();
+    assert_eq!(
+        labels,
+        vec!["cat", "cat"],
+        "both the boot pane and the split's run it: {:?}",
+        listed.stdout,
+    );
+}
+
+/// `show-options` prints a COMMAND shell-quoted, and `-v` prints it raw.
+///
+/// Quoted because it is the only way an empty one can be seen at all — `default-command ''` says
+/// something, a line ending in a space says nothing — and because a command with spaces on an
+/// unquoted line is ambiguous to a reader. tmux prints a string option the same way. `-v` stays raw:
+/// a script asked for the value, not a rendering of it.
+#[test]
+fn a_command_option_is_printed_quoted_and_read_raw() {
+    let absent = socket_path();
+    let empty = ConfigHome::new("");
+    let shown = sprag_env(
+        &absent,
+        &["show-options"],
+        &[("XDG_CONFIG_HOME", empty.as_str())],
+    );
+    assert!(shown.ok, "{}", shown.stderr);
+    assert!(
+        shown
+            .stdout
+            .lines()
+            .any(|line| line == "default-command ''"),
+        "an unset command is VISIBLE as empty: {:?}",
+        shown.stdout,
+    );
+
+    let set = ConfigHome::new("[options]\ndefault-command = \"exec top -d 2\"\n");
+    let env = [("XDG_CONFIG_HOME", set.as_str())];
+    let shown = sprag_env(&absent, &["show-options"], &env);
+    assert!(
+        shown
+            .stdout
+            .lines()
+            .any(|line| line == "default-command 'exec top -d 2'"),
+        "a command with spaces is one quoted word: {:?}",
+        shown.stdout,
+    );
+    let bare = sprag_env(&absent, &["show-options", "-v", "default-command"], &env);
+    assert_eq!(
+        bare.stdout.trim(),
+        "exec top -d 2",
+        "and -v hands a script the value itself",
+    );
+}

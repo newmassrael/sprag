@@ -26,7 +26,7 @@ pub mod remote;
 pub mod snapshot;
 pub mod workspace;
 
-pub use command::{command_from_parts, default_shell_command};
+pub use command::{command_from_parts, default_shell_command, shell_command_line};
 pub use layout::{
     LayoutError, LayoutNode, LayoutNodeWire, LayoutSnapshot, LayoutTree, LayoutWire, LeafHome,
     SplitDir, SplitId, SplitSide,

@@ -208,7 +208,10 @@ fn pane_command() -> (CommandBuilder, String) {
     // assembly (TERM, args, label) and the `$SHELL` fallback are the shared SSOT.
     match command_spec() {
         Some((program, args)) => sprag_terminal::command_from_parts(program, args),
-        None => sprag_terminal::default_shell_command(),
+        // No explicit argv: the user's `default-command`, then `$SHELL`. `SPRAG_GUI_CMD` stays ahead
+        // of it because an argv a launcher passed is an explicit choice, and `default-command` is by
+        // definition what runs when there was none.
+        None => sprag_host::config::default_pane_command(),
     }
 }
 

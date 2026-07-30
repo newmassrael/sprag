@@ -181,10 +181,14 @@ impl WorkspaceExternal {
     /// not an array, a non-`u16` `cols`/`rows`) is a `TypeMismatch` HERE, the same refusal the
     /// `spawn` action and `new_session`'s own `name` field give a type error — so a `new_session`
     /// can reject a malformed birth spec before it creates the session. `cmd` (an argv array)
-    /// defaults to `$SHELL`; `cols`/`rows` left `None` take the pool's default size at spawn.
+    /// defaults to the user's [`default-command`](crate::options::DEFAULT_COMMAND), then to `$SHELL`
+    /// ([`default_pane_command`](crate::config::default_pane_command)); `cols`/`rows` left `None` take
+    /// the pool's default size at spawn.
     fn parse_spawn(map: &Map<String, Value>) -> Result<SpawnSpec, InvokeError> {
         let (command, label) = match map.get("cmd") {
-            None => sprag_terminal::default_shell_command(),
+            // The user's `default-command`, falling through to `$SHELL` — one resolver for every
+            // birth, so a setting cannot be honoured by some spawn paths and not others.
+            None => crate::config::default_pane_command(),
             Some(Value::Array(argv)) => build_command(argv)?,
             Some(_) => return Err(InvokeError::TypeMismatch),
         };

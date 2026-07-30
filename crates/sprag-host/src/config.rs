@@ -197,6 +197,51 @@ pub fn options() -> Result<Options, ConfigError> {
     Ok(client_config()?.0)
 }
 
+/// What a pane runs when NO command was specified: the user's
+/// [`default-command`](crate::options::DEFAULT_COMMAND) if they set one, else `$SHELL` —
+/// tmux's `default-command` falling through to its `default-shell`.
+///
+/// # Why this is one function and not four
+///
+/// Four places resolve "no command specified": the daemon's `spawn` / `split` / `new_session` /
+/// `new_window` actions (through one spec parser), the in-process host's own `new_pane` and
+/// `new_window`, the windowed client's boot pane, and `sprag-term`'s standalone boot. A setting
+/// honoured by some of them is the asymmetry R237 named — `prefix %` working over a socket and doing
+/// nothing in process — so there is one resolver and every birth calls it.
+///
+/// **The restore path is deliberately NOT one of them.** `exact_or_shell`'s fallback to a shell is not
+/// "no command was specified": it is "the recorded command is REFUSED", a security decision about
+/// re-running what a pane was doing. Substituting a user's `default-command` there would answer a
+/// different question with this one's answer.
+///
+/// # Why a broken config does not refuse the pane
+///
+/// The daemon has no screen, and the file's problem is already reported to any client that opens a
+/// palette ([`load`]). Refusing to birth a pane over a typo somewhere else in the file would cost the
+/// user the one surface that could tell them — so this logs and falls through, the rule
+/// [`history_limit`](crate::history_limit) states for a malformed env var.
+#[must_use]
+pub fn default_pane_command() -> (sprag_terminal::CommandBuilder, String) {
+    let command = match options() {
+        Ok(options) => options
+            .get(options::DEFAULT_COMMAND)
+            .unwrap_or_default()
+            .to_owned(),
+        Err(error) => {
+            tracing::warn!(
+                target: "sprag_host::config",
+                %error,
+                "using the default shell for a pane with no command",
+            );
+            String::new()
+        }
+    };
+    if command.is_empty() {
+        return sprag_terminal::default_shell_command();
+    }
+    sprag_terminal::shell_command_line(&command)
+}
+
 /// The client-side halves of the user's config, or the defaults when there is nothing to read.
 fn client_config() -> Result<(Options, Keymap), ConfigError> {
     let Some(path) = config_path() else {
@@ -1657,6 +1702,44 @@ mod tests {
                 );
                 // The same reader a client uses agrees, so the file is not merely well-shaped.
                 assert_eq!(keymap().expect("usable").prefix().to_string(), "C-a");
+            },
+        );
+    }
+    /// A pane with no command runs the user's `default-command`, and the SHELL when they set none.
+    ///
+    /// The label is what the assertion reads, because it is what a user sees in a sidebar and what
+    /// `sprag panes` prints — a pane running `htop` that introspects as `bash` is one they cannot find.
+    #[test]
+    fn a_pane_with_no_command_runs_the_users_default_command() {
+        with_config(
+            Some("[options]\ndefault-command = \"exec /usr/bin/htop -d 5\"\n"),
+            || {
+                let (_command, label) = default_pane_command();
+                assert_eq!(label, "htop", "labelled by what it RUNS, not by the shell");
+            },
+        );
+        // Silent user: the shared `$SHELL` fallback, unchanged.
+        with_config(Some(""), || {
+            let (_command, label) = default_pane_command();
+            let (_shell, shell_label) = sprag_terminal::default_shell_command();
+            assert_eq!(label, shell_label);
+        });
+    }
+
+    /// A config that cannot be USED does not cost the user their pane.
+    ///
+    /// The daemon has no screen and the file's problem is already reported to any client that opens a
+    /// palette, so refusing to birth a pane over a typo elsewhere in the file would take away the one
+    /// surface that could explain it. The same rule a malformed env count follows.
+    #[test]
+    fn a_broken_config_still_births_a_pane() {
+        with_config(
+            Some("[[bind]]\nkey = \"x\"\naction = \"kill-server\"\n"),
+            || {
+                assert!(options().is_err(), "the file really is unusable");
+                let (_command, label) = default_pane_command();
+                let (_shell, shell_label) = sprag_terminal::default_shell_command();
+                assert_eq!(label, shell_label, "and the pane gets a shell");
             },
         );
     }

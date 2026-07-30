@@ -1529,7 +1529,7 @@ impl HostClient for Host {
             // so an in-process create cannot fail — but never panic on the arm that unwraps least.
             return String::new();
         };
-        let (command, label) = sprag_terminal::default_shell_command();
+        let (command, label) = crate::config::default_pane_command();
         let (cols, rows) = lock(&self.workspace()).default_size();
         let _ = self.spawn(command, label, cols, rows, None, None);
         name
@@ -1567,14 +1567,15 @@ impl HostClient for Host {
     /// Spawn a shell into the default session's CURRENT window, wired with whatever
     /// [`with_pane_hooks`](Self::with_pane_hooks) installed (nothing, for a test host).
     ///
-    /// `$SHELL` through [`default_shell_command`](sprag_terminal::default_shell_command) — the same
-    /// SSOT the `spawn` wire action's `cmd`-less default resolves, so an in-process client and a
-    /// wire client are born with the same program rather than two ideas of "a shell".
+    /// The user's [`default-command`](crate::options::DEFAULT_COMMAND) then `$SHELL`, through
+    /// [`default_pane_command`](crate::config::default_pane_command) — the same SSOT the `spawn` wire
+    /// action's `cmd`-less default resolves, so an in-process client and a wire client are born with
+    /// the same program rather than two ideas of what a pane runs.
     ///
     /// The pane adopts the workspace's default size: a client-created pane has no geometry of its
     /// own until the first reflow gives it its tile, exactly as a boot pane does not.
     fn new_pane(&self) -> Option<PaneId> {
-        let (command, label) = sprag_terminal::default_shell_command();
+        let (command, label) = crate::config::default_pane_command();
         let on_dirty = self.pane_hooks.as_ref().and_then(|hooks| hooks());
         let workspace = self.workspace();
         let mut workspace = lock(&workspace);
