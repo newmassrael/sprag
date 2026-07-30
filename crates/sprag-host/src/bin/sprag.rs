@@ -42,9 +42,13 @@
 //! sprag list-keys                          print the client keymap `config.toml` produces
 //! sprag bind-key [-T prefix] KEY ACTION…   give a key a meaning (tmux bind-key)
 //! sprag unbind-key [-T prefix] KEY         take a key's meaning away (tmux unbind-key)
-//!                          The three verbs here that need NO DAEMON: a keybinding is a client's,
-//!                          not a server's, so they answer while nothing is running. Unlike
-//!                          tmux's, the two editing verbs WRITE `config.toml` — see [`bind_key`]
+//! sprag show-options [-g]                  print every option and its value (tmux show-options)
+//! sprag set-option [-g] NAME VALUE         set one client option (tmux set-option)
+//! sprag set-option [-g] -u NAME            put one back to its default (tmux set-option -u)
+//!                          The verbs here that need NO DAEMON: a keybinding and a client option
+//!                          are a CLIENT's, not a server's, so they answer while nothing is
+//!                          running. Unlike tmux's, the editing verbs WRITE `config.toml` — see
+//!                          [`bind_key`]
 //! ```
 //!
 //! ## Which commands take `-t`, and why the two answers differ
@@ -144,6 +148,8 @@ fn run() -> io::Result<()> {
         Some("list-keys") => list_keys(args.collect()),
         Some("bind-key") => bind_key(args.collect()),
         Some("unbind-key") => unbind_key(args.collect()),
+        Some("show-options") => show_options(args.collect()),
+        Some("set-option") => set_option(args.collect()),
         Some("-h" | "--help" | "help") | None => {
             print_usage();
             Ok(())
@@ -282,9 +288,12 @@ fn run_project(args: Vec<String>) -> io::Result<()> {
 ///
 /// The output is tmux's own shape (`bind-key -T prefix KEY COMMAND`) so a tmux user reads it
 /// without learning anything, and every line after the first begins with `bind-key` so a script can
-/// filter for them. The PREFIX gets the first line on its own, because sprag's prefix is a field of
-/// the keymap rather than a server option — tmux answers that question with `show-options -g
-/// prefix`, and sprag has no options table to put it in.
+/// filter for them. The PREFIX gets the first line on its own, even though it is now also an OPTION
+/// (`show-options` prints it; `set-option prefix` changes it, which is tmux's own answer). That is not
+/// a second authority: both lines come out of one file, and the keymap's prefix is built FROM the
+/// option rather than beside it. It stays because a keymap listing whose prefix a reader has to look
+/// up elsewhere is what hid R235's defect — a `send-prefix` binding stranded on an abandoned key,
+/// visible only when the two were printed together.
 fn list_keys(args: Vec<String>) -> io::Result<()> {
     if let Some(unexpected) = args.first() {
         return Err(io::Error::new(
@@ -383,6 +392,152 @@ fn unbind_key(args: Vec<String>) -> io::Result<()> {
     Ok(())
 }
 
+/// The only option scope sprag has, and tmux's own flag for it.
+///
+/// tmux's `-g` selects the GLOBAL table rather than a session's or a window's. Every sprag option is
+/// global — one client config file, no per-session or per-window overlay — so the flag carries no
+/// information and is accepted as the spelling a tmux user's fingers produce. `-w` / `-p` are refused
+/// BY NAME, and `set-window-option` / `show-window-options` are not verbs here at all: a scope with no
+/// members would promise an overlay nothing holds, which is the treatment [`strip_key_table`] gives
+/// `-T root` and for the same reason.
+const GLOBAL_SCOPE: &str = "-g";
+
+/// `show-options [-g]`: print every option and the value in force — tmux `show-options`.
+///
+/// **Needs no daemon**, like `list-keys`, and for the same reason: every option here is what one
+/// CLIENT does with one attachment, so it lives in the user's config file rather than in the server.
+///
+/// EVERY option is printed, set or not — which is the whole point of having a table. A user who does
+/// not already know an option's name cannot find it in a file that does not mention it, and tmux
+/// answers the same question the same way. The shape is tmux's (`name value`, sorted) so a script
+/// written against one reads the other.
+fn show_options(args: Vec<String>) -> io::Result<()> {
+    let rest = strip_option_scope("show-options", args)?;
+    if let Some(unexpected) = rest.first() {
+        return Err(bad_input(&format!(
+            "show-options: unexpected argument {unexpected:?} (it takes none, or {GLOBAL_SCOPE})"
+        )));
+    }
+    let options = sprag_host::config::options().map_err(|error| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("show-options: {error}"))
+    })?;
+    for (name, value) in options.iter() {
+        println!("{name} {value}");
+    }
+    Ok(())
+}
+
+/// `set-option [-g] NAME VALUE` / `set-option [-g] -u NAME`: change one client option — tmux
+/// `set-option`.
+///
+/// **This EDITS `config.toml`**, for the reason `bind-key` does: the file IS the live table, so a
+/// client attached right now re-reads it, `show-options` prints it, and the next attach still has it.
+/// One answer rather than three — and there is no second authority for a setting, which is what makes
+/// `show-options` trustworthy. It needs no daemon.
+///
+/// The NAME and VALUE are validated HERE, into an
+/// [`OptionSetting`](sprag_host::options::OptionSetting), so a typo in an argument is reported as one:
+/// rendering it through `ConfigError` would prefix the message with `config.toml` and send a user to
+/// fix a file that is fine.
+fn set_option(args: Vec<String>) -> io::Result<()> {
+    let (unset, rest) = strip_set_option_flags(args)?;
+    let mut rest = rest.into_iter();
+    let name = rest.next().ok_or_else(|| {
+        bad_input(&format!(
+            "set-option: needs an option and a value, e.g. `set-option prefix C-a` \
+             (there are: {})",
+            sprag_host::options::names()
+        ))
+    })?;
+    let value = rest.next();
+    if let Some(extra) = rest.next() {
+        return Err(bad_input(&format!(
+            "set-option: unexpected argument {extra:?} (it takes one option and one value)"
+        )));
+    }
+    let path = if unset {
+        if let Some(value) = value {
+            return Err(bad_input(&format!(
+                "set-option: -u removes an option, so it takes no value (got {value:?})"
+            )));
+        }
+        let spec = sprag_host::options::spec(&name).ok_or_else(|| {
+            bad_input(&format!(
+                "set-option: {}",
+                sprag_host::options::OptionError::Unknown(name.clone())
+            ))
+        })?;
+        sprag_host::config::unset_option(spec)
+    } else {
+        let value = value.ok_or_else(|| {
+            bad_input(&format!(
+                "set-option: {name:?} needs a value (or -u to put it back to its default)"
+            ))
+        })?;
+        let setting = sprag_host::options::OptionSetting::parse(&name, &value)
+            .map_err(|error| bad_input(&format!("set-option: {error}")))?;
+        sprag_host::config::set_option(&setting)
+    }
+    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("set-option: {error}")))?;
+    // Named on stderr for `bind-key`'s reason: a tmux user expects a runtime set to vanish, and one
+    // written into a file they maintain deserves to say where. stdout stays empty for a script.
+    eprintln!(
+        "sprag: {} in {}",
+        if unset { "unset" } else { "set" },
+        path.display()
+    );
+    Ok(())
+}
+
+/// Split `set-option`'s flags off its positional arguments: whether `-u` was given, and the rest.
+///
+/// Flags are taken until the first non-flag, which is tmux's own shape. A per-window / per-pane scope
+/// is refused BY NAME rather than ignored, for [`GLOBAL_SCOPE`]'s reason.
+fn strip_set_option_flags(args: Vec<String>) -> io::Result<(bool, Vec<String>)> {
+    let mut unset = false;
+    let mut rest = Vec::new();
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            GLOBAL_SCOPE => {}
+            "-u" => unset = true,
+            "-w" | "-p" => {
+                return Err(bad_input(&format!(
+                    "set-option: {arg} names a per-window / per-pane option table, and sprag has \
+                     one client table — only {GLOBAL_SCOPE} (or no flag) applies"
+                )));
+            }
+            _ => {
+                rest.push(arg);
+                rest.extend(args);
+                break;
+            }
+        }
+    }
+    Ok((unset, rest))
+}
+
+/// Strip a leading [`GLOBAL_SCOPE`] from `args` — the read verb's half of
+/// [`strip_set_option_flags`].
+fn strip_option_scope(verb: &str, args: Vec<String>) -> io::Result<Vec<String>> {
+    let mut args = args.into_iter();
+    let Some(first) = args.next() else {
+        return Ok(Vec::new());
+    };
+    match first.as_str() {
+        GLOBAL_SCOPE => Ok(args.collect()),
+        "-w" | "-p" => Err(bad_input(&format!(
+            "{verb}: {first} names a per-window / per-pane option table, and sprag has one client \
+             table — only {GLOBAL_SCOPE} (or no flag) applies"
+        ))),
+        _ => {
+            let mut rest = vec![first];
+            rest.extend(args);
+            Ok(rest)
+        }
+    }
+}
+
 /// Strip a leading `-T TABLE` from `args`, refusing any table but [`PREFIX_TABLE`].
 ///
 /// The table itself is not returned, because with exactly one of them the flag carries no
@@ -428,7 +583,8 @@ fn print_usage() {
          \x20             | resize-pane PANE -x COLS -y ROWS\n\
          \x20             | send-keys PANE [-l] KEY… | capture-pane PANE [-p]> [-t SESSION]\n\
          \x20      sprag <list-keys | bind-key [-T prefix] KEY ACTION…\n\
-         \x20             | unbind-key [-T prefix] KEY>"
+         \x20             | unbind-key [-T prefix] KEY>\n\
+         \x20      sprag <show-options | set-option [-u] NAME [VALUE]> [-g]"
     );
 }
 

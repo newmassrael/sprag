@@ -26,7 +26,7 @@
 //!
 //! `sprag-tui` refuses to START on a config it cannot use, because the screen able to show the
 //! message is the one it has not yet replaced. This client has no such screen, so it takes the
-//! DEFAULTS plus the reason ([`sprag_host::config::KeymapFile::load_usable`]) and reports through
+//! DEFAULTS plus the reason ([`sprag_host::config::ClientConfig::load_usable`]) and reports through
 //! the surface that already exists for exactly this: a broken config is a line in the command
 //! palette, beside the one a broken `.sprag.toml` gets ([`report`](ClientKeys::report)).
 //!
@@ -36,7 +36,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use pinion_core::reactive::Owner;
-use sprag_host::config::KeymapFile;
+use sprag_host::config::ClientConfig;
 use sprag_host::keymap::{KeySpec, PrefixMode, Routed};
 
 /// `Owner::cache` key for this client's keymap holder.
@@ -54,7 +54,7 @@ const CLIENT_KEYS_KEY: &str = "sprag_gui.keys";
 /// [`Signal`]: pinion_core::reactive::Signal
 pub(crate) struct ClientKeys {
     /// The user's keymap plus the text it was read from, so a `bind-key` (or an editor) is noticed.
-    file: RefCell<KeymapFile>,
+    file: RefCell<ClientConfig>,
     /// Where the next keystroke goes. `Cell` because it is a two-state flag, read and written on one
     /// thread inside one event handler.
     mode: Cell<PrefixMode>,
@@ -64,7 +64,7 @@ impl ClientKeys {
     /// Read the user's keymap now. A file that cannot be used leaves the DEFAULTS in force and its
     /// reason on the file itself, where [`report`](Self::report) reads it.
     fn load() -> Self {
-        let (file, _) = KeymapFile::load_usable();
+        let (file, _) = ClientConfig::load_usable();
         Self {
             file: RefCell::new(file),
             mode: Cell::new(PrefixMode::default()),
@@ -162,7 +162,7 @@ pub(crate) fn use_client_keys() -> Rc<ClientKeys> {
 pub(crate) mod test_support {
     use std::path::Path;
 
-    use super::{CLIENT_KEYS_KEY, Cell, ClientKeys, KeymapFile, Owner, PrefixMode, Rc, RefCell};
+    use super::{CLIENT_KEYS_KEY, Cell, ClientConfig, ClientKeys, Owner, PrefixMode, Rc, RefCell};
 
     /// Seed the keymap slot from `config` — a file the test wrote — so a test drives a KNOWN keymap
     /// and can still edit that file to prove the live re-read.
@@ -176,7 +176,7 @@ pub(crate) mod test_support {
     /// makes this an injection rather than an override.
     pub(crate) fn seed_keys(config: &Path) -> Rc<ClientKeys> {
         // The reason a file cannot be used lives ON the file, so a seed does not have to carry it.
-        let (file, _) = KeymapFile::at(config);
+        let (file, _) = ClientConfig::at(config);
         Owner::current()
             .expect("seed_keys() requires an active Owner scope")
             .cache(CLIENT_KEYS_KEY, || ClientKeys {

@@ -55,6 +55,7 @@ pub mod history;
 pub mod host;
 pub mod keymap;
 pub mod notify;
+pub mod options;
 pub mod pane;
 pub mod plugins;
 pub mod project;
@@ -90,6 +91,7 @@ pub use host::{
 };
 pub use keymap::{BoundAction, KeyError, KeySpec, Keymap};
 pub use notify::ChannelRegistry;
+pub use options::{OPTIONS, OptionError, OptionKind, OptionSpec, Options};
 pub use pane::{CellFrame, SpragPaneExternal, focus, mouse, paste, send_key, send_text};
 pub use plugins::PluginsExternal;
 pub use project::{PROJECT_FILE, Project, ProjectAction, ProjectError};

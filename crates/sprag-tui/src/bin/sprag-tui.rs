@@ -75,9 +75,11 @@
 //!   terminal gives it, and so does every later window change. With one client that is simply
 //!   correct; with several it is a POLICY, and the same one tmux spells `window-size latest`. The
 //!   alternatives tmux also offers (smallest attached client, or a per-client viewport over a
-//!   larger pane) need a client-size registry the daemon does not have. Still unbuilt after H2's
-//!   keybinding slice: `window-size` is an OPTION, and sprag has no options table for one to live
-//!   in — the config file grew a keymap, not a `set-option`.
+//!   larger pane) need a client-size registry the daemon does not have. There IS an options table
+//!   now ([`sprag_host::options`], `sprag set-option`), so the reason has narrowed to the one that
+//!   always mattered: `window-size` would name a policy nothing performs. `latest` is what this
+//!   code DOES, and the other three values need the registry — an option offering them would be a
+//!   setting a user can write and `show-options` will print, that changes nothing.
 //! * **No pane is closed from here.** `exit` in the shell does it, and the destructive verb is the
 //!   one that would want a confirmation prompt this client has nowhere to draw.
 //! * **Type-ahead before the client is up is lost.** `set_raw_mode` sets the termios with
@@ -134,7 +136,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     // a message the user has to read, and every later step either replaces the screen it would be
     // printed on or gives them something else to think about. It also costs one file read, so
     // there is nothing to gain by deferring it.
-    let mut keymap = sprag_host::config::KeymapFile::load()?;
+    let mut keymap = sprag_host::config::ClientConfig::load()?;
     // This client OPENS the controlling terminal rather than letting termwiz do it, and keeps the
     // handle: the mouse modes have to be turned on and off as the panes' children ask for them
     // ([`MouseMirror`]), and `Terminal` offers no way to say so — `set_raw_mode` decides once, from
@@ -560,7 +562,7 @@ fn resize_pane(host: &WireHost, pane: PaneId, area: Rect) {
 /// A broken save keeps the last good table and is LOGGED, because the only screen this client could
 /// print on is the one it is painting a user's panes onto — and taking their bindings away over a
 /// typo in an editor would be a worse answer than carrying on with the table they had.
-fn refreshed(keymap: &mut sprag_host::config::KeymapFile) -> &Keymap {
+fn refreshed(keymap: &mut sprag_host::config::ClientConfig) -> &Keymap {
     if let Err(error) = keymap.refresh() {
         tracing::warn!(target: "sprag_tui::keys", %error, "the edited config was not usable; keeping the loaded keymap");
     }

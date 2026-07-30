@@ -1391,7 +1391,7 @@ impl ConfigHome {
 /// caret nor the `d`.
 #[test]
 fn a_prefix_declared_in_the_users_config_reaches_the_client() {
-    let config = ConfigHome::new("[keys]\nprefix = \"C-a\"\n");
+    let config = ConfigHome::new("[options]\nprefix = \"C-a\"\n");
     let (_daemon, _sock, mut conn, session, mut tui) = attached_client_with(
         |sock, session| {
             Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", config.as_str())])
@@ -1431,9 +1431,10 @@ impl ConfigHome {
     }
 }
 
-/// Run the shipped `sprag` CLI against `config`, with NO socket — the editing key verbs need no
-/// daemon, which is half of what makes them a client's rather than a server's.
-fn sprag_keys(config: &ConfigHome, args: &[&str]) -> std::process::Output {
+/// Run the shipped `sprag` CLI against `config`, with NO socket — the config-editing verbs (a
+/// binding, an option) need no daemon, which is half of what makes them a CLIENT's rather than a
+/// server's.
+fn sprag_config(config: &ConfigHome, args: &[&str]) -> std::process::Output {
     let out = Command::new(sprag_cli_bin())
         .args(args)
         .env("XDG_CONFIG_HOME", config.as_str())
@@ -1498,7 +1499,7 @@ fn a_bind_key_run_while_attached_reaches_the_running_client() {
     );
 
     // The edit, by the shipped CLI, into the file the running client read at startup.
-    sprag_keys(&config, &["bind-key", "c", "detach-client"]);
+    sprag_config(&config, &["bind-key", "c", "detach-client"]);
     assert!(
         std::fs::read_to_string(config.path())
             .expect("the CLI wrote it")
@@ -1513,6 +1514,75 @@ fn a_bind_key_run_while_attached_reaches_the_running_client() {
     assert!(
         status.success(),
         "the client detaches on the newly bound key, not {status:?}",
+    );
+    wait_for("the daemon to release the client", || {
+        settled(attached(&mut conn, &session), &0)
+    });
+}
+
+/// **THE GATE for H2's options half: `sprag set-option` reaches a client that is ALREADY RUNNING.**
+///
+/// The unit tests drive an `Options` table in process, and the CLI tests drive the file with nothing
+/// attached. Neither can say whether the shipped client reads the `[options]` table at all, let alone
+/// whether it reads it AGAIN after starting — the same seam slice 2's gate exists for, one table over.
+///
+/// Three claims, each failing in a DIFFERENT direction:
+///
+/// * **Before the set, `C-a` is an ordinary key.** It reaches `cat`, which echoes `^Ad`. A client
+///   that had somehow taken `C-a` as its prefix would consume it and detach on the `d`.
+/// * **After the set, the OLD prefix is an ordinary key.** `C-b d` must ALSO reach the pane. This is
+///   the discriminating claim: a client that never re-read its config still holds `C-b` as its prefix,
+///   so it would DETACH here — and this assertion times out instead.
+/// * **After the set, `C-a d` detaches.** The new prefix opens the table, with no reattach anywhere.
+///
+/// REVERT-PROOF: drop the `refresh` in `refreshed` (read the config once at startup) and the second
+/// claim fails — the client detaches on `C-b d` while `sprag show-options` prints `prefix C-a`, which
+/// is precisely the divergence between the printed table and the live one that this design forbids.
+#[test]
+fn a_set_option_run_while_attached_reaches_the_running_client() {
+    let config = ConfigHome::new("");
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client_with(
+        |sock, session| {
+            Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", config.as_str())])
+        },
+        &["cat"],
+    );
+
+    // Typed first, so everything after this is proven to act on a client that was WORKING.
+    tui.type_bytes(b"live");
+    wait_for("the client to be painting", || painted(&mut tui, "live"));
+
+    // `C-a` is nobody's prefix yet: both bytes reach the child, which echoes them.
+    tui.type_bytes(&[0x01]);
+    tui.type_bytes(b"d");
+    wait_for("C-a to reach the pane as an ordinary key", || {
+        painted(&mut tui, "live^Ad")
+    });
+
+    // The edit, by the shipped CLI, into the file the running client read at startup.
+    sprag_config(&config, &["set-option", "prefix", "C-a"]);
+    assert!(
+        std::fs::read_to_string(config.path())
+            .expect("the CLI wrote it")
+            .contains("prefix"),
+        "the file really changed",
+    );
+
+    // The OLD prefix is now an ordinary key — the claim a client holding a stale table FAILS, by
+    // detaching here instead of echoing.
+    tui.type_bytes(&[0x02]);
+    tui.type_bytes(b"d");
+    wait_for("the abandoned prefix to reach the pane", || {
+        painted(&mut tui, "live^Ad^Bd")
+    });
+
+    // ...and the DECLARED prefix is the one that opens the table, with no reattach.
+    tui.type_bytes(&[0x01]);
+    tui.type_bytes(b"d");
+    let status = tui.wait();
+    assert!(
+        status.success(),
+        "the client detaches on the newly set prefix, not {status:?}",
     );
     wait_for("the daemon to release the client", || {
         settled(attached(&mut conn, &session), &0)

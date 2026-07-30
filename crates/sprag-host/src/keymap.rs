@@ -435,7 +435,7 @@ impl Keymap {
     /// on that key is their choice about that key and stays where they put it. If the new prefix key
     /// already meant something, the self-send takes it over — one key means one thing, the rule
     /// [`Keymap::bind`] already applies — and a later `[[bind]]` can still override it, because a
-    /// config's `[keys]` table is read before its bindings.
+    /// config's `[options]` table is read before its bindings.
     ///
     /// # Errors
     ///

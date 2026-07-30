@@ -175,7 +175,7 @@
 //! ### The user's keymap comes FIRST (H2 slice 3)
 //!
 //! Before any of the reserved chords, a keystroke in a focused pane is offered to the user's own
-//! PREFIX table — the same `config.toml` `[keys]` / `[[bind]]` table `sprag-tui` reads, the same
+//! PREFIX table — the same `config.toml` `[options]` / `[[bind]]` table `sprag-tui` reads, the same
 //! [`Keymap`](sprag_host::keymap::Keymap), and the same live re-read that makes `sprag bind-key` a
 //! runtime command (see [`keys`]). `prefix %` splits the focused pane, `prefix d` detaches this
 //! client, `prefix o` moves focus on, `prefix prefix` types the prefix into the pane.

@@ -786,7 +786,7 @@ mod tests {
         let (host, pane0) = two_cats();
         let owner = Owner::new();
         owner.run(|| {
-            let (_config, _keys) = Config::seeded("[keys]\nprefix = \"C-a\"\n");
+            let (_config, _keys) = Config::seeded("[options]\nprefix = \"C-a\"\n");
             seed_terminal(host);
             let before = panes();
 
@@ -836,7 +836,7 @@ mod tests {
         let (host, _pane0) = two_cats();
         let owner = Owner::new();
         owner.run(|| {
-            let (config, _keys) = Config::seeded("[keys]\nprefix = \"C-a\"\n");
+            let (config, _keys) = Config::seeded("[options]\nprefix = \"C-a\"\n");
             seed_terminal(host);
             let before = panes();
 
@@ -846,7 +846,7 @@ mod tests {
             assert_eq!(panes(), before);
 
             config.write(
-                "[keys]\nprefix = \"C-a\"\n\n[[bind]]\nkey = \"c\"\naction = \"split-window -v\"\n",
+                "[options]\nprefix = \"C-a\"\n\n[[bind]]\nkey = \"c\"\naction = \"split-window -v\"\n",
             );
             assert!(press(0, "a", ctrl()));
             assert!(press(0, "c", Modifiers::default()));
@@ -933,7 +933,7 @@ mod tests {
         let (host, pane0) = two_cats();
         let owner = Owner::new();
         owner.run(|| {
-            let (_config, _keys) = Config::seeded("[keys]\nprefix = \"!\"\n");
+            let (_config, _keys) = Config::seeded("[options]\nprefix = \"!\"\n");
             seed_terminal(host);
             assert!(press(0, "!", Modifiers::default()), "arms");
             assert!(press(0, "!", Modifiers::default()), "and sends one through");
@@ -984,7 +984,7 @@ mod tests {
         let (host, _pane0) = two_cats();
         let owner = Owner::new();
         owner.run(|| {
-            let (_config, _keys) = Config::seeded("[keys]\nprefix = \"C-S-c\"\n");
+            let (_config, _keys) = Config::seeded("[options]\nprefix = \"C-S-c\"\n");
             let quits = counting_quit(&Owner::current().expect("owner"));
             seed_terminal(host);
             let mods = Modifiers {
@@ -1014,7 +1014,7 @@ mod tests {
         let owner = Owner::new();
         owner.run(|| {
             let (_config, keys) = Config::seeded(
-                "[keys]\nprefix = \"C-a\"\n\n[[bind]]\nkey = \"c\"\naction = \"kill-server\"\n",
+                "[options]\nprefix = \"C-a\"\n\n[[bind]]\nkey = \"c\"\naction = \"kill-server\"\n",
             );
             let quits = counting_quit(&Owner::current().expect("owner"));
             seed_terminal(host);

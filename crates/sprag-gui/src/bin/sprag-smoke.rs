@@ -1190,7 +1190,7 @@ fn check_terminal_output_never_reaches_the_shaper(smoke: &mut Smoke, report: &mu
 /// Placed after the one-pane check above (it leaves an extra pane standing) and before the check
 /// below, which splits without cleaning up.
 fn check_the_gui_follows_the_users_keymap(smoke: &mut Smoke, report: &mut Report) {
-    let written = smoke.write_user_config("[keys]\nprefix = \"C-a\"\n");
+    let written = smoke.write_user_config("[options]\nprefix = \"C-a\"\n");
     report.check(
         "a user config can be written for the client to read",
         written.is_ok(),
@@ -1267,7 +1267,7 @@ fn check_the_gui_follows_the_users_keymap(smoke: &mut Smoke, report: &mut Report
     // user who fixes their typo is not still being told about it. Found by reading this line: with the
     // keystroke path as the only re-reader the report was permanent, because the palette's own field
     // holds the keyboard while it is open and no keystroke can reach a pane to clear it.
-    let _ = smoke.write_user_config("[keys]\nprefix = \"C-a\"\n");
+    let _ = smoke.write_user_config("[options]\nprefix = \"C-a\"\n");
     // A WAIT, because a single re-open can read the previous frame: closing and opening in quick
     // succession leaves `sprag_palette_panel` painted throughout, so `wait_for_tag` is satisfied by the
     // tree that still holds the old line. Each attempt opens AND closes, so the focus trap stays
@@ -1279,6 +1279,29 @@ fn check_the_gui_follows_the_users_keymap(smoke: &mut Smoke, report: &mut Report
     report.check(
         &format!("and it GOES when the file is fixed ({:?})", fixed.is_ok()),
         fixed.is_ok(),
+    );
+
+    // A broken OPTION is reported by the same surface as a broken binding, because the file is ONE
+    // document with one verdict: the options and the keymap are validated together, so a client cannot
+    // end up honouring the half of a config that happened to parse. Read painted, for the reason
+    // above — and it is a distinct claim from the binding case, since a reader that skipped the
+    // `[options]` table would leave this file looking perfectly usable.
+    if smoke
+        .write_user_config("[options]\ndetach-on-destroy = \"sideways\"\n")
+        .is_err()
+    {
+        report.check("a broken option can be written", false);
+        return;
+    }
+    let complaint = smoke.wait_for(|s| {
+        let text = palette_text(s)?;
+        text.contains("config.toml").then_some(text)
+    });
+    report.check(
+        &format!("a value no option takes is REPORTED too ({complaint:?})"),
+        complaint
+            .as_deref()
+            .is_ok_and(|text| text.contains("detach-on-destroy")),
     );
 }
 

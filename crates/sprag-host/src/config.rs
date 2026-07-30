@@ -30,18 +30,24 @@
 //! to a hostile repository — they are what makes a declared command legible — so they hold here too,
 //! and a single treatment means neither surface has to ask where a row came from before acting.
 
-//! ## Two settings, two readers, ONE file shape
+//! ## Two audiences, three readers, ONE file shape
 //!
-//! [`load`] answers the commands question and [`keymap`] answers the keys one, because they have
-//! different consumers: a declared command is PASTED INTO A PANE, which is a daemon operation, so
-//! [`UserConfig`] crosses the wire to the palette — while a keybinding is what one client does with
-//! one keyboard, which the daemon has no reason to hold and two clients may legitimately disagree
-//! about. Putting the keymap in the wire DTO would send it somewhere it is not wanted.
+//! [`load`] answers the commands question; [`keymap`] and [`options()`](fn@options) answer the
+//! client's. The split
+//! is by CONSUMER, not by convenience: a declared command is PASTED INTO A PANE, which is a daemon
+//! operation, so [`UserConfig`] crosses the wire to the palette — while a keybinding and a client
+//! policy are what ONE client does with one keyboard and one attachment, which the daemon has no
+//! reason to hold and two clients may legitimately disagree about. Putting either in the wire DTO
+//! would send it somewhere it is not wanted.
 //!
-//! What they share is ONE private description of the file's shape. That sharing is not an
-//! optimisation: it is what keeps `deny_unknown_fields` honest. A `[keys]` table the commands
+//! What all three share is ONE private description of the file's shape. That sharing is not an
+//! optimisation: it is what keeps `deny_unknown_fields` honest. An `[options]` table the commands
 //! reader had never heard of would make the whole file invalid for a user who only wanted to
 //! rebind a key.
+//!
+//! The two CLIENT readers are one act of validation (`build`, private) because the keymap's prefix IS
+//! an option: [`crate::options`] holds it, and the keymap is built FROM that table rather than from a
+//! second key in the file. One home in the file, one derivation out of it.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -49,6 +55,7 @@ use std::path::{Path, PathBuf};
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 
 use crate::keymap::{BoundAction, KeyError, KeySpec, Keymap};
+use crate::options::{self, OptionSetting, OptionSpec, Options};
 use crate::project::{ProjectAction, ProjectError, validate_declared};
 
 /// The user's config file name, under [`config_dir`].
@@ -110,7 +117,8 @@ pub struct UserConfig {
 pub enum ConfigError {
     /// The file's CONTENT could not be used: unreadable, not TOML, or declaring something invalid.
     Content(ProjectError),
-    /// The file could not be WRITTEN — produced only by [`bind_key`] and [`unbind_key`].
+    /// The file could not be WRITTEN — produced only by the editing verbs ([`bind_key`],
+    /// [`unbind_key`], [`set_option`], [`unset_option`]).
     Unwritable(String),
 }
 
@@ -172,16 +180,43 @@ fn read_config(path: &Path) -> Result<UserConfig, ConfigError> {
 /// [`ConfigError`] when the file exists and cannot be read, is not valid TOML, or declares a key,
 /// an action, or a bind/unbind pair that cannot be used.
 pub fn keymap() -> Result<Keymap, ConfigError> {
-    let Some(path) = config_path() else {
-        return Ok(Keymap::default());
-    };
-    if !path.is_file() {
-        return Ok(Keymap::default());
-    }
-    build_keymap(&read_file(&path)?)
+    Ok(client_config()?.1)
 }
 
-/// The user's [`Keymap`], holding on to [`CONFIG_FILE`]'s text so it can notice the file CHANGED.
+/// The user's OPTIONS: [`Options::default`] with whatever [`CONFIG_FILE`] declares layered over it.
+///
+/// The same three-way silence [`keymap`] treats as "the user has not said otherwise" — no file, no
+/// config directory, no `[options]` table — and the same whole-file refusal for one that exists and
+/// cannot be used. Read on every call, so `sprag show-options` in a shell describes the file as it is
+/// now rather than as it was when something started.
+///
+/// # Errors
+///
+/// [`ConfigError`] on exactly [`keymap`]'s conditions — it is one validation over one document.
+pub fn options() -> Result<Options, ConfigError> {
+    Ok(client_config()?.0)
+}
+
+/// The client-side halves of the user's config, or the defaults when there is nothing to read.
+fn client_config() -> Result<(Options, Keymap), ConfigError> {
+    let Some(path) = config_path() else {
+        return Ok((Options::default(), Keymap::default()));
+    };
+    if !path.is_file() {
+        return Ok((Options::default(), Keymap::default()));
+    }
+    build(&read_file(&path)?)
+}
+
+/// The client-side halves of the user's config — the [`Keymap`] and the [`Options`] — holding on to
+/// [`CONFIG_FILE`]'s text so it can notice the file CHANGED.
+///
+/// # Why ONE holder for two tables
+///
+/// They come out of one file. A second holder would mean a second read of the same bytes, a second
+/// staleness verdict, and two answers to "what does the file say right now" that can differ for as
+/// long as one of them has not looked — for a file whose whole point is that an edit takes effect
+/// immediately. One holder makes that class of disagreement unrepresentable.
 ///
 /// # Why a client holds this rather than a bare `Keymap`
 ///
@@ -208,15 +243,19 @@ pub fn keymap() -> Result<Keymap, ConfigError> {
 /// everything except the thing that caused it. The exact check costs one read of a file measured in
 /// hundreds of bytes, against a routing decision and a repaint that both follow it.
 #[derive(Clone, Debug)]
-pub struct KeymapFile {
+pub struct ClientConfig {
     /// Where the file would be, or `None` when there is no config directory to hold one — in which
     /// case there is nothing to re-read and the defaults are final.
     path: Option<PathBuf>,
-    /// The exact text `keymap` was built from; `None` when there was no file at all.
+    /// The exact text the tables below were built from; `None` when there was no file at all.
     text: Option<String>,
-    /// The last table read SUCCESSFULLY. Retained across a failed re-read (see
+    /// The last keymap read SUCCESSFULLY. Retained across a failed re-read (see
     /// [`refresh`](Self::refresh)).
     keymap: Keymap,
+    /// The last options read successfully — retained across a failed re-read with the keymap, since
+    /// they are one document and a client that kept half of a file would be honouring a config
+    /// nobody wrote.
+    options: Options,
     /// Why the file's own declarations are NOT the table in force, if they are not — the error from
     /// the last read that actually looked at the content.
     ///
@@ -227,8 +266,8 @@ pub struct KeymapFile {
     unusable: Option<ConfigError>,
 }
 
-impl KeymapFile {
-    /// Read the user's keymap now, remembering the file it came from.
+impl ClientConfig {
+    /// Read the user's config now, remembering the file it came from.
     ///
     /// # Errors
     ///
@@ -242,7 +281,7 @@ impl KeymapFile {
         }
     }
 
-    /// The user's keymap, or [`Keymap::default`] and the reason theirs could not be used.
+    /// The user's tables, or the DEFAULTS and the reason theirs could not be used.
     ///
     /// **For a client with no screen to fail on.** [`load`](Self::load)'s answer to a broken file is
     /// to refuse to start, which is right for a terminal client — the screen able to show the message
@@ -258,7 +297,7 @@ impl KeymapFile {
         Self::read(config_path())
     }
 
-    /// The keymap declared by `path`, watched at `path` — [`load_usable`](Self::load_usable) aimed at
+    /// The config declared by `path`, watched at `path` — [`load_usable`](Self::load_usable) aimed at
     /// a file the caller names instead of at the user's own.
     ///
     /// The holder stopped hard-coding which file it watches when this arrived, and the honest reason
@@ -286,16 +325,17 @@ impl KeymapFile {
             _ => (None, None),
         };
         let built = match &text {
-            Some(text) => parse_file(text).and_then(|file| build_keymap(&file)),
-            None => Ok(Keymap::default()),
+            Some(text) => parse_file(text).and_then(|file| build(&file)),
+            None => Ok((Options::default(), Keymap::default())),
         };
-        let (keymap, error) = match built {
-            Ok(keymap) => (keymap, unreadable),
-            Err(error) => (Keymap::default(), Some(error)),
+        let ((options, keymap), error) = match built {
+            Ok(tables) => (tables, unreadable),
+            Err(error) => ((Options::default(), Keymap::default()), Some(error)),
         };
         (
             Self {
                 keymap,
+                options,
                 path,
                 text,
                 unusable: error.clone(),
@@ -304,10 +344,16 @@ impl KeymapFile {
         )
     }
 
-    /// The table as it was last read.
+    /// The keymap as it was last read.
     #[must_use]
     pub fn keymap(&self) -> &Keymap {
         &self.keymap
+    }
+
+    /// The options as they were last read.
+    #[must_use]
+    pub fn options(&self) -> &Options {
+        &self.options
     }
 
     /// Why the table in force is NOT the one the file declares, if it is not — [`None`] when the file
@@ -322,9 +368,9 @@ impl KeymapFile {
         self.unusable.as_ref()
     }
 
-    /// Re-read the file if its content has changed, and say whether the TABLE moved.
+    /// Re-read the file if its content has changed, and say whether EITHER table moved.
     ///
-    /// `Ok(false)` is the steady state. `Ok(true)` means the file changed AND the new table differs
+    /// `Ok(false)` is the steady state. `Ok(true)` means the file changed AND the new tables differ
     /// — a file rewritten without any change to what it MEANS answers `false`, so a caller acting
     /// on this is never acting on an edit that was not one.
     ///
@@ -359,13 +405,18 @@ impl KeymapFile {
         // the file is being honoured now, a failure means it is not, and the early return above means
         // an unchanged file never overwrites either.
         let next = match &self.text {
-            Some(text) => parse_file(text).and_then(|file| build_keymap(&file)),
-            None => Ok(Keymap::default()),
+            Some(text) => parse_file(text).and_then(|file| build(&file)),
+            None => Ok((Options::default(), Keymap::default())),
         };
         match next {
-            Ok(next) => {
+            Ok((options, keymap)) => {
                 self.unusable = None;
-                Ok(std::mem::replace(&mut self.keymap, next) != self.keymap)
+                // Both swaps run before either verdict is combined. `a() || b()` would short-circuit
+                // and leave the OPTIONS unswapped on any keystroke that moved the keymap — a stale
+                // table that only appears when the other one changed.
+                let keymap_moved = std::mem::replace(&mut self.keymap, keymap) != self.keymap;
+                let options_moved = std::mem::replace(&mut self.options, options) != self.options;
+                Ok(keymap_moved || options_moved)
             }
             Err(error) => {
                 self.unusable = Some(error.clone());
@@ -375,38 +426,62 @@ impl KeymapFile {
     }
 }
 
-/// Layer a file's declarations over the default keymap.
-fn build_keymap(file: &UserConfigFile) -> Result<Keymap, ConfigError> {
-    let invalid = |error: KeyError| ConfigError::Content(ProjectError::Invalid(error.to_string()));
+/// Everything a CLIENT reads out of the file: the options in force, and the keymap they help produce.
+///
+/// ONE function because it is ONE act of validation. A caller able to get a keymap out of a file
+/// whose `[options]` are broken would be acting on half a document the user never wrote — the rule
+/// [`keymap`] states for a half-parsed keymap, one table over.
+///
+/// The order is load-bearing: the options are built FIRST because the prefix comes out of them, so
+/// the file has exactly one place that says what the prefix is and the keymap is downstream of it.
+fn build(file: &UserConfigFile) -> Result<(Options, Keymap), ConfigError> {
+    let invalid = |why: String| ConfigError::Content(ProjectError::Invalid(why));
+    let mut options = Options::default();
+    for (name, value) in &file.options {
+        options
+            .set(name, value)
+            .map_err(|error| invalid(error.to_string()))?;
+    }
     let mut keymap = Keymap::default();
-    if let Some(prefix) = file.keys.as_ref().and_then(|keys| keys.prefix.as_deref()) {
-        keymap.set_prefix(prefix).map_err(invalid)?;
+    // Unconditional, and there is nothing left to branch on: `Options` answers for every registered
+    // option (its default when the file is silent), and `set_prefix` returns early when the value is
+    // unchanged. The "did the user name a prefix" question this used to ask now has no reader.
+    if let Some(prefix) = options.get(options::PREFIX) {
+        keymap
+            .set_prefix(prefix)
+            .map_err(|error: KeyError| invalid(error.to_string()))?;
     }
     for bind in &file.bind {
-        keymap.bind(&bind.key, &bind.action).map_err(invalid)?;
+        keymap
+            .bind(&bind.key, &bind.action)
+            .map_err(|error| invalid(error.to_string()))?;
     }
     for unbind in &file.unbind {
         // Refused rather than resolved by precedence. Applying binds before unbinds is one
         // defensible order and applying them in file order is another, so a file that says both
         // about one key has not said what it wants — and a user who has to remember which array
         // wins has been given a puzzle instead of a keymap.
-        let key = KeySpec::parse(&unbind.key).map_err(invalid)?;
+        let key = KeySpec::parse(&unbind.key).map_err(|error| invalid(error.to_string()))?;
         if file
             .bind
             .iter()
             .any(|bind| KeySpec::parse(&bind.key).is_ok_and(|bound| bound == key))
         {
-            return Err(invalid(KeyError::BoundAndUnbound(key.to_string())));
+            return Err(invalid(
+                KeyError::BoundAndUnbound(key.to_string()).to_string(),
+            ));
         }
-        keymap.unbind(&unbind.key).map_err(invalid)?;
+        keymap
+            .unbind(&unbind.key)
+            .map_err(|error| invalid(error.to_string()))?;
     }
-    Ok(keymap)
+    Ok((options, keymap))
 }
 
 /// The `[[bind]]` array's name in the file, and the field names of one entry.
 ///
 /// Spelled here as well as on [`DeclaredBind`] because a writer cannot ask a `serde` derive what it
-/// called a field. Nothing HOLDS the two together — except that [`edit_keys`] reads its own output
+/// called a field. Nothing HOLDS the two together — except that [`edit_config`] reads its own output
 /// back through the reader before writing it, so a drift makes the very first edit fail with
 /// `deny_unknown_fields` rather than silently producing a file nothing honours.
 const BIND_ARRAY: &str = "bind";
@@ -447,7 +522,7 @@ const ACTION_FIELD: &str = "action";
 /// [`ConfigError::Content`] when the file already cannot be read or used;
 /// [`ConfigError::Unwritable`] when it cannot be replaced.
 pub fn bind_key(key: &KeySpec, action: BoundAction) -> Result<PathBuf, ConfigError> {
-    edit_keys(|doc| {
+    edit_config(|doc| {
         // The contradiction slice 1 REFUSES (`BoundAndUnbound`) is what an unbind left in place
         // would make: this key is being given a meaning, so a declaration that it has none is not
         // a second opinion to keep, it is the same statement retracted.
@@ -489,7 +564,7 @@ pub fn bind_key(key: &KeySpec, action: BoundAction) -> Result<PathBuf, ConfigErr
 ///
 /// As [`bind_key`], and it takes a parsed key for the same reason.
 pub fn unbind_key(key: &KeySpec) -> Result<PathBuf, ConfigError> {
-    edit_keys(|doc| {
+    edit_config(|doc| {
         remove_named(doc, BIND_ARRAY, key)?;
         // A key the defaults never bound now means nothing already: removing the user's own
         // binding was the whole edit, and an `[[unbind]]` would be a line about a key no table
@@ -505,6 +580,73 @@ pub fn unbind_key(key: &KeySpec) -> Result<PathBuf, ConfigError> {
         }
         Ok(())
     })
+}
+
+/// The `[options]` table's name in the file — see [`BIND_ARRAY`] for why a writer spells it out.
+const OPTIONS_TABLE: &str = "options";
+
+/// Set an option in the user's [`CONFIG_FILE`] — tmux's `set-option`. Returns the file it wrote.
+///
+/// Like [`bind_key`] this EDITS the user's file rather than a runtime table, for the reason slice 2
+/// established: the file IS the live table, so `show-options` and an attached client cannot give
+/// different answers. And like it, this needs no daemon — every option here is a client's.
+///
+/// It takes an [`OptionSetting`] rather than a name and a value, so every error it can report is
+/// about the FILE. A mistyped option name or value is the caller's, refused where the caller can be
+/// told so.
+///
+/// # Errors
+///
+/// [`ConfigError::Content`] when the file already cannot be read or used;
+/// [`ConfigError::Unwritable`] when it cannot be replaced.
+pub fn set_option(setting: &OptionSetting) -> Result<PathBuf, ConfigError> {
+    edit_config(|doc| {
+        table_mut(doc, OPTIONS_TABLE)?[setting.spec().name] = value(setting.value());
+        Ok(())
+    })
+}
+
+/// Remove an option from the user's [`CONFIG_FILE`], so its default is in force again — tmux's
+/// `set-option -u`. Returns the file it wrote.
+///
+/// IDEMPOTENT, like [`unbind_key`]: unsetting an option the file never mentioned rewrites it to the
+/// same content. An `[options]` table left EMPTY by the last unset is kept rather than removed —
+/// the same rule that refuses to rewrite an inline array, one table over: an edit that deletes a
+/// header the user wrote by hand has reformatted a file it was not asked about.
+///
+/// # Errors
+///
+/// As [`set_option`].
+pub fn unset_option(spec: &'static OptionSpec) -> Result<PathBuf, ConfigError> {
+    edit_config(|doc| {
+        // Checked first so that unsetting an option in a file with no `[options]` cannot bring the
+        // table into being — [`remove_named`]'s rule.
+        if doc.get(OPTIONS_TABLE).is_none() {
+            return Ok(());
+        }
+        table_mut(doc, OPTIONS_TABLE)?.remove(spec.name);
+        Ok(())
+    })
+}
+
+/// The document's `[name]` table, created empty if the file has none.
+///
+/// An inline `name = {…}` is REFUSED rather than replaced, for [`tables_mut`]'s reason: it reads back
+/// identically, so the file is not broken, and rewriting it would rearrange a file the user wrote by
+/// hand.
+fn table_mut<'a>(
+    doc: &'a mut DocumentMut,
+    name: &'static str,
+) -> Result<&'a mut Table, ConfigError> {
+    doc.entry(name)
+        .or_insert(Item::Table(Table::new()))
+        .as_table_mut()
+        .ok_or_else(|| {
+            ConfigError::Unwritable(format!(
+                "its `{name}` is written as an inline table; an edit only writes the [{name}] \
+                 form, so change it by hand first"
+            ))
+        })
 }
 
 /// Whether a `[[bind]]` / `[[unbind]]` entry names `key`.
@@ -560,6 +702,9 @@ fn remove_named(
 
 /// Apply `edit` to the user's [`CONFIG_FILE`] and write it back, or change nothing at all.
 ///
+/// Shared by every writer here — a binding and an option are two edits to one document, and a second
+/// copy of this would be a second answer to what a valid config is.
+///
 /// # The two validations, and why both are needed
 ///
 /// The file is read through the ORDINARY reader BEFORE the edit: a config this reader cannot make
@@ -571,7 +716,7 @@ fn remove_named(
 /// AND the `list-keys` that would have explained why.
 ///
 /// A missing file is not an error — it is a user who has no config yet, and the edit creates one.
-fn edit_keys(
+fn edit_config(
     edit: impl FnOnce(&mut DocumentMut) -> Result<(), ConfigError>,
 ) -> Result<PathBuf, ConfigError> {
     let path = config_path().ok_or_else(|| {
@@ -588,13 +733,13 @@ fn edit_keys(
             )));
         }
     };
-    build_keymap(&parse_file(&text)?)?;
+    build(&parse_file(&text)?)?;
     let mut doc = text
         .parse::<DocumentMut>()
         .map_err(|error| ConfigError::Content(ProjectError::Malformed(error.to_string())))?;
     edit(&mut doc)?;
     let edited = doc.to_string();
-    build_keymap(&parse_file(&edited)?)?;
+    build(&parse_file(&edited)?)?;
     write_config(&path, &edited)?;
     Ok(path)
 }
@@ -667,28 +812,21 @@ struct UserConfigFile {
     /// `[[command]]` entries; defaulted, so a config that declares none is valid.
     #[serde(default)]
     command: Vec<crate::project::DeclaredAction>,
-    /// The `[keys]` table — client-wide key settings that are not a binding.
+    /// The `[options]` table — every named setting that is not a binding.
+    ///
+    /// A MAP rather than a field per option, so [`crate::options::OPTIONS`] stays the single list of
+    /// what exists: a struct field would mean adding an option in two places and letting them drift.
+    /// `deny_unknown_fields` cannot police a map's keys, so an unknown option NAME is refused by
+    /// [`Options::set`] instead — which answers with the real names, rather than with serde's
+    /// "unknown field".
     #[serde(default)]
-    keys: Option<DeclaredKeys>,
+    options: std::collections::BTreeMap<String, String>,
     /// `[[bind]]` entries, layered over the defaults in file order.
     #[serde(default)]
     bind: Vec<DeclaredBind>,
     /// `[[unbind]]` entries, removing a default.
     #[serde(default)]
     unbind: Vec<DeclaredUnbind>,
-}
-
-/// The `[keys]` table.
-///
-/// A table rather than a bare `prefix = "C-b"` at the file's top level, because the top level is
-/// where the file's SECTIONS live: a setting with no table would be the one thing a reader could not
-/// tell apart from a typo'd table name.
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DeclaredKeys {
-    /// The key that says "the next keystroke is the client's" — tmux's `prefix`. Absent means the
-    /// default, `C-b`.
-    prefix: Option<String>,
 }
 
 /// One `[[bind]]` entry — tmux's `bind-key key command`.
@@ -883,7 +1021,7 @@ mod tests {
     /// "unknown field", i.e. rebinding a key would empty the user's command palette.
     #[test]
     fn declaring_keys_does_not_invalidate_the_commands_half() {
-        let text = "[keys]\nprefix = \"C-a\"\n\n[[bind]]\nkey = \"c\"\naction = \"split-window -h\"\n\n\
+        let text = "[options]\nprefix = \"C-a\"\n\n[[bind]]\nkey = \"c\"\naction = \"split-window -h\"\n\n\
                     [[unbind]]\nkey = \"o\"\n\n[[command]]\nname = \"top\"\nrun = [\"htop\"]\n";
         with_config(Some(text), || {
             let config = load().expect("the file exists").expect("and is valid");
@@ -958,10 +1096,10 @@ mod tests {
     /// twice.
     ///
     /// REVERT-PROOF: re-serialize the parsed `UserConfigFile` instead of editing the document, and
-    /// the comment, the blank lines and the `[keys]` table's inline note all disappear.
+    /// the comment, the blank lines and the `[options]` table's inline note all disappear.
     #[test]
     fn a_bound_key_lands_in_the_file_and_the_rest_of_it_survives() {
-        let text = "# keep me\n[keys]\nprefix = \"C-a\"  # and me\n\n\
+        let text = "# keep me\n[options]\nprefix = \"C-a\"  # and me\n\n\
                     [[command]]\nname = \"top\"\nrun = [\"htop\"]\n";
         with_config(Some(text), || {
             bind_key(&key("c"), action("split-window -h")).expect("binds");
@@ -987,7 +1125,7 @@ mod tests {
     /// made the whole config unusable.
     ///
     /// REVERT-PROOF: drop the `remove_named(UNBIND_ARRAY)` call and this fails at the WRITE, in
-    /// `edit_keys`'s read-back — which is that guard doing its job.
+    /// `edit_config`'s read-back — which is that guard doing its job.
     #[test]
     fn binding_a_key_the_file_unbound_takes_the_unbind_out() {
         with_config(Some("[[unbind]]\nkey = \"o\"\n"), || {
@@ -1076,7 +1214,7 @@ mod tests {
     /// silently repairing a line the user never named, in a file every client is currently
     /// refusing to start against, and leaving them believing it is fine.
     ///
-    /// REVERT-PROOF: drop the pre-edit `build_keymap` and the second half fails. The first half
+    /// REVERT-PROOF: drop the pre-edit `build` and the second half fails. The first half
     /// does not, which is the point.
     #[test]
     fn an_edit_refuses_a_config_it_cannot_read_and_changes_nothing() {
@@ -1134,7 +1272,7 @@ mod tests {
     #[test]
     fn a_running_table_follows_the_file() {
         with_config(Some(""), || {
-            let mut live = KeymapFile::load().expect("loads");
+            let mut live = ClientConfig::load().expect("loads");
             assert_eq!(live.keymap().action("c", Modifiers::default()), None);
 
             bind_key(&key("c"), action("detach-client")).expect("binds");
@@ -1153,14 +1291,17 @@ mod tests {
     #[test]
     fn a_running_table_follows_a_hand_edited_prefix() {
         with_config(Some(""), || {
-            let mut live = KeymapFile::load().expect("loads");
+            let mut live = ClientConfig::load().expect("loads");
             let ctrl = Modifiers {
                 ctrl: true,
                 ..Modifiers::default()
             };
             assert!(live.keymap().is_prefix("b", ctrl), "the default to start");
-            std::fs::write(config_path().expect("a path"), "[keys]\nprefix = \"C-a\"\n")
-                .expect("the user's editor saves");
+            std::fs::write(
+                config_path().expect("a path"),
+                "[options]\nprefix = \"C-a\"\n",
+            )
+            .expect("the user's editor saves");
             assert!(live.refresh().expect("re-reads"));
             assert!(live.keymap().is_prefix("a", ctrl), "the gate moved");
             assert!(!live.keymap().is_prefix("b", ctrl));
@@ -1176,7 +1317,7 @@ mod tests {
         with_config(
             Some("[[bind]]\nkey = \"c\"\naction = \"detach-client\"\n"),
             || {
-                let mut live = KeymapFile::load().expect("loads");
+                let mut live = ClientConfig::load().expect("loads");
                 std::fs::write(config_path().expect("a path"), "[[bind]]\nkey = [\n")
                     .expect("a half-typed save");
                 assert!(live.refresh().is_err(), "the save is reported");
@@ -1198,7 +1339,7 @@ mod tests {
     #[test]
     fn a_deleted_config_returns_the_defaults() {
         with_config(Some("[[unbind]]\nkey = \"d\"\n"), || {
-            let mut live = KeymapFile::load().expect("loads");
+            let mut live = ClientConfig::load().expect("loads");
             assert_eq!(live.keymap().action("d", Modifiers::default()), None);
             std::fs::remove_file(config_path().expect("a path")).expect("the user deletes it");
             assert!(live.refresh().expect("re-reads"));
@@ -1214,7 +1355,7 @@ mod tests {
     #[test]
     fn a_broken_key_or_action_is_refused_and_the_report_names_this_file() {
         for (text, expected) in [
-            ("[keys]\nprefix = \"C-\"\n", "is not a key"),
+            ("[options]\nprefix = \"C-\"\n", "is not a key"),
             (
                 "[[bind]]\nkey = \"Up\"\naction = \"detach-client\"\n",
                 "is not a key",
@@ -1285,7 +1426,7 @@ mod tests {
         }
     }
 
-    /// [`KeymapFile::load_usable`]'s contract, exercised through [`KeymapFile::at`]: a file that
+    /// [`ClientConfig::load_usable`]'s contract, exercised through [`ClientConfig::at`]: a file that
     /// cannot be used yields a WORKING table plus the reason, the SAME file is not re-reported, and a
     /// fix is noticed.
     ///
@@ -1296,7 +1437,7 @@ mod tests {
     #[test]
     fn an_unusable_file_keeps_a_working_table_reports_once_and_notices_the_fix() {
         let config = NamedConfig::new("[[bind]]\nkey = \"x\"\naction = \"kill-server\"\n");
-        let (mut file, error) = KeymapFile::at(&config.path());
+        let (mut file, error) = ClientConfig::at(&config.path());
         let error = error.expect("an unusable file reports why").to_string();
         assert!(
             error.contains(CONFIG_FILE) && error.contains("kill-server"),
@@ -1335,11 +1476,155 @@ mod tests {
     fn a_file_that_is_not_there_yet_is_still_watched() {
         let config = NamedConfig::new("");
         std::fs::remove_file(config.path()).expect("remove it again");
-        let (mut file, error) = KeymapFile::at(&config.path());
+        let (mut file, error) = ClientConfig::at(&config.path());
         assert_eq!(error, None);
         assert_eq!(file.keymap(), &Keymap::default());
-        config.write("[keys]\nprefix = \"C-a\"\n");
+        config.write("[options]\nprefix = \"C-a\"\n");
         assert_eq!(file.refresh(), Ok(true));
         assert_eq!(file.keymap().prefix().to_string(), "C-a");
+    }
+    /// An edit that moves the KEYMAP must not leave the OPTIONS behind.
+    ///
+    /// The trap this pins is a short-circuit: writing the two verdicts as
+    /// `replace(keymap) != keymap || replace(options) != options` never runs the second swap on any
+    /// re-read that changed the keymap, so the holder would answer with a NEW table and a STALE
+    /// option — and only for edits that touched both, which is what makes it the kind of bug that
+    /// ships. REVERT-PROOF: combine the two with `||` in `refresh` and this test fails on the
+    /// `detach-on-destroy` assertion while every other test in this module still passes.
+    #[test]
+    fn an_edit_that_moves_both_tables_moves_both() {
+        let config = NamedConfig::new("[options]\nprefix = \"C-a\"\n");
+        let (mut file, error) = ClientConfig::at(&config.path());
+        assert_eq!(error, None);
+        assert_eq!(file.options().get(options::DETACH_ON_DESTROY), Some("on"));
+
+        config.write("[options]\nprefix = \"C-o\"\ndetach-on-destroy = \"next\"\n");
+        assert_eq!(file.refresh(), Ok(true));
+        assert_eq!(
+            file.keymap().prefix().to_string(),
+            "C-o",
+            "the keymap moved"
+        );
+        assert_eq!(
+            file.options().get(options::DETACH_ON_DESTROY),
+            Some("next"),
+            "and so did the option, in the same re-read",
+        );
+    }
+
+    /// An option changing ALONE is a change: the holder reports it, so a client acting on `Ok(true)`
+    /// is not told to ignore an edit that was one.
+    #[test]
+    fn an_option_moving_alone_is_reported_as_a_change() {
+        let config = NamedConfig::new("");
+        let (mut file, _) = ClientConfig::at(&config.path());
+        config.write("[options]\ndetach-on-destroy = \"off\"\n");
+        assert_eq!(file.refresh(), Ok(true));
+        assert_eq!(file.options().get(options::DETACH_ON_DESTROY), Some("off"));
+        assert_eq!(file.keymap(), &Keymap::default(), "the keymap did not move");
+    }
+
+    /// An option the registry does not know is refused, and the report names THIS file — the other
+    /// half of the split the CLI's argument errors are on. A user who mistyped a name in their editor
+    /// has to be sent to the file; one who mistyped it on a command line must not be.
+    #[test]
+    fn an_unknown_option_in_the_file_names_the_file() {
+        with_config(Some("[options]\nprefixx = \"C-a\"\n"), || {
+            let error = options().expect_err("an unknown option is refused");
+            let message = error.to_string();
+            assert!(
+                message.starts_with(CONFIG_FILE) && message.contains("prefixx"),
+                "got {message:?}",
+            );
+        });
+    }
+
+    /// A value the option will not take is refused WHOLE, like a bad binding: the keymap half of a
+    /// file whose options are broken is a table the user never wrote.
+    #[test]
+    fn a_bad_option_value_in_the_file_refuses_the_whole_config() {
+        with_config(
+            Some(
+                "[options]\ndetach-on-destroy = \"maybe\"\n\n[[bind]]\nkey = \"c\"\naction = \"detach-client\"\n",
+            ),
+            || {
+                assert!(options().is_err(), "the options half refuses");
+                assert!(
+                    keymap().is_err(),
+                    "and so does the keymap half — one document, one verdict",
+                );
+            },
+        );
+    }
+
+    /// An option edit is REFUSED when the file is already broken, and changes nothing.
+    ///
+    /// A writer has no business rewriting a config it cannot understand. Which of `edit_config`'s two
+    /// validations refuses this is deliberately NOT asserted: R236 measured that the post-edit
+    /// read-back catches the same input, so a test claiming the pre-check would be claiming more than
+    /// it can see. What is pinned is the pair — refused, and the file untouched.
+    #[test]
+    fn an_option_edit_refuses_a_config_it_cannot_read_and_changes_nothing() {
+        let broken = "[[bind]]\nkey = \"x\"\naction = \"kill-server\"\n";
+        with_config(Some(broken), || {
+            let setting = OptionSetting::parse(options::PREFIX, "C-a").expect("a valid setting");
+            assert!(set_option(&setting).is_err(), "the edit is refused");
+            let path = config_path().expect("a path");
+            assert_eq!(
+                std::fs::read_to_string(path).expect("still there"),
+                broken,
+                "and the file is untouched",
+            );
+        });
+    }
+
+    /// An unset that empties `[options]` leaves the HEADER the user wrote.
+    ///
+    /// Not tidiness deferred — the rule that refuses to rewrite an inline array, one table over: an
+    /// edit that deletes a header nobody asked about has reformatted a file the user maintains, and a
+    /// config editor that does that cannot be trusted twice. The empty table means exactly what its
+    /// absence means, so nothing is lost.
+    #[test]
+    fn an_unset_that_empties_the_table_keeps_the_users_header() {
+        with_config(Some("# mine\n[options]\nprefix = \"C-a\"\n"), || {
+            let spec = options::spec(options::PREFIX).expect("prefix is an option");
+            let path = unset_option(spec).expect("the unset lands");
+            let text = std::fs::read_to_string(path).expect("read it back");
+            assert!(!text.contains("C-a"), "the value went: {text:?}");
+            assert!(text.contains("[options]"), "the header stayed: {text:?}");
+            assert!(text.contains("# mine"), "and the comment: {text:?}");
+        });
+    }
+
+    /// An option lands INSIDE `[options]`, and the read-back is what makes that safe.
+    ///
+    /// The structural claim the behavioural tests do not make: a key written at the document ROOT
+    /// reads back identically to a human and is refused by the file's shape, so the failure mode is a
+    /// writer that cannot write rather than a config that stops working. REVERT-PROOF: assign to the
+    /// document root instead of the table and this fails on the write — measured, and measured through
+    /// THIS suite rather than only through the CLI's, which is where it was first read as a pass.
+    #[test]
+    fn a_set_option_lands_in_the_options_table() {
+        with_config(
+            Some("# mine\n[[bind]]\nkey = \"c\"\naction = \"detach-client\"\n"),
+            || {
+                let setting = OptionSetting::parse(options::PREFIX, "^a").expect("a valid setting");
+                let path = set_option(&setting).expect("the edit lands");
+                let text = std::fs::read_to_string(&path).expect("read it back");
+                let table = text
+                    .find("[options]")
+                    .unwrap_or_else(|| panic!("the table was created: {text:?}"));
+                let key = text
+                    .find("prefix = \"C-a\"")
+                    .unwrap_or_else(|| panic!("the canonical value was written: {text:?}"));
+                assert!(key > table, "and it is inside the table: {text:?}");
+                assert!(
+                    text.contains("# mine"),
+                    "the user's comment survives: {text:?}"
+                );
+                // The same reader a client uses agrees, so the file is not merely well-shaped.
+                assert_eq!(keymap().expect("usable").prefix().to_string(), "C-a");
+            },
+        );
     }
 }

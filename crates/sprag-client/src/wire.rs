@@ -137,16 +137,36 @@ const HOST_BIN_ENV: &str = "SPRAG_GUI_HOST_BIN";
 /// this env; it is the established GUI-config channel (`SPRAG_GUI_PANES`/`_HOST_SOCK`/…).
 const SESSION_ENV: &str = "SPRAG_GUI_SESSION";
 
-/// Env: how this client reacts when its OWN attached session is DESTROYED — the tmux
-/// `detach-on-destroy` session option. `on` (or unset / an unrecognized value) DETACHES this client
-/// (the shipped default, and tmux's own); `off` / `next` / `previous` SWITCH it to a neighbouring
-/// session instead (tmux's switch-to-next), detaching only when there is no other session to move
-/// to; `no-detached` switches only to a session NO OTHER client is viewing, detaching rather than
-/// pile a second client onto one another client already holds. Read
-/// ONCE at boot (the codebase's config convention, alongside [`SESSION_ENV`]) into a
-/// [`DetachOnDestroy`] held on the [`WireHost`]; a future runtime `set-option` would write the SAME
-/// enum, so the policy — not this env — is the durable seam.
-const DETACH_ON_DESTROY_ENV: &str = "SPRAG_DETACH_ON_DESTROY";
+/// How this client reacts when its OWN attached session is DESTROYED — the tmux
+/// `detach-on-destroy` option, now the user's own
+/// [`options::DETACH_ON_DESTROY`](sprag_host::options::DETACH_ON_DESTROY). `on` DETACHES this client
+/// (the default, and tmux's own); `off` / `next` / `previous` SWITCH it to a neighbouring session
+/// instead (tmux's switch-to-next), detaching only when there is no other session to move to;
+/// `no-detached` switches only to a session NO OTHER client is viewing, detaching rather than pile a
+/// second client onto one another client already holds.
+///
+/// # Why this is no longer `SPRAG_DETACH_ON_DESTROY`
+///
+/// It was an env var read once at boot, and its own note said a runtime `set-option` would write the
+/// same enum. Keeping both would put TWO authorities behind one setting, and the CLI could not
+/// reconcile them: `sprag show-options` runs in its own process and cannot see the environment of the
+/// client it is describing, so it would print a policy that client is not using — the exact failure
+/// this front keeps meeting. The env was the temporary channel; the option is the durable one.
+fn detach_on_destroy() -> DetachOnDestroy {
+    match sprag_host::config::options() {
+        Ok(options) => options
+            .get(sprag_host::options::DETACH_ON_DESTROY)
+            .map_or(DetachOnDestroy::Detach, parse_detach_on_destroy),
+        Err(error) => {
+            tracing::warn!(
+                target: "sprag_client::wire",
+                %error,
+                "using the default destroy policy",
+            );
+            DetachOnDestroy::Detach
+        }
+    }
+}
 
 /// One pane the wire client mirrors, in HOST order (no holes — "slots" and their holes
 /// are the GUI `SlotView`'s concern, not this data client's). Holds the pane's host
@@ -424,20 +444,21 @@ impl DetachOnDestroy {
     }
 }
 
-/// Parse the [`DETACH_ON_DESTROY_ENV`] value into a [`DetachOnDestroy`] — a pure decision over its
-/// input (the env read stays in [`WireHost::spawn_or_attach`], matching `resolve_session` /
-/// `parse_allowlist`). Whitespace- and case-insensitive; an ABSENT or UNRECOGNIZED value is
-/// [`Detach`](DetachOnDestroy::Detach), the safe tmux default — a typo detaches (what an unset env
-/// does) rather than silently switching a client somewhere it never asked to go.
-fn parse_detach_on_destroy(raw: Option<&str>) -> DetachOnDestroy {
-    match raw
-        .map(|value| value.trim().to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("off") => DetachOnDestroy::Off,
-        Some("no-detached") => DetachOnDestroy::NoDetached,
-        Some("next") => DetachOnDestroy::Next,
-        Some("previous") => DetachOnDestroy::Previous,
+/// Parse one [`options::DETACH_ON_DESTROY_VALUES`](sprag_host::options::DETACH_ON_DESTROY_VALUES)
+/// name into a [`DetachOnDestroy`] — a pure decision over its input, kept out of
+/// [`detach_on_destroy`]'s config read the way `resolve_session` is kept out of the env reads.
+///
+/// The option table has already refused anything outside that vocabulary, so the fallback arm is not
+/// the validation — it is what keeps this total. It answers [`Detach`](DetachOnDestroy::Detach), the
+/// safe default: an unrecognised policy detaches rather than silently switching a client somewhere it
+/// never asked to go. A value the TABLE offers and this does not translate would be a setting nothing
+/// performs, which is why `every_offered_policy_is_one_this_client_performs` exists.
+fn parse_detach_on_destroy(value: &str) -> DetachOnDestroy {
+    match value {
+        "off" => DetachOnDestroy::Off,
+        "no-detached" => DetachOnDestroy::NoDetached,
+        "next" => DetachOnDestroy::Next,
+        "previous" => DetachOnDestroy::Previous,
         _ => DetachOnDestroy::Detach,
     }
 }
@@ -588,12 +609,6 @@ pub struct WireHost {
     /// The pane grid `(cols, rows)` this client booted at — the birth size a sidebar "+" gives a
     /// new session (it reflows to this window on first paint, like every boot pane).
     boot_dims: (u16, u16),
-    /// How this client reacts when its OWN attached session is destroyed — the tmux
-    /// `detach-on-destroy` policy ([`DetachOnDestroy`]), read once at boot from
-    /// [`DETACH_ON_DESTROY_ENV`]. `Copy`, so a `&self` method reads it with no borrow. Consulted at
-    /// BOTH destroy triggers: [`kill_session`](HostClient::kill_session) (this client's own sidebar
-    /// kill) and [`reconcile_lost_session`](HostClient::reconcile_lost_session) (an out-of-band kill).
-    detach_on_destroy: DetachOnDestroy,
     /// Set by the poll thread when this client's attached session is destroyed OUT OF BAND under a
     /// SWITCH policy (another client / the `sprag` CLI killed it): the poll cannot switch (a UI-thread
     /// op), so it flags this + repaints, and the UI-thread
@@ -730,10 +745,6 @@ impl WireHost {
         let requested = std::env::var_os(SESSION_ENV)
             .filter(|name| !name.is_empty())
             .map(|name| name.to_string_lossy().into_owned());
-        // The destroy policy is a boot-time config read here (kept out of the pure helpers, like the
-        // session env above), held on the client so a session kill can consult it with no env re-read.
-        let detach_on_destroy =
-            parse_detach_on_destroy(std::env::var(DETACH_ON_DESTROY_ENV).ok().as_deref());
         let (session, created) =
             resolve_session(&mut conn, requested.as_deref(), argv.as_deref(), cols, rows)?;
         conn.scope_to(session.clone());
@@ -783,7 +794,6 @@ impl WireHost {
             session: RefCell::new(session.clone()),
             sock: sock.clone(),
             boot_dims: (cols, rows),
-            detach_on_destroy,
             lost_session: Arc::new(AtomicBool::new(false)),
             mru: RefCell::new(vec![session.clone()]),
             on_change,
@@ -821,7 +831,7 @@ impl WireHost {
             Arc::clone(&self.sessions),
             Arc::clone(&self.on_change),
             Arc::clone(&self.quit),
-            self.detach_on_destroy,
+            Arc::new(detach_on_destroy),
             Arc::clone(&self.lost_session),
             Arc::clone(&stop),
             since0,
@@ -1371,7 +1381,7 @@ impl HostClient for WireHost {
         let successor = is_own
             .then(|| {
                 destroy_successor(
-                    self.detach_on_destroy,
+                    detach_on_destroy(),
                     &self.sessions(),
                     name,
                     &self.mru.borrow(),
@@ -1431,7 +1441,7 @@ impl HostClient for WireHost {
         if self.lost_session.swap(false, Ordering::AcqRel) {
             let me = self.session.borrow().clone();
             let successor = destroy_successor(
-                self.detach_on_destroy,
+                detach_on_destroy(),
                 &self.sessions(),
                 &me,
                 &self.mru.borrow(),
@@ -2459,7 +2469,7 @@ fn spawn_poll(
     sessions: SessionsMirror,
     on_change: Arc<dyn Fn() + Send + Sync>,
     quit: Arc<dyn QuitSink>,
-    policy: DetachOnDestroy,
+    policy: Arc<dyn Fn() -> DetachOnDestroy + Send + Sync>,
     lost_session: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     mut since: u64,
@@ -2479,7 +2489,7 @@ fn spawn_poll(
                         if handle_poll_error(
                             &error,
                             &stop,
-                            policy,
+                            policy(),
                             &lost_session,
                             &quit,
                             &on_change,
@@ -2511,7 +2521,7 @@ fn spawn_poll(
                         if handle_poll_error(
                             &error,
                             &stop,
-                            policy,
+                            policy(),
                             &lost_session,
                             &quit,
                             &on_change,
@@ -2536,7 +2546,7 @@ fn spawn_poll(
                         if handle_poll_error(
                             &error,
                             &stop,
-                            policy,
+                            policy(),
                             &lost_session,
                             &quit,
                             &on_change,
@@ -2597,7 +2607,7 @@ fn spawn_poll(
                         if handle_poll_error(
                             &error,
                             &stop,
-                            policy,
+                            policy(),
                             &lost_session,
                             &quit,
                             &on_change,
@@ -2810,45 +2820,58 @@ mod tests {
             .collect()
     }
 
-    /// The policy env parses to the tmux values, DEFAULTING to detach for anything unrecognized —
+    /// The policy names parse to the tmux values, DEFAULTING to detach for anything unrecognized —
     /// so a client only ever switches away on an EXPLICIT `off`/`no-detached`/`next`/`previous`,
-    /// never on a typo or an unset env. REVERT-PROOF: drop the trim/lowercase and `"  NEXT "` stops
-    /// matching; map the wildcard to `Next` and the `"on"`/unset/bogus cases start switching; the
-    /// hyphenless `"nodetached"` proves the match is EXACT (a near-miss detaches, never silently
-    /// picks a switch policy).
+    /// never on a typo. REVERT-PROOF: map the wildcard to `Next` and the `on`/empty/bogus cases start
+    /// switching; the hyphenless `"nodetached"` proves the match is EXACT (a near-miss detaches, never
+    /// silently picks a switch policy).
+    ///
+    /// The trim/lowercase this used to assert is now the OPTION table's
+    /// ([`OptionKind::canonicalise`](sprag_host::options::OptionKind::canonicalise)), which is why a
+    /// value reaching here is already canonical — one folding site instead of one per consumer.
     #[test]
-    fn the_detach_policy_env_defaults_to_detach_and_reads_off_no_detached_next_previous() {
-        assert_eq!(parse_detach_on_destroy(None), DetachOnDestroy::Detach);
-        assert_eq!(parse_detach_on_destroy(Some("on")), DetachOnDestroy::Detach);
-        assert_eq!(parse_detach_on_destroy(Some("")), DetachOnDestroy::Detach);
+    fn the_detach_policy_defaults_to_detach_and_reads_off_no_detached_next_previous() {
+        assert_eq!(parse_detach_on_destroy("on"), DetachOnDestroy::Detach);
+        assert_eq!(parse_detach_on_destroy(""), DetachOnDestroy::Detach);
+        assert_eq!(parse_detach_on_destroy("sideways"), DetachOnDestroy::Detach);
+        assert_eq!(parse_detach_on_destroy("off"), DetachOnDestroy::Off);
         assert_eq!(
-            parse_detach_on_destroy(Some("sideways")),
-            DetachOnDestroy::Detach
-        );
-        assert_eq!(parse_detach_on_destroy(Some("off")), DetachOnDestroy::Off);
-        assert_eq!(parse_detach_on_destroy(Some(" OFF ")), DetachOnDestroy::Off);
-        assert_eq!(
-            parse_detach_on_destroy(Some("no-detached")),
-            DetachOnDestroy::NoDetached
-        );
-        assert_eq!(
-            parse_detach_on_destroy(Some(" No-Detached ")),
+            parse_detach_on_destroy("no-detached"),
             DetachOnDestroy::NoDetached
         );
         // A near-miss (hyphen dropped) is NOT no-detached — it falls to the safe detach default.
         assert_eq!(
-            parse_detach_on_destroy(Some("nodetached")),
+            parse_detach_on_destroy("nodetached"),
             DetachOnDestroy::Detach
         );
-        assert_eq!(parse_detach_on_destroy(Some("next")), DetachOnDestroy::Next);
+        assert_eq!(parse_detach_on_destroy("next"), DetachOnDestroy::Next);
         assert_eq!(
-            parse_detach_on_destroy(Some("  NEXT ")),
-            DetachOnDestroy::Next
+            parse_detach_on_destroy("previous"),
+            DetachOnDestroy::Previous
         );
-        assert_eq!(
-            parse_detach_on_destroy(Some("Previous")),
-            DetachOnDestroy::Previous,
-        );
+    }
+
+    /// Every value the option table OFFERS is a policy this client actually performs.
+    ///
+    /// The drift guard the split vocabulary needs: the names live in `sprag-host`, which cannot see
+    /// this enum, and the translation lives here — so nothing but a test holds them together. A name
+    /// the table offered and this fell through on would be a setting a user can write and
+    /// `show-options` will print, that behaves exactly like `on` and reports nothing. Distinctness is
+    /// what detects it: a fall-through collides with `on`'s own policy.
+    #[test]
+    fn every_offered_policy_is_one_this_client_performs() {
+        let offered = sprag_host::options::DETACH_ON_DESTROY_VALUES;
+        let performed: Vec<DetachOnDestroy> = offered
+            .iter()
+            .map(|value| parse_detach_on_destroy(value))
+            .collect();
+        for (value, policy) in offered.iter().zip(&performed) {
+            assert_eq!(
+                performed.iter().filter(|other| *other == policy).count(),
+                1,
+                "{value:?} performs the same policy as another offered value",
+            );
+        }
     }
 
     /// The `next`/`previous` target is the LIST NEIGHBOUR (wrapping), or `None` (detach) for the
@@ -3147,7 +3170,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
-            DetachOnDestroy::Detach,
+            Arc::new(|| DetachOnDestroy::Detach),
             Arc::new(AtomicBool::new(false)),
             Arc::clone(&stop),
             0,
@@ -3226,7 +3249,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
-            DetachOnDestroy::Detach,
+            Arc::new(|| DetachOnDestroy::Detach),
             Arc::new(AtomicBool::new(false)),
             Arc::clone(&stop),
             0,
@@ -3308,7 +3331,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             on_change,
             Arc::clone(&quit) as Arc<dyn QuitSink>,
-            DetachOnDestroy::Detach,
+            Arc::new(|| DetachOnDestroy::Detach),
             Arc::new(AtomicBool::new(false)),
             Arc::clone(&stop),
             0,
@@ -3366,7 +3389,7 @@ mod tests {
                 Arc::new(Mutex::new(Vec::new())),
                 on_change,
                 Arc::clone(&quit) as Arc<dyn QuitSink>,
-                policy,
+                Arc::new(move || policy),
                 Arc::clone(&lost),
                 Arc::clone(&stop),
                 0,
@@ -3411,7 +3434,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
-            DetachOnDestroy::Next,
+            Arc::new(|| DetachOnDestroy::Next),
             Arc::clone(&lost),
             Arc::clone(&stop),
             0,
@@ -3457,7 +3480,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
-            DetachOnDestroy::Next,
+            Arc::new(|| DetachOnDestroy::Next),
             Arc::clone(&lost),
             Arc::clone(&stop),
             0,
@@ -3526,7 +3549,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
-            DetachOnDestroy::Detach,
+            Arc::new(|| DetachOnDestroy::Detach),
             Arc::new(AtomicBool::new(false)),
             Arc::clone(&stop),
             0,

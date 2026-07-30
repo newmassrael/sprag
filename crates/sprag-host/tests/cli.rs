@@ -1961,7 +1961,7 @@ impl ConfigHome {
 #[test]
 fn list_keys_reads_the_users_config_with_no_daemon() {
     let config = ConfigHome::new(
-        "[keys]\nprefix = \"C-a\"\n\n\
+        "[options]\nprefix = \"C-a\"\n\n\
          [[bind]]\nkey = \"|\"\naction = \"split-window -h\"\n\n\
          [[unbind]]\nkey = \"%\"\n",
     );
@@ -2137,4 +2137,214 @@ fn only_the_prefix_key_table_is_accepted() {
         "naming what was asked for and what exists: {}",
         run.stderr,
     );
+}
+
+/// `show-options` answers from the user's config with **NO DAEMON RUNNING**, and prints EVERY option
+/// — the one the file sets and the one it does not.
+///
+/// The no-daemon half is the point of the verb, for `list-keys`'s reason: every option here is what
+/// one CLIENT does with one attachment, so it lives in the user's file rather than in the server.
+///
+/// Printing an option the file never mentions is the other half, and it is not padding: a user who
+/// does not already know an option's name cannot discover it in a file that does not name it, which
+/// is the whole reason this table exists rather than a struct. tmux answers the same way.
+#[test]
+fn show_options_prints_every_option_with_no_daemon() {
+    let config = ConfigHome::new("[options]\ndetach-on-destroy = \"off\"\n");
+    let absent = socket_path();
+    assert!(!absent.exists(), "the socket was never bound");
+    let run = sprag_env(
+        &absent,
+        &["show-options"],
+        &[("XDG_CONFIG_HOME", config.as_str())],
+    );
+    assert!(run.ok, "no daemon is not an error: {}", run.stderr);
+    let lines: Vec<&str> = run.stdout.lines().collect();
+    assert!(
+        lines.contains(&"detach-on-destroy off"),
+        "the option the file set: {lines:?}",
+    );
+    assert!(
+        lines.contains(&"prefix C-b"),
+        "and the one it did not, at its default: {lines:?}",
+    );
+    let mut sorted = lines.clone();
+    sorted.sort_unstable();
+    assert_eq!(lines, sorted, "sorted by name, like tmux's: {lines:?}");
+}
+
+/// `set-option` WRITES the user's config, needs no daemon, and canonicalises the value.
+///
+/// It writes for `bind-key`'s reason: the file IS the live table, so `show-options`, an attached
+/// client and the next attach cannot give three different answers. Asserted THROUGH `show-options`
+/// rather than by reading the file, because the claim is about what a client would read.
+///
+/// The canonical half is what keeps one setting one string: `^a` and `C-a` are one keystroke, so a
+/// file that recorded the spelling it was handed would make `show-options` and `list-keys` disagree
+/// about a prefix they both read from it.
+#[test]
+fn set_option_writes_the_users_config_with_no_daemon() {
+    let config = ConfigHome::new("# mine\n[[command]]\nname = \"top\"\nrun = [\"htop\"]\n");
+    let absent = socket_path();
+    assert!(!absent.exists(), "the socket was never bound");
+    let env = [("XDG_CONFIG_HOME", config.as_str())];
+
+    let run = sprag_env(&absent, &["set-option", "prefix", "^a"], &env);
+    assert!(run.ok, "no daemon is not an error: {}", run.stderr);
+    assert!(
+        run.stdout.is_empty(),
+        "stdout stays clean for a script: {:?}",
+        run.stdout
+    );
+
+    let listed = sprag_env(&absent, &["show-options"], &env);
+    assert!(listed.ok, "{}", listed.stderr);
+    assert!(
+        listed.stdout.lines().any(|line| line == "prefix C-a"),
+        "stored as the keymap spells it: {:?}",
+        listed.stdout,
+    );
+
+    // The user's own file is still theirs.
+    let text = config_text(&config);
+    assert!(
+        text.contains("# mine") && text.contains("htop"),
+        "the comment and the unrelated table survive an option edit: {text:?}",
+    );
+}
+
+/// `set-option -u` puts an option back to its default by REMOVING it, so the file says only what the
+/// user chose — and it is idempotent, like `unbind-key`.
+#[test]
+fn set_option_u_removes_the_option_and_restores_the_default() {
+    let config = ConfigHome::new("[options]\nprefix = \"C-a\"\n");
+    let absent = socket_path();
+    let env = [("XDG_CONFIG_HOME", config.as_str())];
+
+    let run = sprag_env(&absent, &["set-option", "-u", "prefix"], &env);
+    assert!(run.ok, "{}", run.stderr);
+    assert!(
+        !config_text(&config).contains("C-a"),
+        "the value is gone from the file: {:?}",
+        config_text(&config),
+    );
+    let listed = sprag_env(&absent, &["show-options"], &env);
+    assert!(
+        listed.stdout.lines().any(|line| line == "prefix C-b"),
+        "and the default is in force: {:?}",
+        listed.stdout,
+    );
+
+    // Unsetting what is already unset rewrites the same file rather than failing.
+    let before = config_text(&config);
+    let again = sprag_env(&absent, &["set-option", "-u", "prefix"], &env);
+    assert!(again.ok, "{}", again.stderr);
+    assert_eq!(before, config_text(&config), "idempotent");
+}
+
+/// A mistyped option NAME or VALUE is reported as an ARGUMENT — it must never name `config.toml`.
+///
+/// The rule this pins is the one `ConfigError` exists for, one level in: a user who typed
+/// `set-option prefixx` has a fine config file, and a message prefixed with `config.toml` would send
+/// them to read it. Both messages instead say what the alternatives are, which is the only thing that
+/// makes a name-keyed table usable.
+#[test]
+fn set_option_reports_a_bad_argument_without_naming_the_file() {
+    let config = ConfigHome::new("");
+    let absent = socket_path();
+    let env = [("XDG_CONFIG_HOME", config.as_str())];
+
+    let unknown = sprag_env(&absent, &["set-option", "prefixx", "C-a"], &env);
+    assert!(!unknown.ok, "a mistyped option is refused");
+    assert!(
+        !unknown.stderr.contains("config.toml"),
+        "an argument mistake names no file: {}",
+        unknown.stderr,
+    );
+    assert!(
+        unknown.stderr.contains("prefix") && unknown.stderr.contains("detach-on-destroy"),
+        "it lists the real options: {}",
+        unknown.stderr,
+    );
+
+    let bad = sprag_env(&absent, &["set-option", "detach-on-destroy", "maybe"], &env);
+    assert!(!bad.ok, "a value outside the vocabulary is refused");
+    assert!(
+        !bad.stderr.contains("config.toml"),
+        "also an argument mistake: {}",
+        bad.stderr,
+    );
+    assert!(
+        bad.stderr.contains("no-detached"),
+        "and it lists the values: {}",
+        bad.stderr,
+    );
+    assert!(
+        config_text(&config).is_empty(),
+        "neither refusal touched the file: {:?}",
+        config_text(&config),
+    );
+}
+
+/// tmux's `-g` is accepted and a per-window / per-pane scope is refused BY NAME.
+///
+/// `-g` because every sprag option is global, so the flag a tmux user's fingers produce carries no
+/// information and must simply work. `-w` / `-p` because there is no per-window or per-pane table:
+/// accepting them would promise an overlay nothing holds, and silently ignoring them would leave a
+/// user believing they had set something narrower than they had. The `-T root` treatment, one verb
+/// over.
+#[test]
+fn an_option_scope_with_no_members_is_refused_by_name() {
+    let config = ConfigHome::new("");
+    let absent = socket_path();
+    let env = [("XDG_CONFIG_HOME", config.as_str())];
+
+    let global = sprag_env(&absent, &["set-option", "-g", "prefix", "C-a"], &env);
+    assert!(global.ok, "tmux's own flag works: {}", global.stderr);
+    assert!(sprag_env(&absent, &["show-options", "-g"], &env).ok);
+
+    for scope in ["-w", "-p"] {
+        let run = sprag_env(&absent, &["set-option", scope, "prefix", "C-a"], &env);
+        assert!(!run.ok, "{scope} is refused rather than ignored");
+        assert!(
+            run.stderr.contains(scope) && run.stderr.contains("-g"),
+            "naming what was asked for and what exists: {}",
+            run.stderr,
+        );
+    }
+}
+
+/// `show-options` and `list-keys` can never disagree about the PREFIX.
+///
+/// Two verbs print it, which is safe only because they read ONE fact: the keymap's prefix is built
+/// FROM the option rather than beside it. This is the drift guard that claim needs — a second home
+/// for the prefix would show up here as two answers, and R235's defect was exactly a keymap and its
+/// prefix disagreeing.
+#[test]
+fn the_prefix_reads_the_same_through_both_verbs() {
+    let config = ConfigHome::new("");
+    let absent = socket_path();
+    let env = [("XDG_CONFIG_HOME", config.as_str())];
+
+    for spelling in ["C-a", "^o", "F1"] {
+        assert!(sprag_env(&absent, &["set-option", "prefix", spelling], &env).ok);
+        let shown = sprag_env(&absent, &["show-options"], &env);
+        let listed = sprag_env(&absent, &["list-keys"], &env);
+        let from_options = shown
+            .stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("prefix "))
+            .map(str::to_owned);
+        let from_keys = listed
+            .stdout
+            .lines()
+            .next()
+            .and_then(|line| line.strip_prefix("prefix "))
+            .map(str::to_owned);
+        assert_eq!(
+            from_options, from_keys,
+            "{spelling:?}: show-options and list-keys must name one prefix",
+        );
+        assert!(from_options.is_some(), "and both printed one");
+    }
 }
