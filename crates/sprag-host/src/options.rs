@@ -214,12 +214,15 @@ pub const WINDOW_SIZE: &str = "window-size";
 /// [`PREFIX`] follows by validating through `KeySpec`, and the opposite of
 /// [`DETACH_ON_DESTROY_VALUES`], whose policy lives in a crate this one cannot depend on.
 ///
-/// tmux's fourth value, `manual`, is absent — see [`WindowSize`] for what it would need. A user who
-/// types it is answered with this list.
+/// `manual` is here on the same terms as the other three — it names a rule the daemon performs, by
+/// reading the size `sprag resize-window` pinned on the window. What it does with NOTHING pinned is
+/// [`arbitrate`](crate::window::arbitrate)'s to state, not this table's: an empty source is not an
+/// unperformed rule.
 pub const WINDOW_SIZE_VALUES: &[&str] = &[
     WindowSize::Largest.name(),
     WindowSize::Smallest.name(),
     WindowSize::Latest.name(),
+    WindowSize::Manual.name(),
 ];
 
 /// Every option sprag has, sorted by name so `show-options` output is stable.

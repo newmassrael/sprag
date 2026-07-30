@@ -109,6 +109,21 @@ pub struct WindowSnapshot {
     /// neither `layout` nor `floating` (spawned but not yet reconciled) still comes back and is
     /// appended by the first post-restore reconcile.
     pub panes: Vec<PaneSnapshot>,
+    /// The `(cols, rows)` an operator PINNED for this window (tmux `resize-window`), or `None` if
+    /// nobody has — the one size in this file that is a DECISION rather than a measurement.
+    ///
+    /// Every pane carries its own `cols`/`rows` above, and those are readings taken at snapshot
+    /// time: they say how big the panes happened to be, and the first client to attach after a
+    /// restore overwrites them. This says how big the window was declared to be, which is why it has
+    /// to be here — a reboot is exactly when there is no client to ask, so a pinned window that did
+    /// not persist would come back pinned to nothing and reflow on the next attach, losing a
+    /// decision the panes' own sizes cannot reconstruct (they are a tiling of it, not it).
+    ///
+    /// `#[serde(default)]` keeps the addition additive, the rule `argv` and `remote` already follow:
+    /// a snapshot written before this field loads as `None`, which is the un-pinned behaviour those
+    /// daemons had.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual_size: Option<(u16, u16)>,
 }
 
 /// One pane's restore facts: enough to re-spawn a shell where the pane was and address it by its
@@ -165,6 +180,7 @@ pub fn snapshot(registry: &Arc<Mutex<SessionRegistry>>) -> Snapshot {
         name: String,
         layout: LayoutWire,
         floating: Vec<PaneId>,
+        manual_size: Option<(u16, u16)>,
         pool: Arc<Mutex<crate::workspace::Workspace>>,
     }
     struct SessSkel {
@@ -192,6 +208,7 @@ pub fn snapshot(registry: &Arc<Mutex<SessionRegistry>>) -> Snapshot {
                             name: w.name().to_owned(),
                             layout: LayoutWire::from(w.layout()),
                             floating,
+                            manual_size: w.manual_size(),
                             pool: Arc::clone(w.workspace()),
                         }
                     })
@@ -228,6 +245,7 @@ pub fn snapshot(registry: &Arc<Mutex<SessionRegistry>>) -> Snapshot {
                         layout: w.layout,
                         floating: w.floating,
                         panes,
+                        manual_size: w.manual_size,
                     }
                 })
                 .collect(),
@@ -454,9 +472,13 @@ mod tests {
     }
 
     /// THE load-bearing durability claim: a live registry's whole shape — two sessions, the
-    /// windows, which is current, the tiled arrangement, a floated pane, and every pane's cwd —
-    /// serializes to JSON and rebuilds a structurally identical registry plus a plan naming each
-    /// pane to re-spawn under its OLD id. A dropped field would restore a DIFFERENT desktop.
+    /// windows, which is current, the tiled arrangement, a floated pane, a PINNED window size, and
+    /// every pane's cwd — serializes to JSON and rebuilds a structurally identical registry plus a
+    /// plan naming each pane to re-spawn under its OLD id. A dropped field would restore a DIFFERENT
+    /// desktop.
+    ///
+    /// The pin is deliberately set on ONE of the two sessions, so a `manual_size` that came back by
+    /// being written everywhere rather than restored per window fails on the other.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_registry_round_trips_through_a_snapshot() {
@@ -482,6 +504,13 @@ mod tests {
             .unwrap()
             .set_floating(ids[1], true, &panes);
         reconcile(&reg, "0", "0");
+        // An operator's PINNED window size — a decision, not a reading, and the one size in the file
+        // no client can reconstruct. Distinct from the registry default (77x21) and from every pane's
+        // own size below, so restoring it is verifiable on its own.
+        lock(&reg)
+            .window_mut("0", "0")
+            .unwrap()
+            .set_manual_size(Some((123, 45)));
 
         // A second session "work" with one pane of its own — a real independent attach unit.
         lock(&reg).new_session(Some("work")).unwrap();
@@ -519,6 +548,20 @@ mod tests {
             "the tiling survived"
         );
         assert!(win.floating().contains(&ids[1]), "the float survived");
+        assert_eq!(
+            win.manual_size(),
+            Some((123, 45)),
+            "the pinned window size survived the reboot"
+        );
+        assert_eq!(
+            restored
+                .session("work")
+                .unwrap()
+                .current_window()
+                .manual_size(),
+            None,
+            "a window nobody pinned came back un-pinned"
+        );
 
         // The plan names every pane to re-spawn, under its old id and with its cwd.
         assert_eq!(plan.panes.len(), 4, "three in session 0, one in work");
@@ -597,12 +640,7 @@ mod tests {
             sessions: vec![SessionSnapshot {
                 name: "0".to_owned(),
                 current_window: "0".to_owned(),
-                windows: vec![WindowSnapshot {
-                    name: "0".to_owned(),
-                    layout: LayoutWire::default(),
-                    floating: vec![],
-                    panes: vec![],
-                }],
+                windows: vec![win("0", vec![])],
             }],
         };
         assert!(matches!(
@@ -622,12 +660,7 @@ mod tests {
             sessions: vec![SessionSnapshot {
                 name: "0".to_owned(),
                 current_window: "ghost".to_owned(), // no such window
-                windows: vec![WindowSnapshot {
-                    name: "0".to_owned(),
-                    layout: LayoutWire::default(),
-                    floating: vec![],
-                    panes: vec![],
-                }],
+                windows: vec![win("0", vec![])],
             }],
         };
         assert!(matches!(
@@ -652,13 +685,15 @@ mod tests {
         ));
     }
 
-    /// An empty window named `name` with the given panes — for building malformed snapshots.
+    /// An unpinned, empty window named `name` with the given panes — for building malformed
+    /// snapshots.
     fn win(name: &str, panes: Vec<PaneSnapshot>) -> WindowSnapshot {
         WindowSnapshot {
             name: name.to_owned(),
             layout: LayoutWire::default(),
             floating: vec![],
             panes,
+            manual_size: None,
         }
     }
 

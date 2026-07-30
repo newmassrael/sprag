@@ -39,6 +39,19 @@
 //! where they live rather than in each client. A client writes a pane's size only when this daemon
 //! has no window to derive one from, which is the honest fallback and what both did before any of
 //! this existed.
+//!
+//! # The one policy that arbitrates over nobody
+//!
+//! [`WindowSize::Manual`] does not read the clients at all: its window is a size an operator PINNED
+//! on the window itself (`sprag resize-window`, stored beside the arrangement it sizes and restored
+//! with it). So the sentences above hold for three of the four values, and the fourth is why this
+//! module takes a `pinned` argument as well as a list of reports.
+//!
+//! It exists because a derived window has no memory. Measured: a session whose panes a user had
+//! arranged at 100x30 was reflowed by the first client to attach — to that client's size, and it
+//! stayed there after the client left, because the honest answer with nobody attached is "leave the
+//! panes alone". So the wrap width of a long-running program was decided by whoever last glanced at
+//! it, permanently, and no value of this option could hold it. `manual` is the value that can.
 
 use std::sync::{Arc, Mutex};
 
@@ -52,11 +65,13 @@ use crate::scope::SessionScope;
 /// The policy that decides a session's window size from its attached clients — tmux's
 /// `window-size` option.
 ///
-/// Every variant here is a rule this daemon PERFORMS. tmux's fourth value, `manual`, is not
-/// offered: it means "the window size changes only when `resize-window` says so", which needs a
-/// per-session size the daemon stores and a verb that writes it, and an option value naming a rule
-/// nothing performs is the defect this front keeps finding. See the module docs of
-/// [`crate::options`] for how a refused value is answered with the list of ones that work.
+/// Every variant here is a rule this daemon PERFORMS — see the module docs of [`crate::options`]
+/// for how a refused value is answered with the list of ones that work.
+///
+/// Three of the four DERIVE the window from the clients looking at it. [`Manual`](Self::Manual) is
+/// the one that does not, and that difference is why it needs storage nothing else here needs: a
+/// derived answer can be recomputed from facts the daemon already holds, and a declared one exists
+/// only because somebody said it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum WindowSize {
     /// The largest attached client, per dimension — nobody's view is cropped, and smaller clients
@@ -69,6 +84,19 @@ pub enum WindowSize {
     /// sprag did by construction before any of this existed, which is why it is the default: a
     /// user with one client sees exactly what they always saw.
     Latest,
+    /// The size an operator PINNED with `resize-window`
+    /// ([`Window::manual_size`](sprag_terminal::Window::manual_size)) — the window stops following
+    /// its clients, and a client bigger than it has margin while a smaller one sees part of it.
+    /// tmux's `manual`.
+    ///
+    /// The point of it is that the window survives who is watching. Measured before this variant
+    /// existed: a session whose panes a user had arranged at 100x30 was reflowed to 80x24 the
+    /// instant any client attached, and stayed there after it left — a program's wrap width decided
+    /// by whoever happened to look at it last, permanently, with nothing that could pin it.
+    ///
+    /// With NOTHING pinned it is not a rule yet, so it defers to [`DEFAULT`](Self::DEFAULT); see
+    /// [`arbitrate`].
+    Manual,
 }
 
 impl WindowSize {
@@ -87,11 +115,12 @@ impl WindowSize {
             Self::Largest => "largest",
             Self::Smallest => "smallest",
             Self::Latest => "latest",
+            Self::Manual => "manual",
         }
     }
 
     /// Every value, in the order they are offered to a user who typed one that does not exist.
-    pub const ALL: [Self; 3] = [Self::Largest, Self::Smallest, Self::Latest];
+    pub const ALL: [Self; 4] = [Self::Largest, Self::Smallest, Self::Latest, Self::Manual];
 
     /// Parse a value from the user's file or the CLI, or `None` for one that is not a policy.
     #[must_use]
@@ -100,8 +129,9 @@ impl WindowSize {
     }
 }
 
-/// The window `sizes` add up to under `policy`, or `None` when no attached client has reported an
-/// area.
+/// The window `sizes` add up to under `policy`, or `None` when the question has no answer — which
+/// is `manual` with nothing pinned and no client reporting, or any other policy with no client
+/// reporting.
 ///
 /// `None` is not "use a default": it means the question has no answer yet, and the caller's honest
 /// response is to leave the panes at whatever size they already have. Inventing 80x24 here would
@@ -117,12 +147,34 @@ impl WindowSize {
 ///
 /// [`WindowSize::Latest`] is the exception and necessarily so: it names a CLIENT, so it takes that
 /// client's two numbers together rather than mixing dimensions from different ones.
+///
+/// # `pinned` answers ALONE, and answers nothing when it is absent
+///
+/// [`WindowSize::Manual`] reads `pinned` and ignores `sizes` entirely — a window that follows nobody
+/// is the whole feature, so a client attaching, resizing or leaving moves nothing.
+///
+/// With `manual` set and NOTHING pinned, this falls through to [`WindowSize::DEFAULT`] rather than
+/// answering `None`, and the reason is that `None` is not harmless here. It means "no window", which
+/// sends both frontends to their no-window fallback of sizing panes from their own surface — the
+/// two-authority defect R242 removed, re-reachable by one `set-option`. Deferring instead makes
+/// `set-option window-size manual` on its own a no-op the user cannot see, which is the honest
+/// reading of it: they have named a source, and the source is empty until `resize-window` writes it.
 #[must_use]
-pub fn arbitrate(policy: WindowSize, sizes: &[ClientSize]) -> Option<ClientSize> {
+pub fn arbitrate(
+    policy: WindowSize,
+    sizes: &[ClientSize],
+    pinned: Option<ClientSize>,
+) -> Option<ClientSize> {
+    if let (WindowSize::Manual, Some(pinned)) = (policy, pinned) {
+        // The one answer that needs no client at all — including when there are none.
+        return Some(pinned);
+    }
     let (first, rest) = sizes.split_first()?;
     Some(match policy {
-        // `sizes` is oldest-first, so the last element is the most recent report.
-        WindowSize::Latest => *sizes.last().unwrap_or(first),
+        // `sizes` is oldest-first, so the last element is the most recent report. `Manual` arrives
+        // here only with nothing pinned, where it means DEFAULT — and DEFAULT is `Latest`, a
+        // coupling `manual_with_nothing_pinned_is_the_default_policy` holds to this arm.
+        WindowSize::Latest | WindowSize::Manual => *sizes.last().unwrap_or(first),
         WindowSize::Largest => rest.iter().fold(*first, |acc, size| ClientSize {
             cols: acc.cols.max(size.cols),
             rows: acc.rows.max(size.rows),
@@ -173,10 +225,21 @@ pub(crate) fn retile(
     // Each lock is taken and released in turn — attachments, then registry, then the pool — so this
     // never holds two at once and cannot invert an order some other path takes.
     let sizes = lock(attachments).sizes(session);
-    let Some(window) = arbitrate(crate::config::window_size(), &sizes) else {
-        return;
+    // The scope FIRST, because the pinned size is a property of the window this is about to tile,
+    // and both come out of the one registry lock: reading them under two would let a window switch
+    // land between, laying one window's tree out over another window's pinned rectangle.
+    let (scope, pinned) = {
+        let registry = lock(registry);
+        let Some(scope) = SessionScope::of(&registry, session) else {
+            return;
+        };
+        let pinned = registry
+            .window(session, scope.window())
+            .and_then(sprag_terminal::Window::manual_size)
+            .map(|(cols, rows)| ClientSize { cols, rows });
+        (scope, pinned)
     };
-    let Some(scope) = SessionScope::of(&lock(registry), session) else {
+    let Some(window) = arbitrate(crate::config::window_size(), &sizes, pinned) else {
         return;
     };
     let Some(layout) = crate::host::reconciled_layout(registry, &scope) else {
@@ -218,10 +281,10 @@ mod tests {
     }
 
     #[test]
-    fn no_reported_client_has_no_window() {
+    fn no_reported_client_and_nothing_pinned_has_no_window() {
         for policy in WindowSize::ALL {
             assert_eq!(
-                arbitrate(policy, &[]),
+                arbitrate(policy, &[], None),
                 None,
                 "{} must not invent a window nobody asked for",
                 policy.name()
@@ -232,10 +295,11 @@ mod tests {
     #[test]
     fn one_client_is_the_window_under_every_policy() {
         // The single-viewer case, which is the one that must not change behaviour: whichever policy
-        // a user sets, one client's area IS the window.
+        // a user sets, one client's area IS the window. `manual` is in here too, with nothing
+        // pinned — the state a user reaches by setting the option and stopping there.
         for policy in WindowSize::ALL {
             assert_eq!(
-                arbitrate(policy, &[size(100, 30)]),
+                arbitrate(policy, &[size(100, 30)], None),
                 Some(size(100, 30)),
                 "{}",
                 policy.name()
@@ -250,12 +314,12 @@ mod tests {
         // caught here. Neither answer is either client's own area.
         let clients = [size(80, 50), size(120, 24)];
         assert_eq!(
-            arbitrate(WindowSize::Largest, &clients),
+            arbitrate(WindowSize::Largest, &clients, None),
             Some(size(120, 50)),
             "largest takes the widest AND the tallest"
         );
         assert_eq!(
-            arbitrate(WindowSize::Smallest, &clients),
+            arbitrate(WindowSize::Smallest, &clients, None),
             Some(size(80, 24)),
             "smallest takes the narrowest AND the shortest"
         );
@@ -267,7 +331,70 @@ mod tests {
         // is the most recent report. A `latest` that folded per dimension would answer 120x50 here,
         // which is a window no client ever reported.
         let clients = [size(80, 50), size(120, 24)];
-        assert_eq!(arbitrate(WindowSize::Latest, &clients), Some(size(120, 24)));
+        assert_eq!(
+            arbitrate(WindowSize::Latest, &clients, None),
+            Some(size(120, 24))
+        );
+    }
+
+    /// THE claim `manual` is for: the answer is the pinned rectangle and the clients do not enter
+    /// into it — including when there are none, which is the case every other policy answers `None`
+    /// to and the one a detached session lives in.
+    #[test]
+    fn a_pinned_window_ignores_every_client_and_needs_none() {
+        let pinned = size(100, 30);
+        assert_eq!(
+            arbitrate(WindowSize::Manual, &[], Some(pinned)),
+            Some(pinned),
+            "a pinned window has a size with nobody attached at all"
+        );
+        // Two clients that agree on neither dimension with the pin, one of them the most recent
+        // report — so a `manual` that folded, picked, or fell through would answer something else.
+        let clients = [size(80, 50), size(120, 24)];
+        assert_eq!(
+            arbitrate(WindowSize::Manual, &clients, Some(pinned)),
+            Some(pinned),
+            "a pinned window follows nobody"
+        );
+    }
+
+    /// The coupling the `Latest | Manual` arm of [`arbitrate`] rests on: `manual` with nothing
+    /// pinned IS [`WindowSize::DEFAULT`], so if that default ever moves off `latest` this fails
+    /// rather than the arm silently answering the wrong policy's question.
+    #[test]
+    fn manual_with_nothing_pinned_is_the_default_policy() {
+        let cases: [&[ClientSize]; 3] = [
+            &[],
+            &[size(100, 30)],
+            &[size(80, 50), size(120, 24), size(90, 40)],
+        ];
+        for clients in cases {
+            assert_eq!(
+                arbitrate(WindowSize::Manual, clients, None),
+                arbitrate(WindowSize::DEFAULT, clients, None),
+                "manual with nothing pinned must answer exactly what {} does, over {clients:?}",
+                WindowSize::DEFAULT.name()
+            );
+        }
+    }
+
+    /// A pinned size is INERT under every policy that derives one, which is what makes
+    /// `resize-window` safe to run before choosing to use it — and what the CLI's note is about.
+    #[test]
+    fn a_pinned_size_changes_nothing_until_the_policy_names_it() {
+        let clients = [size(80, 50), size(120, 24)];
+        let pinned = Some(size(100, 30));
+        for policy in WindowSize::ALL {
+            if policy == WindowSize::Manual {
+                continue;
+            }
+            assert_eq!(
+                arbitrate(policy, &clients, pinned),
+                arbitrate(policy, &clients, None),
+                "{} must not read a pinned size",
+                policy.name()
+            );
+        }
     }
 
     #[test]
@@ -280,10 +407,10 @@ mod tests {
         for policy in WindowSize::ALL {
             assert_eq!(WindowSize::parse(policy.name()), Some(policy));
         }
-        // tmux's fourth value is NOT silently accepted as something else: it is not offered, so it
-        // is refused like any other word, and the caller lists what does work.
-        assert_eq!(WindowSize::parse("manual"), None);
         assert_eq!(WindowSize::parse(""), None);
         assert_eq!(WindowSize::parse("Largest"), None, "values are lower-case");
+        // A word that names no rule is refused rather than mapped to something near it; the caller
+        // answers with the list that works.
+        assert_eq!(WindowSize::parse("automatic"), None);
     }
 }

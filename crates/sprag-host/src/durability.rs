@@ -300,6 +300,7 @@ mod tests {
                     layout: LayoutWire::default(),
                     floating: vec![],
                     panes: vec![],
+                    manual_size: None,
                 }],
             }],
         }

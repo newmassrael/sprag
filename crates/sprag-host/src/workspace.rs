@@ -65,6 +65,7 @@ use sprag_terminal::{
     SplitDir, SplitSide, SshRemote, WindowKillOutcome, Workspace,
 };
 
+use crate::attach::ClientSize;
 use crate::bump_on_dirty;
 use crate::external::{as_object, lock, opt_dim, require_pane_id, rpc_external_impl};
 use crate::notify::ChannelRegistry;
@@ -76,8 +77,8 @@ use crate::wire::{
     BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DROP_FILE_ACTION, GLOBAL_COMMANDS_SLOT,
     GRID_WORK_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
     NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PROJECT_FIELD, RENAME_WINDOW_ACTION,
-    RESIZE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
-    SPAWN_ACTION, SPLIT_ACTION, WINDOW_SIZE_SLOT, WINDOWS_SLOT,
+    RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, WINDOW_SIZE_SLOT, WINDOWS_SLOT,
 };
 
 /// The mux-management engine `External`: a control surface over the shared
@@ -721,6 +722,45 @@ impl WorkspaceExternal {
         Ok(IntrospectValue::Json(Value::Null))
     }
 
+    /// `resize_window {window?, cols?, rows?}` action: PIN the size of a window of THIS request's
+    /// session, or un-pin it — tmux `resize-window`. `window` absent ⇒ the current one.
+    ///
+    /// Both dimensions together, or NEITHER. Both pin that size; neither un-pins the window and
+    /// hands it back to whichever policy derives one from the attached clients. HALF of a size is
+    /// refused rather than completed from somewhere, the rule `client/size` already follows: a
+    /// caller that sent one number has a bug worth naming, and a window whose height came from a
+    /// different decision than its width is a rectangle nobody chose.
+    ///
+    /// It stores and announces; it resizes nothing itself. The panes follow through the invoke
+    /// BOUNDARY's re-derivation, the same one a split and a client's attach go through, so a pinned
+    /// window and a derived one reach the panes by ONE path.
+    ///
+    /// **The announce is NOT independently falsifiable, and measuring said so.** Removing it leaves
+    /// the whole PTY suite green, including the two tests written for this action — because the
+    /// re-derivation resizes panes, a pane resize marks it dirty, and the dirty path bumps. That is
+    /// R241's finding about `client/size` repeating one action along: the wake arrives either way, a
+    /// reflow late, over a chain nobody states as a contract (it holds only while a window change
+    /// always changes some pane's size — false for a window of nothing but floats, and false for a
+    /// re-pin the tiling absorbs). It is kept for the earlier, contracted wake and because every
+    /// sibling action here announces; it is not kept on the strength of a test.
+    fn resize_window(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let map = as_object(args)?;
+        let window = self.window_target(map)?.to_owned();
+        let size = match (opt_dim(map, "cols")?, opt_dim(map, "rows")?) {
+            (Some(cols), Some(rows)) => Some((cols, rows)),
+            (None, None) => None,
+            _ => return Err(InvokeError::TypeMismatch),
+        };
+        lock(&self.registry)
+            .resize_window(self.scope.session(), &window, size)
+            .map_err(|error| {
+                tracing::debug!(target: "sprag_host", %error, "refused to resize a window");
+                InvokeError::Rejected
+            })?;
+        self.announce();
+        Ok(IntrospectValue::Json(Value::Null))
+    }
+
     /// `break_pane {pane, name?}` action: move a pane out of its window into a NEW window of THIS
     /// request's session (born current), and answer with the new window's name — tmux `break-pane`.
     ///
@@ -832,6 +872,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                     SchemaField::new(SELECT_WINDOW_ACTION, "action"),
                     SchemaField::new(RENAME_WINDOW_ACTION, "action"),
                     SchemaField::new(KILL_WINDOW_ACTION, "action"),
+                    SchemaField::new(RESIZE_WINDOW_ACTION, "action"),
                     SchemaField::new(BREAK_PANE_ACTION, "action"),
                     SchemaField::new(JOIN_PANE_ACTION, "action"),
                     SchemaField::new(DROP_FILE_ACTION, "action"),
@@ -1074,7 +1115,13 @@ impl ExternalIntrospect for WorkspaceExternal {
             WINDOW_SIZE_SLOT => {
                 let window = self.attachments.as_ref().and_then(|attachments| {
                     let sizes = lock(attachments).sizes(self.scope.session());
-                    crate::window::arbitrate(crate::config::window_size(), &sizes)
+                    // The PINNED size of the window this request was assembled for — a decision an
+                    // operator stored, where the areas above are reports clients made.
+                    let pinned = lock(&self.registry)
+                        .window(self.scope.session(), self.scope.window())
+                        .and_then(sprag_terminal::Window::manual_size)
+                        .map(|(cols, rows)| ClientSize { cols, rows });
+                    crate::window::arbitrate(crate::config::window_size(), &sizes, pinned)
                 });
                 encoded_answer(&window, "window_size")
             }
@@ -1174,6 +1221,7 @@ impl WorkspaceExternal {
             SELECT_WINDOW_ACTION => self.select_window(&args),
             RENAME_WINDOW_ACTION => self.rename_window(&args),
             KILL_WINDOW_ACTION => self.kill_window(&args),
+            RESIZE_WINDOW_ACTION => self.resize_window(&args),
             BREAK_PANE_ACTION => self.break_pane(&args),
             JOIN_PANE_ACTION => self.join_pane(&args),
             DROP_FILE_ACTION => self.drop_file(&args),

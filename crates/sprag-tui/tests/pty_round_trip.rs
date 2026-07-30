@@ -1458,6 +1458,24 @@ fn sprag_config(config: &ConfigHome, args: &[&str]) -> std::process::Output {
     out
 }
 
+/// Run the shipped `sprag` CLI against a daemon on `sock` AND the user's `config` — for a verb that
+/// needs both, which `resize-window` is: the socket carries the session it acts on, and the config is
+/// where it reads the `window-size` policy it reports the gap in.
+fn sprag_on(sock: &Path, config: &ConfigHome, args: &[&str]) -> std::process::Output {
+    let out = Command::new(sprag_cli_bin())
+        .args(args)
+        .env("SPRAG_HOST_RPC_SOCK", sock)
+        .env("XDG_CONFIG_HOME", config.as_str())
+        .output()
+        .expect("run the sprag CLI");
+    assert!(
+        out.status.success(),
+        "sprag {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    out
+}
+
 /// **THE GATE for H2 slice 2: `sprag bind-key` reaches a client that is ALREADY RUNNING.**
 ///
 /// Every unit test of this round drives the table directly, or drives a `KeymapFile` in-process.
@@ -1795,4 +1813,170 @@ fn a_client_that_reported_nothing_re_tiles_when_the_window_moves() {
             }
         },
     );
+}
+
+// ----- the `window-size manual` gate -----
+
+/// The size an operator PINS below — deliberately not the boot pane's ([`BOOT_PANE`]), not the
+/// attaching client's pseudoterminal ([`BOOT_PTY`]) and not the area it resizes to
+/// ([`MANUAL_CLIENT`]). Every number a daemon could fall back to is a different number, so a pass
+/// cannot be an accident.
+const PINNED: (u16, u16) = (111, 33);
+
+/// What the client in the `manual` gate reports. Chosen SMALLER than [`PINNED`] in both dimensions,
+/// so the pinned window is one the client cannot show whole — the case a policy that quietly took
+/// the client's area would have to produce, and the one a user hits (a big pinned session viewed
+/// from a small terminal).
+const MANUAL_CLIENT: (u16, u16) = (60, 20);
+
+/// **THE GATE for `window-size manual` + `sprag resize-window`**: a PINNED window does not follow
+/// the clients attached to it.
+///
+/// No unit test can make this claim. The arbitration is a pure function with its own tests, and what
+/// those cannot say is whether the pinned size ever reaches a pane, whether the daemon re-derives it
+/// when a client arrives, or whether an attaching client still overwrites it — which is exactly what
+/// happened before this round, measured: a session whose panes a user had arranged at one size was
+/// reflowed by any client that attached, permanently, with nothing that could hold it.
+///
+/// Four claims on one live session, in the order that makes each discriminating:
+///
+/// * **With NO client attached at all**, `resize-window` moves the panes off the boot size. Every
+///   other policy answers `None` in this state — nobody has reported an area — so this claim alone
+///   separates a `manual` the daemon PERFORMS from a value the option table merely accepts.
+/// * **A real client attaches on a real pseudoterminal and reports a smaller area. The panes stay
+///   pinned.** This is what the feature is for, and a daemon ignoring the pin gives `MANUAL_CLIENT`.
+/// * **It holds for a settle window**, so a daemon that passed the pin through on its way to the
+///   client's size — the shape a race would take — is caught rather than sampled at the right moment.
+/// * **The client detaches and the panes are STILL pinned.** Detach is its own re-derivation path
+///   (`window_moved`), and a pin read only on attach would fail here.
+#[test]
+fn a_pinned_window_does_not_follow_the_client_that_attaches_to_it() {
+    let config = ConfigHome::new("[options]\nwindow-size = \"manual\"\n");
+    let (_daemon, sock) = spawn_daemon_with_config(&["cat"], Some(config.as_str()));
+    let mut conn = observe(&sock);
+    let session = boot_session(&mut conn);
+
+    // The boot pane's size, so the first claim is a MOVE rather than a coincidence.
+    assert_eq!(
+        pane_size(&mut conn, &session),
+        Some(BOOT_PANE),
+        "the boot pane starts at the daemon's default size"
+    );
+    sprag_on(
+        &sock,
+        &config,
+        &[
+            "resize-window",
+            "-t",
+            &session,
+            "-x",
+            &PINNED.0.to_string(),
+            "-y",
+            &PINNED.1.to_string(),
+        ],
+    );
+    wait_for("the pin to reach the pane with nobody attached", || {
+        settled(pane_size(&mut conn, &session), &Some(PINNED))
+    });
+
+    let mut client = Tui::attach(&sock, &session);
+    wait_for("the client to attach", || {
+        match attached(&mut conn, &session) {
+            0 => Err("nobody attached".to_owned()),
+            _ => Ok(()),
+        }
+    });
+    client.resize(MANUAL_CLIENT.0, MANUAL_CLIENT.1);
+    // The client's report has to have LANDED before "the pane did not move" means anything —
+    // otherwise this passes on a daemon that simply had not heard from it yet. `list-clients` is the
+    // daemon's own account of what it was told, so it is the honest thing to wait on.
+    wait_for("the daemon to record the client's own area", || {
+        let listing = String::from_utf8_lossy(
+            &sprag_on(&sock, &config, &["list-clients", "-t", &session]).stdout,
+        )
+        .into_owned();
+        let want = format!("[{}x{}]", MANUAL_CLIENT.0, MANUAL_CLIENT.1);
+        if listing.contains(&want) {
+            Ok(())
+        } else {
+            Err(format!("{listing:?} does not yet show {want}"))
+        }
+    });
+    assert_eq!(
+        pane_size(&mut conn, &session),
+        Some(PINNED),
+        "the pinned window followed the client that attached to it"
+    );
+
+    // ...and it STAYS. Without this the gate would pass on a daemon that merely happened to be
+    // between writes at the moment it was sampled.
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(
+        pane_size(&mut conn, &session),
+        Some(PINNED),
+        "the pin was overwritten after it had settled"
+    );
+    assert!(
+        client.holds_the_terminal(),
+        "the client died rather than viewing a window bigger than itself"
+    );
+
+    // The DETACH path, which re-derives on its own (`window_moved`) — a pin consulted only when a
+    // client arrives leaves the panes at the departing client's size here.
+    drop(client);
+    wait_for("the client to go", || match attached(&mut conn, &session) {
+        0 => Ok(()),
+        n => Err(format!("{n} still attached")),
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        pane_size(&mut conn, &session),
+        Some(PINNED),
+        "the panes moved when the client left a PINNED window"
+    );
+}
+
+/// **The other half of `manual`: `-u` hands the window back to its clients.**
+///
+/// The gate above proves a pin HOLDS; this proves it is not a one-way door, which is the claim a user
+/// who pinned by mistake depends on. It is also the only test that makes the un-pinned case
+/// observable while a client is attached: with nothing pinned, `manual` defers to the DEFAULT policy,
+/// so the attached client's own area becomes the window again — a daemon that treated an un-pinned
+/// `manual` as "no window at all" would leave the panes wherever the pin had put them.
+#[test]
+fn un_pinning_hands_the_window_back_to_the_attached_client() {
+    let config = ConfigHome::new("[options]\nwindow-size = \"manual\"\n");
+    let (_daemon, sock) = spawn_daemon_with_config(&["cat"], Some(config.as_str()));
+    let mut conn = observe(&sock);
+    let session = boot_session(&mut conn);
+
+    let mut client = Tui::attach(&sock, &session);
+    wait_for("the client to attach", || {
+        match attached(&mut conn, &session) {
+            0 => Err("nobody attached".to_owned()),
+            _ => Ok(()),
+        }
+    });
+    client.resize(MANUAL_CLIENT.0, MANUAL_CLIENT.1);
+    sprag_on(
+        &sock,
+        &config,
+        &[
+            "resize-window",
+            "-t",
+            &session,
+            "-x",
+            &PINNED.0.to_string(),
+            "-y",
+            &PINNED.1.to_string(),
+        ],
+    );
+    wait_for("the pin to win over the attached client", || {
+        settled(pane_size(&mut conn, &session), &Some(PINNED))
+    });
+
+    sprag_on(&sock, &config, &["resize-window", "-t", &session, "-u"]);
+    wait_for("the client's own area to become the window again", || {
+        settled(pane_size(&mut conn, &session), &Some(MANUAL_CLIENT))
+    });
 }

@@ -503,6 +503,21 @@ pub const RENAME_WINDOW_ACTION: &str = "rename_window";
 /// session is gone".
 pub const KILL_WINDOW_ACTION: &str = "kill_window";
 
+/// The mux control external invoke action that PINS the size of a window of the SCOPED session
+/// (`{window?, cols?, rows?}`) — tmux `resize-window`. `window` absent ⇒ the current one; `cols`
+/// and `rows` together pin that size, and BOTH absent un-pins the window.
+///
+/// It writes a stored fact and nothing else: whether the pinned size is what the panes are laid out
+/// over is the `window-size` option's answer ([`crate::options::WINDOW_SIZE`]), which the daemon
+/// reads from the user's file. So this action never becomes a way to set an option over the wire —
+/// the invariant [`crate::options`] states — and pinning a size before choosing to use it is a
+/// legal order rather than an error.
+///
+/// Unlike [`RESIZE_ACTION`] this touches no PTY directly. The panes follow because every mux action
+/// re-derives the session's window at the invoke BOUNDARY, which is the same path a split or a
+/// client's attach takes — one derivation, thirteen callers, now fourteen.
+pub const RESIZE_WINDOW_ACTION: &str = "resize_window";
+
 /// The mux control external invoke action that BREAKS a pane out of its window into a new window
 /// of the SCOPED session, born current, and returns its name (`{pane, name?}`) — tmux `break-pane`.
 ///

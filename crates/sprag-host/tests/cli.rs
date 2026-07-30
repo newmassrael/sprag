@@ -1844,6 +1844,155 @@ fn the_cli_resizes_a_pane_and_the_daemon_reports_the_new_size() {
     );
 }
 
+/// `resize-window` PINS a window's size, `-u` un-pins it, and the size takes effect only while
+/// `window-size` is `manual` — with the gap REPORTED rather than left to be discovered.
+///
+/// The daemon here has no attached client, which is what makes the first claim discriminating: every
+/// other policy answers "no window" in that state, so a pane that moves at all proves the pin is a
+/// rule the daemon performs. The `largest` half then proves the other direction — the size is stored
+/// but inert — and that a user is TOLD, which is the whole reason storing an inert value is allowed.
+#[test]
+fn the_cli_pins_a_window_size_and_reports_when_the_policy_ignores_it() {
+    // The DAEMON reads `window-size` from the user's file itself — no option crosses the wire — so
+    // the config home has to reach the daemon as well as the CLI. Giving it to the CLI alone is a
+    // real mistake this gate made first: the verb stored the pin and printed no note (its own view of
+    // the file said `manual`) while the daemon went on arbitrating under the default.
+    let config = ConfigHome::new("[options]\nwindow-size = \"manual\"\n");
+    let env = [("XDG_CONFIG_HOME", config.as_str())];
+    let (_host, sock) = spawn_host_env(&env);
+
+    let pinned = sprag_env(
+        &sock,
+        &["resize-window", "-t", "0", "-x", "111", "-y", "33"],
+        &env,
+    );
+    assert!(pinned.ok, "resize-window succeeded: {}", pinned.stderr);
+    assert!(
+        sprag(&sock, &["panes"]).stdout.contains("111x33"),
+        "the pin reached the pane with nobody attached: {:?}",
+        sprag(&sock, &["panes"]).stdout,
+    );
+    assert!(
+        pinned.stderr.is_empty(),
+        "a pin the policy USES needs no note: {}",
+        pinned.stderr,
+    );
+
+    // A pane forced elsewhere is pulled back by the next action boundary — the pin is the authority
+    // for as long as it stands, not a one-shot write.
+    sprag(&sock, &["resize-pane", "0", "-x", "40", "-y", "10"]);
+    assert!(
+        sprag(&sock, &["panes"]).stdout.contains("111x33"),
+        "a pinned window re-derives over a direct pane resize: {:?}",
+        sprag(&sock, &["panes"]).stdout,
+    );
+
+    // -u hands it back: with nothing pinned and no client reporting, there is no window, so the
+    // panes hold where they are rather than reflowing to a number nobody chose.
+    let freed = sprag_env(&sock, &["resize-window", "-t", "0", "-u"], &env);
+    assert!(freed.ok, "-u succeeded: {}", freed.stderr);
+    sprag(&sock, &["resize-pane", "0", "-x", "40", "-y", "10"]);
+    assert!(
+        sprag(&sock, &["panes"]).stdout.contains("40x10"),
+        "an un-pinned window stops overriding: {:?}",
+        sprag(&sock, &["panes"]).stdout,
+    );
+
+    // The same verb under a policy that does not read the pin: it STORES and says so. The policy is
+    // flipped through the real `set-option`, which edits the one file both processes read — so this
+    // also shows the daemon picking the change up with nothing restarted.
+    let flipped = sprag_env(&sock, &["set-option", "window-size", "largest"], &env);
+    assert!(flipped.ok, "set-option succeeded: {}", flipped.stderr);
+    let noted = sprag_env(
+        &sock,
+        &["resize-window", "-t", "0", "-x", "100", "-y", "30"],
+        &env,
+    );
+    assert!(
+        noted.ok,
+        "a pin is stored whatever the policy: {}",
+        noted.stderr
+    );
+    assert!(
+        noted.stderr.contains("largest") && noted.stderr.contains("manual"),
+        "the note names the policy in force AND the way out: {:?}",
+        noted.stderr,
+    );
+    assert!(
+        sprag(&sock, &["panes"]).stdout.contains("40x10"),
+        "and it stayed inert: {:?}",
+        sprag(&sock, &["panes"]).stdout,
+    );
+
+    // ...and the SAME stored size becomes live the moment the policy names it. Nothing is re-sent.
+    let back = sprag_env(&sock, &["set-option", "window-size", "manual"], &env);
+    assert!(back.ok, "set-option succeeded: {}", back.stderr);
+    sprag_env(&sock, &["resize-pane", "0", "-x", "50", "-y", "12"], &env);
+    assert!(
+        sprag(&sock, &["panes"]).stdout.contains("100x30"),
+        "a size stored under `largest` is what `manual` then uses: {:?}",
+        sprag(&sock, &["panes"]).stdout,
+    );
+}
+
+/// `resize-window`'s argument rules: both dimensions or neither, no zero, `-u` is exclusive, and an
+/// unknown window is named. Each refusal happens with nothing written.
+#[test]
+fn the_cli_refuses_a_half_window_a_zero_and_a_contradiction() {
+    let (_host, sock) = spawn_host();
+
+    let half = sprag(&sock, &["resize-window", "-t", "0", "-x", "80"]);
+    assert!(
+        !half.ok && half.stderr.contains("both dimensions"),
+        "{}",
+        half.stderr
+    );
+
+    let zero = sprag(&sock, &["resize-window", "-t", "0", "-x", "0", "-y", "30"]);
+    assert!(
+        !zero.ok && zero.stderr.contains("positive"),
+        "{}",
+        zero.stderr
+    );
+
+    // -u means "no rectangle", so a rectangle alongside it is a contradiction rather than a
+    // precedence puzzle this verb gets to resolve silently.
+    let both = sprag(
+        &sock,
+        &["resize-window", "-t", "0", "-u", "-x", "80", "-y", "24"],
+    );
+    assert!(
+        !both.ok && both.stderr.contains("no dimensions"),
+        "{}",
+        both.stderr
+    );
+
+    let ghost = sprag(
+        &sock,
+        &["resize-window", "-t", "0", "ghost", "-x", "80", "-y", "24"],
+    );
+    assert!(
+        !ghost.ok && ghost.stderr.contains("ghost"),
+        "{}",
+        ghost.stderr
+    );
+
+    // A window command's -t is required, so a missing one is refused before any connection.
+    let unscoped = sprag(&sock, &["resize-window", "-x", "80", "-y", "24"]);
+    assert!(
+        !unscoped.ok && unscoped.stderr.contains("-t SESSION"),
+        "{}",
+        unscoped.stderr,
+    );
+
+    // Nothing above wrote anything: the boot pane is untouched.
+    assert!(
+        sprag(&sock, &["panes"]).stdout.contains("80x24"),
+        "a refused resize-window pins nothing: {:?}",
+        sprag(&sock, &["panes"]).stdout,
+    );
+}
+
 /// The strongest chain the CLI can prove without a display: `send-keys` reaches the pane's CHILD
 /// through the real PTY, and `capture-pane` reads back what the child did with it.
 ///

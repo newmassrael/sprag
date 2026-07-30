@@ -83,6 +83,18 @@ pub struct Window {
     /// Keyed in one map, the dock-back that clears the float flag would drop the home on the
     /// floor before the leaf it was captured for could be placed.
     homes: HashMap<PaneId, LeafHome>,
+    /// The `(cols, rows)` an operator PINNED for this window, or `None` while nobody has.
+    ///
+    /// It lives here, beside the [`layout`](Self::layout) it sizes, because that is what it is: the
+    /// rectangle the arrangement is laid out over. Every OTHER answer to "how big is this window"
+    /// is derived from who is currently looking at it, and a derived fact has no business being
+    /// stored; this one is not derived from anything, which is why it needs a home and why the home
+    /// is durable ([`WindowSnapshot::manual_size`](crate::snapshot::WindowSnapshot::manual_size)).
+    ///
+    /// Whether it is USED is a policy the host reads from the user's file, not a property of this
+    /// field — a pinned size sits here inert until that policy names it, so writing one is never
+    /// the same act as switching to it. See `sprag_host::window::WindowSize`.
+    manual_size: Option<(u16, u16)>,
     layout_revision: u64,
 }
 
@@ -97,6 +109,7 @@ impl Window {
             layout: LayoutTree::new(),
             floating: HashSet::new(),
             homes: HashMap::new(),
+            manual_size: None,
             layout_revision: 0,
         }
     }
@@ -112,11 +125,18 @@ impl Window {
     /// heals any that failed to come back. `homes` starts empty (not persisted; see the snapshot
     /// module docs) and `layout_revision` at 0 — a restored window is NEW, and every pre-reboot
     /// client that held a revision is gone.
+    ///
+    /// `manual_size`, by contrast, COMES BACK, and the difference is the same one that decides every
+    /// field here: a home is a client's pixels and a revision is a client's bookmark, while a pinned
+    /// size is an OPERATOR's decision about the window itself — the same kind of fact as the
+    /// arrangement, restored for the same reason. A reboot that reopened a pinned window at whatever
+    /// the first client to attach happened to be would have thrown the decision away.
     fn restore(
         name: &str,
         pool: Workspace,
         layout: LayoutWire,
         floating: Vec<PaneId>,
+        manual_size: Option<(u16, u16)>,
     ) -> Result<Self, LayoutError> {
         let mut tree = LayoutTree::new();
         tree.set_from_wire(layout)?;
@@ -126,6 +146,7 @@ impl Window {
             layout: tree,
             floating: floating.into_iter().collect(),
             homes: HashMap::new(),
+            manual_size,
             layout_revision: 0,
         })
     }
@@ -158,6 +179,25 @@ impl Window {
     #[must_use]
     pub fn floating(&self) -> &HashSet<PaneId> {
         &self.floating
+    }
+
+    /// The `(cols, rows)` an operator pinned for this window, or `None` while nobody has — tmux's
+    /// `resize-window` size, read by the host's `window-size manual` policy.
+    #[must_use]
+    pub fn manual_size(&self) -> Option<(u16, u16)> {
+        self.manual_size
+    }
+
+    /// Pin this window's size, or `None` to un-pin it and hand the window back to whatever policy
+    /// derives one from the attached clients — tmux `resize-window`.
+    ///
+    /// It does NOT bump [`layout_revision`](Self::layout_revision), and the reason is what that
+    /// number means: a revision says a client's PROJECTION of the arrangement is stale, and the
+    /// arrangement here is untouched — the same tree, over a different rectangle. What a client has
+    /// to re-read is the session's window, which reaches it as its own wire fact. Bumping here would
+    /// tell every client its layout cache was invalid to deliver news about something else.
+    pub fn set_manual_size(&mut self, size: Option<(u16, u16)>) {
+        self.manual_size = size;
     }
 
     /// How many times this window's arrangement has CHANGED — the number a client watches
@@ -778,6 +818,26 @@ impl Session {
         Ok(())
     }
 
+    /// Pin the size of the window named `name`, or un-pin it with `None` — tmux `resize-window`.
+    /// See [`Window::set_manual_size`].
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::Unknown`] if no window of this session is called `name`.
+    pub fn resize_window(
+        &mut self,
+        name: &str,
+        size: Option<(u16, u16)>,
+    ) -> Result<(), SessionError> {
+        let window = self
+            .windows
+            .iter_mut()
+            .find(|w| w.name == name)
+            .ok_or_else(|| SessionError::Unknown(name.to_owned()))?;
+        window.set_manual_size(size);
+        Ok(())
+    }
+
     /// The index of the window whose pool holds `pane`, or `None` if no window of this session
     /// does — how [`break_pane`](Self::break_pane) / [`join_pane`](Self::join_pane) find a pane's
     /// SOURCE window from its id ALONE.
@@ -1106,8 +1166,9 @@ impl SessionRegistry {
                         rows: p.rows,
                     });
                 }
-                let window = Window::restore(&w.name, seed.sibling(), w.layout, w.floating)
-                    .map_err(|e| SnapshotError::Layout(e.to_string()))?;
+                let window =
+                    Window::restore(&w.name, seed.sibling(), w.layout, w.floating, w.manual_size)
+                        .map_err(|e| SnapshotError::Layout(e.to_string()))?;
                 windows.push(window);
             }
             let current_window = windows
@@ -1477,6 +1538,21 @@ impl SessionRegistry {
         self.session_named_mut(session)?.rename_window(name, new)
     }
 
+    /// Pin the size of the window named `name` of the session named `session`, or un-pin it with
+    /// `None` — tmux `resize-window`. See [`Session::resize_window`].
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::Unknown`] for an unknown session OR window.
+    pub fn resize_window(
+        &mut self,
+        session: &str,
+        name: &str,
+        size: Option<(u16, u16)>,
+    ) -> Result<(), SessionError> {
+        self.session_named_mut(session)?.resize_window(name, size)
+    }
+
     /// Break `pane` out of the window that holds it, within the session named `session`, into a new
     /// window, returning its name — the registry-level entry the wire handler uses (resolve the
     /// session, then delegate to [`Session::break_pane`], which derives the pane's source window).
@@ -1608,6 +1684,20 @@ impl SessionRegistry {
     pub fn window_mut(&mut self, session: &str, window: &str) -> Option<&mut Window> {
         let session = self.sessions.iter_mut().find(|s| s.name == session)?;
         session.windows.iter_mut().find(|w| w.name == window)
+    }
+
+    /// The window named `window` of the session named `session` — [`window_mut`](Self::window_mut)'s
+    /// read half, name-addressed on both dimensions for the same reason and `None` in the same two
+    /// cases.
+    ///
+    /// A reader wants the same "THAT window, not whichever is current now" guarantee a writer does:
+    /// the host arbitrates a session's window size against the arrangement of the window its scope
+    /// was assembled for, and reading a pinned size off a different window than the one being tiled
+    /// would lay one window's tree out over another window's rectangle.
+    #[must_use]
+    pub fn window(&self, session: &str, window: &str) -> Option<&Window> {
+        let session = self.sessions.iter().find(|s| s.name == session)?;
+        session.windows.iter().find(|w| w.name == window)
     }
 
     /// A clone of the pane-pool handle of the window a request scoped to `session` acts on —

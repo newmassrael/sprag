@@ -29,6 +29,12 @@
 //! sprag select-window -t SESSION NAME     make NAME the session's current window
 //! sprag rename-window -t SESSION [win] NEW rename a window (default: the current one) to NEW
 //! sprag kill-window -t SESSION [win]      kill a window (default: the current one); the last ends the session
+//! sprag resize-window -t SESSION [win] -x COLS -y ROWS | -u
+//!                                         PIN a window's size so it stops following the clients
+//!                                         attached to it, or -u to un-pin it (tmux
+//!                                         resize-window). Takes effect while `window-size` is
+//!                                         `manual`; the size is stored either way and survives a
+//!                                         reboot
 //!
 //! sprag panes [-t SESSION]                        list the current window's panes (tmux list-panes)
 //! sprag split-window [-t SESSION] [-h|-v [-b] PANE] [-- command…]
@@ -102,9 +108,9 @@ use sprag_host::keymap::{BoundAction, KeySpec};
 use sprag_host::wire::{
     BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, FULL_TEXT_SLOT, JOIN_PANE_ACTION, KEY_ACTION,
     KILL_SESSION_ACTION, KILL_WINDOW_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT,
-    PASTE_ACTION, RENAME_WINDOW_ACTION, RESIZE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
-    SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, find_slot_for, project_slot_for,
-    regex_slot_for,
+    PASTE_ACTION, RENAME_WINDOW_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_WINDOW_ACTION,
+    SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, find_slot_for,
+    project_slot_for, regex_slot_for,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{HOST_SOCKET, HostConn, socket_path};
@@ -137,6 +143,7 @@ fn run() -> io::Result<()> {
         Some("select-window") => select_window(args.collect()),
         Some("rename-window") => rename_window(args.collect()),
         Some("kill-window") => kill_window(args.collect()),
+        Some("resize-window") => resize_window(args.collect()),
         Some("break-pane") => break_pane(args.collect()),
         Some("join-pane") => join_pane(args.collect()),
         Some("panes") => panes(args.collect()),
@@ -625,6 +632,7 @@ fn print_usage() {
          \x20             | kill-session NAME | kill-server [--purge]>\n\
          \x20      sprag <windows | new-window [name] | select-window NAME\n\
          \x20             | rename-window [window] NAME | kill-window [window]\n\
+         \x20             | resize-window [window] <-x COLS -y ROWS | -u>\n\
          \x20             | break-pane PANE [name] | join-pane PANE WINDOW> -t SESSION\n\
          \x20      sprag <panes | split-window [-h|-v [-b] PANE] [-- command…]\n\
          \x20             | kill-pane PANE\n\
@@ -2186,6 +2194,111 @@ fn kill_window(args: Vec<String>) -> io::Result<()> {
         )),
         Err(error) => Err(error),
     }
+}
+
+/// `resize-window -t SESSION [window] {-x COLS -y ROWS | -u}`: PIN a window's size, or un-pin it —
+/// tmux `resize-window`. Default window: the current one.
+///
+/// BOTH dimensions or NEITHER, for the reason [`resize_pane`] gives and one more. There, "the other
+/// one, unchanged" could not be supplied honestly because reading a pane's size back would race a
+/// client resizing it. Here the stored size has exactly one writer — this verb — so no race, and the
+/// answer is still no: a window is a rectangle somebody chose, and completing half of one from what
+/// happens to be pinned would produce a shape nobody decided on. `-u` is the explicit way to say
+/// "no rectangle at all", spelled as `set-option -u` spells the same idea.
+///
+/// tmux's relative forms (`-U`/`-D`/`-L`/`-R` with an adjustment) and its `-a`/`-A` (take the
+/// smallest / largest client) are NOT offered, and the reason is one fact rather than a size
+/// preference: each would have to compute a new rectangle from a current one, and this CLI holds
+/// neither input. Reading them here and sending back a result is a SECOND arbitration living in a
+/// client — the defect this whole front has been removing. They belong in the action, where the
+/// stored size and the clients' reports both already are, and they are not built.
+///
+/// # It pins; it does not switch to pinning
+///
+/// The size is stored whatever `window-size` currently says, and the note names the gap when the
+/// policy in force is not `manual`. Pinning first and choosing to use it second is a legal order —
+/// refusing it would make the natural sequence fail for no mechanical reason — but a value that
+/// silently does nothing is what this front keeps finding, so it is reported rather than assumed
+/// understood. The verb does NOT write the option: that would be a daemon-side command editing the
+/// user's `config.toml`, which is [`set_option`]'s job and nobody else's.
+fn resize_window(args: Vec<String>) -> io::Result<()> {
+    let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
+    let (session, rest) = target_and_rest(args, "resize-window")?;
+    let mut window: Option<String> = None;
+    let mut cols: Option<u64> = None;
+    let mut rows: Option<u64> = None;
+    let mut unpin = false;
+    let mut it = rest.into_iter();
+    while let Some(arg) = it.next() {
+        let mut dimension = |name: &str, flag: &str| -> io::Result<u64> {
+            let value = it
+                .next()
+                .ok_or_else(|| bad(format!("resize-window: {flag} needs a {name} count")))?;
+            match value.parse::<u64>() {
+                Ok(0) | Err(_) => Err(bad(format!(
+                    "resize-window: {flag} {value:?} is not a positive {name} count"
+                ))),
+                Ok(count) => Ok(count),
+            }
+        };
+        match arg.as_str() {
+            "-x" | "--width" => cols = Some(dimension("column", "-x")?),
+            "-y" | "--height" => rows = Some(dimension("row", "-y")?),
+            "-u" | "--unset" => unpin = true,
+            _ if window.is_none() => window = Some(arg),
+            other => return Err(bad(format!("resize-window: unexpected argument {other:?}"))),
+        }
+    }
+    let size = match (unpin, cols, rows) {
+        (true, None, None) => None,
+        (true, _, _) => {
+            return Err(bad(
+                "resize-window: -u un-pins the window, so it takes no dimensions".to_owned(),
+            ));
+        }
+        (false, Some(cols), Some(rows)) => Some((cols, rows)),
+        (false, _, _) => {
+            return Err(bad(
+                "resize-window needs both dimensions (-x COLS -y ROWS), or -u to un-pin".to_owned(),
+            ));
+        }
+    };
+    let mut conn = connect()?;
+    require_session(&mut conn, &session)?;
+    let mut action_args = json!({});
+    if let Some(window) = &window {
+        action_args["window"] = json!(window);
+    }
+    if let Some((cols, rows)) = size {
+        action_args["cols"] = json!(cols);
+        action_args["rows"] = json!(rows);
+    }
+    let target = window.as_deref().unwrap_or("the current window");
+    scoped_window_action(
+        &mut conn,
+        &session,
+        RESIZE_WINDOW_ACTION,
+        action_args,
+        &format!("resize-window: no window named {target:?} in session {session:?}"),
+    )?;
+    match size {
+        Some((cols, rows)) => println!("pinned {target} to {cols}x{rows}"),
+        None => println!("un-pinned {target}"),
+    }
+    // The gap between storing a size and USING one, named the moment it exists rather than left for
+    // the user to discover as "I resized and nothing moved". Read from the user's file here, the way
+    // every option verb reads it — the daemon was never asked what it thinks the policy is.
+    if size.is_some() {
+        let policy = sprag_host::config::window_size();
+        if policy != sprag_host::WindowSize::Manual {
+            eprintln!(
+                "sprag: note: window-size is {}, so the panes still follow the attached clients \
+                 — `sprag set-option window-size manual` to lay them out over this size",
+                policy.name()
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Issue a scoped window `scene/invoke`, mapping a request-level refusal (`Other`) to `message` —

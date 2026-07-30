@@ -100,6 +100,7 @@ fn main() -> ExitCode {
             // one. It attaches a second CLIENT and takes it away again, leaving the pane set as it
             // found it.
             check_a_window_and_a_terminal_agree_on_one_pane_size(&mut smoke, &mut report);
+            check_a_pinned_window_overrides_what_this_window_measured(&mut smoke, &mut report);
             // AFTER every check that needs the client this run booted, because it REPLACES that
             // client twice. Before the session kill, which is happy to kill whichever session the
             // client it finds is attached to.
@@ -1781,6 +1782,119 @@ fn check_a_window_and_a_terminal_agree_on_one_pane_size(smoke: &mut Smoke, repor
     drop(terminal);
     report.check(
         "the panes return to this window's own size when the terminal leaves",
+        smoke
+            .wait_for(|_| {
+                let dims = pane_dims(&mut daemon, &session);
+                (!dims.is_empty() && dims == solo).then_some(())
+            })
+            .is_ok(),
+    );
+
+    // Leave the file as this check found it, so a later one reads its own settings and not these.
+    let _ = smoke.write_user_config("");
+}
+
+/// **`window-size manual` reaches a WINDOW, not only a terminal.**
+///
+/// The check above proves a GUI is IN the arbitration; this proves the one policy that takes the
+/// arbitration AWAY from it still governs it. That is not the same claim, and it is the one a
+/// reasoning-only argument would have skipped: a GUI reports what its panes measured, and `manual`
+/// ignores that report, so "the pin wins" depends on the client NOT re-asserting its own measurement
+/// — which is exactly the two-authority defect this front removed and would silently restore.
+///
+/// Four claims, and the last is the strongest:
+///
+/// * The panes take the PINNED size, which is deliberately LARGER than what this window measured, so
+///   no fallback to the client's own area can be mistaken for a pass.
+/// * This window then paints PART of every pane — the same crop path the `largest` check exercises,
+///   reached from a stored decision instead of from another client's report.
+/// * It HOLDS. A client that answered a too-large grid by re-reporting, or by sizing its own panes,
+///   would pull the panes back within a frame or two.
+/// * `-u` returns every pane to what this window measured. Only that direction can distinguish "the
+///   pin governs a live report" from "the client stopped reporting at all".
+fn check_a_pinned_window_overrides_what_this_window_measured(
+    smoke: &mut Smoke,
+    report: &mut Report,
+) {
+    let Some(session) = smoke.attached_session() else {
+        report.check("the window names its session", false);
+        return;
+    };
+    let Ok(mut daemon) = smoke.daemon() else {
+        report.check("the smoke reaches the daemon", false);
+        return;
+    };
+    let solo = settled_pane_dims(smoke, &mut daemon, &session);
+    let Some(measured) = window_size(&mut daemon, &session) else {
+        report.check("this window reported an area to pin against", false);
+        return;
+    };
+
+    if let Err(error) = smoke.write_user_config("[options]\nwindow-size = \"manual\"\n") {
+        report.check("the smoke writes window-size manual", false);
+        eprintln!("      {error}");
+        return;
+    }
+    // Bigger than what this window can draw, in BOTH dimensions, so every later claim is a relation
+    // against a number no client here reported.
+    let pinned = (measured.0 + 20, measured.1 + 8);
+    if let Err(error) = smoke.cli(&[
+        "resize-window",
+        "-t",
+        &session,
+        "-x",
+        &pinned.0.to_string(),
+        "-y",
+        &pinned.1.to_string(),
+    ]) {
+        report.check("sprag resize-window pins the window", false);
+        eprintln!("      {error}");
+        let _ = smoke.write_user_config("");
+        return;
+    }
+    report.check(
+        "a pinned window becomes the session's window, over what this client reported",
+        smoke
+            .wait_for(|_| (window_size(&mut daemon, &session) == Some(pinned)).then_some(()))
+            .is_ok(),
+    );
+    let grown = settled_pane_dims(smoke, &mut daemon, &session);
+    report.check(
+        "and every pane grew past what this window measured",
+        !grown.is_empty()
+            && grown != solo
+            && grown.iter().all(|(pane, (cols, rows))| {
+                solo.get(pane)
+                    .is_some_and(|(was, tall)| cols >= was && rows >= tall)
+            }),
+    );
+    report.check(
+        "this window paints part of every pinned pane",
+        smoke
+            .wait_for(|smoke| {
+                let grids = smoke.grid_facts();
+                (!grids.is_empty()
+                    && grids
+                        .iter()
+                        .all(|(painted, buffer)| painted.0 < buffer.0 && painted.1 < buffer.1))
+                .then_some(())
+            })
+            .is_ok(),
+    );
+    // ...and it STAYS. A client that re-asserted its own measurement would win here within a frame,
+    // which is the defect this claim exists to catch rather than a timing nicety.
+    let held = settled_pane_dims(smoke, &mut daemon, &session);
+    report.check(
+        "the pin is not pulled back by the client that cannot show it whole",
+        held == grown && !held.is_empty(),
+    );
+
+    // The un-pin, which is the only direction that separates a governed report from an absent one.
+    if let Err(error) = smoke.cli(&["resize-window", "-t", &session, "-u"]) {
+        eprintln!("      could not un-pin: {error}");
+    }
+    report.check(
+        "un-pinning returns every pane to what this window measured",
         smoke
             .wait_for(|_| {
                 let dims = pane_dims(&mut daemon, &session);

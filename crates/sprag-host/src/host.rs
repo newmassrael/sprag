@@ -2361,6 +2361,7 @@ mod tests {
                             rows: 24,
                         },
                     ],
+                    manual_size: None,
                 }],
             }],
         };
@@ -2419,6 +2420,7 @@ mod tests {
                         cols: 80,
                         rows: 24,
                     }],
+                    manual_size: None,
                 }],
             }],
         };
@@ -2485,6 +2487,7 @@ mod tests {
                             rows: 24,
                         },
                     ],
+                    manual_size: None,
                 }],
             }],
         };
