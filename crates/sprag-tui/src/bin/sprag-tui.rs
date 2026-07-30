@@ -95,7 +95,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use pinion_core::QuitSink;
 use sprag_client::WireHost;
 use sprag_host::HostClient;
-use sprag_host::keymap::{BoundAction, Keymap};
+use sprag_host::keymap::{BoundAction, Keymap, PrefixMode, Routed};
 use sprag_input::{Modifiers, MouseEventKind, MouseInput};
 use sprag_terminal::{PaneId, SplitId};
 use sprag_tui::{
@@ -216,7 +216,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     // Where the next key goes. Starts at the pane: the prefix is a departure from the steady
     // state, not the other way round.
-    let mut keys = Keys::ToPane;
+    let mut keys = PrefixMode::ToPane;
     loop {
         // `None` blocks until the terminal has something OR the waker fires — the select this
         // client's whole idle cost rests on.
@@ -567,19 +567,6 @@ fn refreshed(keymap: &mut sprag_host::config::KeymapFile) -> &Keymap {
     keymap.keymap()
 }
 
-/// Where the next keystroke goes.
-///
-/// Two states rather than a `bool` because the prefix is not a modifier — it is a mode the client
-/// enters and leaves, and `after_prefix: true` at a call site says nothing about which way round
-/// that is.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Keys {
-    /// The steady state: keys are the program's.
-    ToPane,
-    /// The prefix was just pressed, so the next key is a command to this client.
-    AfterPrefix,
-}
-
 /// What the loop should do with a key.
 #[derive(PartialEq, Eq, Debug)]
 enum Command {
@@ -598,31 +585,27 @@ enum Command {
 /// has no spelling for is therefore not a key a binding could have named either, which is why the
 /// one decode can serve all three.
 ///
-/// An unbound command key is SWALLOWED rather than passed through to the pane, which is tmux's
-/// behaviour and the safer of the two: a user who typed the prefix meant to address the client, so
-/// delivering their mistake to a shell would run something they did not ask for.
-fn command(keys: &mut Keys, keymap: &Keymap, event: &KeyEvent) -> Command {
+/// The DECODE is all this adds. Which keystroke is the prefix, what an armed key means, and when the
+/// mode ends are [`Keymap::route`]'s — shared with `sprag-gui`, whose keys arrive already spelled
+/// that way, so the two frontends cannot come to disagree about what a user's table says.
+fn command(keys: &mut PrefixMode, keymap: &Keymap, event: &KeyEvent) -> Command {
     // The prefix is a ONE-KEY mode, so it ends here — before anything looks at what the key is —
     // rather than in each outcome, where a new binding could forget it. Taking the old mode out in
     // the same move is what leaves exactly one place that can put it back.
-    let mode = std::mem::replace(keys, Keys::ToPane);
+    let mode = std::mem::replace(keys, PrefixMode::ToPane);
     let Some(key) = wire_key(event) else {
         // A key the wire cannot spell reaches neither a pane nor the table. It still ENDS the
         // prefix mode, because the mode is one key long whatever that key turns out to be.
         return Command::Swallow;
     };
     let mut scratch = [0u8; 4];
-    let name = key.name(&mut scratch);
-    if mode == Keys::AfterPrefix {
-        return keymap
-            .action(name, key.mods())
-            .map_or(Command::Swallow, Command::Act);
+    let routed = keymap.route(mode, key.name(&mut scratch), key.mods());
+    *keys = routed.next();
+    match routed {
+        Routed::ToPane => Command::ToPane(key),
+        Routed::Act(action) => Command::Act(action),
+        Routed::Prefix | Routed::Swallow => Command::Swallow,
     }
-    if keymap.is_prefix(name, key.mods()) {
-        *keys = Keys::AfterPrefix;
-        return Command::Swallow;
-    }
-    Command::ToPane(key)
 }
 
 /// The [`QuitSink`] the wire client pulls when the daemon is definitively gone — the tmux
@@ -882,12 +865,12 @@ mod tests {
     }
 
     /// The name a routed key would be sent to the pane under, or `None` if it goes nowhere.
-    fn routed(keys: &mut Keys, bytes: &[u8]) -> Option<String> {
+    fn routed(keys: &mut PrefixMode, bytes: &[u8]) -> Option<String> {
         routed_with(&Keymap::default(), keys, bytes)
     }
 
     /// [`routed`] against a keymap other than the default.
-    fn routed_with(keymap: &Keymap, keys: &mut Keys, bytes: &[u8]) -> Option<String> {
+    fn routed_with(keymap: &Keymap, keys: &mut PrefixMode, bytes: &[u8]) -> Option<String> {
         match command(keys, keymap, &typed(bytes)) {
             Command::ToPane(key) => {
                 let mut scratch = [0u8; 4];
@@ -898,7 +881,7 @@ mod tests {
     }
 
     /// Route one keystroke through the DEFAULT keymap — what a user who has written no config gets.
-    fn acted(keys: &mut Keys, bytes: &[u8]) -> Command {
+    fn acted(keys: &mut PrefixMode, bytes: &[u8]) -> Command {
         command(keys, &Keymap::default(), &typed(bytes))
     }
 
@@ -907,40 +890,44 @@ mod tests {
     /// The steady state: a key is the program's, not the client's.
     #[test]
     fn an_ordinary_key_reaches_the_pane() {
-        let mut keys = Keys::ToPane;
+        let mut keys = PrefixMode::ToPane;
         assert_eq!(routed(&mut keys, b"q").as_deref(), Some("q"));
-        assert_eq!(keys, Keys::ToPane);
+        assert_eq!(keys, PrefixMode::ToPane);
     }
 
     /// The two keys slice 2 quit on now belong to the program — which is the whole reason the
     /// prefix exists, so it is asserted rather than left to the module docs.
     #[test]
     fn the_old_quit_keys_are_the_programs_now() {
-        let mut keys = Keys::ToPane;
+        let mut keys = PrefixMode::ToPane;
         assert_eq!(routed(&mut keys, b"q").as_deref(), Some("q"));
         // `Ctrl-C`: an interrupt for the child, not a quit for the client.
         assert_eq!(routed(&mut keys, &[0x03]).as_deref(), Some("c"));
-        assert!(routed(&mut keys, &[0x03]).is_some_and(|_| keys == Keys::ToPane));
+        assert!(routed(&mut keys, &[0x03]).is_some_and(|_| keys == PrefixMode::ToPane));
     }
 
     /// The prefix is swallowed and arms the next key; `d` then detaches.
     #[test]
     fn the_prefix_then_d_detaches() {
-        let mut keys = Keys::ToPane;
+        let mut keys = PrefixMode::ToPane;
         assert_eq!(acted(&mut keys, CTRL_B), Command::Swallow);
-        assert_eq!(keys, Keys::AfterPrefix, "the prefix arms the next key");
+        assert_eq!(
+            keys,
+            PrefixMode::AfterPrefix,
+            "the prefix arms the next key"
+        );
         assert_eq!(
             acted(&mut keys, b"d"),
             Command::Act(BoundAction::DetachClient)
         );
-        assert_eq!(keys, Keys::ToPane, "the mode is one key long");
+        assert_eq!(keys, PrefixMode::ToPane, "the mode is one key long");
     }
 
     /// A bare `d` with no prefix is a letter, not a detach. The revert-proof for the prefix
     /// mechanism itself: route `d` first and the client would leave before anything was typed.
     #[test]
     fn a_bare_d_is_a_letter() {
-        let mut keys = Keys::ToPane;
+        let mut keys = PrefixMode::ToPane;
         assert_eq!(routed(&mut keys, b"d").as_deref(), Some("d"));
     }
 
@@ -951,24 +938,24 @@ mod tests {
     /// the assertion is unchanged while the mechanism under it lost a special case.
     #[test]
     fn ctrl_d_after_the_prefix_is_not_a_detach() {
-        let mut keys = Keys::ToPane;
+        let mut keys = PrefixMode::ToPane;
         assert_eq!(acted(&mut keys, CTRL_B), Command::Swallow);
         assert_eq!(acted(&mut keys, &[0x04]), Command::Swallow);
-        assert_eq!(keys, Keys::ToPane);
+        assert_eq!(keys, PrefixMode::ToPane);
     }
 
     /// `prefix prefix` types a literal prefix into the pane, which is what keeps `Ctrl-B` reachable
     /// by a program that binds it (readline's backward-char, for one).
     #[test]
     fn the_prefix_twice_types_a_literal_prefix() {
-        let mut keys = Keys::ToPane;
+        let mut keys = PrefixMode::ToPane;
         assert_eq!(acted(&mut keys, CTRL_B), Command::Swallow);
         assert_eq!(
             acted(&mut keys, CTRL_B),
             Command::Act(BoundAction::SendPrefix),
             "the second prefix is the send-prefix binding",
         );
-        assert_eq!(keys, Keys::ToPane);
+        assert_eq!(keys, PrefixMode::ToPane);
         // ...and what that binding sends is the PREFIX itself, read from the keymap rather than
         // from the key that triggered it.
         let keymap = Keymap::default();
@@ -986,7 +973,7 @@ mod tests {
     fn send_prefix_bound_elsewhere_still_sends_the_prefix() {
         let mut keymap = Keymap::default();
         keymap.bind("a", "send-prefix").expect("binds");
-        let mut keys = Keys::ToPane;
+        let mut keys = PrefixMode::ToPane;
         assert_eq!(
             command(&mut keys, &keymap, &typed(CTRL_B)),
             Command::Swallow
@@ -1004,10 +991,10 @@ mod tests {
     /// to address the client, so their mistake must not reach a shell.
     #[test]
     fn an_unbound_command_key_is_swallowed() {
-        let mut keys = Keys::ToPane;
+        let mut keys = PrefixMode::ToPane;
         assert_eq!(acted(&mut keys, CTRL_B), Command::Swallow);
         assert_eq!(acted(&mut keys, b"z"), Command::Swallow);
-        assert_eq!(keys, Keys::ToPane, "and the mode still ends");
+        assert_eq!(keys, PrefixMode::ToPane, "and the mode still ends");
     }
 
     /// A rebound PREFIX moves the gate, and the old prefix becomes the program's again.
@@ -1020,17 +1007,17 @@ mod tests {
         let mut keymap = Keymap::default();
         keymap.set_prefix("C-a").expect("sets");
         const CTRL_A: &[u8] = &[0x01];
-        let mut keys = Keys::ToPane;
+        let mut keys = PrefixMode::ToPane;
         assert_eq!(
             routed_with(&keymap, &mut keys, CTRL_B).as_deref(),
             Some("b")
         );
-        assert_eq!(keys, Keys::ToPane, "the old prefix arms nothing");
+        assert_eq!(keys, PrefixMode::ToPane, "the old prefix arms nothing");
         assert_eq!(
             command(&mut keys, &keymap, &typed(CTRL_A)),
             Command::Swallow
         );
-        assert_eq!(keys, Keys::AfterPrefix, "the new one does");
+        assert_eq!(keys, PrefixMode::AfterPrefix, "the new one does");
         assert_eq!(
             command(&mut keys, &keymap, &typed(b"d")),
             Command::Act(BoundAction::DetachClient),
@@ -1044,7 +1031,7 @@ mod tests {
         let mut keymap = Keymap::default();
         keymap.bind("C-o", "detach-client").expect("binds");
         keymap.unbind("o").expect("unbinds");
-        let mut keys = Keys::ToPane;
+        let mut keys = PrefixMode::ToPane;
         assert_eq!(acted(&mut keys, CTRL_B), Command::Swallow);
         // Ctrl-O, the C0 byte — unreachable under the hardcoded table's "a modified command key is
         // a slip" rule, and bindable now.
@@ -1075,7 +1062,7 @@ mod tests {
     fn the_two_split_keys_carry_tmuxs_directions_and_not_each_others() {
         use sprag_terminal::SplitDir;
 
-        let mut keys = Keys::ToPane;
+        let mut keys = PrefixMode::ToPane;
         assert_eq!(acted(&mut keys, CTRL_B), Command::Swallow);
         assert_eq!(
             acted(&mut keys, b"%"),
@@ -1084,7 +1071,7 @@ mod tests {
                 before: false
             }),
         );
-        assert_eq!(keys, Keys::ToPane, "and the mode is one key long");
+        assert_eq!(keys, PrefixMode::ToPane, "and the mode is one key long");
         assert_eq!(acted(&mut keys, CTRL_B), Command::Swallow);
         assert_eq!(
             acted(&mut keys, b"\""),
@@ -1099,7 +1086,7 @@ mod tests {
     /// pane this client has just made.
     #[test]
     fn the_prefix_then_o_moves_to_the_next_pane() {
-        let mut keys = Keys::ToPane;
+        let mut keys = PrefixMode::ToPane;
         assert_eq!(acted(&mut keys, CTRL_B), Command::Swallow);
         assert_eq!(
             acted(&mut keys, b"o"),
@@ -1115,7 +1102,7 @@ mod tests {
     /// would split the window mid-word.
     #[test]
     fn the_split_keys_are_ordinary_characters_without_the_prefix() {
-        let mut keys = Keys::ToPane;
+        let mut keys = PrefixMode::ToPane;
         assert_eq!(routed(&mut keys, b"%").as_deref(), Some("%"));
         assert_eq!(routed(&mut keys, b"\"").as_deref(), Some("\""));
         assert_eq!(routed(&mut keys, b"o").as_deref(), Some("o"));
@@ -1128,11 +1115,11 @@ mod tests {
     /// next`, so a user running through a history with it would find their focus moving instead.
     #[test]
     fn a_modified_command_key_is_swallowed() {
-        let mut keys = Keys::ToPane;
+        let mut keys = PrefixMode::ToPane;
         assert_eq!(acted(&mut keys, CTRL_B), Command::Swallow);
         // Ctrl-O, the C0 byte.
         assert_eq!(acted(&mut keys, &[0x0f]), Command::Swallow);
-        assert_eq!(keys, Keys::ToPane);
+        assert_eq!(keys, PrefixMode::ToPane);
     }
 
     /// A key the wire cannot spell still ENDS the prefix mode — it is one key long whatever that
@@ -1142,7 +1129,7 @@ mod tests {
     /// it, and a client that left the mode armed would treat the user's NEXT keystroke as a command.
     #[test]
     fn an_unspellable_key_after_the_prefix_still_ends_the_mode() {
-        let mut keys = Keys::ToPane;
+        let mut keys = PrefixMode::ToPane;
         assert_eq!(acted(&mut keys, CTRL_B), Command::Swallow);
         let bare_shift = KeyEvent {
             key: termwiz::input::KeyCode::Shift,
@@ -1152,7 +1139,7 @@ mod tests {
             command(&mut keys, &Keymap::default(), &bare_shift),
             Command::Swallow
         );
-        assert_eq!(keys, Keys::ToPane, "the mode ended");
+        assert_eq!(keys, PrefixMode::ToPane, "the mode ended");
         // ...and the very next ordinary key is the program's again, not a command.
         assert_eq!(routed(&mut keys, b"d").as_deref(), Some("d"));
     }

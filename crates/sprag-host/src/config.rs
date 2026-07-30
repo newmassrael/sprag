@@ -217,6 +217,14 @@ pub struct KeymapFile {
     /// The last table read SUCCESSFULLY. Retained across a failed re-read (see
     /// [`refresh`](Self::refresh)).
     keymap: Keymap,
+    /// Why the file's own declarations are NOT the table in force, if they are not — the error from
+    /// the last read that actually looked at the content.
+    ///
+    /// Here rather than in the caller, and that is the whole point: a client that kept its own copy
+    /// would have to decide what an unchanged file means, and the honest answer is "no news", which is
+    /// indistinguishable from "nothing is wrong" once the fact lives somewhere else. Cleared by a read
+    /// that succeeds, set by one that fails, and left ALONE by a read that found the file unmoved.
+    unusable: Option<ConfigError>,
 }
 
 impl KeymapFile {
@@ -228,29 +236,90 @@ impl KeymapFile {
     /// read, is not valid TOML, or declares something unusable. A client fails to START on those,
     /// because the one screen able to show the message is the one it has not yet replaced.
     pub fn load() -> Result<Self, ConfigError> {
-        let path = config_path();
-        let text = match path.as_deref() {
-            Some(path) if path.is_file() => {
-                Some(std::fs::read_to_string(path).map_err(|error| {
-                    ConfigError::Content(ProjectError::Unreadable(error.to_string()))
-                })?)
-            }
-            _ => None,
-        };
-        Ok(Self {
-            keymap: match &text {
-                Some(text) => build_keymap(&parse_file(text)?)?,
-                None => Keymap::default(),
+        match Self::read(config_path()) {
+            (_, Some(error)) => Err(error),
+            (file, None) => Ok(file),
+        }
+    }
+
+    /// The user's keymap, or [`Keymap::default`] and the reason theirs could not be used.
+    ///
+    /// **For a client with no screen to fail on.** [`load`](Self::load)'s answer to a broken file is
+    /// to refuse to start, which is right for a terminal client — the screen able to show the message
+    /// is the one it has not yet replaced. A windowed client has no such screen, and refusing to open
+    /// a window over one bad line would take a whole session view away with the reason going to a log
+    /// the user will not read. It reports through a surface of its own instead, and needs a usable
+    /// table to report FROM.
+    ///
+    /// The broken text is REMEMBERED, so [`refresh`](Self::refresh) notices the fix and does not
+    /// re-report the same file on every keystroke until then — the same once-only rule a failed
+    /// re-read follows.
+    pub fn load_usable() -> (Self, Option<ConfigError>) {
+        Self::read(config_path())
+    }
+
+    /// The keymap declared by `path`, watched at `path` — [`load_usable`](Self::load_usable) aimed at
+    /// a file the caller names instead of at the user's own.
+    ///
+    /// The holder stopped hard-coding which file it watches when this arrived, and the honest reason
+    /// is that a client's USE of it could not otherwise be exercised from outside this crate: the
+    /// only other way in is `$XDG_CONFIG_HOME`, which is process-global, so a frontend's test would
+    /// have to mutate the environment its siblings are reading. Everything else is identical —
+    /// the same reader, the same fall back to the defaults, the same remembered text.
+    pub fn at(path: &std::path::Path) -> (Self, Option<ConfigError>) {
+        Self::read(Some(path.to_owned()))
+    }
+
+    /// Read `path` and build what it declares, keeping the pieces either caller needs: the holder
+    /// (always usable — the defaults when the file could not be used) and the reason, if any.
+    fn read(path: Option<PathBuf>) -> (Self, Option<ConfigError>) {
+        let (text, unreadable) = match path.as_deref() {
+            Some(path) if path.is_file() => match std::fs::read_to_string(path) {
+                Ok(text) => (Some(text), None),
+                Err(error) => (
+                    None,
+                    Some(ConfigError::Content(ProjectError::Unreadable(
+                        error.to_string(),
+                    ))),
+                ),
             },
-            path,
-            text,
-        })
+            _ => (None, None),
+        };
+        let built = match &text {
+            Some(text) => parse_file(text).and_then(|file| build_keymap(&file)),
+            None => Ok(Keymap::default()),
+        };
+        let (keymap, error) = match built {
+            Ok(keymap) => (keymap, unreadable),
+            Err(error) => (Keymap::default(), Some(error)),
+        };
+        (
+            Self {
+                keymap,
+                path,
+                text,
+                unusable: error.clone(),
+            },
+            error,
+        )
     }
 
     /// The table as it was last read.
     #[must_use]
     pub fn keymap(&self) -> &Keymap {
         &self.keymap
+    }
+
+    /// Why the table in force is NOT the one the file declares, if it is not — [`None`] when the file
+    /// (or its absence) is being honoured.
+    ///
+    /// A client with a surface to report on asks this rather than remembering what a read once told it,
+    /// and the difference is not cosmetic: a re-read of an UNCHANGED broken file has nothing to say, so
+    /// a caller keeping its own copy would either clear a report that still holds or re-announce one
+    /// the user has already seen. Both were written before this existed.
+    #[must_use]
+    pub fn unusable(&self) -> Option<&ConfigError> {
+        self.unusable.as_ref()
     }
 
     /// Re-read the file if its content has changed, and say whether the TABLE moved.
@@ -286,11 +355,23 @@ impl KeymapFile {
             return Ok(false);
         }
         self.text = text;
+        // The verdict is recorded either way, because this is the read that LOOKED: a success means
+        // the file is being honoured now, a failure means it is not, and the early return above means
+        // an unchanged file never overwrites either.
         let next = match &self.text {
-            Some(text) => build_keymap(&parse_file(text)?)?,
-            None => Keymap::default(),
+            Some(text) => parse_file(text).and_then(|file| build_keymap(&file)),
+            None => Ok(Keymap::default()),
         };
-        Ok(std::mem::replace(&mut self.keymap, next) != self.keymap)
+        match next {
+            Ok(next) => {
+                self.unusable = None;
+                Ok(std::mem::replace(&mut self.keymap, next) != self.keymap)
+            }
+            Err(error) => {
+                self.unusable = Some(error.clone());
+                Err(error)
+            }
+        }
     }
 }
 
@@ -1165,5 +1246,100 @@ mod tests {
                 );
             });
         }
+    }
+
+    /// A temporary directory holding a `config.toml`, removed on drop — for the tests that name their
+    /// file rather than reaching it through the environment.
+    #[cfg(test)]
+    struct NamedConfig(PathBuf);
+
+    #[cfg(test)]
+    impl NamedConfig {
+        fn new(text: &str) -> Self {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static NEXT: AtomicU32 = AtomicU32::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "sprag-keymap-at-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed),
+            ));
+            std::fs::create_dir_all(&dir).expect("temp config dir");
+            let config = Self(dir);
+            config.write(text);
+            config
+        }
+
+        fn path(&self) -> PathBuf {
+            self.0.join(CONFIG_FILE)
+        }
+
+        fn write(&self, text: &str) {
+            std::fs::write(self.path(), text).expect("write config");
+        }
+    }
+
+    #[cfg(test)]
+    impl Drop for NamedConfig {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// [`KeymapFile::load_usable`]'s contract, exercised through [`KeymapFile::at`]: a file that
+    /// cannot be used yields a WORKING table plus the reason, the SAME file is not re-reported, and a
+    /// fix is noticed.
+    ///
+    /// The middle claim is the one that costs something to get right. **REVERT-PROOF: leave `text` as
+    /// `None` when the build fails** (i.e. do not remember the broken bytes) and the second assertion
+    /// fails — `refresh` sees content where it remembered none, rebuilds, and reports the same typo on
+    /// every keystroke until it is fixed, which is the report-once rule the type exists to keep.
+    #[test]
+    fn an_unusable_file_keeps_a_working_table_reports_once_and_notices_the_fix() {
+        let config = NamedConfig::new("[[bind]]\nkey = \"x\"\naction = \"kill-server\"\n");
+        let (mut file, error) = KeymapFile::at(&config.path());
+        let error = error.expect("an unusable file reports why").to_string();
+        assert!(
+            error.contains(CONFIG_FILE) && error.contains("kill-server"),
+            "{error:?}"
+        );
+        assert_eq!(
+            file.keymap(),
+            &Keymap::default(),
+            "and the table is usable meanwhile",
+        );
+        assert_eq!(
+            file.refresh(),
+            Ok(false),
+            "the same broken file is not re-reported",
+        );
+        // ...and that silence is NOT "nothing is wrong": the verdict stands until a read that looked
+        // at the content says otherwise. A caller keeping its own copy of the reason had to guess
+        // which of the two an `Ok(false)` meant, and guessed wrong — a surface showing the report
+        // cleared it by asking twice.
+        assert!(
+            file.unusable().is_some(),
+            "an unmoved broken file is still broken",
+        );
+        config.write("[[bind]]\nkey = \"x\"\naction = \"detach-client\"\n");
+        assert_eq!(file.refresh(), Ok(true), "the fix is noticed");
+        assert_eq!(file.unusable(), None, "...and the verdict clears with it");
+        assert_eq!(
+            file.keymap().action("x", Modifiers::default()),
+            Some(crate::keymap::BoundAction::DetachClient),
+        );
+    }
+
+    /// A file that does not exist is not an error — it is "the user has said nothing" — and it is
+    /// watched anyway, so writing one for the first time takes effect without a restart.
+    #[test]
+    fn a_file_that_is_not_there_yet_is_still_watched() {
+        let config = NamedConfig::new("");
+        std::fs::remove_file(config.path()).expect("remove it again");
+        let (mut file, error) = KeymapFile::at(&config.path());
+        assert_eq!(error, None);
+        assert_eq!(file.keymap(), &Keymap::default());
+        config.write("[keys]\nprefix = \"C-a\"\n");
+        assert_eq!(file.refresh(), Ok(true));
+        assert_eq!(file.keymap().prefix().to_string(), "C-a");
     }
 }

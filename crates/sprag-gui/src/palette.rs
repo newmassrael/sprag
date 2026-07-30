@@ -270,7 +270,14 @@ pub(crate) fn open(target: Option<usize>) {
     let slots = &use_terminal().slots;
     use_target_pane().set(target);
     let catalog = command::catalog(target, slots);
-    use_config_errors().set(Rc::new(catalog.config_errors));
+    // The KEYMAP's report joins the catalog's, and is collected here rather than inside `catalog`
+    // because `catalog` asks the HOST: a keybinding is what one client does with one keyboard, so
+    // this client reads that half of `config.toml` itself and the host never looks at it. Which also
+    // means the keymap's error is invisible to the collector beside it — `global_commands`
+    // deserializes the very same file and a bad `action = "…"` string parses fine there.
+    let mut errors = catalog.config_errors;
+    errors.extend(crate::keys::use_client_keys().report());
+    use_config_errors().set(Rc::new(errors));
     use_frozen_catalog().set(Rc::new(catalog.commands));
     use_cursor().set(0);
     use_text_edit_state(PALETTE_FIELD_TAG).set_text(String::new());

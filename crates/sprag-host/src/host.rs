@@ -1584,6 +1584,43 @@ impl HostClient for Host {
             .ok()
     }
 
+    /// Divide `target`'s cell and put a new shell in the half it opens — [`new_pane`](Self::new_pane)
+    /// with a PLACE.
+    ///
+    /// Ordered PRE-FLIGHT, spawn, place, which is the `split` wire action's order and for its reason:
+    /// a target that holds no leaf here is refused with NO child forked, because the alternative is to
+    /// fork the user's shell and then have to kill it. The placement is checked again where it happens
+    /// — the spawn needs the workspace lock and the placement the registry's, and this codebase never
+    /// nests them, so the two cannot be one atomic step. A target that leaves the tiling in between
+    /// leaves the pane APPENDED and still returns its id: killing a shell the user just asked for
+    /// would be the worse answer.
+    ///
+    /// The trait defaults this to `None` and until now only the wire client overrode it, because only
+    /// a wire client had a keystroke to serve. `sprag-gui` under `SPRAG_GUI_HOST=inprocess` now has
+    /// one too (a `prefix %` off the user's keymap), and a client whose split works over a socket and
+    /// silently does nothing in-process is an asymmetry no test could see past.
+    fn split(&self, target: PaneId, dir: SplitDir, before: bool) -> Option<PaneId> {
+        let scope = self.scope();
+        if !crate::host::tiled_panes(&self.registry, &scope).contains(&target) {
+            return None;
+        }
+        let id = self.new_pane()?;
+        let side = if before {
+            SplitSide::First
+        } else {
+            SplitSide::Second
+        };
+        if !crate::host::split_pane(&self.registry, &scope, id, target, side, dir) {
+            tracing::warn!(
+                target: "sprag_host",
+                %id,
+                %target,
+                "the split's target left the tiling while its pane was being born; appended it",
+            );
+        }
+        Some(id)
+    }
+
     /// Remove the pane, bound so the pool guard drops FIRST and the reaped `Pane`'s blocking `Drop`
     /// (kill / wait / join the reader) runs outside the lock — the discipline the `close` wire
     /// action keeps for the same reason.
@@ -1850,6 +1887,53 @@ mod tests {
         assert!(
             host.pane_ids().is_empty(),
             "leaving an empty window rather than refusing"
+        );
+    }
+
+    /// `split` is `new_pane` with a PLACE: the new shell lands where the direction asked, and a target
+    /// that holds no leaf here is refused with NO child forked.
+    ///
+    /// The refusal is what the ordering is for. **REVERT-PROOF: drop the `tiled_panes` pre-flight and
+    /// the last assertion fails** — an unknown target forks the user's shell, appends it because there
+    /// was nothing to divide, and answers with an id, which is the outcome the wire action's own
+    /// pre-flight exists to avoid.
+    #[test]
+    fn split_places_a_shell_beside_its_target_and_refuses_an_unknown_one() {
+        let host = Host::new((40, 6));
+        let first = host.new_pane().expect("a shell is born");
+
+        let below = host
+            .split(first, SplitDir::Vertical, false)
+            .expect("the target was there to divide");
+        assert_eq!(host.pane_ids(), vec![first, below]);
+        assert!(
+            matches!(
+                host.layout().tree.root,
+                Some(sprag_terminal::LayoutNodeWire::Split {
+                    dir: SplitDir::Vertical,
+                    ..
+                })
+            ),
+            "the arrangement is the stack the direction named: {:?}",
+            host.layout().tree,
+        );
+
+        // tmux's `-b`: the near side instead of the far one, which is a different tree and not a
+        // different pane count — so the pair is asserted rather than just the growth.
+        let above = host
+            .split(below, SplitDir::Horizontal, true)
+            .expect("splits again");
+        assert_eq!(host.pane_ids(), vec![first, below, above]);
+
+        assert_eq!(
+            host.split(PaneId(999), SplitDir::Horizontal, false),
+            None,
+            "an unknown target is refused",
+        );
+        assert_eq!(
+            host.pane_ids(),
+            vec![first, below, above],
+            "...with no child forked, which is the point of checking first",
         );
     }
 

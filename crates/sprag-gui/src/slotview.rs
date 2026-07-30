@@ -35,7 +35,9 @@ use sprag_host::{
     PaneScrollFacts, Project, UserConfig,
 };
 use sprag_input::{Modifiers, MouseInput};
-use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneExit, PaneId, SessionInfo, WindowInfo};
+use sprag_terminal::{
+    LayoutSnapshot, LayoutWire, PaneExit, PaneId, SessionInfo, SplitDir, WindowInfo,
+};
 use sprag_vt::{ClipboardTarget, MouseProtocol};
 
 use crate::terminal::MAX_PANES;
@@ -324,6 +326,22 @@ impl SlotView {
     /// second client or a plugin created.
     pub(crate) fn new_pane(&self) -> bool {
         self.host.new_pane().is_some()
+    }
+
+    /// Divide slot `slot`'s pane and put a new shell in the half it opens (tmux `split-window -h` /
+    /// `-v`), returning whether one was born — `false` for a hole, or a refusal.
+    ///
+    /// [`new_pane`](Self::new_pane) with a PLACE. This client can rearrange with a POINTER, so an
+    /// append plus a drag says everything a direction does and the palette's `New pane` needs no
+    /// direction at all. What needs one is a KEYSTROKE: `prefix %` names the arrangement it wants and
+    /// there is no gesture in it, so the direction has to travel with the request.
+    ///
+    /// Which slot the new pane lands in is not this call's answer, exactly as `new_pane`'s is not:
+    /// the host places it and the next [`reconcile`](Self::reconcile) maps it.
+    pub(crate) fn split(&self, slot: usize, dir: SplitDir, before: bool) -> bool {
+        self.id(slot)
+            .and_then(|id| self.host.split(id, dir, before))
+            .is_some()
     }
 
     /// Close slot `slot`'s pane (tmux `kill-pane`), returning whether one was removed — `false` for

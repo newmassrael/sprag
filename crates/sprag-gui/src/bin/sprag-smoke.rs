@@ -92,6 +92,9 @@ fn main() -> ExitCode {
             // it (see the function docs), so it must run while both are alive and the session it
             // renames a window in still exists.
             check_terminal_output_never_reaches_the_shaper(&mut smoke, &mut report);
+            // The keymap gate, HERE because it splits: after the check above, which needs exactly one
+            // pane, and before the one below, which leaves several standing.
+            check_the_gui_follows_the_users_keymap(&mut smoke, &mut report);
             // AFTER it, and that ordering is load-bearing twice over: the check above needs
             // exactly ONE pane to make the daemon-to-client pane correspondence unambiguous, and
             // this one SPLITS until the pane set can attribute its own cost. It also leaves those
@@ -117,9 +120,17 @@ fn main() -> ExitCode {
 
 /// The palette opens on a REQUEST, paints a content-sized panel, and announces a modal dialog.
 ///
-/// The `open` verb is what makes this reachable at all: the palette's only other entry is a chord,
-/// and synthetic key input does not drain headless — so before the verb existed, nothing in this
-/// function could run.
+/// The `open` verb is what makes this reachable at all: the palette's only other entry is a chord.
+///
+/// The reason recorded here used to be that synthetic key input does not drain headless. **That is no
+/// longer true and was measured false this round** — [`check_the_gui_follows_the_users_keymap`] drives
+/// `scene/key` and reaches `apply_key`, which is how the keymap gate works at all. What remains true
+/// is narrower and still enough: a chord is a KEY, so driving the palette that way would assert the
+/// chord table rather than the palette, and the verb is the surface an agent has either way.
+///
+/// The neighbouring claim about POINTER input ([`check_an_agents_read_costs_no_scene_rederive`]) rests
+/// on the same inbox and is therefore doubtful too — but it was not measured here, and it is left
+/// standing rather than quietly reworded.
 fn check_the_palette_opens_over_rpc(smoke: &mut Smoke, report: &mut Report) {
     // `is_ok_and`, not `map_or(true, ..)`: this is the assertion an unreadable tree used to PASS
     // for the wrong reason, because "no palette node" and "no answer" were the same value.
@@ -1165,6 +1176,140 @@ fn check_terminal_output_never_reaches_the_shaper(smoke: &mut Smoke, report: &mu
     );
 }
 
+/// **THE GATE for the GUI's half of the user keymap.** Every other test of it either seeds a table or
+/// drives `route_key` in-process, and none can say whether the SHIPPED client ever looks at the user's
+/// file — the seam where the whole feature can be absent with a green suite. This is the one place the
+/// claim can be made: the real binary, a real daemon, and a `config.toml` this harness wrote into an
+/// environment it owns.
+///
+/// The MIDDLE claims discriminate, and they fail in opposite directions:
+/// * a bare `%` must divide nothing — so a client that treated every `%` as a command cannot pass;
+/// * `C-b` must arm NOTHING, because the file moved the prefix to `C-a` — so a client holding
+///   `Keymap::default()` cannot pass.
+///
+/// Placed after the one-pane check above (it leaves an extra pane standing) and before the check
+/// below, which splits without cleaning up.
+fn check_the_gui_follows_the_users_keymap(smoke: &mut Smoke, report: &mut Report) {
+    let written = smoke.write_user_config("[keys]\nprefix = \"C-a\"\n");
+    report.check(
+        "a user config can be written for the client to read",
+        written.is_ok(),
+    );
+    if written.is_err() {
+        return;
+    }
+    let Ok(before) = smoke.pane_count() else {
+        report.check("the painted tree answers a pane count to start from", false);
+        return;
+    };
+    // A keystroke goes to the FOCUSED pane, so the focus has to be real (see [`Smoke::focus_pane`]).
+    if !smoke.focus_pane(0) {
+        report.check("a pane can be focused to type into", false);
+        return;
+    }
+
+    report.check(
+        "an unprefixed command key is accepted",
+        smoke.press(0, "%", false).is_ok(),
+    );
+    report.check(
+        &format!("...and divides nothing ({before} pane(s))"),
+        smoke.pane_count() == Ok(before),
+    );
+
+    // The DEFAULT prefix, which this user's file has moved: it arms nothing, so the key after it is
+    // still the program's.
+    let _ = smoke.press(0, "b", true);
+    let _ = smoke.press(0, "%", false);
+    report.check(
+        "the default prefix arms nothing once the file has moved it",
+        smoke.pane_count() == Ok(before),
+    );
+
+    // ...and the prefix the FILE names does.
+    report.check(
+        "the user's prefix is accepted",
+        smoke.press(0, "a", true).is_ok(),
+    );
+    report.check(
+        "and the command key after it is too",
+        smoke.press(0, "%", false).is_ok(),
+    );
+    let grown = smoke.wait_for(|s| {
+        let count = s.pane_count().ok()?;
+        (count > before).then_some(count)
+    });
+    report.check(
+        &format!("`prefix %` off the user's own config split the focused pane ({grown:?})"),
+        grown.is_ok(),
+    );
+
+    // ...and the other half of reading a config: a file this client CANNOT use must say so where a
+    // user will see it. A window has no screen to fail on, so the report goes to the palette beside
+    // the one a broken project config gets — and this reads the PAINTED line, because a report only a
+    // log holds is a keymap error nobody fixes.
+    if smoke
+        .write_user_config("[[bind]]\nkey = \"x\"\naction = \"kill-server\"\n")
+        .is_err()
+    {
+        report.check("a broken user config can be written", false);
+        return;
+    }
+    let reported = palette_text(smoke);
+    report.check(
+        &format!("a config the client cannot use is REPORTED in the palette ({reported:?})"),
+        reported
+            .as_deref()
+            .is_some_and(|text| text.contains("config.toml") && text.contains("kill-server")),
+    );
+
+    // Put a usable config back and the report GOES — the palette re-reads the file when it opens, so a
+    // user who fixes their typo is not still being told about it. Found by reading this line: with the
+    // keystroke path as the only re-reader the report was permanent, because the palette's own field
+    // holds the keyboard while it is open and no keystroke can reach a pane to clear it.
+    let _ = smoke.write_user_config("[keys]\nprefix = \"C-a\"\n");
+    // A WAIT, because a single re-open can read the previous frame: closing and opening in quick
+    // succession leaves `sprag_palette_panel` painted throughout, so `wait_for_tag` is satisfied by the
+    // tree that still holds the old line. Each attempt opens AND closes, so the focus trap stays
+    // balanced for the checks that follow (they need a pane focused to be offered pane rows).
+    let fixed = smoke.wait_for(|s| {
+        let text = palette_text(s)?;
+        (!text.contains("config.toml")).then_some(text)
+    });
+    report.check(
+        &format!("and it GOES when the file is fixed ({:?})", fixed.is_ok()),
+        fixed.is_ok(),
+    );
+}
+
+/// Open the palette, read every string its panel paints, and DISMISS it again.
+///
+/// The dismissal is a scrim click (`send("scrim:PointerUp")`) and its result is CHECKED, because there
+/// is no `close` verb: an `invoke("close")` answers `Rejected`, and a caller that drops that gets a
+/// palette which stays open, refuses every later `open` (the palette's `open_on_request` declines when it
+/// is already up), and keeps painting the catalog frozen at the FIRST open. Three runs of this file
+/// read that as a mechanism defect in the client. It is the failure [`Smoke::call`]'s own doc warns
+/// about — a rejected call looks exactly like one that did nothing.
+fn palette_text(smoke: &mut Smoke) -> Option<String> {
+    smoke.invoke("sprag_palette", "open", Value::Null).ok()?;
+    let painted = smoke.wait_for_tag("sprag_palette_panel").ok()?;
+    let text = painted
+        .get("sprag_palette_panel")
+        .map(|node| node.text.join(" "));
+    smoke
+        .invoke("sprag_palette", "send", json!("scrim:PointerUp"))
+        .ok()?;
+    // The dismissal has to have LANDED before the next open, or that open is refused and the read
+    // after it is this one's leftovers.
+    smoke
+        .wait_for(|s| {
+            let painted = s.tags().ok()?;
+            (!painted.contains_key("sprag_palette_panel")).then_some(())
+        })
+        .ok()?;
+    text
+}
+
 /// A request pays the grid only when it can READ the grid — over a real socket, from a real client.
 ///
 /// R217 built `sprag_grid::work` and found that ANY call on the daemon's socket re-projected every
@@ -1740,6 +1885,38 @@ impl Smoke {
         Ok(self.docked_panes()?.len())
     }
 
+    /// Write the user's `config.toml` — the file both children read out of this run's isolated
+    /// `XDG_CONFIG_HOME`, and the one the client's keymap comes from.
+    ///
+    /// Writable mid-run because the file IS the live table: `sprag bind-key` edits it and a running
+    /// client is supposed to act on that, so a check has to be able to do the same.
+    fn write_user_config(&mut self, text: &str) -> Result<(), String> {
+        let dir = self.state.join("config").join("sprag");
+        std::fs::create_dir_all(&dir).map_err(|error| format!("config dir: {error}"))?;
+        std::fs::write(dir.join("config.toml"), text).map_err(|error| format!("config: {error}"))
+    }
+
+    /// Hold `mods` down, press `key`, and let go — one keystroke through the shell's own keyboard
+    /// gate, landing in `apply_key` exactly as a physical one does.
+    ///
+    /// The modifiers are a SEPARATE call because `scene/key` carries none: the substrate holds a
+    /// modifier state that `scene/modifiers` writes, and `apply_key` is handed whatever is held at the
+    /// moment the key dispatches. Released afterwards so a chord cannot leak into the next press.
+    ///
+    /// `path` rather than a pixel coordinate — the key needs a position only because the drain moves
+    /// the cursor first, and naming the pane's TAG keeps this readable when the layout changes.
+    fn press(&mut self, pane: usize, key: &str, ctrl: bool) -> Result<(), String> {
+        if ctrl {
+            self.call("scene/modifiers", json!({ "ctrl": true }))?;
+        }
+        let path = format!("sprag_gui.pane.{pane}");
+        let sent = self.call("scene/key", json!({ "path": path, "key": key }));
+        if ctrl {
+            self.call("scene/modifiers", json!({}))?;
+        }
+        sent.map(|_| ())
+    }
+
     /// Put the within-app focus on pane `i`, so the palette's pane-scoped rows are offered.
     ///
     /// Driven rather than assumed, for the reason the boot check already records: a `focus_request`
@@ -2061,6 +2238,11 @@ fn spawn(binary: &Path, host: &Path, gui: &Path, state: &Path, log: &Path) -> io
         .env("SPRAG_GUI_HOST_SOCK", host)
         .env("SPRAG_RPC_SOCK", gui)
         .env("XDG_STATE_HOME", state)
+        // The user's CONFIG, isolated the same way the state is. Both children read it — the daemon
+        // for the palette's declared commands, the client for its keymap — so without this a run is
+        // reading whatever `config.toml` the developer happens to have, and a `[[command]]` in it
+        // would silently change a palette row count this file asserts on.
+        .env("XDG_CONFIG_HOME", state.join("config"))
         // Mesa lavapipe: software Vulkan, so wgpu finds a device with no GPU surface (see the
         // module docs — this is the single least guessable line in the file).
         .env(

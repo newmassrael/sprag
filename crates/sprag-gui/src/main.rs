@@ -172,6 +172,23 @@
 //! `Ctrl+PageUp/Down` is reserved to cycle focus between tiles (a pinion
 //! `focus_request`, not the PTY).
 //!
+//! ### The user's keymap comes FIRST (H2 slice 3)
+//!
+//! Before any of the reserved chords, a keystroke in a focused pane is offered to the user's own
+//! PREFIX table — the same `config.toml` `[keys]` / `[[bind]]` table `sprag-tui` reads, the same
+//! [`Keymap`](sprag_host::keymap::Keymap), and the same live re-read that makes `sprag bind-key` a
+//! runtime command (see [`keys`]). `prefix %` splits the focused pane, `prefix d` detaches this
+//! client, `prefix o` moves focus on, `prefix prefix` types the prefix into the pane.
+//!
+//! The reserved `Ctrl+Shift+*` chords stay where they are: they name surfaces the binding vocabulary
+//! has no word for (find bar, palette, clipboard, session switch, dock). Making THOSE bindable is
+//! tmux's `-n` root table plus five new action names — a later slice.
+//!
+//! **The keymap deliberately does NOT go through [`WidgetCore::keybinding`]**, even though that is
+//! where a pinion binding would normally declare keys. sprag declares no primary surface, so pinion
+//! routes a keybinding event to the no-op `send_to_primary` and DROPS it — which is why `keybinding`
+//! is left empty and a test says so. `apply_key` is the door.
+//!
 //! IME-composed input (R31, R34) — Hangul, CJK — arrives not as keystrokes but
 //! as [`WidgetCore::apply_composition`] events targeting the focused pane. The
 //! in-progress preedit is mirrored into that pane's
@@ -218,6 +235,7 @@ mod find;
 mod focus_report;
 mod hyperlink;
 mod input;
+mod keys;
 mod palette;
 mod reflow;
 mod rpc;
@@ -2571,6 +2589,12 @@ mod tests {
     /// `send_to_primary` on a no-primary binding (it would be silently dropped), and sprag
     /// drives every key through `apply_key` -> `route_key` -> the host instead, so an
     /// override here would be a latent input-loss bug.
+    ///
+    /// **That claim was tested for real in H2 slice 3.** The slice's plan — in the design doc and in
+    /// the debt register both — said the GUI's keymap work was to fill this empty `keybinding`, which
+    /// would have put the user's whole prefix table behind the drop this assertion describes. The
+    /// table went into [`route_key`](crate::input::route_key) instead. An emptiness with a test on it
+    /// is not unfinished work, and two rounds of notes read it as exactly that.
     #[test]
     fn declares_no_primary_surface_and_composes_from_extras_alone() {
         assert!(

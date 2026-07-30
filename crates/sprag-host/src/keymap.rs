@@ -28,6 +28,18 @@
 //! second key vocabulary plus a mapping table between the two, and the divergence is invisible for
 //! every default binding because all of them are plain characters.
 //!
+//! ## The ROUTING is here too, because both frontends must agree
+//!
+//! [`Keymap::route`] is the whole state machine: whether a keystroke is the prefix, what an armed key
+//! means, and — through [`Routed::next`] — when the one-key mode ends. It lives beside the table
+//! rather than in either client, because the two clients decode keys differently (termwiz events in
+//! the terminal, pinion key names in the GUI) and agree about everything after that. A second
+//! implementation would be two answers to "what does this user's table say".
+//!
+//! What each client keeps for itself is PERFORMING an action, which has nothing in common between
+//! them: a split is a wire request in one and the same request through a `SlotView` in the other, and
+//! `detach-client` is a loop `break` in one and a quit sink in the other.
+//!
 //! ## Defaults are a keymap, not a fallback
 //!
 //! [`Keymap::default`] IS tmux's table (verified against `tmux 3.2a`'s own `list-keys -T prefix`).
@@ -503,6 +515,75 @@ impl Keymap {
     pub fn binds(&self) -> impl Iterator<Item = (&KeySpec, BoundAction)> {
         self.binds.iter().map(|(key, action)| (key, *action))
     }
+
+    /// Route one keystroke, given the mode the PREVIOUS one left behind.
+    ///
+    /// `name` and `mods` are the wire's spelling of the key — [`sprag_input::NAMED_KEYS`] or a
+    /// single character — which is what both frontends already have by the time they ask: a
+    /// keystroke a client cannot name is not one a binding could have named either.
+    ///
+    /// An unbound key AFTER the prefix is [`Routed::Swallow`] rather than passed through, which is
+    /// tmux's behaviour and the safer of the two: a user who typed the prefix meant to address the
+    /// client, so delivering their mistake to a shell would run something they did not ask for.
+    #[must_use]
+    pub fn route(&self, mode: PrefixMode, name: &str, mods: Modifiers) -> Routed {
+        if mode == PrefixMode::AfterPrefix {
+            return self.action(name, mods).map_or(Routed::Swallow, Routed::Act);
+        }
+        if self.is_prefix(name, mods) {
+            return Routed::Prefix;
+        }
+        Routed::ToPane
+    }
+}
+
+/// Where the next keystroke goes.
+///
+/// Two states rather than a `bool` because the prefix is not a modifier — it is a mode the client
+/// enters and leaves, and `after_prefix: true` at a call site says nothing about which way round
+/// that is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum PrefixMode {
+    /// The steady state: keys are the program's.
+    #[default]
+    ToPane,
+    /// The prefix was just pressed, so the next key is a command to this client.
+    AfterPrefix,
+}
+
+/// What a client should do with a keystroke — the answer [`Keymap::route`] gives.
+///
+/// Carries no key: a caller that asked about a keystroke still has it, and threading it back out
+/// would force one representation on two frontends that decode differently (termwiz `KeyEvent` in
+/// the terminal client, a pinion key name in the GUI).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Routed {
+    /// Send it to the focused pane — the steady state.
+    ToPane,
+    /// It was the PREFIX: swallow it, and the NEXT keystroke is a command to this client.
+    Prefix,
+    /// Carry out a bound command of the client's own.
+    Act(BoundAction),
+    /// Nothing at all — an unbound key after the prefix.
+    Swallow,
+}
+
+impl Routed {
+    /// Where the NEXT keystroke goes after this one.
+    ///
+    /// **The mode is one key long, and this is the one definition of that.** Total on purpose: a
+    /// client that derives its next mode from here cannot arm the mode by accident, and — because
+    /// every outcome but [`Routed::Prefix`] answers [`PrefixMode::ToPane`] — cannot forget to
+    /// disarm it either. Both frontends have more ways to leave a keystroke than to route one (the
+    /// GUI has five surfaces that consume a key before the pane is even resolved), so the rule has
+    /// to live somewhere neither of them can partially implement.
+    #[must_use]
+    pub fn next(&self) -> PrefixMode {
+        match self {
+            Self::Prefix => PrefixMode::AfterPrefix,
+            Self::ToPane | Self::Act(_) | Self::Swallow => PrefixMode::ToPane,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -914,6 +995,81 @@ mod tests {
             keymap.action("a", ctrl),
             None,
             "and nothing was invented on the new one",
+        );
+    }
+
+    /// Ctrl, as every routing test below spells it.
+    fn ctrl() -> Modifiers {
+        Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        }
+    }
+
+    /// The steady state and the mode: a bare command key is the program's, the prefix arms, and the
+    /// armed key is the client's.
+    #[test]
+    fn the_prefix_arms_exactly_one_key() {
+        let keymap = Keymap::default();
+        let none = Modifiers::default();
+        assert_eq!(
+            keymap.route(PrefixMode::ToPane, "d", none),
+            Routed::ToPane,
+            "a bare `d` is a letter, not a detach",
+        );
+        let armed = keymap.route(PrefixMode::ToPane, "b", ctrl());
+        assert_eq!(armed, Routed::Prefix);
+        assert_eq!(armed.next(), PrefixMode::AfterPrefix);
+        let acted = keymap.route(PrefixMode::AfterPrefix, "d", none);
+        assert_eq!(acted, Routed::Act(BoundAction::DetachClient));
+        assert_eq!(acted.next(), PrefixMode::ToPane, "and the mode is spent");
+    }
+
+    /// **The mode ends on the NEXT key whatever that key turns out to be.** Every outcome but the
+    /// prefix itself disarms, which is what lets a client with many ways to consume a keystroke get
+    /// the rule right by asking rather than by remembering.
+    ///
+    /// REVERT-PROOF: answer `AfterPrefix` for `Swallow` and one mistyped command key leaves the
+    /// client eating every keystroke that follows, with no way for the user to get out.
+    #[test]
+    fn only_the_prefix_leaves_the_mode_armed() {
+        for routed in [
+            Routed::ToPane,
+            Routed::Act(BoundAction::DetachClient),
+            Routed::Swallow,
+        ] {
+            assert_eq!(routed.next(), PrefixMode::ToPane, "{routed:?}");
+        }
+        assert_eq!(Routed::Prefix.next(), PrefixMode::AfterPrefix);
+    }
+
+    /// An unbound command key is SWALLOWED rather than delivered: a user who typed the prefix meant
+    /// to address the client, so passing their mistake on would run something they did not ask for.
+    #[test]
+    fn an_unbound_command_key_is_swallowed() {
+        let keymap = Keymap::default();
+        assert_eq!(
+            keymap.route(PrefixMode::AfterPrefix, "z", Modifiers::default()),
+            Routed::Swallow,
+        );
+        // ...and a MODIFIED command key is a different key, so `prefix Ctrl-D` is not a detach.
+        assert_eq!(
+            keymap.route(PrefixMode::AfterPrefix, "d", ctrl()),
+            Routed::Swallow,
+        );
+    }
+
+    /// **After the prefix, the prefix key is the TABLE's, not a re-arm.** `prefix prefix` types a
+    /// literal prefix into the pane — the only way a program that binds `C-b` can still receive it.
+    ///
+    /// REVERT-PROOF: check `is_prefix` before the armed branch and the two prefixes arm the mode
+    /// twice instead of sending anything, so the key becomes unreachable by any program.
+    #[test]
+    fn the_prefix_twice_is_the_self_send_and_not_a_second_arm() {
+        let keymap = Keymap::default();
+        assert_eq!(
+            keymap.route(PrefixMode::AfterPrefix, "b", ctrl()),
+            Routed::Act(BoundAction::SendPrefix),
         );
     }
 

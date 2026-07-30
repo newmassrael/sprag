@@ -5,9 +5,11 @@
 //! The [`TerminalViewer`](crate::TerminalViewer) `apply_key` / `apply_composition`
 //! trait methods delegate here. See the crate-root "Input" / "Scrollback" docs.
 
+use crate::keys::use_client_keys;
 use crate::terminal::{pane_cache_key, pane_index_of, pane_tag, use_terminal};
 use pinion_core::reactive::{Owner, Signal};
 use pinion_core::{CompositionEvent, Modifiers, Scene};
+use sprag_host::keymap::{BoundAction, Routed};
 
 /// `Owner::cache` key for pane `pane`'s IME preedit overlay. Minted via the one
 /// per-pane key site [`pane_cache_key`] so the index suffix cannot drift.
@@ -113,26 +115,28 @@ fn scroll_to_prompt(pane: usize, key: &str) {
 /// nowhere to switch (`occupied.len() <= 1`, `active` not in the set, or a non-cycle
 /// key). Pure, so it is unit-testable; up=previous / down=next mirrors the scrollback
 /// chord.
-fn next_focus(active: usize, key: &str, occupied: &[usize]) -> Option<usize> {
+fn next_focus(active: usize, forward: bool, occupied: &[usize]) -> Option<usize> {
     if occupied.len() <= 1 {
         return None;
     }
     let pos = occupied.iter().position(|&slot| slot == active)?;
     let n = occupied.len();
-    let next = match key {
-        "PageDown" => (pos + 1) % n,
-        "PageUp" => (pos + n - 1) % n,
-        _ => return None,
-    };
-    Some(occupied[next])
+    // `n - 1` is `-1` modulo `n` — the same wrap [`session_neighbour`] uses over the session list.
+    let step = if forward { 1 } else { n - 1 };
+    Some(occupied[(pos + step) % n])
 }
 
 /// Move focus to the next / previous tiled pane (wrapping) via a pinion
 /// [`focus_request`](pinion_core::focus_request) — the framework focus ring and
 /// the `apply_key` routing both follow the focus manager, so requesting the new
 /// pane's tag is the whole switch. A single-pane window is a no-op.
-fn cycle_focus(active: usize, key: &str) {
-    if let Some(next) = next_focus(active, key, &use_terminal().slots.occupied_slots()) {
+///
+/// A `forward` flag rather than the key that asked, because two things now ask: the
+/// `Ctrl+PageUp/Down` chord, which carries a direction, and the keymap's `select-pane -t :.+`,
+/// which is only ever forward. Threading a key string through for the second would mean spelling a
+/// chord's key at a site that has nothing to do with chords.
+fn cycle_focus(active: usize, forward: bool) {
+    if let Some(next) = next_focus(active, forward, &use_terminal().slots.occupied_slots()) {
         pinion_core::focus_request::request(pane_tag(next));
     }
 }
@@ -308,6 +312,55 @@ fn switch_to_last_session() {
     use_terminal().slots.switch_to_last_session();
 }
 
+/// A stable, allocation-free name for a bound action in the diagnostic trace ([`crate::diag`]) —
+/// the [`WindowChord::label`] shape, for the same reason: a trace line has to be readable without
+/// the reader knowing which key produced it.
+///
+/// Spelled as the VERB the user bound rather than as the enum's variant, so a `diag` line and the
+/// `config.toml` line that caused it read the same. The split's flags are left out: the label names
+/// which command ran, and the arrangement it produced is in the layout the next frame paints.
+fn action_label(action: BoundAction) -> &'static str {
+    match action {
+        BoundAction::DetachClient => "detach-client",
+        BoundAction::SendPrefix => "send-prefix",
+        BoundAction::SplitWindow { .. } => "split-window",
+        BoundAction::SelectNextPane => "select-pane",
+    }
+}
+
+/// Carry out one of the user's bound commands on the focused pane — the four actions a
+/// [`Keymap`](sprag_host::keymap::Keymap) can name, each through the mechanism this client already
+/// had for it.
+///
+/// `detach-client` is the quit sink and not a session teardown: closing this window leaves the daemon
+/// and the session running, which is what detaching MEANS in topology B (`sprag attach` connect-or-
+/// spawns a daemon it never owns). `send-prefix` sends the PREFIX read off the live table, not the
+/// key that triggered it — a user who binds it to `a` means `prefix a` to type `C-b`.
+///
+/// Nothing here repaints: a split's new pane and a focus move both reach the paint through the
+/// channels that already carry them (the host announces the pane set, and a focus request re-derives
+/// the ring), which is why the palette's `New pane` needs no repaint either.
+fn perform(action: BoundAction, active: usize) {
+    match action {
+        BoundAction::DetachClient => pinion_core::use_quit_sink().request_quit(),
+        BoundAction::SendPrefix => {
+            let prefix = use_client_keys().prefix();
+            // Whether the PTY could be given it is discarded on purpose. Elsewhere a `false` from
+            // `send_key` means "unencodable, so fall through to the shell default"; here the key was
+            // already decided to be this client's — the user typed the prefix twice — so there is
+            // nothing to fall through to. A prefix the encoder cannot spell (`F13`) sends nothing,
+            // which is the honest outcome of binding one.
+            let _ = use_terminal()
+                .slots
+                .send_key(active, prefix.name(), prefix.mods());
+        }
+        BoundAction::SplitWindow { dir, before } => {
+            use_terminal().slots.split(active, dir, before);
+        }
+        BoundAction::SelectNextPane => cycle_focus(active, true),
+    }
+}
+
 /// Route a focused keystroke to the **focused pane's** PTY. The roving-tabindex
 /// gate maps `focused` to a pane tile ([`pane_index_of`]); a non-pane / absent
 /// focus is a no-op (falls through to the shell default). A reserved
@@ -331,6 +384,12 @@ pub(crate) fn route_key(
     modifiers: Modifiers,
     repeat: bool,
 ) -> bool {
+    // The user's prefix mode is taken out HERE, in the first statement, before anything looks at what
+    // the key is or where it is going. The mode is ONE KEY LONG whatever that key turns out to be, and
+    // five of the surfaces below consume a keystroke before the pane is even resolved — so a prefix
+    // armed in a pane must not survive a character typed into a find field. One place that can end the
+    // mode is one place that can forget to; the single re-arm is in `keys::ClientKeys::route`.
+    let prefixed = use_client_keys().take();
     // The destructive-command prompt, FIRST and gated on the prompt being UP rather than on what holds
     // focus: while the client is asking whether to destroy something, no key may reach anything else —
     // not a pane behind the scrim, not the palette row that armed it. Every other route below is keyed
@@ -377,6 +436,30 @@ pub(crate) fn route_key(
     let Some(active) = pane_index_of(tag) else {
         return false;
     };
+    // THE USER'S KEYMAP, and it is consulted here for two reasons that decide the position exactly.
+    //
+    // AFTER the pane gate above: a keystroke a text field or the session rail owns is not CONTESTED.
+    // The prefix exists because a pane's child owns every key; a field owns its keys outright, and
+    // arming a one-key mode there would eat the next character out of a user's search needle. Every
+    // action a binding can name acts on the focused pane anyway.
+    //
+    // BEFORE every built-in chord below: a table the user wrote outranks one this binary spells. A
+    // prefix rebound onto `Ctrl+Shift+C` has to be reachable, and after the prefix that same chord is
+    // an unbound command key, which tmux swallows. In the steady state nothing is taken — the prefix
+    // space and the reserved `Ctrl+Shift+*` space are disjoint until a user puts one on top of the
+    // other, and then that is what they asked for.
+    match use_client_keys().route(prefixed, key, to_input_mods(modifiers)) {
+        Routed::Act(action) => {
+            crate::diag::chord(action_label(action), "act", active);
+            perform(action, active);
+            return true;
+        }
+        // The prefix itself, and a command key bound to nothing: both are consumed. Passing an
+        // unbound one on would run something in the pane that the user — who had just addressed this
+        // client — never asked for.
+        Routed::Prefix | Routed::Swallow => return true,
+        Routed::ToPane => {}
+    }
     // Clipboard chords (R139) act on the selection / clipboard, not the PTY: copy the
     // active selection to CLIPBOARD, or paste CLIPBOARD into the focused pane. Consumed
     // either way so `Ctrl+Shift+C/V` never reach the shell (Ctrl+C there is SIGINT).
@@ -427,7 +510,7 @@ pub(crate) fn route_key(
         }
         crate::diag::chord(chord.label(), "act", active);
         match chord {
-            WindowChord::CycleFocus => cycle_focus(active, key),
+            WindowChord::CycleFocus => cycle_focus(active, key == "PageDown"),
             WindowChord::Scroll => scroll_view(active, key),
             WindowChord::ToggleDock => {
                 crate::dock::toggle_pane_floating(active);
@@ -568,16 +651,443 @@ mod tests {
 
     /// Poll a handle's row 0 until it contains `needle` or the deadline passes.
     fn wait_for_row0(handle: &PanePtyHandle, needle: &str) -> String {
+        wait_for_row0_where(handle, |row| row.contains(needle))
+    }
+
+    /// Poll a handle's row 0 until `holds` is satisfied or the deadline passes, then answer the row.
+    ///
+    /// The predicate form exists because a keystroke's arrival is not always spellable as a substring:
+    /// a control byte's echo is the child's termios' business, so "both `%` arrived" is a COUNT rather
+    /// than a `"%%"` — and waiting on the count is what makes the assertion race-free (waiting on the
+    /// first `%` would read the row before the second arrived).
+    fn wait_for_row0_where(handle: &PanePtyHandle, holds: impl Fn(&str) -> bool) -> String {
         let start = Instant::now();
         let mut row0 = String::new();
         while start.elapsed() < Duration::from_secs(5) {
             row0 = handle.with_screen(|screen| screen.row_text(0));
-            if row0.contains(needle) {
+            if holds(&row0) {
                 break;
             }
             sleep(Duration::from_millis(20));
         }
         row0
+    }
+
+    /// A temporary `config.toml` for the keymap tests, removed on drop.
+    ///
+    /// A FILE rather than a seeded table, because the file is the live table: `sprag bind-key` edits
+    /// it and a running client is supposed to notice. A test that seeded a `Keymap` directly could not
+    /// tell a client that re-reads from one that read once at boot — the whole claim of slice 2.
+    ///
+    /// Its own directory per test, so `$XDG_CONFIG_HOME` is never touched: the environment is
+    /// process-global and this crate's tests run in parallel, so pointing it anywhere would have
+    /// siblings reading whatever the last writer left.
+    struct Config(std::path::PathBuf);
+
+    impl Config {
+        /// Write `text` as a fresh config and answer the holder reading it.
+        fn seeded(text: &str) -> (Self, std::rc::Rc<crate::keys::ClientKeys>) {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static NEXT: AtomicU32 = AtomicU32::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "sprag-gui-keys-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed),
+            ));
+            std::fs::create_dir_all(&dir).expect("temp config dir");
+            let config = Self(dir);
+            config.write(text);
+            let keys = crate::keys::test_support::seed_keys(&config.path());
+            (config, keys)
+        }
+
+        fn path(&self) -> std::path::PathBuf {
+            self.0.join("config.toml")
+        }
+
+        /// Rewrite the file — what `sprag bind-key` does, and what an editor does.
+        fn write(&self, text: &str) {
+            std::fs::write(self.path(), text).expect("write config");
+        }
+    }
+
+    impl Drop for Config {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A quit sink that counts, seeded into pinion's provider slot so `detach-client` is observable.
+    #[derive(Debug)]
+    struct CountingQuit(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl pinion_core::QuitSink for CountingQuit {
+        fn request_quit(&self) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// Seed the quit sink for this owner and hand back its counter.
+    fn counting_quit(owner: &Owner) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sink: std::sync::Arc<dyn pinion_core::QuitSink> =
+            std::sync::Arc::new(CountingQuit(std::sync::Arc::clone(&count)));
+        pinion_core::QUIT_SINK.provide(owner, sink);
+        count
+    }
+
+    /// Ctrl, as the keymap tests spell it.
+    fn ctrl() -> Modifiers {
+        Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        }
+    }
+
+    /// A two-pane `cat` host, so a keystroke that reaches a PTY is observable and a split is
+    /// countable.
+    fn two_cats() -> (Host, PanePtyHandle) {
+        let host = Host::new((40, 6));
+        let id0 = host
+            .spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+            .expect("pane 0");
+        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+            .expect("pane 1");
+        let handle = host.pane_handle(id0).expect("pane 0 handle");
+        (host, handle)
+    }
+
+    /// How many panes this client can see, reconciled first — the read a frame does before it paints,
+    /// so a pane born on the host is counted the way the real client counts it.
+    fn panes() -> usize {
+        let slots = &use_terminal().slots;
+        let _ = slots.reconcile();
+        slots.occupied_slots().len()
+    }
+
+    /// Deliver one keystroke to pane `pane` through the full public path.
+    fn press(pane: usize, key: &str, mods: Modifiers) -> bool {
+        let mut scene = Scene::Container(ContainerNode::new(Vec::new()));
+        TerminalViewer::apply_key(&mut scene, Some(pane_tag(pane)), key, mods)
+    }
+
+    /// **THE SLICE: the GUI acts on the user's own prefix table.** `prefix = "C-a"` in a file this
+    /// client never wrote, and `C-a` then `%` splits the focused pane.
+    ///
+    /// The FIRST assertion is what discriminates: a bare `%` before any prefix must reach the PANE and
+    /// split nothing, so a client that treated every `%` as a split cannot pass. The second is the
+    /// other half — `C-b`, the DEFAULT prefix, must arm nothing once the file has moved it, so a
+    /// client holding `Keymap::default()` cannot pass either.
+    ///
+    /// REVERT-PROOF (both measured): route on `Keymap::default()` and `C-a` reaches the pane while
+    /// `C-b %` splits — the two assertions fail in opposite directions.
+    #[test]
+    fn the_users_prefix_table_splits_the_focused_pane() {
+        let (host, pane0) = two_cats();
+        let owner = Owner::new();
+        owner.run(|| {
+            let (_config, _keys) = Config::seeded("[keys]\nprefix = \"C-a\"\n");
+            seed_terminal(host);
+            let before = panes();
+
+            // A bare command key is the program's: it reaches the PTY and divides nothing.
+            assert!(press(0, "%", Modifiers::default()));
+            assert_eq!(
+                panes(),
+                before,
+                "a `%` with no prefix before it is a character, not a split",
+            );
+
+            // The DEFAULT prefix arms nothing, because the file moved it.
+            assert!(press(0, "b", ctrl()));
+            assert!(press(0, "%", Modifiers::default()));
+            assert_eq!(
+                panes(),
+                before,
+                "`C-b` is not this user's prefix, so `%` after it is still a character",
+            );
+
+            // ...and the prefix the FILE names does arm.
+            assert!(press(0, "a", ctrl()));
+            assert!(press(0, "%", Modifiers::default()));
+            assert_eq!(panes(), before + 1, "`prefix %` divided the focused pane",);
+        });
+        // The two `%` meant for the shell were DELIVERED; the third was the client's and was not. A
+        // count rather than `"%%"` because the `C-b` between them echoes as the child pleases — and
+        // waiting on the count is what keeps this from reading the row before the second one landed.
+        let row0 = wait_for_row0_where(&pane0, |row| row.matches('%').count() >= 2);
+        assert_eq!(
+            row0.matches('%').count(),
+            2,
+            "both unprefixed keys reached the pane and the prefixed one did not: {row0:?}",
+        );
+    }
+
+    /// A rebind reaches a RUNNING window: the file is edited under a client that is already up, and
+    /// the very next keystroke follows the new table.
+    ///
+    /// This is `sprag bind-key`'s claim on this frontend — and `source-file`'s, since an editor writes
+    /// the same bytes.
+    ///
+    /// REVERT-PROOF: drop the `refresh` in `ClientKeys::route` (read the file once at boot) and the
+    /// second half fails — `prefix c` stays unbound forever while `sprag list-keys` prints it.
+    #[test]
+    fn an_edit_to_the_file_reaches_a_running_client() {
+        let (host, _pane0) = two_cats();
+        let owner = Owner::new();
+        owner.run(|| {
+            let (config, _keys) = Config::seeded("[keys]\nprefix = \"C-a\"\n");
+            seed_terminal(host);
+            let before = panes();
+
+            // `c` is bound to nothing yet: swallowed after the prefix, and nothing happens.
+            assert!(press(0, "a", ctrl()));
+            assert!(press(0, "c", Modifiers::default()));
+            assert_eq!(panes(), before);
+
+            config.write(
+                "[keys]\nprefix = \"C-a\"\n\n[[bind]]\nkey = \"c\"\naction = \"split-window -v\"\n",
+            );
+            assert!(press(0, "a", ctrl()));
+            assert!(press(0, "c", Modifiers::default()));
+            assert_eq!(panes(), before + 1, "the edit landed with no reattach",);
+        });
+    }
+
+    /// **The prefix mode is ONE KEY LONG, including when another surface took that key.**
+    ///
+    /// Arm the prefix in a pane, then deliver a keystroke that never reaches the pane gate at all (no
+    /// focus). The mode must be spent by it, so the next `d` is a letter for the shell rather than a
+    /// detach nobody asked for.
+    ///
+    /// REVERT-PROOF: take the mode inside the pane block instead of in `route_key`'s first statement
+    /// and this fails — the stale mode survives the unrelated keystroke and eats the next one.
+    #[test]
+    fn the_mode_does_not_survive_a_keystroke_that_went_elsewhere() {
+        let (host, pane0) = two_cats();
+        let owner = Owner::new();
+        owner.run(|| {
+            let (_config, _keys) = Config::seeded("");
+            let quits = counting_quit(&Owner::current().expect("owner"));
+            seed_terminal(host);
+
+            assert!(press(0, "b", ctrl()), "the prefix is armed");
+            // A keystroke with NO focus: `route_key` falls through to the shell default without
+            // resolving a pane. It still ends the mode.
+            let mut scene = Scene::Container(ContainerNode::new(Vec::new()));
+            assert!(!TerminalViewer::apply_key(
+                &mut scene,
+                None,
+                "x",
+                Modifiers::default()
+            ));
+            assert!(press(0, "d", Modifiers::default()));
+            assert_eq!(
+                quits.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "`d` was a letter, not the detach a stale prefix would have made it",
+            );
+        });
+        assert!(
+            wait_for_row0(&pane0, "d").contains('d'),
+            "and it reached the pane",
+        );
+    }
+
+    /// `detach-client` pulls the shell's quit sink — the window goes and the daemon does not, which is
+    /// what detaching means in topology B.
+    ///
+    /// Also the negative half: the keystroke reaches no PTY, so a program in the pane never sees the
+    /// `d`.
+    #[test]
+    fn detach_client_pulls_the_quit_sink_and_no_pty() {
+        let (host, pane0) = two_cats();
+        let owner = Owner::new();
+        owner.run(|| {
+            let (_config, _keys) = Config::seeded("");
+            let quits = counting_quit(&Owner::current().expect("owner"));
+            seed_terminal(host);
+            assert!(press(0, "b", ctrl()));
+            assert!(press(0, "d", Modifiers::default()));
+            assert_eq!(quits.load(std::sync::atomic::Ordering::SeqCst), 1);
+            // A SENTINEL after it, so the negative below is not a race dressed up as a sleep: once `z`
+            // has echoed, anything the `d` was going to deliver has had its turn.
+            assert!(press(0, "z", Modifiers::default()));
+        });
+        let row0 = wait_for_row0(&pane0, "z");
+        assert!(
+            !row0.contains('d'),
+            "the command key was the client's, so the shell never saw it: {row0:?}",
+        );
+    }
+
+    /// `send-prefix` types the PREFIX into the pane — the only way a program that binds the prefix key
+    /// can still receive it.
+    ///
+    /// The prefix here is `!`, printable on purpose: a control character's echo depends on the child's
+    /// termios, and the claim under test is which KEY was sent, not how a shell renders it. A printable
+    /// prefix is also a table no default could have produced, so the assertion can only pass if the
+    /// file was read.
+    #[test]
+    fn send_prefix_types_the_prefix_the_file_names() {
+        let (host, pane0) = two_cats();
+        let owner = Owner::new();
+        owner.run(|| {
+            let (_config, _keys) = Config::seeded("[keys]\nprefix = \"!\"\n");
+            seed_terminal(host);
+            assert!(press(0, "!", Modifiers::default()), "arms");
+            assert!(press(0, "!", Modifiers::default()), "and sends one through");
+            // The sentinel makes the COUNT below race-free and discriminating in both directions: a
+            // client with no prefix would have delivered two, one that swallowed the self-send none.
+            assert!(press(0, "z", Modifiers::default()));
+        });
+        let row0 = wait_for_row0(&pane0, "z");
+        assert_eq!(
+            row0.matches('!').count(),
+            1,
+            "the pane received the prefix exactly once: {row0:?}",
+        );
+    }
+
+    /// `select-pane -t :.+` moves focus on, through the same
+    /// [`focus_request`](pinion_core::focus_request) the `Ctrl+PageDown` chord uses — so the framework
+    /// focus ring and the next keystroke's routing both follow it.
+    #[test]
+    fn select_next_pane_requests_the_siblings_focus() {
+        let (host, _pane0) = two_cats();
+        let owner = Owner::new();
+        owner.run(|| {
+            let (_config, _keys) = Config::seeded("");
+            seed_terminal(host);
+            let _ = pinion_core::focus_request::drain(); // clear any stale request
+            assert!(press(0, "b", ctrl()));
+            assert!(press(0, "o", Modifiers::default()));
+            assert_eq!(
+                pinion_core::focus_request::drain().as_deref(),
+                Some(pane_tag(1)),
+                "focus was requested for the next pane",
+            );
+        });
+    }
+
+    /// **The user's table outranks a chord this binary spells.** A prefix rebound onto `Ctrl+Shift+C`
+    /// arms the mode instead of copying, and the command key after it is honoured.
+    ///
+    /// That ordering is the point: a keymap that lost to six hardcoded chords would be a keymap with
+    /// six holes in it that no `list-keys` output could show. Nothing is taken in the steady state —
+    /// the two spaces are disjoint until a user puts one on top of the other.
+    ///
+    /// REVERT-PROOF: move the keymap below the clipboard chord and `Ctrl+Shift+C` copies while the
+    /// prefix becomes unreachable, so the detach never happens.
+    #[test]
+    fn the_users_prefix_outranks_a_built_in_chord() {
+        let (host, _pane0) = two_cats();
+        let owner = Owner::new();
+        owner.run(|| {
+            let (_config, _keys) = Config::seeded("[keys]\nprefix = \"C-S-c\"\n");
+            let quits = counting_quit(&Owner::current().expect("owner"));
+            seed_terminal(host);
+            let mods = Modifiers {
+                ctrl: true,
+                shift: true,
+                ..Modifiers::default()
+            };
+            assert!(press(0, "C", mods), "the rebound prefix armed");
+            assert!(press(0, "d", Modifiers::default()));
+            assert_eq!(
+                quits.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "so the command key after it was the client's",
+            );
+        });
+    }
+
+    /// A config this client cannot use leaves it with a WORKING table and a report to show, because a
+    /// window has no screen to fail on and a keymap error nobody can see is a keymap error nobody
+    /// fixes.
+    ///
+    /// The report is what the command palette paints beside a broken project config
+    /// ([`crate::palette`]); the DEFAULTS are what keeps the window usable in the meantime.
+    #[test]
+    fn a_broken_config_leaves_the_defaults_and_a_report() {
+        let (host, _pane0) = two_cats();
+        let owner = Owner::new();
+        owner.run(|| {
+            let (_config, keys) = Config::seeded(
+                "[keys]\nprefix = \"C-a\"\n\n[[bind]]\nkey = \"c\"\naction = \"kill-server\"\n",
+            );
+            let quits = counting_quit(&Owner::current().expect("owner"));
+            seed_terminal(host);
+            let report = keys.report().expect("a broken config reports why");
+            assert!(
+                report.contains("config.toml") && report.contains("kill-server"),
+                "the report names the file and the line to fix: {report:?}",
+            );
+            // ASKED TWICE, because asking is what cleared it. The report path re-reads the file, and
+            // an unchanged file has no news — so a holder that treated "nothing changed" as "nothing
+            // is wrong" showed the error on the first palette open and nothing on the second. The
+            // verdict now lives on the file, which is the only place that knows whether it looked.
+            assert_eq!(
+                keys.report(),
+                Some(report),
+                "and asking again does not clear a file that is still broken",
+            );
+            // The DEFAULT table is in force, so `C-b d` still detaches — the file's `C-a` is not.
+            assert!(press(0, "b", ctrl()));
+            assert!(press(0, "d", Modifiers::default()));
+            assert_eq!(quits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        });
+    }
+
+    /// The report describes the file as it is NOW: fixing the typo clears it.
+    ///
+    /// The palette is the only surface that shows it, and while the palette is OPEN its own field holds
+    /// the keyboard — so no keystroke can reach a pane to trigger a re-read. Without the re-read on the
+    /// report path, a user who fixed their config would keep being told it was broken.
+    ///
+    /// REVERT-PROOF: drop the `reread` in `ClientKeys::report` and the second half fails.
+    #[test]
+    fn the_report_follows_the_file_and_clears_when_it_is_fixed() {
+        let owner = Owner::new();
+        owner.run(|| {
+            let (config, keys) = Config::seeded("");
+            assert_eq!(keys.report(), None, "a usable config reports nothing");
+            config.write("[[bind]]\nkey = \"x\"\naction = \"kill-server\"\n");
+            assert!(
+                keys.report()
+                    .is_some_and(|report| report.contains("kill-server")),
+                "a broken save is reported without any keystroke",
+            );
+            config.write("[[bind]]\nkey = \"x\"\naction = \"detach-client\"\n");
+            assert_eq!(keys.report(), None, "and the fix clears it");
+        });
+    }
+
+    /// **Every key this client's own chords name must be one a user could BIND**, or the keymap has a
+    /// key in it that no `[[bind]]` line can reach and no `list-keys` output can explain.
+    ///
+    /// A third drift guard in the family R235 started (the wire's encoder and `sprag-tui`'s decoder
+    /// are the other two), and the one this frontend needs: pinion's key names are pinion's, so the
+    /// only names sprag can hold itself to are the ones it spells.
+    #[test]
+    fn every_key_the_gui_chords_name_is_bindable() {
+        for key in [
+            "PageUp",
+            "PageDown",
+            "Enter",
+            "ArrowUp",
+            "ArrowDown",
+            "c",
+            "v",
+            "f",
+            "p",
+            "l",
+        ] {
+            assert!(
+                sprag_input::is_key_name(key),
+                "{key:?} is a key this client reserves but no config could name",
+            );
+        }
     }
 
     /// End-to-end multi-pane routing THROUGH `apply_key`: a focused keystroke reaches
@@ -952,26 +1462,29 @@ mod tests {
         assert_eq!(session_neighbour(&names, "gone", true), None);
     }
 
+    /// Forward = next, backward = previous; both wrap over the OCCUPIED slots.
+    ///
+    /// The direction is the caller's now (a `bool`), not read off a key here — which key means
+    /// forward is [`window_chord`]'s answer and is asserted there, and the keymap's
+    /// `select-pane -t :.+` has no key to read at all.
     #[test]
     fn next_focus_wraps_between_panes() {
-        // Down = next, Up = previous; both wrap over the occupied slots. Contiguous
-        // (the boot set) behaves as the former modular wrap.
+        // Contiguous (the boot set) behaves as the former modular wrap.
         let all = [0, 1, 2];
-        assert_eq!(next_focus(0, "PageDown", &all), Some(1));
-        assert_eq!(next_focus(2, "PageDown", &all), Some(0)); // wrap forward
-        assert_eq!(next_focus(0, "PageUp", &all), Some(2)); // wrap backward
-        assert_eq!(next_focus(1, "PageUp", &all), Some(0));
-        // A single pane has nowhere to switch to; a non-cycle key is None.
-        assert_eq!(next_focus(0, "PageDown", &[0]), None);
-        assert_eq!(next_focus(0, "Enter", &all), None);
+        assert_eq!(next_focus(0, true, &all), Some(1));
+        assert_eq!(next_focus(2, true, &all), Some(0)); // wrap forward
+        assert_eq!(next_focus(0, false, &all), Some(2)); // wrap backward
+        assert_eq!(next_focus(1, false, &all), Some(0));
+        // A single pane has nowhere to switch to.
+        assert_eq!(next_focus(0, true, &[0]), None);
         // Non-contiguous slots (a closed pane left a hole at slot 1): cycling STEPS
         // OVER the hole rather than landing on it (the Round 2b live-correct path).
         let holed = [0, 2, 3];
-        assert_eq!(next_focus(0, "PageDown", &holed), Some(2));
-        assert_eq!(next_focus(3, "PageDown", &holed), Some(0)); // wrap forward
-        assert_eq!(next_focus(0, "PageUp", &holed), Some(3)); // wrap backward
+        assert_eq!(next_focus(0, true, &holed), Some(2));
+        assert_eq!(next_focus(3, true, &holed), Some(0)); // wrap forward
+        assert_eq!(next_focus(0, false, &holed), Some(3)); // wrap backward
         // `active` not among the occupied slots (a just-closed slot) -> nowhere.
-        assert_eq!(next_focus(1, "PageDown", &holed), None);
+        assert_eq!(next_focus(1, true, &holed), None);
     }
 
     /// The `Ctrl+PageUp/Down` focus-cycle chord is handled (`true`), reaches no
