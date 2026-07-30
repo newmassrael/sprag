@@ -279,11 +279,15 @@ pub use sprag_rpc::SESSION_PARAM;
 /// that WRITES it ([`sprag_rpc`]) so the host that READS it shares ONE spelling — exactly as
 /// [`SESSION_PARAM`] is. [`CLIENT_HELLO_METHOD`] announces a connection's client id
 /// ([`CLIENT_PARAM`]); [`CLIENT_ATTACH_METHOD`] declares/switches that client's attached session
-/// (reusing [`SESSION_PARAM`]). Both are intercepted before the generic dispatch core, since they
-/// act on the frame's connection id, which no scene external sees. The reader's contract lives in
-/// [`crate::rpc`] (the dispatch owner's client-lifecycle intercept); the writer's is on each
-/// `sprag_rpc` const.
-pub use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM};
+/// (reusing [`SESSION_PARAM`]); [`CLIENT_SIZE_METHOD`] reports the cell area that client can give a
+/// window ([`COLS_PARAM`] / [`ROWS_PARAM`]), which is the input tmux's `window-size` arbitrates
+/// over. All three are intercepted before the generic dispatch core, since they act on the frame's
+/// connection id, which no scene external sees. The reader's contract lives in [`crate::rpc`] (the
+/// dispatch owner's client-lifecycle intercept); the writer's is on each `sprag_rpc` const.
+pub use sprag_rpc::{
+    CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, CLIENT_SIZE_METHOD, COLS_PARAM,
+    ROWS_PARAM,
+};
 
 /// The mux control external query slot: every session's name, plus which one an unscoped
 /// request acts on — how a client discovers what it can address with [`SESSION_PARAM`].
@@ -300,6 +304,20 @@ pub const SESSIONS_SLOT: &str = "sessions";
 /// per-client state that fills each [`SESSIONS_SLOT`] row's `attached` count. Empty off a daemon
 /// that tracks no wire clients (a GUI's in-process host), so it degrades to "no clients".
 pub const CLIENTS_SLOT: &str = "clients";
+
+/// The mux control external query slot: the SCOPED session's arbitrated window size
+/// (`{cols, rows}`, or `null` when no attached client has reported an area) — the rectangle every
+/// client lays the arrangement out over ([`sprag_terminal::tile`]).
+///
+/// This is the ANSWER to tmux's `window-size`, not the option: the daemon reads the policy from the
+/// user's `config.toml` itself and publishes only the size it arbitrated
+/// ([`crate::window::arbitrate`]), so no option crosses the wire (R240) and a client needs to know
+/// nothing about which rule produced its window.
+///
+/// Scoped, because a window belongs to a session. `null` is a real answer meaning "no client has
+/// said how big it is" — a client that reads it then leaves the panes at the size they have, rather
+/// than reflowing every program in the session to a number nobody chose.
+pub const WINDOW_SIZE_SLOT: &str = "window_size";
 
 /// The mux control external invoke action that creates a session BORN WITH A SHELL
 /// (`{name?, cmd?, cols?, rows?}`), returning its name.

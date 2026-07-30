@@ -37,13 +37,16 @@ use pinion_rpc::{
 use sprag_terminal::{SessionRegistry, Workspace};
 
 use crate::PaneCells;
-use crate::attach::{AttachOutcome, AttachmentRegistry};
+use crate::attach::{AttachOutcome, AttachmentRegistry, ClientSize, SizeOutcome};
 use crate::external::lock;
 use crate::host::Host;
 use crate::notify::ChannelRegistry;
 use crate::runs::RunRegistry;
 use crate::scope::{ScopeError, SessionScope};
-use crate::wire::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM};
+use crate::wire::{
+    CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, CLIENT_SIZE_METHOD, COLS_PARAM,
+    ROWS_PARAM,
+};
 
 /// The long-lived host state threaded through the serve loop: the booted [`Host`]
 /// (the single [`SessionRegistry`] owner), the background plugin-run registry, pinion's
@@ -589,6 +592,60 @@ fn handle_hello(state: &HostState, conn: ConnId, request: &Request) -> Option<St
 /// already-validated `scope` session. A first attach or a switch moves a per-session count, so it
 /// bumps the scene to wake parked `scene/waitFor`s to re-read the badge; an idempotent re-send
 /// does not. An attach with no prior `client/hello` is a protocol error, refused `-32602`.
+/// Record the client's reported cell area ([`CLIENT_SIZE_METHOD`]) and, when it moved, announce it
+/// to the session that client is watching.
+///
+/// The bump is what makes a window change on ONE client reach the others: the arbitrated window is
+/// derived from every attached client's area, so a report that moves it must wake the long-polls
+/// that will re-read it.
+///
+/// **It is deliberately kept although no test isolates it, and that was MEASURED rather than
+/// assumed.** Removing it leaves the whole `window-size` gate green, including the case written to
+/// catch exactly this (`a_client_that_reported_nothing_re_tiles_when_the_window_moves`). The reason
+/// is an indirection: a report that moves the window makes the REPORTING client re-tile and resize
+/// the panes, the reflow marks those panes dirty, and the dirty path bumps the scene — so the other
+/// clients wake anyway. That chain is real but it is nobody's stated contract for this, it only
+/// holds while a window change always resizes a pane, and it makes the wake arrive a reflow later
+/// than the fact that caused it. Announcing the fact itself costs one bump on a window change and
+/// does not depend on any of that.
+fn handle_size(state: &HostState, conn: ConnId, request: &Request) -> Option<String> {
+    let dim = |key: &str| {
+        request
+            .params
+            .as_ref()
+            .and_then(|params| params.get(key))
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| u16::try_from(value).ok())
+            .filter(|value| *value > 0)
+    };
+    // Both dimensions or neither: half a size is not a size, and a client that sent one number has
+    // a bug this refusal names rather than a window whose height came from somewhere else.
+    let (Some(cols), Some(rows)) = (dim(COLS_PARAM), dim(ROWS_PARAM)) else {
+        return lifecycle_invalid(
+            request,
+            format!("{CLIENT_SIZE_METHOD} requires positive {COLS_PARAM} and {ROWS_PARAM}"),
+        );
+    };
+    let mut attachments = lock(state.attachments());
+    match attachments.size(conn, ClientSize { cols, rows }) {
+        SizeOutcome::NoClient => lifecycle_invalid(
+            request,
+            format!("{CLIENT_SIZE_METHOD} requires {CLIENT_HELLO_METHOD} first"),
+        ),
+        SizeOutcome::Unchanged => lifecycle_ok(request),
+        SizeOutcome::Changed => {
+            // A client that reports before attaching moves no session's window yet; its attach
+            // announces on its own.
+            let session = attachments.session_of(conn).map(str::to_owned);
+            drop(attachments);
+            if let Some(session) = session {
+                state.channels().bump(&session);
+            }
+            lifecycle_ok(request)
+        }
+    }
+}
+
 fn handle_attach(
     state: &HostState,
     conn: ConnId,
@@ -750,6 +807,15 @@ fn dispatch_one(state: &HostState, frame: RpcFrame) {
             // several connections share) and returns.
             if parsed.method.as_str() == CLIENT_HELLO_METHOD {
                 if let Some(response) = handle_hello(state, conn, &parsed) {
+                    reply.send(response);
+                }
+                return;
+            }
+            // `client/size` reports the area its client can give a window. Handled beside the hello
+            // and BEFORE scope resolution for the same reason: it carries no session. Which session
+            // it moves is the one that client is attached to, which only the registry knows.
+            if parsed.method.as_str() == CLIENT_SIZE_METHOD {
+                if let Some(response) = handle_size(state, conn, &parsed) {
                     reply.send(response);
                 }
                 return;

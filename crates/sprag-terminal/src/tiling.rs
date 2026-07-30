@@ -1,18 +1,39 @@
-//! The host's logical arrangement, in CHARACTER CELLS.
+//! The host's logical arrangement, in CHARACTER CELLS — the ONE authority on how big a pane is.
 //!
-//! `sprag-gui` turns the same [`LayoutWire`] into pixel rectangles through pinion's dock surface;
-//! this is its terminal peer, and the two are deliberately separate. The host owns WHICH panes are
-//! split, in what order, at what proportion — so a detach preserves it — and each client owns the
-//! unit that arrangement becomes. That is why [`sprag_client`] hands out logical trees and knows
-//! about neither pixels nor cells.
+//! [`tile`] is a pure function of an arrangement and a WINDOW, and every client runs the same one:
+//! a pane's `(cols, rows)` is decided here, by the tree and the window size the daemon arbitrated,
+//! and by nothing a single client happens to be. That is the whole point of the function living in
+//! this crate rather than in a frontend.
+//!
+//! # Why it is shared, and what it was before
+//!
+//! It used to live in `sprag-tui`, opposite a `sprag-gui` that derived each pane's cell size from
+//! that pane's own measured PIXEL rect. Two clients then answered "how wide is this pane" with two
+//! numbers, and the pane took whichever one was written last — a size the other client was never
+//! told about, because a resize does not bump the scene. The loser went on painting a grid it had
+//! the wrong dimensions for. One pane cannot have two sizes, so there cannot be two functions that
+//! decide it.
+//!
+//! What each client still owns is where the result goes on ITS surface: `sprag-gui` places the
+//! panes as pixels through pinion's dock, `sprag-tui` places them as cells on a terminal. Neither
+//! places them in a size of its own choosing.
+//!
+//! # The window is not the client's screen
+//!
+//! The area passed in is the session's arbitrated window (`sprag_host::WindowSize`, tmux's
+//! `window-size` — named in prose because the policy lives a layer up, in the crate that reads the
+//! user's file), which is a fact about every attached client rather than about the caller. A
+//! client with more room than the window paints the tiling into part of its surface and leaves the
+//! rest as background; a client with less sees only what fits. Both are showing the same
+//! arrangement at the same size, which is what makes two clients of a session agree.
 //!
 //! # Rounding is the whole difficulty, and it is not a detail here
 //!
 //! Pixels round at sub-cell granularity and nobody notices. Character cells round at the
 //! granularity the user counts: a boundary that lands one column left of where it did last frame is
 //! a whole screen redraw, and a user watching a 40/41 split flip to 41/40 as they type is watching a
-//! bug. So the division here is INTEGER and total — [`divide`] states it once, every split goes
-//! through it, and the same inputs always yield the same cells.
+//! bug. So the division here is INTEGER and total — one private `divide` states it once, every
+//! split goes through it, and the same inputs always yield the same cells.
 //!
 //! # What a divider costs, and why it is a cell rather than a hint
 //!
@@ -24,15 +45,20 @@
 //!
 //! # The bound: a region too small to hold both children shows ONE
 //!
-//! The arrangement is the host's and can hold more panes than this terminal has rows — a GUI on a
-//! large display splitting a session an 80x24 ssh client is also attached to. A split whose axis
-//! cannot give both children a cell and a divider one gives the whole region to `first`, and the
-//! second child (with everything under it) is OMITTED from the tiling: it has no rectangle, it is
-//! not painted, and it is not resized. Dropping it is the honest answer — a zero-column pane is not
-//! a pane, and the host is right to refuse a resize to one — but the pane is still ALIVE and still
-//! the session's, so a client that shrinks below its arrangement loses the view, never the work.
+//! The arrangement is the host's and can hold more panes than the window has rows. A split whose
+//! axis cannot give both children a cell and a divider one gives the whole region to `first`, and
+//! the second child (with everything under it) is OMITTED from the tiling: it has no rectangle, it
+//! is not painted, and it is not resized. Dropping it is the honest answer — a zero-column pane is
+//! not a pane, and the host is right to refuse a resize to one — but the pane is still ALIVE and
+//! still the session's, so a window too small for its arrangement loses the view, never the work.
+//!
+//! Because the input is the arbitrated window, that loss is now the same for every client of a
+//! session instead of per-terminal: a pane the window cannot hold is unpainted everywhere, rather
+//! than present on the large client and missing on the small one. A client whose own surface is
+//! smaller than the window still shows the panes it has room for — it is cropping a tiling it
+//! agrees with, which is a different thing from computing a smaller one.
 
-use sprag_terminal::{LayoutNodeWire, LayoutWire, PaneId, SplitDir, SplitId};
+use crate::{LayoutNodeWire, LayoutWire, PaneId, SplitDir, SplitId};
 
 /// A rectangle of character cells in the local terminal's coordinates, `col`/`row` counted from the
 /// top-left of the screen.
@@ -76,6 +102,36 @@ impl Rect {
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.cols == 0 || self.rows == 0
+    }
+
+    /// The part of this rectangle that also lies inside `bounds`, or `None` when they do not
+    /// overlap at all.
+    ///
+    /// What a client paints with when its own surface is smaller than the arbitrated window: the
+    /// tiling is computed over the WINDOW, so a rectangle can extend past the screen showing it, and
+    /// drawing it whole would write cells the terminal does not have. Clipping here keeps the two
+    /// facts separate — a pane is RESIZED to its share of the window and PAINTED to what fits —
+    /// which is what lets a small client show part of a large window instead of disagreeing about
+    /// how large the window is.
+    #[must_use]
+    pub fn intersect(&self, bounds: Rect) -> Option<Rect> {
+        let col = self.col.max(bounds.col);
+        let row = self.row.max(bounds.row);
+        let right = self
+            .col
+            .saturating_add(self.cols)
+            .min(bounds.col.saturating_add(bounds.cols));
+        let bottom = self
+            .row
+            .saturating_add(self.rows)
+            .min(bounds.row.saturating_add(bounds.rows));
+        let clipped = Self::new(
+            col,
+            row,
+            right.saturating_sub(col),
+            bottom.saturating_sub(row),
+        );
+        (!clipped.is_empty()).then_some(clipped)
     }
 
     /// Whether the cell at `(col, row)` lies inside this rectangle.
@@ -135,7 +191,7 @@ pub struct Divider {
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Tiling {
     /// The panes that fit, in PAINT ORDER (left-to-right, top-to-bottom) — the same order
-    /// [`LayoutTree::panes`](sprag_terminal::LayoutTree::panes) reports, so a client cycling
+    /// [`LayoutTree::panes`](crate::LayoutTree::panes) reports, so a client cycling
     /// through them moves the way the arrangement reads.
     pub panes: Vec<PaneRect>,
     /// The dividers between them, in the order their splits were walked.
@@ -191,7 +247,7 @@ impl Tiling {
     /// define a stacking order the way a pixel client must.
     ///
     /// The returned cell is pane-LOCAL and 0-based, which is the coordinate space
-    /// [`MouseInput`](sprag_input::MouseInput) is defined in: a child knows only its own grid, and
+    /// `sprag_input::MouseInput` is defined in: a child knows only its own grid, and
     /// handing it a screen coordinate would put every click in the wrong place by exactly the
     /// pane's origin — invisibly so for the pane at (0, 0), which is the one a single-pane test
     /// would use.
@@ -909,5 +965,29 @@ mod tests {
         assert_eq!(tiling.pane_at(21, 0), None, "one past the right edge");
         assert_eq!(tiling.pane_at(0, 5), None, "one past the bottom edge");
         assert_eq!(Tiling::default().pane_at(0, 0), None, "nothing is tiled");
+    }
+
+    #[test]
+    fn intersect_crops_to_the_bounds_and_reports_no_overlap() {
+        let screen = Rect::screen(80, 24);
+        // Wholly inside: unchanged.
+        let inside = Rect::new(10, 5, 20, 10);
+        assert_eq!(inside.intersect(screen), Some(inside));
+        // Straddling the right and bottom edges: cropped to what the screen has, ORIGIN kept — a
+        // clip that moved the rectangle would paint the pane in the wrong place.
+        assert_eq!(
+            Rect::new(70, 20, 30, 10).intersect(screen),
+            Some(Rect::new(70, 20, 10, 4))
+        );
+        // Wholly outside (a pane the window gave a rectangle this terminal cannot reach at all):
+        // absent rather than empty, so a caller cannot paint a zero-cell rectangle by accident.
+        assert_eq!(Rect::new(80, 0, 10, 10).intersect(screen), None);
+        assert_eq!(Rect::new(0, 24, 10, 10).intersect(screen), None);
+        // A window SMALLER than the screen leaves the tiling untouched: the caller's bounds are the
+        // screen, and cropping never grows anything.
+        assert_eq!(
+            Rect::new(0, 0, 40, 12).intersect(screen),
+            Some(Rect::new(0, 0, 40, 12))
+        );
     }
 }

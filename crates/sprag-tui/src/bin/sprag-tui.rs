@@ -69,17 +69,22 @@
 //! the pointer leaves the divider the instant it starts moving — recognising the line on every
 //! event instead would resize once and then swallow every click that followed.
 //!
+//! # The pane's size is the SESSION's, not this terminal's
+//!
+//! This client reports its own area to the daemon ([`report_size`]) and lays the arrangement out
+//! over the WINDOW the daemon arbitrates from every attached client's report
+//! ([`window_area`], tmux's `window-size`) — not over its own screen. With one client the two are
+//! the same rectangle and nothing has changed. With several they need not be, and that is the
+//! point: one pane cannot have two sizes.
+//!
+//! So a terminal larger than the window paints into part of itself, and one smaller shows the part
+//! that fits ([`Rect::intersect`], applied at PAINT time only — the pane is resized to its share of
+//! the window regardless of what this terminal can display). The window change path still reports
+//! first and tiles second, because under the default `latest` policy this terminal's new area IS
+//! the new window.
+//!
 //! # What it deliberately does not do yet
 //!
-//! * **Latest attach wins the pane's size.** Attaching resizes each pane to the rectangle this
-//!   terminal gives it, and so does every later window change. With one client that is simply
-//!   correct; with several it is a POLICY, and the same one tmux spells `window-size latest`. The
-//!   alternatives tmux also offers (smallest attached client, or a per-client viewport over a
-//!   larger pane) need a client-size registry the daemon does not have. There IS an options table
-//!   now ([`sprag_host::options`], `sprag set-option`), so the reason has narrowed to the one that
-//!   always mattered: `window-size` would name a policy nothing performs. `latest` is what this
-//!   code DOES, and the other three values need the registry — an option offering them would be a
-//!   setting a user can write and `show-options` will print, that changes nothing.
 //! * **No pane is closed from here.** `exit` in the shell does it, and the destructive verb is the
 //!   one that would want a confirmation prompt this client has nowhere to draw.
 //! * **Type-ahead before the client is up is lost.** `set_raw_mode` sets the termios with
@@ -202,6 +207,9 @@ fn run() -> Result<(), Box<dyn Error>> {
     // only when it created the session too. Matching each to the rectangle it was given HERE —
     // before the first paint, through the same call a window change uses — is what makes an attach
     // over ssh show panes shaped like the window they are being shown in.
+    // BEFORE the first reconcile: the arbitration cannot include a client that has not spoken, so
+    // reporting after it would tile the first frame over a window this terminal was not counted in.
+    report_size(&host, screen_area);
     let mut tiling = reconcile(&host, screen_area, &mut focus);
     mouse.follow(&host, &tiling);
     // The pointer's state, kept across events because the wire wants EDGES and this terminal
@@ -214,7 +222,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     // The first paint clears, because the surface starts blank but the terminal underneath it does
     // not. Later ones do not need to: the tiling PARTITIONS the screen, so every cell has an author
     // and a repaint cannot leave a hole for the previous frame to show through.
-    paint(&mut screen, &host, &tiling, focus, Clear::Yes)?;
+    paint(&mut screen, &host, &tiling, screen_area, focus, Clear::Yes)?;
 
     // Where the next key goes. Starts at the pane: the prefix is a departure from the steady
     // state, not the other way round.
@@ -251,14 +259,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                         }
                         tiling = reconcile(&host, screen_area, &mut focus);
                         mouse.follow(&host, &tiling);
-                        paint(&mut screen, &host, &tiling, focus, Clear::No)?;
+                        paint(&mut screen, &host, &tiling, screen_area, focus, Clear::No)?;
                     }
                     Command::Act(BoundAction::SelectNextPane) => {
                         let next = focus.and_then(|pane| tiling.next_after(pane));
                         set_focus(&host, &mut focus, next.or_else(|| tiling.first_pane()));
                         // Only the CURSOR moved, and it is painted from the tiling this loop already
                         // holds — so the repaint is the whole point and the reconcile is not needed.
-                        paint(&mut screen, &host, &tiling, focus, Clear::No)?;
+                        paint(&mut screen, &host, &tiling, screen_area, focus, Clear::No)?;
                     }
                 }
             }
@@ -300,7 +308,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                                     // Repainted here rather than left to the host's notification:
                                     // a divider that lags the pointer by a round trip is what a
                                     // user reads as a heavy client.
-                                    paint(&mut screen, &host, &tiling, focus, Clear::Yes)?;
+                                    paint(
+                                        &mut screen,
+                                        &host,
+                                        &tiling,
+                                        screen_area,
+                                        focus,
+                                        Clear::Yes,
+                                    )?;
                                 }
                             }
                             // A press cannot reach here (it is claimed above) and a bare motion
@@ -316,7 +331,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                     };
                     if edge.kind == MouseEventKind::Press && focus != Some(pane) {
                         set_focus(&host, &mut focus, Some(pane));
-                        paint(&mut screen, &host, &tiling, focus, Clear::No)?;
+                        paint(&mut screen, &host, &tiling, screen_area, focus, Clear::No)?;
                     }
                     // Pane-LOCAL cells: `pane_at` has already subtracted the rectangle's origin.
                     // The host re-gates this against the pane's own tracking mode, so a report the
@@ -335,9 +350,13 @@ fn run() -> Result<(), Box<dyn Error>> {
                 let (cols, rows) = screen_size(screen.terminal())?;
                 screen_area = Rect::screen(cols, rows);
                 screen.resize(usize::from(cols), usize::from(rows));
+                // The window is arbitrated over what the clients report, so this terminal's new
+                // area has to reach the daemon BEFORE the tiling that depends on it — under the
+                // default `latest` policy this report IS the new window.
+                report_size(&host, screen_area);
                 tiling = reconcile(&host, screen_area, &mut focus);
                 mouse.follow(&host, &tiling);
-                paint(&mut screen, &host, &tiling, focus, Clear::Yes)?;
+                paint(&mut screen, &host, &tiling, screen_area, focus, Clear::Yes)?;
             }
             // `Wake` carries no payload by design — which edge fired is in the flags below.
             Some(_) | None => {}
@@ -356,7 +375,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             // A child that just enabled tracking woke this client the same way its output would,
             // so the mirror is re-read here and not on a timer.
             mouse.follow(&host, &tiling);
-            paint(&mut screen, &host, &tiling, focus, Clear::No)?;
+            paint(&mut screen, &host, &tiling, screen_area, focus, Clear::No)?;
         }
     }
     // Before the terminal is given back: see [`MouseMirror::release`].
@@ -395,6 +414,7 @@ fn paint(
     screen: &mut BufferedTerminal<SystemTerminal>,
     host: &WireHost,
     tiling: &Tiling,
+    screen_area: Rect,
     focus: Option<PaneId>,
     clear: Clear,
 ) -> Result<(), Box<dyn Error>> {
@@ -410,14 +430,24 @@ fn paint(
     }
     let mut cursor = Vec::new();
     for held in &tiling.panes {
+        // The tiling is in WINDOW coordinates, which this terminal need not be big enough to hold:
+        // a rectangle past the edge is painted as far as the screen goes and no further. Skipped
+        // entirely when it does not reach the screen at all — a pane of a window larger than this
+        // terminal, which is visible on the clients that do have room for it.
+        let Some(area) = held.area.intersect(screen_area) else {
+            continue;
+        };
         let cells = host.pane_cells(held.pane, 0);
-        screen.add_changes(pane_changes(&cells, held.area));
+        screen.add_changes(pane_changes(&cells, area));
         if focus == Some(held.pane) {
-            cursor = cursor_changes(&cells, held.area);
+            cursor = cursor_changes(&cells, area);
         }
     }
     for divider in &tiling.dividers {
-        screen.add_changes(divider_changes(divider));
+        let Some(area) = divider.area.intersect(screen_area) else {
+            continue;
+        };
+        screen.add_changes(divider_changes(&Divider { area, ..*divider }));
     }
     screen.add_changes(cursor);
     screen.flush()?;
@@ -431,8 +461,8 @@ fn paint(
 /// recompute — and because getting them out of step is what a partial update looks like: a focus on
 /// a pane that no longer has a rectangle sends keys into a program nobody can see, and a pane whose
 /// PTY still holds the old rectangle's size reflows to the wrong width.
-fn reconcile(host: &WireHost, area: Rect, focus: &mut Option<PaneId>) -> Tiling {
-    let tiling = tile(&host.layout().tree, area);
+fn reconcile(host: &WireHost, screen: Rect, focus: &mut Option<PaneId>) -> Tiling {
+    let tiling = tile(&host.layout().tree, window_area(host, screen));
     // Keep the pane the user chose if it is still shown; fall back to the first otherwise. The
     // fallback is reached by a pane exiting, by another client closing one, and by this terminal
     // shrinking below what the arrangement needs — all of which leave a focus naming nothing.
@@ -528,6 +558,29 @@ fn paste(host: &WireHost, focus: Option<PaneId>, text: &str) {
 /// than writing zeroes into the PTY winsize, so a pane that a GUI sized keeps truthful
 /// `ws_xpixel` / `ws_ypixel` reports even while a TUI is the one resizing it.
 const CELL_PX_UNKNOWN: (u16, u16) = (0, 0);
+
+/// The rectangle the arrangement is laid out over: the session's ARBITRATED window if the host has
+/// one, else this terminal's own screen.
+///
+/// The fallback is not a default, it is the honest answer to a different question. A host with no
+/// window (an older daemon, or one no client has reported an area to) is saying nothing about what
+/// the panes should be, and this client's own screen is then the only fact available — which is
+/// exactly what it used before `window-size` existed.
+fn window_area(host: &WireHost, screen: Rect) -> Rect {
+    match host.window_size() {
+        Some((cols, rows)) => Rect::screen(cols, rows),
+        None => screen,
+    }
+}
+
+/// Tell the host how big this terminal is — the input its `window-size` policy arbitrates over.
+///
+/// Called at boot and on every window change, which are exactly the moments the answer can move.
+/// The daemon ignores a repeat of the same numbers, so a resize that ends where it started costs
+/// one call and wakes nobody.
+fn report_size(host: &WireHost, screen: Rect) {
+    host.report_client_size(screen.cols, screen.rows);
+}
 
 /// Resize `pane` to the rectangle the layouter gave it — the reflow the program inside it sees.
 ///

@@ -71,10 +71,13 @@ pub mod ssh;
 // way in and no second policy site. A plain comment, not a doc comment: an outer doc here would be
 // merged with the module's own `//!` docs and resolve THEIR intra-doc links in this scope instead.
 mod upload;
+pub mod window;
 pub mod wire;
 pub mod workspace;
 
-pub use attach::{AttachOutcome, AttachmentRegistry, ClientId, ClientInfo};
+pub use attach::{
+    AttachOutcome, AttachmentRegistry, ClientId, ClientInfo, ClientSize, SizeOutcome,
+};
 pub use config::{CONFIG_FILE, ConfigError, UserConfig};
 pub use durability::{
     load_snapshot, reconnect_command, restore_allowlist, restore_command, save_if_changed,
@@ -102,6 +105,7 @@ pub use rpc::{
 pub use runs::{RunId, RunRegistry, RunState};
 pub use scope::{ScopeError, SessionScope};
 pub use ssh::{PortForward, SshTarget, SshTargetError};
+pub use window::{WindowSize, arbitrate};
 pub use wire::{mux_action_path, pane_container_tag, pane_input_path};
 pub use workspace::WorkspaceExternal;
 

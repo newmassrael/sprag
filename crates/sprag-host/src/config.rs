@@ -57,6 +57,7 @@ use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 use crate::keymap::{BoundAction, KeyError, KeySpec, Keymap};
 use crate::options::{self, OptionSetting, OptionSpec, Options};
 use crate::project::{ProjectAction, ProjectError, validate_declared};
+use crate::window::WindowSize;
 
 /// The user's config file name, under [`config_dir`].
 ///
@@ -240,6 +241,39 @@ pub fn default_pane_command() -> (sprag_terminal::CommandBuilder, String) {
         return sprag_terminal::default_shell_command();
     }
     sprag_terminal::shell_command_line(&command)
+}
+
+/// The policy that decides a session's window size when several clients are attached — the user's
+/// [`window-size`](crate::options::WINDOW_SIZE), or [`WindowSize::DEFAULT`] if they have not set one.
+///
+/// Read from the file on every call, like [`default_pane_command`] and for the same reason: the
+/// daemon is a reader of the user's config, not a holder of it, so `set-option window-size` takes
+/// effect on the next arbitration with nothing to restart and nothing to invalidate. The cost is one
+/// file read per window change, against a reflow of every pane in the session.
+///
+/// A broken config logs and falls through to the default rather than refusing to answer: a session
+/// whose window could not be computed would have no size at all, which is worse than the behaviour
+/// the user had before they typed the typo.
+#[must_use]
+pub fn window_size() -> WindowSize {
+    let value = match options() {
+        Ok(options) => options
+            .get(options::WINDOW_SIZE)
+            .unwrap_or_default()
+            .to_owned(),
+        Err(error) => {
+            tracing::warn!(
+                target: "sprag_host::config",
+                %error,
+                "using the default window-size policy",
+            );
+            String::new()
+        }
+    };
+    // A value the registry validated but this enum does not know would be a table offering a policy
+    // nothing performs — the defect `WINDOW_SIZE_VALUES` exists to make unreachable. Falling back is
+    // the total answer; the vocabulary test in `options` is what keeps it unreachable.
+    WindowSize::parse(&value).unwrap_or(WindowSize::DEFAULT)
 }
 
 /// The client-side halves of the user's config, or the defaults when there is nothing to read.

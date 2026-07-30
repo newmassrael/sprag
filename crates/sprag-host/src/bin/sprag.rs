@@ -752,7 +752,16 @@ fn list_clients(args: Vec<String>) -> io::Result<()> {
         if filter.as_deref().is_some_and(|want| want != session) {
             continue;
         }
-        println!("{id}: {session}");
+        // The area the client reported, in tmux's own `[COLSxROWS]` shape. Omitted rather than
+        // faked when it has not reported one: this is what `window-size` arbitrates over, so a
+        // client that is not in the arbitration must not read as though it were.
+        match (
+            client["size"]["cols"].as_u64(),
+            client["size"]["rows"].as_u64(),
+        ) {
+            (Some(cols), Some(rows)) => println!("{id}: {session} [{cols}x{rows}]"),
+            _ => println!("{id}: {session}"),
+        }
     }
     Ok(())
 }

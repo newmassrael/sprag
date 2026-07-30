@@ -36,12 +36,12 @@
 
 use std::sync::Arc;
 
-use crate::layout::{Divider, Rect};
 use pinion_core::style::Color as PinColor;
 use pinion_core::{
     CellWidth, CursorShape as PinCursorShape, GridBuffer, Hyperlink as PinHyperlink, HyperlinkId,
     TermCell, TermColor, UnderlineStyle as PinUnderlineStyle,
 };
+use sprag_terminal::tiling::{Divider, Rect};
 use termwiz::cell::{Blink, CellAttributes, Intensity, Underline, unicode_column_width};
 use termwiz::color::{ColorAttribute, SrgbaTuple};
 use termwiz::hyperlink::Hyperlink;

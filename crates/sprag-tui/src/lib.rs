@@ -36,11 +36,13 @@
 //! [`sprag_client`], and both are needed — a dependency added HERE would never reach that one.
 
 mod key;
-mod layout;
 mod mouse;
 mod paint;
 
 pub use key::{WireKey, wire_key};
-pub use layout::{Divider, PaneRect, Rect, Tiling, tile, with_ratio};
+// The cell-space tiler moved to `sprag-terminal` so `sprag-gui` computes pane sizes through the
+// SAME function (see `sprag_terminal::tiling`). Re-exported rather than dropped: this crate's
+// callers ask a terminal frontend where a pane goes, and the answer's address is not their concern.
 pub use mouse::MouseEdges;
 pub use paint::{cell_attributes, cursor_changes, divider_changes, pane_changes};
+pub use sprag_terminal::{Divider, PaneRect, Rect, Tiling, tile, with_ratio};

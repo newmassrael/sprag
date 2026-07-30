@@ -77,7 +77,7 @@ use crate::wire::{
     GRID_WORK_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
     NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PROJECT_FIELD, RENAME_WINDOW_ACTION,
     RESIZE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
-    SPAWN_ACTION, SPLIT_ACTION, WINDOWS_SLOT,
+    SPAWN_ACTION, SPLIT_ACTION, WINDOW_SIZE_SLOT, WINDOWS_SLOT,
 };
 
 /// The mux-management engine `External`: a control surface over the shared
@@ -841,6 +841,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                     SchemaField::new(CLIENTS_SLOT, "list"),
                     SchemaField::new(GRID_WORK_SLOT, "object"),
                     SchemaField::new(WINDOWS_SLOT, "list"),
+                    SchemaField::new(WINDOW_SIZE_SLOT, "object"),
                     SchemaField::new(GLOBAL_COMMANDS_SLOT, "object"),
                     PROJECT_FIELD,
                 ]
@@ -1060,6 +1061,22 @@ impl ExternalIntrospect for WorkspaceExternal {
                     None => Vec::new(),
                 };
                 encoded_answer(&clients, "clients")
+            }
+            // The SCOPED session's arbitrated window — the rectangle every client tiles over, so
+            // that two clients of different sizes give one pane one size. The POLICY is read from
+            // the user's file here (no option crosses the wire); the clients' areas come from the
+            // same dispatch-layer attachment map that fills `clients` and `attached`.
+            //
+            // `null` off a daemon that tracks no wire clients, and equally when no attached client
+            // has reported an area yet. Both mean "nobody has said how big this is", and a client
+            // reading it leaves its panes at the size they already have — an in-process host has
+            // exactly one surface, so it never needed arbitrating in the first place.
+            WINDOW_SIZE_SLOT => {
+                let window = self.attachments.as_ref().and_then(|attachments| {
+                    let sizes = lock(attachments).sizes(self.scope.session());
+                    crate::window::arbitrate(crate::config::window_size(), &sizes)
+                });
+                encoded_answer(&window, "window_size")
             }
             // What this host has paid to project its cells. Read straight off the meter rather
             // than recomputed, and UNSCOPED on purpose: the counters are process-wide, so scoping
@@ -1646,7 +1663,13 @@ mod tests {
         ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
             .unwrap();
 
-        for slot in [SESSIONS_SLOT, CLIENTS_SLOT, WINDOWS_SLOT, LAYOUT_SLOT] {
+        for slot in [
+            SESSIONS_SLOT,
+            CLIENTS_SLOT,
+            WINDOWS_SLOT,
+            WINDOW_SIZE_SLOT,
+            LAYOUT_SLOT,
+        ] {
             let answer = ext.query(slot).expect("the slot answers");
             assert!(
                 answer.as_raw().is_some(),

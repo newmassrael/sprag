@@ -335,6 +335,27 @@ pub trait HostClient {
     /// last-known cell geometry untouched.
     fn resize(&self, id: PaneId, cols: u16, rows: u16, cell_px: (u16, u16));
 
+    /// Tell the host how many CELLS this client has to give a window
+    /// ([`crate::wire::CLIENT_SIZE_METHOD`]) — at attach, and again on every window change.
+    ///
+    /// The input to tmux's `window-size`: the host cannot measure a client's surface, so a session
+    /// with several viewers can only be arbitrated over what each one reports. The default is a
+    /// no-op, which is the right answer for an in-process host — it has exactly one surface, so
+    /// there is nothing to arbitrate between and the client's own size IS the window.
+    fn report_client_size(&self, cols: u16, rows: u16) {
+        let _ = (cols, rows);
+    }
+
+    /// The session's arbitrated window in cells — the area [`sprag_terminal::tile`] lays the
+    /// arrangement out over, and the reason two clients of one session give a pane one size.
+    ///
+    /// `None` means no arbitration applies: an in-process host (one surface, so the caller's own is
+    /// the window) or a daemon no client has reported a size to yet. A caller that gets `None` uses
+    /// its own surface, which is both the honest answer and the behaviour that predates this.
+    fn window_size(&self) -> Option<(u16, u16)> {
+        None
+    }
+
     /// Send a W3C `key` + `mods` to pane `id` — the CLIENT input path. `true` if it
     /// reached the PTY; `false` if `id` is absent, the key is unencodable, or the send
     /// failed.

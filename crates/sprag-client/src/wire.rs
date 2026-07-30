@@ -84,14 +84,15 @@ use base64::engine::general_purpose::STANDARD;
 use pinion_core::{GridBuffer, QuitSink};
 use serde_json::{Value, json};
 use sprag_grid::ProjectionToken;
+use sprag_host::ClientSize;
 use sprag_host::wire::{
     BREAK_PANE_ACTION, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT, CLOSE_ACTION,
     DROP_FILE_ACTION, FOCUS_ACTION, FULL_TEXT_SLOT, GLOBAL_COMMANDS_SLOT, JOIN_PANE_ACTION,
     KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, MOUSE_ACTION,
     NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, PROMPT_MARKS_SLOT,
     RESIZE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
-    SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at, find_slot_for,
-    project_slot_for, regex_slot_for,
+    SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOW_SIZE_SLOT, WINDOWS_SLOT, cells_slot_at,
+    find_slot_for, project_slot_for, regex_slot_for,
 };
 use sprag_host::{
     CellFrame, HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneNotification,
@@ -99,8 +100,8 @@ use sprag_host::{
 };
 use sprag_input::{Modifiers, MouseButton, MouseEventKind, MouseInput};
 use sprag_rpc::{
-    CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn, new_gui_client_id,
-    runtime_path,
+    CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, CLIENT_SIZE_METHOD, COLS_PARAM,
+    HostConn, ROWS_PARAM, new_gui_client_id, runtime_path,
 };
 use sprag_terminal::{
     LayoutSnapshot, LayoutWire, PaneExit, PaneId, SessionInfo, SplitDir, WindowInfo,
@@ -250,6 +251,15 @@ struct Mirrored {
     /// The window the `layout` belongs to (its `windows`-slot name).
     window: String,
     layout: LayoutSnapshot,
+    /// The session's arbitrated window size (tmux `window-size`), or `None` while no attached
+    /// client has reported an area.
+    ///
+    /// Kept HERE rather than in a mirror of its own because it is read WITH the arrangement and
+    /// never without it: tiling is a function of both, so the poll stores them under one lock and a
+    /// reader takes them from one place. Not revision-guarded like the layout — it carries no
+    /// revision, being derived from every attached client's report rather than from a versioned
+    /// document, so the newest read simply wins.
+    window_size: Option<(u16, u16)>,
 }
 
 /// The host's current arrangement + which window it is, mirrored. Shared between the UI thread
@@ -310,6 +320,41 @@ fn query_layout(conn: &mut HostConn) -> io::Result<LayoutSnapshot> {
         json!({ "path": mux_action_path(LAYOUT_SLOT) }),
     )?;
     serde_json::from_value(value).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+/// Read the session's arbitrated window size off the wire — the ONE place the `window_size` slot is
+/// queried, shared by the boot read, the poll thread's refresh, and a switch's re-boot.
+///
+/// A slot that answers `null` (no client has reported an area, or a host that tracks none) decodes
+/// to `None`, which is a value rather than a failure: the caller falls back to its own surface.
+fn query_window_size(conn: &mut HostConn) -> io::Result<Option<(u16, u16)>> {
+    let value = conn.call(
+        "scene/query",
+        json!({ "path": mux_action_path(WINDOW_SIZE_SLOT) }),
+    )?;
+    let size: Option<ClientSize> = serde_json::from_value(value)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    Ok(size.map(|size| (size.cols, size.rows)))
+}
+
+/// Store the arbitrated window in the mirror. Unguarded (see [`Mirrored::window_size`]).
+fn store_window_size(layout: &Mutex<Mirrored>, size: Option<(u16, u16)>) {
+    lock_layout(layout).window_size = size;
+}
+
+/// Report this client's own cell area to the daemon (`client/size`) — the input its `window-size`
+/// policy arbitrates over.
+///
+/// BEST-EFFORT, like [`send_hello`]: a daemon that does not know the method leaves this client out
+/// of the arbitration, which degrades to the behaviour that predates it (the window is whatever the
+/// clients that DO report agree on, or nothing at all and every client uses its own surface).
+fn send_size(conn: &mut HostConn, cols: u16, rows: u16) {
+    if let Err(error) = conn.call(
+        CLIENT_SIZE_METHOD,
+        json!({ COLS_PARAM: cols, ROWS_PARAM: rows }),
+    ) {
+        tracing::debug!(target: "sprag_gui::wire", %error, "client/size failed; this client is not arbitrated over");
+    }
 }
 
 /// The scoped session's window LIST, mirrored — what a tabbed client draws. Shared between the
@@ -775,6 +820,10 @@ impl WireHost {
         let layout: LayoutMirror = Arc::new(Mutex::new(Mirrored {
             window: current,
             layout: query_layout(&mut conn)?,
+            // Best-effort, unlike the arrangement: a client that cannot learn the arbitrated window
+            // falls back to its own surface, which is what it did before the slot existed. A daemon
+            // too old to serve it must not stop this client from painting.
+            window_size: query_window_size(&mut conn).unwrap_or_default(),
         }));
         let windows: WindowsMirror = Arc::new(Mutex::new(window_list));
         // EVERY session, mirrored for the switcher sidebar — booted like the window list and for the
@@ -868,7 +917,16 @@ impl WireHost {
         // borrow and BEFORE mutating any mirror (so a failed read is a clean abort). Order mirrors
         // boot: revision baseline first (subscribe-then-snapshot), then the frames, then windows /
         // layout / sessions.
-        let (fetched, seeds, window_list, current, layout_snapshot, session_list, since0) = {
+        let (
+            fetched,
+            seeds,
+            window_list,
+            current,
+            layout_snapshot,
+            window_size,
+            session_list,
+            since0,
+        ) = {
             let mut conn = self.conn.borrow_mut();
             conn.scope_to(session.to_owned());
             // R-PR67: re-attach this client to the session it just switched to (tmux
@@ -883,6 +941,9 @@ impl WireHost {
             let window_list = query_windows(&mut conn)?;
             let current = current_window_name(&window_list).unwrap_or_default();
             let layout_snapshot = query_layout(&mut conn)?;
+            // The window is arbitrated PER SESSION, so a switch re-reads it: the session being
+            // joined has its own attached clients and its own answer.
+            let window_size = query_window_size(&mut conn).unwrap_or_default();
             let session_list = query_sessions(&mut conn)?;
             (
                 fetched,
@@ -890,6 +951,7 @@ impl WireHost {
                 window_list,
                 current,
                 layout_snapshot,
+                window_size,
                 session_list,
                 since0,
             )
@@ -910,6 +972,7 @@ impl WireHost {
         *lock_layout(&self.layout) = Mirrored {
             window: current,
             layout: layout_snapshot,
+            window_size,
         };
         store_windows(&self.windows, window_list);
         store_sessions(&self.sessions, session_list);
@@ -1014,6 +1077,9 @@ impl WireHost {
         if let Ok(snapshot) = query_layout(&mut conn) {
             store_layout(&self.layout, &current, snapshot);
         }
+        if let Ok(size) = query_window_size(&mut conn) {
+            store_window_size(&self.layout, size);
+        }
     }
 
     /// Re-read every session on the UI-thread connection and store it — the immediate-feedback
@@ -1074,6 +1140,27 @@ impl HostClient for WireHost {
     /// must never arrive as the same value.
     fn layout(&self) -> LayoutSnapshot {
         lock_layout(&self.layout).layout.clone()
+    }
+
+    /// The session's arbitrated window, read from the same mirror as the arrangement — a lock, no
+    /// socket call, because this is on the paint path beside [`Self::layout`].
+    fn window_size(&self) -> Option<(u16, u16)> {
+        lock_layout(&self.layout).window_size
+    }
+
+    /// Report this client's cell area, and mirror the window it produces IMMEDIATELY.
+    ///
+    /// The immediate re-read is what makes a resize feel local rather than arriving a poll later:
+    /// under the default `latest` policy this client's own report IS the new window, so waiting for
+    /// the poll's wake would leave one frame tiled over the old rectangle. It is the same
+    /// immediate-feedback shape the window and session writes already use.
+    fn report_client_size(&self, cols: u16, rows: u16) {
+        let mut conn = self.conn.borrow_mut();
+        send_size(&mut conn, cols, rows);
+        if let Ok(size) = query_window_size(&mut conn) {
+            drop(conn);
+            store_window_size(&self.layout, size);
+        }
     }
 
     fn set_layout(&self, tree: LayoutWire, expected: u64) -> LayoutSnapshot {
@@ -2601,6 +2688,12 @@ fn spawn_poll(
                 // this client's projection. Tagged with `current`, so a switch resets the mirror.
                 // A definitive failure detaches (as above); on a transient one the last-known
                 // arrangement stands (a hiccup means "no news", never "your layout is gone").
+                // The arbitrated window rides the SAME wake: it moves when any client of this
+                // session resizes, and a client holding a stale one would tile over a rectangle
+                // the others have already left.
+                if let Ok(size) = query_window_size(&mut conn) {
+                    store_window_size(&layout, size);
+                }
                 match query_layout(&mut conn) {
                     Ok(snapshot) => store_layout(&layout, &current, snapshot),
                     Err(error) => {

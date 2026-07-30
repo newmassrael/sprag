@@ -147,6 +147,15 @@ fn socket_path() -> PathBuf {
 /// and a pane that is idle stays alive. The mouse tests pass something else, because their claim
 /// needs a child that ASKS for tracking and `cat` never does.
 fn spawn_daemon_running(program: &[&str]) -> (Daemon, PathBuf) {
+    spawn_daemon_with_config(program, None)
+}
+
+/// The same daemon, reading `config` as the user's config home.
+///
+/// `window-size` is a DAEMON-side option (like `default-command`), so a test about it has to point
+/// the DAEMON at the file — pointing only the clients there would leave the arbitration reading
+/// whatever config the machine running the suite happens to have.
+fn spawn_daemon_with_config(program: &[&str], config: Option<&str>) -> (Daemon, PathBuf) {
     let sock = socket_path();
     let _ = std::fs::remove_file(&sock);
     let child = Command::new(sprag_term_bin())
@@ -156,6 +165,7 @@ fn spawn_daemon_running(program: &[&str]) -> (Daemon, PathBuf) {
         .args(program)
         .env("SPRAG_HOST_RPC_SOCK", &sock)
         .env("SPRAG_HOST_RPC", "1")
+        .envs(config.map(|home| ("XDG_CONFIG_HOME", home)))
         .stdin(Stdio::null())
         .spawn()
         .expect("spawn the sprag-term daemon");
@@ -1587,4 +1597,202 @@ fn a_set_option_run_while_attached_reaches_the_running_client() {
     wait_for("the daemon to release the client", || {
         settled(attached(&mut conn, &session), &0)
     });
+}
+
+// ----- the window-size gate -----
+
+/// The two clients this gate attaches, and the window each policy must produce from them.
+///
+/// The dimensions are CROSSED on purpose — the wider client is the shorter one — so the three
+/// policies give three DIFFERENT answers, and neither `largest` nor `smallest` is any single
+/// client's own area. A daemon that picked a whole client rather than folding per dimension is
+/// caught, and so is one that ignores the policy and keeps the last writer.
+const FIRST_CLIENT: (u16, u16) = (100, 24);
+const SECOND_CLIENT: (u16, u16) = (80, 30);
+
+/// **THE GATE for `window-size`**: two real clients of different sizes, on real pseudoterminals,
+/// against a real daemon reading a real `config.toml` — and the pane takes the size the POLICY
+/// says, not the size of whoever wrote last.
+///
+/// This is the claim the whole front is for, and no unit test can make it. The arbitration is a
+/// pure function with its own tests; what those cannot say is whether a second client's area ever
+/// reaches the daemon, whether the daemon reads the user's policy, or whether a client lays its
+/// panes out over the answer instead of over its own terminal. Before this round the pane simply
+/// took the size of the client that most recently laid out, and the other client was never told —
+/// so `smallest` here is the discriminating case: it demands the SMALL client's width and the
+/// SHORT client's height while the daemon's most recent report is neither.
+fn window_size_policy_case(policy: &str, want: (u16, u16)) {
+    let config = ConfigHome::new(&format!("[options]\nwindow-size = \"{policy}\"\n"));
+    let (_daemon, sock) = spawn_daemon_with_config(&["cat"], Some(config.as_str()));
+    let mut conn = observe(&sock);
+    let session = boot_session(&mut conn);
+
+    let mut first = Tui::attach(&sock, &session);
+    wait_for("the first client to attach", || {
+        match attached(&mut conn, &session) {
+            0 => Err("nobody attached".to_owned()),
+            _ => Ok(()),
+        }
+    });
+    first.resize(FIRST_CLIENT.0, FIRST_CLIENT.1);
+    wait_for("the first client's area to become the window", || {
+        settled(pane_size(&mut conn, &session), &Some(FIRST_CLIENT))
+    });
+
+    // The SECOND client, reported last — so `latest` is its area and the other two policies must
+    // disagree with it.
+    let mut second = Tui::attach(&sock, &session);
+    wait_for(
+        "the daemon to count two attached clients",
+        || match attached(&mut conn, &session) {
+            2 => Ok(()),
+            n => Err(format!("{n} attached")),
+        },
+    );
+    second.resize(SECOND_CLIENT.0, SECOND_CLIENT.1);
+
+    wait_for(
+        &format!("window-size {policy} to settle the pane at {want:?}"),
+        || {
+            settled(pane_size(&mut conn, &session), &Some(want))
+                .map_err(|got| format!("{got}; clients are {FIRST_CLIENT:?} and {SECOND_CLIENT:?}"))
+        },
+    );
+
+    // ...and it STAYS there. Without this the test would pass on a daemon that merely passed
+    // through the second client's resize on its way to somewhere else, and it is also what would
+    // catch two clients fighting: a pane both of them keep rewriting cannot hold one size.
+    let held = pane_size(&mut conn, &session);
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(
+        pane_size(&mut conn, &session),
+        held,
+        "the window moved after it had settled: two clients are still fighting over it"
+    );
+    assert_eq!(held, Some(want), "window-size {policy}");
+}
+
+#[test]
+fn window_size_smallest_takes_the_narrowest_and_the_shortest() {
+    window_size_policy_case(
+        "smallest",
+        (
+            FIRST_CLIENT.0.min(SECOND_CLIENT.0),
+            FIRST_CLIENT.1.min(SECOND_CLIENT.1),
+        ),
+    );
+}
+
+#[test]
+fn window_size_largest_takes_the_widest_and_the_tallest() {
+    window_size_policy_case(
+        "largest",
+        (
+            FIRST_CLIENT.0.max(SECOND_CLIENT.0),
+            FIRST_CLIENT.1.max(SECOND_CLIENT.1),
+        ),
+    );
+}
+
+#[test]
+fn window_size_latest_takes_the_client_that_reported_last() {
+    window_size_policy_case("latest", SECOND_CLIENT);
+}
+
+/// **The announce half of `window-size`**: a client that reported NOTHING still re-tiles when
+/// somebody else changes the window.
+///
+/// The policy gates above cannot make this claim, and measuring proved it: removing the scene bump
+/// from the daemon's `client/size` handler leaves all three of them green. The reason is that the
+/// client which REPORTS re-reads the window inline and resizes the panes itself, so the pane sizes —
+/// the only thing those tests observe — are already right without anyone else waking. The client
+/// that did not report is the one left holding a stale window, and what it gets wrong is where it
+/// draws: it lays the arrangement out over a rectangle the session has left.
+///
+/// So this asserts on the FIRST client's SCREEN. It splits at 100 columns, where the divider lands
+/// at `halves(100)`, and then a second client attaches at 80 under `window-size smallest`. The
+/// window becomes 80 wide, and the divider on the first client's own terminal has to MOVE to
+/// `halves(80)` — a column it can only find by learning that the window moved.
+#[test]
+fn a_client_that_reported_nothing_re_tiles_when_the_window_moves() {
+    let config = ConfigHome::new("[options]\nwindow-size = \"smallest\"\n");
+    let (_daemon, sock) = spawn_daemon_with_config(&["cat"], Some(config.as_str()));
+    let mut conn = observe(&sock);
+    let session = boot_session(&mut conn);
+
+    let wide = (100u16, 24u16);
+    let narrow = (80u16, 24u16);
+    let mut first = Tui::attach(&sock, &session);
+    wait_for("the first client to attach", || {
+        match attached(&mut conn, &session) {
+            0 => Err("nobody attached".to_owned()),
+            _ => Ok(()),
+        }
+    });
+    first.resize(wide.0, wide.1);
+    wait_for("the wide client's area to become the window", || {
+        settled(pane_size(&mut conn, &session), &Some(wide))
+    });
+
+    // Split from the FIRST client, so the arrangement it is about to re-tile is one it made.
+    first.type_bytes(PREFIX);
+    first.type_bytes(b"%");
+    let (wide_near, wide_far) = halves(wide.0);
+    wait_for("the split to divide the wide window", || {
+        settled(
+            pane_sizes(&mut conn, &session),
+            &vec![(wide_near, wide.1), (wide_far, wide.1)],
+        )
+    });
+    wait_for("the divider to be drawn at the wide column", || {
+        let column = first.column(wide_near);
+        if column.chars().all(|glyph| glyph == '\u{2502}') {
+            Ok(())
+        } else {
+            Err(format!("column {wide_near} reads {column:?}"))
+        }
+    });
+
+    // A SECOND, narrower client. It reports; the first one does not. Under `smallest` the window
+    // becomes 80 wide, and the first client has to hear about it.
+    let mut second = Tui::attach(&sock, &session);
+    wait_for(
+        "the daemon to count two attached clients",
+        || match attached(&mut conn, &session) {
+            2 => Ok(()),
+            n => Err(format!("{n} attached")),
+        },
+    );
+    second.resize(narrow.0, narrow.1);
+
+    let (narrow_near, narrow_far) = halves(narrow.0);
+    assert_ne!(
+        narrow_near, wide_near,
+        "the two windows must put the divider in DIFFERENT columns or this proves nothing",
+    );
+    wait_for(
+        "the panes to take their share of the narrowed window",
+        || {
+            settled(
+                pane_sizes(&mut conn, &session),
+                &vec![(narrow_near, narrow.1), (narrow_far, narrow.1)],
+            )
+        },
+    );
+    // THE claim: the first client's own screen now draws the divider where the NARROW window puts
+    // it. A client holding a stale window keeps drawing it at `wide_near`.
+    wait_for(
+        "the un-reporting client to redraw its divider at the narrowed column",
+        || {
+            let column = first.column(narrow_near);
+            if column.chars().all(|glyph| glyph == '\u{2502}') {
+                Ok(())
+            } else {
+                Err(format!(
+                    "column {narrow_near} reads {column:?} (wide column {wide_near} reads {:?})",
+                    first.column(wide_near)
+                ))
+            }
+        },
+    );
 }

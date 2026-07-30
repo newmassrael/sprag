@@ -59,6 +59,29 @@ pub const CLIENT_ATTACH_METHOD: &str = "client/attach";
 /// The [`CLIENT_HELLO_METHOD`] params key carrying the opaque client id.
 pub const CLIENT_PARAM: &str = "client";
 
+/// The JSON-RPC method a connection sends to report the cell area its client can give a window —
+/// `params: { "cols": <u16>, "rows": <u16> }` — once when it attaches and again on every window
+/// change. The calling connection must have sent [`CLIENT_HELLO_METHOD`] first.
+///
+/// This is what makes tmux's `window-size` answerable: the size a WINDOW takes is a fact about
+/// every client attached to its session, so the daemon has to hold each client's own area before
+/// it can arbitrate between them. Reported rather than inferred, because only the client knows
+/// what it has — a terminal's winsize, or a GUI window's pixels divided by its font metric — and
+/// the daemon owns neither.
+///
+/// A size is a CLIENT's, not a connection's: a client's several connections describe one surface,
+/// and the last report wins for all of them. It is also not the same fact as
+/// [`CLIENT_ATTACH_METHOD`]'s session, which is why it is its own method — a window change moves
+/// the size without touching the attachment, and re-declaring an attachment to say so would make
+/// every resize look like a `switch-client`.
+pub const CLIENT_SIZE_METHOD: &str = "client/size";
+
+/// The [`CLIENT_SIZE_METHOD`] params key carrying the client's width in cells.
+pub const COLS_PARAM: &str = "cols";
+
+/// The [`CLIENT_SIZE_METHOD`] params key carrying the client's height in cells.
+pub const ROWS_PARAM: &str = "rows";
+
 /// Mint a `sprag-gui` window's client id: `gui-<pid>-<launch nanos>`, process-unique and stable
 /// for that window's whole life, shared by its request and poll connections.
 ///

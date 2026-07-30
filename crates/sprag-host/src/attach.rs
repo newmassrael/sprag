@@ -38,16 +38,37 @@ use std::collections::HashMap;
 /// Not identity (says nothing about who the peer is), only "these connections are one client".
 pub type ClientId = String;
 
-/// One attached client, for the `clients` wire slot (tmux `list-clients`): the opaque client id
-/// and the session it is currently viewing. The daemon's honest analog of tmux's `struct client`
-/// row — sprag has no tty/size/activity to report (a `sprag-gui` window is not a terminal the
-/// daemon owns), so this carries only what the [`AttachmentRegistry`] actually knows.
+/// The cell area one client can give a window, as that client REPORTED it
+/// ([`crate::wire::CLIENT_SIZE_METHOD`]).
+///
+/// Reported rather than measured, because the daemon owns neither surface: a `sprag-tui`'s area is
+/// its terminal's winsize, a `sprag-gui`'s is its window's pixels divided by its font metric, and
+/// the only process that can turn either into cells is the one holding it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct ClientSize {
+    /// How many columns the client has.
+    pub cols: u16,
+    /// How many rows the client has.
+    pub rows: u16,
+}
+
+/// One attached client, for the `clients` wire slot (tmux `list-clients`): the opaque client id,
+/// the session it is currently viewing, and the cell area it reported.
+///
+/// The daemon's honest analog of tmux's `struct client` row. The size used to be absent with a
+/// reason attached — "a `sprag-gui` window is not a terminal the daemon owns" — and that reason
+/// survives, which is why the field is a REPORT rather than a measurement: the daemon still owns no
+/// tty, it is now TOLD. `None` is a real state (a client that attached before reporting), not a
+/// placeholder, so a reader never mistakes an unreported size for a zero-cell one.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct ClientInfo {
     /// The opaque, client-minted id (e.g. a `sprag-gui` window's `gui-{pid}-{nanos}`).
     pub client: ClientId,
     /// The session this client is attached to (tmux `client -> session`).
     pub session: String,
+    /// The cell area it reported, or `None` if it has not reported one yet.
+    #[serde(default)]
+    pub size: Option<ClientSize>,
 }
 
 /// What an [`attach`](AttachmentRegistry::attach) did, so the caller knows whether the per-session
@@ -68,7 +89,38 @@ pub enum AttachOutcome {
     Unchanged,
 }
 
-/// The daemon's `conn -> client -> attached session` map (see the module docs).
+/// What a [`size`](AttachmentRegistry::size) report did, so the caller knows whether the session's
+/// arbitrated window could have moved (and the scene must be bumped so every other client's
+/// long-poll re-reads it).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum SizeOutcome {
+    /// The connection never sent [`crate::wire::CLIENT_HELLO_METHOD`] — a protocol error; the
+    /// caller refuses the request rather than inventing a client.
+    NoClient,
+    /// The client's area is new or different: the arbitration's inputs moved.
+    Changed,
+    /// The client re-reported the size it already had: nothing to announce.
+    Unchanged,
+}
+
+/// One client's reported area together with WHEN it was reported, relative to every other report.
+///
+/// The ordinal exists for one policy: `window-size latest` has to name the most recent client, and
+/// "most recent" is not a property of a `HashMap`. It counts reports and attachments rather than
+/// keystrokes, which is a deliberate narrowing of tmux's "most recently USED client" — a keystroke
+/// arrives on a pane's input path carrying no client identity, so tracking it would mean threading
+/// a client id through the whole input wire to serve one option. Attach-or-resize is what this
+/// daemon can observe honestly, and it is also what a user changing their window means by "latest".
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Reported {
+    /// The area the client last reported.
+    size: ClientSize,
+    /// A monotone stamp: higher is more recent.
+    ordinal: u64,
+}
+
+/// The daemon's `conn -> client -> attached session` map, and each client's reported area (see the
+/// module docs).
 #[derive(Default, Debug)]
 pub struct AttachmentRegistry {
     /// Which client each LIVE connection belongs to (from `client/hello`). A connection is in
@@ -78,6 +130,16 @@ pub struct AttachmentRegistry {
     /// appears only after it attaches; every entry is a present client (removed when its last
     /// connection closes), so the values ARE the live attachments.
     client_session: HashMap<ClientId, String>,
+    /// Each present client's reported area (from `client/size`), stamped with its recency.
+    ///
+    /// Keyed by CLIENT rather than by connection because a client's several connections describe
+    /// one surface. Independent of `client_session`: a client may report a size before it attaches
+    /// (which is the order both frontends use, so the first arbitration already counts it) and an
+    /// attached client may never report one.
+    client_size: HashMap<ClientId, Reported>,
+    /// The stamp the next report takes. Monotone for the life of the daemon — it orders reports,
+    /// it does not count them, so wrapping is not a concern at one per window change.
+    next_ordinal: u64,
 }
 
 impl AttachmentRegistry {
@@ -97,10 +159,81 @@ impl AttachmentRegistry {
         match self.client_session.get(&client) {
             Some(prev) if *prev == session => AttachOutcome::Unchanged,
             _ => {
+                // An attach makes this client the most recent one, which is what `window-size
+                // latest` reads. Only on a real change: an idempotent re-send says nothing new, and
+                // reordering on it would let a client that merely re-declared its session take the
+                // window from one the user had just resized.
+                self.restamp(&client);
                 let previous = self.client_session.insert(client, session);
                 AttachOutcome::Changed { previous }
             }
         }
+    }
+
+    /// Record the cell area the client owning `conn` can give a window
+    /// ([`crate::wire::CLIENT_SIZE_METHOD`]). The connection must have said hello first.
+    ///
+    /// A report of a DIFFERENT area makes this client the most recent one, which is what
+    /// `window-size latest` reads. Re-reporting the same area is [`SizeOutcome::Unchanged`] and
+    /// leaves the order alone: a client that re-sent its own numbers has moved nothing a policy can
+    /// see, and announcing it would wake every other client to re-read a window that did not move.
+    pub fn size(&mut self, conn: ConnId, size: ClientSize) -> SizeOutcome {
+        let Some(client) = self.conn_client.get(&conn) else {
+            return SizeOutcome::NoClient;
+        };
+        let client = client.clone();
+        if self.client_size.get(&client).map(|held| held.size) == Some(size) {
+            return SizeOutcome::Unchanged;
+        }
+        let ordinal = self.take_ordinal();
+        self.client_size.insert(client, Reported { size, ordinal });
+        SizeOutcome::Changed
+    }
+
+    /// The session the client owning `conn` is attached to, if it has one.
+    ///
+    /// The caller's use is announcing: a fact about a CLIENT (its area) changes what a SESSION's
+    /// window is, and only the registry knows which session that is.
+    #[must_use]
+    pub fn session_of(&self, conn: ConnId) -> Option<&str> {
+        let client = self.conn_client.get(&conn)?;
+        self.client_session.get(client).map(String::as_str)
+    }
+
+    /// Move `client` to the front of the recency order, if it has a size to order.
+    ///
+    /// A client with no reported area is left alone: there is nothing for `latest` to name, and
+    /// inventing a stamp for an absent size would make it the "most recent" answer to a question
+    /// it cannot answer.
+    fn restamp(&mut self, client: &ClientId) {
+        if let Some(held) = self.client_size.get(client).copied() {
+            let ordinal = self.take_ordinal();
+            self.client_size
+                .insert(client.clone(), Reported { ordinal, ..held });
+        }
+    }
+
+    /// The next recency stamp.
+    fn take_ordinal(&mut self) -> u64 {
+        self.next_ordinal = self.next_ordinal.saturating_add(1);
+        self.next_ordinal
+    }
+
+    /// Every area reported by a client attached to `session`, OLDEST FIRST — so the last element is
+    /// the most recent report, which is what `window-size latest` names.
+    ///
+    /// Clients that never reported an area are absent rather than present with a zero: a policy
+    /// taking the smallest attached client must not be handed a size nobody has.
+    #[must_use]
+    pub fn sizes(&self, session: &str) -> Vec<ClientSize> {
+        let mut reported: Vec<Reported> = self
+            .client_session
+            .iter()
+            .filter(|(_, viewing)| viewing.as_str() == session)
+            .filter_map(|(client, _)| self.client_size.get(client).copied())
+            .collect();
+        reported.sort_by_key(|held| held.ordinal);
+        reported.into_iter().map(|held| held.size).collect()
     }
 
     /// Release `conn` on close. When it is the LAST live connection of its client, that client is
@@ -114,6 +247,10 @@ impl AttachmentRegistry {
             // The client still has another connection open; it stays present and attached.
             return None;
         }
+        // The area goes with the client. A departed client's size left behind would keep
+        // arbitrating a window nobody is looking at — the smallest attached client would stay
+        // smallest forever after it closed.
+        self.client_size.remove(&client);
         self.client_session.remove(&client)
     }
 
@@ -141,6 +278,7 @@ impl AttachmentRegistry {
             .map(|(client, session)| ClientInfo {
                 client: client.clone(),
                 session: session.clone(),
+                size: self.client_size.get(client).map(|held| held.size),
             })
             .collect();
         clients.sort_by(|a, b| {
@@ -308,6 +446,15 @@ mod tests {
         reg.hello(hello_only, "client-c".to_owned());
         reg.attach(a, "work".to_owned());
         reg.attach(b, "home".to_owned());
+        // Only ONE of them reports an area, so the listing is asserted in both states: a size that
+        // was reported, and the honest absence of one that was not.
+        reg.size(
+            b,
+            ClientSize {
+                cols: 120,
+                rows: 40,
+            },
+        );
         // client-c said hello but never attached: it views nothing, so it is NOT listed.
         let clients = reg.clients();
         assert_eq!(
@@ -316,13 +463,169 @@ mod tests {
                 ClientInfo {
                     client: "client-a".to_owned(),
                     session: "home".to_owned(),
+                    size: Some(ClientSize {
+                        cols: 120,
+                        rows: 40
+                    }),
                 },
                 ClientInfo {
                     client: "client-b".to_owned(),
                     session: "work".to_owned(),
+                    size: None,
                 },
             ],
             "attached clients only, sorted by client id"
+        );
+    }
+
+    #[test]
+    fn a_size_needs_a_hello_and_is_announced_only_when_it_moves() {
+        let mut reg = AttachmentRegistry::default();
+        let c = conn(1);
+        let size = ClientSize { cols: 80, rows: 24 };
+        assert_eq!(
+            reg.size(c, size),
+            SizeOutcome::NoClient,
+            "a connection that never said hello has no client to size"
+        );
+        reg.hello(c, "tui".to_owned());
+        assert_eq!(reg.size(c, size), SizeOutcome::Changed, "the first report");
+        assert_eq!(
+            reg.size(c, size),
+            SizeOutcome::Unchanged,
+            "the same numbers again move no window, so nothing is announced"
+        );
+        assert_eq!(
+            reg.size(c, ClientSize { cols: 80, rows: 25 }),
+            SizeOutcome::Changed,
+            "one row is a different window"
+        );
+    }
+
+    #[test]
+    fn sizes_are_the_attached_clients_own_areas_oldest_first() {
+        let mut reg = AttachmentRegistry::default();
+        let (big, small, elsewhere, silent) = (conn(1), conn(2), conn(3), conn(4));
+        for (c, name) in [
+            (big, "big"),
+            (small, "small"),
+            (elsewhere, "elsewhere"),
+            (silent, "silent"),
+        ] {
+            reg.hello(c, name.to_owned());
+        }
+        reg.attach(big, "work".to_owned());
+        reg.attach(small, "work".to_owned());
+        reg.attach(elsewhere, "home".to_owned());
+        reg.attach(silent, "work".to_owned());
+        reg.size(
+            big,
+            ClientSize {
+                cols: 120,
+                rows: 40,
+            },
+        );
+        reg.size(small, ClientSize { cols: 80, rows: 24 });
+        // A client of ANOTHER session must not reach this session's arbitration, and one that never
+        // reported must not appear as a zero — a `smallest` policy handed 0x0 would collapse every
+        // pane in the session.
+        reg.size(
+            elsewhere,
+            ClientSize {
+                cols: 200,
+                rows: 60,
+            },
+        );
+
+        assert_eq!(
+            reg.sizes("work"),
+            vec![
+                ClientSize {
+                    cols: 120,
+                    rows: 40
+                },
+                ClientSize { cols: 80, rows: 24 },
+            ],
+            "this session's reporters only, in report order"
+        );
+        assert_eq!(reg.sizes("nobody"), Vec::new(), "an unviewed session");
+    }
+
+    #[test]
+    fn the_recency_order_follows_the_latest_report_and_a_real_attach() {
+        let mut reg = AttachmentRegistry::default();
+        let (a, b) = (conn(1), conn(2));
+        reg.hello(a, "a".to_owned());
+        reg.hello(b, "b".to_owned());
+        reg.attach(a, "work".to_owned());
+        reg.attach(b, "work".to_owned());
+        reg.size(
+            a,
+            ClientSize {
+                cols: 100,
+                rows: 30,
+            },
+        );
+        reg.size(b, ClientSize { cols: 80, rows: 24 });
+        assert_eq!(
+            reg.sizes("work").last(),
+            Some(&ClientSize { cols: 80, rows: 24 }),
+            "b reported last"
+        );
+
+        // A window change on `a` makes it the most recent again — this is what a user resizing
+        // their terminal means by "latest".
+        reg.size(a, ClientSize { cols: 90, rows: 30 });
+        assert_eq!(
+            reg.sizes("work").last(),
+            Some(&ClientSize { cols: 90, rows: 30 }),
+            "a moved last"
+        );
+
+        // An IDEMPOTENT re-attach must not reorder: a client re-declaring the session it is already
+        // on has not moved, and letting it take the window would make a harmless re-send steal the
+        // size from the client the user just resized.
+        reg.attach(b, "work".to_owned());
+        assert_eq!(
+            reg.sizes("work").last(),
+            Some(&ClientSize { cols: 90, rows: 30 }),
+            "an unchanged attach leaves the order alone"
+        );
+
+        // A real SWITCH does reorder: the client just arrived at this session.
+        reg.attach(b, "home".to_owned());
+        reg.attach(b, "work".to_owned());
+        assert_eq!(
+            reg.sizes("work").last(),
+            Some(&ClientSize { cols: 80, rows: 24 }),
+            "b attached most recently"
+        );
+    }
+
+    #[test]
+    fn a_departed_clients_area_stops_arbitrating() {
+        let mut reg = AttachmentRegistry::default();
+        let (stays, leaves) = (conn(1), conn(2));
+        reg.hello(stays, "stays".to_owned());
+        reg.hello(leaves, "leaves".to_owned());
+        reg.attach(stays, "work".to_owned());
+        reg.attach(leaves, "work".to_owned());
+        reg.size(
+            stays,
+            ClientSize {
+                cols: 120,
+                rows: 40,
+            },
+        );
+        reg.size(leaves, ClientSize { cols: 80, rows: 24 });
+        reg.disconnect(leaves);
+        assert_eq!(
+            reg.sizes("work"),
+            vec![ClientSize {
+                cols: 120,
+                rows: 40
+            }],
+            "a closed client's area would keep the window small forever"
         );
     }
 

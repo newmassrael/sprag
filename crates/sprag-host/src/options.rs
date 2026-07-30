@@ -32,10 +32,12 @@
 //!
 //! ## No option crosses the WIRE — each process reads the file itself
 //!
-//! Most of these are one CLIENT's: a prefix key, a detach policy and a font size are what one client
+//! Some of these are one CLIENT's: a prefix key, a detach policy and a font size are what one client
 //! does with one keyboard, one attachment and one window, and two clients may legitimately differ. But
 //! [`DEFAULT_COMMAND`] is the DAEMON's, because that is where a pane is born, and an option about what
-//! a pane runs cannot live anywhere else.
+//! a pane runs cannot live anywhere else — and [`WINDOW_SIZE`] is the daemon's for the opposite
+//! reason: it settles what several clients CANNOT be allowed to differ about, so no one of them can
+//! hold it.
 //!
 //! So the invariant is not "every option is a client's" — an earlier version of this doc said that,
 //! and `default-command` is the counter-example that corrected it. The invariant that actually holds,
@@ -53,6 +55,7 @@
 //! re-reads it live — an exposure limit that a user can edit, and that takes effect without the
 //! daemon restarting, is not an exposure limit.
 
+use crate::window::WindowSize;
 use std::collections::BTreeMap;
 
 use crate::keymap::KeySpec;
@@ -193,6 +196,30 @@ pub const GUI_FONT: &str = "gui-font";
 /// must parse to a distinct policy there, or the table offers a value nothing performs.
 pub const DETACH_ON_DESTROY_VALUES: &[&str] = &["on", "off", "no-detached", "next", "previous"];
 
+/// How big a session's window is when several clients of different sizes are attached — tmux's
+/// `window-size`.
+///
+/// A DAEMON-side option like [`DEFAULT_COMMAND`], and for the same kind of reason: the window is a
+/// fact about every client at once, so no one client can decide it. What crosses the wire is the
+/// arbitrated SIZE ([`crate::wire::WINDOW_SIZE_SLOT`]), never this setting.
+///
+/// It arbitrates over the clients that report an area, which today means `sprag-tui` and not
+/// `sprag-gui` — see [`WindowSize`] for the mechanism that gap is waiting on.
+pub const WINDOW_SIZE: &str = "window-size";
+
+/// [`WINDOW_SIZE`]'s values — [`WindowSize`]'s own names, taken from the enum rather than re-spelled
+/// here, so the option's vocabulary and the policy that performs it cannot drift. The same rule
+/// [`PREFIX`] follows by validating through `KeySpec`, and the opposite of
+/// [`DETACH_ON_DESTROY_VALUES`], whose policy lives in a crate this one cannot depend on.
+///
+/// tmux's fourth value, `manual`, is absent — see [`WindowSize`] for what it would need. A user who
+/// types it is answered with this list.
+pub const WINDOW_SIZE_VALUES: &[&str] = &[
+    WindowSize::Largest.name(),
+    WindowSize::Smallest.name(),
+    WindowSize::Latest.name(),
+];
+
 /// Every option sprag has, sorted by name so `show-options` output is stable.
 ///
 /// An option earns its place by having a live CONSUMER — a setting nothing reads is exactly the
@@ -222,6 +249,13 @@ pub const OPTIONS: &[OptionSpec] = &[
         name: PREFIX,
         kind: OptionKind::Key,
         default: "C-b",
+    },
+    OptionSpec {
+        name: WINDOW_SIZE,
+        kind: OptionKind::Choice(WINDOW_SIZE_VALUES),
+        // What the code did before the option existed, so a solo user's panes do not change size
+        // the day this ships.
+        default: WindowSize::DEFAULT.name(),
     },
 ];
 
@@ -537,5 +571,26 @@ mod tests {
         assert_eq!(options.number(PREFIX), None);
         assert_eq!(options.number(DETACH_ON_DESTROY), None);
         assert_eq!(options.number("not-an-option"), None);
+    }
+
+    #[test]
+    fn the_window_size_vocabulary_is_exactly_the_policy_set() {
+        // `WINDOW_SIZE_VALUES` names its three entries by hand (an array literal cannot fold over
+        // `ALL`), so this is the guard that keeps the two from drifting: a policy added to the enum
+        // and not offered here would be unreachable from the file, and a name offered here that no
+        // policy answers to would be a value `set-option` accepts and nothing performs.
+        let from_policy: Vec<&str> = WindowSize::ALL.iter().map(|policy| policy.name()).collect();
+        assert_eq!(WINDOW_SIZE_VALUES, from_policy.as_slice());
+        // And every offered value survives the option's own canonicalisation back into a policy —
+        // the round trip a user's file actually takes.
+        for value in WINDOW_SIZE_VALUES {
+            let stored = OptionKind::Choice(WINDOW_SIZE_VALUES)
+                .canonicalise(value)
+                .expect("an offered value is acceptable");
+            assert!(
+                WindowSize::parse(&stored).is_some(),
+                "{value:?} is offered but does not parse to a policy"
+            );
+        }
     }
 }
