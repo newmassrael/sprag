@@ -36,6 +36,7 @@
 //! `two_observations_of_one_unchanged_pane_publish_once` asserts that rather than trusting it.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -44,6 +45,40 @@ use sprag_terminal::PaneId;
 use sprag_vt::Screen;
 
 use crate::external::lock;
+
+/// Trackers visited by a nearest-deadline scan, process-wide.
+static DEADLINE_VISITS: AtomicU64 = AtomicU64::new(0);
+
+/// What this module's deadline bookkeeping has cost the process so far.
+///
+/// # Why a counter, for a walk that is obviously short
+///
+/// [`AgentRegistry::next_deadline`] answers a question about the WHOLE registry, so it visits every
+/// tracker. That is correct and it is cheap once. It stopped being cheap when it was called from
+/// [`AgentClock::observe`], which the pane list calls once per pane: N looks each walking N entries
+/// is 2N^2 tracker visits per client wake. R255 measured the term rather than arguing about it —
+/// 2.70 to 3.35 ns per remembered pane per look, linear in the entry count against a control that
+/// ruled out cache locality — and R256 removed it by asking the O(1) question instead.
+///
+/// The removal changes NO answer, which is exactly the class R255 recorded as needing a count: an
+/// exact optimisation has no behavioural observable, so nothing would go red the day somebody
+/// restores the tidier-looking whole-registry read. `sprag_grid::work` and `sprag_detect::work` are
+/// the same instrument for the same reason. The number is monotonic and process-wide; read it twice
+/// and take the DELTA.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentWork {
+    /// Trackers visited by a nearest-deadline scan. The scan that remains is the settle waker's own
+    /// park, which asks once per wake rather than once per pane.
+    pub deadline_visits_total: u64,
+}
+
+/// Read the meter. See [`AgentWork`] for why the answer is only meaningful as a delta.
+#[must_use]
+pub fn work() -> AgentWork {
+    AgentWork {
+        deadline_visits_total: DEADLINE_VISITS.load(Ordering::Relaxed),
+    }
+}
 
 /// One pane's published agent state, in the shape the pane list puts on the wire.
 ///
@@ -198,21 +233,30 @@ impl AgentRegistry {
     /// This is the whole of what the settle waker needs to know to sleep: with nothing pending there
     /// is no clock to serve, which is what keeps M3's "a quiet workspace costs nothing" true of the
     /// confirmation and not only of the evaluation.
+    /// **This walks every tracker**, so it belongs to callers asking about the registry as a whole —
+    /// the waker, once per wake. A per-PANE caller wants [`pending_deadline`](Self::pending_deadline)
+    /// instead: the pane list calls one of these per pane, and a whole-registry read there is what
+    /// made the term quadratic (R255 measured it, [`AgentWork`] carries the count that keeps it gone).
     #[must_use]
     pub fn next_deadline(&self) -> Option<Instant> {
+        DEADLINE_VISITS.fetch_add(self.trackers.len() as u64, Ordering::Relaxed);
         self.trackers
             .values()
             .filter_map(Tracker::pending_deadline)
             .min()
     }
 
+    /// When THIS pane's candidate would publish, or `None` when it has none — one hash lookup.
+    #[must_use]
+    pub fn pending_deadline(&self, id: PaneId) -> Option<Instant> {
+        self.trackers.get(&id).and_then(Tracker::pending_deadline)
+    }
+
     /// Whether this pane has a candidate whose window has closed by `now` — the waker's test for
     /// "this one needs asking, the rest do not".
     #[must_use]
     pub fn is_due(&self, id: PaneId, now: Instant) -> bool {
-        self.trackers
-            .get(&id)
-            .and_then(Tracker::pending_deadline)
+        self.pending_deadline(id)
             .is_some_and(|deadline| deadline <= now)
     }
 
@@ -331,12 +375,49 @@ impl AgentClock {
         }
     }
 
-    /// [`AgentRegistry::observe`], signalling the waker if this look CREATED a deadline.
+    /// [`AgentRegistry::observe`], signalling the waker if this look gave the pane a deadline the
+    /// waker may not have planned around.
     ///
-    /// The signal is on the edge — not pending before, pending after — rather than on every look at a
-    /// pending pane. A repainting pane would otherwise notify on every client wake, and each of those
-    /// notifications costs the waker a trip round its loop to conclude that the deadline it already
-    /// knew about has not moved.
+    /// The signal is on the EDGE — the pane's deadline changed and there is now one — rather than on
+    /// every look at a pending pane. A repainting pane would otherwise notify on every client wake,
+    /// and each of those notifications costs the waker a trip round its loop to conclude that the
+    /// deadline it already knew about has not moved.
+    ///
+    /// # Why THIS PANE's deadline is the right question, where the registry's minimum was the
+    /// expensive one
+    ///
+    /// The waker must be woken whenever the registry's nearest deadline becomes EARLIER while it is
+    /// parked, and the first version of this asked exactly that, by reading the minimum over every
+    /// tracker before and after. It is correct and it is quadratic: the pane list calls this once per
+    /// pane, so N looks each walking N entries is 2N^2 tracker visits per client wake. R255 measured
+    /// the term at 2.70 to 3.35 ns per remembered pane per look — invisible at three panes, larger
+    /// than the whole pane list at sixty-four.
+    ///
+    /// The cheap question is sound because of what `observe` can touch: it mutates exactly ONE
+    /// tracker, so every other pane's deadline is the same after as before. The minimum can therefore
+    /// only have moved if THIS pane's deadline moved — which makes "this pane's deadline changed and
+    /// is now `Some`" a strict SUPERSET of "the minimum moved and is now `Some`". Nothing the old
+    /// comparison would have signalled is lost.
+    ///
+    /// What the superset adds is a wake in the case where this pane's new deadline is not the nearest
+    /// one, and that costs the waker a trip round its loop to park again — which its own docs already
+    /// record as harmless.
+    ///
+    /// The trade is measured and it is not free: two hash lookups cost about 20 ns more than two
+    /// walks of a ONE-entry registry, so a workspace below about eight panes pays a bounded constant
+    /// for a term that was otherwise unbounded. There is a version with no lookups at all —
+    /// [`AgentRegistry::observe`] holds the tracker already and could hand its deadline back — and it
+    /// is deliberately not taken, because the registry's docs make a point of knowing nothing about
+    /// the signal. Asking the memory a question about the MEMORY and leaving the clock to decide
+    /// about WAKING is the seam; 20 ns is what it costs, and no instrument in this project can see it
+    /// above the pane list that carries it.
+    ///
+    /// The wrong cheap version is the one that looks even simpler: a `None` ->
+    /// `Some` edge. It would miss a pane whose candidate is ALREADY waiting when the user shortens
+    /// `agent-settle-time`, because [`Tracker::pending_deadline`] is derived from the policy and moves
+    /// EARLIER under the waiting candidate — a deadline the waker is already parked past.
+    /// `a_shortened_window_wakes_a_waker_parked_on_the_old_one` is that case, and it is why the test
+    /// compares deadlines rather than presence.
     pub fn observe(
         &self,
         id: PaneId,
@@ -346,9 +427,9 @@ impl AgentClock {
         window: impl FnOnce() -> Hysteresis,
     ) -> Option<AgentFacts> {
         let mut state = lock(&self.state);
-        let before = state.next_deadline();
+        let before = state.pending_deadline(id);
         let facts = state.observe(id, screen, title, now, window);
-        let after = state.next_deadline();
+        let after = state.pending_deadline(id);
         drop(state);
         if after != before && after.is_some() {
             self.appeared.notify_all();
@@ -646,6 +727,60 @@ mod clock_tests {
             "a due deadline is served now, not after the cap: waited {:?}",
             start.elapsed(),
         );
+    }
+
+    /// THE CASE THAT DECIDES WHAT THE EDGE IS COMPARED ON, and the reason `observe` reads a deadline
+    /// rather than a presence.
+    ///
+    /// A candidate is already waiting when the user shortens `agent-settle-time`. Nothing appears —
+    /// the pane was pending before and is pending after — but the deadline moves EARLIER, because
+    /// `Tracker::pending_deadline` is derived from `since + settle` rather than stored, exactly so
+    /// that a shortened window moves the wait it is already serving. A waker parked on the old
+    /// deadline would otherwise sleep straight through the new one.
+    ///
+    /// This is what a `None` -> `Some` edge would miss, and it is the whole difference between the
+    /// cheap question being sound and being a regression.
+    #[test]
+    fn a_shortened_window_wakes_a_waker_parked_on_the_old_one() {
+        let clock = Arc::new(AgentClock::default());
+        let em = painted(CLAUDE_FOOTER);
+        let title = Some("✳ Claude Code");
+        let now = Instant::now();
+        // A window far longer than this test's patience, so the park below can only return because
+        // it was TOLD the deadline moved.
+        let long = Hysteresis {
+            settle: Duration::from_secs(600),
+        };
+        clock.observe(PaneId(1), em.screen(), title, now, || long);
+        assert!(
+            clock
+                .with(|state| state.pending_deadline(PaneId(1)))
+                .is_some(),
+            "the first look leaves a candidate waiting on the long window",
+        );
+
+        let parked = Arc::clone(&clock);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waker = std::thread::spawn(move || {
+            parked.park_until_due(Duration::from_secs(600));
+            let _ = tx.send(());
+        });
+        std::thread::sleep(Duration::from_millis(50));
+
+        // The user shortens the window. The pane is pending before and pending after, so nothing
+        // APPEARED — and the deadline it is waiting on just moved into the past.
+        let short = Hysteresis {
+            settle: Duration::from_millis(1),
+        };
+        clock.observe(PaneId(1), em.screen(), title, now, || short);
+        assert!(
+            clock.with(|state| state.is_due(PaneId(1), Instant::now())),
+            "the shortened window puts the candidate's deadline behind us",
+        );
+
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("a waker parked on the old deadline was never told the new one is nearer");
+        waker.join().expect("the waker thread");
     }
 
     /// The wake is on the EDGE. A pane already pending, looked at again, must not notify — otherwise a
