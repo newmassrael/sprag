@@ -102,13 +102,13 @@ use std::time::Instant;
 
 use pinion_core::QuitSink;
 use sprag_client::WireHost;
-use sprag_host::HostClient;
 use sprag_host::keymap::{BoundAction, Keymap, PrefixMode, Routed};
+use sprag_host::{HostClient, PaneAgent};
 use sprag_input::{Modifiers, MouseEventKind, MouseInput};
 use sprag_terminal::{PaneId, SplitId};
 use sprag_tui::{
-    Divider, MouseEdges, PaintCache, PanePaint, Rect, Tiling, WireKey, cursor_changes,
-    divider_changes, tile, wire_key, with_ratio,
+    Divider, MouseEdges, PaintCache, PanePaint, Rect, Tiling, WireKey, agent_window_title,
+    cursor_changes, divider_changes, tile, title_change, wire_key, with_ratio,
 };
 use sprag_vt::MouseProtocol;
 use termwiz::caps::{Capabilities, ProbeHints};
@@ -220,10 +220,10 @@ fn run() -> Result<(), Box<dyn Error>> {
     // state: the pointer is over panes, not between them.
     let mut dragging: Option<(SplitId, Divider)> = None;
 
-    // What the surface already holds, so a frame writes only the rows that can differ from it. The
-    // first paint finds it empty and writes everything, which is also what the `Clear::Yes` below
-    // means — see [`PaintCache`].
-    let mut cache = PaintCache::default();
+    // What this client has already put on the terminal, so a frame writes only what differs from it.
+    // The first paint finds it empty and writes everything, which is also what the `Clear::Yes` below
+    // means — see [`Painted`].
+    let mut held = Painted::default();
 
     // The first paint clears, because the surface starts blank but the terminal underneath it does
     // not. Later ones do not need to: the tiling PARTITIONS the screen, so every cell has an author
@@ -235,7 +235,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         screen_area,
         focus,
         Clear::Yes,
-        &mut cache,
+        &mut held,
     )?;
 
     // Where the next key goes. Starts at the pane: the prefix is a departure from the steady
@@ -280,7 +280,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                             screen_area,
                             focus,
                             Clear::No,
-                            &mut cache,
+                            &mut held,
                         )?;
                     }
                     Command::Act(BoundAction::SelectNextPane) => {
@@ -295,7 +295,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                             screen_area,
                             focus,
                             Clear::No,
-                            &mut cache,
+                            &mut held,
                         )?;
                     }
                 }
@@ -345,7 +345,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                         screen_area,
                                         focus,
                                         Clear::Yes,
-                                        &mut cache,
+                                        &mut held,
                                     )?;
                                 }
                             }
@@ -369,7 +369,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                             screen_area,
                             focus,
                             Clear::No,
-                            &mut cache,
+                            &mut held,
                         )?;
                     }
                     // Pane-LOCAL cells: `pane_at` has already subtracted the rectangle's origin.
@@ -402,7 +402,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                     screen_area,
                     focus,
                     Clear::Yes,
-                    &mut cache,
+                    &mut held,
                 )?;
             }
             // `Wake` carries no payload by design — which edge fired is in the flags below.
@@ -429,7 +429,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 screen_area,
                 focus,
                 Clear::No,
-                &mut cache,
+                &mut held,
             )?;
         }
     }
@@ -439,6 +439,22 @@ fn run() -> Result<(), Box<dyn Error>> {
     // `BufferedTerminal`'s inner terminal restores the termios, the cursor and the alternate
     // screen on drop, so the normal exit path needs nothing here beyond letting it drop.
     Ok(())
+}
+
+/// What this client has already put on the terminal — the baseline every frame is a difference
+/// against, and the reason a repaint is cheap.
+///
+/// The two fields are one concept and not a bag: neither is state the client HAS, both are records of
+/// what the terminal was last told, and both exist so that telling it again can be skipped. They are
+/// also written in exactly one place ([`paint`]), which is what makes the records trustworthy — a
+/// second writer would leave the terminal and the record disagreeing with no way to notice.
+#[derive(Default)]
+struct Painted {
+    /// The rows the surface holds, so only the rows whose stamps moved are rebuilt (R246).
+    cache: PaintCache,
+    /// The window title as last SET, so an unchanged digest costs no escape sequence at all — see
+    /// [`title_change`], which owns that decision and is tested on it.
+    title: Option<String>,
 }
 
 /// Whether a repaint should blank the surface first.
@@ -478,19 +494,26 @@ fn paint(
     screen_area: Rect,
     focus: Option<PaneId>,
     clear: Clear,
-    cache: &mut PaintCache,
+    held: &mut Painted,
 ) -> Result<(), Box<dyn Error>> {
+    // The outer terminal's title, refreshed HERE because this is the one function that writes the
+    // terminal at all — so every path that repaints also re-titles, and no future caller can add a
+    // repaint that forgets to. Before the empty-tiling return: a client whose last pane just closed
+    // still owes the title the truth, and "no panes" is not "an agent is still waiting".
+    retitle(screen, host, &mut held.title);
     if tiling.panes.is_empty() {
         // No panes is a legitimate transient state (the last one just closed), not an error: the
         // host will either grow one or go away, and both wake this loop. The last frame stays on
         // screen rather than being blanked, because a user whose shell just exited is owed the
-        // output it exited with.
+        // output it exited with. Flushed all the same, so a title the retitle above queued is not
+        // held back by a frame there is nothing to draw for; with no cell changes it paints nothing.
+        screen.flush()?;
         return Ok(());
     }
     if clear == Clear::Yes {
         screen.add_change(Change::ClearScreen(ColorAttribute::Default));
         // The surface no longer holds anything the cache could let a row skip.
-        cache.forget();
+        held.cache.forget();
     }
     let mut drawn = Vec::with_capacity(tiling.panes.len());
     for held in &tiling.panes {
@@ -516,7 +539,7 @@ fn paint(
         .iter()
         .find(|held| focus == Some(held.pane))
         .map_or_else(Vec::new, |held| cursor_changes(&held.cells, held.area));
-    screen.add_changes(cache.changes(&drawn));
+    screen.add_changes(held.cache.changes(&drawn));
     for divider in &tiling.dividers {
         let Some(area) = divider.area.intersect(screen_area) else {
             continue;
@@ -526,6 +549,35 @@ fn paint(
     screen.add_changes(cursor);
     screen.flush()?;
     Ok(())
+}
+
+/// Set the outer terminal's window title to what the session's agents are doing
+/// ([`agent_window_title`]), and only when that has CHANGED since this client last set one.
+///
+/// The equality skip is not an optimisation, it is the whole reason a title is cheap enough to
+/// refresh from the paint path: `Surface::add_change` records every change it is handed and the flush
+/// renders them, so a title re-added on each frame would put one OSC on the wire per repaint — per
+/// keystroke, on the input path this client's cost model is built around (R246).
+///
+/// The facts are read from the poll-maintained cache ([`HostClient::pane_agent`]), so this makes no
+/// socket call and cannot block a frame. Which pane the user is looking at plays no part: unlike the
+/// GUI — whose OS title follows the FOCUSED pane, because its background panes have tabs and dock
+/// headers of their own to wear a marker on — this client has no other chrome, so its title has to
+/// answer for every pane at once.
+fn retitle(
+    screen: &mut BufferedTerminal<SystemTerminal>,
+    host: &WireHost,
+    held: &mut Option<String>,
+) {
+    let agents: Vec<(PaneId, PaneAgent)> = host
+        .pane_ids()
+        .into_iter()
+        .filter_map(|id| host.pane_agent(id).map(|agent| (id, agent)))
+        .collect();
+    let wanted = agent_window_title(&host.current_session(), &agents);
+    if let Some(change) = title_change(held, wanted) {
+        screen.add_change(change);
+    }
 }
 
 /// Lay the host's arrangement out over `area`, keep `focus` on a pane that is actually shown, and

@@ -42,6 +42,7 @@ use pinion_core::{
     TermCell, TermColor, UnderlineStyle as PinUnderlineStyle,
 };
 use sprag_grid::ProjectionToken;
+use sprag_host::PaneAgent;
 use sprag_terminal::PaneId;
 use sprag_terminal::tiling::{Divider, Rect};
 use termwiz::cell::{Blink, CellAttributes, Intensity, Underline, unicode_column_width};
@@ -221,6 +222,83 @@ pub fn divider_changes(divider: &Divider) -> Vec<Change> {
         changes.push(Change::Text(glyph.repeat(usize::from(divider.area.cols))));
     }
     changes
+}
+
+/// The OUTER terminal's window title for a client attached to `session`, reporting what each pane's
+/// agent is doing (H3 slice 5).
+///
+/// # Why the title is this client's agent surface at all
+///
+/// This is the frontend with NO chrome. It paints panes, the lines between them, and one cursor —
+/// deliberately, and its own paint docs give the reason ("what makes the focused pane identifiable
+/// without a coloured border"). So it has no pane list to hang a marker on, and the two ways to make
+/// one are not equal:
+///
+/// * A STATUS ROW would have to come out of the window, which means this client reporting a smaller
+///   area to the daemon, which re-arbitrates `window-size` and reflows every pane in the session — and
+///   it would do that each time an agent starts or exits. A row is also a permanent piece of chrome
+///   whose contents are a front of their own (tmux's `status-left` / `status-right` / formats).
+/// * The outer terminal's TITLE costs no row, no reflow and no arbitration, and it is where this
+///   project ALREADY puts a pane's state for the other frontend: `sprag-gui` writes the focused pane's
+///   display title — the very string carrying the agent marker — into its OS window title. A client
+///   owning the title of the terminal it was launched in is also what tmux does (`set-titles`).
+///
+/// The title is visible when the window is NOT focused, which for the state this front exists for
+/// ("come back to me") is the more useful half: a user working elsewhere sees the tab change.
+///
+/// # The shape, and what each part of it is for
+///
+/// `sprag: work` with nothing to report, and `sprag: work — claude needs an answer (pane 3), claude
+/// working (pane 1)` with agents. Ordered by [`sprag_client::agent_urgency`] and NOT by pane id,
+/// because a terminal truncates a title from the right: the pane a person has to go to must be in the
+/// part that survives. Ties keep pane-id order, so a title does not reshuffle between two equally
+/// urgent panes on every wake.
+///
+/// The pane ID is named because it is the only handle this client's panes HAVE — it shows no numbers
+/// anywhere — and it is the same id `sprag panes`, `sprag agent` and the MCP tools all take, so a
+/// title tells a user what to type. It trails the phrase rather than leading it for the truncation
+/// reason again: the state is what a glance needs.
+///
+/// A pane the wire says nothing about contributes nothing (D8's additive rule at this surface), and a
+/// workspace of shells therefore produces exactly the baseline — which is what makes the digest's
+/// appearance itself meaningful.
+#[must_use]
+pub fn agent_window_title(session: &str, agents: &[(PaneId, PaneAgent)]) -> String {
+    let baseline = format!("sprag: {session}");
+    if agents.is_empty() {
+        return baseline;
+    }
+    let mut ordered: Vec<&(PaneId, PaneAgent)> = agents.iter().collect();
+    // A STABLE sort, so equal urgencies keep the pane order the caller passed (host order) rather
+    // than swapping under the user between two wakes that say the same thing.
+    ordered.sort_by_key(|(_, agent)| sprag_client::agent_urgency(&agent.state));
+    let digest = ordered
+        .iter()
+        .map(|(id, agent)| format!("{} (pane {id})", sprag_client::agent_phrase(agent)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{baseline} \u{2014} {digest}")
+}
+
+/// The [`Change`] that puts `wanted` on the terminal's title bar — or `None` when the terminal is
+/// already showing it, advancing `held` to whatever was decided.
+///
+/// The skip is not an optimisation, and pulling it out here is what lets a test say so.
+/// [`Surface::add_change`](termwiz::surface::Surface::add_change) RECORDS every change it is handed and
+/// the flush renders them, so a title handed over on every frame is one OSC per repaint — that is once
+/// per keystroke, on the path R246 measured this client's whole cost model on. A title is also the one
+/// thing here a terminal may show somewhere persistent (a tab, a window list), so rewriting it
+/// needlessly is visible work rather than merely wasted work.
+///
+/// `held` is the client's own record of what it last SET, not a read of the terminal: there is no way
+/// to ask a terminal what its title is, so the only honest baseline is what was sent. `None` therefore
+/// means "we have set none yet", which is why the first call always answers `Some`.
+pub fn title_change(held: &mut Option<String>, wanted: String) -> Option<Change> {
+    if held.as_deref() == Some(wanted.as_str()) {
+        return None;
+    }
+    *held = Some(wanted.clone());
+    Some(Change::Title(wanted))
 }
 
 /// What a cell prints and how many columns that print is supposed to occupy, or `None` when the
@@ -641,6 +719,106 @@ mod tests {
     use super::*;
     use pinion_core::{CellAttrs, GridCursor};
     use termwiz::surface::Surface;
+
+    /// One pane's verdict, as the client reads it off the wire.
+    fn agent(state: &str, name: &str) -> PaneAgent {
+        PaneAgent {
+            state: state.to_owned(),
+            name: Some(name.to_owned()),
+            rule: Some("dialog-choice-list".to_owned()),
+            seq: 2,
+        }
+    }
+
+    /// A workspace with no agents produces the BASELINE title and nothing else — the additive rule
+    /// (D8) at this surface, which is what makes the digest's appearance mean something.
+    ///
+    /// REVERT-PROOF: drop the empty-case early return and the title ends in a dangling separator, so
+    /// every shell-only session claims to be reporting something.
+    #[test]
+    fn a_workspace_of_shells_titles_the_terminal_with_the_session_alone() {
+        assert_eq!(agent_window_title("work", &[]), "sprag: work");
+    }
+
+    /// The pane a person has to go to comes FIRST, whatever order the host listed the panes in.
+    ///
+    /// This is the assertion the ordering exists for, and it is about truncation rather than taste: a
+    /// terminal cuts a title off on the right, so a blocked pane behind two working ones is a blocked
+    /// pane the user never sees. D3 names `Blocked` as the state the whole front exists for.
+    ///
+    /// REVERT-PROOF: drop the `sort_by_key` and the blocked pane appears third — the title still
+    /// mentions it, in the half a terminal does not show.
+    #[test]
+    fn the_title_leads_with_the_pane_that_needs_an_answer() {
+        let panes = [
+            (PaneId(4), agent("working", "claude")),
+            (PaneId(7), agent("working", "codex")),
+            (PaneId(9), agent("blocked", "claude")),
+        ];
+        assert_eq!(
+            agent_window_title("work", &panes),
+            "sprag: work \u{2014} claude needs an answer (pane 9), claude working (pane 4), \
+             codex working (pane 7)",
+            "blocked first; the two equal-urgency panes keep the host's order",
+        );
+    }
+
+    /// A title is SET once and then only when it has changed — the equality skip
+    /// ([`title_change`]), asserted rather than asserted-in-a-comment.
+    ///
+    /// The cost it exists to avoid is one OSC per repaint, which on this client is one per keystroke.
+    /// Nothing about the screen would look wrong, which is precisely why it needs a test: a mechanism
+    /// whose absence is invisible is one that gets deleted by the next tidy-up.
+    ///
+    /// REVERT-PROOF: return `Some` unconditionally and the second assertion fails; never advance
+    /// `held` and the same one does (every frame would re-send).
+    #[test]
+    fn the_terminals_title_is_set_once_and_then_only_when_it_moves() {
+        let mut held = None;
+        let first = title_change(&mut held, "sprag: work".to_owned());
+        assert!(
+            matches!(first, Some(Change::Title(ref t)) if t == "sprag: work"),
+            "the first title is always sent — a client cannot ask a terminal what it is showing: \
+             {first:?}",
+        );
+        assert!(
+            title_change(&mut held, "sprag: work".to_owned()).is_none(),
+            "an unchanged digest costs nothing at all",
+        );
+        let moved = title_change(
+            &mut held,
+            "sprag: work \u{2014} claude idle (pane 1)".to_owned(),
+        );
+        assert!(
+            matches!(moved, Some(Change::Title(_))),
+            "and a state that MOVED is sent on the frame that noticed: {moved:?}",
+        );
+        assert_eq!(
+            held.as_deref(),
+            Some("sprag: work \u{2014} claude idle (pane 1)"),
+            "the record follows what was sent, so the next frame compares against it",
+        );
+    }
+
+    /// An `idle` agent outranks a `working` one, and the pane id rides each entry.
+    ///
+    /// The id is the only handle this client's panes have — it paints no numbers anywhere — and it is
+    /// the id `sprag panes`, `sprag agent` and the MCP tools all take, so the title tells a user what
+    /// to type next.
+    ///
+    /// REVERT-PROOF: rank `idle` and `working` the same and the order becomes the input's, which
+    /// leaves an agent that is waiting for somebody behind one that is not.
+    #[test]
+    fn an_agent_at_rest_outranks_one_that_is_still_working() {
+        let panes = [
+            (PaneId(1), agent("working", "claude")),
+            (PaneId(2), agent("idle", "claude")),
+        ];
+        assert_eq!(
+            agent_window_title("main", &panes),
+            "sprag: main \u{2014} claude idle (pane 2), claude working (pane 1)",
+        );
+    }
 
     /// Paint a buffer onto a surface of its own size, as the sole focused pane — the composition
     /// every test here asserts through, so none of them assert on the change LIST when what matters
