@@ -97,13 +97,19 @@
 //!   and the evaluation it declines to run costs 42.6 to 52.0 us. One evaluation is 11.1x to 12.8x
 //!   the whole pane-list request that would carry it, which is the opposite shape from R221's
 //!   projection at half a percent of its own fetch. The gate is not an optimisation on this path.
-//! * **A per-look cost grows LINEARLY with the number of panes the registry remembers**, at 2.70 to
-//!   3.35 ns each. `AgentClock::observe` reads the nearest deadline before and after every look and
-//!   each read walks every tracker, so a pane list over N panes performs 2N^2 tracker visits. The
-//!   middle registry size is a control against the other explanation — a hash lookup losing its
-//!   cache in a bigger map would step rather than climb — and it lands within 3% of the straight
-//!   line through the other two, in every run. At three panes the term is a fifth of a microsecond;
-//!   at sixty-four it is larger than the whole pane list measured here.
+//! * **A per-look cost grew LINEARLY with the number of panes the registry remembers**, at 2.70 to
+//!   3.35 ns each — 3.98x to 4.32x across a 64-fold span. `AgentClock::observe` read the nearest
+//!   deadline before and after every look and each read walked every tracker, so a pane list over N
+//!   panes performed 2N^2 tracker visits. The middle registry size is a control against the other
+//!   explanation — a hash lookup losing its cache in a bigger map would step rather than climb — and
+//!   it landed within 3% of the straight line through the other two, in every run.
+//! * **R256 removed it**, and the same rows measured again over ten runs say 0.85x to 1.16x, with a
+//!   slope of -0.222 to +0.175 ns per remembered pane: flat, straddling zero. A look at a registry of
+//!   sixty-four went from 0.226-0.275 us to 0.079-0.092 us. THE TRADE IS MEASURED AND IS NOT FREE:
+//!   two hash lookups cost about 20 ns more than two walks of a ONE-entry registry, so the row at a
+//!   single remembered pane moved from 0.056-0.065 us to 0.068-0.095 us and the crossover is near
+//!   eight panes. A bounded constant against an unbounded term, and the eight-pane rows are
+//!   indistinguishable before and after, which is what a crossover there predicts.
 //!
 //! ## What is deliberately NOT here
 //!
@@ -218,10 +224,13 @@ const SHELL: &[&str] = &["$ ls -la", "total 0", "$ "];
 /// How many panes each agent registry in the scaling row remembers.
 ///
 /// Three sizes rather than two, and the middle one is the CONTROL. Two points can only say that a
-/// per-look cost grew; they cannot say what grew it, and there are two candidates in `observe` — the
-/// nearest-deadline reads, which walk every tracker by construction, and the hash lookup's locality
-/// in a larger map. A cost that is linear in the entry count is the walk; one that steps and then
-/// flattens is the cache. The span is wide (64x) because a ratio between 1 and 4 would be inside
+/// per-look cost grew; they cannot say what grew it, and when this row was written there were two
+/// candidates in `observe` — the nearest-deadline reads, which walk every tracker by construction,
+/// and the hash lookup's locality in a larger map. A cost linear in the entry count is the walk; one
+/// that steps and then flattens is the cache. R255 measured it linear at 2.70 to 3.35 ns per
+/// remembered pane and R256 removed the walk from that path, so the row is now a REGRESSION check:
+/// the number it reports should be flat, and `sprag-host/tests/agent_cost.rs` is the half that goes
+/// red if it stops being. The span is wide (64x) because a ratio between 1 and 4 would be inside
 /// this box's own noise, and the top end is still an ordinary number of panes for somebody who
 /// leaves a session running.
 const REGISTRY_SIZES: [u64; 3] = [1, 8, 64];
@@ -980,28 +989,28 @@ fn main() -> ExitCode {
         largest / smallest.max(&1),
         slope * 1e9,
     );
-    // The middle size is the control, and it is read rather than assumed: linear says the walk,
-    // because that is the only term in `observe` that is O(entries) by construction.
+    // The middle size was the control that identified the term, and it is kept because it is also
+    // what tells a REAPPEARANCE from noise: a walk climbs with the entry count, and nothing else in
+    // `observe` does.
     if let Some((middle, middle_row)) = scaling.get(1) {
         let predicted = small_row.min.as_secs_f64() + slope * (middle - smallest) as f64;
         println!(
             "  the middle size is the CONTROL: {middle} panes measured {:.3} us against {:.3} us\n  \
-             predicted by a straight line through the other two — {:+.1}%. Linear in the entry\n  \
-             count is the nearest-deadline read, which walks every tracker twice per look; a hash\n  \
-             lookup losing its cache in a bigger map would step rather than climb.",
+             predicted by a straight line through the other two — {:+.1}%. A cost linear in the\n  \
+             entry count is a WALK of the registry; a hash lookup losing its cache in a bigger map\n  \
+             would step rather than climb.",
             micros(middle_row.min),
             predicted * 1e6,
             (middle_row.min.as_secs_f64() / predicted - 1.0) * 100.0,
         );
     }
     println!(
-        "  a pane list over N panes takes N looks and each look walks the registry twice, so the\n  \
-         term is 2N^2 tracker visits. At {PANE_COUNT} panes it is {:.2} us and invisible; at\n  \
-         {largest} it is {:.1} us of a single client wake, against a whole pane list measured at\n  \
-         {:.1} us here.",
-        micros(small_row.min) * PANE_COUNT as f64,
-        micros(large_row.min) * *largest as f64,
-        micros(panes.min),
+        "  R255 measured this row at 3.82x to 4.30x, because `observe` read the registry's nearest\n  \
+         deadline before and after every look and the pane list calls it once per pane — 2N^2\n  \
+         tracker visits per client wake. R256 asks the O(1) question instead (only the observed\n  \
+         pane's tracker can have changed, so only its deadline can have moved the minimum), and\n  \
+         this row exists now to say the walk stays gone. `tests/agent_cost.rs` is the half that\n  \
+         goes red; a ratio climbing back toward 4x here is the same news arriving as a number."
     );
 
     println!(
