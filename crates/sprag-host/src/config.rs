@@ -460,18 +460,7 @@ impl ClientConfig {
     /// Read `path` and build what it declares, keeping the pieces either caller needs: the holder
     /// (always usable — the defaults when the file could not be used) and the reason, if any.
     fn read(path: Option<PathBuf>) -> (Self, Option<ConfigError>) {
-        let (text, unreadable) = match path.as_deref() {
-            Some(path) if path.is_file() => match std::fs::read_to_string(path) {
-                Ok(text) => (Some(text), None),
-                Err(error) => (
-                    None,
-                    Some(ConfigError::Content(ProjectError::Unreadable(
-                        error.to_string(),
-                    ))),
-                ),
-            },
-            _ => (None, None),
-        };
+        let (text, unreadable) = read_text(path.as_deref());
         let built = match &text {
             Some(text) => parse_file(text).and_then(|file| build(&file)),
             None => Ok((Options::default(), Keymap::default())),
@@ -572,6 +561,195 @@ impl ClientConfig {
             }
         }
     }
+}
+
+/// [`CONFIG_FILE`]'s text, or why it could not be had.
+///
+/// A path that is not a file is NOT an error: it is a user who has written no config, which every
+/// reader here answers with the defaults. Shared by the two holders so that answer is one decision
+/// rather than two that can drift — a daemon deciding a missing file is a problem while a client
+/// decides it is not would be a disagreement about the same absent file.
+fn read_text(path: Option<&Path>) -> (Option<String>, Option<ConfigError>) {
+    match path {
+        Some(path) if path.is_file() => match std::fs::read_to_string(path) {
+            Ok(text) => (Some(text), None),
+            Err(error) => (
+                None,
+                Some(ConfigError::Content(ProjectError::Unreadable(
+                    error.to_string(),
+                ))),
+            ),
+        },
+        _ => (None, None),
+    }
+}
+
+/// The DAEMON's half of [`CONFIG_FILE`] — the agent manifests, held so that an edit can be noticed.
+///
+/// # Why this is HELD, when every other reader in this module reads per call
+///
+/// [`options`](fn@options) and [`window_size`] read the file on every call, deliberately: the daemon
+/// is a reader of the user's config rather than a holder of it, so `set-option` takes effect with
+/// nothing to restart and nothing to invalidate. [`window_size`] prices that honestly as one file
+/// read per WINDOW CHANGE — a rare-event justification — and [`agent_settle`] narrows the same read
+/// to the panes actually waiting on a window.
+///
+/// A manifest list cannot be bought on those terms, and [`sprag_detect::built_ins`] says why in its
+/// own docs: a manifest owns compiled [`Regex`](regex::Regex)es, so a reader that rebuilt the list
+/// per evaluation would recompile every pattern of every agent on a path served once per client
+/// wake. Every other setting in this file costs a READ; this one costs a parse and a compile.
+///
+/// # So when is it re-read
+///
+/// From a wake that already exists, which is [`ClientConfig`]'s answer transposed one process over.
+/// A client re-reads on the keystroke whose meaning the table decides. The daemon re-reads on the
+/// agent waker's sweep — a loop that already runs, already walks every session, and already takes
+/// the locks — so this adds no thread, no timer and no wake, which is the property that argument
+/// exists to protect.
+///
+/// The consequence is a LATENCY and is stated as one rather than left to be discovered: an edit
+/// takes effect within one sweep. That is the shape slice 3's discovery contract already has.
+///
+/// # What "changed" means
+///
+/// The file's TEXT, exactly as [`ClientConfig`] compares it and for the reason recorded there — a
+/// `(mtime, len)` stamp misses two writes inside one timestamp tick that leave the length alone.
+///
+/// Text is coarser than MEANING, and here that is not a choice: a [`Manifest`](sprag_detect::Manifest)
+/// holds compiled patterns and cannot be compared for equality at all, so a file rewritten without
+/// changing what it says still replaces the ruleset. What that costs is one re-evaluation per pane —
+/// the cost of a single client poll — against a rewrite that happens when a person saves a file.
+#[derive(Debug)]
+pub struct AgentManifests {
+    /// Where the file would be, or `None` when there is no config directory to hold one — in which
+    /// case there is nothing to re-read and the built-ins are final.
+    path: Option<PathBuf>,
+    /// The exact text [`rules`](Self::rules) was built from; `None` when there was no file at all.
+    text: Option<String>,
+    /// The last list read successfully, KEPT across a failed re-read.
+    rules: sprag_detect::Ruleset,
+    /// Why the list in force is not the one the file declares, if it is not.
+    unusable: Option<ConfigError>,
+}
+
+impl AgentManifests {
+    /// The user's manifests now, remembering the file they came from.
+    ///
+    /// Never fails. A daemon has no screen to report on and detection is not what a session is FOR,
+    /// so a typo in an `[[agent]]` entry must not take a user's terminal away — the rule
+    /// [`default_pane_command`] and [`window_size`] already follow one table over. The reason is kept
+    /// on [`unusable`](Self::unusable) for a surface that can show it, and logged once here so a user
+    /// whose manifests are silently the built-ins has somewhere to find out why.
+    #[must_use]
+    pub fn load() -> Self {
+        Self::at(config_path().as_deref())
+    }
+
+    /// The manifests declared by `path`, watched at `path`.
+    ///
+    /// Aimed at a caller's own file rather than at the user's, for [`ClientConfig::at`]'s reason: the
+    /// only other way in is `$XDG_CONFIG_HOME`, which is process-global, so a test would otherwise
+    /// have to mutate the environment its siblings are reading.
+    #[must_use]
+    pub fn at(path: Option<&Path>) -> Self {
+        let (text, unreadable) = read_text(path);
+        let (rules, unusable) = match declared_in(text.as_deref()) {
+            Ok(manifests) => (sprag_detect::Ruleset::new(manifests), unreadable),
+            Err(error) => (sprag_detect::Ruleset::default(), Some(error)),
+        };
+        if let Some(error) = &unusable {
+            report_manifests(error);
+        }
+        Self {
+            path: path.map(Path::to_path_buf),
+            text,
+            rules,
+            unusable,
+        }
+    }
+
+    /// The manifests in force.
+    #[must_use]
+    pub fn rules(&self) -> &sprag_detect::Ruleset {
+        &self.rules
+    }
+
+    /// Why the list in force is NOT the one the file declares, if it is not — `None` when the file
+    /// (or its absence) is being honoured.
+    #[must_use]
+    pub fn unusable(&self) -> Option<&ConfigError> {
+        self.unusable.as_ref()
+    }
+
+    /// Re-read the file if its content has changed, and say whether the ruleset was REPLACED.
+    ///
+    /// `false` is the steady state, and it is what the caller acts on: a replaced ruleset carries a
+    /// new [`Ruleset::revision`](sprag_detect::Ruleset::revision), which is a quiescence-key input,
+    /// so every remembered pane owes an evaluation. Answering `true` when nothing moved would cost
+    /// the workspace an evaluation per pane for no reason; answering `false` when it did would leave
+    /// every quiet pane holding a verdict the user has just edited away.
+    ///
+    /// A file that has become UNREADABLE answers `false` and changes nothing: this cannot tell
+    /// whether the content moved, so the honest report is that it did not look. A file that changed
+    /// and cannot be USED keeps the previous list and records the reason — the rule
+    /// [`ClientConfig::refresh`] states, and the same once-only reporting, because the remembered
+    /// text advances either way.
+    pub fn refresh(&mut self) -> bool {
+        let Some(path) = self.path.as_deref() else {
+            return false;
+        };
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => Some(text),
+            // DELETED is a user saying "I have no manifests of my own", which is the state the
+            // built-ins answer.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(_) => return false,
+        };
+        if text == self.text {
+            return false;
+        }
+        self.text = text;
+        match declared_in(self.text.as_deref()) {
+            Ok(manifests) => {
+                self.unusable = None;
+                self.rules = sprag_detect::Ruleset::new(manifests);
+                true
+            }
+            Err(error) => {
+                report_manifests(&error);
+                self.unusable = Some(error);
+                false
+            }
+        }
+    }
+}
+
+/// The manifests `text` declares, layered over the built-ins — or the built-ins alone when there is
+/// no file.
+///
+/// One reader for the first read and for every re-read, so a daemon that has been running cannot
+/// come to a different conclusion about a file than one that just started.
+fn declared_in(text: Option<&str>) -> Result<Vec<sprag_detect::Manifest>, ConfigError> {
+    match text {
+        Some(text) => parse_file(text).and_then(|file| {
+            declared_manifests(&file.agent)
+                .map_err(|why| ConfigError::Content(ProjectError::Invalid(why)))
+        }),
+        None => Ok(sprag_detect::built_ins()),
+    }
+}
+
+/// Say why the manifests in force are not the user's.
+///
+/// Once per edit that broke them, which falls out of the caller rather than being counted: the
+/// remembered text advances on a failed re-read, so an unchanged broken file never reaches here
+/// twice.
+fn report_manifests(error: &ConfigError) {
+    tracing::warn!(
+        target: "sprag_host::config",
+        %error,
+        "using the built-in agent manifests",
+    );
 }
 
 /// One declared option value as the text [`OptionKind::canonicalise`](crate::options::OptionKind)
@@ -1069,6 +1247,15 @@ struct UserConfigFile {
     /// `[[unbind]]` entries, removing a default.
     #[serde(default)]
     unbind: Vec<DeclaredUnbind>,
+    /// `[[agent]]` entries, layered over [`sprag_detect::built_ins`] in file order.
+    ///
+    /// Read by the DAEMON rather than by a client, which is why nothing in [`build`] touches it: the
+    /// keymap and the options are what a client needs to interpret a keystroke, and the manifests are
+    /// what the detector needs to read a screen. One file, two readers, and each one validates only
+    /// what it is going to use — so a broken `[[bind]]` cannot stop the daemon from detecting agents,
+    /// and a broken `[[agent]]` cannot stop a client from starting.
+    #[serde(default)]
+    agent: Vec<DeclaredAgent>,
 }
 
 /// One `[[bind]]` entry — tmux's `bind-key [-n] [-r] key command`.
@@ -1124,6 +1311,340 @@ impl DeclaredUnbind {
     }
 }
 
+/// One `[[agent]]` entry — an agent manifest the user declares, layered over
+/// [`sprag_detect::built_ins`].
+///
+/// # The layering, and why its grain is a RULE
+///
+/// H2's D5 settled the shape for the keymap — the defaults are a table and the file layers over it,
+/// so a user corrects one binding without redeclaring the rest — and H3's D6 adopts it unchanged.
+/// Where the two differ is the unit: a keymap's is a key, a manifest's is a rule. So an entry naming
+/// a BUILT-IN agent layers into it rule by rule, matched on [`sprag_detect::Rule::id`], which R252
+/// already made a stable name for exactly this use. A rule the built-in does not have is appended;
+/// one it does have is replaced IN PLACE, keeping the position the built-in gave it — the treatment
+/// [`bind_key`] gives a rebound key, and for the same reason: a corrected rule should stay where its
+/// reader expects to find it.
+///
+/// An entry naming an agent no built-in declares is a NEW manifest, and it goes at the FRONT of the
+/// list. Order is load-bearing there and only there: [`sprag_detect::detect`] offers a pane to
+/// manifests until one CLAIMS it, so the front is what "the user's file wins" means for
+/// identification.
+///
+/// # Why there is no way to remove a built-in AGENT, derived rather than omitted
+///
+/// The obvious fourth verb — drop `codex` entirely — has nothing left to do once the three above
+/// exist, and that is a property of the code rather than a judgement about how much anyone wants it:
+///
+/// * A user's own manifest is consulted FIRST, so a built-in can never pre-empt a claim the user's
+///   file makes on the same pane.
+/// * A pane a manifest claims but no rule matches publishes NOTHING — `AgentRegistry::observe`
+///   carries the absence through [`sprag_detect::AgentState::wire_str`] returning `None` — so
+///   `disable`-ing an agent's rules already removes it from the wire completely, while keeping the
+///   honest "I know what this is and not what it is doing" that a rule author debugging needs.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeclaredAgent {
+    /// The agent's name. A built-in's name layers into that built-in; any other name declares a new
+    /// agent. Carried out on the verdict, so it is what a person reads in a pane list.
+    name: String,
+    /// `[[agent.fingerprint]]` — what identifies a pane as this agent's. ANY one is enough, which is
+    /// why identification widens by APPENDING: a user adding a fingerprint for their wrapper script
+    /// should not have to restate the ones that already work.
+    #[serde(default)]
+    fingerprint: Vec<DeclaredFingerprint>,
+    /// `[[agent.rule]]` — what the pane is DOING, once it is known to be this agent's.
+    #[serde(default)]
+    rule: Vec<DeclaredRule>,
+    /// Rule ids to drop from the built-in — `[[unbind]]`'s counterpart, one grain down.
+    ///
+    /// A rule that fires wrongly is usually CORRECTED by redeclaring its id, and that is the common
+    /// case. This is for the one correction that cannot be written as a better pattern: the rule
+    /// should not exist on this box at all.
+    #[serde(default)]
+    disable: Vec<String>,
+}
+
+/// One `[[agent.fingerprint]]` — a conjunction of matches; any one fingerprint claims the pane.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeclaredFingerprint {
+    /// Every match that must hold.
+    ///
+    /// An ARRAY rather than a table keyed by region, and the built-ins are what settle it: `codex`'s
+    /// one fingerprint is a composer line in the bottom 3 rows AND a footer shape in the bottom 1, so
+    /// a region-keyed table would have nowhere to put the second — the same reason the keymap's
+    /// bindings are an array of tables rather than a map.
+    all: Vec<DeclaredMatch>,
+}
+
+/// One `[[agent.rule]]` — a state, its evidence, and how strongly it outranks a competing rule.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeclaredRule {
+    /// The stable name this rule is corrected, disabled and EXPLAINED by. It rides the verdict (D7),
+    /// so it is what answers "why does this pane say working".
+    id: String,
+    /// `working`, `blocked` or `idle` — see [`declared_state`].
+    state: String,
+    /// Higher wins; ties break by declaration order. Defaulted to zero, which is BELOW every
+    /// built-in rule, so a rule meant to outrank one has to say so in the file rather than by
+    /// accident of where it was written.
+    #[serde(default)]
+    priority: i32,
+    /// Every match that must hold — a rule is made specific by conjunction rather than by one
+    /// unreadable regex.
+    all: Vec<DeclaredMatch>,
+}
+
+/// One match — which text to read, and the ONE test to judge it by.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeclaredMatch {
+    /// `title`, or `bottom:N` — see [`declared_region`].
+    region: String,
+    /// The region's text begins with this.
+    #[serde(default)]
+    starts_with: Option<String>,
+    /// The region's text contains this anywhere.
+    #[serde(default)]
+    contains: Option<String>,
+    /// The region's text matches this pattern. Compiled HERE, so a pattern that cannot compile is
+    /// reported against the file rather than never matching for the life of the daemon.
+    #[serde(default)]
+    regex: Option<String>,
+}
+
+/// The `region = …` spelling: the OSC title, or the last N non-empty rows.
+///
+/// A single spec string rather than a region name beside a separate line count, because the count
+/// belongs to exactly one of the regions: two fields would make `region = "title", lines = 4` a
+/// state the reader has to refuse, and the spelling that cannot express it needs no refusal. This is
+/// `KeySpec::parse`'s shape — a spec parsed at the edge, refusing an unknown one by NAMING what
+/// exists.
+fn declared_region(spec: &str) -> Result<sprag_detect::Region, String> {
+    if spec == "title" {
+        return Ok(sprag_detect::Region::Title);
+    }
+    if let Some(count) = spec.strip_prefix("bottom:") {
+        let lines: u16 = count
+            .parse()
+            .map_err(|_| format!("region \"{spec}\": {count} is not a number of rows"))?;
+        if lines == 0 {
+            return Err(format!(
+                "region \"{spec}\": a window of no rows reads no text, so nothing could match it",
+            ));
+        }
+        return Ok(sprag_detect::Region::BottomLines(lines));
+    }
+    Err(format!(
+        "region \"{spec}\": write \"title\" for the pane's title, or \"bottom:N\" for its last N \
+         non-empty rows",
+    ))
+}
+
+/// The `state = …` spelling, read out of the wire vocabulary itself.
+///
+/// The list comes from [`sprag_detect::AgentState::wire_str`] rather than being spelled again here,
+/// so the file accepts exactly the states the wire can carry and the two cannot drift. `unknown`
+/// falls out as unwritable without a second rule saying so — it has no wire token, because it IS the
+/// absence of one — and that is the right answer: a rule concluding "no answer" would out-rank the
+/// rules that have one while saying nothing, and a manifest that matches nothing already reaches
+/// `Unknown` on its own.
+fn declared_state(spec: &str) -> Result<sprag_detect::AgentState, String> {
+    const STATES: [sprag_detect::AgentState; 3] = [
+        sprag_detect::AgentState::Working,
+        sprag_detect::AgentState::Blocked,
+        sprag_detect::AgentState::Idle,
+    ];
+    STATES
+        .into_iter()
+        .find(|state| state.wire_str() == Some(spec))
+        .ok_or_else(|| {
+            let known: Vec<&str> = STATES.into_iter().filter_map(|s| s.wire_str()).collect();
+            format!("state \"{spec}\": write one of {}", known.join(", "))
+        })
+}
+
+impl DeclaredMatch {
+    /// This entry as a matcher, with its pattern compiled.
+    fn build(&self) -> Result<sprag_detect::Match, String> {
+        Ok(sprag_detect::Match::new(
+            declared_region(&self.region)?,
+            self.test()?,
+        ))
+    }
+
+    /// The one test this entry names.
+    ///
+    /// Written as a total match over the three fields rather than as a count followed by an unwrap,
+    /// so "exactly one" is the shape of the code and not a fact asserted about it — and so the two
+    /// ways to get it wrong get different messages.
+    fn test(&self) -> Result<sprag_detect::Test, String> {
+        match (&self.starts_with, &self.contains, &self.regex) {
+            (Some(prefix), None, None) => Ok(sprag_detect::Test::StartsWith(prefix.clone())),
+            (None, Some(needle), None) => Ok(sprag_detect::Test::Contains(needle.clone())),
+            (None, None, Some(pattern)) => regex::Regex::new(pattern)
+                .map(sprag_detect::Test::Regex)
+                .map_err(|error| format!("regex {pattern:?} does not compile: {error}")),
+            (None, None, None) => Err(format!(
+                "the match on region \"{}\" names no test — give it one of starts_with, contains \
+                 or regex",
+                self.region,
+            )),
+            _ => Err(format!(
+                "the match on region \"{}\" names more than one test — a match reads its region \
+                 exactly one way",
+                self.region,
+            )),
+        }
+    }
+}
+
+/// The matches of one conjunction, refusing an empty one.
+///
+/// An empty conjunction HOLDS — `all` over nothing is true — so an empty fingerprint would claim
+/// every pane in the workspace and an empty rule would fire on every screen. `Fingerprint`'s own
+/// docs call that the manifest author's error rather than something the type can prevent; at the
+/// FILE edge it can be prevented, which is the same argument that compiles a pattern here rather
+/// than letting it fail silently forever.
+fn declared_matches(
+    all: &[DeclaredMatch],
+    whose: &str,
+) -> Result<Vec<sprag_detect::Match>, String> {
+    if all.is_empty() {
+        return Err(format!(
+            "{whose}: `all` is empty, and a conjunction of no conditions holds for every pane",
+        ));
+    }
+    all.iter().map(DeclaredMatch::build).collect()
+}
+
+impl DeclaredFingerprint {
+    /// This entry as a fingerprint.
+    fn build(&self, agent: &str) -> Result<sprag_detect::Fingerprint, String> {
+        Ok(sprag_detect::Fingerprint::all(declared_matches(
+            &self.all,
+            &format!("agent \"{agent}\": a fingerprint"),
+        )?))
+    }
+}
+
+impl DeclaredRule {
+    /// This entry as a rule.
+    fn build(&self, agent: &str) -> Result<sprag_detect::Rule, String> {
+        if self.id.is_empty() {
+            return Err(format!(
+                "agent \"{agent}\": a rule needs an id — it is what a verdict names when somebody \
+                 asks why the pane reads the way it does",
+            ));
+        }
+        Ok(sprag_detect::Rule {
+            id: self.id.clone(),
+            state: declared_state(&self.state)?,
+            all: declared_matches(
+                &self.all,
+                &format!("agent \"{agent}\": rule \"{}\"", self.id),
+            )?,
+            priority: self.priority,
+        })
+    }
+}
+
+impl DeclaredAgent {
+    /// Apply this entry to `manifest` — disable, then widen, then correct.
+    ///
+    /// The order is the file's meaning rather than an implementation detail: `disable` is about the
+    /// rules that were ALREADY there, so it runs before this entry's own rules are laid down, and a
+    /// file that both disables and declares one id is refused rather than resolved by whichever ran
+    /// first. That refusal is `build`'s treatment of a key that is both bound and unbound, one table
+    /// over — a file that says two things about one rule has not said what it wants.
+    fn layer_onto(&self, manifest: &mut sprag_detect::Manifest) -> Result<(), String> {
+        for id in &self.disable {
+            if self.rule.iter().any(|rule| &rule.id == id) {
+                return Err(format!(
+                    "agent \"{}\": rule \"{id}\" is both declared and disabled",
+                    self.name,
+                ));
+            }
+            let known: Vec<&str> = manifest.rules.iter().map(|rule| rule.id.as_str()).collect();
+            if !known.contains(&id.as_str()) {
+                return Err(format!(
+                    "agent \"{}\": there is no rule \"{id}\" to disable (it has {})",
+                    self.name,
+                    if known.is_empty() {
+                        "none".to_owned()
+                    } else {
+                        known.join(", ")
+                    },
+                ));
+            }
+            manifest.rules.retain(|rule| &rule.id != id);
+        }
+        for fingerprint in &self.fingerprint {
+            manifest.any.push(fingerprint.build(&self.name)?);
+        }
+        for declared in &self.rule {
+            let rule = declared.build(&self.name)?;
+            match manifest
+                .rules
+                .iter_mut()
+                .find(|existing| existing.id == rule.id)
+            {
+                // In place, so a corrected rule keeps the position the built-in gave it — and so a
+                // second entry for one agent corrects the first rather than shadowing it.
+                Some(existing) => *existing = rule,
+                None => manifest.rules.push(rule),
+            }
+        }
+        Ok(())
+    }
+}
+
+/// [`sprag_detect::built_ins`] with the file's `[[agent]]` entries layered over them.
+///
+/// The result is what every pane in the daemon is evaluated against, in the order a pane is offered
+/// to them: the user's own agents first, then the built-ins in their own order.
+///
+/// A half-applied layering never escapes: an entry mutates the manifest it is laying into and can
+/// still fail afterwards, and the caller discards the whole result — which is [`keymap`]'s rule
+/// ("reported WHOLE"), holding here for the same reason. A list assembled from the half of a file
+/// that parsed would be rules the user never wrote.
+fn declared_manifests(declared: &[DeclaredAgent]) -> Result<Vec<sprag_detect::Manifest>, String> {
+    let mut manifests = sprag_detect::built_ins();
+    // How many entries at the FRONT are the user's own, so several new agents keep file order
+    // instead of each one displacing the last.
+    let mut user_agents = 0usize;
+    for agent in declared {
+        if agent.name.is_empty() {
+            return Err("an [[agent]] needs a name — it is what a pane list shows".to_owned());
+        }
+        let index = match manifests.iter().position(|m| m.name == agent.name) {
+            Some(index) => index,
+            None => {
+                if agent.fingerprint.is_empty() {
+                    return Err(format!(
+                        "agent \"{}\": a new agent needs at least one [[agent.fingerprint]], or \
+                         no pane could ever be recognised as it",
+                        agent.name,
+                    ));
+                }
+                manifests.insert(
+                    user_agents,
+                    sprag_detect::Manifest {
+                        name: agent.name.clone(),
+                        any: Vec::new(),
+                        rules: Vec::new(),
+                    },
+                );
+                user_agents += 1;
+                user_agents - 1
+            }
+        };
+        agent.layer_onto(&mut manifests[index])?;
+    }
+    Ok(manifests)
+}
+
 /// A declared `table = …`, or [`KeyTable::Prefix`] when the entry is silent.
 ///
 /// Silence means the prefix table because that is where every one of sprag's defaults lives and what
@@ -1172,6 +1693,10 @@ pub(crate) fn with_config<T>(text: Option<&str>, body: impl FnOnce() -> T) -> T 
 #[cfg(test)]
 mod tests {
     use sprag_input::Modifiers;
+    // `Screen` is reached through the port trait, which the agent tests one module over also import
+    // for the same reason: a manifest is judged against a screen, and the screen comes from an
+    // emulator that has been painted.
+    use sprag_vt::VtPort as _;
 
     use super::*;
 
@@ -2217,5 +2742,533 @@ mod tests {
                 assert_eq!(label, shell_label, "and the pane gets a shell");
             },
         );
+    }
+
+    // ---- H3 slice 4: the `[[agent]]` manifests ------------------------------------------------
+
+    /// The manifests a file declares, or why it could not be used — the reader every test below
+    /// goes through, so none of them can pass against a path the daemon does not take.
+    fn manifests_from(text: &str) -> Result<Vec<sprag_detect::Manifest>, ConfigError> {
+        declared_in(Some(text))
+    }
+
+    fn why(text: &str) -> String {
+        manifests_from(text)
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| panic!("expected a refusal, got a usable list"))
+    }
+
+    fn named<'a>(
+        manifests: &'a [sprag_detect::Manifest],
+        name: &str,
+    ) -> &'a sprag_detect::Manifest {
+        manifests
+            .iter()
+            .find(|manifest| manifest.name == name)
+            .unwrap_or_else(|| panic!("no manifest named {name}"))
+    }
+
+    fn rule_ids(manifest: &sprag_detect::Manifest) -> Vec<&str> {
+        manifest.rules.iter().map(|rule| rule.id.as_str()).collect()
+    }
+
+    fn painted(lines: &[&str]) -> sprag_vt::Emulator {
+        let mut em = sprag_vt::Emulator::new(80, 24);
+        em.advance(lines.join("\r\n").as_bytes());
+        em
+    }
+
+    /// THE SLICE'S OWN GATE, in the words the design uses: *a user manifest correcting a built-in
+    /// rule*.
+    ///
+    /// It asserts both halves of "correcting", because only one of them is about layering. The rule
+    /// named is REPLACED — the file's pattern decides, not the built-in's — and every other rule of
+    /// that agent is still there, which is what "without redeclaring the rest" means and what a
+    /// wholesale replacement would quietly lose.
+    #[test]
+    fn a_user_manifest_corrects_one_built_in_rule_and_keeps_the_rest() {
+        let manifests = manifests_from(
+            r#"
+            [[agent]]
+            name = "claude"
+
+            [[agent.rule]]
+            id = "idle-glyph"
+            state = "idle"
+            priority = 10
+            all = [ { region = "title", starts_with = "@" } ]
+            "#,
+        )
+        .expect("a corrected rule is usable");
+
+        let claude = named(&manifests, "claude");
+        assert_eq!(
+            rule_ids(claude),
+            ["dialog-choice-list", "spinner-glyph", "idle-glyph"],
+            "the built-in's other rules survive, and the corrected one keeps its position",
+        );
+
+        // The correction is the file's, not the built-in's: `✳` no longer reads as idle and `@`
+        // does. Asserted through `detect` rather than by reading the rule back, because what the
+        // user changed is what the pane SAYS.
+        let em = painted(&["❯", "  ⏸ manual mode on · ? for shortcuts"]);
+        assert_eq!(
+            sprag_detect::detect(em.screen(), Some("✳ Claude Code"), &manifests).state,
+            sprag_detect::AgentState::Unknown,
+            "the built-in's own pattern is gone",
+        );
+        assert_eq!(
+            sprag_detect::detect(em.screen(), Some("@ Claude Code"), &manifests).state,
+            sprag_detect::AgentState::Idle,
+            "and the file's pattern is what decides",
+        );
+    }
+
+    /// The format has to be able to say what the built-ins say, and `codex` is the one that proves
+    /// it: its single fingerprint is a composer line in the bottom 3 rows AND a footer shape in the
+    /// bottom 1 — two matches on the SAME region with different windows, which is exactly what a
+    /// region-keyed table could not have held.
+    ///
+    /// Asserted behaviourally rather than structurally. A field-by-field comparison would prove the
+    /// declaration and the built-in have the same SHAPE; running both against the same screen proves
+    /// they mean the same thing, which is the property a user redeclaring an agent needs.
+    #[test]
+    fn the_format_expresses_the_conjunction_the_built_in_codex_needs() {
+        let declared = manifests_from(
+            r#"
+            [[agent]]
+            name = "mycodex"
+
+            [[agent.fingerprint]]
+            all = [
+              { region = "bottom:3", regex = '(?m)^›\s' },
+              { region = "bottom:1", regex = '(?m)^\s*\S+\s+\S+\s+·\s+/' },
+            ]
+
+            [[agent.rule]]
+            id = "no-working-signal"
+            state = "idle"
+            priority = 10
+            all = [ { region = "title", regex = '\S' } ]
+            "#,
+        )
+        .expect("the conjunction is expressible");
+
+        let em = painted(&["› write me a test", "gpt-5.6 high · /home/coin/sprag"]);
+        let mine = sprag_detect::detect(em.screen(), Some("sprag"), &declared);
+        assert_eq!(mine.agent.as_deref(), Some("mycodex"));
+        assert_eq!(mine.state, sprag_detect::AgentState::Idle);
+        assert_eq!(
+            mine.state,
+            sprag_detect::detect(em.screen(), Some("sprag"), &sprag_detect::built_ins()).state,
+            "the declared agent reads the screen exactly as the built-in does",
+        );
+
+        // The conjunction is doing the work: drop the footer row and NEITHER claims the pane.
+        let composer_only = painted(&["› write me a test"]);
+        assert_eq!(
+            sprag_detect::detect(composer_only.screen(), Some("sprag"), &declared).agent,
+            None,
+            "one half of the conjunction is not the fingerprint",
+        );
+    }
+
+    /// A new agent goes in FRONT of the built-ins, because `detect` stops at the first manifest that
+    /// claims the pane — so the front is the only position at which a user's file can win.
+    #[test]
+    fn a_new_agent_is_offered_before_the_built_ins() {
+        let manifests = manifests_from(
+            r#"
+            [[agent]]
+            name = "wrapper"
+
+            [[agent.fingerprint]]
+            all = [ { region = "bottom:4", contains = "? for shortcuts" } ]
+
+            [[agent.rule]]
+            id = "wrapper-idle"
+            state = "idle"
+            all = [ { region = "title", starts_with = "✳" } ]
+            "#,
+        )
+        .expect("a new agent is usable");
+
+        assert_eq!(
+            manifests
+                .iter()
+                .map(|m| m.name.as_str())
+                .collect::<Vec<_>>(),
+            ["wrapper", "claude", "codex"],
+        );
+
+        // The fingerprint deliberately collides with `claude`'s footer one: the user's file wins.
+        let em = painted(&["❯", "  ⏸ manual mode on · ? for shortcuts"]);
+        assert_eq!(
+            sprag_detect::detect(em.screen(), Some("✳ Claude Code"), &manifests)
+                .agent
+                .as_deref(),
+            Some("wrapper"),
+        );
+    }
+
+    /// Several new agents keep FILE order at the front rather than each one displacing the last.
+    #[test]
+    fn several_new_agents_keep_the_order_the_file_wrote_them_in() {
+        let manifests = manifests_from(
+            r#"
+            [[agent]]
+            name = "first"
+            [[agent.fingerprint]]
+            all = [ { region = "title", starts_with = "1" } ]
+
+            [[agent]]
+            name = "second"
+            [[agent.fingerprint]]
+            all = [ { region = "title", starts_with = "2" } ]
+            "#,
+        )
+        .expect("two new agents are usable");
+        assert_eq!(
+            manifests
+                .iter()
+                .map(|m| m.name.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second", "claude", "codex"],
+        );
+    }
+
+    /// `disable` is `[[unbind]]`'s counterpart one grain down: it removes a built-in rule outright,
+    /// for the correction that cannot be written as a better pattern.
+    #[test]
+    fn a_disabled_rule_is_gone_and_the_agent_still_reads_its_other_states() {
+        let manifests = manifests_from(
+            r#"
+            [[agent]]
+            name = "claude"
+            disable = ["idle-glyph"]
+            "#,
+        )
+        .expect("a disabled rule is usable");
+
+        let claude = named(&manifests, "claude");
+        assert_eq!(rule_ids(claude), ["dialog-choice-list", "spinner-glyph"]);
+
+        let em = painted(&["❯", "  ⏸ manual mode on · ? for shortcuts"]);
+        let verdict = sprag_detect::detect(em.screen(), Some("✳ Claude Code"), &manifests);
+        assert_eq!(
+            verdict.state,
+            sprag_detect::AgentState::Unknown,
+            "the rule that read this screen is gone",
+        );
+        assert_eq!(
+            verdict.agent.as_deref(),
+            Some("claude"),
+            "and the pane is still known to be claude's — 'I know what this is and not what it is \
+             doing' is the fact `disable` leaves standing",
+        );
+    }
+
+    /// A rule id that is both declared and disabled is REFUSED rather than resolved by whichever
+    /// happens to run first — `build`'s treatment of a key that is both bound and unbound, one
+    /// table over. A file that says two things about one rule has not said what it wants.
+    #[test]
+    fn a_rule_both_declared_and_disabled_is_refused() {
+        let why = why(r#"
+            [[agent]]
+            name = "claude"
+            disable = ["idle-glyph"]
+
+            [[agent.rule]]
+            id = "idle-glyph"
+            state = "idle"
+            all = [ { region = "title", starts_with = "@" } ]
+            "#);
+        assert!(why.contains("idle-glyph"), "{why}");
+        assert!(why.contains("declared and disabled"), "{why}");
+    }
+
+    /// A `disable` naming a rule that is not there is a TYPO, and a typo that silently did nothing
+    /// would leave the author believing their config was accepted — `deny_unknown_fields`'s own
+    /// argument, applied to a value rather than to a field name.
+    #[test]
+    fn disabling_a_rule_that_does_not_exist_is_refused_and_says_which_exist() {
+        let why = why(r#"
+            [[agent]]
+            name = "claude"
+            disable = ["idle-glyf"]
+            "#);
+        assert!(why.contains("idle-glyf"), "{why}");
+        assert!(
+            why.contains("idle-glyph"),
+            "the message lists the ids that do exist: {why}",
+        );
+    }
+
+    /// An empty conjunction HOLDS, so an empty fingerprint would claim every pane in the workspace
+    /// and an empty rule would fire on every screen. `Fingerprint`'s docs call that the author's
+    /// error rather than something the TYPE can prevent; the file edge can prevent it, and does.
+    #[test]
+    fn an_empty_conjunction_is_refused_rather_than_holding_for_every_pane() {
+        let fingerprint = why(r#"
+            [[agent]]
+            name = "greedy"
+            [[agent.fingerprint]]
+            all = []
+            "#);
+        assert!(fingerprint.contains("every pane"), "{fingerprint}");
+
+        let rule = why(r#"
+            [[agent]]
+            name = "claude"
+            [[agent.rule]]
+            id = "always"
+            state = "working"
+            all = []
+            "#);
+        assert!(rule.contains("every pane"), "{rule}");
+    }
+
+    /// A new agent with no fingerprint could never claim a pane, so the file has declared something
+    /// that cannot do anything. Refused, rather than accepted and inert.
+    #[test]
+    fn a_new_agent_with_no_fingerprint_is_refused() {
+        let why = why(r#"
+            [[agent]]
+            name = "ghost"
+            [[agent.rule]]
+            id = "ghost-idle"
+            state = "idle"
+            all = [ { region = "title", starts_with = "x" } ]
+            "#);
+        assert!(why.contains("fingerprint"), "{why}");
+    }
+
+    /// An entry that only CORRECTS a built-in needs no fingerprint of its own — the check above is
+    /// about a new agent, and this is the other side of it.
+    #[test]
+    fn correcting_a_built_in_needs_no_fingerprint() {
+        let manifests = manifests_from(
+            r#"
+            [[agent]]
+            name = "codex"
+            [[agent.rule]]
+            id = "spinner-glyph"
+            state = "working"
+            priority = 20
+            all = [ { region = "title", starts_with = "*" } ]
+            "#,
+        )
+        .expect("correcting a built-in is usable");
+        assert_eq!(named(&manifests, "codex").any.len(), 1, "unchanged");
+    }
+
+    /// Each of the four ways to write a match wrongly, refused with the file's own words.
+    #[test]
+    fn a_match_names_exactly_one_region_and_exactly_one_test() {
+        let agent =
+            |m: &str| format!("[[agent]]\nname = \"x\"\n[[agent.fingerprint]]\nall = [ {m} ]\n");
+
+        let none = why(&agent(r#"{ region = "title" }"#));
+        assert!(none.contains("names no test"), "{none}");
+
+        let both = why(&agent(
+            r#"{ region = "title", contains = "a", starts_with = "b" }"#,
+        ));
+        assert!(both.contains("more than one test"), "{both}");
+
+        let region = why(&agent(r#"{ region = "middle", contains = "a" }"#));
+        assert!(region.contains("bottom:N"), "{region}");
+
+        let rows = why(&agent(r#"{ region = "bottom:0", contains = "a" }"#));
+        assert!(rows.contains("no rows"), "{rows}");
+    }
+
+    /// A pattern that cannot compile is refused HERE, with the file named — not left to never match
+    /// on every pane for the life of the daemon. The same choice `Test`'s docs describe for the
+    /// compiled variant, and the same one the keymap makes for a key spec.
+    #[test]
+    fn a_pattern_that_does_not_compile_is_refused_with_the_pattern_quoted() {
+        let why = why(r#"
+            [[agent]]
+            name = "x"
+            [[agent.fingerprint]]
+            all = [ { region = "title", regex = "([unclosed" } ]
+            "#);
+        assert!(why.contains("does not compile"), "{why}");
+        assert!(why.contains("([unclosed"), "{why}");
+    }
+
+    /// The states the file accepts are the states the WIRE carries, read out of the vocabulary
+    /// itself — so `unknown` is unwritable without a second rule saying so, because it has no wire
+    /// token at all.
+    #[test]
+    fn a_rule_may_conclude_only_a_state_the_wire_can_carry() {
+        let why = why(r#"
+            [[agent]]
+            name = "claude"
+            [[agent.rule]]
+            id = "nothing"
+            state = "unknown"
+            all = [ { region = "title", contains = "x" } ]
+            "#);
+        assert!(why.contains("working"), "{why}");
+        assert!(why.contains("blocked"), "{why}");
+        assert!(why.contains("idle"), "{why}");
+    }
+
+    /// A typo'd table is refused rather than silently doing nothing — the reason the file has
+    /// `deny_unknown_fields` at all, asserted for the new tables rather than assumed of them.
+    #[test]
+    fn a_typo_in_an_agent_table_is_refused() {
+        let why = why(r#"
+            [[agent]]
+            name = "claude"
+            [[agent.rules]]
+            id = "x"
+            state = "idle"
+            all = [ { region = "title", contains = "x" } ]
+            "#);
+        assert!(why.contains("rules"), "{why}");
+    }
+
+    /// A file with no `[[agent]]` at all is the built-ins, unchanged — the same three-way silence
+    /// `keymap` treats as "the user has not said otherwise".
+    #[test]
+    fn a_file_that_declares_no_agent_is_the_built_ins() {
+        let manifests = manifests_from("[options]\nprefix = \"C-a\"\n").expect("usable");
+        assert_eq!(
+            manifests
+                .iter()
+                .map(|m| m.name.as_str())
+                .collect::<Vec<_>>(),
+            sprag_detect::built_ins()
+                .iter()
+                .map(|m| m.name.as_str())
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    // ---- H3 slice 4: the holder ---------------------------------------------------------------
+
+    /// A file the caller names, so the holder's behaviour is exercised without mutating the
+    /// process-global environment its sibling tests are reading — `ClientConfig::at`'s reason.
+    fn manifest_file(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "sprag-manifests-{}-{name}.toml",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    /// The holder's whole contract: an edit REPLACES the ruleset, and anything that is not an edit
+    /// does not. Both directions matter and for different reasons — a replacement that did not
+    /// happen leaves every quiet pane holding a verdict the user has edited away, and one that
+    /// happens anyway costs the workspace an evaluation per pane on every sweep forever.
+    #[test]
+    fn an_edit_replaces_the_ruleset_and_an_unchanged_file_does_not() {
+        let path = manifest_file("edit");
+        std::fs::write(
+            &path,
+            "[[agent]]\nname = \"claude\"\ndisable = [\"idle-glyph\"]\n",
+        )
+        .expect("write");
+
+        let mut held = AgentManifests::at(Some(&path));
+        let first = held.rules().revision();
+        assert_eq!(rule_ids(named(held.rules().manifests(), "claude")).len(), 2);
+
+        assert!(!held.refresh(), "an unchanged file is not an edit");
+        assert_eq!(held.rules().revision(), first, "and nothing is replaced");
+
+        std::fs::write(
+            &path,
+            "[[agent]]\nname = \"claude\"\ndisable = [\"spinner-glyph\"]\n",
+        )
+        .expect("rewrite");
+        assert!(held.refresh(), "an edit is an edit");
+        assert_ne!(
+            held.rules().revision(),
+            first,
+            "a replaced ruleset is a new one, which is what makes every pane owe an evaluation",
+        );
+        assert_eq!(
+            rule_ids(named(held.rules().manifests(), "claude")),
+            ["dialog-choice-list", "idle-glyph"],
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// An edit that BREAKS the file keeps the manifests that were working and says why.
+    ///
+    /// `ClientConfig::refresh`'s rule, and the daemon needs it more: there is no screen to print on,
+    /// and swapping in the built-ins would silently take a user's own agents away because they
+    /// typo'd a line in an editor.
+    #[test]
+    fn a_broken_edit_keeps_the_manifests_that_worked() {
+        let path = manifest_file("broken");
+        std::fs::write(
+            &path,
+            "[[agent]]\nname = \"claude\"\ndisable = [\"idle-glyph\"]\n",
+        )
+        .expect("write");
+        let mut held = AgentManifests::at(Some(&path));
+        let working = held.rules().revision();
+        assert!(held.unusable().is_none());
+
+        std::fs::write(
+            &path,
+            "[[agent]]\nname = \"claude\"\ndisable = [\"nope\"]\n",
+        )
+        .expect("rewrite");
+        assert!(!held.refresh(), "a broken edit replaces nothing");
+        assert_eq!(held.rules().revision(), working, "the working list is kept");
+        assert_eq!(
+            rule_ids(named(held.rules().manifests(), "claude")),
+            ["dialog-choice-list", "spinner-glyph"],
+        );
+        let reported = held.unusable().expect("the reason is kept for a surface");
+        assert!(reported.to_string().contains("nope"), "{reported}");
+
+        // And the fix is noticed, so one bad save is not permanent.
+        std::fs::write(
+            &path,
+            "[[agent]]\nname = \"claude\"\ndisable = [\"spinner-glyph\"]\n",
+        )
+        .expect("fix");
+        assert!(held.refresh(), "the fix is an edit too");
+        assert!(held.unusable().is_none(), "and the reason is cleared");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A file that never existed is the built-ins, and DELETING one is a user saying they have no
+    /// manifests of their own — the same answer, reached from the other side.
+    #[test]
+    fn a_deleted_file_falls_back_to_the_built_ins() {
+        let path = manifest_file("deleted");
+        std::fs::write(
+            &path,
+            "[[agent]]\nname = \"claude\"\ndisable = [\"idle-glyph\"]\n",
+        )
+        .expect("write");
+        let mut held = AgentManifests::at(Some(&path));
+        assert_eq!(rule_ids(named(held.rules().manifests(), "claude")).len(), 2);
+
+        std::fs::remove_file(&path).expect("delete");
+        assert!(held.refresh(), "the deletion is an edit");
+        assert_eq!(
+            rule_ids(named(held.rules().manifests(), "claude")).len(),
+            3,
+            "the built-ins are back",
+        );
+    }
+
+    /// With no config directory at all there is nothing to watch, and the built-ins are final.
+    #[test]
+    fn no_config_path_is_the_built_ins_and_no_reads() {
+        let mut held = AgentManifests::at(None);
+        assert_eq!(held.rules().len(), sprag_detect::built_ins().len());
+        assert!(!held.refresh());
     }
 }

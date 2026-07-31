@@ -594,6 +594,93 @@ pub fn built_ins() -> Vec<Manifest> {
     vec![claude(), codex()]
 }
 
+/// The manifest list an evaluation runs against, carrying the identity of that list.
+///
+/// # Why the list and its identity cannot be passed apart
+///
+/// [`Tracker`]'s quiescence gate is EXACT, and the proof has a premise: the rules are a pure
+/// function of the screen and the title, so a pane where neither has moved cannot reach a different
+/// verdict. That holds for exactly as long as the rules themselves do not move — and slice 4 makes
+/// them move, because a user edits `config.toml` and the list is replaced underneath a workspace of
+/// settled panes. The rules are a THIRD input, and the gate was watching two.
+///
+/// Left unwatched, the stale verdict survives for as long as the pane stays quiet. That is not a
+/// corner: a quiet pane is exactly where a wrong verdict is visible and stuck, so it is the pane a
+/// user is editing a manifest to correct. The edit would appear to do nothing while every individual
+/// verdict still looked right.
+///
+/// So the identity belongs BESIDE the list rather than in a parameter a caller can forget to pass —
+/// `AgentClock`'s argument one crate up, where the condvar lives in one type with the mutex so no
+/// caller can create a candidate and neglect to signal.
+#[derive(Debug, Clone)]
+pub struct Ruleset {
+    /// The manifests, in the order they are offered to a pane. First claim wins ([`detect`]).
+    manifests: Vec<Manifest>,
+    /// Which list this is.
+    ///
+    /// Compared for EQUALITY and never for order: the gate asks whether these are the same rules
+    /// that produced the last verdict, not which of two is newer. Drawn from a process-wide counter
+    /// rather than incremented per ruleset, so two lists built independently are never mistaken for
+    /// one — a positional number would make `Ruleset::new(a)` and `Ruleset::new(b)` interchangeable
+    /// to the gate, which is the bug this field exists to prevent wearing the costume of the fix.
+    revision: u64,
+}
+
+impl Default for Ruleset {
+    /// The manifests this crate ships.
+    fn default() -> Self {
+        Self::new(built_ins())
+    }
+}
+
+impl Ruleset {
+    /// A ruleset over `manifests`, with an identity nothing else shares.
+    #[must_use]
+    pub fn new(manifests: Vec<Manifest>) -> Self {
+        Self {
+            manifests,
+            revision: next_revision(),
+        }
+    }
+
+    /// The manifests, for the matcher.
+    #[must_use]
+    pub fn manifests(&self) -> &[Manifest] {
+        &self.manifests
+    }
+
+    /// This list's identity: equal for two readings of the same list, different for any two lists.
+    ///
+    /// Compared for EQUALITY and never for order — a reader asks whether these are the rules that
+    /// produced its last answer, not which of two is newer.
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// How many manifests are offered to a pane.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.manifests.len()
+    }
+
+    /// Whether no manifest is offered at all — every pane reads [`AgentState::Unknown`].
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.manifests.is_empty()
+    }
+}
+
+/// The next ruleset identity.
+///
+/// Process-wide and monotonic, so an identity is never reused within a run. `Relaxed` because
+/// nothing is ordered against this: the only operation on the value is equality against a copy a
+/// tracker took, and the tracker took it while holding the registry's lock.
+fn next_revision() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

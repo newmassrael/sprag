@@ -2156,6 +2156,108 @@ fn an_idle_agent_pane_settles_with_no_client_activity_and_no_output() {
     );
 }
 
+/// H3 slice 4 against a REAL `sprag-term`: a manifest edited on DISK reaches a pane that is not
+/// moving, with no client activity and no pane output.
+///
+/// # Why this cannot be a unit test, which is the lesson slice 3 paid for
+///
+/// Every part of the reload is unit-tested one layer down: the file format, the layering, the holder
+/// that notices an edit, the ruleset revision in the quiescence key, and `AgentRegistry::stale`. That
+/// is exactly the state slice 3's waker was in when the shipped daemon published nothing at all — the
+/// COMPOSITION is what fails, and only the binary runs it. The rule R253 wrote down is the one this
+/// test exists to honour: when a subsystem's whole purpose is to act without being asked, no test that
+/// asks can confirm it.
+///
+/// The composition here has three joints, and a break in any of them leaves every individual piece
+/// green: the waker must re-read the file, it must hand the new list to the registry, and its `ask`
+/// must have a reason to look at a pane that is neither due nor unknown. A pane that has painted once
+/// and gone quiet has nothing else coming.
+///
+/// # What makes the observation about the DAEMON
+///
+/// The same separation the idle test needed. A pane-list read drives an evaluation, so "edit the file,
+/// then read the pane list" would pass with no waker reload at all — the reading client would do the
+/// work. So this parks on `scene/waitFor` BEFORE the edit and requires the wake: only the daemon can
+/// advance this session's revision here, because the boot pane is `cat` with nothing left to say.
+#[test]
+fn an_edited_manifest_reaches_a_pane_that_is_not_moving() {
+    let dir = std::env::temp_dir().join(format!("sprag-wire-agentcfg-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sprag")).expect("create the temp config dir");
+    let config = dir.join("sprag").join(sprag_host::config::CONFIG_FILE);
+    // A file that says nothing about agents: the built-ins are in force, so the pane below settles
+    // exactly as it does with no config at all. Written rather than left absent so that the EDIT is a
+    // change of content and not a creation — the harder case, and the one a user actually performs.
+    std::fs::write(&config, "[options]\n").expect("write the initial config");
+
+    let (_host, sock) = spawn_host_with(
+        &[
+            "sh",
+            "-c",
+            "printf '\\033]2;\\342\\234\\263 Claude Code\\007\\033[2J\\033[H\\342\\235\\257\\n  \
+             \\342\\217\\270 manual mode on \\302\\267 ? for shortcuts\\n'; cat",
+        ],
+        &[("XDG_CONFIG_HOME", &dir.display().to_string())],
+    );
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned host socket");
+
+    // Settled under the BUILT-IN rules first, so what the edit changes is an answer this daemon has
+    // already given rather than one it never reached.
+    let settled = wait_until(Duration::from_secs(20), || {
+        pane_entry(&mut conn, 0)["agent"]["state"] == "idle"
+    });
+    assert!(
+        settled,
+        "the agent-shaped pane never settled under the built-ins"
+    );
+
+    // Park BEFORE the edit. From here the pane emits nothing and this test invokes no action, so the
+    // only thing that can move the revision is the daemon acting on a file it re-read by itself.
+    let since = read_revision(&mut conn);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let parked_sock = sock.clone();
+    let waiter = std::thread::spawn(move || {
+        let mut parked =
+            HostConn::connect(&parked_sock, Duration::from_secs(5)).expect("second connection");
+        let woken = parked.call("scene/waitFor", json!({ "since": since }));
+        let _ = tx.send(woken.map(|v: Value| v["revision"].as_u64().unwrap_or(0)));
+    });
+
+    // The user corrects a built-in rule: the same screen now reads as WORKING. `working` is evidence
+    // a rule SAW, so it publishes on sight — the edit's arrival is not itself delayed by a settle
+    // window, and the timeout below is about the sweep alone.
+    std::fs::write(
+        &config,
+        "[options]\n\n[[agent]]\nname = \"claude\"\n\n[[agent.rule]]\nid = \"idle-glyph\"\n\
+         state = \"working\"\npriority = 10\nall = [ { region = \"title\", starts_with = \"✳\" } ]\n",
+    )
+    .expect("edit the config");
+
+    let woken = rx.recv_timeout(Duration::from_secs(30)).expect(
+        "the daemon never advanced the revision after the edit — nothing re-read the file, or \
+         nothing looked at a pane that was neither due nor unknown",
+    );
+    let revision = woken.expect("waitFor answered an error");
+    assert!(
+        revision > since,
+        "the wake carried a newer revision: {revision} vs {since}",
+    );
+    waiter.join().expect("the waiter thread");
+
+    let entry = pane_entry(&mut conn, 0);
+    assert_eq!(
+        entry["agent"]["state"], "working",
+        "the corrected rule is what the pane now reads as: {entry}",
+    );
+    assert_eq!(
+        entry["agent"]["rule"], "idle-glyph",
+        "and the verdict still names the rule that fired, which is what `explain` reads: {entry}",
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// One pane's entry from the `/sprag_mux` pane list.
 fn pane_entry(conn: &mut HostConn, id: u64) -> Value {
     conn.call(

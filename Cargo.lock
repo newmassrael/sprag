@@ -3672,6 +3672,7 @@ dependencies = [
  "libc",
  "pinion-core",
  "pinion-rpc",
+ "regex",
  "serde",
  "serde_json",
  "signal-hook",

@@ -10,9 +10,13 @@
 //!   [`Hysteresis`], and M2 is why the design calls it a correctness requirement of the input
 //!   rather than a later polish.
 //! * **A quiet pane costs nothing, exactly.** An idle agent pane moved ZERO row generations over
-//!   eight seconds (M3). Because the rules are a pure function of the screen and the title, a pane
-//!   where neither has moved cannot reach a different verdict — so skipping the evaluation is a
-//!   skip with a proof rather than a heuristic that trades accuracy for cost.
+//!   eight seconds (M3). Because the rules are a pure function of the screen, the title and the
+//!   RULE LIST, a pane where none of the three has moved cannot reach a different verdict — so
+//!   skipping the evaluation is a skip with a proof rather than a heuristic that trades accuracy for
+//!   cost. The third input is the one slice 4 added and it is named here rather than left implied:
+//!   the list is replaced when a user edits `config.toml`, and a gate watching only the first two
+//!   would hold a stale verdict on every quiet pane for as long as it stayed quiet. See
+//!   [`Ruleset`].
 //! * **A modal hides WHO the pane belongs to.** A `codex` dialog covers the composer line and the
 //!   footer its fingerprint is made of, so the pane goes unclaimed in the one state this front
 //!   exists to report (R251). Nothing on that screen says `codex`, so no better fingerprint fixes
@@ -25,7 +29,7 @@ use std::time::{Duration, Instant};
 
 use sprag_vt::Screen;
 
-use crate::{Manifest, Verdict};
+use crate::{Manifest, Ruleset, Verdict};
 
 /// The default settle window.
 ///
@@ -98,22 +102,30 @@ struct Seen {
     /// [`detect`](crate::detect) reads it — so two titles this cannot tell apart are two titles the
     /// rules cannot tell apart either.
     title: String,
+    /// WHICH rules produced the last verdict ([`Ruleset::revision`](crate::Ruleset::revision)).
+    ///
+    /// The other three fields are what the rules READ; this one is the rules themselves. It belongs
+    /// in the same key for the same reason: the skip claims a re-evaluation would reach the same
+    /// answer, and a re-evaluation against a list the user has since edited would not.
+    rules: u64,
 }
 
 impl Seen {
-    fn of(screen: &Screen, title: &str) -> Self {
+    fn of(screen: &Screen, title: &str, rules: u64) -> Self {
         let mut seen = Self {
             generations: Vec::new(),
             cols: 0,
             title: String::new(),
+            rules,
         };
-        seen.refresh(screen, title);
+        seen.refresh(screen, title, rules);
         seen
     }
 
-    /// Whether nothing the rules can read has moved.
-    fn unchanged(&self, screen: &Screen, title: &str) -> bool {
-        self.cols == screen.cols()
+    /// Whether nothing the rules can read has moved, and the rules are still the same rules.
+    fn unchanged(&self, screen: &Screen, title: &str, rules: u64) -> bool {
+        self.rules == rules
+            && self.cols == screen.cols()
             && self.title == title
             && self.generations.len() == screen.rows() as usize
             && (0..screen.rows())
@@ -121,7 +133,8 @@ impl Seen {
     }
 
     /// Take the reading again, reusing the buffers so a steady-state pane allocates nothing.
-    fn refresh(&mut self, screen: &Screen, title: &str) {
+    fn refresh(&mut self, screen: &Screen, title: &str, rules: u64) {
+        self.rules = rules;
         self.generations.clear();
         self.generations
             .extend((0..screen.rows()).map(|row| screen.row_generation(row).unwrap_or_default()));
@@ -253,30 +266,45 @@ impl Tracker {
     ///   has moved is the CLOCK, which is a third input while a transition is pending, and asking
     ///   it is what keeps a pane that went quiet mid-transition from freezing in its previous state
     ///   forever.
+    /// * **The RULES have moved** — a user edited `config.toml`, so the list is not the list that
+    ///   produced the published verdict. The screen and the title are unchanged and the answer can
+    ///   still differ, which is why [`Ruleset`] carries its identity into the key rather than
+    ///   leaving the caller to remember to invalidate anything.
     pub fn observe(
         &mut self,
         screen: &Screen,
         title: Option<&str>,
-        manifests: &[Manifest],
+        rules: &Ruleset,
         now: Instant,
     ) -> &Verdict {
         let title = title.unwrap_or_default();
+        let revision = rules.revision();
         if self
             .seen
             .as_ref()
-            .is_some_and(|seen| seen.unchanged(screen, title))
+            .is_some_and(|seen| seen.unchanged(screen, title, revision))
         {
             self.settle(now);
             return &self.published;
         }
         if let Some(seen) = &mut self.seen {
-            seen.refresh(screen, title);
+            seen.refresh(screen, title, revision);
         } else {
-            self.seen = Some(Seen::of(screen, title));
+            self.seen = Some(Seen::of(screen, title, revision));
         }
-        let candidate = self.evaluate(screen, title, manifests);
+        let candidate = self.evaluate(screen, title, rules.manifests());
         self.consider(candidate, now);
         &self.published
+    }
+
+    /// Which rules produced the published verdict, or `None` for a pane never observed.
+    ///
+    /// The waker's test for "this pane's answer was reached under a list that has since been
+    /// replaced". A pane can be neither due nor unknown and still owe an evaluation, which is the
+    /// third reason to ask about a pane and the one slice 4 added.
+    #[must_use]
+    pub fn evaluated_under(&self) -> Option<u64> {
+        self.seen.as_ref().map(|seen| seen.rules)
     }
 
     /// The verdict this frame argues for, with the memory consulted where the screen has gone
@@ -417,14 +445,14 @@ mod tests {
     /// has to be absent exactly when nothing is waiting and exact when something is.
     #[test]
     fn the_pending_deadline_is_the_instant_a_waiting_candidate_would_publish() {
-        let manifests = [claude()];
+        let rules = Ruleset::new(vec![claude()]);
         let mut tracker = Tracker::default();
         let mut em = painted(CLAUDE_FOOTER);
         let base = Instant::now();
 
         // A dialog publishes on sight, so nothing is left waiting.
         repaint(&mut em, DIALOG);
-        tracker.observe(em.screen(), Some("✳ Claude Code"), &manifests, base);
+        tracker.observe(em.screen(), Some("✳ Claude Code"), &rules, base);
         assert_eq!(tracker.verdict().state, AgentState::Blocked);
         assert_eq!(
             tracker.pending_deadline(),
@@ -434,7 +462,7 @@ mod tests {
 
         // The dialog goes away: a return to rest is an ABSENCE, so it waits — and says until when.
         repaint(&mut em, CLAUDE_FOOTER);
-        tracker.observe(em.screen(), Some("✳ Claude Code"), &manifests, base);
+        tracker.observe(em.screen(), Some("✳ Claude Code"), &rules, base);
         assert_eq!(
             tracker.pending_deadline(),
             Some(base + DEFAULT_SETTLE),
@@ -450,7 +478,7 @@ mod tests {
         tracker.observe(
             em.screen(),
             Some("✳ Claude Code"),
-            &manifests,
+            &rules,
             base + DEFAULT_SETTLE,
         );
         assert_eq!(tracker.verdict().state, AgentState::Idle);
@@ -462,15 +490,15 @@ mod tests {
     /// waiting, rather than starting over because the user typed `set-option`.
     #[test]
     fn a_shortened_window_publishes_a_candidate_that_has_already_held_long_enough() {
-        let manifests = [claude()];
+        let rules = Ruleset::new(vec![claude()]);
         let mut tracker = Tracker::default();
         let mut em = painted(CLAUDE_FOOTER);
         let base = Instant::now();
 
         repaint(&mut em, DIALOG);
-        tracker.observe(em.screen(), Some("✳ Claude Code"), &manifests, base);
+        tracker.observe(em.screen(), Some("✳ Claude Code"), &rules, base);
         repaint(&mut em, CLAUDE_FOOTER);
-        tracker.observe(em.screen(), Some("✳ Claude Code"), &manifests, base);
+        tracker.observe(em.screen(), Some("✳ Claude Code"), &rules, base);
         assert_eq!(tracker.pending_deadline(), Some(base + DEFAULT_SETTLE));
 
         let shorter = Duration::from_millis(250);
@@ -485,7 +513,7 @@ mod tests {
         tracker.observe(
             em.screen(),
             Some("✳ Claude Code"),
-            &manifests,
+            &rules,
             base + DEFAULT_SETTLE / 2,
         );
         assert_eq!(
@@ -506,7 +534,7 @@ mod tests {
     /// The gate H3's design named for this slice: one animation is one publication.
     #[test]
     fn a_spinner_animation_publishes_one_working_not_six() {
-        let manifests = [claude()];
+        let rules = Ruleset::new(vec![claude()]);
         let mut tracker = Tracker::default();
         let mut em = painted(CLAUDE_FOOTER);
         let base = Instant::now();
@@ -514,7 +542,7 @@ mod tests {
         for (tick, frame) in ["⠂", "⠐", "⠂", "⠐", "⠂", "⠐"].iter().enumerate() {
             let title = format!("{frame} Run sleep command for 25 seconds");
             let now = base + MEASURED_SPINNER_PERIOD * u32::try_from(tick).expect("six of them");
-            let verdict = tracker.observe(em.screen(), Some(&title), &manifests, now);
+            let verdict = tracker.observe(em.screen(), Some(&title), &rules, now);
             assert_eq!(verdict.state, AgentState::Working, "frame {frame}");
         }
         assert_eq!(
@@ -529,18 +557,28 @@ mod tests {
         let verdict = tracker.observe(
             em.screen(),
             Some("⠂ Run sleep command for 25 seconds"),
-            &manifests,
+            &rules,
             base + Duration::from_secs(6),
         );
         assert_eq!(verdict.state, AgentState::Blocked);
         assert_eq!(tracker.seq(), 2);
     }
 
-    /// The quiescence gate is a SKIP, and the way to see a skip is to change the answer under it:
-    /// only an evaluation could notice a rewritten rule, so a verdict that does not move proves the
-    /// rules did not run.
+    /// The RULES are the quiescence key's fourth term, and this test replaces the one R252 wrote.
+    ///
+    /// R252 proved the skip by rewriting a rule underneath the tracker and asserting the verdict did
+    /// NOT move: only an evaluation could notice the rewrite, so a frozen verdict meant the rules had
+    /// not run. That instrument is the defect slice 4 exists to fix — a user edits `config.toml` to
+    /// correct a rule that is misfiring, and the pane they are watching is quiet, which is why the
+    /// wrong answer is visible and stuck there. So the assertion is INVERTED here.
+    ///
+    /// What is lost with it is the only behavioural view of the skip, and that is worth stating
+    /// rather than discovering: an exact skip is one whose absence changes no answer, so with the
+    /// rules in the key there is nothing left for a test to see. The gate's remaining proof is the
+    /// evaluation it does not run, which is a COST, and cost is what H3's open measurement 3
+    /// instruments.
     #[test]
-    fn the_quiescence_gate_does_not_run_the_rules_and_is_not_a_freeze() {
+    fn a_rewritten_rule_reaches_a_pane_that_has_not_moved() {
         let mut rewritten = claude();
         rewritten
             .rules
@@ -550,39 +588,62 @@ mod tests {
             .state = AgentState::Working;
 
         let mut tracker = Tracker::default();
-        let mut em = painted(CLAUDE_FOOTER);
+        let em = painted(CLAUDE_FOOTER);
         let title = Some("✳ Claude Code");
         let base = Instant::now();
 
-        tracker.observe(em.screen(), title, &[claude()], base);
-        tracker.observe(em.screen(), title, &[claude()], base + DEFAULT_SETTLE);
+        let rules = Ruleset::new(vec![claude()]);
+        tracker.observe(em.screen(), title, &rules, base);
+        tracker.observe(em.screen(), title, &rules, base + DEFAULT_SETTLE);
         assert_eq!(tracker.verdict().state, AgentState::Idle);
+        let generations: Vec<Option<u64>> = (0..em.screen().rows())
+            .map(|row| em.screen().row_generation(row))
+            .collect();
 
-        tracker.observe(
-            em.screen(),
-            title,
-            std::slice::from_ref(&rewritten),
-            base + DEFAULT_SETTLE * 2,
-        );
+        let edited = Ruleset::new(vec![rewritten]);
+        tracker.observe(em.screen(), title, &edited, base + DEFAULT_SETTLE * 2);
         assert_eq!(
             tracker.verdict().state,
-            AgentState::Idle,
-            "nothing the rules read had moved, so the rules did not run",
+            AgentState::Working,
+            "a replaced rule list is a changed input, so the answer is recomputed",
         );
 
-        // Move one row and the same rewritten manifest lands at once: the gate skipped, it did not
-        // stop.
-        repaint(
-            &mut em,
-            &["❯ typed something", "  ⏸ manual mode on · ? for shortcuts"],
+        // The premise, asserted rather than assumed — the same discipline R252's resize test
+        // applies. If the pane had repainted, the re-evaluation would be explained by the screen
+        // and this test would prove nothing about the rules term.
+        assert_eq!(
+            generations,
+            (0..em.screen().rows())
+                .map(|row| em.screen().row_generation(row))
+                .collect::<Vec<_>>(),
+            "not one row moved between the two verdicts",
         );
-        tracker.observe(
-            em.screen(),
-            title,
-            std::slice::from_ref(&rewritten),
-            base + DEFAULT_SETTLE * 3,
+    }
+
+    /// The same list, offered again, is not a change — the other direction of the term above, and the
+    /// one that keeps it from being "re-evaluate always" wearing a key's costume.
+    ///
+    /// This is also slice 3's two-clients-one-wake property read from underneath: two readers of one
+    /// pane observe against the same ruleset, so the second call must publish nothing new.
+    #[test]
+    fn the_same_ruleset_offered_twice_publishes_nothing_new() {
+        let mut tracker = Tracker::default();
+        let em = painted(CLAUDE_FOOTER);
+        let title = Some("✳ Claude Code");
+        let base = Instant::now();
+        let rules = Ruleset::new(vec![claude()]);
+
+        tracker.observe(em.screen(), title, &rules, base);
+        tracker.observe(em.screen(), title, &rules, base + DEFAULT_SETTLE);
+        assert_eq!(tracker.verdict().state, AgentState::Idle);
+        let settled = tracker.seq();
+
+        tracker.observe(em.screen(), title, &rules, base + DEFAULT_SETTLE * 2);
+        assert_eq!(
+            tracker.seq(),
+            settled,
+            "the same rules on an unmoved pane are the same answer",
         );
-        assert_eq!(tracker.verdict().state, AgentState::Working);
     }
 
     /// A resize is a content change no damage stamp records, and the test asserts that premise
@@ -590,7 +651,7 @@ mod tests {
     /// died instead of quietly becoming vacuous.
     #[test]
     fn a_resize_that_truncates_a_row_is_not_quiescence() {
-        let manifests = [claude()];
+        let rules = Ruleset::new(vec![claude()]);
         let mut tracker = Tracker::default();
         let mut em = Emulator::new(80, 24);
         // The alternate screen, because that is the resize path that copies the stamps verbatim
@@ -599,8 +660,8 @@ mod tests {
         em.advance(CLAUDE_FOOTER.join("\r\n").as_bytes());
         let base = Instant::now();
 
-        tracker.observe(em.screen(), None, &manifests, base);
-        let verdict = tracker.observe(em.screen(), None, &manifests, base + DEFAULT_SETTLE);
+        tracker.observe(em.screen(), None, &rules, base);
+        let verdict = tracker.observe(em.screen(), None, &rules, base + DEFAULT_SETTLE);
         assert_eq!(
             verdict.agent.as_deref(),
             Some("claude"),
@@ -619,8 +680,8 @@ mod tests {
             "the premise: this resize moved no damage stamp, so only the width can carry it",
         );
 
-        tracker.observe(em.screen(), None, &manifests, base + DEFAULT_SETTLE);
-        tracker.observe(em.screen(), None, &manifests, base + DEFAULT_SETTLE * 2);
+        tracker.observe(em.screen(), None, &rules, base + DEFAULT_SETTLE);
+        tracker.observe(em.screen(), None, &rules, base + DEFAULT_SETTLE * 2);
         assert_eq!(
             tracker.verdict().agent,
             None,
@@ -632,17 +693,17 @@ mod tests {
     /// transition is pending the clock is an input.
     #[test]
     fn a_pending_transition_settles_on_the_clock_although_nothing_moved() {
-        let manifests = [claude()];
+        let rules = Ruleset::new(vec![claude()]);
         let mut tracker = Tracker::default();
         let em = painted(CLAUDE_FOOTER);
         let base = Instant::now();
 
-        tracker.observe(em.screen(), Some("⠂ Compacting"), &manifests, base);
+        tracker.observe(em.screen(), Some("⠂ Compacting"), &rules, base);
         assert_eq!(tracker.verdict().state, AgentState::Working);
 
         let rested = Some("✳ Compacting");
         let began = base + Duration::from_millis(100);
-        tracker.observe(em.screen(), rested, &manifests, began);
+        tracker.observe(em.screen(), rested, &rules, began);
         assert_eq!(
             tracker.verdict().state,
             AgentState::Working,
@@ -650,14 +711,14 @@ mod tests {
         );
 
         // From here NOTHING moves: same screen, same title. Only the clock advances.
-        tracker.observe(em.screen(), rested, &manifests, began + DEFAULT_SETTLE / 2);
+        tracker.observe(em.screen(), rested, &rules, began + DEFAULT_SETTLE / 2);
         assert_eq!(
             tracker.verdict().state,
             AgentState::Working,
             "and it has not held long enough yet",
         );
 
-        tracker.observe(em.screen(), rested, &manifests, began + DEFAULT_SETTLE);
+        tracker.observe(em.screen(), rested, &rules, began + DEFAULT_SETTLE);
         assert_eq!(tracker.verdict().state, AgentState::Idle);
         assert_eq!(tracker.seq(), 2, "one transition, one publication");
     }
@@ -669,17 +730,17 @@ mod tests {
     /// same freeze the pending exception exists to prevent, arriving by the other door.
     #[test]
     fn a_pane_that_keeps_repainting_settles_when_the_candidate_has_held_long_enough() {
-        let manifests = [claude()];
+        let rules = Ruleset::new(vec![claude()]);
         let mut tracker = Tracker::default();
         let mut em = painted(CLAUDE_FOOTER);
         let base = Instant::now();
 
-        tracker.observe(em.screen(), Some("⠂ Reading files"), &manifests, base);
+        tracker.observe(em.screen(), Some("⠂ Reading files"), &rules, base);
         assert_eq!(tracker.verdict().state, AgentState::Working);
 
         let rested = Some("✳ Reading files");
         let began = base + Duration::from_millis(100);
-        tracker.observe(em.screen(), rested, &manifests, began);
+        tracker.observe(em.screen(), rested, &rules, began);
 
         // The spinner has stopped but the transcript has not: every tick moves a row.
         let mut printed = CLAUDE_FOOTER.to_vec();
@@ -689,7 +750,7 @@ mod tests {
             tracker.observe(
                 em.screen(),
                 rested,
-                &manifests,
+                &rules,
                 began + Duration::from_millis(500) * tick,
             );
             assert_eq!(
@@ -701,7 +762,7 @@ mod tests {
 
         printed.insert(0, "● one more");
         repaint(&mut em, &printed);
-        tracker.observe(em.screen(), rested, &manifests, began + DEFAULT_SETTLE);
+        tracker.observe(em.screen(), rested, &rules, began + DEFAULT_SETTLE);
         assert_eq!(
             tracker.verdict().state,
             AgentState::Idle,
@@ -713,16 +774,16 @@ mod tests {
     /// correctness requirement for.
     #[test]
     fn a_pause_in_the_animation_does_not_publish_a_return_to_rest() {
-        let manifests = [claude()];
+        let rules = Ruleset::new(vec![claude()]);
         let mut tracker = Tracker::default();
         let em = painted(CLAUDE_FOOTER);
         let base = Instant::now();
 
-        tracker.observe(em.screen(), Some("⠂ Working"), &manifests, base);
+        tracker.observe(em.screen(), Some("⠂ Working"), &rules, base);
         tracker.observe(
             em.screen(),
             Some("✳ Working"),
-            &manifests,
+            &rules,
             base + MEASURED_SPINNER_PERIOD,
         );
         // A tick DURING the pause, or this test would pass with a window of one nanosecond: it is
@@ -730,14 +791,14 @@ mod tests {
         tracker.observe(
             em.screen(),
             Some("✳ Working"),
-            &manifests,
+            &rules,
             base + MEASURED_SPINNER_PERIOD + MEASURED_SPINNER_PERIOD / 2,
         );
         assert_eq!(tracker.verdict().state, AgentState::Working);
         tracker.observe(
             em.screen(),
             Some("⠐ Working"),
-            &manifests,
+            &rules,
             base + MEASURED_SPINNER_PERIOD * 2,
         );
 
@@ -750,20 +811,20 @@ mod tests {
     /// absence has to hold.
     #[test]
     fn a_dialog_publishes_at_once_where_a_return_to_rest_waits() {
-        let manifests = [claude()];
+        let rules = Ruleset::new(vec![claude()]);
         let base = Instant::now();
         let mut asking = Tracker::default();
         let mut resting = Tracker::default();
         let mut em_asking = painted(CLAUDE_FOOTER);
         let em_resting = painted(CLAUDE_FOOTER);
 
-        asking.observe(em_asking.screen(), Some("⠂ x"), &manifests, base);
-        resting.observe(em_resting.screen(), Some("⠂ x"), &manifests, base);
+        asking.observe(em_asking.screen(), Some("⠂ x"), &rules, base);
+        resting.observe(em_resting.screen(), Some("⠂ x"), &rules, base);
 
         let moment = base + Duration::from_millis(100);
         repaint(&mut em_asking, DIALOG);
-        asking.observe(em_asking.screen(), Some("✳ x"), &manifests, moment);
-        resting.observe(em_resting.screen(), Some("✳ x"), &manifests, moment);
+        asking.observe(em_asking.screen(), Some("✳ x"), &rules, moment);
+        resting.observe(em_resting.screen(), Some("✳ x"), &rules, moment);
 
         assert_eq!(asking.verdict().state, AgentState::Blocked);
         assert_eq!(
@@ -784,16 +845,16 @@ mod tests {
     /// claims. The memory supplies the half the screen has hidden.
     #[test]
     fn a_modal_that_covers_the_fingerprint_keeps_the_agent_the_pane_already_was() {
-        let manifests = [codex()];
+        let rules = Ruleset::new(vec![codex()]);
         let mut tracker = Tracker::default();
         let mut em = painted(CODEX_AT_REST);
         let base = Instant::now();
 
-        tracker.observe(em.screen(), Some("codexprobe"), &manifests, base);
+        tracker.observe(em.screen(), Some("codexprobe"), &rules, base);
         let verdict = tracker.observe(
             em.screen(),
             Some("codexprobe"),
-            &manifests,
+            &rules,
             base + DEFAULT_SETTLE,
         );
         assert_eq!(verdict.agent.as_deref(), Some("codex"));
@@ -802,7 +863,7 @@ mod tests {
         repaint(&mut em, CODEX_MODAL);
         // The premise, asserted rather than assumed: from one frame this pane is nobody's.
         assert_eq!(
-            detect(em.screen(), Some("codexprobe"), &manifests),
+            detect(em.screen(), Some("codexprobe"), rules.manifests()),
             Verdict::default(),
             "if this screen were still claimed the test would prove nothing about memory",
         );
@@ -810,7 +871,7 @@ mod tests {
         let verdict = tracker.observe(
             em.screen(),
             Some("codexprobe"),
-            &manifests,
+            &rules,
             base + DEFAULT_SETTLE + Duration::from_millis(100),
         );
         assert_eq!(verdict.state, AgentState::Blocked);
@@ -828,14 +889,14 @@ mod tests {
     /// FIRST publication too, and not only to a state that is being left.
     #[test]
     fn a_fingerprint_covered_for_less_than_the_window_never_reaches_the_wire() {
-        let manifests = [codex()];
+        let rules = Ruleset::new(vec![codex()]);
         let mut tracker = Tracker::default();
         let mut em = painted(CODEX_AT_REST);
         let base = Instant::now();
 
-        tracker.observe(em.screen(), Some("codexprobe"), &manifests, base);
+        tracker.observe(em.screen(), Some("codexprobe"), &rules, base);
         let settled = base + DEFAULT_SETTLE;
-        tracker.observe(em.screen(), Some("codexprobe"), &manifests, settled);
+        tracker.observe(em.screen(), Some("codexprobe"), &rules, settled);
         assert_eq!(tracker.verdict().agent.as_deref(), Some("codex"));
         assert_eq!(tracker.seq(), 1);
 
@@ -845,14 +906,14 @@ mod tests {
         ];
         repaint(&mut em, hint);
         assert_eq!(
-            detect(em.screen(), Some("codexprobe"), &manifests),
+            detect(em.screen(), Some("codexprobe"), rules.manifests()),
             Verdict::default(),
             "the premise: with the footer replaced, one frame claims nobody",
         );
         tracker.observe(
             em.screen(),
             Some("codexprobe"),
-            &manifests,
+            &rules,
             settled + Duration::from_millis(100),
         );
 
@@ -860,7 +921,7 @@ mod tests {
         tracker.observe(
             em.screen(),
             Some("codexprobe"),
-            &manifests,
+            &rules,
             settled + Duration::from_millis(900),
         );
         assert_eq!(tracker.verdict().agent.as_deref(), Some("codex"));
@@ -876,19 +937,19 @@ mod tests {
     /// outlives an agent goes on being reported as the agent.
     #[test]
     fn a_remembered_agent_that_shows_nothing_active_is_let_go() {
-        let manifests = [codex()];
+        let rules = Ruleset::new(vec![codex()]);
         let mut tracker = Tracker::default();
         let mut em = painted(CODEX_AT_REST);
         let base = Instant::now();
 
-        tracker.observe(em.screen(), Some("codexprobe"), &manifests, base);
+        tracker.observe(em.screen(), Some("codexprobe"), &rules, base);
         let settled = base + DEFAULT_SETTLE;
-        tracker.observe(em.screen(), Some("codexprobe"), &manifests, settled);
+        tracker.observe(em.screen(), Some("codexprobe"), &rules, settled);
         assert_eq!(tracker.verdict().agent.as_deref(), Some("codex"));
 
         // The agent exits and the pane is a shell again.
         repaint(&mut em, &["coin@box:~$ "]);
-        tracker.observe(em.screen(), Some("coin@box: ~"), &manifests, settled);
+        tracker.observe(em.screen(), Some("coin@box: ~"), &rules, settled);
         assert_eq!(
             tracker.verdict().agent.as_deref(),
             Some("codex"),
@@ -897,7 +958,7 @@ mod tests {
         tracker.observe(
             em.screen(),
             Some("coin@box: ~"),
-            &manifests,
+            &rules,
             settled + DEFAULT_SETTLE,
         );
         assert_eq!(tracker.verdict(), &Verdict::default());
@@ -908,7 +969,7 @@ mod tests {
         let verdict = tracker.observe(
             em.screen(),
             Some("coin@box: ~"),
-            &manifests,
+            &rules,
             settled + DEFAULT_SETTLE * 2,
         );
         assert_eq!(
@@ -923,12 +984,12 @@ mod tests {
     /// it before slice 3 exists.
     #[test]
     fn a_pane_that_was_never_an_agent_never_publishes() {
-        let manifests = [claude(), codex()];
+        let rules = Ruleset::new(vec![claude(), codex()]);
         let mut tracker = Tracker::default();
         let mut em = painted(&["coin@box:~$ cargo build"]);
         let base = Instant::now();
 
-        tracker.observe(em.screen(), Some("coin@box: ~"), &manifests, base);
+        tracker.observe(em.screen(), Some("coin@box: ~"), &rules, base);
         repaint(
             &mut em,
             &["coin@box:~$ cargo build", "   Compiling sprag-vt"],
@@ -936,7 +997,7 @@ mod tests {
         tracker.observe(
             em.screen(),
             Some("coin@box: ~"),
-            &manifests,
+            &rules,
             base + DEFAULT_SETTLE * 2,
         );
 

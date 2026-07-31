@@ -20,6 +20,12 @@ sprag-terminal = { workspace = true }
 # (`Tracker`) is held in `agent.rs` rather than on a pane, because a `WorkspaceExternal` is
 # rebuilt per request and a pane belongs to the producer.
 sprag-detect = { workspace = true }
+# A user's `[[agent]]` manifests carry regex tests (crate::config), and a pattern is
+# compiled where it is READ so a manifest that cannot compile is refused with the file
+# named, rather than silently never matching on every pane forever. `sprag-detect` holds
+# the compiled `Regex` in its public `Test`, so this is that type's own crate rather than
+# a second regex engine in the tree.
+regex = { workspace = true }
 # Key→PTY-byte encoder: the engine External (pane.rs) invokes it to turn an
 # injected W3C key into the bytes the child reads (PINION-REQUIREMENTS R2.6).
 sprag-input = { workspace = true }

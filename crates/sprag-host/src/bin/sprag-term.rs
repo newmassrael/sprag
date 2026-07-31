@@ -214,11 +214,18 @@ fn main() -> io::Result<()> {
     // The agent-state memory (H3), shared by the pane list that reads it and the waker that keeps
     // its clock. The two are installed TOGETHER because a registry without a waker publishes
     // `Blocked` promptly and `Idle` only by luck — see `spawn_agent_waker`.
-    let agents = Arc::new(AgentClock::default());
+    //
+    // The manifests come from the user's `config.toml` layered over the built-ins, and the HOLDER
+    // goes to the waker rather than being read here: the file is read once at start-up and then only
+    // when the sweep looks again, which is what keeps a compile of every agent's patterns off a path
+    // served on every client wake (`config::AgentManifests`).
+    let manifests = sprag_host::config::AgentManifests::load();
+    let agents = Arc::new(AgentClock::new(manifests.rules().clone()));
     spawn_agent_waker(
         Arc::clone(host.registry()),
         Arc::clone(&agents),
         Arc::clone(&channels),
+        manifests,
     );
     let state = HostState::new(host, channels, Some(on_pane_exit)).with_agents(agents);
 
@@ -399,6 +406,7 @@ fn spawn_agent_waker(
     registry: Arc<Mutex<SessionRegistry>>,
     agents: Arc<AgentClock>,
     channels: Arc<ChannelRegistry>,
+    mut manifests: sprag_host::config::AgentManifests,
 ) {
     thread::spawn(move || {
         let mut last_sweep = Instant::now();
@@ -414,6 +422,17 @@ fn spawn_agent_waker(
             }
             if sweep {
                 last_sweep = now;
+                // The user's manifests, re-read from a wake this thread already has — the whole of
+                // what "runtime reload on the same terms as the keymap" means for a daemon. A client
+                // re-reads on the keystroke whose meaning the table decides; there is no keystroke
+                // here, and this sweep is the wake that exists. Reading the file per EVALUATION was
+                // never available: a manifest owns compiled patterns.
+                //
+                // It runs before the walk, so the panes the edit invalidates are served by the very
+                // pass that invalidated them rather than one sweep later.
+                if manifests.refresh() {
+                    agents.with(|state| state.reload(manifests.rules().clone()));
+                }
             }
             // Phase 1 — registry lock ONLY: clone out each session's pools as handles, keeping the
             // session NAME beside each so a published change can wake that session's clients and no
@@ -439,14 +458,18 @@ fn spawn_agent_waker(
                 for pane in pool.panes() {
                     let id = pane.id();
                     live.insert(id);
-                    // Two reasons to ask about a pane, and a pane can be both at once on the sweep
-                    // that first sees it. DUE: the window has closed on a candidate, so what publishes
-                    // it is the CLOCK — the third input a pending transition has. UNKNOWN: nobody has
-                    // ever looked at this pane, so it has no state to be waiting on, and only the
-                    // sweep can give it one. Neither applies to a settled, known pane, which is every
-                    // pane in a quiet workspace.
-                    let ask =
-                        agents.with(|state| state.is_due(id, now) || (sweep && !state.knows(id)));
+                    // Three reasons to ask about a pane, and a pane can be more than one at once on
+                    // the sweep that first sees it. DUE: the window has closed on a candidate, so what
+                    // publishes it is the CLOCK — the third input a pending transition has. UNKNOWN:
+                    // nobody has ever looked at this pane, so it has no state to be waiting on, and
+                    // only the sweep can give it one. STALE: the pane is settled and known and its
+                    // answer was reached under a ruleset the user has since edited — the input that
+                    // moved was not on its screen, so nothing else will ever bring it back. None of
+                    // the three applies to a settled pane under unchanged rules, which is every pane
+                    // in a quiet workspace.
+                    let ask = agents.with(|state| {
+                        state.is_due(id, now) || (sweep && (!state.knows(id) || state.stale(id)))
+                    });
                     if !ask {
                         continue;
                     }

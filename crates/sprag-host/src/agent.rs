@@ -39,7 +39,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use sprag_detect::{Hysteresis, Manifest, Tracker};
+use sprag_detect::{Hysteresis, Ruleset, Tracker};
 use sprag_terminal::PaneId;
 use sprag_vt::Screen;
 
@@ -66,33 +66,60 @@ pub struct AgentFacts {
     pub seq: u64,
 }
 
-/// Every pane's agent-state memory, plus the one manifest list they are all evaluated against.
-#[derive(Debug)]
+/// Every pane's agent-state memory, plus the one ruleset they are all evaluated against.
+#[derive(Debug, Default)]
 pub struct AgentRegistry {
-    /// Compiled ONCE for the life of the daemon. A caller that rebuilt this per evaluation would
-    /// recompile every pattern on a path served once per client wake, which is why
-    /// [`sprag_detect::built_ins`] is a named list rather than a literal at each use.
-    manifests: Vec<Manifest>,
+    /// Compiled ONCE per edit of the user's config, not per evaluation. A caller that rebuilt this
+    /// on the hot path would recompile every pattern of every agent on a path served once per client
+    /// wake, which is why [`sprag_detect::built_ins`] is a named list rather than a literal at each
+    /// use and why [`crate::config::AgentManifests`] holds the file rather than reading it.
+    rules: Ruleset,
     trackers: HashMap<PaneId, Tracker>,
 }
 
-impl Default for AgentRegistry {
-    fn default() -> Self {
-        Self::new(sprag_detect::built_ins())
-    }
-}
-
 impl AgentRegistry {
-    /// A registry over `manifests`, with no pane remembered yet.
+    /// A registry over `rules`, with no pane remembered yet.
     ///
-    /// Takes the list rather than calling [`sprag_detect::built_ins`] itself so slice 4 can layer a
-    /// user's `config.toml` manifests over the built-ins without this type learning about files.
+    /// Takes the ruleset rather than calling [`sprag_detect::built_ins`] itself, which is what lets
+    /// the user's `config.toml` manifests layer over the built-ins without this type learning about
+    /// files: [`crate::config::AgentManifests`] does the reading, and hands the result in.
     #[must_use]
-    pub fn new(manifests: Vec<Manifest>) -> Self {
+    pub fn new(rules: Ruleset) -> Self {
         Self {
-            manifests,
+            rules,
             trackers: HashMap::new(),
         }
+    }
+
+    /// Swap in a ruleset the user has just edited, KEEPING every pane's memory.
+    ///
+    /// The trackers survive on purpose, and the two halves of the memory survive for different
+    /// reasons. `seq` must not restart, or every client would read a manifest edit as a state change
+    /// on every pane at once. The remembered IDENTITY survives because R252 made it a manifest NAME
+    /// rather than a position in the list, in as many words *because slice 4 reloads that list from a
+    /// file and a name survives a reload* — so a `codex` pane whose modal is covering its fingerprint
+    /// is still a `codex` pane after the edit.
+    ///
+    /// What does NOT survive is the quiescence skip: the new ruleset carries a new
+    /// [`Ruleset::revision`](sprag_detect::Ruleset::revision), which is one of the key's terms, so
+    /// every remembered pane is [`stale`](Self::stale) until it has been looked at again.
+    pub fn reload(&mut self, rules: Ruleset) {
+        self.rules = rules;
+    }
+
+    /// Whether this pane's published verdict was reached under a ruleset that has since been
+    /// replaced.
+    ///
+    /// The waker's third reason to ask about a pane, beside due and unknown. A pane can be settled,
+    /// known, and waiting on nothing, and still owe an evaluation — because the input that moved was
+    /// not on its screen. A pane nobody has ever observed is NOT stale; it is unknown, which is a
+    /// different question with a different answer.
+    #[must_use]
+    pub fn stale(&self, id: PaneId) -> bool {
+        self.trackers
+            .get(&id)
+            .and_then(Tracker::evaluated_under)
+            .is_some_and(|revision| revision != self.rules.revision())
     }
 
     /// Take a reading of one pane and return what is published for it, or `None` for a pane no
@@ -147,7 +174,7 @@ impl AgentRegistry {
                 entry.insert(Tracker::new(read()))
             }
         };
-        let verdict = tracker.observe(screen, title, &self.manifests, now);
+        let verdict = tracker.observe(screen, title, &self.rules, now);
         let state = verdict.state.wire_str();
         let agent = verdict.agent.clone();
         let rule = verdict.rule.clone();
@@ -271,6 +298,21 @@ impl AgentRegistry {
 /// holding the two separately can lock, create a candidate, and neglect to signal — and the failure
 /// is silent, because every individual verdict still looks right. Here [`observe`](Self::observe) is
 /// the only way to create a candidate and it signals for you.
+///
+/// # Why a RELOAD does not signal, when a candidate does
+///
+/// A reload gives every remembered pane an evaluation to owe, so the symmetrical shape would be a
+/// `reload` here that takes the lock and notifies. It would be signalling NOBODY. The only reloader
+/// is the waker itself, re-reading the user's file in its own sweep — and a thread cannot notify
+/// itself: it is awake, its `sweep` is true, and the walk that follows serves the stale panes in the
+/// same pass. A signal there would be a mechanism with no event, which is the defect this type
+/// exists to prevent rather than a second instance of it to ship.
+///
+/// So the reload goes through [`with`](Self::with) like the waker's other work. If one ever arrives
+/// from ANOTHER thread, a wake is not enough on its own: the loop also needs a reason to do work when
+/// nothing is due and no sweep is owed. That reason lives in `sprag-term`'s `ask` predicate, which is
+/// where "this pane owes an evaluation" is decided, and [`AgentRegistry::stale`] is the question it
+/// asks.
 #[derive(Debug, Default)]
 pub struct AgentClock {
     state: Mutex<AgentRegistry>,
@@ -280,11 +322,11 @@ pub struct AgentClock {
 }
 
 impl AgentClock {
-    /// A clock over `manifests`, with no pane remembered yet.
+    /// A clock over `rules`, with no pane remembered yet.
     #[must_use]
-    pub fn new(manifests: Vec<Manifest>) -> Self {
+    pub fn new(rules: Ruleset) -> Self {
         Self {
-            state: Mutex::new(AgentRegistry::new(manifests)),
+            state: Mutex::new(AgentRegistry::new(rules)),
             appeared: Condvar::new(),
         }
     }
@@ -640,6 +682,137 @@ mod clock_tests {
             clock.with(|state| state.next_deadline()),
             deadline,
             "the deadline did not move, so there was nothing to announce",
+        );
+    }
+
+    /// `claude`, with its idle rule rewritten to conclude something else — a user's correction, in
+    /// the smallest form that changes an answer.
+    fn rewritten_claude() -> Ruleset {
+        let mut claude = sprag_detect::claude();
+        claude
+            .rules
+            .iter_mut()
+            .find(|rule| rule.id == "idle-glyph")
+            .expect("the built-in has an idle rule")
+            .state = sprag_detect::AgentState::Working;
+        Ruleset::new(vec![claude])
+    }
+
+    /// THE RELOAD CASE, and the one the waker's third `ask` reason exists for.
+    ///
+    /// A settled pane is not due and is not unknown, so under slice 3's two reasons nobody would
+    /// ever look at it again. The input that moved is not on its screen — which is precisely the
+    /// pane a user edits a manifest to fix, because a quiet pane is where a wrong verdict is visible
+    /// and stuck.
+    #[test]
+    fn a_reload_makes_a_settled_pane_owe_an_evaluation() {
+        let mut reg = AgentRegistry::default();
+        let em = painted(CLAUDE_FOOTER);
+        let id = PaneId(1);
+        let title = Some("✳ Claude Code");
+        let base = Instant::now();
+
+        reg.observe(id, em.screen(), title, base, Hysteresis::default);
+        let settled = reg
+            .observe(
+                id,
+                em.screen(),
+                title,
+                base + DEFAULT_SETTLE,
+                Hysteresis::default,
+            )
+            .expect("a claude pane publishes");
+        assert_eq!(settled.state, "idle");
+        assert!(
+            !reg.stale(id),
+            "this pane was evaluated under the rules that are in force",
+        );
+
+        reg.reload(rewritten_claude());
+        assert!(
+            reg.stale(id),
+            "a replaced ruleset is an input the pane's own screen cannot report",
+        );
+
+        let after = reg
+            .observe(
+                id,
+                em.screen(),
+                title,
+                base + DEFAULT_SETTLE * 2,
+                Hysteresis::default,
+            )
+            .expect("still a claude pane");
+        assert_eq!(
+            after.state, "working",
+            "the correction reaches a pane that has not painted a single row since",
+        );
+        assert!(!reg.stale(id), "and the debt is settled by looking");
+    }
+
+    /// The memory SURVIVES a reload, and the two halves survive for different reasons.
+    ///
+    /// `seq` must not restart, or a manifest edit would read on the wire as a state change on every
+    /// pane at once. The identity must not be dropped, because R252 made it a manifest NAME rather
+    /// than a position in the list *because slice 4 reloads that list from a file* — this is the
+    /// round that gets to assert the reason was real.
+    #[test]
+    fn a_reload_keeps_the_seq_a_client_diffs_and_the_identity_a_modal_covers() {
+        let mut reg = AgentRegistry::default();
+        let em = painted(CLAUDE_FOOTER);
+        let id = PaneId(1);
+        let title = Some("✳ Claude Code");
+        let base = Instant::now();
+
+        reg.observe(id, em.screen(), title, base, Hysteresis::default);
+        let settled = reg
+            .observe(
+                id,
+                em.screen(),
+                title,
+                base + DEFAULT_SETTLE,
+                Hysteresis::default,
+            )
+            .expect("published");
+
+        reg.reload(rewritten_claude());
+        let after = reg
+            .observe(
+                id,
+                em.screen(),
+                title,
+                base + DEFAULT_SETTLE * 2,
+                Hysteresis::default,
+            )
+            .expect("published");
+
+        assert_eq!(
+            after.seq,
+            settled.seq + 1,
+            "the seq counts on from what the client last read, rather than starting over",
+        );
+        assert_eq!(after.agent.as_deref(), Some("claude"));
+        assert_eq!(
+            reg.len(),
+            1,
+            "one pane, one tracker — the reload built no new map"
+        );
+    }
+
+    /// A pane nobody has ever observed is UNKNOWN, not stale, and the waker asks about the two for
+    /// different reasons. Collapsing them would make `stale` answer for panes it knows nothing
+    /// about, which is the sweep's other job wearing this one's name.
+    #[test]
+    fn a_pane_nobody_has_observed_is_unknown_rather_than_stale() {
+        let mut reg = AgentRegistry::default();
+        let never = PaneId(7);
+        assert!(!reg.knows(never));
+        assert!(!reg.stale(never), "there is no earlier answer to be stale");
+
+        reg.reload(rewritten_claude());
+        assert!(
+            !reg.stale(never),
+            "and a reload does not invent one for a pane that was never looked at",
         );
     }
 }
