@@ -28,6 +28,7 @@ use pinion_widget_paint::dock::{
     DockPanelChrome, DockPanelStyle, DockSplitState, WindowControlTags, dock_outer_zone_highlight,
     view_dock_panel_with_actions, view_dock_surface_chrome, view_window_controls,
 };
+use sprag_host::PaneAgent;
 use sprag_terminal::PaneExit;
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -66,11 +67,19 @@ pub(crate) fn pane_display_title(slots: &SlotView, i: usize) -> String {
     } else {
         title
     };
+    // ...then what the AGENT in the pane is doing (H3 slice 5), between the child's own title and the
+    // exit marker. Between, because the three facts stand in increasing order of finality: what the
+    // child calls itself, what it is doing now, and whether it is still there at all. Riding this one
+    // string is what puts the verdict on every title surface at once — the dock header over the pane,
+    // the tab, a floater's OS title — for the same reason the two markers around it do.
+    let title = format!(
+        "{title}{}",
+        agent_marker(slots.pane_agent(i).as_ref(), slots.pane_is_dead(i))
+    );
     // ...and SUFFIX the exited marker when the pane's child is gone. A suffix rather than a second
     // prefix because the two are not the same kind of fact and must not compete for the same
     // position: attention is a transient flag the user CLEARS by looking, whereas this is a
-    // permanent statement about what the pane now is. Riding this one string is what puts it on
-    // every title surface at once — the dock header over the pane, the tab, the floater's OS title.
+    // permanent statement about what the pane now is.
     //
     // Without it a finished command and a hung one are the same picture: a screen that stopped
     // changing. That is the whole of what remain-on-exit costs a user who cannot see it, and sprag
@@ -79,6 +88,32 @@ pub(crate) fn pane_display_title(slots: &SlotView, i: usize) -> String {
         format!("{title}{}", dead_marker(slots.pane_child_exit(i).as_ref()))
     } else {
         title
+    }
+}
+
+/// What a title says about the AGENT running in a pane — H3's verdict as a phrase, or `""` for a pane
+/// no manifest claims (`agent` absent from the wire, D8) and for a pane whose child is GONE.
+///
+/// The SSOT both title surfaces render through — the sighted title and the a11y name — for
+/// [`dead_marker`]'s reason: two `format!` calls drift on wording, and a screen-reader user and a
+/// sighted user disagreeing about which pane wants attention is the failure this front exists to
+/// prevent.
+///
+/// **Words, not a glyph**, so the a11y name needs no translation (the attention marker needs one
+/// precisely because it is a symbol — "●" is read out as "black circle"). The words themselves are
+/// [`sprag_client::agent_phrase`]'s, which is where the editorial rules and their reasons live —
+/// including why `blocked` is rendered as a request rather than as its wire token. They are shared
+/// with the terminal client rather than spelled here, because two frontends describing one pane
+/// differently is the same drift the exit marker's single function exists to prevent, one level out.
+///
+/// **A DEAD pane gets nothing**, and the reason is composition rather than tidiness: `(exited)` is the
+/// complete statement about a pane whose child is gone, and a verdict beside it would contradict it —
+/// the detector reads a SCREEN, and a dead pane's final screen still shows whatever the agent last
+/// painted, so the honest reading of "(claude working) (exited)" is that nothing is working at all.
+pub(crate) fn agent_marker(agent: Option<&PaneAgent>, dead: bool) -> String {
+    match agent.filter(|_| !dead) {
+        Some(agent) => format!(" ({})", sprag_client::agent_phrase(agent)),
+        None => String::new(),
     }
 }
 
@@ -790,6 +825,42 @@ pub(crate) fn fill_size() -> Size {
 mod tests {
     use super::*;
     use pinion_core::reactive::Owner;
+
+    /// What [`agent_marker`] itself decides — the FRAMING and the two silences — as distinct from the
+    /// wording, which is [`sprag_client::agent_phrase`]'s and is tested there.
+    ///
+    /// The third assertion is the SSOT one, in the shape this module already uses for the exit marker:
+    /// the string the title carries is the shared phrase and not a second rendering of the same token,
+    /// so the terminal client and this one cannot come to describe one pane differently.
+    ///
+    /// REVERT-PROOF: drop the `filter(|_| !dead)` and the dead pane's assertion fails (it would wear a
+    /// verdict beside "(exited)"); spell the phrase here instead of calling the shared function and the
+    /// SSOT assertion still passes for `working` — which is why it is asserted against
+    /// `agent_phrase`'s OWN output rather than against a literal.
+    #[test]
+    fn the_marker_frames_the_shared_phrase_and_says_nothing_for_a_shell_or_a_dead_pane() {
+        let agent = PaneAgent {
+            state: "blocked".to_owned(),
+            name: Some("claude".to_owned()),
+            rule: Some("trust-dialog".to_owned()),
+            seq: 1,
+        };
+        assert_eq!(
+            agent_marker(None, false),
+            "",
+            "a pane no manifest claims contributes nothing at all — absence is the answer",
+        );
+        assert_eq!(
+            agent_marker(Some(&agent), true),
+            "",
+            "and a pane whose child is gone is not running an agent, whatever its screen shows",
+        );
+        assert_eq!(
+            agent_marker(Some(&agent), false),
+            format!(" ({})", sprag_client::agent_phrase(&agent)),
+            "the title carries the SHARED phrase, parenthesised — never its own rendering",
+        );
+    }
 
     /// THE display half of the inline-image feature, end to end over a REAL pane: a child transmits a
     /// Kitty image, the reconcile fetches its raster and registers it in the root image store, and the

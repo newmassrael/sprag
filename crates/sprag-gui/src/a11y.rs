@@ -5,6 +5,7 @@
 use crate::TerminalViewer;
 use crate::terminal::{TerminalView, pane_tag, use_terminal};
 use pinion_a11y::{AccessNode, AccessValue, AriaRole, WidgetA11y};
+use sprag_host::PaneAgent;
 use sprag_terminal::PaneExit;
 
 impl WidgetA11y for TerminalViewer {
@@ -112,6 +113,7 @@ fn pane_node(terminal: &TerminalView, i: usize, focused: Option<&str>) -> Access
             .slots
             .pane_is_dead(i)
             .then(|| terminal.slots.pane_child_exit(i)),
+        terminal.slots.pane_agent(i),
     )
 }
 
@@ -142,6 +144,11 @@ fn terminal_a11y_node(
     // land at all. Flattening them would make a dead-but-unreaped pane announce as live, which is
     // precisely the thing the marker exists to prevent.
     dead: Option<Option<PaneExit>>,
+    // What the AGENT in the pane is doing (H3), `None` for a pane no manifest claims. Announced
+    // through `crate::view::agent_marker` — the same string the sighted title carries, for the
+    // reason the exit marker is shared: a sighted user and a screen-reader user must not come to
+    // different conclusions about which pane is waiting for them.
+    agent: Option<PaneAgent>,
 ) -> AccessNode {
     // Announce an unseen attention notification as SPOKEN words in the name — never the "●"
     // display glyph, which a screen reader would read as "black circle". The AT thus hears
@@ -161,6 +168,10 @@ fn terminal_a11y_node(
     // fact that decides whether typing into this pane will do anything at all. The CODE belongs
     // there for a sharper version of the same reason — a screen reader user cannot glance at the
     // output to guess whether the command worked.
+    // The agent's state, in the same position and through the same function as the sighted title's —
+    // between the pane's own name and the exit marker (and suppressed by a dead child, which is
+    // `agent_marker`'s own rule rather than a second copy of it here).
+    name.push_str(&crate::view::agent_marker(agent.as_ref(), dead.is_some()));
     if let Some(exit) = dead {
         name.push_str(&crate::view::dead_marker(exit.as_ref()));
     }
@@ -184,6 +195,7 @@ mod tests {
             true,
             false,
             None,
+            None,
         );
         assert_eq!(
             node.tag,
@@ -199,7 +211,7 @@ mod tests {
         assert!(node.state.focused, "focused state flows through");
         // Unfocused: the AT focus follows the focus manager.
         assert!(
-            !terminal_a11y_node(pane_tag(0), "sh", String::new(), false, false, None)
+            !terminal_a11y_node(pane_tag(0), "sh", String::new(), false, false, None, None)
                 .state
                 .focused
         );
@@ -210,13 +222,14 @@ mod tests {
     /// non-attention node keeps the plain name, so the prefix is not unconditional.
     #[test]
     fn an_unseen_attention_pane_announces_it_in_the_accessible_name() {
-        let attention = terminal_a11y_node(pane_tag(1), "bash", String::new(), false, true, None);
+        let attention =
+            terminal_a11y_node(pane_tag(1), "bash", String::new(), false, true, None, None);
         assert_eq!(
             attention.name.as_deref(),
             Some("Attention \u{2014} Terminal: bash"),
             "spoken words, not a glyph",
         );
-        let calm = terminal_a11y_node(pane_tag(1), "bash", String::new(), false, false, None);
+        let calm = terminal_a11y_node(pane_tag(1), "bash", String::new(), false, false, None, None);
         assert_eq!(
             calm.name.as_deref(),
             Some("Terminal: bash"),
@@ -238,13 +251,22 @@ mod tests {
             false,
             false,
             Some(None),
+            None,
         );
         assert_eq!(
             exited.name.as_deref(),
             Some("Terminal: cargo (exited)"),
             "the marker trails the name it qualifies",
         );
-        let live = terminal_a11y_node(pane_tag(1), "cargo", String::new(), false, false, None);
+        let live = terminal_a11y_node(
+            pane_tag(1),
+            "cargo",
+            String::new(),
+            false,
+            false,
+            None,
+            None,
+        );
         assert_eq!(
             live.name.as_deref(),
             Some("Terminal: cargo"),
@@ -252,7 +274,15 @@ mod tests {
         );
         // The two markers COMPOSE, each at its own end — the attention prefix is a transient flag,
         // the exited suffix a permanent statement, so neither displaces the other.
-        let both = terminal_a11y_node(pane_tag(1), "cargo", String::new(), false, true, Some(None));
+        let both = terminal_a11y_node(
+            pane_tag(1),
+            "cargo",
+            String::new(),
+            false,
+            true,
+            Some(None),
+            None,
+        );
         assert_eq!(
             both.name.as_deref(),
             Some("Attention \u{2014} Terminal: cargo (exited)"),
@@ -280,6 +310,7 @@ mod tests {
                 code: 101,
                 signal: None,
             })),
+            None,
         );
         assert_eq!(
             failed.name.as_deref(),
@@ -297,6 +328,7 @@ mod tests {
                 code: 1,
                 signal: Some("Terminated".to_owned()),
             })),
+            None,
         );
         assert_eq!(
             killed.name.as_deref(),
@@ -304,11 +336,87 @@ mod tests {
         );
     }
 
+    /// The AGENT's state is SPOKEN, in the same position the sighted title carries it and through the
+    /// same function — so a screen-reader user learns which pane is waiting for an answer at the same
+    /// moment a sighted user can see it.
+    ///
+    /// This is the surface with the sharpest version of the problem H3 exists for: a sighted user can
+    /// glance at six panes and find the one showing a prompt, and an AT user cannot. The marker is
+    /// words for exactly that reason — a glyph would be read out as its unicode name.
+    ///
+    /// REVERT-PROOF: drop the `agent_marker` push and the working pane and the blocked pane announce
+    /// identically; render the wire token instead of the phrase and the AT hears "blocked", which
+    /// reads as a fault rather than as a question waiting for an answer.
+    #[test]
+    fn the_spoken_name_carries_what_the_agent_is_doing() {
+        let agent = |state: &str| {
+            Some(PaneAgent {
+                state: state.to_owned(),
+                name: Some("claude".to_owned()),
+                rule: Some("trust-dialog".to_owned()),
+                seq: 1,
+            })
+        };
+        let blocked = terminal_a11y_node(
+            pane_tag(1),
+            "claude",
+            String::new(),
+            false,
+            false,
+            None,
+            agent("blocked"),
+        );
+        assert_eq!(
+            blocked.name.as_deref(),
+            Some("Terminal: claude (claude needs an answer)"),
+            "the AT hears the request, not the wire's token",
+        );
+        let working = terminal_a11y_node(
+            pane_tag(1),
+            "claude",
+            String::new(),
+            false,
+            false,
+            None,
+            agent("working"),
+        );
+        assert_eq!(
+            working.name.as_deref(),
+            Some("Terminal: claude (claude working)"),
+            "...and the two states are distinguishable by ear",
+        );
+        // A pane no manifest claims announces exactly what it did before H3 — the additive rule,
+        // which on this surface is what keeps a shell from being introduced as an agent at rest.
+        let shell =
+            terminal_a11y_node(pane_tag(1), "bash", String::new(), false, false, None, None);
+        assert_eq!(shell.name.as_deref(), Some("Terminal: bash"));
+        // ...and the verdict yields to the exit marker, which is `agent_marker`'s own rule: the
+        // state and "(exited)" would otherwise contradict each other in one breath.
+        let gone = terminal_a11y_node(
+            pane_tag(1),
+            "claude",
+            String::new(),
+            false,
+            false,
+            Some(None),
+            agent("idle"),
+        );
+        assert_eq!(gone.name.as_deref(), Some("Terminal: claude (exited)"));
+    }
+
     /// The sighted title and the spoken name use ONE marker, so the two surfaces cannot drift into
     /// describing the same pane differently.
     #[test]
     fn the_spoken_marker_is_the_same_string_the_title_paints() {
-        let spoken = terminal_a11y_node(pane_tag(0), "sh", String::new(), false, false, Some(None));
+        let spoken = terminal_a11y_node(
+            pane_tag(0),
+            "sh",
+            String::new(),
+            false,
+            false,
+            Some(None),
+            None,
+        );
         assert!(
             spoken
                 .name

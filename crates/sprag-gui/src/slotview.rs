@@ -31,7 +31,7 @@ use std::collections::HashSet;
 
 use pinion_core::GridBuffer;
 use sprag_host::{
-    HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneNotification,
+    HostClient, PaneAgent, PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneNotification,
     PaneScrollFacts, Project, UserConfig,
 };
 use sprag_input::{Modifiers, MouseInput};
@@ -600,6 +600,16 @@ impl SlotView {
         self.id(slot).and_then(|id| self.host.pane_notification(id))
     }
 
+    /// What the AGENT in slot `slot` is doing (H3), `None` for a hole or a pane no manifest claims.
+    ///
+    /// A DISPLAY fact like [`pane_title`](Self::pane_title), and read by the title SSOT
+    /// ([`crate::view::pane_display_title`]) so one verdict reaches every surface a title reaches —
+    /// the dock header, the tab label, a floater's OS title, and the a11y name. Never identity: the
+    /// state moves under a pane that keeps its address.
+    pub(crate) fn pane_agent(&self, slot: usize) -> Option<PaneAgent> {
+        self.id(slot).and_then(|id| self.host.pane_agent(id))
+    }
+
     /// Slot `slot`'s tmux monitor-bell count (`\a`), `0` for a hole or a pane that rang none. A
     /// DISPLAY signal the attention marker combines with the notification `seq` (see
     /// [`crate::attention`]) — kept SEPARATE because a bell carries no text.
@@ -977,6 +987,10 @@ mod tests {
         /// Per-pane-id exit STATUS, for the title tests that need a code. Deliberately independent
         /// of `dead` so a test can build the real "died but not yet reaped" state — the one a
         /// combined field would make unrepresentable.
+        /// Per-pane-id AGENT verdict (H3), for the display-title / a11y tests. A pane
+        /// absent from the map is one no manifest claims, which is what the wire's absent
+        /// `agent` key means and what a title must render as silence.
+        agents: std::collections::HashMap<PaneId, PaneAgent>,
         exits: std::collections::HashMap<PaneId, PaneExit>,
     }
 
@@ -1041,6 +1055,9 @@ mod tests {
         fn pane_bell_seq(&self, id: PaneId) -> u64 {
             self.bells.get(&id).copied().unwrap_or(0)
         }
+        fn pane_agent(&self, id: PaneId) -> Option<PaneAgent> {
+            self.agents.get(&id).cloned()
+        }
         /// Inert: these tests drive the pane slot map, not the window / session surface.
         fn windows(&self) -> Vec<WindowInfo> {
             Vec::new()
@@ -1071,6 +1088,7 @@ mod tests {
             notes: None,
             bells: std::collections::HashMap::new(),
             dead: std::collections::HashSet::new(),
+            agents: std::collections::HashMap::new(),
             exits: std::collections::HashMap::new(),
         }))
     }
@@ -1093,6 +1111,7 @@ mod tests {
             notes: None,
             bells: std::collections::HashMap::new(),
             dead: std::collections::HashSet::new(),
+            agents: std::collections::HashMap::new(),
             exits: std::collections::HashMap::new(),
         }));
 
@@ -1129,6 +1148,7 @@ mod tests {
             notes: None,
             bells: [(pid(10), 1u64)].into_iter().collect(), // pane 10 also rang, so both markers ride
             dead: [pid(10)].into_iter().collect(),          // ...and its child has exited
+            agents: std::collections::HashMap::new(),
             exits: std::collections::HashMap::new(),
         }));
 
@@ -1174,6 +1194,79 @@ mod tests {
         assert_eq!(view.pane_child_exit(7), None, "...and no status either");
     }
 
+    /// The AGENT verdict reaches every title surface through the same SSOT the other two markers do
+    /// (H3 slice 5), and it reaches them as WORDS a person can act on: the pane running a blocked
+    /// agent is the one the user has to go to, and it says so beside the pane's own title rather than
+    /// only on a wire nobody reads.
+    ///
+    /// Four panes, because four things had to hold at once and only a composition test can see them
+    /// together: a claimed pane wears its state, an UNCLAIMED one wears nothing (D3 — "this is not an
+    /// agent" and "this agent wants you" must not collapse), `blocked` is rendered as a REQUEST rather
+    /// than as a fault, and a DEAD pane drops the verdict its final screen still shows.
+    ///
+    /// REVERT-PROOF: drop the `agent_marker` call from `pane_display_title` and every assertion but
+    /// the unclaimed pane's fails — the pane list goes back to being unable to say which of two
+    /// identical-looking panes is waiting for an answer.
+    #[test]
+    fn the_agent_state_rides_the_display_title_and_a_dead_pane_drops_it() {
+        let agent = |state: &str, name: &str| PaneAgent {
+            state: state.to_owned(),
+            name: Some(name.to_owned()),
+            rule: Some("idle-glyph".to_owned()),
+            seq: 3,
+        };
+        let ids = std::rc::Rc::new(RefCell::new(vec![pid(10), pid(11), pid(12), pid(13)]));
+        let view = SlotView::new(Box::new(FakeHost {
+            ids: std::rc::Rc::clone(&ids),
+            titles: [
+                (pid(10), "claude".to_owned()),
+                (pid(11), "claude".to_owned()),
+                (pid(12), "bash".to_owned()),
+                (pid(13), "claude".to_owned()),
+            ]
+            .into_iter()
+            .collect(),
+            notifications: std::collections::HashMap::new(),
+            notes: None,
+            bells: std::collections::HashMap::new(),
+            // The fourth pane's child is GONE while its screen still shows the agent that was there.
+            dead: [pid(13)].into_iter().collect(),
+            agents: [
+                (pid(10), agent("working", "claude")),
+                (pid(11), agent("blocked", "claude")),
+                // pid(12) is a shell: no manifest claims it, so the wire carries no key at all.
+                (pid(13), agent("idle", "claude")),
+            ]
+            .into_iter()
+            .collect(),
+            exits: std::collections::HashMap::new(),
+        }));
+
+        Owner::new().run(|| {
+            let title = |i| crate::view::pane_display_title(&view, i);
+            assert_eq!(
+                title(0),
+                "claude (claude working)",
+                "the state rides the title the dock header and the tab both read",
+            );
+            assert_eq!(
+                title(1),
+                "claude (claude needs an answer)",
+                "`blocked` is a REQUEST, not a fault — the wire token is not what a person reads",
+            );
+            assert_eq!(
+                title(2),
+                "bash",
+                "a pane no manifest claims says nothing: absence is the answer, never `idle`",
+            );
+            assert_eq!(
+                title(3),
+                format!("claude{}", crate::view::DEAD_MARKER),
+                "a dead pane's final screen may still show an agent; the pane is not running one",
+            );
+        });
+    }
+
     /// A pane whose child FAILED names its code on the title, and one that a signal killed names
     /// the signal — the difference between "this finished badly" and "something took it", neither
     /// of which a stopped screen can express on its own.
@@ -1198,6 +1291,7 @@ mod tests {
             bells: std::collections::HashMap::new(),
             // All three children are gone; only two of them have been reaped.
             dead: [pid(10), pid(11), pid(12)].into_iter().collect(),
+            agents: std::collections::HashMap::new(),
             exits: [
                 (
                     pid(10),
@@ -1251,6 +1345,7 @@ mod tests {
             notes: None,
             bells: std::collections::HashMap::new(),
             dead: [pid(10)].into_iter().collect(),
+            agents: std::collections::HashMap::new(),
             exits: [(
                 pid(10),
                 PaneExit {
@@ -1293,6 +1388,7 @@ mod tests {
             notes: Some(std::rc::Rc::clone(&notes)),
             bells: std::collections::HashMap::new(),
             dead: std::collections::HashSet::new(),
+            agents: std::collections::HashMap::new(),
             exits: std::collections::HashMap::new(),
         }));
 
@@ -1354,6 +1450,7 @@ mod tests {
             notes: None,
             bells: [(pid(10), 2u64)].into_iter().collect(), // pane 10 rang the bell twice
             dead: std::collections::HashSet::new(),
+            agents: std::collections::HashMap::new(),
             exits: std::collections::HashMap::new(),
         }));
 
