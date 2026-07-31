@@ -52,7 +52,7 @@
 // here (mirrors `sprag-gui`) — declared crate-wide so a future internal link cannot re-break it.
 #![allow(rustdoc::private_intra_doc_links)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::unix::io::AsRawFd;
@@ -60,16 +60,17 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use signal_hook::consts::{SIGINT, SIGTERM};
 use sprag_host::{
-    FrameIngress, Host, HostState, RunRegistry, SavedHistory, bump_on_dirty, dispatch_frames,
-    history_dir, history_limits, load_pane_history, load_snapshot, pane_exit_hook,
-    save_histories_if_changed, save_if_changed, snapshot_path, spawn_reaper, stdin_frames,
+    AgentClock, ChannelRegistry, FrameIngress, Host, HostState, RunRegistry, SavedHistory,
+    bump_on_dirty, dispatch_frames, history_dir, history_limits, load_pane_history, load_snapshot,
+    pane_exit_hook, save_histories_if_changed, save_if_changed, snapshot_path, spawn_reaper,
+    stdin_frames,
 };
 use sprag_rpc::HOST_SOCKET;
-use sprag_terminal::{CommandBuilder, PaneId, SessionRegistry, Snapshot};
+use sprag_terminal::{CommandBuilder, PaneId, SessionRegistry, Snapshot, Workspace};
 use sprag_vt::HistoryLimits;
 use tracing_subscriber::{EnvFilter, fmt};
 
@@ -210,7 +211,16 @@ fn main() -> io::Result<()> {
         )
         .map_err(io::Error::other)?;
     }
-    let state = HostState::new(host, channels, Some(on_pane_exit));
+    // The agent-state memory (H3), shared by the pane list that reads it and the waker that keeps
+    // its clock. The two are installed TOGETHER because a registry without a waker publishes
+    // `Blocked` promptly and `Idle` only by luck — see `spawn_agent_waker`.
+    let agents = Arc::new(AgentClock::default());
+    spawn_agent_waker(
+        Arc::clone(host.registry()),
+        Arc::clone(&agents),
+        Arc::clone(&channels),
+    );
+    let state = HostState::new(host, channels, Some(on_pane_exit)).with_agents(agents);
 
     // One dispatch owner (this thread) serialises all dispatch; the always-on
     // socket and stdin are producers of RpcFrames into it, so a socket client
@@ -306,6 +316,177 @@ fn spawn_durability_saver(
                     "pane history save to {} failed: {e}",
                     history_dir.display()
                 );
+            }
+        }
+    });
+}
+
+/// How often the agent waker SWEEPS: discover panes nobody has asked about, and forget panes that are
+/// gone.
+///
+/// # Why a sweep is needed at all, and what it costs
+///
+/// A candidate is created by an OBSERVATION, and until slice 3 the only thing that observed was the
+/// pane-list query. So a daemon nobody had ever queried held no state for any pane — measured, not
+/// reasoned: a first-ever one-shot read of an agent pane on a five-second-old daemon answered nothing,
+/// because the read was itself that pane's first observation and a resting verdict has to hold. That
+/// makes "ask once and get an answer" false for exactly the caller slice 5 is FOR: an MCP or CLI peer
+/// on a daemon with no attached frontend.
+///
+/// The fix is not to poll the panes. The sweep observes a pane only while it is UNKNOWN, and a pane is
+/// unknown once — so the evaluation cost is one screen read per pane for the life of the daemon, not
+/// one per interval. What recurs is the walk itself: the registry lock, then each workspace lock, and
+/// a pane-id read each. [`spawn_durability_saver`] already takes exactly those locks at exactly this
+/// interval and then does strictly more (a history epoch per pane, and an encode when one moved), so
+/// the marginal cost of this thread on an idle daemon is a second cheap lock acquisition every five
+/// seconds. M3's "a quiet workspace costs nothing" is about the evaluation, and the evaluation is what
+/// the sweep does not repeat.
+///
+/// Five seconds because it is [`SNAPSHOT_INTERVAL`]'s reason applied to a different fact: it bounds how
+/// long after a pane's birth its state can be unknown to a caller who never asks twice.
+const AGENT_SWEEP_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Spawn the agent settle waker (daemon only): confirm the verdicts whose window has closed, wake the
+/// clients of the sessions whose answers moved, and forget the panes that are gone.
+///
+/// # Why a thread exists at all
+///
+/// The pane list evaluates a pane when a CLIENT asks, and a client asks when the session's scene
+/// revision moves — which pane output and user actions advance. That drives every verdict resting on
+/// evidence PRESENT on the screen: the output that paints a dialog is the same event that wakes the
+/// reader, so `Blocked` reaches a person on sight.
+///
+/// It does not drive the other half. A verdict resting on an ABSENCE — the agent stopped working, so
+/// it is `Idle` and wants you — has to hold for the settle window before it is believed, and the last
+/// thing to move the revision was **the output that stopped**. In a workspace with one agent pane and
+/// nothing else happening there is no second event, so without this thread that pane would sit at its
+/// previous state until something unrelated happened to wake a client. The failure is worse than a
+/// plain hang because it is data-dependent: six busy agent panes supply each other's wakes, so it
+/// works in exactly the case the feature is for and freezes in the quiet one.
+///
+/// This thread also OBSERVES rather than merely bumping, and that is the difference between waking a
+/// reader and having an answer to give one. With no client attached a bump wakes nobody, so a later
+/// one-shot reader (`sprag` on the CLI, an MCP call) would find a tracker that had never been asked.
+/// Confirming here means the read path stays a pure read.
+///
+/// # It waits on an EVENT, not on a tick — and the first version of this did not
+///
+/// The obvious shape is to compute the nearest deadline, sleep until it, and repeat. That was written,
+/// and a live drive against the daemon showed it never published anything: at start-up nothing is
+/// pending, so the nearest deadline is `None`, so the thread slept for the prune interval — and the
+/// pane-list query that then created a two-second candidate had no way to tell it. **The mechanism
+/// built to serve a deadline nothing else would serve was itself waiting for an event nothing
+/// produced**, which is D9's own defect one level up, and only driving the binary found it.
+///
+/// A shorter sleep is not the fix: waking a few times a second to ask whether anything is pending yet
+/// would take every workspace lock several times a second on a daemon where nothing is happening,
+/// which is the cost M3 measured away. So the appearance of a candidate is an event —
+/// [`AgentClock::park_until_due`] parks on it — and the loop below wakes for exactly three reasons: a
+/// deadline came due, a candidate appeared (so the sleep has to be re-planned around a nearer
+/// deadline), or the prune interval elapsed. Only the first and third do any work.
+///
+/// # Cost
+///
+/// With nothing pending the thread is BLOCKED, not spinning, and wakes on the sweep interval to
+/// discover new panes and bound memory. With something pending it wakes at that deadline: one wake per
+/// transition.
+///
+/// Lock discipline is [`spawn_durability_saver`]'s, for the same reason: the registry lock is taken
+/// and RELEASED to clone out the pools, then each workspace lock is taken on its own, never nested.
+/// The clock's lock is taken inside a workspace lock (the screen is only reachable there) and never
+/// the other way round.
+fn spawn_agent_waker(
+    registry: Arc<Mutex<SessionRegistry>>,
+    agents: Arc<AgentClock>,
+    channels: Arc<ChannelRegistry>,
+) {
+    thread::spawn(move || {
+        let mut last_sweep = Instant::now();
+        loop {
+            // Blocked until there is something to do. Returns early when a candidate APPEARS, which is
+            // not itself work — the guard below sends that wake straight back to the park.
+            agents.park_until_due(AGENT_SWEEP_INTERVAL);
+            let now = Instant::now();
+            let due = agents.with(|state| state.any_due(now));
+            let sweep = now.duration_since(last_sweep) >= AGENT_SWEEP_INTERVAL;
+            if !due && !sweep {
+                continue;
+            }
+            if sweep {
+                last_sweep = now;
+            }
+            // Phase 1 — registry lock ONLY: clone out each session's pools as handles, keeping the
+            // session NAME beside each so a published change can wake that session's clients and no
+            // others.
+            let pools: Vec<(String, Arc<Mutex<Workspace>>)> = {
+                let reg = registry.lock().unwrap_or_else(PoisonError::into_inner);
+                reg.sessions()
+                    .iter()
+                    .flat_map(|session| {
+                        let name = session.name().to_owned();
+                        session
+                            .windows()
+                            .iter()
+                            .map(move |window| (name.clone(), Arc::clone(window.workspace())))
+                    })
+                    .collect()
+            };
+            // Phase 2 — registry lock released. Each pool under its own lock.
+            let mut live: HashSet<PaneId> = HashSet::new();
+            let mut moved: HashSet<String> = HashSet::new();
+            for (session, pool) in &pools {
+                let pool = pool.lock().unwrap_or_else(PoisonError::into_inner);
+                for pane in pool.panes() {
+                    let id = pane.id();
+                    live.insert(id);
+                    // Two reasons to ask about a pane, and a pane can be both at once on the sweep
+                    // that first sees it. DUE: the window has closed on a candidate, so what publishes
+                    // it is the CLOCK — the third input a pending transition has. UNKNOWN: nobody has
+                    // ever looked at this pane, so it has no state to be waiting on, and only the
+                    // sweep can give it one. Neither applies to a settled, known pane, which is every
+                    // pane in a quiet workspace.
+                    let ask =
+                        agents.with(|state| state.is_due(id, now) || (sweep && !state.knows(id)));
+                    if !ask {
+                        continue;
+                    }
+                    let before = agents.with(|state| state.seq(id));
+                    let title = pane.title();
+                    pane.pty().with_screen(|screen| {
+                        agents.observe(
+                            id,
+                            screen,
+                            title.as_deref(),
+                            now,
+                            sprag_host::config::agent_settle,
+                        );
+                    });
+                    if agents.with(|state| state.seq(id)) != before {
+                        moved.insert(session.clone());
+                    }
+                    // THE LOOP'S LIVENESS RESTS ON THIS. `park_until_due` returns immediately for a
+                    // deadline already past, so a due pane that an observation does not RESOLVE sends
+                    // this thread round at full speed forever. It cannot happen: `is_due` is
+                    // `since + settle <= now`, which is exactly `settle`'s own publish condition, and
+                    // every other path through `observe` either publishes or re-dates the candidate to
+                    // `now`. Stated as an assertion rather than a comment because the failure is a
+                    // spin rather than a wrong answer — the mutation that removed the observe above
+                    // took the scene revision from 264 to 6,178,283 in twelve seconds.
+                    debug_assert!(
+                        !agents.with(|state| state.is_due(id, now)),
+                        "pane {id} is still due after being observed at the same instant",
+                    );
+                }
+            }
+            // A tracker must not outlive its pane. The census is DAEMON-WIDE, which is why it is
+            // built here and never in the pane-list query: that walk sees one session, and pruning
+            // against it would forget every other session's panes.
+            if sweep {
+                agents.with(|state| state.retain_live(&live));
+            }
+            // Wake the clients of the sessions whose published answer moved, and only those.
+            for session in &moved {
+                channels.bump(session);
             }
         }
     });

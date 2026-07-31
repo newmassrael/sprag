@@ -2036,3 +2036,253 @@ fn a_broken_project_config_is_reported_rather_than_read_as_empty() {
 
     std::fs::remove_dir_all(&project).ok();
 }
+
+/// H3's D9, against a REAL `sprag-term`: a verdict resting on an ABSENCE confirms itself with no
+/// client activity and no pane output.
+///
+/// # Why this is the gate the slice exists to earn
+///
+/// The pane list evaluates a pane when a client asks, and a client asks when the session's scene
+/// revision moves — which pane OUTPUT advances. That drives `Blocked` and `Working` for free, because
+/// the output that paints a dialog is the same event that wakes the reader. It does not drive `Idle`:
+/// that verdict has to hold for the settle window, and the last thing to move the revision was **the
+/// output that stopped**. Without the settle waker this pane sits at its previous state until
+/// something unrelated wakes a client.
+///
+/// So the observation cannot be "read the pane list after two seconds and see `idle`" — a read drives
+/// an evaluation, so that assertion passes with no waker at all. What distinguishes them is the
+/// REVISION: only the waker can advance it here, because the boot pane paints once and then holds its
+/// pty open with `cat`. Parking on `scene/waitFor` and being woken is therefore proof that the daemon
+/// acted on its own clock.
+///
+/// **What this test alone does NOT prove, measured rather than assumed.** A waker that bumped the
+/// session WITHOUT observing also passes everything above: the wake arrives, the woken client
+/// re-queries, and that query publishes. So this test pins "the daemon wakes a reader on its own
+/// clock"; `one_query_on_a_never_queried_daemon_answers_a_settled_verdict` is what pins "the daemon
+/// CONFIRMS the verdict itself", because there no client ever asks. The pair was found by running that
+/// mutation and reading which test died — the docstring said more than the assertions did.
+///
+/// The tail closes the other half of that mutation: a waker that bumps without publishing leaves the
+/// pane due forever and bumps again every sweep, which is the R152 livelock shape. So the revision is
+/// read again after two sweep intervals and must not have moved.
+///
+/// The wait runs on its own thread so a daemon that never publishes fails with this message instead of
+/// hanging until CI's timeout — a hang reports nothing about which claim broke.
+#[test]
+fn an_idle_agent_pane_settles_with_no_client_activity_and_no_output() {
+    // A `claude` pane at REST: the resting glyph in the title (OSC 2) and the footer its fingerprint
+    // reads, painted once — then `cat`, which emits nothing further, so the pane goes quiet exactly as
+    // an agent that has finished does. The rules' fidelity to a real agent screen is slice 1's
+    // business, proven there against captured screens; this is a screen those rules answer for.
+    let (_host, sock) = spawn_host_running(&[
+        "sh",
+        "-c",
+        "printf '\\033]2;\\342\\234\\263 Claude Code\\007\\033[2J\\033[H\\342\\235\\257\\n  \
+         \\342\\217\\270 manual mode on \\302\\267 ? for shortcuts\\n'; cat",
+    ]);
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned host socket");
+
+    // Wait for the paint to land, so the baseline below is taken after the pane's own output has
+    // stopped. The condition is the pane's TEXT, not a timer.
+    let painted = wait_until(Duration::from_secs(5), || {
+        conn.call(
+            "scene/query",
+            json!({ "path": pane_input_path(0, FULL_TEXT_SLOT) }),
+        )
+        .ok()
+        .and_then(|v: Value| v.as_str().map(|s| s.contains("? for shortcuts")))
+        .unwrap_or(false)
+    });
+    assert!(painted, "the agent-shaped screen never painted");
+
+    // The first look has started the settle window; nothing is published yet, because a resting
+    // verdict has to hold. This assertion is what makes the wake below meaningful — without it the
+    // test could not tell "confirmed on the daemon's clock" from "was already published".
+    let entry = pane_entry(&mut conn, 0);
+    assert!(
+        entry.get("agent").is_none(),
+        "a resting verdict must not publish on sight: {entry}",
+    );
+
+    // Now go quiet. The only thing that can advance this session's revision from here is the waker
+    // publishing the settled verdict: the pane is `cat` with nothing to say, and this test sends no
+    // input and invokes no action.
+    let since = read_revision(&mut conn);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        let mut parked =
+            HostConn::connect(&sock, Duration::from_secs(5)).expect("second connection");
+        let woken = parked.call("scene/waitFor", json!({ "since": since }));
+        let _ = tx.send(woken.map(|v: Value| v["revision"].as_u64().unwrap_or(0)));
+    });
+
+    let woken = rx.recv_timeout(Duration::from_secs(15)).expect(
+        "the daemon never advanced the revision on its own — nothing confirmed the verdict",
+    );
+    let revision = woken.expect("waitFor answered an error");
+    assert!(
+        revision > since,
+        "the wake carried a newer revision: {revision} vs {since}",
+    );
+    waiter.join().expect("the waiter thread");
+
+    // ONE wake per transition, not a tick — and this must be measured BEFORE the pane list is read
+    // again, which is the correction a mutation forced. A waker that bumps without publishing leaves
+    // the pane due forever and bumps every sweep (the R152 livelock shape), but a pane-list read
+    // publishes the verdict itself and so CURES the pane of being due. Asserting stability after such
+    // a read therefore proves nothing: the first draft of this check passed under exactly that
+    // mutation. `scene/revision` is not a pane-list query and drives no evaluation, so the window
+    // below is genuinely untouched. Two sweep intervals, so a per-sweep bump cannot hide inside it.
+    let after_settle = read_revision(&mut conn);
+    std::thread::sleep(Duration::from_secs(12));
+    assert_eq!(
+        read_revision(&mut conn),
+        after_settle,
+        "a settled workspace must stop advancing the revision — a waker that woke a client without \
+         publishing would still find this pane due and bump again every sweep",
+    );
+
+    // Only NOW read the pane list, so the answer the wake was about is reported by the daemon rather
+    // than produced by this query.
+    let entry = pane_entry(&mut conn, 0);
+    assert_eq!(
+        entry["agent"]["state"], "idle",
+        "the settled verdict reached the pane list: {entry}",
+    );
+    assert_eq!(
+        entry["agent"]["name"], "claude",
+        "and it says whose: {entry}"
+    );
+}
+
+/// One pane's entry from the `/sprag_mux` pane list.
+fn pane_entry(conn: &mut HostConn, id: u64) -> Value {
+    conn.call(
+        "scene/query",
+        json!({ "path": mux_action_path(PANES_SLOT) }),
+    )
+    .expect("panes query")
+    .as_array()
+    .and_then(|panes| panes.iter().find(|p| p["id"].as_u64() == Some(id)).cloned())
+    .expect("the pane is listed")
+}
+
+/// D8's additive rule over the REAL wire, plus the one-shot reader D9 buys.
+///
+/// Two claims that both need a live daemon:
+///
+/// * **A workspace with no agents is byte-identical to the pre-H3 shape.** The unit tests assert the
+///   key's absence on a synthetic screen; this asserts it on the wire a client actually parses, where
+///   an accidental `"agent": null` would be a shape change rather than an absence.
+/// * **A reader that asks ONCE gets the settled answer.** Under a poll-driven site alone, a verdict
+///   resting on an absence needs a second observation a window later, so a single-shot caller — `sprag`
+///   on the CLI, an MCP call — could never see `Idle` at all. Here the daemon has already confirmed it
+///   on its own clock, so ONE query answers, and the connection is a FRESH one that has never driven an
+///   evaluation.
+#[test]
+fn a_shell_pane_carries_no_agent_key_and_one_query_answers_a_settled_one() {
+    let (_host, sock) = spawn_host();
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned host socket");
+
+    // The boot pane is `cat`: a blank screen no manifest claims.
+    let shell = pane_entry(&mut conn, 0);
+    assert!(
+        shell.get("agent").is_none(),
+        "a shell pane carries no agent key at all — not a null one: {shell}",
+    );
+    assert!(
+        !shell.to_string().contains("agent"),
+        "and the word does not appear anywhere in its entry: {shell}",
+    );
+
+    // Spawn an agent-shaped pane beside it, then let the daemon settle it with nobody watching.
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(SPAWN_ACTION),
+            "args": { "cmd": ["sh", "-c",
+                "printf '\\033]2;\\342\\234\\263 Claude Code\\007\\033[2J\\033[H\\342\\235\\257\\n  \
+                 \\342\\217\\270 manual mode on \\302\\267 ? for shortcuts\\n'; cat"] },
+        }),
+    )
+    .expect("spawn the agent-shaped pane");
+
+    let settled = wait_until(Duration::from_secs(10), || {
+        pane_entry(&mut conn, 1)["agent"]["state"] == "idle"
+    });
+    assert!(
+        settled,
+        "the agent pane never settled: {}",
+        pane_entry(&mut conn, 1)
+    );
+
+    // A FRESH connection asking exactly once. It has driven no evaluation of its own, so anything it
+    // sees was confirmed by the daemon.
+    let mut fresh =
+        HostConn::connect(&sock, Duration::from_secs(5)).expect("a second, naive connection");
+    let entry = pane_entry(&mut fresh, 1);
+    assert_eq!(
+        entry["agent"]["state"], "idle",
+        "one query answers a settled verdict: {entry}",
+    );
+    assert_eq!(
+        entry["agent"]["rule"], "idle-glyph",
+        "with the rule that said so"
+    );
+
+    // And the shell beside it is still bare, so the presence above is not the detector answering for
+    // everything.
+    let shell = pane_entry(&mut fresh, 0);
+    assert!(
+        shell.get("agent").is_none(),
+        "the shell is still unclaimed: {shell}",
+    );
+}
+
+/// The one-shot reader contract, measured rather than assumed: a caller that asks EXACTLY ONCE, on a
+/// daemon no client has ever queried, gets a settled verdict.
+///
+/// # Why this test exists in this shape
+///
+/// The first version of D9 claimed a one-shot reader was served, and a live drive showed it was not. A
+/// candidate is created by an OBSERVATION, and until slice 3 the only observer was the pane-list query
+/// — so a first-ever read WAS that pane's first observation, and a resting verdict has to hold before
+/// it publishes. The answer was `None`, twice, on a daemon that had been up for five seconds. That is
+/// false for exactly the caller slice 5 is for: an MCP or CLI peer with no frontend attached.
+///
+/// So the sweep discovers unknown panes, and this test is the assertion that it does. It must not poll:
+/// polling would drive the very evaluation being tested, which is how the earlier version of this claim
+/// passed while being wrong. It therefore waits blind, then asks once.
+///
+/// The wait is sweep + settle with room to spare. It is the slowest test in this file, and the reason
+/// is the thing being proven: nothing may touch the daemon in between.
+#[test]
+fn one_query_on_a_never_queried_daemon_answers_a_settled_verdict() {
+    let (_host, sock) = spawn_host_running(&[
+        "sh",
+        "-c",
+        "printf '\\033]2;\\342\\234\\263 Claude Code\\007\\033[2J\\033[H\\342\\235\\257\\n  \
+         \\342\\217\\270 manual mode on \\302\\267 ? for shortcuts\\n'; cat",
+    ]);
+
+    // Blind. No connection, no query, no input — the daemon is alone with its own clock.
+    std::thread::sleep(Duration::from_secs(12));
+
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned host socket");
+    let entry = pane_entry(&mut conn, 0);
+    assert_eq!(
+        entry["agent"]["state"], "idle",
+        "the daemon settled this pane with nobody asking: {entry}",
+    );
+    assert_eq!(
+        entry["agent"]["name"], "claude",
+        "and knows whose pane it is: {entry}"
+    );
+    assert_eq!(
+        entry["agent"]["seq"], 1,
+        "published exactly once, so the sweep is not re-publishing on a loop: {entry}",
+    );
+}

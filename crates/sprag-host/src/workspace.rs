@@ -54,6 +54,7 @@
 use std::fmt;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use pinion_core::external::{
     ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError, RawJson,
@@ -122,6 +123,20 @@ pub struct WorkspaceExternal {
     /// the writes, off the frame's connection id, which no external sees). `None` leaves every
     /// `attached` at 0 — an honest "no wire clients here".
     attachments: Option<Arc<Mutex<crate::AttachmentRegistry>>>,
+    /// The daemon's agent-state memory ([`crate::AgentRegistry`]), or `None` off a daemon — the same
+    /// injection [`Self::attachments`] gets, for the same two reasons.
+    ///
+    /// It cannot be a plain field on this struct: a `WorkspaceExternal` is rebuilt for every
+    /// JSON-RPC request, so a map owned here would be born empty per poll and the hysteresis would
+    /// be silently inert while every individual verdict still looked right. It is `Arc<Mutex<_>>`
+    /// because the memory outlives the request that reads it, and it is `Option` because a `None`
+    /// leaves the `agent` key ABSENT — which is exactly what D8 says a pane with no agent looks
+    /// like, so an in-process host without a detector serves the pre-H3 wire shape rather than a
+    /// wrong answer.
+    ///
+    /// The lock is taken INSIDE the workspace lock (the screen is only reachable there) and never
+    /// the other way round.
+    agents: Option<Arc<crate::AgentClock>>,
 }
 
 /// A VALIDATED pane-spawn request — the command, its label, and any explicit dims. Produced by
@@ -149,6 +164,7 @@ impl WorkspaceExternal {
         channels: Arc<ChannelRegistry>,
         on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
         attachments: Option<Arc<Mutex<crate::AttachmentRegistry>>>,
+        agents: Option<Arc<crate::AgentClock>>,
     ) -> Self {
         Self {
             registry,
@@ -156,6 +172,7 @@ impl WorkspaceExternal {
             channels,
             on_pane_exit,
             attachments,
+            agents,
         }
     }
 
@@ -952,7 +969,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                 // token a client compares describes the same moment as the rest of its entry. A
                 // token read later than the pane list could only ever be NEWER than the frame the
                 // client goes on to fetch, which is the one direction that serves a stale pane.
-                let (panes, tokens) = {
+                let (panes, tokens, agents) = {
                     let guard = lock(self.workspace());
                     let tokens: std::collections::HashMap<u64, sprag_grid::ProjectionToken> = guard
                         .panes()
@@ -964,7 +981,33 @@ impl ExternalIntrospect for WorkspaceExternal {
                             )
                         })
                         .collect();
-                    (guard.list(), tokens)
+                    // The agent verdicts, under the SAME lock and for the same reason the tokens
+                    // are: the screen a rule read and the entry describing it have to be the same
+                    // moment. It leaves as a map keyed by pane id rather than on `PaneInfo`, so the
+                    // producer's DTO stays what its doc says it is and no `sprag_detect` type enters
+                    // `sprag-terminal`.
+                    //
+                    // The window is a user OPTION read from the file, so it is read LAZILY — at most
+                    // once for this whole walk, and not at all when every pane is settled. See
+                    // `AgentRegistry::observe`.
+                    let agents = self.agents.as_ref().map(|agents| {
+                        let mut window: Option<sprag_detect::Hysteresis> = None;
+                        let now = Instant::now();
+                        guard
+                            .panes()
+                            .iter()
+                            .filter_map(|pane| {
+                                let title = pane.title();
+                                let facts = pane.pty().with_screen(|screen| {
+                                    agents.observe(pane.id(), screen, title.as_deref(), now, || {
+                                        *window.get_or_insert_with(crate::config::agent_settle)
+                                    })
+                                })?;
+                                Some((pane.id().0, facts))
+                            })
+                            .collect::<std::collections::HashMap<u64, crate::AgentFacts>>()
+                    });
+                    (guard.list(), tokens, agents)
                 };
                 let entries = panes
                     .iter()
@@ -1101,6 +1144,30 @@ impl ExternalIntrospect for WorkspaceExternal {
                             tokens.get(&p.id).and_then(|t| serde_json::to_value(t).ok())
                         {
                             entry["projection"] = token;
+                        }
+                        // The agent this pane is running and what it is doing (H3). ADDITIVE: the key
+                        // is present only for a pane some manifest CLAIMS and some rule answered for,
+                        // so a workspace of shells is byte-identical to the pre-H3 wire shape — and
+                        // the absence is carried by `AgentRegistry::observe` returning nothing rather
+                        // than by this site remembering to check, so it cannot drift.
+                        //
+                        // `state` is the answer a person wants ("which pane is waiting on me"),
+                        // `rule` is what makes it diagnosable (D7 — a gate that cannot say what it saw
+                        // cannot be debugged, and this is `explain`'s whole content), and `seq` moves
+                        // on a published CHANGE so a client tells "still blocked" from "blocked again"
+                        // without diffing strings — `notification_seq`'s treatment exactly.
+                        if let Some(facts) = agents.as_ref().and_then(|map| map.get(&p.id)) {
+                            let mut value = serde_json::json!({
+                                "state": facts.state,
+                                "seq": facts.seq,
+                            });
+                            if let Some(name) = &facts.agent {
+                                value["name"] = serde_json::json!(name);
+                            }
+                            if let Some(rule) = &facts.rule {
+                                value["rule"] = serde_json::json!(rule);
+                            }
+                            entry["agent"] = value;
                         }
                         entry
                     })
@@ -1508,9 +1575,163 @@ mod tests {
         let channels = Arc::new(ChannelRegistry::default());
         let revision = channels.revision(scope.session());
         (
-            WorkspaceExternal::new(Arc::clone(reg), scope, channels, None, None),
+            WorkspaceExternal::new(Arc::clone(reg), scope, channels, None, None, None),
             revision,
         )
+    }
+
+    /// A control surface WITH a detector installed, plus the registry it shares — the daemon's
+    /// wiring, which is the only configuration the `agent` key exists in.
+    fn control_with_agents(
+        reg: &Arc<Mutex<SessionRegistry>>,
+    ) -> (WorkspaceExternal, Arc<crate::AgentClock>) {
+        let agents = Arc::new(crate::AgentClock::default());
+        let scope = SessionScope::unscoped(reg);
+        let channels = Arc::new(ChannelRegistry::default());
+        (
+            WorkspaceExternal::new(
+                Arc::clone(reg),
+                scope,
+                channels,
+                None,
+                None,
+                Some(Arc::clone(&agents)),
+            ),
+            agents,
+        )
+    }
+
+    /// One pane's entry from the panes slot.
+    fn pane_entry(ext: &mut WorkspaceExternal, id: u64) -> Value {
+        let Some(IntrospectValue::Json(Value::Array(panes))) = ext.query(PANES_SLOT) else {
+            panic!("the panes slot answers with a JSON array");
+        };
+        panes
+            .into_iter()
+            .find(|p| p["id"].as_u64() == Some(id))
+            .expect("the pane is listed")
+    }
+
+    /// Wait until pane `id` carries an `agent` key, then return its entry.
+    ///
+    /// Waits on the CONDITION the assertions read rather than on a timer: the child's `printf` reaches
+    /// the emulator asynchronously, so a sleep long enough today is a flake tomorrow. Each poll
+    /// re-queries the slot, which is also what drives the evaluation — a detector wired to this site
+    /// answers only when asked, which is the whole of D9's problem and is fine HERE because the caller
+    /// is asking.
+    fn await_agent(ext: &mut WorkspaceExternal, id: u64) -> Value {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let entry = pane_entry(ext, id);
+            if entry.get("agent").is_some() {
+                return entry;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "pane {id} never published an agent state: {entry:?}",
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// A pane painted as a BLOCKED `claude`: a choice list over the footer its fingerprint reads, and
+    /// a `cat` to hold the pane open. `Blocked` is the state that publishes on sight, so a test built
+    /// on it waits for no window — and it is the state the whole front exists to report.
+    ///
+    /// The rules' fidelity to a REAL agent screen is slice 1's business, proven there against six
+    /// captured dialogs; this is a screen those rules already answer for.
+    const BLOCKED_CLAUDE: &str =
+        "printf '\\033[2J\\033[H❯ 1. Yes\\n  2. No\\n  ⏸ manual mode on · ? for shortcuts\\n'; cat";
+
+    /// The same pane at REST: the resting glyph in the title, and the footer. `Idle` rests on an
+    /// ABSENCE, so it is the state the settle window applies to.
+    const IDLE_CLAUDE: &str = "printf '\\033]2;✳ Claude Code\\007\\033[2J\\033[H❯\\n  ⏸ manual mode \
+                               on · ? for shortcuts\\n'; cat";
+
+    /// D8: the key is present for a claimed pane and ABSENT for everything else, so a workspace of
+    /// shells is byte-identical to the pre-H3 wire shape. Both halves in one query, because the
+    /// absence is only meaningful beside a presence — a detector that answered for nothing at all
+    /// would pass the first assertion on its own.
+    #[test]
+    fn the_agent_key_is_present_for_a_claimed_pane_and_absent_for_a_shell() {
+        let reg = registry();
+        let (mut ext, _agents) = control_with_agents(&reg);
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+            .unwrap();
+        ext.invoke(
+            SPAWN_ACTION,
+            IntrospectValue::Json(json!({"cmd": ["sh", "-c", BLOCKED_CLAUDE]})),
+        )
+        .unwrap();
+
+        let claimed = await_agent(&mut ext, 1);
+        assert_eq!(
+            claimed["agent"],
+            json!({
+                "state": "blocked",
+                "name": "claude",
+                "rule": "dialog-choice-list",
+                "seq": 1,
+            }),
+            "the state a person wants, the agent, the rule that says WHY (D7), and the seq",
+        );
+
+        let shell = pane_entry(&mut ext, 0);
+        assert!(
+            shell.get("agent").is_none(),
+            "a pane no manifest claims carries no key at all: {shell:?}",
+        );
+    }
+
+    /// The `seq` is what lets a client tell "still blocked" from "blocked again" without diffing
+    /// strings, so it must NOT move on a re-read of an unchanged pane — which is what two attached
+    /// clients polling one wake do.
+    #[test]
+    fn re_reading_an_unchanged_agent_pane_does_not_move_the_seq() {
+        let reg = registry();
+        let (mut ext, _agents) = control_with_agents(&reg);
+        ext.invoke(
+            SPAWN_ACTION,
+            IntrospectValue::Json(json!({"cmd": ["sh", "-c", BLOCKED_CLAUDE]})),
+        )
+        .unwrap();
+
+        let first = await_agent(&mut ext, 0);
+        let second = pane_entry(&mut ext, 0);
+        let third = pane_entry(&mut ext, 0);
+        assert_eq!(first["agent"], second["agent"]);
+        assert_eq!(
+            second["agent"], third["agent"],
+            "the verdict is published once however many times it is read",
+        );
+        assert_eq!(second["agent"]["seq"], json!(1));
+    }
+
+    /// The settle window is a user OPTION, and this is the assertion that it is a control something
+    /// OBEYS rather than one `show-options` merely prints.
+    ///
+    /// `agent-settle-time = 0` means "publish every reading as it arrives", so an IDLE pane — a verdict
+    /// that rests on an absence and would otherwise wait two seconds — publishes on the first look. A
+    /// site that ignored the option, or read it once at startup, fails here on the clock rather than on
+    /// a value: the test would hang until its own deadline.
+    #[test]
+    fn the_settle_option_reaches_the_evaluation_site() {
+        crate::config::with_config(Some("[options]\nagent-settle-time = 0\n"), || {
+            let reg = registry();
+            let (mut ext, _agents) = control_with_agents(&reg);
+            ext.invoke(
+                SPAWN_ACTION,
+                IntrospectValue::Json(json!({"cmd": ["sh", "-c", IDLE_CLAUDE]})),
+            )
+            .unwrap();
+
+            let entry = await_agent(&mut ext, 0);
+            assert_eq!(
+                entry["agent"]["state"],
+                json!("idle"),
+                "a zero window publishes a resting verdict on sight: {entry:?}",
+            );
+        });
     }
 
     #[test]
@@ -2411,6 +2632,7 @@ mod tests {
             Arc::new(ChannelRegistry::default()),
             None,
             Some(attachments),
+            None,
         );
         assert_eq!(
             session_names(ext.query(SESSIONS_SLOT)),
@@ -2781,6 +3003,7 @@ mod tests {
             Arc::new(ChannelRegistry::default()),
             Some(signal),
             None,
+            None,
         );
         // `new_session` sends exactly one signal by itself: the [`crate::BirthPin`] it takes fires
         // on release, deliberately, so a birth that FAILED still lets an idle daemon go. A BLOCKING
@@ -2942,6 +3165,7 @@ mod tests {
             SessionScope::unscoped(&reg),
             Arc::new(ChannelRegistry::default()),
             Some(signal),
+            None,
             None,
         );
 
@@ -3227,6 +3451,7 @@ mod tests {
             SessionScope::unscoped(&reg),
             Arc::new(ChannelRegistry::default()),
             Some(signal),
+            None,
             None,
         );
 

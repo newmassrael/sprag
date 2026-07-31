@@ -308,6 +308,43 @@ pub fn history_limit_lines() -> usize {
     configured.map_or(sprag_vt::DEFAULT_SCROLLBACK_LINES, |lines| lines as usize)
 }
 
+/// The agent-state settle window in force — the user's
+/// [`agent-settle-time`](crate::options::AGENT_SETTLE_TIME), or the detector's own default if they
+/// have not set one.
+///
+/// Read from the file on every call, like every other option reader here, so `set-option` takes effect
+/// with nothing to restart. **But WHERE it is called is the cost decision, and it is not this
+/// function's to make.** [`window_size`] prices its own file read as one per WINDOW CHANGE and
+/// [`history_limit_lines`] as one per pane BIRTH; both are rare events, and both say so. The settle
+/// window's reader is the pane list, which is served on every client wake — so
+/// [`AgentRegistry::observe`](crate::AgentRegistry::observe) calls this only for a pane that will
+/// actually consult the window (one being built, or one with a candidate waiting), and a workspace of
+/// settled panes reads the file zero times. Calling it unconditionally from that path would be a file
+/// read per output batch per session, which is the one shape this option must not take.
+///
+/// A broken config logs and falls through to the default, the rule [`default_pane_command`] states at
+/// length. Refusing to answer would leave a pane with no agent state at all, which is worse for the
+/// user than the window they had before they typed the typo.
+#[must_use]
+pub fn agent_settle() -> sprag_detect::Hysteresis {
+    let configured = match options() {
+        Ok(options) => options.number(options::AGENT_SETTLE_TIME),
+        Err(error) => {
+            tracing::warn!(
+                target: "sprag_host::config",
+                %error,
+                "using the default agent-settle-time",
+            );
+            None
+        }
+    };
+    sprag_detect::Hysteresis {
+        settle: configured.map_or(sprag_detect::DEFAULT_SETTLE, |millis| {
+            std::time::Duration::from_millis(u64::from(millis))
+        }),
+    }
+}
+
 /// The client-side halves of the user's config, or the defaults when there is nothing to read.
 fn client_config() -> Result<(Options, Keymap), ConfigError> {
     let Some(path) = config_path() else {
@@ -1450,6 +1487,35 @@ mod tests {
             std::time::Duration::from_millis(declared),
             crate::keymap::DEFAULT_REPEAT_TIME,
         );
+    }
+
+    /// The two spellings of the settle window must not drift: the options table's string and
+    /// [`sprag_detect::DEFAULT_SETTLE`] are the same duration.
+    ///
+    /// Both have to exist — a `Tracker` built with `Hysteresis::default()` answers with no config file
+    /// anywhere, which is what every unit test in `sprag-detect` runs on — so the guard is a test
+    /// rather than one constant. The treatment `repeat-time` gets against the keymap and
+    /// `history-limit` against the emulator.
+    #[test]
+    fn the_agent_settle_default_is_the_detectors_own() {
+        let declared: u64 = options::spec(options::AGENT_SETTLE_TIME)
+            .expect("a registered option")
+            .default
+            .parse()
+            .expect("a number");
+        assert_eq!(
+            std::time::Duration::from_millis(declared),
+            sprag_detect::DEFAULT_SETTLE,
+        );
+    }
+
+    /// And the reader in force agrees with both, on a file that says nothing — the assertion that
+    /// would catch a default parsed but never applied.
+    #[test]
+    fn a_silent_file_gets_the_detectors_settle_window() {
+        with_config(None, || {
+            assert_eq!(agent_settle().settle, sprag_detect::DEFAULT_SETTLE);
+        });
     }
 
     /// The text `config.toml` holds right now, for the writer tests.

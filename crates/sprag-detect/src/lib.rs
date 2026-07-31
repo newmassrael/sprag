@@ -570,6 +570,30 @@ pub fn codex() -> Manifest {
     }
 }
 
+/// Every manifest this crate ships, in the order they are offered to a pane.
+///
+/// # Why this is a function and not a `const`
+///
+/// A manifest owns compiled [`Regex`]es, so this ALLOCATES — and that is the whole reason the list
+/// exists as one named thing. A caller that built `vec![claude(), codex()]` per evaluation would
+/// recompile every pattern on a path served once per client wake; a caller that holds the result
+/// compiles them once for the life of the daemon. Naming the list is what makes the second shape the
+/// obvious one.
+///
+/// # Order
+///
+/// First match wins for IDENTIFICATION — the fingerprint check [`detect`] runs — so the order is part
+/// of the answer.
+/// It is `claude` then `codex` for no better reason than the order they were measured in (R249, then
+/// R251), and nothing rests on it: the two fingerprints are asserted not to claim each other's panes
+/// (`the_two_built_in_manifests_do_not_claim_each_others_panes`), so the order is currently
+/// unobservable. Slice 4 layers user manifests over this list, and its layering rule is where order
+/// becomes load-bearing.
+#[must_use]
+pub fn built_ins() -> Vec<Manifest> {
+    vec![claude(), codex()]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -85,6 +85,21 @@ pub struct HostState {
     /// state exists. `Option`, not a hidden default: a non-daemon caller states `None` at the
     /// call site rather than inheriting a policy silently.
     on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// The daemon's agent-state memory (H3), shared into the mux control surface per assembly like
+    /// [`Self::attachments`], or `None` for a host that runs no detector.
+    ///
+    /// **A host that installs this must also drive the settle waker**
+    /// ([`crate::agent`]'s module docs, and `sprag-term`'s `spawn_agent_waker`). The two are paired by
+    /// this comment rather than by a type, so the reason is worth stating: the registry alone gives
+    /// verdicts that rest on PRESENT evidence, because the output that paints a dialog is the same
+    /// event that wakes a reader — while a verdict resting on an ABSENCE is confirmed by a clock
+    /// nothing else in this daemon runs. Installing the registry without the waker is therefore not a
+    /// smaller feature; it is one that reports `Blocked` promptly and `Idle` only by luck.
+    ///
+    /// `None` is the honest state for a host without both. It leaves the `agent` key absent, which D8
+    /// already defines as "no agent here", so the wire shape is the pre-H3 one rather than a wrong
+    /// answer.
+    agents: Option<Arc<crate::AgentClock>>,
 }
 
 impl HostState {
@@ -114,6 +129,43 @@ impl HostState {
             channels,
             on_pane_exit,
             attachments: Arc::new(Mutex::new(AttachmentRegistry::default())),
+            agents: None,
+        }
+    }
+
+    /// Install the agent-state memory (H3), sharing it with whoever drives the settle waker.
+    ///
+    /// A builder rather than a fourth parameter on [`new`](Self::new) because exactly one of this
+    /// project's four host owners wants it: the daemon. A parameter would make the other three — two
+    /// test harnesses and `sprag-latency` — state `None` about a subsystem they have nothing to do
+    /// with, and `sprag-latency` in particular measures the pane list, so a detector it did not ask
+    /// for would land in the instrument.
+    ///
+    /// See the field's docs for why installing this without a waker is the one configuration to avoid.
+    #[must_use]
+    pub fn with_agents(mut self, agents: Arc<crate::AgentClock>) -> Self {
+        self.agents = Some(agents);
+        self
+    }
+
+    /// The agent-state memory, cloned for a scene assembly — `None` for a host running no detector.
+    #[must_use]
+    pub fn agents(&self) -> Option<Arc<crate::AgentClock>> {
+        self.agents.clone()
+    }
+
+    /// Everything a DAEMON shares into a scene assembly, as one value.
+    ///
+    /// One accessor rather than three at each call site, so the two assembly sites cannot come to
+    /// disagree about which of the three a scene gets — which is exactly how a surface ends up half
+    /// wired and answering plausibly. The `attachments` map is always present on a `HostState`; the
+    /// other two are present only when their owner installed them.
+    #[must_use]
+    pub fn shared(&self) -> crate::DaemonShared {
+        crate::DaemonShared {
+            on_pane_exit: self.on_pane_exit(),
+            attachments: Some(Arc::clone(self.attachments())),
+            agents: self.agents(),
         }
     }
 
@@ -429,8 +481,7 @@ pub fn handle_request(state: &HostState, request_json: &str) -> Option<String> {
                 state.registry(),
                 &state.runs,
                 &state.channels,
-                state.on_pane_exit(),
-                Some(Arc::clone(state.attachments())),
+                state.shared(),
                 PaneCells::Omitted,
             );
             let revision = state.revision(scope.session());
@@ -496,8 +547,7 @@ fn handle_scoped_with_cells(
         state.registry(),
         &state.runs,
         &state.channels,
-        state.on_pane_exit(),
-        Some(Arc::clone(state.attachments())),
+        state.shared(),
         cells,
     );
     // The SCOPED session's token, which is what makes pinion's own OCC bump land in the right

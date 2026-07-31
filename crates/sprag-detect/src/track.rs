@@ -136,14 +136,32 @@ impl Seen {
 /// One pane's agent state over time: the quiescence gate, the settle window, and the identity a
 /// modal covers.
 ///
-/// One per pane, held wherever a pane is held (slice 3 puts it on `sprag_terminal::Pane`). It owns
-/// no clock and no manifests: `now` and the manifest list arrive on every [`observe`](Self::observe)
-/// call, so a workspace has one manifest list and a test has arithmetic.
+/// One per pane, held by whoever serves the pane's facts. Slice 3 puts it in a host-side registry,
+/// NOT on `sprag_terminal::Pane` as this comment said when slice 2 wrote it: `sprag-terminal` is the
+/// producer and owns the emulator and the PTY only, while a detector is scene-side — the division
+/// `sprag-grid` already sits on the far side of. It owns no clock and no manifests: `now` and the
+/// manifest list arrive on every [`observe`](Self::observe) call, so a workspace has one manifest
+/// list and a test has arithmetic.
 ///
 /// [`observe`](Self::observe) is meant to be called on EVERY tick, including the ticks where
 /// nothing has happened. The quiescence gate lives inside it rather than at the call site, so a
 /// caller cannot accidentally hold a pane's pending transition open by deciding for itself that
 /// nothing was worth asking about.
+///
+/// # There is no tick, so a pending transition has to ASK for one
+///
+/// Slice 2 wrote "every tick" as though a tick existed. Slice 3 read the daemon and found none: the
+/// pane list is served when a client asks, and a client asks when the scene revision moves, which
+/// pane OUTPUT and user ACTIONS advance. That is enough for a verdict resting on present evidence —
+/// the output that paints a dialog is the same event that wakes the reader — and it is not enough for
+/// one resting on an absence, because the last thing to move the revision was the output that
+/// STOPPED. A pane going quiet is a transition whose confirming observation nothing produces.
+///
+/// So [`pending_deadline`](Self::pending_deadline) exists: it is the instant at which this tracker
+/// would publish if it were asked, and it is `None` when nothing is pending. A caller drives the
+/// clock by observing again at that instant, and a caller with nothing pending owes nothing — which
+/// keeps M3's "a quiet workspace costs nothing" true of the confirmation as well as of the
+/// evaluation.
 #[derive(Debug)]
 pub struct Tracker {
     policy: Hysteresis,
@@ -191,6 +209,36 @@ impl Tracker {
     #[must_use]
     pub const fn seq(&self) -> u64 {
         self.seq
+    }
+
+    /// When a pending candidate would be published, or `None` when nothing is pending.
+    ///
+    /// The instant is derived (`since + settle`) rather than stored, so a policy that changes while a
+    /// candidate is pending moves the deadline it is already waiting on — which is what a user who
+    /// just shortened the window means by shortening it. See [`set_policy`](Self::set_policy).
+    ///
+    /// A caller uses this to know when to [`observe`](Self::observe) again; see the type's own docs
+    /// for why the answer cannot be left to whatever else happens to be moving.
+    #[must_use]
+    pub fn pending_deadline(&self) -> Option<Instant> {
+        self.pending
+            .as_ref()
+            .map(|pending| pending.since + self.policy.settle)
+    }
+
+    /// Replace the settle policy.
+    ///
+    /// Exists because the window is a user OPTION and this project's options are read from the file
+    /// on every call rather than held — the daemon is a reader of the user's config, not an owner of
+    /// it, so `set-option` takes effect with nothing to restart. A tracker built once at a pane's
+    /// first sighting would otherwise pin the window at whatever the file said that day.
+    ///
+    /// It does NOT touch a pending candidate's `since`: the window is how long the answer must hold,
+    /// and re-dating the evidence because the policy moved would restart a wait the pane has already
+    /// served — the same defect as re-starting the window on every re-observation, which
+    /// `a_pane_that_keeps_repainting_settles_when_the_candidate_has_held_long_enough` pins.
+    pub const fn set_policy(&mut self, policy: Hysteresis) {
+        self.policy = policy;
     }
 
     /// Take a reading of the pane and return what is published for it now.
@@ -363,6 +411,96 @@ mod tests {
             "a window shorter than the animation it guards against publishes the flicker it exists \
              to absorb",
         );
+    }
+
+    /// D9: the deadline is the tracker's whole answer to "when should somebody ask me again", so it
+    /// has to be absent exactly when nothing is waiting and exact when something is.
+    #[test]
+    fn the_pending_deadline_is_the_instant_a_waiting_candidate_would_publish() {
+        let manifests = [claude()];
+        let mut tracker = Tracker::default();
+        let mut em = painted(CLAUDE_FOOTER);
+        let base = Instant::now();
+
+        // A dialog publishes on sight, so nothing is left waiting.
+        repaint(&mut em, DIALOG);
+        tracker.observe(em.screen(), Some("✳ Claude Code"), &manifests, base);
+        assert_eq!(tracker.verdict().state, AgentState::Blocked);
+        assert_eq!(
+            tracker.pending_deadline(),
+            None,
+            "a verdict published on sight leaves nothing to come back for",
+        );
+
+        // The dialog goes away: a return to rest is an ABSENCE, so it waits — and says until when.
+        repaint(&mut em, CLAUDE_FOOTER);
+        tracker.observe(em.screen(), Some("✳ Claude Code"), &manifests, base);
+        assert_eq!(
+            tracker.pending_deadline(),
+            Some(base + DEFAULT_SETTLE),
+            "the deadline is when the candidate was first seen plus the window",
+        );
+        assert_eq!(
+            tracker.verdict().state,
+            AgentState::Blocked,
+            "and it has NOT published yet — otherwise the deadline above is describing nothing",
+        );
+
+        // Asked at the deadline, it publishes and the deadline is spent.
+        tracker.observe(
+            em.screen(),
+            Some("✳ Claude Code"),
+            &manifests,
+            base + DEFAULT_SETTLE,
+        );
+        assert_eq!(tracker.verdict().state, AgentState::Idle);
+        assert_eq!(tracker.pending_deadline(), None);
+    }
+
+    /// F3: the window is a user option, so it can move while a candidate is already waiting. It moves
+    /// the DEADLINE and not the evidence — a pane that has already held for the new window is done
+    /// waiting, rather than starting over because the user typed `set-option`.
+    #[test]
+    fn a_shortened_window_publishes_a_candidate_that_has_already_held_long_enough() {
+        let manifests = [claude()];
+        let mut tracker = Tracker::default();
+        let mut em = painted(CLAUDE_FOOTER);
+        let base = Instant::now();
+
+        repaint(&mut em, DIALOG);
+        tracker.observe(em.screen(), Some("✳ Claude Code"), &manifests, base);
+        repaint(&mut em, CLAUDE_FOOTER);
+        tracker.observe(em.screen(), Some("✳ Claude Code"), &manifests, base);
+        assert_eq!(tracker.pending_deadline(), Some(base + DEFAULT_SETTLE));
+
+        let shorter = Duration::from_millis(250);
+        tracker.set_policy(Hysteresis { settle: shorter });
+        assert_eq!(
+            tracker.pending_deadline(),
+            Some(base + shorter),
+            "the candidate keeps the instant it was first seen; only the window moved",
+        );
+
+        // Half of the OLD window is already twice the new one, so the next reading publishes.
+        tracker.observe(
+            em.screen(),
+            Some("✳ Claude Code"),
+            &manifests,
+            base + DEFAULT_SETTLE / 2,
+        );
+        assert_eq!(
+            tracker.verdict().state,
+            AgentState::Idle,
+            "time already served counts against the new window",
+        );
+    }
+
+    /// The list exists so a caller compiles the patterns once; if it ever stops carrying every
+    /// built-in, a pane of that agent goes unclaimed on the wire with nothing failing here.
+    #[test]
+    fn the_built_in_list_carries_every_built_in_manifest() {
+        let names: Vec<String> = crate::built_ins().into_iter().map(|m| m.name).collect();
+        assert_eq!(names, vec![claude().name, codex().name]);
     }
 
     /// The gate H3's design named for this slice: one animation is one publication.

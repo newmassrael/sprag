@@ -47,6 +47,7 @@
 //! design (not faked to mirror the buffer). A future windowed host fills the
 //! rect via `pinion_runtime::compute_layout`.
 
+pub mod agent;
 pub mod attach;
 pub mod config;
 pub mod durability;
@@ -74,7 +75,7 @@ mod upload;
 pub mod window;
 pub mod wire;
 pub mod workspace;
-
+pub use agent::{AgentClock, AgentFacts, AgentRegistry};
 pub use attach::{
     AttachOutcome, AttachmentRegistry, ClientId, ClientInfo, ClientSize, SizeOutcome,
 };
@@ -110,6 +111,7 @@ pub use wire::{mux_action_path, pane_container_tag, pane_input_path};
 pub use workspace::WorkspaceExternal;
 
 use std::borrow::Cow;
+use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use pinion_core::scene::{ContainerNode, ExternalNode, TextGridNode};
@@ -119,6 +121,46 @@ use sprag_terminal::{PaneId, PanePty, SessionRegistry};
 use sprag_vt::{Palette, Screen};
 
 use crate::external::lock;
+
+/// What a DAEMON shares into a scene assembly, and an in-process host does not have.
+///
+/// Every field is `None` for a non-daemon — the GUI's in-process host, `sprag-latency`, the unit
+/// tests. They travel together because the mistake they invite is the same one: a surface wired with
+/// some of them and not others answers plausibly and behaves differently from the daemon it is
+/// standing in for. [`none`](Self::none) is the honest way to say "not a daemon" once.
+#[derive(Clone, Default)]
+pub struct DaemonShared {
+    /// The self-cleaning daemon's pane-`on_exit` death-signal hook ([`spawn_reaper`]), wired into
+    /// every pane a scene surface spawns so its death feeds the reaper.
+    pub on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Per-client session attachment, read when the `sessions` slot is served to fill each
+    /// `SessionInfo::attached`. `None` leaves every count at 0 — an honest "no wire clients here".
+    pub attachments: Option<Arc<Mutex<AttachmentRegistry>>>,
+    /// The agent-state memory (H3), read by the pane list. `None` leaves the `agent` key absent,
+    /// which D8 already defines as "no agent here", so a host without a detector serves the pre-H3
+    /// wire shape rather than a wrong answer.
+    ///
+    /// Whoever sets this must also drive the settle waker — see [`AgentClock`] and `sprag-term`.
+    pub agents: Option<Arc<AgentClock>>,
+}
+
+impl DaemonShared {
+    /// Not a daemon: no reaper hook, no attachment map, no detector.
+    #[must_use]
+    pub fn none() -> Self {
+        Self::default()
+    }
+}
+
+impl fmt::Debug for DaemonShared {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DaemonShared")
+            .field("on_pane_exit", &self.on_pane_exit.is_some())
+            .field("attachments", &self.attachments.is_some())
+            .field("agents", &self.agents.is_some())
+            .finish()
+    }
+}
 
 // Re-export the snapshot shapes a consumer reads, so downstream code need
 // not depend on pinion-rpc's module layout directly.
@@ -378,6 +420,14 @@ fn pane_container(id: PaneId, pty: &PanePty, cells: PaneCells) -> Scene {
 /// stale baseline and parks a current one; nothing consults it as a write precondition), so
 /// no session's request is ever refused or mis-answered because another was busy.
 ///
+/// ## The daemon's own state travels as ONE value
+///
+/// [`DaemonShared`] carries the three things a DAEMON has and an in-process host does not. They are
+/// grouped rather than passed positionally because they share one property that is easy to get wrong
+/// separately: each is `None` off a daemon, and a caller that supplies some and not others gets a
+/// half-wired surface rather than an error. One value makes "this host is a daemon" a single
+/// statement at the call site.
+///
 /// ## `cells` is the assembly's whole cost
 ///
 /// Everything else here is `Arc` clones and handles; the panes' [`PaneCells`] are the one
@@ -391,10 +441,14 @@ pub fn workspace_scene(
     registry: &Arc<Mutex<SessionRegistry>>,
     runs: &Arc<Mutex<RunRegistry>>,
     channels: &Arc<ChannelRegistry>,
-    on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
-    attachments: Option<Arc<Mutex<AttachmentRegistry>>>,
+    daemon: DaemonShared,
     cells: PaneCells,
 ) -> Scene {
+    let DaemonShared {
+        on_pane_exit,
+        attachments,
+        agents,
+    } = daemon;
     // The scoped session's pool, resolved when the scope was (never re-derived here — one
     // question, one answer). The registry lock is not held, so taking the workspace lock
     // below cannot nest inside it.
@@ -416,6 +470,7 @@ pub fn workspace_scene(
             Arc::clone(channels),
             on_pane_exit.clone(),
             attachments,
+            agents,
         )))
         .with_tag(MUX_TAG),
     ));

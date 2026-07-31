@@ -14,6 +14,12 @@ publish = false
 sprag-vt = { workspace = true }
 sprag-grid = { workspace = true }
 sprag-terminal = { workspace = true }
+# Agent-state detection (H3): a PURE read of a screen + title, consumed HERE for the same
+# reason `sprag-grid` is — the producer owns the emulator and the PTY, and everything that
+# turns a screen into a scene fact lives on this side of that line. The per-pane memory
+# (`Tracker`) is held in `agent.rs` rather than on a pane, because a `WorkspaceExternal` is
+# rebuilt per request and a pane belongs to the producer.
+sprag-detect = { workspace = true }
 # Key→PTY-byte encoder: the engine External (pane.rs) invokes it to turn an
 # injected W3C key into the bytes the child reads (PINION-REQUIREMENTS R2.6).
 sprag-input = { workspace = true }

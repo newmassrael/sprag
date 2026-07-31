@@ -3675,6 +3675,7 @@ dependencies = [
  "serde",
  "serde_json",
  "signal-hook",
+ "sprag-detect",
  "sprag-grid",
  "sprag-input",
  "sprag-plugin",
