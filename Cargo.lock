@@ -3621,6 +3621,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sprag-detect"
+version = "0.0.1"
+dependencies = [
+ "regex",
+ "sprag-vt",
+]
+
+[[package]]
 name = "sprag-grid"
 version = "0.0.1"
 dependencies = [

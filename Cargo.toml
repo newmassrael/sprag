@@ -16,6 +16,10 @@ resolver = "3"
 members = [
     "crates/sprag-vt",
     "crates/sprag-grid",
+    # What a pane is DOING, read from its screen and title (H3 slice 1). Pure like
+    # sprag-grid and for the same reason: a verdict about somebody else's UI is only
+    # honest if a captured screen can be replayed against it.
+    "crates/sprag-detect",
     "crates/sprag-input",
     "crates/sprag-terminal",
     "crates/sprag-host",
@@ -179,6 +183,7 @@ sce-rust-runtime = { git = "https://github.com/newmassrael/scxml-core-engine.git
 # Internal crates.
 sprag-vt = { path = "crates/sprag-vt", version = "0.0.1" }
 sprag-grid = { path = "crates/sprag-grid", version = "0.0.1" }
+sprag-detect = { path = "crates/sprag-detect", version = "0.0.1" }
 sprag-input = { path = "crates/sprag-input", version = "0.0.1" }
 sprag-terminal = { path = "crates/sprag-terminal", version = "0.0.1" }
 sprag-host = { path = "crates/sprag-host", version = "0.0.1" }

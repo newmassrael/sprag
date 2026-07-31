@@ -1,0 +1,16 @@
+[package]
+name = "sprag-detect"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Derives a pane's agent state from its screen and title (H3 slice 1)"
+publish = false
+
+[dependencies]
+sprag-vt = { workspace = true }
+# A manifest's sharpest test is a regex over a bottom-anchored region — the shape
+# every agent dialog measured in R249 shares. Already a workspace dependency for
+# `Screen::find_regex`, so this adds no new crate to the tree.
+regex = { workspace = true }
