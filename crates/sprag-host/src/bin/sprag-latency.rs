@@ -73,6 +73,38 @@
 //! of every run so no row can quietly claim to be faster than the thing measuring it. The
 //! repetition count is a column, because a reader should not have to trust that it was chosen well.
 //!
+//! ## What the H3 rows measured, and where the question had to be asked from
+//!
+//! H3's design left the agent evaluation's cost unmeasured through four slices, and R254 recorded
+//! it as owed twice over: once because the evaluation now sits on the pane list, and once because
+//! putting the rule list into the quiescence gate's key destroyed the only behavioural test the
+//! skip had. The rows exist to answer both. Measured on this box (i9-14900HX, powersave governor),
+//! `--release`, ten runs of this battery — with the profile and the machine stated because a
+//! duration that leaves them keeps its authority and loses its meaning:
+//!
+//! * **The comparison the debt asked for cannot be resolved at the level it asked for it.** The
+//!   pane list with and without the detector differed by +0.07 to +4.22 us over ten runs of a
+//!   request that costs 7.4 to 8.7 us. Every run was positive, so the SIGN is settled; the
+//!   magnitude spans sixty-fold, so the size is not. Those two rows are the ones R221 already
+//!   recorded as the noisiest in this battery — the only ones served while three live PTY panes
+//!   and their reader threads share the process, which is interference a 64 KiB copy cannot cancel.
+//! * **So the number comes from a row with no PTY in it.** One `AgentClock::observe` on a settled
+//!   pane costs 0.056 to 0.086 us with 1 to 8 panes remembered. That is the DETECTOR's part of a
+//!   pane's entry; the title clone and the screen lock the pane list also performs per pane are not
+//!   in it, and this instrument has not separated them.
+//! * **The gate is worth 3040x to 3605x what it skips**, and that ratio held to within 8% across
+//!   ten runs while its two absolutes moved by 20% — a look at a quiet pane costs 0.014 to 0.023 us
+//!   and the evaluation it declines to run costs 42.6 to 52.0 us. One evaluation is 11.1x to 12.8x
+//!   the whole pane-list request that would carry it, which is the opposite shape from R221's
+//!   projection at half a percent of its own fetch. The gate is not an optimisation on this path.
+//! * **A per-look cost grows LINEARLY with the number of panes the registry remembers**, at 2.70 to
+//!   3.35 ns each. `AgentClock::observe` reads the nearest deadline before and after every look and
+//!   each read walks every tracker, so a pane list over N panes performs 2N^2 tracker visits. The
+//!   middle registry size is a control against the other explanation — a hash lookup losing its
+//!   cache in a bigger map would step rather than climb — and it lands within 3% of the straight
+//!   line through the other two, in every run. At three panes the term is a fifth of a microsecond;
+//!   at sixty-four it is larger than the whole pane list measured here.
+//!
 //! ## What is deliberately NOT here
 //!
 //! Hardware counters. Retired instructions would be near-deterministic and gate-able, but this box
@@ -104,9 +136,12 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use sprag_detect::{DEFAULT_SETTLE, Hysteresis, Ruleset, Tracker, built_ins, detect};
 use sprag_grid::{project, projection_token};
-use sprag_host::{CellFrame, ChannelRegistry, Host, HostState, PaneScrollFacts, handle_request};
-use sprag_terminal::CommandBuilder;
+use sprag_host::{
+    AgentClock, CellFrame, ChannelRegistry, Host, HostState, PaneScrollFacts, handle_request,
+};
+use sprag_terminal::{CommandBuilder, PaneId};
 use sprag_vt::{Emulator, Palette, Screen, VtPort};
 
 /// The pane geometry everything below is measured at — an ordinary terminal, so the numbers are
@@ -168,6 +203,29 @@ const CELLS_READ: &str = r#"{"jsonrpc":"2.0","id":3,"method":"scene/query","para
 /// for every pane.
 const SNAPSHOT: &str = r#"{"jsonrpc":"2.0","id":4,"method":"scene/snapshot","params":{"path":""}}"#;
 
+/// A `claude` pane at rest, as its footer fingerprint sees it — the FIRST manifest in the built-in
+/// list, so identifying it stops after one.
+const CLAUDE_FOOTER: &[&str] = &["❯", "  ⏸ manual mode on · ? for shortcuts"];
+
+/// The title that goes with it. Present because the rules read the title as well as the screen, and
+/// a row measured without one would price a cheaper evaluation than the daemon ever performs.
+const CLAUDE_TITLE: &str = "✳ Claude Code";
+
+/// An ordinary shell pane. Nothing claims it, so every manifest is offered it — which is the case
+/// EVERY non-agent pane in a workspace pays, and so the one an honest hot-path row is measured at.
+const SHELL: &[&str] = &["$ ls -la", "total 0", "$ "];
+
+/// How many panes each agent registry in the scaling row remembers.
+///
+/// Three sizes rather than two, and the middle one is the CONTROL. Two points can only say that a
+/// per-look cost grew; they cannot say what grew it, and there are two candidates in `observe` — the
+/// nearest-deadline reads, which walk every tracker by construction, and the hash lookup's locality
+/// in a larger map. A cost that is linear in the entry count is the walk; one that steps and then
+/// flattens is the cache. The span is wide (64x) because a ratio between 1 and 4 would be inside
+/// this box's own noise, and the top end is still an ordinary number of panes for somebody who
+/// leaves a session running.
+const REGISTRY_SIZES: [u64; 3] = [1, 8, 64];
+
 /// What one subject cost, reduced to the numbers that mean different things.
 #[derive(Clone, Copy)]
 struct Sample {
@@ -182,6 +240,15 @@ struct Sample {
 /// A duration in microseconds.
 fn micros(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1e6
+}
+
+/// How many times [`measure`] called a subject's body: the warmup, the pilot, and every timed span.
+///
+/// Exact rather than approximate, because it is the denominator of the COUNTS this tool reports
+/// beside its durations — and a count divided by an estimate of how much work produced it is an
+/// estimate.
+const fn calls(sample: &Sample) -> u64 {
+    WARMUP as u64 + PILOT as u64 + SAMPLES as u64 * sample.repeats as u64
 }
 
 /// The smallest interval this box can observe: two reads of the clock with nothing between them.
@@ -288,6 +355,27 @@ fn filled(fill: &str) -> Screen {
         }
     }
     emulator.screen().clone()
+}
+
+/// A screen with `lines` painted into it top-down — the shape the detector's own fixtures use, so a
+/// row measured here is measured against the same screens its tests assert on.
+fn painted_screen(lines: &[&str]) -> Screen {
+    let mut emulator = Emulator::new(COLS, ROWS);
+    emulator.advance(lines.join("\r\n").as_bytes());
+    emulator.screen().clone()
+}
+
+/// A tracker that has already published a resting verdict for `screen`, so a measured look at it is
+/// the STEADY state of a settled pane rather than a first sighting.
+///
+/// Two observations, because a verdict resting on an absence is not published until its settle
+/// window has closed — one look leaves a candidate pending, which is a different (and rarer) path
+/// through `observe` than the one every client wake takes.
+fn settled(screen: &Screen, rules: &Ruleset, base: Instant) -> Tracker {
+    let mut tracker = Tracker::new(Hysteresis::default());
+    tracker.observe(screen, Some(CLAUDE_TITLE), rules, base);
+    tracker.observe(screen, Some(CLAUDE_TITLE), rules, base + DEFAULT_SETTLE);
+    tracker
 }
 
 /// The text a measured pane holds: a full screen of ordinary words, ending in [`MARKER`].
@@ -503,6 +591,129 @@ fn main() -> ExitCode {
         },
     );
 
+    // THE DETECTOR (H3), measured on its own before it is measured inside a request — because the
+    // pane-list rows below are the noisiest in this battery (live PTY panes and their reader
+    // threads share the process) and a difference between two of them is only as good as the band
+    // it has to clear. These rows have no PTY in them at all.
+    let claude_screen = painted_screen(CLAUDE_FOOTER);
+    let shell_screen = painted_screen(SHELL);
+    let rules = Ruleset::default();
+    // The SAME rules with a different identity — a user saving `config.toml` unchanged. It is what
+    // makes the gate miss without changing a single answer, which is the only way to price the skip
+    // against a like-for-like alternative rather than against a different verdict.
+    let reloaded = Ruleset::new(built_ins());
+
+    let detect_shell = paired(
+        "detect (shell: whole list, no claim)",
+        &mut controls,
+        None,
+        || {
+            black_box(detect(black_box(&shell_screen), None, rules.manifests()));
+        },
+    );
+    let detect_claude = paired(
+        "detect (claude: first manifest claims)",
+        &mut controls,
+        None,
+        || {
+            black_box(detect(
+                black_box(&claude_screen),
+                Some(CLAUDE_TITLE),
+                rules.manifests(),
+            ));
+        },
+    );
+
+    let base = Instant::now();
+    let settled_at = base + DEFAULT_SETTLE;
+    let mut quiet = settled(&claude_screen, &rules, base);
+    let quiet_before = sprag_detect::work();
+    let gate_hit = paired(
+        "Tracker::observe, quiet (gate hits)",
+        &mut controls,
+        None,
+        || {
+            black_box(quiet.observe(
+                black_box(&claude_screen),
+                Some(CLAUDE_TITLE),
+                &rules,
+                settled_at,
+            ));
+        },
+    );
+    let quiet_after = sprag_detect::work();
+
+    // The gate MISSING, with everything else held still. The rules alternate between two lists that
+    // say the same thing, so every look is a full evaluation and every look reaches the verdict
+    // already published — which is what deleting the skip would cost, and nothing else. Measuring
+    // it against a CHANGED screen instead would have priced a different verdict as well as a
+    // different code path.
+    let mut moving = settled(&claude_screen, &rules, base);
+    let alternating = [&reloaded, &rules];
+    let mut turn = 0_usize;
+    let miss_before = sprag_detect::work();
+    let gate_miss = paired(
+        "Tracker::observe, reloaded (gate miss)",
+        &mut controls,
+        None,
+        || {
+            turn ^= 1;
+            black_box(moving.observe(
+                black_box(&claude_screen),
+                Some(CLAUDE_TITLE),
+                alternating[turn],
+                settled_at,
+            ));
+        },
+    );
+    let miss_after = sprag_detect::work();
+
+    // THE WRAPPER the daemon reaches the gate THROUGH, and the one part of it that could grow with
+    // the workspace: `AgentClock::observe` reads the registry's nearest deadline before and after
+    // each look, and that read walks every tracker. Whether it matters is a question about two
+    // registry SIZES, so it is asked as one — the same pane, observed on a clock that remembers one
+    // pane and on a clock that remembers many.
+    let clocks: Vec<AgentClock> = REGISTRY_SIZES
+        .iter()
+        .map(|&remembered| {
+            let clock = AgentClock::new(Ruleset::default());
+            for id in 0..remembered {
+                // Twice, so every tracker in the map is SETTLED: a registry full of pending
+                // candidates is a different measurement, and not the one a quiet workspace makes.
+                for at in [base, settled_at] {
+                    clock.observe(
+                        PaneId(id),
+                        &claude_screen,
+                        Some(CLAUDE_TITLE),
+                        at,
+                        Hysteresis::default,
+                    );
+                }
+            }
+            clock
+        })
+        .collect();
+    let mut scaling: Vec<(u64, Sample)> = Vec::with_capacity(REGISTRY_SIZES.len());
+    for (&remembered, clock) in REGISTRY_SIZES.iter().zip(&clocks) {
+        // The SAME pane on every clock, so the only thing that differs between these rows is how
+        // many OTHER panes the registry holds.
+        let row = paired(
+            &format!("AgentClock::observe, {remembered} kept"),
+            &mut controls,
+            None,
+            || {
+                black_box(clock.observe(
+                    PaneId(0),
+                    black_box(&claude_screen),
+                    Some(CLAUDE_TITLE),
+                    settled_at,
+                    Hysteresis::default,
+                ));
+            },
+        );
+        scaling.push((remembered, row));
+    }
+
     // The request path, served in-process exactly as the transport serves it.
     let state = live_host();
     let revision = paired(
@@ -513,10 +724,11 @@ fn main() -> ExitCode {
             black_box(handle_request(black_box(&state), REVISION));
         },
     );
+    let panes_bytes = reply_bytes(&state, PANES_READ);
     let panes = paired(
         "request panes slot (with tokens)",
         &mut controls,
-        Some(reply_bytes(&state, PANES_READ)),
+        Some(panes_bytes),
         || {
             black_box(handle_request(black_box(&state), PANES_READ));
         },
@@ -537,6 +749,26 @@ fn main() -> ExitCode {
             black_box(handle_request(black_box(&state), SNAPSHOT));
         },
     );
+
+    // THE PANE LIST WITH THE DETECTOR IN IT. `with_agents` consumes the state and hands it back, so
+    // this is literally the host measured above with a detector installed — the same three panes,
+    // the same screens, the same request text. Not a second host, which is the only way a
+    // difference this small is attributable to anything.
+    let state = state.with_agents(Arc::new(AgentClock::new(Ruleset::default())));
+    // Served once OUTSIDE the timed span, which is also every pane's first observation — the one
+    // look that has to evaluate. What the span then measures is the steady state a settled
+    // workspace is in for the rest of the daemon's life.
+    let agent_bytes = reply_bytes(&state, PANES_READ);
+    let evaluations_before = sprag_detect::work();
+    let panes_with_agents = paired(
+        "request panes slot (+ agent eval)",
+        &mut controls,
+        Some(agent_bytes),
+        || {
+            black_box(handle_request(black_box(&state), PANES_READ));
+        },
+    );
+    let evaluations_after = sprag_detect::work();
 
     let quietest = controls.iter().min().copied().unwrap_or_default();
     let noisiest = controls.iter().max().copied().unwrap_or_default();
@@ -646,6 +878,130 @@ fn main() -> ExitCode {
     println!(
         "\nThe fetch a token can skip costs {:.0}x the token that decides to skip it.",
         cells.min.as_secs_f64() / token.min.as_secs_f64(),
+    );
+
+    println!(
+        "\nMEASURED — what the agent detector (H3) costs the pane list, the debt R253 opened and\n\
+         R254 recorded a second reason for. The same host, the same panes, one difference:"
+    );
+    budget("the pane list, no detector", panes.min);
+    budget(
+        "the same pane list, detector installed",
+        panes_with_agents.min,
+    );
+    let difference = micros(panes_with_agents.min) - micros(panes.min);
+    let band = micros(noisiest) - micros(quietest);
+    println!(
+        "  the difference is {difference:+.3} us ({:+.1}%), against a control that moved {band:.3} \
+         us\n  between its quietest and its noisiest pairing in this same run. DO NOT QUOTE THIS\n  \
+         ROW: ten runs of this battery spread it over sixty-fold (this file's docs record the\n  \
+         range). It BOUNDS the cost and does not resolve it — the two rows carry three live PTY\n  \
+         panes and their reader threads, which is interference the control cannot see and so\n  \
+         cannot cancel. The row that resolves it is the registry one below.",
+        (panes_with_agents.min.as_secs_f64() / panes.min.as_secs_f64() - 1.0) * 100.0,
+    );
+    println!(
+        "  the two replies are {panes_bytes} and {agent_bytes} bytes: no manifest claims a shell\n  \
+         pane, so D8 leaves the key absent and whatever the difference is, it is WORK and not\n  \
+         payload."
+    );
+
+    // The count, taken across the row above. Every call `measure` makes is accounted for, so the
+    // denominator is exact rather than an estimate of how much work the row did.
+    let looks = calls(&panes_with_agents) * PANE_COUNT as u64;
+    let evaluations = evaluations_after.evaluations_total - evaluations_before.evaluations_total;
+    println!(
+        "\n  AND THE COUNT, which repeats to the digit where every microsecond above does not:\n  \
+         that row took {looks} looks at a settled pane and ran {evaluations} evaluations. The\n  \
+         quiescence gate skipped {:.4}% of them, and `sprag_detect::work` is where a TEST can say\n  \
+         so — R254 put the rule list in the gate's key, which was right and which left the skip\n  \
+         with no behavioural observable at all. `sprag-detect`'s `tests/meter.rs` is that test;\n  \
+         this row is what it is worth.",
+        (1.0 - evaluations as f64 / looks as f64) * 100.0,
+    );
+
+    println!("\nMEASURED — what that skip is worth, with everything but the gate held still:");
+    budget("a look at a quiet pane (the gate hits)", gate_hit.min);
+    budget("the same look, rules replaced (it misses)", gate_miss.min);
+    budget(
+        "  saved, per pane per look",
+        gate_miss.min.saturating_sub(gate_hit.min),
+    );
+    budget(
+        &format!("  over {PANE_COUNT} panes on one client wake"),
+        gate_miss.min.saturating_sub(gate_hit.min) * PANE_COUNT as u32,
+    );
+    println!(
+        "  the gate is {:.0}x cheaper than the evaluation it decides not to run.",
+        gate_miss.min.as_secs_f64() / gate_hit.min.as_secs_f64(),
+    );
+    // The two rows are only worth what their code paths are, so the same meter that gates the skip
+    // is read across them here: a row claiming to skip must have skipped, and a row claiming to
+    // evaluate must have evaluated once per call. Without this the pair could be measuring the same
+    // path twice and reporting the difference as a saving.
+    println!(
+        "  the rows are what they say: {} evaluations over {} quiet looks, {} over {} reloaded\n  \
+         ones — read from `sprag_detect::work` across each row, not asserted about it.",
+        quiet_after.evaluations_total - quiet_before.evaluations_total,
+        calls(&gate_hit),
+        miss_after.evaluations_total - miss_before.evaluations_total,
+        calls(&gate_miss),
+    );
+    println!(
+        "  the evaluation alone: {:.1} us for a pane the first manifest claims, {:.1} us for one\n  \
+         nobody claims -> {:.2}x. The unclaimed case is every ordinary shell pane in the\n  \
+         workspace, and it is the whole list because identification stops only at a CLAIM — which\n  \
+         is what slice 4's layering charges when a user's new agent goes to the FRONT.",
+        micros(detect_claude.min),
+        micros(detect_shell.min),
+        detect_shell.min.as_secs_f64() / detect_claude.min.as_secs_f64(),
+    );
+    println!(
+        "  AND THE SHAPE OF IT: one evaluation is {:.1}x the whole pane-list request that would\n  \
+         carry it ({:.1} us), where R221 found the projection at half a percent of the fetch it is\n  \
+         named for. The gate is not an optimisation on this path; it is what keeps the pane list\n  \
+         the cost of a pane list.",
+        detect_shell.min.as_secs_f64() / panes.min.as_secs_f64(),
+        micros(panes.min),
+    );
+
+    println!("\nMEASURED — does one look grow with the SIZE of the registry it is taken from?");
+    for (remembered, row) in &scaling {
+        let pane = if *remembered == 1 { "pane" } else { "panes" };
+        budget(&format!("a look, {remembered} {pane} remembered"), row.min);
+    }
+    let (smallest, small_row) = scaling.first().expect("the sizes are not empty");
+    let (largest, large_row) = scaling.last().expect("the sizes are not empty");
+    let slope =
+        (large_row.min.as_secs_f64() - small_row.min.as_secs_f64()) / (largest - smallest) as f64;
+    println!(
+        "  {:.2}x for {}x the registry — {:.2} ns per remembered pane, per look.",
+        large_row.min.as_secs_f64() / small_row.min.as_secs_f64(),
+        largest / smallest.max(&1),
+        slope * 1e9,
+    );
+    // The middle size is the control, and it is read rather than assumed: linear says the walk,
+    // because that is the only term in `observe` that is O(entries) by construction.
+    if let Some((middle, middle_row)) = scaling.get(1) {
+        let predicted = small_row.min.as_secs_f64() + slope * (middle - smallest) as f64;
+        println!(
+            "  the middle size is the CONTROL: {middle} panes measured {:.3} us against {:.3} us\n  \
+             predicted by a straight line through the other two — {:+.1}%. Linear in the entry\n  \
+             count is the nearest-deadline read, which walks every tracker twice per look; a hash\n  \
+             lookup losing its cache in a bigger map would step rather than climb.",
+            micros(middle_row.min),
+            predicted * 1e6,
+            (middle_row.min.as_secs_f64() / predicted - 1.0) * 100.0,
+        );
+    }
+    println!(
+        "  a pane list over N panes takes N looks and each look walks the registry twice, so the\n  \
+         term is 2N^2 tracker visits. At {PANE_COUNT} panes it is {:.2} us and invisible; at\n  \
+         {largest} it is {:.1} us of a single client wake, against a whole pane list measured at\n  \
+         {:.1} us here.",
+        micros(small_row.min) * PANE_COUNT as f64,
+        micros(large_row.min) * *largest as f64,
+        micros(panes.min),
     );
 
     println!(
