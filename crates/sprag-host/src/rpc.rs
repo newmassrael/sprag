@@ -98,7 +98,9 @@ pub struct HostState {
     ///
     /// `None` is the honest state for a host without both. It leaves the `agent` key absent, which D8
     /// already defines as "no agent here", so the wire shape is the pre-H3 one rather than a wrong
-    /// answer.
+    /// answer. Who that is, measured rather than repeated from the comments nearby: `sprag-latency`
+    /// (which measures the pane list, so a detector it did not ask for would land in the instrument)
+    /// and the test harnesses. Nothing outside this crate builds a [`HostState`] at all.
     agents: Option<Arc<crate::AgentClock>>,
 }
 

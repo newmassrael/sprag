@@ -124,10 +124,15 @@ use crate::external::lock;
 
 /// What a DAEMON shares into a scene assembly, and an in-process host does not have.
 ///
-/// Every field is `None` for a non-daemon — the GUI's in-process host, `sprag-latency`, the unit
-/// tests. They travel together because the mistake they invite is the same one: a surface wired with
-/// some of them and not others answers plausibly and behaves differently from the daemon it is
-/// standing in for. [`none`](Self::none) is the honest way to say "not a daemon" once.
+/// Every field is `None` for a non-daemon, and it is worth naming who those actually are, because the
+/// older comments around this file say "the GUI's in-process host" and no such host exists: nothing
+/// outside this crate builds a [`HostState`]. The real non-daemon owners are `sprag-latency` — which
+/// measures the pane list and must not have a detector it did not ask for landing in the instrument —
+/// and the two test harnesses.
+///
+/// They travel together because the mistake they invite is the same one: a surface wired with some of
+/// them and not others answers plausibly and behaves differently from the daemon it is standing in
+/// for. [`none`](Self::none) is the honest way to say "not a daemon" once.
 #[derive(Clone, Default)]
 pub struct DaemonShared {
     /// The self-cleaning daemon's pane-`on_exit` death-signal hook ([`spawn_reaper`]), wired into
