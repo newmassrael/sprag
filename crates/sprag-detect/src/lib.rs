@@ -33,14 +33,50 @@
 //!   marker `❯` followed by `<digit>.` at the start of a line, with at least one more numbered
 //!   option below it. Nothing in an agent's transcript output has that shape.
 //!
-//! ## The bound this slice ships with, stated rather than discovered later
+//! ## What a SECOND agent changed, and what it left standing (R251)
 //!
-//! A pane is identified as an agent's by [`Manifest::any`], and every fingerprint of `claude`'s
-//! needs the pane to have painted something recognisable. A first-run trust dialog arrives BEFORE
-//! the agent has set a title and while its footer is replaced by the dialog, so it reads
-//! [`AgentState::Unknown`] rather than [`Blocked`](AgentState::Blocked). That is a miss, it is
-//! measured, and it is recoverable in a later slice by a fingerprint that does not depend on the
-//! title. It is recorded here so the next author does not have to rediscover it from a bug report.
+//! One agent is a sample, not a vocabulary, so `codex` was driven the same way before this
+//! vocabulary was allowed to freeze. It is an independent implementation — Rust and `ratatui`
+//! against `claude`'s TypeScript and Ink — and it moved three things:
+//!
+//! * **The selection marker is not a constant.** Three markers were measured across the two
+//!   agents: `❯` (U+276F) in `claude`, `>` (U+003E) in `codex`'s sign-in picker, and `›` (U+203A)
+//!   in `codex`'s directory-trust dialog. Two of those are inside ONE agent, so the marker is not
+//!   even a per-agent constant and [`dialog_pattern`] matches the measured CLASS. Everything else
+//!   about the shape held: marker, `<digit>.`, and at least one more numbered option below.
+//! * **A fingerprint needs conjunction, which is why [`Fingerprint`] exists.** `claude` is
+//!   identified by one string in a fixed footer. `codex` has no such string at any width: its
+//!   footer is `<model> <effort> · <cwd>`, every part of which is configurable, and the one banner
+//!   naming the product scrolls out of the transcript. It is identifiable only as a composer line
+//!   AND a footer shape together — the same argument [`Rule::all`] already makes, arriving one
+//!   level up.
+//! * **The braille spinner generalised, and the resting glyph did not.** `codex`'s working title
+//!   is a braille frame exactly as `claude`'s is, and [`spinner_pattern`]'s range matched four
+//!   frames no `claude` probe ever produced — which is what writing the pattern for the animation
+//!   rather than for the two frames observed was for. But `codex` has no resting glyph at all: at
+//!   rest its title is the bare working-directory name, indistinguishable from a shell's. Its idle
+//!   rule is therefore the lowest-priority FALLBACK, taking its specificity from [`Rule::priority`]
+//!   rather than from a pattern — a distinction a revert-proof had to settle, because the negation
+//!   it was first written as could be widened to match anything without turning a test red.
+//!
+//! What survived unchanged: [`Region`]'s two variants, [`Test`]'s three, [`Rule::priority`], and
+//! the twelve-row window — `codex`'s two dialogs put their marker 3 and 7 non-empty rows up, inside
+//! the spread the window was already sized for.
+//!
+//! ## The bounds this slice ships with, stated rather than discovered later
+//!
+//! A pane is identified as an agent's by [`Manifest::any`], and every fingerprint needs the pane to
+//! have painted something recognisable. Two measured misses follow from that, and both read
+//! [`AgentState::Unknown`] rather than the true state:
+//!
+//! * A first-run trust dialog arrives BEFORE the agent has set a title and while its footer is
+//!   replaced by the dialog. Measured in BOTH agents, so it is a property of onboarding rather than
+//!   a quirk of one — which also means a title-free fingerprint is worth more than it looked.
+//! * `codex` shows a transient hint in place of its footer for a few seconds after `esc`, and its
+//!   fingerprint is a footer conjunction, so it goes unclaimed for exactly that window.
+//!
+//! Both are recorded here, and asserted by tests, so the next author does not rediscover them from
+//! a bug report.
 
 use regex::Regex;
 use sprag_vt::Screen;
@@ -149,6 +185,43 @@ impl Match {
     }
 }
 
+/// One piece of independent evidence that a pane belongs to an agent.
+///
+/// A fingerprint is a CONJUNCTION for the same reason [`Rule::all`] is: an author makes it specific
+/// by adding a second readable condition rather than by folding both into one regex that spans
+/// rows. That this is needed at all is a measurement rather than a symmetry — `claude` is
+/// identified by a single string in a fixed footer, but `codex` has no constant string anywhere on
+/// its screen, and is recognisable only as its composer line AND the shape of its footer together.
+#[derive(Debug, Clone)]
+pub struct Fingerprint {
+    /// Every match that must hold for this fingerprint to claim the pane.
+    ///
+    /// An EMPTY list holds vacuously and so claims every pane. That is the manifest author's error
+    /// rather than something this can prevent, exactly as an empty [`Test::Contains`] needle is —
+    /// stated here because the failure is silent and total.
+    pub all: Vec<Match>,
+}
+
+impl Fingerprint {
+    /// A fingerprint that is one match — the common case, and the shape every `claude` fingerprint
+    /// still has.
+    #[must_use]
+    pub fn one(m: Match) -> Self {
+        Self { all: vec![m] }
+    }
+
+    /// A fingerprint that needs several matches at once.
+    #[must_use]
+    pub const fn all(all: Vec<Match>) -> Self {
+        Self { all }
+    }
+
+    /// Whether every match holds.
+    fn holds(&self, screen: &Screen, title: &str) -> bool {
+        self.all.iter().all(|m| m.holds(screen, title))
+    }
+}
+
 /// One state conclusion, its evidence, and how strongly it outranks a competing one.
 #[derive(Debug, Clone)]
 pub struct Rule {
@@ -184,7 +257,12 @@ pub struct Manifest {
     /// shows none of what a pane at rest shows, and requiring every fingerprint would mean the
     /// agent is only recognised in the state that happens to show all of them. The field is named
     /// for its semantics so the difference from [`Rule::all`] is visible at the use site.
-    pub any: Vec<Match>,
+    ///
+    /// Each element is itself a conjunction, so this is a disjunction of conjunctions rather than
+    /// of single matches. The extra level is not symmetry for its own sake: `codex` cannot be
+    /// identified by any one condition on its screen, and flattening it back would put that
+    /// conjunction inside a regex spanning rows.
+    pub any: Vec<Fingerprint>,
     /// The state rules, in declaration order. Arbitration is by [`Rule::priority`] first.
     pub rules: Vec<Rule>,
 }
@@ -219,7 +297,7 @@ pub fn detect(screen: &Screen, title: Option<&str>, manifests: &[Manifest]) -> V
     let title = title.unwrap_or_default();
     let Some(manifest) = manifests
         .iter()
-        .find(|manifest| manifest.any.iter().any(|m| m.holds(screen, title)))
+        .find(|manifest| manifest.any.iter().any(|fp| fp.holds(screen, title)))
     else {
         return Verdict::default();
     };
@@ -266,15 +344,21 @@ fn bottom_lines(screen: &Screen, n: u16) -> String {
 /// — `❯ 1. do the thing` echoed into the prompt box — reads as a dialog, because a prompt echo and
 /// a choice list's first row are the same string. A choice list always offers more than one choice;
 /// an echo is one line. That is the difference the pattern is written to see.
-fn dialog_pattern() -> Regex {
-    Regex::new(r"(?m)^\s*❯\s+\d+\.[\s\S]*?^\s*\d+\.").expect("a literal pattern compiles")
+///
+/// The marker is a CLASS, not a literal, and that is a measurement rather than caution: `claude`
+/// marks with `❯` (U+276F) while `codex` marks its sign-in picker with `>` (U+003E) and its trust
+/// dialog with `›` (U+203A). Two markers inside one agent means the marker is not a per-agent
+/// constant either, so a rule keyed on the glyph one probe happened to see is a rule about that
+/// probe.
+pub fn dialog_pattern() -> Regex {
+    Regex::new(r"(?m)^\s*[❯›>]\s+\d+\.[\s\S]*?^\s*\d+\.").expect("a literal pattern compiles")
 }
 
 /// The Braille Patterns block, which every frame of the spinner is drawn from.
 ///
 /// The block rather than the two frames that were observed: matching the glyphs seen would be a
 /// rule about one run of the animation instead of about the animation.
-fn spinner_pattern() -> Regex {
+pub fn spinner_pattern() -> Regex {
     Regex::new(r"^[\u{2800}-\u{28FF}]").expect("a literal range compiles")
 }
 
@@ -296,15 +380,20 @@ pub fn claude() -> Manifest {
         name: "claude".to_owned(),
         any: vec![
             // The idle glyph, which is distinctive enough to be a fingerprint on its own...
-            Match::new(Region::Title, Test::StartsWith(RESTING_GLYPH.to_owned())),
+            Fingerprint::one(Match::new(
+                Region::Title,
+                Test::StartsWith(RESTING_GLYPH.to_owned()),
+            )),
             // ...and the spinner, so a pane that is busy the first time it is looked at is still
             // recognised. Two fingerprints covering the two title shapes.
-            Match::new(Region::Title, Test::Regex(spinner.clone())),
+            Fingerprint::one(Match::new(Region::Title, Test::Regex(spinner.clone()))),
             // The footer, for the window between states where the title is momentarily neither.
-            Match::new(
+            // Each of these is one condition, which is what an agent with a constant string in a
+            // fixed footer affords -- see `codex` for the case that does not.
+            Fingerprint::one(Match::new(
                 Region::BottomLines(4),
                 Test::Contains("? for shortcuts".to_owned()),
-            ),
+            )),
         ],
         rules: vec![
             Rule {
@@ -334,6 +423,105 @@ pub fn claude() -> Manifest {
                 all: vec![Match::new(
                     Region::Title,
                     Test::StartsWith(RESTING_GLYPH.to_owned()),
+                )],
+                priority: 10,
+            },
+        ],
+    }
+}
+
+/// `codex`'s composer line — its marker followed by a space, whatever the user has typed after it.
+///
+/// Measured empty (`› Write tests for @filename`, a placeholder), mid-typing (`› x`) and holding a
+/// submitted message (`› hi`). It is the one row `codex` paints in every steady state.
+fn codex_composer_pattern() -> Regex {
+    Regex::new(r"(?m)^›\s").expect("a literal pattern compiles")
+}
+
+/// `codex`'s footer — `<model> <effort> · <absolute path>`.
+///
+/// Matched as a SHAPE rather than by any of its words, because all three parts vary: the model and
+/// the effort are configurable and the path is the user's. Measured identical at 80 and at 160
+/// columns, so it is the footer itself rather than a truncation artefact of one probe width.
+fn codex_footer_pattern() -> Regex {
+    Regex::new(r"(?m)^\s*\S+\s+\S+\s+·\s+/").expect("a literal pattern compiles")
+}
+
+/// A title with anything in it at all.
+///
+/// `codex` has no resting glyph — at rest its title is the bare working-directory name, exactly
+/// what a shell puts there — so its idle rule cannot read a glyph the way `claude`'s does. What it
+/// must NOT do is state the absence of the spinner as a pattern of its own: [`Rule::priority`]
+/// already separates the two, and a second spelling of the same fact is one that can silently
+/// disagree with [`spinner_pattern`] the day either is edited. A revert-proof is what settled it —
+/// written as a negation, the character class could be widened to match anything without turning a
+/// single test red, which is the definition of a mechanism that is not there.
+///
+/// So the pattern carries only what is genuinely its own: the pane has painted a title. An empty
+/// one fails, which is the safe direction — a pane that has said nothing is not asserted to be at
+/// rest.
+fn painted_title_pattern() -> Regex {
+    Regex::new(r"\S").expect("a literal pattern compiles")
+}
+
+/// The built-in manifest for OpenAI's `codex` CLI, derived from R251's measurements.
+///
+/// The second agent, and the reason the vocabulary above is trusted to be about agents rather than
+/// about `claude`. Its rules are structurally `claude`'s — the same dialog shape, the same braille
+/// spinner — and its FINGERPRINT is where the two genuinely differ.
+///
+/// # Panics
+///
+/// Panics if a pattern here fails to compile, which is a build-time error in this file and cannot
+/// depend on input.
+#[must_use]
+pub fn codex() -> Manifest {
+    let spinner = spinner_pattern();
+    Manifest {
+        name: "codex".to_owned(),
+        // ONE fingerprint, and it is a conjunction, because no single condition on a `codex` screen
+        // is both stable and specific: the composer marker alone is a character a shell prompt may
+        // well use, and the footer shape alone is three tokens and a path. Together they are the
+        // agent. This is the case `Fingerprint` was added for.
+        any: vec![Fingerprint::all(vec![
+            Match::new(
+                Region::BottomLines(3),
+                Test::Regex(codex_composer_pattern()),
+            ),
+            Match::new(Region::BottomLines(1), Test::Regex(codex_footer_pattern())),
+        ])],
+        rules: vec![
+            // The same rule as `claude`'s, matching a `codex` dialog through the widened marker
+            // class. It is written from a MEASURED mid-session picker, and the pane it was measured
+            // on reads `Unknown` today because the modal covers the footer the fingerprint needs --
+            // see the crate docs. The rule is correct and the identification is what is missing,
+            // which is asserted rather than described in
+            // `codex_dialog_matches_the_rule_although_the_pane_is_not_claimed`.
+            Rule {
+                id: "dialog-choice-list".to_owned(),
+                state: AgentState::Blocked,
+                all: vec![Match::new(
+                    Region::BottomLines(12),
+                    Test::Regex(dialog_pattern()),
+                )],
+                priority: 30,
+            },
+            Rule {
+                id: "spinner-glyph".to_owned(),
+                state: AgentState::Working,
+                all: vec![Match::new(Region::Title, Test::Regex(spinner))],
+                priority: 20,
+            },
+            // `claude`'s idle rule reads a glyph that is THERE; `codex` has none, so this one is
+            // the LOWEST-priority fallback and takes its specificity from the ordering rather than
+            // from its pattern. The same measured reason applies: on a blocked `codex` pane the
+            // title is the resting one, so this rule and the dialog rule both match.
+            Rule {
+                id: "no-working-signal".to_owned(),
+                state: AgentState::Idle,
+                all: vec![Match::new(
+                    Region::Title,
+                    Test::Regex(painted_title_pattern()),
                 )],
                 priority: 10,
             },
@@ -564,7 +752,10 @@ mod tests {
     fn priority_beats_declaration_order_in_both_directions() {
         let both = |first: i32, second: i32| Manifest {
             name: "t".to_owned(),
-            any: vec![Match::new(Region::Title, Test::Contains("t".to_owned()))],
+            any: vec![Fingerprint::one(Match::new(
+                Region::Title,
+                Test::Contains("t".to_owned()),
+            ))],
             rules: vec![
                 Rule {
                     id: "first".to_owned(),
@@ -606,7 +797,10 @@ mod tests {
     fn every_match_in_a_rule_must_hold() {
         let manifest = Manifest {
             name: "t".to_owned(),
-            any: vec![Match::new(Region::Title, Test::Contains("t".to_owned()))],
+            any: vec![Fingerprint::one(Match::new(
+                Region::Title,
+                Test::Contains("t".to_owned()),
+            ))],
             rules: vec![Rule {
                 id: "both".to_owned(),
                 state: AgentState::Blocked,
@@ -635,7 +829,10 @@ mod tests {
     fn the_first_manifest_that_fingerprints_the_pane_claims_it() {
         let claimer = |name: &str| Manifest {
             name: name.to_owned(),
-            any: vec![Match::new(Region::Title, Test::Contains("x".to_owned()))],
+            any: vec![Fingerprint::one(Match::new(
+                Region::Title,
+                Test::Contains("x".to_owned()),
+            ))],
             rules: vec![],
         };
         let em = painted(&["x"]);
@@ -649,5 +846,175 @@ mod tests {
         assert_eq!(AgentState::Working.wire_str(), Some("working"));
         assert_eq!(AgentState::Blocked.wire_str(), Some("blocked"));
         assert_eq!(AgentState::Idle.wire_str(), Some("idle"));
+    }
+
+    // ── The SECOND agent (R251). Every fixture below was captured from a real `codex` driven in a
+    //    real sprag pane, the same way `claude`'s were. One agent is a sample; these are what make
+    //    the vocabulary above a claim about agents rather than about one vendor's UI.
+
+    fn codex_verdict(lines: &[&str], title: Option<&str>) -> Verdict {
+        let em = painted(lines);
+        detect(em.screen(), title, &[codex()])
+    }
+
+    /// At rest: the composer holding its placeholder, the footer showing model, effort and cwd.
+    /// Title is the bare directory name — `codexprobe`, with no glyph of any kind.
+    const CODEX_IDLE: &[&str] = &[
+        "  Tip: Our most capable model yet. GPT-5.6 Sol can tackle complex code changes,",
+        "  dig into research, produce polished documents, and take on your most ambitious",
+        "› Write tests for @filename",
+        "  gpt-5.6-sol default · /tmp/claude-1000/-home-coin-sprag/6fa43ef3-48fe-4a56-a7…",
+    ];
+
+    /// The sign-in picker, `codex`'s first screen. Marker is ASCII `>` at column zero.
+    const CODEX_SIGNIN_PICKER: &[&str] = &[
+        "  Welcome to Codex, OpenAI's command-line coding agent",
+        "  Sign in with ChatGPT to use Codex as part of your paid plan",
+        "  or connect an API key for usage-based billing",
+        "> 1. Sign in with ChatGPT",
+        "     Usage included with Plus, Pro, Business, and Enterprise plans",
+        "  2. Sign in with Device Code",
+        "     Sign in from another device with a one-time code",
+        "  3. Provide your own API key",
+        "     Pay for what you use",
+        "  Press enter to continue",
+    ];
+
+    /// The directory-trust dialog. Marker is `›` — a DIFFERENT glyph from the screen above, in the
+    /// same agent, which is the measurement that made the marker a class.
+    const CODEX_TRUST_DIALOG: &[&str] = &[
+        "> You are in /tmp/claude-1000/-home-coin-sprag/6fa43ef3-48fe-4a56-a7d7-5b36f3d23",
+        "  Do you trust the contents of this directory? Working with untrusted contents",
+        "  comes with higher risk of prompt injection. Trusting the directory allows",
+        "  project-local config, hooks, and exec policies to load.",
+        "› 1. Yes, continue",
+        "  2. No, quit",
+        "  Press enter to continue",
+    ];
+
+    /// A MID-SESSION modal — the `/model` picker, opened with no model call at all. This is the
+    /// state the front exists for, and the one the footer conjunction cannot see.
+    const CODEX_MODEL_PICKER: &[&str] = &[
+        "  Select Model and Effort",
+        "  Access legacy models by running codex -m <model_name> or in your config.toml",
+        "› 1. gpt-5.6-sol (current)  Latest frontier agentic coding model.",
+        "  2. gpt-5.6-terra          Balanced agentic coding model for everyday work.",
+        "  3. gpt-5.6-luna           Fast and affordable agentic coding model.",
+        "  4. gpt-5.5                Frontier model for complex coding, research, and",
+        "                            real-world work.",
+        "  5. gpt-5.2                Optimized for professional work and long-running",
+        "                            agents.",
+        "  Press enter to confirm or esc to go back",
+    ];
+
+    #[test]
+    fn codex_at_rest_reads_idle_from_a_title_with_no_glyph_at_all() {
+        let v = codex_verdict(CODEX_IDLE, Some("codexprobe"));
+        assert_eq!(v.state, AgentState::Idle);
+        assert_eq!(v.agent.as_deref(), Some("codex"));
+        assert_eq!(v.rule.as_deref(), Some("no-working-signal"));
+    }
+
+    /// The payoff of writing [`spinner_pattern`] for the braille BLOCK rather than for the two
+    /// frames `claude` happened to show: these four came from a different agent and none of them
+    /// was ever produced by a `claude` probe.
+    #[test]
+    fn codex_working_is_read_from_braille_frames_no_claude_probe_produced() {
+        for frame in ["⠼", "⠏", "⠸", "⠇"] {
+            let title = format!("{frame} codexprobe");
+            let v = codex_verdict(CODEX_IDLE, Some(&title));
+            assert_eq!(v.state, AgentState::Working, "frame {frame}");
+            assert_eq!(v.rule.as_deref(), Some("spinner-glyph"), "frame {frame}");
+        }
+    }
+
+    /// Both `codex` dialogs match the shared pattern, and the test asserts WHY that needed a
+    /// change: the marker literal `claude` was written from misses both of them. Without this
+    /// second half the widening would be untested — the pattern would pass either way.
+    #[test]
+    fn both_codex_markers_match_and_claudes_lone_marker_would_have_missed_them() {
+        let widened = dialog_pattern();
+        let claude_only = Regex::new(r"(?m)^\s*❯\s+\d+\.[\s\S]*?^\s*\d+\.").expect("compiles");
+        for fixture in [CODEX_SIGNIN_PICKER, CODEX_TRUST_DIALOG, CODEX_MODEL_PICKER] {
+            let em = painted(fixture);
+            let text = bottom_lines(em.screen(), 12);
+            assert!(widened.is_match(&text), "widened pattern must match");
+            assert!(
+                !claude_only.is_match(&text),
+                "the single-marker pattern must MISS, or the widening proves nothing"
+            );
+        }
+    }
+
+    /// The slice's second measured miss, pinned exactly like the first. A mid-session modal covers
+    /// the footer, so the fingerprint cannot claim the pane — and the assertion goes on to show the
+    /// RULE matches that very screen, which is what makes this a miss of identification rather than
+    /// of the rule. That distinction is what tells slice 2 where to fix it: the per-pane memory has
+    /// to carry WHICH AGENT a pane is, not only what it was doing.
+    #[test]
+    fn codex_dialog_matches_the_rule_although_the_pane_is_not_claimed() {
+        let v = codex_verdict(CODEX_MODEL_PICKER, Some("codexprobe"));
+        assert_eq!(v.state, AgentState::Unknown);
+        assert_eq!(v.agent, None, "the footer the fingerprint needs is covered");
+
+        let manifest = codex();
+        let blocked = manifest
+            .rules
+            .iter()
+            .find(|r| r.id == "dialog-choice-list")
+            .expect("codex has a dialog rule");
+        let em = painted(CODEX_MODEL_PICKER);
+        assert!(
+            blocked
+                .all
+                .iter()
+                .all(|m| m.holds(em.screen(), "codexprobe")),
+            "the rule matches; only the identification is missing"
+        );
+    }
+
+    /// The conjunction is load-bearing in BOTH directions, so each half is dropped in turn. Either
+    /// half alone is a shape an ordinary shell can produce, which is the whole reason
+    /// [`Fingerprint`] carries a list rather than one match.
+    #[test]
+    fn neither_half_of_the_codex_fingerprint_claims_a_pane_alone() {
+        let composer_only = &["› Write tests for @filename", "  just some output"];
+        assert_eq!(codex_verdict(composer_only, Some("codexprobe")).agent, None);
+
+        let footer_only = &[
+            "  some transcript line",
+            "  gpt-5.6-sol default · /tmp/claude-1000/-home-coin-sprag/6fa43ef3-48fe-4a56-a7…",
+        ];
+        assert_eq!(codex_verdict(footer_only, Some("codexprobe")).agent, None);
+    }
+
+    /// The idle rule fires on a title being THERE, so the one input that can hold it honest is a
+    /// claimed pane that has painted none. Widen the pattern to accept the empty string and this
+    /// goes red; nothing else does, which is how the rule's own doc knows what it is allowed to
+    /// claim.
+    #[test]
+    fn a_codex_pane_that_has_painted_no_title_is_not_asserted_to_be_resting() {
+        let v = codex_verdict(CODEX_IDLE, None);
+        assert_eq!(v.state, AgentState::Unknown);
+        assert_eq!(
+            v.agent.as_deref(),
+            Some("codex"),
+            "the pane IS claimed — this is a miss about the state, not about identity"
+        );
+    }
+
+    /// Two manifests in one list must not claim each other's panes, which is the property slice 4's
+    /// user-layered manifests will depend on and which no single-manifest test can show.
+    #[test]
+    fn the_two_built_in_manifests_do_not_claim_each_others_panes() {
+        let both = [claude(), codex()];
+
+        let em = painted(CODEX_IDLE);
+        let v = detect(em.screen(), Some("codexprobe"), &both);
+        assert_eq!(v.agent.as_deref(), Some("codex"));
+
+        let em = painted(IDLE);
+        let v = detect(em.screen(), Some("✳ Claude Code"), &both);
+        assert_eq!(v.agent.as_deref(), Some("claude"));
     }
 }
