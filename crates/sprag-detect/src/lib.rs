@@ -13,8 +13,10 @@
 //! encode somebody else's UI, and the only way to keep them honest is to be able to replay a
 //! captured screen and assert on it.
 //!
-//! Hysteresis, the per-pane memory and the publish seam are deliberately NOT here. They need a
-//! clock and a place to remember, and both belong to the caller (slice 2).
+//! The rules answer from ONE frame. What a frame cannot know — that the frame before said
+//! something else — is [`Tracker`], the per-pane memory this crate also owns (slice 2). It keeps
+//! the clock a parameter for the same reason everything else here is pure. The publish seam is
+//! still the caller's (slice 3).
 //!
 //! ## What the design rests on, measured rather than assumed (R249)
 //!
@@ -81,6 +83,10 @@
 use regex::Regex;
 use sprag_vt::Screen;
 
+mod track;
+
+pub use track::{DEFAULT_SETTLE, Hysteresis, Tracker};
+
 /// What an agent pane is doing, as a person would describe it.
 ///
 /// The vocabulary is deliberately small. [`Blocked`](Self::Blocked) is the state this whole front
@@ -113,6 +119,24 @@ impl AgentState {
             Self::Blocked => Some("blocked"),
             Self::Idle => Some("idle"),
         }
+    }
+
+    /// Whether this state is asserted by evidence PRESENT on the screen, rather than by the absence
+    /// of it.
+    ///
+    /// [`Working`](Self::Working) is a spinner frame in the title and [`Blocked`](Self::Blocked) is
+    /// a choice list on the screen: both are things a rule SAW. The other two are what a pane reads
+    /// as when the working signal or the fingerprint is not there — and an absence can be an
+    /// artifact of the instant the sample was taken, because the working signal is an ANIMATION
+    /// (R249's M2, a title alternating at about 1 Hz).
+    ///
+    /// [`Tracker`] rests two decisions on that asymmetry and no third thing should read it as
+    /// "busy": an active verdict is published on sight while a resting one has to hold
+    /// ([`Hysteresis`]), and a pane whose fingerprint a modal has covered may keep the identity it
+    /// already had only while it is showing something active.
+    #[must_use]
+    pub const fn is_active(self) -> bool {
+        matches!(self, Self::Working | Self::Blocked)
     }
 }
 
@@ -267,6 +291,39 @@ pub struct Manifest {
     pub rules: Vec<Rule>,
 }
 
+impl Manifest {
+    /// Whether any fingerprint claims this pane as this agent's.
+    fn claims(&self, screen: &Screen, title: &str) -> bool {
+        self.any.iter().any(|fp| fp.holds(screen, title))
+    }
+
+    /// The verdict this manifest's rules reach on a pane already taken to be this agent's —
+    /// arbitration WITHOUT identification.
+    ///
+    /// Separate from [`detect`] because the two halves have different answers available to them.
+    /// Identification reads the screen and can fail on a screen that is still this agent's: a modal
+    /// covers the composer and the footer `codex` is recognised by, which is the one state this
+    /// whole front exists to report (R251). [`Tracker`] remembers what a pane was and calls this
+    /// directly, so the memory supplies the half the screen has hidden. Keeping it ONE function is
+    /// [`Rule::id`]'s argument again — a second arbitration path is a path that can disagree.
+    fn verdict(&self, screen: &Screen, title: &str) -> Verdict {
+        // Highest priority wins; `max_by_key` on a plain iterator returns the LAST maximum, so the
+        // order is reversed to make it the FIRST — declaration order is the documented tie-break,
+        // and a reader should not have to know which end of the iterator the tie fell off.
+        let fired = self
+            .rules
+            .iter()
+            .rev()
+            .filter(|rule| rule.all.iter().all(|m| m.holds(screen, title)))
+            .max_by_key(|rule| rule.priority);
+        Verdict {
+            state: fired.map_or(AgentState::Unknown, |rule| rule.state),
+            agent: Some(self.name.clone()),
+            rule: fired.map(|rule| rule.id.clone()),
+        }
+    }
+}
+
 /// A state, with the evidence that produced it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Verdict {
@@ -295,26 +352,10 @@ pub struct Verdict {
 #[must_use]
 pub fn detect(screen: &Screen, title: Option<&str>, manifests: &[Manifest]) -> Verdict {
     let title = title.unwrap_or_default();
-    let Some(manifest) = manifests
+    manifests
         .iter()
-        .find(|manifest| manifest.any.iter().any(|fp| fp.holds(screen, title)))
-    else {
-        return Verdict::default();
-    };
-    // Highest priority wins; `max_by_key` on a plain iterator returns the LAST maximum, so the
-    // order is reversed to make it the FIRST — declaration order is the documented tie-break, and
-    // a reader should not have to know which end of the iterator the tie fell off.
-    let fired = manifest
-        .rules
-        .iter()
-        .rev()
-        .filter(|rule| rule.all.iter().all(|m| m.holds(screen, title)))
-        .max_by_key(|rule| rule.priority);
-    Verdict {
-        state: fired.map_or(AgentState::Unknown, |rule| rule.state),
-        agent: Some(manifest.name.clone()),
-        rule: fired.map(|rule| rule.id.clone()),
-    }
+        .find(|manifest| manifest.claims(screen, title))
+        .map_or_else(Verdict::default, |manifest| manifest.verdict(screen, title))
 }
 
 /// The last `n` non-empty rows of the visible screen, in reading order.

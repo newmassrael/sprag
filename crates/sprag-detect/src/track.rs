@@ -1,0 +1,808 @@
+//! The per-pane memory: what a single frame cannot know.
+//!
+//! H3 slice 2. [`detect`](crate::detect) answers from one screen and one title, and that is the
+//! whole of what it can do. Three of the measurements this front is built on are about a pane over
+//! TIME, and none of them can be honoured without somewhere to remember:
+//!
+//! * **The working signal is an ANIMATION.** `claude`'s title alternates between braille frames at
+//!   about 1 Hz (R249's M2). A detector that publishes every frame publishes a flicker, so a
+//!   verdict that rests on NOT seeing that signal has to hold before it is believed. That is
+//!   [`Hysteresis`], and M2 is why the design calls it a correctness requirement of the input
+//!   rather than a later polish.
+//! * **A quiet pane costs nothing, exactly.** An idle agent pane moved ZERO row generations over
+//!   eight seconds (M3). Because the rules are a pure function of the screen and the title, a pane
+//!   where neither has moved cannot reach a different verdict — so skipping the evaluation is a
+//!   skip with a proof rather than a heuristic that trades accuracy for cost.
+//! * **A modal hides WHO the pane belongs to.** A `codex` dialog covers the composer line and the
+//!   footer its fingerprint is made of, so the pane goes unclaimed in the one state this front
+//!   exists to report (R251). Nothing on that screen says `codex`, so no better fingerprint fixes
+//!   it; only memory does.
+//!
+//! The clock arrives as a PARAMETER, the shape `Keymap::route` uses and for the same reason: a
+//! settle window becomes arithmetic in a test instead of a sleep.
+
+use std::time::{Duration, Instant};
+
+use sprag_vt::Screen;
+
+use crate::{Manifest, Verdict};
+
+/// The default settle window.
+///
+/// Longer than the roughly 1 Hz the working spinner was measured alternating at (R249's M2),
+/// because the artifact this window exists to absorb is one frame of that animation: a window
+/// shorter than the period it guards against publishes exactly the flicker it was added for. Two
+/// seconds rather than one leaves room for a slower box and a slower agent, and it is only ever
+/// spent on a pane coming to REST — [`AgentState::is_active`](crate::AgentState::is_active) states
+/// are published on sight, so the state a person is waiting for is never delayed by it.
+pub const DEFAULT_SETTLE: Duration = Duration::from_secs(2);
+
+/// How long a candidate state must hold before [`Tracker`] publishes it.
+///
+/// # One parameter, where the design named two
+///
+/// H3's design asked for "N consecutive evaluations, with a wall-clock cap so a slow-changing pane
+/// still settles". The count is not a second mechanism, and this is the slice that had to find out:
+///
+/// * A pending candidate is REPLACED by any observation that disagrees with it, so "this has been
+///   the answer since `t`" already means "nothing has disagreed since `t`". A count of agreeing
+///   observations adds no evidence to that.
+/// * Under the OR the design's own sentence implies — the cap exists precisely because a quiet pane
+///   never reaches N — the count can only publish EARLIER than the window. On a pane that repaints
+///   quickly, which is what an agent printing output IS, N observations arrive in milliseconds and
+///   the guard collapses to nothing.
+/// * Under an AND it is worse: a pane that goes quiet after one observation never reaches N and
+///   freezes in its previous state forever, which is the failure the pending exception below exists
+///   to prevent.
+///
+/// So the window is time, and time alone. The struct stays a struct because the option that will
+/// carry it (slice 3, where an evaluation site exists to read it) wants a name, and because a
+/// second knob added later must not change [`Tracker::new`]'s shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hysteresis {
+    /// How long a candidate that rests on an ABSENCE must hold before it is published.
+    pub settle: Duration,
+}
+
+impl Default for Hysteresis {
+    fn default() -> Self {
+        Self {
+            settle: DEFAULT_SETTLE,
+        }
+    }
+}
+
+/// A verdict waiting to be believed, and when it was first seen.
+#[derive(Debug)]
+struct Pending {
+    candidate: Verdict,
+    since: Instant,
+}
+
+/// The inputs the rules read, as of the last evaluation — the quiescence key.
+///
+/// It is the exactness that earns the skip, so each field is here because the rules can read it
+/// and for no other reason.
+#[derive(Debug)]
+struct Seen {
+    /// Per-row damage stamps, which stand in for every row's text: a row whose stamp has not moved
+    /// has not been written to. This is the same comparison the projection gate and the wire client
+    /// already make (R218, R220), against the same stamps.
+    generations: Vec<u64>,
+    /// The width, because a row's TEXT is its cells and how many of them fit — and the two can move
+    /// independently. `Screen::resized`, the resize path an alternate screen takes, copies every
+    /// row's damage stamp verbatim while truncating the cells to the new width, so a narrowing
+    /// resize is a content change no stamp records.
+    cols: u16,
+    /// The title, with an absent one stored as the empty string exactly as
+    /// [`detect`](crate::detect) reads it — so two titles this cannot tell apart are two titles the
+    /// rules cannot tell apart either.
+    title: String,
+}
+
+impl Seen {
+    fn of(screen: &Screen, title: &str) -> Self {
+        let mut seen = Self {
+            generations: Vec::new(),
+            cols: 0,
+            title: String::new(),
+        };
+        seen.refresh(screen, title);
+        seen
+    }
+
+    /// Whether nothing the rules can read has moved.
+    fn unchanged(&self, screen: &Screen, title: &str) -> bool {
+        self.cols == screen.cols()
+            && self.title == title
+            && self.generations.len() == screen.rows() as usize
+            && (0..screen.rows())
+                .all(|row| screen.row_generation(row) == Some(self.generations[row as usize]))
+    }
+
+    /// Take the reading again, reusing the buffers so a steady-state pane allocates nothing.
+    fn refresh(&mut self, screen: &Screen, title: &str) {
+        self.generations.clear();
+        self.generations
+            .extend((0..screen.rows()).map(|row| screen.row_generation(row).unwrap_or_default()));
+        self.cols = screen.cols();
+        if self.title != title {
+            self.title.clear();
+            self.title.push_str(title);
+        }
+    }
+}
+
+/// One pane's agent state over time: the quiescence gate, the settle window, and the identity a
+/// modal covers.
+///
+/// One per pane, held wherever a pane is held (slice 3 puts it on `sprag_terminal::Pane`). It owns
+/// no clock and no manifests: `now` and the manifest list arrive on every [`observe`](Self::observe)
+/// call, so a workspace has one manifest list and a test has arithmetic.
+///
+/// [`observe`](Self::observe) is meant to be called on EVERY tick, including the ticks where
+/// nothing has happened. The quiescence gate lives inside it rather than at the call site, so a
+/// caller cannot accidentally hold a pane's pending transition open by deciding for itself that
+/// nothing was worth asking about.
+#[derive(Debug)]
+pub struct Tracker {
+    policy: Hysteresis,
+    /// The verdict on the wire. [`Verdict::default`] until something is published.
+    published: Verdict,
+    /// Increments on every PUBLISHED change, so a client can tell "still blocked" from "blocked
+    /// again" without diffing strings — the treatment `notification_seq` already gets.
+    seq: u64,
+    pending: Option<Pending>,
+    seen: Option<Seen>,
+    /// Which agent this pane was last IDENTIFIED as, independent of what it is doing.
+    ///
+    /// By name rather than by index into the manifest list, because slice 4 reloads that list from
+    /// a file: a name survives a reload and a position does not.
+    identity: Option<String>,
+}
+
+impl Default for Tracker {
+    fn default() -> Self {
+        Self::new(Hysteresis::default())
+    }
+}
+
+impl Tracker {
+    /// A tracker for one pane, with nothing published yet.
+    #[must_use]
+    pub fn new(policy: Hysteresis) -> Self {
+        Self {
+            policy,
+            published: Verdict::default(),
+            seq: 0,
+            pending: None,
+            seen: None,
+            identity: None,
+        }
+    }
+
+    /// The verdict currently published for this pane.
+    #[must_use]
+    pub const fn verdict(&self) -> &Verdict {
+        &self.published
+    }
+
+    /// How many times the published verdict has changed.
+    #[must_use]
+    pub const fn seq(&self) -> u64 {
+        self.seq
+    }
+
+    /// Take a reading of the pane and return what is published for it now.
+    ///
+    /// Call it on every tick. Two things can happen without the rules running at all, and both are
+    /// deliberate:
+    ///
+    /// * **Nothing the rules read has moved and nothing is pending** — the answer cannot have
+    ///   changed, so it is not recomputed. The skip is exact, not a sampling policy.
+    /// * **Nothing has moved but a transition IS pending** — the rules still do not run, because
+    ///   with both their inputs unchanged they would reach the candidate they already reached. What
+    ///   has moved is the CLOCK, which is a third input while a transition is pending, and asking
+    ///   it is what keeps a pane that went quiet mid-transition from freezing in its previous state
+    ///   forever.
+    pub fn observe(
+        &mut self,
+        screen: &Screen,
+        title: Option<&str>,
+        manifests: &[Manifest],
+        now: Instant,
+    ) -> &Verdict {
+        let title = title.unwrap_or_default();
+        if self
+            .seen
+            .as_ref()
+            .is_some_and(|seen| seen.unchanged(screen, title))
+        {
+            self.settle(now);
+            return &self.published;
+        }
+        if let Some(seen) = &mut self.seen {
+            seen.refresh(screen, title);
+        } else {
+            self.seen = Some(Seen::of(screen, title));
+        }
+        let candidate = self.evaluate(screen, title, manifests);
+        self.consider(candidate, now);
+        &self.published
+    }
+
+    /// The verdict this frame argues for, with the memory consulted where the screen has gone
+    /// silent about who the pane belongs to.
+    fn evaluate(&mut self, screen: &Screen, title: &str, manifests: &[Manifest]) -> Verdict {
+        if let Some(manifest) = manifests.iter().find(|m| m.claims(screen, title)) {
+            if self.identity.as_deref() != Some(manifest.name.as_str()) {
+                self.identity = Some(manifest.name.clone());
+            }
+            return manifest.verdict(screen, title);
+        }
+        // Nothing claims the pane — which is what a `codex` pane looks like the moment a modal
+        // covers the composer and the footer (R251). A pane that was an agent a moment ago is
+        // still that agent, so the remembered manifest is asked directly.
+        //
+        // Only for an ACTIVE verdict, and that bound is the same measurement read the other way:
+        // at rest a `codex` title is the bare working directory and its screen is a prompt line,
+        // which is what a SHELL looks like too. Without the fingerprint there is nothing left to
+        // tell an agent at rest from the shell that outlived it, so a resting pane is not asserted
+        // to still be anybody — while a dialog or a spinner is evidence the remembered agent is
+        // still there, and is exactly the state the memory exists to rescue.
+        self.identity
+            .as_deref()
+            .and_then(|name| manifests.iter().find(|m| m.name == name))
+            .map(|manifest| manifest.verdict(screen, title))
+            .filter(|verdict| verdict.state.is_active())
+            .unwrap_or_default()
+    }
+
+    /// Weigh a fresh candidate against what is published.
+    fn consider(&mut self, candidate: Verdict, now: Instant) {
+        if candidate == self.published {
+            // The pane moved without changing what it MEANS — the next spinner frame, another line
+            // of output. Whatever transition was pending is off, because something disagreed with
+            // it.
+            self.pending = None;
+            return;
+        }
+        if candidate.state.is_active() {
+            // Positive evidence: a spinner frame in the title, a choice list on the screen. There
+            // is no sampling artifact that INVENTS one of those, and the state a person is waiting
+            // for is the one it would be perverse to delay.
+            self.publish(candidate);
+            return;
+        }
+        let restart = !matches!(&self.pending, Some(pending) if pending.candidate == candidate);
+        if restart {
+            self.pending = Some(Pending {
+                candidate,
+                since: now,
+            });
+        }
+        self.settle(now);
+    }
+
+    /// Publish a pending candidate once it has held for the settle window.
+    fn settle(&mut self, now: Instant) {
+        let Some(pending) = &self.pending else {
+            return;
+        };
+        if now.saturating_duration_since(pending.since) >= self.policy.settle {
+            let candidate = pending.candidate.clone();
+            self.publish(candidate);
+        }
+    }
+
+    fn publish(&mut self, verdict: Verdict) {
+        self.pending = None;
+        // Let the identity go exactly when the published answer is that nobody claims this pane.
+        // The memory and the wire then agree, and a pane an agent has EXITED cannot go on being
+        // reported as that agent the next time something dialog-shaped appears in it.
+        if verdict.agent.is_none() {
+            self.identity = None;
+        }
+        self.published = verdict;
+        self.seq += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{AgentState, claude, codex, detect};
+    use sprag_vt::{Emulator, VtPort};
+
+    /// The measurement the settle window is sized against: R249's M2 sampled `claude`'s working
+    /// title alternating between two braille frames at about 1 Hz.
+    const MEASURED_SPINNER_PERIOD: Duration = Duration::from_secs(1);
+
+    fn painted(lines: &[&str]) -> Emulator {
+        let mut em = Emulator::new(80, 24);
+        em.advance(lines.join("\r\n").as_bytes());
+        em
+    }
+
+    /// Repaint the SAME pane, the way an agent redrawing its screen does — so the row damage
+    /// stamps move exactly as they would live, rather than being compared across two emulators
+    /// that never shared a generation counter.
+    fn repaint(em: &mut Emulator, lines: &[&str]) {
+        em.advance(b"\x1b[2J\x1b[H");
+        em.advance(lines.join("\r\n").as_bytes());
+    }
+
+    /// Enough of a `claude` pane to be claimed by its footer fingerprint with no title at all.
+    const CLAUDE_FOOTER: &[&str] = &["❯", "  ⏸ manual mode on · ? for shortcuts"];
+
+    /// The smallest screen that is a choice list. The dialog RULE's fidelity to a real agent is
+    /// slice 1's business, proven there against three captured `claude` dialogs and three `codex`
+    /// ones; these tests are about time, and need only a screen the rule fires on.
+    const DIALOG: &[&str] = &["❯ 1. Yes", "  2. No"];
+
+    /// A `codex` pane at rest: the composer line and the footer shape, which is the conjunction its
+    /// fingerprint is made of.
+    const CODEX_AT_REST: &[&str] = &[
+        "› Write tests for @filename",
+        "  gpt-5.6-sol default · /tmp",
+    ];
+
+    /// A `codex` modal, which covers both halves of that conjunction — the R251 finding, in the
+    /// smallest form that reproduces it. Every test using it asserts that it really is unclaimed
+    /// rather than assuming it.
+    const CODEX_MODAL: &[&str] = &[
+        "  Select Model",
+        "› 1. gpt-5.6-sol (current)",
+        "  2. gpt-5.5",
+    ];
+
+    #[test]
+    fn the_default_settle_window_outlasts_the_measured_spinner_period() {
+        assert!(
+            DEFAULT_SETTLE > MEASURED_SPINNER_PERIOD,
+            "a window shorter than the animation it guards against publishes the flicker it exists \
+             to absorb",
+        );
+    }
+
+    /// The gate H3's design named for this slice: one animation is one publication.
+    #[test]
+    fn a_spinner_animation_publishes_one_working_not_six() {
+        let manifests = [claude()];
+        let mut tracker = Tracker::default();
+        let mut em = painted(CLAUDE_FOOTER);
+        let base = Instant::now();
+
+        for (tick, frame) in ["⠂", "⠐", "⠂", "⠐", "⠂", "⠐"].iter().enumerate() {
+            let title = format!("{frame} Run sleep command for 25 seconds");
+            let now = base + MEASURED_SPINNER_PERIOD * u32::try_from(tick).expect("six of them");
+            let verdict = tracker.observe(em.screen(), Some(&title), &manifests, now);
+            assert_eq!(verdict.state, AgentState::Working, "frame {frame}");
+        }
+        assert_eq!(
+            tracker.seq(),
+            1,
+            "six frames of one animation are one publication",
+        );
+
+        // Non-vacuity: a tracker that had frozen after the first frame would have passed every
+        // assertion above. This one is still reading the pane.
+        repaint(&mut em, DIALOG);
+        let verdict = tracker.observe(
+            em.screen(),
+            Some("⠂ Run sleep command for 25 seconds"),
+            &manifests,
+            base + Duration::from_secs(6),
+        );
+        assert_eq!(verdict.state, AgentState::Blocked);
+        assert_eq!(tracker.seq(), 2);
+    }
+
+    /// The quiescence gate is a SKIP, and the way to see a skip is to change the answer under it:
+    /// only an evaluation could notice a rewritten rule, so a verdict that does not move proves the
+    /// rules did not run.
+    #[test]
+    fn the_quiescence_gate_does_not_run_the_rules_and_is_not_a_freeze() {
+        let mut rewritten = claude();
+        rewritten
+            .rules
+            .iter_mut()
+            .find(|rule| rule.id == "idle-glyph")
+            .expect("the manifest has an idle rule")
+            .state = AgentState::Working;
+
+        let mut tracker = Tracker::default();
+        let mut em = painted(CLAUDE_FOOTER);
+        let title = Some("✳ Claude Code");
+        let base = Instant::now();
+
+        tracker.observe(em.screen(), title, &[claude()], base);
+        tracker.observe(em.screen(), title, &[claude()], base + DEFAULT_SETTLE);
+        assert_eq!(tracker.verdict().state, AgentState::Idle);
+
+        tracker.observe(
+            em.screen(),
+            title,
+            std::slice::from_ref(&rewritten),
+            base + DEFAULT_SETTLE * 2,
+        );
+        assert_eq!(
+            tracker.verdict().state,
+            AgentState::Idle,
+            "nothing the rules read had moved, so the rules did not run",
+        );
+
+        // Move one row and the same rewritten manifest lands at once: the gate skipped, it did not
+        // stop.
+        repaint(
+            &mut em,
+            &["❯ typed something", "  ⏸ manual mode on · ? for shortcuts"],
+        );
+        tracker.observe(
+            em.screen(),
+            title,
+            std::slice::from_ref(&rewritten),
+            base + DEFAULT_SETTLE * 3,
+        );
+        assert_eq!(tracker.verdict().state, AgentState::Working);
+    }
+
+    /// A resize is a content change no damage stamp records, and the test asserts that premise
+    /// rather than assuming it — if `sprag-vt` ever stamps rows on resize, this says the premise
+    /// died instead of quietly becoming vacuous.
+    #[test]
+    fn a_resize_that_truncates_a_row_is_not_quiescence() {
+        let manifests = [claude()];
+        let mut tracker = Tracker::default();
+        let mut em = Emulator::new(80, 24);
+        // The alternate screen, because that is the resize path that copies the stamps verbatim
+        // (`Screen::resized`); the main screen reflows and stamps every row afresh.
+        em.advance(b"\x1b[?1049h");
+        em.advance(CLAUDE_FOOTER.join("\r\n").as_bytes());
+        let base = Instant::now();
+
+        tracker.observe(em.screen(), None, &manifests, base);
+        let verdict = tracker.observe(em.screen(), None, &manifests, base + DEFAULT_SETTLE);
+        assert_eq!(
+            verdict.agent.as_deref(),
+            Some("claude"),
+            "claimed by the footer fingerprint, with no title at all",
+        );
+
+        let before: Vec<Option<u64>> = (0..em.screen().rows())
+            .map(|row| em.screen().row_generation(row))
+            .collect();
+        em.resize(20, 24);
+        let after: Vec<Option<u64>> = (0..em.screen().rows())
+            .map(|row| em.screen().row_generation(row))
+            .collect();
+        assert_eq!(
+            before, after,
+            "the premise: this resize moved no damage stamp, so only the width can carry it",
+        );
+
+        tracker.observe(em.screen(), None, &manifests, base + DEFAULT_SETTLE);
+        tracker.observe(em.screen(), None, &manifests, base + DEFAULT_SETTLE * 2);
+        assert_eq!(
+            tracker.verdict().agent,
+            None,
+            "the footer was truncated away, and the rules were asked because the width moved",
+        );
+    }
+
+    /// The pending exception: a pane that goes quiet mid-transition still settles, because while a
+    /// transition is pending the clock is an input.
+    #[test]
+    fn a_pending_transition_settles_on_the_clock_although_nothing_moved() {
+        let manifests = [claude()];
+        let mut tracker = Tracker::default();
+        let em = painted(CLAUDE_FOOTER);
+        let base = Instant::now();
+
+        tracker.observe(em.screen(), Some("⠂ Compacting"), &manifests, base);
+        assert_eq!(tracker.verdict().state, AgentState::Working);
+
+        let rested = Some("✳ Compacting");
+        let began = base + Duration::from_millis(100);
+        tracker.observe(em.screen(), rested, &manifests, began);
+        assert_eq!(
+            tracker.verdict().state,
+            AgentState::Working,
+            "an absence has to hold before it is believed",
+        );
+
+        // From here NOTHING moves: same screen, same title. Only the clock advances.
+        tracker.observe(em.screen(), rested, &manifests, began + DEFAULT_SETTLE / 2);
+        assert_eq!(
+            tracker.verdict().state,
+            AgentState::Working,
+            "and it has not held long enough yet",
+        );
+
+        tracker.observe(em.screen(), rested, &manifests, began + DEFAULT_SETTLE);
+        assert_eq!(tracker.verdict().state, AgentState::Idle);
+        assert_eq!(tracker.seq(), 2, "one transition, one publication");
+    }
+
+    /// The window is measured from when a candidate was FIRST seen, not from the last time it was
+    /// seen again. A pane that keeps repainting — an agent printing its transcript — re-reaches the
+    /// same candidate on every tick, and a window restarted by each of those never expires at all:
+    /// the pane would be stuck in its previous state for as long as it stayed busy, which is the
+    /// same freeze the pending exception exists to prevent, arriving by the other door.
+    #[test]
+    fn a_pane_that_keeps_repainting_settles_when_the_candidate_has_held_long_enough() {
+        let manifests = [claude()];
+        let mut tracker = Tracker::default();
+        let mut em = painted(CLAUDE_FOOTER);
+        let base = Instant::now();
+
+        tracker.observe(em.screen(), Some("⠂ Reading files"), &manifests, base);
+        assert_eq!(tracker.verdict().state, AgentState::Working);
+
+        let rested = Some("✳ Reading files");
+        let began = base + Duration::from_millis(100);
+        tracker.observe(em.screen(), rested, &manifests, began);
+
+        // The spinner has stopped but the transcript has not: every tick moves a row.
+        let mut printed = CLAUDE_FOOTER.to_vec();
+        for tick in 1..=3 {
+            printed.insert(0, "● and then it said something else");
+            repaint(&mut em, &printed);
+            tracker.observe(
+                em.screen(),
+                rested,
+                &manifests,
+                began + Duration::from_millis(500) * tick,
+            );
+            assert_eq!(
+                tracker.verdict().state,
+                AgentState::Working,
+                "tick {tick}: the candidate has not held long enough yet",
+            );
+        }
+
+        printed.insert(0, "● one more");
+        repaint(&mut em, &printed);
+        tracker.observe(em.screen(), rested, &manifests, began + DEFAULT_SETTLE);
+        assert_eq!(
+            tracker.verdict().state,
+            AgentState::Idle,
+            "it has been the answer for the whole window, busy pane or not",
+        );
+    }
+
+    /// A pause shorter than the window is absorbed entirely — the flicker M2 made hysteresis a
+    /// correctness requirement for.
+    #[test]
+    fn a_pause_in_the_animation_does_not_publish_a_return_to_rest() {
+        let manifests = [claude()];
+        let mut tracker = Tracker::default();
+        let em = painted(CLAUDE_FOOTER);
+        let base = Instant::now();
+
+        tracker.observe(em.screen(), Some("⠂ Working"), &manifests, base);
+        tracker.observe(
+            em.screen(),
+            Some("✳ Working"),
+            &manifests,
+            base + MEASURED_SPINNER_PERIOD,
+        );
+        // A tick DURING the pause, or this test would pass with a window of one nanosecond: it is
+        // the window that has to be asked, not merely the pane.
+        tracker.observe(
+            em.screen(),
+            Some("✳ Working"),
+            &manifests,
+            base + MEASURED_SPINNER_PERIOD + MEASURED_SPINNER_PERIOD / 2,
+        );
+        assert_eq!(tracker.verdict().state, AgentState::Working);
+        tracker.observe(
+            em.screen(),
+            Some("⠐ Working"),
+            &manifests,
+            base + MEASURED_SPINNER_PERIOD * 2,
+        );
+
+        assert_eq!(tracker.verdict().state, AgentState::Working);
+        assert_eq!(tracker.seq(), 1, "the pause never reached the wire");
+    }
+
+    /// The asymmetry, with both sides driven at the SAME instants so the difference is the policy
+    /// and not the timings: evidence that is PRESENT publishes on sight, evidence that is an
+    /// absence has to hold.
+    #[test]
+    fn a_dialog_publishes_at_once_where_a_return_to_rest_waits() {
+        let manifests = [claude()];
+        let base = Instant::now();
+        let mut asking = Tracker::default();
+        let mut resting = Tracker::default();
+        let mut em_asking = painted(CLAUDE_FOOTER);
+        let em_resting = painted(CLAUDE_FOOTER);
+
+        asking.observe(em_asking.screen(), Some("⠂ x"), &manifests, base);
+        resting.observe(em_resting.screen(), Some("⠂ x"), &manifests, base);
+
+        let moment = base + Duration::from_millis(100);
+        repaint(&mut em_asking, DIALOG);
+        asking.observe(em_asking.screen(), Some("✳ x"), &manifests, moment);
+        resting.observe(em_resting.screen(), Some("✳ x"), &manifests, moment);
+
+        assert_eq!(asking.verdict().state, AgentState::Blocked);
+        assert_eq!(
+            asking.seq(),
+            2,
+            "the state a person is waiting for is not delayed"
+        );
+        assert_eq!(
+            resting.verdict().state,
+            AgentState::Working,
+            "the same instant, and this one still has to hold",
+        );
+        assert_eq!(resting.seq(), 1);
+    }
+
+    /// R251's finding, which is what grew this slice: a modal covers the two things `codex`'s
+    /// fingerprint is made of, so the pane the front exists to report is the pane no fingerprint
+    /// claims. The memory supplies the half the screen has hidden.
+    #[test]
+    fn a_modal_that_covers_the_fingerprint_keeps_the_agent_the_pane_already_was() {
+        let manifests = [codex()];
+        let mut tracker = Tracker::default();
+        let mut em = painted(CODEX_AT_REST);
+        let base = Instant::now();
+
+        tracker.observe(em.screen(), Some("codexprobe"), &manifests, base);
+        let verdict = tracker.observe(
+            em.screen(),
+            Some("codexprobe"),
+            &manifests,
+            base + DEFAULT_SETTLE,
+        );
+        assert_eq!(verdict.agent.as_deref(), Some("codex"));
+        assert_eq!(verdict.state, AgentState::Idle);
+
+        repaint(&mut em, CODEX_MODAL);
+        // The premise, asserted rather than assumed: from one frame this pane is nobody's.
+        assert_eq!(
+            detect(em.screen(), Some("codexprobe"), &manifests),
+            Verdict::default(),
+            "if this screen were still claimed the test would prove nothing about memory",
+        );
+
+        let verdict = tracker.observe(
+            em.screen(),
+            Some("codexprobe"),
+            &manifests,
+            base + DEFAULT_SETTLE + Duration::from_millis(100),
+        );
+        assert_eq!(verdict.state, AgentState::Blocked);
+        assert_eq!(
+            verdict.agent.as_deref(),
+            Some("codex"),
+            "the memory answered what the screen would not",
+        );
+    }
+
+    /// The OTHER measured miss this slice inherited, and the settle window is what absorbs it:
+    /// `codex` replaces its footer with a transient hint for a few seconds, so the fingerprint's
+    /// conjunction fails and the pane briefly belongs to nobody. Because a resting verdict has to
+    /// hold, that flicker never reaches the wire at all — which is why the window applies to a
+    /// FIRST publication too, and not only to a state that is being left.
+    #[test]
+    fn a_fingerprint_covered_for_less_than_the_window_never_reaches_the_wire() {
+        let manifests = [codex()];
+        let mut tracker = Tracker::default();
+        let mut em = painted(CODEX_AT_REST);
+        let base = Instant::now();
+
+        tracker.observe(em.screen(), Some("codexprobe"), &manifests, base);
+        let settled = base + DEFAULT_SETTLE;
+        tracker.observe(em.screen(), Some("codexprobe"), &manifests, settled);
+        assert_eq!(tracker.verdict().agent.as_deref(), Some("codex"));
+        assert_eq!(tracker.seq(), 1);
+
+        let hint = &[
+            "› Write tests for @filename",
+            "  press esc again to interrupt",
+        ];
+        repaint(&mut em, hint);
+        assert_eq!(
+            detect(em.screen(), Some("codexprobe"), &manifests),
+            Verdict::default(),
+            "the premise: with the footer replaced, one frame claims nobody",
+        );
+        tracker.observe(
+            em.screen(),
+            Some("codexprobe"),
+            &manifests,
+            settled + Duration::from_millis(100),
+        );
+
+        repaint(&mut em, CODEX_AT_REST);
+        tracker.observe(
+            em.screen(),
+            Some("codexprobe"),
+            &manifests,
+            settled + Duration::from_millis(900),
+        );
+        assert_eq!(tracker.verdict().agent.as_deref(), Some("codex"));
+        assert_eq!(
+            tracker.seq(),
+            1,
+            "the pane never stopped being codex as far as anybody downstream can tell",
+        );
+    }
+
+    /// The bound on that memory, and the other half of the same measurement: an unclaimed pane
+    /// showing nothing active is not asserted to still be anybody. Otherwise the shell that
+    /// outlives an agent goes on being reported as the agent.
+    #[test]
+    fn a_remembered_agent_that_shows_nothing_active_is_let_go() {
+        let manifests = [codex()];
+        let mut tracker = Tracker::default();
+        let mut em = painted(CODEX_AT_REST);
+        let base = Instant::now();
+
+        tracker.observe(em.screen(), Some("codexprobe"), &manifests, base);
+        let settled = base + DEFAULT_SETTLE;
+        tracker.observe(em.screen(), Some("codexprobe"), &manifests, settled);
+        assert_eq!(tracker.verdict().agent.as_deref(), Some("codex"));
+
+        // The agent exits and the pane is a shell again.
+        repaint(&mut em, &["coin@box:~$ "]);
+        tracker.observe(em.screen(), Some("coin@box: ~"), &manifests, settled);
+        assert_eq!(
+            tracker.verdict().agent.as_deref(),
+            Some("codex"),
+            "an absence, so it has to hold like any other",
+        );
+        tracker.observe(
+            em.screen(),
+            Some("coin@box: ~"),
+            &manifests,
+            settled + DEFAULT_SETTLE,
+        );
+        assert_eq!(tracker.verdict(), &Verdict::default());
+
+        // And the identity is really gone: the very screen that rode on memory in the test above
+        // is nobody's dialog now.
+        repaint(&mut em, CODEX_MODAL);
+        let verdict = tracker.observe(
+            em.screen(),
+            Some("coin@box: ~"),
+            &manifests,
+            settled + DEFAULT_SETTLE * 2,
+        );
+        assert_eq!(
+            verdict,
+            &Verdict::default(),
+            "a dialog in a shell is not the agent that used to live here",
+        );
+    }
+
+    /// A pane nobody ever claimed publishes nothing at all, so a workspace of ordinary shells keeps
+    /// the pre-H3 wire shape — the additive discipline, checked at the only place that can decide
+    /// it before slice 3 exists.
+    #[test]
+    fn a_pane_that_was_never_an_agent_never_publishes() {
+        let manifests = [claude(), codex()];
+        let mut tracker = Tracker::default();
+        let mut em = painted(&["coin@box:~$ cargo build"]);
+        let base = Instant::now();
+
+        tracker.observe(em.screen(), Some("coin@box: ~"), &manifests, base);
+        repaint(
+            &mut em,
+            &["coin@box:~$ cargo build", "   Compiling sprag-vt"],
+        );
+        tracker.observe(
+            em.screen(),
+            Some("coin@box: ~"),
+            &manifests,
+            base + DEFAULT_SETTLE * 2,
+        );
+
+        assert_eq!(tracker.verdict(), &Verdict::default());
+        assert_eq!(tracker.seq(), 0, "nothing was ever published");
+    }
+}
