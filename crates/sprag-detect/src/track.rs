@@ -309,12 +309,21 @@ impl Tracker {
 
     /// The verdict this frame argues for, with the memory consulted where the screen has gone
     /// silent about who the pane belongs to.
+    ///
+    /// Identification is [`detect`](crate::detect)'s rather than a second walk of the list here,
+    /// and the reason is the same one [`Rule::id`](crate::Rule::id) gives for keeping arbitration in
+    /// one function: a second matcher is a matcher that can disagree. It also leaves exactly one
+    /// place where the rules run, which is what lets [`work`](crate::work) meter the cost the
+    /// quiescence gate exists to avoid — see [`DetectWork`](crate::DetectWork). A manifest that
+    /// claims a pane always names itself on the verdict, so `agent.is_some()` is precisely "the
+    /// list claimed this pane".
     fn evaluate(&mut self, screen: &Screen, title: &str, manifests: &[Manifest]) -> Verdict {
-        if let Some(manifest) = manifests.iter().find(|m| m.claims(screen, title)) {
-            if self.identity.as_deref() != Some(manifest.name.as_str()) {
-                self.identity = Some(manifest.name.clone());
+        let claimed = crate::detect(screen, Some(title), manifests);
+        if claimed.agent.is_some() {
+            if self.identity != claimed.agent {
+                self.identity.clone_from(&claimed.agent);
             }
-            return manifest.verdict(screen, title);
+            return claimed;
         }
         // Nothing claims the pane — which is what a `codex` pane looks like the moment a modal
         // covers the composer and the footer (R251). A pane that was an agent a moment ago is

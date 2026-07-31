@@ -80,12 +80,64 @@
 //! Both are recorded here, and asserted by tests, so the next author does not rediscover them from
 //! a bug report.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use regex::Regex;
 use sprag_vt::Screen;
 
 mod track;
 
 pub use track::{DEFAULT_SETTLE, Hysteresis, Tracker};
+
+/// How many rule evaluations have run, process-wide.
+static EVALUATIONS: AtomicU64 = AtomicU64::new(0);
+/// How many manifests those evaluations were OFFERED, process-wide.
+static MANIFESTS: AtomicU64 = AtomicU64::new(0);
+
+/// What this crate has cost the process so far — the meter for the work [`Tracker`]'s quiescence
+/// gate exists to avoid.
+///
+/// # Why this exists, which is a story about an instrument rather than about a counter
+///
+/// The gate is an EXACT skip: it claims a re-evaluation would reach the answer already published,
+/// so its absence changes no answer. That is what makes it worth having and it is also what makes
+/// it hard to prove. R252 proved it BEHAVIOURALLY — rewrite a rule underneath a tracker, observe an
+/// unchanged pane, and assert the verdict did not move, because only an evaluation could have
+/// noticed the rewrite. R254 then put the rule list's identity INTO the gate's key, which is
+/// correct and which destroyed that instrument: a rewritten list is now a different list, so the
+/// gate no longer skips it and the one observable a test could reach is gone. Deleting the gate
+/// outright turned no test red.
+///
+/// So the proof moves from behaviour to COST, and a cost this project can assert is a count.
+/// `sprag_grid::work` is the precedent in this tree — R217 metered projections for the same reason
+/// and R221 measured why: wall-clock on this box drifts 20-30% between runs of the same binary, so
+/// a threshold in microseconds is a flake by construction, while a count is unaffected by what else
+/// the machine is doing. `sprag-latency` prices the gate in TIME and says what that saving is
+/// worth; this is the half that can go red.
+///
+/// Both totals are monotonic and process-wide. A caller reads them twice and takes the DELTA; a
+/// single reading means nothing on its own, because it includes every evaluation since boot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DetectWork {
+    /// Rule evaluations run — one per [`detect`] call, and so one per look at a pane the
+    /// quiescence gate did NOT skip. This is the number the gate exists to hold down.
+    pub evaluations_total: u64,
+    /// Manifests those evaluations were offered — the VOLUME, and it is not `evaluations *
+    /// list_len`. Identification stops at the first manifest that claims the pane, so a claimed
+    /// pane costs its own position in the list and a pane nobody claims costs the whole list.
+    /// That asymmetry is the price of slice 4's layering rule (a user's new agent goes to the
+    /// FRONT), and it is charged to every ordinary shell pane in the workspace.
+    pub manifests_total: u64,
+}
+
+/// Read the meter. See [`DetectWork`] for why the answer is only meaningful as a delta.
+#[must_use]
+pub fn work() -> DetectWork {
+    DetectWork {
+        evaluations_total: EVALUATIONS.load(Ordering::Relaxed),
+        manifests_total: MANIFESTS.load(Ordering::Relaxed),
+    }
+}
 
 /// What an agent pane is doing, as a person would describe it.
 ///
@@ -349,13 +401,25 @@ pub struct Verdict {
 /// A manifest that claims a pane but matches no rule yields [`AgentState::Unknown`] WITH the agent
 /// named — "I know what this is and not what it is doing" is a different fact from "I do not know
 /// what this is", and a person debugging a manifest needs to tell them apart.
+///
+/// This is the ONE place the rules run, which is what makes [`work`] a meter rather than an
+/// estimate: [`Tracker`] delegates here rather than walking the list itself, so an evaluation
+/// cannot be paid for without being counted. See [`DetectWork`] for why a count is the gate's
+/// remaining proof.
 #[must_use]
 pub fn detect(screen: &Screen, title: Option<&str>, manifests: &[Manifest]) -> Verdict {
     let title = title.unwrap_or_default();
-    manifests
-        .iter()
-        .find(|manifest| manifest.claims(screen, title))
-        .map_or_else(Verdict::default, |manifest| manifest.verdict(screen, title))
+    EVALUATIONS.fetch_add(1, Ordering::Relaxed);
+    // Counted inside the predicate rather than as `manifests.len()`, because `find` short-circuits
+    // and the difference is the whole point of the number: a claimed pane pays for its position in
+    // the list, an unclaimed one pays for all of it.
+    let mut offered = 0_u64;
+    let claimed = manifests.iter().find(|manifest| {
+        offered += 1;
+        manifest.claims(screen, title)
+    });
+    MANIFESTS.fetch_add(offered, Ordering::Relaxed);
+    claimed.map_or_else(Verdict::default, |manifest| manifest.verdict(screen, title))
 }
 
 /// The last `n` non-empty rows of the visible screen, in reading order.
