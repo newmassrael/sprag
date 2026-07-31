@@ -1576,6 +1576,99 @@ fn wait_for_pane_text(sock: &Path, needle: &str) -> String {
     panic!("pane 0 never showed {needle:?}; last text was {last:?}");
 }
 
+/// `sprag agent` against a REAL daemon (H3 slice 5): the pane whose screen says an agent is waiting
+/// for an answer is reported, the shell beside it is not, and naming a pane also says WHICH RULE
+/// decided and how to correct it.
+///
+/// # What only a live run can prove here
+///
+/// The verb reads three wire field names (`state`, `name`, `rule`) out of a key (`agent`) that a
+/// different crate writes, and a unit test over hand-written JSON would agree with itself about all
+/// four. This is the same seam R253 was bitten at, and the CLI is where it is cheapest to hold: the
+/// daemon under test is the shipped binary, the screen is painted by a real child, and the detector
+/// runs where it runs in production.
+///
+/// The pane is agent-SHAPED rather than a credentialed agent — H3's discipline throughout, and a gate
+/// that needed an API key is a gate nobody runs. `Blocked` is the state used because it rests on
+/// evidence PRESENT on the screen (a bottom-anchored choice list), so it publishes on sight with no
+/// settle window and this test needs no sleep.
+///
+/// REVERT-PROOF: have the verb print every pane rather than only the claimed ones and the two-line
+/// assertion fails; drop the `require_pane` pre-flight and the unknown-pane assertion fails.
+#[test]
+fn the_cli_reports_which_pane_an_agent_is_waiting_in() {
+    // `claude`'s resting glyph in the title (OSC 2) is the fingerprint; the numbered choice list in
+    // the bottom rows is what the `dialog-choice-list` rule reads. Then `cat`, so the pane goes quiet.
+    let (_host, sock) = spawn_host_running(&[
+        "sh",
+        "-c",
+        "printf '\\033]2;\\342\\234\\263 Claude Code\\007\\033[2J\\033[H\
+         \\342\\235\\257 1. Yes\\n  2. No\\n'; cat",
+    ]);
+    wait_for_pane_text(&sock, "2. No");
+    // A second pane running a plain shell — the population that must stay silent.
+    let split = sprag(&sock, &["split-window", "--", "cat"]);
+    assert!(split.ok, "split-window succeeded: {}", split.stderr);
+    let shell = split.stdout.trim().to_owned();
+
+    let listed = sprag(&sock, &["agent"]);
+    assert!(listed.ok, "agent succeeded: {}", listed.stderr);
+    let lines: Vec<&str> = listed.stdout.lines().collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "only the pane a manifest CLAIMS is listed — a shell is not an agent at rest: {:?}",
+        listed.stdout,
+    );
+    assert!(
+        lines[0].starts_with("0: blocked  claude  rule=dialog-choice-list  seq="),
+        "ID: STATE  NAME  rule=RULE  seq=N, from the daemon's own verdict: {:?}",
+        lines[0],
+    );
+    assert!(
+        !listed.stdout.contains(&format!("{shell}: ")),
+        "the shell pane contributes nothing: {:?}",
+        listed.stdout,
+    );
+
+    // Naming the pane turns the reading into a diagnosis: the same line, plus the remedy.
+    let explained = sprag(&sock, &["agent", "0"]);
+    assert!(explained.ok, "agent 0 succeeded: {}", explained.stderr);
+    assert!(
+        explained.stdout.contains("rule=dialog-choice-list")
+            && explained.stdout.contains("[[agent]] block in config.toml"),
+        "a named pane says which rule fired and what to edit: {:?}",
+        explained.stdout,
+    );
+
+    // ...and the pane with no agent, when NAMED, says so — the answer D3 requires to be
+    // distinguishable from `idle`, rather than the silence the list gives it.
+    let quiet = sprag(&sock, &["agent", &shell]);
+    assert!(
+        quiet.ok,
+        "agent on a shell pane succeeded: {}",
+        quiet.stderr
+    );
+    assert!(
+        quiet.stdout.contains("no agent") && quiet.stdout.contains("not the same as idle"),
+        "a named shell pane is answered, not ignored: {:?}",
+        quiet.stdout,
+    );
+
+    // An absent pane is an ERROR, not an empty answer: the caller named a specific pane.
+    let missing = sprag(&sock, &["agent", "99"]);
+    assert!(
+        !missing.ok,
+        "an unknown pane is refused: {:?}",
+        missing.stdout
+    );
+    assert!(
+        missing.stderr.contains("no pane 99"),
+        "and says which: {:?}",
+        missing.stderr,
+    );
+}
+
 /// The pane lifecycle over the CLI: list, split, list again, kill, and the refusals on either side
 /// of it. Drives the real daemon, so a break in the wire vocabulary these verbs share with it —
 /// `spawn`, `close`, the `panes` slot — fails here rather than in someone's shell.

@@ -533,6 +533,15 @@ impl Tui {
         VtPort::input_modes(&*self.screen.lock().expect("the screen mutex"))
     }
 
+    /// The WINDOW TITLE the client set on this terminal (`OSC 0` / `OSC 2`), `None` while it has set
+    /// none — read off the emulator that consumed the escape, like every other assertion here.
+    ///
+    /// This is the client's agent surface (it paints no chrome of its own), so it is read the same
+    /// way its cells are: the client emits the OSC, sprag's own emulator decides what it meant.
+    fn title(&self) -> Option<String> {
+        VtPort::title(&*self.screen.lock().expect("the screen mutex")).map(str::to_owned)
+    }
+
     /// Every row of the client's painted screen — the failure diagnostic, never an assertion.
     fn rows(&self) -> Vec<String> {
         let emulator = self.screen.lock().expect("the screen mutex");
@@ -696,6 +705,49 @@ fn the_client_takes_the_paste_and_leaves_the_mouse() {
         modes.mouse_protocol,
         MouseProtocol::None,
         "the mouse still belongs to the user's terminal: {modes:?}",
+    );
+}
+
+/// **THE agent surface for this client** (H3 slice 5): a pane whose screen says an agent is waiting
+/// for an answer turns into a WINDOW TITLE on the terminal the client borrowed.
+///
+/// # Why this test and not a unit test over the digest
+///
+/// The digest itself is a pure function with its own tests. What only the shipped binary runs is the
+/// composition, which is four joints long and green at every joint if any one of them is broken: the
+/// daemon must publish the `agent` key, `sprag-client` must parse it onto its cache, the client must
+/// ask for it (`HostClient::pane_agent`), and the paint path must turn a CHANGED digest into an escape
+/// this terminal receives. R253 paid for that lesson at this exact seam — unit-green, inert in the
+/// binary — and this client has no other chrome, so a break here is a front with nothing to show.
+///
+/// The pane is agent-SHAPED rather than a credentialed agent, the discipline every measurement in H3
+/// has followed: a `printf` paints `claude`'s resting title (its fingerprint) and a bottom-anchored
+/// choice list (the `dialog-choice-list` rule), then `cat` holds the pane open and says nothing more.
+/// `Blocked` is chosen because it is asserted by evidence PRESENT on the screen, so it publishes on
+/// sight — no settle window, and therefore no sleep in this test.
+///
+/// The title is read off the emulator that consumed the client's bytes, so the assertion is on what a
+/// terminal would DISPLAY, not on which escape the client chose to spell it with.
+#[test]
+fn a_blocked_agent_pane_reaches_the_terminals_window_title() {
+    // The resting glyph in the title (OSC 2) is the fingerprint; the numbered choice list in the
+    // bottom rows is what makes the verdict `Blocked` rather than `Idle`.
+    let (_daemon, _sock, _conn, session, tui) = attached_client_with(
+        Tui::attach,
+        &[
+            "sh",
+            "-c",
+            "printf '\\033]2;\\342\\234\\263 Claude Code\\007\\033[2J\\033[H\
+             \\342\\235\\257 1. Yes\\n  2. No\\n'; cat",
+        ],
+    );
+
+    // The pane id is the daemon's, and the boot pane is 0 — the same id `sprag panes` prints and the
+    // MCP tools take, which is why the title names it at all.
+    let want = format!("sprag: {session} \u{2014} claude needs an answer (pane 0)");
+    wait_for(
+        "the agent's state to reach the terminal's window title",
+        || settled(tui.title(), &Some(want.clone())),
     );
 }
 

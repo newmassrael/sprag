@@ -92,6 +92,11 @@ fn main() -> ExitCode {
             // it (see the function docs), so it must run while both are alive and the session it
             // renames a window in still exists.
             check_terminal_output_never_reaches_the_shaper(&mut smoke, &mut report);
+            // H3 slice 5's own gate, and it belongs beside the check above for the same reason: it
+            // drives the DAEMON's pane and waits for the CLIENT to paint the consequence, so it needs
+            // the one-pane correspondence that check has just established — and it leaves the pane
+            // set exactly as it found it.
+            check_an_agents_state_reaches_the_painted_pane_title(&mut smoke, &mut report);
             // The keymap gate, HERE because it splits: after the check above, which needs exactly one
             // pane, and before the one below, which leaves several standing.
             check_the_gui_follows_the_users_keymap(&mut smoke, &mut report);
@@ -1062,6 +1067,120 @@ fn check_the_mirror_reshapes_nothing_it_has_shaped(smoke: &mut Smoke, report: &m
 /// The frames are SAMPLED, because `last` is the last frame and no cumulative per-paint counter
 /// exists. `contiguous` is what keeps that honest: a frame number that jumps means one slipped
 /// between two samples, and "not one frame shaped" would then be a claim about a frame never read.
+/// **H3 slice 5's gate**: a pane whose screen says an agent is waiting for an answer turns into TEXT
+/// this client PAINTS — the state beside the pane's own title, where a person looking at the window
+/// finds it.
+///
+/// # Why this has to be the live check and not a unit test
+///
+/// The verdict crosses five hands before a pixel: the daemon's detector produces it, the pane list
+/// carries it, `sprag-client` parses it onto its poll cache, the title SSOT frames it, and every title
+/// surface renders that string. Each hand has its own unit test and all of them pass while a pane
+/// title says nothing — which is exactly the failure R253 recorded at the neighbouring seam
+/// (unit-green, inert in the binary). Only a painted frame closes it.
+///
+/// # What is driven, and why it is not a real agent
+///
+/// The pane is made agent-SHAPED by typing a `printf` at its own shell: `claude`'s resting glyph in the
+/// title, a bottom-anchored numbered choice list (what the `dialog-choice-list` rule reads), and the
+/// footer its fingerprint matches. Every H3 measurement has been taken this way and the reason is
+/// recorded in the design: a gate that needs a credential is a gate that gets skipped. The footer is
+/// included deliberately — a shell that rewrites the title on its next prompt would take the
+/// title-shaped fingerprint away, and the footer keeps the pane CLAIMED either way.
+///
+/// `Blocked` rather than `Idle`, because a verdict resting on evidence PRESENT on the screen publishes
+/// on sight (D5's asymmetry): no settle window, so this check needs no sleep and cannot flake on one.
+///
+/// The phrase asserted is the one a person reads — "needs an answer", not the wire's `blocked` — so
+/// this also gates the wording rule the two frontends share (`sprag_client::agent_phrase`).
+fn check_an_agents_state_reaches_the_painted_pane_title(smoke: &mut Smoke, report: &mut Report) {
+    /// The phrase a blocked agent's title must carry, rendered for a person rather than as the wire
+    /// token — see [`sprag_client::agent_phrase`].
+    const PHRASE: &str = "claude needs an answer";
+
+    let Some(session) = smoke.attached_session() else {
+        report.check("the client says which session to drive", false);
+        return;
+    };
+    let Ok(mut daemon) = smoke.daemon() else {
+        report.check("the daemon takes a second connection to drive it by", false);
+        return;
+    };
+    // One pane on each side, waited on rather than sampled — the same correspondence argument (and the
+    // same flake) as the check above: the daemon addresses a pane by id, the client paints it by index,
+    // and nothing on the wire maps one to the other.
+    let ids = daemon_panes(&mut daemon, &session);
+    let one_each = smoke.wait_for(|s| {
+        let painted = s.docked_panes().ok()?;
+        matches!((ids.as_slice(), painted.as_slice()), ([_], [_])).then_some(painted)
+    });
+    report.check(
+        &format!("one pane on each side to drive an agent screen into (daemon {ids:?})"),
+        one_each.is_ok(),
+    );
+    let Ok(painted) = one_each else {
+        return;
+    };
+    let ([id], [_index]) = (ids.as_slice(), painted.as_slice()) else {
+        return;
+    };
+    let id = *id;
+
+    // The title is not painted before the pane says anything — asserted, because a check whose
+    // "after" state was already true before the drive proves nothing about the drive.
+    let already = smoke
+        .tags()
+        .map(|tags| {
+            tags.values()
+                .any(|node| joined(&node.text).contains(PHRASE))
+        })
+        .unwrap_or(false);
+    report.check(
+        "no pane claims an agent state before one is painted",
+        !already,
+    );
+
+    let script = "printf '\\033]2;\\342\\234\\263 Claude Code\\007\\033[2J\\033[H\
+                  \\342\\235\\257 1. Yes\\n  2. No\\n? for shortcuts\\n'\n";
+    let drove: Result<Value, _> = daemon.call(
+        "scene/invoke",
+        json!({
+            "path": format!("/pane_{id}/sprag_input/external/text"),
+            "args": { "text": script },
+            "session": session,
+        }),
+    );
+    // Waited on the CONDITION — the painted text — and not on the drive's own answer: the text action
+    // returns as soon as the bytes reach the PTY, which is three processes away from a frame.
+    let titled = smoke.wait_for(|s| {
+        let tags = s.tags().ok()?;
+        tags.iter()
+            .find(|(_, node)| joined(&node.text).contains(PHRASE))
+            .map(|(tag, node)| format!("{tag}: {:?}", node.text))
+    });
+    report.check(
+        &format!("a blocked agent's state is PAINTED beside its pane's title ({titled:?}, drive {drove:?})"),
+        titled.is_ok(),
+    );
+    // ...and the AT hears it too, through the same string — the one surface a sighted check cannot
+    // stand in for, and the reason the marker is words rather than a glyph.
+    let announced = smoke
+        .access()
+        .values()
+        .filter_map(|node| node["name"].as_str().map(str::to_owned))
+        .find(|name| name.contains(PHRASE));
+    report.check(
+        &format!("and a screen reader is told the same thing ({announced:?})"),
+        announced.is_some(),
+    );
+}
+
+/// Every string a node painted, as one haystack — the subtree text of a tagged node arrives as a list
+/// (a title is one entry, the rows beside it others), and a phrase is looked for across the lot.
+fn joined(text: &[String]) -> String {
+    text.join(" ")
+}
+
 fn check_terminal_output_never_reaches_the_shaper(smoke: &mut Smoke, report: &mut Report) {
     /// A window name no shaper on this machine has seen, in three scripts so it cannot collide with
     /// anything the UI already paints.
