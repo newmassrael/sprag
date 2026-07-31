@@ -46,6 +46,10 @@
 //! sprag resize-pane [-t SESSION] PANE -x COLS -y ROWS  resize a pane's PTY + emulator
 //! sprag send-keys [-t SESSION] PANE [-l] KEY…     send W3C key names (or, with -l, literal text)
 //! sprag capture-pane [-t SESSION] PANE [-p]       print a pane's retained output to stdout
+//! sprag agent [-t SESSION] [PANE]                 what the AI agent in each pane is doing
+//!                                         (working / blocked / idle), one line per pane an agent
+//!                                         manifest claims — a shell prints nothing. Naming a PANE
+//!                                         also prints WHICH RULE decided, and how to correct it
 //!
 //! sprag list-keys                          print the client keymap `config.toml` produces
 //! sprag bind-key [-nr] [-T TABLE] KEY ACTION…  give a key a meaning (tmux bind-key)
@@ -150,6 +154,7 @@ fn run() -> io::Result<()> {
         Some("break-pane") => break_pane(args.collect()),
         Some("join-pane") => join_pane(args.collect()),
         Some("panes") => panes(args.collect()),
+        Some("agent") => agent(args.collect()),
         Some("split-window") => split_window(args.collect()),
         Some("kill-pane") => kill_pane(args.collect()),
         Some("resize-pane") => resize_pane(args.collect()),
@@ -711,7 +716,8 @@ fn print_usage() {
          \x20      sprag <panes | split-window [-h|-v [-b] PANE] [-- command…]\n\
          \x20             | kill-pane PANE\n\
          \x20             | resize-pane PANE -x COLS -y ROWS\n\
-         \x20             | send-keys PANE [-l] KEY… | capture-pane PANE [-p]> [-t SESSION]\n\
+         \x20             | send-keys PANE [-l] KEY… | capture-pane PANE [-p]\n\
+         \x20             | agent [PANE]> [-t SESSION]\n\
          \x20      sprag <list-keys | bind-key [-nr] [-T prefix|root] KEY ACTION…\n\
          \x20             | unbind-key [-n] [-T prefix|root] KEY>\n\
          \x20      sprag <show-options [-v] [NAME] | set-option [-u] NAME [VALUE]> [-g]"
@@ -1687,6 +1693,79 @@ fn panes(args: Vec<String>) -> io::Result<()> {
             _ => String::new(),
         };
         println!("{id}: {cols}x{rows}  {command}{title}");
+    }
+    Ok(())
+}
+
+/// `agent [-t SESSION] [PANE]`: what the AI agent in each pane is doing — H3's verdict, from the
+/// same pane list every other surface reads.
+///
+/// `ID: STATE  NAME  rule=RULE  seq=N`, one line per pane that an agent manifest CLAIMS. A pane
+/// running a shell prints nothing, which is the pane list's own additive rule at this surface: the
+/// `agent` key is absent for a pane with no known state, so a workspace of shells prints nothing at
+/// all rather than a column of "none". `sprag panes` is the verb that lists every pane.
+///
+/// Naming a PANE turns the same reading into a DIAGNOSIS, and that is why one verb does both. The
+/// state alone answers "is it waiting for me"; when the answer is WRONG, the only useful next fact is
+/// which rule produced it (H3's D7 — a gate that cannot say what it saw cannot be debugged), and what
+/// to do about it. So a named pane also prints the rule's remedy: the id is what an `[[agent]]` block
+/// in `config.toml` redefines or disables, which is what makes a mis-detected pane fixable without a
+/// release. A named pane with no agent says so explicitly rather than printing nothing — the caller
+/// asked about that pane, which is [`require_pane`]'s rule, and "no manifest claims this" is a real
+/// answer that is NOT the same as "idle" (D3: those are opposite instructions to a person).
+///
+/// The rule is never re-derived here. It is the value the daemon's detector produced, carried on the
+/// wire, so this verb cannot come to disagree with the state it explains.
+fn agent(args: Vec<String>) -> io::Result<()> {
+    let (session, rest) = scope_and_rest(args, "agent")?;
+    let mut wanted: Option<u64> = None;
+    for arg in rest {
+        if wanted.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("agent: unexpected argument {arg:?} (agent [-t SESSION] [PANE])"),
+            ));
+        }
+        wanted = Some(arg.parse::<u64>().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("agent: {arg:?} is neither -t nor a pane id"),
+            )
+        })?);
+    }
+    let mut conn = connect_scoped(session.as_deref())?;
+    if let Some(pane) = wanted {
+        require_pane(&mut conn, session.as_deref(), pane, "agent")?;
+    }
+    let listed: Value = conn.call(
+        "scene/query",
+        scoped_params(session.as_deref(), mux_action_path(PANES_SLOT)),
+    )?;
+    for entry in listed.as_array().into_iter().flatten() {
+        let id = entry["id"].as_u64().unwrap_or_default();
+        if wanted.is_some_and(|pane| pane != id) {
+            continue;
+        }
+        let agent = &entry["agent"];
+        // ADDITIVE: no key means no manifest claims the pane. Silent in the LIST (a shell is not an
+        // answer anybody asked for) and stated for a pane the caller named.
+        let Some(state) = agent["state"].as_str() else {
+            if wanted.is_some() {
+                println!("{id}: no agent  (no manifest claims this pane — not the same as idle)");
+            }
+            continue;
+        };
+        let name = agent["name"].as_str().unwrap_or("(unidentified)");
+        let rule = agent["rule"].as_str().unwrap_or("(none)");
+        let seq = agent["seq"].as_u64().unwrap_or(0);
+        println!("{id}: {state}  {name}  rule={rule}  seq={seq}");
+        if wanted.is_some() {
+            println!(
+                "    `{rule}` is the rule that fired. If this verdict is wrong, redefine or \
+                 disable that id in an [[agent]] block in config.toml — the daemon picks the edit \
+                 up on its own."
+            );
+        }
     }
     Ok(())
 }
