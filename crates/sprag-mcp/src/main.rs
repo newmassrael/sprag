@@ -9,12 +9,16 @@
 //!
 //! It is a [Model Context Protocol](https://modelcontextprotocol.io) **stdio
 //! server**: Claude Code (or any MCP client) spawns it and it speaks newline-delimited
-//! JSON-RPC 2.0 on stdin/stdout. It advertises nine self-describing tools —
+//! JSON-RPC 2.0 on stdin/stdout. It advertises eleven self-describing tools —
 //! `list_panes`, `read_pane`, `read_last_command`, `read_pane_links`, `read_pane_images`,
-//! `find_in_pane`, `regex_in_pane`, `write_pane`, `send_keys` — so an
+//! `find_in_pane`, `regex_in_pane`, `agent_state`, `agent_explain`, `write_pane`, `send_keys` — so an
 //! agent *immediately* understands "read/write a sibling pane" without reading any sprag
-//! source. Each tool call bridges to the host wire via [`sprag_rpc::HostConn`],
-//! addressing panes with the [`sprag_host::wire`] path SSOT.
+//! source. The two `agent_*` tools are the surface for the one fact an agent cannot read off a
+//! sibling's screen without interpreting it: whether the AI in that pane is waiting for a human
+//! (H3). They report the daemon's own verdict, so two agents watching one pane agree.
+//!
+//! Each tool call bridges to the host wire via [`sprag_rpc::HostConn`], addressing panes with the
+//! [`sprag_host::wire`] path SSOT.
 //!
 //! ## Locating the host (works in any pane, no per-instance config)
 //!
@@ -190,15 +194,22 @@ fn handle_initialize(message: &Value) -> Value {
         "instructions": "You are running inside a pane of a sprag terminal. These \
             tools let you observe and drive the OTHER (sibling) panes as data: read a \
             pane's on-screen text and scrollback, read just a pane's last command and \
-            its result, type text into a pane, or send keys. \
+            its result, ask whether the AI AGENT in a sibling pane is working, waiting for \
+            a human, or at rest (`agent_state`, and `agent_explain` for why), type text \
+            into a pane, or send keys. \
             Call `list_panes` first to see the pane numbers (1 = first pane). \
             \"pane 2\" means the second pane in that list. If a tool reports it is not \
             inside a sprag terminal, these tools do not apply to this session."
     })
 }
 
-/// The seven self-describing tools. Descriptions are written for an agent so a request
-/// like "type xxx into pane 2" maps directly onto the `write_pane` tool.
+/// The self-describing tool roster. Descriptions are written for an agent so a request like "type
+/// xxx into pane 2" maps directly onto the `write_pane` tool, and "is the agent in pane 2 done?"
+/// onto `agent_state`.
+///
+/// The count is deliberately not stated here: it was wrong (it said seven while there were nine),
+/// which is what a number maintained in prose does. The roster itself is below and the crate-root doc
+/// names the tools rather than counting them.
 fn tools_list() -> Value {
     let pane_arg = json!({
         "type": "integer",
@@ -334,6 +345,48 @@ fn tools_list() -> Value {
                 }
             },
             {
+                "name": "agent_state",
+                "description": "Report what the AI AGENT in each sibling pane is doing — which one \
+                    is waiting for a human, which is still working, and which pane holds no agent at \
+                    all. Use this to answer 'is the agent in pane 2 done?' or 'which pane needs \
+                    attention?' without reading and interpreting screens. The states are: \
+                    `working` (the agent is running: thinking, calling a tool, printing), `blocked` \
+                    (it has ASKED something and cannot continue until a human answers — a \
+                    permission or trust dialog), and `idle` (at rest, waiting for input it has not \
+                    asked for). A pane with NO agent state is reported as such and is NOT idle: \
+                    'this is not an agent' and 'this agent is waiting' are opposite facts. Given a \
+                    `pane`, reports that one; with no argument, every pane.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "pane": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "1-based pane number as shown by list_panes. Omit to \
+                                report every pane."
+                        }
+                    },
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "agent_explain",
+                "description": "Explain WHY a pane's agent state is what it is: which detection \
+                    rule fired, which agent manifest claimed the pane, and how to correct it. Use \
+                    this when a state looks wrong — the answer names the rule id, which is the id \
+                    you disable or redefine in an `[[agent]]` block in sprag's config.toml. The \
+                    rule is read from the verdict the detector already produced, so it can never \
+                    disagree with what agent_state reports. A pane no manifest claims is explained \
+                    as exactly that, which is the diagnosable answer for 'why does my agent pane \
+                    show nothing'.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "pane": pane_arg },
+                    "required": ["pane"],
+                    "additionalProperties": false
+                }
+            },
+            {
                 "name": "write_pane",
                 "description": "Type literal text into a sibling pane's shell, as if the \
                     user typed it, and (by default) press Enter to run it. Use this to \
@@ -399,6 +452,8 @@ fn handle_tools_call(message: &Value) -> Value {
         "read_pane_images" => tool_read_pane_images(&args),
         "find_in_pane" => tool_find_in_pane(&args),
         "regex_in_pane" => tool_regex_in_pane(&args),
+        "agent_state" => tool_agent_state(&args),
+        "agent_explain" => tool_agent_explain(&args),
         "write_pane" => tool_write_pane(&args),
         "send_keys" => tool_send_keys(&args),
         other => Err(format!("unknown tool: {other}")),
@@ -449,6 +504,46 @@ struct PaneInfo {
     /// {id, pixel size, anchor cell}. An agent cannot OCR an image, but CAN learn one is present and
     /// where — tmux shows no inline images at all.
     images: Vec<ImageInfo>,
+    /// What the AGENT running in the pane is doing (H3), or `None` for a pane no manifest claims —
+    /// which is every ordinary shell. The one fact here that is about a SIBLING AI rather than about
+    /// a program: it is how an agent learns that the pane next to it is waiting for a human.
+    agent: Option<AgentInfo>,
+}
+
+/// One pane's agent verdict as an agent reads it — the wire's own `agent` object, field for field.
+///
+/// The state token is carried rather than glossed. A human surface renders `blocked` as a phrase
+/// (`sprag_client::agent_phrase`, shared by both frontends so they cannot drift); this surface's reader
+/// is a program that will branch on the value, so it gets the vocabulary and the tool description
+/// teaches what each token means.
+struct AgentInfo {
+    /// `working` / `blocked` / `idle` — never absent, because the whole object is absent for a pane
+    /// with no known state.
+    state: String,
+    /// Which manifest claims the pane (`claude`, `codex`), or `None` when a rule fired and a modal
+    /// covered the fingerprint that would have named it (R251).
+    name: Option<String>,
+    /// Which RULE produced the state — what `agent_explain` exists to report (H3's D7: a gate that
+    /// cannot say what it saw cannot be diagnosed).
+    rule: Option<String>,
+    /// Increments on a PUBLISHED change, so a poller tells "still blocked" from "blocked again"
+    /// without diffing strings.
+    seq: u64,
+}
+
+/// Parse the additive `agent` object (`{state, name?, rule?, seq}`) from a panes-slot entry.
+///
+/// The `state` token is what makes the value exist: a missing key, `null`, or an object without one
+/// reads as `None` — "this host says nothing about an agent here". Never defaulted, because a
+/// defaulted `idle` would tell an agent that a shell was a sibling waiting for input.
+fn parse_agent_info(entry: &Value) -> Option<AgentInfo> {
+    let agent = entry.get("agent")?;
+    Some(AgentInfo {
+        state: agent.get("state")?.as_str()?.to_owned(),
+        name: agent.get("name").and_then(Value::as_str).map(str::to_owned),
+        rule: agent.get("rule").and_then(Value::as_str).map(str::to_owned),
+        seq: agent.get("seq").and_then(Value::as_u64).unwrap_or(0),
+    })
 }
 
 /// One inline image a pane shows, as an agent reads it (R1404 Stage 5): its id, pixel size, and the
@@ -536,7 +631,32 @@ fn pane_summary(pane: &PaneInfo) -> String {
     if pane.focus_tracking {
         out.push_str("      focus: tracking focus in/out\n");
     }
+    // The sibling AI, if the pane holds one (H3). Last because it is the only line here that is about
+    // another agent rather than about a program: an agent scanning this list to find who needs a human
+    // reads it, and every other line answers a question about the terminal.
+    if let Some(agent) = &pane.agent {
+        out.push_str(&format!("      agent: {}\n", agent_line(agent)));
+    }
     out
+}
+
+/// One agent verdict as a `list_panes` / `agent_state` line: the state, whose it is, and which rule
+/// said so.
+///
+/// Rendered from the wire's own fields with nothing invented, so a reader can act on the token and
+/// `agent_explain` cannot disagree with `list_panes` about the same pane. `name` and `rule` are both
+/// optional on the wire and both are simply omitted when absent — the additive discipline the pane
+/// list itself follows, rather than a `none` a program would have to special-case.
+fn agent_line(agent: &AgentInfo) -> String {
+    let mut line = format!("state={}", agent.state);
+    if let Some(name) = &agent.name {
+        line.push_str(&format!(" name={name}"));
+    }
+    if let Some(rule) = &agent.rule {
+        line.push_str(&format!(" rule={rule}"));
+    }
+    line.push_str(&format!(" seq={}", agent.seq));
+    line
 }
 
 /// Render a pane's mouse-tracking wire token (`"click"` / `"button"` / `"any"`) into an agent-facing
@@ -758,6 +878,106 @@ fn tool_send_keys(args: &Value) -> Result<String, String> {
     Ok(format!("Sent {} key(s) to pane {number}.", keys.len()))
 }
 
+/// `agent_state`: what the agent in each pane is doing, or in one named pane (H3 slice 5).
+///
+/// The whole-terminal form is the one an agent actually asks — "which pane needs a human" is a
+/// question about the SET — so the `pane` argument is optional, unlike every read tool here. Naming a
+/// pane that does not exist is still an ERROR rather than an empty answer, which is `find --pane`'s
+/// rule and the CLI's: a caller who named a pane asked about that pane.
+///
+/// A pane with no verdict is reported EXPLICITLY rather than omitted. D3 makes that mandatory — "this
+/// is not an agent" and "this agent is waiting" are opposite instructions — and an omission would
+/// leave a reader to infer which by counting lines.
+fn tool_agent_state(args: &Value) -> Result<String, String> {
+    let panes = query_panes()?;
+    if panes.is_empty() {
+        return Ok("This sprag terminal has no panes.".to_owned());
+    }
+    let selected: Vec<&PaneInfo> = match args.get("pane") {
+        Some(_) => {
+            let number = pane_number(args)?;
+            vec![panes.iter().find(|p| p.number == number).ok_or_else(|| {
+                format!(
+                    "no pane {number}; this terminal has {} pane(s). Call list_panes.",
+                    panes.len()
+                )
+            })?]
+        }
+        None => panes.iter().collect(),
+    };
+    let mut out = String::new();
+    for pane in selected {
+        match &pane.agent {
+            Some(agent) => out.push_str(&format!(
+                "  pane {}: id={} {}\n",
+                pane.number,
+                pane.id,
+                agent_line(agent)
+            )),
+            None => out.push_str(&format!(
+                "  pane {}: id={} no agent (no manifest claims this pane — not the same as idle)\n",
+                pane.number, pane.id
+            )),
+        }
+    }
+    Ok(out)
+}
+
+/// `agent_explain`: which RULE produced a pane's state, and what to edit when it is wrong.
+///
+/// H3's D7 is the whole reason this can exist as a READ: the rule's identity travels in every verdict
+/// and on the wire, so this reports the value the detector produced rather than evaluating anything a
+/// second time. A second evaluation is a second answer, and two answers about one pane is the defect
+/// D2 avoids one layer down.
+///
+/// The remedy is named because a rule id with no instruction is only half an explanation: the id is
+/// what an `[[agent]]` block in `config.toml` addresses — replacing it in place, or `disable`-ing it —
+/// which is what makes a mis-detected pane fixable by the user who found it rather than by a release.
+fn tool_agent_explain(args: &Value) -> Result<String, String> {
+    let number = pane_number(args)?;
+    let panes = query_panes()?;
+    let pane = panes.iter().find(|p| p.number == number).ok_or_else(|| {
+        format!(
+            "no pane {number}; this terminal has {} pane(s). Call list_panes.",
+            panes.len()
+        )
+    })?;
+    let Some(agent) = &pane.agent else {
+        return Ok(format!(
+            "pane {number} (id={}) has no agent state: no agent manifest claims this pane, so no \
+             rule was even consulted for it. That is what an ordinary shell looks like. If this pane \
+             IS running an agent sprag does not know, add an `[[agent]]` block to sprag's config.toml \
+             with a fingerprint that matches its screen or title.\n",
+            pane.id
+        ));
+    };
+    let mut out = format!("pane {number} (id={}) is {}", pane.id, agent.state);
+    match &agent.name {
+        Some(name) => out.push_str(&format!(", detected as `{name}`")),
+        None => out.push_str(
+            ", and no manifest is currently identified for it (a dialog can cover the very lines an \
+             agent's fingerprint is read from, so the state is published without the name)",
+        ),
+    }
+    match &agent.rule {
+        Some(rule) => out.push_str(&format!(
+            ". The rule that fired is `{rule}`. If that verdict is wrong, redefine or `disable` the \
+             rule with that id in an `[[agent]]` block in sprag's config.toml — a corrected rule \
+             keeps its position, and the daemon picks the edit up on its own.\n"
+        )),
+        None => out.push_str(
+            ". No rule id came with the verdict, which is a pre-H3 daemon rather than an \
+             unexplainable state.\n",
+        ),
+    }
+    out.push_str(&format!(
+        "The state has changed {} time(s) since this pane was first seen (seq={}), so a repeat read \
+         showing the same seq is the same verdict rather than a new one.\n",
+        agent.seq, agent.seq
+    ));
+    Ok(out)
+}
+
 // ---- Pane resolution + host bridge ---------------------------------------------
 
 /// The requested 1-based pane number from a tool's arguments.
@@ -839,6 +1059,7 @@ fn parse_pane_info(index: usize, pane: &Value) -> PaneInfo {
             .and_then(Value::as_array)
             .map(|arr| arr.iter().filter_map(parse_image_info).collect())
             .unwrap_or_default(),
+        agent: parse_agent_info(pane),
     }
 }
 
@@ -935,7 +1156,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tools_list_advertises_the_nine_tools_with_object_schemas() {
+    fn tools_list_advertises_every_tool_with_object_schemas() {
         let tools = tools_list();
         let names: Vec<&str> = tools["tools"]
             .as_array()
@@ -953,6 +1174,8 @@ mod tests {
                 "read_pane_images",
                 "find_in_pane",
                 "regex_in_pane",
+                "agent_state",
+                "agent_explain",
                 "write_pane",
                 "send_keys"
             ]
@@ -980,6 +1203,13 @@ mod tests {
         // regex_in_pane names its argument `pattern`, not `needle`: the argument NAME is part of
         // how an agent learns which language it is writing in.
         assert_eq!(required("regex_in_pane"), json!(["pane", "pattern"]));
+        // agent_explain requires the pane it is explaining...
+        assert_eq!(required("agent_explain"), json!(["pane"]));
+        // ...and `agent_state` requires NOTHING, which is the one asymmetry in this roster and is
+        // deliberate: "which pane needs a human" is a question about the SET, so the whole-terminal
+        // form is the one an agent asks first. A `required: ["pane"]` here would force it to ask
+        // once per pane and assemble the answer itself.
+        assert_eq!(required("agent_state"), json!(null));
     }
 
     #[test]
@@ -1096,6 +1326,7 @@ mod tests {
             mouse: Some("any".to_owned()),
             focus_tracking: true,
             images: vec![],
+            agent: None,
         };
         let summary = pane_summary(&tracking);
         assert!(
@@ -1121,6 +1352,94 @@ mod tests {
         assert!(
             !resting.contains("focus:"),
             "no focus line when off: {resting}"
+        );
+    }
+
+    /// The additive `agent` object off the wire, and the three shapes that must NOT become a state:
+    /// a missing key, a `null`, and an object with no `state`.
+    ///
+    /// A defaulted state is the specific failure worth a test here: `idle` means "an agent is waiting
+    /// for you", so inventing one for a pane running a shell would send a sibling agent to interrupt a
+    /// human who was never asked for anything.
+    ///
+    /// REVERT-PROOF: give `state` a fallback (`unwrap_or("idle")`) and the three rejection assertions
+    /// fail together.
+    #[test]
+    fn parse_agent_info_reads_a_verdict_and_never_invents_one() {
+        let claimed = parse_agent_info(&json!({
+            "id": 1,
+            "agent": { "state": "blocked", "name": "claude", "rule": "dialog-choice-list", "seq": 4 }
+        }))
+        .expect("a well-formed verdict parses");
+        assert_eq!(claimed.state, "blocked");
+        assert_eq!(claimed.name.as_deref(), Some("claude"));
+        assert_eq!(claimed.rule.as_deref(), Some("dialog-choice-list"));
+        assert_eq!(claimed.seq, 4);
+
+        // A pane no manifest claims — the ordinary shell, and the whole population this surface must
+        // not describe as an agent at rest.
+        assert!(parse_agent_info(&json!({ "id": 1, "command": "bash" })).is_none());
+        assert!(parse_agent_info(&json!({ "id": 1, "agent": null })).is_none());
+        assert!(
+            parse_agent_info(&json!({ "id": 1, "agent": { "seq": 2 } })).is_none(),
+            "an object with no state is not a state",
+        );
+        // `name` and `rule` are optional ON THE WIRE (R251: a modal can cover the fingerprint), so a
+        // verdict without them is still a verdict.
+        let nameless = parse_agent_info(&json!({ "id": 1, "agent": { "state": "working" } }))
+            .expect("a state alone is enough");
+        assert_eq!(
+            (nameless.name, nameless.rule, nameless.seq),
+            (None, None, 0)
+        );
+    }
+
+    /// The pane list's agent line, and the additive rule that keeps it off every other pane.
+    ///
+    /// The state TOKEN is carried rather than glossed, unlike the human surfaces: this line's reader
+    /// is a program that will branch on the value, and `agent_explain` is where the prose lives.
+    ///
+    /// REVERT-PROOF: make the line unconditional and the shell assertion fails — every pane in the
+    /// terminal would claim an agent state, which is D3's one forbidden collapse.
+    #[test]
+    fn pane_summary_surfaces_a_sibling_agents_state_and_omits_it_for_a_shell() {
+        let shell = PaneInfo {
+            number: 1,
+            id: 3,
+            title: String::new(),
+            command: "bash".to_owned(),
+            cols: 80,
+            rows: 24,
+            notification: None,
+            bell: 0,
+            shell: None,
+            exit_status: None,
+            mouse: None,
+            focus_tracking: false,
+            images: vec![],
+            agent: None,
+        };
+        let claimed = PaneInfo {
+            agent: Some(AgentInfo {
+                state: "blocked".to_owned(),
+                name: Some("claude".to_owned()),
+                rule: Some("dialog-choice-list".to_owned()),
+                seq: 4,
+            }),
+            ..shell
+        };
+        let summary = pane_summary(&claimed);
+        assert!(
+            summary.contains("agent: state=blocked name=claude rule=dialog-choice-list seq=4"),
+            "the verdict surfaces field for field: {summary}",
+        );
+        let quiet = pane_summary(&PaneInfo {
+            agent: None,
+            ..claimed
+        });
+        assert!(
+            !quiet.contains("agent:"),
+            "a pane no manifest claims says nothing about an agent: {quiet}",
         );
     }
 
