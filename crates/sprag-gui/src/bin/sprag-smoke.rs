@@ -1765,16 +1765,7 @@ fn check_a_window_and_a_terminal_agree_on_one_pane_size(smoke: &mut Smoke, repor
     // honest because the other policy would have chosen this client's own area instead.
     report.check(
         "the window paints part of every pane, which are now larger than it",
-        smoke
-            .wait_for(|smoke| {
-                let grids = smoke.grid_facts();
-                (!grids.is_empty()
-                    && grids
-                        .iter()
-                        .all(|(painted, buffer)| painted.0 < buffer.0 && painted.1 < buffer.1))
-                .then_some(())
-            })
-            .is_ok(),
+        every_pane_is_cropped(smoke, "largest"),
     );
 
     // The detach: a client leaving moves the window as surely as one arriving, and the client that
@@ -1870,16 +1861,7 @@ fn check_a_pinned_window_overrides_what_this_window_measured(
     );
     report.check(
         "this window paints part of every pinned pane",
-        smoke
-            .wait_for(|smoke| {
-                let grids = smoke.grid_facts();
-                (!grids.is_empty()
-                    && grids
-                        .iter()
-                        .all(|(painted, buffer)| painted.0 < buffer.0 && painted.1 < buffer.1))
-                .then_some(())
-            })
-            .is_ok(),
+        every_pane_is_cropped(smoke, "manual"),
     );
     // ...and it STAYS. A client that re-asserted its own measurement would win here within a frame,
     // which is the defect this claim exists to catch rather than a timing nicety.
@@ -2835,6 +2817,31 @@ fn wait_for_path(path: &Path) -> io::Result<()> {
 /// The pair is the whole of the crop question, which is why it travels as one value: a grid whose
 /// painted size is smaller than its buffer is showing part of its pane, and either number alone
 /// says nothing about that.
+/// A `painted < buffer on both axes` wait that PRINTS what it last saw when it does not hold.
+///
+/// The predicate is the same at both call sites and a bare `false` from either is undiagnosable:
+/// "the window paints part of every pane" failing tells a reader nothing about WHICH pane, whether
+/// the grids were empty, or which axis was equal. Observed flaking once in seventeen runs with no
+/// evidence of the cause, which is what a silent gate costs.
+fn every_pane_is_cropped(smoke: &mut Smoke, what: &str) -> bool {
+    let mut last = Vec::new();
+    let held = smoke
+        .wait_for(|smoke| {
+            let grids = smoke.grid_facts();
+            let cropped = !grids.is_empty()
+                && grids
+                    .iter()
+                    .all(|(painted, buffer)| painted.0 < buffer.0 && painted.1 < buffer.1);
+            last = grids;
+            cropped.then_some(())
+        })
+        .is_ok();
+    if !held {
+        eprintln!("      {what}: last grids (painted, buffer) = {last:?}");
+    }
+    held
+}
+
 type GridFacts = ((u64, u64), (u64, u64));
 
 /// Every painted pane grid in `node`'s subtree, as [`GridFacts`].

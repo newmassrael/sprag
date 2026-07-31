@@ -687,10 +687,15 @@ fn resize_pane(host: &WireHost, pane: PaneId, area: Rect) {
 /// EDITOR the reload tmux spells `source-file`, with nothing to invoke.
 ///
 /// Called from the KEY arm alone, which is both the cheapest place and the only correct one: the
-/// table decides nothing else, so a check anywhere earlier would be work the answer never uses. The
-/// cost is one `metadata` call per keystroke, against a routing decision that follows it and a
-/// repaint that costs orders of magnitude more. **No timer, no thread, no watch** — the loop stays
-/// the pure `select` R226 measured.
+/// table decides nothing else, so a check anywhere earlier would be work the answer never uses.
+/// **No timer, no thread, no watch** — the loop stays the pure `select` R226 measured.
+///
+/// The cost is one `read_to_string` per keystroke — the whole file, not a `metadata` stat, because
+/// [`ClientConfig::refresh`](sprag_host::config::ClientConfig::refresh) compares CONTENT rather than
+/// an mtime (an editor that rewrites a file unchanged must not count as an edit). MEASURED in R246
+/// at **4.8 us per key**, against a repaint that was three orders of magnitude dearer before the
+/// same round made it row-gated. This sentence said `metadata` until R246 read the function it was
+/// describing.
 ///
 /// A broken save keeps the last good table and is LOGGED, because the only screen this client could
 /// print on is the one it is painting a user's panes onto — and taking their bindings away over a
