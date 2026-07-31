@@ -52,9 +52,9 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
+use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value, value};
 
-use crate::keymap::{BoundAction, KeyError, KeySpec, Keymap};
+use crate::keymap::{BoundAction, KeyError, KeySpec, KeyTable, Keymap};
 use crate::options::{self, OptionSetting, OptionSpec, Options};
 use crate::project::{ProjectAction, ProjectError, validate_declared};
 use crate::window::WindowSize;
@@ -582,9 +582,15 @@ fn build(file: &UserConfigFile) -> Result<(Options, Keymap), ConfigError> {
             .set_prefix(prefix)
             .map_err(|error: KeyError| invalid(error.to_string()))?;
     }
+    // The second option the keymap is built FROM, on the same terms as the prefix: one place in the
+    // file says how long a repeat lasts, and the table is downstream of it.
+    if let Some(millis) = options.number(options::REPEAT_TIME) {
+        keymap.set_repeat_time(u64::from(millis));
+    }
     for bind in &file.bind {
+        let table = bind.table().map_err(|error| invalid(error.to_string()))?;
         keymap
-            .bind(&bind.key, &bind.action)
+            .bind(table, &bind.key, &bind.action, bind.repeat)
             .map_err(|error| invalid(error.to_string()))?;
     }
     for unbind in &file.unbind {
@@ -592,18 +598,23 @@ fn build(file: &UserConfigFile) -> Result<(Options, Keymap), ConfigError> {
         // defensible order and applying them in file order is another, so a file that says both
         // about one key has not said what it wants — and a user who has to remember which array
         // wins has been given a puzzle instead of a keymap.
+        //
+        // PER TABLE, since slice 4: `%` in the root table and `%` in the prefix table are different
+        // keys that happen to share a spelling, so binding one and unbinding the other says two
+        // things about two keys rather than two things about one.
+        let table = unbind.table().map_err(|error| invalid(error.to_string()))?;
         let key = KeySpec::parse(&unbind.key).map_err(|error| invalid(error.to_string()))?;
-        if file
-            .bind
-            .iter()
-            .any(|bind| KeySpec::parse(&bind.key).is_ok_and(|bound| bound == key))
-        {
+        let contradicted = file.bind.iter().any(|bind| {
+            bind.table().is_ok_and(|bound| bound == table)
+                && KeySpec::parse(&bind.key).is_ok_and(|bound| bound == key)
+        });
+        if contradicted {
             return Err(invalid(
                 KeyError::BoundAndUnbound(key.to_string()).to_string(),
             ));
         }
         keymap
-            .unbind(&unbind.key)
+            .unbind(table, &unbind.key)
             .map_err(|error| invalid(error.to_string()))?;
     }
     Ok((options, keymap))
@@ -622,6 +633,10 @@ const UNBIND_ARRAY: &str = "unbind";
 const KEY_FIELD: &str = "key";
 /// The `action` field of a `[[bind]]` entry — see [`BIND_ARRAY`].
 const ACTION_FIELD: &str = "action";
+/// The `table` field of a `[[bind]]` / `[[unbind]]` entry — see [`BIND_ARRAY`].
+const TABLE_FIELD: &str = "table";
+/// The `repeat` field of a `[[bind]]` entry — see [`BIND_ARRAY`].
+const REPEAT_FIELD: &str = "repeat";
 
 /// Bind `key` to `action` in the user's [`CONFIG_FILE`] — tmux's `bind-key`. Returns the file it
 /// wrote.
@@ -652,29 +667,38 @@ const ACTION_FIELD: &str = "action";
 ///
 /// [`ConfigError::Content`] when the file already cannot be read or used;
 /// [`ConfigError::Unwritable`] when it cannot be replaced.
-pub fn bind_key(key: &KeySpec, action: BoundAction) -> Result<PathBuf, ConfigError> {
-    edit_config(|doc| {
+pub fn bind_key(
+    table: KeyTable,
+    key: &KeySpec,
+    action: BoundAction,
+    repeat: bool,
+) -> Result<PathBuf, ConfigError> {
+    edit_config(move |doc| {
         // The contradiction slice 1 REFUSES (`BoundAndUnbound`) is what an unbind left in place
         // would make: this key is being given a meaning, so a declaration that it has none is not
-        // a second opinion to keep, it is the same statement retracted.
-        remove_named(doc, UNBIND_ARRAY, key)?;
-        let tables = tables_mut(doc, BIND_ARRAY)?;
+        // a second opinion to keep, it is the same statement retracted. Scoped to the same TABLE,
+        // because that is the scope the refusal itself now has.
+        remove_named(doc, UNBIND_ARRAY, table, key)?;
+        let entries = tables_mut(doc, BIND_ARRAY)?;
         // Bound to a `let` rather than used as the `if let` scrutinee: the iterator is a boxed
         // trait object, so as a temporary it would live — with its immutable borrow — past the
         // point the `else` arm needs the array mutably.
-        let existing = tables.iter().position(|table| names(table, key));
+        let existing = entries.iter().position(|entry| names(entry, table, key));
         if let Some(index) = existing {
             // Retargeted IN PLACE rather than removed and appended, the same rule
             // [`Keymap::bind`] follows: a rebound key keeps the position the user gave it, in
             // their file as well as in `list-keys`.
-            if let Some(table) = tables.get_mut(index) {
-                table[ACTION_FIELD] = value(action.to_string());
+            if let Some(entry) = entries.get_mut(index) {
+                entry[ACTION_FIELD] = value(action.to_string());
+                set_or_clear(entry, REPEAT_FIELD, repeat_field(repeat));
             }
         } else {
-            let mut table = Table::new();
-            table[KEY_FIELD] = value(key.to_string());
-            table[ACTION_FIELD] = value(action.to_string());
-            tables.push(table);
+            let mut entry = Table::new();
+            entry[KEY_FIELD] = value(key.to_string());
+            entry[ACTION_FIELD] = value(action.to_string());
+            set_or_clear(&mut entry, TABLE_FIELD, table_field(table));
+            set_or_clear(&mut entry, REPEAT_FIELD, repeat_field(repeat));
+            entries.push(entry);
         }
         Ok(())
     })
@@ -694,20 +718,25 @@ pub fn bind_key(key: &KeySpec, action: BoundAction) -> Result<PathBuf, ConfigErr
 /// # Errors
 ///
 /// As [`bind_key`], and it takes a parsed key for the same reason.
-pub fn unbind_key(key: &KeySpec) -> Result<PathBuf, ConfigError> {
-    edit_config(|doc| {
-        remove_named(doc, BIND_ARRAY, key)?;
+pub fn unbind_key(table: KeyTable, key: &KeySpec) -> Result<PathBuf, ConfigError> {
+    edit_config(move |doc| {
+        remove_named(doc, BIND_ARRAY, table, key)?;
         // A key the defaults never bound now means nothing already: removing the user's own
         // binding was the whole edit, and an `[[unbind]]` would be a line about a key no table
-        // mentions.
-        if Keymap::default().action(key.name(), key.mods()).is_none() {
+        // mentions. Asked of the same TABLE — sprag's defaults are all in the prefix table, so an
+        // unbind in the root table never needs a suppressing line.
+        if Keymap::default()
+            .action(table, key.name(), key.mods())
+            .is_none()
+        {
             return Ok(());
         }
-        let tables = tables_mut(doc, UNBIND_ARRAY)?;
-        if tables.iter().all(|table| !names(table, key)) {
-            let mut table = Table::new();
-            table[KEY_FIELD] = value(key.to_string());
-            tables.push(table);
+        let entries = tables_mut(doc, UNBIND_ARRAY)?;
+        if entries.iter().all(|entry| !names(entry, table, key)) {
+            let mut entry = Table::new();
+            entry[KEY_FIELD] = value(key.to_string());
+            set_or_clear(&mut entry, TABLE_FIELD, table_field(table));
+            entries.push(entry);
         }
         Ok(())
     })
@@ -792,12 +821,43 @@ fn table_mut<'a>(
 /// Compared PARSED rather than as text: `C-o` and `^o` are one keystroke, so an edit that matched
 /// only the spelling it was handed would leave behind an entry the READER treats as the same key —
 /// which for a bind is a stale action and for an unbind is the contradiction slice 1 refuses.
-fn names(entry: &Table, key: &KeySpec) -> bool {
-    entry
-        .get(KEY_FIELD)
-        .and_then(Item::as_str)
-        .and_then(|spec| KeySpec::parse(spec).ok())
-        .is_some_and(|spec| spec == *key)
+fn names(entry: &Table, table: KeyTable, key: &KeySpec) -> bool {
+    // The TABLE is half the identity of a binding, not a property of one: `%` in the root table and
+    // `%` in the prefix table are two keys. An editor that matched on the key alone would rewrite
+    // the wrong entry — silently, and only for users who had bound both.
+    let same_table = declared_table(entry.get(TABLE_FIELD).and_then(Item::as_str))
+        .is_ok_and(|declared| declared == table);
+    same_table
+        && entry
+            .get(KEY_FIELD)
+            .and_then(Item::as_str)
+            .and_then(|spec| KeySpec::parse(spec).ok())
+            .is_some_and(|spec| spec == *key)
+}
+
+/// Write `table` / `repeat` onto a `[[bind]]` entry, or REMOVE the field when it is the default.
+///
+/// Removing rather than writing `table = "prefix"` matters on a REBIND: a key that repeated and no
+/// longer does would otherwise keep a `repeat = true` line that nothing honours, which is a file
+/// saying one thing and a keymap doing another. It also keeps a hand-maintained file free of lines
+/// stating the default.
+fn set_or_clear(entry: &mut Table, field: &str, declare: Option<Value>) {
+    match declare {
+        Some(declared) => entry[field] = value(declared),
+        None => {
+            entry.remove(field);
+        }
+    }
+}
+
+/// The `table = …` an entry needs, or [`None`] when it is the default and the field should go.
+fn table_field(table: KeyTable) -> Option<Value> {
+    (table != KeyTable::Prefix).then(|| Value::from(table.as_str()))
+}
+
+/// The `repeat = …` an entry needs, or [`None`] when it does not repeat.
+fn repeat_field(repeat: bool) -> Option<Value> {
+    repeat.then(|| Value::from(true))
 }
 
 /// The document's `[[name]]` array of tables, created empty if the file has none.
@@ -827,15 +887,16 @@ fn tables_mut<'a>(
 fn remove_named(
     doc: &mut DocumentMut,
     name: &'static str,
+    table: KeyTable,
     key: &KeySpec,
 ) -> Result<bool, ConfigError> {
     if doc.get(name).is_none() {
         return Ok(false);
     }
-    let tables = tables_mut(doc, name)?;
-    let before = tables.len();
-    tables.retain(|table| !names(table, key));
-    Ok(tables.len() != before)
+    let entries = tables_mut(doc, name)?;
+    let before = entries.len();
+    entries.retain(|entry| !names(entry, table, key));
+    Ok(entries.len() != before)
 }
 
 /// Apply `edit` to the user's [`CONFIG_FILE`] and write it back, or change nothing at all.
@@ -973,7 +1034,10 @@ struct UserConfigFile {
     unbind: Vec<DeclaredUnbind>,
 }
 
-/// One `[[bind]]` entry — tmux's `bind-key key command`.
+/// One `[[bind]]` entry — tmux's `bind-key [-n] [-r] key command`.
+///
+/// The two optional fields are why slice 1 made this an array of TABLES rather than a `key = action`
+/// map: *"a map has nowhere to put a second field"*. They arrive here with no format change.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DeclaredBind {
@@ -981,14 +1045,54 @@ struct DeclaredBind {
     key: String,
     /// The action, spelled as the shell spells it, e.g. `split-window -h`.
     action: String,
+    /// Which table — `"prefix"` (the default) or `"root"`, tmux's `-T`. An unknown name is refused
+    /// by [`KeyTable::parse`] rather than by serde, so the message can list the tables that exist.
+    #[serde(default)]
+    table: Option<String>,
+    /// tmux's `-r`: hold the prefix table open for `repeat-time` after this acts.
+    #[serde(default)]
+    repeat: bool,
 }
 
-/// One `[[unbind]]` entry — tmux's `unbind-key key`.
+/// One `[[unbind]]` entry — tmux's `unbind-key [-n] key`.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DeclaredUnbind {
     /// The key spec to remove.
     key: String,
+    /// Which table to remove it from — see [`DeclaredBind::table`].
+    #[serde(default)]
+    table: Option<String>,
+}
+
+impl DeclaredBind {
+    /// The table this entry names, defaulting to the prefix table.
+    ///
+    /// # Errors
+    ///
+    /// [`KeyError::UnknownTable`] for a name that is not one of sprag's.
+    fn table(&self) -> Result<KeyTable, KeyError> {
+        declared_table(self.table.as_deref())
+    }
+}
+
+impl DeclaredUnbind {
+    /// The table this entry names, defaulting to the prefix table.
+    ///
+    /// # Errors
+    ///
+    /// [`KeyError::UnknownTable`] for a name that is not one of sprag's.
+    fn table(&self) -> Result<KeyTable, KeyError> {
+        declared_table(self.table.as_deref())
+    }
+}
+
+/// A declared `table = …`, or [`KeyTable::Prefix`] when the entry is silent.
+///
+/// Silence means the prefix table because that is where every one of sprag's defaults lives and what
+/// a `bind-key` with no `-T` means in tmux — the field is the departure, not the norm.
+fn declared_table(name: Option<&str>) -> Result<KeyTable, KeyError> {
+    name.map_or(Ok(KeyTable::Prefix), KeyTable::parse)
 }
 
 /// Point `XDG_CONFIG_HOME` at a fresh temporary directory holding `text` as the user config
@@ -1173,16 +1277,18 @@ mod tests {
             let keymap = keymap().expect("and so do the keys");
             assert_eq!(keymap.prefix().to_string(), "C-a");
             assert!(
-                keymap.action("c", Modifiers::default()).is_some(),
+                keymap
+                    .action(KeyTable::Prefix, "c", Modifiers::default())
+                    .is_some(),
                 "the declared bind is there",
             );
             assert_eq!(
-                keymap.action("o", Modifiers::default()),
+                keymap.action(KeyTable::Prefix, "o", Modifiers::default()),
                 None,
                 "the unbound default is gone",
             );
             assert_eq!(
-                keymap.action("d", Modifiers::default()),
+                keymap.action(KeyTable::Prefix, "d", Modifiers::default()),
                 Some(crate::keymap::BoundAction::DetachClient),
                 "and every default the file did not mention survives",
             );
@@ -1197,7 +1303,9 @@ mod tests {
                     [[bind]]\nkey = \"x\"\naction = \"select-pane -t :.+\"\n";
         with_config(Some(text), || {
             assert_eq!(
-                keymap().expect("valid").action("x", Modifiers::default()),
+                keymap()
+                    .expect("valid")
+                    .action(KeyTable::Prefix, "x", Modifiers::default()),
                 Some(crate::keymap::BoundAction::SelectNextPane),
             );
         });
@@ -1217,6 +1325,131 @@ mod tests {
                 "the report names the key: {message:?}",
             );
         });
+    }
+
+    /// The file's `table` and `repeat` fields reach the keymap, and the default of each is the one
+    /// a silent entry means.
+    #[test]
+    fn the_file_declares_a_table_and_a_repeat() {
+        let text = "[[bind]]\nkey = \"F5\"\naction = \"detach-client\"\ntable = \"root\"\n\
+                    [[bind]]\nkey = \"o\"\naction = \"select-pane -t :.+\"\nrepeat = true\n\
+                    [[bind]]\nkey = \"x\"\naction = \"detach-client\"\n";
+        with_config(Some(text), || {
+            let keymap = keymap().expect("valid");
+            let bind = |key: &str| {
+                keymap
+                    .binds()
+                    .find(|bind| bind.key().to_string() == key)
+                    .expect("declared")
+            };
+            assert_eq!(bind("F5").table(), KeyTable::Root);
+            assert!(!bind("F5").repeats());
+            assert!(bind("o").repeats());
+            assert_eq!(bind("o").table(), KeyTable::Prefix, "silence means prefix");
+            assert_eq!(bind("x").table(), KeyTable::Prefix);
+            assert!(!bind("x").repeats(), "and silence means no repeat");
+        });
+    }
+
+    /// A `table` the file spells wrong is refused, and the report names the file and the tables that
+    /// exist. Never defaulted — a binding silently moved into the prefix table is one the user would
+    /// see in `list-keys` and believe they had asked for.
+    #[test]
+    fn an_unknown_table_in_the_file_names_the_file() {
+        let text = "[[bind]]\nkey = \"x\"\naction = \"detach-client\"\ntable = \"copy-mode\"\n";
+        with_config(Some(text), || {
+            let message = keymap().expect_err("no such table").to_string();
+            assert!(message.contains(CONFIG_FILE), "{message:?}");
+            assert!(
+                message.contains("copy-mode") && message.contains("root"),
+                "the report names what was asked for and what exists: {message:?}",
+            );
+        });
+    }
+
+    /// A root binding that asks to repeat is refused from the FILE too, not only from the CLI —
+    /// the two are one rule with two front doors.
+    #[test]
+    fn a_repeating_root_binding_in_the_file_is_refused() {
+        let text =
+            "[[bind]]\nkey = \"F5\"\naction = \"detach-client\"\ntable = \"root\"\nrepeat = true\n";
+        with_config(Some(text), || {
+            let message = keymap().expect_err("cannot repeat").to_string();
+            assert!(
+                message.contains("repeat") && message.contains("prefix"),
+                "the report names the mechanism: {message:?}",
+            );
+        });
+    }
+
+    /// **The bound-and-unbound contradiction is PER TABLE.** `%` in the root table and `%` in the
+    /// prefix table are two keys, so binding one and unbinding the other says two things about two
+    /// keys — which is a config, not a puzzle.
+    ///
+    /// REVERT-PROOF: compare the key alone and this valid file is refused, with a message naming a
+    /// contradiction the user did not write.
+    #[test]
+    fn bound_in_one_table_and_unbound_in_the_other_is_not_a_contradiction() {
+        let text = "[[bind]]\nkey = \"%\"\naction = \"detach-client\"\ntable = \"root\"\n\
+                    [[unbind]]\nkey = \"%\"\n";
+        with_config(Some(text), || {
+            let keymap = keymap().expect("two statements about two keys");
+            let none = Modifiers::default();
+            assert_eq!(
+                keymap.action(KeyTable::Root, "%", none),
+                Some(crate::keymap::BoundAction::DetachClient),
+            );
+            assert_eq!(
+                keymap.action(KeyTable::Prefix, "%", none),
+                None,
+                "and the prefix table's default was the one taken away",
+            );
+        });
+
+        // ...while the SAME table still is one.
+        let same = "[[bind]]\nkey = \"%\"\naction = \"detach-client\"\ntable = \"root\"\n\
+                    [[unbind]]\nkey = \"%\"\ntable = \"root\"\n";
+        with_config(Some(same), || {
+            let message = keymap().expect_err("contradictory").to_string();
+            assert!(message.contains("both bound and unbound"), "{message:?}");
+        });
+    }
+
+    /// `repeat-time` reaches the keymap out of the options table, the same way the prefix does.
+    #[test]
+    fn the_repeat_time_option_reaches_the_keymap() {
+        with_config(Some("[options]\nrepeat-time = 120\n"), || {
+            assert_eq!(
+                keymap().expect("valid").repeat_time(),
+                std::time::Duration::from_millis(120),
+            );
+        });
+        with_config(Some(""), || {
+            assert_eq!(
+                keymap().expect("valid").repeat_time(),
+                crate::keymap::DEFAULT_REPEAT_TIME,
+                "and a silent file gets the default the keymap itself ships",
+            );
+        });
+    }
+
+    /// The two spellings of the repeat default must not drift: the options table's string and
+    /// [`crate::keymap::DEFAULT_REPEAT_TIME`] are the same number.
+    ///
+    /// Both have to exist — `Keymap::default()` answers with no config file at all, which is what
+    /// `sprag list-keys` runs on — so the guard is a test rather than one constant. The treatment
+    /// `history-limit` gets against the emulator's own default.
+    #[test]
+    fn the_repeat_time_default_is_the_keymaps_own() {
+        let declared: u64 = options::spec(options::REPEAT_TIME)
+            .expect("a registered option")
+            .default
+            .parse()
+            .expect("a number");
+        assert_eq!(
+            std::time::Duration::from_millis(declared),
+            crate::keymap::DEFAULT_REPEAT_TIME,
+        );
     }
 
     /// The text `config.toml` holds right now, for the writer tests.
@@ -1246,7 +1479,13 @@ mod tests {
         let text = "# keep me\n[options]\nprefix = \"C-a\"  # and me\n\n\
                     [[command]]\nname = \"top\"\nrun = [\"htop\"]\n";
         with_config(Some(text), || {
-            bind_key(&key("c"), action("split-window -h")).expect("binds");
+            bind_key(
+                KeyTable::Prefix,
+                &key("c"),
+                action("split-window -h"),
+                false,
+            )
+            .expect("binds");
             let after = written();
             assert!(after.contains("# keep me"), "{after:?}");
             assert!(after.contains("# and me"), "{after:?}");
@@ -1254,7 +1493,7 @@ mod tests {
             // ...and the binding is really there, read back through the ordinary reader.
             let keymap = keymap().expect("the written file is valid");
             assert_eq!(
-                keymap.action("c", Modifiers::default()),
+                keymap.action(KeyTable::Prefix, "c", Modifiers::default()),
                 Some(crate::keymap::BoundAction::SplitWindow {
                     dir: sprag_terminal::SplitDir::Horizontal,
                     before: false
@@ -1273,10 +1512,12 @@ mod tests {
     #[test]
     fn binding_a_key_the_file_unbound_takes_the_unbind_out() {
         with_config(Some("[[unbind]]\nkey = \"o\"\n"), || {
-            bind_key(&key("o"), action("detach-client")).expect("binds");
+            bind_key(KeyTable::Prefix, &key("o"), action("detach-client"), false).expect("binds");
             assert!(!written().contains("[[unbind]]"), "{:?}", written());
             assert_eq!(
-                keymap().expect("valid").action("o", Modifiers::default()),
+                keymap()
+                    .expect("valid")
+                    .action(KeyTable::Prefix, "o", Modifiers::default()),
                 Some(crate::keymap::BoundAction::DetachClient),
             );
         });
@@ -1290,7 +1531,7 @@ mod tests {
         with_config(
             Some("[[bind]]\nkey = \"c\"\naction = \"detach-client\"\n"),
             || {
-                unbind_key(&key("c")).expect("unbinds");
+                unbind_key(KeyTable::Prefix, &key("c")).expect("unbinds");
                 let after = written();
                 assert!(!after.contains("[[bind]]"), "the binding went: {after:?}");
                 assert!(
@@ -1298,10 +1539,12 @@ mod tests {
                     "`c` is not a default, so there is nothing to suppress: {after:?}"
                 );
                 // A DEFAULT does get recorded, because the layering would restore it otherwise.
-                unbind_key(&key("o")).expect("unbinds");
+                unbind_key(KeyTable::Prefix, &key("o")).expect("unbinds");
                 assert!(written().contains("[[unbind]]"), "{:?}", written());
                 assert_eq!(
-                    keymap().expect("valid").action("o", Modifiers::default()),
+                    keymap()
+                        .expect("valid")
+                        .action(KeyTable::Prefix, "o", Modifiers::default()),
                     None,
                 );
             },
@@ -1318,12 +1561,13 @@ mod tests {
         with_config(
             Some("[[bind]]\nkey = \"^o\"\naction = \"detach-client\"\n"),
             || {
-                bind_key(&key("C-o"), action("send-prefix")).expect("binds");
+                bind_key(KeyTable::Prefix, &key("C-o"), action("send-prefix"), false)
+                    .expect("binds");
                 let after = written();
                 assert_eq!(after.matches("action =").count(), 1, "one entry: {after:?}");
                 assert!(after.contains("send-prefix"), "{after:?}");
                 // ...and an unbind reaches it through the other spelling too.
-                unbind_key(&key("^o")).expect("unbinds");
+                unbind_key(KeyTable::Prefix, &key("^o")).expect("unbinds");
                 assert!(!written().contains("[[bind]]"), "{:?}", written());
             },
         );
@@ -1336,12 +1580,92 @@ mod tests {
         let text = "[[bind]]\nkey = \"a\"\naction = \"detach-client\"\n\
                     [[bind]]\nkey = \"b\"\naction = \"send-prefix\"\n";
         with_config(Some(text), || {
-            bind_key(&key("a"), action("select-pane -t :.+")).expect("binds");
+            bind_key(
+                KeyTable::Prefix,
+                &key("a"),
+                action("select-pane -t :.+"),
+                false,
+            )
+            .expect("binds");
             let after = written();
             let a = after.find("key = \"a\"").expect("a is there");
             let b = after.find("key = \"b\"").expect("b is there");
             assert!(a < b, "the user's order survived: {after:?}");
             assert_eq!(after.matches("[[bind]]").count(), 2);
+        });
+    }
+
+    /// A written binding carries `table` / `repeat` only when they are NOT the default, and a
+    /// rebind that drops a flag REMOVES the line rather than leaving it.
+    ///
+    /// REVERT-PROOF for the removal half: write the field unconditionally and a key that stops
+    /// repeating keeps `repeat = true` in the user's file — a config saying one thing while the
+    /// keymap does another, discovered only when someone reads the file back.
+    #[test]
+    fn a_written_binding_states_only_what_is_not_the_default() {
+        with_config(Some(""), || {
+            bind_key(KeyTable::Root, &key("F5"), action("detach-client"), false).expect("binds");
+            let after = written();
+            assert!(after.contains("table = \"root\""), "{after:?}");
+            assert!(
+                !after.contains("repeat"),
+                "no flag it did not ask for: {after:?}"
+            );
+
+            bind_key(
+                KeyTable::Prefix,
+                &key("o"),
+                action("select-pane -t :.+"),
+                true,
+            )
+            .expect("binds");
+            let after = written();
+            assert!(after.contains("repeat = true"), "{after:?}");
+            assert_eq!(
+                after.matches("table =").count(),
+                1,
+                "the prefix table is silence, not `table = \"prefix\"`: {after:?}",
+            );
+
+            bind_key(KeyTable::Prefix, &key("o"), action("detach-client"), false).expect("rebinds");
+            let after = written();
+            assert!(
+                !after.contains("repeat"),
+                "the flag went with the binding it was on: {after:?}",
+            );
+            assert_eq!(after.matches("[[bind]]").count(), 2, "{after:?}");
+        });
+    }
+
+    /// **An edit reaches one TABLE's entry, not every entry with that key.** Binding `%` in the root
+    /// table must leave the `%` a user already had in the prefix table exactly where it was.
+    ///
+    /// REVERT-PROOF: match on the key alone in `names` and this rewrites the prefix entry instead of
+    /// adding a root one — silently changing a binding the user did not name, and only for users who
+    /// had bothered to bind both.
+    #[test]
+    fn an_edit_reaches_one_tables_entry() {
+        let text = "[[bind]]\nkey = \"%\"\naction = \"detach-client\"\n";
+        with_config(Some(text), || {
+            bind_key(KeyTable::Root, &key("%"), action("send-prefix"), false).expect("binds");
+            let after = written();
+            assert_eq!(after.matches("[[bind]]").count(), 2, "{after:?}");
+            assert!(
+                after.contains("detach-client"),
+                "the first survived: {after:?}"
+            );
+            assert!(
+                after.contains("send-prefix"),
+                "and the second landed: {after:?}"
+            );
+
+            unbind_key(KeyTable::Root, &key("%")).expect("unbinds");
+            let after = written();
+            assert!(
+                after.contains("detach-client"),
+                "removing the root one left the prefix one: {after:?}",
+            );
+            assert_eq!(after.matches("[[bind]]").count(), 1, "{after:?}");
         });
     }
 
@@ -1365,7 +1689,7 @@ mod tests {
         let text = "[[bind]]\nkey = \"x\"\naction = \"kill-server\"\n";
         for edited in [key("c"), key("x")] {
             with_config(Some(text), || {
-                let message = bind_key(&edited, action("detach-client"))
+                let message = bind_key(KeyTable::Prefix, &edited, action("detach-client"), false)
                     .expect_err("refused")
                     .to_string();
                 assert!(message.contains(CONFIG_FILE), "{message:?}");
@@ -1381,9 +1705,16 @@ mod tests {
     fn an_edit_creates_the_file_when_there_is_none() {
         with_config(None, || {
             assert!(load().is_none(), "nothing to start with");
-            bind_key(&key("C-x"), action("detach-client")).expect("binds");
+            bind_key(
+                KeyTable::Prefix,
+                &key("C-x"),
+                action("detach-client"),
+                false,
+            )
+            .expect("binds");
             assert_eq!(
                 keymap().expect("valid").action(
+                    KeyTable::Prefix,
                     "x",
                     Modifiers {
                         ctrl: true,
@@ -1400,9 +1731,9 @@ mod tests {
     #[test]
     fn unbinding_twice_writes_the_same_file() {
         with_config(Some(""), || {
-            unbind_key(&key("o")).expect("unbinds");
+            unbind_key(KeyTable::Prefix, &key("o")).expect("unbinds");
             let once = written();
-            unbind_key(&key("o")).expect("unbinds again");
+            unbind_key(KeyTable::Prefix, &key("o")).expect("unbinds again");
             assert_eq!(written(), once);
         });
     }
@@ -1417,12 +1748,17 @@ mod tests {
     fn a_running_table_follows_the_file() {
         with_config(Some(""), || {
             let mut live = ClientConfig::load().expect("loads");
-            assert_eq!(live.keymap().action("c", Modifiers::default()), None);
+            assert_eq!(
+                live.keymap()
+                    .action(KeyTable::Prefix, "c", Modifiers::default()),
+                None
+            );
 
-            bind_key(&key("c"), action("detach-client")).expect("binds");
+            bind_key(KeyTable::Prefix, &key("c"), action("detach-client"), false).expect("binds");
             assert!(live.refresh().expect("re-reads"), "the table moved");
             assert_eq!(
-                live.keymap().action("c", Modifiers::default()),
+                live.keymap()
+                    .action(KeyTable::Prefix, "c", Modifiers::default()),
                 Some(crate::keymap::BoundAction::DetachClient),
             );
             // An unchanged file is not a change, so a caller never acts on an edit that was not one.
@@ -1466,7 +1802,8 @@ mod tests {
                     .expect("a half-typed save");
                 assert!(live.refresh().is_err(), "the save is reported");
                 assert_eq!(
-                    live.keymap().action("c", Modifiers::default()),
+                    live.keymap()
+                        .action(KeyTable::Prefix, "c", Modifiers::default()),
                     Some(crate::keymap::BoundAction::DetachClient),
                     "and the working table is kept",
                 );
@@ -1484,11 +1821,16 @@ mod tests {
     fn a_deleted_config_returns_the_defaults() {
         with_config(Some("[[unbind]]\nkey = \"d\"\n"), || {
             let mut live = ClientConfig::load().expect("loads");
-            assert_eq!(live.keymap().action("d", Modifiers::default()), None);
+            assert_eq!(
+                live.keymap()
+                    .action(KeyTable::Prefix, "d", Modifiers::default()),
+                None
+            );
             std::fs::remove_file(config_path().expect("a path")).expect("the user deletes it");
             assert!(live.refresh().expect("re-reads"));
             assert_eq!(
-                live.keymap().action("d", Modifiers::default()),
+                live.keymap()
+                    .action(KeyTable::Prefix, "d", Modifiers::default()),
                 Some(crate::keymap::BoundAction::DetachClient),
             );
         });
@@ -1609,7 +1951,8 @@ mod tests {
         assert_eq!(file.refresh(), Ok(true), "the fix is noticed");
         assert_eq!(file.unusable(), None, "...and the verdict clears with it");
         assert_eq!(
-            file.keymap().action("x", Modifiers::default()),
+            file.keymap()
+                .action(KeyTable::Prefix, "x", Modifiers::default()),
             Some(crate::keymap::BoundAction::DetachClient),
         );
     }

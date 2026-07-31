@@ -48,8 +48,9 @@
 //! sprag capture-pane [-t SESSION] PANE [-p]       print a pane's retained output to stdout
 //!
 //! sprag list-keys                          print the client keymap `config.toml` produces
-//! sprag bind-key [-T prefix] KEY ACTION…   give a key a meaning (tmux bind-key)
-//! sprag unbind-key [-T prefix] KEY         take a key's meaning away (tmux unbind-key)
+//! sprag bind-key [-nr] [-T TABLE] KEY ACTION…  give a key a meaning (tmux bind-key)
+//! sprag unbind-key [-n] [-T TABLE] KEY     take a key's meaning away (tmux unbind-key)
+//!                          -n is -T root: a key that acts with NO prefix. -r is tmux's repeat
 //! sprag show-options [-g] [-v] [NAME]      print the options and their values (tmux show-options)
 //! sprag set-option [-g] NAME VALUE         set one client option (tmux set-option)
 //! sprag set-option [-g] -u NAME            put one back to its default (tmux set-option -u)
@@ -106,7 +107,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use sprag_host::keymap::{BoundAction, KeySpec};
+use sprag_host::keymap::{BoundAction, KeySpec, KeyTable};
 use sprag_host::wire::{
     BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, FULL_TEXT_SLOT, JOIN_PANE_ACTION, KEY_ACTION,
     KILL_SESSION_ACTION, KILL_WINDOW_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT,
@@ -314,29 +315,45 @@ fn list_keys(args: Vec<String>) -> io::Result<()> {
         io::Error::new(io::ErrorKind::InvalidData, format!("list-keys: {error}"))
     })?;
     println!("prefix {}", keymap.prefix());
+    // Each line carries its own `-T`, exactly as tmux's does, rather than the tables being printed
+    // under headings: every line after the first is then a `bind-key` command a user can paste back,
+    // which is the property that makes this output worth having in tmux's shape at all.
+    //
     // Aligned on the widest key so the actions read as a column. Measured in CHARACTERS rather than
     // bytes: a key spec is a user's string and `%` is not the only thing they may bind.
-    let width = keymap
-        .binds()
-        .map(|(key, _)| key.to_string().chars().count())
-        .max()
-        .unwrap_or(0);
-    for (key, action) in keymap.binds() {
-        let key = key.to_string();
-        let pad = " ".repeat(width - key.chars().count());
-        println!("bind-key -T prefix {key}{pad}  {action}");
+    let width = |what: fn(&sprag_host::keymap::Bind) -> String| {
+        keymap
+            .binds()
+            .map(|bind| what(bind).chars().count())
+            .max()
+            .unwrap_or(0)
+    };
+    let table_width = width(|bind| bind.table().to_string());
+    let key_width = width(|bind| bind.key().to_string());
+    for bind in keymap.binds() {
+        // The repeat column is a fixed two characters wide whether or not this binding repeats, so
+        // the actions still line up in a table where only some do.
+        let repeat = if bind.repeats() { "-r" } else { "  " };
+        let table = format!("{:table_width$}", bind.table());
+        let key = format!("{:key_width$}", bind.key().to_string());
+        println!("bind-key {repeat} -T {table} {key}  {}", bind.action());
     }
     Ok(())
 }
 
-/// The only key table sprag has, and tmux's own name for it.
+/// The flags `bind-key` and `unbind-key` take before the key — tmux's `[-nr] [-T table]`.
 ///
-/// Accepted as `-T prefix` so a tmux user's spelling works; anything else is refused BY NAME rather
-/// than ignored. `-T root` in particular is slice 4's — a binding with no prefix competes with the
-/// pane for every keystroke, and accepting the flag would promise arbitration nothing performs.
-const PREFIX_TABLE: &str = "prefix";
+/// A record rather than a tuple because `-n` and `-T root` are the SAME flag under two spellings
+/// (tmux's manual: *"-n is an alias for -T root"*), and a caller reading `.0` would have to know
+/// which of them produced it.
+struct KeyFlags {
+    /// Which table, from `-n` or `-T`.
+    table: KeyTable,
+    /// tmux's `-r`, accepted by `bind-key` alone.
+    repeat: bool,
+}
 
-/// `bind-key [-T prefix] KEY ACTION…`: give a key a meaning — tmux `bind-key`.
+/// `bind-key [-nr] [-T TABLE] KEY ACTION…`: give a key a meaning — tmux `bind-key`.
 ///
 /// **This EDITS `config.toml`, which tmux's `bind-key` does not**, and the difference is the whole
 /// of slice 2's design. tmux's config is an imperative script that a runtime fact cannot be written
@@ -351,7 +368,8 @@ const PREFIX_TABLE: &str = "prefix";
 /// -h` and a shell-quoted `bind-key c "split-window -h"` arrive as the same string, which is the
 /// one `BoundAction` parses.
 fn bind_key(args: Vec<String>) -> io::Result<()> {
-    let mut rest = strip_key_table("bind-key", args)?.into_iter();
+    let (flags, args) = strip_key_flags("bind-key", args)?;
+    let mut rest = args.into_iter();
     let key = rest.next().ok_or_else(|| {
         bad_input("bind-key: needs a key and an action, e.g. `bind-key c \"split-window -h\"`")
     })?;
@@ -368,9 +386,19 @@ fn bind_key(args: Vec<String>) -> io::Result<()> {
     let key = KeySpec::parse(&key).map_err(|error| bad_input(&format!("bind-key: {error}")))?;
     let action =
         BoundAction::parse(&action).map_err(|error| bad_input(&format!("bind-key: {error}")))?;
-    let path = sprag_host::config::bind_key(&key, action).map_err(|error| {
-        io::Error::new(io::ErrorKind::InvalidData, format!("bind-key: {error}"))
-    })?;
+    // Refused HERE as well as by `Keymap::bind`, and not instead of it: this is the argument error a
+    // CLI user made, and the keymap's is the same contradiction arriving from a file. Naming it in
+    // the caller's own terms is the rule every parse in this verb follows.
+    if flags.repeat && flags.table == KeyTable::Root {
+        return Err(bad_input(&format!(
+            "bind-key: {}",
+            sprag_host::keymap::KeyError::RepeatInRoot(key.to_string())
+        )));
+    }
+    let path =
+        sprag_host::config::bind_key(flags.table, &key, action, flags.repeat).map_err(|error| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("bind-key: {error}"))
+        })?;
     // Named on stderr because it is the SURPRISING half: a tmux user expects a runtime bind to
     // vanish, and one that has quietly been written to a file they maintain deserves to be told
     // where. stdout stays empty so a script can pipe this without filtering.
@@ -378,13 +406,22 @@ fn bind_key(args: Vec<String>) -> io::Result<()> {
     Ok(())
 }
 
-/// `unbind-key [-T prefix] KEY`: take a key's meaning away — tmux `unbind-key`.
+/// `unbind-key [-n] [-T TABLE] KEY`: take a key's meaning away — tmux `unbind-key`.
 ///
 /// Removes the user's own binding, and — only when the DEFAULT keymap binds the key — records an
 /// `[[unbind]]` so the default stays suppressed. See [`sprag_host::config::unbind_key`] for why
 /// that condition is load-bearing rather than tidiness.
 fn unbind_key(args: Vec<String>) -> io::Result<()> {
-    let mut rest = strip_key_table("unbind-key", args)?.into_iter();
+    let (flags, args) = strip_key_flags("unbind-key", args)?;
+    // tmux's `unbind-key` has no `-r` either: repeat is a property of a binding, and this verb
+    // removes one. Refused by NAME rather than ignored, the rule this file already follows for a
+    // table it does not have.
+    if flags.repeat {
+        return Err(bad_input(
+            "unbind-key: -r is bind-key's; repeat is a property of a binding, not of removing one",
+        ));
+    }
+    let mut rest = args.into_iter();
     let key = rest
         .next()
         .ok_or_else(|| bad_input("unbind-key: needs a key, e.g. `unbind-key o`"))?;
@@ -394,7 +431,7 @@ fn unbind_key(args: Vec<String>) -> io::Result<()> {
         )));
     }
     let key = KeySpec::parse(&key).map_err(|error| bad_input(&format!("unbind-key: {error}")))?;
-    let path = sprag_host::config::unbind_key(&key).map_err(|error| {
+    let path = sprag_host::config::unbind_key(flags.table, &key).map_err(|error| {
         io::Error::new(io::ErrorKind::InvalidData, format!("unbind-key: {error}"))
     })?;
     eprintln!("sprag: unbound in {}", path.display());
@@ -407,8 +444,9 @@ fn unbind_key(args: Vec<String>) -> io::Result<()> {
 /// global — one client config file, no per-session or per-window overlay — so the flag carries no
 /// information and is accepted as the spelling a tmux user's fingers produce. `-w` / `-p` are refused
 /// BY NAME, and `set-window-option` / `show-window-options` are not verbs here at all: a scope with no
-/// members would promise an overlay nothing holds, which is the treatment [`strip_key_table`] gives
-/// `-T root` and for the same reason.
+/// members would promise an overlay nothing holds. [`strip_key_flags`] applies the same rule one verb
+/// over — it now ACCEPTS `-T root`, because slice 4 built the table that flag names, and refuses only
+/// the tables sprag still does not have.
 const GLOBAL_SCOPE: &str = "-g";
 
 /// `show-options [-g] [-v] [NAME]`: print the options and the values in force — tmux
@@ -595,29 +633,62 @@ fn strip_show_options_flags(args: Vec<String>) -> io::Result<(bool, Vec<String>)
     Ok((bare, rest))
 }
 
-/// Strip a leading `-T TABLE` from `args`, refusing any table but [`PREFIX_TABLE`].
+/// Strip the leading `[-nr] [-T TABLE]` flags from `args`, returning them and what is left.
 ///
-/// The table itself is not returned, because with exactly one of them the flag carries no
-/// information — it is a spelling a tmux user's fingers produce, and what this has to do is make
-/// that spelling work while refusing the one (`-T root`) that would promise slice 4's arbitration.
-fn strip_key_table(verb: &str, args: Vec<String>) -> io::Result<Vec<String>> {
-    let mut rest = args.into_iter();
-    let Some(first) = rest.next() else {
-        return Ok(Vec::new());
+/// # Where flag parsing STOPS, and why it has to
+///
+/// At the first token that is not a recognised flag — not at the first token that does not start
+/// with `-`. A key spec may BE `-`, and `bind-key - split-window -h` has to keep working; a parser
+/// that treated every leading dash as a flag would take that user's key away.
+///
+/// `-n`, `-r` and the combined `-nr` are one rule (`-` followed by those letters), because tmux's
+/// own synopsis is spelled `bind-key [-nr]` — that is the form a user copies out of the manual.
+///
+/// `-n` and `-T` are the same flag: tmux documents `-n` as an alias for `-T root`. Given both, they
+/// have to AGREE — `-n -T prefix` is two contradictory statements about one binding, and picking
+/// either one would be inventing a precedence rule the user cannot see.
+fn strip_key_flags(verb: &str, args: Vec<String>) -> io::Result<(KeyFlags, Vec<String>)> {
+    let mut flags = KeyFlags {
+        table: KeyTable::Prefix,
+        repeat: false,
     };
-    if first != "-T" {
-        return Ok(std::iter::once(first).chain(rest).collect());
+    let mut named_root = false;
+    let mut named_table = None;
+    let mut rest = args.into_iter().peekable();
+    while let Some(token) = rest.peek() {
+        let letters = token.strip_prefix('-').filter(|rest| {
+            !rest.is_empty() && rest.chars().all(|letter| letter == 'n' || letter == 'r')
+        });
+        if let Some(letters) = letters {
+            named_root |= letters.contains('n');
+            flags.repeat |= letters.contains('r');
+            rest.next();
+            continue;
+        }
+        if token != "-T" {
+            break;
+        }
+        rest.next();
+        let name = rest
+            .next()
+            .ok_or_else(|| bad_input(&format!("{verb}: -T needs a table name")))?;
+        let table =
+            KeyTable::parse(&name).map_err(|error| bad_input(&format!("{verb}: {error}")))?;
+        named_table = Some(table);
     }
-    let table = rest
-        .next()
-        .ok_or_else(|| bad_input(&format!("{verb}: -T needs a table name")))?;
-    if table != PREFIX_TABLE {
-        return Err(bad_input(&format!(
-            "{verb}: {table:?} is not a key table sprag has (there is one: {PREFIX_TABLE:?}); \
-             a binding with no prefix is not built"
-        )));
-    }
-    Ok(rest.collect())
+    flags.table = match (named_root, named_table) {
+        (true, Some(KeyTable::Prefix)) => {
+            return Err(bad_input(&format!(
+                "{verb}: -n and -T {:?} contradict; -n IS -T {:?}",
+                KeyTable::Prefix.as_str(),
+                KeyTable::Root.as_str()
+            )));
+        }
+        (true, _) => KeyTable::Root,
+        (false, Some(table)) => table,
+        (false, None) => KeyTable::Prefix,
+    };
+    Ok((flags, rest.collect()))
 }
 
 /// An argument the CLI will not take, as the error every verb here reports.
@@ -641,8 +712,8 @@ fn print_usage() {
          \x20             | kill-pane PANE\n\
          \x20             | resize-pane PANE -x COLS -y ROWS\n\
          \x20             | send-keys PANE [-l] KEY… | capture-pane PANE [-p]> [-t SESSION]\n\
-         \x20      sprag <list-keys | bind-key [-T prefix] KEY ACTION…\n\
-         \x20             | unbind-key [-T prefix] KEY>\n\
+         \x20      sprag <list-keys | bind-key [-nr] [-T prefix|root] KEY ACTION…\n\
+         \x20             | unbind-key [-n] [-T prefix|root] KEY>\n\
          \x20      sprag <show-options [-v] [NAME] | set-option [-u] NAME [VALUE]> [-g]"
     );
 }

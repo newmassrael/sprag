@@ -11,9 +11,15 @@
 //!
 //! What the user's [`Keymap`](sprag_host::keymap::Keymap) names is the four things BOTH frontends can do — detach, send the
 //! prefix, split the focused pane, move focus on. So this is the table the GUI adopts, whole: the
-//! same file, the same defaults, the same one-key mode, and the same live re-read. A rebind typed
+//! same file, the same defaults, the same modes, and the same live re-read. A rebind typed
 //! into a shell reaches this window on the next keystroke, exactly as it reaches an attached
 //! `sprag-tui`.
+//!
+//! That includes both of slice 4's additions, and neither cost this file anything: a ROOT binding is
+//! one more answer out of `Keymap::route`, and a REPEAT window is one more state in the mode this
+//! holder already carried. The root table's placement is [`crate::input::route_key`]'s question, not
+//! this one's — it sits after the pane gate, so a bare bound key cannot be taken out of a search
+//! field.
 //!
 //! # Why not `WidgetCore::keybinding`
 //!
@@ -34,6 +40,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::Instant;
 
 use pinion_core::reactive::Owner;
 use sprag_host::config::ClientConfig;
@@ -55,8 +62,8 @@ const CLIENT_KEYS_KEY: &str = "sprag_gui.keys";
 pub(crate) struct ClientKeys {
     /// The user's keymap plus the text it was read from, so a `bind-key` (or an editor) is noticed.
     file: RefCell<ClientConfig>,
-    /// Where the next keystroke goes. `Cell` because it is a two-state flag, read and written on one
-    /// thread inside one event handler.
+    /// Where the next keystroke goes. `Cell` because it is a small `Copy` state, read and written on
+    /// one thread inside one event handler.
     mode: Cell<PrefixMode>,
 }
 
@@ -78,6 +85,10 @@ impl ClientKeys {
     /// to be, and [`crate::input::route_key`] has five surfaces that can consume a key before the
     /// pane is even resolved; taking the mode out in one place is what keeps a prefix armed in a
     /// pane from surviving a keystroke typed into a find field.
+    ///
+    /// A REPEAT window is taken out by the same move, and deliberately: a window is the prefix table
+    /// still being armed, so a character typed into a search needle has to end it for the same
+    /// reason it ends the one-key mode. The window is a duration only in the absence of other input.
     pub(crate) fn take(&self) -> PrefixMode {
         self.mode.replace(PrefixMode::ToPane)
     }
@@ -90,6 +101,9 @@ impl ClientKeys {
     ///
     /// A broken save KEEPS the last good table and records the reason for the palette. Swapping in
     /// the defaults would take a user's own bindings away because they typo'd a line in an editor.
+    /// The clock is read HERE rather than inside the keymap so a repeat window can be tested by
+    /// passing an instant. This is the whole of what `-r` costs the event loop: no timer, no thread,
+    /// no tick — nothing observes a window closing except the next keystroke.
     pub(crate) fn route(
         &self,
         mode: PrefixMode,
@@ -97,7 +111,11 @@ impl ClientKeys {
         mods: sprag_input::Modifiers,
     ) -> Routed {
         self.reread();
-        let routed = self.file.borrow().keymap().route(mode, name, mods);
+        let routed = self
+            .file
+            .borrow()
+            .keymap()
+            .route(mode, Instant::now(), name, mods);
         self.mode.set(routed.next());
         routed
     }

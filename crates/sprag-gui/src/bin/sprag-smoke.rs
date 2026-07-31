@@ -1271,6 +1271,11 @@ fn boot_pane_cols(smoke: &mut Smoke, report: &mut Report, when: &str) -> Option<
 /// * `C-b` must arm NOTHING, because the file moved the prefix to `C-a` — so a client holding
 ///   `Keymap::default()` cannot pass.
 ///
+/// Slice 4's ROOT table is checked here too rather than in a gate of its own, because it is the same
+/// claim about the same seam — this binary reads this file — and a second gate would pay the cost of
+/// a second window to assert it. Its own discriminating claim is an UNBOUND function key dividing
+/// nothing, immediately before the bound one divides.
+///
 /// Placed after the one-pane check above (it leaves an extra pane standing) and before the check
 /// below, which splits without cleaning up.
 fn check_the_gui_follows_the_users_keymap(smoke: &mut Smoke, report: &mut Report) {
@@ -1326,6 +1331,37 @@ fn check_the_gui_follows_the_users_keymap(smoke: &mut Smoke, report: &mut Report
     report.check(
         &format!("`prefix %` off the user's own config split the focused pane ({grown:?})"),
         grown.is_ok(),
+    );
+
+    // THE ROOT TABLE (slice 4), through the same shipped binary. `F5` is bound with `-n`, so it acts
+    // with no prefix at all — and the discriminating claim is the one BEFORE it: an unbound function
+    // key must divide nothing, so a client that acted on every key it did not recognise cannot pass.
+    let grown = grown.unwrap_or(before);
+    if smoke
+        .write_user_config(
+            "[[bind]]\nkey = \"F5\"\naction = \"split-window -h\"\ntable = \"root\"\n",
+        )
+        .is_err()
+    {
+        report.check("a root-table config can be written", false);
+        return;
+    }
+    let _ = smoke.press(0, "F6", false);
+    report.check(
+        &format!("an unbound key still divides nothing ({grown} pane(s))"),
+        smoke.pane_count() == Ok(grown),
+    );
+    report.check(
+        "a root-table key is accepted with no prefix",
+        smoke.press(0, "F5", false).is_ok(),
+    );
+    let rooted = smoke.wait_for(|s| {
+        let count = s.pane_count().ok()?;
+        (count > grown).then_some(count)
+    });
+    report.check(
+        &format!("`-n F5` split the focused pane with NO prefix ({rooted:?})"),
+        rooted.is_ok(),
     );
 
     // ...and the other half of reading a config: a file this client CANNOT use must say so where a
@@ -1605,8 +1641,17 @@ fn check_the_host_projects_panes_only_for_a_grid_reader(smoke: &mut Smoke, repor
     let (projections, cells) = (after.0 - before.0, after.1 - before.1);
     // Non-vacuity first: a window in which nothing was painted prices nothing, and the
     // divisibility test below is trivially true of zero.
+    //
+    // `painted` is REPORTED and not merely conjoined, because the two ways this fails are opposite
+    // and a bare `false` cannot tell them apart: the wait timing out means the needle never reached
+    // the client's grid, while `painted` with no cells would mean it arrived without a fetch. A
+    // 1-in-16 failure here was recorded as `0 projections, 0 cells` with nothing to say which — the
+    // silence R247 removed from the cropped-pane gate, in a second place.
     report.check(
-        &format!("the driven line reached the client's painted grid ({driven:?})"),
+        &format!(
+            "the driven line reached the client's painted grid \
+             (invoke {driven:?}, painted {painted}, {cells} cells)"
+        ),
         painted && cells > 0,
     );
     report.check(

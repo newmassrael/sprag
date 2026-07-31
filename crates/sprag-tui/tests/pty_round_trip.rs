@@ -2410,3 +2410,115 @@ fn a_clear_that_moved_no_rectangle_still_redraws_the_panes() {
         tui.rows(),
     );
 }
+
+/// **THE GATE for H2 slice 4's root table: a `-n` binding acts with NO prefix, and the key it took
+/// never reaches the child.**
+///
+/// Both halves are needed and only the second is easy to get wrong. A client that consulted the root
+/// table and then ALSO forwarded the keystroke would look correct in every screenshot of the action
+/// — the split happens — while quietly typing a control character into the user's shell every time
+/// they used their own binding.
+///
+/// The action is `split-window -h` rather than `detach-client` deliberately: a detaching client
+/// cannot then be asked what the pane received. Three claims, in the order that makes them
+/// discriminating:
+///
+/// * The client is painting, so what follows acts on a client that was WORKING.
+/// * `C-o` alone — no prefix — splits. Nothing else in this client's vocabulary splits on a bare
+///   key, and the daemon is the authority for the count.
+/// * The pane's own text holds no `^O`. That is the line discipline's caret echo of `0x0f`, the
+///   same evidence the prefix gate uses in the opposite direction: there it PROVES the byte
+///   travelled, here its absence proves it did not.
+///
+/// REVERT-PROOF: drop the root lookup from `Keymap::route` and the second claim times out while the
+/// third starts failing too — the key becomes an ordinary keystroke and `^O` appears in the shell.
+#[test]
+fn a_root_binding_acts_with_no_prefix_and_the_key_never_reaches_the_pane() {
+    let config = ConfigHome::new(
+        "[[bind]]\nkey = \"C-o\"\naction = \"split-window -h\"\ntable = \"root\"\n",
+    );
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client_with(
+        |sock, session| {
+            Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", config.as_str())])
+        },
+        &["cat"],
+    );
+
+    tui.type_bytes(b"live");
+    wait_for("the client to be painting", || painted(&mut tui, "live"));
+
+    // No prefix. This is the whole of what `-n` means.
+    tui.type_bytes(&[0x0f]);
+    wait_for("the root binding to split the window", || {
+        settled(pane_ids(&mut conn, &session).len(), &2)
+    });
+
+    let text = pane_text(&mut conn, &session);
+    assert!(
+        !text.contains("^O"),
+        "a root-bound key is the CLIENT's and must not also reach the child: {text:?}",
+    );
+    assert!(
+        text.contains("live"),
+        "...while the keys that were never bound still did: {text:?}",
+    );
+}
+
+/// **THE GATE for H2 slice 4's repeat: one prefix, two commands — and the window really closes.**
+///
+/// The third claim is the one that cannot be faked. A client that simply never left the prefix table
+/// would satisfy the first two and be catastrophically broken; only typing again AFTER the window
+/// has lapsed can tell "the window is open for `repeat-time`" from "the window is open forever".
+///
+/// The binding is `send-prefix`, and the choice is what makes the whole test readable from ONE pane.
+/// Written first against `split-window`, it failed on the third claim for a reason worth recording:
+/// a split MOVES THE FOCUS to the pane it creates, so the key typed after the lapse went to a
+/// freshly born shell rather than to the `cat` this test can read — and a fresh shell's startup
+/// `tcsetattr` purges type-ahead anyway (R246). `send-prefix` changes no focus, spawns no child, and
+/// makes the SAME keystroke produce two different, visible bytes depending on the window:
+///
+/// * inside it, `%` is the client's and puts `^B` in the pane — the line discipline's caret echo of
+///   the `0x02` the action sent;
+/// * after it, `%` is the program's and puts a literal `%` there.
+///
+/// `repeat-time` is 100 ms and the lapse is a 500 ms sleep — five times the window. That is not a
+/// race: the window closes at a deadline the client computed when it acted, so sleeping PAST it is a
+/// one-directional guarantee rather than something being waited for.
+///
+/// REVERT-PROOF: answer `PrefixMode::ToPane` for a repeating act (i.e. ignore `-r`) and the second
+/// claim times out — the screen reads `live^B%`, the `%` having gone straight to `cat`.
+#[test]
+fn a_repeat_binding_acts_twice_on_one_prefix_and_then_lets_go() {
+    let config = ConfigHome::new(
+        "[options]\nrepeat-time = 100\n\
+         [[bind]]\nkey = \"%\"\naction = \"send-prefix\"\nrepeat = true\n",
+    );
+    let (_daemon, _sock, _conn, _session, mut tui) = attached_client_with(
+        |sock, session| {
+            Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", config.as_str())])
+        },
+        &["cat"],
+    );
+
+    tui.type_bytes(b"live");
+    wait_for("the client to be painting", || painted(&mut tui, "live"));
+
+    tui.type_bytes(&[0x02]); // the prefix, ONCE
+    tui.type_bytes(b"%");
+    wait_for("the bound key to send the prefix", || {
+        painted(&mut tui, "live^B")
+    });
+
+    // No second prefix. This is `-r`.
+    tui.type_bytes(b"%");
+    wait_for("the repeat to act again without a second prefix", || {
+        painted(&mut tui, "live^B^B")
+    });
+
+    // Past the deadline the client itself computed — so the window is shut, not merely likely to be.
+    std::thread::sleep(Duration::from_millis(500));
+    tui.type_bytes(b"%");
+    wait_for("the lapsed window to hand the key back to the pane", || {
+        painted(&mut tui, "live^B^B%")
+    });
+}

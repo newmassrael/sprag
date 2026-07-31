@@ -443,13 +443,21 @@ pub(crate) fn route_key(
     // arming a one-key mode there would eat the next character out of a user's search needle. Every
     // action a binding can name acts on the focused pane anyway.
     //
+    // SLICE 4 MADE THAT POSITION LOAD-BEARING RATHER THAN MERELY RIGHT. A prefix binding could not
+    // reach a field in the first place — it needs a prefix keystroke, and the mode is taken out
+    // above. A ROOT binding is on a bare key, so with the lookup any higher, a user who bound `F5`
+    // and then typed `F5` into a search needle would get a split instead of a search.
+    //
     // BEFORE every built-in chord below: a table the user wrote outranks one this binary spells. A
     // prefix rebound onto `Ctrl+Shift+C` has to be reachable, and after the prefix that same chord is
     // an unbound command key, which tmux swallows. In the steady state nothing is taken — the prefix
     // space and the reserved `Ctrl+Shift+*` space are disjoint until a user puts one on top of the
-    // other, and then that is what they asked for.
+    // other, and then that is what they asked for. A root binding a user puts ON one of those chords
+    // takes it, which is the same answer and the same reason.
     match use_client_keys().route(prefixed, key, to_input_mods(modifiers)) {
-        Routed::Act(action) => {
+        // The repeat window rides on `Routed::next`, which `ClientKeys::route` already stored — a
+        // caller reading `again` here would be a second author of the mode transition.
+        Routed::Act { action, .. } => {
             crate::diag::chord(action_label(action), "act", active);
             perform(action, active);
             return true;
@@ -821,6 +829,84 @@ mod tests {
             2,
             "both unprefixed keys reached the pane and the prefixed one did not: {row0:?}",
         );
+    }
+
+    /// **A `-n` binding acts in this frontend too, with no prefix — and the key never reaches the
+    /// PTY.**
+    ///
+    /// Both frontends route through one `Keymap::route`, so the routing itself is settled in
+    /// `sprag-host`. What is GUI-specific, and what this test is for, is WHERE the lookup sits: the
+    /// user's table is consulted AFTER the pane gate, so a root binding fires in a pane and cannot
+    /// fire while a text field owns the keyboard.
+    /// [`a_root_binding_does_not_fire_while_a_field_holds_the_keyboard`] asserts the second half;
+    /// this asserts the first.
+    ///
+    /// REVERT-PROOF: drop the root lookup and `F5` becomes a keystroke — the split never happens and
+    /// the pane receives a key the user had bound to a command.
+    #[test]
+    fn a_root_binding_splits_the_focused_pane_with_no_prefix() {
+        let (host, _pane0) = two_cats();
+        let owner = Owner::new();
+        owner.run(|| {
+            let (_config, _keys) = Config::seeded(
+                "[[bind]]\nkey = \"F5\"\naction = \"split-window -h\"\ntable = \"root\"\n",
+            );
+            seed_terminal(host);
+            let before = panes();
+
+            // A key nobody bound is still the program's, so a client that split on everything cannot
+            // pass this.
+            assert!(press(0, "F6", Modifiers::default()));
+            assert_eq!(panes(), before, "an unbound function key is a keystroke");
+
+            assert!(press(0, "F5", Modifiers::default()));
+            assert_eq!(
+                panes(),
+                before + 1,
+                "the root binding acted with no prefix at all",
+            );
+        });
+    }
+
+    /// **A root binding does not fire while a text field holds the keyboard**, and this is the half
+    /// of `-n` that only the GUI has to answer.
+    ///
+    /// A prefix binding could not do this damage: it needs a prefix keystroke first, and the mode is
+    /// taken out before any surface is consulted. A ROOT binding is on a bare key, so a user who
+    /// bound `F5` and then typed `F5` into a search needle would have their client split a pane
+    /// instead of searching — the keystroke a field owns is not CONTESTED, which is exactly the
+    /// argument that put the keymap after the pane gate in the first place.
+    ///
+    /// Driven with the find field's own tag rather than an invented one, so what is asserted is the
+    /// real focus a user has while typing a search.
+    ///
+    /// REVERT-PROOF: move the keymap lookup above the `find` / `palette` / sidebar routes and this
+    /// splits.
+    #[test]
+    fn a_root_binding_does_not_fire_while_a_field_holds_the_keyboard() {
+        let (host, _pane0) = two_cats();
+        let owner = Owner::new();
+        owner.run(|| {
+            let (_config, _keys) = Config::seeded(
+                "[[bind]]\nkey = \"F5\"\naction = \"split-window -h\"\ntable = \"root\"\n",
+            );
+            seed_terminal(host);
+            let before = panes();
+            let mut scene = Scene::Container(ContainerNode::new(Vec::new()));
+            // Whether the FIELD consumed it is `find`'s business; the claim here is only that the
+            // keymap did not.
+            let _ = TerminalViewer::apply_key(
+                &mut scene,
+                Some(crate::find::FIND_FIELD_TAG),
+                "F5",
+                Modifiers::default(),
+            );
+            assert_eq!(
+                panes(),
+                before,
+                "a key the search field owns is not the keymap's to take",
+            );
+        });
     }
 
     /// A rebind reaches a RUNNING window: the file is edited under a client that is already up, and

@@ -98,6 +98,7 @@ use std::fmt::Write as _;
 use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use pinion_core::QuitSink;
 use sprag_client::WireHost;
@@ -739,11 +740,15 @@ fn command(keys: &mut PrefixMode, keymap: &Keymap, event: &KeyEvent) -> Command 
         return Command::Swallow;
     };
     let mut scratch = [0u8; 4];
-    let routed = keymap.route(mode, key.name(&mut scratch), key.mods());
+    // The clock is read HERE and passed in, which is all a repeat window (`-r`) costs this loop:
+    // nothing observes a window closing except the next keystroke, so there is still no timer, no
+    // tick and no timeout on the `select` — the property this client's whole idle cost rests on.
+    let routed = keymap.route(mode, Instant::now(), key.name(&mut scratch), key.mods());
     *keys = routed.next();
     match routed {
         Routed::ToPane => Command::ToPane(key),
-        Routed::Act(action) => Command::Act(action),
+        // `again` is consumed by `Routed::next` above, which is the one place the mode is decided.
+        Routed::Act { action, .. } => Command::Act(action),
         Routed::Prefix | Routed::Swallow => Command::Swallow,
     }
 }
@@ -988,6 +993,8 @@ fn screen_size(terminal: &mut SystemTerminal) -> Result<(u16, u16), Box<dyn Erro
 
 #[cfg(test)]
 mod tests {
+    use sprag_host::keymap::KeyTable;
+
     use super::*;
 
     /// The bytes a terminal sends for a keystroke, as termwiz's own parser decodes them — so the
@@ -1112,7 +1119,9 @@ mod tests {
     #[test]
     fn send_prefix_bound_elsewhere_still_sends_the_prefix() {
         let mut keymap = Keymap::default();
-        keymap.bind("a", "send-prefix").expect("binds");
+        keymap
+            .bind(KeyTable::Prefix, "a", "send-prefix", false)
+            .expect("binds");
         let mut keys = PrefixMode::ToPane;
         assert_eq!(
             command(&mut keys, &keymap, &typed(CTRL_B)),
@@ -1169,8 +1178,10 @@ mod tests {
     #[test]
     fn a_users_binding_is_routed_and_an_unbound_default_is_not() {
         let mut keymap = Keymap::default();
-        keymap.bind("C-o", "detach-client").expect("binds");
-        keymap.unbind("o").expect("unbinds");
+        keymap
+            .bind(KeyTable::Prefix, "C-o", "detach-client", false)
+            .expect("binds");
+        keymap.unbind(KeyTable::Prefix, "o").expect("unbinds");
         let mut keys = PrefixMode::ToPane;
         assert_eq!(acted(&mut keys, CTRL_B), Command::Swallow);
         // Ctrl-O, the C0 byte — unreachable under the hardcoded table's "a modified command key is

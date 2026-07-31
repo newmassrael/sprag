@@ -2367,13 +2367,18 @@ fn a_mistyped_argument_names_no_file_and_a_broken_file_still_does() {
     );
 }
 
-/// `-T prefix` is accepted so a tmux user's spelling works; any other table is refused BY NAME.
+/// Both of sprag's key tables are accepted under tmux's own spellings, and a THIRD is refused by
+/// name.
 ///
-/// `-T root` is the one that matters: a binding with no prefix competes with the pane for every
-/// keystroke, and accepting the flag would promise arbitration nothing performs. Refusing it names
-/// what sprag has instead of silently binding into the only table there is.
+/// `-n` and `-T root` have to reach the same place, because tmux's manual defines the first as an
+/// alias for the second — a user whose fingers produce one and whose config was written with the
+/// other must not end up with two bindings.
+///
+/// Refusing an unknown table by NAME rather than defaulting it is what keeps `switch-client -T`'s
+/// custom tables open: a silent fallback to the prefix table would put a binding somewhere the user
+/// did not ask for and print it back to them as though they had.
 #[test]
-fn only_the_prefix_key_table_is_accepted() {
+fn both_key_tables_are_accepted_and_a_third_is_refused() {
     let config = ConfigHome::new("");
     let env = [("XDG_CONFIG_HOME", config.as_str())];
     let run = sprag_env(
@@ -2385,14 +2390,195 @@ fn only_the_prefix_key_table_is_accepted() {
 
     let run = sprag_env(
         &socket_path(),
-        &["bind-key", "-T", "root", "c", "detach-client"],
+        &["bind-key", "-n", "F5", "detach-client"],
         &env,
     );
-    assert!(!run.ok, "the root table is not built");
+    assert!(run.ok, "-n binds in the root table: {}", run.stderr);
+    let run = sprag_env(
+        &socket_path(),
+        &["bind-key", "-T", "root", "F6", "detach-client"],
+        &env,
+    );
+    assert!(run.ok, "and so does its long form: {}", run.stderr);
+
+    let listed = sprag_env(&socket_path(), &["list-keys"], &env);
+    let root_lines = listed
+        .stdout
+        .lines()
+        .filter(|line| line.contains("-T root"))
+        .count();
+    assert_eq!(
+        root_lines, 2,
+        "one line each, not one per spelling:\n{}",
+        listed.stdout
+    );
+
+    let run = sprag_env(
+        &socket_path(),
+        &["bind-key", "-T", "copy-mode", "c", "detach-client"],
+        &env,
+    );
+    assert!(!run.ok, "sprag has two tables, not three");
     assert!(
-        run.stderr.contains("root") && run.stderr.contains("prefix"),
+        run.stderr.contains("copy-mode")
+            && run.stderr.contains("root")
+            && run.stderr.contains("prefix"),
         "naming what was asked for and what exists: {}",
         run.stderr,
+    );
+}
+
+/// `list-keys` lines its columns up ACROSS the two tables, so the actions read as one column.
+///
+/// Pinned because the defect it caught is invisible to every other assertion here and was found by
+/// reading the output: `KeyTable`'s `Display` wrote its string directly instead of going through
+/// `Formatter::pad`, so the `{:width$}` the printer asks for was silently ignored and every `root`
+/// line put its key two characters to the left. A manual `Display` that does not call `pad` honours
+/// no formatting flag it is given.
+#[test]
+fn list_keys_lines_up_its_columns_across_both_tables() {
+    let config = ConfigHome::new("");
+    let env = [("XDG_CONFIG_HOME", config.as_str())];
+    assert!(
+        sprag_env(
+            &socket_path(),
+            &["bind-key", "-n", "F5", "detach-client"],
+            &env
+        )
+        .ok
+    );
+    let listed = sprag_env(&socket_path(), &["list-keys"], &env).stdout;
+    let widest = listed
+        .lines()
+        .filter(|line| line.starts_with("bind-key"))
+        .filter_map(|line| line.find(" -T ").map(|at| &line[at + 4..]))
+        .filter_map(|rest| rest.find(' ').map(|at| &rest[..at]))
+        .map(str::len)
+        .max()
+        .expect("some bindings are listed");
+    assert!(
+        listed
+            .lines()
+            .filter(|line| line.contains("-T root"))
+            .all(|line| line.contains(&format!("-T {:widest$} ", "root"))),
+        "the shorter table name is padded to the longer one:\n{listed}",
+    );
+}
+
+/// `-n` and `-T prefix` together are REFUSED rather than resolved.
+///
+/// They are two contradictory statements about one binding — tmux documents `-n` AS `-T root` — and
+/// honouring either would be inventing a precedence rule a user cannot see in their own command
+/// line. The same reasoning slice 1 applied to a key that is both bound and unbound.
+#[test]
+fn the_two_spellings_of_the_root_table_may_not_contradict() {
+    let config = ConfigHome::new("");
+    let env = [("XDG_CONFIG_HOME", config.as_str())];
+    let run = sprag_env(
+        &socket_path(),
+        &["bind-key", "-n", "-T", "prefix", "c", "detach-client"],
+        &env,
+    );
+    assert!(!run.ok, "-n and -T prefix cannot both be true");
+    assert!(
+        run.stderr.contains("-n") && run.stderr.contains("root"),
+        "the message says why: {}",
+        run.stderr,
+    );
+}
+
+/// `-r` is `bind-key`'s and REFUSED in the root table, where it could not mean anything.
+///
+/// Measured against `tmux 3.2a`: it accepts `bind -n -r` and stores it, and the binding never
+/// repeats — because repeat holds the PREFIX table open and a root binding is reached without the
+/// prefix. sprag refuses it instead, the same divergence it already takes for a bare `split-window`
+/// in a binding: a declaration with no effect is what this whole surface exists to prevent.
+#[test]
+fn repeat_is_refused_where_it_could_not_act() {
+    let config = ConfigHome::new("");
+    let env = [("XDG_CONFIG_HOME", config.as_str())];
+    let run = sprag_env(
+        &socket_path(),
+        &["bind-key", "-r", "o", "select-pane -t :.+"],
+        &env,
+    );
+    assert!(
+        run.ok,
+        "-r in the prefix table is the whole point: {}",
+        run.stderr
+    );
+    let listed = sprag_env(&socket_path(), &["list-keys"], &env);
+    assert!(
+        listed
+            .stdout
+            .lines()
+            .any(|line| line.contains("-r") && line.contains("-T prefix") && line.contains(" o ")),
+        "list-keys shows the flag back:\n{}",
+        listed.stdout,
+    );
+
+    let run = sprag_env(
+        &socket_path(),
+        &["bind-key", "-n", "-r", "F5", "detach-client"],
+        &env,
+    );
+    assert!(!run.ok, "a root binding has no prefix table to hold open");
+    assert!(
+        run.stderr.contains("repeat") && run.stderr.contains("prefix"),
+        "the message names the mechanism: {}",
+        run.stderr,
+    );
+
+    let run = sprag_env(&socket_path(), &["unbind-key", "-r", "o"], &env);
+    assert!(!run.ok, "-r is not unbind-key's flag");
+}
+
+/// The two tables hold one key SEPARATELY, all the way through the file and back out of
+/// `list-keys`.
+///
+/// This is the property that makes the table half of a binding's identity rather than a property of
+/// one: binding `%` in the root table must not disturb the `%` sprag ships in the prefix table, and
+/// unbinding one must not remove the other. An editor matching on the key alone would corrupt
+/// exactly the config of a user who took the trouble to bind both.
+#[test]
+fn one_key_in_two_tables_is_two_bindings() {
+    let config = ConfigHome::new("");
+    let env = [("XDG_CONFIG_HOME", config.as_str())];
+    assert!(
+        sprag_env(
+            &socket_path(),
+            &["bind-key", "-n", "%", "detach-client"],
+            &env
+        )
+        .ok,
+        "bound in the root table",
+    );
+    let listed = sprag_env(&socket_path(), &["list-keys"], &env).stdout;
+    assert!(
+        listed.contains("-T prefix") && listed.contains("-T root"),
+        "both survive:\n{listed}",
+    );
+    assert!(
+        listed.lines().any(|line| line.contains("-T prefix")
+            && line.contains('%')
+            && line.contains("split-window -h")),
+        "the shipped default is untouched:\n{listed}",
+    );
+
+    assert!(
+        sprag_env(&socket_path(), &["unbind-key", "-n", "%"], &env).ok,
+        "unbound in the root table",
+    );
+    let listed = sprag_env(&socket_path(), &["list-keys"], &env).stdout;
+    assert!(
+        listed.lines().any(|line| line.contains("-T prefix")
+            && line.contains('%')
+            && line.contains("split-window -h")),
+        "and the prefix table's % is STILL there:\n{listed}",
+    );
+    assert!(
+        !listed.contains("-T root"),
+        "while the root table is empty again:\n{listed}",
     );
 }
 

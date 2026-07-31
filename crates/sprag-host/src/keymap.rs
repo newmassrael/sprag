@@ -28,13 +28,34 @@
 //! second key vocabulary plus a mapping table between the two, and the divergence is invisible for
 //! every default binding because all of them are plain characters.
 //!
+//! ## Two tables: behind the prefix, and in front of it
+//!
+//! [`KeyTable::Prefix`] holds the keys that mean something AFTER the prefix — tmux's default table
+//! and where all of sprag's own defaults are. [`KeyTable::Root`] holds keys that act with no prefix
+//! at all (tmux's `-n`), which therefore never reach the pane. One key can be in both and mean two
+//! different things, which is what makes the table half of a binding's identity rather than a
+//! property of one.
+//!
 //! ## The ROUTING is here too, because both frontends must agree
 //!
-//! [`Keymap::route`] is the whole state machine: whether a keystroke is the prefix, what an armed key
-//! means, and — through [`Routed::next`] — when the one-key mode ends. It lives beside the table
+//! [`Keymap::route`] is the whole state machine: whether a keystroke is the prefix, which table it is
+//! looked up in, and — through [`Routed::next`] — when the mode ends. It lives beside the table
 //! rather than in either client, because the two clients decode keys differently (termwiz events in
 //! the terminal, pinion key names in the GUI) and agree about everything after that. A second
 //! implementation would be two answers to "what does this user's table say".
+//!
+//! Its ORDER is measured against `tmux 3.2a` rather than reasoned out, and one step of it is
+//! surprising: the prefix is checked BEFORE the root table, so a root binding on the prefix key does
+//! not fire. [`Keymap::route`]'s own doc records the probes.
+//!
+//! ## Repeat is a deadline, not a timer
+//!
+//! A [`Bind::repeats`] binding (tmux's `-r`) leaves the prefix table armed for
+//! [`Keymap::repeat_time`] instead of one keystroke, so `prefix o o o` runs the binding three times.
+//! Nothing in sprag observes the moment that window closes — there is no key-table indicator to
+//! repaint — so the deadline is simply compared against the next keystroke's arrival, and no client
+//! grows a timer, a thread or a tick for it. [`Keymap::route`] takes the instant as a parameter,
+//! which is also what lets a test assert a window without sleeping through one.
 //!
 //! What each client keeps for itself is PERFORMING an action, which has nothing in common between
 //! them: a split is a wire request in one and the same request through a `SlotView` in the other, and
@@ -47,9 +68,18 @@
 //! who wants one extra binding does not have to re-declare the four they already had.
 
 use std::fmt;
+use std::time::{Duration, Instant};
 
 use sprag_input::Modifiers;
 use sprag_terminal::SplitDir;
+
+/// tmux's own `repeat-time` default, and the one sprag takes when the options table is silent.
+///
+/// Read from `tmux 3.2a`'s `show-options -g repeat-time` on this machine rather than recalled. It
+/// lives here rather than only in [`crate::options`] because [`Keymap::default`] has to answer
+/// without a config file at all — `sprag list-keys` runs on a machine with no daemon and no
+/// `config.toml`.
+pub const DEFAULT_REPEAT_TIME: Duration = Duration::from_millis(500);
 
 /// Why a keymap declaration could not be used.
 ///
@@ -69,8 +99,12 @@ pub enum KeyError {
         /// What is wrong with it, in the user's terms.
         why: String,
     },
-    /// One key is both bound and unbound by the same file.
+    /// One key is both bound and unbound by the same file, in the same table.
     BoundAndUnbound(String),
+    /// The name is not one of sprag's key tables.
+    UnknownTable(String),
+    /// A root-table binding asked to repeat, which cannot mean anything.
+    RepeatInRoot(String),
 }
 
 impl fmt::Display for KeyError {
@@ -90,7 +124,84 @@ impl fmt::Display for KeyError {
             Self::BoundAndUnbound(key) => {
                 write!(f, "{key} is both bound and unbound; say only one")
             }
+            Self::UnknownTable(name) => write!(
+                f,
+                "{name:?} is not a key table (there are: {:?}, {:?})",
+                KeyTable::Prefix.as_str(),
+                KeyTable::Root.as_str()
+            ),
+            // Names the MECHANISM rather than the rule, because the rule on its own reads as an
+            // arbitrary refusal: repeat is a window during which the PREFIX table stays armed, and a
+            // root binding is reached without the prefix, so there is nothing for it to hold open.
+            // tmux 3.2a accepts this combination and it does nothing there — measured, and refused
+            // here for the reason every other silent declaration in this file is refused.
+            Self::RepeatInRoot(key) => write!(
+                f,
+                "{key} cannot repeat: repeat holds the {:?} table open for the next keystroke, \
+                 and a {:?} binding is reached without the prefix",
+                KeyTable::Prefix.as_str(),
+                KeyTable::Root.as_str()
+            ),
         }
+    }
+}
+
+/// Which of sprag's two key tables a binding lives in — tmux's `-T`.
+///
+/// # Why an enum and not a string
+///
+/// A table name reaches this module from three places (the CLI's `-T`/`-n`, the config file's
+/// `table = …`, and [`Keymap`]'s own defaults) and every one of them has to reject an unknown name
+/// rather than create a table nobody consults. Parsing once, into a closed type, is what makes the
+/// refusal impossible to forget at the fourth call site.
+///
+/// There are exactly two because a THIRD needs a way to switch to it: tmux's custom tables are
+/// reachable only through `switch-client -T`, which is a bound action that changes the client's
+/// mode. That is a different mechanism, and refusing an unknown name by name is what keeps it open.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum KeyTable {
+    /// Keys pressed AFTER the prefix — the default, and where every one of sprag's own defaults is.
+    #[default]
+    Prefix,
+    /// Keys pressed WITHOUT the prefix, which therefore never reach the pane — tmux's `-n`.
+    Root,
+}
+
+impl KeyTable {
+    /// tmux's own name for this table, which is the spelling the CLI, the config file and
+    /// `list-keys` all use.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Prefix => "prefix",
+            Self::Root => "root",
+        }
+    }
+
+    /// Parse tmux's table name.
+    ///
+    /// # Errors
+    ///
+    /// [`KeyError::UnknownTable`] for anything else — never a silent fallback to
+    /// [`KeyTable::Prefix`], which would take a binding a user aimed at the root table and quietly
+    /// put it behind the prefix.
+    pub fn parse(name: &str) -> Result<Self, KeyError> {
+        match name {
+            "prefix" => Ok(Self::Prefix),
+            "root" => Ok(Self::Root),
+            other => Err(KeyError::UnknownTable(other.to_owned())),
+        }
+    }
+}
+
+impl fmt::Display for KeyTable {
+    /// Through [`pad`](fmt::Formatter::pad), not `write_str`, so `{:6}` actually pads.
+    ///
+    /// `list-keys` aligns its columns with a width, and a `Display` that writes the string directly
+    /// ignores every formatting flag it is given — which put the key column two characters left on
+    /// every `root` line and only there. Found by READING the output, not by reading this function.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad(self.as_str())
     }
 }
 
@@ -367,17 +478,69 @@ impl fmt::Display for BoundAction {
     }
 }
 
-/// A client's prefix key and the table of commands that follow it.
+/// One binding: a key, in a table, meaning an action — and whether it repeats.
+///
+/// A record rather than the `(KeySpec, BoundAction)` pair this used to be, because with a table and
+/// a repeat flag the tuple's positions stop saying what they are. Every field is read together at the
+/// one place a keystroke is routed.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Bind {
+    /// Which table the key has to be pressed in to mean this.
+    table: KeyTable,
+    /// The keystroke.
+    key: KeySpec,
+    /// What it does.
+    action: BoundAction,
+    /// tmux's `-r`: after this acts, the prefix table stays armed for
+    /// [`repeat_time`](Keymap::repeat_time) rather than one keystroke.
+    repeat: bool,
+}
+
+impl Bind {
+    /// Which table this binding is in.
+    #[must_use]
+    pub fn table(&self) -> KeyTable {
+        self.table
+    }
+
+    /// The keystroke it is on.
+    #[must_use]
+    pub fn key(&self) -> &KeySpec {
+        &self.key
+    }
+
+    /// What it does.
+    #[must_use]
+    pub fn action(&self) -> BoundAction {
+        self.action
+    }
+
+    /// Whether it repeats — tmux's `-r`.
+    #[must_use]
+    pub fn repeats(&self) -> bool {
+        self.repeat
+    }
+}
+
+/// A client's prefix key and the tables of commands it routes.
 ///
 /// Ordered rather than hashed: a keymap holds a handful of entries and is read once per keystroke,
 /// so a linear scan is not a cost — and the ORDER is load-bearing for `list-keys`, which has to show
 /// a user the table they wrote.
+///
+/// ONE list for both tables rather than one per table, because the file's `[[bind]]` is one array
+/// and `list-keys` shows a user their own declaration order: two lists would need a merge that has to
+/// reconstruct it. The [`table`](Bind::table) field is what a lookup filters on.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Keymap {
     /// The key that says "the next keystroke is mine".
     prefix: KeySpec,
-    /// What each key means after the prefix, in declaration order.
-    binds: Vec<(KeySpec, BoundAction)>,
+    /// How long a [`repeat`](Bind::repeats) binding holds the prefix table open — tmux's
+    /// `repeat-time`, and like [`prefix`](Self::prefix) it is built FROM the options table rather
+    /// than declared beside it.
+    repeat_time: Duration,
+    /// Every binding, in declaration order, across both tables.
+    binds: Vec<Bind>,
 }
 
 impl Default for Keymap {
@@ -389,26 +552,38 @@ impl Default for Keymap {
     /// [`BoundAction::parse`] gives.
     fn default() -> Self {
         let key = |spec: &str| KeySpec::parse(spec).expect("a default key spec is well formed");
+        let bind = |spec: &str, action| Bind {
+            table: KeyTable::Prefix,
+            key: key(spec),
+            action,
+            repeat: false,
+        };
         Self {
             prefix: key("C-b"),
+            repeat_time: DEFAULT_REPEAT_TIME,
+            // The ROOT table ships empty, which is also tmux's state for keyboard keys: its own
+            // default root table holds mouse bindings only (measured from `list-keys -T root`).
+            // And no default REPEATS: tmux's `-r` defaults sit on `select-pane -U/-D/-L/-R` and
+            // `resize-pane`, directional actions this vocabulary does not have, so putting `-r` on
+            // `o` would be sprag inventing a default tmux never had.
             binds: vec![
-                (key("C-b"), BoundAction::SendPrefix),
-                (
-                    key("\""),
+                bind("C-b", BoundAction::SendPrefix),
+                bind(
+                    "\"",
                     BoundAction::SplitWindow {
                         dir: SplitDir::Vertical,
                         before: false,
                     },
                 ),
-                (
-                    key("%"),
+                bind(
+                    "%",
                     BoundAction::SplitWindow {
                         dir: SplitDir::Horizontal,
                         before: false,
                     },
                 ),
-                (key("d"), BoundAction::DetachClient),
-                (key("o"), BoundAction::SelectNextPane),
+                bind("d", BoundAction::DetachClient),
+                bind("o", BoundAction::SelectNextPane),
             ],
         }
     }
@@ -446,18 +621,41 @@ impl Keymap {
         if previous == next {
             return Ok(());
         }
-        let moves = |(key, action): &(KeySpec, BoundAction)| {
-            *key == previous && *action == BoundAction::SendPrefix
+        // Scoped to the PREFIX table on both sides. A `send-prefix` a user put in the ROOT table is
+        // a key that sends the prefix without the prefix, which is a statement about THAT key rather
+        // than about whichever key the prefix currently is — so it does not follow, and it must not
+        // be the thing displaced either.
+        let moves = |bind: &Bind| {
+            bind.table == KeyTable::Prefix
+                && bind.key == previous
+                && bind.action == BoundAction::SendPrefix
         };
         if self.binds.iter().any(moves) {
-            self.binds.retain(|(key, _)| *key != next);
+            self.binds
+                .retain(|bind| bind.table != KeyTable::Prefix || bind.key != next);
             if let Some(slot) = self.binds.iter_mut().find(|bind| moves(bind)) {
                 // Retargeted in place rather than removed and re-pushed, so `list-keys` shows it
                 // where the user's file put it instead of at the end.
-                slot.0 = next;
+                slot.key = next;
             }
         }
         Ok(())
+    }
+
+    /// How long a [`repeat`](Bind::repeats) binding holds the prefix table open.
+    #[must_use]
+    pub fn repeat_time(&self) -> Duration {
+        self.repeat_time
+    }
+
+    /// Set the repeat window — tmux's `repeat-time`, in milliseconds.
+    ///
+    /// Zero is a DECISION rather than an absence, and it is the one tmux takes too (`repeat-time 0`
+    /// is accepted there): a window that has already closed when it opens, so a `-r` binding acts
+    /// exactly once. Nothing here has to special-case it — [`PrefixMode::armed`] compares an instant
+    /// that is already in the past.
+    pub fn set_repeat_time(&mut self, millis: u64) {
+        self.repeat_time = Duration::from_millis(millis);
     }
 
     /// Bind `key` to `action`, replacing whatever it meant before — tmux's `bind-key`.
@@ -468,12 +666,33 @@ impl Keymap {
     /// # Errors
     ///
     /// [`KeyError::UnknownKey`] / [`KeyError::UnknownAction`] / [`KeyError::BadFlags`].
-    pub fn bind(&mut self, key: &str, action: &str) -> Result<(), KeyError> {
+    pub fn bind(
+        &mut self,
+        table: KeyTable,
+        key: &str,
+        action: &str,
+        repeat: bool,
+    ) -> Result<(), KeyError> {
         let key = KeySpec::parse(key)?;
         let action = BoundAction::parse(action)?;
-        match self.binds.iter_mut().find(|(bound, _)| *bound == key) {
-            Some(slot) => slot.1 = action,
-            None => self.binds.push((key, action)),
+        if repeat && table == KeyTable::Root {
+            return Err(KeyError::RepeatInRoot(key.to_string()));
+        }
+        match self
+            .binds
+            .iter_mut()
+            .find(|bound| bound.table == table && bound.key == key)
+        {
+            Some(slot) => {
+                slot.action = action;
+                slot.repeat = repeat;
+            }
+            None => self.binds.push(Bind {
+                table,
+                key,
+                action,
+                repeat,
+            }),
         }
         Ok(())
     }
@@ -487,9 +706,10 @@ impl Keymap {
     /// # Errors
     ///
     /// [`KeyError::UnknownKey`] for a spec that names no key — a typo is still a typo.
-    pub fn unbind(&mut self, key: &str) -> Result<(), KeyError> {
+    pub fn unbind(&mut self, table: KeyTable, key: &str) -> Result<(), KeyError> {
         let key = KeySpec::parse(key)?;
-        self.binds.retain(|(bound, _)| *bound != key);
+        self.binds
+            .retain(|bound| bound.table != table || bound.key != key);
         Ok(())
     }
 
@@ -499,21 +719,27 @@ impl Keymap {
         self.prefix.matches(name, mods)
     }
 
-    /// What a keystroke means AFTER the prefix, or [`None`] for an unbound key.
+    /// What a keystroke means in `table`, or [`None`] for a key that is not bound there.
     ///
-    /// An unbound key is the caller's to swallow: a user who typed the prefix meant to address the
-    /// client, so delivering their mistake to a shell would run something they did not ask for.
+    /// A key can be bound in BOTH tables and mean two different things — tmux allows exactly that
+    /// (measured: `bind -n C-b` sits beside `bind C-b send-prefix`) — so the table is not a filter
+    /// applied to one answer, it is part of the question.
     #[must_use]
-    pub fn action(&self, name: &str, mods: Modifiers) -> Option<BoundAction> {
-        self.binds
-            .iter()
-            .find(|(key, _)| key.matches(name, mods))
-            .map(|(_, action)| *action)
+    pub fn action(&self, table: KeyTable, name: &str, mods: Modifiers) -> Option<BoundAction> {
+        self.bound(table, name, mods).map(|bind| bind.action)
     }
 
-    /// Every binding, in the order a user would read them.
-    pub fn binds(&self) -> impl Iterator<Item = (&KeySpec, BoundAction)> {
-        self.binds.iter().map(|(key, action)| (key, *action))
+    /// The binding `name`+`mods` has in `table`, whole — the lookup [`route`](Self::route) uses,
+    /// which needs the repeat flag as well as the action.
+    fn bound(&self, table: KeyTable, name: &str, mods: Modifiers) -> Option<&Bind> {
+        self.binds
+            .iter()
+            .find(|bind| bind.table == table && bind.key.matches(name, mods))
+    }
+
+    /// Every binding, in the order a user would read them, across both tables.
+    pub fn binds(&self) -> impl Iterator<Item = &Bind> {
+        self.binds.iter()
     }
 
     /// Route one keystroke, given the mode the PREVIOUS one left behind.
@@ -525,23 +751,70 @@ impl Keymap {
     /// An unbound key AFTER the prefix is [`Routed::Swallow`] rather than passed through, which is
     /// tmux's behaviour and the safer of the two: a user who typed the prefix meant to address the
     /// client, so delivering their mistake to a shell would run something they did not ask for.
+    ///
+    /// # The order, and why it is this one
+    ///
+    /// Every step below was MEASURED against `tmux 3.2a` driving a real client on a pty, because two
+    /// of them are runtime behaviour its manual does not state:
+    ///
+    /// 1. **Armed** — after the prefix, or inside a repeat window — look in [`KeyTable::Prefix`].
+    /// 2. **The prefix itself**, BEFORE the root table. A root binding on the prefix key does not
+    ///    fire in tmux: `bind -n C-b …` leaves `C-b` arming the prefix, with a root binding on
+    ///    another key firing normally as the control. The natural implementation looks the root
+    ///    table up first and gets this backwards.
+    /// 3. **[`KeyTable::Root`]** — a binding with no prefix, which therefore takes the key from the
+    ///    pane. That is the whole of what `-n` means.
+    /// 4. Otherwise the pane.
+    ///
+    /// An unbound key inside a REPEAT window falls through to 2-4 instead of being swallowed —
+    /// measured (typing `ZQ` inside the window puts `ZQ` in the shell). That asymmetry with the
+    /// one-key mode is deliberate in tmux and is why [`PrefixMode`] has three states rather than a
+    /// deadline hung off the second.
+    ///
+    /// `now` is a parameter rather than a call inside here so a repeat window can be tested by
+    /// passing an instant instead of sleeping through one.
     #[must_use]
-    pub fn route(&self, mode: PrefixMode, name: &str, mods: Modifiers) -> Routed {
-        if mode == PrefixMode::AfterPrefix {
-            return self.action(name, mods).map_or(Routed::Swallow, Routed::Act);
+    pub fn route(&self, mode: PrefixMode, now: Instant, name: &str, mods: Modifiers) -> Routed {
+        if mode.armed(now) {
+            if let Some(bind) = self.bound(KeyTable::Prefix, name, mods) {
+                return self.act(bind, now);
+            }
+            if mode == PrefixMode::AfterPrefix {
+                return Routed::Swallow;
+            }
         }
         if self.is_prefix(name, mods) {
             return Routed::Prefix;
         }
+        if let Some(bind) = self.bound(KeyTable::Root, name, mods) {
+            return self.act(bind, now);
+        }
         Routed::ToPane
+    }
+
+    /// Carry out `bind`, opening a repeat window from `now` if it asked for one.
+    ///
+    /// The window is measured from THIS keystroke rather than from the first of a run, so every
+    /// repeat re-arms it — measured against tmux, where three presses at 0/400/800 ms under a 500 ms
+    /// `repeat-time` all reach the binding and none reaches the pane.
+    fn act(&self, bind: &Bind, now: Instant) -> Routed {
+        Routed::Act {
+            action: bind.action,
+            again: bind.repeat.then(|| now + self.repeat_time),
+        }
     }
 }
 
 /// Where the next keystroke goes.
 ///
-/// Two states rather than a `bool` because the prefix is not a modifier — it is a mode the client
+/// States rather than a `bool` because the prefix is not a modifier — it is a mode the client
 /// enters and leaves, and `after_prefix: true` at a call site says nothing about which way round
 /// that is.
+///
+/// [`Repeating`](Self::Repeating) is a third state and not a deadline attached to
+/// [`AfterPrefix`](Self::AfterPrefix), because the two differ in what an UNBOUND key does: after the
+/// prefix it is swallowed, inside a repeat window it falls through to the pane. That is tmux's
+/// behaviour, measured.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum PrefixMode {
     /// The steady state: keys are the program's.
@@ -549,6 +822,26 @@ pub enum PrefixMode {
     ToPane,
     /// The prefix was just pressed, so the next key is a command to this client.
     AfterPrefix,
+    /// A [`repeat`](Bind::repeats) binding just acted, so the prefix table stays armed until
+    /// `until` without the prefix being pressed again — tmux's `-r` plus `repeat-time`.
+    Repeating {
+        /// When the window closes. Compared against a passed-in instant on the next keystroke, which
+        /// is the ONLY thing that ever observes it: sprag paints no key-table indicator, so nothing
+        /// happens at the moment a window expires and a timer would have nothing to wake for.
+        until: Instant,
+    },
+}
+
+impl PrefixMode {
+    /// Whether the prefix table is live for a keystroke arriving at `now`.
+    #[must_use]
+    pub fn armed(self, now: Instant) -> bool {
+        match self {
+            Self::ToPane => false,
+            Self::AfterPrefix => true,
+            Self::Repeating { until } => now <= until,
+        }
+    }
 }
 
 /// What a client should do with a keystroke — the answer [`Keymap::route`] gives.
@@ -563,7 +856,16 @@ pub enum Routed {
     /// It was the PREFIX: swallow it, and the NEXT keystroke is a command to this client.
     Prefix,
     /// Carry out a bound command of the client's own.
-    Act(BoundAction),
+    Act {
+        /// What to do.
+        action: BoundAction,
+        /// When the repeat window this opens closes, or [`None`] for a binding that does not repeat.
+        ///
+        /// Carried OUT of the routing rather than computed by the caller so [`Routed::next`] stays
+        /// the one definition of the next mode: a frontend that added `now + repeat_time` itself
+        /// would be a second author of that rule, and there are two frontends.
+        again: Option<Instant>,
+    },
     /// Nothing at all — an unbound key after the prefix.
     Swallow,
 }
@@ -571,17 +873,21 @@ pub enum Routed {
 impl Routed {
     /// Where the NEXT keystroke goes after this one.
     ///
-    /// **The mode is one key long, and this is the one definition of that.** Total on purpose: a
-    /// client that derives its next mode from here cannot arm the mode by accident, and — because
-    /// every outcome but [`Routed::Prefix`] answers [`PrefixMode::ToPane`] — cannot forget to
-    /// disarm it either. Both frontends have more ways to leave a keystroke than to route one (the
-    /// GUI has five surfaces that consume a key before the pane is even resolved), so the rule has
-    /// to live somewhere neither of them can partially implement.
+    /// **The mode is one key long unless a binding asked otherwise, and this is the one definition
+    /// of that.** Total on purpose: a client that derives its next mode from here cannot arm the
+    /// mode by accident, and — because every outcome but [`Routed::Prefix`] and a repeating
+    /// [`Routed::Act`] answers [`PrefixMode::ToPane`] — cannot forget to disarm it either. Both
+    /// frontends have more ways to leave a keystroke than to route one (the GUI has five surfaces
+    /// that consume a key before the pane is even resolved), so the rule has to live somewhere
+    /// neither of them can partially implement.
     #[must_use]
     pub fn next(&self) -> PrefixMode {
         match self {
             Self::Prefix => PrefixMode::AfterPrefix,
-            Self::ToPane | Self::Act(_) | Self::Swallow => PrefixMode::ToPane,
+            Self::Act {
+                again: Some(until), ..
+            } => PrefixMode::Repeating { until: *until },
+            Self::ToPane | Self::Act { again: None, .. } | Self::Swallow => PrefixMode::ToPane,
         }
     }
 }
@@ -866,7 +1172,7 @@ mod tests {
         assert_eq!(keymap.prefix().to_string(), "C-b");
         let printed: Vec<String> = keymap
             .binds()
-            .map(|(key, action)| format!("{key} {action}"))
+            .map(|bind| format!("{} {}", bind.key(), bind.action()))
             .collect();
         assert_eq!(
             printed,
@@ -887,14 +1193,16 @@ mod tests {
     #[test]
     fn a_binding_layers_over_the_defaults_rather_than_replacing_them() {
         let mut keymap = Keymap::default();
-        keymap.bind("c", "split-window -h").expect("binds");
+        keymap
+            .bind(KeyTable::Prefix, "c", "split-window -h", false)
+            .expect("binds");
         assert_eq!(
-            keymap.action("d", Modifiers::default()),
+            keymap.action(KeyTable::Prefix, "d", Modifiers::default()),
             Some(BoundAction::DetachClient),
             "the defaults survive",
         );
         assert_eq!(
-            keymap.action("c", Modifiers::default()),
+            keymap.action(KeyTable::Prefix, "c", Modifiers::default()),
             Some(BoundAction::SplitWindow {
                 dir: SplitDir::Horizontal,
                 before: false
@@ -906,12 +1214,14 @@ mod tests {
     #[test]
     fn rebinding_a_key_replaces_it_where_it_was() {
         let mut keymap = Keymap::default();
-        let before: Vec<String> = keymap.binds().map(|(key, _)| key.to_string()).collect();
-        keymap.bind("%", "detach-client").expect("binds");
-        let after: Vec<String> = keymap.binds().map(|(key, _)| key.to_string()).collect();
+        let before: Vec<String> = keymap.binds().map(|bind| bind.key().to_string()).collect();
+        keymap
+            .bind(KeyTable::Prefix, "%", "detach-client", false)
+            .expect("binds");
+        let after: Vec<String> = keymap.binds().map(|bind| bind.key().to_string()).collect();
         assert_eq!(before, after, "the order is the user's, not the edit's");
         assert_eq!(
-            keymap.action("%", Modifiers::default()),
+            keymap.action(KeyTable::Prefix, "%", Modifiers::default()),
             Some(BoundAction::DetachClient),
         );
     }
@@ -920,10 +1230,18 @@ mod tests {
     #[test]
     fn unbinding_removes_a_default_and_repeats_harmlessly() {
         let mut keymap = Keymap::default();
-        keymap.unbind("o").expect("unbinds");
-        assert_eq!(keymap.action("o", Modifiers::default()), None);
-        keymap.unbind("o").expect("unbinding twice is not an error");
-        assert!(matches!(keymap.unbind("Up"), Err(KeyError::UnknownKey(_))));
+        keymap.unbind(KeyTable::Prefix, "o").expect("unbinds");
+        assert_eq!(
+            keymap.action(KeyTable::Prefix, "o", Modifiers::default()),
+            None
+        );
+        keymap
+            .unbind(KeyTable::Prefix, "o")
+            .expect("unbinding twice is not an error");
+        assert!(matches!(
+            keymap.unbind(KeyTable::Prefix, "Up"),
+            Err(KeyError::UnknownKey(_))
+        ));
     }
 
     /// The prefix is the user's, and rebinding it moves the gate.
@@ -959,18 +1277,18 @@ mod tests {
             ..Modifiers::default()
         };
         assert_eq!(
-            keymap.action("a", ctrl),
+            keymap.action(KeyTable::Prefix, "a", ctrl),
             Some(BoundAction::SendPrefix),
             "prefix prefix types the prefix, whatever the prefix is",
         );
         assert_eq!(
-            keymap.action("b", ctrl),
+            keymap.action(KeyTable::Prefix, "b", ctrl),
             None,
             "and the old key means nothing"
         );
         // In place: the user's order is not disturbed by a move they did not ask for.
         assert_eq!(
-            keymap.binds().next().map(|(key, _)| key.to_string()),
+            keymap.binds().next().map(|bind| bind.key().to_string()),
             Some("C-a".to_owned()),
         );
     }
@@ -980,22 +1298,41 @@ mod tests {
     #[test]
     fn a_users_binding_on_the_old_prefix_key_does_not_follow() {
         let mut keymap = Keymap::default();
-        keymap.bind("C-b", "detach-client").expect("binds");
+        keymap
+            .bind(KeyTable::Prefix, "C-b", "detach-client", false)
+            .expect("binds");
         keymap.set_prefix("C-a").expect("sets");
         let ctrl = Modifiers {
             ctrl: true,
             ..Modifiers::default()
         };
         assert_eq!(
-            keymap.action("b", ctrl),
+            keymap.action(KeyTable::Prefix, "b", ctrl),
             Some(BoundAction::DetachClient),
             "their binding stayed on their key",
         );
         assert_eq!(
-            keymap.action("a", ctrl),
+            keymap.action(KeyTable::Prefix, "a", ctrl),
             None,
             "and nothing was invented on the new one",
         );
+    }
+
+    /// An instant for a routing test that is not about timing.
+    ///
+    /// Every repeat test takes its own `let base = Instant::now()` and does ARITHMETIC on it, so no
+    /// assertion in this module waits for a window to close — a test that slept through 500 ms would
+    /// be a test that fails on a loaded machine.
+    fn now() -> Instant {
+        Instant::now()
+    }
+
+    /// A non-repeating [`Routed::Act`], which is what almost every binding produces.
+    fn acting(action: BoundAction) -> Routed {
+        Routed::Act {
+            action,
+            again: None,
+        }
     }
 
     /// Ctrl, as every routing test below spells it.
@@ -1013,15 +1350,15 @@ mod tests {
         let keymap = Keymap::default();
         let none = Modifiers::default();
         assert_eq!(
-            keymap.route(PrefixMode::ToPane, "d", none),
+            keymap.route(PrefixMode::ToPane, now(), "d", none),
             Routed::ToPane,
             "a bare `d` is a letter, not a detach",
         );
-        let armed = keymap.route(PrefixMode::ToPane, "b", ctrl());
+        let armed = keymap.route(PrefixMode::ToPane, now(), "b", ctrl());
         assert_eq!(armed, Routed::Prefix);
         assert_eq!(armed.next(), PrefixMode::AfterPrefix);
-        let acted = keymap.route(PrefixMode::AfterPrefix, "d", none);
-        assert_eq!(acted, Routed::Act(BoundAction::DetachClient));
+        let acted = keymap.route(PrefixMode::AfterPrefix, now(), "d", none);
+        assert_eq!(acted, acting(BoundAction::DetachClient));
         assert_eq!(acted.next(), PrefixMode::ToPane, "and the mode is spent");
     }
 
@@ -1035,7 +1372,7 @@ mod tests {
     fn only_the_prefix_leaves_the_mode_armed() {
         for routed in [
             Routed::ToPane,
-            Routed::Act(BoundAction::DetachClient),
+            acting(BoundAction::DetachClient),
             Routed::Swallow,
         ] {
             assert_eq!(routed.next(), PrefixMode::ToPane, "{routed:?}");
@@ -1049,12 +1386,12 @@ mod tests {
     fn an_unbound_command_key_is_swallowed() {
         let keymap = Keymap::default();
         assert_eq!(
-            keymap.route(PrefixMode::AfterPrefix, "z", Modifiers::default()),
+            keymap.route(PrefixMode::AfterPrefix, now(), "z", Modifiers::default()),
             Routed::Swallow,
         );
         // ...and a MODIFIED command key is a different key, so `prefix Ctrl-D` is not a detach.
         assert_eq!(
-            keymap.route(PrefixMode::AfterPrefix, "d", ctrl()),
+            keymap.route(PrefixMode::AfterPrefix, now(), "d", ctrl()),
             Routed::Swallow,
         );
     }
@@ -1068,8 +1405,8 @@ mod tests {
     fn the_prefix_twice_is_the_self_send_and_not_a_second_arm() {
         let keymap = Keymap::default();
         assert_eq!(
-            keymap.route(PrefixMode::AfterPrefix, "b", ctrl()),
-            Routed::Act(BoundAction::SendPrefix),
+            keymap.route(PrefixMode::AfterPrefix, now(), "b", ctrl()),
+            acting(BoundAction::SendPrefix),
         );
     }
 
@@ -1078,20 +1415,348 @@ mod tests {
     #[test]
     fn the_self_send_takes_over_the_new_prefix_key() {
         let mut keymap = Keymap::default();
-        keymap.bind("C-a", "detach-client").expect("binds");
+        keymap
+            .bind(KeyTable::Prefix, "C-a", "detach-client", false)
+            .expect("binds");
         keymap.set_prefix("C-a").expect("sets");
         let ctrl = Modifiers {
             ctrl: true,
             ..Modifiers::default()
         };
-        assert_eq!(keymap.action("a", ctrl), Some(BoundAction::SendPrefix));
+        assert_eq!(
+            keymap.action(KeyTable::Prefix, "a", ctrl),
+            Some(BoundAction::SendPrefix)
+        );
         assert_eq!(
             keymap
                 .binds()
-                .filter(|(key, _)| key.to_string() == "C-a")
+                .filter(|bind| bind.key().to_string() == "C-a")
                 .count(),
             1,
             "one key, one entry",
+        );
+    }
+
+    /// A binding in the ROOT table acts with NO prefix, and the key therefore never reaches the
+    /// pane. That is the whole of what tmux's `-n` means.
+    ///
+    /// REVERT-PROOF: drop the root lookup from `route` and this answers `ToPane` — the binding is
+    /// still in the table, still printed by `list-keys`, and does nothing at all. Which is exactly
+    /// the "a bound key that silently does nothing" failure this module was built to prevent.
+    #[test]
+    fn a_root_binding_acts_without_the_prefix_and_takes_the_key_from_the_pane() {
+        let mut keymap = Keymap::default();
+        keymap
+            .bind(KeyTable::Root, "F5", "detach-client", false)
+            .expect("binds");
+        assert_eq!(
+            keymap.route(PrefixMode::ToPane, now(), "F5", Modifiers::default()),
+            acting(BoundAction::DetachClient),
+        );
+        assert_eq!(
+            keymap.route(PrefixMode::ToPane, now(), "F6", Modifiers::default()),
+            Routed::ToPane,
+            "and a key nobody bound is still the program's",
+        );
+    }
+
+    /// **The PREFIX beats a root binding on the same key** — measured against `tmux 3.2a` driving a
+    /// real client on a pty, because the manual does not say and the natural implementation gets it
+    /// backwards.
+    ///
+    /// The probe: `bind -n C-b display-message ROOT`, then press `C-b` and a prefix-table key. The
+    /// prefix binding fired and the root one never did, with a root binding on a DIFFERENT key
+    /// firing as the control — so "the root binding did not run" is not explained by root bindings
+    /// being broken.
+    ///
+    /// REVERT-PROOF: look the root table up before the prefix check and a user who binds anything to
+    /// their own prefix key loses the prefix entirely, with every command key after it going to the
+    /// shell.
+    #[test]
+    fn the_prefix_beats_a_root_binding_on_the_same_key() {
+        let mut keymap = Keymap::default();
+        keymap
+            .bind(KeyTable::Root, "C-b", "detach-client", false)
+            .expect("binds");
+        assert_eq!(
+            keymap.route(PrefixMode::ToPane, now(), "b", ctrl()),
+            Routed::Prefix,
+            "the prefix still arms",
+        );
+        assert_eq!(
+            keymap.route(PrefixMode::AfterPrefix, now(), "d", Modifiers::default()),
+            acting(BoundAction::DetachClient),
+            "and the table behind it is reachable",
+        );
+    }
+
+    /// The root table is not consulted after the prefix: `prefix F5` is an unbound COMMAND key,
+    /// which is swallowed, not a root binding reached by a longer route.
+    #[test]
+    fn a_root_binding_is_not_reachable_through_the_prefix() {
+        let mut keymap = Keymap::default();
+        keymap
+            .bind(KeyTable::Root, "F5", "detach-client", false)
+            .expect("binds");
+        assert_eq!(
+            keymap.route(PrefixMode::AfterPrefix, now(), "F5", Modifiers::default()),
+            Routed::Swallow,
+        );
+    }
+
+    /// One key in two tables is TWO bindings, and each edit reaches exactly one of them.
+    #[test]
+    fn the_tables_hold_one_key_separately() {
+        let mut keymap = Keymap::default();
+        keymap
+            .bind(KeyTable::Root, "%", "detach-client", false)
+            .expect("binds");
+        let none = Modifiers::default();
+        assert_eq!(
+            keymap.action(KeyTable::Root, "%", none),
+            Some(BoundAction::DetachClient),
+        );
+        assert_eq!(
+            keymap.action(KeyTable::Prefix, "%", none),
+            Some(BoundAction::SplitWindow {
+                dir: SplitDir::Horizontal,
+                before: false,
+            }),
+            "the shipped default is a different binding that happens to share a spelling",
+        );
+        keymap.unbind(KeyTable::Root, "%").expect("unbinds");
+        assert_eq!(keymap.action(KeyTable::Root, "%", none), None);
+        assert!(
+            keymap.action(KeyTable::Prefix, "%", none).is_some(),
+            "and unbinding one did not reach the other",
+        );
+    }
+
+    /// A table sprag does not have is refused BY NAME, never defaulted.
+    #[test]
+    fn an_unknown_table_is_refused_by_name() {
+        assert_eq!(KeyTable::parse("root"), Ok(KeyTable::Root));
+        assert_eq!(KeyTable::parse("prefix"), Ok(KeyTable::Prefix));
+        let refused = KeyTable::parse("copy-mode").expect_err("no such table");
+        assert!(matches!(refused, KeyError::UnknownTable(_)));
+        let message = refused.to_string();
+        assert!(
+            message.contains("copy-mode") && message.contains("root") && message.contains("prefix"),
+            "it says what was asked for and what exists: {message}",
+        );
+    }
+
+    /// **`-r` holds the prefix table open, so the next key acts without a second prefix** — tmux's
+    /// repeat, and the reason its own arrow bindings carry the flag.
+    ///
+    /// The window is arithmetic on a passed-in instant, so this test does not sleep.
+    ///
+    /// REVERT-PROOF: answer `PrefixMode::ToPane` for a repeating act and the second press is a
+    /// letter in the user's shell instead of a second command.
+    #[test]
+    fn a_repeat_binding_holds_the_prefix_table_open() {
+        let mut keymap = Keymap::default();
+        keymap
+            .bind(KeyTable::Prefix, "o", "select-pane -t :.+", true)
+            .expect("binds");
+        let base = Instant::now();
+        let first = keymap.route(PrefixMode::AfterPrefix, base, "o", Modifiers::default());
+        assert_eq!(
+            first,
+            Routed::Act {
+                action: BoundAction::SelectNextPane,
+                again: Some(base + DEFAULT_REPEAT_TIME),
+            },
+        );
+        let armed = first.next();
+        assert_eq!(
+            armed,
+            PrefixMode::Repeating {
+                until: base + DEFAULT_REPEAT_TIME
+            },
+        );
+        let inside = base + Duration::from_millis(100);
+        assert_eq!(
+            keymap.route(armed, inside, "o", Modifiers::default()),
+            Routed::Act {
+                action: BoundAction::SelectNextPane,
+                again: Some(inside + DEFAULT_REPEAT_TIME),
+            },
+            "and EVERY repeat re-arms the window from itself — measured against tmux, where three \
+             presses at 0/400/800ms under a 500ms repeat-time all reach the binding",
+        );
+    }
+
+    /// The window closes on its own, with nothing watching it: a key arriving after the deadline is
+    /// routed as though the prefix had never been pressed.
+    ///
+    /// **This is why there is no timer.** Nothing in sprag observes the moment a window expires, so
+    /// a deadline compared on arrival is indistinguishable from a timer that fires — and the
+    /// terminal client's loop stays the pure `select` R226 measured.
+    #[test]
+    fn a_repeat_window_closes_without_anything_watching_it() {
+        let mut keymap = Keymap::default();
+        keymap
+            .bind(KeyTable::Prefix, "o", "select-pane -t :.+", true)
+            .expect("binds");
+        let base = Instant::now();
+        let armed = PrefixMode::Repeating { until: base };
+        assert!(armed.armed(base), "the deadline itself is still inside");
+        let after = base + Duration::from_millis(1);
+        assert!(!armed.armed(after));
+        assert_eq!(
+            keymap.route(armed, after, "o", Modifiers::default()),
+            Routed::ToPane,
+            "a letter, once the window has closed",
+        );
+    }
+
+    /// **An unbound key INSIDE a repeat window reaches the pane** — it is not swallowed the way an
+    /// unbound key after the prefix is.
+    ///
+    /// Measured: with a `-r` binding armed in tmux, typing `ZQ` inside the window puts `ZQ` in the
+    /// shell. That asymmetry is the whole reason `Repeating` is a state of its own rather than a
+    /// deadline hung off `AfterPrefix`.
+    ///
+    /// REVERT-PROOF: fall into the `Swallow` arm for a repeat window as well, and every character a
+    /// user types within half a second of a repeating command vanishes with no way to tell why.
+    #[test]
+    fn an_unbound_key_inside_a_repeat_window_still_reaches_the_pane() {
+        let keymap = Keymap::default();
+        let base = Instant::now();
+        let armed = PrefixMode::Repeating {
+            until: base + DEFAULT_REPEAT_TIME,
+        };
+        assert_eq!(
+            keymap.route(armed, base, "Z", Modifiers::default()),
+            Routed::ToPane,
+        );
+        assert_eq!(
+            keymap.route(PrefixMode::AfterPrefix, base, "Z", Modifiers::default()),
+            Routed::Swallow,
+            "where the SAME key after the prefix is swallowed",
+        );
+    }
+
+    /// `repeat-time 0` is a decision, not an absence: the binding acts exactly once.
+    ///
+    /// The zero case needs no branch anywhere — the window opens already closed, and
+    /// [`PrefixMode::armed`] compares an instant that is in the past by the time the next key
+    /// arrives. R245's `history-limit` lesson, on a duration.
+    #[test]
+    fn repeat_time_zero_acts_exactly_once() {
+        let mut keymap = Keymap::default();
+        keymap.set_repeat_time(0);
+        keymap
+            .bind(KeyTable::Prefix, "o", "select-pane -t :.+", true)
+            .expect("binds");
+        let base = Instant::now();
+        let acted = keymap.route(PrefixMode::AfterPrefix, base, "o", Modifiers::default());
+        assert_eq!(acted.next(), PrefixMode::Repeating { until: base });
+        assert_eq!(
+            keymap.route(
+                acted.next(),
+                base + Duration::from_nanos(1),
+                "o",
+                Modifiers::default()
+            ),
+            Routed::ToPane,
+            "the second press is the program's",
+        );
+    }
+
+    /// A ROOT binding cannot repeat, and the refusal names the mechanism rather than the rule.
+    ///
+    /// tmux accepts this combination and does nothing with it (measured). Accepting it here would be
+    /// a `-r` a user can see in `list-keys` and never observe.
+    #[test]
+    fn a_root_binding_cannot_repeat() {
+        let mut keymap = Keymap::default();
+        let refused = keymap
+            .bind(KeyTable::Root, "F5", "detach-client", true)
+            .expect_err("repeat has no prefix table to hold open");
+        assert!(matches!(refused, KeyError::RepeatInRoot(_)));
+        assert!(
+            keymap.binds().all(|bind| bind.table() == KeyTable::Prefix),
+            "and the refused binding did not land",
+        );
+    }
+
+    /// Rebinding a repeating key without `-r` STOPS it repeating — the flag is part of the binding
+    /// being replaced, not a property that accumulates.
+    #[test]
+    fn rebinding_without_repeat_takes_the_repeat_away() {
+        let mut keymap = Keymap::default();
+        keymap
+            .bind(KeyTable::Prefix, "o", "select-pane -t :.+", true)
+            .expect("binds");
+        keymap
+            .bind(KeyTable::Prefix, "o", "detach-client", false)
+            .expect("rebinds");
+        assert!(
+            keymap
+                .binds()
+                .filter(|bind| bind.key().to_string() == "o")
+                .all(|bind| !bind.repeats()),
+            "the flag went with the binding it was on",
+        );
+    }
+
+    /// The self-send follows the prefix WITHIN the prefix table only. A `send-prefix` a user put in
+    /// the root table is a statement about that key — "send the prefix without pressing it" — so it
+    /// stays where they put it.
+    ///
+    /// **The prefix table's own self-send is unbound FIRST, and that line is the test.** Written
+    /// without it this passed with the table check deleted, because the retarget takes the FIRST
+    /// match and the shipped `C-b send-prefix` is ahead of anything a user adds — so the root
+    /// binding survived by position rather than by rule. Measured, then fixed.
+    ///
+    /// REVERT-PROOF: drop the table check from `moves` and rebinding the prefix silently retargets a
+    /// root binding the user aimed at one specific key.
+    #[test]
+    fn the_self_send_follows_only_inside_the_prefix_table() {
+        let mut keymap = Keymap::default();
+        keymap.unbind(KeyTable::Prefix, "C-b").expect("unbinds");
+        keymap
+            .bind(KeyTable::Root, "C-b", "send-prefix", false)
+            .expect("binds");
+        keymap.set_prefix("C-a").expect("sets");
+        assert_eq!(
+            keymap.action(KeyTable::Root, "b", ctrl()),
+            Some(BoundAction::SendPrefix),
+            "their root binding stayed on their key",
+        );
+        assert_eq!(
+            keymap.action(KeyTable::Prefix, "a", ctrl()),
+            None,
+            "and nothing was invented in the prefix table on the way",
+        );
+    }
+
+    /// The OTHER half of moving the prefix: taking over the new key clears the PREFIX table's
+    /// entry for it, and must not reach into the root table.
+    ///
+    /// A separate test because it needs the opposite setup — the shipped self-send has to still be
+    /// there for the takeover to run at all — and the two reverts are two different lines.
+    ///
+    /// REVERT-PROOF: drop the table check from the `retain` and a root binding on the key the user
+    /// moved their prefix to is DELETED, silently, by an edit about a different table.
+    #[test]
+    fn moving_the_prefix_does_not_sweep_a_root_binding_off_the_new_key() {
+        let mut keymap = Keymap::default();
+        keymap
+            .bind(KeyTable::Root, "C-a", "detach-client", false)
+            .expect("binds");
+        keymap.set_prefix("C-a").expect("sets");
+        assert_eq!(
+            keymap.action(KeyTable::Root, "a", ctrl()),
+            Some(BoundAction::DetachClient),
+            "the root binding on the new prefix key is a different key and stays",
+        );
+        assert_eq!(
+            keymap.action(KeyTable::Prefix, "a", ctrl()),
+            Some(BoundAction::SendPrefix),
+            "while the self-send did move onto it",
         );
     }
 }

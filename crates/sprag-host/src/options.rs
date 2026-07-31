@@ -218,6 +218,18 @@ pub const GUI_FONT: &str = "gui-font";
 /// reboot, silently.
 pub const HISTORY_LIMIT: &str = "history-limit";
 
+/// How long a repeating binding holds the prefix table open, in milliseconds — tmux's
+/// `repeat-time`.
+///
+/// A CLIENT-side option like [`PREFIX`], and the second one the keymap is built FROM rather than
+/// beside: a `-r` binding is a statement about one keyboard's timing, and two clients attached to one
+/// session may legitimately disagree about it. Nothing crosses the wire.
+///
+/// Zero is a DECISION and not an absence — the distinction [`HISTORY_LIMIT`] drew for retention, here
+/// for a duration: `repeat-time 0` is a window that has already closed, so a `-r` binding acts exactly
+/// once. tmux accepts `0` and refuses a negative value, which is `Number { min: 0 }` exactly.
+pub const REPEAT_TIME: &str = "repeat-time";
+
 /// [`DETACH_ON_DESTROY`]'s values, in tmux's documented order.
 ///
 /// The vocabulary lives HERE and the policy lives in the client that acts on it (`sprag-client`
@@ -295,6 +307,17 @@ pub const OPTIONS: &[OptionSpec] = &[
         name: PREFIX,
         kind: OptionKind::Key,
         default: "C-b",
+    },
+    OptionSpec {
+        name: REPEAT_TIME,
+        // Floors at 0, which is where tmux floors it too: `repeat-time 0` is accepted there and
+        // `-1` is refused with "value is too small". Measured, not recalled.
+        kind: OptionKind::Number { min: 0 },
+        // tmux's own default. Spelled here AND as `keymap::DEFAULT_REPEAT_TIME`, which
+        // `Keymap::default` needs because `sprag list-keys` answers with no config file at all;
+        // `the_repeat_time_default_is_the_keymaps_own` holds the two together, the treatment
+        // `history-limit` gets against the emulator.
+        default: "500",
     },
     OptionSpec {
         name: WINDOW_SIZE,
