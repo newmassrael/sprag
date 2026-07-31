@@ -209,14 +209,27 @@ pub struct PanePty {
 }
 
 impl PanePty {
-    /// Spawn `command` on a fresh `cols × rows` pseudoterminal.
+    /// Spawn `command` on a fresh `cols × rows` pseudoterminal retaining the default depth of
+    /// scrollback.
+    ///
+    /// The callback-free, history-free convenience. A DAEMON birthing a user's pane goes through
+    /// [`Workspace::spawn`](crate::Workspace::spawn), which asks that pool's
+    /// [`HistoryLimitSource`](crate::HistoryLimitSource) instead of taking this default.
     ///
     /// # Errors
     ///
     /// Returns [`PanePtyError`] if the PTY cannot be opened, the child
     /// cannot be spawned, or the master reader/writer cannot be acquired.
     pub fn spawn(command: CommandBuilder, cols: u16, rows: u16) -> Result<Self, PanePtyError> {
-        Self::spawn_with_dirty(command, cols, rows, None, None, &[])
+        Self::spawn_with_dirty(
+            command,
+            cols,
+            rows,
+            None,
+            None,
+            &[],
+            sprag_vt::DEFAULT_SCROLLBACK_LINES,
+        )
     }
 
     /// [`Self::spawn`] with two reader-thread callbacks:
@@ -258,6 +271,7 @@ impl PanePty {
         on_dirty: Option<Box<dyn Fn() + Send>>,
         on_exit: Option<Box<dyn Fn() + Send>>,
         history: &[u8],
+        history_limit: usize,
     ) -> Result<Self, PanePtyError> {
         let cols = cols.max(1);
         let rows = rows.max(1);
@@ -293,7 +307,11 @@ impl PanePty {
                 .map_err(|e| PanePtyError::new("take writer", &e))?,
         ));
 
-        let emulator = Arc::new(Mutex::new(Emulator::new(cols, rows)));
+        let emulator = Arc::new(Mutex::new(Emulator::with_history_limit(
+            cols,
+            rows,
+            history_limit,
+        )));
         // Replay a restored pane's recorded scrollback into the fresh emulator while this thread is
         // still its only observer — before the reader below can apply a single byte from the child.
         if !history.is_empty() {
@@ -572,6 +590,23 @@ impl PanePty {
     #[must_use]
     pub fn history_bytes(&self, limits: HistoryLimits) -> Vec<u8> {
         lock(&self.emulator).history_bytes(limits)
+    }
+
+    /// How many logical lines of SCROLLBACK this pane retains — the `history-limit` it was born
+    /// with.
+    ///
+    /// Introspection, and deliberately NOT the persistence budget: [`Self::history_bytes`] encodes
+    /// the visible screen as well as the scrollback, so bounding a save by this number would cut the
+    /// live screen out of a full pane's history and leave a pane set to keep no scrollback with
+    /// nothing saved at all. The save path passes the operator's ceiling whole and lets the encoder
+    /// saturate at whatever the screen actually holds.
+    ///
+    /// Read from the emulator rather than stored beside it, so it is the value the eviction path
+    /// actually enforces. The alt screen carries the same limit, so this answers identically while a
+    /// fullscreen app is up.
+    #[must_use]
+    pub fn history_limit(&self) -> usize {
+        lock(&self.emulator).screen().history_limit()
     }
 
     /// The epoch of everything [`Self::history_bytes`] would encode — cheap enough to poll on a timer,
@@ -1147,6 +1182,7 @@ mod tests {
             })),
             None,
             &[],
+            sprag_vt::DEFAULT_SCROLLBACK_LINES,
         )
         .expect("spawn a pty");
 
@@ -1477,6 +1513,7 @@ mod tests {
             })),
             None,
             &[],
+            sprag_vt::DEFAULT_SCROLLBACK_LINES,
         )
         .expect("spawn a pty");
 
@@ -1511,6 +1548,7 @@ mod tests {
                 counter.fetch_add(1, Ordering::SeqCst);
             })),
             &[],
+            sprag_vt::DEFAULT_SCROLLBACK_LINES,
         )
         .expect("spawn a pty");
 

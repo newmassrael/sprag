@@ -44,7 +44,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use crate::PaneId;
 use crate::layout::{LayoutError, LayoutTree, LayoutWire, LeafHome, SplitDir, SplitSide};
 use crate::snapshot::{PaneRestore, RestorePlan, SNAPSHOT_VERSION, Snapshot, SnapshotError};
-use crate::workspace::{Pane, Workspace};
+use crate::workspace::{HistoryLimitSource, Pane, Workspace};
 
 /// One window: a named layout unit owning a pane pool, how its tiled panes are ARRANGED,
 /// and which of them a client has FLOATED out of the tiling.
@@ -1202,6 +1202,29 @@ impl SessionRegistry {
     #[must_use]
     pub fn sessions(&self) -> &[Session] {
         &self.sessions
+    }
+
+    /// Install `source` as the [`HistoryLimitSource`] every pane born from here on consults, across
+    /// every window this registry currently holds.
+    ///
+    /// Applied to the whole registry rather than to one pool because a new window's workspace is a
+    /// [`sibling`](Workspace::sibling) of an existing one and inherits the source from it — so
+    /// seeding what is here now covers every window that will ever be made from it. A registry
+    /// REPLACED wholesale (a restore) is a new set of pools and needs its own call, which is why
+    /// this is a method and not a constructor argument.
+    ///
+    /// Takes `&self`: each pool is already behind its own lock, and nothing about the registry's own
+    /// shape changes.
+    pub fn set_history_limit_source(&self, source: HistoryLimitSource) {
+        for session in self.sessions() {
+            for window in session.windows() {
+                window
+                    .workspace()
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .set_history_limit_source(Arc::clone(&source));
+            }
+        }
     }
 
     /// A [`SessionInfo`] for every session, in creation order — the STRUCTURAL list a switcher

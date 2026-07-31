@@ -40,15 +40,19 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use sprag_terminal::{PaneHistory, PaneId, SessionRegistry, pane_histories};
-use sprag_vt::{HistoryLimits, SCROLLBACK_CAP};
+use sprag_vt::HistoryLimits;
 
 use crate::durability::{socket_key, sprag_state_dir, write_atomic_private};
 
-/// How many logical lines of each pane's output survive a restart by default.
+/// The operator's ceiling on persisted history when `SPRAG_RESTORE_HISTORY` says nothing: none.
 ///
-/// Derived from the emulator's own retention cap rather than restated, so the default is exactly
-/// "everything the pane still holds" and cannot drift away from it.
-pub const DEFAULT_HISTORY_LINES: usize = SCROLLBACK_CAP;
+/// `usize::MAX` rather than a line count, because with the variable unset there is no second opinion
+/// to express — each pane persists exactly the history it still HOLDS, which is its own
+/// [`history-limit`](crate::options::HISTORY_LIMIT). That is the property this default has always
+/// been reaching for; it was previously spelled as the emulator's retention constant, which said the
+/// same thing only while every pane's retention was the same number. Now that a user can raise it,
+/// a fixed count here would silently truncate the difference at every reboot.
+pub const NO_HISTORY_CEILING: usize = usize::MAX;
 
 /// The default per-pane budget for inline-image RASTER in a saved history: 8 MiB of RGBA.
 ///
@@ -103,9 +107,25 @@ pub fn history_file_pane(path: &Path) -> Option<PaneId> {
         .map(PaneId)
 }
 
-/// How many logical lines of each pane's output to persist: `SPRAG_RESTORE_HISTORY` if it holds a
-/// number, else [`DEFAULT_HISTORY_LINES`]. `0` disables history persistence entirely — the daemon
-/// then neither saves nor restores it.
+/// The operator's CEILING on how many logical lines of any pane's output reach the disk:
+/// `SPRAG_RESTORE_HISTORY` if it holds a number, else [`NO_HISTORY_CEILING`]. `0` disables history
+/// persistence entirely — the daemon then neither saves nor restores it.
+///
+/// A ceiling rather than a count, because how much a pane HAS became the user's decision when
+/// [`history-limit`](crate::options::HISTORY_LIMIT) did. The encoder already stops at what the
+/// screen holds, so an unset ceiling persists exactly that — each pane its own depth — with no
+/// arithmetic here. The two knobs sit on genuinely different axes: one is memory the user chose, the
+/// other is disk exposure the OPERATOR bounds, and neither can be inferred from the other.
+///
+/// It bounds the SAVE, not the retention, and those are not the same set of lines: a saved history is
+/// the scrollback plus the visible screen. So this must never be narrowed to a pane's `history-limit`
+/// on the way through — that would drop the live screen from a full pane's save, and save nothing at
+/// all for a pane configured to keep no scrollback.
+///
+/// This is what keeps the module doc's invariant intact now that a user-editable setting also
+/// affects what lands on disk: an operator who needs a hard bound sets this variable and it wins
+/// over any `config.toml`. An operator who sets nothing has expressed no bound, and the honest
+/// reading of that is "save what the pane has", not "save the number this constant used to be".
 ///
 /// A malformed value falls back to the default and WARNS rather than refusing to boot: a typo in
 /// an environment variable must not cost the operator their daemon.
@@ -113,7 +133,7 @@ pub fn history_file_pane(path: &Path) -> Option<PaneId> {
 pub fn history_limit() -> usize {
     env_count(
         "SPRAG_RESTORE_HISTORY",
-        DEFAULT_HISTORY_LINES,
+        NO_HISTORY_CEILING,
         "is not a line count",
     )
 }
@@ -318,6 +338,31 @@ pub fn purge_histories(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_default_ceiling_does_not_truncate_a_pane_configured_deeper_than_the_old_cap() {
+        // The reboot half of `history-limit`, tied to the CONSTANT rather than to `usize::MAX`
+        // spelled in the test: with `SPRAG_RESTORE_HISTORY` unset a pane must persist everything it
+        // holds, however deep the user set it. Held at the 1000 this default used to be, a pane
+        // keeping 2000 lines would come back from a reboot missing half of them — silently, and
+        // only across a restart, which is the hardest place for a user to notice.
+        use sprag_vt::VtPort as _;
+        let mut emulator = sprag_vt::Emulator::with_history_limit(16, 2, 2_500);
+        let feed: String = (0..2_000).map(|i| format!("{i}\r\n")).collect();
+        emulator.advance(feed.as_bytes());
+
+        let saved = emulator.history_bytes(HistoryLimits {
+            lines: NO_HISTORY_CEILING,
+            image_bytes: 0,
+        });
+        let mut restored = sprag_vt::Emulator::with_history_limit(16, 2, 2_500);
+        restored.advance(&saved);
+        assert_eq!(
+            restored.screen().scrollback_rows().next().as_deref(),
+            Some("0"),
+            "the OLDEST line survived the save, so the ceiling truncated nothing",
+        );
+    }
 
     /// A scratch directory unique to the calling test, so parallel tests never share one.
     fn scratch(tag: &str) -> PathBuf {

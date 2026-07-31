@@ -2746,6 +2746,67 @@ fn a_daemon_born_pane_runs_the_users_default_command() {
     );
 }
 
+/// A pane the DAEMON births retains the user's `history-limit`, not the emulator's default.
+///
+/// The gate for the whole seam, and it has to run against a real daemon: the limit is read from
+/// `config.toml` at the birth, inside the process that owns the emulator, so a test that drove
+/// `Workspace` directly would prove the pool honours a source without proving anything installs one.
+/// That install lives on the path a restore also takes, and it is exactly the asymmetry R237 named —
+/// a setting honoured on one birth path and silently ignored on another.
+///
+/// The numbers are chosen so no fallback can pass: `12` is not the 1000-line default and not the
+/// screen height, and the output fed is longer than both. A pane still on the default retains ~1000
+/// here, a pane whose limit never reached the emulator retains ~1000 too, and only a pane born with
+/// the user's value retains 12.
+#[test]
+fn a_daemon_born_pane_retains_the_users_history_limit() {
+    let config = ConfigHome::new("[options]\nhistory-limit = 12\n");
+    let (_host, sock) = spawn_host_with(&[], &[("XDG_CONFIG_HOME", config.as_str())]);
+
+    let mut born = false;
+    wait_for(Duration::from_secs(5), || {
+        born = !sprag(&sock, &["panes"]).stdout.trim().is_empty();
+        born
+    });
+    assert!(born, "the boot pane appears");
+
+    // 200 numbered lines: far past the configured 12 and past a screenful, so the retained count
+    // can only be the limit.
+    let typed = sprag(&sock, &["send-keys", "0", "-l", "seq 1 200 | sed 's/^/L/'"]);
+    assert!(typed.ok, "send-keys: {}", typed.stderr);
+    let entered = sprag(&sock, &["send-keys", "0", "Enter"]);
+    assert!(entered.ok, "send-keys Enter: {}", entered.stderr);
+
+    // Wait on the CONTENT the assertion reads — the last line arriving — rather than on a timer.
+    let mut captured = String::new();
+    let finished = wait_for(Duration::from_secs(20), || {
+        captured = sprag(&sock, &["capture-pane", "0", "-p"]).stdout;
+        captured.contains("L200")
+    });
+    assert!(finished, "the 200 lines were echoed: {captured:?}");
+
+    let retained: Vec<&str> = captured
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            line.strip_prefix('L')
+                .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .collect();
+    // Scrollback is the limit; the VISIBLE screen is on top of it and is not bounded by it, so the
+    // total is "12 plus a screenful" rather than exactly 12. The discriminating fact is that it is
+    // nowhere near the 1000 an unconfigured pane keeps.
+    assert!(
+        retained.len() < 200,
+        "a limit of 12 must evict most of 200 lines, kept {}: {captured:?}",
+        retained.len(),
+    );
+    assert!(
+        retained.last() == Some(&"L200"),
+        "the NEWEST line is the one kept — eviction takes from the oldest end: {retained:?}",
+    );
+}
+
 /// `show-options` prints a COMMAND shell-quoted, and `-v` prints it raw.
 ///
 /// Quoted because it is the only way an empty one can be seen at all — `default-command ''` says

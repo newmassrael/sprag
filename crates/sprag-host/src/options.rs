@@ -64,7 +64,8 @@ use crate::keymap::KeySpec;
 ///
 /// Each kind carries its vocabulary WITH it, so a bad value can be answered with the alternatives
 /// rather than with a type name: a key is whatever [`KeySpec`] parses (the option space and the keymap
-/// therefore cannot drift apart), a choice is a fixed list, and a number is a positive integer.
+/// therefore cannot drift apart), a choice is a fixed list, and a number is an integer at or above a
+/// floor the option itself names.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum OptionKind {
     /// A keystroke spec — `C-a`, `%`, `F1`. Validated by [`KeySpec::parse`], so this option's
@@ -72,15 +73,21 @@ pub enum OptionKind {
     Key,
     /// One of a fixed set of names, matched case-insensitively and stored lowercase.
     Choice(&'static [&'static str]),
-    /// A positive integer. Zero is refused rather than treated as "unset", because an option always
-    /// HAS a value in force and a caller asking for it must never be handed a size, count or limit of
-    /// nothing.
+    /// An integer at or above `min`.
     ///
-    /// No upper bound: a bound nothing measures is taste, and the one candidate here (a glyph so large
-    /// the boot grid is empty) cannot happen — the GUI's `grid_dims` floors at 1x1. A value too large
-    /// for a `u32` is refused as not being a number, which is the type's own bound and not an invented
-    /// one.
-    Number,
+    /// The floor is per option because zero is not one thing. For a SIZE it is nonsense — a glyph of
+    /// no pixels is not a smaller glyph, so [`GUI_FONT`] floors at 1 and a caller asking for it is
+    /// never handed a size of nothing. For a RETENTION COUNT it is a decision — "keep no history" is
+    /// exactly what a user who wants a pane that remembers nothing has asked for, and tmux's own
+    /// `history-limit` takes it — so [`HISTORY_LIMIT`] floors at 0. This is the distinction
+    /// [`Command`](Self::Command) already draws for the empty string: an empty value is a value where
+    /// emptiness means something, and an absence where it does not.
+    ///
+    /// A floor rather than a `zero: bool` because it is the honest shape of the constraint and costs
+    /// a future option with a real minimum nothing. Still no upper bound: a bound nothing measures is
+    /// taste, and a value too large for a `u32` is refused as not being a number, which is the type's
+    /// own bound and not an invented one.
+    Number { min: u32 },
     /// A shell COMMAND LINE, empty for none.
     ///
     /// The one kind whose vocabulary is genuinely open, and saying so is the honest thing rather than
@@ -89,9 +96,9 @@ pub enum OptionKind {
     /// user reads it — which is a better report than any refusal here could be.
     ///
     /// Empty is VALID and means "no command", the state tmux's own `default-command` uses to mean
-    /// "run the shell". So this is the kind where an empty value is a value, and the reason
-    /// [`Number`](Self::Number) refusing zero is not the same rule: a size of nothing is not a size,
-    /// while a command of nothing is a decision.
+    /// "run the shell". So this is the kind where an empty value is a value — the same judgement
+    /// [`Number`](Self::Number) makes per option with its floor, and for the same reason: emptiness
+    /// is a decision for some settings and an absence for others, and only the setting knows which.
     Command,
 }
 
@@ -118,9 +125,13 @@ impl OptionKind {
             }
             // Re-rendered from the PARSE rather than trimmed, so `007` and ` 7 ` are stored as `7` —
             // the same rule a key follows, and what keeps one value one string in the file.
-            Self::Number => match value.trim().parse::<u32>() {
-                Ok(0) | Err(_) => Err(format!("{value:?} is not a number above zero")),
-                Ok(number) => Ok(number.to_string()),
+            Self::Number { min } => match value.trim().parse::<u32>() {
+                Ok(number) if number >= min => Ok(number.to_string()),
+                // The complaint NAMES the floor rather than saying "above zero" for every option,
+                // because the floor is now the thing that differs between them and a reader who is
+                // told the wrong one will try the wrong value next.
+                _ if min == 0 => Err(format!("{value:?} is not a number")),
+                _ => Err(format!("{value:?} is not a number {min} or above")),
             },
             // Trimmed and otherwise untouched: the INSIDE of the line is the shell's grammar, so
             // normalising any of it would be this table editing a command it does not parse.
@@ -188,6 +199,25 @@ pub const DEFAULT_COMMAND: &str = "default-command";
 /// a user reading `show-options` can see which of their clients a setting reaches.
 pub const GUI_FONT: &str = "gui-font";
 
+/// How many lines of scrolled-off output a pane keeps — tmux's `history-limit`.
+///
+/// A DAEMON-side option like [`DEFAULT_COMMAND`] and for the same reason: the scrollback lives in the
+/// emulator, which lives in the daemon, so the setting is read where the pane is BORN. Nothing crosses
+/// the wire for it.
+///
+/// Read at each birth rather than cached at boot, exactly as [`DEFAULT_COMMAND`] is, so a user who
+/// raises it gets deeper history on their next pane without restarting the daemon. A LIVE pane keeps
+/// the limit it was born with — which is tmux's model, and the honest one here: lowering the limit
+/// re-applied to existing panes would DESTROY retained output as a side effect of editing a config
+/// file, and the only way to offer that safely is a verb the user aims at a pane, which is a
+/// different feature from an option.
+///
+/// It also sets the default depth of what SURVIVES a restart, because
+/// [`history_limit`](crate::history_limit) derives the persistence budget from it — a pane configured
+/// to keep 50,000 lines whose saved history stopped at 1,000 would lose the difference at every
+/// reboot, silently.
+pub const HISTORY_LIMIT: &str = "history-limit";
+
 /// [`DETACH_ON_DESTROY`]'s values, in tmux's documented order.
 ///
 /// The vocabulary lives HERE and the policy lives in the client that acts on it (`sprag-client`
@@ -247,8 +277,19 @@ pub const OPTIONS: &[OptionSpec] = &[
     },
     OptionSpec {
         name: GUI_FONT,
-        kind: OptionKind::Number,
+        // Floors at 1: a glyph of no pixels is not a smaller glyph.
+        kind: OptionKind::Number { min: 1 },
         default: "20",
+    },
+    OptionSpec {
+        name: HISTORY_LIMIT,
+        // Floors at 0, where zero MEANS "keep nothing" rather than "unset" — see the kind's own doc.
+        kind: OptionKind::Number { min: 0 },
+        // The emulator's own default, so a user who has said nothing gets exactly the retention
+        // sprag had before this option existed. Spelled here AND as
+        // `sprag_vt::DEFAULT_SCROLLBACK_LINES`; `the_history_limit_default_is_the_emulators_own`
+        // holds the two together, the treatment `prefix` gets against the keymap.
+        default: "1000",
     },
     OptionSpec {
         name: PREFIX,
@@ -367,7 +408,7 @@ impl OptionSetting {
     /// number is not how a person writes one. The reader accepts both spellings for the same reason.
     #[must_use]
     pub fn as_number(&self) -> Option<u32> {
-        matches!(self.spec.kind, OptionKind::Number)
+        matches!(self.spec.kind, OptionKind::Number { .. })
             .then(|| self.value.parse().ok())
             .flatten()
     }
@@ -427,7 +468,7 @@ impl Options {
     /// inconsistency a test already forbids.
     #[must_use]
     pub fn number(&self, name: &str) -> Option<u32> {
-        matches!(spec(name)?.kind, OptionKind::Number)
+        matches!(spec(name)?.kind, OptionKind::Number { .. })
             .then(|| self.get(name)?.parse().ok())
             .flatten()
     }
@@ -456,6 +497,51 @@ mod tests {
             keymap.prefix().to_string(),
             "the registry's prefix default must be the keymap's own",
         );
+        // Same drift guard, one option along: the table spells the retention default and so does the
+        // emulator that enforces it. A disagreement would make `show-options history-limit` report a
+        // depth no pane actually keeps.
+        assert_eq!(
+            spec(HISTORY_LIMIT)
+                .expect("history-limit is an option")
+                .default,
+            sprag_vt::DEFAULT_SCROLLBACK_LINES.to_string(),
+            "the registry's history-limit default must be the emulator's own retention",
+        );
+    }
+
+    #[test]
+    fn zero_is_a_value_for_a_retention_count_and_not_for_a_size() {
+        // The reason `Number` carries a floor at all. A user asking for a pane that remembers
+        // nothing has made a decision, and tmux's `history-limit 0` takes it; a glyph of no pixels
+        // is not a smaller glyph. One kind cannot answer both, so the option names its own floor.
+        let mut options = Options::default();
+        options
+            .set(HISTORY_LIMIT, "0")
+            .expect("history-limit 0 keeps no history — a decision, not an absence");
+        assert_eq!(options.get(HISTORY_LIMIT), Some("0"));
+        assert_eq!(options.number(HISTORY_LIMIT), Some(0));
+
+        let refused = Options::default()
+            .set(GUI_FONT, "0")
+            .expect_err("a zero-pixel glyph is not a size");
+        assert!(
+            refused.to_string().contains("1 or above"),
+            "the complaint must name the floor that was missed, not a generic one: {refused}",
+        );
+    }
+
+    #[test]
+    fn a_history_limit_above_the_default_is_accepted_whole() {
+        // The point of the option is raising it, so the path a raise takes is asserted rather than
+        // assumed: canonicalised, stored, and readable back as the number the caller will use.
+        let mut options = Options::default();
+        options.set(HISTORY_LIMIT, " 50000 ").expect("a line count");
+        assert_eq!(
+            options.get(HISTORY_LIMIT),
+            Some("50000"),
+            "stored as the parse's own spelling, like every other value",
+        );
+        assert_eq!(options.number(HISTORY_LIMIT), Some(50_000));
     }
 
     #[test]
@@ -552,13 +638,16 @@ mod tests {
 
     #[test]
     fn a_number_option_refuses_zero_and_anything_that_is_not_one() {
+        // `gui-font` floors at 1, so zero is refused here along with the non-numbers — and the
+        // complaint NAMES that floor rather than saying "above zero" for every option, now that
+        // `history-limit` sits in the same kind with a floor of 0.
         let mut options = Options::default();
         for refused in ["0", "-4", "huge", "", "1.5", "4px"] {
             let error = options
                 .set(GUI_FONT, refused)
                 .expect_err("{refused} is not a size");
             assert!(
-                error.to_string().contains("above zero"),
+                error.to_string().contains("1 or above"),
                 "{refused:?} must be refused as a number: {error}",
             );
         }

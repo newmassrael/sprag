@@ -466,12 +466,29 @@ pub struct Emulator {
 }
 
 impl Emulator {
-    /// A fresh emulator with a blank `cols x rows` main screen.
+    /// A fresh emulator with a blank `cols x rows` main screen retaining
+    /// [`DEFAULT_SCROLLBACK_LINES`](crate::DEFAULT_SCROLLBACK_LINES) of history.
+    ///
+    /// The constructor for everything that does not carry a user's `history-limit` — tests, the
+    /// grid tools, the GUI's own probes. A daemon birthing a real pane uses
+    /// [`with_history_limit`](Self::with_history_limit).
     #[must_use]
     pub fn new(cols: u16, rows: u16) -> Self {
+        Self::with_history_limit(cols, rows, crate::DEFAULT_SCROLLBACK_LINES)
+    }
+
+    /// A fresh emulator whose main screen retains `history_limit` logical lines — tmux's
+    /// `history-limit`, as the user configured it.
+    ///
+    /// Separate from [`new`](Self::new) rather than replacing it because the limit has exactly one
+    /// producer (the daemon reading the user's option at a pane's birth) and many callers that have
+    /// no opinion; making all of them name a number would spread a setting into code that does not
+    /// participate in it. `0` retains no history at all.
+    #[must_use]
+    pub fn with_history_limit(cols: u16, rows: u16, history_limit: usize) -> Self {
         Self {
             parser: Parser::new(),
-            screen: Screen::new(cols.max(1), rows.max(1)),
+            screen: Screen::new(cols.max(1), rows.max(1), history_limit),
             saved_main: None,
             cols: cols.max(1),
             rows: rows.max(1),
@@ -2503,7 +2520,11 @@ impl Emulator {
 
     fn enter_alt(&mut self) {
         if self.saved_main.is_none() {
-            let mut alt = Screen::new(self.cols, self.rows);
+            // The alt screen inherits the limit even though it retains no scrollback of its own
+            // (an alt-screen app owns the whole surface): a resize WHILE in alt goes through
+            // `resized`, which carries the limit onward, and the main screen is restored from
+            // `saved_main` — so a default here would leak the wrong limit into that path.
+            let mut alt = Screen::new(self.cols, self.rows, self.screen.history_limit());
             alt.set_kind(ScreenKind::Alternate);
             let main = std::mem::replace(&mut self.screen, alt);
             self.saved_main = Some(main);

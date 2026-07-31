@@ -336,6 +336,13 @@ pub fn pane_histories(
                     let epoch = pane.pty().history_epoch();
                     // The epoch is read and compared under the SAME lock acquisition the encode would
                     // take, so nothing can mutate between "unchanged" and the decision to skip.
+                    // `limits` is the OPERATOR's ceiling and is passed WHOLE. It is deliberately not
+                    // narrowed to this pane's own `history_limit`, which looks like the tighter
+                    // budget and is not one: `history_bytes` encodes the scrollback AND the visible
+                    // screen, so a limit that bounds only retention would cut the live screen out
+                    // of a full pane's saved history — and save nothing at all for a pane set to
+                    // keep no scrollback. The encoder already saturates at what the screen holds,
+                    // so an unset ceiling persists exactly that and needs no help.
                     let bytes =
                         (seen.get(&id) != Some(&epoch)).then(|| pane.pty().history_bytes(limits));
                     PaneHistory { id, epoch, bytes }
@@ -916,6 +923,68 @@ mod tests {
             assert!(
                 std::time::Instant::now() < deadline,
                 "the printing pane never re-encoded (changed: {changed:?})",
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// A pane that retains NO scrollback still has its visible screen captured.
+    ///
+    /// The guard on a coupling that looks right and is not. A pane now owns a `history-limit`, so
+    /// narrowing the save budget to it reads like the tighter, more correct bound — and it is wrong,
+    /// because a saved history is the scrollback PLUS the visible screen. At a limit of zero that
+    /// narrowing captures nothing, and the pane comes back from a reboot BLANK rather than showing
+    /// what was on it.
+    ///
+    /// REVERT-PROOF: passing `limits.lines.min(pane.pty().history_limit())` to `history_bytes`
+    /// instead of `limits` fails this on an empty capture. Nothing else in the suite moves, which is
+    /// exactly why it is written here.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_pane_retaining_no_scrollback_still_captures_its_visible_screen() {
+        let dir = std::env::temp_dir();
+        let reg = Arc::new(Mutex::new(SessionRegistry::new((80, 24))));
+        let pool = reg
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .workspace_of("0")
+            .unwrap();
+        // Zero retention: the setting a user picks for a pane that must remember nothing.
+        lock(&pool).set_history_limit_source(Arc::new(|| 0));
+        let id = lock(&pool)
+            .spawn(cmd_in(&dir), "sh".to_owned(), 80, 24)
+            .unwrap();
+        reconcile(&reg, "0", "0");
+        assert_eq!(
+            lock(&pool).pane(id).unwrap().pty().history_limit(),
+            0,
+            "the pane really was born with no retention",
+        );
+
+        // `cat` echoes, so this lands on the VISIBLE screen with nothing scrolling off.
+        lock(&pool)
+            .pane(id)
+            .unwrap()
+            .pty()
+            .write(b"on the screen\n")
+            .expect("write to the pane's pty");
+
+        // Wait on the CONDITION the assertion reads — the text reaching the capture.
+        let seen = HashMap::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let captured = pane_histories(&reg, HistoryLimits::text_only(usize::MAX), &seen)
+                .into_iter()
+                .find(|entry| entry.id == id)
+                .and_then(|entry| entry.bytes)
+                .unwrap_or_default();
+            if String::from_utf8_lossy(&captured).contains("on the screen") {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a zero-retention pane must still save its visible screen, got {:?}",
+                String::from_utf8_lossy(&captured),
             );
             std::thread::sleep(std::time::Duration::from_millis(20));
         }

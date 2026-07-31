@@ -276,6 +276,38 @@ pub fn window_size() -> WindowSize {
     WindowSize::parse(&value).unwrap_or(WindowSize::DEFAULT)
 }
 
+/// How many logical lines of scrollback a pane BORN NOW should retain — the user's
+/// [`history-limit`](crate::options::HISTORY_LIMIT), or the emulator's own default if they have not
+/// set one.
+///
+/// Read from the file on every call, like [`default_pane_command`] and [`window_size`], so a user who
+/// raises the setting gets it on their next pane with nothing to restart. One file read per pane
+/// BIRTH — a rate bounded by how fast a person can open panes, against a setting that would otherwise
+/// need a daemon restart to take effect.
+///
+/// A broken config logs and falls through to the default rather than refusing the pane, the rule
+/// [`default_pane_command`] states at length: the daemon has no screen to report the problem on, and
+/// a user who cannot open a pane cannot open the palette that would tell them what is wrong.
+///
+/// The registry has already refused anything that is not a number, so a value that fails to parse
+/// here would mean the table and this reader disagree — falling back is the total answer, and
+/// `every_option_default_is_a_value_that_option_accepts` is what keeps it unreachable.
+#[must_use]
+pub fn history_limit_lines() -> usize {
+    let configured = match options() {
+        Ok(options) => options.number(options::HISTORY_LIMIT),
+        Err(error) => {
+            tracing::warn!(
+                target: "sprag_host::config",
+                %error,
+                "using the default history-limit for a pane",
+            );
+            None
+        }
+    };
+    configured.map_or(sprag_vt::DEFAULT_SCROLLBACK_LINES, |lines| lines as usize)
+}
+
 /// The client-side halves of the user's config, or the defaults when there is nothing to read.
 fn client_config() -> Result<(Options, Keymap), ConfigError> {
     let Some(path) = config_path() else {

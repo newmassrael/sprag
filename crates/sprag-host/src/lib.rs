@@ -84,9 +84,9 @@ pub use durability::{
     save_snapshot, snapshot_path,
 };
 pub use history::{
-    DEFAULT_HISTORY_IMAGE_BYTES, DEFAULT_HISTORY_LINES, SavedHistory, history_dir,
-    history_file_pane, history_image_bytes, history_limit, history_limits, load_pane_history,
-    purge_histories, save_histories_if_changed,
+    DEFAULT_HISTORY_IMAGE_BYTES, NO_HISTORY_CEILING, SavedHistory, history_dir, history_file_pane,
+    history_image_bytes, history_limit, history_limits, load_pane_history, purge_histories,
+    save_histories_if_changed,
 };
 pub use host::{
     Host, HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneMatch,

@@ -63,7 +63,16 @@ fn bash_session(cols: u16, rows: u16) -> PanePty {
     cmd.env("PS1", PROMPT);
     cmd.env("PROMPT_COMMAND", "");
     cmd.env("TERM", "xterm");
-    PanePty::spawn_with_dirty(cmd, cols, rows, None, None, &[]).expect("spawn bash on a PTY")
+    PanePty::spawn_with_dirty(
+        cmd,
+        cols,
+        rows,
+        None,
+        None,
+        &[],
+        sprag_vt::DEFAULT_SCROLLBACK_LINES,
+    )
+    .expect("spawn bash on a PTY")
 }
 
 /// The screen's highest per-row damage stamp — a cheap "did anything change"

@@ -13,8 +13,8 @@ pub use emulator::{Emulator, osc52_reply};
 pub use history::HistoryLimits;
 pub use port::{
     Attrs, BadPattern, Cell, ClipboardQuery, ClipboardTarget, ClipboardTargets, ClipboardWrite,
-    Color, ColorTarget, Cursor, CursorShape, FIND_MATCH_CAP, FindLine, FindMatch, FindResult,
-    Hyperlink, Image, InputModes, KittyKeyboardFlags, LastCommand, LinkRun, MouseEncoding,
-    MouseProtocol, Notification, Palette, PromptMark, REGEX_SIZE_LIMIT, Rgb, SCROLLBACK_CAP,
-    Screen, ScreenKind, ShellState, UnderlineStyle, VtPort, Width, char_columns,
+    Color, ColorTarget, Cursor, CursorShape, DEFAULT_SCROLLBACK_LINES, FIND_MATCH_CAP, FindLine,
+    FindMatch, FindResult, Hyperlink, Image, InputModes, KittyKeyboardFlags, LastCommand, LinkRun,
+    MouseEncoding, MouseProtocol, Notification, Palette, PromptMark, REGEX_SIZE_LIMIT, Rgb, Screen,
+    ScreenKind, ShellState, UnderlineStyle, VtPort, Width, char_columns,
 };

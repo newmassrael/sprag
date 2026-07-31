@@ -39,20 +39,37 @@ pub fn char_columns(ch: char) -> usize {
     UnicodeWidthChar::width(ch).unwrap_or(0)
 }
 
-/// Maximum number of scrolled-off LOGICAL lines [`Screen`] retains (FIFO). A soft-wrapped line
-/// counts ONCE no matter how many physical rows it occupies, so history retention is INDEPENDENT
-/// of the terminal width: narrowing (which multiplies physical rows) never evicts history it would
-/// have kept at the wider size. This is tmux's `history-limit` model — tmux counts logical lines
-/// because it never wraps history — and sprag matches it while ALSO reflowing, which tmux does not.
-pub const SCROLLBACK_CAP: usize = 1000;
+/// How many scrolled-off LOGICAL lines a [`Screen`] retains (FIFO) when nobody says otherwise —
+/// the DEFAULT for [`Screen::history_limit`], not a ceiling over it.
+///
+/// A soft-wrapped line counts ONCE no matter how many physical rows it occupies, so history
+/// retention is INDEPENDENT of the terminal width: narrowing (which multiplies physical rows) never
+/// evicts history it would have kept at the wider size. This is tmux's `history-limit` model — tmux
+/// counts logical lines because it never wraps history — and sprag matches it while ALSO reflowing,
+/// which tmux does not.
+///
+/// The value each screen actually enforces is per-instance ([`Screen::new`]'s third argument),
+/// because `history-limit` is a setting a user changes. This is what a pane born with nothing
+/// configured gets, and `sprag-host`'s option table spells the same number as its own default — a
+/// test there holds the two together, since nothing in the type system can.
+pub const DEFAULT_SCROLLBACK_LINES: usize = 1000;
 
-/// A hard ceiling on the PHYSICAL rows scrollback may hold — a memory guard orthogonal to
-/// [`SCROLLBACK_CAP`]. A pathological single logical line (megabytes with no newline) is one
-/// logical line under the logical cap yet many physical rows, so without this it could pin
-/// unbounded memory. Set generously (a large multiple of the logical cap) so it only bites the
-/// runaway case; normal content is bounded by the logical cap well below it. tmux has no such
-/// ceiling — this is where sprag is stricter (tmux-superior on memory safety).
-pub(crate) const SCROLLBACK_PHYSICAL_CAP: usize = SCROLLBACK_CAP * 8;
+/// How many PHYSICAL rows a screen retaining `lines` logical lines may hold — a memory guard
+/// orthogonal to the logical limit, derived from it rather than fixed.
+///
+/// A pathological single logical line (megabytes with no newline) is one logical line under the
+/// logical limit yet many physical rows, so without this it could pin unbounded memory. Set
+/// generously (a large multiple of the logical limit) so it only bites the runaway case; normal
+/// content is bounded by the logical limit well below it. tmux has no such ceiling — this is where
+/// sprag is stricter (tmux-superior on memory safety).
+///
+/// DERIVED per screen rather than a `const`, because a fixed ceiling computed from the DEFAULT
+/// would silently cap a user who raised `history-limit`: at the old 8x1000, a pane configured for
+/// 50,000 lines would stop at 8,000 physical rows and the setting would appear not to work. It
+/// saturates rather than wrapping, so a limit near `usize::MAX` cannot fold back to a small ceiling.
+pub(crate) const fn scrollback_physical_ceiling(lines: usize) -> usize {
+    lines.saturating_mul(8)
+}
 
 /// Maximum number of distinct inline [`Image`]s a [`Screen`] retains (FIFO). Bounds memory
 /// against a child that transmits many distinct image ids without clearing; past this the
@@ -1111,7 +1128,7 @@ impl std::error::Error for BadPattern {}
 /// One scrolled-off line: its STYLED cells, the soft-wrap flag it carried, plus any
 /// shell-integration [`PromptMark`] the row held. Bundling all three WITH the cells (rather
 /// than parallel deques) makes them impossible to desync as lines are pushed, popped at the
-/// [`SCROLLBACK_CAP`], reflowed, or cloned on resize — the single-source-of-truth shape for
+/// retention limit, reflowed, or cloned on resize — the single-source-of-truth shape for
 /// scrollback history.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct ScrollbackLine {
@@ -1174,8 +1191,8 @@ pub struct Screen {
     kind: ScreenKind,
     /// One monotonic damage stamp per row.
     generations: Vec<u64>,
-    /// Rows scrolled off the top of the MAIN screen, oldest first, bounded by
-    /// [`SCROLLBACK_CAP`] (FIFO). Each is the row's STYLED cells (fg/bg/attrs/
+    /// Rows scrolled off the top of the MAIN screen, oldest first, bounded by this screen's
+    /// [`history_limit`](Self::history_limit) (FIFO). Each is the row's STYLED cells (fg/bg/attrs/
     /// width preserved), trailing blanks trimmed — so scrolled-back history paints
     /// with its original colors, not flattened to plain text. The text capture
     /// path derives strings from these cells ([`Screen::scrollback_rows`] /
@@ -1238,17 +1255,36 @@ pub struct Screen {
     content_epoch: u64,
     /// Count of COMPLETE logical lines currently in [`Self::scrollback`] (each ends in a
     /// non-[`wrapped`](Self::wrapped) row), maintained incrementally so [`Self::trim_scrollback`]
-    /// can enforce [`SCROLLBACK_CAP`] on the hot scroll path in O(1). A cached aggregate of the
+    /// can enforce the [`history_limit`](Self::history_limit) on the hot scroll path in O(1). A cached aggregate of the
     /// deque; every scrollback mutation routes through [`Self::push_scrollback`] /
     /// [`Self::trim_scrollback`] / [`Self::clear_scrollback`] so it cannot desync (a debug
     /// assertion in [`Self::reflowed`] re-checks it against a full recount).
     scrollback_logical: usize,
+    /// How many logical lines of scrollback THIS screen retains — tmux's `history-limit`, per
+    /// screen because it is a setting the user changes rather than a property of the emulator.
+    ///
+    /// `0` is a value, not an absence: it means keep no history at all, which is what a user asking
+    /// for a pane that remembers nothing has asked for. [`DEFAULT_SCROLLBACK_LINES`] is what a
+    /// screen born with nothing configured gets.
+    ///
+    /// Carried by every DERIVED screen — [`Self::resized`], [`Self::reflowed`] and the alt screen —
+    /// rather than re-defaulted, because a screen that forgot it would silently evict a user's
+    /// raised history on the next resize. Each of those is a `Screen::new` call whose third argument
+    /// the compiler forces the author to name, which is why the limit is a constructor parameter and
+    /// not a setter.
+    history_limit: usize,
 }
 
 impl Screen {
-    /// A blank `cols x rows` screen, every row at generation 0.
+    /// A blank `cols x rows` screen retaining `history_limit` logical lines of scrollback, every row
+    /// at generation 0.
+    ///
+    /// `history_limit` is a parameter rather than a default-then-set because the three internal
+    /// callers are exactly the places a derived screen must INHERIT it, and a signature that demands
+    /// the value cannot be silently forgotten by a fourth added later. Pass
+    /// [`DEFAULT_SCROLLBACK_LINES`] for a screen nobody has configured.
     #[must_use]
-    pub fn new(cols: u16, rows: u16) -> Self {
+    pub fn new(cols: u16, rows: u16, history_limit: usize) -> Self {
         let count = cols as usize * rows as usize;
         Self {
             cols,
@@ -1264,7 +1300,14 @@ impl Screen {
             next_image_seq: 0,
             scrollback_logical: 0,
             content_epoch: 0,
+            history_limit,
         }
+    }
+
+    /// How many logical lines of scrollback this screen retains — see [`Self::new`].
+    #[must_use]
+    pub fn history_limit(&self) -> usize {
+        self.history_limit
     }
 
     /// The inline images (Kitty graphics / Sixel) the child is displaying (pinion R1404), in
@@ -1967,7 +2010,9 @@ impl Screen {
     /// A copy of this screen resized to `cols x rows`, preserving the
     /// overlapping top-left region, the cursor, and the screen kind.
     pub(crate) fn resized(&self, cols: u16, rows: u16) -> Screen {
-        let mut next = Screen::new(cols, rows);
+        // The retention limit is this screen's own: a resize re-lays-out content, it does not
+        // re-decide how much of it the user asked to keep.
+        let mut next = Screen::new(cols, rows, self.history_limit);
         let copy_cols = cols.min(self.cols);
         let copy_rows = rows.min(self.rows);
         for r in 0..copy_rows {
@@ -2202,7 +2247,10 @@ impl Screen {
         let keep = rows as usize;
         let total = phys.len();
         let start = total.saturating_sub(keep);
-        let mut next = Screen::new(cols, rows);
+        // Inherited, and this is the site where losing it would bite hardest: the overflow below is
+        // pushed through `push_scrollback` and then TRIMMED, so a re-defaulted limit would evict a
+        // user's raised history on every reflow — silently, and only on resize.
+        let mut next = Screen::new(cols, rows, self.history_limit);
         // The overflow above the visible window BECOMES the new scrollback. It already holds the
         // old scrollback (rewrapped as part of the unified stream), so do NOT also clone the old
         // deque — that would double the history. `Screen::new` leaves `next.scrollback` empty.
@@ -2302,7 +2350,7 @@ impl Screen {
     }
 
     /// The number of COMPLETE logical lines currently in scrollback — the width-independent unit
-    /// [`SCROLLBACK_CAP`] bounds, unlike the physical row count [`Self::scrollback_len`]. A test
+    /// the [`history_limit`](Self::history_limit) bounds, unlike the physical row count [`Self::scrollback_len`]. A test
     /// introspection accessor (no non-test consumer yet); the count's SSOT is the field it reads.
     #[cfg(test)]
     #[must_use]
@@ -2351,13 +2399,19 @@ impl Screen {
         self.touch_scrollback();
     }
 
-    /// Evict the oldest scrollback until it fits BOTH bounds: [`SCROLLBACK_CAP`] LOGICAL lines
-    /// (width-independent retention) AND [`SCROLLBACK_PHYSICAL_CAP`] physical rows (a memory guard
-    /// against a pathological unbroken line). The SSOT for scrollback SHRINK — pops from the front
-    /// (oldest), decrementing the logical count as each line-ending row leaves.
+    /// Evict the oldest scrollback until it fits BOTH bounds: this screen's
+    /// [`history_limit`](Self::history_limit) LOGICAL lines (width-independent retention) AND the
+    /// [`scrollback_physical_ceiling`] it derives (a memory guard against a pathological unbroken
+    /// line). The SSOT for scrollback SHRINK — pops from the front (oldest), decrementing the
+    /// logical count as each line-ending row leaves.
+    ///
+    /// Both bounds read the PER-SCREEN limit, so a raised `history-limit` raises them together; a
+    /// version that kept the physical ceiling at the default's would cap the logical one at eight
+    /// rows per line and make the setting look broken on wide, wrapped output.
     fn trim_scrollback(&mut self) {
-        while self.scrollback_logical > SCROLLBACK_CAP
-            || self.scrollback.len() > SCROLLBACK_PHYSICAL_CAP
+        let physical_ceiling = scrollback_physical_ceiling(self.history_limit);
+        while self.scrollback_logical > self.history_limit
+            || self.scrollback.len() > physical_ceiling
         {
             match self.scrollback.pop_front() {
                 Some(line) => {
@@ -2672,6 +2726,20 @@ mod tests {
         e
     }
 
+    /// [`em`] on an emulator configured for `limit` logical lines of history — the constructor a
+    /// daemon uses once it has read the user's `history-limit`.
+    fn em_limited(cols: u16, rows: u16, limit: usize, bytes: &str) -> Emulator {
+        let mut e = Emulator::with_history_limit(cols, rows, limit);
+        e.advance(bytes.as_bytes());
+        e
+    }
+
+    /// `n` numbered lines, each ending in a hard newline — `n` LOGICAL lines on a screen wide
+    /// enough not to wrap them.
+    fn numbered_lines(n: usize) -> String {
+        (0..n).map(|i| format!("{i}\r\n")).collect()
+    }
+
     /// The palette resolves the three colour forms and the standard-xterm indexed ranges — the
     /// formulas must match pinion's `Palette` byte-for-byte, so an un-mutated palette projects
     /// identically to the pre-OSC-colour behaviour.
@@ -2752,10 +2820,14 @@ mod tests {
     #[test]
     fn scrollback_cap_is_fifo() {
         // On a 1-row screen each newline scrolls; feed past the cap.
-        let n = SCROLLBACK_CAP + 100;
+        let n = DEFAULT_SCROLLBACK_LINES + 100;
         let input: String = (0..n).map(|i| format!("{i}\r\n")).collect();
         let e = em(12, 1, &input);
-        assert_eq!(e.screen().scrollback_len(), SCROLLBACK_CAP, "bounded");
+        assert_eq!(
+            e.screen().scrollback_len(),
+            DEFAULT_SCROLLBACK_LINES,
+            "bounded"
+        );
         // The oldest 100 lines (0..100) were dropped; 100 is now the oldest.
         assert_eq!(e.screen().scrollback_rows().next().as_deref(), Some("100"));
     }
@@ -2766,24 +2838,27 @@ mod tests {
         // then narrow so every line wraps to two physical rows: the physical row count doubles PAST
         // the old physical cap, yet NO logical line is evicted — a physical-row cap would have
         // halved the retained history the moment the rows doubled.
-        let n = SCROLLBACK_CAP + 5;
+        let n = DEFAULT_SCROLLBACK_LINES + 5;
         let input: String = (0..n).map(|i| format!("L{i:07}\r\n")).collect(); // 8 glyphs/line
         let mut e = em(16, 2, &input); // width 16: each logical line is one physical row
-        assert_eq!(e.screen().scrollback_logical_len(), SCROLLBACK_CAP);
+        assert_eq!(
+            e.screen().scrollback_logical_len(),
+            DEFAULT_SCROLLBACK_LINES
+        );
         e.resize(4, 2); // narrow: each 8-glyph line wraps to two physical rows
         assert_eq!(
             e.screen().scrollback_logical_len(),
-            SCROLLBACK_CAP,
+            DEFAULT_SCROLLBACK_LINES,
             "narrowing evicted no logical line (width-independent retention)"
         );
         assert!(
-            e.screen().scrollback_len() > SCROLLBACK_CAP,
+            e.screen().scrollback_len() > DEFAULT_SCROLLBACK_LINES,
             "physical rows doubled past the old physical cap, yet history was retained"
         );
         e.resize(16, 2); // widen back
         assert_eq!(
             e.screen().scrollback_logical_len(),
-            SCROLLBACK_CAP,
+            DEFAULT_SCROLLBACK_LINES,
             "the logical count is stable across narrow∘widen"
         );
     }
@@ -2793,11 +2868,178 @@ mod tests {
         // One logical line of many thousands of glyphs (no newline) autowraps to one physical row
         // per glyph on a width-1 screen — a SINGLE logical line, so the LOGICAL cap never bounds
         // it. Only the physical ceiling does, so a runaway line cannot pin unbounded memory.
-        let huge = "a".repeat(SCROLLBACK_PHYSICAL_CAP + 100);
+        let huge = "a".repeat(scrollback_physical_ceiling(DEFAULT_SCROLLBACK_LINES) + 100);
         let e = em(1, 2, &huge);
         assert!(
-            e.screen().scrollback_len() <= SCROLLBACK_PHYSICAL_CAP,
+            e.screen().scrollback_len() <= scrollback_physical_ceiling(DEFAULT_SCROLLBACK_LINES),
             "the physical ceiling bounds a pathological unbroken line"
+        );
+    }
+
+    #[test]
+    fn a_configured_limit_governs_retention_in_both_directions() {
+        // The point of the option: a limit BELOW the default must actually evict, and one ABOVE it
+        // must actually retain. Asserting only the raised direction would pass on a screen that
+        // ignored the limit and kept everything.
+        // Every line is newline-TERMINATED, so all 100 scroll off a 1-row screen and the visible
+        // row ends blank; the newest 10 of 0..=99 are therefore 90..=99.
+        let small = em_limited(12, 1, 10, &numbered_lines(100));
+        assert_eq!(small.screen().scrollback_logical_len(), 10, "10 retained");
+        assert_eq!(
+            small.screen().scrollback_rows().next().as_deref(),
+            Some("90"),
+            "the OLDEST survivor is line 90 — eviction takes from the front",
+        );
+
+        // Above the default, where a screen still enforcing `DEFAULT_SCROLLBACK_LINES` would stop.
+        let big = em_limited(12, 1, 2_500, &numbered_lines(2_000));
+        assert_eq!(
+            big.screen().scrollback_logical_len(),
+            2_000,
+            "everything fed is retained past the 1000-line default",
+        );
+    }
+
+    #[test]
+    fn a_zero_limit_retains_no_history_at_all() {
+        // `0` is a VALUE, not an unset: the pane remembers nothing. A screen that treated it as
+        // "unset, use the default" would retain 1000 lines here, which is the opposite of the ask.
+        // The trailing text has no newline, so it stays on the VISIBLE row: a zero limit throws
+        // history away, it does not stop the terminal from being a terminal.
+        let e = em_limited(12, 1, 0, &format!("{}live", numbered_lines(50)));
+        assert_eq!(e.screen().scrollback_logical_len(), 0);
+        assert_eq!(e.screen().scrollback_len(), 0, "no physical rows either");
+        assert_eq!(
+            e.screen().row_text(0),
+            "live",
+            "the VISIBLE row is untouched"
+        );
+    }
+
+    #[test]
+    fn the_physical_ceiling_scales_with_the_configured_limit() {
+        // The ceiling is DERIVED per screen. Held at the default's 8x1000, a pane configured for
+        // 50 lines of pathological unbroken output would be bounded at 8000 physical rows instead
+        // of its own 400 — the guard would stop tracking the setting it exists beside.
+        let huge = "a".repeat(1_000);
+        let e = em_limited(1, 2, 50, &huge);
+        assert!(
+            e.screen().scrollback_len() <= scrollback_physical_ceiling(50),
+            "bounded by 8x50, not by 8x the default: {} rows",
+            e.screen().scrollback_len(),
+        );
+    }
+
+    #[test]
+    fn the_verbatim_resize_fallback_carries_the_limit_too() {
+        // `resized` is the fallback `reflowed` takes for the alt screen and for a degenerate size.
+        // Driven through `Emulator::resize` it is hard to observe — the alt screen holds no
+        // scrollback for a wrong limit to evict — so it is called DIRECTLY here rather than left as
+        // an inheritance nothing checks. It carries scrollback across verbatim WITHOUT trimming, so
+        // a re-defaulted limit would sit dormant in the new screen and evict on the next push
+        // instead of at the resize, which is the kind of delay that makes a bug hard to attribute.
+        let mut screen = Screen::new(16, 2, 2_500);
+        for i in 0..1_500 {
+            screen.push_scrollback(ScrollbackLine {
+                cells: vec![Cell::blank()],
+                wrapped: false,
+                mark: None,
+            });
+            let _ = i;
+        }
+        screen.trim_scrollback();
+        assert_eq!(
+            screen.scrollback_logical_len(),
+            1_500,
+            "nothing evicted yet"
+        );
+
+        let mut next = screen.resized(8, 2);
+        assert_eq!(next.history_limit(), 2_500, "the limit came across");
+        next.trim_scrollback();
+        assert_eq!(
+            next.scrollback_logical_len(),
+            1_500,
+            "and it still governs: a re-defaulted 1000 would have evicted 500 lines here",
+        );
+    }
+
+    #[test]
+    fn a_saved_history_holds_the_visible_screen_whatever_the_retention_limit() {
+        // A saved history is the scrollback PLUS the visible screen, so the retention limit is the
+        // wrong bound for it. At `history-limit 0` there is no scrollback and the pane must still
+        // come back showing what was on it; a save budget narrowed to the retention limit would
+        // encode nothing here, blanking the restored pane.
+        // One row, so the first line genuinely scrolls off rather than staying on screen.
+        let e = em_limited(20, 1, 0, "gone\r\nstill here");
+        let bytes = e
+            .screen()
+            .history_bytes(HistoryLimits::text_only(usize::MAX));
+        let replayed = String::from_utf8_lossy(&bytes).into_owned();
+        assert!(
+            replayed.contains("still here"),
+            "the visible screen must survive a zero retention limit: {replayed:?}",
+        );
+        assert!(
+            !replayed.contains("gone"),
+            "and the line that scrolled off must NOT, since nothing retained it: {replayed:?}",
+        );
+    }
+
+    #[test]
+    fn an_unbounded_save_budget_persists_everything_a_raised_limit_kept() {
+        // The reboot half of the option. With no operator ceiling the encoder saturates at what the
+        // screen holds, so a pane configured deeper than the old 1000-line default saves its full
+        // depth — a budget still fixed at that default would silently drop the difference, and only
+        // across a restart.
+        let e = em_limited(16, 2, 2_500, &numbered_lines(2_000));
+        let bytes = e
+            .screen()
+            .history_bytes(HistoryLimits::text_only(usize::MAX));
+
+        // Replayed into a fresh emulator, which is what a restore actually does — asserting on the
+        // encoded BYTES would be asserting on escape sequences rather than on what comes back.
+        let mut restored = Emulator::with_history_limit(16, 2, 5_000);
+        restored.advance(&bytes);
+        assert_eq!(
+            restored.screen().scrollback_rows().next().as_deref(),
+            Some("0"),
+            "the OLDEST line survived, so nothing was truncated to the 1000-line default",
+        );
+        assert_eq!(
+            restored.screen().scrollback_logical_len(),
+            e.screen().scrollback_logical_len(),
+            "and the depth came back exactly",
+        );
+    }
+
+    #[test]
+    fn a_derived_screen_inherits_the_configured_limit() {
+        // Every screen a resize or a reflow produces is a fresh `Screen::new`, so each is a place
+        // the limit could be re-defaulted — which would silently evict a raised history on the
+        // next resize, and only then. Both paths are exercised: `reflowed` (main screen, rewraps)
+        // and `resized` (the alt-screen/degenerate fallback, verbatim).
+        let mut e = em_limited(16, 2, 2_500, &numbered_lines(2_000));
+        assert_eq!(e.screen().history_limit(), 2_500);
+        let before = e.screen().scrollback_logical_len();
+
+        e.resize(8, 2); // narrow — the main-screen REFLOW path
+        assert_eq!(e.screen().history_limit(), 2_500, "carried across a reflow");
+        assert_eq!(
+            e.screen().scrollback_logical_len(),
+            before,
+            "a re-defaulted limit would have evicted down to 1000 here",
+        );
+
+        // The alt screen is its own `Screen::new`, and main is restored from it.
+        e.advance(b"\x1b[?1049h");
+        assert_eq!(e.screen().history_limit(), 2_500, "the alt screen too");
+        e.resize(20, 2); // resize WHILE in alt — the verbatim `resized` path
+        e.advance(b"\x1b[?1049l");
+        assert_eq!(
+            e.screen().scrollback_logical_len(),
+            before,
+            "main came back through the alt round-trip with its history intact",
         );
     }
 

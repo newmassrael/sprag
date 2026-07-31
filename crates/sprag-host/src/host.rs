@@ -49,9 +49,9 @@ use std::sync::{Arc, Mutex};
 use pinion_core::GridBuffer;
 use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{
-    CommandBuilder, LayoutSnapshot, LayoutWire, Pane, PaneId, PanePtyError, PanePtyHandle,
-    PaneRebirth, SessionInfo, SessionRegistry, Snapshot, SnapshotError, SplitDir, SplitSide,
-    WindowInfo, Workspace,
+    CommandBuilder, HistoryLimitSource, LayoutSnapshot, LayoutWire, Pane, PaneId, PanePtyError,
+    PanePtyHandle, PaneRebirth, SessionInfo, SessionRegistry, Snapshot, SnapshotError, SplitDir,
+    SplitSide, WindowInfo, Workspace,
 };
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol, Screen, osc52_reply};
 
@@ -867,13 +867,25 @@ pub struct Host {
 /// [`HostClient::new_pane`]'s is not, so this is held instead of passed.
 type PaneHooks = Arc<dyn Fn() -> Option<Box<dyn Fn() + Send>> + Send + Sync>;
 
+/// The [`HistoryLimitSource`] every registry this crate builds is seeded with: the user's
+/// `history-limit`, re-read from `config.toml` at each pane's birth.
+///
+/// One function rather than the closure spelled at each construction site, so the daemon's boot
+/// registry and a restore's replacement registry cannot come to answer differently — the asymmetry
+/// R237 named, where a setting is honoured on one path and silently ignored on another.
+fn history_limit_source() -> HistoryLimitSource {
+    Arc::new(crate::config::history_limit_lines)
+}
+
 impl Host {
     /// A new host over a registry with one empty session / window whose dimension-less
     /// spawns adopt `default_size`. Boot panes are added with [`spawn`](Self::spawn).
     #[must_use]
     pub fn new(default_size: (u16, u16)) -> Self {
+        let registry = SessionRegistry::new(default_size);
+        registry.set_history_limit_source(history_limit_source());
         Self {
-            registry: Arc::new(Mutex::new(SessionRegistry::new(default_size))),
+            registry: Arc::new(Mutex::new(registry)),
             pane_hooks: None,
         }
     }
@@ -978,6 +990,10 @@ impl Host {
     ) -> Result<usize, SnapshotError> {
         // Build the new shape FIRST (fallible), so a bad snapshot leaves the boot registry intact.
         let (registry, plan) = SessionRegistry::from_snapshot(snapshot)?;
+        // A restore builds a whole new set of pane pools, so the source has to be installed on them
+        // too — before the loop below spawns a single restored pane, or those panes would come back
+        // at the default depth while every later one honoured the user's setting.
+        registry.set_history_limit_source(history_limit_source());
         // Swap the CONTENTS, preserving the Arc the reaper already holds a clone of, and claim the
         // birth in the same breath. The restored registry describes sessions whose panes are still
         // being spawned one at a time below, so it reads as "nothing live" for the whole loop: the

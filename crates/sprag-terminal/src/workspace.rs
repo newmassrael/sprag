@@ -331,6 +331,34 @@ pub struct Workspace {
     panes: Vec<Pane>,
     next_id: Arc<AtomicU64>,
     default_size: (u16, u16),
+    history_limit: HistoryLimitSource,
+}
+
+/// Asked, at each pane's BIRTH, how many logical lines of scrollback that pane should retain —
+/// tmux's `history-limit`.
+///
+/// A source rather than a number because the answer is the user's and it can change: `sprag-host`
+/// installs one that reads `config.toml`, so raising the setting deepens the NEXT pane's history
+/// without restarting the daemon, exactly as `default-command` already behaves. A stored `usize`
+/// would freeze the setting at daemon boot.
+///
+/// It is a source rather than a parameter on `spawn` because this crate owns the only two places a
+/// pane is ever born, and a caller that had to pass the limit is a caller that could forget to. It
+/// is shared (`Arc`) and inherited by [`Workspace::sibling`] for the same reason `next_id` is: every
+/// window of a session must answer from one place, or a pane's history would depend on which window
+/// it happened to open in.
+///
+/// `Send + Sync` because a workspace lives behind a `Mutex` in the daemon and is read from the
+/// snapshot thread; the closure only reads a file, so it holds no state that could race.
+pub type HistoryLimitSource = Arc<dyn Fn() -> usize + Send + Sync>;
+
+/// The [`HistoryLimitSource`] a workspace uses when nobody installs one: the emulator's own default.
+///
+/// A standalone pool and every unit test get this, so a workspace that is not part of a configured
+/// daemon behaves exactly as it did before the setting existed.
+#[must_use]
+fn default_history_limit_source() -> HistoryLimitSource {
+    Arc::new(|| sprag_vt::DEFAULT_SCROLLBACK_LINES)
 }
 
 impl Workspace {
@@ -354,7 +382,23 @@ impl Workspace {
             panes: Vec::new(),
             next_id,
             default_size,
+            history_limit: default_history_limit_source(),
         }
+    }
+
+    /// Install the [`HistoryLimitSource`] this pool's births consult — the seam `sprag-host` uses to
+    /// put the user's `history-limit` behind every pane without this crate learning what a config
+    /// file is.
+    ///
+    /// Affects FUTURE births only. It cannot do anything else: a pane's retention lives in its
+    /// emulator from the moment it is born, so panes already in this pool keep the limit they were
+    /// spawned with — which is also the behaviour the option itself promises, and tmux's.
+    ///
+    /// Held rather than passed at each spawn for the reason `sprag-host`'s own `set_pane_hooks`
+    /// states (named in prose, not linked — a crate this one cannot depend on): the callers that
+    /// birth panes take no argument for it, and one that had to would be one that could forget.
+    pub fn set_history_limit_source(&mut self, source: HistoryLimitSource) {
+        self.history_limit = source;
     }
 
     /// The default `(cols, rows)` a dimension-less spawn adopts.
@@ -405,6 +449,10 @@ impl Workspace {
             panes: Vec::new(),
             next_id: Arc::clone(&self.next_id),
             default_size: self.default_size,
+            // Shared for the same reason the id counter is: a new window is not a new configuration,
+            // and a sibling that defaulted here would give a session's second window shallower
+            // history than its first for no reason the user could see.
+            history_limit: Arc::clone(&self.history_limit),
         }
     }
 
@@ -452,7 +500,11 @@ impl Workspace {
         // Capture the launch argv BEFORE the builder is moved into the spawn, so a snapshot can
         // later re-run it (an allowlisted program) or fall back to a shell.
         let argv = argv_of(&command);
-        let pty = PanePty::spawn_with_dirty(command, cols, rows, on_dirty, on_exit, &[])?;
+        // Asked HERE rather than cached on the pool, so a user who edits `history-limit` gets it on
+        // their next pane rather than on their next daemon.
+        let history_limit = (self.history_limit)();
+        let pty =
+            PanePty::spawn_with_dirty(command, cols, rows, on_dirty, on_exit, &[], history_limit)?;
         // Mint AFTER a successful spawn so a failed spawn consumes no id (preserving the
         // old counter's gap-free-on-failure behaviour). Relaxed ordering: ids need only
         // uniqueness + monotonicity, not synchronization with other memory.
@@ -495,7 +547,21 @@ impl Workspace {
             history,
         } = pane;
         let argv = argv_of(&command);
-        let pty = PanePty::spawn_with_dirty(command, cols, rows, on_dirty, on_exit, &history)?;
+        // A RESTORED pane reads the setting live too, rather than inheriting whatever it had before
+        // the reboot: the snapshot records what a pane WAS, and its retention is a current setting,
+        // not a property of the pane the user is getting back. Replaying more history than the
+        // limit allows is safe either way — the replay scrolls through the same eviction path any
+        // live output does, so the pane settles at exactly the configured depth.
+        let history_limit = (self.history_limit)();
+        let pty = PanePty::spawn_with_dirty(
+            command,
+            cols,
+            rows,
+            on_dirty,
+            on_exit,
+            &history,
+            history_limit,
+        )?;
         // Reserve the id above the counter so a future mint cannot reissue it (saturating so a
         // pathological u64::MAX id cannot wrap the reservation back to 0). Relaxed matches the
         // mint path: ids need only uniqueness + monotonicity, not synchronization.
@@ -654,6 +720,7 @@ fn argv_of(command: &CommandBuilder) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     /// A long-lived child (`cat` reads stdin) so the pane's PTY stays open
     /// across resize/close assertions.
@@ -663,6 +730,47 @@ mod tests {
         c.arg("cat");
         c.env("TERM", "dumb");
         c
+    }
+
+    #[test]
+    fn a_pane_is_born_with_the_limit_its_pool_names() {
+        // The whole seam in one assertion: the pool is asked at BIRTH, so the pane the user gets
+        // carries the setting rather than the emulator's default.
+        let mut ws = Workspace::new((80, 24));
+        ws.set_history_limit_source(Arc::new(|| 4_242));
+        let id = ws.spawn(cmd(), "sh".to_string(), 80, 24).unwrap();
+        assert_eq!(ws.pane(id).unwrap().pty().history_limit(), 4_242);
+    }
+
+    #[test]
+    fn the_source_is_read_per_birth_not_captured_once() {
+        // `default-command`'s rule: a user editing their config gets it on the NEXT pane, with
+        // nothing restarted. A pool that cached the first answer would need a new daemon instead,
+        // and that difference is invisible to a test that only ever spawns one pane.
+        let answers = Arc::new(Mutex::new(vec![100_usize, 7]));
+        let mut ws = Workspace::new((80, 24));
+        let queue = Arc::clone(&answers);
+        ws.set_history_limit_source(Arc::new(move || queue.lock().unwrap().remove(0)));
+        let first = ws.spawn(cmd(), "sh".to_string(), 80, 24).unwrap();
+        let second = ws.spawn(cmd(), "sh".to_string(), 80, 24).unwrap();
+        assert_eq!(ws.pane(first).unwrap().pty().history_limit(), 100);
+        assert_eq!(
+            ws.pane(second).unwrap().pty().history_limit(),
+            7,
+            "the second birth asked again rather than reusing the first answer",
+        );
+    }
+
+    #[test]
+    fn a_sibling_pool_inherits_the_limit_source() {
+        // A new WINDOW is not a new configuration. `sibling` shares the id counter for the same
+        // reason, and a sibling that defaulted here would give a session's second window shallower
+        // history than its first with nothing to explain it.
+        let mut ws = Workspace::new((80, 24));
+        ws.set_history_limit_source(Arc::new(|| 321));
+        let mut next = ws.sibling();
+        let id = next.spawn(cmd(), "sh".to_string(), 80, 24).unwrap();
+        assert_eq!(next.pane(id).unwrap().pty().history_limit(), 321);
     }
 
     #[test]
