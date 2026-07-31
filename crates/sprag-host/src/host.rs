@@ -207,6 +207,38 @@ pub struct PaneNotification {
     pub seq: u64,
 }
 
+/// What the AGENT running in a pane is doing, as a display client reads it off
+/// [`HostClient::pane_agent`] — H3's verdict as it arrived, not a re-derivation.
+///
+/// Present only for a pane some manifest CLAIMS and some rule answered for: `Unknown` is carried as
+/// the ABSENCE of this value, which is the same additive discipline the `agent` key follows on the
+/// wire (D8) and the reason a workspace of shells produces nothing here. D3 requires that absence to
+/// stay distinguishable from [`state`](Self::state) `"idle"`, because "this is not an agent" and
+/// "this agent wants you" are opposite instructions to a person reading a pane list.
+///
+/// [`state`](Self::state) is a `String` rather than [`sprag_detect::AgentState`] deliberately, and
+/// the reason is which side of the wire this type lives on: a client parses it from a daemon that
+/// may be NEWER than itself, so an unrecognised token has to survive as itself and reach a surface
+/// rather than collapse into an enum's fallback. It is the same rule `sprag-mcp`'s mouse token
+/// already follows. The vocabulary a daemon of this build can produce is
+/// [`sprag_detect::AgentState::wire_str`]'s.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct PaneAgent {
+    /// The state token — `"working"` / `"blocked"` / `"idle"` from
+    /// [`sprag_detect::AgentState::wire_str`], never a spelling invented client-side.
+    pub state: String,
+    /// Which manifest claims the pane (`"claude"`, `"codex"`), or `None` when a rule fired and no
+    /// manifest is identified — a modal covering the fingerprint is the measured case (R251).
+    pub name: Option<String>,
+    /// Which RULE produced the state. D7: a gate that cannot say what it saw cannot be diagnosed,
+    /// and this is the whole content of `explain` — a read of the value the detector already
+    /// produced, so a surface can never disagree with the verdict it explains.
+    pub rule: Option<String>,
+    /// Increments on a PUBLISHED change, so a client tells "still blocked" from "blocked again"
+    /// without diffing strings — [`PaneNotification::seq`]'s treatment exactly.
+    pub seq: u64,
+}
+
 /// A pane's most recent OSC 52 clipboard WRITE, as a display client fetches it ON DEMAND off
 /// [`HostClient::pane_clipboard_write`] once the write `seq` in the pane list grows past the last
 /// it applied. The payload is potentially large (a whole paste), which is why it is fetched on
@@ -785,6 +817,21 @@ pub trait HostClient {
     /// both. Defaulted to `0` so an older [`HostClient`] impl need not implement it.
     fn pane_bell_seq(&self, _id: PaneId) -> u64 {
         0
+    }
+
+    /// What the AGENT running in pane `id` is doing ([`PaneAgent`]), or `None` for a pane no
+    /// manifest claims — H3's verdict, read by a display client so its pane list can say which pane
+    /// is waiting on the user.
+    ///
+    /// Defaulted to `None`, and here the default is the IN-PROCESS arm's real answer rather than a
+    /// courtesy to an older impl. H3's D2 puts the detector daemon-side and gives its reason — three
+    /// consumers computing the same fact independently is three authorities that can disagree — so
+    /// the memory the verdict comes out of ([`crate::AgentRegistry`]) lives in `sprag-term`'s process
+    /// and reaches a client on the pane list. An in-process [`Host`] has no such memory, and giving
+    /// it one would BE the second evaluation site D2 refuses. So it says so, exactly as
+    /// `SessionInfo::attached` answers `None` off a daemon rather than guessing.
+    fn pane_agent(&self, _id: PaneId) -> Option<PaneAgent> {
+        None
     }
 
     /// Pane `id`'s live mouse-tracking protocol level (None / Click / ButtonEvent / AnyEvent, DECSET

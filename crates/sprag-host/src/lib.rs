@@ -90,7 +90,7 @@ pub use history::{
     save_histories_if_changed,
 };
 pub use host::{
-    Host, HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneMatch,
+    Host, HostClient, PaneAgent, PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneMatch,
     PaneNotification, PaneScrollFacts,
 };
 pub use keymap::{BoundAction, KeyError, KeySpec, Keymap};

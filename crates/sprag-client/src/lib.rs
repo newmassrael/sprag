@@ -38,7 +38,14 @@
 //! whether a crate CAN pull the GPU stack — it is what this workspace resolves for the crate
 //! under test.
 
+mod agent;
 mod wire;
+
+/// H3's agent verdict rendered for a person — the WORDS both frontends put their own frame around.
+///
+/// Public because two display clients consume it and neither may spell the vocabulary itself; see the
+/// module's own docs for why a rendering belongs in this crate at all.
+pub use agent::{agent_phrase, agent_urgency};
 
 /// The topology-B wire client: a display client's whole relationship with a `sprag-term` host
 /// PROCESS, behind the same [`HostClient`](sprag_host::HostClient) protocol an in-process

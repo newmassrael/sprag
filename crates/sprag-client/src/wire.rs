@@ -95,8 +95,8 @@ use sprag_host::wire::{
     find_slot_for, project_slot_for, regex_slot_for,
 };
 use sprag_host::{
-    CellFrame, HostClient, PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneNotification,
-    PaneScrollFacts, Project, UserConfig, mux_action_path, pane_input_path,
+    CellFrame, HostClient, PaneAgent, PaneClipboardQuery, PaneClipboardWrite, PaneFind,
+    PaneNotification, PaneScrollFacts, Project, UserConfig, mux_action_path, pane_input_path,
 };
 use sprag_input::{Modifiers, MouseButton, MouseEventKind, MouseInput};
 use sprag_rpc::{
@@ -216,6 +216,11 @@ struct WirePane {
     /// dynamic — re-adopted each wake; the pane pointer oracle reads it to decide whether to CAPTURE
     /// a press AND, from the level, whether to forward drag / bare motion.
     mouse_protocol: MouseProtocol,
+    /// What the AGENT in this pane is doing (H3's `agent` key), `None` for a pane no manifest claims.
+    /// Host-authoritative + dynamic like [`Self::notification`] — re-adopted every wake, INCLUDING
+    /// back to `None`, because an agent that exits leaves a shell behind and a title still saying
+    /// "working" would be the one failure this fact exists to prevent.
+    agent: Option<PaneAgent>,
     frame: CellFrame,
     /// The GUI's tracked grid `(cols, rows)`: seeded from the host at boot, advanced only
     /// when a `resize` RPC SUCCEEDS (so the reflow no-op guard reads it with no
@@ -1791,6 +1796,22 @@ impl HostClient for WireHost {
             .and_then(|pane| pane.notification.clone())
     }
 
+    /// The pane's agent verdict (H3), served from the same poll-refreshed mirror as
+    /// [`Self::pane_notification`] and re-adopted each wake — so a state that MOVED reaches a title
+    /// on the wake that carried it, and a pane whose agent exited stops claiming one.
+    ///
+    /// Wake-stale by exactly one poll, which is the same staleness every other fact on this mirror
+    /// carries and is bounded by the same thing: the daemon bumps the scene revision when a verdict
+    /// publishes (H3's D9 schedules a bump for the settle window's expiry precisely so an absence-based
+    /// state does not wait for the next keystroke), so the wake this reads is the one the change
+    /// caused.
+    fn pane_agent(&self, id: PaneId) -> Option<PaneAgent> {
+        self.lock_cache()
+            .iter()
+            .find(|pane| pane.id == id)
+            .and_then(|pane| pane.agent.clone())
+    }
+
     /// Served from the same poll-refreshed mirror as [`Self::pane_notification`], re-adopted each
     /// wake, so the bell count reflects the host's latest.
     fn pane_bell_seq(&self, id: PaneId) -> u64 {
@@ -2057,6 +2078,11 @@ struct PaneSeed {
     /// The pane's live mouse-tracking protocol level, parsed from the additive `mouse` wire token
     /// ([`MouseProtocol::from_wire_str`]); `None` when the key is omitted (no tracking / older daemon).
     mouse_protocol: MouseProtocol,
+    /// What the AGENT in this pane is doing (H3), `None` when the wire omits the `agent` key — a pane
+    /// no manifest claims, or a pre-H3 daemon. Those flatten together on purpose: both mean "this
+    /// host is telling me nothing about an agent here", which is what a surface must render as
+    /// silence rather than as `idle`.
+    agent: Option<PaneAgent>,
     dims: (u16, u16),
     /// What a fetch of this pane's CELLS would depend on, as the host reported it
     /// ([`sprag_grid::ProjectionToken`]). `None` when the wire omits the key — an older daemon, or
@@ -2095,6 +2121,9 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
             // ADDITIVE: the `mouse` key is a protocol-level token present only while the child is
             // tracking; parse it back to the level (absent / unknown -> None) via the vt SSOT.
             let mouse_protocol = MouseProtocol::from_wire_str(pane["mouse"].as_str());
+            // ADDITIVE: the `agent` key rides only a pane with a KNOWN agent state (H3's D8), so an
+            // absent key is the honest "no agent here" and never a defaulted state.
+            let agent = parse_agent(&pane["agent"]);
             let cols = u16::try_from(pane["cols"].as_u64().unwrap_or(1)).unwrap_or(1);
             let rows = u16::try_from(pane["rows"].as_u64().unwrap_or(1)).unwrap_or(1);
             // ADDITIVE: absent (or unparseable) reads as `None`, which makes this pane fetch
@@ -2113,11 +2142,33 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
                 clipboard_query,
                 images,
                 mouse_protocol,
+                agent,
                 dims: (cols, rows),
                 projection,
             })
         })
         .collect()
+}
+
+/// Parse the additive `agent` object (`{state, name?, rule?, seq}`) back into a [`PaneAgent`].
+///
+/// The `state` token is REQUIRED and is what makes the value exist: a missing key, `null`, a
+/// non-object, or an object without a state string all read as `None` — "this host is saying nothing
+/// about an agent in this pane". Nothing is defaulted, for [`parse_child_exit`]'s reason one state
+/// further on: a defaulted `"idle"` would tell a user an agent was waiting for them in a pane that
+/// holds a shell.
+///
+/// The token is carried VERBATIM rather than matched against this build's vocabulary, so a daemon
+/// newer than its client can name a state this client has never heard of and have it reach a
+/// surface. `seq` defaults to `0` because it is a change COUNTER — a client compares it with the last
+/// one it saw, and 0 is the honest "no change seen yet" for a daemon that omitted it.
+fn parse_agent(value: &Value) -> Option<PaneAgent> {
+    Some(PaneAgent {
+        state: value["state"].as_str()?.to_owned(),
+        name: value["name"].as_str().map(str::to_owned),
+        rule: value["rule"].as_str().map(str::to_owned),
+        seq: value["seq"].as_u64().unwrap_or(0),
+    })
 }
 
 /// Parse the additive `child_exit` object (`{code, signal?}`) back into a [`PaneExit`].
@@ -2537,6 +2588,11 @@ fn merge_panes(
             // host-authoritative + dynamic: re-adopt the query's mouse-tracking level each wake, so
             // the capture gate + drag/motion forwarding track the child enabling / disabling reporting.
             mouse_protocol: seed.mouse_protocol,
+            // host-authoritative + dynamic, and re-adopted for the reason `child_exit` is: the value
+            // KEEPS CHANGING while the pane lives, and the change that matters most is back to
+            // `None` — an agent that exits leaves its shell in the pane, and a kept verdict would
+            // leave that shell wearing the agent's last state for the life of the client.
+            agent: seed.agent.clone(),
             // The token is stored ONLY beside a frame this wake actually fetched. A survivor whose
             // fetch was skipped keeps the token its frame was taken under, and a survivor whose
             // fetch was ATTEMPTED and missed keeps it too — adopting the query's token beside an
@@ -2710,6 +2766,10 @@ fn spawn_poll(
                                 clipboard_query: pane.clipboard_query,
                                 images: pane.images.clone(), // keep last-known images too
                                 mouse_protocol: pane.mouse_protocol, // keep last-known tracking level too
+                                // Keep the last-known verdict: a query that failed says nothing
+                                // about the agent, and dropping it would blank a "blocked" title on
+                                // a hiccup — the one moment a user most needs it to still be there.
+                                agent: pane.agent.clone(),
                                 dims: pane.dims,
                                 // Keep the token the held frame was taken under: the re-query
                                 // failed, so the host's current one is unknown, and inventing one
@@ -3848,6 +3908,7 @@ mod tests {
             clipboard_query: None,
             images: Vec::new(),
             mouse_protocol: MouseProtocol::None,
+            agent: None,
             frame: frame(3),
             dims: (80, 24),
         }
@@ -3867,6 +3928,7 @@ mod tests {
             clipboard_query: None,
             images: Vec::new(),
             mouse_protocol: MouseProtocol::None,
+            agent: None,
             dims: (80, 24),
             projection: current,
         }
@@ -3988,6 +4050,7 @@ mod tests {
                 clipboard_query: None,
                 images: Vec::new(),
                 mouse_protocol: MouseProtocol::None,
+                agent: None,
                 projection: None,
                 frame: frame(3),
                 dims: (80, 24),
@@ -4004,6 +4067,7 @@ mod tests {
                 clipboard_query: None,
                 images: Vec::new(),
                 mouse_protocol: MouseProtocol::None,
+                agent: None,
                 projection: None,
                 frame: frame(3),
                 dims: (40, 12),
@@ -4025,6 +4089,7 @@ mod tests {
                 clipboard_query: None,
                 images: Vec::new(),
                 mouse_protocol: MouseProtocol::None,
+                agent: None,
                 projection: None,
                 dims: (100, 30),
             },
@@ -4040,6 +4105,7 @@ mod tests {
                 clipboard_query: None,
                 images: Vec::new(),
                 mouse_protocol: MouseProtocol::None,
+                agent: None,
                 projection: None,
                 dims: (80, 24),
             },
@@ -4055,6 +4121,7 @@ mod tests {
                 clipboard_query: None,
                 images: Vec::new(),
                 mouse_protocol: MouseProtocol::None,
+                agent: None,
                 projection: None,
                 dims: (80, 24),
             },
@@ -4105,6 +4172,7 @@ mod tests {
             clipboard_query: None,
             images: Vec::new(),
             mouse_protocol: MouseProtocol::None,
+            agent: None,
             frame: frame(3),
             projection: None,
             dims: (80, 24),
@@ -4121,6 +4189,7 @@ mod tests {
             clipboard_query: None,
             images: Vec::new(),
             mouse_protocol: MouseProtocol::None,
+            agent: None,
             projection: None,
             dims: (80, 24),
         }];
@@ -4158,6 +4227,7 @@ mod tests {
             clipboard_query: None,
             images: Vec::new(),
             mouse_protocol: MouseProtocol::None,
+            agent: None,
             frame: frame(3),
             projection: None,
             dims: (80, 24),
@@ -4177,6 +4247,7 @@ mod tests {
             clipboard_query: None,
             images: Vec::new(),
             mouse_protocol: MouseProtocol::None,
+            agent: None,
             projection: None,
             dims: (80, 24),
         }];
@@ -4212,6 +4283,7 @@ mod tests {
                 clipboard_query: None,
                 images: Vec::new(),
                 mouse_protocol: MouseProtocol::None,
+                agent: None,
                 projection: None,
                 frame: frame(3),
                 dims: (80, 24),
@@ -4228,6 +4300,7 @@ mod tests {
                 clipboard_query: None,
                 images: Vec::new(),
                 mouse_protocol: MouseProtocol::None,
+                agent: None,
                 projection: None,
                 frame: frame(3),
                 dims: (80, 24),
@@ -4246,6 +4319,7 @@ mod tests {
                 clipboard_query: None,
                 images: Vec::new(),
                 mouse_protocol: MouseProtocol::None,
+                agent: None,
                 projection: None,
                 dims: (80, 24),
             },
@@ -4261,6 +4335,7 @@ mod tests {
                 clipboard_query: None,
                 images: Vec::new(),
                 mouse_protocol: MouseProtocol::None,
+                agent: None,
                 projection: None,
                 dims: (80, 24),
             },
@@ -4311,6 +4386,81 @@ mod tests {
             .expect("a present object still parses");
         assert_eq!(n.seq, 0, "a non-numeric seq clamps to 0");
         assert_eq!(n.title, None, "an absent title is None");
+    }
+
+    /// [`parse_agent`] maps the additive `agent` object and NEVER manufactures a state.
+    ///
+    /// The rejections are the assertions that matter. `idle` means "an agent is waiting for you", so a
+    /// defaulted state would put that on every shell in the workspace — and D3 makes the distinction
+    /// between "not an agent" and "an agent at rest" mandatory precisely because they are opposite
+    /// instructions to the person reading a pane list.
+    ///
+    /// REVERT-PROOF: default the state (`unwrap_or("idle")`) and the three rejection assertions fail
+    /// together.
+    #[test]
+    fn parse_agent_maps_the_wire_object_and_never_invents_a_state() {
+        let a = parse_agent(&json!({
+            "state": "blocked", "name": "claude", "rule": "dialog-choice-list", "seq": 4
+        }))
+        .expect("a well-formed verdict parses");
+        assert_eq!(a.state, "blocked");
+        assert_eq!(a.name.as_deref(), Some("claude"));
+        assert_eq!(a.rule.as_deref(), Some("dialog-choice-list"));
+        assert_eq!(a.seq, 4);
+
+        // A pane no manifest claims, an older daemon, and a garbled object all read as silence.
+        assert!(parse_agent(&Value::Null).is_none(), "null ⇒ None");
+        assert!(parse_agent(&json!("nope")).is_none(), "a string ⇒ None");
+        assert!(
+            parse_agent(&json!({ "seq": 2 })).is_none(),
+            "an object with no state is not a state",
+        );
+
+        // `name` and `rule` are optional ON THE WIRE (R251: a modal can cover the fingerprint), and a
+        // state token this build has never heard of is carried rather than dropped — the daemon may be
+        // newer than its client.
+        let bare = parse_agent(&json!({ "state": "compacting" })).expect("a state alone is enough");
+        assert_eq!(
+            (bare.state.as_str(), bare.name, bare.rule, bare.seq),
+            ("compacting", None, None, 0),
+        );
+    }
+
+    /// A pane whose agent EXITED stops claiming one: the merge re-adopts the query's verdict,
+    /// including back to `None`.
+    ///
+    /// This is the direction that would rot silently. A kept verdict still looks right on every pane
+    /// that has one, and the pane it is wrong about is the shell an agent left behind — which would go
+    /// on wearing "working" in every title surface for the life of the client.
+    ///
+    /// REVERT-PROOF: carry the prior value when the seed has none (`seed.agent.clone().or(prior…)`)
+    /// and the second assertion fails while the first still passes.
+    #[test]
+    fn a_survivor_re_adopts_the_hosts_verdict_including_its_absence() {
+        let verdict = PaneAgent {
+            state: "working".to_owned(),
+            name: Some("claude".to_owned()),
+            rule: Some("spinner-glyph".to_owned()),
+            seq: 2,
+        };
+        // The pane is cached with no verdict and the host now reports one: the survivor adopts it.
+        let mut seed = seeded(1, None);
+        seed.agent = Some(verdict.clone());
+        let merged = merge_panes(&[cached(1, None)], &[seed], &[(PaneId(1), frame(4))]);
+        assert_eq!(
+            merged[0].agent.as_ref().map(|a| a.state.as_str()),
+            Some("working"),
+            "a verdict that appeared reaches the cache on the wake that carried it",
+        );
+
+        // ...and now the agent has exited, so the host says nothing about this pane again.
+        let mut held = cached(1, None);
+        held.agent = Some(verdict);
+        let merged = merge_panes(&[held], &[seeded(1, None)], &[(PaneId(1), frame(5))]);
+        assert!(
+            merged[0].agent.is_none(),
+            "the absence is adopted too — the shell left behind is not still an agent",
+        );
     }
 
     /// A connected [`HostConn`] whose server RECORDS every request it receives and answers each
