@@ -1362,8 +1362,11 @@ mod tests {
     /// for you", so inventing one for a pane running a shell would send a sibling agent to interrupt a
     /// human who was never asked for anything.
     ///
-    /// REVERT-PROOF: give `state` a fallback (`unwrap_or("idle")`) and the three rejection assertions
-    /// fail together.
+    /// REVERT-PROOF: give `state` a fallback (`unwrap_or("idle")`) and TWO of the three rejections
+    /// fail — the `null` and the state-less object. The missing-key case survives it, because
+    /// `entry.get("agent")?` has already short-circuited; measured rather than assumed, and worth
+    /// naming because that third case is the only one a real daemon produces (it omits the key for a
+    /// pane no manifest claims), which is why `tests/mcp_stdio.rs` cannot hold this guard at all.
     #[test]
     fn parse_agent_info_reads_a_verdict_and_never_invents_one() {
         let claimed = parse_agent_info(&json!({
