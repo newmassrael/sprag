@@ -37,6 +37,12 @@ sprag-vt = { workspace = true }
 # GridBuffer (the cells this crate paints) + QuitSink (the client's quit edge, which
 # the poll thread pulls when the daemon is gone). GPU-FREE: pinion's data layer.
 pinion-core = { workspace = true }
+# `ProjectionToken` — the per-row damage stamps a frame arrives with, which is what lets
+# `PaintCache` rebuild only the rows that can have changed. Promoted OUT of [dev-dependencies],
+# where it was for the paint tests' real projection: a production `use` from a dev-only
+# dependency does not build. GPU-free: its whole closure is pinion-core + sprag-vt, both of
+# which this crate already depends on.
+sprag-grid = { workspace = true }
 # The terminal toolkit: Surface + its terminfo renderer (paint), and the local
 # terminal's raw/alternate-screen control. NOT a new dependency — sprag-vt already
 # parses what panes EMIT with it, and this crate writes what a terminal DISPLAYS.
@@ -46,11 +52,10 @@ termwiz = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-# (sprag-vt is a normal dependency above — the VT battery the paint tests drive real
-# escape sequences through is the same crate the mouse mirror reads its levels from.)
-# The real projection, which is what turns those cells into the
-# GridBuffer a client receives.
-sprag-grid = { workspace = true }
+# (sprag-vt and sprag-grid are normal dependencies above — the VT battery the paint tests
+# drive real escape sequences through is the same crate the mouse mirror reads its levels
+# from, and the projection the tests build their GridBuffers with is the same one
+# `PaintCache` reads tokens from.)
 # The PTY gate (tests/pty_round_trip.rs) needs a real pseudoterminal to run the shipped
 # binary on — the same abstraction the producer gives every pane, used here from the
 # other side. NOT a runtime dependency: this client owns a terminal, it never makes one.

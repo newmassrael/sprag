@@ -47,6 +47,7 @@
 use std::sync::{Arc, Mutex};
 
 use pinion_core::GridBuffer;
+use sprag_grid::ProjectionToken;
 use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{
     CommandBuilder, HistoryLimitSource, LayoutSnapshot, LayoutWire, Pane, PaneId, PanePtyError,
@@ -277,6 +278,32 @@ pub trait HostClient {
     /// into scrollback (self-clamped to the retained depth). A `1x1` placeholder if
     /// `id` is absent.
     fn pane_cells(&self, id: PaneId, offset_lines: usize) -> GridBuffer;
+
+    /// [`pane_cells`](Self::pane_cells) TOGETHER WITH the token those cells were projected under —
+    /// what a client needs to repaint only the rows the producer stamped.
+    ///
+    /// **One call rather than two, and that is the whole reason it exists.** A client that read the
+    /// cells and then the token would be reading two facts a frame apart: a fetch landing between
+    /// them pairs OLD cells with a NEW token, the client stores the new token beside the old cells,
+    /// and every row those cells still owe goes unpainted for as long as nothing else stamps it.
+    /// Answering both under one lock is what makes the pair describe one frame.
+    ///
+    /// `None` for the token means "this host cannot say", and every caller must read it as "rebuild
+    /// everything" — the answer that is never wrong. It is the default here, so an impl need not
+    /// implement it; it is also the honest answer for a NON-ZERO `offset_lines`, because the token
+    /// summarises the live screen and says nothing about a projection windowed into scrollback.
+    ///
+    /// See [`ProjectionToken`] for the one direction it promises: equal token ⇒ equal projection,
+    /// never the converse. A row whose stamp is unchanged is a row a painter may leave alone — the
+    /// same invariant pinion's `TextGrid` already rests on, and the reason the emulator stamps
+    /// EVERY row on a palette change.
+    fn pane_cells_and_token(
+        &self,
+        id: PaneId,
+        offset_lines: usize,
+    ) -> (GridBuffer, Option<ProjectionToken>) {
+        (self.pane_cells(id, offset_lines), None)
+    }
 
     /// Pane `id`'s non-cell per-frame facts ([`PaneScrollFacts`]): scrollback depth +
     /// visible rows. A zero-depth / one-row default if `id` is absent.

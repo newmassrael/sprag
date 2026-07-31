@@ -1131,6 +1131,27 @@ impl HostClient for WireHost {
             .map_or_else(|| self.live_cells(id), |frame| frame.cells)
     }
 
+    /// The live cells and the token they arrived with, read under ONE lock.
+    ///
+    /// One `lock_cache` and not two, which is the whole point: the poll thread replaces a pane's
+    /// frame and its token together, so a caller taking them in two calls can straddle that swap
+    /// and pair last wake's cells with this wake's token. It would then believe it had painted rows
+    /// it never received — see [`HostClient::pane_cells_and_token`].
+    ///
+    /// A non-zero offset answers no token: this client's own scrolled fetch re-projects the screen
+    /// windowed into scrollback, and the token summarises the LIVE screen. Answering the live
+    /// token beside a scrolled buffer would let a painter skip rows it has never drawn.
+    fn pane_cells_and_token(
+        &self,
+        id: PaneId,
+        offset_lines: usize,
+    ) -> (GridBuffer, Option<ProjectionToken>) {
+        if offset_lines != 0 {
+            return (self.pane_cells(id, offset_lines), None);
+        }
+        cells_and_token(&self.lock_cache(), id)
+    }
+
     /// The mirrored arrangement — a lock and a clone, never a socket call, so the paint
     /// path can read it every frame to notice its projection is stale (see `LayoutMirror`).
     ///
@@ -2327,6 +2348,22 @@ fn boot_panes(
 /// catch — and it is neither transient nor self-correcting: every wake will fail the same way and
 /// the window will show nothing at all. Logging both at `debug` made the second one look like the
 /// first, so the shape change in R222 that made the skew reachable is the reason for the split.
+/// Pane `id`'s live cells and the token they were fetched under, read out of ONE borrow of the
+/// mirror — the body of [`HostClient::pane_cells_and_token`], split out so the pairing can be
+/// asserted without a daemon.
+///
+/// A pane the mirror does not hold answers the `1x1` placeholder every absent-id read here answers,
+/// with no token: nothing has been painted for it, so there is nothing a later frame could skip.
+fn cells_and_token(
+    cache: &[WirePane],
+    id: PaneId,
+) -> (GridBuffer, Option<sprag_grid::ProjectionToken>) {
+    cache.iter().find(|pane| pane.id == id).map_or_else(
+        || (GridBuffer::new(1, 1), None),
+        |pane| (pane.frame.cells.clone(), pane.projection.clone()),
+    )
+}
+
 fn fetch_frames(conn: &mut HostConn, ids: &[PaneId]) -> Vec<(PaneId, CellFrame)> {
     let mut fetched = Vec::with_capacity(ids.len());
     for &id in ids {
@@ -3833,6 +3870,31 @@ mod tests {
             dims: (80, 24),
             projection: current,
         }
+    }
+
+    /// The paint path's read: a pane's cells and the token they arrived under come back TOGETHER.
+    ///
+    /// The pairing is the claim, not either half. A client that answered the cells and dropped the
+    /// token would paint correctly and rebuild every row of every pane on every frame — invisible
+    /// from any screen, which is why it is asserted here rather than left to the live gate.
+    #[test]
+    fn a_panes_cells_come_back_with_the_token_they_were_fetched_under() {
+        let mirror = vec![cached(1, Some(token(9))), cached(2, None)];
+
+        let (cells, held) = cells_and_token(&mirror, PaneId(1));
+        assert_eq!(held, Some(token(9)), "the token must ride with the cells");
+        assert_eq!(cells.cols(), frame(3).cells.cols());
+
+        assert_eq!(
+            cells_and_token(&mirror, PaneId(2)).1,
+            None,
+            "a pane the host could not vouch for must not be given a token",
+        );
+        assert_eq!(
+            cells_and_token(&mirror, PaneId(7)).1,
+            None,
+            "and neither must a pane the mirror does not hold",
+        );
     }
 
     /// THE fetch gate: a pane whose projection token has not moved is not re-fetched, and every

@@ -41,6 +41,8 @@ use pinion_core::{
     CellWidth, CursorShape as PinCursorShape, GridBuffer, Hyperlink as PinHyperlink, HyperlinkId,
     TermCell, TermColor, UnderlineStyle as PinUnderlineStyle,
 };
+use sprag_grid::ProjectionToken;
+use sprag_terminal::PaneId;
 use sprag_terminal::tiling::{Divider, Rect};
 use termwiz::cell::{Blink, CellAttributes, Intensity, Underline, unicode_column_width};
 use termwiz::color::{ColorAttribute, SrgbaTuple};
@@ -91,6 +93,25 @@ const BLANK: &str = " ";
 /// cluster that clobbered its neighbour, so the surface ends up right either way.
 #[must_use]
 pub fn pane_changes(grid: &GridBuffer, area: Rect) -> Vec<Change> {
+    pane_rows_changes(grid, area, 0..area.rows)
+}
+
+/// [`pane_changes`] for a chosen subset of the rectangle's rows, the others left to whatever the
+/// surface already holds.
+///
+/// Row indices are the RECTANGLE's, not the screen's — the same coordinates the loop below counts
+/// in — because the caller choosing them ([`PaintCache`]) is comparing a pane's own damage stamps,
+/// which are numbered from the pane's first row.
+///
+/// Skipping a row is only ever correct against something that moves whenever the row's cells would
+/// differ, and it is not this function's place to decide that: it writes what it is told and
+/// nothing else. Every guarantee lives in [`PaintCache`].
+#[must_use]
+fn pane_rows_changes(
+    grid: &GridBuffer,
+    area: Rect,
+    rows: impl Iterator<Item = u16>,
+) -> Vec<Change> {
     if area.is_empty() {
         return Vec::new();
     }
@@ -100,7 +121,7 @@ pub fn pane_changes(grid: &GridBuffer, area: Rect) -> Vec<Change> {
     // than one per cell — the table is interned on the producer's side for the same reason.
     let mut interned: Option<(HyperlinkId, Arc<Hyperlink>)> = None;
 
-    for row in 0..area.rows {
+    for row in rows {
         // Every row is anchored absolutely rather than by trusting where the previous row's text
         // left the cursor: a row whose cells fill the last column would otherwise depend on the
         // terminal's autowrap setting, which is not this crate's to assume. With several panes on
@@ -464,6 +485,157 @@ pub fn cursor_changes(grid: &GridBuffer, area: Rect) -> Vec<Change> {
     changes
 }
 
+/// One pane's contribution to a frame: where it goes, what it holds, and the stamp that says how
+/// much of it can have changed.
+///
+/// The cells and the token are taken TOGETHER
+/// ([`HostClient::pane_cells_and_token`](sprag_host::HostClient::pane_cells_and_token)) and travel
+/// together from there on, because a token that does not describe the buffer beside it is worse
+/// than no token at all — it licenses a skip of rows the client never received.
+pub struct PanePaint {
+    /// Which pane.
+    pub pane: PaneId,
+    /// Its rectangle on THIS terminal — already intersected with the screen, so it is what will
+    /// actually be written.
+    pub area: Rect,
+    /// The cells to write.
+    pub cells: GridBuffer,
+    /// The projection token those cells arrived under, or [`None`] for "cannot say".
+    pub token: Option<ProjectionToken>,
+}
+
+/// What was last written to the terminal's surface, so a frame writes only the rows that can differ
+/// from it.
+///
+/// # Why this exists
+///
+/// Building a pane's change list is `O(cells)` and it was being done in full for every frame. On
+/// the input path that is once per KEYSTROKE — measured at 1.14 ms per repaint for an 80x24 pane
+/// and **17.9 ms for 240x64**, which is more than a 60 Hz frame to put one echoed character on
+/// screen. The bytes that actually reach the terminal were never the cost: `Surface`'s own diff
+/// already reduces them to almost nothing (4.2 ms of flushing against 448 ms of building, over the
+/// same burst). So the work to remove is the BUILDING, and the only safe way to skip it is a token
+/// that moves whenever the answer would.
+///
+/// # What makes a skip safe
+///
+/// [`ProjectionToken`]'s `row_generations` are the producer's own per-row damage stamps, and the
+/// invariant that an unchanged stamp means unchanged cells is not one this cache introduces: it is
+/// the one pinion's `TextGrid` already rests on, and the reason `sprag-vt` stamps EVERY row on a
+/// palette change rather than only the cells it re-colours. This is a second consumer of an
+/// existing guarantee, not a new guarantee.
+///
+/// Everything the stamps do NOT cover invalidates the pane WHOLE, and each is a field the token
+/// carries for exactly that reason:
+///
+/// * **the alternate screen** — a switch replaces the content while both screens keep their own
+///   stamp counters, so equal stamps across a switch would mean nothing;
+/// * **the column count** — a resize COPIES surviving rows' stamps (documented in
+///   [`ProjectionToken`]), so a width change is invisible to them;
+/// * **the row count** — the same argument on the other axis.
+///
+/// And what the token says nothing about at all is the SURFACE: the cache describes a screen, so
+/// any change to which pane owns which rectangle discards it entirely ([`Self::changes`] compares
+/// the whole arrangement), as does a caller that blanked the surface ([`Self::forget`]).
+///
+/// A pane whose host answers no token is never remembered, so it is rebuilt every frame — the
+/// behaviour of every client before this existed.
+#[derive(Default)]
+pub struct PaintCache {
+    /// Which pane owned which rectangle when the remembered rows were written. Compared WHOLE
+    /// rather than per pane: a pane's own rectangle being unchanged does not say another pane has
+    /// not written over it, and the cheapest way to never have to make that argument is not to
+    /// rely on it.
+    arrangement: Vec<(PaneId, Rect)>,
+    /// The token each pane's surface rows were built from. Absent for a pane whose host could not
+    /// say, which is what makes "cannot say" rebuild rather than skip.
+    tokens: std::collections::HashMap<PaneId, ProjectionToken>,
+}
+
+impl PaintCache {
+    /// Forget everything: whatever is on the surface is no longer known.
+    ///
+    /// The caller's obligation on any [`Change::ClearScreen`] — a blanked surface holds none of
+    /// the rows this cache would otherwise let a frame skip.
+    ///
+    /// The token clear is NOT independently falsifiable and is kept anyway, which is worth saying
+    /// rather than leaving for a reader to discover: clearing the arrangement alone already forces
+    /// the next frame whole, because any frame with a pane in it has an arrangement the empty one
+    /// cannot equal. That argument holds only while no caller asks for an empty frame, and this is
+    /// a public type — so `forget` clears what its name says it clears, and does not rest on a
+    /// property of its callers.
+    pub fn forget(&mut self) {
+        self.arrangement.clear();
+        self.tokens.clear();
+    }
+
+    /// The changes `panes` still owe the surface, in the order they were given.
+    ///
+    /// One call for the WHOLE frame rather than one per pane, so the arrangement check cannot be
+    /// forgotten by a caller that painted the panes in a loop.
+    #[must_use]
+    pub fn changes(&mut self, panes: &[PanePaint]) -> Vec<Change> {
+        let arrangement: Vec<(PaneId, Rect)> =
+            panes.iter().map(|drawn| (drawn.pane, drawn.area)).collect();
+        if arrangement != self.arrangement {
+            self.tokens.clear();
+            self.arrangement = arrangement;
+        }
+
+        let mut changes = Vec::new();
+        for drawn in panes {
+            let reusable = drawn
+                .token
+                .as_ref()
+                .zip(self.tokens.get(&drawn.pane))
+                .filter(|(now, then)| comparable(now, then));
+            match reusable {
+                Some((now, then)) => {
+                    let stamped = drawn.area.rows.min(row_count(now));
+                    changes.extend(pane_rows_changes(
+                        &drawn.cells,
+                        drawn.area,
+                        (0..drawn.area.rows).filter(|row| {
+                            // Past the stamps is past what this cache can vouch for, so those rows
+                            // are always rebuilt. In practice there are none: they are the tail of
+                            // a rectangle taller than the grid, which is a pane still catching up
+                            // to a resize — and a resize has already discarded the arrangement.
+                            *row >= stamped
+                                || now.row_generations[usize::from(*row)]
+                                    != then.row_generations[usize::from(*row)]
+                        }),
+                    ));
+                }
+                None => changes.extend(pane_changes(&drawn.cells, drawn.area)),
+            }
+            match &drawn.token {
+                Some(token) => self.tokens.insert(drawn.pane, token.clone()),
+                // A pane the host cannot vouch for must not leave a token behind that a later
+                // frame would compare against.
+                None => self.tokens.remove(&drawn.pane),
+            };
+        }
+        changes
+    }
+}
+
+/// Whether two tokens differ ONLY in ways their `row_generations` can account for.
+///
+/// Everything else about a projection that can change without stamping a row is checked here
+/// instead, and the CURSOR is deliberately not among them: it moves on nearly every keystroke and
+/// is painted by [`cursor_changes`] from the same grid, so treating it as a whole-pane
+/// invalidation would rebuild every frame and save nothing.
+fn comparable(now: &ProjectionToken, then: &ProjectionToken) -> bool {
+    now.screen == then.screen
+        && now.cols == then.cols
+        && now.row_generations.len() == then.row_generations.len()
+}
+
+/// A token's row count, clamped into the row unit a rectangle counts in.
+fn row_count(token: &ProjectionToken) -> u16 {
+    u16::try_from(token.row_generations.len()).unwrap_or(u16::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,6 +671,286 @@ mod tests {
     /// A one-row buffer of `cells`, padded with blanks to `cols`.
     fn row(cols: u16, cells: Vec<TermCell>) -> GridBuffer {
         GridBuffer::new(cols, 1).with_row(0, cells)
+    }
+
+    /// A token over `stamps`, everything else at the value a fresh main screen carries.
+    fn token(stamps: &[u64], cols: u16) -> ProjectionToken {
+        ProjectionToken {
+            row_generations: stamps.to_vec(),
+            cursor: GridCursor::default(),
+            screen: pinion_core::ScreenKind::Main,
+            cols,
+            scrollback_len: 0,
+        }
+    }
+
+    /// A `cols` x `stamps.len()` buffer whose row `r` is `text[r]`, blank-padded.
+    fn grid_of(cols: u16, text: &[&str]) -> GridBuffer {
+        let mut grid = GridBuffer::new(cols, u16::try_from(text.len()).expect("a small grid"));
+        for (index, line) in text.iter().enumerate() {
+            grid = grid.with_row(
+                u16::try_from(index).expect("a small grid"),
+                line.chars()
+                    .map(|c| cell(c.to_string()))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        grid
+    }
+
+    /// One pane filling a surface of its own size.
+    fn whole(pane: u64, grid: &GridBuffer, token: Option<ProjectionToken>) -> PanePaint {
+        PanePaint {
+            pane: PaneId(pane),
+            area: Rect::screen(grid.cols(), grid.rows()),
+            cells: grid.clone(),
+            token,
+        }
+    }
+
+    /// **THE claim.** A row whose stamp did not move is not written again — and the one that moved
+    /// is. Asserted on the CHANGE LIST rather than the screen, because a screen that looks right
+    /// cannot tell a skipped row from a rewritten one, which is the whole difference being made.
+    #[test]
+    fn only_the_rows_whose_stamps_moved_are_written_again() {
+        let first = grid_of(4, &["ab", "cd", "ef"]);
+        let mut cache = PaintCache::default();
+        let all = cache.changes(&[whole(1, &first, Some(token(&[1, 1, 1], 4)))]);
+
+        let second = grid_of(4, &["ab", "ZZ", "ef"]);
+        let some = cache.changes(&[whole(1, &second, Some(token(&[1, 2, 1], 4)))]);
+
+        assert_eq!(
+            some.len() * 3,
+            all.len(),
+            "one row of three must cost exactly a third of three: {} vs {}",
+            some.len(),
+            all.len(),
+        );
+        let mut surface = Surface::new(4, 3);
+        surface.add_changes(all);
+        surface.add_changes(some);
+        assert_eq!(
+            surface.screen_chars_to_string(),
+            painted(&second).screen_chars_to_string(),
+            "and the screen must still be what a full rebuild would have drawn",
+        );
+    }
+
+    /// A frame that changes NOTHING writes nothing at all — the steady state a keystroke's
+    /// notification wakes every OTHER pane into.
+    #[test]
+    fn an_unchanged_pane_costs_no_changes_at_all() {
+        let grid = grid_of(4, &["ab", "cd"]);
+        let mut cache = PaintCache::default();
+        let _ = cache.changes(&[whole(1, &grid, Some(token(&[7, 7], 4)))]);
+        assert!(
+            cache
+                .changes(&[whole(1, &grid, Some(token(&[7, 7], 4)))])
+                .is_empty(),
+        );
+    }
+
+    /// No token means "cannot say", and the only safe reading of that is to rebuild — every frame,
+    /// not just the first, so a host that never answers is exactly the client that shipped before
+    /// this cache existed.
+    #[test]
+    fn a_pane_with_no_token_is_rebuilt_every_frame() {
+        let grid = grid_of(4, &["ab", "cd"]);
+        let mut cache = PaintCache::default();
+        let first = cache.changes(&[whole(1, &grid, None)]);
+        let second = cache.changes(&[whole(1, &grid, None)]);
+        assert!(!second.is_empty());
+        assert_eq!(first.len(), second.len());
+    }
+
+    /// A token that arrives AFTER one that did not must not be compared against nothing — and a
+    /// pane that stops answering must not leave a token behind for a later frame to trust.
+    #[test]
+    fn a_pane_that_stops_answering_forgets_what_it_said() {
+        let grid = grid_of(4, &["ab", "cd"]);
+        let mut cache = PaintCache::default();
+        let _ = cache.changes(&[whole(1, &grid, Some(token(&[1, 1], 4)))]);
+        let _ = cache.changes(&[whole(1, &grid, None)]);
+        assert!(
+            !cache
+                .changes(&[whole(1, &grid, Some(token(&[1, 1], 4)))])
+                .is_empty(),
+            "the token before the silence is not a description of what is on the surface now",
+        );
+    }
+
+    /// The three things a row stamp cannot see, each of which must rebuild the pane WHOLE.
+    ///
+    /// A resize copies surviving rows' stamps, so a width change is invisible to them; an
+    /// alternate-screen switch replaces the content while both screens keep their own counters; and
+    /// the row count is the same argument on the other axis.
+    #[test]
+    fn what_the_stamps_cannot_see_rebuilds_the_pane_whole() {
+        let grid = grid_of(4, &["ab", "cd"]);
+        let same = token(&[1, 1], 4);
+
+        for (what, moved) in [
+            (
+                "the alternate screen",
+                ProjectionToken {
+                    screen: pinion_core::ScreenKind::Alternate,
+                    ..same.clone()
+                },
+            ),
+            (
+                "a width change",
+                ProjectionToken {
+                    cols: 5,
+                    ..same.clone()
+                },
+            ),
+            (
+                "a row count change",
+                ProjectionToken {
+                    row_generations: vec![1, 1, 1],
+                    ..same.clone()
+                },
+            ),
+        ] {
+            let mut cache = PaintCache::default();
+            let _ = cache.changes(&[whole(1, &grid, Some(same.clone()))]);
+            assert!(
+                !cache.changes(&[whole(1, &grid, Some(moved))]).is_empty(),
+                "{what} must not be skipped over",
+            );
+        }
+    }
+
+    /// The cache describes a SCREEN, so a changed arrangement discards it — even for a pane whose
+    /// own rectangle and stamps are untouched.
+    ///
+    /// **Read off the surface, because that is the only place the defect is visible.** A split and
+    /// its undo return a pane to a rectangle it held before, with the same content and therefore
+    /// the same stamps — while the pane that sat beside it in between has written over half of it.
+    /// A cache comparing only that pane's own token would skip the rebuild and leave the neighbour's
+    /// text on screen, and every count in the frame would still look plausible: the assertion has
+    /// to be what the terminal SHOWS.
+    ///
+    /// The first version of this test asserted the frame was non-empty and passed with the
+    /// arrangement check deleted, because the joining pane's own changes were in the same list.
+    #[test]
+    fn a_changed_arrangement_discards_the_cache() {
+        let alone = grid_of(4, &["aaaa", "aaaa"]);
+        let stamps = token(&[1, 1], 4);
+        let left = grid_of(2, &["LL", "LL"]);
+        let right = grid_of(2, &["RR", "RR"]);
+        let half = |col: u16| Rect {
+            col,
+            row: 0,
+            cols: 2,
+            rows: 2,
+        };
+
+        let mut cache = PaintCache::default();
+        let mut surface = Surface::new(4, 2);
+        // Alone over the whole screen...
+        surface.add_changes(cache.changes(&[whole(1, &alone, Some(stamps.clone()))]));
+        // ...then split, so a neighbour owns the right half...
+        surface.add_changes(cache.changes(&[
+            PanePaint {
+                pane: PaneId(1),
+                area: half(0),
+                cells: left.clone(),
+                token: Some(stamps.clone()),
+            },
+            PanePaint {
+                pane: PaneId(2),
+                area: half(2),
+                cells: right,
+                token: Some(stamps.clone()),
+            },
+        ]));
+        // ...and then alone again, unchanged, which is where a per-pane comparison goes wrong.
+        surface.add_changes(cache.changes(&[whole(1, &alone, Some(stamps))]));
+
+        assert_eq!(
+            surface.screen_chars_to_string(),
+            painted(&alone).screen_chars_to_string(),
+            "the neighbour's cells must not survive the pane's return to the whole screen",
+        );
+    }
+
+    /// A rectangle TALLER than the pane's stamps is written past them, not indexed past them.
+    ///
+    /// The rectangle is the authority and the grid catches up to a resize a wake behind it, so a
+    /// pane routinely owns rows its own buffer does not have. Those rows are outside anything the
+    /// stamps vouch for and are always rebuilt — and the guard that says so is also what keeps a
+    /// row index from running off the end of the token, which is why this test drives four rows
+    /// against two stamps rather than asserting on a count.
+    #[test]
+    fn a_rectangle_taller_than_the_stamps_is_written_not_indexed() {
+        let grid = grid_of(4, &["ab", "cd"]);
+        let tall = Rect {
+            col: 0,
+            row: 0,
+            cols: 4,
+            rows: 4,
+        };
+        let stamps = token(&[1, 1], 4);
+        let mut cache = PaintCache::default();
+        let mut surface = Surface::new(4, 4);
+        for _ in 0..2 {
+            surface.add_changes(cache.changes(&[PanePaint {
+                pane: PaneId(1),
+                area: tall,
+                cells: grid.clone(),
+                token: Some(stamps.clone()),
+            }]));
+        }
+        let mut whole_every_time = Surface::new(4, 4);
+        whole_every_time.add_changes(pane_changes(&grid, tall));
+        assert_eq!(
+            surface.screen_chars_to_string(),
+            whole_every_time.screen_chars_to_string(),
+        );
+    }
+
+    /// A blanked surface holds nothing, so the cache must not answer as if it did.
+    #[test]
+    fn forgetting_makes_the_next_frame_whole() {
+        let grid = grid_of(4, &["ab", "cd"]);
+        let stamps = token(&[1, 1], 4);
+        let mut cache = PaintCache::default();
+        let full = cache.changes(&[whole(1, &grid, Some(stamps.clone()))]);
+        cache.forget();
+        assert_eq!(
+            cache.changes(&[whole(1, &grid, Some(stamps))]).len(),
+            full.len(),
+        );
+    }
+
+    /// **The end-to-end safety claim, read off a screen.** A surface driven through a run of frames
+    /// THROUGH the cache holds exactly what a surface rebuilt in full every frame holds.
+    ///
+    /// Written this way because the failure this guards is invisible from any single frame: a
+    /// wrongly skipped row shows the PREVIOUS frame's text, which is a perfectly plausible screen
+    /// until it is compared with the one that was owed.
+    #[test]
+    fn a_cached_run_of_frames_paints_what_a_full_rebuild_paints() {
+        let frames = [
+            (grid_of(6, &["one", "two", "six"]), token(&[1, 1, 1], 6)),
+            (grid_of(6, &["one", "TWO", "six"]), token(&[1, 2, 1], 6)),
+            (grid_of(6, &["ONE", "TWO", "six"]), token(&[2, 2, 1], 6)),
+            (grid_of(6, &["ONE", "TWO", "SIX"]), token(&[2, 2, 9], 6)),
+            (grid_of(6, &["ONE", "TWO", "SIX"]), token(&[2, 2, 9], 6)),
+        ];
+        let mut cache = PaintCache::default();
+        let mut cached = Surface::new(6, 3);
+        let mut whole_every_time = Surface::new(6, 3);
+        for (grid, stamps) in &frames {
+            cached.add_changes(cache.changes(&[whole(1, grid, Some(stamps.clone()))]));
+            whole_every_time.add_changes(pane_changes(grid, Rect::screen(6, 3)));
+            assert_eq!(
+                cached.screen_chars_to_string(),
+                whole_every_time.screen_chars_to_string(),
+            );
+        }
     }
 
     /// The base case, and the one every other test rests on: clusters land in their own columns.

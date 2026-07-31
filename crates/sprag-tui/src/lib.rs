@@ -44,5 +44,7 @@ pub use key::{WireKey, wire_key};
 // SAME function (see `sprag_terminal::tiling`). Re-exported rather than dropped: this crate's
 // callers ask a terminal frontend where a pane goes, and the answer's address is not their concern.
 pub use mouse::MouseEdges;
-pub use paint::{cell_attributes, cursor_changes, divider_changes, pane_changes};
+pub use paint::{
+    PaintCache, PanePaint, cell_attributes, cursor_changes, divider_changes, pane_changes,
+};
 pub use sprag_terminal::{Divider, PaneRect, Rect, Tiling, tile, with_ratio};

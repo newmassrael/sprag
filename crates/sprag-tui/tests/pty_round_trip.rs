@@ -284,6 +284,26 @@ fn pane_ids(conn: &mut HostConn, session: &str) -> Vec<u64> {
         .unwrap_or_default()
 }
 
+/// The tracking level the DAEMON reports for `pane` (`"click"` / `"button"` / `"any"`), or [`None`]
+/// while its child is asking for nothing.
+///
+/// The per-pane authority, which is what a test about WHICH pane a report reaches has to wait on: a
+/// display client's own mirror is the MAXIMUM over the panes, so with two tracking children it says
+/// nothing about either one of them.
+fn pane_mouse(conn: &mut HostConn, session: &str, pane: u64) -> Option<String> {
+    conn.call(
+        "scene/query",
+        json!({ "session": session, "path": mux_action_path(PANES_SLOT) }),
+    )
+    .ok()?
+    .as_array()?
+    .iter()
+    .find(|entry| entry["id"].as_u64() == Some(pane))?
+    .get("mouse")?
+    .as_str()
+    .map(str::to_owned)
+}
+
 /// What the DAEMON says pane 0 of the session holds — scrollback and visible text together.
 ///
 /// The other half of every screen diagnostic: a client painting nothing and a pane holding nothing
@@ -1229,18 +1249,51 @@ fn a_click_in_the_second_pane_arrives_in_that_panes_own_columns() {
         .get(1)
         .expect("the split made a second pane");
 
+    // The new shell must have TAKEN ITS TERMINAL before anything is typed at it, and this wait is
+    // not belt-and-braces: a shell sets its termios with `TCSAFLUSH` on startup exactly as this
+    // client does (see `Tui::holds_the_terminal`), so type-ahead delivered before that point is
+    // PURGED by the kernel — silently, and only some of it. Its first written byte is the prompt,
+    // which it prints after that setup, so a pane holding anything at all is a shell that will
+    // keep what it is given.
+    //
+    // This wait was ADDED after the fact and the reason is worth recording: the test passed for as
+    // long as it did because the client was slow. R244 measured the 88 characters below at
+    // ~124 ms EACH and called them "an accidental synchroniser"; R246 made a keystroke cheap, the
+    // delay went away, and the race it had been hiding surfaced 2 runs in 3.
+    wait_for(
+        "the split's shell to take its terminal",
+        || match pane_text_of(&mut conn, &session, second).trim().is_empty() {
+            true => Err("the new pane has printed nothing yet".to_owned()),
+            false => Ok(()),
+        },
+    );
+
     // The split focuses the new pane, so this types into IT: the shell there is put in the raw,
     // mouse-tracking state a real editor would put it in. The command is typed rather than made the
     // pane's birth argv because a split spawns the host's `$SHELL` and takes no command.
     tui.type_bytes(
         b"stty -echo -icanon min 1 time 0; printf '\x5c033[?1002h\x5c033[?1006h'; exec cat -v\r",
     );
-    wait_for("the second pane's child to ask for the mouse", || {
-        settled(
-            tui.local_modes().mouse_protocol,
-            &MouseProtocol::ButtonEvent,
-        )
-    });
+    // THE PANE's tracking mode, read off the daemon — not this client's mirror, which is what this
+    // wait used to read under this very comment.
+    //
+    // R244 measured that mistake and could not land the fix: BOTH panes track here (the boot one
+    // from birth), so the client's mirror is already `ButtonEvent` before the split's child has
+    // asked for anything, and the wait was satisfied in microseconds. What kept the test honest was
+    // the 88 characters above taking ~11 seconds to type, during which the child got there anyway.
+    // R246 made a keystroke cheap and the clicks below started arriving before the child had
+    // enabled tracking, where the host's own per-pane gate correctly DROPS them: 2 runs in 5.
+    //
+    // The daemon's `mouse` key is the authority, it is per pane, and it is ADDITIVE — absent until
+    // the child asks — so "not yet" and "not tracking" are the same observation, which is the one
+    // this wait wants.
+    wait_for(
+        "the second pane's child to ask for the mouse",
+        || match pane_mouse(&mut conn, &session, second) {
+            Some(level) if level == "button" => Ok(()),
+            other => Err(format!("pane {second} reports {other:?}")),
+        },
+    );
 
     // A whole click on the DIVIDER first — press AND release. It is nobody's cell, so nothing may
     // be forwarded anywhere, and what makes that assertable is the click AFTER it: once the real
@@ -2274,4 +2327,86 @@ fn one_global_manual_still_gives_each_window_its_own_size() {
     wait_for("the un-pinned window to follow the client again", || {
         settled(pane_size(&mut conn, &session), &Some(client))
     });
+}
+
+/// The size the window is PINNED to below — smaller than both terminal sizes the client takes, so
+/// every pane rectangle is the same rectangle before and after the resize.
+const PINNED_SMALL: (u16, u16) = (40, 10);
+
+/// **A clear that moved no rectangle still redraws the panes.**
+///
+/// The one case [`PaintCache`](sprag_tui::PaintCache)'s arrangement check cannot see: the surface is
+/// blanked while every pane keeps its rectangle and every row keeps its stamp. A client that did not
+/// tell the cache it had cleared would skip every row and leave the user looking at nothing.
+///
+/// Reaching it takes a PINNED window, and that is the point rather than an inconvenience: with a
+/// derived window the client's own area IS the window, so a resize moves every rectangle and the
+/// arrangement check covers it. Pinned, the client's terminal grows past a window that does not
+/// follow it — the panes do not move, and the resize path still clears because a shrunken screen
+/// cannot be trusted to hold what the old one did.
+///
+/// Written because the revert-proof for that `forget()` passed against the whole suite, twice: the
+/// first attempt at this test used a divider drag onto the divider's own column, which reaches
+/// nothing at all — `MouseEdges` emits no edge for a pointer that did not move, so there was no
+/// drag, no clear, and a test that asserted the screen was fine because nothing had happened to it.
+#[test]
+fn a_clear_that_moved_no_rectangle_still_redraws_the_panes() {
+    let config = ConfigHome::new("[options]\nwindow-size = \"manual\"\n");
+    let (_daemon, sock) = spawn_daemon_with_config(&["cat"], Some(config.as_str()));
+    let mut conn = observe(&sock);
+    let session = boot_session(&mut conn);
+    sprag_on(
+        &sock,
+        &config,
+        &[
+            "resize-window",
+            "-t",
+            &session,
+            "-x",
+            &PINNED_SMALL.0.to_string(),
+            "-y",
+            &PINNED_SMALL.1.to_string(),
+        ],
+    );
+
+    let mut tui = Tui::attach(&sock, &session);
+    wait_for(
+        "the daemon to count the client as attached",
+        || match attached(&mut conn, &session) {
+            0 => Err("0 attached clients".to_owned()),
+            _ => Ok(()),
+        },
+    );
+    wait_for("the client to take the terminal", || {
+        match tui.holds_the_terminal() {
+            true => Ok(()),
+            false => Err("the client has written nothing yet".to_owned()),
+        }
+    });
+    // The pin holds against the attaching client, which is `window-size manual`'s own claim and
+    // here is also the precondition: the rectangle must not be the client's.
+    wait_for("the pinned window to reach the pane", || {
+        settled(pane_size(&mut conn, &session), &Some(PINNED_SMALL))
+    });
+
+    tui.type_bytes(b"hello");
+    wait_for("the typed text to come back painted", || {
+        painted(&mut tui, "hello")
+    });
+
+    // The terminal GROWS past the pinned window. The client re-reports, the daemon ignores it, the
+    // tiling is the same tiling over the same window — and the client clears before repainting.
+    tui.resize(100, 30);
+
+    wait_for("the pane to survive a clear that moved nothing", || {
+        painted(&mut tui, "hello")
+    });
+    // ...and it STAYS, rather than being one frame a later repaint takes back.
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        tui.row(0),
+        "hello",
+        "the pane's own cells outlive a clear that moved nothing: {:?}",
+        tui.rows(),
+    );
 }

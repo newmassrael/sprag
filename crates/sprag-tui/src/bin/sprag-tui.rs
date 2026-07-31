@@ -106,8 +106,8 @@ use sprag_host::keymap::{BoundAction, Keymap, PrefixMode, Routed};
 use sprag_input::{Modifiers, MouseEventKind, MouseInput};
 use sprag_terminal::{PaneId, SplitId};
 use sprag_tui::{
-    Divider, MouseEdges, Rect, Tiling, WireKey, cursor_changes, divider_changes, pane_changes,
-    tile, wire_key, with_ratio,
+    Divider, MouseEdges, PaintCache, PanePaint, Rect, Tiling, WireKey, cursor_changes,
+    divider_changes, tile, wire_key, with_ratio,
 };
 use sprag_vt::MouseProtocol;
 use termwiz::caps::{Capabilities, ProbeHints};
@@ -219,10 +219,23 @@ fn run() -> Result<(), Box<dyn Error>> {
     // state: the pointer is over panes, not between them.
     let mut dragging: Option<(SplitId, Divider)> = None;
 
+    // What the surface already holds, so a frame writes only the rows that can differ from it. The
+    // first paint finds it empty and writes everything, which is also what the `Clear::Yes` below
+    // means — see [`PaintCache`].
+    let mut cache = PaintCache::default();
+
     // The first paint clears, because the surface starts blank but the terminal underneath it does
     // not. Later ones do not need to: the tiling PARTITIONS the screen, so every cell has an author
     // and a repaint cannot leave a hole for the previous frame to show through.
-    paint(&mut screen, &host, &tiling, screen_area, focus, Clear::Yes)?;
+    paint(
+        &mut screen,
+        &host,
+        &tiling,
+        screen_area,
+        focus,
+        Clear::Yes,
+        &mut cache,
+    )?;
 
     // Where the next key goes. Starts at the pane: the prefix is a departure from the steady
     // state, not the other way round.
@@ -259,14 +272,30 @@ fn run() -> Result<(), Box<dyn Error>> {
                         }
                         tiling = reconcile(&host, screen_area, &mut focus);
                         mouse.follow(&host, &tiling);
-                        paint(&mut screen, &host, &tiling, screen_area, focus, Clear::No)?;
+                        paint(
+                            &mut screen,
+                            &host,
+                            &tiling,
+                            screen_area,
+                            focus,
+                            Clear::No,
+                            &mut cache,
+                        )?;
                     }
                     Command::Act(BoundAction::SelectNextPane) => {
                         let next = focus.and_then(|pane| tiling.next_after(pane));
                         set_focus(&host, &mut focus, next.or_else(|| tiling.first_pane()));
                         // Only the CURSOR moved, and it is painted from the tiling this loop already
                         // holds — so the repaint is the whole point and the reconcile is not needed.
-                        paint(&mut screen, &host, &tiling, screen_area, focus, Clear::No)?;
+                        paint(
+                            &mut screen,
+                            &host,
+                            &tiling,
+                            screen_area,
+                            focus,
+                            Clear::No,
+                            &mut cache,
+                        )?;
                     }
                 }
             }
@@ -315,6 +344,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                         screen_area,
                                         focus,
                                         Clear::Yes,
+                                        &mut cache,
                                     )?;
                                 }
                             }
@@ -331,7 +361,15 @@ fn run() -> Result<(), Box<dyn Error>> {
                     };
                     if edge.kind == MouseEventKind::Press && focus != Some(pane) {
                         set_focus(&host, &mut focus, Some(pane));
-                        paint(&mut screen, &host, &tiling, screen_area, focus, Clear::No)?;
+                        paint(
+                            &mut screen,
+                            &host,
+                            &tiling,
+                            screen_area,
+                            focus,
+                            Clear::No,
+                            &mut cache,
+                        )?;
                     }
                     // Pane-LOCAL cells: `pane_at` has already subtracted the rectangle's origin.
                     // The host re-gates this against the pane's own tracking mode, so a report the
@@ -356,7 +394,15 @@ fn run() -> Result<(), Box<dyn Error>> {
                 report_size(&host, screen_area);
                 tiling = reconcile(&host, screen_area, &mut focus);
                 mouse.follow(&host, &tiling);
-                paint(&mut screen, &host, &tiling, screen_area, focus, Clear::Yes)?;
+                paint(
+                    &mut screen,
+                    &host,
+                    &tiling,
+                    screen_area,
+                    focus,
+                    Clear::Yes,
+                    &mut cache,
+                )?;
             }
             // `Wake` carries no payload by design — which edge fired is in the flags below.
             Some(_) | None => {}
@@ -375,7 +421,15 @@ fn run() -> Result<(), Box<dyn Error>> {
             // A child that just enabled tracking woke this client the same way its output would,
             // so the mirror is re-read here and not on a timer.
             mouse.follow(&host, &tiling);
-            paint(&mut screen, &host, &tiling, screen_area, focus, Clear::No)?;
+            paint(
+                &mut screen,
+                &host,
+                &tiling,
+                screen_area,
+                focus,
+                Clear::No,
+                &mut cache,
+            )?;
         }
     }
     // Before the terminal is given back: see [`MouseMirror::release`].
@@ -408,8 +462,14 @@ enum Clear {
 /// without a coloured border.
 ///
 /// Reading the cells every frame rather than caching them is deliberate and free: a live
-/// [`HostClient::pane_cells`] reads [`WireHost`](sprag_client::WireHost)'s poll-maintained cache
-/// with no socket call.
+/// [`HostClient::pane_cells_and_token`] reads [`WireHost`](sprag_client::WireHost)'s
+/// poll-maintained cache with no socket call.
+///
+/// What is NOT free is turning those cells into changes, which is `O(cells)` and was being done in
+/// full every frame — once per keystroke on the input path, and measured at 17.9 ms for a 240x64
+/// pane. So the cells are read whole and the CHANGES are built only for the rows the producer
+/// stamped, through [`PaintCache`]. The cursor is unaffected: it is `O(1)` and a bare cursor move
+/// stamps no row, which is exactly why it is painted separately.
 fn paint(
     screen: &mut BufferedTerminal<SystemTerminal>,
     host: &WireHost,
@@ -417,6 +477,7 @@ fn paint(
     screen_area: Rect,
     focus: Option<PaneId>,
     clear: Clear,
+    cache: &mut PaintCache,
 ) -> Result<(), Box<dyn Error>> {
     if tiling.panes.is_empty() {
         // No panes is a legitimate transient state (the last one just closed), not an error: the
@@ -427,8 +488,10 @@ fn paint(
     }
     if clear == Clear::Yes {
         screen.add_change(Change::ClearScreen(ColorAttribute::Default));
+        // The surface no longer holds anything the cache could let a row skip.
+        cache.forget();
     }
-    let mut cursor = Vec::new();
+    let mut drawn = Vec::with_capacity(tiling.panes.len());
     for held in &tiling.panes {
         // The tiling is in WINDOW coordinates, which this terminal need not be big enough to hold:
         // a rectangle past the edge is painted as far as the screen goes and no further. Skipped
@@ -437,12 +500,22 @@ fn paint(
         let Some(area) = held.area.intersect(screen_area) else {
             continue;
         };
-        let cells = host.pane_cells(held.pane, 0);
-        screen.add_changes(pane_changes(&cells, area));
-        if focus == Some(held.pane) {
-            cursor = cursor_changes(&cells, area);
-        }
+        let (cells, token) = host.pane_cells_and_token(held.pane, 0);
+        drawn.push(PanePaint {
+            pane: held.pane,
+            area,
+            cells,
+            token,
+        });
     }
+    // The cursor is read from the SAME buffers the changes were built from, and before them in the
+    // source only because the cache consumes the list: a second fetch could land a frame apart and
+    // put the cursor where the cells are not.
+    let cursor = drawn
+        .iter()
+        .find(|held| focus == Some(held.pane))
+        .map_or_else(Vec::new, |held| cursor_changes(&held.cells, held.area));
+    screen.add_changes(cache.changes(&drawn));
     for divider in &tiling.dividers {
         let Some(area) = divider.area.intersect(screen_area) else {
             continue;
