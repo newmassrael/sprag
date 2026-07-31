@@ -89,6 +89,10 @@ const BOOT_PANE: (u16, u16) = (40, 6);
 /// the geometry they report, which needs no child behaviour and no waiting.
 const OTHER_PANE: (u16, u16) = (33, 7);
 
+/// The pane for the test whose child paints a link, an image and a command cycle: the artifacts have
+/// to still be ON SCREEN when the tools ask, and six rows scroll the link away.
+const TALL_PANE: (u16, u16) = (40, 12);
+
 // ----- the daemon -----
 
 /// Kills and reaps the spawned daemon on scope exit (including a test panic), and unlinks its socket
@@ -832,6 +836,84 @@ fn the_query_slots_every_read_tool_names_are_the_daemons_own() {
     assert!(
         last.contains("use read_pane"),
         "a pane with no shell integration is told where to look instead: {last}"
+    );
+}
+
+/// The other half of the three list-shaped read tools: a pane that actually HAS a link, an image and
+/// a finished command.
+///
+/// `the_query_slots_every_read_tool_names_are_the_daemons_own` proves each slot exists and that an
+/// empty answer is an answer. It cannot prove the tools RENDER anything, because a pane running `cat`
+/// emits no OSC 8, no graphics and no OSC 133 — so every one of those three answers is the empty
+/// branch, and a tool that formatted its non-empty case wrongly would pass. This test is the reason
+/// the pair is worth two tests rather than one: the child here emits all three, in the forms sprag's
+/// own emulator is already proved to parse, and each tool has to turn a real slot value into the text
+/// an agent reads.
+///
+/// The pane is deliberately taller than the others: the artifacts have to still be ON SCREEN when the
+/// tools ask, and a six-row pane scrolls the link off while the command cycle is still printing.
+///
+/// REVERT-PROOF (all four measured red): render a link run without its `uri` and the destination
+/// assertion fails; report an image's `id` in place of its pixel size and the size assertion fails;
+/// have `read_last_command` print the raw slot instead of slicing `{command, output, exit_status}`
+/// and the exit-status assertion fails; drop the exit code from the pane list's shell line and the
+/// last assertion fails.
+#[test]
+fn the_list_read_tools_render_what_a_pane_actually_shows() {
+    // One OSC 8 hyperlink with an id, one 2x2 Kitty RGBA image (16 payload bytes, base64), and one
+    // full OSC 133 cycle: prompt (A), the typed command, input end (B), output start (C), one output
+    // line, command end (D) with exit 0. Then `cat`, so the pane stays alive and quiet. Every form is
+    // copied from a fixture this workspace already drives through the same emulator.
+    let (_daemon, sock) = spawn_daemon(
+        &[
+            "sh",
+            "-c",
+            "printf '\\033]8;id=x1;https://example.com/manual\\007the manual\\033]8;;\\007\\r\\n'; \
+             printf '\\033_Ga=T,f=32,s=2,v=2,i=7;AAECAwQFBgcICQoLDA0ODw==\\033\\\\'; \
+             printf '\\033]133;A\\007$ echo hi\\033]133;B\\007\\r\\n\
+             \\033]133;C\\007hi\\r\\n\\033]133;D;0\\007'; cat",
+        ],
+        TALL_PANE,
+    );
+    let mut server = McpServer::spawn(&sock);
+
+    // The link's DESTINATION as data — the answer tmux cannot give at all, since `capture-pane`
+    // flattens OSC 8 to its display text and drops the URI.
+    // The wait is on the link EXISTING; what is rendered about it belongs in the assertion, so a
+    // regression in the rendering fails at once instead of timing the wait out.
+    let links = server.wait_for_tool("read_pane_links", json!({ "pane": 1 }), "1 link(s)");
+    assert!(
+        links.contains("1 link(s)")
+            && links.contains("\"the manual\" -> https://example.com/manual")
+            && links.contains("id=x1"),
+        "the displayed text, the URI it points at, and the link id: {links}"
+    );
+
+    // An image cannot be read, but its PRESENCE and geometry can — which is what the tool claims.
+    let images = server.wait_for_tool("read_pane_images", json!({ "pane": 1 }), "image #");
+    assert!(
+        images.contains("1 image(s)") && images.contains("image #7: 2x2 px at cell"),
+        "the id and the pixel size the child transmitted: {images}"
+    );
+
+    // The command-scoped read: sliced at the shell's marks, not the whole screen.
+    let last = server.wait_for_tool("read_last_command", json!({ "pane": 1 }), "echo hi");
+    assert!(
+        last.contains("$ echo hi") && last.contains("[exit 0]") && last.contains("--- output ---"),
+        "the command line and how it ended: {last}"
+    );
+    assert_eq!(
+        last.lines().last(),
+        Some("hi"),
+        "and the output is the command's alone, not the screen's: {last}"
+    );
+
+    // The same cycle also drives the pane list's shell-integration line, which no other test here
+    // reaches: a resting pane has none, so it is only observable on a pane that emitted marks.
+    let listed = server.call_tool("list_panes", json!({}));
+    assert!(
+        listed.contains("shell: at a prompt (last command exit 0)"),
+        "the pane list reports the shell as idle and how the last command ended: {listed}"
     );
 }
 
