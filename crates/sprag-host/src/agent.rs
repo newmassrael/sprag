@@ -40,7 +40,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use sprag_detect::{Hysteresis, ReportOutcome, Ruleset, Tracker};
+use sprag_detect::{Hysteresis, Report, ReportOutcome, Ruleset, Tracker};
 use sprag_terminal::PaneId;
 use sprag_vt::Screen;
 
@@ -348,20 +348,20 @@ impl AgentRegistry {
     /// The answer is [`ReportOutcome`] plus the published `seq`, so one round trip tells a reporter
     /// that it was heard (`accepted`), whether anybody needs waking (`changed`), and which published
     /// generation its report became.
+    /// [`Report::owner`], when given, is the process group whose continued existence keeps the
+    /// report standing — see [`orphaned`](Self::orphaned) for what asks about it later, and
+    /// [`crate::sweep_once`] for why a report needs such a thing at all.
     pub fn report(
         &mut self,
         id: PaneId,
-        state: sprag_detect::AgentState,
-        agent: Option<String>,
-        source: &str,
-        seq: Option<u64>,
+        report: Report,
         window: impl FnOnce() -> Hysteresis,
     ) -> (ReportOutcome, u64) {
         let tracker = self
             .trackers
             .entry(id)
             .or_insert_with(|| Tracker::new(window()));
-        let outcome = tracker.report(state, agent, source, seq);
+        let outcome = tracker.report(report);
         (outcome, tracker.seq())
     }
 
@@ -383,6 +383,24 @@ impl AgentRegistry {
         self.trackers
             .get(&id)
             .is_some_and(|tracker| tracker.reported_source().is_some())
+    }
+
+    /// Whether this pane holds a report whose OWNER is gone — an authority with nobody behind it.
+    ///
+    /// The owner is a process group, so the question is asked of the OS and not of any state kept
+    /// here: a group that no longer exists cannot correct, contradict or withdraw what it said, and
+    /// a report that outlives its reporter is exactly the confident wrong answer this whole
+    /// mechanism must not produce.
+    ///
+    /// `false` for a pane with no report and for a report that named no owner — the second is a
+    /// person at a command line, whose report is theirs to withdraw and nobody else's to expire.
+    #[must_use]
+    pub fn orphaned(&self, id: PaneId) -> bool {
+        self.trackers
+            .get(&id)
+            .and_then(Tracker::reported_owner)
+            .and_then(|owner| u32::try_from(owner).ok())
+            .is_some_and(|owner| !process_group_exists(owner))
     }
 
     /// Whether this pane owes a look no screen event will ask for — today, exactly a released pane.
@@ -628,13 +646,10 @@ impl AgentClock {
     pub fn report(
         &self,
         id: PaneId,
-        state: sprag_detect::AgentState,
-        agent: Option<String>,
-        source: &str,
-        seq: Option<u64>,
+        report: Report,
         window: impl FnOnce() -> Hysteresis,
     ) -> (ReportOutcome, u64) {
-        lock(&self.state).report(id, state, agent, source, seq, window)
+        lock(&self.state).report(id, report, window)
     }
 
     /// [`AgentRegistry::release`] under the lock, SIGNALLING the waker when a report was dropped.
@@ -681,6 +696,36 @@ impl AgentClock {
             .wait_timeout(state, wait)
             .unwrap_or_else(PoisonError::into_inner);
     }
+}
+
+/// Whether a process group still exists, asked of the OS.
+///
+/// `kill(-pgid, 0)` delivers nothing and reports only whether the group is there — the standard way
+/// to ask, and one syscall, which is what lets [`AgentRegistry::orphaned`] sit beside the sweep's
+/// `is_eof` load without changing that loop's cost shape.
+///
+/// **`EPERM` means the group EXISTS** and this process may not signal it, so it answers `true`. Only
+/// `ESRCH` is an absence. Reading the return value alone would retire a live agent's report the
+/// moment it ran as another user.
+///
+/// A pgid below 2 is refused rather than asked about, because `kill`'s negation reads those as
+/// commands rather than questions: `-0` is "my own process group" and `-1` is "every process I may
+/// signal". Neither is a group any pane's terminal is owned by, and the guard is here so that a
+/// nonsense value coming the other way cannot be turned into one.
+fn process_group_exists(pgid: u32) -> bool {
+    let Ok(pgid) = i32::try_from(pgid) else {
+        return false;
+    };
+    if pgid < 2 {
+        return false;
+    }
+    // SAFETY: `kill` with signal 0 performs the permission and existence checks and delivers
+    // nothing. Both arguments are plain integers and the guard above keeps the negation off the
+    // process-group wildcards.
+    if unsafe { libc::kill(-pgid, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 #[cfg(test)]
@@ -730,10 +775,13 @@ mod tests {
 
         let (outcome, published) = reg.report(
             PaneId(1),
-            sprag_detect::AgentState::Idle,
-            Some("claude".to_owned()),
-            "herdr:claude",
-            Some(7),
+            Report {
+                state: sprag_detect::AgentState::Idle,
+                agent: Some("claude".to_owned()),
+                source: "herdr:claude".to_owned(),
+                seq: Some(7),
+                owner: None,
+            },
             Hysteresis::default,
         );
         assert!(outcome.accepted && outcome.changed);
@@ -764,10 +812,13 @@ mod tests {
         let report = |reg: &mut AgentRegistry, reads: &mut u32| {
             reg.report(
                 PaneId(3),
-                sprag_detect::AgentState::Working,
-                None,
-                "hook",
-                None,
+                Report {
+                    state: sprag_detect::AgentState::Working,
+                    agent: None,
+                    source: "hook".to_owned(),
+                    seq: None,
+                    owner: None,
+                },
                 || {
                     *reads += 1;
                     Hysteresis::default()
@@ -806,10 +857,13 @@ mod tests {
         );
         reg.report(
             PaneId(1),
-            sprag_detect::AgentState::Idle,
-            None,
-            "hook",
-            None,
+            Report {
+                state: sprag_detect::AgentState::Idle,
+                agent: None,
+                source: "hook".to_owned(),
+                seq: None,
+                owner: None,
+            },
             Hysteresis::default,
         );
         let settled = base + DEFAULT_SETTLE * 2;
@@ -1120,10 +1174,13 @@ mod clock_tests {
         let clock = Arc::new(AgentClock::default());
         clock.report(
             PaneId(1),
-            sprag_detect::AgentState::Working,
-            None,
-            "hook",
-            None,
+            Report {
+                state: sprag_detect::AgentState::Working,
+                agent: None,
+                source: "hook".to_owned(),
+                seq: None,
+                owner: None,
+            },
             Hysteresis::default,
         );
         assert_eq!(
@@ -1453,5 +1510,54 @@ mod clock_tests {
             !reg.owes_evaluation(id, much_later, true),
             "and the sweep finds it known and evaluated under the rules in force",
         );
+    }
+
+    /// The question `orphaned` puts to the OS, at its edges.
+    ///
+    /// The live half needs both answers or it proves nothing: a group that exists and one that does
+    /// not, told apart by the same call. The refused half is the pair of values `kill`'s negation
+    /// reads as commands — `-0` is "my own process group" and `-1` is "everything I may signal" — so
+    /// a nonsense owner arriving from anywhere must be declined rather than asked about, and the
+    /// test that says so is the only thing standing between a bad number and a signal.
+    ///
+    /// `EPERM` — a group that exists but belongs to another user, which is what an agent started
+    /// under `sudo` leaves in a pane — answers `true` in the code above and is NOT exercised here:
+    /// an unprivileged test cannot make a process it may not signal. Named rather than left to be
+    /// assumed, because getting it wrong would retire such an agent's report on its first sweep.
+    #[test]
+    fn a_process_group_exists_until_it_does_not_and_the_wildcards_are_refused() {
+        let mine = u32::try_from(unsafe { libc::getpgrp() }).expect("our own process group");
+        assert!(
+            process_group_exists(mine),
+            "our own group is there to be found",
+        );
+
+        let mut gone = std::process::Command::new("/bin/sleep");
+        gone.arg("300");
+        // SAFETY: `setpgid` is async-signal-safe and runs in the forked child before `exec`.
+        unsafe {
+            use std::os::unix::process::CommandExt as _;
+            gone.pre_exec(|| match libc::setpgid(0, 0) {
+                0 => Ok(()),
+                _ => Err(std::io::Error::last_os_error()),
+            });
+        }
+        let mut gone = gone.spawn().expect("a process in its own group");
+        let pgid = gone.id();
+        assert!(
+            process_group_exists(pgid),
+            "CONTROL: it is there while it runs"
+        );
+        gone.kill().expect("kill it");
+        gone.wait()
+            .expect("and reap it, so the group is really gone");
+        assert!(!process_group_exists(pgid), "and gone once it is");
+
+        for wildcard in [0, 1] {
+            assert!(
+                !process_group_exists(wildcard),
+                "{wildcard} is a command to kill, not a group to ask about",
+            );
+        }
     }
 }

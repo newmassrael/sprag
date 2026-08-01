@@ -62,8 +62,8 @@ use pinion_core::external::{
 };
 use serde_json::{Map, Value, json};
 use sprag_terminal::{
-    CommandBuilder, KillOutcome, LayoutSnapshot, LayoutWire, PaneId, SessionInfo, SessionRegistry,
-    SplitDir, SplitSide, SshRemote, WindowKillOutcome, Workspace,
+    CommandBuilder, KillOutcome, LayoutSnapshot, LayoutWire, Pane, PaneId, SessionInfo,
+    SessionRegistry, SplitDir, SplitSide, SshRemote, WindowKillOutcome, Workspace,
 };
 
 use crate::attach::ClientSize;
@@ -426,16 +426,35 @@ impl WorkspaceExternal {
             None | Some(Value::Null) => None,
             Some(value) => Some(value.as_u64().ok_or(InvokeError::TypeMismatch)?),
         };
+        // `bind` asks for the report to last only as long as whatever is running in the pane; it
+        // does NOT say what that is. The daemon reads which process group owns the pane's terminal
+        // itself, so a caller can neither name somebody else's group nor park a release on a pane it
+        // does not speak for. Absent is a report that stands until it is released, which is what a
+        // person at a command line means by making one.
+        let bind = match map.get("bind") {
+            None | Some(Value::Null) => false,
+            Some(value) => value.as_bool().ok_or(InvokeError::TypeMismatch)?,
+        };
         let Some(agents) = self.agents.as_ref() else {
             // No detector on this host (a GUI's in-process host, a unit test): there is no memory to
             // report INTO, and inventing one here would publish a verdict the pane list cannot read.
             return Err(InvokeError::Rejected);
         };
-        if !self.holds_pane(id) {
+        let Some(owner) = self.with_pane(id, |pane| bind.then(|| pane.pty().foreground_pgid()))
+        else {
             return Err(InvokeError::Rejected);
-        }
-        let (outcome, seq_published) =
-            agents.report(id, state, name, source, seq, crate::config::agent_settle);
+        };
+        let (outcome, seq_published) = agents.report(
+            id,
+            sprag_detect::Report {
+                state,
+                agent: name,
+                source: source.to_owned(),
+                seq,
+                owner: owner.flatten().map(u64::from),
+            },
+            crate::config::agent_settle,
+        );
         if outcome.changed {
             self.channels.announce(
                 self.scope.session(),
@@ -478,15 +497,25 @@ impl WorkspaceExternal {
     /// the check would refuse a hook whose pane sits in a session other than the connection's default
     /// — which is most of them.
     fn holds_pane(&self, id: PaneId) -> bool {
+        self.with_pane(id, |_| ()).is_some()
+    }
+
+    /// Run `read` against the pane with `id`, or answer `None` when this daemon does not hold it.
+    ///
+    /// One walk and one definition of "we hold this pane": [`holds_pane`](Self::holds_pane) is this
+    /// asked for nothing, so a caller that needs the pane ITSELF cannot end up checking membership
+    /// against a second traversal that might one day disagree with the first.
+    fn with_pane<T>(&self, id: PaneId, read: impl FnOnce(&Pane) -> T) -> Option<T> {
         let registry = lock(&self.registry);
-        registry.sessions().iter().any(|session| {
-            session.windows().iter().any(|window| {
-                lock(window.workspace())
-                    .panes()
-                    .iter()
-                    .any(|pane| pane.id() == id)
-            })
-        })
+        for session in registry.sessions() {
+            for window in session.windows() {
+                let workspace = lock(window.workspace());
+                if let Some(pane) = workspace.panes().iter().find(|pane| pane.id() == id) {
+                    return Some(read(pane));
+                }
+            }
+        }
+        None
     }
 
     /// `resize` action: resize the pane with `id` to `cols x rows`.

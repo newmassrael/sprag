@@ -205,11 +205,11 @@ pub struct Tracker {
     owes_look: bool,
 }
 
-/// A report in force: who said it, and the sequence number they said it with.
+/// A report in force: who said it, the sequence number they said it with, and how long it lasts.
 ///
 /// The state itself is NOT here — it goes straight into `published`, because a report is the
 /// published answer rather than a candidate for it. What is kept is only what the NEXT report has
-/// to be judged against.
+/// to be judged against, plus what decides when THIS one is over.
 #[derive(Debug)]
 struct Reported {
     /// The reporter's name, as it will appear on the wire. Compared against the next report's so a
@@ -218,6 +218,41 @@ struct Reported {
     /// The last sequence number accepted from `source`, if it sent one. `None` for a reporter with
     /// no clock (a person at a command line), which is therefore never refused as stale.
     seq: Option<u64>,
+    /// An opaque token naming the thing whose continued existence keeps this report standing, or
+    /// `None` for a report that stands until somebody releases it.
+    ///
+    /// The tracker stores it and never interprets it — like `source` and `seq`, it is the caller's
+    /// vocabulary. It lives HERE rather than in a map beside the tracker because a report's lifetime
+    /// is part of the report: a second place answering "is there a report on this pane" would drift
+    /// from this one silently, every individual answer still looking right.
+    ///
+    /// It is on the report rather than on the tracker because it belongs to ONE report — the next
+    /// report is a new claim by a possibly new speaker, and it brings its own.
+    owner: Option<u64>,
+}
+
+/// What a reporter said about a pane, as one message.
+///
+/// The five fields travel together from the wire to the tracker and mean nothing apart: `state` is
+/// the claim, `agent` and `source` are who is making it, and `seq` and `owner` are the two things
+/// that bound it — one against the reporter's own replays, the other against the reporter ceasing to
+/// exist. Passing them separately let a caller reorder two `Option`s of the same width, which no
+/// signature could have caught.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Report {
+    /// What the reporter says the pane is doing.
+    pub state: AgentState,
+    /// The agent's name, when the reporter names it. A reporter that does NOT leaves the pane's
+    /// identity alone rather than clearing it — see [`Tracker::report`].
+    pub agent: Option<String>,
+    /// Who is reporting, as it will appear on the wire beside the verdict.
+    pub source: String,
+    /// The reporter's own monotonic clock, compared only against the last one from `source`.
+    /// `None` for a reporter that has none, which is therefore never refused as stale.
+    pub seq: Option<u64>,
+    /// An opaque token for the thing whose existence keeps this report standing, or `None` for one
+    /// that stands until it is released. The tracker stores it and never interprets it.
+    pub owner: Option<u64>,
 }
 
 /// What a [`report`](Tracker::report) did.
@@ -378,13 +413,22 @@ impl Tracker {
     ///
     /// A report with no `seq` is always accepted: a caller with no clock (a person at a command
     /// line, a shell hook with no counter) has nothing to be stale against.
-    pub fn report(
-        &mut self,
-        state: AgentState,
-        agent: Option<String>,
-        source: &str,
-        seq: Option<u64>,
-    ) -> ReportOutcome {
+    ///
+    /// # The owner, and why a report may carry one
+    ///
+    /// A report outranks the screen, so it must end for a reason, and that reason is not a clock:
+    /// what expires is the REPORTER. [`Report::owner`] is an opaque token for the thing whose
+    /// existence keeps this report standing — the caller decides what it means and asks, later,
+    /// whether it is still there. `None` is a report that stands until it is released, which is what
+    /// a person at a command line means by making one.
+    pub fn report(&mut self, report: Report) -> ReportOutcome {
+        let Report {
+            state,
+            agent,
+            source,
+            seq,
+            owner,
+        } = report;
         if let Some(held) = &self.reported
             && held.source == source
             && let (Some(last), Some(incoming)) = (held.seq, seq)
@@ -414,10 +458,7 @@ impl Tracker {
         };
         // Kept even when the state has not moved: the new `seq` is what the NEXT report is judged
         // against, so a duplicate still advances the reporter's clock.
-        self.reported = Some(Reported {
-            source: source.to_owned(),
-            seq,
-        });
+        self.reported = Some(Reported { source, seq, owner });
         self.owes_look = false;
         let changed = verdict != self.published;
         if changed {
@@ -461,6 +502,18 @@ impl Tracker {
     #[must_use]
     pub fn reported_source(&self) -> Option<&str> {
         self.reported.as_ref().map(|held| held.source.as_str())
+    }
+
+    /// The token whose continued existence keeps the report in force, when there is a report and it
+    /// named one.
+    ///
+    /// Two `None`s that a caller must NOT collapse: no report at all, and a report that stands until
+    /// released. Both mean "this rule has nothing to do here", which is why one answer serves — but
+    /// a caller that ever needs to tell them apart asks [`reported_source`](Self::reported_source),
+    /// which is `Some` exactly when a report is in force.
+    #[must_use]
+    pub fn reported_owner(&self) -> Option<u64> {
+        self.reported.as_ref().and_then(|held| held.owner)
     }
 
     /// Whether this pane owes a fresh look that no screen event will ask for.
@@ -1191,7 +1244,13 @@ mod tests {
         let mut reported = Tracker::default();
         reported.observe(em.screen(), Some("⠂ Reading files"), &rules, base);
         assert_eq!(reported.verdict().state, AgentState::Working);
-        let outcome = reported.report(AgentState::Idle, Some("claude".to_owned()), "hook", Some(1));
+        let outcome = reported.report(Report {
+            state: AgentState::Idle,
+            agent: Some("claude".to_owned()),
+            source: "hook".to_owned(),
+            seq: Some(1),
+            owner: None,
+        });
         assert_eq!(
             outcome,
             ReportOutcome {
@@ -1235,7 +1294,13 @@ mod tests {
             "the fixture really is a screen the rules read as blocked",
         );
 
-        tracker.report(AgentState::Idle, None, "hook", Some(1));
+        tracker.report(Report {
+            state: AgentState::Idle,
+            agent: None,
+            source: "hook".to_owned(),
+            seq: Some(1),
+            owner: None,
+        });
         assert_eq!(
             tracker.verdict().agent.as_deref(),
             Some("claude"),
@@ -1293,7 +1358,13 @@ mod tests {
             base + Duration::from_millis(100),
         );
         assert_eq!(tracker.verdict().state, AgentState::Blocked);
-        tracker.report(AgentState::Idle, None, "hook", None);
+        tracker.report(Report {
+            state: AgentState::Idle,
+            agent: None,
+            source: "hook".to_owned(),
+            seq: None,
+            owner: None,
+        });
         assert!(!tracker.owes_look(), "a report is its own answer");
 
         tracker.release_report();
@@ -1320,11 +1391,23 @@ mod tests {
 
         assert!(
             tracker
-                .report(AgentState::Working, None, "hook", Some(5))
+                .report(Report {
+                    state: AgentState::Working,
+                    agent: None,
+                    source: "hook".to_owned(),
+                    seq: Some(5),
+                    owner: None
+                })
                 .accepted,
         );
         assert_eq!(
-            tracker.report(AgentState::Idle, None, "hook", Some(5)),
+            tracker.report(Report {
+                state: AgentState::Idle,
+                agent: None,
+                source: "hook".to_owned(),
+                seq: Some(5),
+                owner: None
+            }),
             ReportOutcome {
                 accepted: false,
                 changed: false
@@ -1337,7 +1420,13 @@ mod tests {
             "and a refused report changes nothing",
         );
         assert_eq!(
-            tracker.report(AgentState::Idle, None, "hook", Some(4)),
+            tracker.report(Report {
+                state: AgentState::Idle,
+                agent: None,
+                source: "hook".to_owned(),
+                seq: Some(4),
+                owner: None
+            }),
             ReportOutcome {
                 accepted: false,
                 changed: false
@@ -1346,7 +1435,13 @@ mod tests {
         );
         assert!(
             tracker
-                .report(AgentState::Idle, None, "hook", Some(6))
+                .report(Report {
+                    state: AgentState::Idle,
+                    agent: None,
+                    source: "hook".to_owned(),
+                    seq: Some(6),
+                    owner: None
+                })
                 .accepted,
             "forwards is heard",
         );
@@ -1355,7 +1450,13 @@ mod tests {
         // source's numbering would silence it entirely.
         assert!(
             tracker
-                .report(AgentState::Working, None, "other", Some(1))
+                .report(Report {
+                    state: AgentState::Working,
+                    agent: None,
+                    source: "other".to_owned(),
+                    seq: Some(1),
+                    owner: None
+                })
                 .accepted,
             "a new speaker is not judged by the old one's clock",
         );
@@ -1363,12 +1464,24 @@ mod tests {
         // And a reporter with no clock at all (a person at a command line).
         assert!(
             tracker
-                .report(AgentState::Blocked, None, "cli", None)
+                .report(Report {
+                    state: AgentState::Blocked,
+                    agent: None,
+                    source: "cli".to_owned(),
+                    seq: None,
+                    owner: None
+                })
                 .accepted,
         );
         assert!(
             tracker
-                .report(AgentState::Blocked, None, "cli", None)
+                .report(Report {
+                    state: AgentState::Blocked,
+                    agent: None,
+                    source: "cli".to_owned(),
+                    seq: None,
+                    owner: None
+                })
                 .accepted,
             "with nothing to be stale against, nothing is refused",
         );
@@ -1379,10 +1492,22 @@ mod tests {
     #[test]
     fn a_duplicate_report_is_accepted_and_publishes_nothing() {
         let mut tracker = Tracker::default();
-        tracker.report(AgentState::Working, None, "hook", Some(1));
+        tracker.report(Report {
+            state: AgentState::Working,
+            agent: None,
+            source: "hook".to_owned(),
+            seq: Some(1),
+            owner: None,
+        });
         let published = tracker.seq();
 
-        let outcome = tracker.report(AgentState::Working, None, "hook", Some(2));
+        let outcome = tracker.report(Report {
+            state: AgentState::Working,
+            agent: None,
+            source: "hook".to_owned(),
+            seq: Some(2),
+            owner: None,
+        });
         assert_eq!(
             outcome,
             ReportOutcome {
@@ -1398,9 +1523,78 @@ mod tests {
         // The reporter's clock DID advance, so its next message is judged against the newer number.
         assert!(
             !tracker
-                .report(AgentState::Idle, None, "hook", Some(2))
+                .report(Report {
+                    state: AgentState::Idle,
+                    agent: None,
+                    source: "hook".to_owned(),
+                    seq: Some(2),
+                    owner: None
+                })
                 .accepted,
             "a duplicate still advances the source's sequence",
+        );
+    }
+
+    /// The owner belongs to ONE report, so a later report brings its own — including none.
+    ///
+    /// This is what keeps the lifetime from outliving the claim it was attached to. A pane runs one
+    /// agent, and a new speaker owns the pane (see the sequence tests above); inheriting the previous
+    /// speaker's owner would tie a fresh report to a process that has nothing to do with it, and
+    /// carrying it past a release would let a released pane be re-released.
+    ///
+    /// A release clears it, which is asserted here rather than assumed: `reported_owner` answering
+    /// after a release would be a lifetime with no report on the other end of it.
+    #[test]
+    fn an_owner_belongs_to_one_report_and_the_next_one_brings_its_own() {
+        let mut tracker = Tracker::default();
+
+        tracker.report(Report {
+            state: AgentState::Working,
+            agent: None,
+            source: "hook".to_owned(),
+            seq: None,
+            owner: Some(4242),
+        });
+        assert_eq!(tracker.reported_owner(), Some(4242));
+
+        // The same speaker, saying something new: its own owner, not the one before.
+        tracker.report(Report {
+            state: AgentState::Blocked,
+            agent: None,
+            source: "hook".to_owned(),
+            seq: None,
+            owner: Some(99),
+        });
+        assert_eq!(tracker.reported_owner(), Some(99));
+
+        // A speaker that binds nothing REPLACES the binding rather than inheriting it — otherwise a
+        // person's report would be retired by whatever the previous hook was speaking for.
+        tracker.report(Report {
+            state: AgentState::Idle,
+            agent: None,
+            source: "cli".to_owned(),
+            seq: None,
+            owner: None,
+        });
+        assert_eq!(tracker.reported_owner(), None);
+        assert_eq!(
+            tracker.reported_source(),
+            Some("cli"),
+            "and there IS a report — the two `None`s are not the same answer",
+        );
+
+        tracker.report(Report {
+            state: AgentState::Working,
+            agent: None,
+            source: "hook".to_owned(),
+            seq: None,
+            owner: Some(7),
+        });
+        assert!(tracker.release_report(), "a report was in force");
+        assert_eq!(
+            tracker.reported_owner(),
+            None,
+            "a released pane has no lifetime left to run out",
         );
     }
 
@@ -1418,7 +1612,13 @@ mod tests {
         let base = Instant::now();
 
         tracker.observe(em.screen(), Some("claude"), &rules, base);
-        tracker.report(AgentState::Working, None, "hook", None);
+        tracker.report(Report {
+            state: AgentState::Working,
+            agent: None,
+            source: "hook".to_owned(),
+            seq: None,
+            owner: None,
+        });
 
         // The screen moves, so the quiescence gate is not what is being measured here.
         repaint(&mut em, CLAUDE_FOOTER);

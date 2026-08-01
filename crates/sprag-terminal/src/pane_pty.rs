@@ -667,6 +667,26 @@ impl PanePty {
         read_cwd(self.pid()?)
     }
 
+    /// The process group that currently owns this pane's terminal, read LIVE from the OS.
+    ///
+    /// This is the pane's FOREGROUND JOB, which is what a shell hands the terminal to when the user
+    /// runs something and takes back when that thing ends. It is the only fact available here that
+    /// identifies a process the pane is running but did not spawn — [`pid`](Self::pid) names the
+    /// child, and an agent typed at that child's prompt is one level further down.
+    ///
+    /// A caller can hold onto the answer as a claim about WHICH process is doing something in this
+    /// pane, and later ask the OS whether that group still exists. That is the whole reason it is
+    /// published: it outlives the read, where [`is_eof`](Self::is_eof) only ever answers about the
+    /// child.
+    ///
+    /// `None` when the child has exited or been reaped (same guard and same reason as
+    /// [`cwd`](Self::cwd) — a recycled pid must not be walked), when nothing owns the terminal, or
+    /// on a platform with no `/proc`.
+    #[must_use]
+    pub fn foreground_pgid(&self) -> Option<u32> {
+        read_foreground_pgid(self.pid()?)
+    }
+
     /// Whether the child has closed the pseudoterminal (no more output).
     /// Once set, the reader thread has applied every byte it received.
     #[must_use]
@@ -897,6 +917,35 @@ fn read_cwd(pid: u32) -> Option<PathBuf> {
 /// restored pane falls back to the daemon's own cwd. An honest `None`, not a guess.
 #[cfg(not(target_os = "linux"))]
 fn read_cwd(_pid: u32) -> Option<PathBuf> {
+    None
+}
+
+/// Read the foreground process group of a process's controlling terminal.
+///
+/// Linux: `/proc/<pid>/stat` field 8, `tpgid`. The same number `tcgetpgrp` would return for that
+/// terminal — measured equal at a prompt, under a foreground job, and after that job was killed —
+/// and reachable without a master fd, which this crate hands to the resize coalescer thread.
+///
+/// **Field 2 is the executable name in parentheses and may itself contain spaces and parentheses**,
+/// so the split starts after the LAST `)` rather than at the first space. Splitting naively is the
+/// classic way to read this file wrong, and it would misparse for any child whose name has a space
+/// in it — a rename away from being somebody's bug.
+///
+/// `-1` is the kernel's "no foreground group" (no controlling terminal), and it is `None` here: a
+/// caller asking which process owns the pane deserves an absence, not a sentinel it must know about.
+#[cfg(target_os = "linux")]
+fn read_foreground_pgid(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // After the last ')' the fields are 3..N, so tpgid (field 8) is the sixth of them.
+    let after_comm = &stat[stat.rfind(')')? + 1..];
+    u32::try_from(after_comm.split_whitespace().nth(5)?.parse::<i32>().ok()?).ok()
+}
+
+/// No `/proc` off Linux — the same honest `None` as [`read_cwd`], and with the same consequence:
+/// a report bound to a process group is simply never released by that rule, which is where this
+/// tree already was.
+#[cfg(not(target_os = "linux"))]
+fn read_foreground_pgid(_pid: u32) -> Option<u32> {
     None
 }
 
@@ -1305,6 +1354,95 @@ mod tests {
             dir.canonicalize().ok(),
             "cwd tracks the directory the child was spawned in",
         );
+    }
+
+    /// `foreground_pgid` names the job the pane's terminal currently belongs to — which is what
+    /// makes it able to see a process the pane did not spawn.
+    ///
+    /// Read TWICE with the input changed, because one reading cannot tell "the foreground job" from
+    /// "the child": at a prompt those are the same number, and the whole point of this accessor is
+    /// the case where they are not. So the shell is asked at rest (where it owns its own terminal)
+    /// and again while a job it started holds the terminal — and the child is asserted ALIVE across
+    /// both, since a caller that could use `is_eof` instead would not need this at all.
+    ///
+    /// The job is `sleep`, given a here-string of nothing to do, because what is being observed is
+    /// terminal ownership rather than anything the job prints.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn foreground_pgid_names_the_job_that_owns_the_terminal() {
+        let mut command = CommandBuilder::new("/bin/bash");
+        command.arg("--norc");
+        command.arg("-i");
+        command.env("TERM", "dumb");
+        command.env("PS1", "$ ");
+        let pty = PanePty::spawn(command, 20, 4).expect("spawn a pty");
+        let child = pty.pid().expect("a live child");
+
+        let at_rest =
+            wait_for(&pty, |pgid| pgid == Some(child)).expect("the shell owns its own tty");
+        assert_eq!(
+            at_rest, child,
+            "at a prompt the foreground job IS the child"
+        );
+
+        pty.write(b"sleep 300\n").expect("write to the pty");
+        let running = wait_for(&pty, |pgid| pgid.is_some_and(|pgid| pgid != child))
+            .expect("a foreground job takes the terminal");
+        assert_ne!(
+            running, child,
+            "a job the child started owns the terminal while it runs",
+        );
+        assert!(
+            !pty.is_eof(),
+            "and the child is alive throughout — this is exactly the case `is_eof` cannot see",
+        );
+    }
+
+    /// `/proc/<pid>/stat`'s second field is the executable name in parentheses and may contain BOTH
+    /// spaces and parentheses, so the fields after it are found from the LAST `)` — never by
+    /// splitting the line, and never from the first `)`.
+    ///
+    /// The fixture carries both hazards at once (`sl) eep`) because they break different parses and
+    /// one name that only had a space would leave half the claim untested: a whitespace split from
+    /// the start of the line misses on the space, and anchoring on the FIRST `)` misses on the
+    /// paren. Either way the number read belongs to something else entirely, and a pane's child is
+    /// whatever the user configured as their shell — so this is a rename away from being real.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_child_whose_name_breaks_a_naive_stat_parse_is_still_read_correctly() {
+        let dir = std::env::temp_dir().join(format!("sprag-pty-space-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let spaced = dir.join("sl) eep");
+        std::fs::copy("/bin/sleep", &spaced).expect("a copy of sleep under an awkward name");
+
+        let mut command = CommandBuilder::new(&spaced);
+        command.arg("300");
+        command.env("TERM", "dumb");
+        let pty = PanePty::spawn(command, 20, 4).expect("spawn a pty");
+        let child = pty.pid().expect("a live child");
+        let pgid = wait_for(&pty, |pgid| pgid.is_some()).expect("a foreground group");
+
+        assert_eq!(
+            pgid, child,
+            "the child is its own foreground job, read past a comm field with a space in it",
+        );
+        drop(pty);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Poll `foreground_pgid` until `want` accepts it, or give up. Job control settles on the
+    /// child's own schedule, so a fixed sleep would either be flaky or slow.
+    #[cfg(target_os = "linux")]
+    fn wait_for(pty: &PanePty, want: impl Fn(Option<u32>) -> bool) -> Option<u32> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            let pgid = pty.foreground_pgid();
+            if want(pgid) {
+                return pgid;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        None
     }
 
     /// `resize` is `&self`: a shared `&PanePty` reflows the PTY +

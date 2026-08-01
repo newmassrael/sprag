@@ -111,7 +111,7 @@ use sprag_vt::Screen;
 
 mod track;
 
-pub use track::{DEFAULT_SETTLE, Hysteresis, ReportOutcome, Tracker};
+pub use track::{DEFAULT_SETTLE, Hysteresis, Report, ReportOutcome, Tracker};
 
 /// How many rule evaluations have run, process-wide.
 static EVALUATIONS: AtomicU64 = AtomicU64::new(0);

@@ -468,6 +468,16 @@ pub const AGENT_MANIFESTS_SLOT: &str = "agent_manifests";
 /// * `seq` — the reporter's own monotonic clock. Optional, and when present a value at or below the
 ///   last one accepted FROM THAT SOURCE is refused as a replay (`accepted: false`), which is the only
 ///   way a reporter learns that its message arrived out of order.
+/// * `bind` — whether this report should last only as long as whatever is currently running in the
+///   pane. Optional, default false. A HOOK sets it, because it speaks for the agent that spawned it
+///   and must not outlive it; a person does not, because their report is theirs to withdraw and the
+///   command they typed it with has already exited.
+///
+///   It does NOT say what to bind to, and that is the point: the daemon reads which process group
+///   owns the pane's terminal itself, so a caller can neither name somebody else's process nor park
+///   a release on a pane it does not speak for. A pane whose foreground group cannot be read (no
+///   `/proc`, or a child already reaped) yields an unbound report rather than a refused one — the
+///   honest degradation, which is where this action was before the field existed.
 ///
 /// The answer's `changed` says whether the published verdict actually moved — a duplicate report is
 /// accepted and changes nothing — and it is what decides whether the daemon records an
@@ -480,7 +490,8 @@ pub const REPORT_AGENT_ACTION: &str = "report_agent";
 
 /// The mux control external action: give a pane back to the screen — `{id}` → `{released}`.
 ///
-/// The other half of [`REPORT_AGENT_ACTION`], and the reason that one needs no expiry clock. A
+/// The other half of [`REPORT_AGENT_ACTION`], and part of why that one needs no expiry clock — the
+/// rest being that a bound report is retired when the process group it named is gone. A
 /// reporter calls it when the agent it speaks for is finished or gone; a person calls it when a
 /// reporter has wandered off; and the daemon calls it for a pane whose CHILD has exited, since a
 /// process that no longer exists cannot be the authority on what its pane is doing.

@@ -2113,6 +2113,13 @@ fn deliver_hook(args: Vec<String>) -> Option<()> {
                 "source": format!("hook:{}", target.name),
                 "name": target.agent,
                 "seq": hooks::report_seq()?,
+                // This report is made ON BEHALF OF the agent that spawned this process, not by it,
+                // so it must not outlive that agent. `SessionEnd` covers the graceful exit; this
+                // covers the two it cannot — an agent that is killed or crashes runs no hook, and
+                // this hook swallows its own failures, so even a clean release can be lost.
+                // `report-agent` deliberately does NOT set it: a person's report is theirs to
+                // withdraw, and binding it would retire it as soon as their command returned.
+                "bind": true,
             }),
         ),
         hooks::Outcome::Release => (RELEASE_AGENT_ACTION, json!({ "id": pane })),

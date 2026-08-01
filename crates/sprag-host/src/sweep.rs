@@ -142,17 +142,28 @@ pub fn sweep_once(
             let id = pane.id();
             live.insert(id);
             report.visited += 1;
-            // A REPORT outlives the process that made it, and this is what bounds that. A pane whose
-            // child is gone has no reporter — nothing inside it can ever release, correct, or contradict
-            // what it last said — so the authority is dropped and the screen becomes the only witness
-            // again. That is why the report needs no expiry clock: the thing that expires is the
-            // REPORTER, and the daemon can see exactly when it does.
+            // A REPORT outlives the process that made it, and this is what bounds that. The thing
+            // that expires is the REPORTER, and it can go in two ways the daemon can see:
             //
-            // `is_eof` first, and the agent lock only if it holds: the read is one atomic load per pane
-            // while the lock is contended by every client wake (R261 measured what this loop's locks
-            // cost), and an exited pane is the rare case. The release makes the pane owe a look, which
-            // `owes_evaluation` below serves in THIS pass rather than the next one.
-            if pane.pty().is_eof() && agents.with(|state| state.reported(id)) {
+            // * the pane's CHILD is gone, so nothing inside the pane can release, correct or
+            //   contradict what it last said; or
+            // * the report named an OWNER — the process group that held the pane's terminal when it
+            //   spoke — and that group no longer exists. This is the shape an agent normally has:
+            //   the pane's child is a shell, the agent is what the user typed at its prompt, and
+            //   killing it leaves the shell alive, so the first test never fires for it. Without
+            //   this one a crashed agent parks `working` on a pane sitting at a prompt forever,
+            //   which is the worst answer a status can give.
+            //
+            // The cheap side first in both, and the agent lock only if it holds: `is_eof` is one
+            // atomic load and the owner check is one `kill(2)`, while the lock is contended by every
+            // client wake (R261 measured what this loop's locks cost). The release makes the pane owe
+            // a look, which `owes_evaluation` below serves in THIS pass rather than the next one.
+            let reporter_gone = if pane.pty().is_eof() {
+                agents.with(|state| state.reported(id))
+            } else {
+                agents.with(|state| state.orphaned(id))
+            };
+            if reporter_gone {
                 agents.release(id);
             }
             // Three reasons to ask about a pane — due, unknown, stale — and none of them applies to
@@ -219,7 +230,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use sprag_detect::{DEFAULT_SETTLE, Ruleset, built_ins};
+    use sprag_detect::{DEFAULT_SETTLE, Report, Ruleset, built_ins};
     use sprag_terminal::CommandBuilder;
 
     /// A pane that paints `text` and then blocks on its PTY forever, so nothing it does can land in
@@ -281,10 +292,13 @@ mod tests {
 
         let (outcome, _) = agents.report(
             id,
-            sprag_detect::AgentState::Blocked,
-            Some("claude".to_owned()),
-            "hook",
-            None,
+            Report {
+                state: sprag_detect::AgentState::Blocked,
+                agent: Some("claude".to_owned()),
+                source: "hook".to_owned(),
+                seq: None,
+                owner: None,
+            },
             sprag_detect::Hysteresis::default,
         );
         assert!(
@@ -308,6 +322,114 @@ mod tests {
         assert!(
             !agents.with(|state| state.any_owes_look()),
             "and the same pass re-derived the verdict rather than leaving the pane owing one",
+        );
+    }
+
+    /// A process in a group of its OWN, standing in for an agent the pane did not spawn.
+    ///
+    /// `setpgid` is what makes it usable: a spawned child inherits its parent's process group, so
+    /// without this the "agent's" group would be the TEST RUNNER's, and the kill that retires the
+    /// report would take the test with it. With it, the child's pid is its pgid.
+    fn agent_in_its_own_group() -> std::process::Child {
+        use std::os::unix::process::CommandExt as _;
+        let mut command = std::process::Command::new("/bin/sleep");
+        command.arg("300");
+        // SAFETY: `setpgid` is async-signal-safe and runs in the forked child before `exec`, which
+        // is the only place `pre_exec` bodies are allowed to do anything.
+        unsafe {
+            command.pre_exec(|| match libc::setpgid(0, 0) {
+                0 => Ok(()),
+                _ => Err(std::io::Error::last_os_error()),
+            });
+        }
+        command.spawn().expect("a stand-in agent")
+    }
+
+    /// A report dies with the process that made it EVEN WHEN that process was not the pane's child —
+    /// which is the shape an agent normally has.
+    ///
+    /// The pane's child is long-lived here and never reaches EOF, so the rule this exercises is the
+    /// only one that can fire. That is asserted rather than assumed: a user types `claude` at the
+    /// prompt of the shell sprag spawned, so killing the agent leaves the shell alive, and the EOF
+    /// rule — the whole of what slice 2 had — never sees it. Without this an authoritative `working`
+    /// would sit on a pane showing a shell prompt forever.
+    ///
+    /// The CONTROL is the first sweep, taken while the stand-in is still running: without it this
+    /// passes on a rule that retires every bound report on sight.
+    #[test]
+    fn a_bound_report_dies_with_a_process_the_pane_did_not_spawn() {
+        let reg = registry_with(&[("a", claude_pane())]);
+        let channels = Arc::new(ChannelRegistry::default());
+        let agents = Arc::new(AgentClock::new(Ruleset::new(built_ins())));
+        let id = PaneId(0);
+
+        let mut agent = agent_in_its_own_group();
+        let owner = agent.id();
+        agents.report(
+            id,
+            Report {
+                state: sprag_detect::AgentState::Blocked,
+                agent: Some("claude".to_owned()),
+                source: "hook:claude".to_owned(),
+                seq: None,
+                owner: Some(u64::from(owner)),
+            },
+            sprag_detect::Hysteresis::default,
+        );
+
+        let alive = Instant::now() + DEFAULT_SETTLE * 2;
+        sweep_once(&reg, &agents, &channels, alive, true);
+        assert!(
+            agents.with(|state| state.reported(id)),
+            "CONTROL: the agent is still running, so its report stands",
+        );
+
+        agent.kill().expect("kill the stand-in agent");
+        agent.wait().expect("reap it, so its group is really gone");
+
+        sweep_once(&reg, &agents, &channels, alive + DEFAULT_SETTLE, true);
+        assert!(
+            !agents.with(|state| state.reported(id)),
+            "the agent is gone, so its authority is gone",
+        );
+        assert!(
+            !agents.with(|state| state.any_owes_look()),
+            "and the same pass re-derived the verdict rather than leaving the pane owing one",
+        );
+    }
+
+    /// An UNBOUND report is never retired by that rule, and this is the property most easily broken
+    /// by it: `sprag report-agent` is a person saying what a pane is doing, and the command they
+    /// said it with has already exited by the time anything could ask about it. Their report is
+    /// theirs to withdraw, with `release-agent`, and nobody else's to expire.
+    ///
+    /// Sweeps run long past the point the bound test above was already released at.
+    #[test]
+    fn an_unbound_report_is_nobody_elses_to_expire() {
+        let reg = registry_with(&[("a", claude_pane())]);
+        let channels = Arc::new(ChannelRegistry::default());
+        let agents = Arc::new(AgentClock::new(Ruleset::new(built_ins())));
+        let id = PaneId(0);
+
+        agents.report(
+            id,
+            Report {
+                state: sprag_detect::AgentState::Blocked,
+                agent: Some("claude".to_owned()),
+                source: "cli".to_owned(),
+                seq: None,
+                owner: None,
+            },
+            sprag_detect::Hysteresis::default,
+        );
+        let mut now = Instant::now();
+        for _ in 0..3 {
+            now += DEFAULT_SETTLE * 2;
+            sweep_once(&reg, &agents, &channels, now, true);
+        }
+        assert!(
+            agents.with(|state| state.reported(id)),
+            "nothing was bound to this report, so nothing can retire it",
         );
     }
 

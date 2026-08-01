@@ -3383,6 +3383,86 @@ fn the_cli_reports_and_releases_an_agent_for_the_pane_it_is_running_in() {
     );
 }
 
+/// A hook's report does not outlive the agent it speaks for, even when that agent is a GRANDCHILD
+/// of the pane — which is how an agent normally runs.
+///
+/// The pane's child here is an interactive shell, and the "agent" is a job started at its prompt,
+/// exactly as a user typing `claude` produces. Killing that job leaves the shell alive, so the rule
+/// slice 2 shipped — a report dies when the pane's own child reaches EOF — never fires for it. What
+/// this proves is the whole chain a real crash goes through: `sprag hook` binds the report to
+/// whatever owns the pane's terminal, the daemon samples that itself, and a sweep retires the report
+/// once that job is gone.
+///
+/// Two controls, and the test is worth little without either. The report is read back WHILE the job
+/// runs, so a rule that retired every bound report on sight could not pass; and the shell is
+/// asserted alive at the end, so a pane that simply died cannot be what produced the recovery.
+///
+/// What this does NOT prove is which pass does the retiring — `sprag agent` reads the pane list, and
+/// a pane-list read observes every pane it describes (R271). The sweep being the actor is proven
+/// where it can be: `sweep_once` is called directly in `sweep.rs`'s own tests.
+#[test]
+fn a_hooks_report_does_not_outlive_an_agent_the_pane_did_not_spawn() {
+    let (_host, sock) = spawn_host_running(&["bash", "--norc", "-i"]);
+    let env = [("SPRAG_PANE", "0")];
+
+    // The agent: a job at the shell's prompt, so it is one level below the pane's own child.
+    assert!(sprag(&sock, &["send-keys", "0", "-l", "sleep 300"]).ok);
+    assert!(sprag(&sock, &["send-keys", "0", "Enter"]).ok);
+    assert!(
+        wait_for(Duration::from_secs(10), || {
+            sprag(&sock, &["capture-pane", "0"])
+                .stdout
+                .contains("sleep 300")
+        }),
+        "the shell echoed the command, so it has taken it",
+    );
+
+    // The hook fires the way the agent's own config makes it fire: a payload on stdin, the pane from
+    // the environment. Nothing here names a process — the daemon reads which one owns the terminal.
+    let run = sprag_stdin(
+        &sock,
+        &["hook", "claude"],
+        &env,
+        r#"{"hook_event_name":"UserPromptSubmit","session_id":"s1"}"#,
+    );
+    assert!(
+        run.ok && run.stdout.is_empty(),
+        "the hook is silent: {} {}",
+        run.stdout,
+        run.stderr,
+    );
+    assert!(
+        wait_for(Duration::from_secs(10), || {
+            sprag(&sock, &["agent", "0"]).stdout.contains("0: working")
+        }),
+        "CONTROL: while the agent runs, its report stands: {}",
+        sprag(&sock, &["agent", "0"]).stdout,
+    );
+
+    // The agent dies without running a hook, which is what a crash, a SIGKILL and an OOM all look
+    // like from here. Ctrl-C reaches the foreground job and nothing else.
+    assert!(sprag(&sock, &["send-keys", "0", "C-c"]).ok);
+    assert!(
+        wait_for(Duration::from_secs(20), || {
+            !sprag(&sock, &["agent", "0"]).stdout.contains("0: working")
+        }),
+        "the agent is gone, so its report is: {}",
+        sprag(&sock, &["agent", "0"]).stdout,
+    );
+
+    // CONTROL: the pane's own child never died, so the EOF rule cannot be what did this.
+    assert!(sprag(&sock, &["send-keys", "0", "-l", "echo still-here"]).ok);
+    assert!(sprag(&sock, &["send-keys", "0", "Enter"]).ok);
+    assert!(
+        wait_for(Duration::from_secs(10), || {
+            sprag(&sock, &["capture-pane", "0"])
+                .stdout
+                .contains("still-here")
+        }),
+        "the shell is still running and answering",
+    );
+}
+
 /// Run the CLI with `input` on its stdin.
 ///
 /// The only way to exercise `hook`, which takes its payload there — and the only way to be sure the
