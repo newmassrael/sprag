@@ -1669,6 +1669,76 @@ fn the_cli_reports_which_pane_an_agent_is_waiting_in() {
     );
 }
 
+/// `sprag agent` says a broken `config.toml` FIRST, and says it on stderr — the case where the
+/// remedy the verb prints is otherwise a trap.
+///
+/// # The defect this closes
+///
+/// The verb tells a user with a wrong verdict to edit an `[[agent]]` block. When that file will not
+/// parse, the daemon keeps the last list that worked and reports it to a `tracing::warn` nobody
+/// reads — so a user who has ALREADY written the block is told to write it, sees nothing change, and
+/// has no way from here to learn the file was refused. Worse for the pane the block was meant to
+/// claim: `no agent  (no manifest claims this pane)` is what an unparsed claim looks like from here,
+/// which reads as a detection problem rather than a syntax one.
+///
+/// # Why stderr, and why the assertion is about the STREAM
+///
+/// The listing is `ID: STATE  NAME  rule=RULE  seq=N`, a shape a script slices. A caveat on stdout
+/// would make every such script skip a line it never had to skip. So the split is the claim: the
+/// sentence is on stderr, and stdout carries the rows and only the rows.
+///
+/// REVERT-PROOF, both measured, and the FIRST attempt at the pair was wrong in a way worth keeping:
+/// swapping `eprintln!` for `println!` does NOT fail the stdout assertion, because the sentence
+/// leaves the stream the earlier assertion reads and that one fails first. The mutation that isolates
+/// the stdout claim is printing to BOTH streams — measured red, on that assertion, naming the row it
+/// polluted. Dropping the query is what fails the stderr assertion.
+#[test]
+fn the_cli_says_a_refused_manifest_file_before_it_reports_any_verdict() {
+    let dir = std::env::temp_dir().join(format!("sprag-cli-manifest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sprag")).expect("create the temp config dir");
+    // Valid TOML, invalid MANIFEST: a `disable` naming a rule that does not exist. Nothing else in
+    // the file stops working, which is what makes the failure silent.
+    std::fs::write(
+        dir.join("sprag").join(sprag_host::config::CONFIG_FILE),
+        "[[agent]]\nname = \"claude\"\ndisable = [\"nope\"]\n",
+    )
+    .expect("write the broken config");
+
+    let (_host, sock) =
+        spawn_host_with(&["cat"], &[("XDG_CONFIG_HOME", &dir.display().to_string())]);
+
+    let run = sprag(&sock, &["agent"]);
+    assert!(run.ok, "agent still answers: {}", run.stderr);
+    assert!(
+        run.stderr.contains("nope") && run.stderr.contains("last worked"),
+        "the refusal is reported, with what the daemon did about it: {:?}",
+        run.stderr,
+    );
+    assert!(
+        run.stdout.is_empty(),
+        "and the rows stream carries rows only — a script slicing it skips nothing: {:?}",
+        run.stdout,
+    );
+
+    // The diagnosing form is where the trap was: it names the file to edit, so it must also say the
+    // file is currently being refused.
+    let named = sprag(&sock, &["agent", "0"]);
+    assert!(named.ok, "agent 0 still answers: {}", named.stderr);
+    assert!(
+        named.stdout.contains("no agent"),
+        "the pane still reports as unclaimed — the reading a broken manifest produces: {:?}",
+        named.stdout,
+    );
+    assert!(
+        named.stderr.contains("nope"),
+        "and the caveat is on this call too, which is the one that says to edit that file: {:?}",
+        named.stderr,
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The pane lifecycle over the CLI: list, split, list again, kill, and the refusals on either side
 /// of it. Drives the real daemon, so a break in the wire vocabulary these verbs share with it —
 /// `spawn`, `close`, the `panes` slot — fails here rather than in someone's shell.

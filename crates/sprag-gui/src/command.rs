@@ -594,6 +594,15 @@ pub(crate) fn catalog(target: Option<usize>, slots: &SlotView) -> Catalog {
         // message names its own file, so the user learns which to open.
         Some(Err(message)) => errors.push(message),
     }
+    // ...and the third report about that same file, which contributes no rows to ANY list: a broken
+    // `[[agent]]` block leaves the daemon detecting agents with whatever manifests last worked. It is
+    // collected here because it is the host's answer, beside the two above; the keymap's is collected
+    // by the palette instead, because that half of the file is this client's to read.
+    //
+    // Nothing about it is command-shaped, and that is why it rides `config_errors` rather than
+    // anything in `out`. The palette is where this client says what is wrong with `config.toml`, and
+    // a user who has just been told their agent states look wrong has one place to look.
+    errors.extend(slots.agent_manifest_report());
     out.extend([
         Command::Find,
         Command::Copy,
@@ -699,9 +708,11 @@ pub(crate) fn catalog(target: Option<usize>, slots: &SlotView) -> Catalog {
 pub(crate) struct Catalog {
     /// The commands to offer, in the order an empty query lists them.
     pub(crate) commands: Vec<Command>,
-    /// Why a config contributed nothing, one message per broken file (the pane's project, the
-    /// user's own, or both). A `Vec` rather than an `Option` because the two are independent: one
-    /// being broken says nothing about the other, and a user with two problems needs to see two.
+    /// Why a config contributed nothing — one message per thing that is broken: the pane's project,
+    /// the user's own commands, and the user's agent manifests. A `Vec` rather than an `Option`
+    /// because they are independent: one being broken says nothing about the others, and a user with
+    /// three problems needs to see three. (The manifests are the one member that contributed no rows
+    /// to begin with — see [`catalog`] on why it is collected here anyway.)
     pub(crate) config_errors: Vec<String>,
 }
 
@@ -825,6 +836,10 @@ mod tests {
         project: Option<Result<sprag_host::Project, String>>,
         /// What this host answers for the USER's config — the same three outcomes, independently.
         global: Option<Result<sprag_host::UserConfig, String>>,
+        /// Why the daemon's agent manifests are not the user's. Independent of the two above: it is
+        /// the same FILE as `global`, but a different half of it, and either half can be the broken
+        /// one.
+        manifests: Option<String>,
         /// The live pane set. Ids are deliberately NOT their slot numbers, so a test asserting on a
         /// recorded id proves the slot→id mapping was applied rather than an accidental identity.
         panes: Vec<PaneId>,
@@ -891,6 +906,9 @@ mod tests {
         }
         fn global_commands(&self) -> Option<Result<sprag_host::UserConfig, String>> {
             self.global.clone()
+        }
+        fn agent_manifest_report(&self) -> Option<String> {
+            self.manifests.clone()
         }
         fn paste(&self, id: PaneId, text: &str) -> bool {
             self.log.borrow_mut().pasted.push((id, text.to_owned()));
@@ -985,6 +1003,7 @@ mod tests {
             log: Rc::clone(&log),
             project: None,
             global: None,
+            manifests: None,
             // Offset so no id equals its slot (see the field's own note).
             panes: (0..panes).map(|i| PaneId(7 + i as u64)).collect(),
         };
@@ -1008,6 +1027,7 @@ mod tests {
             log: Rc::clone(&log),
             project: answer,
             global: None,
+            manifests: None,
             panes: vec![PaneId(7)],
         };
         let slots = SlotView::new(Box::new(host));
@@ -1015,12 +1035,13 @@ mod tests {
         (slots, log)
     }
 
-    /// A `SlotView` over a host answering `project` for the pane AND `global` for the user, so a
-    /// test can drive the two config sources independently — which is the whole point of their being
-    /// two.
+    /// A `SlotView` over a host answering `project` for the pane, `global` for the user's commands
+    /// and `manifests` for the daemon's agent rules, so a test can drive the three config reports
+    /// independently — which is the whole point of their being three.
     fn slots_with_configs(
         project: Option<Result<sprag_host::Project, String>>,
         global: Option<Result<sprag_host::UserConfig, String>>,
+        manifests: Option<String>,
     ) -> SlotView {
         let host = CatalogHost {
             windows: vec![WindowInfo {
@@ -1032,6 +1053,7 @@ mod tests {
             log: Rc::default(),
             project,
             global,
+            manifests,
             panes: vec![PaneId(7)],
         };
         let slots = SlotView::new(Box::new(host));
@@ -1062,7 +1084,7 @@ mod tests {
     /// built-ins and the ordering assertion fails.
     #[test]
     fn the_users_own_commands_are_offered_wherever_the_pane_is() {
-        let slots = slots_with_configs(None, Some(Ok(user_config(&["top"]))));
+        let slots = slots_with_configs(None, Some(Ok(user_config(&["top"]))), None);
 
         let commands = catalog(Some(0), &slots).commands;
         let user = commands
@@ -1101,6 +1123,7 @@ mod tests {
         let slots = slots_with_configs(
             Some(Ok(one_action_project())), // declares "test", titled "Run the suite"
             Some(Ok(user_config(&["test", "top"]))),
+            None,
         );
 
         let commands = catalog(Some(0), &slots).commands;
@@ -1137,6 +1160,7 @@ mod tests {
             Some(Err(
                 "config.toml: the command \"a\" has an empty `run`".to_owned()
             )),
+            None,
         );
 
         let built = catalog(Some(0), &slots);
@@ -1162,6 +1186,57 @@ mod tests {
                 .iter()
                 .any(|e| e.contains("config.toml") && e.contains("empty `run`")),
             "and the user config's report names ITS file: {:?}",
+            built.config_errors
+        );
+    }
+
+    /// A broken `[[agent]]` block is reported even though it costs the catalog no rows — which is
+    /// what makes it different from its two neighbours and the reason it could be forgotten.
+    ///
+    /// A broken project or user config announces itself by an absence a user can see: commands they
+    /// wrote are missing from the palette. A broken manifest takes NOTHING out of this list. Its only
+    /// symptom is elsewhere entirely — an agent verdict that looks wrong, or a pane that reads as
+    /// claimed by nobody — so if this surface does not say it, nothing in this client does.
+    ///
+    /// REVERT-PROOF: drop the `errors.extend` line in `catalog` and the palette shows a clean config
+    /// for a file the daemon has refused.
+    #[test]
+    fn a_broken_agent_manifest_is_reported_though_it_costs_the_catalog_no_rows() {
+        let report = "config.toml: `disable` names no rule `nope` in agent `claude`".to_owned();
+        let slots = slots_with_configs(None, Some(Ok(user_config(&["top"]))), Some(report.clone()));
+
+        let built = catalog(Some(0), &slots);
+        assert!(
+            built
+                .commands
+                .iter()
+                .any(|c| matches!(c, Command::Declared(a) if a.name == "top")),
+            "the user's commands are untouched — the manifests cost this list nothing"
+        );
+        assert_eq!(
+            built.config_errors,
+            vec![report],
+            "and the report is shown anyway, VERBATIM as the host rendered it"
+        );
+    }
+
+    /// Three broken things in one file, three reports — the count is the assertion, because a
+    /// collector that folded any two together would still look right with one.
+    #[test]
+    fn the_three_config_reports_are_independent() {
+        let slots = slots_with_configs(
+            Some(Err(broken_project_report())),
+            Some(Err(
+                "config.toml: the command \"a\" has an empty `run`".to_owned()
+            )),
+            Some("config.toml: `disable` names no rule `nope` in agent `claude`".to_owned()),
+        );
+
+        let built = catalog(Some(0), &slots);
+        assert_eq!(built.config_errors.len(), 3, "{:?}", built.config_errors);
+        assert!(
+            built.config_errors.iter().any(|e| e.contains("nope")),
+            "the manifests' report is one of them: {:?}",
             built.config_errors
         );
     }
@@ -1192,6 +1267,7 @@ mod tests {
                 sprag_host::ProjectError::Malformed("expected `]` at line 1".to_owned()),
             )
             .to_string())),
+            None,
         );
 
         let built = catalog(Some(0), &slots);

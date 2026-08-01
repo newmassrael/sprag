@@ -386,6 +386,16 @@ impl SlotView {
         self.host.global_commands()
     }
 
+    /// Why the daemon's agent manifests are not the ones the user's `config.toml` declares — `None`
+    /// when they are, or when this host detects no agents at all. Already worded to name the file,
+    /// like the two reads above.
+    ///
+    /// Takes no slot for a stronger reason than [`global_commands`](Self::global_commands) does: the
+    /// ruleset is the DAEMON's, so a broken block is not a fact about any pane on this window.
+    pub(crate) fn agent_manifest_report(&self) -> Option<String> {
+        self.host.agent_manifest_report()
+    }
+
     /// Deliver a file dropped on the window to slot `slot`'s pane, returning the path the pane was
     /// handed — `None` for a hole, or when the host refuses the file. The host decides whether that
     /// means pasting the local path or uploading to a remote workspace first; this end only says

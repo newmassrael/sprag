@@ -57,8 +57,8 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    FULL_TEXT_SLOT, KEY_ACTION, LAST_COMMAND_SLOT, LINKS_SLOT, PANES_SLOT, TEXT_ACTION,
-    find_slot_for, regex_slot_for,
+    AGENT_MANIFESTS_SLOT, FULL_TEXT_SLOT, KEY_ACTION, LAST_COMMAND_SLOT, LINKS_SLOT, PANES_SLOT,
+    TEXT_ACTION, find_slot_for, regex_slot_for,
 };
 use sprag_host::{PaneFind, mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
@@ -378,7 +378,8 @@ fn tools_list() -> Value {
                     rule is read from the verdict the detector already produced, so it can never \
                     disagree with what agent_state reports. A pane no manifest claims is explained \
                     as exactly that, which is the diagnosable answer for 'why does my agent pane \
-                    show nothing'.",
+                    show nothing' — and if that config.toml will not parse at all, the answer says \
+                    so first, because an unparsed claim is indistinguishable from an absent one.",
                 "inputSchema": {
                     "type": "object",
                     "properties": { "pane": pane_arg },
@@ -933,6 +934,10 @@ fn tool_agent_state(args: &Value) -> Result<String, String> {
 /// The remedy is named because a rule id with no instruction is only half an explanation: the id is
 /// what an `[[agent]]` block in `config.toml` addresses — replacing it in place, or `disable`-ing it —
 /// which is what makes a mis-detected pane fixable by the user who found it rather than by a release.
+///
+/// And a remedy that names a file is worth nothing if the file is already unreadable, which is why
+/// every answer here is prefixed by [`manifest_caveat`] when there is one. The `sprag agent` verb
+/// does the same thing for a person; this is the same fact reaching the reader that acts on it.
 fn tool_agent_explain(args: &Value) -> Result<String, String> {
     let number = pane_number(args)?;
     let panes = query_panes()?;
@@ -942,16 +947,24 @@ fn tool_agent_explain(args: &Value) -> Result<String, String> {
             panes.len()
         )
     })?;
+    // In front of EVERY branch below, and most of all the one that says no manifest claims this
+    // pane: that sentence is also what an unparsed claim looks like from here, and sending a reader
+    // off to write an `[[agent]]` block they have already written is the trap this closes.
+    let mut out = manifest_caveat().unwrap_or_default();
     let Some(agent) = &pane.agent else {
-        return Ok(format!(
+        out.push_str(&format!(
             "pane {number} (id={}) has no agent state: no agent manifest claims this pane, so no \
              rule was even consulted for it. That is what an ordinary shell looks like. If this pane \
              IS running an agent sprag does not know, add an `[[agent]]` block to sprag's config.toml \
              with a fingerprint that matches its screen or title.\n",
             pane.id
         ));
+        return Ok(out);
     };
-    let mut out = format!("pane {number} (id={}) is {}", pane.id, agent.state);
+    out.push_str(&format!(
+        "pane {number} (id={}) is {}",
+        pane.id, agent.state
+    ));
     match &agent.name {
         Some(name) => out.push_str(&format!(", detected as `{name}`")),
         None => out.push_str(
@@ -1023,6 +1036,40 @@ fn query_panes() -> Result<Vec<PaneInfo>, String> {
         .enumerate()
         .map(|(index, pane)| parse_pane_info(index, pane))
         .collect())
+}
+
+/// Why the daemon's agent manifests are not the ones the user's `config.toml` declares, as a line to
+/// put in front of an explanation — or nothing when they are, which is the ordinary case.
+///
+/// A read failure answers `None` rather than propagating: this is a CAVEAT on another tool's answer,
+/// and an old daemon that does not serve the slot must not turn `agent_explain` into an error. The
+/// tool it qualifies has already made its own call and would report a dead host itself.
+fn manifest_caveat() -> Option<String> {
+    let value = host_call(
+        "scene/query",
+        json!({ "path": mux_action_path(AGENT_MANIFESTS_SLOT) }),
+    )
+    .ok()?;
+    let error = value.get("error").and_then(Value::as_str)?;
+    Some(manifest_caveat_line(error))
+}
+
+/// The caveat's WORDING, split from the call that fetches it so it is testable without a live host —
+/// [`parse_pane_info`]'s reason, applied to the other direction of the same boundary.
+///
+/// It says three things a reader needs and would not otherwise reach: that the file is broken, that
+/// detection did NOT fall back to nothing (the daemon kept the last usable list, so the verdicts
+/// below are real answers from a stale rule set), and that an unparsed claim is indistinguishable
+/// from an absent one. The last is the trap: without it, `no agent manifest claims this pane` sends
+/// a reader to write an `[[agent]]` block they have already written.
+fn manifest_caveat_line(error: &str) -> String {
+    format!(
+        "NOTE before reading this: sprag's config.toml does not currently declare usable agent \
+         manifests ({error}). The daemon is detecting with the last list that worked, so a verdict \
+         below may be answering to a rule the file no longer contains — and a pane the file was \
+         meant to claim can appear as if no manifest claims it. Fixing that file is the first \
+         move.\n"
+    )
 }
 
 /// Parse one panes-slot entry into a [`PaneInfo`], numbered 1-based from its host-order `index`.
@@ -1288,6 +1335,30 @@ mod tests {
         assert_eq!(mouse_phrase("any"), "clicks + drag + motion");
         // A token a future tracking level might add surfaces verbatim, never vanishes.
         assert_eq!(mouse_phrase("future"), "future");
+    }
+
+    /// The caveat carries the host's sentence AND the two facts a reader cannot get from it.
+    ///
+    /// The daemon's message says what is wrong with the file. It does not say what the daemon DID
+    /// about it, and that is the part that changes what a reader should do: detection did not stop,
+    /// so the verdicts are real readings from a stale rule set, and a pane the file meant to claim
+    /// looks unclaimed. A caveat that only forwarded the error would leave `agent_explain` telling a
+    /// reader to write a block they have already written.
+    #[test]
+    fn the_manifest_caveat_says_what_the_daemon_did_not_only_what_broke() {
+        let line = manifest_caveat_line("config.toml: no rule `nope` in agent `claude`");
+        assert!(
+            line.contains("no rule `nope`"),
+            "the host's own sentence is carried verbatim: {line}"
+        );
+        assert!(
+            line.contains("last list that worked"),
+            "and says detection did not stop, so the verdicts below are real: {line}"
+        );
+        assert!(
+            line.contains("as if no manifest claims it"),
+            "and names the reading an unparsed claim produces, which is the trap: {line}"
+        );
     }
 
     #[test]

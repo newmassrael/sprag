@@ -150,18 +150,33 @@ fn socket_path() -> PathBuf {
 /// typed at it comes straight back, which is how a write is proven to have ARRIVED without needing a
 /// shell.
 fn spawn_daemon(program: &[&str], size: (u16, u16)) -> (Daemon, PathBuf) {
+    spawn_daemon_with(program, size, &[])
+}
+
+/// The one spawn, with `env` overrides on the DAEMON's own environment — what a test needs when the
+/// thing under test is a file the daemon reads rather than a pane it runs (`XDG_CONFIG_HOME`, so a
+/// test can point the daemon at a config of its own without touching the environment its parallel
+/// siblings are reading).
+fn spawn_daemon_with(
+    program: &[&str],
+    size: (u16, u16),
+    env: &[(&str, &str)],
+) -> (Daemon, PathBuf) {
     let sock = socket_path();
     let _ = std::fs::remove_file(&sock);
-    let child = Command::new(sprag_term_bin())
+    let mut command = Command::new(sprag_term_bin());
+    command
         .arg("--size")
         .arg(format!("{}x{}", size.0, size.1))
         .arg("--")
         .args(program)
         .env(SOCK_ENV, &sock)
         .env("SPRAG_HOST_RPC", "1")
-        .stdin(Stdio::null())
-        .spawn()
-        .expect("spawn the sprag-term daemon");
+        .stdin(Stdio::null());
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let child = command.spawn().expect("spawn the sprag-term daemon");
     (Daemon(child, sock.clone()), sock)
 }
 
@@ -1019,6 +1034,56 @@ fn the_agent_tools_report_the_daemons_own_verdict() {
         quiet.contains("no agent manifest claims this pane") && quiet.contains("[[agent]]"),
         "a pane with no agent is explained as exactly that: {quiet}"
     );
+}
+
+/// `agent_explain` warns about a REFUSED `config.toml` before it explains anything — the case where
+/// its own remedy sends a reader in a circle.
+///
+/// The explanation's value is that it names what to edit. When the file it names will not parse, the
+/// daemon keeps the last list that worked and says so only to a log, so an agent reading this tool
+/// is told to write an `[[agent]]` block that may already be written — and the pane the block was
+/// meant to claim reports as claimed by nobody, which reads as a fingerprint problem rather than a
+/// syntax one. The caveat is what separates those two readings.
+///
+/// Live rather than unit because the caveat is a second host call the tool makes on its own: nothing
+/// in the arguments asks for it, so a wiring that never made the call would satisfy every unit test
+/// of the wording. `manifest_caveat_line`'s own test holds the wording; this holds that a reader gets
+/// it at all.
+///
+/// REVERT-PROOF: drop the `manifest_caveat()` prefix in `tool_agent_explain` and both assertions
+/// fail — the daemon is left reporting the refusal to a log nobody reads, which is the state this
+/// round ends.
+#[test]
+fn agent_explain_warns_when_the_daemon_has_refused_the_manifest_file() {
+    let dir = std::env::temp_dir().join(format!("sprag-mcp-manifest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sprag")).expect("create the temp config dir");
+    // Valid TOML, invalid MANIFEST — nothing else in the file stops working, which is what makes the
+    // failure silent.
+    std::fs::write(
+        dir.join("sprag").join("config.toml"),
+        "[[agent]]\nname = \"claude\"\ndisable = [\"nope\"]\n",
+    )
+    .expect("write the broken config");
+
+    let (_daemon, sock) = spawn_daemon_with(
+        &["cat"],
+        BOOT_PANE,
+        &[("XDG_CONFIG_HOME", &dir.display().to_string())],
+    );
+    let mut server = McpServer::spawn(&sock);
+
+    let why = server.call_tool("agent_explain", json!({ "pane": 1 }));
+    assert!(
+        why.starts_with("NOTE before reading this"),
+        "the caveat leads, because it changes how the rest is read: {why}"
+    );
+    assert!(
+        why.contains("nope") && why.contains("no agent manifest claims this pane"),
+        "the daemon's own sentence, in front of the reading an unparsed claim produces: {why}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ----- the socket resolve -----

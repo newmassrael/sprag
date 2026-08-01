@@ -113,11 +113,11 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use sprag_host::keymap::{BoundAction, KeySpec, KeyTable};
 use sprag_host::wire::{
-    BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, FULL_TEXT_SLOT, JOIN_PANE_ACTION, KEY_ACTION,
-    KILL_SESSION_ACTION, KILL_WINDOW_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT,
-    PASTE_ACTION, RENAME_WINDOW_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_WINDOW_ACTION,
-    SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, find_slot_for,
-    project_slot_for, regex_slot_for,
+    AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, FULL_TEXT_SLOT,
+    JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, NEW_SESSION_ACTION,
+    NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, RENAME_WINDOW_ACTION, RESIZE_ACTION,
+    RESIZE_WINDOW_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION,
+    TEXT_ACTION, WINDOWS_SLOT, find_slot_for, project_slot_for, regex_slot_for,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{HOST_SOCKET, HostConn, socket_path};
@@ -1716,6 +1716,18 @@ fn panes(args: Vec<String>) -> io::Result<()> {
 ///
 /// The rule is never re-derived here. It is the value the daemon's detector produced, carried on the
 /// wire, so this verb cannot come to disagree with the state it explains.
+///
+/// # Why it reports a broken `config.toml` before it reports anything else
+///
+/// Because the remedy above is otherwise a trap. This verb tells a user with a wrong verdict to edit
+/// an `[[agent]]` block, and a daemon whose manifest file will not parse keeps the last list that
+/// WORKED and says so nowhere — so the user edits, sees nothing change, and the surface that sent
+/// them there stays silent. Worse for a pane the file was supposed to claim: `no agent  (no manifest
+/// claims this pane)` is what an unparsed claim looks like from here, which reads as a detection
+/// problem rather than a syntax one.
+///
+/// So the report is asked for on every `agent` call, not only a diagnosing one, and printed on
+/// stderr because it qualifies the answer rather than being part of it.
 fn agent(args: Vec<String>) -> io::Result<()> {
     let (session, rest) = scope_and_rest(args, "agent")?;
     let mut wanted: Option<u64> = None;
@@ -1736,6 +1748,20 @@ fn agent(args: Vec<String>) -> io::Result<()> {
     let mut conn = connect_scoped(session.as_deref())?;
     if let Some(pane) = wanted {
         require_pane(&mut conn, session.as_deref(), pane, "agent")?;
+    }
+    // FIRST, and on stderr. Every line below was produced by a ruleset that is not the user's, so
+    // the caveat has to arrive before the readings it qualifies — and a script slicing `ID: STATE`
+    // out of stdout must not have to skip a sentence to find them.
+    let manifests: Value = conn.call(
+        "scene/query",
+        scoped_params(session.as_deref(), mux_action_path(AGENT_MANIFESTS_SLOT)),
+    )?;
+    if let Some(error) = manifests["error"].as_str() {
+        eprintln!("sprag: agent: {error}");
+        eprintln!(
+            "sprag: agent: the states below came from the manifests that last worked, not from \
+             that file"
+        );
     }
     let listed: Value = conn.call(
         "scene/query",
