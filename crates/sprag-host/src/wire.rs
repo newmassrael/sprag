@@ -447,6 +447,53 @@ pub const GLOBAL_COMMANDS_SLOT: &str = "commands";
 /// CHEAPER than the two config slots above rather than merely alike.
 pub const AGENT_MANIFESTS_SLOT: &str = "agent_manifests";
 
+/// The mux control external action: a process inside a pane REPORTS what it is doing, and that
+/// report outranks anything the screen argues until it is released.
+///
+/// `{id, source, state, name?, seq?}` → `{accepted, changed, seq}`.
+///
+/// * `id` — the pane, which a reporter inside one reads from its own environment (`SPRAG_PANE`, the
+///   variable a daemon publishes at each pane's birth). The same `id` every other pane-addressing
+///   action takes, because there is only one name for a pane.
+/// * `source` — who is speaking (`herdr:claude`'s shape: an integration, not a person). REQUIRED: an
+///   authority that cannot be named cannot be told from another one, cannot be shown to a user, and
+///   cannot have its own replays refused.
+/// * `state` — `working` / `blocked` / `idle`, read through
+///   [`AgentState::from_wire`](sprag_detect::AgentState::from_wire) so the vocabulary has one
+///   definition. `unknown` is REFUSED: a reporter that no longer knows is asking to be scraped, which
+///   is [`RELEASE_AGENT_ACTION`], and accepting it here would pin "not an agent" over a pane the
+///   screen can read perfectly well.
+/// * `name` — which agent is speaking, published as the pane's `agent.name`. Optional, because the
+///   report's subject is the STATE; a reporter that omits it leaves the pane's identity to the rules.
+/// * `seq` — the reporter's own monotonic clock. Optional, and when present a value at or below the
+///   last one accepted FROM THAT SOURCE is refused as a replay (`accepted: false`), which is the only
+///   way a reporter learns that its message arrived out of order.
+///
+/// The answer's `changed` says whether the published verdict actually moved — a duplicate report is
+/// accepted and changes nothing — and it is what decides whether the daemon records an
+/// `agent_state_changed` event and wakes the session's clients.
+///
+/// A report is published WITHOUT the settle window: hysteresis exists because a resting verdict rests
+/// on the absence of an animated signal, and a report is not a sample of a screen (see
+/// [`Tracker::report`](sprag_detect::Tracker::report)).
+pub const REPORT_AGENT_ACTION: &str = "report_agent";
+
+/// The mux control external action: give a pane back to the screen — `{id}` → `{released}`.
+///
+/// The other half of [`REPORT_AGENT_ACTION`], and the reason that one needs no expiry clock. A
+/// reporter calls it when the agent it speaks for is finished or gone; a person calls it when a
+/// reporter has wandered off; and the daemon calls it for a pane whose CHILD has exited, since a
+/// process that no longer exists cannot be the authority on what its pane is doing.
+///
+/// `released` is `false` for a pane nobody was reporting, so "stopped listening" is distinguishable
+/// from "there was nobody to stop listening to" — a caller retrying a release is not silently told
+/// it worked.
+///
+/// The released pane does not go blank: it keeps the last published verdict until the daemon's next
+/// pass re-derives one from its screen, which the release itself asks for (the waker is signalled and
+/// the pane owes a look).
+pub const RELEASE_AGENT_ACTION: &str = "release_agent";
+
 /// The `project.<pane>` query path for pane `id` — the ONE place that name is built, so a client and
 /// the host cannot spell it differently.
 #[must_use]

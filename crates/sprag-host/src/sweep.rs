@@ -142,6 +142,19 @@ pub fn sweep_once(
             let id = pane.id();
             live.insert(id);
             report.visited += 1;
+            // A REPORT outlives the process that made it, and this is what bounds that. A pane whose
+            // child is gone has no reporter — nothing inside it can ever release, correct, or contradict
+            // what it last said — so the authority is dropped and the screen becomes the only witness
+            // again. That is why the report needs no expiry clock: the thing that expires is the
+            // REPORTER, and the daemon can see exactly when it does.
+            //
+            // `is_eof` first, and the agent lock only if it holds: the read is one atomic load per pane
+            // while the lock is contended by every client wake (R261 measured what this loop's locks
+            // cost), and an exited pane is the rare case. The release makes the pane owe a look, which
+            // `owes_evaluation` below serves in THIS pass rather than the next one.
+            if pane.pty().is_eof() && agents.with(|state| state.reported(id)) {
+                agents.release(id);
+            }
             // Three reasons to ask about a pane — due, unknown, stale — and none of them applies to
             // a settled pane under unchanged rules, which is every pane in a quiet workspace.
             // `AgentRegistry::owes_evaluation` holds the composition and the argument for each.
@@ -223,6 +236,79 @@ mod tests {
     /// can MOVE. A plain shell pane's never does, which is what the two-session test needs.
     fn claude_pane() -> CommandBuilder {
         painting("  \u{23f8} manual mode on \u{b7} ? for shortcuts")
+    }
+
+    /// A REPORT dies with its reporter: a pane whose child has exited loses its authority on the next
+    /// sweep, and the same pass gives the pane back to the screen.
+    ///
+    /// This is what makes the report need no expiry clock. A hook releases when its agent finishes, but
+    /// a KILLED agent runs no hook — so something has to notice that the process which spoke is gone,
+    /// and the daemon can see exactly that. Without it an authoritative `working` would outlive the
+    /// agent forever, and no screen reading could ever correct it.
+    ///
+    /// The screen here is a `claude` footer painted by a child that then EXITS, so the pane keeps its
+    /// output (a pane holds its place after its child dies) and the scrape has a real verdict to
+    /// return to.
+    #[test]
+    fn a_report_dies_with_the_process_that_made_it() {
+        // Painted, then gone: `printf` without the `exec cat` the other fixtures block on.
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg("printf '%s' \"  \u{23f8} manual mode on \u{b7} ? for shortcuts\"");
+        command.env("TERM", "dumb");
+        let reg = registry_with(&[("a", command)]);
+        let channels = Arc::new(ChannelRegistry::default());
+        let agents = Arc::new(AgentClock::new(Ruleset::new(built_ins())));
+        let id = PaneId(0);
+
+        // Wait for the child to be GONE rather than sleeping: the release is keyed on EOF, so a pass
+        // taken before the exit lands would be measuring the wrong moment.
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        while Instant::now() < deadline {
+            let pool = {
+                let guard = reg.lock().unwrap_or_else(PoisonError::into_inner);
+                guard.workspace_of("a").expect("the session")
+            };
+            let gone = {
+                let guard = pool.lock().unwrap_or_else(PoisonError::into_inner);
+                guard.pane(id).is_some_and(|pane| pane.pty().is_eof())
+            };
+            if gone {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        let (outcome, _) = agents.report(
+            id,
+            sprag_detect::AgentState::Blocked,
+            Some("claude".to_owned()),
+            "hook",
+            None,
+            sprag_detect::Hysteresis::default,
+        );
+        assert!(
+            outcome.accepted,
+            "the report is taken while the pane exists"
+        );
+        assert!(agents.with(|state| state.reported(id)));
+
+        // One sweep, far enough ahead that a resting candidate the scrape creates can also settle.
+        sweep_once(
+            &reg,
+            &agents,
+            &channels,
+            Instant::now() + DEFAULT_SETTLE * 2,
+            true,
+        );
+        assert!(
+            !agents.with(|state| state.reported(id)),
+            "the reporter is gone, so its authority is gone",
+        );
+        assert!(
+            !agents.with(|state| state.any_owes_look()),
+            "and the same pass re-derived the verdict rather than leaving the pane owing one",
+        );
     }
 
     /// A registry with one session per entry in `panes`, each holding that one pane, and every pane

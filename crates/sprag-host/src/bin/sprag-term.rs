@@ -455,9 +455,15 @@ fn spawn_agent_waker(
             // not itself work — the guard below sends that wake straight back to the park.
             agents.park_until_due(SWEEP_INTERVAL);
             let now = Instant::now();
-            let due = agents.with(|state| state.any_due(now));
+            // Two reasons to do work on a wake that is not a sweep. A deadline has come due — the
+            // clock publishing a verdict nothing else would confirm — or a pane has been RELEASED
+            // from a report and its published state is one nobody stands behind any more. The second
+            // is the arrival `AgentClock::observe`'s docs anticipated: work asked for by another
+            // thread, which needs both the signal (`AgentClock::release` sends it) and a reason to act
+            // when nothing is due, which is this.
+            let owed = agents.with(|state| state.any_due(now) || state.any_owes_look());
             let sweep = now.duration_since(last_sweep) >= SWEEP_INTERVAL;
-            if !due && !sweep {
+            if !owed && !sweep {
                 continue;
             }
             if sweep {

@@ -40,7 +40,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use sprag_detect::{Hysteresis, Ruleset, Tracker};
+use sprag_detect::{Hysteresis, ReportOutcome, Ruleset, Tracker};
 use sprag_terminal::PaneId;
 use sprag_vt::Screen;
 
@@ -122,6 +122,14 @@ pub struct AgentFacts {
     /// Increments on a published CHANGE, so a client tells "still blocked" from "blocked again"
     /// without diffing strings — `notification_seq`'s treatment.
     pub seq: u64,
+    /// WHO said so, when a process inside the pane reported it rather than a rule inferring it —
+    /// `None` for a scraped verdict.
+    ///
+    /// The counterpart of [`rule`](Self::rule) for the other kind of evidence, and additive for the
+    /// same reason: a client that knows nothing about reports reads exactly the pre-report shape. A
+    /// reported verdict carries no `rule` and a scraped one carries no `source`, so which authority
+    /// answered is never a guess.
+    pub source: Option<String>,
 }
 
 /// Every pane's agent-state memory, plus the one ruleset they are all evaluated against.
@@ -228,6 +236,11 @@ impl AgentRegistry {
     /// * **STALE** — the pane is settled and known and its answer was reached under a ruleset the user
     ///   has since edited. The input that moved was not on its screen, so nothing else will ever bring
     ///   it back.
+    /// * **RELEASED** — a report was in force and has been dropped, so the published verdict is one
+    ///   nobody stands behind any more. Served on ANY wake rather than only a sweep, unlike the two
+    ///   above: a release is one pane's own event, caused by something a person just did or by that
+    ///   pane's agent going away, and the answer it invalidates is the pane's whole published state.
+    ///   A ruleset edit is neither of those — it is bulk and it is not urgent.
     ///
     /// None of the three applies to a settled pane under unchanged rules, which is every pane in a
     /// quiet workspace — so the answer this returns in the steady state is `false`, and the screen read
@@ -248,7 +261,7 @@ impl AgentRegistry {
     /// is made of.
     #[must_use]
     pub fn owes_evaluation(&self, id: PaneId, now: Instant, sweep: bool) -> bool {
-        self.is_due(id, now) || (sweep && (!self.knows(id) || self.stale(id)))
+        self.is_due(id, now) || self.owes_look(id) || (sweep && (!self.knows(id) || self.stale(id)))
     }
 
     /// Take a reading of one pane and return what is published for it, or `None` for a pane no
@@ -319,7 +332,75 @@ impl AgentRegistry {
             agent,
             rule,
             seq: tracker.seq(),
+            source: tracker.reported_source().map(str::to_owned),
         })
+    }
+
+    /// Take a REPORT for one pane — the push half of the agent surface, and the only input here that
+    /// outranks the screen.
+    ///
+    /// Builds the pane's memory if this is the first thing ever heard about it, which is why `window`
+    /// is taken on the same terms [`observe`](Self::observe) takes it: a reported pane may later be
+    /// released back to the screen, and the tracker it is released INTO must hold the window the user
+    /// currently has set rather than a default frozen at the report. It is read at most once, and not
+    /// at all for a pane already known — a report is not a reason to read the config file.
+    ///
+    /// The answer is [`ReportOutcome`] plus the published `seq`, so one round trip tells a reporter
+    /// that it was heard (`accepted`), whether anybody needs waking (`changed`), and which published
+    /// generation its report became.
+    pub fn report(
+        &mut self,
+        id: PaneId,
+        state: sprag_detect::AgentState,
+        agent: Option<String>,
+        source: &str,
+        seq: Option<u64>,
+        window: impl FnOnce() -> Hysteresis,
+    ) -> (ReportOutcome, u64) {
+        let tracker = self
+            .trackers
+            .entry(id)
+            .or_insert_with(|| Tracker::new(window()));
+        let outcome = tracker.report(state, agent, source, seq);
+        (outcome, tracker.seq())
+    }
+
+    /// Release the pane named by `id` back to the screen, answering whether a report was in force.
+    ///
+    /// A pane nobody has reported, and a pane nobody has ever observed, both answer `false` — there
+    /// is nothing to release, and inventing a tracker to say so would give the pane a memory its
+    /// first look has not earned.
+    pub fn release(&mut self, id: PaneId) -> bool {
+        self.trackers
+            .get_mut(&id)
+            .is_some_and(Tracker::release_report)
+    }
+
+    /// Whether this pane's published verdict is a report — the test the daemon uses to decide whether
+    /// a pane whose child has EXITED still has an authority to drop.
+    #[must_use]
+    pub fn reported(&self, id: PaneId) -> bool {
+        self.trackers
+            .get(&id)
+            .is_some_and(|tracker| tracker.reported_source().is_some())
+    }
+
+    /// Whether this pane owes a look no screen event will ask for — today, exactly a released pane.
+    #[must_use]
+    pub fn owes_look(&self, id: PaneId) -> bool {
+        self.trackers.get(&id).is_some_and(Tracker::owes_look)
+    }
+
+    /// Whether ANY pane owes such a look — the waker's guard, beside [`any_due`](Self::any_due).
+    ///
+    /// A walk of the trackers, and per WAKE rather than per pane, which is the distinction R255
+    /// measured and the reason this is not a per-pane caller's question ([`owes_look`](Self::owes_look)
+    /// is that one, at one hash lookup). It is deliberately NOT counted in [`AgentWork`]: that meter
+    /// says what the DEADLINE bookkeeping costs, and folding a second kind of walk into it would
+    /// corrupt the number R255 and R256 are pinned against.
+    #[must_use]
+    pub fn any_owes_look(&self) -> bool {
+        self.trackers.values().any(Tracker::owes_look)
     }
 
     /// When the earliest waiting candidate would publish, or `None` when nothing is waiting.
@@ -537,6 +618,42 @@ impl AgentClock {
         facts
     }
 
+    /// [`AgentRegistry::report`] under the lock. No signal: a report needs the waker for nothing.
+    ///
+    /// It publishes on the spot and it CLEARS any pending candidate, so the only thing it can do to
+    /// the waker's plan is remove a deadline from it — and a waker parked on a deadline that has
+    /// stopped existing wakes, finds nothing due, and parks again. The wake a report does need is the
+    /// CLIENTS', and that one is the caller's to send beside the event it records, where the two land
+    /// together (`ChannelRegistry::announce`).
+    pub fn report(
+        &self,
+        id: PaneId,
+        state: sprag_detect::AgentState,
+        agent: Option<String>,
+        source: &str,
+        seq: Option<u64>,
+        window: impl FnOnce() -> Hysteresis,
+    ) -> (ReportOutcome, u64) {
+        lock(&self.state).report(id, state, agent, source, seq, window)
+    }
+
+    /// [`AgentRegistry::release`] under the lock, SIGNALLING the waker when a report was dropped.
+    ///
+    /// This is the arrival [`observe`](Self::observe)'s docs anticipated — a reason to work that
+    /// comes from ANOTHER thread. A release makes the pane owe a look, and the look needs a screen,
+    /// which only the waker's pass reads; without the signal the correction would wait for whatever
+    /// happened to wake the thread next, up to a whole sweep interval, for a pane a person is
+    /// watching. The predicate side of the same arrival is
+    /// [`AgentRegistry::any_owes_look`] in the waker's guard: a wake with nothing to do would
+    /// otherwise be sent straight back to the park.
+    pub fn release(&self, id: PaneId) -> bool {
+        let released = lock(&self.state).release(id);
+        if released {
+            self.appeared.notify_all();
+        }
+        released
+    }
+
     /// Read the memory under its lock — the waker's walk, and nothing else.
     pub fn with<R>(&self, f: impl FnOnce(&mut AgentRegistry) -> R) -> R {
         f(&mut lock(&self.state))
@@ -588,6 +705,157 @@ mod tests {
     fn repaint(em: &mut Emulator, lines: &[&str]) {
         em.advance(b"\x1b[2J\x1b[H");
         em.advance(lines.join("\r\n").as_bytes());
+    }
+
+    /// A reported verdict reaches the pane list naming its SOURCE and no rule; a scraped one is the
+    /// other way round. That is how a reader tells an authority from an inference.
+    #[test]
+    fn a_reported_verdict_names_who_said_it_and_a_scraped_one_names_the_rule() {
+        let mut reg = AgentRegistry::new(Ruleset::new(vec![sprag_detect::claude()]));
+        let em = painted(CLAUDE_FOOTER);
+        let base = Instant::now();
+
+        let scraped = reg
+            .observe(
+                PaneId(1),
+                em.screen(),
+                Some("⠂ x"),
+                base,
+                Hysteresis::default,
+            )
+            .expect("the footer claims this pane");
+        assert_eq!(scraped.state, "working");
+        assert!(scraped.rule.is_some(), "a scrape says which rule fired");
+        assert_eq!(scraped.source, None, "and names no reporter");
+
+        let (outcome, published) = reg.report(
+            PaneId(1),
+            sprag_detect::AgentState::Idle,
+            Some("claude".to_owned()),
+            "herdr:claude",
+            Some(7),
+            Hysteresis::default,
+        );
+        assert!(outcome.accepted && outcome.changed);
+        let reported = reg
+            .observe(
+                PaneId(1),
+                em.screen(),
+                Some("⠂ x"),
+                base,
+                Hysteresis::default,
+            )
+            .expect("still claimed");
+        assert_eq!(reported.state, "idle", "the report outranks the screen");
+        assert_eq!(reported.source.as_deref(), Some("herdr:claude"));
+        assert_eq!(reported.rule, None, "a report fired no rule");
+        assert_eq!(
+            reported.seq, published,
+            "and the answer carries that generation"
+        );
+    }
+
+    /// A report about a pane nobody has ever looked at BUILDS the memory, reading the settle window
+    /// once to do it — because that window is what the pane will be released back into.
+    #[test]
+    fn a_report_builds_the_memory_and_reads_the_window_once() {
+        let mut reg = AgentRegistry::default();
+        let mut reads = 0_u32;
+        let report = |reg: &mut AgentRegistry, reads: &mut u32| {
+            reg.report(
+                PaneId(3),
+                sprag_detect::AgentState::Working,
+                None,
+                "hook",
+                None,
+                || {
+                    *reads += 1;
+                    Hysteresis::default()
+                },
+            )
+        };
+
+        assert!(!reg.knows(PaneId(3)), "nothing has looked at this pane");
+        report(&mut reg, &mut reads);
+        assert!(reg.knows(PaneId(3)), "the report gave it a memory");
+        assert_eq!(reads, 1, "which needed a window");
+        report(&mut reg, &mut reads);
+        assert_eq!(
+            reads, 1,
+            "a report is not a reason to re-read the user's config"
+        );
+    }
+
+    /// A RELEASED pane owes an evaluation on ANY wake, where a stale one waits for the sweep.
+    ///
+    /// The contrast is the point: staleness is bulk and unhurried (a config edit touched every pane),
+    /// while a release is one pane's own event and invalidates its whole published state. Without the
+    /// `sweep` argument being ignored for this reason, a release would take up to a sweep interval to
+    /// show — for a pane somebody is watching.
+    #[test]
+    fn a_released_pane_owes_a_look_on_any_wake() {
+        let mut reg = AgentRegistry::new(Ruleset::new(vec![sprag_detect::claude()]));
+        let em = painted(CLAUDE_FOOTER);
+        let base = Instant::now();
+        reg.observe(
+            PaneId(1),
+            em.screen(),
+            Some("⠂ x"),
+            base,
+            Hysteresis::default,
+        );
+        reg.report(
+            PaneId(1),
+            sprag_detect::AgentState::Idle,
+            None,
+            "hook",
+            None,
+            Hysteresis::default,
+        );
+        let settled = base + DEFAULT_SETTLE * 2;
+        assert!(
+            !reg.owes_evaluation(PaneId(1), settled, true),
+            "a reported pane owes nothing — not even on a sweep",
+        );
+        assert!(!reg.any_owes_look());
+
+        assert!(reg.release(PaneId(1)), "a report was in force");
+        assert!(
+            reg.owes_evaluation(PaneId(1), settled, false),
+            "and a released pane is served on a wake that is not a sweep",
+        );
+        assert!(reg.any_owes_look(), "which is what the waker's guard reads");
+
+        reg.observe(
+            PaneId(1),
+            em.screen(),
+            Some("⠂ x"),
+            settled,
+            Hysteresis::default,
+        );
+        assert!(!reg.any_owes_look(), "the look served it");
+        assert!(!reg.reported(PaneId(1)));
+    }
+
+    /// Releasing a pane nobody reported — or one nobody has ever seen — answers `false` and creates
+    /// nothing.
+    #[test]
+    fn releasing_what_nobody_reported_is_a_clean_no() {
+        let mut reg = AgentRegistry::new(Ruleset::new(vec![sprag_detect::claude()]));
+        let em = painted(CLAUDE_FOOTER);
+        assert!(!reg.release(PaneId(9)), "no such pane");
+        assert!(
+            !reg.knows(PaneId(9)),
+            "and asking did not give it a memory it has not earned",
+        );
+        reg.observe(
+            PaneId(1),
+            em.screen(),
+            Some("⠂ x"),
+            Instant::now(),
+            Hysteresis::default,
+        );
+        assert!(!reg.release(PaneId(1)), "observed, but never reported");
     }
 
     /// The window is read for a pane never seen and for one with a candidate waiting, and NOT for a
@@ -840,6 +1108,48 @@ mod clock_tests {
     ///
     /// This is what a `None` -> `Some` edge would miss, and it is the whole difference between the
     /// cheap question being sound and being a regression.
+    /// A RELEASE wakes a parked waker, because the pane it released needs a screen and only the
+    /// waker's pass reads one.
+    ///
+    /// The park here can only return because it was TOLD: a report leaves nothing pending, so
+    /// `park_until_due` sleeps for its whole cap, and the cap is longer than this test's patience. Same
+    /// instrument as `a_shortened_window_wakes_a_waker_parked_on_the_old_one`, pointed at the other
+    /// arrival — the one `AgentClock::observe`'s docs anticipated, from another thread.
+    #[test]
+    fn a_release_wakes_a_parked_waker() {
+        let clock = Arc::new(AgentClock::default());
+        clock.report(
+            PaneId(1),
+            sprag_detect::AgentState::Working,
+            None,
+            "hook",
+            None,
+            Hysteresis::default,
+        );
+        assert_eq!(
+            clock.with(|state| state.next_deadline()),
+            None,
+            "a report leaves nothing pending, so the park below has no deadline to return on",
+        );
+
+        let parked = Arc::clone(&clock);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waker = std::thread::spawn(move || {
+            parked.park_until_due(Duration::from_secs(600));
+            let _ = tx.send(());
+        });
+        std::thread::sleep(Duration::from_millis(50));
+
+        assert!(clock.release(PaneId(1)), "a report was in force");
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("a parked waker was never told a pane had been released");
+        waker.join().expect("the waker thread");
+        assert!(
+            clock.with(|state| state.any_owes_look()),
+            "and it has a reason to act on the wake, which the guard reads",
+        );
+    }
+
     #[test]
     fn a_shortened_window_wakes_a_waker_parked_on_the_old_one() {
         let clock = Arc::new(AgentClock::default());

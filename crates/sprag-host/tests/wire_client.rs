@@ -20,9 +20,10 @@ use sprag_host::wire::events_slot_since;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DROP_FILE_ACTION,
     FULL_TEXT_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION, LAYOUT_SLOT, LINKS_SLOT,
-    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, SELECT_WINDOW_ACTION,
-    SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION,
-    WINDOWS_SLOT, cells_slot_at, project_slot_for,
+    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, RELEASE_AGENT_ACTION,
+    REPORT_AGENT_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
+    project_slot_for,
 };
 use sprag_host::{CellFrame, mux_action_path, pane_input_path};
 use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn};
@@ -2821,4 +2822,179 @@ fn a_daemon_born_pane_is_told_which_pane_it_is_and_where_to_report() {
         printed,
         "the boot pane's child never printed {expected:?}; its screen was {seen:?}",
     );
+}
+
+/// The PUSH path end to end against a REAL `sprag-term`: a report outranks the daemon's own scrape,
+/// and a release hands the pane back — with the correction served by the daemon's waker rather than by
+/// anything this test does.
+///
+/// Nothing else in the suite reaches that second half. The release only sets a flag; the SCREEN it
+/// must be re-read from is reachable only from the waker's pass, so a daemon whose waker did not learn
+/// the new reason to work (`AgentRegistry::any_owes_look` in its guard) would answer this test's
+/// release with a pane frozen in its reported state. The unit tests prove the guard's predicate and
+/// the signal in isolation; this is the only place the two run in the daemon that owns them.
+///
+/// **What the timing can and cannot separate.** The bound below is well under
+/// `SWEEP_INTERVAL`, so a daemon that served the release only on its next scheduled sweep would
+/// usually fail it — but not always, since a release can land shortly before a sweep that was coming
+/// anyway. The bound is therefore a real contract and a partial proof of the mechanism; the mechanism
+/// itself is pinned where it can be, in `agent::tests`.
+#[test]
+fn a_report_outranks_the_daemons_scrape_and_a_release_gives_the_pane_back() {
+    // `agent-settle-time = 0` is what makes the bound below an instrument rather than a stopwatch. With
+    // the default window a released pane's RESTING verdict has to hold two seconds before it can be
+    // published, so the correction is wake + window and no bound separates a signalled wake from a
+    // sweep that was coming anyway. At zero the window is gone and the only thing left between the
+    // release and the new verdict is the wake itself.
+    let dir = std::env::temp_dir().join(format!("sprag-wire-push-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sprag")).expect("create the temp config dir");
+    std::fs::write(
+        dir.join("sprag").join(sprag_host::config::CONFIG_FILE),
+        "[options]\nagent-settle-time = 0\n",
+    )
+    .expect("write the config");
+
+    // A `claude` pane at rest: the resting title and the footer its fingerprint reads, then `cat` so
+    // the pane stays put.
+    let (_host, sock) = spawn_host_with(
+        &[
+            "sh",
+            "-c",
+            "printf '\\033]2;\\342\\234\\263 Claude Code\\007\\033[2J\\033[H\\342\\235\\257\\n  \\342\\217\\270 manual mode on \\302\\267 ? for shortcuts\\n'; cat",
+        ],
+        &[("XDG_CONFIG_HOME", &dir.display().to_string())],
+    );
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned host socket");
+
+    // The daemon's own reading first, so what the report overrides is a real scraped verdict rather
+    // than an absence.
+    let scraped = wait_until(Duration::from_secs(10), || {
+        pane_entry(&mut conn, 0)["agent"]["state"].as_str() == Some("idle")
+    });
+    assert!(scraped, "the daemon never scraped this pane as idle");
+    let entry = pane_entry(&mut conn, 0);
+    assert!(
+        entry["agent"]["rule"].is_string() && entry["agent"]["source"].is_null(),
+        "a scraped verdict names its rule and no reporter: {entry}",
+    );
+
+    // The report. `working` is not what the screen says, and it needs no settle window.
+    let answer: Value = conn
+        .call(
+            "scene/invoke",
+            json!({
+                "path": mux_action_path(REPORT_AGENT_ACTION),
+                "args": {
+                    "id": 0,
+                    "source": "wire-it",
+                    "state": "working",
+                    "name": "claude",
+                    "seq": 1,
+                },
+            }),
+        )
+        .expect("the report crosses the socket");
+    assert_eq!(answer["accepted"], json!(true), "accepted: {answer}");
+    assert_eq!(answer["changed"], json!(true), "and it moved the verdict");
+
+    let entry = pane_entry(&mut conn, 0);
+    assert_eq!(
+        entry["agent"]["state"],
+        json!("working"),
+        "the report outranks the daemon's own reading of the screen: {entry}",
+    );
+    assert_eq!(entry["agent"]["source"], json!("wire-it"));
+    assert!(
+        entry["agent"]["rule"].is_null(),
+        "and it carries no rule, because none fired: {entry}",
+    );
+
+    // A replay of the same sequence number is refused, over the same socket the hook would use.
+    let replay: Value = conn
+        .call(
+            "scene/invoke",
+            json!({
+                "path": mux_action_path(REPORT_AGENT_ACTION),
+                "args": {"id": 0, "source": "wire-it", "state": "idle", "seq": 1},
+            }),
+        )
+        .expect("a refused report is still a well-formed call");
+    assert_eq!(
+        replay["accepted"],
+        json!(false),
+        "a replay is refused: {replay}"
+    );
+    assert_eq!(
+        pane_entry(&mut conn, 0)["agent"]["state"],
+        json!("working"),
+        "and changed nothing",
+    );
+
+    // WHAT COUNTS AS EVIDENCE HERE, after a first draft that had none. Polling the pane list would
+    // SERVE the release — a pane-list query observes every pane it describes — and parking on
+    // `waitFor` proves nothing either, because pinion bumps the scene revision inside its own
+    // dispatcher: the release's own invoke wakes the park whatever the daemon does with it. The
+    // revert-proof caught both.
+    //
+    // The one observable that only the daemon can produce is the JOURNAL: `agent_state_changed` is
+    // recorded when a verdict MOVES, and after the release the only thing that can move this pane's
+    // verdict is the waker's own pass. `events.<since>` is a QUERY — it reads the log and observes no
+    // pane — so watching it cannot serve what it is watching for.
+    let cursor = read_revision(&mut conn);
+    let released: Value = conn
+        .call(
+            "scene/invoke",
+            json!({
+                "path": mux_action_path(RELEASE_AGENT_ACTION),
+                "args": {"id": 0},
+            }),
+        )
+        .expect("the release crosses the socket");
+    assert_eq!(
+        released["released"],
+        json!(true),
+        "a report was in force: {released}"
+    );
+
+    // With `agent-settle-time = 0` the re-derived verdict publishes on sight, so the only thing between
+    // the release and the record below is the waker's trip round its loop — which needs both the signal
+    // (`AgentClock::release` notifies) and a reason to act on a wake that is not a sweep
+    // (`any_owes_look` in the guard). One second against a sweep interval of five.
+    let corrected = wait_until(Duration::from_secs(1), || {
+        let batch: Value = conn
+            .call(
+                "scene/query",
+                json!({ "path": mux_action_path(&events_slot_since(cursor)) }),
+            )
+            .expect("the events family answers");
+        batch["events"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|event| event["type"] == "pane_agent_state_changed" && event["pane"] == 0)
+    });
+    assert!(
+        corrected,
+        "the daemon never re-derived the released pane's verdict on its own",
+    );
+
+    // Only NOW read the pane list, so what it reports was published by the daemon rather than produced
+    // by this query.
+    let entry = pane_entry(&mut conn, 0);
+    assert_eq!(
+        entry["agent"]["state"],
+        json!("idle"),
+        "released, the pane is the screen's again: {entry}",
+    );
+    assert!(
+        entry["agent"]["source"].is_null(),
+        "and it names no reporter: {entry}",
+    );
+    assert!(
+        entry["agent"]["rule"].is_string(),
+        "the verdict is a rule's again: {entry}",
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

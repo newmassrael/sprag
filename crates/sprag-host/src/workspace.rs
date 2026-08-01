@@ -80,9 +80,9 @@ use crate::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DROP_FILE_ACTION,
     EVENTS_FIELD, GLOBAL_COMMANDS_SLOT, GRID_WORK_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION,
     KILL_WINDOW_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT,
-    PROJECT_FIELD, RENAME_WINDOW_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_WINDOW_ACTION,
-    SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION,
-    WINDOW_SIZE_SLOT, WINDOWS_SLOT,
+    PROJECT_FIELD, RELEASE_AGENT_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION,
+    RESIZE_WINDOW_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, WINDOW_SIZE_SLOT, WINDOWS_SLOT,
 };
 
 /// The mux-management engine `External`: a control surface over the shared
@@ -389,6 +389,104 @@ impl WorkspaceExternal {
         } else {
             Err(InvokeError::Rejected) // no such pane
         }
+    }
+
+    /// `report_agent` action: take a report from a process inside the pane — see
+    /// [`crate::wire::REPORT_AGENT_ACTION`] for the argument vocabulary.
+    ///
+    /// Three things happen in one call and their ORDER is the correctness here: the report is taken
+    /// under the agent lock, and only if it MOVED the published verdict does this announce — the same
+    /// condition the settle waker uses, so the two publishers of an agent verdict cannot come to
+    /// disagree about what counts as a change. The record and the wake travel together
+    /// ([`ChannelRegistry::announce`] holds the journal lock across the bump), so a client woken by
+    /// this can always read the event that woke it.
+    ///
+    /// A pane the daemon does not hold is REFUSED rather than remembered. Without that check a
+    /// reporter with a stale `SPRAG_PANE` — a process that outlived its pane — would create a tracker
+    /// for a pane that does not exist, which nothing would ever prune (the sweep's census forgets
+    /// panes it cannot see, and it cannot see this one either).
+    fn report_agent(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let map = as_object(args)?;
+        let id = require_pane_id(map, "id")?;
+        let source = map
+            .get("source")
+            .and_then(Value::as_str)
+            .filter(|source| !source.is_empty())
+            .ok_or(InvokeError::TypeMismatch)?;
+        let state = map
+            .get("state")
+            .and_then(Value::as_str)
+            .and_then(sprag_detect::AgentState::from_wire)
+            .ok_or(InvokeError::TypeMismatch)?;
+        let name = map.get("name").and_then(Value::as_str).map(str::to_owned);
+        // Absent is "I have no clock", which is always fresh. A malformed `seq` is a TypeMismatch
+        // rather than a silent fall-back to that: a reporter whose counter arrived as a string has a
+        // bug, and answering "accepted" would hide it behind a report that can never be refused.
+        let seq = match map.get("seq") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(value.as_u64().ok_or(InvokeError::TypeMismatch)?),
+        };
+        let Some(agents) = self.agents.as_ref() else {
+            // No detector on this host (a GUI's in-process host, a unit test): there is no memory to
+            // report INTO, and inventing one here would publish a verdict the pane list cannot read.
+            return Err(InvokeError::Rejected);
+        };
+        if !self.holds_pane(id) {
+            return Err(InvokeError::Rejected);
+        }
+        let (outcome, seq_published) =
+            agents.report(id, state, name, source, seq, crate::config::agent_settle);
+        if outcome.changed {
+            self.channels.announce(
+                self.scope.session(),
+                vec![crate::events::Event::AgentStateChanged(id.0)],
+            );
+        }
+        Ok(IntrospectValue::Json(serde_json::json!({
+            "accepted": outcome.accepted,
+            "changed": outcome.changed,
+            "seq": seq_published,
+        })))
+    }
+
+    /// `release_agent` action: drop the report in force for `id` — see
+    /// [`crate::wire::RELEASE_AGENT_ACTION`].
+    ///
+    /// It announces NOTHING, and that is not an omission. A release does not publish a verdict; it
+    /// asks for one to be re-derived from the screen, and the pass that does that
+    /// ([`crate::sweep_once`]) announces whatever it finds through the one publisher those events
+    /// already come from. Announcing here would wake every client of the session to read a verdict
+    /// that has not been recomputed yet.
+    fn release_agent(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let id = require_pane_id(as_object(args)?, "id")?;
+        let Some(agents) = self.agents.as_ref() else {
+            return Err(InvokeError::Rejected);
+        };
+        if !self.holds_pane(id) {
+            return Err(InvokeError::Rejected);
+        }
+        Ok(IntrospectValue::Json(
+            serde_json::json!({ "released": agents.release(id) }),
+        ))
+    }
+
+    /// Whether the DAEMON holds a pane with this id — any session, any window.
+    ///
+    /// Daemon-wide rather than this request's scope on purpose: the agent memory is keyed by
+    /// [`PaneId`] alone (every window's pool draws from one counter), so a report about a pane in
+    /// another session is about a pane that really does exist and really does have a tracker. Scoping
+    /// the check would refuse a hook whose pane sits in a session other than the connection's default
+    /// — which is most of them.
+    fn holds_pane(&self, id: PaneId) -> bool {
+        let registry = lock(&self.registry);
+        registry.sessions().iter().any(|session| {
+            session.windows().iter().any(|window| {
+                lock(window.workspace())
+                    .panes()
+                    .iter()
+                    .any(|pane| pane.id() == id)
+            })
+        })
     }
 
     /// `resize` action: resize the pane with `id` to `cols x rows`.
@@ -1171,6 +1269,13 @@ impl ExternalIntrospect for WorkspaceExternal {
                             if let Some(rule) = &facts.rule {
                                 value["rule"] = serde_json::json!(rule);
                             }
+                            // WHO said so, for a verdict that was REPORTED rather than inferred. The
+                            // counterpart of `rule` for the other kind of evidence: a reported verdict
+                            // carries no rule and a scraped one carries no source, so a reader never
+                            // has to guess which authority answered.
+                            if let Some(source) = &facts.source {
+                                value["source"] = serde_json::json!(source);
+                            }
                             entry["agent"] = value;
                         }
                         entry
@@ -1371,6 +1476,8 @@ impl WorkspaceExternal {
             BREAK_PANE_ACTION => self.break_pane(&args),
             JOIN_PANE_ACTION => self.join_pane(&args),
             DROP_FILE_ACTION => self.drop_file(&args),
+            REPORT_AGENT_ACTION => self.report_agent(&args),
+            RELEASE_AGENT_ACTION => self.release_agent(&args),
             _ => Err(InvokeError::UnknownPath),
         }
     }
@@ -1785,6 +1892,213 @@ mod tests {
     /// ABSENCE, so it is the state the settle window applies to.
     const IDLE_CLAUDE: &str = "printf '\\033]2;✳ Claude Code\\007\\033[2J\\033[H❯\\n  ⏸ manual mode \
                                on · ? for shortcuts\\n'; cat";
+
+    /// A report crosses the wire, reaches the pane list, and is RECORDED as a change a reader that
+    /// arrives later still learns about.
+    ///
+    /// The event matters as much as the verdict: a client parked on `scene/waitFor` is woken by the
+    /// announce, and R269's journal is what tells it which pane to re-read. A report that published
+    /// without recording would move the pane list under a client with nothing to point at it.
+    #[test]
+    fn a_report_over_the_wire_publishes_and_records_the_change() {
+        let reg = registry();
+        let (mut ext, _agents) = control_with_agents(&reg);
+        // A plain shell, so the SCRAPE has nothing to say about this pane at all — every word of the
+        // answer below therefore comes from the report.
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+            .unwrap();
+
+        let answer = ext
+            .invoke(
+                REPORT_AGENT_ACTION,
+                IntrospectValue::Json(json!({
+                    "id": 0,
+                    "source": "herdr:claude",
+                    "state": "working",
+                    "name": "claude",
+                    "seq": 11,
+                })),
+            )
+            .expect("a well-formed report is taken");
+        let IntrospectValue::Json(answer) = answer else {
+            panic!("a report answers with an object");
+        };
+        assert_eq!(answer["accepted"], json!(true));
+        assert_eq!(
+            answer["changed"],
+            json!(true),
+            "nothing was published before"
+        );
+        assert_eq!(answer["seq"], json!(1), "the first published generation");
+
+        let entry = pane_entry(&mut ext, 0);
+        assert_eq!(
+            entry["agent"],
+            json!({
+                "state": "working",
+                "name": "claude",
+                "seq": 1,
+                "source": "herdr:claude",
+            }),
+            "a pane no rule claims is published because a process inside it said so, and the answer \
+             names the authority instead of a rule: {entry:?}",
+        );
+
+        let Some(IntrospectValue::Json(batch)) = ext.query(&crate::wire::events_slot_since(0))
+        else {
+            panic!("the events family answers");
+        };
+        assert!(
+            batch["events"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|event| event["type"] == "pane_agent_state_changed" && event["pane"] == 0),
+            "the report is readable as a typed change: {batch}",
+        );
+    }
+
+    /// A DUPLICATE report is accepted and records nothing — the same condition the settle waker uses,
+    /// so the two publishers of an agent verdict cannot come to disagree about what a change is.
+    #[test]
+    fn a_duplicate_report_wakes_nobody() {
+        let reg = registry();
+        let (mut ext, _agents) = control_with_agents(&reg);
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+            .unwrap();
+        let report = |ext: &mut WorkspaceExternal, seq: u64| {
+            let answer = ext
+                .invoke(
+                    REPORT_AGENT_ACTION,
+                    IntrospectValue::Json(json!({
+                        "id": 0, "source": "hook", "state": "working", "seq": seq,
+                    })),
+                )
+                .expect("accepted");
+            let IntrospectValue::Json(answer) = answer else {
+                panic!("an object");
+            };
+            answer
+        };
+        let events = |ext: &WorkspaceExternal| -> usize {
+            let Some(IntrospectValue::Json(batch)) = ext.query(&crate::wire::events_slot_since(0))
+            else {
+                panic!("the events family answers");
+            };
+            batch["events"].as_array().map_or(0, Vec::len)
+        };
+
+        report(&mut ext, 1);
+        let recorded = events(&ext);
+        let second = report(&mut ext, 2);
+        assert_eq!(second["accepted"], json!(true), "a repeat is heard");
+        assert_eq!(second["changed"], json!(false), "and publishes nothing");
+        assert_eq!(
+            events(&ext),
+            recorded,
+            "so it records nothing and wakes nobody",
+        );
+    }
+
+    /// Every way a report can be malformed, refused at the door — and each for its own reason.
+    #[test]
+    fn a_report_this_daemon_cannot_honour_is_refused() {
+        let reg = registry();
+        let (mut ext, _agents) = control_with_agents(&reg);
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+            .unwrap();
+        let report = |ext: &mut WorkspaceExternal, args: Value| {
+            ext.invoke(REPORT_AGENT_ACTION, IntrospectValue::Json(args))
+        };
+
+        assert_eq!(
+            report(
+                &mut ext,
+                json!({"id": 7, "source": "hook", "state": "idle"})
+            ),
+            Err(InvokeError::Rejected),
+            "a pane the daemon does not hold — a reporter that outlived its pane",
+        );
+        assert_eq!(
+            report(&mut ext, json!({"id": 0, "state": "idle"})),
+            Err(InvokeError::TypeMismatch),
+            "an authority that cannot be named is not an authority",
+        );
+        assert_eq!(
+            report(&mut ext, json!({"id": 0, "source": "", "state": "idle"})),
+            Err(InvokeError::TypeMismatch),
+            "nor is an empty one",
+        );
+        assert_eq!(
+            report(
+                &mut ext,
+                json!({"id": 0, "source": "hook", "state": "unknown"})
+            ),
+            Err(InvokeError::TypeMismatch),
+            "`unknown` is a conclusion about the RULES, not a state a reporter is in",
+        );
+        assert_eq!(
+            report(
+                &mut ext,
+                json!({"id": 0, "source": "hook", "state": "busy"})
+            ),
+            Err(InvokeError::TypeMismatch),
+            "and a spelling the vocabulary does not have",
+        );
+        assert_eq!(
+            report(
+                &mut ext,
+                json!({"id": 0, "source": "hook", "state": "idle", "seq": "11"}),
+            ),
+            Err(InvokeError::TypeMismatch),
+            "a counter that arrived as a string is a bug in the reporter, not a report with no clock",
+        );
+        let entry = pane_entry(&mut ext, 0);
+        assert!(
+            entry.get("agent").is_none(),
+            "and none of them published anything: {entry:?}",
+        );
+    }
+
+    /// A release says whether it actually dropped anything, so a retry is not silently told it worked.
+    #[test]
+    fn a_release_says_whether_there_was_anything_to_release() {
+        let reg = registry();
+        let (mut ext, _agents) = control_with_agents(&reg);
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+            .unwrap();
+        let release = |ext: &mut WorkspaceExternal, id: u64| {
+            ext.invoke(
+                RELEASE_AGENT_ACTION,
+                IntrospectValue::Json(json!({"id": id})),
+            )
+        };
+
+        assert_eq!(
+            release(&mut ext, 0),
+            Ok(IntrospectValue::Json(json!({"released": false}))),
+            "nobody is reporting this pane yet",
+        );
+        ext.invoke(
+            REPORT_AGENT_ACTION,
+            IntrospectValue::Json(json!({"id": 0, "source": "hook", "state": "working"})),
+        )
+        .unwrap();
+        assert_eq!(
+            release(&mut ext, 0),
+            Ok(IntrospectValue::Json(json!({"released": true}))),
+        );
+        assert_eq!(
+            release(&mut ext, 0),
+            Ok(IntrospectValue::Json(json!({"released": false}))),
+            "and the second release has nothing left to drop",
+        );
+        assert_eq!(
+            release(&mut ext, 7),
+            Err(InvokeError::Rejected),
+            "a pane the daemon does not hold is refused, as it is for a report",
+        );
+    }
 
     /// D8: the key is present for a claimed pane and ABSENT for everything else, so a workspace of
     /// shells is byte-identical to the pre-H3 wire shape. Both halves in one query, because the
