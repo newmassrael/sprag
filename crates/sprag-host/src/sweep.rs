@@ -22,11 +22,11 @@
 //! Measured R261 on a live registry with real PTY panes, `--release`, five runs:
 //!
 //! * **A quiet pass is free to everybody else.** Every pane settled under unchanged rules, the whole
-//!   pass 0.58 to 1.04 us, and a concurrent pane-list reader cannot tell whether it is running:
-//!   -1.4 to +5.9 us on its median against a control doing the same work on a private registry, at
+//!   pass 0.37 to 0.58 us, and a concurrent pane-list reader cannot tell whether it is running:
+//!   +0.4 to +0.8 us on its median against a control doing the same work on a private registry, at
 //!   SEVEN TO TWELVE MILLION times the real duty cycle.
-//! * **A pass in which every pane OWES an evaluation is a different object** — 64 to 87 us for three
-//!   panes, 84x to 114x the quiet one, because the workspace lock is held across
+//! * **A pass in which every pane OWES an evaluation is a different object** — 44 to 58 us for three
+//!   panes, about 100x the quiet one, because the workspace lock is held across
 //!   [`AgentClock::observe`] for every pane in that window. That is not hypothetical: **a manifest
 //!   reload makes every remembered pane stale at once**, so saving `config.toml` schedules exactly
 //!   one such pass, and so does the first pass after boot.
@@ -86,8 +86,10 @@ pub struct SweepReport {
 /// seconds, so that a negligible answer settles the real cadence a fortiori.
 ///
 /// **The recurring pass is free.** Shared minus a control sweeping a PRIVATE registry at the same
-/// rate: -1.4 to +5.9 us on the reader's median, -1.6 to +6.4 us at p99, over five runs — at seven
-/// to twelve million times the daemon's actual duty cycle.
+/// rate: +0.4 to +0.8 us on the reader's median and -2.4 to +0.9 us at p99 — at seven to twelve
+/// million times the daemon's actual duty cycle. Taken again while another project was building
+/// (the tool's control spread 29-240% against 25-69%), the same differences read -1.4 to +5.9 and
+/// -1.6 to +6.4: the paired design holds across a 2x change in the box, which is what it is for.
 ///
 /// **The churning pass cannot be answered the same way, and that is a property of the system rather
 /// than of the instrument.** A pane-list request runs the same detector under the same clock, so
@@ -97,8 +99,8 @@ pub struct SweepReport {
 /// the reader having done the rest. The two conditions cannot be matched, so their difference is not
 /// a lock cost — R255's shape again, a comparison that cannot be resolved at the level it was asked.
 ///
-/// So that case is bounded DIRECTLY instead, by this pass's own duration: 64 to 87 us for three
-/// panes against 0.58 to 1.04 us quiet, 84x to 114x, and a reader wants one window so what it can
+/// So that case is bounded DIRECTLY instead, by this pass's own duration: 44 to 58 us for three
+/// panes against 0.37 to 0.58 us quiet, about 100x, and a reader wants one window so what it can
 /// wait for is that window's share. The consequence is stated rather than left to be met: a manifest
 /// edit schedules one pass in which every remembered pane is stale. It is a one-off on a user action,
 /// which is why this is documented and not redesigned — and it is the paragraph a future slice that

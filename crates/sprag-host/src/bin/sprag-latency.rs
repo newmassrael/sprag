@@ -149,9 +149,10 @@
 //! the real `sweep_once` against the same registry. Five runs:
 //!
 //! * **The recurring pass is free.** Shared minus a control sweeping a PRIVATE registry at the same
-//!   rate: -1.4 to +5.9 us on the reader's median and -1.6 to +6.4 us at p99 — at seven to twelve
-//!   MILLION times the daemon's real duty cycle.
-//! * **A churning pass is 84x to 114x a quiet one** (64-87 us for three panes against 0.58-1.04 us),
+//!   rate: +0.4 to +0.8 us on the reader's median and -2.4 to +0.9 us at p99 — at seven to twelve
+//!   MILLION times the daemon's real duty cycle. The same differences read -1.4 to +5.9 and -1.6 to
+//!   +6.4 while another project was building, which is the paired design surviving a 2x box.
+//! * **A churning pass is about 100x a quiet one** (44-58 us for three panes against 0.37-0.58 us),
 //!   because the workspace lock is held across an evaluation per pane.
 //! * **But the churning DIFFERENCE is not a lock cost and cannot be made into one.** The reader runs
 //!   the same detector under the same clock, so sharing the registry changes who evaluates, not only

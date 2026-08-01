@@ -420,9 +420,9 @@ fn spawn_durability_saver(
 ///
 /// What those locks cost was R260's one open term and is now measured (R261, on
 /// [`sprag_host::sweep_once`]): with the pass running at seven to twelve MILLION times this
-/// interval, a concurrent pane-list reader's median moves -1.4 to +5.9 us against a control doing
+/// interval, a concurrent pane-list reader's median moves +0.4 to +0.8 us against a control doing
 /// the same work on a registry it does not share. The recurring pass is free. The pass after a
-/// manifest reload is not the same object — 64 to 87 us for three panes — and the reason it is
+/// manifest reload is not the same object — 44 to 58 us for three panes — and the reason it is
 /// documented rather than redesigned is on `sweep_once`.
 fn spawn_agent_waker(
     registry: Arc<Mutex<SessionRegistry>>,
