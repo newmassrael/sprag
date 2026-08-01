@@ -629,6 +629,253 @@ mod tests {
         );
     }
 
+    /// `codex`'s sign-in picker, which NAMES the product — the screen the title-free fingerprint
+    /// was built for.
+    const CODEX_SIGNIN: &[&str] = &[
+        "  Welcome to Codex, OpenAI's command-line coding agent",
+        "> 1. Sign in with ChatGPT",
+        "  2. Sign in with Device Code",
+    ];
+
+    /// ...and the directory-trust dialog that follows it, which names NOBODY. Any program could ask
+    /// this question, so no fingerprint can claim it and only the memory can.
+    const CODEX_TRUST: &[&str] = &[
+        "  Do you trust the contents of this directory?",
+        "› 1. Yes, continue",
+        "  2. No, quit",
+    ];
+
+    /// The onboarding SEQUENCE, which is worth more than either screen alone.
+    ///
+    /// Slice 1 shipped `codex`'s trust dialog as an unclaimable screen and it still is one: nothing
+    /// on it belongs to `codex` rather than to any program that could ask the same question. What
+    /// closes it is not a better fingerprint but the ORDER a user meets it in — sign-in first, and
+    /// that screen does name the product. Once the pane has been claimed, the identity memory the
+    /// modal case (R251) was built for carries it through.
+    ///
+    /// So the two mechanisms compose: the fingerprint reaches a screen the memory could not have
+    /// been seeded from, and the memory reaches a screen no fingerprint can match. The premise is
+    /// asserted first, because a test whose second half passes for the wrong reason would look
+    /// exactly like this one.
+    #[test]
+    fn a_remembered_agent_carries_through_the_dialog_that_names_nobody() {
+        let rules = Ruleset::new(vec![codex()]);
+        let base = Instant::now();
+
+        // THE PREMISE: on its own, the trust dialog is claimed by nobody.
+        let mut cold = Tracker::default();
+        let alone = painted(CODEX_TRUST);
+        cold.observe(alone.screen(), None, &rules, base);
+        assert_eq!(
+            cold.verdict().agent,
+            None,
+            "the screen really is unclaimable, so the sequence below is what does the work",
+        );
+
+        // The pane a user actually has: sign-in, then trust.
+        let mut tracker = Tracker::default();
+        let mut em = painted(CODEX_SIGNIN);
+        tracker.observe(em.screen(), None, &rules, base);
+        assert_eq!(
+            tracker.verdict().agent.as_deref(),
+            Some("codex"),
+            "the picker names the product, so the fingerprint reaches it with no title at all",
+        );
+
+        repaint(&mut em, CODEX_TRUST);
+        let after = tracker.observe(em.screen(), None, &rules, base + Duration::from_millis(50));
+        assert_eq!(
+            after.agent.as_deref(),
+            Some("codex"),
+            "and the memory carries the identity onto the screen that names nobody",
+        );
+        assert_eq!(
+            after.state,
+            AgentState::Blocked,
+            "which is the whole point: it is a question waiting on the user",
+        );
+    }
+
+    /// THE MISS THAT IS NOT CLOSED, asserted at last — and slice 1 said it was.
+    ///
+    /// The crate docs have recorded a second measured miss since slice 1 (`codex` replaces its
+    /// footer with a transient hint for a few seconds after `esc`, and its fingerprint is a
+    /// conjunction over that footer) and claimed *"both are recorded here, and asserted by tests"*.
+    /// Only the onboarding one ever was. There is no captured screen of the hint in this tree, so
+    /// this test is written from the STRUCTURE the miss follows from rather than from a fixture
+    /// pretending to be a measurement: the composer is there and the footer is not.
+    ///
+    /// What it pins is the reason the memory does not rescue this one, which is the part that looks
+    /// like a bug and is not. `evaluate` asserts a remembered identity only for an ACTIVE verdict,
+    /// and a pane that has just been `esc`-ed is at rest. Widening that filter would trade this miss
+    /// for a worse one: at rest a `codex` screen is a prompt line and its title is a bare directory
+    /// name, so a pane whose agent EXITED would be reported as that agent for as long as the shell
+    /// that outlived it stayed quiet.
+    ///
+    /// REVERT-PROOF: drop the `is_active` filter in `evaluate` and this fails, together with
+    /// `a_remembered_agent_that_shows_nothing_active_is_let_go` and
+    /// `a_resize_that_truncates_a_row_is_not_quiescence`. Naming the co-casualties is the point
+    /// rather than an aside: the filter already had a test, so what this one adds is not coverage of
+    /// the filter but the connection between the filter and a MISS the crate docs describe — the two
+    /// were recorded in different places and nothing said they were the same fact.
+    #[test]
+    fn a_resting_pane_that_loses_its_fingerprint_is_not_asserted_to_still_be_anybody() {
+        let rules = Ruleset::new(vec![codex()]);
+        let mut tracker = Tracker::default();
+        let base = Instant::now();
+
+        // Claimed normally first, so the memory HAS an identity to offer. `idle` rests on an
+        // absence, so it takes the window to be published — hence the second observation.
+        let mut em = painted(CODEX_AT_REST);
+        tracker.observe(em.screen(), Some("codexprobe"), &rules, base);
+        let claimed = tracker.observe(
+            em.screen(),
+            Some("codexprobe"),
+            &rules,
+            base + DEFAULT_SETTLE,
+        );
+        assert_eq!(
+            claimed.agent.as_deref(),
+            Some("codex"),
+            "the composer-and-footer conjunction claims a pane at rest",
+        );
+
+        // The footer is replaced. Structurally this is the post-`esc` hint: the composer survives,
+        // the footer conjunction cannot hold, and nothing about the screen is active.
+        repaint(
+            &mut em,
+            &["› Write tests for @filename", "  press esc again to clear"],
+        );
+        let began = base + DEFAULT_SETTLE + Duration::from_millis(10);
+        tracker.observe(em.screen(), Some("codexprobe"), &rules, began);
+        let after = tracker.observe(
+            em.screen(),
+            Some("codexprobe"),
+            &rules,
+            began + DEFAULT_SETTLE,
+        );
+        assert_eq!(
+            after.agent, None,
+            "the memory declines to assert an identity for a pane that is merely quiet",
+        );
+    }
+
+    /// A RELOAD DOES NOT RESTART A WAIT THE PANE HAS ALREADY SERVED.
+    ///
+    /// Every reload test written so far uses a SETTLED pane, which is the easy half: nothing is in
+    /// flight, so nothing can be lost. The pane mid-transition is the one with a decision in it,
+    /// and the decision is [`consider`](Tracker::consider)'s `restart` guard — a candidate the new
+    /// rules still argue for keeps its original `since`.
+    ///
+    /// That is right because of what the window is FOR. It absorbs a sampling artifact of the
+    /// SCREEN — one frame of a spinner — and the screen here has held for the whole window. The
+    /// rules moving is not a reason to disbelieve evidence that has not moved. The tempting
+    /// implementation, re-dating the candidate on every re-evaluation, would make a user who edits
+    /// `config.toml` while a pane is going quiet wait a second window for a verdict the first one
+    /// had already earned — and would do it invisibly, because the answer that eventually arrives
+    /// is the right one.
+    ///
+    /// The assertion is the DEADLINE, not the verdict: observing at exactly `since + settle` is
+    /// what a re-dated candidate cannot satisfy.
+    ///
+    /// REVERT-PROOF: make `restart` unconditional and this fails at the deadline — together with
+    /// `a_pane_that_keeps_repainting_settles_when_the_candidate_has_held_long_enough`, and that
+    /// second casualty is worth naming rather than hiding. The guard was already load-bearing for a
+    /// pane whose SCREEN keeps moving; what had never been asked is whether it holds when the thing
+    /// that moves is the RULE LIST, which reaches `consider` by a different route and was the one
+    /// input the guard was not written against.
+    #[test]
+    fn a_reload_mid_transition_keeps_the_window_the_candidate_has_already_served() {
+        let mut tracker = Tracker::default();
+        let mut em = painted(DIALOG);
+        let base = Instant::now();
+
+        // Blocked on sight — positive evidence is never delayed, so the pane starts from a
+        // published state with nothing pending.
+        let rules = Ruleset::new(vec![claude()]);
+        tracker.observe(em.screen(), Some("✳ Claude Code"), &rules, base);
+        assert_eq!(tracker.verdict().state, AgentState::Blocked);
+
+        // The dialog is answered: the pane now argues for `idle`, which rests on an ABSENCE and so
+        // has to hold for the window.
+        repaint(&mut em, CLAUDE_FOOTER);
+        let began = base + Duration::from_millis(10);
+        tracker.observe(em.screen(), Some("✳ Claude Code"), &rules, began);
+        assert_eq!(
+            tracker.verdict().state,
+            AgentState::Blocked,
+            "the candidate is pending, not published",
+        );
+        assert_eq!(tracker.pending_deadline(), Some(began + DEFAULT_SETTLE));
+
+        // HALFWAY THROUGH THE WINDOW the user edits an unrelated part of the file. A new list, a
+        // new revision, and the same verdict for this screen.
+        let reloaded = Ruleset::new(vec![claude()]);
+        tracker.observe(
+            em.screen(),
+            Some("✳ Claude Code"),
+            &reloaded,
+            began + DEFAULT_SETTLE / 2,
+        );
+        assert_eq!(
+            tracker.pending_deadline(),
+            Some(began + DEFAULT_SETTLE),
+            "the deadline is the one the candidate earned, not one re-dated by the edit",
+        );
+
+        tracker.observe(
+            em.screen(),
+            Some("✳ Claude Code"),
+            &reloaded,
+            began + DEFAULT_SETTLE,
+        );
+        assert_eq!(
+            tracker.verdict().state,
+            AgentState::Idle,
+            "so it publishes on time",
+        );
+    }
+
+    /// ...and a reload the pane DISAGREES with does restart it, which is the same rule read from
+    /// the other side: the window is per-candidate, so a different answer serves its own wait.
+    ///
+    /// Written because the guard above is only half a claim. An implementation that never restarted
+    /// would satisfy the test above and would publish a brand-new candidate the instant an older
+    /// one's window happened to elapse — a verdict with no evidence behind it at all.
+    #[test]
+    fn a_reload_the_pane_disagrees_with_starts_the_window_again() {
+        let mut tracker = Tracker::default();
+        let mut em = painted(DIALOG);
+        let base = Instant::now();
+
+        let rules = Ruleset::new(vec![claude()]);
+        tracker.observe(em.screen(), Some("✳ Claude Code"), &rules, base);
+        assert_eq!(tracker.verdict().state, AgentState::Blocked);
+
+        repaint(&mut em, CLAUDE_FOOTER);
+        let began = base + Duration::from_millis(10);
+        tracker.observe(em.screen(), Some("✳ Claude Code"), &rules, began);
+        assert_eq!(tracker.pending_deadline(), Some(began + DEFAULT_SETTLE));
+
+        // The user disables the rule the pending candidate came from. The same screen now argues
+        // for a DIFFERENT answer, so the evidence for the old one is gone.
+        let mut stripped = claude();
+        stripped.rules.retain(|rule| rule.id != "idle-glyph");
+        let edited = Ruleset::new(vec![stripped]);
+        let moved = began + DEFAULT_SETTLE / 2;
+        tracker.observe(em.screen(), Some("✳ Claude Code"), &edited, moved);
+        assert_eq!(
+            tracker.pending_deadline(),
+            Some(moved + DEFAULT_SETTLE),
+            "a candidate nothing has argued for before starts its own window",
+        );
+        assert_eq!(
+            tracker.verdict().state,
+            AgentState::Blocked,
+            "and nothing is published until it has served it",
+        );
+    }
+
     /// The same list, offered again, is not a change — the other direction of the term above, and the
     /// one that keeps it from being "re-evaluate always" wearing a key's costume.
     ///

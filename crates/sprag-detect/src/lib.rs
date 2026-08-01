@@ -65,20 +65,44 @@
 //! the twelve-row window — `codex`'s two dialogs put their marker 3 and 7 non-empty rows up, inside
 //! the spread the window was already sized for.
 //!
-//! ## The bounds this slice ships with, stated rather than discovered later
+//! ## The bounds, and what closing two of them cost
 //!
 //! A pane is identified as an agent's by [`Manifest::any`], and every fingerprint needs the pane to
-//! have painted something recognisable. Two measured misses follow from that, and both read
-//! [`AgentState::Unknown`] rather than the true state:
+//! have painted something recognisable. Slice 1 shipped two measured misses that followed from that,
+//! both reading [`AgentState::Unknown`] rather than the true state. **Both are now closed, and the
+//! answer to the first was inside the screen that recorded it.**
 //!
-//! * A first-run trust dialog arrives BEFORE the agent has set a title and while its footer is
-//!   replaced by the dialog. Measured in BOTH agents, so it is a property of onboarding rather than
-//!   a quirk of one — which also means a title-free fingerprint is worth more than it looked.
-//! * `codex` shows a transient hint in place of its footer for a few seconds after `esc`, and its
-//!   fingerprint is a footer conjunction, so it goes unclaimed for exactly that window.
+//! * **Onboarding, in BOTH agents** — the first-run dialog arrives before any title and with the
+//!   footer replaced, so every other fingerprint is blind to it. But the captured screens NAME the
+//!   product, in the sentence each prints to explain itself, so a title-free fingerprint was
+//!   buildable from the fixtures that had been sitting in this file's tests since slice 1. It is a
+//!   CONJUNCTION of the name and the dialog shape: on the name alone, any pane displaying the
+//!   agent's name — a README, a terminal someone is discussing it in — would be claimed, and that is
+//!   worse than a wrong row, because [`Tracker`] remembers an identity and would go on rescuing that
+//!   pane forever.
+//! * **`codex`'s transient post-`esc` hint**, which replaces the footer its fingerprint is a
+//!   conjunction over. **This one is NOT closed, and it is not closable by the memory**, which is
+//!   worth stating because the memory looks like it should. [`Tracker`] asserts a remembered
+//!   identity only for an ACTIVE verdict, and a pane that has just been `esc`-ed is at REST — the
+//!   filter is deliberate and measured: at rest a `codex` title is the bare working directory and
+//!   its screen is a prompt line, which is what a SHELL looks like, so a pane whose agent EXITED
+//!   would otherwise go on being reported as that agent.
 //!
-//! Both are recorded here, and asserted by tests, so the next author does not rediscover them from
-//! a bug report.
+//! Two residues follow, and both are properties of the screens rather than of this crate:
+//!
+//! * The hint window above, for a pane at rest.
+//! * `codex`'s directory-trust dialog names nothing at all — any program could ask "do you trust the
+//!   contents of this directory", so no fingerprint can claim it. It IS rescued when it follows the
+//!   sign-in picker in the same pane, which is the order a new user meets it in, because that
+//!   screen is a dialog and therefore active; a pane whose first screen is the trust dialog, on a
+//!   box where sign-in already happened, is still a miss.
+//!
+//! **The trap that shape avoids is not hypothetical.** The `codex` trust-dialog fixture was captured
+//! under `/tmp/claude-1000/…`, so the string `claude` is on that screen. A fingerprint written on
+//! the bare NAME rather than on a phrase would read a `codex` pane as `claude` on any box whose
+//! scratch directory is named that way — a cross-agent misattribution produced by the capture
+//! environment and by neither agent. `the_codex_trust_dialog_names_nobody_and_is_still_a_miss`
+//! asserts the string is there and that the fingerprint does not fire on it.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -471,6 +495,18 @@ pub fn spinner_pattern() -> Regex {
 /// states, which is why it cannot be the whole answer.
 const RESTING_GLYPH: &str = "✳";
 
+/// How many non-empty rows up from the bottom a dialog's selection marker may sit.
+///
+/// Twelve, because a dialog is bottom-anchored but VARIES in height: the measured ones put their
+/// marker 3, 5, 7, 8 and 9 non-empty rows from the bottom across both agents. A window sized to the
+/// smallest would miss the others, and one sized to the pane would make the rule depend on how tall
+/// the pane happens to be.
+///
+/// Named rather than repeated because it is now read by four matches in two manifests — the two
+/// dialog RULES and the two onboarding FINGERPRINTS, which have to agree about the region or the
+/// conjunction would be looking at a different screen than the rule that then fires on it.
+const DIALOG_WINDOW: u16 = 12;
+
 /// The built-in manifest for Anthropic's `claude` CLI, derived from R249's measurements.
 ///
 /// # Panics
@@ -499,17 +535,31 @@ pub fn claude() -> Manifest {
                 Region::BottomLines(4),
                 Test::Contains("? for shortcuts".to_owned()),
             )),
+            // ONBOARDING, where neither of the two above exists: the trust dialog arrives before
+            // the agent has set a title and with the footer replaced by the dialog itself. This is
+            // the title-free fingerprint the crate docs owed, and it is a CONJUNCTION for a reason
+            // the alternative makes obvious. On the name alone, any pane displaying this agent's
+            // name — a README, a terminal someone is discussing it in — would be claimed, and a
+            // false claim is not merely a wrong row: `Tracker` remembers the identity and would go
+            // on rescuing that pane as an agent every time anything dialog-shaped appeared in it.
+            // Requiring the dialog SHAPE as well narrows it to what was actually measured.
+            Fingerprint::all(vec![
+                Match::new(
+                    Region::BottomLines(DIALOG_WINDOW),
+                    Test::Contains("Claude Code".to_owned()),
+                ),
+                Match::new(
+                    Region::BottomLines(DIALOG_WINDOW),
+                    Test::Regex(dialog_pattern()),
+                ),
+            ]),
         ],
         rules: vec![
             Rule {
                 id: "dialog-choice-list".to_owned(),
                 state: AgentState::Blocked,
-                // Twelve, because a dialog is bottom-anchored but VARIES in height: the three
-                // measured ones put their selection marker 5, 8 and 9 non-empty rows from the
-                // bottom. A window sized to the smallest would miss the others, and a window
-                // sized to the pane would make the rule depend on how tall the pane is.
                 all: vec![Match::new(
-                    Region::BottomLines(12),
+                    Region::BottomLines(DIALOG_WINDOW),
                     Test::Regex(dialog_pattern()),
                 )],
                 // Above `idle-glyph` because BOTH match on a blocked pane -- the measured fact
@@ -584,17 +634,37 @@ pub fn codex() -> Manifest {
     let spinner = spinner_pattern();
     Manifest {
         name: "codex".to_owned(),
-        // ONE fingerprint, and it is a conjunction, because no single condition on a `codex` screen
-        // is both stable and specific: the composer marker alone is a character a shell prompt may
-        // well use, and the footer shape alone is three tokens and a path. Together they are the
-        // agent. This is the case `Fingerprint` was added for.
-        any: vec![Fingerprint::all(vec![
-            Match::new(
-                Region::BottomLines(3),
-                Test::Regex(codex_composer_pattern()),
-            ),
-            Match::new(Region::BottomLines(1), Test::Regex(codex_footer_pattern())),
-        ])],
+        // A conjunction, because no single condition on a `codex` screen is both stable and
+        // specific: the composer marker alone is a character a shell prompt may well use, and the
+        // footer shape alone is three tokens and a path. Together they are the agent. This is the
+        // case `Fingerprint` was added for.
+        any: vec![
+            Fingerprint::all(vec![
+                Match::new(
+                    Region::BottomLines(3),
+                    Test::Regex(codex_composer_pattern()),
+                ),
+                Match::new(Region::BottomLines(1), Test::Regex(codex_footer_pattern())),
+            ]),
+            // ONBOARDING, the state the conjunction above cannot see: the sign-in picker replaces
+            // both the composer and the footer, and arrives before any title. `claude`'s equivalent
+            // carries the same argument for requiring the dialog SHAPE alongside the name.
+            //
+            // This one buys more than the screen it matches. Once this pane is claimed, `Tracker`
+            // remembers the identity — so the directory-trust dialog that FOLLOWS a sign-in, which
+            // names nothing at all, is rescued by the memory rather than needing a fingerprint it
+            // cannot have.
+            Fingerprint::all(vec![
+                Match::new(
+                    Region::BottomLines(DIALOG_WINDOW),
+                    Test::Contains("Welcome to Codex".to_owned()),
+                ),
+                Match::new(
+                    Region::BottomLines(DIALOG_WINDOW),
+                    Test::Regex(dialog_pattern()),
+                ),
+            ]),
+        ],
         rules: vec![
             // The same rule as `claude`'s, matching a `codex` dialog through the widened marker
             // class. It is written from a MEASURED mid-session picker, and the pane it was measured
@@ -606,7 +676,7 @@ pub fn codex() -> Manifest {
                 id: "dialog-choice-list".to_owned(),
                 state: AgentState::Blocked,
                 all: vec![Match::new(
-                    Region::BottomLines(12),
+                    Region::BottomLines(DIALOG_WINDOW),
                     Test::Regex(dialog_pattern()),
                 )],
                 priority: 30,
@@ -931,15 +1001,53 @@ mod tests {
         );
     }
 
-    /// The bound this slice ships with, asserted so it is a KNOWN miss rather than a surprise: a
-    /// first-run trust dialog arrives before any title and with the footer replaced.
+    /// The onboarding miss slice 1 shipped as a known bound, CLOSED — and closed out of the very
+    /// screen that recorded it, because the fixture had the answer in it all along.
+    ///
+    /// The dialog arrives before any title and with the footer replaced, so both of `claude`'s other
+    /// fingerprints are blind to it. What it does carry is the agent's own name, in a sentence it
+    /// prints to explain what it is about to be allowed to do.
+    ///
+    /// The state matters as much as the identification: an onboarding dialog is a person being
+    /// asked a question, so a pane that is now claimed must also read `Blocked` rather than merely
+    /// becoming visible.
     #[test]
-    fn a_first_run_dialog_before_any_title_is_a_known_miss() {
+    fn a_first_run_dialog_is_claimed_by_the_title_free_fingerprint() {
         let v = verdict(TRUST_DIALOG, None);
         assert_eq!(
-            v,
-            Verdict::default(),
-            "documented in the crate docs; recoverable by a title-free fingerprint later",
+            v.agent.as_deref(),
+            Some("claude"),
+            "no title and no footer, and it is still recognised",
+        );
+        assert_eq!(
+            v.state,
+            AgentState::Blocked,
+            "and the first thing a new user meets reads as what it is: a question",
+        );
+    }
+
+    /// The other half of the conjunction, and the reason it IS one.
+    ///
+    /// On the name alone, every pane that displays the agent's name would be claimed — a README, a
+    /// terminal someone is discussing it in, this project's own source. That is not merely a wrong
+    /// row: `Tracker` remembers an identity once it is established, so a pane falsely claimed here
+    /// would go on being rescued as an agent every time anything dialog-shaped appeared in it.
+    ///
+    /// REVERT-PROOF: drop the `dialog_pattern` match from the onboarding fingerprint and this fails
+    /// while `a_first_run_dialog_is_claimed_by_the_title_free_fingerprint` stays green — the two
+    /// tests are the two halves of one `all`.
+    #[test]
+    fn merely_naming_the_agent_does_not_claim_a_pane() {
+        let prose = &[
+            "$ cat NOTES.md",
+            "We should check what Claude Code does with a narrow pane.",
+            "1. it might reflow",
+            "$ ",
+        ];
+        let v = verdict(prose, None);
+        assert_eq!(
+            v.agent, None,
+            "the name is in the text and there is no dialog, so nothing is claimed",
         );
     }
 
@@ -1186,6 +1294,59 @@ mod tests {
                 .iter()
                 .all(|m| m.holds(em.screen(), "codexprobe")),
             "the rule matches; only the identification is missing"
+        );
+    }
+
+    /// `codex`'s onboarding screen names the product, so the title-free fingerprint reaches it —
+    /// and reaching it is worth more than the one screen, because of what follows it.
+    #[test]
+    fn the_codex_sign_in_picker_is_claimed_before_any_title_exists() {
+        let v = codex_verdict(CODEX_SIGNIN_PICKER, None);
+        assert_eq!(v.agent.as_deref(), Some("codex"));
+        assert_eq!(
+            v.state,
+            AgentState::Blocked,
+            "a sign-in picker is a person being asked a question",
+        );
+    }
+
+    /// THE BOUND THAT REMAINS, measured rather than assumed: `codex`'s directory-trust dialog names
+    /// nothing.
+    ///
+    /// Read the fixture. It says "Do you trust the contents of this directory", it shows a path, and
+    /// it offers two choices — there is no token on that screen that belongs to `codex` rather than
+    /// to any program that could ask the same question. So it is not claimable by a fingerprint at
+    /// all, and the only thing that rescues it is having been claimed EARLIER in the same pane,
+    /// which `a_remembered_agent_carries_through_the_dialog_that_names_nobody` holds one module
+    /// over.
+    ///
+    /// A pane whose FIRST screen is this one, on a box where sign-in already happened, is therefore
+    /// still a miss. That is the honest residue of this front and it is written down rather than
+    /// rounded off.
+    #[test]
+    fn the_codex_trust_dialog_names_nobody_and_is_still_a_miss() {
+        let v = codex_verdict(CODEX_TRUST_DIALOG, None);
+        assert_eq!(
+            v,
+            Verdict::default(),
+            "nothing on this screen identifies the agent that drew it",
+        );
+
+        // AND IT MUST NOT BE CLAIMED BY THE OTHER AGENT EITHER, which is not a hypothetical: this
+        // fixture was captured under `/tmp/claude-1000/...`, so the string `claude` is on the
+        // screen. A fingerprint written on the bare NAME rather than on a phrase would read a
+        // `codex` pane as `claude` on any box whose scratch directory is named that way — a
+        // cross-agent misattribution produced by the capture environment, not by either agent.
+        let em = painted(CODEX_TRUST_DIALOG);
+        let text = bottom_lines(em.screen(), DIALOG_WINDOW);
+        assert!(
+            text.contains("claude"),
+            "the premise: the capture path really does put that string on this screen",
+        );
+        assert_eq!(
+            detect(em.screen(), None, &[claude()]).agent,
+            None,
+            "and `claude`'s onboarding fingerprint is a PHRASE, so it does not fire on it",
         );
     }
 

@@ -3060,7 +3060,15 @@ mod tests {
             "#,
         )
         .expect("correcting a built-in is usable");
-        assert_eq!(named(&manifests, "codex").any.len(), 1, "unchanged");
+        // Against the BUILT-IN's own count rather than a literal. The claim is that a correction
+        // leaves the fingerprint list alone, and a hard-coded number states an incidental fact
+        // instead — it went red the round `codex` gained an onboarding fingerprint, which is a
+        // change this test has no opinion about.
+        assert_eq!(
+            named(&manifests, "codex").any.len(),
+            sprag_detect::codex().any.len(),
+            "a correction leaves the fingerprints exactly as the built-in declares them",
+        );
     }
 
     /// Each of the four ways to write a match wrongly, refused with the file's own words.
