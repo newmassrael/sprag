@@ -3293,3 +3293,92 @@ fn following_delivers_a_single_bump_change_the_wait_answers_with() {
         "the settle waker's transition reaches a shell, at the revision the wait answers with",
     );
 }
+
+/// `report-agent` / `release-agent` from a shell, with the pane taken from `$SPRAG_PANE` — the form a
+/// hook uses, and the whole point of publishing that variable at a pane's birth.
+///
+/// The CLI is a surface of its own: every assertion here is about what a person or a hook can actually
+/// type, which no wire-level test reaches. Three things are proven — the env default, the vocabulary's
+/// refusals, and that a report typed at a shell reaches the pane list the daemon serves.
+#[test]
+fn the_cli_reports_and_releases_an_agent_for_the_pane_it_is_running_in() {
+    let (_host, sock) = spawn_host();
+
+    // No `$SPRAG_PANE` and no `--pane`: refused, naming the variable rather than suggesting a guess.
+    let run = sprag(&sock, &["report-agent", "working"]);
+    assert!(!run.ok, "a report with no pane cannot be honoured");
+    assert!(
+        run.stderr.contains("SPRAG_PANE"),
+        "the error names the variable a pane would have: {}",
+        run.stderr,
+    );
+
+    // The vocabulary, refused CLIENT-SIDE so a typo does not become a round trip — and `unknown`
+    // pointed at the verb that actually means it.
+    let run = sprag_env(&sock, &["report-agent", "unknown"], &[("SPRAG_PANE", "0")]);
+    assert!(!run.ok);
+    assert!(
+        run.stderr.contains("release-agent"),
+        "`unknown` is not a state; it is a release: {}",
+        run.stderr,
+    );
+    let run = sprag_env(&sock, &["report-agent", "busy"], &[("SPRAG_PANE", "0")]);
+    assert!(!run.ok);
+    assert!(
+        run.stderr.contains("working | blocked | idle"),
+        "a spelling outside the vocabulary names the vocabulary: {}",
+        run.stderr,
+    );
+
+    // The report itself, with the pane coming from the environment exactly as it does inside a pane.
+    let run = sprag_env(
+        &sock,
+        &["report-agent", "blocked", "--name", "claude", "--seq", "5"],
+        &[("SPRAG_PANE", "0")],
+    );
+    assert!(run.ok, "the report succeeded: {}", run.stderr);
+    assert!(
+        run.stdout.contains("accepted") && run.stdout.contains("(state changed)"),
+        "and says what the daemon did with it: {}",
+        run.stdout,
+    );
+
+    // It reached the daemon's own answer: `sprag agent` reads the pane list, so this is the same
+    // publication a display client sees.
+    let run = sprag(&sock, &["agent", "0"]);
+    assert!(run.ok, "agent succeeded: {}", run.stderr);
+    assert!(
+        run.stdout.contains("0: blocked") && run.stdout.contains("claude"),
+        "a `cat` pane no manifest claims is published because a report said so: {}",
+        run.stdout,
+    );
+
+    // A replay of the same sequence number is REFUSED, and the CLI says so rather than exiting 0 on a
+    // report that vanished.
+    let run = sprag_env(
+        &sock,
+        &["report-agent", "idle", "--seq", "5"],
+        &[("SPRAG_PANE", "0")],
+    );
+    assert!(
+        run.stdout.contains("REFUSED"),
+        "a replay is reported as refused: {} {}",
+        run.stdout,
+        run.stderr,
+    );
+
+    // The release, and its answer for a pane nobody is reporting any more.
+    let run = sprag_env(&sock, &["release-agent"], &[("SPRAG_PANE", "0")]);
+    assert!(run.ok, "release succeeded: {}", run.stderr);
+    assert!(
+        run.stdout.contains("released"),
+        "the release says a report was dropped: {}",
+        run.stdout,
+    );
+    let run = sprag_env(&sock, &["release-agent"], &[("SPRAG_PANE", "0")]);
+    assert!(
+        run.stdout.contains("nothing to release"),
+        "and the second one says there was nothing left: {}",
+        run.stdout,
+    );
+}

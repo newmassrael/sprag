@@ -47,6 +47,9 @@
 //! sprag send-keys [-t SESSION] PANE [-l] KEY…     send W3C key names (or, with -l, literal text)
 //! sprag capture-pane [-t SESSION] PANE [-p]       print a pane's retained output to stdout
 //! sprag agent [-t SESSION] [PANE]                 what the AI agent in each pane is doing
+//! sprag report-agent STATE [--pane N] [--source S]  say what the agent in a pane is DOING
+//!                          [--name AGENT] [--seq N]  (the pane defaults to $SPRAG_PANE)
+//! sprag release-agent [-t SESSION] [--pane N]      hand the pane back to screen inference
 //!                                         (working / blocked / idle), one line per pane an agent
 //!                                         manifest claims — a shell prints nothing. Naming a PANE
 //!                                         also prints WHICH RULE decided, and how to correct it
@@ -115,9 +118,10 @@ use sprag_host::keymap::{BoundAction, KeySpec, KeyTable};
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, FULL_TEXT_SLOT,
     JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, NEW_SESSION_ACTION,
-    NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, RENAME_WINDOW_ACTION, RESIZE_ACTION,
-    RESIZE_WINDOW_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION,
-    TEXT_ACTION, WINDOWS_SLOT, events_slot_since, find_slot_for, project_slot_for, regex_slot_for,
+    NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, RELEASE_AGENT_ACTION, RENAME_WINDOW_ACTION,
+    REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
+    SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, events_slot_since, find_slot_for,
+    project_slot_for, regex_slot_for,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{HOST_SOCKET, HostConn, socket_path};
@@ -155,6 +159,8 @@ fn run() -> io::Result<()> {
         Some("join-pane") => join_pane(args.collect()),
         Some("panes") => panes(args.collect()),
         Some("agent") => agent(args.collect()),
+        Some("report-agent") => report_agent(args.collect()),
+        Some("release-agent") => release_agent(args.collect()),
         Some("events") => events(args.collect()),
         Some("split-window") => split_window(args.collect()),
         Some("kill-pane") => kill_pane(args.collect()),
@@ -719,6 +725,9 @@ fn print_usage() {
          \x20             | resize-pane PANE -x COLS -y ROWS\n\
          \x20             | send-keys PANE [-l] KEY… | capture-pane PANE [-p]\n\
          \x20             | agent [PANE]> [-t SESSION]\n\
+         \x20      sprag report-agent <working|blocked|idle> [-t SESSION] [--pane N]\n\
+         \x20             [--source S] [--name AGENT] [--seq N]\n\
+         \x20      sprag release-agent [-t SESSION] [--pane N]\n\
          \x20      sprag events [-t SESSION] [--since N] [-f]\n\
          \x20      sprag <list-keys | bind-key [-nr] [-T prefix|root] KEY ACTION…\n\
          \x20             | unbind-key [-n] [-T prefix|root] KEY>\n\
@@ -1667,6 +1676,218 @@ fn require_pane(
             scope_name(session)
         ),
     ))
+}
+
+/// `report-agent STATE [-t SESSION] [--pane N] [--source S] [--name AGENT] [--seq N]`: say what the
+/// agent in a pane is doing, from INSIDE that pane.
+///
+/// The pane defaults to `$SPRAG_PANE` — the variable the daemon publishes into every pane it births —
+/// so the useful form is the short one and it takes no argument a hook would have to discover:
+///
+/// ```text
+/// sprag report-agent working
+/// sprag report-agent idle --source myhook
+/// ```
+///
+/// That default is the whole reason a shell hook needs no JSON-RPC of its own. Outside a pane there is
+/// no such variable and no default: the error says so rather than reporting about somebody else's
+/// pane.
+///
+/// `--source` defaults to `cli` because a report must always name an authority (the daemon refuses an
+/// unnamed one), and the honest name for a report typed at a command line is the command line. A hook
+/// SHOULD pass its own, since a source is also the unit a replay is refused against.
+///
+/// Prints what the daemon did with it — `accepted`/`refused`, whether the published verdict `changed`,
+/// and the published `seq` — because a report that arrived out of order is refused silently otherwise,
+/// which is exactly the case a reporter needs to see.
+fn report_agent(args: Vec<String>) -> io::Result<()> {
+    let (session, rest) = scope_and_rest(args, "report-agent")?;
+    let mut state: Option<String> = None;
+    let mut pane: Option<u64> = None;
+    let mut source: Option<String> = None;
+    let mut name: Option<String> = None;
+    let mut seq: Option<u64> = None;
+    let mut it = rest.into_iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--pane" => pane = Some(named_pane(&mut it, "report-agent")?),
+            "--source" => {
+                source = Some(
+                    it.next()
+                        .ok_or_else(|| bad_input("report-agent: --source needs a name"))?,
+                );
+            }
+            "--name" => {
+                name = Some(
+                    it.next()
+                        .ok_or_else(|| bad_input("report-agent: --name needs an agent name"))?,
+                );
+            }
+            "--seq" => {
+                let value = it
+                    .next()
+                    .ok_or_else(|| bad_input("report-agent: --seq needs a number"))?;
+                seq = Some(value.parse::<u64>().map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("report-agent: --seq {value:?} is not a number"),
+                    )
+                })?);
+            }
+            other if state.is_none() && !other.starts_with('-') => state = Some(other.to_owned()),
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "report-agent: unexpected argument {other:?} (report-agent STATE \
+                         [-t SESSION] [--pane N] [--source S] [--name AGENT] [--seq N])"
+                    ),
+                ));
+            }
+        }
+    }
+    // Checked HERE rather than left to the daemon's refusal: `working|blocked|idle` is a vocabulary a
+    // person mistypes, and `unknown` is the mistake worth naming — it reads like a state and means
+    // "scrape me again", which is `release-agent`.
+    let state =
+        state.ok_or_else(|| bad_input("report-agent: needs a state (working | blocked | idle)"))?;
+    if sprag_detect::AgentState::from_wire(&state).is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            match state.as_str() {
+                "unknown" => "report-agent: `unknown` is not reportable — use `release-agent` to \
+                              hand the pane back to the screen"
+                    .to_owned(),
+                other => {
+                    format!("report-agent: {other:?} is not a state (working | blocked | idle)")
+                }
+            },
+        ));
+    }
+    let pane = pane.map_or_else(|| own_pane("report-agent"), Ok)?;
+    let mut conn = connect_scoped(session.as_deref())?;
+    let mut params = serde_json::json!({
+        "id": pane,
+        "state": state,
+        "source": source.unwrap_or_else(|| "cli".to_owned()),
+    });
+    if let Some(name) = name {
+        params["name"] = Value::String(name);
+    }
+    if let Some(seq) = seq {
+        params["seq"] = Value::from(seq);
+    }
+    let answer: Value = conn.call(
+        "scene/invoke",
+        scoped_invoke(
+            session.as_deref(),
+            mux_action_path(REPORT_AGENT_ACTION),
+            params,
+        ),
+    )?;
+    let accepted = answer["accepted"].as_bool().unwrap_or(false);
+    println!(
+        "pane {pane}: {} {} seq={}",
+        if accepted { "accepted" } else { "REFUSED" },
+        if answer["changed"].as_bool().unwrap_or(false) {
+            "(state changed)"
+        } else {
+            "(no change)"
+        },
+        answer["seq"].as_u64().unwrap_or(0),
+    );
+    if !accepted {
+        eprintln!(
+            "sprag: report-agent: refused as stale — a --seq at or below the last one from this \
+             source is a replay"
+        );
+    }
+    Ok(())
+}
+
+/// `release-agent [-t SESSION] [--pane N]`: hand a pane back to the screen, dropping whatever report
+/// was in force.
+///
+/// The pane defaults to `$SPRAG_PANE`, like [`report_agent`], so an agent's exit hook is
+/// `sprag release-agent` with no arguments. Answers whether a report was actually dropped, so a
+/// caller can tell that from "there was nobody reporting".
+///
+/// A daemon also does this on its own for a pane whose CHILD has exited (`sprag_host::sweep_once`) —
+/// the case a hook cannot cover, because a killed process runs no hook.
+fn release_agent(args: Vec<String>) -> io::Result<()> {
+    let (session, rest) = scope_and_rest(args, "release-agent")?;
+    let mut pane: Option<u64> = None;
+    let mut it = rest.into_iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--pane" => pane = Some(named_pane(&mut it, "release-agent")?),
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "release-agent: unexpected argument {other:?} (release-agent \
+                         [-t SESSION] [--pane N])"
+                    ),
+                ));
+            }
+        }
+    }
+    let pane = pane.map_or_else(|| own_pane("release-agent"), Ok)?;
+    let mut conn = connect_scoped(session.as_deref())?;
+    let answer: Value = conn.call(
+        "scene/invoke",
+        scoped_invoke(
+            session.as_deref(),
+            mux_action_path(RELEASE_AGENT_ACTION),
+            serde_json::json!({ "id": pane }),
+        ),
+    )?;
+    if answer["released"].as_bool().unwrap_or(false) {
+        println!("pane {pane}: released — its state comes from the screen again");
+    } else {
+        println!("pane {pane}: nothing to release (no report was in force)");
+    }
+    Ok(())
+}
+
+/// The pane THIS process is running in, from `SPRAG_PANE` — what the daemon told the pane at birth.
+///
+/// The error names the variable rather than saying "pass --pane", because a caller outside a pane
+/// cannot fix this by guessing an id: either they are in a sprag pane and the daemon published it, or
+/// they are addressing somebody else's pane and should say which.
+fn own_pane(command: &str) -> io::Result<u64> {
+    let raw = std::env::var(sprag_host::PANE_ENV_VAR).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "{command}: no ${} in the environment — run it inside a sprag pane, or name one \
+                 with --pane",
+                sprag_host::PANE_ENV_VAR
+            ),
+        )
+    })?;
+    raw.parse::<u64>().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{command}: ${}={raw:?} is not a pane id",
+                sprag_host::PANE_ENV_VAR
+            ),
+        )
+    })
+}
+
+/// The `--pane N` value for a verb that takes one.
+fn named_pane(it: &mut impl Iterator<Item = String>, command: &str) -> io::Result<u64> {
+    let value = it
+        .next()
+        .ok_or_else(|| bad_input(&format!("{command}: --pane needs a pane id")))?;
+    value.parse::<u64>().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{command}: --pane {value:?} is not a pane id"),
+        )
+    })
 }
 
 /// `panes [-t SESSION]`: one line per pane of the scoped session's CURRENT window — tmux
