@@ -117,7 +117,7 @@ use sprag_host::wire::{
     JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, NEW_SESSION_ACTION,
     NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, RENAME_WINDOW_ACTION, RESIZE_ACTION,
     RESIZE_WINDOW_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION,
-    TEXT_ACTION, WINDOWS_SLOT, find_slot_for, project_slot_for, regex_slot_for,
+    TEXT_ACTION, WINDOWS_SLOT, events_slot_since, find_slot_for, project_slot_for, regex_slot_for,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{HOST_SOCKET, HostConn, socket_path};
@@ -155,6 +155,7 @@ fn run() -> io::Result<()> {
         Some("join-pane") => join_pane(args.collect()),
         Some("panes") => panes(args.collect()),
         Some("agent") => agent(args.collect()),
+        Some("events") => events(args.collect()),
         Some("split-window") => split_window(args.collect()),
         Some("kill-pane") => kill_pane(args.collect()),
         Some("resize-pane") => resize_pane(args.collect()),
@@ -718,6 +719,7 @@ fn print_usage() {
          \x20             | resize-pane PANE -x COLS -y ROWS\n\
          \x20             | send-keys PANE [-l] KEY… | capture-pane PANE [-p]\n\
          \x20             | agent [PANE]> [-t SESSION]\n\
+         \x20      sprag events [-t SESSION] [--since N] [-f]\n\
          \x20      sprag <list-keys | bind-key [-nr] [-T prefix|root] KEY ACTION…\n\
          \x20             | unbind-key [-n] [-T prefix|root] KEY>\n\
          \x20      sprag <show-options [-v] [NAME] | set-option [-u] NAME [VALUE]> [-g]"
@@ -1558,6 +1560,15 @@ fn scoped_params(session: Option<&str>, path: String) -> Value {
     }
 }
 
+/// The scope ALONE, for the two methods that read no path — `scene/revision` and `scene/waitFor`.
+/// Kept beside [`scoped_params`] so the one way a request names its session is spelled once.
+fn scoped_only(session: Option<&str>) -> Value {
+    match session {
+        Some(name) => json!({ "session": name }),
+        None => json!({}),
+    }
+}
+
 /// [`scoped_params`] plus an action's `args` — the invoke shape, kept beside the query shape so the
 /// two cannot drift.
 fn scoped_invoke(session: Option<&str>, path: String, args: Value) -> Value {
@@ -1794,6 +1805,124 @@ fn agent(args: Vec<String>) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// `events [-t SESSION] [--since N] [-f]`: what has CHANGED in the scoped session, one line each.
+///
+/// The half of a wake that a bare revision number could never carry. A client woken by
+/// `scene/waitFor` learns only that something moved and re-reads everything to find out what; this
+/// asks the daemon, which already knew.
+///
+/// ## Why `-f` is the verb and the rest is scaffolding
+///
+/// Without it this is a poll, and a poll is what the whole feature exists to remove. With it the
+/// verb BLOCKS until something happens and then says what — which is the primitive an agent
+/// orchestrating other agents actually needs, and the one thing sprag's tooling could not express
+/// at all. `sprag events -f | while read -r line; do …` is the shape it buys.
+///
+/// It is built from two calls that already existed and one that did not: park on `scene/waitFor`,
+/// read `events.<since>`, repeat. No new blocking method — the cursor IS the revision the wait
+/// answers with, so the pair composes (see `sprag_host::events`).
+///
+/// ## The long-poll connection carries NO read deadline, deliberately
+///
+/// Every other verb here is a request-response against a local daemon answering from memory, so a
+/// reply that has not arrived in seconds is not slow, it is not coming. A parked `waitFor` is the
+/// opposite: waiting indefinitely is its contract. The GUI's poll thread makes the same distinction
+/// on its own dedicated connection, and this follows it rather than inventing a second policy.
+///
+/// ## `lost` is REPORTED, never swallowed
+///
+/// A reader that falls behind the daemon's ring is told, on stderr so a script slicing stdout is
+/// unaffected. The honest response is to re-read the world (`sprag panes`, `sprag windows`), and
+/// saying so is the difference between a gap the caller can act on and one it cannot see.
+fn events(args: Vec<String>) -> io::Result<()> {
+    let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
+    let (session, rest) = scope_and_rest(args, "events")?;
+    let mut since: Option<u64> = None;
+    let mut follow = false;
+    let mut it = rest.into_iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "-f" | "--follow" => follow = true,
+            "--since" => {
+                let value = it
+                    .next()
+                    .ok_or_else(|| bad("events: --since needs a revision".to_owned()))?;
+                since =
+                    Some(value.parse::<u64>().map_err(|_| {
+                        bad(format!("events: --since {value:?} is not a revision"))
+                    })?);
+            }
+            other => {
+                return Err(bad(format!(
+                    "events: unexpected argument {other:?} (events [-t SESSION] [--since N] [-f])"
+                )));
+            }
+        }
+    }
+
+    let mut conn = connect_scoped(session.as_deref())?;
+    // A cursor the caller did not give is NOW, not zero: `events -f` means "tell me what happens",
+    // and replaying a daemon's whole history first would bury that under a backlog nobody asked
+    // for. `--since 0` is how a caller asks for the backlog, and it is the only way to get it.
+    let mut cursor = match since {
+        Some(cursor) => cursor,
+        None => {
+            let answer: Value = conn.call("scene/revision", scoped_only(session.as_deref()))?;
+            answer["revision"].as_u64().unwrap_or(0)
+        }
+    };
+
+    loop {
+        let batch: Value = conn.call(
+            "scene/query",
+            scoped_params(
+                session.as_deref(),
+                mux_action_path(&events_slot_since(cursor)),
+            ),
+        )?;
+        if batch["lost"].as_bool().unwrap_or(false) {
+            eprintln!(
+                "sprag: events: fell behind the daemon's log — some changes were dropped before \
+                 this read. Re-read the world (`sprag panes`, `sprag windows`); what follows is \
+                 only what survived."
+            );
+        }
+        for event in batch["events"].as_array().into_iter().flatten() {
+            let kind = event["type"].as_str().unwrap_or("?");
+            // The subject key is named for WHAT it is, so a reader that has matched the type
+            // already knows which slot to re-read. Printed as `TYPE<TAB>SUBJECT` — the shape
+            // `sprag run`'s listing uses, which a script can cut.
+            let subject = ["pane", "window", "session"]
+                .iter()
+                .find_map(|key| match &event[*key] {
+                    Value::String(name) => Some(name.clone()),
+                    Value::Number(id) => Some(id.to_string()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            println!("{kind}\t{subject}");
+        }
+        cursor = batch["next"].as_u64().unwrap_or(cursor);
+        if !follow {
+            return Ok(());
+        }
+        // Park. No deadline: waiting is this call's contract, not a hazard (see the doc above).
+        //
+        // THE WAIT'S ANSWER IS A SIGNAL, NOT A CURSOR, and the first version of this loop took it
+        // for one. `waitFor` answers the revision it advanced TO, so adopting it as the cursor
+        // skips whatever was recorded AT that revision — and the read that follows is `> cursor`,
+        // so the skipped record is never offered again. It survived a manual drive because a spawn
+        // happens to bump twice (the record lands above the wait's answer), and it would have lost
+        // exactly the event this niche is about: `ChannelRegistry::announce` bumps ONCE and records
+        // at that very revision, so every agent transition would have vanished. The cursor stays
+        // where the last READ left it; the wait only says it is worth reading again.
+        conn.set_read_deadline(None)?;
+        let mut params = scoped_only(session.as_deref());
+        params["since"] = json!(cursor);
+        let _: Value = conn.call("scene/waitFor", params)?;
+    }
 }
 
 /// `split-window [-t SESSION] [-h|-v [-b] PANE] [-- command…]`: add a pane to the scoped session's

@@ -3199,3 +3199,97 @@ fn a_command_option_is_printed_quoted_and_read_raw() {
         "and -v hands a script the value itself",
     );
 }
+
+/// **The slice-5 claim, and H4's lesson applied**: a wire fact no shell can reach is not a delivered
+/// capability. This drives the real CLI against a real daemon.
+///
+/// Also the shape a caller actually wants: `--since 0` for the backlog, and a cursor that advances
+/// so the same change is not delivered twice.
+#[test]
+fn the_cli_reads_what_changed_by_cursor() {
+    let (_host, sock) = spawn_host();
+
+    // A bare `events` starts at NOW, not at zero: `events -f` means "tell me what happens", and a
+    // daemon's whole history is not that.
+    let now = sprag(&sock, &["events"]);
+    assert!(now.ok, "events succeeded: {}", now.stderr);
+    assert!(
+        now.stdout.is_empty(),
+        "the default cursor is the present, so nothing is replayed: {:?}",
+        now.stdout,
+    );
+
+    let split = sprag(&sock, &["split-window", "--", "cat"]);
+    assert!(split.ok, "split-window succeeded: {}", split.stderr);
+    let pane = split.stdout.trim().to_owned();
+
+    let backlog = sprag(&sock, &["events", "--since", "0"]);
+    assert!(backlog.ok, "events --since 0 succeeded: {}", backlog.stderr);
+    assert!(
+        backlog
+            .stdout
+            .lines()
+            .any(|line| line == format!("pane_created\t{pane}")),
+        "the change is readable as TYPE<TAB>SUBJECT, a shape a script can cut: {:?}",
+        backlog.stdout,
+    );
+    assert!(
+        backlog.stderr.is_empty(),
+        "nothing was lost, so nothing is said about it: {:?}",
+        backlog.stderr,
+    );
+}
+
+/// **The blocking form, which is the whole reason the verb exists** — and the regression test for a
+/// bug that a manual drive did NOT catch.
+///
+/// `sprag events -f` parks until something happens and then says what. The loop is `read at cursor`
+/// then `waitFor at cursor`, and the wait's answer is a SIGNAL rather than a cursor: adopting it
+/// would skip whatever was recorded AT that revision, which is never offered again because the read
+/// is strictly greater than the cursor.
+///
+/// The first version did adopt it, and driving it by hand looked fine — a spawn bumps the revision
+/// TWICE, so the record lands above the wait's answer and survives by luck. This test uses the
+/// AGENT transition instead, which `ChannelRegistry::announce` publishes with a SINGLE bump and a
+/// record at that exact revision. Under the bug it prints nothing at all.
+#[test]
+fn following_delivers_a_single_bump_change_the_wait_answers_with() {
+    let (_host, sock) = spawn_host_running(&[
+        "sh",
+        "-c",
+        "printf '\\033]2;\\342\\234\\263 Claude Code\\007\\033[2J\\033[H\
+         \\342\\235\\257\\n  \\342\\217\\270 manual mode on \\302\\267 ? for shortcuts\\n'; cat",
+    ]);
+
+    let mut follow = Command::new(env!("CARGO_BIN_EXE_sprag"))
+        .args(["events", "-f"])
+        .env("SPRAG_HOST_RPC_SOCK", &sock)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start `sprag events -f`");
+
+    // Read ONE line, blocking. The settle window has to close before the waker publishes, so this
+    // is what the verb is for: no polling, no sleep chosen by the caller.
+    let stdout = follow.stdout.take().expect("piped stdout");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let mut line = String::new();
+        let read = std::io::BufReader::new(stdout).read_line(&mut line);
+        let _ = tx.send(read.map(|_| line));
+    });
+
+    let line = rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("`events -f` printed a line before the timeout")
+        .expect("reading the line succeeded");
+    let _ = follow.kill();
+    let _ = follow.wait();
+
+    assert_eq!(
+        line.trim(),
+        "pane_agent_state_changed\t0",
+        "the settle waker's transition reaches a shell, at the revision the wait answers with",
+    );
+}

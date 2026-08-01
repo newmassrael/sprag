@@ -616,6 +616,7 @@ fn the_shipped_server_speaks_the_protocol_and_survives_bad_input() {
         "regex_in_pane",
         "agent_state",
         "agent_explain",
+        "wait_for_change",
         "write_pane",
         "send_keys",
     ] {
@@ -1084,6 +1085,56 @@ fn agent_explain_warns_when_the_daemon_has_refused_the_manifest_file() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **THE live gate for `wait_for_change`, and R258's lesson is why it exists**: nothing in the
+/// arguments asks for a park, a cursor, or an event, so a wiring that made neither host call would
+/// satisfy every unit test of the wording. Only driving the real server against a real daemon can
+/// tell whether the tool does what its description promises.
+///
+/// Three properties, and the third is the one a poll loop could never have:
+///
+/// 1. a change made while the tool is BLOCKED reaches the caller — it does not have to be asked for
+///    a second time;
+/// 2. the answer names the change and its subject, not a bare "something happened";
+/// 3. a quiet terminal is reported as quiet rather than as a failure, so an agent does not read
+///    silence as breakage.
+#[test]
+fn wait_for_change_blocks_and_reports_what_moved() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn(&sock);
+
+    // Establish the cursor at the present, the way any first call does.
+    let quiet = server.call_tool("wait_for_change", json!({ "timeout_seconds": 1 }));
+    assert!(
+        quiet.contains("Nothing changed"),
+        "a quiet terminal is an ANSWER, not an error: {quiet}",
+    );
+
+    // Now make a change while the tool is parked. The split runs on this thread AFTER the server has
+    // been asked to wait, so the tool is genuinely blocked when it happens — a tool that polled once
+    // and returned would report nothing.
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
+    let mover = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        conn.call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(SPAWN_ACTION), "args": {} }),
+        )
+        .expect("spawn a pane while the tool waits");
+    });
+
+    let moved = server.call_tool("wait_for_change", json!({ "timeout_seconds": 20 }));
+    mover.join().expect("the mover thread finished");
+
+    assert!(
+        moved.contains("pane_created"),
+        "the change that happened DURING the wait is what comes back: {moved}",
+    );
+    assert!(
+        moved.contains("pane id="),
+        "and it names its subject, so the caller knows what to re-read: {moved}",
+    );
 }
 
 // ----- the socket resolve -----

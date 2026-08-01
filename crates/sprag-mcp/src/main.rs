@@ -53,12 +53,13 @@
 
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use serde_json::{Value, json};
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, FULL_TEXT_SLOT, KEY_ACTION, LAST_COMMAND_SLOT, LINKS_SLOT, PANES_SLOT,
-    TEXT_ACTION, find_slot_for, regex_slot_for,
+    TEXT_ACTION, events_slot_since, find_slot_for, regex_slot_for,
 };
 use sprag_host::{PaneFind, mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
@@ -370,6 +371,34 @@ fn tools_list() -> Value {
                 }
             },
             {
+                "name": "wait_for_change",
+                "description": "BLOCK until something changes in this terminal, then report what \
+                    changed. Use this instead of polling list_panes or agent_state in a loop: it \
+                    costs nothing while nothing is happening and returns the moment it does. This \
+                    is the tool for 'wait until the agent in pane 2 finishes', 'tell me when a \
+                    pane exits', or coordinating several agents. Reports typed changes — \
+                    `pane_agent_state_changed` (an agent started working, became blocked, or went \
+                    idle), `pane_created`, `pane_closed`, `window_created`, `window_closed`, \
+                    `window_selected`, `session_created`, `session_closed`, `layout_updated` — \
+                    each naming its SUBJECT, not its new value: follow up with agent_state or \
+                    list_panes to read the subject it names. Returns immediately if something has \
+                    already changed since the last call. Pane OUTPUT is not a change here: read \
+                    the pane for that.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "timeout_seconds": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 600,
+                            "description": "Give up and report nothing changed after this long \
+                                (default 60). A timeout is not an error."
+                        }
+                    },
+                    "additionalProperties": false
+                }
+            },
+            {
                 "name": "agent_explain",
                 "description": "Explain WHY a pane's agent state is what it is: which detection \
                     rule fired, which agent manifest claimed the pane, and how to correct it. Use \
@@ -455,6 +484,7 @@ fn handle_tools_call(message: &Value) -> Value {
         "regex_in_pane" => tool_regex_in_pane(&args),
         "agent_state" => tool_agent_state(&args),
         "agent_explain" => tool_agent_explain(&args),
+        "wait_for_change" => tool_wait_for_change(&args),
         "write_pane" => tool_write_pane(&args),
         "send_keys" => tool_send_keys(&args),
         other => Err(format!("unknown tool: {other}")),
@@ -924,6 +954,143 @@ fn tool_agent_state(args: &Value) -> Result<String, String> {
     Ok(out)
 }
 
+/// `wait_for_change`: block until this terminal's shape or an agent's verdict moves, then say what.
+///
+/// The tool that closes the gap between "an agent can look at other agents" and "an agent can
+/// orchestrate them". Everything else here is a READ a caller has to decide when to perform, so
+/// coordinating on another pane meant a poll loop — and a poll loop is a sleep chosen by whoever
+/// wrote it, wrong in both directions at once.
+///
+/// ## Built from two calls, neither of them new
+///
+/// `scene/waitFor {since}` parks until the scene revision passes `since`; `events.<since>` says what
+/// happened after it. The cursor IS the revision, so the pair composes without a blocking method of
+/// its own (`sprag_host::events` has the reasoning, and pinion's `waiter` has the scar behind it).
+///
+/// ## The cursor is PROCESS state, and it has to be
+///
+/// Every other tool here reconnects per call and holds nothing. This one cannot: "what changed" is
+/// meaningless without "since when", and an agent that had to pass a revision number back would be
+/// keeping a bookkeeping detail this server already knows. So the cursor lives here, advanced by
+/// each answer — which is also what makes the documented "returns immediately if something has
+/// already changed since the last call" true rather than aspirational.
+///
+/// ## A timeout is an ANSWER, not an error
+///
+/// The caller asked to be told what changed; "nothing did, within the time you gave me" is a
+/// truthful answer to that, and reporting it as a failure would make an agent treat a quiet
+/// terminal as a broken one.
+fn tool_wait_for_change(args: &Value) -> Result<String, String> {
+    /// Where this server has read up to. `None` until the first call, which starts at the present:
+    /// replaying a daemon's whole history to a caller asking "what happens next" would bury the
+    /// answer under a backlog it did not ask for.
+    static CURSOR: Mutex<Option<u64>> = Mutex::new(None);
+
+    let timeout = match args.get("timeout_seconds") {
+        None => Duration::from_secs(60),
+        Some(value) => {
+            let seconds = value
+                .as_u64()
+                .ok_or("timeout_seconds must be a whole number of seconds")?;
+            if !(1..=600).contains(&seconds) {
+                return Err("timeout_seconds must be between 1 and 600".to_owned());
+            }
+            Duration::from_secs(seconds)
+        }
+    };
+
+    let mut cursor = CURSOR.lock().unwrap_or_else(PoisonError::into_inner);
+    let since = match *cursor {
+        Some(since) => since,
+        None => host_call("scene/revision", json!({}))?["revision"]
+            .as_u64()
+            .ok_or("the host did not report a scene revision")?,
+    };
+
+    // ONE connection for both calls: the park and the read that follows it are one question, and a
+    // second connect between them would be a second chance to fail in the middle of it.
+    let sock = host_sock().ok_or_else(|| {
+        "not inside a sprag terminal (no SPRAG_HOST_RPC_SOCK in this process or any \
+         ancestor); these pane tools do not apply to this session"
+            .to_owned()
+    })?;
+    let mut conn = HostConn::connect(&sock, CONNECT_TIMEOUT)
+        .map_err(|e| format!("cannot reach the sprag host at {}: {e}", sock.display()))?;
+
+    // The caller's timeout IS the read deadline — the one place a parked `waitFor` should carry one.
+    conn.set_read_deadline(Some(timeout))
+        .map_err(|e| format!("cannot set the wait timeout: {e}"))?;
+    match conn.call("scene/waitFor", json!({ "since": since })) {
+        Ok(_) => {}
+        // A connection that trips its deadline is finished, which is fine: nothing happened, and
+        // the cursor has not moved, so the next call parks from the same place.
+        //
+        // BOTH kinds, because a socket read timeout is not one error. `std` says so of
+        // `set_read_timeout` — "WouldBlock or TimedOut" — and Linux is the `WouldBlock` half
+        // (EAGAIN), which is what the live gate caught: matching only `TimedOut` turned every quiet
+        // wait into a tool failure reading `Resource temporarily unavailable`.
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ) =>
+        {
+            return Ok(format!(
+                "Nothing changed in {} seconds. The terminal is quiet; call again to keep waiting.",
+                timeout.as_secs()
+            ));
+        }
+        Err(error) => return Err(error.to_string()),
+    }
+
+    // The wait's answer is a SIGNAL, not a cursor. Reading from `since` — not from the revision the
+    // wait reported — is what keeps a change recorded AT that revision from being skipped, and the
+    // agent transition is exactly that case: it is published with a single bump.
+    conn.set_read_deadline(None)
+        .map_err(|e| format!("cannot clear the wait timeout: {e}"))?;
+    let batch = conn
+        .call(
+            "scene/query",
+            json!({ "path": mux_action_path(&events_slot_since(since)) }),
+        )
+        .map_err(|e| e.to_string())?;
+
+    *cursor = Some(batch["next"].as_u64().unwrap_or(since));
+    drop(cursor);
+
+    let mut out = String::new();
+    if batch["lost"].as_bool().unwrap_or(false) {
+        out.push_str(
+            "Some changes were dropped before this call could read them, so this list is \
+             incomplete. Re-read the terminal with list_panes.\n",
+        );
+    }
+    let events = batch["events"].as_array().map_or(&[][..], Vec::as_slice);
+    if events.is_empty() {
+        out.push_str("The scene moved but nothing structural changed (a pane produced output).");
+        return Ok(out);
+    }
+    for event in events {
+        let kind = event["type"].as_str().unwrap_or("?");
+        match (
+            event["pane"].as_u64(),
+            event["window"].as_str(),
+            event["session"].as_str(),
+        ) {
+            (Some(id), _, _) => {
+                // The wire carries the host's pane ID; a caller of these tools addresses panes by
+                // their 1-based NUMBER, so both travel. Reporting only the id would name a pane in
+                // a vocabulary no other tool here accepts.
+                out.push_str(&format!("  {kind}: pane id={id}\n"));
+            }
+            (_, Some(name), _) => out.push_str(&format!("  {kind}: window {name}\n")),
+            (_, _, Some(name)) => out.push_str(&format!("  {kind}: session {name}\n")),
+            _ => out.push_str(&format!("  {kind}\n")),
+        }
+    }
+    Ok(out)
+}
+
 /// `agent_explain`: which RULE produced a pane's state, and what to edit when it is wrong.
 ///
 /// H3's D7 is the whole reason this can exist as a READ: the rule's identity travels in every verdict
@@ -1222,6 +1389,7 @@ mod tests {
                 "find_in_pane",
                 "regex_in_pane",
                 "agent_state",
+                "wait_for_change",
                 "agent_explain",
                 "write_pane",
                 "send_keys"
