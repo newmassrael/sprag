@@ -444,8 +444,8 @@ fn run() -> Result<(), Box<dyn Error>> {
 /// What this client has already put on the terminal — the baseline every frame is a difference
 /// against, and the reason a repaint is cheap.
 ///
-/// The two fields are one concept and not a bag: neither is state the client HAS, both are records of
-/// what the terminal was last told, and both exist so that telling it again can be skipped. They are
+/// The fields are one concept and not a bag: none is state the client HAS, each is a record of what
+/// the terminal was last told, and each exists so that telling it again can be skipped. They are
 /// also written in exactly one place ([`paint`]), which is what makes the records trustworthy — a
 /// second writer would leave the terminal and the record disagreeing with no way to notice.
 #[derive(Default)]
@@ -455,6 +455,11 @@ struct Painted {
     /// The window title as last SET, so an unchanged digest costs no escape sequence at all — see
     /// [`title_change`], which owns that decision and is tested on it.
     title: Option<String>,
+    /// What that title was DERIVED from: the host's pane-agent token
+    /// ([`HostClient::pane_agents_token`]) and the session name, together the whole input to
+    /// [`agent_window_title`]. Held so the digest is rebuilt when its source moved rather than on
+    /// every keystroke — see [`retitle`].
+    title_from: Option<(u64, String)>,
 }
 
 /// Whether a repaint should blank the surface first.
@@ -500,7 +505,7 @@ fn paint(
     // terminal at all — so every path that repaints also re-titles, and no future caller can add a
     // repaint that forgets to. Before the empty-tiling return: a client whose last pane just closed
     // still owes the title the truth, and "no panes" is not "an agent is still waiting".
-    retitle(screen, host, &mut held.title);
+    retitle(screen, host, held);
     if tiling.panes.is_empty() {
         // No panes is a legitimate transient state (the last one just closed), not an error: the
         // host will either grow one or go away, and both wake this loop. The last frame stays on
@@ -559,21 +564,43 @@ fn paint(
 /// renders them, so a title re-added on each frame would put one OSC on the wire per repaint — per
 /// keystroke, on the input path this client's cost model is built around (R246).
 ///
-/// The facts are read from the poll-maintained cache ([`HostClient::pane_agent`]), so this makes no
+/// The facts are read from the poll-maintained cache ([`HostClient::pane_agents`]), so this makes no
 /// socket call and cannot block a frame. Which pane the user is looking at plays no part: unlike the
 /// GUI — whose OS title follows the FOCUSED pane, because its background panes have tabs and dock
 /// headers of their own to wear a marker on — this client has no other chrome, so its title has to
 /// answer for every pane at once.
-fn retitle(
-    screen: &mut BufferedTerminal<SystemTerminal>,
-    host: &WireHost,
-    held: &mut Option<String>,
-) {
-    let agents = host.pane_agents();
-    let wanted = agent_window_title(&host.current_session(), &agents);
-    if let Some(change) = title_change(held, wanted) {
+///
+/// # Two skips, at two different costs, and they are not the same skip
+///
+/// [`title_change`] skips the OSC when the digest came out the same — it is what keeps an unchanged
+/// title off the wire, and it is downstream of building the digest. This one skips BUILDING it, by
+/// keying the answer on everything it is derived from ([`HostClient::pane_agents_token`] plus the
+/// session name). Until R265 only the first existed, so the walk, the sort and the string build ran
+/// on every keystroke and were thrown away; the argument for leaving it that way was that the cost
+/// was small at a pane count the wire could not exceed, and R264 removed that ceiling.
+///
+/// The key is complete because it is not a LIST of inputs: the token counts changes to the cache
+/// every one of those inputs lives in, so a verdict moving, a pane opening and a pane closing are
+/// the same event to it. A host that will not promise a token answers `None` and this skips
+/// nothing, which is the direction a mistake here has to fall.
+fn retitle(screen: &mut BufferedTerminal<SystemTerminal>, host: &WireHost, held: &mut Painted) {
+    let session = host.current_session();
+    // The whole input to the digest, in one value: the host's token for the pane verdicts plus the
+    // session the baseline names. `None` from the host means it will not promise a token, and the
+    // walk runs unconditionally — the safe direction, and the one every impl but this client's is
+    // on (see `HostClient::pane_agents_token`).
+    let from = host
+        .pane_agents_token()
+        .map(|token| (token, session.clone()));
+    if from.is_some() && from == held.title_from {
+        return;
+    }
+
+    let wanted = agent_window_title(&session, &host.pane_agents());
+    if let Some(change) = title_change(&mut held.title, wanted) {
         screen.add_change(change);
     }
+    held.title_from = from;
 }
 
 /// Lay the host's arrangement out over `area`, keep `focus` on a pane that is actually shown, and

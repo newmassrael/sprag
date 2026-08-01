@@ -855,6 +855,28 @@ pub trait HostClient {
             .collect()
     }
 
+    /// A token that changes whenever [`pane_agents`](Self::pane_agents) could answer differently —
+    /// or `None` from an impl that cannot promise one.
+    ///
+    /// `None` is the SAFE default and the reason this is an `Option` rather than a counter every
+    /// impl has to fake: it means "ask again", so an impl that says nothing costs a caller a
+    /// recomputation, and only an impl that actively claims a token can make one skip. The same
+    /// treatment `WirePane::projection` gives a frame's projection token in `sprag-client`, for the
+    /// same reason — an absent token belongs on the unconditional path.
+    ///
+    /// A caller memoises whatever it derives from the pane list beside this value and recomputes
+    /// when it moves. `sprag-tui` does exactly that for the window title, which it otherwise
+    /// rebuilds and discards on every keystroke.
+    ///
+    /// CONTRACT: an impl that answers `Some` must move the token on every change a caller could
+    /// observe through [`pane_agents`](Self::pane_agents) — including a pane appearing or leaving.
+    /// Moving it when nothing observable changed is permitted and costs only a recomputation;
+    /// FAILING to move it is a stale answer with no way to notice, so an impl that cannot promise
+    /// the first should answer `None`.
+    fn pane_agents_token(&self) -> Option<u64> {
+        None
+    }
+
     /// Pane `id`'s live mouse-tracking protocol level (None / Click / ButtonEvent / AnyEvent, DECSET
     /// 1000 / 1002 / 1003) — the ONE mouse-report authority fact a display client reads to decide
     /// whether to CAPTURE the pointer AND, from the level, which edges to forward (press/release,
