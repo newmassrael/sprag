@@ -111,6 +111,36 @@
 //!   eight panes. A bounded constant against an unbounded term, and the eight-pane rows are
 //!   indistinguishable before and after, which is what a crossover there predicts.
 //!
+//! ## What the SWEEP rows measured (R260), and the paragraph they corrected
+//!
+//! Everything above is paid when a client asks. The settle waker's sweep is paid whether or not
+//! anyone asks — one pass every five seconds for the life of the daemon — and it had never been
+//! measured through four slices and three rounds that each recorded it as owed. Five runs, minima,
+//! same box and profile:
+//!
+//! * **One sweep over a quiet workspace is 1.96-2.33 us at one pane, 2.50-2.95 us at eight, and
+//!   7.01-8.38 us at sixty-four**, composed from its terms rather than measured whole. Against the
+//!   five-second period that is 0.00014% of one core at the top end. Nothing here asks to be
+//!   changed, which is a result and not a reason the measurement was unnecessary — the shape did.
+//! * **At one pane, 94% of a sweep is a config-file read that no version of the cost argument
+//!   named**, and at sixty-four it is still 26%. R254 put the manifest reload on this thread and
+//!   priced its SCHEDULING (no new thread, no timer, no wake), which is true and is a different
+//!   claim; the sweep's own cost paragraph priced the WORK, was written a slice earlier, and priced
+//!   the term that scales instead of the term that dominates. The saver it compared itself against
+//!   reads no file at all.
+//! * **The per-pane question is flat**: 0.039-0.043 us to ask whether a pane owes an evaluation,
+//!   -0.02 to +0.06 ns per remembered pane across a 64x span. Three hash lookups under one lock,
+//!   and the lock is taken once per PANE — which the old paragraph's "a pane-id read each" did not
+//!   say.
+//! * **The walk is metered, not inferred, and the count was exact in all five runs**: every
+//!   `deadline_visits_total` in the block is accounted for by `any_due`'s calls times its registry
+//!   size, with nothing left over. A duration can show that the per-pane question is cheap; only
+//!   the counter shows it walks NOTHING. Per visit it is about 1.0 ns, the same order as the
+//!   1.35-1.68 ns R255 inferred from a different row.
+//! * **The census is not the free by-product `retain_live`'s docs call it** — 2.9x to 3.0x the
+//!   prune it exists to serve. Free in the sense meant (it needs no walk of its own), not in the
+//!   sense the word carries.
+//!
 //! ## What is deliberately NOT here
 //!
 //! Hardware counters. Retired instructions would be near-deterministic and gate-able, but this box
@@ -137,6 +167,7 @@
 // are perfectly correct. The same allow sits at the root of the crate's other two binaries.
 #![allow(rustdoc::private_intra_doc_links)]
 
+use std::collections::HashSet;
 use std::hint::black_box;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -144,6 +175,8 @@ use std::time::{Duration, Instant};
 
 use sprag_detect::{DEFAULT_SETTLE, Hysteresis, Ruleset, Tracker, built_ins, detect};
 use sprag_grid::{project, projection_token};
+use sprag_host::agent::SWEEP_INTERVAL;
+use sprag_host::config::AgentManifests;
 use sprag_host::{
     AgentClock, CellFrame, ChannelRegistry, Host, HostState, PaneScrollFacts, handle_request,
 };
@@ -723,6 +756,136 @@ fn main() -> ExitCode {
         scaling.push((remembered, row));
     }
 
+    // THE SETTLE WAKER'S SWEEP (R260). Everything above is paid when a client asks; this is the one
+    // loop in the daemon that runs whether or not anything is happening, so what it costs is paid by
+    // every user for as long as the daemon lives. Its own doc priced it by ARGUMENT — a comparison
+    // against the durability saver, which takes the same locks at the same interval — and the terms
+    // below are what that argument enumerated, plus the ones it did not.
+    //
+    // Measured through `AgentClock::with`, because the lock is not incidental here: the sweep takes
+    // it once per PANE rather than once per pass, so a per-pane row that measured the bare registry
+    // method would be measuring something the daemon never calls.
+    //
+    // NOT measured, and enumerated rather than left as an absence: the registry and workspace LOCKS
+    // the walk takes, and the session-name String cloned once per window to build the pool list.
+    // The locks are excluded because an instrument with one thread measures them uncontended, and
+    // uncontended is not what they cost — the difference IS the contention, and this tool cannot
+    // produce it. They are also the terms the durability saver genuinely shares at the same
+    // interval, so they are the half of the original argument that was right. The String is
+    // excluded because it is per WINDOW, and a workspace has one or a few.
+    let census: Vec<HashSet<PaneId>> = REGISTRY_SIZES
+        .iter()
+        .map(|&remembered| (0..remembered).map(PaneId).collect())
+        .collect();
+    let mut per_pane: Vec<(u64, Sample)> = Vec::with_capacity(REGISTRY_SIZES.len());
+    let mut per_park: Vec<(u64, Sample)> = Vec::with_capacity(REGISTRY_SIZES.len());
+    let mut per_prune: Vec<(u64, Sample)> = Vec::with_capacity(REGISTRY_SIZES.len());
+    let mut per_census: Vec<(u64, Sample)> = Vec::with_capacity(REGISTRY_SIZES.len());
+    let park_before = sprag_host::agent::work();
+    for ((&remembered, clock), live) in REGISTRY_SIZES.iter().zip(&clocks).zip(&census) {
+        // ONCE PER PANE PER SWEEP: the question that decides whether the screen behind this pane is
+        // read at all. Asked with `sweep` true and of a settled pane under unchanged rules, which is
+        // the answer every pane in a quiet workspace gives — `false`, and the evaluation never runs.
+        per_pane.push((
+            remembered,
+            paired(
+                &format!("sweep: owes_evaluation, {remembered} kept"),
+                &mut controls,
+                None,
+                || {
+                    black_box(clock.with(|state| {
+                        state.owes_evaluation(black_box(PaneId(0)), settled_at, true)
+                    }));
+                },
+            ),
+        ));
+        // TWICE PER WAKE: once inside `park_until_due` to choose how long to sleep, and once after
+        // waking to decide whether anything is actually due. Both walk every tracker, and both have
+        // to — the sleep can be cut short by a candidate appearing with a nearer deadline, so the
+        // answer from before the park cannot be reused after it.
+        per_park.push((
+            remembered,
+            paired(
+                &format!("sweep: any_due, {remembered} kept"),
+                &mut controls,
+                None,
+                || {
+                    black_box(clock.with(|state| state.any_due(settled_at)));
+                },
+            ),
+        ));
+        // ONCE PER SWEEP: forget the panes that are gone. Measured against a FULL census, so nothing
+        // is removed — the steady state, and the only one that recurs. A retain that actually drops
+        // entries happens once per pane close.
+        per_prune.push((
+            remembered,
+            paired(
+                &format!("sweep: retain_live, {remembered} kept"),
+                &mut controls,
+                None,
+                || {
+                    clock.with(|state| state.retain_live(black_box(live)));
+                },
+            ),
+        ));
+        // ONCE PER SWEEP, built one insert at a time as the walk visits each pane. It is the argument
+        // for `retain_live` being cheap — a daemon-wide census is a by-product of a walk already
+        // happening — and a by-product is not free.
+        per_census.push((
+            remembered,
+            paired(
+                &format!("sweep: census build, {remembered} panes"),
+                &mut controls,
+                None,
+                || {
+                    let mut live: HashSet<PaneId> = HashSet::new();
+                    for id in 0..remembered {
+                        live.insert(PaneId(id));
+                    }
+                    black_box(live);
+                },
+            ),
+        ));
+    }
+    let park_after = sprag_host::agent::work();
+
+    // ONCE PER SWEEP, AND IN NO VERSION OF THE COST ARGUMENT: R254 put the user's manifest reload on
+    // this thread, correctly — it needs a wake and this is the wake that exists. What that settled
+    // was the SCHEDULING. The sweep's own cost paragraph still enumerated a walk and some locks, and
+    // the durability saver it compares itself against reads no file at all: it WRITES when the shape
+    // changed and is silent otherwise. So this is the one recurring term with no counterpart in the
+    // thing the marginal-cost argument was measured against.
+    //
+    // Both operating points, because they are different syscalls and most users are the second: a
+    // file that exists and is unchanged, and a config path with no file behind it.
+    let manifest_path = std::env::temp_dir().join("sprag-latency-manifests.toml");
+    std::fs::write(
+        &manifest_path,
+        "[[agent]]\nname = \"claude\"\ndisable = [\"idle-glyph\"]\n",
+    )
+    .expect("a manifest fixture is writable");
+    let mut present = AgentManifests::at(Some(&manifest_path));
+    let refresh_present = paired(
+        "sweep: manifests refresh (file)",
+        &mut controls,
+        None,
+        || {
+            black_box(present.refresh());
+        },
+    );
+    let missing_path = std::env::temp_dir().join("sprag-latency-no-such-manifests.toml");
+    let _ = std::fs::remove_file(&missing_path);
+    let mut absent = AgentManifests::at(Some(&missing_path));
+    let refresh_absent = paired(
+        "sweep: manifests refresh (no file)",
+        &mut controls,
+        None,
+        || {
+            black_box(absent.refresh());
+        },
+    );
+    let _ = std::fs::remove_file(&manifest_path);
+
     // The request path, served in-process exactly as the transport serves it.
     let state = live_host();
     let revision = paired(
@@ -1011,6 +1174,112 @@ fn main() -> ExitCode {
          pane's tracker can have changed, so only its deadline can have moved the minimum), and\n  \
          this row exists now to say the walk stays gone. `tests/agent_cost.rs` is the half that\n  \
          goes red; a ratio climbing back toward 4x here is the same news arriving as a number."
+    );
+
+    println!(
+        "\nMEASURED — the settle waker's SWEEP, the cost nobody asks for: one pass every five\n\
+         seconds, for the life of the daemon, over a workspace where nothing is happening."
+    );
+    // What one sweep costs, composed from the terms rather than measured whole: the per-pane
+    // question once per pane, the whole-registry read TWICE (once inside the park to choose a
+    // sleep, once after it to decide whether anything is due), the prune once, the census once,
+    // and the manifest read once. The locks the walk takes are excluded, and why is said above.
+    let sweep_pass = |i: usize| {
+        per_pane[i].1.min * u32::try_from(per_pane[i].0).expect("a small count")
+            + per_park[i].1.min * 2
+            + per_prune[i].1.min
+            + per_census[i].1.min
+            + refresh_present.min
+    };
+    for (i, &remembered) in REGISTRY_SIZES.iter().enumerate() {
+        let pane = if remembered == 1 { "pane" } else { "panes" };
+        budget(&format!("one sweep, {remembered} {pane}"), sweep_pass(i));
+    }
+    println!(
+        "  per pane, per sweep: {:.3} us to ask whether this one owes an evaluation ({} kept) —\n  \
+         and the answer in a quiet workspace is no, so the screen read behind it never happens.\n  \
+         {:+.2} ns per remembered pane across a {}x span, which is the flat this row wants: the\n  \
+         question is three hash lookups under one lock and none of them walks anything.",
+        micros(per_pane[0].1.min),
+        per_pane[0].0,
+        (per_pane[2].1.min.as_secs_f64() - per_pane[0].1.min.as_secs_f64())
+            / (per_pane[2].0 - per_pane[0].0) as f64
+            * 1e9,
+        per_pane[2].0 / per_pane[0].0.max(1),
+    );
+    println!(
+        "  per WAKE, twice: `any_due` at {:.3} us over {} panes against {:.3} us over {} — {:.2}x\n  \
+         for {}x the registry, which is the WALK it is supposed to be. `park_until_due` performs\n  \
+         the same read to choose its sleep, and the answer cannot be carried across the park\n  \
+         because a candidate appearing is exactly what cuts the sleep short.",
+        micros(per_park[2].1.min),
+        per_park[2].0,
+        micros(per_park[0].1.min),
+        per_park[0].0,
+        per_park[2].1.min.as_secs_f64() / per_park[0].1.min.as_secs_f64(),
+        per_park[2].0 / per_park[0].0.max(1),
+    );
+    // The rows above are DURATIONS and this box's durations move 20-30% between runs. The claim
+    // underneath them — that `any_due` walks the whole registry and the per-pane question walks
+    // nothing — is a COUNT, and a count is exact. So it is checked rather than illustrated: every
+    // visit inside this window has to be accounted for by an `any_due` row's calls times its
+    // registry size, with nothing left over for `owes_evaluation`, `retain_live` or the census.
+    let visits = park_after.deadline_visits_total - park_before.deadline_visits_total;
+    let expected: u64 = per_park
+        .iter()
+        .map(|(remembered, row)| calls(row) * remembered)
+        .sum();
+    println!(
+        "  the walk is METERED, not inferred: {visits} tracker visits over this whole block\n  \
+         against {expected} predicted by `any_due` alone ({}) — so the per-pane question, the\n  \
+         prune and the census contributed NONE, which is the half a duration cannot show. Read\n  \
+         from `sprag_host::agent::work`, the counter `tests/agent_cost.rs` gates the pane list\n  \
+         with.",
+        if visits == expected {
+            "exact"
+        } else {
+            "MISMATCH — something else is scanning"
+        },
+    );
+    println!(
+        "  and the CENSUS is not the free by-product `retain_live`'s docs call it: building the\n  \
+         daemon-wide live set costs {:.3} us at {} panes against {:.3} us for the prune it\n  \
+         exists to serve — {:.1}x the operation, and the largest single term in a sweep over a\n  \
+         big workspace. Free in the sense that matters (it needs no walk of its own) and not in\n  \
+         the sense the word suggests.",
+        micros(per_census[2].1.min),
+        per_census[2].0,
+        micros(per_prune[2].1.min),
+        per_census[2].1.min.as_secs_f64() / per_prune[2].1.min.as_secs_f64(),
+    );
+    println!(
+        "  THE TERM THE COST ARGUMENT NEVER HAD: the manifest re-read, {:.3} us with a file and\n  \
+         {:.3} us with none — the same as asking {:.0} panes whether they owe an evaluation, on a\n  \
+         daemon that may have three. R254 put it on this thread and priced the SCHEDULING (no new\n  \
+         thread, no new timer, no new wake), which is true and is a different claim; the sweep's\n  \
+         own cost paragraph priced the WORK and was written a slice earlier. The durability saver\n  \
+         it compares itself against reads no file at all — it writes when the shape moved and is\n  \
+         otherwise silent — so this is the one recurring term with no counterpart in the thing the\n  \
+         marginal-cost comparison was made against.",
+        micros(refresh_present.min),
+        micros(refresh_absent.min),
+        refresh_present.min.as_secs_f64() / per_pane[0].1.min.as_secs_f64(),
+    );
+    println!(
+        "  SO, AND THE SHAPE IS THE POINT: at {} pane the sweep is {:.2} us and the manifest read\n  \
+         is {:.0}% of it; at {} it is {:.2} us and the read is {:.0}%. The term the argument\n  \
+         enumerated (a walk over the panes) is the one that scales, and it is not what a sweep\n  \
+         costs on the workspaces people actually have — a daemon with three panes spends almost\n  \
+         its entire sweep reading a config file. Against the five-second period even the big case\n  \
+         is {:.5}% of one core, so nothing here asks to be changed; what asked to be changed was\n  \
+         a paragraph that named the small term and omitted the large one.",
+        per_pane[0].0,
+        micros(sweep_pass(0)),
+        refresh_present.min.as_secs_f64() / sweep_pass(0).as_secs_f64() * 100.0,
+        per_pane[2].0,
+        micros(sweep_pass(2)),
+        refresh_present.min.as_secs_f64() / sweep_pass(2).as_secs_f64() * 100.0,
+        sweep_pass(2).as_secs_f64() / SWEEP_INTERVAL.as_secs_f64() * 100.0,
     );
 
     println!(
