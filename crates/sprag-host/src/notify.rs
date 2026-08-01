@@ -42,6 +42,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use pinion_core::SceneRevision;
 use pinion_rpc::WaiterRegistry;
 
+use crate::events::SessionJournal;
+
 /// One session's change-notification channel: the scene-version token its changes advance, and the
 /// parked `scene/waitFor` replies waiting on it. The token's observer is the ONLY thing that fires
 /// those replies, and it is installed when the channel is minted — so no announce site has to
@@ -49,6 +51,11 @@ use pinion_rpc::WaiterRegistry;
 struct SessionChannel {
     revision: Arc<SceneRevision>,
     waiters: Arc<WaiterRegistry>,
+    /// What has CHANGED in this session, keyed by the very token above — the payload half of a
+    /// wake. It lives here, beside the revision, because the revision is its cursor vocabulary: a
+    /// journal kept anywhere else would be keyed by a number this map owns, which is the fork
+    /// [`crate::events`] refuses.
+    journal: Arc<Mutex<SessionJournal>>,
 }
 
 impl SessionChannel {
@@ -69,7 +76,11 @@ impl SessionChannel {
             "a session channel requires a fresh SceneRevision: its wake observer must install \
              (an already-observed revision would leave scene/waitFor parked forever)",
         );
-        Self { revision, waiters }
+        Self {
+            revision,
+            waiters,
+            journal: Arc::new(Mutex::new(SessionJournal::new())),
+        }
     }
 }
 
@@ -106,6 +117,27 @@ impl ChannelRegistry {
     #[must_use]
     pub fn waiters(&self, session: &str) -> Arc<WaiterRegistry> {
         Arc::clone(&self.entry(session).waiters)
+    }
+
+    /// `session`'s change journal — the payload a wake on this channel is about.
+    #[must_use]
+    pub fn journal(&self, session: &str) -> Arc<Mutex<SessionJournal>> {
+        Arc::clone(&self.entry(session).journal)
+    }
+
+    /// Record what moved in `session` since the last observation, at the revision it is now at.
+    ///
+    /// Reads the revision through this same channel rather than taking it as an argument: the
+    /// number a record is keyed by and the number a parked waiter is released with must be the one
+    /// token, and a caller free to pass a different one is a caller who eventually will.
+    pub fn observe(&self, registry: &sprag_terminal::SessionRegistry, session: &str) {
+        let entry = self.entry(session);
+        let revision = entry.revision.current();
+        entry
+            .journal
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .observe(registry, session, revision);
     }
 
     /// Announce a change in `session`, answering the revision it advanced to.
@@ -159,6 +191,7 @@ impl ChannelRegistry {
         SessionChannel {
             revision: Arc::clone(&channel.revision),
             waiters: Arc::clone(&channel.waiters),
+            journal: Arc::clone(&channel.journal),
         }
     }
 

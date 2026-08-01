@@ -923,7 +923,20 @@ fn dispatch_one(state: &HostState, frame: RpcFrame) {
                 ControlFlow::Break(()) => {}
                 // Not an async waitFor: dispatch the ALREADY-parsed request (no re-parse).
                 ControlFlow::Continue(reply) => {
-                    if let Some(response) = handle_scoped(state, &scope, parsed) {
+                    let response = handle_scoped(state, &scope, parsed);
+                    // THE derive site. Every mutating wire method passes through this one arm, so a
+                    // method added later records what it changed without a line of its own — the
+                    // structural property `notify`'s wake already has, extended to the wake's
+                    // payload. Run BEFORE the reply, so a caller that reads the journal the instant
+                    // its own call returns is never told its change has not happened yet.
+                    //
+                    // pinion has already bumped the scoped revision by now (it bumps after a
+                    // mutating handler returns `Ok`, inside its own dispatcher), so the records land
+                    // at the number a client woken by that bump will read with.
+                    state
+                        .channels()
+                        .observe(&lock(state.registry()), scope.session());
+                    if let Some(response) = response {
                         reply.send(response);
                     }
                 }
@@ -2132,6 +2145,91 @@ mod tests {
                 request.to_owned(),
                 recording_reply(sink),
             ),
+        );
+    }
+
+    /// One `scene/invoke` through the real per-frame dispatch body, discarding the reply.
+    fn invoke_recording(state: &HostState, action: &str, args: serde_json::Value) {
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "scene/invoke",
+            "params": { "path": crate::wire::mux_action_path(action), "args": args },
+        });
+        dispatch_recording(state, &request.to_string(), &sink);
+    }
+
+    /// Everything `BOOT`'s journal has recorded above `cursor`.
+    fn journal_since(state: &HostState, cursor: u64) -> Vec<crate::events::Event> {
+        state
+            .channels()
+            .journal(BOOT)
+            .lock()
+            .expect("the journal")
+            .since(cursor)
+            .events
+    }
+
+    /// **THE claim of the derive site.** `spawn` does not mention this log, this module, or an
+    /// event of any kind — and a pane appearing is still reported.
+    ///
+    /// That is the whole reason the record is DERIVED at the one arm every mutating method passes
+    /// through rather than EMITTED by each handler. An emitting design is a rule the next method
+    /// added has to remember, and a forgotten one is a client that never learns, with no error
+    /// anywhere to say so — the failure `notify`'s wake was shaped to make impossible, extended
+    /// here to the wake's payload.
+    #[test]
+    fn a_spawned_pane_is_reported_without_the_action_emitting_anything() {
+        let state = host_with("sleep 30", 80, 24);
+        // The boot observation: a session's FIRST shape has no predecessor, so it records nothing.
+        state.channels().observe(&lock(state.registry()), BOOT);
+        let baseline = state.revision(BOOT).current();
+        assert!(
+            journal_since(&state, 0).is_empty(),
+            "arriving first is not a change — the initial shape records nothing",
+        );
+
+        invoke_recording(&state, crate::wire::SPAWN_ACTION, serde_json::json!({}));
+
+        let events = journal_since(&state, baseline);
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, crate::events::Event::PaneCreated(_))),
+            "the spawn reached the journal without a line of its own: {events:?}",
+        );
+    }
+
+    /// The other half of the same claim, and the one that keeps the log affordable: a keystroke is
+    /// a `scene/invoke` too, so the derive site runs at TYPING rate. It must record nothing.
+    ///
+    /// A shape that walked every pane here would pay an N-lock walk per key. The gate is each
+    /// window's `layout_revision`, and this is what holds it to that: input moves no arrangement,
+    /// so no pane list is re-read and no record is written.
+    #[test]
+    fn typing_into_a_pane_records_nothing() {
+        let state = host_with("sleep 30", 80, 24);
+        state.channels().observe(&lock(state.registry()), BOOT);
+        let baseline = state.revision(BOOT).current();
+
+        for _ in 0..8 {
+            let sink = Arc::new(Mutex::new(Vec::new()));
+            let request = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "scene/invoke",
+                "params": {
+                    "path": crate::wire::pane_input_path(0, crate::wire::KEY_ACTION),
+                    "args": { "key": "a" },
+                },
+            });
+            dispatch_recording(&state, &request.to_string(), &sink);
+        }
+
+        assert!(
+            journal_since(&state, baseline).is_empty(),
+            "input is not a structural change, and the derive site must not invent one",
         );
     }
 
