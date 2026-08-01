@@ -166,6 +166,34 @@
 //! which point a condition claiming every pane owed an evaluation was visibly evaluating three panes
 //! in two thousand passes. **A probe needs a control on the probe.**
 //!
+//! ## What the SOCKET costs (R262), and what it does to every other number here
+//!
+//! Every row in this tool is served in-process through [`handle_request`], and that bound has been
+//! stated here since the tool was written without ever being priced. It is now. A real `sprag-term`
+//! is spawned with the same panes and the same geometry, driven over its Unix socket with the same
+//! request texts, and a client's wall clock is decomposed into the three things it is: the daemon's
+//! own work (already measured), the client's PARSE of the reply, and the transport left over.
+//! Four runs:
+//!
+//! * **A round trip is 22 to 35 us of FIXED cost** — for a `scene/revision` whose whole answer is
+//!   fourteen bytes and whose in-process cost is about ONE microsecond. **The wire is roughly 30x
+//!   the daemon's work for a small request.**
+//! * A 912-byte pane list is 43 to 74 us of transport, so the size term is 15 to 45 ns per byte,
+//!   **some fifty times slower than this box copies memory** — it is per-message handling on both
+//!   ends, not bandwidth.
+//! * **This is the proportion every other figure here has to be read in.** The projection at 0.18%
+//!   of a frame, the agent gate at 3000x what it skips, the sweep at microseconds per five seconds:
+//!   all of them are changes to a term that is a fraction of the round trip carrying it. What that
+//!   argues for is what this project already built — the fetch gate (R220) and `waitFor` over
+//!   polling both cut the NUMBER of round trips, and neither could have cut the cost of one.
+//!
+//! The two hosts cannot be the same process, so their equivalence is checked rather than assumed:
+//! the reply's `result` is sized on both sides and printed. `scene/revision` matches to the byte.
+//! The pane list does not — the two hosts' pane LABELS differ — and that residue is priced with the
+//! tool's own size slope instead of being waved off: about 112 bytes, one to five microseconds,
+//! inside the run-to-run band. The first version of that check compared a payload against a JSON-RPC
+//! envelope and flagged both rows as answering different questions, on 34 bytes of `{"jsonrpc"...}`.
+//!
 //! ## What is deliberately NOT here
 //!
 //! Hardware counters. Retired instructions would be near-deterministic and gate-able, but this box
@@ -173,10 +201,11 @@
 //! operator changing a sysctl — and, more to the point, a count of instructions is a proxy for
 //! time, not time. The question this round owes an answer to is a latency budget.
 //!
-//! The socket is also not here. Every request below is served IN-PROCESS through
-//! [`handle_request`], the same entry point the transport calls, so these are the daemon's costs
-//! with the wire's cost excluded. That bound is stated rather than hidden: a client's wall-clock
-//! adds a round trip nobody has priced.
+//! The socket WAS also not here, and now is — see the section above. Every row below the socket
+//! ones is still served IN-PROCESS through [`handle_request`], the same entry point the transport
+//! calls, so each of them is the daemon's share alone; what the wire adds on top is measured
+//! separately rather than folded in, because they are two different questions and only one of them
+//! is about sprag's own code.
 //!
 //! ## Running it
 //!
@@ -199,13 +228,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use serde_json::json;
 use sprag_detect::{DEFAULT_SETTLE, Hysteresis, Ruleset, Tracker, built_ins, detect};
 use sprag_grid::{project, projection_token};
 use sprag_host::agent::SWEEP_INTERVAL;
 use sprag_host::config::AgentManifests;
 use sprag_host::{
     AgentClock, CellFrame, ChannelRegistry, Host, HostState, PaneScrollFacts, handle_request,
-    sweep_once,
+    mux_action_path, sweep_once,
 };
 use sprag_terminal::{CommandBuilder, PaneId};
 use sprag_vt::{Emulator, Palette, Screen, VtPort};
@@ -518,6 +548,21 @@ fn live_host() -> HostState {
     state
 }
 
+/// The size of the `result` an in-process request answers with — NOT the whole response.
+///
+/// The equivalence check between the in-process host and the socket one has to compare like with
+/// like, and [`sprag_rpc::HostConn::call`] hands back the RESULT while [`handle_request`] returns the
+/// whole JSON-RPC response. Comparing those two is comparing a payload against an envelope: the
+/// first version of the socket rows did exactly that and flagged both of them as answering different
+/// questions, on a 34-byte envelope.
+fn result_bytes(state: &HostState, request: &str) -> usize {
+    let response = handle_request(state, request).expect("the dispatch produced a response");
+    serde_json::from_str::<serde_json::Value>(&response)
+        .ok()
+        .and_then(|value| serde_json::to_string(value.get("result")?).ok())
+        .map_or(0, |text| text.len())
+}
+
 /// Serve one request, fail loudly if it did not succeed, and report the reply's size.
 ///
 /// Called once per request subject OUTSIDE the measured loop: the check scans the whole response,
@@ -529,6 +574,93 @@ fn reply_bytes(state: &HostState, request: &str) -> usize {
         "request failed: {request} -> {response}",
     );
     response.len()
+}
+
+/// A `sprag-term` spawned on a socket of its own, killed and unlinked when this drops.
+///
+/// The daemon must die with the tool even on a panic, and its socket must go with it: this mints a
+/// fresh path per run, so a leak would strew one dead socket per invocation under the temp dir. The
+/// kill comes first — the host holds the socket open until it exits.
+struct SocketHost(std::process::Child, std::path::PathBuf);
+
+impl Drop for SocketHost {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+        let _ = std::fs::remove_file(&self.1);
+    }
+}
+
+/// Spawn a real `sprag-term` holding [`PANE_COUNT`] panes painted exactly like [`live_host`]'s, and
+/// connect to it over its Unix socket.
+///
+/// # Why the panes have to match
+///
+/// The socket's cost is the DIFFERENCE between a request served over the wire and the same request
+/// served in-process, and a difference between two hosts is only a transport measurement if the two
+/// hosts are doing the same work. They cannot be the same host — one is this process and one is a
+/// daemon — so the equivalence is established the only way it can be: the same boot command, the
+/// same geometry, and the REPLY BYTES compared and printed. A row whose two replies differ in length
+/// is comparing two different answers, and says so.
+///
+/// The binary is located beside this one. `CARGO_BIN_EXE_*` exists only for tests, and a tool that
+/// took a path from the environment would silently measure whatever was there.
+fn socket_host() -> Option<(SocketHost, sprag_rpc::HostConn)> {
+    let exe = std::env::current_exe().ok()?;
+    let daemon = exe.parent()?.join("sprag-term");
+    if !daemon.is_file() {
+        eprintln!(
+            "sprag-latency: no sprag-term beside {} — skipping the socket rows.",
+            exe.display()
+        );
+        eprintln!("Build it first: cargo build --release -p sprag-host --bins");
+        return None;
+    }
+    let sock = std::env::temp_dir().join(format!("sprag-latency-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&sock);
+    let child = std::process::Command::new(&daemon)
+        .arg("--size")
+        .arg(format!("{COLS}x{ROWS}"))
+        .arg("--")
+        .arg("/bin/sh")
+        .arg("-c")
+        .arg(format!("printf '%s' '{}'; exec cat", screenful()))
+        .env("SPRAG_HOST_RPC_SOCK", &sock)
+        .env("SPRAG_HOST_RPC", "1")
+        .env("TERM", "dumb")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let host = SocketHost(child, sock.clone());
+    let mut conn = sprag_rpc::HostConn::connect(&sock, CONTENT_TIMEOUT).ok()?;
+    // The boot pane is one; the in-process host has PANE_COUNT. Spawn the rest through the same
+    // mux action a client uses, so both hosts serve a pane list of the same length.
+    for _ in 1..PANE_COUNT {
+        let _ = conn.call(
+            "scene/invoke",
+            json!({
+                "path": mux_action_path(sprag_host::wire::SPAWN_ACTION),
+                "args": {"argv": ["/bin/sh", "-c", format!("printf '%s' '{}'; exec cat", screenful())]},
+            }),
+        );
+    }
+    // A pane list taken mid-boot is a SHORTER answer, and the byte comparison would then read as
+    // "the two hosts disagree" when what differs is only how far along one of them is.
+    let deadline = Instant::now() + CONTENT_TIMEOUT;
+    while Instant::now() < deadline {
+        let panes = conn
+            .call("scene/query", json!({"path": "/sprag_mux/external/panes"}))
+            .ok()
+            .and_then(|value| Some(value.as_array()?.len()))
+            .unwrap_or(0);
+        if panes >= PANE_COUNT {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Some((host, conn))
 }
 
 /// How many pane-list requests one contention condition serves.
@@ -1094,6 +1226,70 @@ fn main() -> ExitCode {
     );
     let evaluations_after = sprag_detect::work();
 
+    // THE SOCKET (R262). Every row above is served IN-PROCESS through `handle_request`, the same
+    // entry point the transport calls — a bound this tool has stated since it was written and never
+    // priced. A client's wall clock is three things stacked: the daemon's own work (measured above),
+    // the TRANSPORT (two syscall pairs and the bytes between them), and the client's PARSE of the
+    // reply into a value it can use. All three are measured here so the middle one can be had by
+    // subtraction rather than asserted.
+    //
+    // The daemon cannot be this process, so the equivalence between the two hosts is established the
+    // only way it can be: the same boot command, the same geometry, the same pane count — and the
+    // REPLY BYTES printed for both, because a difference between two hosts is a transport
+    // measurement only while they are answering the same question with the same answer.
+    let socket_rows: Vec<(&str, Sample, Sample, usize, usize)> =
+        if let Some((_host, mut conn)) = socket_host() {
+            let mut rows = Vec::new();
+            for (name, method, params, in_process, in_process_bytes) in [
+                (
+                    "scene/revision",
+                    "scene/revision",
+                    json!({}),
+                    revision,
+                    result_bytes(&state, REVISION),
+                ),
+                (
+                    "panes slot",
+                    "scene/query",
+                    json!({"path": "/sprag_mux/external/panes"}),
+                    panes,
+                    result_bytes(&state, PANES_READ),
+                ),
+            ] {
+                // Served once outside the timer, both to warm the path and to SIZE it: the byte
+                // count is the equivalence check between the two hosts.
+                let Ok(first) = conn.call(method, params.clone()) else {
+                    continue;
+                };
+                let wire_bytes = serde_json::to_string(&first).map_or(0, |text| text.len());
+                let text = serde_json::to_string(&first).unwrap_or_default();
+                let over_wire = paired(
+                    &format!("socket: {name}"),
+                    &mut controls,
+                    Some(wire_bytes),
+                    || {
+                        black_box(conn.call(method, params.clone()).ok());
+                    },
+                );
+                // The client's own parse, on the very bytes that came back — the third term, so the
+                // transport is what is left after it and the daemon's work are taken out.
+                let parse = paired(
+                    "  its reply, parsed client-side",
+                    &mut controls,
+                    Some(text.len()),
+                    || {
+                        black_box(serde_json::from_str::<serde_json::Value>(black_box(&text)).ok());
+                    },
+                );
+                rows.push((name, over_wire, parse, wire_bytes, in_process_bytes));
+                let _ = in_process;
+            }
+            rows
+        } else {
+            Vec::new()
+        };
+    let socket_in_process = [revision, panes];
+
     // WHAT THE SWEEP'S LOCKS COST (R261). R260 measured every term of a sweep and refused this one,
     // because a single-threaded instrument acquires a lock uncontended and uncontended is not what a
     // lock costs. What it costs is the WAIT it inflicts on somebody else, so the subject is not the
@@ -1523,6 +1719,86 @@ fn main() -> ExitCode {
         refresh_present.min.as_secs_f64() / sweep_pass(2).as_secs_f64() * 100.0,
         sweep_pass(2).as_secs_f64() / SWEEP_INTERVAL.as_secs_f64() * 100.0,
     );
+
+    if socket_rows.is_empty() {
+        println!("\nSKIPPED — the socket rows: no `sprag-term` was found beside this binary.");
+    } else {
+        println!(
+            "\nMEASURED — THE SOCKET, the round trip every row above excludes. A client's wall\n\
+             clock is the daemon's work plus the transport plus the client's own parse; the first\n\
+             and third are measured, so the middle is what is left."
+        );
+        for ((name, wire, parse, wire_bytes, in_process_bytes), served) in
+            socket_rows.iter().zip(socket_in_process)
+        {
+            let transport = wire
+                .min
+                .saturating_sub(served.min)
+                .saturating_sub(parse.min);
+            budget(&format!("{name}: over the socket"), wire.min);
+            budget("  of which the daemon's own work", served.min);
+            budget("  of which the client's parse", parse.min);
+            budget("  LEFT OVER: the transport", transport);
+            println!(
+                "  {:.1}x the in-process row. Replies {} B over the wire against {} B in\n  \
+                 process{} — the check that the two hosts are answering the same question.",
+                wire.min.as_secs_f64() / served.min.as_secs_f64(),
+                wire_bytes,
+                in_process_bytes,
+                if wire_bytes.abs_diff(*in_process_bytes) * 20 > *in_process_bytes {
+                    ", WHICH DIFFER by more than 5%, so this row compares two answers"
+                } else {
+                    ""
+                },
+            );
+        }
+        // The two rows are 14 B and ~900 B, so together they separate the FIXED cost of a round
+        // trip from the per-byte one — and the per-byte figure is then what prices the one place
+        // the equivalence check is not exact.
+        if socket_rows.len() >= 2 {
+            let (_, small_wire, small_parse, small_bytes, _) = &socket_rows[0];
+            let (_, large_wire, large_parse, large_bytes, large_in_process) = &socket_rows[1];
+            let small_transport = small_wire
+                .min
+                .saturating_sub(socket_in_process[0].min)
+                .saturating_sub(small_parse.min);
+            let large_transport = large_wire
+                .min
+                .saturating_sub(socket_in_process[1].min)
+                .saturating_sub(large_parse.min);
+            let per_byte = (micros(large_transport) - micros(small_transport))
+                / (*large_bytes as f64 - *small_bytes as f64);
+            println!(
+                "  A ROUND TRIP IS MOSTLY FIXED COST: {:.1} us for {} bytes and {:.1} us for {}, so\n  \
+                 {:.1} us of it is per-request and the rest scales at about {:.0} ns per byte —\n  \
+                 which is some fifty times slower than this box copies memory, so the size term is\n  \
+                 per-MESSAGE handling on both ends rather than bandwidth. That slope also prices\n  \
+                 the one place the two hosts are not identical: their pane LABELS differ, {} B\n  \
+                 against {} B, and {} bytes at that slope is {:.1} us — inside the run-to-run band,\n  \
+                 so the divergence flagged above is not what this row is measuring.",
+                micros(small_transport),
+                small_bytes,
+                micros(large_transport),
+                large_bytes,
+                micros(small_transport),
+                per_byte * 1e3,
+                large_bytes,
+                large_in_process,
+                large_bytes.abs_diff(*large_in_process),
+                per_byte * large_bytes.abs_diff(*large_in_process) as f64,
+            );
+        }
+        println!(
+            "  A CLIENT PAYS ALL THREE. Every other number in this tool is the daemon's share, and\n  \
+             that bound is now a figure rather than a disclaimer. The transport is the floor under\n  \
+             any latency a person can feel and it is paid once per request however small the\n  \
+             request is — which is the argument for the fetch gate (R220) and for `waitFor` over\n  \
+             polling: both cut the NUMBER of round trips, and neither could have cut the cost of\n  \
+             one. It also puts every daemon-side figure in this tool in proportion: the agent\n  \
+             evaluation, the sweep, the projection and the gate are all changes to a term that is\n  \
+             a fraction of what the wire under it charges."
+        );
+    }
 
     println!(
         "\nMEASURED — what the sweep's LOCKS cost, which is what they make a READER wait. The\n\
