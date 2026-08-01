@@ -108,7 +108,7 @@ use sprag_input::{Modifiers, MouseEventKind, MouseInput};
 use sprag_terminal::{PaneId, SplitId};
 use sprag_tui::{
     Divider, MouseEdges, PaintCache, PanePaint, Rect, Tiling, WireKey, agent_window_title,
-    cursor_changes, divider_changes, session_agents, tile, title_change, wire_key, with_ratio,
+    cursor_changes, divider_changes, tile, title_change, wire_key, with_ratio,
 };
 use sprag_vt::MouseProtocol;
 use termwiz::caps::{Capabilities, ProbeHints};
@@ -569,7 +569,7 @@ fn retitle(
     host: &WireHost,
     held: &mut Option<String>,
 ) {
-    let agents = session_agents(host);
+    let agents = host.pane_agents();
     let wanted = agent_window_title(&host.current_session(), &agents);
     if let Some(change) = title_change(held, wanted) {
         screen.add_change(change);

@@ -1,7 +1,7 @@
 //! `GridBuffer` -> a real terminal, as [`Change`]s.
 //!
 //! This is the terminal frontend's UNIT half: the pure function that turns the cells a
-//! [`HostClient`] serves into the escape-sequence vocabulary a terminal
+//! [`HostClient`](sprag_host::HostClient) serves into the escape-sequence vocabulary a terminal
 //! understands. It is the character-cell peer of `sprag-gui`'s pixel work, and it lives here for
 //! the reason `sprag_client`'s crate docs give: the shared client hands out `GridBuffer`s and
 //! knows nothing about the unit either frontend measures them in.
@@ -42,7 +42,7 @@ use pinion_core::{
     TermCell, TermColor, UnderlineStyle as PinUnderlineStyle,
 };
 use sprag_grid::ProjectionToken;
-use sprag_host::{HostClient, PaneAgent};
+use sprag_host::PaneAgent;
 use sprag_terminal::PaneId;
 use sprag_terminal::tiling::{Divider, Rect};
 use termwiz::cell::{Blink, CellAttributes, Intensity, Underline, unicode_column_width};
@@ -262,53 +262,6 @@ pub fn divider_changes(divider: &Divider) -> Vec<Change> {
 /// A pane the wire says nothing about contributes nothing (D8's additive rule at this surface), and a
 /// workspace of shells therefore produces exactly the baseline — which is what makes the digest's
 /// appearance itself meaningful.
-/// Every pane the host is reporting an agent for, in host order — the walk behind
-/// [`agent_window_title`], run once per PAINT.
-///
-/// # Why this is a function rather than three lines at the call site
-///
-/// It was three lines in the binary's `retitle`, which made it unreachable: R262 registered this
-/// walk as the last unmeasured path in the project and could not price it from `sprag-latency`,
-/// because that tool lives in `sprag-host` and a live [`HostClient`] implementation is on the far
-/// side of that dependency edge. `examples/title-cost.rs` measures THIS function against a real
-/// `WireHost`, which it can only do because the function exists.
-///
-/// # What it costs, and why the shape is worth knowing
-///
-/// The equality skip that makes the title cheap is at the OSC ([`title_change`]) and not here, so
-/// this runs on every repaint — which for this client is every keystroke (R246) — and its answer is
-/// then usually discarded. Against `WireHost` that is one cache lock for the id list and then ONE
-/// MORE PER PANE, each of which LINEARLY SCANS the cache for its id: N+1 acquisitions and N^2
-/// comparisons, plus a clone of every agent pane's three strings.
-///
-/// Measured R262 (`examples/title-cost.rs`, release, against a real daemon). The walk, the title
-/// build and the discarded comparison together are **0.9 us over 62 panes that no manifest claims,
-/// and 15 to 17 us when every one of them is an agent** — a third of a percent of R246's ~5 ms
-/// release paint. Documented rather than restructured, and the two things the measurement
-/// corrected are worth keeping:
-///
-/// * **The empty branch understates it nineteenfold.** A workspace of shells clones nothing and
-///   leaves the title at its baseline, so a measurement taken there prices the plumbing.
-/// * **The quadratic walk is NOT the larger half.** On a populated workspace the digest STRING
-///   BUILD is comparable to or larger than the walk feeding it, so a fix aimed at the N^2 term —
-///   which is what reading this code suggests — would have been aimed at the smaller one.
-///
-/// # One premise of "documented, not fixed" has since expired
-///
-/// R263 rested that verdict on two things: the cost was small, AND 62 was the most panes a client
-/// could attach to at all — a ceiling this very measurement is what FOUND. R264 removed the
-/// ceiling (`sprag_terminal::MAX_LAYOUT_DEPTH`), so only the magnitude argument is left, and the
-/// magnitude is the term that GROWS: re-measured at 63 and 100 panes, the empty-branch walk goes
-/// 1.9 us to 3.8 us for 1.6x the panes, and the whole path 31.7 us to 35.6 us — still under 1% of
-/// a paint, and no longer bounded by anything but what a user does. Re-take it rather than requote
-/// it before concluding anything at a much larger count.
-pub fn session_agents(host: &impl HostClient) -> Vec<(PaneId, PaneAgent)> {
-    host.pane_ids()
-        .into_iter()
-        .filter_map(|id| host.pane_agent(id).map(|agent| (id, agent)))
-        .collect()
-}
-
 #[must_use]
 pub fn agent_window_title(session: &str, agents: &[(PaneId, PaneAgent)]) -> String {
     let baseline = format!("sprag: {session}");
@@ -614,7 +567,7 @@ pub fn cursor_changes(grid: &GridBuffer, area: Rect) -> Vec<Change> {
 /// much of it can have changed.
 ///
 /// The cells and the token are taken TOGETHER
-/// ([`HostClient::pane_cells_and_token`]) and travel
+/// ([`HostClient::pane_cells_and_token`](sprag_host::HostClient::pane_cells_and_token)) and travel
 /// together from there on, because a token that does not describe the buffer beside it is worse
 /// than no token at all — it licenses a skip of rows the client never received.
 pub struct PanePaint {

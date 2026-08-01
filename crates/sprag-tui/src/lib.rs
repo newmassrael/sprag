@@ -46,6 +46,6 @@ pub use key::{WireKey, wire_key};
 pub use mouse::MouseEdges;
 pub use paint::{
     PaintCache, PanePaint, agent_window_title, cell_attributes, cursor_changes, divider_changes,
-    pane_changes, session_agents, title_change,
+    pane_changes, title_change,
 };
 pub use sprag_terminal::{Divider, PaneRect, Rect, Tiling, tile, with_ratio};

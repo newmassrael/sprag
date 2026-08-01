@@ -834,6 +834,27 @@ pub trait HostClient {
         None
     }
 
+    /// EVERY pane an agent claims, with its verdict, in host order — the whole answer at once.
+    ///
+    /// **One call rather than N+1, and that is the whole reason it exists**, on the same terms as
+    /// [`pane_cells_and_token`](Self::pane_cells_and_token). A caller that read
+    /// [`pane_ids`](Self::pane_ids) and then [`pane_agent`](Self::pane_agent) per id would be
+    /// reading the MEMBERSHIP and the VERDICTS at different moments: for an impl that mirrors both
+    /// in a cache another thread replaces, a refresh landing mid-walk pairs one generation's pane
+    /// list with another's states, so a pane that went away is silently dropped from the answer and
+    /// one that arrived is never asked about. Answering under one lock is what makes the result
+    /// describe one moment.
+    ///
+    /// The default COMPOSES exactly that walk, and is correct only where the two reads cannot
+    /// disagree — an in-process impl reading one authority, or a stub. **An impl whose membership
+    /// and verdicts live in shared mutable state must override it**; `WireHost` does.
+    fn pane_agents(&self) -> Vec<(PaneId, PaneAgent)> {
+        self.pane_ids()
+            .into_iter()
+            .filter_map(|id| self.pane_agent(id).map(|agent| (id, agent)))
+            .collect()
+    }
+
     /// Pane `id`'s live mouse-tracking protocol level (None / Click / ButtonEvent / AnyEvent, DECSET
     /// 1000 / 1002 / 1003) — the ONE mouse-report authority fact a display client reads to decide
     /// whether to CAPTURE the pointer AND, from the level, which edges to forward (press/release,

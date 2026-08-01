@@ -69,6 +69,7 @@
 //! (and its membership) is the GUI's `SlotView`, on the UI thread only.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::io;
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
@@ -228,15 +229,69 @@ struct WirePane {
     dims: (u16, u16),
 }
 
-/// The wire client's pane data cache, in host order. Shared between the UI thread
-/// (reads / input / resize) and the poll thread (frame refresh) under one lock. Addressed
-/// by [`PaneId`] identity (a linear scan over the small pane set), NOT by display slot —
+/// The wire client's pane data cache: the panes in HOST ORDER, plus the index that makes
+/// [`PaneId`] an address rather than a search. Addressed by identity, NOT by display slot —
 /// this client speaks the host's language; the GUI's `SlotView` owns slot mapping.
-type Cache = Arc<Mutex<Vec<WirePane>>>;
+///
+/// # Why the index, and why the two halves cannot drift
+///
+/// The order is load-bearing (`pane_ids` is a membership list a client maps to its own
+/// slots), so this is a `Vec` with a side index rather than a map. It used to be the `Vec`
+/// alone, and its own doc justified that with "a linear scan over the small pane set" —
+/// a premise R264 removed when it lifted the 62-pane ceiling the wire used to impose. Every
+/// per-pane accessor paid that scan, and so did the POLL thread's own rebuild
+/// ([`merge_panes`], [`stale_panes`]), which is the worse half: that one runs on every scene
+/// revision, not merely on every paint.
+///
+/// Both fields are PRIVATE and the only way to build one is [`PaneCache::new`], which
+/// derives the index from the panes it is given. A cache whose index disagrees with its
+/// panes is therefore not a bug to test for — it is a value that cannot be constructed.
+struct PaneCache {
+    panes: Vec<WirePane>,
+    index: HashMap<PaneId, usize>,
+}
+
+impl PaneCache {
+    /// Adopt `panes` (already in host order) and derive the index from them.
+    fn new(panes: Vec<WirePane>) -> Self {
+        let index = panes
+            .iter()
+            .enumerate()
+            .map(|(at, pane)| (pane.id, at))
+            .collect();
+        Self { panes, index }
+    }
+
+    /// Pane `id`, or `None` if this cache does not hold it.
+    fn get(&self, id: PaneId) -> Option<&WirePane> {
+        self.index.get(&id).map(|at| &self.panes[*at])
+    }
+
+    /// Pane `id` for a write-back — the tracked-dimensions latch is the one mutation a
+    /// reader performs, and it never changes the SET, so the index stays true.
+    fn get_mut(&mut self, id: PaneId) -> Option<&mut WirePane> {
+        self.index.get(&id).map(|at| &mut self.panes[*at])
+    }
+
+    /// Every pane, in host order.
+    fn panes(&self) -> &[WirePane] {
+        &self.panes
+    }
+}
+
+impl Default for PaneCache {
+    fn default() -> Self {
+        Self::new(Vec::new())
+    }
+}
+
+/// The shared handle: one cache between the UI thread (reads / input / resize) and the poll
+/// thread (frame refresh), under one lock.
+type Cache = Arc<Mutex<PaneCache>>;
 
 /// Lock the shared pane cache, poison-tolerant — the ONE definition of the cache's lock
 /// discipline, shared by the UI thread ([`WireHost::lock_cache`]) and the poll thread.
-fn lock_cache(cache: &Mutex<Vec<WirePane>>) -> MutexGuard<'_, Vec<WirePane>> {
+fn lock_cache(cache: &Mutex<PaneCache>) -> MutexGuard<'_, PaneCache> {
     cache.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -973,7 +1028,7 @@ impl WireHost {
         // COMMIT: swap every mirror's CONTENTS (the `Arc`s themselves stay — shared with the paint
         // path and the poll thread), set the attached session, then start the poll. `merge_panes`
         // with an empty `existing` is the boot case (all newcomers, each taking its fetched frame).
-        *lock_cache(&self.cache) = merge_panes(&[], &seeds, &fetched);
+        *lock_cache(&self.cache) = merge_panes(&PaneCache::default(), &seeds, &fetched);
         *lock_layout(&self.layout) = Mirrored {
             window: current,
             layout: layout_snapshot,
@@ -1037,7 +1092,7 @@ impl WireHost {
 
     /// Lock the shared pane cache (poison-tolerant, matching the rest of the wire
     /// client's lock discipline). The ONE place the cache lock is taken on the UI thread.
-    fn lock_cache(&self) -> MutexGuard<'_, Vec<WirePane>> {
+    fn lock_cache(&self) -> MutexGuard<'_, PaneCache> {
         lock_cache(&self.cache)
     }
 
@@ -1046,8 +1101,7 @@ impl WireHost {
     /// contract graceful, matching the in-process [`Host`](sprag_host::Host).
     fn live_cells(&self, id: PaneId) -> GridBuffer {
         self.lock_cache()
-            .iter()
-            .find(|pane| pane.id == id)
+            .get(id)
             .map(|pane| pane.frame.cells.clone())
             .unwrap_or_else(|| GridBuffer::new(1, 1))
     }
@@ -1114,7 +1168,11 @@ impl HostClient for WireHost {
     /// very next wake (its first `cells` fetch usually succeeds), later only if that fetch
     /// keeps failing.
     fn pane_ids(&self) -> Vec<PaneId> {
-        self.lock_cache().iter().map(|pane| pane.id).collect()
+        self.lock_cache()
+            .panes()
+            .iter()
+            .map(|pane| pane.id)
+            .collect()
     }
 
     fn pane_cells(&self, id: PaneId, offset_lines: usize) -> GridBuffer {
@@ -1582,8 +1640,7 @@ impl HostClient for WireHost {
 
     fn pane_scroll_facts(&self, id: PaneId) -> PaneScrollFacts {
         self.lock_cache()
-            .iter()
-            .find(|pane| pane.id == id)
+            .get(id)
             .map(|pane| pane.frame.facts.clone())
             .unwrap_or(PaneScrollFacts {
                 scrollback_len: 0,
@@ -1593,8 +1650,7 @@ impl HostClient for WireHost {
 
     fn pane_grid_size(&self, id: PaneId) -> (u16, u16) {
         self.lock_cache()
-            .iter()
-            .find(|pane| pane.id == id)
+            .get(id)
             .map(|pane| pane.dims)
             .unwrap_or((1, 1))
     }
@@ -1608,7 +1664,7 @@ impl HostClient for WireHost {
         // latched). Addressed by IDENTITY: the write-back finds the pane by `id`, so a
         // freed/reused entry can never latch a resize onto a different pane (F8 dissolves).
         if self.request("scene/invoke", params, "resize").is_some()
-            && let Some(pane) = self.lock_cache().iter_mut().find(|pane| pane.id == id)
+            && let Some(pane) = self.lock_cache().get_mut(id)
         {
             pane.dims = (cols, rows);
         }
@@ -1771,8 +1827,7 @@ impl HostClient for WireHost {
 
     fn pane_command_label(&self, id: PaneId) -> String {
         self.lock_cache()
-            .iter()
-            .find(|pane| pane.id == id)
+            .get(id)
             .map(|pane| pane.label.clone())
             .unwrap_or_default()
     }
@@ -1782,8 +1837,7 @@ impl HostClient for WireHost {
     /// rewriting it each prompt.
     fn pane_title(&self, id: PaneId) -> Option<String> {
         self.lock_cache()
-            .iter()
-            .find(|pane| pane.id == id)
+            .get(id)
             .and_then(|pane| pane.title.clone())
     }
 
@@ -1791,8 +1845,7 @@ impl HostClient for WireHost {
     /// so the `seq` reflects the host's latest.
     fn pane_notification(&self, id: PaneId) -> Option<PaneNotification> {
         self.lock_cache()
-            .iter()
-            .find(|pane| pane.id == id)
+            .get(id)
             .and_then(|pane| pane.notification.clone())
     }
 
@@ -1807,18 +1860,49 @@ impl HostClient for WireHost {
     /// caused.
     fn pane_agent(&self, id: PaneId) -> Option<PaneAgent> {
         self.lock_cache()
-            .iter()
-            .find(|pane| pane.id == id)
+            .get(id)
             .and_then(|pane| pane.agent.clone())
+    }
+
+    /// One `lock_cache` and not N+1, which is the whole point — see the trait's
+    /// [`pane_agents`](HostClient::pane_agents) for what the composed walk gets wrong here.
+    ///
+    /// The composed default takes this lock once for the id list and again for each id, and the
+    /// POLL THREAD replaces this cache wholesale between any two of those acquisitions. So the
+    /// walk could report a pane the current cache no longer holds, and miss one it does. Reading
+    /// the membership and the verdicts off ONE guard is what makes the answer a single moment's.
+    ///
+    /// Measured R262/R263 and re-measured after this change (R265, `sprag-tui`'s
+    /// `examples/title-cost.rs`, release, against a real daemon). The walk runs on every repaint —
+    /// every KEYSTROKE for `sprag-tui` (R246) — because the equality skip is at the OSC and not
+    /// here, so what it costs is worth knowing:
+    ///
+    /// | panes | walk, no pane claimed | walk, every pane claimed |
+    /// |---|---|---|
+    /// | 63 | 1.943 us → **0.100 us** | 10.851 us → **8.427 us** |
+    /// | 100 | 3.794 us → **0.172 us** | 18.419 us → **14.200 us** |
+    ///
+    /// The two columns move by 20x and 1.3x for the same change, and the gap is the finding: the
+    /// quadratic scan is ALL of the empty branch and a minority of the populated one, which is
+    /// dominated by cloning each claimed pane's three `String`s. That clone is not a leftover to
+    /// remove — handing owned data out from behind a lock is what this seam costs, and the
+    /// alternative (running a caller's closure while holding the cache lock) is worse.
+    ///
+    /// What matters more than either number: the empty branch grew 1.95x for 1.59x the panes before
+    /// and grows 1.72x now. R264 removed the wire's 62-pane cap, so nothing bounds the count any
+    /// more — LINEAR is the property that makes the cost safe at a count nobody has measured.
+    fn pane_agents(&self) -> Vec<(PaneId, PaneAgent)> {
+        self.lock_cache()
+            .panes()
+            .iter()
+            .filter_map(|pane| pane.agent.clone().map(|agent| (pane.id, agent)))
+            .collect()
     }
 
     /// Served from the same poll-refreshed mirror as [`Self::pane_notification`], re-adopted each
     /// wake, so the bell count reflects the host's latest.
     fn pane_bell_seq(&self, id: PaneId) -> u64 {
-        self.lock_cache()
-            .iter()
-            .find(|pane| pane.id == id)
-            .map_or(0, |pane| pane.bell_seq)
+        self.lock_cache().get(id).map_or(0, |pane| pane.bell_seq)
     }
 
     /// Whether the child has exited, served from the same poll-refreshed mirror as
@@ -1828,10 +1912,7 @@ impl HostClient for WireHost {
     /// ONE-WAY, so the worst case is a just-exited pane still reading live for a poll interval —
     /// never a live pane declared dead.
     fn pane_is_dead(&self, id: PaneId) -> bool {
-        self.lock_cache()
-            .iter()
-            .find(|pane| pane.id == id)
-            .is_some_and(|pane| pane.dead)
+        self.lock_cache().get(id).is_some_and(|pane| pane.dead)
     }
 
     /// HOW the child ended, from the same mirror as [`Self::pane_is_dead`].
@@ -1841,8 +1922,7 @@ impl HostClient for WireHost {
     /// before it names its code — never a code attributed to a pane that is still running.
     fn pane_child_exit(&self, id: PaneId) -> Option<PaneExit> {
         self.lock_cache()
-            .iter()
-            .find(|pane| pane.id == id)
+            .get(id)
             .and_then(|pane| pane.child_exit.clone())
     }
 
@@ -1853,8 +1933,7 @@ impl HostClient for WireHost {
     /// mis-gate a single event. `pane_mouse_active` is the trait's derived `.is_active()`.
     fn pane_mouse_protocol(&self, id: PaneId) -> MouseProtocol {
         self.lock_cache()
-            .iter()
-            .find(|pane| pane.id == id)
+            .get(id)
             .map_or(MouseProtocol::None, |pane| pane.mouse_protocol)
     }
 
@@ -1864,8 +1943,7 @@ impl HostClient for WireHost {
     /// [`Self::pane_image_rgba`] (R1404 Stage 5 on-demand).
     fn pane_images(&self, id: PaneId) -> Vec<Image> {
         self.lock_cache()
-            .iter()
-            .find(|pane| pane.id == id)
+            .get(id)
             .map(|pane| pane.images.clone())
             .unwrap_or_default()
     }
@@ -1883,16 +1961,14 @@ impl HostClient for WireHost {
     /// `clipboard_osc` polls it each frame and fetches the payload only when it grows.
     fn pane_clipboard_write_seq(&self, id: PaneId) -> u64 {
         self.lock_cache()
-            .iter()
-            .find(|pane| pane.id == id)
+            .get(id)
             .map_or(0, |pane| pane.clipboard_write_seq)
     }
 
     /// The pending read query (selection + seq), served from the mirror (no round-trip).
     fn pane_clipboard_query(&self, id: PaneId) -> Option<PaneClipboardQuery> {
         self.lock_cache()
-            .iter()
-            .find(|pane| pane.id == id)
+            .get(id)
             .and_then(|pane| pane.clipboard_query)
     }
 
@@ -2406,10 +2482,10 @@ fn boot_panes(
 /// A pane the mirror does not hold answers the `1x1` placeholder every absent-id read here answers,
 /// with no token: nothing has been painted for it, so there is nothing a later frame could skip.
 fn cells_and_token(
-    cache: &[WirePane],
+    cache: &PaneCache,
     id: PaneId,
 ) -> (GridBuffer, Option<sprag_grid::ProjectionToken>) {
-    cache.iter().find(|pane| pane.id == id).map_or_else(
+    cache.get(id).map_or_else(
         || (GridBuffer::new(1, 1), None),
         |pane| (pane.frame.cells.clone(), pane.projection.clone()),
     )
@@ -2445,9 +2521,9 @@ fn fetch_frames(conn: &mut HostConn, ids: &[PaneId]) -> Vec<(PaneId, CellFrame)>
 /// steady-state, so they can never diverge (the R120 attach-race tolerance falls out of the
 /// shared drop-if-frameless rule; the dock topology projects from `SlotView`'s occupied
 /// slots, not a count, so a mid-boot close orphans nothing).
-fn build_cache(conn: &mut HostConn, seeds: Vec<PaneSeed>) -> Vec<WirePane> {
+fn build_cache(conn: &mut HostConn, seeds: Vec<PaneSeed>) -> PaneCache {
     let fetched = fetch_frames(conn, &pane_ids_of(&seeds));
-    merge_panes(&[], &seeds, &fetched)
+    merge_panes(&PaneCache::default(), &seeds, &fetched)
 }
 
 /// Every seed's id — the BOOT / re-attach case of the fetch set, where there is no cache to
@@ -2514,11 +2590,11 @@ fn refresh_to_set(conn: &mut HostConn, cache: &Cache, seeds: &[PaneSeed]) {
 /// only if it was read BEFORE the frame it labels, which the host and [`merge_panes`] between them
 /// rule out — the host reads it under the same lock as the pane list, and the merge stores it only
 /// beside a frame this wake fetched. Every other imprecision costs a redundant fetch.
-fn stale_panes(existing: &[WirePane], seeds: &[PaneSeed]) -> Vec<PaneId> {
+fn stale_panes(existing: &PaneCache, seeds: &[PaneSeed]) -> Vec<PaneId> {
     seeds
         .iter()
         .filter(|seed| {
-            let Some(prior) = existing.iter().find(|pane| pane.id == seed.id) else {
+            let Some(prior) = existing.get(seed.id) else {
                 return true; // newcomer: no frame to keep
             };
             match (&prior.projection, &seed.projection) {
@@ -2550,17 +2626,19 @@ fn stale_panes(existing: &[WirePane], seeds: &[PaneSeed]) -> Vec<PaneId> {
 /// is ever mirrored — [`pane_ids`](HostClient::pane_ids) omits it). A pane absent from
 /// `seeds` is gone (not carried over). Boot is the `existing == &[]` case (all newcomers).
 fn merge_panes(
-    existing: &[WirePane],
+    existing: &PaneCache,
     seeds: &[PaneSeed],
     fetched: &[(PaneId, CellFrame)],
-) -> Vec<WirePane> {
+) -> PaneCache {
+    // Index the arrivals ONCE rather than searching them per seed. `fetched` holds only the
+    // panes this wake re-fetched, so on a quiet wake it is empty and on a busy one it is the
+    // whole set — which is exactly when a per-seed search would cost the most.
+    let arrived: HashMap<PaneId, &CellFrame> =
+        fetched.iter().map(|(id, frame)| (*id, frame)).collect();
     let mut rebuilt = Vec::with_capacity(seeds.len());
     for seed in seeds {
-        let prior = existing.iter().find(|pane| pane.id == seed.id);
-        let fresh = fetched
-            .iter()
-            .find(|(id, _)| *id == seed.id)
-            .map(|(_, frame)| frame.clone());
+        let prior = existing.get(seed.id);
+        let fresh = arrived.get(&seed.id).map(|frame| (*frame).clone());
         let refetched = fresh.is_some();
         let frame = fresh.or_else(|| prior.map(|pane| pane.frame.clone()));
         let Some(frame) = frame else {
@@ -2607,7 +2685,7 @@ fn merge_panes(
             dims: prior.map_or(seed.dims, |pane| pane.dims), // GUI-authoritative — keep tracked
         });
     }
-    rebuilt
+    PaneCache::new(rebuilt)
 }
 
 /// Start the background poll: block on `scene/waitFor {since}`, then MIRROR the host's
@@ -2743,6 +2821,7 @@ fn spawn_poll(
                         // query error still refreshes live output; the real set change is
                         // caught on a later wake.
                         let seeds: Vec<PaneSeed> = lock_cache(&cache)
+                            .panes()
                             .iter()
                             .map(|pane| PaneSeed {
                                 id: pane.id,
@@ -3354,7 +3433,7 @@ mod tests {
         let stop = Arc::new(AtomicBool::new(false)); // NOT our teardown: the host died
         let poll = spawn_poll(
             conn,
-            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(PaneCache::default())),
             Arc::new(Mutex::new(Mirrored::default())),
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
@@ -3433,7 +3512,7 @@ mod tests {
         let stop = Arc::new(AtomicBool::new(false)); // NOT our teardown: the session was killed
         let poll = spawn_poll(
             conn,
-            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(PaneCache::default())),
             Arc::new(Mutex::new(Mirrored::default())),
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
@@ -3515,7 +3594,7 @@ mod tests {
         let stop = Arc::new(AtomicBool::new(false));
         let poll = spawn_poll(
             conn,
-            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(PaneCache::default())),
             Arc::new(Mutex::new(Mirrored::default())),
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
@@ -3573,7 +3652,7 @@ mod tests {
             let stop = Arc::new(AtomicBool::new(false)); // NOT our teardown: the session was killed
             let poll = spawn_poll(
                 conn,
-                Arc::new(Mutex::new(Vec::new())),
+                Arc::new(Mutex::new(PaneCache::default())),
                 Arc::new(Mutex::new(Mirrored::default())),
                 Arc::new(Mutex::new(Vec::new())),
                 Arc::new(Mutex::new(Vec::new())),
@@ -3618,7 +3697,7 @@ mod tests {
         let stop = Arc::new(AtomicBool::new(false)); // NOT our teardown: the host died
         let poll = spawn_poll(
             conn,
-            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(PaneCache::default())),
             Arc::new(Mutex::new(Mirrored::default())),
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
@@ -3664,7 +3743,7 @@ mod tests {
         let stop = Arc::new(AtomicBool::new(false)); // FALSE, so the loop enters and parks
         let poll = spawn_poll(
             conn,
-            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(PaneCache::default())),
             Arc::new(Mutex::new(Mirrored::default())),
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
@@ -3733,7 +3812,7 @@ mod tests {
         let stop = Arc::new(AtomicBool::new(false)); // FALSE, so the loop actually enters
         let poll = spawn_poll(
             conn,
-            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(PaneCache::default())),
             Arc::new(Mutex::new(Mirrored::default())),
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
@@ -3934,6 +4013,81 @@ mod tests {
         }
     }
 
+    /// The agent walk answers off ONE cache: every claimed pane, in host order, nothing else.
+    ///
+    /// The host-order half is not decoration — the title digest a client builds from this reads
+    /// left to right, so a walk that reordered panes would rewrite the user's window title every
+    /// time the cache was rebuilt. And the ONE-lock half is held the way
+    /// [`cells_and_token`]'s pairing is: structurally, by there being a single `lock_cache` in the
+    /// method, with the reason in its doc. What is testable without a daemon is the answer, and
+    /// that is what this pins.
+    #[test]
+    fn the_agent_walk_reports_every_claimed_pane_in_host_order() {
+        let claimed = |id: u64, state: &str| {
+            let mut pane = cached(id, None);
+            pane.agent = Some(PaneAgent {
+                state: state.to_owned(),
+                name: Some("claude".to_owned()),
+                rule: None,
+                seq: 1,
+            });
+            pane
+        };
+        // Host order 7, 3, 9 — deliberately not sorted, so a walk that sorted would show.
+        let cache = PaneCache::new(vec![
+            claimed(7, "working"),
+            cached(3, None), // a shell: claimed by nothing
+            claimed(9, "blocked"),
+        ]);
+
+        let walked: Vec<(PaneId, String)> = cache
+            .panes()
+            .iter()
+            .filter_map(|pane| pane.agent.clone().map(|agent| (pane.id, agent.state)))
+            .collect();
+        assert_eq!(
+            walked,
+            vec![
+                (PaneId(7), "working".to_owned()),
+                (PaneId(9), "blocked".to_owned()),
+            ],
+            "the claimed panes, in host order, and the shell contributes nothing",
+        );
+    }
+
+    /// A rebuild re-addresses: a pane it drops stops resolving, and one it adds starts.
+    ///
+    /// The index and the panes cannot disagree — `PaneCache::new` is the only constructor and it
+    /// derives one from the other — so what is worth pinning is that the REBUILD goes through it.
+    /// A `merge_panes` that returned a cache carrying a previous generation's index would answer
+    /// this test with the wrong pane, or with a pane that is gone.
+    #[test]
+    fn a_rebuilt_cache_addresses_the_panes_it_actually_holds() {
+        let before = PaneCache::new(vec![cached(10, None), cached(11, None)]);
+        assert!(before.get(PaneId(11)).is_some());
+
+        // Pane 11 closed, pane 12 was born — and 12 comes FIRST in host order, so a stale index
+        // would not merely miss it, it would resolve 10 to the wrong slot.
+        let seeds = vec![seeded(12, None), seeded(10, None)];
+        let after = merge_panes(
+            &before,
+            &seeds,
+            &[(PaneId(12), frame(4)), (PaneId(10), frame(4))],
+        );
+
+        assert!(
+            after.get(PaneId(11)).is_none(),
+            "a closed pane stops resolving"
+        );
+        assert_eq!(after.get(PaneId(12)).map(|pane| pane.id), Some(PaneId(12)));
+        assert_eq!(after.get(PaneId(10)).map(|pane| pane.id), Some(PaneId(10)));
+        assert_eq!(
+            after.panes().iter().map(|pane| pane.id).collect::<Vec<_>>(),
+            vec![PaneId(12), PaneId(10)],
+            "and host order is what the seeds said, not what the old cache held",
+        );
+    }
+
     /// The paint path's read: a pane's cells and the token they arrived under come back TOGETHER.
     ///
     /// The pairing is the claim, not either half. A client that answered the cells and dropped the
@@ -3941,7 +4095,7 @@ mod tests {
     /// from any screen, which is why it is asserted here rather than left to the live gate.
     #[test]
     fn a_panes_cells_come_back_with_the_token_they_were_fetched_under() {
-        let mirror = vec![cached(1, Some(token(9))), cached(2, None)];
+        let mirror = PaneCache::new(vec![cached(1, Some(token(9))), cached(2, None)]);
 
         let (cells, held) = cells_and_token(&mirror, PaneId(1));
         assert_eq!(held, Some(token(9)), "the token must ride with the cells");
@@ -3965,11 +4119,11 @@ mod tests {
     /// is known to be false.
     #[test]
     fn only_a_pane_whose_projection_moved_is_refetched() {
-        let cache = vec![
+        let cache = PaneCache::new(vec![
             cached(10, Some(token(7))), // unchanged since its frame
             cached(11, Some(token(7))), // moved on
             cached(12, None),           // frame predates the token
-        ];
+        ]);
         let seeds = vec![
             seeded(10, Some(token(7))),
             seeded(11, Some(token(8))),
@@ -3992,9 +4146,9 @@ mod tests {
         let existing = vec![cached(10, Some(token(7)))];
         // The host has moved on, but this wake fetched nothing for pane 10.
         let seeds = vec![seeded(10, Some(token(9)))];
-        let merged = merge_panes(&existing, &seeds, &[]);
+        let merged = merge_panes(&PaneCache::new(existing), &seeds, &[]);
         assert_eq!(
-            merged[0].projection,
+            merged.panes()[0].projection,
             Some(token(7)),
             "an unfetched pane keeps the token its frame belongs to",
         );
@@ -4010,10 +4164,10 @@ mod tests {
     fn a_refetched_pane_adopts_the_token_that_came_with_the_query() {
         let existing = vec![cached(10, Some(token(7)))];
         let seeds = vec![seeded(10, Some(token(9)))];
-        let merged = merge_panes(&existing, &seeds, &[(PaneId(10), frame(9))]);
-        assert_eq!(merged[0].projection, Some(token(9)));
+        let merged = merge_panes(&PaneCache::new(existing), &seeds, &[(PaneId(10), frame(9))]);
+        assert_eq!(merged.panes()[0].projection, Some(token(9)));
         assert_eq!(
-            merged[0].frame.cells.cols(),
+            merged.panes()[0].frame.cells.cols(),
             9,
             "and the fetched frame with it"
         );
@@ -4128,34 +4282,35 @@ mod tests {
         ];
         let fetched = vec![(PaneId(10), frame(5)), (PaneId(12), frame(7))]; // 13 not fetched
 
-        let merged = merge_panes(&existing, &seeds, &fetched);
+        let merged = merge_panes(&PaneCache::new(existing), &seeds, &fetched);
 
         // Host order; pane 11 gone, pane 13 dropped (no frame yet).
         assert_eq!(
-            merged.iter().map(|p| p.id).collect::<Vec<_>>(),
+            merged.panes().iter().map(|p| p.id).collect::<Vec<_>>(),
             vec![PaneId(10), PaneId(12)],
         );
         // Survivor 10 splits by authority: KEEPS its GUI-tracked dims (not the query's
         // momentary size) but ADOPTS the query's label (host-authoritative), takes the fresh
         // frame.
         assert_eq!(
-            merged[0].dims,
+            merged.panes()[0].dims,
             (80, 24),
             "survivor keeps its GUI-tracked dims, not the query's momentary size"
         );
         assert_eq!(
-            merged[0].label, "bash-relabeled",
+            merged.panes()[0].label,
+            "bash-relabeled",
             "survivor adopts the query's label (host-authoritative), not the stale first-seen one"
         );
         assert_eq!(
-            merged[0].frame.cells.cols(),
+            merged.panes()[0].frame.cells.cols(),
             5,
             "survivor took the fresh frame"
         );
         // Newcomer 12 seeds dims + label from the query, takes its fetched frame.
-        assert_eq!(merged[1].dims, (80, 24));
-        assert_eq!(merged[1].label, "vim");
-        assert_eq!(merged[1].frame.cells.cols(), 7);
+        assert_eq!(merged.panes()[1].dims, (80, 24));
+        assert_eq!(merged.panes()[1].label, "vim");
+        assert_eq!(merged.panes()[1].frame.cells.cols(), 7);
     }
 
     #[test]
@@ -4193,10 +4348,10 @@ mod tests {
             projection: None,
             dims: (80, 24),
         }];
-        let merged = merge_panes(&existing, &seeds, &[]); // fetch missed this wake
-        assert_eq!(merged.len(), 1, "the survivor is still mirrored");
+        let merged = merge_panes(&PaneCache::new(existing), &seeds, &[]); // fetch missed this wake
+        assert_eq!(merged.panes().len(), 1, "the survivor is still mirrored");
         assert_eq!(
-            merged[0].frame.cells.cols(),
+            merged.panes()[0].frame.cells.cols(),
             3,
             "kept its last frame when the refetch missed (not dropped)"
         );
@@ -4252,13 +4407,13 @@ mod tests {
             dims: (80, 24),
         }];
 
-        let merged = merge_panes(&existing, &seeds, &[]);
+        let merged = merge_panes(&PaneCache::new(existing), &seeds, &[]);
         assert!(
-            merged[0].dead,
+            merged.panes()[0].dead,
             "the mirror adopts the host's liveness rather than keeping its own stale view"
         );
         assert_eq!(
-            merged[0].child_exit.as_ref().map(|exit| exit.code),
+            merged.panes()[0].child_exit.as_ref().map(|exit| exit.code),
             Some(101),
             "and the status the host learned AFTER that, which is the only way a code ever arrives",
         );
@@ -4342,15 +4497,16 @@ mod tests {
         ];
         let fetched = vec![(PaneId(10), frame(5)), (PaneId(11), frame(5))];
 
-        let merged = merge_panes(&existing, &seeds, &fetched);
+        let merged = merge_panes(&PaneCache::new(existing), &seeds, &fetched);
 
         assert_eq!(
-            merged[0].title.as_deref(),
+            merged.panes()[0].title.as_deref(),
             Some("coin@host:~"),
             "survivor re-adopts the host's live title, never freezing the first-seen one",
         );
         assert_eq!(
-            merged[1].title, None,
+            merged.panes()[1].title,
+            None,
             "a cleared title clears the mirror too (host is authoritative both ways)",
         );
     }
@@ -4446,9 +4602,13 @@ mod tests {
         // The pane is cached with no verdict and the host now reports one: the survivor adopts it.
         let mut seed = seeded(1, None);
         seed.agent = Some(verdict.clone());
-        let merged = merge_panes(&[cached(1, None)], &[seed], &[(PaneId(1), frame(4))]);
+        let merged = merge_panes(
+            &PaneCache::new(vec![cached(1, None)]),
+            &[seed],
+            &[(PaneId(1), frame(4))],
+        );
         assert_eq!(
-            merged[0].agent.as_ref().map(|a| a.state.as_str()),
+            merged.panes()[0].agent.as_ref().map(|a| a.state.as_str()),
             Some("working"),
             "a verdict that appeared reaches the cache on the wake that carried it",
         );
@@ -4456,9 +4616,13 @@ mod tests {
         // ...and now the agent has exited, so the host says nothing about this pane again.
         let mut held = cached(1, None);
         held.agent = Some(verdict);
-        let merged = merge_panes(&[held], &[seeded(1, None)], &[(PaneId(1), frame(5))]);
+        let merged = merge_panes(
+            &PaneCache::new(vec![held]),
+            &[seeded(1, None)],
+            &[(PaneId(1), frame(5))],
+        );
         assert!(
-            merged[0].agent.is_none(),
+            merged.panes()[0].agent.is_none(),
             "the absence is adopted too — the shell left behind is not still an agent",
         );
     }

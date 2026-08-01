@@ -4,7 +4,7 @@
 //! ## Why it is here and not in `sprag-latency`
 //!
 //! `sprag-latency` is a `sprag-host` binary, and the thing under test is
-//! [`sprag_tui::session_agents`] over a live [`WireHost`] — which lives in `sprag-client`, on the
+//! `HostClient::pane_agents` over a live [`WireHost`] — which lives in `sprag-client`, on the
 //! far side of `sprag-host`'s dependency edge. A tool cannot reach up. So the measurement lives
 //! where its subject does, and pays for that with a daemon of its own.
 //!
@@ -13,14 +13,20 @@
 //! `retitle` runs on every repaint, which for this client is every KEYSTROKE (R246 measured the
 //! release paint at about five milliseconds). The equality skip that makes the title cheap is at the
 //! OSC — [`sprag_tui::title_change`] — and NOT at the walk, so the walk happens whether or not the
-//! answer moved. Against `WireHost` that walk is:
+//! answer moved. What that walk costs is a question about magnitudes, which is what this answers —
+//! against the paint it rides on rather than against zero.
 //!
-//! * `pane_ids()` — one cache lock, one `Vec` of N ids;
-//! * `pane_agent(id)` per id — **another lock each**, each one LINEARLY SCANNING the cache for its
-//!   id, and cloning three `String`s for a pane an agent claims.
+//! ## What R265 changed under it
 //!
-//! So N+1 acquisitions and N^2 comparisons per paint. Whether that matters is a question about
-//! magnitudes, which is what this answers — against the paint it rides on rather than against zero.
+//! Until R265 the walk was `pane_ids()` for the id list and then `pane_agent(id)` per id: N+1 cache
+//! locks, and each of those a LINEAR SCAN, because the cache was a `Vec` whose own doc justified
+//! that with "the small pane set" — the premise R264 had just removed. It is now one
+//! `HostClient::pane_agents` call: one lock, one pass over a cache addressed by `PaneId`.
+//!
+//! The reason was never the microseconds. The poll thread REPLACES that cache wholesale, so a walk
+//! holding the lock N+1 times could pair one generation's pane list with another's verdicts —
+//! dropping a pane that went away and missing one that arrived. The numbers below are what the
+//! correctness fix also bought.
 //!
 //! It also answered a question nobody asked, because building it was the first time anything in this
 //! project put sixty-odd panes in one session: **a client could not attach to a session with more
@@ -47,7 +53,7 @@ use std::time::{Duration, Instant};
 use pinion_core::QuitSink;
 use sprag_client::WireHost;
 use sprag_host::HostClient;
-use sprag_tui::{agent_window_title, session_agents, title_change};
+use sprag_tui::{agent_window_title, title_change};
 
 /// Pane counts the walk is measured at. One is the floor; sixty-two was the CEILING, and is not a
 /// round number by choice — see below.
@@ -273,10 +279,10 @@ fn main() -> ExitCode {
         // wearing the populated one's label. Waited for rather than slept through.
         if claimed {
             let deadline = Instant::now() + Duration::from_secs(20);
-            while Instant::now() < deadline && session_agents(&host).len() < panes {
+            while Instant::now() < deadline && host.pane_agents().len() < panes {
                 std::thread::sleep(Duration::from_millis(100));
             }
-            let claimed_now = session_agents(&host).len();
+            let claimed_now = host.pane_agents().len();
             if claimed_now < panes {
                 eprintln!(
                     "title-cost: only {claimed_now} of {panes} panes were claimed; \
@@ -286,9 +292,9 @@ fn main() -> ExitCode {
             }
         }
         let walk = measure(|| {
-            black_box(session_agents(black_box(&host)));
+            black_box(black_box(&host).pane_agents());
         });
-        let agents = session_agents(&host);
+        let agents = host.pane_agents();
         let session = host.current_session();
         let build = measure(|| {
             black_box(agent_window_title(black_box(&session), black_box(&agents)));
@@ -298,7 +304,7 @@ fn main() -> ExitCode {
         // call takes the SKIP branch — which is the branch every paint but the first takes.
         let mut held = Some(agent_window_title(&session, &agents));
         let whole = measure(|| {
-            let agents = session_agents(black_box(&host));
+            let agents = black_box(&host).pane_agents();
             let wanted = agent_window_title(&session, &agents);
             black_box(title_change(&mut held, wanted));
         });
@@ -347,10 +353,11 @@ fn main() -> ExitCode {
         );
         println!(
             "  AND THE WALK IS NOT THE LARGER HALF, which is the opposite of what reading the code\n  \
-             suggested. The N+1 cache locks and the N^2 scan are real — the empty-branch walk grows\n  \
-             {:.0}x for {}x the panes, {:.3} us at {small_n} against {:.3} us at {large_n} — but on\n  \
-             a populated workspace the DIGEST STRING BUILD is comparable to or larger than the walk\n  \
-             it feeds. A fix aimed at the quadratic term would have been aimed at the smaller half.",
+             suggested, and is still true after R265 removed the quadratic term: the empty-branch\n  \
+             walk now grows {:.1}x for {}x the panes ({:.3} us at {small_n} against {:.3} us at\n  \
+             {large_n}) — LINEAR — while on a populated workspace the DIGEST STRING BUILD is still\n  \
+             comparable to or larger than the walk it feeds. What is left in the walk itself is the\n  \
+             per-agent String clone, which is what handing owned data out from behind a lock COSTS.",
             large.as_secs_f64() / small.as_secs_f64(),
             large_n / small_n.max(1),
             micros(small),
@@ -363,9 +370,9 @@ fn main() -> ExitCode {
              of this happens on every keystroke and is then discarded — and at well under a percent\n  \
              of a keystroke, that is a fact to record rather than a thing to fix. A gate in front of\n  \
              the walk would buy that percent and cost a second piece of state that has to stay true.\n  \
-             NOTE the walk grows with the pane count and the wire no longer caps it (R264 flattened\n  \
-             the layout's shape; 63 used to be unattachable). The conclusion holds at the counts\n  \
-             measured here and is worth re-taking, not re-quoting, at a much larger one.",
+             R264 removed the wire's 62-pane cap, so nothing bounds this count any more; what makes\n  \
+             the conclusion safe at a larger one is that R265 made the growth LINEAR, not that the\n  \
+             number here is small.",
             micros(top_claimed),
             top_claimed.as_secs_f64() / R246_RELEASE_PAINT.as_secs_f64() * 100.0,
         );
