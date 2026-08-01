@@ -141,6 +141,30 @@
 //!   prune it exists to serve. Free in the sense meant (it needs no walk of its own), not in the
 //!   sense the word carries.
 //!
+//! ## What the CONTENTION rows measured (R261), and the two answers that were wrong first
+//!
+//! R260 named one term it would not claim: what the sweep's locks cost, because a single-threaded
+//! instrument acquires a lock uncontended and uncontended is not what a lock costs. What a lock
+//! costs is the wait it inflicts, so these rows time a pane-list READER while a second thread runs
+//! the real `sweep_once` against the same registry. Five runs:
+//!
+//! * **The recurring pass is free.** Shared minus a control sweeping a PRIVATE registry at the same
+//!   rate: -1.4 to +5.9 us on the reader's median and -1.6 to +6.4 us at p99 — at seven to twelve
+//!   MILLION times the daemon's real duty cycle.
+//! * **A churning pass is 84x to 114x a quiet one** (64-87 us for three panes against 0.58-1.04 us),
+//!   because the workspace lock is held across an evaluation per pane.
+//! * **But the churning DIFFERENCE is not a lock cost and cannot be made into one.** The reader runs
+//!   the same detector under the same clock, so sharing the registry changes who evaluates, not only
+//!   who waits. Bounded directly by the pass's own duration instead.
+//!
+//! Two wrong answers came first, and both were plausible. **A single condition with no control said
+//! 10x on the median** — mostly the reader's own re-evaluation. **A control that was not matched said
+//! +160 to +237 us** — one background loop reloaded one clock and the other reloaded two, so they
+//! churned at different rates and the difference was churn, not sharing. What caught the second was
+//! not care: it was printing the sweeper's own pass and evaluation COUNTS beside the latencies, at
+//! which point a condition claiming every pane owed an evaluation was visibly evaluating three panes
+//! in two thousand passes. **A probe needs a control on the probe.**
+//!
 //! ## What is deliberately NOT here
 //!
 //! Hardware counters. Retired instructions would be near-deterministic and gate-able, but this box
@@ -171,6 +195,7 @@ use std::collections::HashSet;
 use std::hint::black_box;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use sprag_detect::{DEFAULT_SETTLE, Hysteresis, Ruleset, Tracker, built_ins, detect};
@@ -179,6 +204,7 @@ use sprag_host::agent::SWEEP_INTERVAL;
 use sprag_host::config::AgentManifests;
 use sprag_host::{
     AgentClock, CellFrame, ChannelRegistry, Host, HostState, PaneScrollFacts, handle_request,
+    sweep_once,
 };
 use sprag_terminal::{CommandBuilder, PaneId};
 use sprag_vt::{Emulator, Palette, Screen, VtPort};
@@ -502,6 +528,131 @@ fn reply_bytes(state: &HostState, request: &str) -> usize {
         "request failed: {request} -> {response}",
     );
     response.len()
+}
+
+/// How many pane-list requests one contention condition serves.
+///
+/// Large, because the subject is a TAIL rather than a centre: a reader only pays for a lock it
+/// actually collides with, so the interesting samples are rare by construction and a short run can
+/// miss them entirely. Two thousand at ~10 us is a fifth of a second per condition.
+const CONTENTION_REQUESTS: usize = 2_000;
+
+/// Serve [`CONTENTION_REQUESTS`] pane-list requests, timing each one, and return them SORTED.
+///
+/// Every other subject in this tool is estimated by its MINIMUM, for the reason the module doc
+/// gives. **For a contention question the minimum is precisely the wrong estimator**: it is by
+/// definition the sample that did not have to wait, so it reports the answer "no cost" whatever the
+/// truth is. These rows are read at the tail instead, and the median is kept beside it to show
+/// whether the whole distribution moved or only its top.
+fn reader_latencies(state: &HostState) -> Vec<Duration> {
+    latencies(state, |_| {})
+}
+
+/// [`reader_latencies`], running `between` OUTSIDE the timer before each request.
+///
+/// The isolate for "what does a churning ruleset cost the READER itself". Done from the reader's own
+/// thread on purpose: the first version asked a second thread to churn, and a thread whose entire
+/// loop body is `lock, reload, unlock` is a mutex hammer rather than a workload — it starved the
+/// reader so badly that ADDING a sweep to that thread improved the reader's tail, which is a
+/// std::sync::Mutex fairness property and not anything about this daemon. Single-threaded, the row
+/// measures the thing it is named for and nothing else.
+fn latencies(state: &HostState, mut between: impl FnMut(&HostState)) -> Vec<Duration> {
+    let mut out = Vec::with_capacity(CONTENTION_REQUESTS);
+    for _ in 0..CONTENTION_REQUESTS {
+        between(state);
+        let start = Instant::now();
+        black_box(handle_request(black_box(state), PANES_READ));
+        out.push(start.elapsed());
+    }
+    out.sort_unstable();
+    out
+}
+
+/// [`reader_latencies`], with `background` running on a second thread as fast as it can for the
+/// whole of the reader's run.
+///
+/// Continuously rather than once every five seconds, deliberately: the duty cycle a daemon actually
+/// runs would put almost every request in the gap between passes and measure nothing, so this is the
+/// worst case a reader could ever meet. A negligible answer here settles the real cadence a
+/// fortiori, and a large one has to be scaled back down by the duty cycle before it means anything.
+///
+/// # Why the conditions come in PAIRS
+///
+/// The first draft of this ran one background loop — the real sweep on the reader's own registry —
+/// and reported the difference as what the locks cost. It is not: the same difference is produced by
+/// two other things the condition also changes, and both are large.
+///
+/// * **The reader re-evaluates too.** Making every pane stale is what forces the sweeper to work,
+///   and the pane list runs the same detector under the same clock, so the reader's OWN request
+///   starts evaluating every pane as well. Three panes of evaluation is hundreds of microseconds and
+///   lands squarely in the range the tail moved to.
+/// * **A second thread burns a core.** Cache, memory bandwidth and the scheduler are shared whether
+///   or not a lock is.
+///
+/// So every sweeping condition is measured twice — once against the reader's own registry and once
+/// against a PRIVATE one built the same way — and the sharing is the difference between the pair.
+/// The private sweeper does identical work at an identical rate; the only thing it does not do is
+/// touch a lock the reader wants. [[latency-budget-r221]]'s rule, in the one form that applies to a
+/// concurrency question: a control cancels only the noise it shares.
+fn under(state: &HostState, mut background: impl FnMut() + Send) -> Vec<Duration> {
+    let stop = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while !stop.load(Ordering::Relaxed) {
+                background();
+            }
+        });
+        let out = reader_latencies(state);
+        stop.store(true, Ordering::Relaxed);
+        out
+    })
+}
+
+/// Passes run and panes evaluated by every [`pass`] call so far, process-wide.
+///
+/// THE CONTROL ON THE PROBE ITSELF. A background thread that never got scheduled, or one whose panes
+/// turn out not to owe an evaluation after all, produces a reader distribution indistinguishable from
+/// "the locks are free" — and the conclusion would be about the harness rather than about the daemon.
+/// A condition that claims to sweep has to show its passes, and one that claims every pane owes an
+/// evaluation has to show them evaluated.
+static PASSES: AtomicU64 = AtomicU64::new(0);
+static EVALUATED: AtomicU64 = AtomicU64::new(0);
+
+/// One sweep pass over `host`'s registry, at `now`, with discovery on — the daemon's own call.
+fn pass(host: &HostState, clock: &Arc<AgentClock>) {
+    let report = sweep_once(
+        host.registry(),
+        clock,
+        host.channels(),
+        Instant::now(),
+        true,
+    );
+    PASSES.fetch_add(1, Ordering::Relaxed);
+    EVALUATED.fetch_add(report.evaluated as u64, Ordering::Relaxed);
+}
+
+/// The passes and evaluations since the last call — read either side of a condition.
+fn swept_since(before: (u64, u64)) -> (u64, u64) {
+    (
+        PASSES.load(Ordering::Relaxed) - before.0,
+        EVALUATED.load(Ordering::Relaxed) - before.1,
+    )
+}
+
+/// A reading of the two counters, for [`swept_since`] to subtract.
+fn swept_now() -> (u64, u64) {
+    (
+        PASSES.load(Ordering::Relaxed),
+        EVALUATED.load(Ordering::Relaxed),
+    )
+}
+
+/// The sample at `fraction` through a sorted slice — the tail estimator these contention rows need.
+fn percentile(sorted: &[Duration], fraction: f64) -> Duration {
+    let last = sorted.len().saturating_sub(1);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let index = (fraction * last as f64).round() as usize;
+    sorted[index.min(last)]
 }
 
 /// Print one derived line: a duration, and what fraction of a frame it is.
@@ -942,6 +1093,96 @@ fn main() -> ExitCode {
     );
     let evaluations_after = sprag_detect::work();
 
+    // WHAT THE SWEEP'S LOCKS COST (R261). R260 measured every term of a sweep and refused this one,
+    // because a single-threaded instrument acquires a lock uncontended and uncontended is not what a
+    // lock costs. What it costs is the WAIT it inflicts on somebody else, so the subject is not the
+    // sweep at all — it is a READER's latency while the sweep runs.
+    //
+    // Three conditions against the same host: no sweeper, a sweeper whose panes are all settled, and
+    // a sweeper that reloads the ruleset before every pass so every pane owes an evaluation. The
+    // third is what a user's `config.toml` save schedules, and what the first pass after boot does.
+    let clock = state.agents().expect("the state has a detector installed");
+    // The PRIVATE host the control conditions sweep: built the same way, with the same panes and the
+    // same detector, and shared with nothing. A sweeper on it does identical work at an identical
+    // rate and touches no lock the reader wants.
+    let other = live_host().with_agents(Arc::new(AgentClock::new(Ruleset::default())));
+    let other_clock = other.agents().expect("the private host has one too");
+    // Two rulesets that say the SAME thing, alternated: every pass finds every pane's verdict reached
+    // under a revision no longer in force, which is a manifest save sustained. Built once, because
+    // `built_ins` compiles patterns and a sweeper in the regex compiler is not a sweeper holding a
+    // lock.
+    let churn = [Ruleset::new(built_ins()), Ruleset::new(built_ins())];
+    // ONE TOGGLE PER CLOCK. A single shared toggle flipped once per clock per iteration, so each
+    // clock was handed the SAME ruleset every time and nothing ever went stale — thousands of passes
+    // evaluating three panes between them. The `evald` column is what caught it, which is why it is
+    // printed: without it both churning conditions would have reported a lock cost of zero, and the
+    // zero would have been the harness.
+    let mut turns = [0_usize; 2];
+    let mut stale = |which: usize, clock: &Arc<AgentClock>| {
+        turns[which] ^= 1;
+        clock.with(|state| state.reload(churn[turns[which]].clone()));
+    };
+
+    // A pass timed on its own, so the differential rows below have a hold time to be read against:
+    // whatever a reader can wait for, it cannot be longer than one window's share of this.
+    let churn_pass = {
+        stale(0, &clock);
+        let start = Instant::now();
+        let report = sweep_once(
+            state.registry(),
+            &clock,
+            state.channels(),
+            Instant::now(),
+            true,
+        );
+        let elapsed = start.elapsed();
+        assert!(report.evaluated > 0, "a churning pass has to evaluate");
+        (elapsed, report.evaluated)
+    };
+    let quiet_pass = {
+        let start = Instant::now();
+        let report = sweep_once(
+            state.registry(),
+            &clock,
+            state.channels(),
+            Instant::now(),
+            true,
+        );
+        let elapsed = start.elapsed();
+        assert_eq!(report.evaluated, 0, "a second pass evaluates nothing");
+        elapsed
+    };
+
+    let free = reader_latencies(&state);
+    let mark = swept_now();
+    let quiet_private = under(&state, || pass(&other, &other_clock));
+    let quiet_private_work = swept_since(mark);
+    let mark = swept_now();
+    let quiet_shared = under(&state, || pass(&state, &clock));
+    let quiet_shared_work = swept_since(mark);
+    // Staleness is forced on the READER's clock in every stale condition, including the controls --
+    // that is what makes the reader re-evaluate, and it has to be held constant so the pair differs
+    // only in which registry is swept.
+    let stale_none = latencies(&state, |_| stale(0, &clock));
+    // The pair differs in ONE thing: which registry the sweeper walks. Both churn BOTH clocks, so
+    // the background loop runs at the same rate and forces the reader's own re-evaluation at the
+    // same rate — the first version churned one clock on one side and two on the other, which let
+    // the shared condition iterate faster and charged the difference to the lock.
+    let mark = swept_now();
+    let stale_private = under(&state, || {
+        stale(0, &clock);
+        stale(1, &other_clock);
+        pass(&other, &other_clock);
+    });
+    let stale_private_work = swept_since(mark);
+    let mark = swept_now();
+    let stale_shared = under(&state, || {
+        stale(0, &clock);
+        stale(1, &other_clock);
+        pass(&state, &clock);
+    });
+    let stale_shared_work = swept_since(mark);
+
     let quietest = controls.iter().min().copied().unwrap_or_default();
     let noisiest = controls.iter().max().copied().unwrap_or_default();
     println!(
@@ -1280,6 +1521,125 @@ fn main() -> ExitCode {
         micros(sweep_pass(2)),
         refresh_present.min.as_secs_f64() / sweep_pass(2).as_secs_f64() * 100.0,
         sweep_pass(2).as_secs_f64() / SWEEP_INTERVAL.as_secs_f64() * 100.0,
+    );
+
+    println!(
+        "\nMEASURED — what the sweep's LOCKS cost, which is what they make a READER wait. The\n\
+         sweeper runs CONTINUOUSLY here, not once every five seconds, so this is the worst case a\n\
+         request could ever meet rather than the one it will."
+    );
+    println!(
+        "  {:<42} {:>9} {:>9} {:>9} {:>7} {:>8}",
+        "condition (reader = pane-list request)", "median", "p99", "max", "passes", "evald"
+    );
+    for (label, samples, work) in [
+        ("no second thread at all", &free, (0, 0)),
+        (
+            "  sweeping a PRIVATE registry",
+            &quiet_private,
+            quiet_private_work,
+        ),
+        (
+            "  sweeping the reader's own",
+            &quiet_shared,
+            quiet_shared_work,
+        ),
+        (
+            "new rules before EVERY request, no thread",
+            &stale_none,
+            (0, 0),
+        ),
+        (
+            "rules churning + a PRIVATE registry",
+            &stale_private,
+            stale_private_work,
+        ),
+        (
+            "rules churning + the reader's own",
+            &stale_shared,
+            stale_shared_work,
+        ),
+    ] {
+        println!(
+            "  {label:<42} {:>8.1}u {:>8.1}u {:>8.1}u {:>7} {:>8}",
+            micros(percentile(samples, 0.50)),
+            micros(percentile(samples, 0.99)),
+            micros(samples.last().copied().unwrap_or_default()),
+            work.0,
+            work.1,
+        );
+    }
+    println!(
+        "  The last two columns are THE CONTROL ON THE PROBE: passes the background thread\n  \
+         actually ran, and panes it actually evaluated. A thread that never got scheduled would\n  \
+         produce the same reader distribution as a free lock, and the conclusion would be about\n  \
+         this harness rather than about the daemon. A quiet condition must show passes and no\n  \
+         evaluations; a churning one must show both.",
+    );
+    println!(
+        "  AND THE HOLD ITSELF, timed alone: a churning pass over {} panes is {:.1} us, a quiet\n  \
+         one {:.2} us. That is the whole pass across every window; a reader waits at most for the\n  \
+         ONE window it wants, so this is an upper bound on the wait, not the wait.",
+        churn_pass.1,
+        micros(churn_pass.0),
+        micros(quiet_pass),
+    );
+    println!(
+        "  READ THE TAIL, NOT THE MINIMUM, and read the PAIRS. Every other row in this tool is\n  \
+         estimated by its minimum; here that is the sample that did not collide, which reports no\n  \
+         cost whatever the truth is. And each sweeping condition has a control that does the SAME\n  \
+         work on a private registry, because the first version of this attributed to locks what was\n  \
+         mostly two other things: a churning ruleset makes the READER's own request evaluate every\n  \
+         pane, and a second thread burns a core whether or not it shares a lock.",
+    );
+    println!(
+        "  SO, FOR A QUIET PASS — the one that runs every five seconds forever — SHARED minus its\n  \
+         PRIVATE control is {:+.1} us on the median and {:+.1} us at p99. And the rate that was\n  \
+         measured at: {} passes while the reader ran for {:.0} ms, against ONE pass per {:.0}\n  \
+         seconds in a daemon — {:.0} MILLION times the real duty cycle. That is the answer R260\n  \
+         declined to give: the locks of the recurring pass cost a concurrent reader nothing this\n  \
+         instrument can see, at a rate no daemon will ever produce.",
+        micros(percentile(&quiet_shared, 0.50)) - micros(percentile(&quiet_private, 0.50)),
+        micros(percentile(&quiet_shared, 0.99)) - micros(percentile(&quiet_private, 0.99)),
+        quiet_shared_work.0,
+        quiet_shared.iter().sum::<Duration>().as_secs_f64() * 1e3,
+        SWEEP_INTERVAL.as_secs_f64(),
+        quiet_shared_work.0 as f64
+            / (quiet_shared.iter().sum::<Duration>().as_secs_f64() / SWEEP_INTERVAL.as_secs_f64())
+            / 1e6,
+    );
+    println!(
+        "  THE CHURNING PAIR CANNOT BE READ THE SAME WAY, and the `evald` column is why: the\n  \
+         private sweeper evaluated {} panes over {} passes — three each, every pass — while the\n  \
+         shared one evaluated {} over {}. It is not doing less work; the READER is doing that work\n  \
+         instead, because a pane-list request runs the same detector under the same clock and\n  \
+         whichever thread arrives first pays. Sharing the registry changes WHO evaluates, not only\n  \
+         who waits, so the two conditions cannot be matched and their difference is not a lock.\n  \
+         This is R255's shape again: the comparison cannot be resolved at the level it was asked.",
+        stale_private_work.1, stale_private_work.0, stale_shared_work.1, stale_shared_work.0,
+    );
+    println!(
+        "  SO THE CHURNING CASE IS BOUNDED DIRECTLY INSTEAD, by the pass's own duration above:\n  \
+         {:.0} us for three panes against {:.2} us quiet — {:.0}x, which is the evaluation and\n  \
+         nothing else. A reader wants ONE window, so what it can wait for is that window's share.\n  \
+         The reader's own re-evaluation is the other half and is not a lock at all: {:+.1} us on\n  \
+         its median with no second thread in the process, and that is the upper bound of it —\n  \
+         every request meets new rules there, where a real reload happens once.",
+        micros(churn_pass.0),
+        micros(quiet_pass),
+        churn_pass.0.as_secs_f64() / quiet_pass.as_secs_f64(),
+        micros(percentile(&stale_none, 0.50)) - micros(percentile(&free, 0.50)),
+    );
+    println!(
+        "  WHY A CHURNING PASS IS A DIFFERENT OBJECT: a quiet pass holds each workspace lock only\n  \
+         for as long as its panes take to answer a hash-lookup question ({:.3} us each). A pass\n  \
+         where every pane owes an evaluation holds it across the whole evaluation of every pane in\n  \
+         that window — {:.1} us each — so a reader waiting on that lock waits for all of them. That\n  \
+         pass is scheduled by a user saving `config.toml` and by the first pass after boot. It is a\n  \
+         one-off, which is why this is documented rather than redesigned; the number is worth\n  \
+         knowing because a future slice that makes evaluations dearer inherits it.",
+        micros(per_pane[0].1.min),
+        micros(detect_shell.min),
     );
 
     println!(
