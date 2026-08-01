@@ -51,6 +51,7 @@ pub mod agent;
 pub mod attach;
 pub mod config;
 pub mod durability;
+pub mod events;
 mod external;
 pub mod history;
 pub mod host;
@@ -85,6 +86,7 @@ pub use durability::{
     load_snapshot, reconnect_command, restore_allowlist, restore_command, save_if_changed,
     save_snapshot, snapshot_path,
 };
+pub use events::{Batch, Event, EventLog, Record};
 pub use history::{
     DEFAULT_HISTORY_IMAGE_BYTES, NO_HISTORY_CEILING, SavedHistory, history_dir, history_file_pane,
     history_image_bytes, history_limit, history_limits, load_pane_history, purge_histories,
