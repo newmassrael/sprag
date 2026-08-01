@@ -36,13 +36,14 @@
 //!
 //! The numbers, the conditions and the one comparison that cannot be made are on [`sweep_once`].
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, PoisonError};
 use std::time::Instant;
 
 use sprag_terminal::{PaneId, SessionRegistry, Workspace};
 
 use crate::agent::AgentClock;
+use crate::events::Event;
 use crate::notify::ChannelRegistry;
 
 /// What one pass did — returned so a caller can act on it and a test can assert it, rather than
@@ -131,7 +132,10 @@ pub fn sweep_once(
     // Phase 2 — registry lock released. Each pool under its own lock.
     let mut report = SweepReport::default();
     let mut live: HashSet<PaneId> = HashSet::new();
-    let mut moved: HashSet<String> = HashSet::new();
+    // Per SESSION, the panes whose published verdict moved — the wake and its reason, collected
+    // together so they cannot disagree. `seq` moving is the sweep's own definition of a published
+    // change and is now also the record's, rather than a second rule that could drift from it.
+    let mut moved: HashMap<String, Vec<u64>> = HashMap::new();
     for (session, pool) in &pools {
         let pool = pool.lock().unwrap_or_else(PoisonError::into_inner);
         for pane in pool.panes() {
@@ -157,7 +161,7 @@ pub fn sweep_once(
                 );
             });
             if agents.with(|state| state.seq(id)) != before {
-                moved.insert(session.clone());
+                moved.entry(session.clone()).or_default().push(id.0);
             }
             // THE LOOP'S LIVENESS RESTS ON THIS. `park_until_due` returns immediately for a deadline
             // already past, so a due pane that an observation does not RESOLVE sends the waker round
@@ -180,9 +184,18 @@ pub fn sweep_once(
     if discover {
         agents.with(|state| state.retain_live(&live));
     }
-    // Wake the clients of the sessions whose published answer moved, and only those.
-    for session in &moved {
-        channels.bump(session);
+    // Wake the clients of the sessions whose published answer moved, and only those — and tell
+    // them WHICH panes moved, in the same call, so the wake and its reason land together
+    // (`ChannelRegistry::announce` holds the journal lock across the bump for exactly that).
+    for (session, panes) in &moved {
+        channels.announce(
+            session,
+            panes
+                .iter()
+                .copied()
+                .map(Event::AgentStateChanged)
+                .collect(),
+        );
     }
     report.moved = moved.len();
     report
@@ -407,5 +420,85 @@ mod tests {
             "and the one whose answer did not move is not — a shell pane no manifest claims \
              publishes nothing, so its clients have nothing to re-read",
         );
+    }
+
+    /// **THE slice-4 claim.** The verdict transition is the event the whole niche is about, and it
+    /// is the one thing the dispatch funnel structurally cannot derive: it rests on the pane's
+    /// SCREEN, which reaches the daemon through output, and on a clock nothing else in the daemon
+    /// runs. So the observer that can see it emits it — and the record must name the very pane whose
+    /// `seq` moved, which is the same condition the wake beside it already uses.
+    #[test]
+    fn the_settle_wakes_a_session_and_says_which_pane_moved() {
+        let reg = registry_with(&[("a", claude_pane()), ("b", painting("$ "))]);
+        let agents = clock();
+        let channels = ChannelRegistry::default();
+        let base = Instant::now();
+
+        sweep_once(&reg, &agents, &channels, base, true);
+        let cursor_a = channels.revision("a").current();
+        let cursor_b = channels.revision("b").current();
+        assert!(
+            journal_events(&channels, "a", 0).is_empty(),
+            "a candidate is not a publication, so it is not a record either",
+        );
+
+        sweep_once(&reg, &agents, &channels, base + DEFAULT_SETTLE, true);
+
+        let recorded = journal_events(&channels, "a", cursor_a);
+        assert_eq!(
+            recorded.len(),
+            1,
+            "exactly the pane whose verdict moved: {recorded:?}",
+        );
+        assert!(
+            matches!(recorded[0], Event::AgentStateChanged(_)),
+            "and it is named as an agent transition: {recorded:?}",
+        );
+        assert!(
+            journal_events(&channels, "b", cursor_b).is_empty(),
+            "the session whose answer did not move records nothing, exactly as it is not woken",
+        );
+    }
+
+    /// The record lands at the revision the WAKE carries, not one behind it.
+    ///
+    /// A client parks at `R`, is answered `R'` by the bump, and asks for `(R, R']`. A record keyed
+    /// `R` would be invisible to that read and would never be offered again — the client's cursor
+    /// has already passed it. This is what `ChannelRegistry::announce` holds the journal lock for.
+    #[test]
+    fn the_record_is_readable_from_the_cursor_the_wake_answers() {
+        let reg = registry_with(&[("a", claude_pane())]);
+        let agents = clock();
+        let channels = ChannelRegistry::default();
+        let base = Instant::now();
+
+        sweep_once(&reg, &agents, &channels, base, true);
+        // What a parked client would be holding: the revision before the publishing pass.
+        let parked_at = channels.revision("a").current();
+
+        sweep_once(&reg, &agents, &channels, base + DEFAULT_SETTLE, true);
+
+        // What the wake answers it with.
+        let woken_at = channels.revision("a").current();
+        assert!(woken_at > parked_at, "the settle advanced the scene");
+        assert_eq!(
+            journal_events(&channels, "a", parked_at).len(),
+            1,
+            "the record is inside the window the client asks for",
+        );
+        assert!(
+            journal_events(&channels, "a", woken_at).is_empty(),
+            "and is delivered once — a reader level with the wake has already accounted for it",
+        );
+    }
+
+    /// Everything `session`'s journal has recorded above `cursor`.
+    fn journal_events(channels: &ChannelRegistry, session: &str, cursor: u64) -> Vec<Event> {
+        channels
+            .journal(session)
+            .lock()
+            .expect("the journal")
+            .since(cursor)
+            .events
     }
 }

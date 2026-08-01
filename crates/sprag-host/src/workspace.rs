@@ -1493,6 +1493,9 @@ fn events_value(channels: &ChannelRegistry, session: &str, since: u64) -> Intros
                 serde_json::json!({ "type": "session_closed", "session": name })
             }
             Event::LayoutUpdated => serde_json::json!({ "type": "layout_updated" }),
+            Event::AgentStateChanged(id) => {
+                serde_json::json!({ "type": "pane_agent_state_changed", "pane": id })
+            }
         })
         .collect();
     IntrospectValue::Json(serde_json::json!({

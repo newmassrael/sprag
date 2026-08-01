@@ -56,9 +56,10 @@
 //!   record per batch of PTY output would evict this ring at output rate — destroying, for the
 //!   panes a reader actually cares about, the delivery guarantee the ring exists to give. That is a
 //!   deliberate divergence from the rivals that have such an event, priced rather than omitted.
-//! * There is no agent-state variant YET. It is not a difference in the state above; it is the
-//!   settle waker's own verdict transition, produced by a different thread on a different schedule,
-//!   and it lands with that producer rather than being declared here ahead of anything emitting it.
+//! * [`Event::AgentStateChanged`] is NOT one of these, and is the exception that shows the rule. It
+//!   is not a difference in the state above — it is the settle waker's own verdict transition — so
+//!   it is EMITTED by that observer ([`SessionJournal::emit`]) rather than derived, and it was
+//!   declared only once something could produce it.
 //!
 //! ## What the DISPATCH funnel structurally cannot see, and why that pruned the list again
 //!
@@ -71,8 +72,8 @@
 //! daemon through a pane's `on_dirty` hook and never through a dispatch at all. A `PaneUpdated`
 //! variant was declared here before that was read from the code, and it is now gone rather than
 //! left standing with nothing able to produce it — the same rule that struck `WindowRenamed`,
-//! applied to a variant this module had already shipped. It returns with the observer that can
-//! actually see it, which is where the agent verdict lands too.
+//! applied to a variant this module had already shipped. It returns if and when an observer that
+//! can see it exists, the way [`Event::AgentStateChanged`] arrived with its own.
 //!
 //! The corollary is the reason the funnel is affordable at all: `key`, `text`, `paste` and `mouse`
 //! are invokes, so **every keystroke is a mutating dispatch**. A shape that walked every pane here
@@ -267,6 +268,19 @@ pub enum Event {
     /// reader answers it by re-reading the layout slot, which is what it would do for any subject
     /// this could name.
     LayoutUpdated,
+    /// A pane's published AGENT verdict moved — the event this whole niche is about.
+    ///
+    /// Not derived at the dispatch funnel, and could not be: a verdict rests on what is on the pane's
+    /// SCREEN, which reaches the daemon through output, and a verdict resting on an ABSENCE ("the
+    /// agent stopped working, so it is idle and wants you") is confirmed by a clock nothing else
+    /// runs. So this one is EMITTED by the settle waker, the only observer that can see it.
+    ///
+    /// It is emitted on the same condition the waker already uses to decide whether to wake a
+    /// session's clients at all — the pane's `seq` moving — so a record here and a wake there cannot
+    /// disagree about what a published change is. Like every other variant it names its subject and
+    /// not its value: a reader re-reads the pane list, where the state, the agent and the rule are
+    /// defined once.
+    AgentStateChanged(u64),
 }
 
 /// One [`Event`] with the revision it was appended at — the log's stored unit.
@@ -472,6 +486,19 @@ impl SessionJournal {
             let events = previous.diff(self.shape.as_ref().expect("just replaced"));
             self.log.record(revision, events);
         }
+    }
+
+    /// Record changes an OBSERVER saw, which no shape comparison could have derived.
+    ///
+    /// Separate from [`observe`](Self::observe) rather than folded into it, and the split is the
+    /// same one [`Event::AgentStateChanged`] describes: [`observe`](Self::observe) DERIVES from
+    /// state the daemon publishes, so a new mutating method inherits it; this EMITS what only the
+    /// producer knows. Folding them would put a discipline back — an emitter would have to be
+    /// invoked from the derive site, which does not run on the thread that sees these.
+    ///
+    /// A caller that has nothing to say passes an empty group and records nothing.
+    pub fn emit(&mut self, revision: u64, events: impl IntoIterator<Item = Event>) {
+        self.log.record(revision, events);
     }
 
     /// Everything recorded after `cursor`. See [`EventLog::since`].

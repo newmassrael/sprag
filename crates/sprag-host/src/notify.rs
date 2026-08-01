@@ -148,6 +148,34 @@ impl ChannelRegistry {
         self.revision(session).bump()
     }
 
+    /// Announce a change in `session` AND record what it was, so a client woken by the bump can
+    /// read the reason it was woken.
+    ///
+    /// ## The journal lock spans the bump, and that is the whole of this function
+    ///
+    /// [`bump`](Self::bump) fires the wake observer SYNCHRONOUSLY: a parked reply is sent from
+    /// inside the call. So a record appended after the bump returns is a record the woken client can
+    /// race — it is told `R'`, asks for `(R, R']`, and is answered before the writer has said what
+    /// happened. The client would see an empty batch, conclude nothing structural moved, and never
+    /// be offered the record again: its cursor has passed that revision.
+    ///
+    /// Appending BEFORE the bump does not work either, because the record's key must be the
+    /// revision the bump PRODUCES, and this thread cannot predict it — a pane's `on_dirty` may bump
+    /// the same token concurrently.
+    ///
+    /// So the barrier is the journal lock, which the reader ([`journal`](Self::journal)) must take
+    /// anyway: it is held across the bump and released only once the record is in. The woken client
+    /// gets its reply during the bump, spends a socket round trip coming back, and then blocks on
+    /// this lock for as long as it takes to append — after which the answer is complete. The lock
+    /// this needs already existed; what is new is where it is released.
+    pub fn announce(&self, session: &str, events: Vec<crate::events::Event>) -> u64 {
+        let entry = self.entry(session);
+        let mut journal = entry.journal.lock().unwrap_or_else(PoisonError::into_inner);
+        let revision = entry.revision.bump();
+        journal.emit(revision, events);
+        revision
+    }
+
     /// A session ENDED: wake everything parked on it, then forget its channel.
     ///
     /// The wake is not a courtesy. A client parked on `scene/waitFor` for a session that has just

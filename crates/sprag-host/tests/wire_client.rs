@@ -2710,3 +2710,55 @@ fn the_events_family_reads_a_change_by_cursor_and_reading_does_not_bump() {
         "`events.zzz` belongs to a declared family and is malformed, not unknown: {malformed}",
     );
 }
+
+/// **THE slice-4 proof, over a real socket.** The agent transition is the event this niche exists
+/// for, and it is the one the dispatch funnel cannot derive — so this asks whether the SWEEP's own
+/// verdict reaches a reader as a typed change.
+///
+/// Blind on purpose, like `one_query_on_a_never_queried_daemon_answers_a_settled_verdict`: nothing
+/// connects while the settle window runs. A verdict resting on an ABSENCE ("the agent stopped
+/// working") is confirmed by a clock nothing else in the daemon runs, so a test that kept a client
+/// attached would be measuring the client's wakes rather than the waker's own pass.
+#[test]
+fn the_sweeps_own_verdict_reaches_a_reader_as_a_typed_change() {
+    let (_host, sock) = spawn_host_running(&[
+        "sh",
+        "-c",
+        "printf '\\033]2;\\342\\234\\263 Claude Code\\007\\033[2J\\033[H\\342\\235\\257\\n  \
+         \\342\\217\\270 manual mode on \\302\\267 ? for shortcuts\\n'; cat",
+    ]);
+
+    // The daemon alone with its clock, long enough for the candidate to settle and publish.
+    std::thread::sleep(Duration::from_secs(12));
+
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned host socket");
+
+    // From the beginning of time, because this reader was not here when it happened — which is the
+    // whole point: the record outlives the wake, so a client that arrives late still learns.
+    let batch: Value = conn
+        .call(
+            "scene/query",
+            json!({ "path": mux_action_path(&events_slot_since(0)) }),
+        )
+        .expect("the events family answers");
+    let events = batch["events"].as_array().expect("an events array");
+    assert!(
+        events
+            .iter()
+            .any(|event| event["type"] == "pane_agent_state_changed" && event["pane"] == 0),
+        "the settle waker's own transition is readable as a typed change: {batch}",
+    );
+    assert_eq!(
+        batch["lost"], false,
+        "and nothing was evicted before this reader arrived: {batch}",
+    );
+
+    // The record names its subject and nothing else — the reader turns it into ONE targeted read of
+    // the slot where a verdict is defined, rather than being handed a second copy of it here.
+    let entry = pane_entry(&mut conn, 0);
+    assert_eq!(
+        entry["agent"]["state"], "idle",
+        "and the subject it names answers: {entry}",
+    );
+}
