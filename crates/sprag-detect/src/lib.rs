@@ -111,7 +111,7 @@ use sprag_vt::Screen;
 
 mod track;
 
-pub use track::{DEFAULT_SETTLE, Hysteresis, Tracker};
+pub use track::{DEFAULT_SETTLE, Hysteresis, ReportOutcome, Tracker};
 
 /// How many rule evaluations have run, process-wide.
 static EVALUATIONS: AtomicU64 = AtomicU64::new(0);
@@ -194,6 +194,28 @@ impl AgentState {
             Self::Working => Some("working"),
             Self::Blocked => Some("blocked"),
             Self::Idle => Some("idle"),
+        }
+    }
+
+    /// The state a REPORTER named, or `None` for a token that is not one of the three.
+    ///
+    /// [`wire_str`](Self::wire_str)'s inverse, written here so the vocabulary has ONE definition: a
+    /// process reporting its own state uses the spelling a client already reads, and a spelling
+    /// invented at a wire boundary could not be published.
+    ///
+    /// **`unknown` is deliberately not accepted**, and the asymmetry is the point.
+    /// [`Unknown`](Self::Unknown) means "no manifest claims this pane", which is a conclusion about
+    /// the RULES and not a state a reporter is in. A reporter that no longer knows what it is doing
+    /// is asking to be scraped again — which is a RELEASE, not a report of `unknown`, and the two
+    /// must not collapse: the second would pin an authoritative "not an agent" over a pane the
+    /// screen can see perfectly well.
+    #[must_use]
+    pub fn from_wire(token: &str) -> Option<Self> {
+        match token {
+            "working" => Some(Self::Working),
+            "blocked" => Some(Self::Blocked),
+            "idle" => Some(Self::Idle),
+            _ => None,
         }
     }
 
@@ -1170,6 +1192,32 @@ mod tests {
         assert_eq!(AgentState::Working.wire_str(), Some("working"));
         assert_eq!(AgentState::Blocked.wire_str(), Some("blocked"));
         assert_eq!(AgentState::Idle.wire_str(), Some("idle"));
+    }
+
+    /// The vocabulary has ONE definition, so what a client reads is what a reporter may write — and
+    /// `unknown` is the one asymmetry, on purpose.
+    #[test]
+    fn from_wire_round_trips_the_three_states_and_refuses_the_fourth() {
+        for state in [AgentState::Working, AgentState::Blocked, AgentState::Idle] {
+            let token = state.wire_str().expect("a known state has a token");
+            assert_eq!(
+                AgentState::from_wire(token),
+                Some(state),
+                "{token:?} must read back as the state it is published as",
+            );
+        }
+        assert_eq!(
+            AgentState::from_wire("unknown"),
+            None,
+            "`unknown` is a conclusion about the RULES, not a state a reporter can be in — a \
+             reporter that no longer knows is asking to be scraped, which is a release",
+        );
+        assert_eq!(AgentState::from_wire(""), None);
+        assert_eq!(
+            AgentState::from_wire("Working"),
+            None,
+            "and the token is exact"
+        );
     }
 
     // ── The SECOND agent (R251). Every fixture below was captured from a real `codex` driven in a

@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 use sprag_vt::Screen;
 
-use crate::{Manifest, Ruleset, Verdict};
+use crate::{AgentState, Manifest, Ruleset, Verdict};
 
 /// The default settle window.
 ///
@@ -190,6 +190,49 @@ pub struct Tracker {
     /// By name rather than by index into the manifest list, because slice 4 reloads that list from
     /// a file: a name survives a reload and a position does not.
     identity: Option<String>,
+    /// The REPORT in force, when a process inside the pane has said what it is doing — the second
+    /// kind of evidence this tracker weighs, and the only one that outranks the screen.
+    ///
+    /// `None` is a pane whose state is inferred, which is every pane before anything reports and
+    /// every pane whose reporter has been [`released`](Tracker::release_report).
+    reported: Option<Reported>,
+    /// Set when the pane's published answer has to be RE-DERIVED from the screen and nothing on the
+    /// screen will say so — today, exactly a release.
+    ///
+    /// It is a flag rather than a recomputation because the recomputation needs a screen, which this
+    /// type is never handed except by [`observe`](Self::observe). See
+    /// [`owes_look`](Self::owes_look).
+    owes_look: bool,
+}
+
+/// A report in force: who said it, and the sequence number they said it with.
+///
+/// The state itself is NOT here — it goes straight into `published`, because a report is the
+/// published answer rather than a candidate for it. What is kept is only what the NEXT report has
+/// to be judged against.
+#[derive(Debug)]
+struct Reported {
+    /// The reporter's name, as it will appear on the wire. Compared against the next report's so a
+    /// replay from the SAME speaker is refused while a new speaker is heard.
+    source: String,
+    /// The last sequence number accepted from `source`, if it sent one. `None` for a reporter with
+    /// no clock (a person at a command line), which is therefore never refused as stale.
+    seq: Option<u64>,
+}
+
+/// What a [`report`](Tracker::report) did.
+///
+/// Two independent answers, and a caller needs both: a report can be ACCEPTED without CHANGING
+/// anything (the agent says `working` twice), and a refused one changes nothing either — so
+/// `changed` alone cannot tell a duplicate from a rejection, and only `accepted` can tell a
+/// reporter that its clock has gone backwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReportOutcome {
+    /// Whether the report was taken as authoritative. `false` for a stale sequence number from the
+    /// source that is already speaking — a replayed or out-of-order message.
+    pub accepted: bool,
+    /// Whether the PUBLISHED verdict moved, which is what wakes a client and advances `seq`.
+    pub changed: bool,
 }
 
 impl Default for Tracker {
@@ -209,6 +252,8 @@ impl Tracker {
             pending: None,
             seen: None,
             identity: None,
+            reported: None,
+            owes_look: false,
         }
     }
 
@@ -292,9 +337,142 @@ impl Tracker {
         } else {
             self.seen = Some(Seen::of(screen, title, revision));
         }
+        // A REPORTED pane is not evaluated at all: the rules would produce a candidate that must
+        // lose, so running them would buy nothing and pay for every pattern of every manifest on a
+        // path served per client wake. The memory above is still refreshed, and that is what keeps a
+        // reported pane CHEAP rather than merely overruled — with the screen and the ruleset both
+        // recorded as seen, the pane is neither stale nor quiescence-skipped-with-a-lie, so it owes
+        // nothing until it reports again or is released.
+        if self.reported.is_some() {
+            return &self.published;
+        }
+        // A look re-derived the answer, so whatever owed one is served.
+        self.owes_look = false;
         let candidate = self.evaluate(screen, title, rules.manifests());
         self.consider(candidate, now);
         &self.published
+    }
+
+    /// Take a REPORT from a process inside the pane: publish `state` at once and hold the screen off
+    /// until the report is released.
+    ///
+    /// # Why this skips the settle window entirely
+    ///
+    /// [`Hysteresis`] exists for one reason, and it is a property of SCREENS: a resting verdict is
+    /// asserted by the ABSENCE of a working signal, and the working signal is an animation, so an
+    /// absence may be an artifact of the instant the sample was taken. A report is not a sample. The
+    /// agent is not being observed between spinner frames — it is saying what it is doing, at the
+    /// moment it starts or stops doing it. Making it wait would delay the one thing the report is
+    /// better at than the scrape.
+    ///
+    /// Any pending candidate is dropped for the same reason a disagreeing observation drops one:
+    /// something authoritative has settled the question the candidate was waiting to answer.
+    ///
+    /// # Freshness, and why a new speaker is not judged by the old one's clock
+    ///
+    /// A `seq` is compared only against the last one accepted from the SAME `source`. A reporter's
+    /// sequence is its own monotonic clock, so comparing across sources would let one integration's
+    /// numbering silence another's; and a pane runs one agent, so a second source appearing is a new
+    /// authority rather than a competing sample of the same one. The newest speaker owns the pane,
+    /// and a replay from the speaker that is already talking is refused.
+    ///
+    /// A report with no `seq` is always accepted: a caller with no clock (a person at a command
+    /// line, a shell hook with no counter) has nothing to be stale against.
+    pub fn report(
+        &mut self,
+        state: AgentState,
+        agent: Option<String>,
+        source: &str,
+        seq: Option<u64>,
+    ) -> ReportOutcome {
+        if let Some(held) = &self.reported
+            && held.source == source
+            && let (Some(last), Some(incoming)) = (held.seq, seq)
+            && incoming <= last
+        {
+            return ReportOutcome {
+                accepted: false,
+                changed: false,
+            };
+        }
+        // A reporter that names itself SETS the pane's identity; one that does not leaves it, and the
+        // published verdict falls back to whatever the pane already was. That asymmetry is the same
+        // one `evaluate` already keeps — the memory answers where the current evidence is silent about
+        // WHO, never about what — and getting it wrong is not hypothetical: publishing `agent: None`
+        // for a nameless report would run `publish`'s identity-clearing rule, so a `claude` pane whose
+        // hook reported `idle` without repeating its name would come back from a release as nobody at
+        // all. A test found it.
+        if agent.is_some() {
+            self.identity.clone_from(&agent);
+        }
+        let verdict = Verdict {
+            state,
+            agent: agent.or_else(|| self.identity.clone()),
+            // A report names no RULE, and inventing one here would put a rule id on the wire that
+            // fired nothing. `source` is what a reader asks instead — see `reported_source`.
+            rule: None,
+        };
+        // Kept even when the state has not moved: the new `seq` is what the NEXT report is judged
+        // against, so a duplicate still advances the reporter's clock.
+        self.reported = Some(Reported {
+            source: source.to_owned(),
+            seq,
+        });
+        self.owes_look = false;
+        let changed = verdict != self.published;
+        if changed {
+            self.publish(verdict);
+        } else {
+            // Nothing published, so nothing about the pending candidate has been decided by a
+            // `publish` — but the question it was waiting on is answered all the same.
+            self.pending = None;
+        }
+        ReportOutcome {
+            accepted: true,
+            changed,
+        }
+    }
+
+    /// Give the pane back to the screen: drop any report in force and owe a fresh look.
+    ///
+    /// Answers whether a report was actually in force, so a caller can tell "stopped listening to a
+    /// reporter" from "there was nobody to stop listening to".
+    ///
+    /// Two things are cleared, and the second is what makes the release take effect. The report goes,
+    /// and so does the quiescence memory: without that, a pane whose screen has not moved since the
+    /// report would be skipped by [`observe`](Self::observe)'s own exact-skip and would keep
+    /// publishing the reported answer with nothing left to justify it. The published verdict is
+    /// deliberately NOT cleared — it stays as the last thing anybody knew until a look replaces it,
+    /// which is better than a flicker through `unknown` that no client asked for.
+    pub fn release_report(&mut self) -> bool {
+        let held = self.reported.take().is_some();
+        if held {
+            self.seen = None;
+            self.owes_look = true;
+        }
+        held
+    }
+
+    /// Who is reporting this pane, or `None` when its state is inferred from the screen.
+    ///
+    /// Published beside the verdict so a reader can tell an authority from an inference — D7's rule
+    /// (a gate that cannot say what it saw cannot be diagnosed) applied to the second kind of
+    /// evidence.
+    #[must_use]
+    pub fn reported_source(&self) -> Option<&str> {
+        self.reported.as_ref().map(|held| held.source.as_str())
+    }
+
+    /// Whether this pane owes a fresh look that no screen event will ask for.
+    ///
+    /// A released pane is settled, known, and evaluated under the current rules, so every other
+    /// question a caller asks about "does this pane need attention" answers `false` — while its
+    /// published verdict is a report nobody stands behind any more. This is the third such reason,
+    /// beside a due candidate and a replaced ruleset, and it is the same shape: an input moved that
+    /// was not on the screen.
+    #[must_use]
+    pub const fn owes_look(&self) -> bool {
+        self.owes_look
     }
 
     /// Which rules produced the published verdict, or `None` for a pane never observed.
@@ -984,6 +1162,295 @@ mod tests {
     /// same candidate on every tick, and a window restarted by each of those never expires at all:
     /// the pane would be stuck in its previous state for as long as it stayed busy, which is the
     /// same freeze the pending exception exists to prevent, arriving by the other door.
+    /// A REPORT publishes the moment it arrives, where the same answer from the screen has to hold
+    /// for the settle window first.
+    ///
+    /// The two halves are the test: hysteresis exists because a resting verdict rests on the absence
+    /// of an ANIMATED signal, and that reasoning does not apply to a process saying what it is doing.
+    /// Without the control this would only show that reports are published, not that they skip a wait
+    /// the screen cannot.
+    #[test]
+    fn a_report_publishes_at_once_where_the_screen_would_have_to_wait() {
+        let rules = Ruleset::new(vec![claude()]);
+        let base = Instant::now();
+
+        // The control: the SCREEN going quiet. The working title stops, and the resting verdict is
+        // still not published, because it has not held for the window.
+        let mut scraped = Tracker::default();
+        let em = painted(CLAUDE_FOOTER);
+        scraped.observe(em.screen(), Some("⠂ Reading files"), &rules, base);
+        assert_eq!(scraped.verdict().state, AgentState::Working);
+        scraped.observe(em.screen(), Some("✳ Reading files"), &rules, base);
+        assert_eq!(
+            scraped.verdict().state,
+            AgentState::Working,
+            "the screen's resting answer waits for the window",
+        );
+
+        // The report: the same resting state, published on arrival.
+        let mut reported = Tracker::default();
+        reported.observe(em.screen(), Some("⠂ Reading files"), &rules, base);
+        assert_eq!(reported.verdict().state, AgentState::Working);
+        let outcome = reported.report(AgentState::Idle, Some("claude".to_owned()), "hook", Some(1));
+        assert_eq!(
+            outcome,
+            ReportOutcome {
+                accepted: true,
+                changed: true
+            },
+        );
+        assert_eq!(reported.verdict().state, AgentState::Idle);
+        assert_eq!(reported.reported_source(), Some("hook"));
+        assert_eq!(
+            reported.verdict().rule,
+            None,
+            "a report names no rule, because none fired",
+        );
+    }
+
+    /// While a report stands the screen cannot overrule it; a release gives the pane straight back.
+    ///
+    /// The screen here says something LOUD — a dialog, which is published on sight and never waits —
+    /// so the report is winning against the strongest evidence the scrape has.
+    #[test]
+    fn a_report_outranks_the_screen_until_it_is_released() {
+        let rules = Ruleset::new(vec![claude()]);
+        let mut tracker = Tracker::default();
+        let mut em = painted(CLAUDE_FOOTER);
+        let base = Instant::now();
+
+        // Claimed by its footer first, then asking: a real agent's modal covers the fingerprint, so
+        // the dialog is read through the identity the footer established.
+        tracker.observe(em.screen(), Some("⠂ x"), &rules, base);
+        repaint(&mut em, DIALOG);
+        tracker.observe(
+            em.screen(),
+            Some("✳ x"),
+            &rules,
+            base + Duration::from_millis(100),
+        );
+        assert_eq!(
+            tracker.verdict().state,
+            AgentState::Blocked,
+            "the fixture really is a screen the rules read as blocked",
+        );
+
+        tracker.report(AgentState::Idle, None, "hook", Some(1));
+        assert_eq!(
+            tracker.verdict().agent.as_deref(),
+            Some("claude"),
+            "a report that does not repeat the name leaves the pane the agent it already was",
+        );
+        // Repaint so the quiescence gate cannot be what holds the answer still: the screen HAS moved,
+        // and the report still wins.
+        repaint(&mut em, DIALOG);
+        tracker.observe(
+            em.screen(),
+            Some("✳ x"),
+            &rules,
+            base + Duration::from_secs(10),
+        );
+        assert_eq!(
+            tracker.verdict().state,
+            AgentState::Idle,
+            "the screen argued blocked and the report still owns the pane",
+        );
+
+        assert!(tracker.release_report(), "a report was in force");
+        assert!(
+            !tracker.release_report(),
+            "and only the first release drops it"
+        );
+        assert_eq!(tracker.reported_source(), None);
+        tracker.observe(
+            em.screen(),
+            Some("✳ x"),
+            &rules,
+            base + Duration::from_secs(11),
+        );
+        assert_eq!(
+            tracker.verdict().state,
+            AgentState::Blocked,
+            "released, the pane is the screen's again",
+        );
+    }
+
+    /// A release is served by the next LOOK, and it is the release that clears the quiescence memory —
+    /// without which the screen it must be re-read from would be skipped as unchanged.
+    #[test]
+    fn a_release_owes_a_look_and_the_look_serves_it() {
+        let rules = Ruleset::new(vec![claude()]);
+        let mut tracker = Tracker::default();
+        let mut em = painted(CLAUDE_FOOTER);
+        let base = Instant::now();
+
+        tracker.observe(em.screen(), Some("⠂ x"), &rules, base);
+        repaint(&mut em, DIALOG);
+        tracker.observe(
+            em.screen(),
+            Some("✳ x"),
+            &rules,
+            base + Duration::from_millis(100),
+        );
+        assert_eq!(tracker.verdict().state, AgentState::Blocked);
+        tracker.report(AgentState::Idle, None, "hook", None);
+        assert!(!tracker.owes_look(), "a report is its own answer");
+
+        tracker.release_report();
+        assert!(
+            tracker.owes_look(),
+            "released, and nothing on the screen will say so"
+        );
+        // The screen has NOT moved since the report — the exact case the cleared memory exists for.
+        tracker.observe(
+            em.screen(),
+            Some("✳ x"),
+            &rules,
+            base + Duration::from_millis(200),
+        );
+        assert!(!tracker.owes_look(), "the look served it");
+        assert_eq!(tracker.verdict().state, AgentState::Blocked);
+    }
+
+    /// A replay from the source already speaking is refused; a NEW speaker is heard whatever its clock
+    /// says; and a reporter with no clock is never stale.
+    #[test]
+    fn a_replay_is_refused_but_a_new_speaker_is_heard() {
+        let mut tracker = Tracker::default();
+
+        assert!(
+            tracker
+                .report(AgentState::Working, None, "hook", Some(5))
+                .accepted,
+        );
+        assert_eq!(
+            tracker.report(AgentState::Idle, None, "hook", Some(5)),
+            ReportOutcome {
+                accepted: false,
+                changed: false
+            },
+            "the same sequence number twice is a replay",
+        );
+        assert_eq!(
+            tracker.verdict().state,
+            AgentState::Working,
+            "and a refused report changes nothing",
+        );
+        assert_eq!(
+            tracker.report(AgentState::Idle, None, "hook", Some(4)),
+            ReportOutcome {
+                accepted: false,
+                changed: false
+            },
+            "nor does one that goes backwards",
+        );
+        assert!(
+            tracker
+                .report(AgentState::Idle, None, "hook", Some(6))
+                .accepted,
+            "forwards is heard",
+        );
+
+        // A different integration, whose clock starts wherever it starts. Judging it by the first
+        // source's numbering would silence it entirely.
+        assert!(
+            tracker
+                .report(AgentState::Working, None, "other", Some(1))
+                .accepted,
+            "a new speaker is not judged by the old one's clock",
+        );
+        assert_eq!(tracker.reported_source(), Some("other"));
+        // And a reporter with no clock at all (a person at a command line).
+        assert!(
+            tracker
+                .report(AgentState::Blocked, None, "cli", None)
+                .accepted,
+        );
+        assert!(
+            tracker
+                .report(AgentState::Blocked, None, "cli", None)
+                .accepted,
+            "with nothing to be stale against, nothing is refused",
+        );
+    }
+
+    /// A duplicate report is ACCEPTED and changes nothing — and the two answers are independent, which
+    /// is why `ReportOutcome` carries both.
+    #[test]
+    fn a_duplicate_report_is_accepted_and_publishes_nothing() {
+        let mut tracker = Tracker::default();
+        tracker.report(AgentState::Working, None, "hook", Some(1));
+        let published = tracker.seq();
+
+        let outcome = tracker.report(AgentState::Working, None, "hook", Some(2));
+        assert_eq!(
+            outcome,
+            ReportOutcome {
+                accepted: true,
+                changed: false
+            },
+        );
+        assert_eq!(
+            tracker.seq(),
+            published,
+            "the published generation does not move for an answer that did not",
+        );
+        // The reporter's clock DID advance, so its next message is judged against the newer number.
+        assert!(
+            !tracker
+                .report(AgentState::Idle, None, "hook", Some(2))
+                .accepted,
+            "a duplicate still advances the source's sequence",
+        );
+    }
+
+    /// A reported pane does not run the rules at all — the cheapness claim, measured rather than
+    /// argued.
+    ///
+    /// `sprag_detect::work` counts evaluations process-wide, so the assertion is on the DELTA across
+    /// one observe. Overruling the screen after evaluating it would be correct and would pay for every
+    /// pattern of every manifest on a path served per client wake.
+    #[test]
+    fn a_reported_pane_costs_no_evaluation() {
+        let rules = Ruleset::new(vec![claude(), codex()]);
+        let mut tracker = Tracker::default();
+        let mut em = painted(DIALOG);
+        let base = Instant::now();
+
+        tracker.observe(em.screen(), Some("claude"), &rules, base);
+        tracker.report(AgentState::Working, None, "hook", None);
+
+        // The screen moves, so the quiescence gate is not what is being measured here.
+        repaint(&mut em, CLAUDE_FOOTER);
+        let before = crate::work().evaluations_total;
+        tracker.observe(
+            em.screen(),
+            Some("claude"),
+            &rules,
+            base + Duration::from_secs(1),
+        );
+        assert_eq!(
+            crate::work().evaluations_total,
+            before,
+            "a reported pane's screen is recorded, not evaluated",
+        );
+
+        // The control: released, the same moved screen DOES cost an evaluation.
+        tracker.release_report();
+        repaint(&mut em, DIALOG);
+        let before = crate::work().evaluations_total;
+        tracker.observe(
+            em.screen(),
+            Some("claude"),
+            &rules,
+            base + Duration::from_secs(2),
+        );
+        assert!(
+            crate::work().evaluations_total > before,
+            "and the scrape still runs when it is the authority",
+        );
+    }
+
     #[test]
     fn a_pane_that_keeps_repainting_settles_when_the_candidate_has_held_long_enough() {
         let rules = Ruleset::new(vec![claude()]);
