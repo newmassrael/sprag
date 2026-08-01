@@ -15,6 +15,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+use sprag_host::agent::SWEEP_INTERVAL;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DROP_FILE_ACTION,
     FULL_TEXT_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION, LAYOUT_SLOT, LINKS_SLOT,
@@ -2316,6 +2317,7 @@ fn an_edited_manifest_reaches_a_pane_that_is_not_moving() {
     // The user corrects a built-in rule: the same screen now reads as WORKING. `working` is evidence
     // a rule SAW, so it publishes on sight — the edit's arrival is not itself delayed by a settle
     // window, and the timeout below is about the sweep alone.
+    let edited = Instant::now();
     std::fs::write(
         &config,
         "[options]\n\n[[agent]]\nname = \"claude\"\n\n[[agent.rule]]\nid = \"idle-glyph\"\n\
@@ -2326,6 +2328,29 @@ fn an_edited_manifest_reaches_a_pane_that_is_not_moving() {
     let woken = rx.recv_timeout(Duration::from_secs(30)).expect(
         "the daemon never advanced the revision after the edit — nothing re-read the file, or \
          nothing looked at a pane that was neither due nor unknown",
+    );
+    // THE LATENCY CONTRACT, asserted rather than described. `AgentManifests`' docs state that an
+    // edit takes effect "within one sweep", and `spawn_agent_waker` states WHY that is one and not
+    // two: the re-read runs BEFORE the walk, so the panes the edit invalidates are served by the
+    // very pass that invalidated them. Both were durable comments with nothing behind them.
+    //
+    // The bound separates the two mechanisms rather than fitting the measurement. Serving the stale
+    // panes on the pass AFTER the reload — the shape the ordering exists to avoid — costs a second
+    // interval, so anything under one-and-a-half intervals is the correct ordering and anything at
+    // two is the wrong one. Measured 4.997-5.039 s over five runs at a 5 s interval, so the slack
+    // here is 2.5 s against an observed overshoot of 40 ms.
+    //
+    // That tight clustering at the TOP of the range is not luck and is not an average: this test
+    // reaches the WORST case by construction, because `settled` above is itself published by the
+    // pass that precedes the edit. A 1.3 s sleep inserted before the write moved the reading to
+    // 3.698-3.710 s, which is what proves the arrival is the next sweep BOUNDARY rather than a
+    // fixed interval — and which is why the assertion below is a real ceiling rather than a
+    // description of where this fixture happens to sit.
+    let latency = edited.elapsed();
+    assert!(
+        latency < SWEEP_INTERVAL + SWEEP_INTERVAL / 2,
+        "the edit took {latency:?}, which is a second sweep — the re-read is no longer running \
+         before the walk it invalidates",
     );
     let revision = woken.expect("waitFor answered an error");
     assert!(
