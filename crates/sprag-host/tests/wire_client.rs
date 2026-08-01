@@ -16,11 +16,11 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DROP_FILE_ACTION, FULL_TEXT_SLOT,
-    JOIN_PANE_ACTION, KILL_SESSION_ACTION, LAYOUT_SLOT, LINKS_SLOT, NEW_SESSION_ACTION,
-    NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
-    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT,
-    cells_slot_at, project_slot_for,
+    AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DROP_FILE_ACTION,
+    FULL_TEXT_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION, LAYOUT_SLOT, LINKS_SLOT,
+    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, SELECT_WINDOW_ACTION,
+    SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION,
+    WINDOWS_SLOT, cells_slot_at, project_slot_for,
 };
 use sprag_host::{CellFrame, mux_action_path, pane_input_path};
 use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn};
@@ -2345,6 +2345,98 @@ fn an_edited_manifest_reaches_a_pane_that_is_not_moving() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A BROKEN `[[agent]]` block is reported by the daemon that refused it, and the report clears when
+/// the file is fixed — over the real socket, against the real binary.
+///
+/// # Why this cannot be a unit test
+///
+/// Because the interesting transition is the one where NOTHING ELSE MOVES. A broken edit replaces no
+/// ruleset — `AgentManifests::refresh` answers `false` and keeps the last list that worked — so every
+/// pane keeps its verdict, the revision does not advance, and the only thing in the process that
+/// changed is a sentence nobody had a way to read until now. A test that asked the library would be
+/// asking the very function whose result the daemon is free to ignore; what has to be proved is that
+/// the daemon publishes it OUTSIDE the branch it would be natural to publish it inside.
+///
+/// # The three readings, and why the middle one is the point
+///
+/// Boot is clean, so the slot answers `null`: a report that appeared here would mean the daemon
+/// reported a file it had accepted. Then the file is BROKEN, and the sentence appears from a sweep
+/// this test never asks for — the daemon's own wake. Then it is FIXED, and the sentence goes away,
+/// which is the half a "report once and remember it" implementation gets wrong: a user who has
+/// corrected their config must stop being told it is broken.
+///
+/// REVERT-PROOF: move the publish inside `if replaced` in `sprag-term`'s `adopt_manifests` and the
+/// middle reading stays `null` forever — the daemon detects with the last good list and says nothing,
+/// which is exactly the state this round was opened to end.
+///
+/// The waits are sweep-length because a sweep is what does the work; they poll the CONDITION rather
+/// than sleeping a fixed span, so they cost the sweep and not the timeout.
+#[test]
+fn a_broken_agent_manifest_is_reported_and_the_report_clears_when_it_is_fixed() {
+    let dir = std::env::temp_dir().join(format!("sprag-wire-manifest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sprag")).expect("create the temp config dir");
+    let config = dir.join("sprag").join(sprag_host::config::CONFIG_FILE);
+    // A file that declares a USABLE manifest, so the daemon boots holding the user's own list and the
+    // edit below is a change to something it accepted — not a first read that happens to fail.
+    let good = "[[agent]]\nname = \"claude\"\ndisable = [\"idle-glyph\"]\n";
+    std::fs::write(&config, good).expect("write the initial config");
+
+    let (_host, sock) =
+        spawn_host_with(&["cat"], &[("XDG_CONFIG_HOME", &dir.display().to_string())]);
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned host socket");
+
+    assert_eq!(
+        manifest_report(&mut conn),
+        None,
+        "a daemon whose manifests ARE the user's reports nothing"
+    );
+
+    // The typo: a `disable` naming a rule that does not exist. Valid TOML, so nothing else in the
+    // file stops working — which is what makes this silent.
+    std::fs::write(
+        &config,
+        "[[agent]]\nname = \"claude\"\ndisable = [\"nope\"]\n",
+    )
+    .expect("break the config");
+    let reported = wait_until(Duration::from_secs(30), || {
+        manifest_report(&mut conn).is_some()
+    });
+    assert!(
+        reported,
+        "the daemon never reported the broken manifests — nothing published outside the reload branch"
+    );
+    let message = manifest_report(&mut conn).expect("just observed");
+    assert!(
+        message.contains("nope"),
+        "and the report names what is wrong, rendered by the end that read the file: {message}"
+    );
+
+    // Fixed. The report has to go: a user who corrected the file must stop being told it is broken.
+    std::fs::write(&config, good).expect("fix the config");
+    let cleared = wait_until(Duration::from_secs(30), || {
+        manifest_report(&mut conn).is_none()
+    });
+    assert!(cleared, "the report survived the fix: {message}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The daemon's verdict on the user's agent manifests, or `None` when it has none to give.
+fn manifest_report(conn: &mut HostConn) -> Option<String> {
+    let value: Value = conn
+        .call(
+            "scene/query",
+            json!({ "path": mux_action_path(AGENT_MANIFESTS_SLOT) }),
+        )
+        .expect("agent manifests query");
+    value
+        .get("error")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
 }
 
 /// One pane's entry from the `/sprag_mux` pane list.

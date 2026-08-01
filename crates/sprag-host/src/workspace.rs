@@ -76,11 +76,12 @@ use crate::window::{SizeRequest, WindowSize};
 // The mux control action names + query slots are the shared wire ABI vocabulary
 // ([`crate::wire`]) — the SAME consts a client addresses for pane lifecycle.
 use crate::wire::{
-    BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DROP_FILE_ACTION, GLOBAL_COMMANDS_SLOT,
-    GRID_WORK_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
-    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PROJECT_FIELD, RENAME_WINDOW_ACTION,
-    RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION,
-    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, WINDOW_SIZE_SLOT, WINDOWS_SLOT,
+    AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DROP_FILE_ACTION,
+    GLOBAL_COMMANDS_SLOT, GRID_WORK_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION,
+    KILL_WINDOW_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT,
+    PROJECT_FIELD, RENAME_WINDOW_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_WINDOW_ACTION,
+    SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION,
+    WINDOW_SIZE_SLOT, WINDOWS_SLOT,
 };
 
 /// The mux-management engine `External`: a control surface over the shared
@@ -956,6 +957,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                     SchemaField::new(WINDOWS_SLOT, "list"),
                     SchemaField::new(WINDOW_SIZE_SLOT, "object"),
                     SchemaField::new(GLOBAL_COMMANDS_SLOT, "object"),
+                    SchemaField::new(AGENT_MANIFESTS_SLOT, "object"),
                     PROJECT_FIELD,
                 ]
             },
@@ -1275,6 +1277,10 @@ impl ExternalIntrospect for WorkspaceExternal {
             // same for every request the host serves, which is exactly why it is a fixed slot beside
             // the parametric project one rather than a variant of it.
             GLOBAL_COMMANDS_SLOT => Some(global_commands_value()),
+            // Why the agent manifests in force are not the user's. Unscoped like the two above and
+            // for a stronger reason: the ruleset is the DAEMON's, one list for every session it
+            // serves, so scoping this answer would name a session for a fact no session owns.
+            AGENT_MANIFESTS_SLOT => Some(agent_manifests_value(self.agents.as_deref())),
             // The project governing ONE pane: the commands its `.sprag.toml` declares. Parametric,
             // so it is matched after the fixed slots above (`project.<pane>`, see `PROJECT_FIELD`
             // for why this lives on the mux external rather than the pane's own).
@@ -1407,6 +1413,26 @@ fn global_commands_value() -> IntrospectValue {
         Some(Err(error)) => IntrospectValue::Json(serde_json::json!({
             "error": error.to_string(),
         })),
+    }
+}
+
+/// Serialise the daemon's verdict on the user's agent manifests: an `{error}` object naming why the
+/// ruleset in force is not the one `config.toml` declares, or `null` when it is.
+///
+/// The `{error}` shape is [`global_commands_value`]'s, deliberately, because a client meets the
+/// three of them in one list and a third spelling would be a third parser. What it does NOT share is
+/// the disk read: the sentence was rendered when the daemon last read the file, so this is a lock
+/// and a clone (see [`AGENT_MANIFESTS_SLOT`]).
+///
+/// `None` agents is an in-process host with no detector at all — no manifests, so nothing to report,
+/// which is the same `null` a working file gives. The two are indistinguishable ON PURPOSE: a client
+/// paints nothing in both cases, and a host that cannot detect agents has no verdict to defend.
+fn agent_manifests_value(agents: Option<&crate::AgentClock>) -> IntrospectValue {
+    let report =
+        agents.and_then(|clock| clock.with(|state| state.manifest_report().map(str::to_owned)));
+    match report {
+        None => IntrospectValue::Null,
+        Some(error) => IntrospectValue::Json(serde_json::json!({ "error": error })),
     }
 }
 
@@ -1599,6 +1625,49 @@ mod tests {
             ),
             agents,
         )
+    }
+
+    /// The manifest report crosses as `{error}` and its absence as `null` — the shape the two config
+    /// slots beside it already use, so a client that meets all three parses one thing.
+    ///
+    /// The three readings here are the three states a client has to tell apart, and the middle one
+    /// is the one that could quietly stop working: a report is published by a THREAD this test does
+    /// not run, so a slot that read the file itself, or a clock the surface never got, would answer
+    /// `null` here and look exactly like a healthy daemon.
+    ///
+    /// A surface with NO detector answers `null` too, and that is not a gap. A host that evaluates
+    /// nothing has no ruleset for the user's file to have failed to replace, so it has no verdict to
+    /// report and paints nothing — which is what `null` asks a client to do.
+    ///
+    /// REVERT-PROOF: have `agent_manifests_value` stop asking the clock and the middle reading goes
+    /// back to `null` — the shape a slot that answered from anywhere but the daemon's own holder
+    /// would have.
+    #[test]
+    fn the_manifest_slot_says_null_or_the_daemons_own_sentence() {
+        let reg = registry();
+        let (ext, agents) = control_with_agents(&reg);
+        assert_eq!(
+            ext.query(AGENT_MANIFESTS_SLOT),
+            Some(IntrospectValue::Null),
+            "a daemon whose manifests ARE the user's reports nothing"
+        );
+
+        let sentence = "config.toml: `disable` names no rule `nope` in agent `claude`";
+        agents.with(|state| state.set_manifest_report(Some(sentence.to_owned())));
+        let Some(IntrospectValue::Json(answer)) = ext.query(AGENT_MANIFESTS_SLOT) else {
+            panic!("a published report answers with a JSON object");
+        };
+        assert_eq!(
+            answer["error"], sentence,
+            "carried VERBATIM: the daemon rendered it because only it knows the file"
+        );
+
+        let (plain, _) = control(&reg);
+        assert_eq!(
+            plain.query(AGENT_MANIFESTS_SLOT),
+            Some(IntrospectValue::Null),
+            "and a surface with no detector has no verdict to defend"
+        );
     }
 
     /// One pane's entry from the panes slot.

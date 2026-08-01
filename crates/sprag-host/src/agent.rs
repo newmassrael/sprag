@@ -133,6 +133,9 @@ pub struct AgentRegistry {
     /// use and why [`crate::config::AgentManifests`] holds the file rather than reading it.
     rules: Ruleset,
     trackers: HashMap<PaneId, Tracker>,
+    /// Why the ruleset above is not the one the user's file declares, if it is not — already
+    /// RENDERED, because only the end holding the file knows which file it is about.
+    manifest_report: Option<String>,
 }
 
 impl AgentRegistry {
@@ -146,6 +149,13 @@ impl AgentRegistry {
         Self {
             rules,
             trackers: HashMap::new(),
+            // Nothing has said these are not the user's. The holder that could say so
+            // ([`crate::config::AgentManifests`]) is read by the daemon's waker, which publishes
+            // through [`set_manifest_report`](Self::set_manifest_report) before it parks — so this
+            // default is "not asked yet" for exactly as long as a construction takes, and is the
+            // final answer for a registry nobody feeds a file to at all (a test, an in-process
+            // host).
+            manifest_report: None,
         }
     }
 
@@ -163,6 +173,31 @@ impl AgentRegistry {
     /// every remembered pane is [`stale`](Self::stale) until it has been looked at again.
     pub fn reload(&mut self, rules: Ruleset) {
         self.rules = rules;
+    }
+
+    /// Say why the ruleset in force is NOT the one the user's file declares — `None` when it is, or
+    /// when there is no file to disagree with.
+    ///
+    /// Separate from [`reload`](Self::reload), and the asymmetry is the whole reason this exists as
+    /// its own call. A BROKEN edit replaces no ruleset —
+    /// [`AgentManifests::refresh`](crate::config::AgentManifests::refresh) answers `false` and keeps
+    /// the last list that worked — and that is precisely the moment this moves from `None` to
+    /// `Some`. A report folded into `reload` would be published on every case except the one it is
+    /// for.
+    ///
+    /// The sentence is rendered by the caller because only the caller knows which file it describes,
+    /// the rule [`HostClient::global_commands`](crate::HostClient::global_commands) states for a
+    /// report that crosses the wire. This type still reads no file and holds no path: it is handed
+    /// the sentence exactly as it is handed the [`Ruleset`].
+    pub fn set_manifest_report(&mut self, report: Option<String>) {
+        self.manifest_report = report;
+    }
+
+    /// Why the ruleset in force is not the user's, if it is not — what a client with a surface
+    /// paints.
+    #[must_use]
+    pub fn manifest_report(&self) -> Option<&str> {
+        self.manifest_report.as_deref()
     }
 
     /// Whether this pane's published verdict was reached under a ruleset that has since been

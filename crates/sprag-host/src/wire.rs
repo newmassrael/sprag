@@ -428,6 +428,25 @@ pub const PROJECT_FIELD: SchemaField =
 /// Read ON DEMAND (a palette opening), never per frame: like the project read, it touches the disk.
 pub const GLOBAL_COMMANDS_SLOT: &str = "commands";
 
+/// The mux control external query slot: why the agent manifests IN FORCE are not the ones the user's
+/// `config.toml` declares, as `{error}` — and `null` when they are (or when the user declares none).
+///
+/// GLOBAL, which is what separates it from every H3 surface beside it: an agent verdict is a
+/// property of one pane and is published on the pane's own key, while a broken `[[agent]]` block
+/// takes the whole daemon's detection down to the built-ins. There is no pane to hang it on, so it
+/// is a fixed slot like [`GLOBAL_COMMANDS_SLOT`] rather than a field on the pane list.
+///
+/// Answered from the daemon's own holder rather than by re-reading the file, and the difference is
+/// not an optimisation. After a broken edit the rules in force are the last ones that WORKED, not
+/// the built-ins and not the file's — a fact only the waker that did the re-read knows. A slot that
+/// parsed the file itself would be a second authority reporting on a first, and would say "broken"
+/// for up to a sweep before the daemon had acted on it.
+///
+/// Read ON DEMAND — a palette opening, a `sprag agent`, an `agent_explain` — never per frame. It
+/// touches no disk at all (the report is already rendered and held), which is the one way it is
+/// CHEAPER than the two config slots above rather than merely alike.
+pub const AGENT_MANIFESTS_SLOT: &str = "agent_manifests";
+
 /// The `project.<pane>` query path for pane `id` — the ONE place that name is built, so a client and
 /// the host cannot spell it differently.
 #[must_use]

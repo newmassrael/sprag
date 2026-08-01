@@ -222,6 +222,11 @@ fn main() -> io::Result<()> {
     // served on every client wake (`config::AgentManifests`).
     let manifests = sprag_host::config::AgentManifests::load();
     let agents = Arc::new(AgentClock::new(manifests.rules().clone()));
+    // A file that is already broken at BOOT is reportable from the FIRST request, not from the first
+    // sweep five seconds later — and published HERE, synchronously, rather than as the waker's first
+    // act, because the socket below would otherwise be racing a thread that has not been scheduled
+    // yet. `false`: the clock was just constructed from these rules, so no reload is owed.
+    adopt_manifests(&agents, &manifests, false);
     spawn_agent_waker(
         Arc::clone(host.registry()),
         Arc::clone(&agents),
@@ -452,9 +457,8 @@ fn spawn_agent_waker(
                 //
                 // It runs before the walk, so the panes the edit invalidates are served by the very
                 // pass that invalidated them rather than one sweep later.
-                if manifests.refresh() {
-                    agents.with(|state| state.reload(manifests.rules().clone()));
-                }
+                let replaced = manifests.refresh();
+                adopt_manifests(&agents, &manifests, replaced);
             }
             // The pass itself is `sprag_host::sweep_once` — every input it reads is a library type,
             // so what is left here is the scheduling and nothing else. It also has to be callable:
@@ -462,6 +466,35 @@ fn spawn_agent_waker(
             // thread served requests, which is not a thing a closure in this file can be asked to do.
             sweep_once(&registry, &agents, &channels, now, sweep);
         }
+    });
+}
+
+/// Publish what the user's manifest file says into the clock every client reads: the ruleset in
+/// force when a re-read REPLACED it, and why that ruleset is not the user's whether or not it did.
+///
+/// One function because the two halves come from one act of reading and are published under one
+/// lock. `replaced` is [`AgentManifests::refresh`](sprag_host::config::AgentManifests::refresh)'s
+/// own answer at the sweep, and `false` at boot, where the clock was constructed from these rules
+/// already.
+///
+/// The report is NOT inside the `replaced` branch, and that is the point of writing this out: a
+/// broken edit replaces nothing — `refresh` answers `false` and keeps the last list that worked —
+/// which is exactly the edit a user needs told about. Publishing it beside the reload would have
+/// covered every case except the one the report exists for.
+///
+/// Rendered here, at the end that knows the file is `config.toml`, for
+/// [`sprag_host::HostClient::global_commands`]'s reason: a client re-rendering a
+/// [`ConfigError`](sprag_host::ConfigError) at the far end of the wire names a file it had to guess.
+fn adopt_manifests(
+    agents: &AgentClock,
+    manifests: &sprag_host::config::AgentManifests,
+    replaced: bool,
+) {
+    agents.with(|state| {
+        if replaced {
+            state.reload(manifests.rules().clone());
+        }
+        state.set_manifest_report(manifests.unusable().map(ToString::to_string));
     });
 }
 

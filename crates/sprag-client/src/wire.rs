@@ -87,13 +87,13 @@ use serde_json::{Value, json};
 use sprag_grid::ProjectionToken;
 use sprag_host::ClientSize;
 use sprag_host::wire::{
-    BREAK_PANE_ACTION, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT, CLOSE_ACTION,
-    DROP_FILE_ACTION, FOCUS_ACTION, FULL_TEXT_SLOT, GLOBAL_COMMANDS_SLOT, JOIN_PANE_ACTION,
-    KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, MOUSE_ACTION,
-    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, PROMPT_MARKS_SLOT,
-    RESIZE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
-    SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOW_SIZE_SLOT, WINDOWS_SLOT, cells_slot_at,
-    find_slot_for, project_slot_for, regex_slot_for,
+    AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT,
+    CLOSE_ACTION, DROP_FILE_ACTION, FOCUS_ACTION, FULL_TEXT_SLOT, GLOBAL_COMMANDS_SLOT,
+    JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
+    MOUSE_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION,
+    PROMPT_MARKS_SLOT, RESIZE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOW_SIZE_SLOT, WINDOWS_SLOT,
+    cells_slot_at, find_slot_for, project_slot_for, regex_slot_for,
 };
 use sprag_host::{
     CellFrame, HostClient, PaneAgent, PaneClipboardQuery, PaneClipboardWrite, PaneFind,
@@ -1869,6 +1869,22 @@ impl HostClient for WireHost {
             return Some(Err(message.to_owned()));
         }
         Some(serde_json::from_value::<UserConfig>(value).map_err(|error| error.to_string()))
+    }
+
+    /// Why the daemon's agent manifests are not the user's, over the mux `agent_manifests` slot. On
+    /// demand (a palette opening, a `sprag agent`), never per frame.
+    ///
+    /// TWO answers where its two neighbours have three, and the missing one is the success value:
+    /// the ruleset never crosses this wire, so there is nothing to deserialise and `Null` and "no
+    /// problem" are the same reading. The error travels ALREADY RENDERED and is passed through
+    /// verbatim, for the reason [`Self::global_commands`] states.
+    fn agent_manifest_report(&self) -> Option<String> {
+        let params = json!({ "path": mux_action_path(AGENT_MANIFESTS_SLOT) });
+        let value = self.request("scene/query", params, "agent_manifest_report")?;
+        value
+            .get("error")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
     }
 
     fn pane_prompt_positions(&self, id: PaneId) -> Vec<usize> {

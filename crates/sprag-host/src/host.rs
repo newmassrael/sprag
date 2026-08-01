@@ -696,6 +696,31 @@ pub trait HostClient {
         None
     }
 
+    /// Why the agent manifests IN FORCE are not the ones the user's `config.toml` declares — `None`
+    /// when they are, when the user declares none, or when this host detects no agents at all.
+    ///
+    /// A rendered sentence, like [`global_commands`](Self::global_commands)'s error and for the same
+    /// reason. It is not `Result`-shaped, though, because there is no success value to carry: the
+    /// ruleset itself never crosses the wire (a client evaluates nothing — D2), so the only thing a
+    /// client can be told is what went wrong.
+    ///
+    /// GLOBAL, where every other H3 answer is per-pane. A typo in one `[[agent]]` block does not
+    /// mis-detect one pane; it drops the whole daemon back to whatever list last worked, so the
+    /// report belongs to the workspace rather than to any pane in it. That is also why it cannot be
+    /// derived from [`pane_agents`](Self::pane_agents): a workspace of shells reports no agents
+    /// whether the file is broken or perfect.
+    ///
+    /// Defaulted to `None`, and the DEFAULT is the in-process arm's real answer, exactly as
+    /// [`pane_agent`](Self::pane_agent)'s is: the manifests are read by the daemon's waker, so a host
+    /// without one is not being modest about a fact it holds — it holds none.
+    ///
+    /// A READ that touches NO disk (the daemon rendered this when it last read the file), but it is
+    /// still asked on demand — a palette opening, a `sprag agent` — because it is a report a person
+    /// reads, not a frame input.
+    fn agent_manifest_report(&self) -> Option<String> {
+        None
+    }
+
     /// Move the pane `id` into the window named `dst` of the scoped session (tmux `join-pane`),
     /// returning whether the source window was CLOSED (a join that emptied it) — or `None` if the
     /// move was refused (`id` already lives in `dst`, no window holds `id`, or `dst` names no
