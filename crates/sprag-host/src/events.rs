@@ -99,8 +99,17 @@
 //! a keystroke path measured in milliseconds (R246: ~5 ms per keystroke in release), the top row is
 //! **~0.015% of one keystroke** — and 64 panes is already the wide end of `REGISTRY_SIZES`.
 //!
-//! The number that is NOT claimed: this is one session's shape with one window. A session holding
-//! many windows takes one workspace lock each, and no row measures that yet.
+//! The OTHER axis, because the pane rows hold the window count at one and this walk takes a
+//! WORKSPACE LOCK PER WINDOW — the term that scales with locks rather than with `u64`s. One pane
+//! per window, same conditions:
+//!
+//! * **1 window: 0.168-0.288 us.**
+//! * **16 windows: 1.217-1.313 us.**
+//!
+//! About **70 ns per window against 10 ns per pane** — a window costs roughly seven panes, which is
+//! the lock and is the shape to expect. At sixteen windows it is still **~0.025% of one keystroke**.
+//! The two axes agree where they meet: the `1 pane` and `1 window` rows describe the SAME
+//! configuration reached by two different constructions, and they land within each other's spread.
 
 use std::collections::VecDeque;
 
@@ -455,13 +464,52 @@ pub struct SessionJournal {
     shape: Option<SessionShape>,
 }
 
-/// How many records a session's journal retains.
+/// How many records a session's journal retains — **derived, and here is the derivation.**
 ///
-/// **This number is not earned yet.** It bounds how far a reader may fall behind before it is told
-/// to re-read everything, and the honest way to choose it is to measure how far a real client
-/// actually falls behind — which needs the wire read that does not exist yet. It is deliberately
-/// generous rather than tuned: a session accumulating 256 structural changes between two reads of a
-/// client that is still connected is a client with a bigger problem than a truncated log.
+/// It bounds how far a reader may fall behind before [`Batch::lost`] sends it back to a full
+/// re-read. R269 shipped this as a round number with "not earned yet" written above it; what earns
+/// it is two measurements and one choice.
+///
+/// ## What a record costs
+///
+/// `size_of::<Record>()` is **40 bytes** (`size_of::<Event>()` is 32). The `String` variants add a
+/// small heap allocation each, but they carry window and session NAMES — `"0"`, `"1"` — so that
+/// term is a byte or two. At this capacity a journal is **~10 KB per session**, and a session gets
+/// one only once something has been announced on it.
+///
+/// ## What an operation costs, in records
+///
+/// Measured, and pinned by `rpc::tests::the_records_per_operation_ratio_the_ring_is_sized_against`
+/// so the derivation cannot rot under a later change:
+///
+/// | operation | records |
+/// |---|---|
+/// | spawn | 1 |
+/// | close | 1 |
+/// | new window | 1 |
+/// | select window | 1 |
+/// | **split** | **2** (the pane AND the arrangement) |
+///
+/// ## The choice
+///
+/// Building the widest workspace this project measures — 64 panes, the top of `sprag-latency`'s
+/// `REGISTRY_SIZES` — costs **126 records** by split, the two-record shape
+/// (`rpc::tests::a_workspace_scale_burst_fits_the_ring_with_room`). So this capacity holds a
+/// full workspace-scale reconstruction **twice over**, for 10 KB.
+///
+/// Erring large is the right direction rather than a hedge: an undersized ring costs a client the
+/// re-read it already does today, while the memory is 40 bytes a record. What the number buys is
+/// bounded and stateable — **128 worst-case operations between two reads by one client** — which is
+/// hours at a human's rate and seconds under a script hammering the mux, and the script is exactly
+/// the case `lost` exists to answer honestly.
+///
+/// ## What does NOT consume it
+///
+/// A daemon restart does not: a restore rebuilds the registry before the socket mounts, and a
+/// session's FIRST observation has no predecessor and records nothing
+/// ([`SessionJournal::observe`]). Pane output does not either — it is deliberately not a record
+/// (see the module docs), which is the decision that keeps this ring measured in operations rather
+/// than in bytes-per-second.
 pub const JOURNAL_CAPACITY: usize = 256;
 
 impl SessionJournal {

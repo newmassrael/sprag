@@ -2171,6 +2171,121 @@ mod tests {
             .events
     }
 
+    /// **The measurement `JOURNAL_CAPACITY` is DERIVED from, pinned so the derivation cannot rot.**
+    ///
+    /// The ring's size is chosen against how many records a workspace-scale burst produces, which
+    /// is a function of records-per-OPERATION. A future change that made every mutation emit five
+    /// records would not fail any test above — every one of them asserts that a change is reported,
+    /// not how loudly — and would quietly cut the ring's reach to a fifth. So the ratio is asserted.
+    ///
+    /// The control matters here: `invoke_recording` discards the reply, so a REFUSED action and one
+    /// that legitimately records nothing look identical. The first version of this measurement
+    /// passed `{"pane": 1}` to `close`, whose argument is `id`, and read the refusal as "close emits
+    /// no record". Each case below therefore checks the WORLD moved, not only the log.
+    #[test]
+    fn the_records_per_operation_ratio_the_ring_is_sized_against() {
+        let state = host_with("sleep 30", 80, 24);
+        state.channels().observe(&lock(state.registry()), BOOT);
+        let mut mark = state.revision(BOOT).current();
+        let recorded = |state: &HostState, mark: &mut u64| {
+            let events = journal_since(state, *mark);
+            *mark = state.revision(BOOT).current();
+            events
+        };
+
+        invoke_recording(&state, crate::wire::SPAWN_ACTION, serde_json::json!({}));
+        assert_eq!(
+            recorded(&state, &mut mark),
+            vec![crate::events::Event::PaneCreated(1)],
+            "a spawn is ONE record: it appends to the pool and the tree reconciles lazily, so the \
+             arrangement counter has not moved yet",
+        );
+
+        invoke_recording(
+            &state,
+            crate::wire::NEW_WINDOW_ACTION,
+            serde_json::json!({}),
+        );
+        assert_eq!(
+            recorded(&state, &mut mark).len(),
+            1,
+            "a new window is ONE record — its birth pane is not reported separately, or a reader \
+             would apply the same fact twice in an order this cannot promise",
+        );
+
+        invoke_recording(
+            &state,
+            crate::wire::SELECT_WINDOW_ACTION,
+            serde_json::json!({ "window": "0" }),
+        );
+        assert_eq!(
+            recorded(&state, &mut mark).len(),
+            1,
+            "a select is ONE record"
+        );
+
+        invoke_recording(
+            &state,
+            crate::wire::SPLIT_ACTION,
+            serde_json::json!({ "pane": 0, "dir": "horizontal" }),
+        );
+        assert_eq!(
+            recorded(&state, &mut mark).len(),
+            2,
+            "a split is TWO — the pane AND the arrangement — and is the worst case the ring is \
+             sized against",
+        );
+
+        let before = lock(&state.host.workspace()).panes().len();
+        invoke_recording(
+            &state,
+            crate::wire::CLOSE_ACTION,
+            serde_json::json!({ "id": 1 }),
+        );
+        assert_eq!(
+            lock(&state.host.workspace()).panes().len(),
+            before - 1,
+            "THE CONTROL: the close actually happened, so an empty log below would be a defect \
+             rather than a refusal this probe could not see",
+        );
+        assert_eq!(
+            recorded(&state, &mut mark),
+            vec![crate::events::Event::PaneClosed(1)],
+            "a close is ONE record",
+        );
+    }
+
+    /// The BURST the ring is sized against: building the widest workspace this project measures.
+    ///
+    /// `REGISTRY_SIZES` in `sprag-latency` tops out at 64 panes, so a 64-pane build is the largest
+    /// reconstruction any cost row here contemplates. By SPLIT — the two-record shape — it is 126
+    /// records, which is what makes `JOURNAL_CAPACITY` a derivation rather than a round number.
+    #[test]
+    fn a_workspace_scale_burst_fits_the_ring_with_room() {
+        let state = host_with("sleep 30", 80, 24);
+        state.channels().observe(&lock(state.registry()), BOOT);
+        for _ in 0..63 {
+            invoke_recording(
+                &state,
+                crate::wire::SPLIT_ACTION,
+                serde_json::json!({ "pane": 0, "dir": "horizontal" }),
+            );
+        }
+        assert_eq!(
+            lock(&state.host.workspace()).panes().len(),
+            64,
+            "THE CONTROL: 64 panes were actually built",
+        );
+        let records = journal_since(&state, 0).len();
+        assert_eq!(records, 126, "two per split, and this is the number quoted");
+        assert!(
+            records * 2 <= crate::events::JOURNAL_CAPACITY,
+            "the ring holds this burst TWICE over ({records} x 2 vs {}) — the headroom the \
+             capacity is chosen for",
+            crate::events::JOURNAL_CAPACITY,
+        );
+    }
+
     /// **THE claim of the derive site.** `spawn` does not mention this log, this module, or an
     /// event of any kind — and a pane appearing is still reported.
     ///

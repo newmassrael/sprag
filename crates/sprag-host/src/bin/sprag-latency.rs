@@ -1226,6 +1226,56 @@ fn main() -> ExitCode {
         );
     }
 
+    // THE OTHER AXIS, and R269 shipped without it. The rows above hold the pane count constant at
+    // ONE WINDOW, and `SessionShape::read` takes a workspace lock PER WINDOW — so the term they do
+    // not cover is the one that scales with locks rather than with `u64`s. A session with many
+    // windows is ordinary (tmux users live in them), so "no row measures that yet" was a debt, not
+    // a boundary.
+    for windows in [1_usize, 16] {
+        let shaped = Host::new((COLS, ROWS));
+        {
+            let mut registry = shaped
+                .registry()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for _ in 1..windows {
+                registry
+                    .new_window("0", None)
+                    .expect("create a window in the boot session");
+            }
+        }
+        // One pane per window, so each window's lock guards something and the walk is not measuring
+        // an empty pool it would never meet.
+        for index in 0..windows {
+            shaped
+                .spawn(painted(), format!("w{index}"), COLS, ROWS, None, None)
+                .expect("spawn a pane in the current window");
+        }
+        let shaped = HostState::new(shaped, Arc::new(ChannelRegistry::default()), None);
+        let channels = shaped.channels().clone();
+        channels.observe(
+            &shaped
+                .registry()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            "0",
+        );
+        paired(
+            &format!("events: observe, {windows} windows, no change"),
+            &mut controls,
+            None,
+            || {
+                channels.observe(
+                    &shaped
+                        .registry()
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                    "0",
+                );
+            },
+        );
+    }
+
     let cells = paired(
         "request cells.0 (one pane)",
         &mut controls,
