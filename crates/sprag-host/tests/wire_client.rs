@@ -1549,6 +1549,12 @@ fn a_layout_write_tagged_with_the_wrong_window_is_refused_over_the_socket() {
 
 /// Send a `set_layout` (a vertical split of `first | second` at 0.75) tagged with `expected_window`
 /// and `expected_revision`, over the session named `session`; deserialise + install the answer.
+///
+/// Deliberately spelled the LEGACY nested way. R264 flattened what a client serialises and kept the
+/// nested spelling readable so a snapshot written by an older build still restores; this is that
+/// path's only wire-level coverage, and it is here by choice rather than because nobody updated it.
+/// The flat spelling a current client sends is exercised by
+/// [`an_arrangement_far_deeper_than_the_old_ceiling_crosses_the_socket`].
 fn write_layout_tagged(
     conn: &mut HostConn,
     session: &str,
@@ -1623,6 +1629,89 @@ fn read_layout_in(conn: &mut HostConn, session: &str) -> (u64, sprag_terminal::L
     tree.set_from_wire(snapshot.tree)
         .expect("a served arrangement is well-formed");
     (snapshot.revision, tree)
+}
+
+/// A DEEP arrangement crosses the real socket — the boundary R264 moved, gated where it bit.
+///
+/// R264 removed a ceiling nobody designed: a window's arrangement used to serialise as a nested
+/// chain, so its JSON depth tracked its pane count and a session of more than 62 panes could not be
+/// read by any client. That was proved at the unit level (the parse) and confirmed by hand with an
+/// example that spawns real panes. Neither is a gate: the unit test cannot see the daemon, and a
+/// suite does not spawn sixty PTYs on every commit.
+///
+/// It does not have to. The subject is what the WIRE carries, not what a pool holds, so this writes
+/// an arrangement of two hundred leaves — nested, that is four hundred levels deep, three times past
+/// the limit that used to bite — over a real socket to a real daemon holding TWO panes. The
+/// synthetic leaves are dropped by the reconcile against the live pool, which is the honest outcome
+/// and is asserted: what is proved is that the daemon PARSED, VALIDATED and APPLIED an arrangement
+/// no client could have sent before.
+#[test]
+fn an_arrangement_far_deeper_than_the_old_ceiling_crosses_the_socket() {
+    use sprag_terminal::{LayoutNodeWire, LayoutWire, SplitDir};
+
+    /// Leaves in the written arrangement. Nested, this is `2 * 200 + 2` levels of JSON.
+    const LEAVES: u64 = 200;
+
+    let (_host, sock) = spawn_host();
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term host");
+    conn.call(
+        "scene/invoke",
+        json!({ "path": mux_action_path(SPAWN_ACTION), "args": { "cmd": ["cat"] } }),
+    )
+    .expect("spawn a second pane");
+    let (revision, layout) = read_layout(&mut conn);
+    let live = layout.panes();
+    assert_eq!(live.len(), 2, "the daemon holds two panes, not two hundred");
+
+    // The two live panes sit deepest, so a reconcile that keeps them has to have walked the
+    // whole chain. Every id above them is synthetic and exists only to make the tree deep.
+    let mut root = LayoutNodeWire::Split {
+        id: None,
+        dir: SplitDir::Horizontal,
+        ratio: 0.5,
+        first: Box::new(LayoutNodeWire::Leaf(live[0])),
+        second: Box::new(LayoutNodeWire::Leaf(live[1])),
+    };
+    let synthetic = live.iter().map(|pane| pane.0).max().unwrap_or(0) + 1;
+    for step in 0..LEAVES - 2 {
+        root = LayoutNodeWire::Split {
+            id: None,
+            dir: SplitDir::Horizontal,
+            ratio: 0.5,
+            first: Box::new(LayoutNodeWire::Leaf(sprag_terminal::PaneId(
+                synthetic + step,
+            ))),
+            second: Box::new(root),
+        };
+    }
+    let deep = serde_json::to_value(LayoutWire { root: Some(root) })
+        .expect("a client serialises its arrangement");
+
+    let value = conn
+        .call(
+            "scene/invoke",
+            json!({
+                "path": mux_action_path(SET_LAYOUT_ACTION),
+                "args": { "expected_revision": revision, "tree": deep },
+            }),
+        )
+        .expect("a two-hundred-leaf arrangement reaches the daemon and is answered");
+    let answer: sprag_terminal::LayoutSnapshot =
+        serde_json::from_value(value).expect("the write answers with a snapshot a client can read");
+    assert!(
+        answer.revision > revision,
+        "the deep write was APPLIED, not merely parsed and discarded",
+    );
+
+    let (_, served) = read_layout(&mut conn);
+    assert_eq!(
+        served.panes(),
+        live,
+        "the reconcile kept the live panes and dropped the synthetic ones",
+    );
+
+    let _ = std::fs::remove_file(&sock);
 }
 
 /// The WRITE half over a REAL socket: a client's settled arrangement — a divider it minted
