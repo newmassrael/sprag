@@ -50,6 +50,13 @@
 //! sprag report-agent STATE [--pane N] [--source S]  say what the agent in a pane is DOING
 //!                          [--name AGENT] [--seq N]  (the pane defaults to $SPRAG_PANE)
 //! sprag release-agent [-t SESSION] [--pane N]      hand the pane back to screen inference
+//! sprag install-hooks [AGENT…] [--yes] [--dry-run]  wire an agent's OWN config to report-agent,
+//! sprag uninstall-hooks [AGENT…] [--yes] [--dry-run]  so it says what it is doing instead of
+//! sprag list-hooks                         being guessed at. Writes under $HOME, so it ASKS:
+//!                          the prompt shows the edit, --dry-run stops at it, --yes answers it,
+//!                          and with no terminal to ask on it refuses rather than assume. Naming
+//!                          no AGENT covers every agent actually on this machine. See
+//!                          [`install_hooks`] and [`sprag_host::hooks`]
 //!                                         (working / blocked / idle), one line per pane an agent
 //!                                         manifest claims — a shell prints nothing. Naming a PANE
 //!                                         also prints WHICH RULE decided, and how to correct it
@@ -114,6 +121,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use serde_json::{Value, json};
+use sprag_host::hooks::{self, HookError, Target};
 use sprag_host::keymap::{BoundAction, KeySpec, KeyTable};
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, FULL_TEXT_SLOT,
@@ -161,6 +169,10 @@ fn run() -> io::Result<()> {
         Some("agent") => agent(args.collect()),
         Some("report-agent") => report_agent(args.collect()),
         Some("release-agent") => release_agent(args.collect()),
+        Some("install-hooks") => install_hooks(args.collect()),
+        Some("uninstall-hooks") => uninstall_hooks(args.collect()),
+        Some("list-hooks") => list_hooks(args.collect()),
+        Some("hook") => hook(args.collect()),
         Some("events") => events(args.collect()),
         Some("split-window") => split_window(args.collect()),
         Some("kill-pane") => kill_pane(args.collect()),
@@ -728,6 +740,8 @@ fn print_usage() {
          \x20      sprag report-agent <working|blocked|idle> [-t SESSION] [--pane N]\n\
          \x20             [--source S] [--name AGENT] [--seq N]\n\
          \x20      sprag release-agent [-t SESSION] [--pane N]\n\
+         \x20      sprag <install-hooks | uninstall-hooks> [AGENT…] [--yes] [--dry-run]\n\
+         \x20      sprag list-hooks\n\
          \x20      sprag events [-t SESSION] [--since N] [-f]\n\
          \x20      sprag <list-keys | bind-key [-nr] [-T prefix|root] KEY ACTION…\n\
          \x20             | unbind-key [-n] [-T prefix|root] KEY>\n\
@@ -1848,6 +1862,228 @@ fn release_agent(args: Vec<String>) -> io::Result<()> {
         println!("pane {pane}: nothing to release (no report was in force)");
     }
     Ok(())
+}
+
+/// `install-hooks [AGENT]…` / `uninstall-hooks [AGENT]…`: wire an agent's own configuration to
+/// [`report_agent`], or take that wiring back out.
+///
+/// This is the one thing sprag does that writes under the user's HOME, into a file it did not
+/// create, so it ASKS. The prompt shows the edit that will be applied, derived from the plan that
+/// will be written rather than described beside it — a summary composed separately would be a
+/// second account of what happens.
+///
+/// `--dry-run` prints the plan and stops. `--yes` answers the prompt. With NEITHER a terminal to
+/// ask on nor `--yes`, it refuses: assuming yes would break the promise to ask, and assuming no
+/// would exit 0 having silently done nothing, which is the failure mode of an installer that
+/// cannot tell you it did not install.
+///
+/// Naming no AGENT covers every target whose agent is actually on this machine — installing into
+/// an agent that is not here would create its config directory on its behalf. The ones skipped are
+/// PRINTED, because a silent cap reads as "covered everything".
+fn install_hooks(args: Vec<String>) -> io::Result<()> {
+    edit_hooks(args, true)
+}
+
+/// `uninstall-hooks` — see [`install_hooks`]. Removes only entries sprag owns, and only from
+/// targets it is asked about.
+fn uninstall_hooks(args: Vec<String>) -> io::Result<()> {
+    edit_hooks(args, false)
+}
+
+/// Both halves of the installer: they differ in the plan they derive and in nothing else, so the
+/// asking, the refusal and the reporting have one definition.
+fn edit_hooks(args: Vec<String>, install: bool) -> io::Result<()> {
+    let verb = if install {
+        "install-hooks"
+    } else {
+        "uninstall-hooks"
+    };
+    let mut named: Vec<&'static Target> = Vec::new();
+    let mut assume_yes = false;
+    let mut dry_run = false;
+    for arg in args {
+        match arg.as_str() {
+            "-y" | "--yes" => assume_yes = true,
+            "--dry-run" => dry_run = true,
+            other if other.starts_with('-') => {
+                return Err(bad_input(&format!(
+                    "{verb}: unexpected argument {other:?} ({verb} [AGENT…] [--yes] [--dry-run])"
+                )));
+            }
+            other => named.push(
+                hooks::target(other).ok_or_else(|| HookError::UnknownTarget(other.to_owned()))?,
+            ),
+        }
+    }
+
+    let targets = if named.is_empty() {
+        let mut present = Vec::new();
+        for target in hooks::TARGETS {
+            if hooks::status(target)?.present {
+                present.push(target);
+            } else {
+                println!("{}: not on this machine, skipped", target.label);
+            }
+        }
+        present
+    } else {
+        named
+    };
+
+    let mut plans = Vec::new();
+    for target in targets {
+        let plan = if install {
+            hooks::plan_install(target, &std::env::current_exe()?)?
+        } else {
+            hooks::plan_uninstall(target)?
+        };
+        plans.push(plan);
+    }
+    let plans: Vec<hooks::Plan> = plans.into_iter().filter(|plan| !plan.is_empty()).collect();
+    if plans.is_empty() {
+        println!("nothing to do — every named agent is already as you asked");
+        return Ok(());
+    }
+
+    println!(
+        "sprag will change {}:",
+        if plans.len() == 1 {
+            "one file".to_owned()
+        } else {
+            format!("{} files", plans.len())
+        }
+    );
+    for plan in &plans {
+        println!("\n  {}", plan.path.display());
+        for change in &plan.changes {
+            println!("    {change}");
+        }
+    }
+    if dry_run {
+        println!("\n--dry-run: nothing written");
+        return Ok(());
+    }
+    if !assume_yes && !confirm()? {
+        println!("nothing written");
+        return Ok(());
+    }
+
+    for plan in &plans {
+        let backup = plan.apply()?;
+        match backup {
+            Some(backup) => println!(
+                "{}: written (previous contents kept at {})",
+                plan.path.display(),
+                backup.display()
+            ),
+            None => println!("{}: created", plan.path.display()),
+        }
+    }
+    Ok(())
+}
+
+/// Ask, on the terminal, and read the answer there.
+///
+/// Refuses rather than deciding when there is no terminal — see [`install_hooks`] for why neither
+/// default is acceptable. Anything but an explicit yes is a no.
+fn confirm() -> io::Result<bool> {
+    use std::io::{BufRead as _, IsTerminal as _, Write as _};
+    if !io::stdin().is_terminal() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "nothing to ask on (stdin is not a terminal) — pass --yes to answer in advance, or \
+             --dry-run to see the edit",
+        ));
+    }
+    print!("\nproceed? [y/N] ");
+    io::stdout().flush()?;
+    let mut answer = String::new();
+    io::stdin().lock().read_line(&mut answer)?;
+    Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "Yes"))
+}
+
+/// `list-hooks`: one line per target — whether its agent is here, and how much of the integration
+/// is in place.
+fn list_hooks(args: Vec<String>) -> io::Result<()> {
+    if let Some(other) = args.first() {
+        return Err(bad_input(&format!(
+            "list-hooks: unexpected argument {other:?} (list-hooks)"
+        )));
+    }
+    for target in hooks::TARGETS {
+        let status = hooks::status(target)?;
+        let state = if status.complete() {
+            "installed".to_owned()
+        } else if status.installed > 0 {
+            format!("partly installed ({}/{})", status.installed, status.total)
+        } else if status.present {
+            "available".to_owned()
+        } else {
+            "not found".to_owned()
+        };
+        println!("{:<12} {state:<24} {}", target.name, status.path.display());
+    }
+    Ok(())
+}
+
+/// `hook AGENT`: what an installed entry runs. NOT a command for a person.
+///
+/// The agent hands it a payload on stdin; [`sprag_host::hooks::report_for`] decides what that means
+/// and this delivers it. Every failure is swallowed and the exit status is always 0, because this
+/// runs inside EVERY session of that agent, including ones started in a terminal that has nothing
+/// to do with sprag: a multiplexer that makes somebody's agent print errors because its own daemon
+/// is down, or because they are not in a pane, is not shippable. [`report_agent`] keeps the loud
+/// behaviour for the person invoking it directly.
+///
+/// The `seq` is a wall-clock nanosecond count, so a report that overtakes an earlier one is refused
+/// rather than applied out of order. The cost is stated rather than avoided: a clock stepped
+/// BACKWARDS between two events makes the second refusable, and the pane then holds the earlier
+/// state until the next event. The rival's hook makes the same trade for the same reason — the
+/// alternative is no ordering at all between separate processes.
+fn hook(args: Vec<String>) -> io::Result<()> {
+    let _ = deliver_hook(args);
+    Ok(())
+}
+
+/// [`hook`]'s body. `None` at every step that means "nothing to say", which the caller cannot
+/// distinguish from success and must not.
+fn deliver_hook(args: Vec<String>) -> Option<()> {
+    use std::io::Read as _;
+    let target = hooks::target(args.first()?)?;
+    let mut payload = String::new();
+    io::stdin().read_to_string(&mut payload).ok()?;
+    let outcome = hooks::report_for(target, &serde_json::from_str(&payload).ok()?)?;
+    let pane = std::env::var(sprag_host::PANE_ENV_VAR)
+        .ok()?
+        .parse::<u64>()
+        .ok()?;
+    let mut conn = connect().ok()?;
+    let (action, params) = match outcome {
+        hooks::Outcome::Report(state) => (
+            REPORT_AGENT_ACTION,
+            json!({
+                "id": pane,
+                "state": state.wire_str()?,
+                "source": format!("hook:{}", target.name),
+                "name": target.agent,
+                "seq": u64::try_from(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .ok()?
+                        .as_nanos(),
+                )
+                .ok()?,
+            }),
+        ),
+        hooks::Outcome::Release => (RELEASE_AGENT_ACTION, json!({ "id": pane })),
+    };
+    let _: Value = conn
+        .call(
+            "scene/invoke",
+            scoped_invoke(None, mux_action_path(action), params),
+        )
+        .ok()?;
+    Some(())
 }
 
 /// The pane THIS process is running in, from `SPRAG_PANE` — what the daemon told the pane at birth.

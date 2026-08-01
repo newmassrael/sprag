@@ -3382,3 +3382,231 @@ fn the_cli_reports_and_releases_an_agent_for_the_pane_it_is_running_in() {
         run.stdout,
     );
 }
+
+/// Run the CLI with `input` on its stdin.
+///
+/// The only way to exercise `hook`, which takes its payload there — and the only way to be sure the
+/// installer's refusal is about a stdin that is not a TERMINAL rather than about a stdin that is
+/// missing.
+fn sprag_stdin(sock: &Path, args: &[&str], envs: &[(&str, &str)], input: &str) -> CliRun {
+    use std::io::Write as _;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sprag"))
+        .args(args)
+        .env("SPRAG_HOST_RPC_SOCK", sock)
+        .envs(envs.iter().copied())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run the sprag CLI");
+    child
+        .stdin
+        .take()
+        .expect("a piped stdin")
+        .write_all(input.as_bytes())
+        .expect("write the payload");
+    let output = child.wait_with_output().expect("wait for the sprag CLI");
+    CliRun {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        ok: output.status.success(),
+    }
+}
+
+/// A temporary `$HOME` holding an agent's own config directory, cleaned up on drop.
+///
+/// Every installer test runs against one of these. A test that reached the developer's real
+/// `~/.claude/settings.json` would be a defect whatever it went on to assert.
+struct AgentHome(PathBuf);
+impl Drop for AgentHome {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+impl AgentHome {
+    /// Unique per CALL, like [`socket_path`] and for the same reason.
+    fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("sprag-cli-home-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(dir.join(".claude")).expect("a temp agent config dir");
+        Self(dir)
+    }
+
+    fn as_str(&self) -> &str {
+        self.0.to_str().expect("a utf-8 temp path")
+    }
+
+    /// What is in the agent's settings file, or `None` when there is no such file.
+    fn settings(&self) -> Option<String> {
+        std::fs::read_to_string(self.0.join(".claude").join("settings.json")).ok()
+    }
+}
+
+/// The installer ASKS before it writes under a user's HOME, and an unanswerable question is not a
+/// yes.
+///
+/// This is the decision that made the slice an owner's call rather than a technical one, so it is
+/// asserted at the surface a person actually types. No daemon is spawned on purpose: installing a
+/// hook edits a file and needs no server, exactly as `bind-key` does, and a socket that leads
+/// nowhere proves it.
+#[test]
+fn the_installer_asks_before_writing_and_takes_back_exactly_what_it_wrote() {
+    let sock = socket_path();
+    let home = AgentHome::new();
+    let env = [("HOME", home.as_str())];
+
+    // --dry-run shows the edit and writes nothing.
+    let run = sprag_env(&sock, &["install-hooks", "claude", "--dry-run"], &env);
+    assert!(run.ok, "a dry run succeeds: {}", run.stderr);
+    assert!(
+        run.stdout.contains("settings.json") && run.stdout.contains("hook claude"),
+        "it shows the file and the command it would add: {}",
+        run.stdout,
+    );
+    assert_eq!(home.settings(), None, "--dry-run wrote nothing");
+
+    // Nothing to ask on and no --yes: REFUSED. Not assumed yes (the promise was to ask) and not
+    // assumed no (exiting 0 having silently done nothing is the failure mode being avoided).
+    let run = sprag_env(&sock, &["install-hooks", "claude"], &env);
+    assert!(
+        !run.ok,
+        "an unanswerable question must not be read as consent: {}",
+        run.stdout,
+    );
+    assert!(
+        run.stderr.contains("--yes"),
+        "and it names the flag that answers in advance: {}",
+        run.stderr,
+    );
+    assert_eq!(home.settings(), None, "still nothing on disk");
+
+    // --yes answers it.
+    let run = sprag_env(&sock, &["install-hooks", "claude", "--yes"], &env);
+    assert!(run.ok, "the install succeeded: {}", run.stderr);
+    let installed = home.settings().expect("a settings file");
+    assert!(
+        installed.contains("hook claude") && installed.contains("UserPromptSubmit"),
+        "the command is wired to the events: {installed}",
+    );
+
+    // `list-hooks` reads back what is actually in the file.
+    let run = sprag_env(&sock, &["list-hooks"], &env);
+    assert!(run.ok, "{}", run.stderr);
+    assert!(
+        run.stdout.contains("claude") && run.stdout.contains("installed"),
+        "{}",
+        run.stdout,
+    );
+
+    // And the uninstall takes back exactly what the install put in, leaving the file it created
+    // empty rather than deleting a path the user may since have adopted.
+    let run = sprag_env(&sock, &["uninstall-hooks", "claude", "--yes"], &env);
+    assert!(run.ok, "the uninstall succeeded: {}", run.stderr);
+    assert_eq!(home.settings().as_deref(), Some("{}\n"));
+    let run = sprag_env(&sock, &["list-hooks"], &env);
+    assert!(run.stdout.contains("available"), "{}", run.stdout);
+}
+
+/// The installed hook, end to end: it moves the pane it runs in, and says NOTHING anywhere else.
+///
+/// The silence is not politeness. An installed hook runs in every session of that agent, and most
+/// of them are not sprag's — a multiplexer that makes somebody's agent print errors because it is
+/// not in a pane, or because its own daemon is down, is not shippable. So the first assertion is
+/// the negative one, and the pane that follows is its CONTROL: without it, this would pass on a
+/// binary that does nothing at all.
+///
+/// ON THE INSTRUMENT (R271's lesson): reading the pane list DOES observe the pane it describes, so
+/// it cannot prove the daemon woke by itself — that is not the claim here, and it is already proven
+/// where it belongs. What a pane-list read cannot do is invent `working  claude` for a pane running
+/// `cat`: no manifest claims that screen, so the only thing that can put an agent verdict on it is
+/// the report this hook sent.
+#[test]
+fn an_installed_hook_moves_its_own_pane_and_stays_silent_outside_one() {
+    let (_host, sock) = spawn_host();
+    let prompt = r#"{"hook_event_name":"UserPromptSubmit","session_id":"s1"}"#;
+
+    // Outside a pane: silent, and successful.
+    let run = sprag_stdin(&sock, &["hook", "claude"], &[], prompt);
+    assert!(
+        run.ok,
+        "a hook outside a sprag pane must succeed: {}",
+        run.stderr,
+    );
+    assert!(
+        run.stdout.is_empty() && run.stderr.is_empty(),
+        "and print nothing at all: {:?} {:?}",
+        run.stdout,
+        run.stderr,
+    );
+    assert!(
+        !sprag(&sock, &["agent"]).stdout.contains("claude"),
+        "nothing was reported",
+    );
+
+    // The control: the same payload, with the pane the daemon publishes at a pane's birth.
+    let run = sprag_stdin(&sock, &["hook", "claude"], &[("SPRAG_PANE", "0")], prompt);
+    assert!(run.ok, "{}", run.stderr);
+    assert!(
+        sprag(&sock, &["agent"])
+            .stdout
+            .contains("0: working  claude"),
+        "the pane reports what its agent said: {}",
+        sprag(&sock, &["agent"]).stdout,
+    );
+
+    // A SUBAGENT's completion must not move the pane — a report outranks the screen, so a wrong one
+    // would stand until something released it.
+    let run = sprag_stdin(
+        &sock,
+        &["hook", "claude"],
+        &[("SPRAG_PANE", "0")],
+        r#"{"hook_event_name":"Stop","agent_id":"sub-1"}"#,
+    );
+    assert!(run.ok, "{}", run.stderr);
+    assert!(
+        sprag(&sock, &["agent"]).stdout.contains("working"),
+        "a subagent's Stop left the pane working: {}",
+        sprag(&sock, &["agent"]).stdout,
+    );
+
+    // …while the pane's own does.
+    let run = sprag_stdin(
+        &sock,
+        &["hook", "claude"],
+        &[("SPRAG_PANE", "0")],
+        r#"{"hook_event_name":"Stop"}"#,
+    );
+    assert!(run.ok, "{}", run.stderr);
+    assert!(
+        sprag(&sock, &["agent"]).stdout.contains("0: idle  claude"),
+        "{}",
+        sprag(&sock, &["agent"]).stdout,
+    );
+
+    // SessionEnd is not a state: the agent is gone, and the pane goes back to the screen — which
+    // claims nothing for a `cat`.
+    //
+    // POLLED rather than asserted once, and the reason is worth stating because nothing else in the
+    // tree does: a released pane does NOT drop its verdict at once. `idle` -> `unknown` is a resting
+    // transition, asserted by the ABSENCE of a working signal, so the settle window that guards
+    // every such transition guards this one too — the report skipped hysteresis on the way in
+    // (a report is not a sample) and the screen's answer does not skip it on the way out. An
+    // assertion the instant after the release would be asserting that it does, and would pass only
+    // by racing.
+    let run = sprag_stdin(
+        &sock,
+        &["hook", "claude"],
+        &[("SPRAG_PANE", "0")],
+        r#"{"hook_event_name":"SessionEnd"}"#,
+    );
+    assert!(run.ok, "{}", run.stderr);
+    assert!(
+        wait_for(Duration::from_secs(10), || {
+            !sprag(&sock, &["agent"]).stdout.contains("claude")
+        }),
+        "the release handed the pane back: {}",
+        sprag(&sock, &["agent"]).stdout,
+    );
+}
