@@ -43,7 +43,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::PaneId;
 use crate::layout::{LayoutError, LayoutTree, LayoutWire, LeafHome, SplitDir, SplitSide};
-use crate::snapshot::{PaneRestore, RestorePlan, SNAPSHOT_VERSION, Snapshot, SnapshotError};
+use crate::snapshot::{
+    MIN_READABLE_SNAPSHOT_VERSION, PaneRestore, RestorePlan, SNAPSHOT_VERSION, Snapshot,
+    SnapshotError,
+};
 use crate::workspace::{HistoryLimitSource, Pane, Workspace};
 
 /// One window: a named layout unit owning a pane pool, how its tiled panes are ARRANGED,
@@ -1103,7 +1106,11 @@ impl SessionRegistry {
     /// `current_window` naming no window, or a duplicate session/window name), or a stored layout
     /// is not well-formed. A bad snapshot never bricks the daemon.
     pub fn from_snapshot(snapshot: Snapshot) -> Result<(Self, RestorePlan), SnapshotError> {
-        if snapshot.version != SNAPSHOT_VERSION {
+        // A RANGE, not an equality: this build restores every format back to
+        // `MIN_READABLE_SNAPSHOT_VERSION` and rewrites the file at `SNAPSHOT_VERSION` on the next
+        // save, so a user's sessions migrate by being loaded rather than being thrown away once.
+        // The upper bound still bites — a snapshot from a NEWER build is refused by name.
+        if !(MIN_READABLE_SNAPSHOT_VERSION..=SNAPSHOT_VERSION).contains(&snapshot.version) {
             return Err(SnapshotError::Version {
                 found: snapshot.version,
                 expected: SNAPSHOT_VERSION,

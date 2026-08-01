@@ -659,9 +659,11 @@ impl std::error::Error for LayoutError {}
 /// Check `node` is a well-formed arrangement, accumulating the panes and divider ids seen
 /// so far so the checks are whole-tree (a duplicate is only visible across sub-trees).
 ///
-/// Recursion is bounded by the caller: the wire form reaches the host through `serde_json`,
-/// whose parser rejects nesting past its own recursion limit long before this could
-/// overflow a stack.
+/// Recursion is bounded by [`MAX_LAYOUT_DEPTH`], enforced where the wire form is BUILT
+/// ([`LayoutWire`]'s deserialiser) rather than where its text is parsed. It used to read
+/// "bounded by `serde_json`'s recursion limit", which was true of the socket path and false
+/// of the in-process one (`from_value` has no such limit) — and was the same accident that
+/// capped a session at 62 panes.
 fn validate(
     node: &LayoutNodeWire,
     panes: &mut HashSet<PaneId>,
@@ -725,9 +727,20 @@ fn adopt(node: LayoutNodeWire, next: &mut u64) -> LayoutNode {
 /// exposed. The tree's split-id minting counter is internal state a client must not drive
 /// (and a `next_split` on the wire would invite exactly that). And a client legitimately
 /// arrives holding a divider the host has never seen — see [`LayoutNodeWire::Split::id`].
-/// Same convention as `sprag-host`'s `PaneScrollFacts`: one serde-derived definition, so
+/// Same convention as `sprag-host`'s `PaneScrollFacts`: one definition of the field set, so
 /// the two ends cannot drift on a field name.
-#[derive(Clone, PartialEq, Debug, Default, serde::Serialize, serde::Deserialize)]
+///
+/// ## Its serialised shape is FLAT, and that is load-bearing
+///
+/// This type nests in memory but serialises to an ARENA — a list of nodes that name their
+/// children by index (see [`MAX_LAYOUT_DEPTH`] for the whole story). The nested spelling was
+/// the obvious one and it made a window's JSON depth track its PANE COUNT, which is how a
+/// session of more than 62 panes became unattachable: a window's arrangement is a
+/// right-nested chain, so the last pane sat `2N + 2` levels down and every deserializer in
+/// the project stops at `serde_json`'s default recursion limit of 128. Flat, the depth is a
+/// constant four whatever the pane count, so nothing a user can do to a window bounds what a
+/// client can read.
+#[derive(Clone, PartialEq, Debug, Default)]
 pub struct LayoutWire {
     /// The arrangement's root, or `None` when the window tiles no panes.
     pub root: Option<LayoutNodeWire>,
@@ -762,8 +775,12 @@ impl LayoutWire {
 
 /// One node of an arrangement in transit — the wire twin of [`LayoutNode`] (see
 /// [`LayoutWire`]).
-#[derive(Clone, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
+///
+/// Deliberately NOT serialisable on its own: a node that could serialise itself would emit
+/// the nested shape whose depth tracks the pane count, and one such call is all it takes to
+/// put the ceiling back. [`LayoutWire`] owns the only serialised form there is, and it is
+/// flat. This is a structural bar rather than a convention — there is no derive to forget.
+#[derive(Clone, PartialEq, Debug)]
 pub enum LayoutNodeWire {
     /// A pane occupies this cell, by its registry-global [`PaneId`].
     Leaf(PaneId),
@@ -777,13 +794,258 @@ pub enum LayoutNodeWire {
         /// invent a divider doing so; but an id must be unique and never reused across the
         /// whole tree's life, which only its owner can promise. So the client says "a new
         /// divider, here" and [`LayoutTree::set_from_wire`] names it.
-        #[serde(default)]
         id: Option<SplitId>,
         dir: SplitDir,
         ratio: f32,
         first: Box<LayoutNodeWire>,
         second: Box<LayoutNodeWire>,
     },
+}
+
+/// The deepest arrangement a [`LayoutWire`] may carry, and the reason it needs saying.
+///
+/// Until the wire form went flat, this bound existed but nobody chose it: a nested
+/// arrangement's JSON depth tracked its pane count, so `serde_json`'s own recursion limit
+/// stopped a deep tree before this module's own `validate`/`adopt` recursion could walk one
+/// deep enough to overflow a stack. That was an accident twice over — it capped a USER at 62
+/// panes, and it
+/// was not even universal, since `serde_json::from_value` (the host's in-process arm) has no
+/// such limit. A flat arena removes it entirely: depth is now a property of the tree the
+/// arena DENOTES, and nothing about the text says how deep that is. So the bound moves to
+/// where it belongs — the type's own deserialiser, which is the one gate every wire value
+/// passes through — and gets a number chosen on purpose.
+///
+/// 1024 is far above any arrangement a machine can host (each leaf is a live PTY and a
+/// process, and the deepest possible tree is one leaf per level), and far below what the
+/// recursive walks over it cost: `validate`, `adopt`, [`LayoutWire::panes`] and the nested
+/// `Drop` each take a small frame, so the worst case is a few hundred KB of a stack that has
+/// megabytes.
+pub const MAX_LAYOUT_DEPTH: usize = 1024;
+
+/// One entry of the arena [`LayoutWire`] serialises to — a node whose children are INDICES
+/// into the same arena rather than boxes inside it. Flattening is the whole point: this shape
+/// has a fixed depth, so a window's pane count cannot deepen it.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FlatNode {
+    /// A pane occupies this cell — [`LayoutNodeWire::Leaf`].
+    Leaf(PaneId),
+    /// A division of two sub-trees, each named by its index — [`LayoutNodeWire::Split`].
+    Split {
+        #[serde(default)]
+        id: Option<SplitId>,
+        dir: SplitDir,
+        ratio: f32,
+        first: usize,
+        second: usize,
+    },
+}
+
+/// The arrangement's LEGACY nested form, accepted on READ so that a snapshot written before
+/// the wire went flat still restores the user's sessions instead of booting them away.
+///
+/// Read-only and one migration long: nothing serialises this. Its recursion is safe for the
+/// same reason the flat form's is not — a nested value's depth IS its JSON depth, so the
+/// parser that produced it already refused anything deeper than it can walk.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum LegacyNode {
+    Leaf(PaneId),
+    Split {
+        #[serde(default)]
+        id: Option<SplitId>,
+        dir: SplitDir,
+        ratio: f32,
+        first: Box<LegacyNode>,
+        second: Box<LegacyNode>,
+    },
+}
+
+impl From<LegacyNode> for LayoutNodeWire {
+    fn from(node: LegacyNode) -> Self {
+        match node {
+            LegacyNode::Leaf(pane) => Self::Leaf(pane),
+            LegacyNode::Split {
+                id,
+                dir,
+                ratio,
+                first,
+                second,
+            } => Self::Split {
+                id,
+                dir,
+                ratio,
+                first: Box::new(Self::from(*first)),
+                second: Box::new(Self::from(*second)),
+            },
+        }
+    }
+}
+
+/// A root as it may arrive: an arena INDEX (the flat form) or a whole nested node (the
+/// legacy one). The two are distinguishable with no ambiguity — one is a number, the other an
+/// object — which is what makes accepting both safe rather than a guess.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum RootWire {
+    Index(usize),
+    Legacy(Box<LegacyNode>),
+}
+
+/// [`LayoutWire`]'s serialised shape, both forms at once: `nodes` is present exactly when the
+/// arena form is in use, and absent for a legacy value whose whole tree hangs off `root`.
+#[derive(serde::Deserialize)]
+struct LayoutWireRepr {
+    #[serde(default)]
+    nodes: Option<Vec<FlatNode>>,
+    #[serde(default)]
+    root: Option<RootWire>,
+}
+
+/// The arena a [`LayoutWire`] writes: what [`LayoutWireRepr`] reads back.
+#[derive(serde::Serialize)]
+struct FlatLayout<'a> {
+    nodes: &'a [FlatNode],
+    root: Option<usize>,
+}
+
+/// Append `node`'s sub-tree to `arena` and answer the index it landed at.
+///
+/// Recursive, and deliberately unbounded here: this direction walks a tree the HOST already
+/// holds in memory, on the same terms as [`LayoutWire::panes`] and `From<&LayoutNode>`. The
+/// bound belongs on the reading side, where the tree is a stranger's ([`MAX_LAYOUT_DEPTH`]).
+fn flatten(node: &LayoutNodeWire, arena: &mut Vec<FlatNode>) -> usize {
+    let flat = match node {
+        LayoutNodeWire::Leaf(pane) => FlatNode::Leaf(*pane),
+        LayoutNodeWire::Split {
+            id,
+            dir,
+            ratio,
+            first,
+            second,
+        } => {
+            // Children first, so their indices exist by the time this node names them.
+            let first = flatten(first, arena);
+            let second = flatten(second, arena);
+            FlatNode::Split {
+                id: *id,
+                dir: *dir,
+                ratio: *ratio,
+                first,
+                second,
+            }
+        }
+    };
+    arena.push(flat);
+    arena.len() - 1
+}
+
+impl serde::Serialize for LayoutWire {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut nodes = Vec::new();
+        let root = self.root.as_ref().map(|root| flatten(root, &mut nodes));
+        FlatLayout {
+            nodes: &nodes,
+            root,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for LayoutWire {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+
+        let repr = LayoutWireRepr::deserialize(deserializer)?;
+        match (repr.nodes, repr.root) {
+            // The empty arrangement — a window that tiles no panes. Its arena, when it has
+            // one, must be empty too: nodes under no root are panes that would silently
+            // vanish, which is the same failure `build_arena` refuses as unreachable, and
+            // refusing it there but not here would be a hole in that argument.
+            (None, None) => Ok(Self { root: None }),
+            (Some(nodes), None) if nodes.is_empty() => Ok(Self { root: None }),
+            (Some(_), None) => Err(D::Error::custom(
+                "an arrangement roots at nothing but still carries nodes",
+            )),
+            (Some(nodes), Some(RootWire::Index(root))) => Ok(Self {
+                root: Some(build_arena(&nodes, root).map_err(D::Error::custom)?),
+            }),
+            // A snapshot from before the wire went flat.
+            (None, Some(RootWire::Legacy(root))) => Ok(Self {
+                root: Some(LayoutNodeWire::from(*root)),
+            }),
+            (None, Some(RootWire::Index(_))) => Err(D::Error::custom(
+                "an arrangement names its root by index but carries no `nodes` arena",
+            )),
+            (Some(_), Some(RootWire::Legacy(_))) => Err(D::Error::custom(
+                "an arrangement carries a `nodes` arena but spells its root out in full",
+            )),
+        }
+    }
+}
+
+/// Turn a validated arena into the nested form the rest of this crate works in.
+///
+/// The check is ITERATIVE and the build is recursive, which is the whole trick: a stranger's
+/// arena can denote a tree of any depth, so nothing may descend it until its depth is known
+/// to be within [`MAX_LAYOUT_DEPTH`]. Once the walk below has proved that, the build cannot
+/// recurse further than the walk already did.
+///
+/// The flat form admits three malformed shapes the nested one made UNREPRESENTABLE, so each
+/// is rejected by name: a child index that names no node, a node reached twice (a cycle, or
+/// two parents sharing one sub-tree — `adopt` would loop forever on the first and silently
+/// duplicate panes on the second), and a node no walk from the root reaches, which would
+/// quietly drop whatever panes it holds. This is the cost of flattening, paid in full here.
+fn build_arena(nodes: &[FlatNode], root: usize) -> Result<LayoutNodeWire, String> {
+    let mut seen = vec![false; nodes.len()];
+    let mut reached = 0usize;
+    let mut stack = vec![(root, 1usize)];
+    while let Some((index, depth)) = stack.pop() {
+        let node = nodes
+            .get(index)
+            .ok_or_else(|| format!("node {index} is named but not in the arrangement"))?;
+        if std::mem::replace(&mut seen[index], true) {
+            return Err(format!("node {index} is reached twice"));
+        }
+        reached += 1;
+        if depth > MAX_LAYOUT_DEPTH {
+            return Err(format!(
+                "the arrangement nests deeper than the {MAX_LAYOUT_DEPTH} this build will walk"
+            ));
+        }
+        if let FlatNode::Split { first, second, .. } = node {
+            stack.push((*first, depth + 1));
+            stack.push((*second, depth + 1));
+        }
+    }
+    if reached != nodes.len() {
+        return Err(format!(
+            "the arrangement carries {} node(s) nothing reaches",
+            nodes.len() - reached
+        ));
+    }
+    Ok(nest(nodes, root))
+}
+
+/// Build the nested node at `index` — safe to recurse, because [`build_arena`] has already
+/// proved every index resolves and the tree is no deeper than [`MAX_LAYOUT_DEPTH`].
+fn nest(nodes: &[FlatNode], index: usize) -> LayoutNodeWire {
+    match &nodes[index] {
+        FlatNode::Leaf(pane) => LayoutNodeWire::Leaf(*pane),
+        FlatNode::Split {
+            id,
+            dir,
+            ratio,
+            first,
+            second,
+        } => LayoutNodeWire::Split {
+            id: *id,
+            dir: *dir,
+            ratio: *ratio,
+            first: Box::new(nest(nodes, *first)),
+            second: Box::new(nest(nodes, *second)),
+        },
+    }
 }
 
 impl From<&LayoutTree> for LayoutWire {
@@ -1260,6 +1522,234 @@ mod tests {
         assert!(
             !before.contains(fresh[0]),
             "a restored tree does not reissue a split id",
+        );
+    }
+
+    /// How many nesting levels `json` has, counted the way a parser counts them: every `{`
+    /// or `[` is one deeper, and a brace inside a string is text.
+    ///
+    /// Measured on the TEXT rather than by walking a parsed `Value`, because the parse is
+    /// the thing under test — a depth reported here is one a client's parser must descend
+    /// before it can hand the reply to anything.
+    fn json_depth(json: &str) -> usize {
+        let (mut depth, mut deepest, mut in_string, mut escaped) = (0usize, 0usize, false, false);
+        for byte in json.bytes() {
+            if in_string {
+                match byte {
+                    _ if escaped => escaped = false,
+                    b'\\' => escaped = true,
+                    b'"' => in_string = false,
+                    _ => {}
+                }
+                continue;
+            }
+            match byte {
+                b'"' => in_string = true,
+                b'{' | b'[' => {
+                    depth += 1;
+                    deepest = deepest.max(depth);
+                }
+                b'}' | b']' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+        deepest
+    }
+
+    /// The exact text a client parses for a `layout` read: the host's answer inside the
+    /// JSON-RPC envelope it is served in, for a window of `panes` panes in the shape the
+    /// host actually builds — one `append_pane` per pane.
+    fn served_layout_reply(panes: u64) -> String {
+        let mut tree = LayoutTree::new();
+        for pane in ids(panes) {
+            tree.append_pane(pane);
+        }
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": LayoutSnapshot {
+                revision: 1,
+                tree: LayoutWire::from(&tree),
+                floating: Vec::new(),
+            },
+        })
+        .to_string()
+    }
+
+    /// An arrangement's wire depth must not grow with the pane count — the CAUSE behind a
+    /// ceiling nobody designed.
+    ///
+    /// R263 found a session of more than 62 panes unattachable. The reason is here rather
+    /// than in the transport: a window's arrangement is a right-nested chain, so a nested
+    /// wire form buries the last pane `2N + 3` levels down, and every deserializer in the
+    /// project stops at `serde_json`'s default recursion limit of 128. Depth that tracks a
+    /// user's pane count is the defect; the ceiling is only where it first becomes visible.
+    #[test]
+    fn a_layouts_wire_depth_does_not_track_its_pane_count() {
+        let shallow = json_depth(&served_layout_reply(2));
+        for panes in [8_u64, 62, 63, 512] {
+            assert_eq!(
+                json_depth(&served_layout_reply(panes)),
+                shallow,
+                "a {panes}-pane arrangement must nest no deeper than a 2-pane one",
+            );
+        }
+    }
+
+    /// The SYMPTOM, pinned separately from its cause: a client can parse the arrangement it
+    /// is served, whatever the pane count.
+    ///
+    /// This is `HostConn::call`'s own parse — `serde_json::from_str` over the reply line —
+    /// so it reproduces an unattachable session with no socket, no daemon and no PTY. The
+    /// same limit bites two more places the depth reaches: the host's parse of a client's
+    /// layout WRITE, and `load_snapshot`, which answers `None` on a parse error and turns a
+    /// saved session into a silent empty boot.
+    #[test]
+    fn a_client_parses_a_served_layout_at_any_pane_count() {
+        for panes in [63_u64, 512] {
+            let reply = served_layout_reply(panes);
+            let parsed = serde_json::from_str::<serde_json::Value>(&reply);
+            assert!(
+                parsed.is_ok(),
+                "a client must parse a {panes}-pane arrangement: {:?}",
+                parsed.err(),
+            );
+        }
+    }
+
+    /// An arena denoting a right-nested chain of `splits` dividers (so a tree of depth
+    /// `splits + 1`), as JSON text. Built by hand rather than by serialising a tree, because
+    /// the point is to hand the deserialiser shapes no serialiser of ours would produce.
+    fn chain_arena(splits: usize) -> serde_json::Value {
+        let mut nodes = vec![serde_json::json!({ "leaf": 0 })];
+        let mut root = 0;
+        for k in 1..=splits {
+            nodes.push(serde_json::json!({ "leaf": k }));
+            let leaf = nodes.len() - 1;
+            nodes.push(serde_json::json!({
+                "split": { "id": null, "dir": "horizontal", "ratio": 0.5,
+                           "first": leaf, "second": root },
+            }));
+            root = nodes.len() - 1;
+        }
+        serde_json::json!({ "nodes": nodes, "root": root })
+    }
+
+    /// The depth bound is where it CLAIMS to be — proved from both sides, because a bound
+    /// only tested from the rejecting side is indistinguishable from one set far too low.
+    ///
+    /// The accepting half is the load-bearing one: it walks and then recursively builds a
+    /// tree exactly [`MAX_LAYOUT_DEPTH`] deep on an ordinary test thread's stack, which is
+    /// the evidence the constant was chosen with rather than asserted.
+    #[test]
+    fn an_arrangement_at_the_depth_bound_is_built_and_one_past_it_is_refused() {
+        let deepest = chain_arena(MAX_LAYOUT_DEPTH - 1);
+        let wire: LayoutWire =
+            serde_json::from_value(deepest).expect("an arrangement at the bound is built");
+        assert_eq!(
+            wire.panes().len(),
+            MAX_LAYOUT_DEPTH,
+            "every pane of the deepest legal arrangement survives",
+        );
+
+        let deeper = serde_json::from_value::<LayoutWire>(chain_arena(MAX_LAYOUT_DEPTH));
+        let error = deeper
+            .expect_err("one level past the bound is refused")
+            .to_string();
+        assert!(
+            error.contains(&MAX_LAYOUT_DEPTH.to_string()),
+            "the refusal names the bound it enforced: {error}",
+        );
+    }
+
+    /// The price of flattening, paid in full: an arena can spell out three arrangements the
+    /// nested form made unrepresentable, and each is refused BY NAME rather than absorbed.
+    ///
+    /// None of these is hypothetical about what they would cost. A cycle makes `adopt` loop
+    /// forever; a shared sub-tree duplicates every pane under it; an unreachable node holds
+    /// panes that would simply vanish from the arrangement the user gets back.
+    #[test]
+    fn a_malformed_arena_is_refused_by_name() {
+        let split = |first: usize, second: usize| {
+            serde_json::json!({
+                "split": { "id": null, "dir": "horizontal", "ratio": 0.5,
+                           "first": first, "second": second },
+            })
+        };
+
+        let cases = [
+            (
+                "a child index that names no node",
+                serde_json::json!({ "nodes": [{ "leaf": 0 }, split(0, 7)], "root": 1 }),
+                "not in the arrangement",
+            ),
+            (
+                "a node reached twice — a cycle",
+                serde_json::json!({ "nodes": [{ "leaf": 0 }, split(0, 1)], "root": 1 }),
+                "reached twice",
+            ),
+            (
+                "a node reached twice — two parents sharing one sub-tree",
+                serde_json::json!({ "nodes": [{ "leaf": 0 }, split(0, 0)], "root": 1 }),
+                "reached twice",
+            ),
+            (
+                "a node no walk from the root reaches",
+                serde_json::json!({
+                    "nodes": [{ "leaf": 0 }, { "leaf": 1 }, split(0, 0)],
+                    "root": 0,
+                }),
+                "nothing reaches",
+            ),
+            (
+                "nodes under no root at all — the same vanishing, one step earlier",
+                serde_json::json!({ "nodes": [{ "leaf": 0 }], "root": null }),
+                "roots at nothing",
+            ),
+        ];
+
+        for (what, value, expected) in cases {
+            let error = serde_json::from_value::<LayoutWire>(value)
+                .expect_err(&format!("{what} is refused"))
+                .to_string();
+            assert!(
+                error.contains(expected),
+                "{what} must be refused as {expected:?}, got {error:?}",
+            );
+        }
+    }
+
+    /// A snapshot written before the wire went flat still restores — the migration that keeps
+    /// the fix from costing a user the sessions it was meant to protect.
+    ///
+    /// The legacy text is written out in full rather than generated, because a fixture built
+    /// from today's types could not express the shape this is here to accept.
+    #[test]
+    fn the_legacy_nested_form_is_still_read() {
+        let legacy = r#"{"root":{"split":{"id":0,"dir":"vertical","ratio":0.25,
+            "first":{"leaf":7},
+            "second":{"split":{"id":1,"dir":"horizontal","ratio":0.5,
+                "first":{"leaf":8},"second":{"leaf":9}}}}}}"#;
+
+        let wire: LayoutWire =
+            serde_json::from_str(legacy).expect("a pre-flat arrangement still reads");
+        assert_eq!(
+            wire.panes(),
+            vec![PaneId(7), PaneId(8), PaneId(9)],
+            "every pane of the stored arrangement comes back, in order",
+        );
+
+        // And it comes back as a value the host will INSTALL, not merely one that parsed.
+        let mut tree = LayoutTree::new();
+        tree.set_from_wire(wire)
+            .expect("a restored arrangement is well-formed");
+        assert_eq!(tree.panes(), vec![PaneId(7), PaneId(8), PaneId(9)]);
+
+        // Read is the only direction: what this build writes back is the flat form.
+        let json = serde_json::to_string(&LayoutWire::from(&tree)).expect("it serialises");
+        assert!(
+            json.contains("\"nodes\":"),
+            "a legacy arrangement is rewritten flat, not echoed nested: {json}",
         );
     }
 

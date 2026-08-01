@@ -53,10 +53,29 @@ use crate::registry::SessionRegistry;
 use crate::remote::SshRemote;
 use crate::workspace::{Pane, PaneId};
 
-/// The on-disk snapshot format version. Bumped when the shape changes incompatibly; a loader
-/// that reads a version it does not understand refuses (`SnapshotError::Version`) and the daemon
-/// falls back to an EMPTY boot rather than crashing on a format it cannot parse.
-pub const SNAPSHOT_VERSION: u32 = 1;
+/// The on-disk snapshot format version this build WRITES. Bumped when the shape changes
+/// incompatibly; a loader that reads a version it does not understand refuses
+/// (`SnapshotError::Version`) and the daemon falls back to an EMPTY boot rather than crashing on
+/// a format it cannot parse.
+///
+/// 2 since a window's stored `layout` became the flat arena
+/// ([`MAX_LAYOUT_DEPTH`](crate::MAX_LAYOUT_DEPTH)). The bump is not about what THIS build can
+/// read — it reads both shapes, see [`MIN_READABLE_SNAPSHOT_VERSION`] — but about what an OLDER
+/// one must not silently mistake for its own: a build that knows only version 1 would parse the
+/// header, fail on the layout, and `load_snapshot`'s `.ok()` would turn that into an empty boot
+/// with no reason given. Stamping 2 turns that silence into the loud, specific refusal the
+/// version field exists for.
+pub const SNAPSHOT_VERSION: u32 = 2;
+
+/// The oldest on-disk format this build still RESTORES — the other half of a migration.
+///
+/// A version bump that only moved the write stamp would cost every user their saved sessions
+/// once, which is the opposite of what durability is for. So the loader accepts the whole range
+/// `MIN_READABLE_SNAPSHOT_VERSION..=SNAPSHOT_VERSION`, and the one shape that actually differs —
+/// the arrangement — is read in either spelling by [`LayoutWire`]'s own
+/// deserialiser. The next save rewrites the file at [`SNAPSHOT_VERSION`], so a snapshot migrates
+/// by being loaded.
+pub const MIN_READABLE_SNAPSHOT_VERSION: u32 = 1;
 
 /// The whole durable shape of a [`SessionRegistry`], serialized.
 ///
@@ -654,6 +673,40 @@ mod tests {
             SessionRegistry::from_snapshot(snap),
             Err(SnapshotError::Version { .. }),
         ));
+    }
+
+    /// The migration's two directions, which are not the same claim: every format back to
+    /// [`MIN_READABLE_SNAPSHOT_VERSION`] restores, and one from a NEWER build still does not.
+    ///
+    /// Worth pinning as a range rather than trusting the constants, because the bump that made
+    /// the range necessary would have cost every user their saved sessions had the loader kept
+    /// testing for equality — and equality is what it had, and what still passes every other
+    /// version test in this file.
+    #[test]
+    fn every_readable_version_restores_and_a_newer_one_does_not() {
+        let snap_at = |version| Snapshot {
+            version,
+            next_id: 0,
+            default_size: (80, 24),
+            sessions: vec![SessionSnapshot {
+                name: "0".to_owned(),
+                current_window: "0".to_owned(),
+                windows: vec![win("0", vec![])],
+            }],
+        };
+        for version in MIN_READABLE_SNAPSHOT_VERSION..=SNAPSHOT_VERSION {
+            assert!(
+                SessionRegistry::from_snapshot(snap_at(version)).is_ok(),
+                "a version {version} snapshot must restore, not boot the user away",
+            );
+        }
+        assert!(
+            matches!(
+                SessionRegistry::from_snapshot(snap_at(SNAPSHOT_VERSION + 1)),
+                Err(SnapshotError::Version { .. }),
+            ),
+            "a snapshot from a newer build is still refused by name",
+        );
     }
 
     /// A malformed shape (here: a `current_window` that names no window) is refused with a

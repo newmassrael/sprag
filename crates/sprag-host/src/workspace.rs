@@ -2011,7 +2011,7 @@ mod tests {
         let (mut ext, _rev) = control(&reg);
         assert_eq!(
             answer_doc(ext.query(LAYOUT_SLOT)),
-            json!({"revision": 0, "tree": {"root": null}, "floating": []}),
+            json!({"revision": 0, "tree": {"nodes": [], "root": null}, "floating": []}),
             "an empty window has no arrangement — and the wire carries no minting counter",
         );
 
@@ -2023,17 +2023,19 @@ mod tests {
         let layout = query_layout(&mut ext);
         // Two spawned panes arrange as one split of leaf 0 | leaf 1 — the tree the
         // display client projects, carrying no pixels.
-        assert_eq!(layout["tree"]["root"]["split"]["first"]["leaf"], 0);
-        assert_eq!(layout["tree"]["root"]["split"]["second"]["leaf"], 1);
-        assert_eq!(layout["tree"]["root"]["split"]["dir"], "horizontal");
-        assert_eq!(layout["tree"]["root"]["split"]["ratio"], 0.5);
+        let root = root_node(&layout);
+        assert_eq!(child(&layout, &root, "first")["leaf"], 0);
+        assert_eq!(child(&layout, &root, "second")["leaf"], 1);
+        assert_eq!(root["split"]["dir"], "horizontal");
+        assert_eq!(root["split"]["ratio"], 0.5);
 
         // A closed pane's leaf collapses: the survivor takes the root, no half-split.
         ext.invoke(CLOSE_ACTION, IntrospectValue::Json(json!({"id": 0})))
             .unwrap();
         let layout = query_layout(&mut ext);
         assert_eq!(
-            layout["tree"]["root"]["leaf"], 1,
+            root_node(&layout)["leaf"],
+            1,
             "the survivor reclaimed the space"
         );
     }
@@ -2112,6 +2114,28 @@ mod tests {
         answer_doc(ext.query(LAYOUT_SLOT))
     }
 
+    /// The node an arrangement roots at, resolved through the arena.
+    ///
+    /// A window's `tree` is a FLAT list of nodes naming their children by index, so that a
+    /// user's pane count cannot deepen the JSON a client has to parse (R264, and
+    /// `sprag_terminal::MAX_LAYOUT_DEPTH` for why). These two helpers are what a read
+    /// assertion walks it with — one hop per level, the same shape the old nested spelling
+    /// let a test index into directly.
+    fn root_node(layout: &Value) -> Value {
+        let index = layout["tree"]["root"]
+            .as_u64()
+            .expect("an arrangement with panes names its root by index");
+        layout["tree"]["nodes"][index as usize].clone()
+    }
+
+    /// A split's `first` or `second` child, resolved through the same arena.
+    fn child(layout: &Value, node: &Value, side: &str) -> Value {
+        let index = node["split"][side]
+            .as_u64()
+            .unwrap_or_else(|| panic!("a split names its {side} child by index: {node}"));
+        layout["tree"]["nodes"][index as usize].clone()
+    }
+
     /// The write half through the control surface: a client's settled arrangement installs,
     /// its self-minted divider comes back NAMED, and the answer IS what the slot then
     /// serves — so one round trip records the gesture and tells the client the identity to
@@ -2133,24 +2157,26 @@ mod tests {
             .expect("a revision");
         let answer = write_doc(ext.invoke(
             SET_LAYOUT_ACTION,
-            IntrospectValue::Json(
-                json!({ "expected_revision": at, "tree": { "root": { "split": {
-                "dir": "vertical",
-                "ratio": 0.75,
-                "first": { "leaf": 1 },
-                "second": { "leaf": 0 },
-            } } } }),
-            ),
+            IntrospectValue::Json(json!({ "expected_revision": at, "tree": {
+                "nodes": [
+                    { "leaf": 1 },
+                    { "leaf": 0 },
+                    { "split": { "dir": "vertical", "ratio": 0.75, "first": 0, "second": 1 } },
+                ],
+                "root": 2,
+            } })),
         ));
 
-        assert_eq!(answer["tree"]["root"]["split"]["dir"], "vertical");
-        assert_eq!(answer["tree"]["root"]["split"]["ratio"], 0.75);
+        let root = root_node(&answer);
+        assert_eq!(root["split"]["dir"], "vertical");
+        assert_eq!(root["split"]["ratio"], 0.75);
         assert_eq!(
-            answer["tree"]["root"]["split"]["first"]["leaf"], 1,
+            child(&answer, &root, "first")["leaf"],
+            1,
             "the client's pane ORDER is the user's intent, and it stuck",
         );
         assert!(
-            answer["tree"]["root"]["split"]["id"].is_number(),
+            root["split"]["id"].is_number(),
             "the host NAMED the client's divider: {answer}",
         );
         assert_eq!(
@@ -2180,7 +2206,8 @@ mod tests {
             IntrospectValue::Json(json!({ "id": 1, "floating": true })),
         ));
         assert_eq!(
-            answer["tree"]["root"]["leaf"], 0,
+            root_node(&answer)["leaf"],
+            0,
             "the floated pane's leaf collapsed; its sibling reclaimed the space",
         );
         // The float set is SERVED, not just applied: "absent from the tiling" is all a
@@ -2199,8 +2226,9 @@ mod tests {
         )
         .unwrap();
         let layout = query_layout(&mut ext);
-        assert_eq!(layout["tree"]["root"]["split"]["first"]["leaf"], 0);
-        assert_eq!(layout["tree"]["root"]["split"]["second"]["leaf"], 1);
+        let root = root_node(&layout);
+        assert_eq!(child(&layout, &root, "first")["leaf"], 0);
+        assert_eq!(child(&layout, &root, "second")["leaf"], 1);
         assert_eq!(
             layout["floating"],
             json!([]),
@@ -2225,14 +2253,14 @@ mod tests {
         let at = good["revision"].as_u64().expect("a revision");
         let answer = write_doc(ext.invoke(
             SET_LAYOUT_ACTION,
-            IntrospectValue::Json(
-                json!({ "expected_revision": at, "tree": { "root": { "split": {
-                "dir": "horizontal",
-                "ratio": 4.2,
-                "first": { "leaf": 0 },
-                "second": { "leaf": 0 },
-            } } } }),
-            ),
+            IntrospectValue::Json(json!({ "expected_revision": at, "tree": {
+                "nodes": [
+                    { "leaf": 0 },
+                    { "leaf": 0 },
+                    { "split": { "dir": "horizontal", "ratio": 4.2, "first": 0, "second": 1 } },
+                ],
+                "root": 2,
+            } })),
         ));
         assert_eq!(answer, good, "the arrangement in force is untouched");
 
@@ -2242,7 +2270,7 @@ mod tests {
             ext.invoke(
                 SET_LAYOUT_ACTION,
                 IntrospectValue::Json(
-                    json!({ "expected_revision": at, "tree": { "root": "sideways" } })
+                    json!({ "expected_revision": at, "tree": { "nodes": [], "root": "sideways" } })
                 ),
             ),
             Err(InvokeError::TypeMismatch),
@@ -2255,7 +2283,7 @@ mod tests {
         assert_eq!(
             ext.invoke(
                 SET_LAYOUT_ACTION,
-                IntrospectValue::Json(json!({ "tree": { "root": { "leaf": 0 } } })),
+                IntrospectValue::Json(json!({ "tree": { "nodes": [{ "leaf": 0 }], "root": 0 } })),
             ),
             Err(InvokeError::TypeMismatch),
             "so is the revision it was authored against — a write with no answer to \
@@ -2338,7 +2366,8 @@ mod tests {
         }
         let default_before = query_layout(&mut default);
         assert_eq!(
-            default_before["tree"]["root"]["split"]["first"]["leaf"], 2,
+            child(&default_before, &root_node(&default_before), "first")["leaf"],
+            2,
             "the default session holds the second pair: {default_before}",
         );
 
@@ -2348,18 +2377,20 @@ mod tests {
             .expect("a revision");
         let answer = write_doc(work.invoke(
             SET_LAYOUT_ACTION,
-            IntrospectValue::Json(
-                json!({ "expected_revision": at, "tree": { "root": { "split": {
-                "dir": "vertical",
-                "ratio": 0.75,
-                "first": { "leaf": 1 },
-                "second": { "leaf": 0 },
-            } } } }),
-            ),
+            IntrospectValue::Json(json!({ "expected_revision": at, "tree": {
+                "nodes": [
+                    { "leaf": 1 },
+                    { "leaf": 0 },
+                    { "split": { "dir": "vertical", "ratio": 0.75, "first": 0, "second": 1 } },
+                ],
+                "root": 2,
+            } })),
         ));
-        assert_eq!(answer["tree"]["root"]["split"]["ratio"], 0.75);
+        let root = root_node(&answer);
+        assert_eq!(root["split"]["ratio"], 0.75);
         assert_eq!(
-            answer["tree"]["root"]["split"]["first"]["leaf"], 1,
+            child(&answer, &root, "first")["leaf"],
+            1,
             "work's own gesture stuck, in work's own window: {answer}",
         );
         assert_eq!(
@@ -2391,13 +2422,14 @@ mod tests {
         }
 
         assert_eq!(
-            query_layout(&mut work)["tree"]["root"]["leaf"],
+            root_node(&query_layout(&mut work))["leaf"],
             0,
             "work has a lone pane at its root",
         );
         let default_tree = query_layout(&mut default);
-        assert_eq!(default_tree["tree"]["root"]["split"]["first"]["leaf"], 1);
-        assert_eq!(default_tree["tree"]["root"]["split"]["second"]["leaf"], 2);
+        let root = root_node(&default_tree);
+        assert_eq!(child(&default_tree, &root, "first")["leaf"], 1);
+        assert_eq!(child(&default_tree, &root, "second")["leaf"], 2);
     }
 
     /// A pane of another session is not merely refused — it is not THERE. The scoped
@@ -3518,9 +3550,14 @@ mod tests {
             json!({
                 "expected_revision": at,
                 "expected_window": window,
-                "tree": { "root": { "split": {
-                    "dir": "vertical", "ratio": 0.75, "first": { "leaf": 1 }, "second": { "leaf": 0 },
-                } } },
+                "tree": {
+                    "nodes": [
+                        { "leaf": 1 },
+                        { "leaf": 0 },
+                        { "split": { "dir": "vertical", "ratio": 0.75, "first": 0, "second": 1 } },
+                    ],
+                    "root": 2,
+                },
             })
         };
 
@@ -3537,14 +3574,12 @@ mod tests {
 
         // Control: naming the ACTUAL scoped window lets the SAME gesture through.
         let answer = write_doc(ext.invoke(SET_LAYOUT_ACTION, IntrospectValue::Json(gesture("0"))));
+        let root = root_node(&answer);
         assert_eq!(
-            answer["tree"]["root"]["split"]["ratio"], 0.75,
+            root["split"]["ratio"], 0.75,
             "naming the current window applied the gesture",
         );
-        assert_eq!(
-            answer["tree"]["root"]["split"]["first"]["leaf"], 1,
-            "the order stuck"
-        );
+        assert_eq!(child(&answer, &root, "first")["leaf"], 1, "the order stuck");
     }
 
     /// The window actions refuse a NON-STRING arg where the ABI promises a string — never a silent
@@ -3567,7 +3602,8 @@ mod tests {
             ext.invoke(
                 SET_LAYOUT_ACTION,
                 IntrospectValue::Json(json!({
-                    "expected_revision": at, "expected_window": 42, "tree": { "root": null },
+                    "expected_revision": at, "expected_window": 42,
+                    "tree": { "nodes": [], "root": null },
                 })),
             ),
             Err(InvokeError::TypeMismatch),

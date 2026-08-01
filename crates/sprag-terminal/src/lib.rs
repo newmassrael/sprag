@@ -30,7 +30,7 @@ pub mod workspace;
 pub use command::{command_from_parts, default_shell_command, shell_command_line};
 pub use layout::{
     LayoutError, LayoutNode, LayoutNodeWire, LayoutSnapshot, LayoutTree, LayoutWire, LeafHome,
-    SplitDir, SplitId, SplitSide,
+    MAX_LAYOUT_DEPTH, SplitDir, SplitId, SplitSide,
 };
 pub use pane_pty::{CommandBuilder, PaneExit, PanePty, PanePtyError, PanePtyHandle, RawOutput};
 pub use registry::{
@@ -39,8 +39,9 @@ pub use registry::{
 };
 pub use remote::SshRemote;
 pub use snapshot::{
-    PaneHistory, PaneRestore, PaneSnapshot, RestorePlan, SNAPSHOT_VERSION, SessionSnapshot,
-    Snapshot, SnapshotError, WindowSnapshot, pane_histories, snapshot,
+    MIN_READABLE_SNAPSHOT_VERSION, PaneHistory, PaneRestore, PaneSnapshot, RestorePlan,
+    SNAPSHOT_VERSION, SessionSnapshot, Snapshot, SnapshotError, WindowSnapshot, pane_histories,
+    snapshot,
 };
 pub use tiling::{Divider, PaneRect, Rect, Tiling, fit_window, tile, with_ratio};
 pub use workspace::{HistoryLimitSource, Pane, PaneId, PaneInfo, PaneRebirth, Workspace};
