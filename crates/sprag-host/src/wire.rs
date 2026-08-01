@@ -453,6 +453,60 @@ pub const AGENT_MANIFESTS_SLOT: &str = "agent_manifests";
 pub fn project_slot_for(pane: u64) -> String {
     format!("project.{pane}")
 }
+
+/// The argument of [`EVENTS_FIELD`] — the revision the reader has already accounted for.
+///
+/// **`Open`, and unlike [`CELLS_ARGS`] it is EARNED.** R155 refused an `Open` there because the
+/// bound was "a count we had not exposed", and pinion calls an unearned `Open` an affirmative false
+/// statement carrying a schema's authority. Both alternatives are checked here rather than skipped:
+///
+/// * [`ArgDomain::IndexOf`](pinion_core::external::ArgDomain::IndexOf) means the answerable
+///   arguments are exactly `0..count`. Every revision at or below the current one is answerable AND
+///   so is every value above it (it answers an empty batch, which is the truthful answer to "what
+///   happened after a moment that has not arrived"). A count would be false at the top end — the
+///   `datepicker` case pinion names as an honest `Open`.
+/// * [`ArgDomain::ValuesOf`](pinion_core::external::ArgDomain::ValuesOf) means a key drawn from a
+///   list this surface publishes. A cursor is not drawn from a list; it is whatever revision the
+///   reader last saw, which reaches it from `scene/waitFor` rather than from here.
+///
+/// And nothing is left unexposed, which was R155's actual complaint: what a reader needs is whether
+/// it fell behind, and the ANSWER carries that (`lost`). That is strictly more than a domain could
+/// state, because it is evaluated against this reader's own cursor rather than published as a bound.
+const EVENTS_ARGS: &[SchemaArg] = &[SchemaArg::open("since", "int")];
+
+/// The mux control external query FAMILY: what has CHANGED in the scoped session since revision
+/// `since` — `events.<since>`, answering `{events, next, lost}`.
+///
+/// ## Why a QUERY, and why the argument rides the path
+///
+/// A reader wakes on `scene/waitFor {since: R}`, which answers the revision `R'` the scene advanced
+/// to, and then asks this family at `R` for what happened in `(R, R']`. So the cursor vocabulary is
+/// the scene's own token and this needs no counter of its own ([`crate::events`] has the scar that
+/// rule comes from).
+///
+/// That makes it a read WITH AN ARGUMENT, which is exactly the shape sprag once concluded was
+/// impossible: [`CELLS_FIELD`] records the whole episode. An argument-bearing read served as an
+/// invoke is a `MethodOcc::Mutate`, so it BUMPS — and a reader that also parks on `scene/waitFor`
+/// would wake its own waiter by reading, which for an event stream is worse than it was for frames,
+/// because reading events would generate events. The argument rides the path (pinion R1352), the
+/// method stays `MethodOcc::Read`, and the read is free.
+///
+/// ## Unscoped in name, scoped in answer
+///
+/// The path carries no session: the answer is the SCOPED session's, like [`PANES_SLOT`] and
+/// [`LAYOUT_SLOT`], because a journal is keyed by a revision and revisions are only comparable
+/// within one session ([`crate::notify`]). A reader watching several sessions opens a scoped
+/// connection per session — the same shape its `scene/waitFor` already has to take.
+pub const EVENTS_FIELD: SchemaField =
+    SchemaField::parametric("events.<since>", "object", EVENTS_ARGS);
+
+/// The [`EVENTS_FIELD`] query path for cursor `since` — built from the declaration's own
+/// [`literal_prefix`](SchemaField::literal_prefix) like [`cells_slot_at`], so the address a client
+/// sends, the prefix the host strips and the template an agent discovers cannot drift apart.
+#[must_use]
+pub fn events_slot_since(since: u64) -> String {
+    format!("{}{since}", EVENTS_FIELD.literal_prefix())
+}
 /// The mux control external query slot: the LOGICAL layout of the current window of the
 /// session the request is SCOPED to ([`SESSION_PARAM`]), plus the
 /// revision it is at ([`LayoutSnapshot`](sprag_terminal::LayoutSnapshot)) as JSON — the

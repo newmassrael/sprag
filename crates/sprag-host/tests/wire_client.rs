@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use sprag_host::agent::SWEEP_INTERVAL;
+use sprag_host::wire::events_slot_since;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DROP_FILE_ACTION,
     FULL_TEXT_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION, LAYOUT_SLOT, LINKS_SLOT,
@@ -2592,5 +2593,120 @@ fn one_query_on_a_never_queried_daemon_answers_a_settled_verdict() {
     assert_eq!(
         entry["agent"]["seq"], 1,
         "published exactly once, so the sweep is not re-publishing on a loop: {entry}",
+    );
+}
+
+/// **THE slice-3 proof, over a real socket against the shipped daemon.** A wake tells a client that
+/// something moved; this asks WHAT, and the asking must be free.
+///
+/// Three claims, and the third is the one that needed a daemon rather than a unit test:
+///
+/// 1. a structural change is READABLE by cursor — spawn a pane, and the batch names it;
+/// 2. the pair composes — the revision `scene/waitFor` answers with is the cursor this reads at, so
+///    a client parks and reads with one number and no counter of its own;
+/// 3. **reading does not BUMP.** `events.<since>` is a `scene/query`, so it is classified
+///    `MethodOcc::Read` and the revision is untouched. Served as an invoke it would be `Mutate`,
+///    and a reader parked on `scene/waitFor` would wake its own waiter by reading — for an event
+///    stream, reading events would generate events. That is the R152 livelock in its worst form,
+///    and `cells.<offset>` records sprag having already met it once.
+#[test]
+fn the_events_family_reads_a_change_by_cursor_and_reading_does_not_bump() {
+    let (_host, sock) = spawn_host();
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned host socket");
+
+    // A read before anything has moved: the daemon has observed a shape but recorded no change, and
+    // the answer must say so rather than being absent.
+    let baseline = read_revision(&mut conn);
+    let first: Value = conn
+        .call(
+            "scene/query",
+            json!({ "path": mux_action_path(&events_slot_since(baseline)) }),
+        )
+        .expect("the events family answers");
+    assert_eq!(
+        first["events"].as_array().map(Vec::len),
+        Some(0),
+        "nothing has changed yet: {first}",
+    );
+    assert_eq!(
+        first["lost"], false,
+        "and `lost` travels even when false — absent must not be able to mean fine: {first}",
+    );
+
+    // Claim 3, measured across the read that follows as well as this one.
+    let before_read = read_revision(&mut conn);
+    let _: Value = conn
+        .call(
+            "scene/query",
+            json!({ "path": mux_action_path(&events_slot_since(0)) }),
+        )
+        .expect("a second read answers");
+    assert_eq!(
+        read_revision(&mut conn),
+        before_read,
+        "reading the change log must not advance the token the log is keyed by",
+    );
+
+    // Claim 1: a real mutation, over the real dispatch, with nothing asking for an event.
+    let since = read_revision(&mut conn);
+    let _: Value = conn
+        .call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(SPAWN_ACTION), "args": {} }),
+        )
+        .expect("spawn a pane over the wire");
+
+    // Claim 2: the wake's own number is the cursor. `waitFor` has already been satisfied by the
+    // spawn's bump, so this returns immediately with the revision to read at.
+    let woken: Value = conn
+        .call("scene/waitFor", json!({ "since": since }))
+        .expect("the spawn advanced the scene");
+    assert_eq!(woken["changed"], true, "the spawn moved the scene: {woken}");
+
+    let batch: Value = conn
+        .call(
+            "scene/query",
+            json!({ "path": mux_action_path(&events_slot_since(since)) }),
+        )
+        .expect("the events family answers after a change");
+    let events = batch["events"].as_array().expect("an events array");
+    assert!(
+        events
+            .iter()
+            .any(|event| event["type"] == "pane_created" && event["pane"].is_u64()),
+        "the spawn is readable as a typed change naming its subject: {batch}",
+    );
+    assert_eq!(
+        batch["lost"], false,
+        "and nothing was dropped on the way: {batch}",
+    );
+
+    // The cursor advances: reading at what the batch says to read from next reports no repeat.
+    let next = batch["next"].as_u64().expect("a next cursor");
+    let after: Value = conn
+        .call(
+            "scene/query",
+            json!({ "path": mux_action_path(&events_slot_since(next)) }),
+        )
+        .expect("the events family answers at the new cursor");
+    assert_eq!(
+        after["events"].as_array().map(Vec::len),
+        Some(0),
+        "a change is delivered ONCE, to the cursor that had not seen it: {after}",
+    );
+
+    // A malformed member of an ADVERTISED family is present-but-empty, never absent: `None` becomes
+    // `UnknownIntrospectPath`, meaning "not in its schema", and `events.zzz` IS in the schema. The
+    // taxonomy `cells.<offset>` was corrected into by R155's review.
+    let malformed: Value = conn
+        .call(
+            "scene/query",
+            json!({ "path": mux_action_path("events.zzz") }),
+        )
+        .expect("a malformed member is answered, not refused");
+    assert!(
+        malformed.is_null() || malformed["value"].is_null(),
+        "`events.zzz` belongs to a declared family and is malformed, not unknown: {malformed}",
     );
 }

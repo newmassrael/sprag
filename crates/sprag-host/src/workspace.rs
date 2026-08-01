@@ -68,6 +68,7 @@ use sprag_terminal::{
 
 use crate::attach::ClientSize;
 use crate::bump_on_dirty;
+use crate::events::Event;
 use crate::external::{as_object, lock, opt_dim, require_pane_id, rpc_external_impl};
 use crate::notify::ChannelRegistry;
 use crate::scope::SessionScope;
@@ -77,7 +78,7 @@ use crate::window::{SizeRequest, WindowSize};
 // ([`crate::wire`]) — the SAME consts a client addresses for pane lifecycle.
 use crate::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DROP_FILE_ACTION,
-    GLOBAL_COMMANDS_SLOT, GRID_WORK_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION,
+    EVENTS_FIELD, GLOBAL_COMMANDS_SLOT, GRID_WORK_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION,
     KILL_WINDOW_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT,
     PROJECT_FIELD, RENAME_WINDOW_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_WINDOW_ACTION,
     SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION,
@@ -959,6 +960,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                     SchemaField::new(GLOBAL_COMMANDS_SLOT, "object"),
                     SchemaField::new(AGENT_MANIFESTS_SLOT, "object"),
                     PROJECT_FIELD,
+                    EVENTS_FIELD,
                 ]
             },
         )
@@ -1284,6 +1286,22 @@ impl ExternalIntrospect for WorkspaceExternal {
             // The project governing ONE pane: the commands its `.sprag.toml` declares. Parametric,
             // so it is matched after the fixed slots above (`project.<pane>`, see `PROJECT_FIELD`
             // for why this lives on the mux external rather than the pane's own).
+            // What has CHANGED in the scoped session since a cursor — parametric like the project
+            // slot, and a QUERY so that reading the log cannot advance the token the log is keyed
+            // by (see `EVENTS_FIELD`).
+            path if path.starts_with(EVENTS_FIELD.literal_prefix()) => {
+                let arg = path
+                    .strip_prefix(EVENTS_FIELD.literal_prefix())
+                    .expect("the guard just matched this prefix");
+                // A malformed member of a family this surface ADVERTISES is `Null`
+                // (present-but-empty), never `None`: `None` becomes `UnknownIntrospectPath`, whose
+                // meaning is "not in its schema", and `events.zzz` IS in the schema. The same
+                // taxonomy `cells.<offset>` had to be corrected into by R155's review.
+                let Ok(since) = arg.parse::<u64>() else {
+                    return Some(IntrospectValue::Null);
+                };
+                Some(events_value(&self.channels, self.scope.session(), since))
+            }
             path => {
                 let pane = path.strip_prefix("project.")?.parse::<u64>().ok()?;
                 Some(project_value(self.workspace(), PaneId(pane)))
@@ -1434,6 +1452,54 @@ fn agent_manifests_value(agents: Option<&crate::AgentClock>) -> IntrospectValue 
         None => IntrospectValue::Null,
         Some(error) => IntrospectValue::Json(serde_json::json!({ "error": error })),
     }
+}
+
+/// Serialise a session's change batch: `{events, next, lost}`.
+///
+/// Each event is `{type, …}` — the discriminated shape a client parses with one match, the same
+/// vocabulary a rival's event stream uses, and the reason the subject key is named for what it IS
+/// (`pane`, `window`, `session`) rather than a generic `id`: a reader that has matched on `type`
+/// already knows which slot to re-read, and the key confirms it rather than making it guess.
+///
+/// **`lost` travels even when it is false**, unlike the `skip_serializing_if` shapes elsewhere in
+/// this tree. Those omit a field to keep an addition wire-compatible with an older peer; this one is
+/// a SAFETY answer, and a peer that cannot see the key would read a hole as a clean read. Absent
+/// must not be able to mean "fine".
+fn events_value(channels: &ChannelRegistry, session: &str, since: u64) -> IntrospectValue {
+    let batch = channels
+        .journal(session)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .since(since);
+    let events: Vec<serde_json::Value> = batch
+        .events
+        .iter()
+        .map(|event| match event {
+            Event::PaneCreated(id) => serde_json::json!({ "type": "pane_created", "pane": id }),
+            Event::PaneClosed(id) => serde_json::json!({ "type": "pane_closed", "pane": id }),
+            Event::WindowCreated(name) => {
+                serde_json::json!({ "type": "window_created", "window": name })
+            }
+            Event::WindowClosed(name) => {
+                serde_json::json!({ "type": "window_closed", "window": name })
+            }
+            Event::WindowSelected(name) => {
+                serde_json::json!({ "type": "window_selected", "window": name })
+            }
+            Event::SessionCreated(name) => {
+                serde_json::json!({ "type": "session_created", "session": name })
+            }
+            Event::SessionClosed(name) => {
+                serde_json::json!({ "type": "session_closed", "session": name })
+            }
+            Event::LayoutUpdated => serde_json::json!({ "type": "layout_updated" }),
+        })
+        .collect();
+    IntrospectValue::Json(serde_json::json!({
+        "events": events,
+        "next": batch.next,
+        "lost": batch.lost,
+    }))
 }
 
 /// Serialise an arrangement for the wire — the ONE place a [`LayoutSnapshot`] becomes JSON,

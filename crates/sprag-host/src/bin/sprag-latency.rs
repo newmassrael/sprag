@@ -1189,6 +1189,43 @@ fn main() -> ExitCode {
             black_box(handle_request(black_box(&state), PANES_READ));
         },
     );
+    // THE DERIVE SITE, at the two ends of a realistic span. It runs after EVERY mutating dispatch,
+    // and a keystroke is one (`key`/`text`/`paste`/`mouse` are all invokes) — so this is paid at
+    // TYPING rate, which is the cost the H6 design argued about and did not measure. Measured with
+    // no change to find: the steady state, and the only one that recurs.
+    for panes in [1_usize, 64] {
+        let shaped = Host::new((COLS, ROWS));
+        for index in 0..panes {
+            shaped
+                .spawn(painted(), format!("q{index}"), COLS, ROWS, None, None)
+                .expect("spawn a quiescent pane");
+        }
+        let shaped = HostState::new(shaped, Arc::new(ChannelRegistry::default()), None);
+        let channels = shaped.channels().clone();
+        // Seed the shape, so the row measures the STEADY diff and not the first observation.
+        channels.observe(
+            &shaped
+                .registry()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            "0",
+        );
+        paired(
+            &format!("events: observe, {panes} panes, no change"),
+            &mut controls,
+            None,
+            || {
+                channels.observe(
+                    &shaped
+                        .registry()
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                    "0",
+                );
+            },
+        );
+    }
+
     let cells = paired(
         "request cells.0 (one pane)",
         &mut controls,

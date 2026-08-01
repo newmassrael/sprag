@@ -83,6 +83,23 @@
 //! reason worth keeping: that number means a client's PROJECTION is stale, not that the pane set
 //! moved, and a spawn reconciles the tree lazily so a pane arrives with it unmoved. The test wrote
 //! for the gate is what found it.
+//!
+//! ## What the derive site costs — MEASURED, where the design ARGUED
+//!
+//! The H6 design priced this paragraph by argument ("mutating dispatches are user actions"), and
+//! that argument was already false when it was written: input is an invoke. So it is measured, on
+//! `sprag-latency`'s rows (i9-14900HX, `--release`, three runs, minima), with **no change to find**
+//! — the steady state, and the only one that recurs:
+//!
+//! * **1 pane: 0.121-0.142 us.**
+//! * **64 panes: 0.651-0.754 us.**
+//!
+//! About 9-10 ns per pane, which is the sorted id vector plus a workspace lock per window. Against
+//! a keystroke path measured in milliseconds (R246: ~5 ms per keystroke in release), the top row is
+//! **~0.015% of one keystroke** — and 64 panes is already the wide end of `REGISTRY_SIZES`.
+//!
+//! The number that is NOT claimed: this is one session's shape with one window. A session holding
+//! many windows takes one workspace lock each, and no row measures that yet.
 
 use std::collections::VecDeque;
 
