@@ -104,7 +104,13 @@ signal-hook = "0.3"
 libc = "0.2"
 
 # JSON parsing for tests that assert on the scene/snapshot RPC wire.
-serde_json = "1"
+#
+# `preserve_order` is on for `sprag_host::hooks`, which edits an AGENT's own `settings.json`: the
+# default `Map` is a `BTreeMap`, so a read/edit/write round trip would alphabetise every object in
+# a file sprag does not own. With it, a map serialises in insertion order instead — a change no
+# consumer in this tree reads (JSON-RPC defines no key order), and the one that makes "preserve
+# what is already in the file" true rather than approximate.
+serde_json = { version = "1", features = ["preserve_order"] }
 
 # serde derive for sprag-host's wire DTOs (the pane `cells`-frame facts). Version
 # matches pinion's so the one serde instance is shared across the dep graph.

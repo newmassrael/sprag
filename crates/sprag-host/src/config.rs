@@ -1158,18 +1158,23 @@ fn edit_config(
     Ok(path)
 }
 
-/// Replace [`CONFIG_FILE`] with `text`, atomically.
+/// Replace a file the USER owns with `text`, atomically.
 ///
 /// A sibling temp is written, synced and renamed over the target, so an interrupted write leaves
-/// the previous good config rather than a truncated one — this is the user's own file and there is
+/// the previous good file rather than a truncated one — this is the user's own file and there is
 /// no second copy of it. The temp is keyed on the PID because any number of `sprag` processes may
 /// run at once; the daemon's snapshot can use a fixed suffix only because one flock owns it.
 ///
 /// The target's permissions are carried over when it already exists, so an edit never quietly
 /// changes the mode a user chose for their own file; a new one takes whatever the umask gives.
-fn write_config(path: &Path, text: &str) -> Result<(), ConfigError> {
-    let unwritable =
-        |what: &str, error: &std::io::Error| ConfigError::Unwritable(format!("{what}: {error}"));
+///
+/// Shared with [`crate::hooks`], which writes into an AGENT's config for the same reasons and must
+/// not grow a second answer to how a user's file is replaced. The error is a [`std::io::Error`]
+/// rather than a [`ConfigError`] precisely so both callers can name their own file in it.
+pub(crate) fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+    let unwritable = |what: &str, error: &std::io::Error| {
+        std::io::Error::new(error.kind(), format!("{what}: {error}"))
+    };
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| unwritable("cannot create its directory", &error))?;
@@ -1194,6 +1199,11 @@ fn write_config(path: &Path, text: &str) -> Result<(), ConfigError> {
         let _ = std::fs::remove_file(&tmp);
         unwritable("cannot replace it", &error)
     })
+}
+
+/// [`write_atomic`], with the failure named as a [`CONFIG_FILE`] one.
+fn write_config(path: &Path, text: &str) -> Result<(), ConfigError> {
+    write_atomic(path, text).map_err(|error| ConfigError::Unwritable(error.to_string()))
 }
 
 /// Read + parse [`CONFIG_FILE`] at `path`, without interpreting any of its tables.

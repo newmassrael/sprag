@@ -54,6 +54,7 @@ pub mod durability;
 pub mod events;
 mod external;
 pub mod history;
+pub mod hooks;
 pub mod host;
 pub mod keymap;
 pub mod notify;
@@ -92,6 +93,7 @@ pub use history::{
     history_image_bytes, history_limit, history_limits, load_pane_history, purge_histories,
     save_histories_if_changed,
 };
+pub use hooks::{HookError, Outcome, Plan, Target, plan_install, plan_uninstall, report_for};
 pub use host::{
     Host, HostClient, PANE_ENV_VAR, PaneAgent, PaneClipboardQuery, PaneClipboardWrite, PaneFind,
     PaneMatch, PaneNotification, PaneScrollFacts, pane_env_source,
