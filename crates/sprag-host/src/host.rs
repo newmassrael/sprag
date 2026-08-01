@@ -50,9 +50,9 @@ use pinion_core::GridBuffer;
 use sprag_grid::ProjectionToken;
 use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{
-    CommandBuilder, HistoryLimitSource, LayoutSnapshot, LayoutWire, Pane, PaneId, PanePtyError,
-    PanePtyHandle, PaneRebirth, SessionInfo, SessionRegistry, Snapshot, SnapshotError, SplitDir,
-    SplitSide, WindowInfo, Workspace,
+    CommandBuilder, HistoryLimitSource, LayoutSnapshot, LayoutWire, Pane, PaneEnvSource, PaneId,
+    PanePtyError, PanePtyHandle, PaneRebirth, SessionInfo, SessionRegistry, Snapshot,
+    SnapshotError, SplitDir, SplitSide, WindowInfo, Workspace,
 };
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol, Screen, osc52_reply};
 
@@ -1001,6 +1001,10 @@ pub struct Host {
     /// How a pane born through [`HostClient::new_pane`] is wired to its client — see
     /// [`with_pane_hooks`](Self::with_pane_hooks). `None` leaves such a pane unwired.
     pane_hooks: Option<PaneHooks>,
+    /// What every pane born here tells its child about itself — see
+    /// [`with_pane_env`](Self::with_pane_env). HELD as well as installed on the registry because a
+    /// [`restore`](Self::restore) replaces the registry's pools wholesale and must re-install it.
+    pane_env: Option<PaneEnvSource>,
 }
 
 /// The `on_dirty` FACTORY a [`Host`] wires each client-created pane with: a fresh hook per pane,
@@ -1019,6 +1023,50 @@ fn history_limit_source() -> HistoryLimitSource {
     Arc::new(crate::config::history_limit_lines)
 }
 
+/// The variable naming the pane a process is running IN — tmux's `TMUX_PANE`, and the identity half
+/// of what [`pane_env_source`] publishes.
+///
+/// A public constant because both ends of this rendezvous must name ONE fact once: the daemon
+/// writes it at each pane's birth and anything reporting back reads it, the way
+/// [`HOST_SOCKET`](sprag_rpc::HOST_SOCKET) already does for the address half. The value is the
+/// [`PaneId`] in decimal, which is what every wire method addressing a pane takes as `id`.
+///
+/// Singular, and distinct from the GUI's `SPRAG_GUI_PANES` (a pane COUNT read at start-up).
+pub const PANE_ENV_VAR: &str = "SPRAG_PANE";
+
+/// The [`PaneEnvSource`] a DAEMON installs: every pane it births is told which pane it is
+/// ([`PANE_ENV_VAR`]) and where the daemon serving it listens
+/// (`SPRAG_HOST_RPC_SOCK`, named by [`HOST_SOCKET`](sprag_rpc::HOST_SOCKET) rather than respelled
+/// here, so a client's override and this publication cannot drift apart).
+///
+/// `socket` is PASSED rather than resolved here, and by the caller that mounts the endpoint: a
+/// process that serves no host socket must publish no address, and only the site that decides to
+/// serve knows which of those it is. That is why a GUI's in-process host installs nothing and its
+/// panes are spawned exactly as before.
+///
+/// **Publishing the address is what makes the identity usable**: a child holding only an id has
+/// nothing to send it to, and a child that had to rediscover the endpoint would be a second copy of
+/// [`sprag_rpc::socket_path`]'s precedence rules written in shell.
+///
+/// The pair is a BIRTH-TIME snapshot, as any environment is. Two consequences worth naming: a
+/// process that outlives its pane keeps an id the daemon will answer as unknown (ids are never
+/// reused, so it can never come to mean a DIFFERENT pane), and a pane whose child re-execs keeps
+/// what it was born with.
+#[must_use]
+pub fn pane_env_source(socket: &std::path::Path) -> PaneEnvSource {
+    // Resolved to a `String` ONCE here rather than per birth: a non-UTF-8 socket path cannot travel
+    // as an env value on the wire this publishes into, and finding that out at each spawn would make
+    // every pane pay for a question whose answer cannot change.
+    let socket = socket.to_string_lossy().into_owned();
+    let address_var = sprag_rpc::HOST_SOCKET.path_env;
+    Arc::new(move |id: PaneId| {
+        vec![
+            (PANE_ENV_VAR.to_owned(), id.0.to_string()),
+            (address_var.to_owned(), socket.clone()),
+        ]
+    })
+}
+
 impl Host {
     /// A new host over a registry with one empty session / window whose dimension-less
     /// spawns adopt `default_size`. Boot panes are added with [`spawn`](Self::spawn).
@@ -1029,6 +1077,7 @@ impl Host {
         Self {
             registry: Arc::new(Mutex::new(registry)),
             pane_hooks: None,
+            pane_env: None,
         }
     }
 
@@ -1051,6 +1100,20 @@ impl Host {
         on_dirty: impl Fn() -> Option<Box<dyn Fn() + Send>> + Send + Sync + 'static,
     ) -> Self {
         self.pane_hooks = Some(Arc::new(on_dirty));
+        self
+    }
+
+    /// Install the [`PaneEnvSource`] every pane born under this host publishes to its child — the
+    /// daemon passes [`pane_env_source`], a GUI's in-process host passes nothing.
+    ///
+    /// Installed on the registry immediately (so the boot pane, which is spawned before anything
+    /// else, already carries it) AND held, because [`restore`](Self::restore) replaces the pools and
+    /// re-installs it there. A caller therefore states this once, at construction, and every later
+    /// birth path inherits it — the asymmetry `history_limit_source` names, avoided the same way.
+    #[must_use]
+    pub fn with_pane_env(mut self, source: PaneEnvSource) -> Self {
+        lock(&self.registry).set_pane_env_source(Arc::clone(&source));
+        self.pane_env = Some(source);
         self
     }
 
@@ -1136,6 +1199,12 @@ impl Host {
         // too — before the loop below spawns a single restored pane, or those panes would come back
         // at the default depth while every later one honoured the user's setting.
         registry.set_history_limit_source(history_limit_source());
+        // And the pane environment, for that reason at that moment: a restored pane unable to name
+        // itself would be the only such pane in the daemon, and the gap would surface only after a
+        // reboot.
+        if let Some(source) = &self.pane_env {
+            registry.set_pane_env_source(Arc::clone(source));
+        }
         // Swap the CONTENTS, preserving the Arc the reaper already holds a clone of, and claim the
         // birth in the same breath. The restored registry describes sessions whose panes are still
         // being spawned one at a time below, so it reads as "nothing live" for the whole loop: the
@@ -1954,6 +2023,158 @@ mod tests {
         let mut command = cat();
         command.cwd(cwd);
         command
+    }
+
+    /// The daemon's source publishes BOTH halves of the rendezvous, and names the address variable
+    /// the same way every client reads it.
+    ///
+    /// The address is asserted against `HOST_SOCKET.path_env` rather than a literal on purpose: a
+    /// literal here would keep passing if the policy renamed its override, which is exactly the
+    /// drift that would leave a pane's child pointed at a variable nobody honours.
+    #[test]
+    fn the_daemon_s_pane_environment_names_the_pane_and_its_endpoint() {
+        let source = pane_env_source(std::path::Path::new("/run/sprag/host.sock"));
+        let published = |id: u64| -> std::collections::HashMap<String, String> {
+            source(PaneId(id)).into_iter().collect()
+        };
+
+        let pane_7 = published(7);
+        assert_eq!(pane_7.get(PANE_ENV_VAR).map(String::as_str), Some("7"));
+        assert_eq!(
+            pane_7
+                .get(sprag_rpc::HOST_SOCKET.path_env)
+                .map(String::as_str),
+            Some("/run/sprag/host.sock"),
+            "the address travels under the variable a client already overrides",
+        );
+        assert_eq!(pane_7.len(), 2, "and nothing else is published");
+
+        // The identity moves with the pane while the address does not: one source serves every pane.
+        assert_eq!(
+            published(8).get(PANE_ENV_VAR).map(String::as_str),
+            Some("8")
+        );
+        assert_eq!(
+            published(8).get(sprag_rpc::HOST_SOCKET.path_env),
+            pane_7.get(sprag_rpc::HOST_SOCKET.path_env),
+        );
+    }
+
+    /// A host with no source installed spawns panes exactly as it did before the seam existed — the
+    /// GUI's in-process host, which serves no host socket, is this case.
+    #[test]
+    fn a_host_without_a_pane_environment_publishes_nothing() {
+        let host = Host::new((40, 6));
+        let id = host
+            .spawn(echo_pane_var(), "sh".to_owned(), 40, 6, None, None)
+            .expect("spawn a pane");
+        assert_eq!(printed_row(&host, id), "unset");
+    }
+
+    /// The installed source reaches a pane born through the in-process host — the path the daemon's
+    /// boot pane and every `new_pane` take.
+    #[test]
+    fn a_host_with_a_pane_environment_tells_each_pane_its_own_id() {
+        let host = Host::new((40, 6))
+            .with_pane_env(pane_env_source(std::path::Path::new("/run/sprag/h.sock")));
+        let first = host
+            .spawn(echo_pane_var(), "sh".to_owned(), 40, 6, None, None)
+            .expect("spawn a pane");
+        let second = host
+            .spawn(echo_pane_var(), "sh".to_owned(), 40, 6, None, None)
+            .expect("spawn a second pane");
+        assert_eq!(printed_row(&host, first), first.0.to_string());
+        assert_eq!(
+            printed_row(&host, second),
+            second.0.to_string(),
+            "the second pane is told its own id, not the first's",
+        );
+    }
+
+    /// A RESTORED pane is told too — the case the held source exists for.
+    ///
+    /// A restore replaces every pool in the registry, so the source installed at construction is
+    /// gone from the pools that come back. REVERT-PROOF: drop the `set_pane_env_source` call from
+    /// `restore` and this fails with `unset` while every other restore test stays green — a pane
+    /// unable to name itself only after a reboot is precisely the asymmetry nothing else would catch.
+    #[test]
+    fn a_restored_pane_is_told_which_pane_it_is() {
+        let live = Host::new((80, 24));
+        let id = live
+            .spawn(cat(), "sh".to_owned(), 80, 24, None, None)
+            .unwrap();
+        let snap = sprag_terminal::snapshot(live.registry());
+
+        // The restored pane re-runs a shell (`cat` is not allowlisted), so the recorded argv is not
+        // what prints the variable — the RESTORE's own env publication is, which is the point.
+        let restored = Host::new((80, 24))
+            .with_pane_env(Arc::new(|id: PaneId| {
+                vec![(PANE_ENV_VAR.to_owned(), format!("restored{}", id.0))]
+            }))
+            .with_pane_hooks(|| None);
+        let n = restored
+            .restore(
+                snap,
+                &std::collections::HashSet::new(),
+                |_| None,
+                || None,
+                |_| Vec::new(),
+            )
+            .expect("a valid snapshot restores");
+        assert_eq!(n, 1, "the pane came back");
+
+        // Ask the restored shell to print it, rather than reading a screen a `cat` never writes to.
+        assert!(
+            restored.send_text(id, &format!("printf %s \"${PANE_ENV_VAR}\"\n")),
+            "the restored pane accepts input",
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let expected = format!("restored{id}");
+        while std::time::Instant::now() < deadline
+            && !restored.pane_full_text(id).contains(&expected)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            restored.pane_full_text(id).contains(&expected),
+            "the restored pane's screen: {:?}",
+            restored.pane_full_text(id),
+        );
+    }
+
+    /// A pane's command that prints [`PANE_ENV_VAR`] and exits, so a test can read what the CHILD
+    /// received rather than what the builder was handed.
+    fn echo_pane_var() -> CommandBuilder {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg(format!("printf %s \"${{{PANE_ENV_VAR}-unset}}\""));
+        command.env("TERM", "dumb");
+        command
+    }
+
+    /// Row 0 of `id`'s screen once its child has exited.
+    fn printed_row(host: &Host, id: PaneId) -> String {
+        let workspace = host.workspace();
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(5) {
+            let eof = lock(&workspace)
+                .pane(id)
+                .is_some_and(|pane| pane.pty().is_eof());
+            if eof {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let held = lock(&workspace);
+        let pane = held.pane(id).expect("the pane is still in the pool");
+        pane.pty()
+            .with_screen(|screen| {
+                (0..screen.cols())
+                    .filter_map(|col| screen.cell(col, 0).map(|cell| cell.cluster.to_string()))
+                    .collect::<String>()
+            })
+            .trim_end()
+            .to_owned()
     }
 
     /// The in-process arm reads a pane's project from that pane's OWN live cwd.

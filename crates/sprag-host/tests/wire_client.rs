@@ -2762,3 +2762,63 @@ fn the_sweeps_own_verdict_reaches_a_reader_as_a_typed_change() {
         "and the subject it names answers: {entry}",
     );
 }
+
+/// A pane born under a REAL `sprag-term` carries its own identity in its child's environment — the
+/// end of the chain `sprag_host::pane_env_source` starts, driven the only way that proves the daemon
+/// installs it at all.
+///
+/// The wiring is one call in `sprag-term`'s `main`, and no unit test can reach it: a `Host` built
+/// without `with_pane_env` satisfies every other test in this file, and a pane spawned by such a
+/// daemon looks identical from the outside. R258's lesson — a wiring nothing drives is untested.
+///
+/// **What this asserts and what it does not.** `SPRAG_PANE` is a proof of INJECTION: nothing in the
+/// environment of the process running this test sets it, so a value in the pane's child can only have
+/// come from the birth. The address half is asserted for agreement, not injection — this harness
+/// hands the daemon `SPRAG_HOST_RPC_SOCK` to control its socket path, so the child would inherit the
+/// same string either way. That the source publishes it under the variable a client overrides is
+/// pinned where a control exists, in `host::tests`.
+#[test]
+fn a_daemon_born_pane_is_told_which_pane_it_is_and_where_to_report() {
+    // The boot pane prints both variables and then holds its PTY open, so the screen stays readable.
+    // `-` between them so an empty value cannot masquerade as the other's.
+    let (_host, sock) = spawn_host_running(&[
+        "sh",
+        "-c",
+        "printf 'PANEENV %s-%s\\n' \"$SPRAG_PANE\" \"$SPRAG_HOST_RPC_SOCK\"; cat",
+    ]);
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned host socket");
+
+    // The boot pane's id, read from the wire rather than assumed to be 0 — the assertion below is
+    // about the child being told ITS OWN id, so taking that id from the same list a client reads is
+    // what keeps the two from agreeing by coincidence.
+    let panes = conn
+        .call(
+            "scene/query",
+            json!({ "path": mux_action_path(PANES_SLOT) }),
+        )
+        .expect("panes query");
+    let id = panes[0]["id"].as_u64().expect("the boot pane has an id");
+
+    let expected = format!("PANEENV {id}-{}", sock.display());
+    let mut seen = String::new();
+    let printed = wait_until(Duration::from_secs(5), || {
+        seen = conn
+            .call(
+                "scene/query",
+                json!({ "path": pane_input_path(id, FULL_TEXT_SLOT) }),
+            )
+            .ok()
+            .and_then(|v: Value| v.as_str().map(str::to_owned))
+            .unwrap_or_default();
+        // Row breaks removed before matching: this harness boots a 40-COLUMN pane and a socket path
+        // under the temp dir is longer than that, so the emulator wraps the line mid-path — the
+        // first run of this test read `…/sprag-wire-it-0.so\nck`. The wrap is the terminal's, not
+        // the child's, and the assertion is about what the child was TOLD.
+        seen.replace('\n', "").contains(&expected)
+    });
+    assert!(
+        printed,
+        "the boot pane's child never printed {expected:?}; its screen was {seen:?}",
+    );
+}

@@ -18,7 +18,14 @@
 //! With no command the initial pane runs `$SHELL` (else `/bin/sh`). Socket
 //! policy: `$XDG_RUNTIME_DIR/sprag-host.sock` (override `SPRAG_HOST_RPC_SOCK`),
 //! enabled unless `SPRAG_HOST_RPC` is falsey; `kill -USR1`/`-USR2` enable /
-//! disable it live. As a server it runs until SIGINT/SIGTERM OR until its LAST
+//! disable it live.
+//!
+//! Every pane this server births is told two things about the world it is in, so a process INSIDE a
+//! pane can talk back rather than only be scraped (tmux's `$TMUX` / `$TMUX_PANE`): `SPRAG_PANE` is
+//! its own pane id — the `id` every wire method addressing a pane takes — and `SPRAG_HOST_RPC_SOCK`
+//! is this server's endpoint, so a `sprag` run inside a pane reaches the daemon that owns it with no
+//! argument. Both are birth-time, as any environment is: a process outliving its pane keeps an id
+//! the daemon answers as unknown, never one that comes to mean a different pane. As a server it runs until SIGINT/SIGTERM OR until its LAST
 //! live pane exits — the self-cleaning tmux convention (a host with nothing left
 //! to serve ends). Both edges funnel through ONE shutdown routine that cancels +
 //! joins in-flight plugin runs (the last-pane edge raises SIGTERM into it), so
@@ -121,7 +128,13 @@ fn main() -> io::Result<()> {
     // BEFORE the spawn so the bumper and HostState share the one registry — two would leave the
     // boot pane announcing on a token nobody ever waits on.
     let channels = Arc::new(sprag_host::ChannelRegistry::default());
-    let host = Host::new((args.cols, args.rows));
+    // Every pane this daemon births is told which pane it is and where THIS daemon listens
+    // (`sprag_host::pane_env_source`), so a process inside a pane can report rather than only be
+    // scraped. Installed here, at the site that also `mount`s the endpoint below, because publishing
+    // an address is a promise to serve it — the GUI's in-process host, which serves no host socket,
+    // installs nothing and its panes are spawned exactly as before. The path is `sock`, resolved
+    // above once, so what a pane is told and what `mount` binds cannot differ.
+    let host = Host::new((args.cols, args.rows)).with_pane_env(sprag_host::pane_env_source(&sock));
     // The persistent snapshot path, used only in the daemon arms below.
     let snap_path = snapshot_path(&sock);
     // Self-cleaning lifetime: when the LAST live pane across all sessions exits, the daemon has

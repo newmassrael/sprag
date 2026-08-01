@@ -93,8 +93,8 @@ pub use history::{
     save_histories_if_changed,
 };
 pub use host::{
-    Host, HostClient, PaneAgent, PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneMatch,
-    PaneNotification, PaneScrollFacts,
+    Host, HostClient, PANE_ENV_VAR, PaneAgent, PaneClipboardQuery, PaneClipboardWrite, PaneFind,
+    PaneMatch, PaneNotification, PaneScrollFacts, pane_env_source,
 };
 pub use keymap::{BoundAction, KeyError, KeySpec, Keymap};
 pub use notify::ChannelRegistry;
