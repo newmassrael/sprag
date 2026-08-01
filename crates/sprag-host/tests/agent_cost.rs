@@ -127,3 +127,71 @@ fn the_wakers_own_park_still_reads_the_whole_registry_once() {
         "one park asks the registry as a whole exactly once, over every tracker in it",
     );
 }
+
+/// The sweep's PER-PANE question walks nothing, and only a count can say so.
+///
+/// R260 measured `owes_evaluation` flat across a 64x registry — 0.039 to 0.043 us, slope straddling
+/// zero — and a flat duration is evidence, not proof: this box's rows move 20-30% between runs, which
+/// is wider than the term a small walk would add. The counter is exact. It is the same guard
+/// `a_look_at_one_pane_does_not_walk_the_registry` puts on the pane list, aimed at the other caller:
+/// the three questions this composes are all hash lookups today, and the tidier-looking rewrite of
+/// any of them — `is_due` asking `next_deadline` rather than this pane's, most obviously — is a walk
+/// per pane per sweep with no behavioural difference at all.
+#[test]
+fn a_sweeps_per_pane_question_does_not_walk_the_registry() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let em = painted();
+    let base = Instant::now();
+    let clock = crowded(&em, base);
+    let settled = base + sprag_detect::DEFAULT_SETTLE;
+
+    let before = agent::work();
+    // Every pane the registry remembers, which is what one sweep asks.
+    for id in 0..REMEMBERED {
+        clock.with(|state| {
+            assert!(
+                !state.owes_evaluation(PaneId(id), settled, true),
+                "pane {id} is settled under unchanged rules, so a sweep owes it nothing",
+            );
+        });
+    }
+    let after = agent::work();
+
+    assert_eq!(
+        after.deadline_visits_total - before.deadline_visits_total,
+        0,
+        "a sweep's per-pane question visited another pane's tracker, so the sweep is quadratic in \
+         the number of panes the daemon has open",
+    );
+}
+
+/// One WAKE reads the whole registry TWICE, and that is correct rather than a leftover.
+///
+/// The park reads it to choose a sleep; the loop reads it again on waking, because the sleep can be
+/// cut short by a candidate appearing with a nearer deadline and the pre-park answer is stale after
+/// that. Pinned as a count because the tempting simplification — carry the park's answer across —
+/// changes no verdict and no wire byte, and would be wrong only in the case nobody tests by hand: a
+/// candidate created while the waker slept.
+#[test]
+fn one_wake_reads_the_whole_registry_twice() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let em = painted();
+    let base = Instant::now();
+    let clock = Arc::new(crowded(&em, base));
+
+    let before = agent::work();
+    // The waker's loop, one turn of it: park for the cap, then ask whether anything came due.
+    clock.park_until_due(Duration::from_millis(20));
+    clock.with(|state| state.any_due(Instant::now()));
+    let after = agent::work();
+
+    assert_eq!(
+        after.deadline_visits_total - before.deadline_visits_total,
+        REMEMBERED * 2,
+        "one turn of the waker's loop reads the whole registry exactly twice",
+    );
+}
