@@ -46,6 +46,23 @@ use sprag_vt::Screen;
 
 use crate::external::lock;
 
+/// How often the settle waker SWEEPS: discover panes nobody has asked about, bring a manifest edit
+/// to the panes it invalidates, and forget the panes that are gone.
+///
+/// Five seconds bounds how long after a pane's birth its state can be unknown to a caller who never
+/// asks twice — the daemon's durability snapshot uses the same period for the analogous reason, and
+/// the two are deliberately unlinked because one bounds a loss window and this one bounds a
+/// discovery window.
+///
+/// # Why it lives HERE and not beside the loop that reads it
+///
+/// It was `sprag-term`'s private constant until R260 measured what a sweep costs, at which point
+/// `sprag-latency` needed the same number to say what fraction of a period the work occupies — and
+/// one binary cannot see another's private item, so the alternative was a second spelling of five
+/// seconds with a comment asking the next person not to let them drift. A cadence the agent
+/// subsystem's own module documents belongs to the subsystem.
+pub const SWEEP_INTERVAL: Duration = Duration::from_secs(5);
+
 /// Trackers visited by a nearest-deadline scan, process-wide.
 static DEADLINE_VISITS: AtomicU64 = AtomicU64::new(0);
 
@@ -67,8 +84,14 @@ static DEADLINE_VISITS: AtomicU64 = AtomicU64::new(0);
 /// and take the DELTA.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AgentWork {
-    /// Trackers visited by a nearest-deadline scan. The scan that remains is the settle waker's own
-    /// park, which asks once per wake rather than once per pane.
+    /// Trackers visited by a nearest-deadline scan.
+    ///
+    /// The scans that remain are the settle waker's, and there are TWO per wake rather than the one
+    /// this said before R260 counted them: [`AgentClock::park_until_due`] reads the registry to
+    /// choose how long to sleep, and the loop reads it again on waking to decide whether anything is
+    /// actually due. The second cannot be dropped — a candidate appearing is exactly what cuts the
+    /// sleep short, so the answer from before the park is stale after it. Per wake, not per pane,
+    /// which is the distinction that matters and the one the pane list violated.
     pub deadline_visits_total: u64,
 }
 
@@ -155,6 +178,42 @@ impl AgentRegistry {
             .get(&id)
             .and_then(Tracker::evaluated_under)
             .is_some_and(|revision| revision != self.rules.revision())
+    }
+
+    /// Whether this pane owes an evaluation — the settle waker's whole test for "ask about this one,
+    /// skip the rest".
+    ///
+    /// Three reasons, and a pane can be more than one at once on the sweep that first sees it:
+    ///
+    /// * **DUE** — the window has closed on a candidate, so what publishes it is the CLOCK. This is the
+    ///   third input a pending transition has, and the only one that arrives from no screen and no
+    ///   client.
+    /// * **UNKNOWN** — nobody has ever looked at this pane, so it has no state to be waiting on and is
+    ///   invisible to every other question here. Only a sweep can give it one.
+    /// * **STALE** — the pane is settled and known and its answer was reached under a ruleset the user
+    ///   has since edited. The input that moved was not on its screen, so nothing else will ever bring
+    ///   it back.
+    ///
+    /// None of the three applies to a settled pane under unchanged rules, which is every pane in a
+    /// quiet workspace — so the answer this returns in the steady state is `false`, and the screen read
+    /// behind it never happens.
+    ///
+    /// `sweep` distinguishes the waker's two kinds of wake. A deadline that came due is served on any
+    /// wake; discovery and staleness ride the sweep interval, because both are answers to "what has
+    /// changed while nobody was asking" and neither is urgent.
+    ///
+    /// # Why this is a method here rather than a predicate at the call site
+    ///
+    /// It was the call site's, inline in the waker's loop, for three slices — and a rule composed
+    /// inside a `thread::spawn` closure in a binary is reachable by nothing: no unit test could witness
+    /// the composition of the three questions below (each was tested alone), and no instrument could
+    /// price the one piece of the sweep that runs once per pane per interval. R260 measured this path,
+    /// which is what required it to be callable. The three questions stay separate because the waker
+    /// still asks `is_due` on its own in a debug assertion, and because they are what this composition
+    /// is made of.
+    #[must_use]
+    pub fn owes_evaluation(&self, id: PaneId, now: Instant, sweep: bool) -> bool {
+        self.is_due(id, now) || (sweep && (!self.knows(id) || self.stale(id)))
     }
 
     /// Take a reading of one pane and return what is published for it, or `None` for a pane no
@@ -296,8 +355,14 @@ impl AgentRegistry {
     ///
     /// **`live` must be a DAEMON-WIDE census.** The pane-list query walks one session's panes, and
     /// pruning against that would forget every other session's — so the hot path never calls this.
-    /// The waker does, because it already walks every session to find due panes, so the census is a
-    /// by-product of work it is doing anyway.
+    /// The waker does, because it already walks every session to find due panes, so the census needs
+    /// no walk of its own.
+    ///
+    /// That is the sense in which it is a by-product, and R260 measured the sense in which it is not:
+    /// BUILDING the set is 2.9x to 3.0x this call at sixty-four panes, and the largest single term in
+    /// a sweep over a big workspace. An insert per pane is not free merely because the loop around it
+    /// was already going to run. Both numbers are microseconds against a five-second period, so this
+    /// is a correction to the claim and not a case for changing the code.
     ///
     /// Without this a tracker outlives its pane and the map grows for the life of the daemon, one
     /// entry per pane ever opened. Bounded memory is the whole of the requirement; the latency of
@@ -948,6 +1013,100 @@ mod clock_tests {
         assert!(
             !reg.stale(never),
             "and a reload does not invent one for a pane that was never looked at",
+        );
+    }
+
+    /// The waker's whole test for "ask about this one", composed. Each of the three questions it
+    /// asks has had its own test since the slice that added it; the COMPOSITION had none at any
+    /// level, because it was a closure inside a `thread::spawn` in a binary until R260 needed it
+    /// callable to price it.
+    ///
+    /// The truth table is the claim. A DUE pane is served on any wake, because a deadline that has
+    /// passed is the only thing here that is already late. Discovery and staleness are gated on the
+    /// SWEEP: both answer "what changed while nobody was asking", and one pane's deadline coming due
+    /// is not a reason to go looking at every other pane in the daemon.
+    #[test]
+    fn the_sweep_gate_decides_which_of_the_three_reasons_are_urgent() {
+        let mut reg = AgentRegistry::default();
+        let em = painted(CLAUDE_FOOTER);
+        let title = Some("✳ Claude Code");
+        let base = Instant::now();
+        let due_at = base + DEFAULT_SETTLE;
+
+        // DUE: one look leaves a candidate waiting, and its window closes at `due_at`.
+        let pending = PaneId(1);
+        reg.observe(pending, em.screen(), title, base, Hysteresis::default);
+        assert!(
+            reg.owes_evaluation(pending, due_at, false),
+            "a deadline that has passed is served on ANY wake — the clock is the only input left",
+        );
+        assert!(
+            !reg.owes_evaluation(pending, base, false),
+            "and not before it passes, or the settle window would mean nothing",
+        );
+
+        // UNKNOWN: no tracker at all, so nothing else here can see this pane.
+        let never = PaneId(7);
+        assert!(
+            !reg.owes_evaluation(never, due_at, false),
+            "discovery is not urgent: a pane nobody has asked about waits for the sweep",
+        );
+        assert!(
+            reg.owes_evaluation(never, due_at, true),
+            "and the sweep is the only thing that will ever give it a state",
+        );
+
+        // STALE: settled under rules the user has since replaced.
+        let settled = PaneId(2);
+        reg.observe(settled, em.screen(), title, base, Hysteresis::default);
+        reg.observe(settled, em.screen(), title, due_at, Hysteresis::default)
+            .expect("a claude pane publishes");
+        reg.reload(rewritten_claude());
+        assert!(
+            !reg.owes_evaluation(settled, due_at, false),
+            "a reload is not urgent either — nothing about this pane is late",
+        );
+        assert!(
+            reg.owes_evaluation(settled, due_at, true),
+            "but only the sweep can bring the correction to a pane that never paints again",
+        );
+    }
+
+    /// The property the sweep's whole cost argument rests on: a settled pane under unchanged rules
+    /// owes NOTHING, on either kind of wake. This is the answer every pane in a quiet workspace
+    /// gives every five seconds for the life of the daemon, so it is the one R260 priced — and the
+    /// screen read behind it is what never happens.
+    ///
+    /// Asserted at an instant far past the settle window rather than at the one that published,
+    /// because the steady state a sweep meets is an old one: a candidate that lingered after
+    /// publishing would make every later sweep read a screen, and the failure would be invisible at
+    /// `due_at`.
+    #[test]
+    fn a_settled_pane_under_unchanged_rules_owes_nothing_on_either_wake() {
+        let mut reg = AgentRegistry::default();
+        let em = painted(CLAUDE_FOOTER);
+        let id = PaneId(1);
+        let title = Some("✳ Claude Code");
+        let base = Instant::now();
+
+        reg.observe(id, em.screen(), title, base, Hysteresis::default);
+        reg.observe(
+            id,
+            em.screen(),
+            title,
+            base + DEFAULT_SETTLE,
+            Hysteresis::default,
+        )
+        .expect("a claude pane publishes");
+
+        let much_later = base + DEFAULT_SETTLE * 100;
+        assert!(
+            !reg.owes_evaluation(id, much_later, false),
+            "nothing is waiting on the clock",
+        );
+        assert!(
+            !reg.owes_evaluation(id, much_later, true),
+            "and the sweep finds it known and evaluated under the rules in force",
         );
     }
 }

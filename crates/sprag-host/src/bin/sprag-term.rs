@@ -63,6 +63,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use signal_hook::consts::{SIGINT, SIGTERM};
+use sprag_host::agent::SWEEP_INTERVAL;
 use sprag_host::{
     AgentClock, ChannelRegistry, FrameIngress, Host, HostState, RunRegistry, SavedHistory,
     bump_on_dirty, dispatch_frames, history_dir, history_limits, load_pane_history, load_snapshot,
@@ -328,31 +329,6 @@ fn spawn_durability_saver(
     });
 }
 
-/// How often the agent waker SWEEPS: discover panes nobody has asked about, and forget panes that are
-/// gone.
-///
-/// # Why a sweep is needed at all, and what it costs
-///
-/// A candidate is created by an OBSERVATION, and until slice 3 the only thing that observed was the
-/// pane-list query. So a daemon nobody had ever queried held no state for any pane — measured, not
-/// reasoned: a first-ever one-shot read of an agent pane on a five-second-old daemon answered nothing,
-/// because the read was itself that pane's first observation and a resting verdict has to hold. That
-/// makes "ask once and get an answer" false for exactly the caller slice 5 is FOR: an MCP or CLI peer
-/// on a daemon with no attached frontend.
-///
-/// The fix is not to poll the panes. The sweep observes a pane only while it is UNKNOWN, and a pane is
-/// unknown once — so the evaluation cost is one screen read per pane for the life of the daemon, not
-/// one per interval. What recurs is the walk itself: the registry lock, then each workspace lock, and
-/// a pane-id read each. [`spawn_durability_saver`] already takes exactly those locks at exactly this
-/// interval and then does strictly more (a history epoch per pane, and an encode when one moved), so
-/// the marginal cost of this thread on an idle daemon is a second cheap lock acquisition every five
-/// seconds. M3's "a quiet workspace costs nothing" is about the evaluation, and the evaluation is what
-/// the sweep does not repeat.
-///
-/// Five seconds because it is [`SNAPSHOT_INTERVAL`]'s reason applied to a different fact: it bounds how
-/// long after a pane's birth its state can be unknown to a caller who never asks twice.
-const AGENT_SWEEP_INTERVAL: Duration = Duration::from_secs(5);
-
 /// Spawn the agent settle waker (daemon only): confirm the verdicts whose window has closed, wake the
 /// clients of the sessions whose answers moved, and forget the panes that are gone.
 ///
@@ -392,16 +368,56 @@ const AGENT_SWEEP_INTERVAL: Duration = Duration::from_secs(5);
 /// deadline came due, a candidate appeared (so the sleep has to be re-planned around a nearer
 /// deadline), or the prune interval elapsed. Only the first and third do any work.
 ///
-/// # Cost
+/// # Why a sweep is needed at all
 ///
-/// With nothing pending the thread is BLOCKED, not spinning, and wakes on the sweep interval to
-/// discover new panes and bound memory. With something pending it wakes at that deadline: one wake per
-/// transition.
+/// A candidate is created by an OBSERVATION, and until slice 3 the only thing that observed was the
+/// pane-list query. So a daemon nobody had ever queried held no state for any pane — measured, not
+/// reasoned: a first-ever one-shot read of an agent pane on a five-second-old daemon answered nothing,
+/// because the read was itself that pane's first observation and a resting verdict has to hold. That
+/// makes "ask once and get an answer" false for exactly the caller slice 5 is FOR: an MCP or CLI peer
+/// on a daemon with no attached frontend.
+///
+/// The fix is not to poll the panes. [`sprag_host::AgentRegistry::owes_evaluation`] answers `false` for a settled
+/// pane under unchanged rules, which is every pane in a quiet workspace, so the screen read behind it
+/// never happens. What recurs is the walk.
+///
+/// # Cost — MEASURED (R260), where this paragraph used to argue
+///
+/// With nothing pending the thread is BLOCKED, not spinning, and wakes on [`SWEEP_INTERVAL`] to
+/// discover new panes, carry a manifest edit and bound memory. With something pending it wakes at that
+/// deadline: one wake per transition.
+///
+/// One sweep over a quiet workspace, on `sprag-latency`'s rows (i9-14900HX, `--release`, five runs,
+/// minima): **1.96-2.33 us at one pane, 2.50-2.95 us at eight, 7.01-8.38 us at sixty-four** — against
+/// a five-second period, 0.00014% of one core at the top end. The terms:
+///
+/// * per PANE, 0.039-0.043 us to ask whether it owes an evaluation, flat across a 64x span
+///   (-0.02 to +0.06 ns per remembered pane) because the question is three hash lookups and no walk;
+/// * per WAKE, twice, `any_due` over every tracker — 0.021-0.024 us at one pane and 0.082-0.094 us at
+///   sixty-four, about 1.0 ns per tracker visited, which is the same order as the 1.35-1.68 ns per
+///   visit R255 inferred from a different row. Twice because the park chooses a sleep from it and a
+///   candidate appearing can cut that sleep short, so the answer cannot be carried across;
+/// * per SWEEP, the census (1.93-2.25 us at sixty-four panes), the prune it feeds (0.64-0.74 us), and
+///   the manifest re-read (1.84-2.20 us with a file, 0.58-0.66 us with none).
+///
+/// **Two things this paragraph got wrong while it was an argument, both now measured.** It said what
+/// recurs is "a pane-id read each", which named the smallest per-pane term and omitted the clock lock
+/// the walk takes ONCE PER PANE. And it priced the whole thread as marginal against
+/// [`spawn_durability_saver`] — "the same locks at the same interval, and that one does strictly
+/// more". The locks are genuinely shared. The manifest re-read is not: R254 moved the reload onto this
+/// thread and priced its SCHEDULING (no new thread, no timer, no wake), which is true and is a
+/// different claim, while the saver reads no file at all — it writes when the shape moved and is
+/// otherwise silent. At one pane that unshared term is **94%** of the sweep, and at sixty-four it is
+/// still 26%. Nothing here asks to be changed; what asked to be changed was the paragraph.
+///
+/// [`sprag_host::AgentRegistry::retain_live`]'s "the census is a by-product of work it is doing anyway" is true
+/// about the WALK and not about the cost: building the live set is 2.9x to 3.0x the prune it serves.
 ///
 /// Lock discipline is [`spawn_durability_saver`]'s, for the same reason: the registry lock is taken
 /// and RELEASED to clone out the pools, then each workspace lock is taken on its own, never nested.
 /// The clock's lock is taken inside a workspace lock (the screen is only reachable there) and never
-/// the other way round.
+/// the other way round. What those locks COST is the one term still unmeasured, and deliberately: a
+/// single-threaded instrument measures them uncontended, and uncontended is not what a lock costs.
 fn spawn_agent_waker(
     registry: Arc<Mutex<SessionRegistry>>,
     agents: Arc<AgentClock>,
@@ -413,10 +429,10 @@ fn spawn_agent_waker(
         loop {
             // Blocked until there is something to do. Returns early when a candidate APPEARS, which is
             // not itself work — the guard below sends that wake straight back to the park.
-            agents.park_until_due(AGENT_SWEEP_INTERVAL);
+            agents.park_until_due(SWEEP_INTERVAL);
             let now = Instant::now();
             let due = agents.with(|state| state.any_due(now));
-            let sweep = now.duration_since(last_sweep) >= AGENT_SWEEP_INTERVAL;
+            let sweep = now.duration_since(last_sweep) >= SWEEP_INTERVAL;
             if !due && !sweep {
                 continue;
             }
@@ -458,18 +474,12 @@ fn spawn_agent_waker(
                 for pane in pool.panes() {
                     let id = pane.id();
                     live.insert(id);
-                    // Three reasons to ask about a pane, and a pane can be more than one at once on
-                    // the sweep that first sees it. DUE: the window has closed on a candidate, so what
-                    // publishes it is the CLOCK — the third input a pending transition has. UNKNOWN:
-                    // nobody has ever looked at this pane, so it has no state to be waiting on, and
-                    // only the sweep can give it one. STALE: the pane is settled and known and its
-                    // answer was reached under a ruleset the user has since edited — the input that
-                    // moved was not on its screen, so nothing else will ever bring it back. None of
-                    // the three applies to a settled pane under unchanged rules, which is every pane
-                    // in a quiet workspace.
-                    let ask = agents.with(|state| {
-                        state.is_due(id, now) || (sweep && (!state.knows(id) || state.stale(id)))
-                    });
+                    // Three reasons to ask about a pane — due, unknown, stale — and none of them
+                    // applies to a settled pane under unchanged rules, which is every pane in a quiet
+                    // workspace. `AgentRegistry::owes_evaluation` holds the composition and the
+                    // argument for each reason; it is a method there rather than a closure here so
+                    // that a test can witness the rule and an instrument can price it.
+                    let ask = agents.with(|state| state.owes_evaluation(id, now, sweep));
                     if !ask {
                         continue;
                     }
