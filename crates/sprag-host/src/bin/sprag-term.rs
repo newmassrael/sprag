@@ -52,7 +52,7 @@
 // here (mirrors `sprag-gui`) — declared crate-wide so a future internal link cannot re-break it.
 #![allow(rustdoc::private_intra_doc_links)]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::unix::io::AsRawFd;
@@ -68,10 +68,10 @@ use sprag_host::{
     AgentClock, ChannelRegistry, FrameIngress, Host, HostState, RunRegistry, SavedHistory,
     bump_on_dirty, dispatch_frames, history_dir, history_limits, load_pane_history, load_snapshot,
     pane_exit_hook, save_histories_if_changed, save_if_changed, snapshot_path, spawn_reaper,
-    stdin_frames,
+    stdin_frames, sweep_once,
 };
 use sprag_rpc::HOST_SOCKET;
-use sprag_terminal::{CommandBuilder, PaneId, SessionRegistry, Snapshot, Workspace};
+use sprag_terminal::{CommandBuilder, PaneId, SessionRegistry, Snapshot};
 use sprag_vt::HistoryLimits;
 use tracing_subscriber::{EnvFilter, fmt};
 
@@ -416,8 +416,14 @@ fn spawn_durability_saver(
 /// Lock discipline is [`spawn_durability_saver`]'s, for the same reason: the registry lock is taken
 /// and RELEASED to clone out the pools, then each workspace lock is taken on its own, never nested.
 /// The clock's lock is taken inside a workspace lock (the screen is only reachable there) and never
-/// the other way round. What those locks COST is the one term still unmeasured, and deliberately: a
-/// single-threaded instrument measures them uncontended, and uncontended is not what a lock costs.
+/// the other way round.
+///
+/// What those locks cost was R260's one open term and is now measured (R261, on
+/// [`sprag_host::sweep_once`]): with the pass running at seven to twelve MILLION times this
+/// interval, a concurrent pane-list reader's median moves -1.4 to +5.9 us against a control doing
+/// the same work on a registry it does not share. The recurring pass is free. The pass after a
+/// manifest reload is not the same object — 64 to 87 us for three panes — and the reason it is
+/// documented rather than redesigned is on `sweep_once`.
 fn spawn_agent_waker(
     registry: Arc<Mutex<SessionRegistry>>,
     agents: Arc<AgentClock>,
@@ -450,77 +456,11 @@ fn spawn_agent_waker(
                     agents.with(|state| state.reload(manifests.rules().clone()));
                 }
             }
-            // Phase 1 — registry lock ONLY: clone out each session's pools as handles, keeping the
-            // session NAME beside each so a published change can wake that session's clients and no
-            // others.
-            let pools: Vec<(String, Arc<Mutex<Workspace>>)> = {
-                let reg = registry.lock().unwrap_or_else(PoisonError::into_inner);
-                reg.sessions()
-                    .iter()
-                    .flat_map(|session| {
-                        let name = session.name().to_owned();
-                        session
-                            .windows()
-                            .iter()
-                            .map(move |window| (name.clone(), Arc::clone(window.workspace())))
-                    })
-                    .collect()
-            };
-            // Phase 2 — registry lock released. Each pool under its own lock.
-            let mut live: HashSet<PaneId> = HashSet::new();
-            let mut moved: HashSet<String> = HashSet::new();
-            for (session, pool) in &pools {
-                let pool = pool.lock().unwrap_or_else(PoisonError::into_inner);
-                for pane in pool.panes() {
-                    let id = pane.id();
-                    live.insert(id);
-                    // Three reasons to ask about a pane — due, unknown, stale — and none of them
-                    // applies to a settled pane under unchanged rules, which is every pane in a quiet
-                    // workspace. `AgentRegistry::owes_evaluation` holds the composition and the
-                    // argument for each reason; it is a method there rather than a closure here so
-                    // that a test can witness the rule and an instrument can price it.
-                    let ask = agents.with(|state| state.owes_evaluation(id, now, sweep));
-                    if !ask {
-                        continue;
-                    }
-                    let before = agents.with(|state| state.seq(id));
-                    let title = pane.title();
-                    pane.pty().with_screen(|screen| {
-                        agents.observe(
-                            id,
-                            screen,
-                            title.as_deref(),
-                            now,
-                            sprag_host::config::agent_settle,
-                        );
-                    });
-                    if agents.with(|state| state.seq(id)) != before {
-                        moved.insert(session.clone());
-                    }
-                    // THE LOOP'S LIVENESS RESTS ON THIS. `park_until_due` returns immediately for a
-                    // deadline already past, so a due pane that an observation does not RESOLVE sends
-                    // this thread round at full speed forever. It cannot happen: `is_due` is
-                    // `since + settle <= now`, which is exactly `settle`'s own publish condition, and
-                    // every other path through `observe` either publishes or re-dates the candidate to
-                    // `now`. Stated as an assertion rather than a comment because the failure is a
-                    // spin rather than a wrong answer — the mutation that removed the observe above
-                    // took the scene revision from 264 to 6,178,283 in twelve seconds.
-                    debug_assert!(
-                        !agents.with(|state| state.is_due(id, now)),
-                        "pane {id} is still due after being observed at the same instant",
-                    );
-                }
-            }
-            // A tracker must not outlive its pane. The census is DAEMON-WIDE, which is why it is
-            // built here and never in the pane-list query: that walk sees one session, and pruning
-            // against it would forget every other session's panes.
-            if sweep {
-                agents.with(|state| state.retain_live(&live));
-            }
-            // Wake the clients of the sessions whose published answer moved, and only those.
-            for session in &moved {
-                channels.bump(session);
-            }
+            // The pass itself is `sprag_host::sweep_once` — every input it reads is a library type,
+            // so what is left here is the scheduling and nothing else. It also has to be callable:
+            // R261 measured what its locks cost by running it against a live registry while another
+            // thread served requests, which is not a thing a closure in this file can be asked to do.
+            sweep_once(&registry, &agents, &channels, now, sweep);
         }
     });
 }

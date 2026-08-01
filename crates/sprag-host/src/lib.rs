@@ -67,6 +67,7 @@ pub mod scope;
 // docs and resolves THEIR intra-doc links in this scope, which manufactures phantom errors.
 mod shellword;
 pub mod ssh;
+pub mod sweep;
 // Dropped-file delivery (paste a local path / `scp` it to a remote workspace first). Private: the
 // policy is reached ONLY through the `drop_file` action + `HostClient::drop_file`, so there is one
 // way in and no second policy site. A plain comment, not a doc comment: an outer doc here would be
@@ -106,6 +107,7 @@ pub use rpc::{
 pub use runs::{RunId, RunRegistry, RunState};
 pub use scope::{ScopeError, SessionScope};
 pub use ssh::{PortForward, SshTarget, SshTargetError};
+pub use sweep::{SweepReport, sweep_once};
 pub use window::{WindowSize, arbitrate};
 pub use wire::{mux_action_path, pane_container_tag, pane_input_path};
 pub use workspace::WorkspaceExternal;
