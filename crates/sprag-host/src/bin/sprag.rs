@@ -1978,6 +1978,12 @@ fn edit_hooks(args: Vec<String>, install: bool) -> io::Result<()> {
             ),
             None => println!("{}: created", plan.path.display()),
         }
+        // An agent may hold what its config now names until its user has seen it, so writing the
+        // file is not always the whole install. Printed only for a write that installs, because
+        // there is nothing left to do about an entry that has just been taken back out.
+        if install && let Some(follow_up) = hooks::target(plan.target).and_then(|t| t.follow_up) {
+            println!("    {follow_up}");
+        }
     }
     Ok(())
 }
@@ -2012,11 +2018,11 @@ fn list_hooks(args: Vec<String>) -> io::Result<()> {
     }
     for target in hooks::TARGETS {
         let status = hooks::status(target)?;
-        // A gone binary is reported BEFORE the count, because it outranks it: every event can be
-        // wired and every one of them still fail. Recognition matches the subcommand rather than
-        // the path, which is what lets a re-install repair this in place — and what would otherwise
-        // let a dead install read as a healthy one.
-        let state = if status.missing_program.is_some() {
+        // What is wired but cannot FIRE is reported before the count, because it outranks it:
+        // every event can be installed and every one of them still fail. Both causes read as one
+        // word here for the same reason they are one question on `Status` — to the user an install
+        // that cannot run is one state, whatever put it there.
+        let state = if status.inert() {
             "BROKEN".to_owned()
         } else if status.complete() {
             "installed".to_owned()
@@ -2036,6 +2042,21 @@ fn list_hooks(args: Vec<String>) -> io::Result<()> {
                 target.name,
             );
         }
+        if let Some(switch) = status.disabled_by {
+            println!(
+                "    `{switch}` is false in that file, so {} runs no hooks at all — \
+                 turn it back on with the agent's own command, not with sprag",
+                target.label,
+            );
+        }
+        // Said for an install that is otherwise fine, because "installed" is exactly the answer
+        // that would let a user stop looking while the agent is still holding the hook.
+        if let Some(follow_up) = target.follow_up
+            && status.installed > 0
+            && !status.inert()
+        {
+            println!("    {follow_up}");
+        }
     }
     Ok(())
 }
@@ -2049,11 +2070,10 @@ fn list_hooks(args: Vec<String>) -> io::Result<()> {
 /// is down, or because they are not in a pane, is not shippable. [`report_agent`] keeps the loud
 /// behaviour for the person invoking it directly.
 ///
-/// The `seq` is a wall-clock nanosecond count, so a report that overtakes an earlier one is refused
-/// rather than applied out of order. The cost is stated rather than avoided: a clock stepped
-/// BACKWARDS between two events makes the second refusable, and the pane then holds the earlier
-/// state until the next event. The rival's hook makes the same trade for the same reason — the
-/// alternative is no ordering at all between separate processes.
+/// The `seq` orders two reports from separate processes, so one that overtakes an earlier one is
+/// refused rather than applied out of order. It comes from [`sprag_host::hooks::report_seq`], whose
+/// own docs say why it is a boot-relative count and not the wall clock: a clock that can be stepped
+/// backwards would make the second of two events refusable and park a stale state on the pane.
 fn hook(args: Vec<String>) -> io::Result<()> {
     let _ = deliver_hook(args);
     Ok(())
