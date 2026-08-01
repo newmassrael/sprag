@@ -47,7 +47,7 @@ use crate::snapshot::{
     MIN_READABLE_SNAPSHOT_VERSION, PaneRestore, RestorePlan, SNAPSHOT_VERSION, Snapshot,
     SnapshotError,
 };
-use crate::workspace::{HistoryLimitSource, Pane, Workspace};
+use crate::workspace::{HistoryLimitSource, Pane, PaneEnvSource, Workspace};
 
 /// One window: a named layout unit owning a pane pool, how its tiled panes are ARRANGED,
 /// and which of them a client has FLOATED out of the tiling.
@@ -1230,6 +1230,26 @@ impl SessionRegistry {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .set_history_limit_source(Arc::clone(&source));
+            }
+        }
+    }
+
+    /// Install `source` as the [`PaneEnvSource`] every pane born from here on consults, across every
+    /// window this registry currently holds — the registry-wide counterpart of
+    /// [`Workspace::set_pane_env_source`].
+    ///
+    /// Whole-registry and `&self` for [`set_history_limit_source`](Self::set_history_limit_source)'s
+    /// reasons, and a REPLACED registry (a restore) needs its own call for the same reason: its
+    /// pools are new, and panes coming back into them would otherwise be the only ones in the
+    /// daemon born unable to name themselves.
+    pub fn set_pane_env_source(&self, source: PaneEnvSource) {
+        for session in self.sessions() {
+            for window in session.windows() {
+                window
+                    .workspace()
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .set_pane_env_source(Arc::clone(&source));
             }
         }
     }

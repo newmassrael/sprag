@@ -332,6 +332,7 @@ pub struct Workspace {
     next_id: Arc<AtomicU64>,
     default_size: (u16, u16),
     history_limit: HistoryLimitSource,
+    pane_env: PaneEnvSource,
 }
 
 /// Asked, at each pane's BIRTH, how many logical lines of scrollback that pane should retain —
@@ -361,6 +362,41 @@ fn default_history_limit_source() -> HistoryLimitSource {
     Arc::new(|| sprag_vt::DEFAULT_SCROLLBACK_LINES)
 }
 
+/// Asked, at each pane's BIRTH, which environment variables that pane's child should carry beyond
+/// the command's own — how a process INSIDE a pane learns which pane it is in and where to reach
+/// the daemon that owns it (tmux's `$TMUX` / `$TMUX_PANE`).
+///
+/// Without it a pane's child is told only `TERM`, so nothing running in a pane can name itself: it
+/// can be driven and scraped, but it cannot report. That asymmetry is what this seam removes.
+///
+/// **It returns PAIRS rather than editing the [`CommandBuilder`].** A closure handed the builder
+/// could also change the program, the argv or the cwd, and the authority a source needs is
+/// strictly "add these variables" — the same "hand out the operation, not the resource" line
+/// [`sibling`](Workspace::sibling) draws around the id counter.
+///
+/// **It takes the [`PaneId`] and nothing else.** A pane's SESSION is deliberately absent: an id is
+/// unique across the whole registry (see the type docs), so the owner can resolve the session from
+/// the id, while a session name stored per pool would be a second authority that
+/// [`sibling`](Workspace::sibling) silently copies — and `new_session` builds its first pool as a
+/// sibling of the DEFAULT session's, so every pane of every later session would publish the
+/// default session's name.
+///
+/// A source rather than a `spawn` parameter for [`HistoryLimitSource`]'s reason: this crate owns
+/// the only two places a pane is born, and a caller that had to pass the environment is one that
+/// could forget to. Consulted at each birth rather than cached, so a daemon that learns its
+/// endpoint late still publishes it to the next pane.
+pub type PaneEnvSource = Arc<dyn Fn(PaneId) -> Vec<(String, String)> + Send + Sync>;
+
+/// The [`PaneEnvSource`] a workspace uses when nobody installs one: no variables at all.
+///
+/// A standalone pool, a GUI's in-process host and every unit test get this, so a pane that is not
+/// part of a daemon publishing an endpoint is spawned exactly as it was before this seam existed —
+/// and a child that finds no `SPRAG_PANE` correctly concludes there is nobody to report to.
+#[must_use]
+fn default_pane_env_source() -> PaneEnvSource {
+    Arc::new(|_| Vec::new())
+}
+
 impl Workspace {
     /// A new, empty workspace with its OWN private id counter, whose dimension-less
     /// spawns adopt `default_size`. For a standalone pane pool (and unit tests); a
@@ -383,6 +419,7 @@ impl Workspace {
             next_id,
             default_size,
             history_limit: default_history_limit_source(),
+            pane_env: default_pane_env_source(),
         }
     }
 
@@ -399,6 +436,17 @@ impl Workspace {
     /// birth panes take no argument for it, and one that had to would be one that could forget.
     pub fn set_history_limit_source(&mut self, source: HistoryLimitSource) {
         self.history_limit = source;
+    }
+
+    /// Install the [`PaneEnvSource`] this pool's births consult — the seam `sprag-host` uses to put
+    /// a pane's identity and its daemon's address into every pane's child without this crate
+    /// learning what a socket is.
+    ///
+    /// Affects FUTURE births only, and cannot do anything else: a child's environment is fixed at
+    /// `exec`, so a pane already spawned keeps what it was born with. That is also why the seam is
+    /// a source and not a mutable map — there is no live view of it to offer.
+    pub fn set_pane_env_source(&mut self, source: PaneEnvSource) {
+        self.pane_env = source;
     }
 
     /// The default `(cols, rows)` a dimension-less spawn adopts.
@@ -453,6 +501,11 @@ impl Workspace {
             // and a sibling that defaulted here would give a session's second window shallower
             // history than its first for no reason the user could see.
             history_limit: Arc::clone(&self.history_limit),
+            // Inherited for that same reason, and SAFELY so only because a `PaneEnvSource` is handed
+            // nothing but the pane's id. `new_session` builds a new session's first pool as a sibling
+            // of the DEFAULT session's, so a source that closed over a session name would publish the
+            // wrong one to every pane of every session created after boot.
+            pane_env: Arc::clone(&self.pane_env),
         }
     }
 
@@ -462,7 +515,8 @@ impl Workspace {
     /// # Errors
     ///
     /// Returns [`PanePtyError`] if the pseudoterminal or child cannot be
-    /// started; on failure no pane is added and the id is not consumed.
+    /// started; on failure no pane is added, though the id IS consumed — see
+    /// [`spawn_with_dirty`](Self::spawn_with_dirty).
     pub fn spawn(
         &mut self,
         command: CommandBuilder,
@@ -484,13 +538,18 @@ impl Workspace {
     /// does). Both are pinion-free (`Box<dyn Fn() + Send>`), keeping this crate decoupled
     /// from the GUI shell and the host lifetime; callers with neither use [`Self::spawn`].
     ///
+    /// The pane's id is reserved BEFORE its child starts, because the id travels in that child's
+    /// environment ([`PaneEnvSource`]).
+    ///
     /// # Errors
     ///
     /// Returns [`PanePtyError`] if the pseudoterminal or child cannot be
-    /// started; on failure no pane is added and the id is not consumed.
+    /// started; on failure no pane is added, but the reserved id is CONSUMED — the counter has
+    /// already advanced past it, leaving a gap that the never-reused invariant tolerates (see the
+    /// mint site).
     pub fn spawn_with_dirty(
         &mut self,
-        command: CommandBuilder,
+        mut command: CommandBuilder,
         label: String,
         cols: u16,
         rows: u16,
@@ -503,12 +562,24 @@ impl Workspace {
         // Asked HERE rather than cached on the pool, so a user who edits `history-limit` gets it on
         // their next pane rather than on their next daemon.
         let history_limit = (self.history_limit)();
+        // The id is minted BEFORE the spawn because the pane's own id travels in its child's
+        // environment ([`PaneEnvSource`]) and a child cannot be told a number that does not exist
+        // yet: an environment is fixed at `exec`, so there is no later moment to correct.
+        //
+        // The COST is stated rather than avoided: a spawn that fails now consumes an id, where it
+        // used to leave the counter untouched. Nothing rests on gap-freeness — ids need uniqueness
+        // and monotonicity only (that is what makes a pane addressable by id alone), and a
+        // durability snapshot stores the high-water mark rather than deriving it from live ids, so
+        // a gap survives a restore as harmlessly as the one a top-of-range close already leaves.
+        // The alternative — peeking the counter for the environment and minting after — would let
+        // the two disagree under a concurrent spawn, which is the failure this ordering makes
+        // unrepresentable. Relaxed ordering: ids need no synchronization with other memory.
+        let id = PaneId(self.next_id.fetch_add(1, Ordering::Relaxed));
+        for (key, value) in (self.pane_env)(id) {
+            command.env(key, value);
+        }
         let pty =
             PanePty::spawn_with_dirty(command, cols, rows, on_dirty, on_exit, &[], history_limit)?;
-        // Mint AFTER a successful spawn so a failed spawn consumes no id (preserving the
-        // old counter's gap-free-on-failure behaviour). Relaxed ordering: ids need only
-        // uniqueness + monotonicity, not synchronization with other memory.
-        let id = PaneId(self.next_id.fetch_add(1, Ordering::Relaxed));
         self.panes.push(Pane {
             id,
             pty,
@@ -539,7 +610,7 @@ impl Workspace {
     pub fn spawn_restored(&mut self, pane: PaneRebirth) -> Result<(), PanePtyError> {
         let PaneRebirth {
             id,
-            command,
+            mut command,
             label,
             size: (cols, rows),
             on_dirty,
@@ -553,6 +624,13 @@ impl Workspace {
         // limit allows is safe either way — the replay scrolls through the same eviction path any
         // live output does, so the pane settles at exactly the configured depth.
         let history_limit = (self.history_limit)();
+        // A restored pane's environment is re-derived from the CURRENT daemon rather than restored
+        // from the snapshot, for the reason the argv path already states: the snapshot records what
+        // a pane WAS, and the endpoint serving it now is a fact of this process. Its id is the
+        // caller's, so there is no ordering constraint here — only the same publication.
+        for (key, value) in (self.pane_env)(id) {
+            command.env(key, value);
+        }
         let pty = PanePty::spawn_with_dirty(
             command,
             cols,
@@ -771,6 +849,127 @@ mod tests {
         let mut next = ws.sibling();
         let id = next.spawn(cmd(), "sh".to_string(), 80, 24).unwrap();
         assert_eq!(next.pane(id).unwrap().pty().history_limit(), 321);
+    }
+
+    /// A pane's command that PRINTS one environment variable and exits — the only way to assert
+    /// what a child actually received, as opposed to what the builder was told.
+    fn echoes(var: &str) -> CommandBuilder {
+        let mut c = CommandBuilder::new("/bin/sh");
+        c.arg("-c");
+        c.arg(format!("printf %s \"${{{var}-unset}}\""));
+        c.env("TERM", "dumb");
+        c
+    }
+
+    /// What the child printed on its first row, once it has exited.
+    fn printed(ws: &Workspace, id: PaneId) -> String {
+        let pty = ws.pane(id).unwrap().pty();
+        let start = std::time::Instant::now();
+        while !pty.is_eof() && start.elapsed() < std::time::Duration::from_secs(5) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        pty.with_screen(|screen| {
+            (0..screen.cols())
+                .filter_map(|col| screen.cell(col, 0).map(|cell| cell.cluster.to_string()))
+                .collect::<String>()
+        })
+        .trim_end()
+        .to_owned()
+    }
+
+    #[test]
+    fn a_pane_s_child_is_born_knowing_which_pane_it_is_in() {
+        // The whole seam, proven from the CHILD's side: the pool is asked at each birth and what it
+        // answers reaches the process. Read twice with the input changed — each pane prints its OWN
+        // id, so a source consulted once and reused (or one handed the wrong id) fails the second
+        // assertion while passing the first.
+        let mut ws = Workspace::new((80, 24));
+        ws.set_pane_env_source(Arc::new(|id: PaneId| {
+            vec![("WS_TEST_PANE".to_owned(), id.0.to_string())]
+        }));
+        let first = ws
+            .spawn(echoes("WS_TEST_PANE"), "sh".to_string(), 20, 4)
+            .unwrap();
+        let second = ws
+            .spawn(echoes("WS_TEST_PANE"), "sh".to_string(), 20, 4)
+            .unwrap();
+        assert_eq!(printed(&ws, first), first.0.to_string());
+        assert_eq!(
+            printed(&ws, second),
+            second.0.to_string(),
+            "each pane's child is told its own id, not the first pane's",
+        );
+    }
+
+    #[test]
+    fn a_pool_with_no_source_publishes_nothing() {
+        // The default is not "some empty value" but ABSENCE, which is what lets a child conclude
+        // there is no daemon to report to. A standalone pool and every unit test above rely on it.
+        let mut ws = Workspace::new((80, 24));
+        let id = ws
+            .spawn(echoes("WS_TEST_PANE"), "sh".to_string(), 20, 4)
+            .unwrap();
+        assert_eq!(printed(&ws, id), "unset");
+    }
+
+    #[test]
+    fn a_sibling_pool_inherits_the_pane_env_source() {
+        // A new WINDOW is not a new configuration, exactly as with the history limit. This is also
+        // what makes a session created AFTER boot work at all: `SessionRegistry::new_session` builds
+        // its first pool as a sibling of the default session's.
+        let mut ws = Workspace::new((80, 24));
+        ws.set_pane_env_source(Arc::new(|id: PaneId| {
+            vec![("WS_TEST_PANE".to_owned(), format!("sib{}", id.0))]
+        }));
+        let mut next = ws.sibling();
+        let id = next
+            .spawn(echoes("WS_TEST_PANE"), "sh".to_string(), 20, 4)
+            .unwrap();
+        assert_eq!(printed(&next, id), format!("sib{}", id.0));
+    }
+
+    #[test]
+    fn a_restored_pane_s_child_is_told_too() {
+        // A restore is the other birth site, and a pane that came back unable to name itself would
+        // be a gap visible only after a reboot. Its id is the CALLER's, so this also pins that the
+        // publication uses the id the pane is coming back under.
+        let mut ws = Workspace::new((80, 24));
+        ws.set_pane_env_source(Arc::new(|id: PaneId| {
+            vec![("WS_TEST_PANE".to_owned(), format!("re{}", id.0))]
+        }));
+        ws.spawn_restored(PaneRebirth {
+            id: PaneId(41),
+            command: echoes("WS_TEST_PANE"),
+            label: "sh".to_owned(),
+            size: (20, 4),
+            on_dirty: None,
+            on_exit: None,
+            history: Vec::new(),
+        })
+        .unwrap();
+        assert_eq!(printed(&ws, PaneId(41)), "re41");
+    }
+
+    #[test]
+    fn a_pane_s_id_is_reserved_before_its_child_starts() {
+        // The ordering the environment forces, asserted as the COST it has: the id is minted before
+        // the spawn, so a birth that fails consumes it. Restoring the old "mint after a successful
+        // spawn" makes the surviving pane id 0 and turns this red — which is the point, since
+        // nothing else in the suite can see the difference.
+        let mut ws = Workspace::new((80, 24));
+        let mut doomed = CommandBuilder::new("/nonexistent/sprag-no-such-program");
+        doomed.env("TERM", "dumb");
+        assert!(
+            ws.spawn(doomed, "doomed".to_string(), 20, 4).is_err(),
+            "a program the OS cannot exec is a failed birth",
+        );
+        let id = ws.spawn(cmd(), "sh".to_string(), 20, 4).unwrap();
+        assert_eq!(
+            id,
+            PaneId(1),
+            "the failed birth had already taken 0; ids need uniqueness and monotonicity, not density",
+        );
+        assert_eq!(ws.panes().len(), 1, "and it added no pane");
     }
 
     #[test]

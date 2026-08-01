@@ -44,4 +44,6 @@ pub use snapshot::{
     snapshot,
 };
 pub use tiling::{Divider, PaneRect, Rect, Tiling, fit_window, tile, with_ratio};
-pub use workspace::{HistoryLimitSource, Pane, PaneId, PaneInfo, PaneRebirth, Workspace};
+pub use workspace::{
+    HistoryLimitSource, Pane, PaneEnvSource, PaneId, PaneInfo, PaneRebirth, Workspace,
+};
