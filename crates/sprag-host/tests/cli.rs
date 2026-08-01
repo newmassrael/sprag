@@ -3548,12 +3548,23 @@ fn an_installed_hook_moves_its_own_pane_and_stays_silent_outside_one() {
     // The control: the same payload, with the pane the daemon publishes at a pane's birth.
     let run = sprag_stdin(&sock, &["hook", "claude"], &[("SPRAG_PANE", "0")], prompt);
     assert!(run.ok, "{}", run.stderr);
+    let listed = sprag(&sock, &["agent"]).stdout;
     assert!(
-        sprag(&sock, &["agent"])
-            .stdout
-            .contains("0: working  claude"),
-        "the pane reports what its agent said: {}",
-        sprag(&sock, &["agent"]).stdout,
+        listed.contains("0: working  claude"),
+        "the pane reports what its agent said: {listed}",
+    );
+    // WHERE the verdict came from, on the same line. A reported verdict carries a source and no
+    // rule, and a reader has to be able to tell an authority from an inference — only one of the
+    // two is corrected by editing a manifest.
+    assert!(
+        listed.contains("source=hook:claude") && !listed.contains("rule="),
+        "and says who said so: {listed}",
+    );
+    // The advice follows the evidence: naming a manifest rule here would name one that never fired.
+    let explained = sprag(&sock, &["agent", "0"]).stdout;
+    assert!(
+        explained.contains("release-agent") && !explained.contains("config.toml"),
+        "a reported pane is corrected by a release, not by editing a rule: {explained}",
     );
 
     // A SUBAGENT's completion must not move the pane — a report outranks the screen, so a wrong one
@@ -3608,5 +3619,83 @@ fn an_installed_hook_moves_its_own_pane_and_stays_silent_outside_one() {
         }),
         "the release handed the pane back: {}",
         sprag(&sock, &["agent"]).stdout,
+    );
+}
+
+/// A daemon that is UP but wedged cannot stall the agent that ran the hook.
+///
+/// This is the failure a connect timeout cannot see: the socket accepts, so the connection succeeds,
+/// and the call then waits for an answer that never comes. It matters because an agent WAITS for its
+/// hooks — a multiplexer whose own daemon is stuck must not take somebody's editing session down
+/// with it. The stand-in daemon accepts and answers nothing, which is exactly that shape.
+///
+/// REVERT-PROOF: drop `set_read_deadline` from `deliver_hook` and this hangs until the harness
+/// gives up, while every other test in this file stays green.
+#[test]
+fn a_wedged_daemon_cannot_stall_the_agents_hook() {
+    let sock = socket_path();
+    let listener = std::os::unix::net::UnixListener::bind(&sock).expect("a stand-in daemon");
+    std::thread::spawn(move || {
+        // HELD, not dropped: closing the stream would give the client an EOF, which is an answer of
+        // a kind. Being ignored is the case under test.
+        let _held = listener.accept();
+        std::thread::sleep(Duration::from_secs(20));
+    });
+
+    let start = Instant::now();
+    let run = sprag_stdin(
+        &sock,
+        &["hook", "claude"],
+        &[("SPRAG_PANE", "0")],
+        r#"{"hook_event_name":"UserPromptSubmit"}"#,
+    );
+    let waited = start.elapsed();
+    let _ = std::fs::remove_file(&sock);
+
+    assert!(run.ok, "it still exits 0: {}", run.stderr);
+    assert!(
+        run.stdout.is_empty() && run.stderr.is_empty(),
+        "and still says nothing: {:?} {:?}",
+        run.stdout,
+        run.stderr,
+    );
+    assert!(
+        waited < Duration::from_secs(8),
+        "it gave up on the daemon rather than on the agent: waited {waited:?}",
+    );
+}
+
+/// `list-hooks` tells an install that still WORKS from one that merely still parses.
+///
+/// The settings file is written by hand rather than by an install, because the case being described
+/// is a `sprag` that has MOVED since — which no install this test could run would produce. Without
+/// the check this prints `installed` for six hooks that all fail.
+#[test]
+fn list_hooks_says_broken_when_the_binary_its_hooks_run_is_gone() {
+    let sock = socket_path();
+    let home = AgentHome::new();
+    let gone = format!("{}/gone/sprag", home.as_str());
+    std::fs::write(
+        PathBuf::from(home.as_str()).join(".claude").join("settings.json"),
+        json!({
+            "hooks": {
+                "Stop": [ { "hooks": [ { "type": "command", "command": format!("{gone} hook claude") } ] } ]
+            }
+        })
+        .to_string(),
+    )
+    .expect("write the settings file");
+
+    let run = sprag_env(&sock, &["list-hooks"], &[("HOME", home.as_str())]);
+    assert!(run.ok, "{}", run.stderr);
+    assert!(
+        run.stdout.contains("BROKEN") && run.stdout.contains(&gone),
+        "it names the binary that is gone: {}",
+        run.stdout,
+    );
+    assert!(
+        run.stdout.contains("install-hooks claude"),
+        "and the command that repairs it: {}",
+        run.stdout,
     );
 }

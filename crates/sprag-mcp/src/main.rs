@@ -557,12 +557,18 @@ struct AgentInfo {
     /// Which RULE produced the state — what `agent_explain` exists to report (H3's D7: a gate that
     /// cannot say what it saw cannot be diagnosed).
     rule: Option<String>,
+    /// WHO reported the state, for a verdict a process inside the pane asserted rather than one
+    /// inferred from its screen. Mutually exclusive with [`rule`](Self::rule) in fact and additive
+    /// on the wire: an agent reading this line has to be able to tell an authority from an
+    /// inference, because only one of them is corrected by editing a manifest.
+    source: Option<String>,
     /// Increments on a PUBLISHED change, so a poller tells "still blocked" from "blocked again"
     /// without diffing strings.
     seq: u64,
 }
 
-/// Parse the additive `agent` object (`{state, name?, rule?, seq}`) from a panes-slot entry.
+/// Parse the additive `agent` object (`{state, name?, rule?, source?, seq}`) from a panes-slot
+/// entry.
 ///
 /// The `state` token is what makes the value exist: a missing key, `null`, or an object without one
 /// reads as `None` — "this host says nothing about an agent here". Never defaulted, because a
@@ -573,6 +579,10 @@ fn parse_agent_info(entry: &Value) -> Option<AgentInfo> {
         state: agent.get("state")?.as_str()?.to_owned(),
         name: agent.get("name").and_then(Value::as_str).map(str::to_owned),
         rule: agent.get("rule").and_then(Value::as_str).map(str::to_owned),
+        source: agent
+            .get("source")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         seq: agent.get("seq").and_then(Value::as_u64).unwrap_or(0),
     })
 }
@@ -685,6 +695,9 @@ fn agent_line(agent: &AgentInfo) -> String {
     }
     if let Some(rule) = &agent.rule {
         line.push_str(&format!(" rule={rule}"));
+    }
+    if let Some(source) = &agent.source {
+        line.push_str(&format!(" source={source}"));
     }
     line.push_str(&format!(" seq={}", agent.seq));
     line
@@ -1666,6 +1679,7 @@ mod tests {
                 state: "blocked".to_owned(),
                 name: Some("claude".to_owned()),
                 rule: Some("dialog-choice-list".to_owned()),
+                source: None,
                 seq: 4,
             }),
             ..shell
@@ -1675,9 +1689,28 @@ mod tests {
             summary.contains("agent: state=blocked name=claude rule=dialog-choice-list seq=4"),
             "the verdict surfaces field for field: {summary}",
         );
+
+        // A REPORTED verdict carries who said so and no rule. An agent reading this line acts on
+        // the difference: a scraped verdict is corrected by editing a manifest, a reported one only
+        // by releasing the pane, so a surface that showed neither would be advising a guess.
+        let reported = PaneInfo {
+            agent: Some(AgentInfo {
+                state: "working".to_owned(),
+                name: Some("claude".to_owned()),
+                rule: None,
+                source: Some("hook:claude".to_owned()),
+                seq: 5,
+            }),
+            ..claimed
+        };
+        let summary = pane_summary(&reported);
+        assert!(
+            summary.contains("agent: state=working name=claude source=hook:claude seq=5"),
+            "an authority is told from an inference: {summary}",
+        );
         let quiet = pane_summary(&PaneInfo {
             agent: None,
-            ..claimed
+            ..reported
         });
         assert!(
             !quiet.contains("agent:"),

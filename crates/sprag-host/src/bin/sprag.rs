@@ -2012,7 +2012,13 @@ fn list_hooks(args: Vec<String>) -> io::Result<()> {
     }
     for target in hooks::TARGETS {
         let status = hooks::status(target)?;
-        let state = if status.complete() {
+        // A gone binary is reported BEFORE the count, because it outranks it: every event can be
+        // wired and every one of them still fail. Recognition matches the subcommand rather than
+        // the path, which is what lets a re-install repair this in place — and what would otherwise
+        // let a dead install read as a healthy one.
+        let state = if status.missing_program.is_some() {
+            "BROKEN".to_owned()
+        } else if status.complete() {
             "installed".to_owned()
         } else if status.installed > 0 {
             format!("partly installed ({}/{})", status.installed, status.total)
@@ -2022,6 +2028,14 @@ fn list_hooks(args: Vec<String>) -> io::Result<()> {
             "not found".to_owned()
         };
         println!("{:<12} {state:<24} {}", target.name, status.path.display());
+        if let Some(missing) = &status.missing_program {
+            println!(
+                "    its hooks run {} , which is not there any more — \
+                 `sprag install-hooks {}` points them at this binary",
+                missing.display(),
+                target.name,
+            );
+        }
     }
     Ok(())
 }
@@ -2045,6 +2059,17 @@ fn hook(args: Vec<String>) -> io::Result<()> {
     Ok(())
 }
 
+/// How long [`deliver_hook`] waits for the daemon's answer before abandoning the report.
+///
+/// THIS RUNS IN THE AGENT'S CRITICAL PATH — an agent waits for its hooks — so a daemon that accepts
+/// the connection and then wedges would stall somebody's editing session. `CONNECT_TIMEOUT` bounds
+/// only the accept; without a READ deadline the call itself waits forever. Tighter than the
+/// [`sprag_host::hooks::AGENT_TIMEOUT_SECS`] written into the agent's own config, so ours trips
+/// first and in silence; that one is the backstop for what a client-side deadline cannot cover.
+/// Generous for what it covers: a report is one local round trip on a unix socket, measured in tens
+/// of microseconds.
+const HOOK_DEADLINE: Duration = Duration::from_secs(2);
+
 /// [`hook`]'s body. `None` at every step that means "nothing to say", which the caller cannot
 /// distinguish from success and must not.
 fn deliver_hook(args: Vec<String>) -> Option<()> {
@@ -2058,6 +2083,7 @@ fn deliver_hook(args: Vec<String>) -> Option<()> {
         .parse::<u64>()
         .ok()?;
     let mut conn = connect().ok()?;
+    conn.set_read_deadline(Some(HOOK_DEADLINE)).ok()?;
     let (action, params) = match outcome {
         hooks::Outcome::Report(state) => (
             REPORT_AGENT_ACTION,
@@ -2066,13 +2092,7 @@ fn deliver_hook(args: Vec<String>) -> Option<()> {
                 "state": state.wire_str()?,
                 "source": format!("hook:{}", target.name),
                 "name": target.agent,
-                "seq": u64::try_from(
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .ok()?
-                        .as_nanos(),
-                )
-                .ok()?,
+                "seq": hooks::report_seq()?,
             }),
         ),
         hooks::Outcome::Release => (RELEASE_AGENT_ACTION, json!({ "id": pane })),
@@ -2250,15 +2270,33 @@ fn agent(args: Vec<String>) -> io::Result<()> {
             continue;
         };
         let name = agent["name"].as_str().unwrap_or("(unidentified)");
-        let rule = agent["rule"].as_str().unwrap_or("(none)");
         let seq = agent["seq"].as_u64().unwrap_or(0);
-        println!("{id}: {state}  {name}  rule={rule}  seq={seq}");
+        // The two kinds of evidence are ADDITIVE on the wire and mutually exclusive in fact: a
+        // reported verdict carries a `source` and no `rule`, a scraped one the reverse. Printing
+        // whichever is there is what lets a reader tell an authority from an inference — the
+        // distinction R271 put on the wire and nothing surfaced.
+        let source = agent["source"].as_str();
+        let rule = agent["rule"].as_str();
+        let origin = source
+            .map(|source| format!("source={source}"))
+            .unwrap_or_else(|| format!("rule={}", rule.unwrap_or("(none)")));
+        println!("{id}: {state}  {name}  {origin}  seq={seq}");
         if wanted.is_some() {
-            println!(
-                "    `{rule}` is the rule that fired. If this verdict is wrong, redefine or \
-                 disable that id in an [[agent]] block in config.toml — the daemon picks the edit \
-                 up on its own."
-            );
+            // The advice has to follow the evidence. Telling somebody to redefine a manifest rule
+            // for a verdict a HOOK reported names a rule that never fired, and the edit would do
+            // nothing at all.
+            match source {
+                Some(source) => println!(
+                    "    `{source}` reported this, and a report outranks the screen. \
+                     `sprag release-agent --pane {id}` hands the pane back to screen inference."
+                ),
+                None => println!(
+                    "    `{}` is the rule that fired. If this verdict is wrong, redefine or \
+                     disable that id in an [[agent]] block in config.toml — the daemon picks the \
+                     edit up on its own.",
+                    rule.unwrap_or("(none)"),
+                ),
+            }
         }
     }
     Ok(())

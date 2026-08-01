@@ -153,17 +153,77 @@ impl Target {
         format!("{} hook {}", exe.display(), self.name)
     }
 
-    /// Whether `command` is one of ours — see the module docs on why this matches the SUBCOMMAND
-    /// rather than the path.
+    /// The program an installed command runs, when that command is one of ours.
+    ///
+    /// See the module docs on why this matches the SUBCOMMAND rather than the path — and
+    /// [`status`], which needs the path back out to tell an entry that still WORKS from one that
+    /// merely still parses.
+    #[must_use]
+    pub fn program_of<'a>(&self, command: &'a str) -> Option<&'a str> {
+        let program = command
+            .strip_suffix(&format!(" hook {}", self.name))?
+            .trim()
+            .trim_matches('"');
+        Path::new(program)
+            .file_name()
+            .is_some_and(|name| name == "sprag")
+            .then_some(program)
+    }
+
+    /// Whether `command` is one of ours.
     #[must_use]
     pub fn owns(&self, command: &str) -> bool {
-        let Some(program) = command.strip_suffix(&format!(" hook {}", self.name)) else {
-            return false;
-        };
-        Path::new(program.trim().trim_matches('"'))
-            .file_name()
-            .is_some_and(|program| program == "sprag")
+        self.program_of(command).is_some()
     }
+}
+
+/// How long the AGENT waits for one of these hooks before giving up on it, in seconds.
+///
+/// The second half of a defence whose first half is the client's own read deadline, and it exists
+/// because this hook runs in the agent's CRITICAL PATH: an agent waits for its hooks, so a sprag
+/// daemon that accepts a connection and then wedges would stall somebody's editing session. Our own
+/// deadline is the tighter of the two and trips first, in silence; this is the backstop for the
+/// cases a client-side deadline cannot cover, and it is written into the entry because only the
+/// agent can enforce it.
+pub const AGENT_TIMEOUT_SECS: u64 = 5;
+
+/// A reporter's own clock, in nanoseconds since boot.
+///
+/// [`crate::agent::AgentRegistry::report`] judges freshness per SOURCE, so what a hook needs is a
+/// number that never goes backwards between two events of one session. A wall clock is the obvious
+/// choice and the wrong one: NTP steps it, and a report arriving with a smaller `seq` than its
+/// predecessor is REFUSED — the pane would then hold a stale state until the next event. This
+/// cannot be stepped, and on Linux it keeps running across suspend, which a laptop closing its lid
+/// mid-turn makes an ordinary case rather than a theoretical one.
+///
+/// It restarts at zero on a reboot, which is sound because nothing survives one: the daemon holding
+/// the previous numbers dies with it, and [`crate::durability`] deliberately does not persist a
+/// tracker's report — a verdict is derived state, not workspace state.
+///
+/// `None` only if the platform refuses the clock, which is a reason to say nothing rather than to
+/// report with a number that means something else.
+#[must_use]
+pub fn report_seq() -> Option<u64> {
+    // Linux's BOOTTIME includes time suspended; every other unix gets the closest it has. Both are
+    // monotonic, which is the property being bought.
+    #[cfg(target_os = "linux")]
+    const CLOCK: libc::clockid_t = libc::CLOCK_BOOTTIME;
+    #[cfg(not(target_os = "linux"))]
+    const CLOCK: libc::clockid_t = libc::CLOCK_MONOTONIC;
+
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `clock_gettime` writes a `timespec` through the pointer, and `now` is a live local of
+    // exactly that type. The clock id is a constant the platform defines.
+    if unsafe { libc::clock_gettime(CLOCK, &raw mut now) } != 0 {
+        return None;
+    }
+    u64::try_from(now.tv_sec)
+        .ok()?
+        .checked_mul(1_000_000_000)?
+        .checked_add(u64::try_from(now.tv_nsec).ok()?)
 }
 
 /// What a payload means, or `None` when this hook has nothing to say about it.
@@ -208,6 +268,15 @@ pub struct Status {
     pub installed: usize,
     /// How many there are.
     pub total: usize,
+    /// An installed entry naming an absolute program that is no longer on disk.
+    ///
+    /// The difference between an entry that still PARSES and one that still WORKS. Recognition
+    /// matches the subcommand rather than the path (so a moved binary can be repaired in place),
+    /// and the cost of that choice is exactly this: without checking, a `sprag` that has since been
+    /// moved or removed reads as `installed` while every hook it left behind fails silently. A bare
+    /// program name is resolved on `PATH` at hook time and is not a claim this can falsify, so only
+    /// an absolute path is checked.
+    pub missing_program: Option<PathBuf>,
 }
 
 impl Status {
@@ -238,23 +307,33 @@ pub fn status(target: &'static Target) -> Result<Status, HookError> {
 /// caller that already knows the path should not be able to trip the first.
 fn status_at(target: &'static Target, path: PathBuf) -> Status {
     let present = path.parent().is_some_and(Path::is_dir);
-    let installed = read(&path)
+    let root = read(&path)
         .ok()
         .flatten()
         .and_then(|text| parse(&text).ok())
-        .map_or(0, |root| {
-            target
-                .events
-                .iter()
-                .filter(|(event, _)| holds_ours(&root, target, event))
-                .count()
-        });
+        .unwrap_or_default();
+    let mut installed = 0;
+    let mut missing_program = None;
+    for (event, _) in target.events {
+        let commands = ours_under(&root, target, event);
+        if commands.is_empty() {
+            continue;
+        }
+        installed += 1;
+        if missing_program.is_none() {
+            missing_program = commands.iter().find_map(|command| {
+                let program = Path::new(target.program_of(command)?);
+                (program.is_absolute() && !program.exists()).then(|| program.to_path_buf())
+            });
+        }
+    }
     Status {
         target: target.name,
         path,
         present,
         installed,
         total: target.events.len(),
+        missing_program,
     }
 }
 
@@ -346,8 +425,12 @@ fn install_at(target: &'static Target, path: PathBuf, exe: &Path) -> Result<Plan
         let entries = ensure_event(&mut root, target, event);
         match entries.iter_mut().find(|entry| is_ours(entry, target)) {
             Some(entry) => {
-                if entry["command"] != Value::String(command.clone()) {
-                    entry["command"] = Value::String(command.clone());
+                // Normalised WHOLE rather than field by field, so an entry written by an older
+                // sprag — one naming a binary that has since moved, or predating the timeout —
+                // is brought up to date by the same re-install that repairs a moved path.
+                let wanted = command_entry(&command);
+                if *entry != wanted {
+                    *entry = wanted;
                     changes.push(format!("~ hooks.{event}  ->  {command}"));
                 }
             }
@@ -483,25 +566,31 @@ fn is_ours(entry: &Value, target: &Target) -> bool {
         .is_some_and(|command| target.owns(command))
 }
 
-/// Whether any entry under `event` is ours.
-fn holds_ours(root: &Map<String, Value>, target: &Target, event: &str) -> bool {
+/// One hook entry in the shape the agent reads, carrying the timeout only the agent can enforce.
+fn command_entry(command: &str) -> Value {
+    serde_json::json!({
+        "type": "command",
+        "command": command,
+        "timeout": AGENT_TIMEOUT_SECS,
+    })
+}
+
+/// Every sprag command installed under `event`, in file order.
+fn ours_under<'a>(root: &'a Map<String, Value>, target: &Target, event: &str) -> Vec<&'a str> {
     root.get("hooks")
         .and_then(Value::as_object)
         .and_then(|hooks| hooks.get(event))
         .and_then(Value::as_array)
-        .is_some_and(|groups| {
-            groups.iter().any(|group| {
-                group
-                    .get("hooks")
-                    .and_then(Value::as_array)
-                    .is_some_and(|entries| entries.iter().any(|entry| is_ours(entry, target)))
-            })
+        .map(|groups| {
+            groups
+                .iter()
+                .filter_map(|group| group.get("hooks").and_then(Value::as_array))
+                .flatten()
+                .filter_map(|entry| entry.get("command").and_then(Value::as_str))
+                .filter(|command| target.owns(command))
+                .collect()
         })
-}
-
-/// One hook entry in the shape the agent reads.
-fn command_entry(command: &str) -> Value {
-    serde_json::json!({ "type": "command", "command": command })
+        .unwrap_or_default()
 }
 
 /// The file's text, or `None` when it does not exist.
@@ -952,6 +1041,120 @@ mod tests {
 
         let absent = status_at(&CLAUDE, PathBuf::from("/nowhere/at/all/settings.json"));
         assert!(!absent.present);
+    }
+
+    /// An install whose binary has since gone is BROKEN, not installed.
+    ///
+    /// This is the cost of recognising the subcommand rather than the path — the choice that lets a
+    /// moved binary be repaired in place. Without the check, every event reads as wired while every
+    /// hook it left behind fails, which is the worst answer a status can give: a confident wrong
+    /// one. The control is an install pointing at a program that IS there.
+    #[test]
+    fn a_binary_that_is_gone_reads_as_broken_rather_than_installed() {
+        let gone = Fixture::new(None);
+        let nowhere = gone.0.join("gone").join("sprag");
+        install_at(&CLAUDE, gone.path(), &nowhere)
+            .expect("a plan")
+            .apply()
+            .expect("written");
+        let status = status_at(&CLAUDE, gone.path());
+        assert!(status.complete(), "every event is wired");
+        assert_eq!(
+            status.missing_program.as_deref(),
+            Some(nowhere.as_path()),
+            "and every one of them would fail",
+        );
+
+        let live = Fixture::new(None);
+        let program = live.0.join("sprag");
+        std::fs::write(&program, "").expect("a stand-in binary");
+        install_at(&CLAUDE, live.path(), &program)
+            .expect("a plan")
+            .apply()
+            .expect("written");
+        let status = status_at(&CLAUDE, live.path());
+        assert!(status.complete());
+        assert_eq!(status.missing_program, None, "this one is really there");
+    }
+
+    /// The timeout only the AGENT can enforce is on every entry.
+    ///
+    /// This hook runs in the agent's critical path, so the client's own read deadline is only half
+    /// the defence: it cannot cover a `sprag` that wedges before it reaches the socket at all.
+    #[test]
+    fn every_installed_entry_carries_the_agent_side_timeout() {
+        let fixture = Fixture::new(None);
+        install_at(&CLAUDE, fixture.path(), Path::new(EXE))
+            .expect("a plan")
+            .apply()
+            .expect("written");
+        let root: Value = serde_json::from_str(&fixture.text().expect("a file")).expect("JSON");
+        for (event, _) in CLAUDE.events {
+            let entry = root["hooks"][event][0]["hooks"][0].clone();
+            assert_eq!(entry["timeout"], Value::from(AGENT_TIMEOUT_SECS), "{event}");
+        }
+    }
+
+    /// An entry written by an older sprag is brought up to date by the same re-install that repairs
+    /// a moved path — the reason our own entry is normalised whole rather than field by field.
+    #[test]
+    fn an_entry_missing_the_timeout_is_repaired_by_a_re_install() {
+        let fixture = Fixture::new(Some(
+            r#"{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/sprag hook claude"
+          }
+        ]
+      }
+    ]
+  }
+}
+"#,
+        ));
+        let plan = install_at(&CLAUDE, fixture.path(), Path::new(EXE)).expect("a plan");
+        assert!(
+            plan.changes.iter().any(|change| change.starts_with('~')),
+            "the existing entry is corrected, not duplicated: {:?}",
+            plan.changes,
+        );
+        plan.apply().expect("written");
+        let root: Value = serde_json::from_str(&fixture.text().expect("a file")).expect("JSON");
+        assert_eq!(root["hooks"]["Stop"].as_array().expect("groups").len(), 1);
+        assert_eq!(
+            root["hooks"]["Stop"][0]["hooks"][0]["timeout"],
+            Value::from(AGENT_TIMEOUT_SECS),
+        );
+    }
+
+    /// The reporter's clock is monotonic AND is not the wall clock.
+    ///
+    /// The second half is what makes this a test rather than a restatement: monotonicity alone
+    /// passes on the wall clock, which is the implementation being ruled out, and "is it steppable
+    /// by NTP" cannot be asked by a process that may not step it.
+    ///
+    /// It is measured against a FIXED anchor rather than against `SystemTime::now()`. Comparing the
+    /// two live clocks proves nothing — a realtime sample taken first is below a realtime sample
+    /// taken second, so that comparison passes on exactly the implementation it claims to exclude,
+    /// which the revert-proof is what caught. An uptime, by contrast, would have to exceed half a
+    /// century to reach a date already past.
+    #[test]
+    fn the_reporters_clock_is_monotonic_and_is_not_the_wall_clock() {
+        /// 2020-01-01T00:00:00Z in nanoseconds since the unix epoch — a moment already gone, so any
+        /// wall clock reads above it and any plausible uptime reads far below.
+        const ANCHOR_NANOS: u64 = 1_577_836_800 * 1_000_000_000;
+
+        let first = report_seq().expect("a clock");
+        let second = report_seq().expect("a clock");
+        assert!(second >= first, "{first} then {second}");
+        assert!(
+            first < ANCHOR_NANOS,
+            "a boot-relative count cannot be past 2020: {first} — this is the wall clock",
+        );
     }
 
     /// The recognition rule, read at its edges: ours needs BOTH the subcommand and a program called
