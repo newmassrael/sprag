@@ -22,9 +22,10 @@
 //! So N+1 acquisitions and N^2 comparisons per paint. Whether that matters is a question about
 //! magnitudes, which is what this answers — against the paint it rides on rather than against zero.
 //!
-//! It also answers a question nobody asked, because building it was the first time anything in this
-//! project put sixty-odd panes in one session: **a client cannot attach to a session with more than
-//! 62 panes.** See [`PANE_COUNTS`].
+//! It also answered a question nobody asked, because building it was the first time anything in this
+//! project put sixty-odd panes in one session: **a client could not attach to a session with more
+//! than 62 panes.** R264 removed that ceiling; the count it was found at stays here as the one
+//! these numbers were taken at. See [`PANE_COUNTS`].
 //!
 //! ## Running it
 //!
@@ -48,25 +49,29 @@ use sprag_client::WireHost;
 use sprag_host::HostClient;
 use sprag_tui::{agent_window_title, session_agents, title_change};
 
-/// Pane counts the walk is measured at. One is the floor; sixty-two is the CEILING, and not a
+/// Pane counts the walk is measured at. One is the floor; sixty-two was the CEILING, and is not a
 /// round number by choice — see below.
 ///
-/// # The 62 is a measured limit, not a taste
+/// # The 62 was a measured limit, and it is now history
 ///
-/// This harness was written with 64 at the top and 64 does not boot. `WireHost::spawn_or_attach`
-/// fails with serde_json's `recursion limit exceeded`, and the cause was measured rather than
-/// guessed: the daemon's layout slot is a nested binary tree whose JSON depth is `2N + 3`, so 62
-/// panes serialise to depth 127 and 63 to depth 129 — across serde_json's default limit of 128.
+/// This harness was written with 64 at the top and 64 did not boot: `WireHost::spawn_or_attach`
+/// failed with serde_json's `recursion limit exceeded`. The cause was measured rather than
+/// guessed — the daemon's layout slot was a NESTED binary tree whose JSON depth tracked the pane
+/// count, so 63 panes crossed serde_json's default limit of 128 and the 63rd pane did not degrade
+/// a client, it stopped it attaching at all.
 ///
-/// **So a session's pane count is capped at 62 for every client that shares `WireHost`, which is
-/// both of them, and the 63rd pane does not degrade the client — it stops it attaching at all.**
-/// Found here because this is the first thing in the project that ever asked a client to hold that
-/// many panes. It is registered rather than fixed: the repair is a wire-shape or a deserializer
-/// decision, not a measurement.
+/// **R264 flattened that wire shape** (`sprag_terminal::MAX_LAYOUT_DEPTH`), so the arrangement's
+/// depth is now a constant and no pane count bounds what a client can read. Pass a larger count on
+/// the command line and it attaches — which is how the repair was confirmed against a real daemon
+/// rather than in a unit test alone.
+///
+/// 62 stays the top row for one reason only: R262 and R263's figures were taken there, and a
+/// number is comparable to the one beside it or to nothing.
 const PANE_COUNTS: [usize; 3] = [1, 8, 62];
 
 /// The counts to measure: [`PANE_COUNTS`], or whatever the command line names instead — which is
-/// what found the boot ceiling below rather than a guess about where it was.
+/// what found the boot ceiling above rather than a guess about where it was, and what confirms it
+/// is gone.
 fn pane_counts() -> Vec<usize> {
     let named: Vec<usize> = std::env::args()
         .skip(1)
@@ -355,10 +360,12 @@ fn main() -> ExitCode {
             "  AGAINST THE PAINT IT RIDES ON: {:.1} us at {top_n} panes with every pane an agent is\n  \
              {:.3}% of R246's ~5 ms release paint (a CITED number, taken in another round on this\n  \
              box, not re-measured here). The equality skip is at the OSC and not at the walk, so all\n  \
-             of this happens on every keystroke and is then discarded — and at a third of a percent\n  \
-             of a keystroke, at a pane count the wire cannot even exceed, that is a fact to record\n  \
-             rather than a thing to fix. A gate in front of the walk would buy that third of a\n  \
-             percent and cost a second piece of state that has to stay true.",
+             of this happens on every keystroke and is then discarded — and at well under a percent\n  \
+             of a keystroke, that is a fact to record rather than a thing to fix. A gate in front of\n  \
+             the walk would buy that percent and cost a second piece of state that has to stay true.\n  \
+             NOTE the walk grows with the pane count and the wire no longer caps it (R264 flattened\n  \
+             the layout's shape; 63 used to be unattachable). The conclusion holds at the counts\n  \
+             measured here and is worth re-taking, not re-quoting, at a much larger one.",
             micros(top_claimed),
             top_claimed.as_secs_f64() / R246_RELEASE_PAINT.as_secs_f64() * 100.0,
         );

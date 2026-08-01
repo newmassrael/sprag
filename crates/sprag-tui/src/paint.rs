@@ -284,14 +284,24 @@ pub fn divider_changes(divider: &Divider) -> Vec<Change> {
 /// Measured R262 (`examples/title-cost.rs`, release, against a real daemon). The walk, the title
 /// build and the discarded comparison together are **0.9 us over 62 panes that no manifest claims,
 /// and 15 to 17 us when every one of them is an agent** — a third of a percent of R246's ~5 ms
-/// release paint, at a pane count [the wire cannot exceed](agent_window_title). Documented rather
-/// than restructured, and the two things the measurement corrected are worth keeping:
+/// release paint. Documented rather than restructured, and the two things the measurement
+/// corrected are worth keeping:
 ///
 /// * **The empty branch understates it nineteenfold.** A workspace of shells clones nothing and
 ///   leaves the title at its baseline, so a measurement taken there prices the plumbing.
 /// * **The quadratic walk is NOT the larger half.** On a populated workspace the digest STRING
 ///   BUILD is comparable to or larger than the walk feeding it, so a fix aimed at the N^2 term —
 ///   which is what reading this code suggests — would have been aimed at the smaller one.
+///
+/// # One premise of "documented, not fixed" has since expired
+///
+/// R263 rested that verdict on two things: the cost was small, AND 62 was the most panes a client
+/// could attach to at all — a ceiling this very measurement is what FOUND. R264 removed the
+/// ceiling (`sprag_terminal::MAX_LAYOUT_DEPTH`), so only the magnitude argument is left, and the
+/// magnitude is the term that GROWS: re-measured at 63 and 100 panes, the empty-branch walk goes
+/// 1.9 us to 3.8 us for 1.6x the panes, and the whole path 31.7 us to 35.6 us — still under 1% of
+/// a paint, and no longer bounded by anything but what a user does. Re-take it rather than requote
+/// it before concluding anything at a much larger count.
 pub fn session_agents(host: &impl HostClient) -> Vec<(PaneId, PaneAgent)> {
     host.pane_ids()
         .into_iter()
