@@ -924,6 +924,48 @@ pub const MOVE_PANE_ACTION: &str = "move_pane";
 /// `b` is `null` when a direction found no neighbour.
 pub const SWAP_PANE_ACTION: &str = "swap_pane";
 
+/// The mux control external invoke action that fills a window with ONE pane, or ends that
+/// (`{pane?, on?}`) — tmux `resize-pane -Z`. Answers `{pane, zoomed, changed}`.
+///
+/// `pane` ABSENT means the current window's ACTIVE pane, the default [`SPLIT_ACTION`] and
+/// [`SWAP_PANE_ACTION`] take. `on` absent TOGGLES that pane's own zoom, so one binding is a switch
+/// whichever pane it is aimed at; `true` / `false` are the explicit forms.
+///
+/// **The window is DERIVED from the pane**, [`MOVE_PANE_ACTION`]'s rule at both ends: a zoom is a
+/// per-window fact and a [`PaneId`](sprag_terminal::PaneId) is registry-unique, so zooming a pane
+/// of a window nobody is looking at is a well-formed request. herdr's `pane.zoom` cannot express
+/// it — its flag is per-tab and its target is resolved inside the active tab.
+///
+/// # What it changes, and what it deliberately does not
+///
+/// A zoom is a filter on the PROJECTION, never an edit to the arrangement
+/// ([`sprag_terminal::Projection`]). The tree is untouched, [`SET_LAYOUT_ACTION`] still serves and
+/// accepts it, [`MOVE_PANE_ACTION`] and [`SWAP_PANE_ACTION`] still act on it — herdr refuses a move
+/// into or out of a zoomed tab outright (`PaneMoveReason::ZoomedTab`) — and a caller that draws
+/// nothing can still read where every pane is. What moves is which pane the window projects to,
+/// which is why the daemon reflows that pane's PTY to the whole window and every attached client
+/// shows the same thing.
+///
+/// **Zooming SELECTS.** The daemon holds one invariant here — *a zoom names the pane its window is
+/// ON, or there is no zoom* — so the pane a user types into is always one they can see. The other
+/// side of it is that moving to a different pane ENDS the zoom (herdr instead RETARGETS it, which
+/// is a coherent different feature: their zoom is a mode over a tab, sprag's is a fact about a
+/// pane). Nothing else ends it, and nothing else has to: a split ends it because a split selects
+/// its new pane, closing the zoomed pane ends it because the active pane hands off, and floating it
+/// ends it because it stops being tiled.
+///
+/// **A single-pane window is not refused.** herdr answers `PaneZoomNoopReason::SinglePane`
+/// (`src/app/actions.rs:1925` at `9a4ce5e1`); this accepts it. A zoom is a stored state, not a
+/// repaint, and whether it changes what is on SCREEN depends on a pane count that can move a
+/// moment later — so failing on it would make one caller's result depend on another caller's
+/// timing, for no gain.
+///
+/// A FLOATING target is not an error and not a zoom: it has no leaf, so there is nothing to fill
+/// the window with. It is selected and the answer is `{zoomed: false, changed: false}` — the rule
+/// [`SWAP_PANE_ACTION`] states for an edge. A pane id that names no pane of the SESSION is refused
+/// (`Rejected`), which is the same verb's rule for a typo.
+pub const ZOOM_PANE_ACTION: &str = "zoom_pane";
+
 /// The mux control external invoke action that delivers a DROPPED FILE to a pane (`{pane, path}`) —
 /// the wire form of a display client's drag-and-drop. Answers `{path}`: the path the pane is handed.
 ///

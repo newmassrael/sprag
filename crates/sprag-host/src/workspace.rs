@@ -84,7 +84,7 @@ use crate::wire::{
     RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION,
     SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSION_ACTIVITY_FIELD, SESSIONS_SLOT,
     SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION,
-    WINDOW_SIZE_SLOT, WINDOWS_SLOT,
+    WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION,
 };
 
 /// The mux-management engine `External`: a control surface over the shared
@@ -1166,6 +1166,44 @@ impl WorkspaceExternal {
         ))
     }
 
+    /// `zoom_pane {pane?, on?}` action: fill the window that holds `pane` with it alone, or end
+    /// that window's zoom — tmux `resize-pane -Z`. Answers `{pane, zoomed, changed}`. See
+    /// [`crate::wire::ZOOM_PANE_ACTION`].
+    ///
+    /// `changed` comes from the registry, which compared the two zoom TARGETS rather than two
+    /// flags — so the two edges fall out instead of being special-cased: a floating target and a
+    /// re-assertion of the state already in force both leave the window where it was, report
+    /// `false`, and wake nobody.
+    fn zoom_pane(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let empty = Map::new();
+        let map = match args {
+            IntrospectValue::Json(Value::Object(m)) => m,
+            IntrospectValue::Null => &empty,
+            _ => return Err(InvokeError::TypeMismatch),
+        };
+        let pane = self.pane_target(map, "pane")?;
+        // Absent TOGGLES; a non-bool is malformed rather than silently defaulted, the rule every
+        // other optional flag on this external follows (`parse_placement`'s `before`).
+        let on = match map.get("on") {
+            None | Some(Value::Null) => None,
+            Some(Value::Bool(on)) => Some(*on),
+            Some(_) => return Err(InvokeError::TypeMismatch),
+        };
+        let outcome = lock(&self.registry)
+            .zoom_pane(self.scope.session(), pane, on)
+            .ok_or(InvokeError::Rejected)?;
+        if outcome.changed {
+            // Only on a real change, `select_pane`'s rule: the announce wakes every parked client
+            // to re-read, and a zoom that moved nothing has nothing for them to read.
+            self.announce();
+        }
+        Ok(IntrospectValue::Json(serde_json::json!({
+            "pane": pane.0,
+            "zoomed": outcome.zoomed,
+            "changed": outcome.changed,
+        })))
+    }
+
     /// The `{dir, before?}` half of a placement request — [`split`](Self::split)'s and
     /// [`move_pane`](Self::move_pane)'s, parsed once so the two cannot drift into two spellings of
     /// one vocabulary.
@@ -1250,6 +1288,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                     SchemaField::new(JOIN_PANE_ACTION, "action"),
                     SchemaField::new(MOVE_PANE_ACTION, "action"),
                     SchemaField::new(SWAP_PANE_ACTION, "action"),
+                    SchemaField::new(ZOOM_PANE_ACTION, "action"),
                     SchemaField::new(DROP_FILE_ACTION, "action"),
                     SchemaField::new(PANES_SLOT, "list"),
                     SchemaField::new(LAYOUT_SLOT, "tree"),
@@ -1722,6 +1761,7 @@ impl WorkspaceExternal {
             JOIN_PANE_ACTION => self.join_pane(&args),
             MOVE_PANE_ACTION => self.move_pane(&args),
             SWAP_PANE_ACTION => self.swap_pane(&args),
+            ZOOM_PANE_ACTION => self.zoom_pane(&args),
             DROP_FILE_ACTION => self.drop_file(&args),
             REPORT_AGENT_ACTION => self.report_agent(&args),
             RELEASE_AGENT_ACTION => self.release_agent(&args),
@@ -4723,6 +4763,141 @@ mod tests {
             )),
             json!({"a": 0, "b": 1, "changed": true}),
             "and the direction resolved to the pane the arrangement says is adjacent",
+        );
+    }
+
+    /// The `layout` slot serves BOTH facts, and that is what makes the zoom readable in one wire
+    /// read. A boolean here would have to be joined against the active pane from another slot
+    /// fetched at another instant, and a client that woke between the two writes would fill its
+    /// window with the wrong pane.
+    ///
+    /// The arrangement stays whole underneath, deliberately: a caller that draws nothing still
+    /// reads where every pane is while one of them is filling the window.
+    #[test]
+    fn the_layout_slot_names_the_zoomed_pane_beside_the_arrangement_it_filters() {
+        let reg = registry();
+        let (mut ext, rev) = control(&reg);
+        three_pane_window(&mut ext);
+        let arrangement = query_layout(&mut ext)["tree"].clone();
+        let before = rev.current();
+
+        assert_eq!(
+            answer_doc(Some(
+                ext.invoke(ZOOM_PANE_ACTION, IntrospectValue::Json(json!({"pane": 1})))
+                    .expect("pane 1 is tiled"),
+            )),
+            json!({"pane": 1, "zoomed": true, "changed": true}),
+        );
+
+        let zoomed = query_layout(&mut ext);
+        assert_eq!(zoomed["zoomed"], json!(1), "the wire names the PANE");
+        assert_eq!(
+            zoomed["tree"], arrangement,
+            "and the arrangement underneath is untouched, so a caller that draws nothing still \
+             reads where every pane is",
+        );
+        assert_eq!(
+            tiled_order(&mut ext),
+            vec![0, 1, 2],
+            "all three panes are still tiled — a zoom is a projection, not an edit",
+        );
+        assert!(
+            rev.current() > before,
+            "a zoom changes what every client must draw, so it moves the revision the float set \
+             already moves for the weaker version of that reason",
+        );
+
+        // And the key that opened it closes it: no `on` toggles the target's own state.
+        assert_eq!(
+            answer_doc(Some(
+                ext.invoke(ZOOM_PANE_ACTION, IntrospectValue::Json(json!({"pane": 1})))
+                    .expect("pane 1 is tiled"),
+            )),
+            json!({"pane": 1, "zoomed": false, "changed": true}),
+        );
+        assert_eq!(
+            query_layout(&mut ext)["zoomed"],
+            Value::Null,
+            "an unzoomed window carries no zoom key at all",
+        );
+    }
+
+    /// The zoom's invariant reaches the OTHER verbs without any of them mentioning it. A split
+    /// selects its new pane, and selecting a pane that is not the zoom target ends the zoom — so
+    /// "split while zoomed" is answered by the focus rule rather than by a line inside `split`.
+    ///
+    /// herdr needs the opposite: `self.zoomed = false` written by hand in the split path, the close
+    /// path, the move-out path and the insert path (`src/workspace/tab.rs:414` `:483` `:505` `:527`
+    /// at `9a4ce5e1`).
+    ///
+    /// Revert-proof: `split` gained no zoom code to remove, which is the claim — take `heal_zoom`
+    /// out of `Window::set_active` instead and this reads `1`, a pane nothing is drawing while
+    /// every keystroke goes to the new one.
+    #[test]
+    fn a_split_ends_a_zoom_because_a_split_selects_and_no_other_reason() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        three_pane_window(&mut ext);
+        ext.invoke(ZOOM_PANE_ACTION, IntrospectValue::Json(json!({"pane": 1})))
+            .expect("pane 1 is tiled");
+        assert_eq!(query_layout(&mut ext)["zoomed"], json!(1));
+
+        ext.invoke(
+            SPLIT_ACTION,
+            IntrospectValue::Json(json!({"pane": 1, "dir": "horizontal", "cmd": ["cat"]})),
+        )
+        .expect("the target is tiled");
+
+        assert_eq!(
+            query_layout(&mut ext)["zoomed"],
+            Value::Null,
+            "the new pane is the one the user is on, so the zoom is over",
+        );
+        assert_eq!(
+            active_row(&mut ext),
+            Some(3),
+            "and they are on it, which is the whole reason the zoom ended",
+        );
+    }
+
+    /// `pane` absent means the ACTIVE pane, `split`'s default. A pane id naming nothing is refused
+    /// — `select_pane`'s rule for a typo — and a non-bool `on` is malformed rather than defaulted,
+    /// the rule every other optional flag on this external follows.
+    #[test]
+    fn zoom_pane_defaults_to_here_and_refuses_a_typo() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        three_pane_window(&mut ext); // a split leaves the session on pane 2
+
+        assert_eq!(
+            answer_doc(Some(
+                ext.invoke(ZOOM_PANE_ACTION, IntrospectValue::Null)
+                    .expect("the window has an active pane"),
+            )),
+            json!({"pane": 2, "zoomed": true, "changed": true}),
+            "no arguments at all zooms where the session is",
+        );
+
+        assert_eq!(
+            ext.invoke(
+                ZOOM_PANE_ACTION,
+                IntrospectValue::Json(json!({"pane": 99, "on": true})),
+            )
+            .unwrap_err(),
+            InvokeError::Rejected,
+        );
+        assert_eq!(
+            ext.invoke(
+                ZOOM_PANE_ACTION,
+                IntrospectValue::Json(json!({"on": "yes"})),
+            )
+            .unwrap_err(),
+            InvokeError::TypeMismatch,
+        );
+        assert_eq!(
+            query_layout(&mut ext)["zoomed"],
+            json!(2),
+            "and neither refusal disturbed the zoom already in force",
         );
     }
 

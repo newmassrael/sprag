@@ -139,8 +139,8 @@ use sprag_host::wire::{
     NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, RELEASE_AGENT_ACTION,
     RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION,
     SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION,
-    SWAP_PANE_ACTION, TEXT_ACTION, WINDOWS_SLOT, events_slot_since, find_slot_for,
-    project_slot_for, regex_slot_for, session_activity_at,
+    SWAP_PANE_ACTION, TEXT_ACTION, WINDOWS_SLOT, ZOOM_PANE_ACTION, events_slot_since,
+    find_slot_for, project_slot_for, regex_slot_for, session_activity_at,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -181,6 +181,7 @@ fn run() -> io::Result<()> {
         Some("join-pane") => join_pane(args.collect()),
         Some("move-pane") => move_pane(args.collect()),
         Some("swap-pane") => swap_pane(args.collect()),
+        Some("zoom-pane") => zoom_pane(args.collect()),
         Some("panes") => panes(args.collect()),
         Some("agent") => agent(args.collect()),
         Some("report-agent") => report_agent(args.collect()),
@@ -758,6 +759,7 @@ fn print_usage() {
          \x20             | split-window [-h|-v [-b] [PANE]] [-- command…]\n\
          \x20             | kill-pane [PANE]\n\
          \x20             | resize-pane [PANE] -x COLS -y ROWS\n\
+         \x20             | zoom-pane [PANE] [-u]\n\
          \x20             | send-keys PANE [-l] KEY… | capture-pane PANE [-p]\n\
          \x20             | agent [PANE]> [-t SESSION]\n\
          \x20      sprag report-agent <working|blocked|idle> [-t SESSION] [--pane N]\n\
@@ -3832,6 +3834,89 @@ fn swap_pane(args: Vec<String>) -> io::Result<()> {
         Err(error) if error.kind() == io::ErrorKind::Other => Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!("swap-pane refused: session {session:?} has no such pane, or it is not tiled"),
+        )),
+        Err(error) => Err(error),
+    }
+}
+
+/// `zoom-pane -t SESSION [PANE] [-u|-Z]`: fill the window with one pane, or end that — tmux
+/// `resize-pane -Z`.
+///
+/// PANE omitted means the session's ACTIVE pane. Neither flag TOGGLES, which is what a key bound to
+/// this wants; `-Z` and `-u` are the explicit on and off, spelled as tmux spells them.
+///
+/// The window is never named: the daemon derives it from the pane, so `zoom-pane 7` zooms pane 7's
+/// own window even when the session is looking at another one.
+fn zoom_pane(args: Vec<String>) -> io::Result<()> {
+    let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
+    let (session, rest) = target_and_rest(args, "zoom-pane")?;
+    let mut on: Option<bool> = None;
+    let mut pane: Option<u64> = None;
+    for arg in rest {
+        match arg.as_str() {
+            flag @ ("-u" | "-Z") => {
+                if on.is_some() {
+                    return Err(bad(
+                        "zoom-pane: -Z and -u name one state; give only one".to_owned()
+                    ));
+                }
+                on = Some(flag == "-Z");
+            }
+            other if pane.is_none() => {
+                pane = Some(other.parse::<u64>().map_err(|_| {
+                    bad(format!(
+                        "zoom-pane: {other:?} is neither a flag nor a pane id"
+                    ))
+                })?);
+            }
+            other => return Err(bad(format!("zoom-pane: unexpected argument {other:?}"))),
+        }
+    }
+    let mut args = json!({});
+    if let Some(pane) = pane {
+        args["pane"] = json!(pane);
+    }
+    if let Some(on) = on {
+        args["on"] = json!(on);
+    }
+    let mut conn = connect(None)?;
+    require_session(&mut conn, &session)?;
+    let answer = conn.call(
+        "scene/invoke",
+        json!({ "session": session, "path": mux_action_path(ZOOM_PANE_ACTION), "args": args }),
+    );
+    match answer {
+        Ok(answer) => {
+            let pane = answer["pane"].as_u64().unwrap_or_default();
+            // Told apart by what THIS process asked for, not by listing the causes an answer is
+            // consistent with: a caller that requested a zoom and did not get one is owed the
+            // reason, and the request is a fact the CLI already holds. Only the TOGGLE has two
+            // readings at all, and its unchanged arm resolves to one of them — an unchanged toggle
+            // must have wanted the zoom ON, so the target has no leaf to fill the window from.
+            let floating = |pane| {
+                println!("pane {pane} is floating, so there is nothing to fill its window with");
+            };
+            match (
+                on,
+                answer["zoomed"].as_bool().unwrap_or(false),
+                answer["changed"].as_bool().unwrap_or(false),
+            ) {
+                (_, true, true) => println!("pane {pane} fills its window"),
+                (_, true, false) => println!("pane {pane} already fills its window"),
+                (Some(true), false, _) | (None, false, false) => floating(pane),
+                (_, false, true) => println!("pane {pane}'s window shows its arrangement again"),
+                (_, false, false) => {
+                    println!("pane {pane}'s window already showed its arrangement");
+                }
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::Other => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "zoom-pane refused: session {session:?} has no pane {}",
+                pane.map_or_else(|| "to be active on".to_owned(), |p| p.to_string())
+            ),
         )),
         Err(error) => Err(error),
     }
