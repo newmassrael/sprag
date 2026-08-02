@@ -91,9 +91,9 @@ use sprag_host::wire::{
     CLOSE_ACTION, DROP_FILE_ACTION, FOCUS_ACTION, FULL_TEXT_SLOT, GLOBAL_COMMANDS_SLOT,
     JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
     MOUSE_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION,
-    PROMPT_MARKS_SLOT, RESIZE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION,
-    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOW_SIZE_SLOT, WINDOWS_SLOT,
-    cells_slot_at, find_slot_for, project_slot_for, regex_slot_for,
+    PROMPT_MARKS_SLOT, RESIZE_ACTION, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
+    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION,
+    WINDOW_SIZE_SLOT, WINDOWS_SLOT, cells_slot_at, find_slot_for, project_slot_for, regex_slot_for,
 };
 use sprag_host::{
     CellFrame, HostClient, PaneAgent, PaneClipboardQuery, PaneClipboardWrite, PaneFind,
@@ -193,6 +193,11 @@ struct WirePane {
     /// [`Self::notification`] — re-adopted each wake, kept SEPARATE from it (a bell carries no
     /// text) so the attention marker can combine the two.
     bell_seq: u64,
+    /// Whether this is the pane the window is ON — the DAEMON's active pane, which this client's
+    /// own focus is a projection of. Host-authoritative and re-adopted each wake like the title:
+    /// another client's `select-pane`, or a close handing off, moves it without this client acting.
+    /// Exactly one mirrored pane can carry it.
+    active: bool,
     /// Whether the pane's child has EXITED, `false` while it runs. Host-authoritative and re-adopted
     /// each wake like the rest, but ONE-WAY: a pane never comes back to life, so the only staleness
     /// this can hold is a just-exited pane still reading live for one poll interval.
@@ -1289,6 +1294,40 @@ impl HostClient for WireHost {
         lock_layout(&self.layout).layout.clone()
     }
 
+    /// The pane the daemon says the window is ON, read from the PANE mirror — a lock, no socket
+    /// call, for [`Self::layout`]'s reason: a client re-tiles on every wake, and a round trip here
+    /// would put one on that path.
+    ///
+    /// `None` while the mirror holds no active pane, which covers three cases a client treats
+    /// alike: an empty window, a mirror not yet booted, and a daemon old enough to have no active
+    /// pane at all. In every one of them the client keeps its own focus, which is exactly what it
+    /// did before this fact existed.
+    fn active_pane(&self) -> Option<PaneId> {
+        self.lock_cache()
+            .panes()
+            .iter()
+            .find(|pane| pane.active)
+            .map(|pane| pane.id)
+    }
+
+    /// Publish the user's move to the daemon (`select_pane`), so every attached client follows and a
+    /// pane verb given no target acts where the user is.
+    ///
+    /// Sends the pane by ID rather than a direction even when the user pressed a direction key: the
+    /// client resolved the direction against the arrangement it is SHOWING, and re-resolving it at
+    /// the daemon could land somewhere else if the tiling moved in between.
+    fn select_pane(&self, id: PaneId) -> bool {
+        self.request(
+            "scene/invoke",
+            invoke(
+                &mux_action_path(SELECT_PANE_ACTION),
+                json!({ "pane": id.0 }),
+            ),
+            "select_pane",
+        )
+        .is_some()
+    }
+
     /// The session's arbitrated window, read from the same mirror as the arrangement — a lock, no
     /// socket call, because this is on the paint path beside [`Self::layout`].
     fn window_size(&self) -> Option<(u16, u16)> {
@@ -2226,6 +2265,9 @@ struct PaneSeed {
     /// The pane's tmux monitor-bell count, `0` when the wire omits the key (the child rang none,
     /// or an older daemon).
     bell_seq: u64,
+    /// Whether the window is ON this pane, `false` when the wire omits the key (another pane is
+    /// active, the window holds none, or an older daemon that has no active pane at all).
+    active: bool,
     /// Whether the pane's child has EXITED, `false` when the wire omits the key (it is live, or an
     /// older daemon). One-way: a pane never comes back to life.
     dead: bool,
@@ -2276,6 +2318,9 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
             let title = pane["title"].as_str().map(str::to_owned);
             let notification = parse_notification(&pane["notification"]);
             let bell_seq = pane["bell_seq"].as_u64().unwrap_or(0);
+            // ADDITIVE: present only on the ONE row the window is on, so absent means "not this
+            // one" — and reads `false` for every row of a daemon that predates the active pane.
+            let active = pane["active"].as_bool().unwrap_or(false);
             // ADDITIVE: present only once the child has exited, so absent means live.
             let dead = pane["dead"].as_bool().unwrap_or(false);
             // ADDITIVE and LATER than `dead`: present only once the host reaped the child.
@@ -2301,6 +2346,7 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
                 title,
                 notification,
                 bell_seq,
+                active,
                 dead,
                 child_exit,
                 clipboard_write_seq,
@@ -2741,7 +2787,10 @@ fn merge_panes(
             // grows as the child raises more (and clears to None if the host ever drops it).
             notification: seed.notification.clone(),
             bell_seq: seed.bell_seq, // host-authoritative + dynamic, like the notification
-            dead: seed.dead,         // host-authoritative, and one-way once true
+            // host-authoritative + dynamic: another client's select, or a close handing off,
+            // moves it with nothing local having happened.
+            active: seed.active,
+            dead: seed.dead, // host-authoritative, and one-way once true
             // ...and the status, on the same terms. Re-adopted rather than kept, because unlike
             // `dead` this one CHANGES after the pane dies: the reap lands a wake or two after the
             // exit, and a kept value would freeze the pane at "(exited)" for good.
@@ -2921,6 +2970,10 @@ fn spawn_poll(
                                 // Likewise keep the last-known notification (and its seq) rather
                                 // than dropping the attention badge on a transient query miss.
                                 notification: pane.notification.clone(),
+                                // Keep the last-known active pane too: a failed query says
+                                // nothing about where the user is, and clearing it would move
+                                // this client's focus ring on a hiccup.
+                                active: pane.active,
                                 bell_seq: pane.bell_seq, // keep the last-known bell count too
                                 // Liveness is ONE-WAY, so a stale `true` can never become a lie —
                                 // and a stale `false` is only the pre-liveness reading, corrected
@@ -4070,6 +4123,7 @@ mod tests {
             title: None,
             notification: None,
             bell_seq: 0,
+            active: false,
             dead: false,
             child_exit: None,
             clipboard_write_seq: 0,
@@ -4090,6 +4144,7 @@ mod tests {
             title: None,
             notification: None,
             bell_seq: 0,
+            active: false,
             dead: false,
             child_exit: None,
             clipboard_write_seq: 0,
@@ -4386,6 +4441,7 @@ mod tests {
                 title: None,
                 notification: None,
                 bell_seq: 0,
+                active: false,
                 dead: false,
                 child_exit: None,
                 clipboard_write_seq: 0,
@@ -4403,6 +4459,7 @@ mod tests {
                 title: None,
                 notification: None,
                 bell_seq: 0,
+                active: false,
                 dead: false,
                 child_exit: None,
                 clipboard_write_seq: 0,
@@ -4425,6 +4482,7 @@ mod tests {
                 title: None,
                 notification: None,
                 bell_seq: 0,
+                active: false,
                 dead: false,
                 child_exit: None,
                 clipboard_write_seq: 0,
@@ -4441,6 +4499,7 @@ mod tests {
                 title: None,
                 notification: None,
                 bell_seq: 0,
+                active: false,
                 dead: false,
                 child_exit: None,
                 clipboard_write_seq: 0,
@@ -4457,6 +4516,7 @@ mod tests {
                 title: None,
                 notification: None,
                 bell_seq: 0,
+                active: false,
                 dead: false,
                 child_exit: None,
                 clipboard_write_seq: 0,
@@ -4508,6 +4568,7 @@ mod tests {
             title: None,
             notification: None,
             bell_seq: 0,
+            active: false,
             dead: false,
             child_exit: None,
             clipboard_write_seq: 0,
@@ -4525,6 +4586,7 @@ mod tests {
             title: None,
             notification: None,
             bell_seq: 0,
+            active: false,
             dead: false,
             child_exit: None,
             clipboard_write_seq: 0,
@@ -4563,6 +4625,7 @@ mod tests {
             title: None,
             notification: None,
             bell_seq: 0,
+            active: false,
             dead: false,      // last wake it was still running
             child_exit: None, // ...so of course nothing had reaped it
             clipboard_write_seq: 0,
@@ -4580,6 +4643,7 @@ mod tests {
             title: None,
             notification: None,
             bell_seq: 0,
+            active: false,
             dead: true, // ...and the host now says the child has exited
             child_exit: Some(PaneExit {
                 code: 101, // ...having reaped it, with cargo's own failure code
@@ -4619,6 +4683,7 @@ mod tests {
                 title: Some("stale: vim README".to_owned()),
                 notification: None,
                 bell_seq: 0,
+                active: false,
                 dead: false,
                 child_exit: None,
                 clipboard_write_seq: 0,
@@ -4636,6 +4701,7 @@ mod tests {
                 title: Some("about to be cleared".to_owned()),
                 notification: None,
                 bell_seq: 0,
+                active: false,
                 dead: false,
                 child_exit: None,
                 clipboard_write_seq: 0,
@@ -4655,6 +4721,7 @@ mod tests {
                 title: Some("coin@host:~".to_owned()), // child retitled at the new prompt
                 notification: None,
                 bell_seq: 0,
+                active: false,
                 dead: false,
                 child_exit: None,
                 clipboard_write_seq: 0,
@@ -4671,6 +4738,7 @@ mod tests {
                 title: None, // child cleared its title
                 notification: None,
                 bell_seq: 0,
+                active: false,
                 dead: false,
                 child_exit: None,
                 clipboard_write_seq: 0,

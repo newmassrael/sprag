@@ -497,6 +497,34 @@ pub trait HostClient {
     /// select-window) they should move to their own mux/window client trait.
     fn layout(&self) -> LayoutSnapshot;
 
+    /// The pane the current window is ON — the daemon's active pane, which a display client's own
+    /// focus is a PROJECTION of (see [`Self::select_pane`]).
+    ///
+    /// `None` for a window holding no panes, and for an impl with no daemon behind it. Read from
+    /// whatever the impl already mirrors — this is called on every re-tile, so an impl that made a
+    /// round trip here would put one on the keystroke path.
+    fn active_pane(&self) -> Option<PaneId> {
+        None
+    }
+
+    /// Tell the daemon the user moved to pane `id` — tmux `select-pane`, from the client side.
+    ///
+    /// The other half of [`Self::active_pane`], and the reason a client PUBLISHES rather than
+    /// merely remembering: which pane the user is on is session state (every attached client
+    /// follows it, a reattaching one inherits it, and a pane verb given no target acts on it), so a
+    /// client that kept its focus to itself would be a second authority on one fact.
+    ///
+    /// Sent for USER INTENT only. A client that cannot SHOW the active pane — a terminal client
+    /// while the daemon's active pane is floating — moves its own focus ring locally and says
+    /// nothing, because "I cannot display that" is not the user choosing something else, and
+    /// publishing it would fight the client that can.
+    ///
+    /// The default is a no-op `false`; the wire client overrides it. `true` if the daemon accepted.
+    #[must_use]
+    fn select_pane(&self, _id: PaneId) -> bool {
+        false
+    }
+
     /// Install `tree` as the current window's arrangement, returning the CANONICAL result
     /// — the write half of the arc (see [`sprag_terminal::layout`]).
     ///

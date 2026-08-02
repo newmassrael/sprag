@@ -42,14 +42,23 @@
 //! `Ctrl-O` could not move focus; a keymap gets that for free, because `Ctrl-D` is simply not the
 //! key `d` is bound to. It also makes `C-o` bindable, which the special case could not express.
 //!
-//! # Which pane the keys go to is THIS CLIENT's question
+//! # Which pane the keys go to is the SESSION's answer, projected here
 //!
-//! The daemon has no active-pane concept — that is the same fact that makes tmux's `select-pane`
-//! unbuilt here — so focus is client state, and it has to be. Two clients attached to one session
-//! are looking at two terminals, and a user typing into the left pane of one has said nothing about
-//! where the other's keystrokes should land. What the daemon IS told is the EDGE
-//! ([`HostClient::focus`]), because a program that enabled DEC 1004 asked to know when it gained or
-//! lost the user's attention, and that is exactly what moving focus here means.
+//! This used to be client state on the argument that two attached terminals are two independent
+//! views. tmux says otherwise and so does the rest of this client: the current WINDOW is session
+//! state and every attached client already follows it, so keeping the current PANE private made one
+//! fact have two authorities — and left nothing that draws no pixels, an agent or a shell running
+//! `sprag`, able to say "here" at all.
+//!
+//! So the daemon holds it ([`HostClient::active_pane`]), this client PROJECTS it, and a move the
+//! user makes here is published ([`HostClient::select_pane`]). Two facts stay separate underneath:
+//! the daemon is also told the focus EDGE ([`HostClient::focus`]), because a program that enabled
+//! DEC 1004 asked to know when it gained or lost the user's attention — that is about a client's
+//! attention, this is about where the session is.
+//!
+//! The one place they part company is a pane this terminal cannot SHOW: a floated pane has no leaf
+//! in the arrangement a terminal client tiles. Then the cursor falls back locally and publishes
+//! nothing, so the GUI showing that pane keeps the session where the user put it.
 //!
 //! # The pointer goes where it IS, and the terminal reports it only when a child asked
 //!
@@ -203,7 +212,14 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     // Which pane the user is typing into. `None` until the arrangement is read, which is the
     // honest starting value: the client cannot name a pane before it has been told of one.
+    // This client's focus, and the DAEMON's answer as this client last saw it. The second is what
+    // makes following an EDGE rather than a level: the pane mirror lags a moment behind a publish,
+    // so a client that adopted it unconditionally would yank the cursor back to where the user was
+    // before their own keypress. Compared against, it moves focus exactly when the daemon's answer
+    // CHANGES — another client selecting, a close handing off, this client's own move landing —
+    // and says nothing while the mirror is merely catching up.
     let mut focus = None;
+    let mut seen_active = None;
     // The panes this client attached to were sized by whoever created them, which is this client
     // only when it created the session too. Matching each to the rectangle it was given HERE —
     // before the first paint, through the same call a window change uses — is what makes an attach
@@ -211,7 +227,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     // BEFORE the first reconcile: the arbitration cannot include a client that has not spoken, so
     // reporting after it would tile the first frame over a window this terminal was not counted in.
     report_size(&host, screen_area);
-    let mut tiling = reconcile(&host, screen_area, &mut focus);
+    let mut tiling = reconcile(&host, screen_area, &mut focus, &mut seen_active);
     mouse.follow(&host, &tiling);
     // The pointer's state, kept across events because the wire wants EDGES and this terminal
     // reports a state (see [`MouseEdges`]).
@@ -267,11 +283,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                     // for a notification that may only arrive with the new shell's first prompt.
                     Command::Act(BoundAction::SplitWindow { dir, before }) => {
                         if let Some(pane) = focus.and_then(|pane| host.split(pane, dir, before)) {
-                            // tmux puts a new pane in the foreground, and so does this: the user asked
-                            // for a shell and would otherwise have to ask again to reach it.
+                            // The DAEMON has already made the new pane active (tmux's rule, applied
+                            // where the split happens), so this only moves the cursor to where the
+                            // session already is — locally, with no publish to race the next one.
                             set_focus(&host, &mut focus, Some(pane));
                         }
-                        tiling = reconcile(&host, screen_area, &mut focus);
+                        tiling = reconcile(&host, screen_area, &mut focus, &mut seen_active);
                         mouse.follow(&host, &tiling);
                         paint(
                             &mut screen,
@@ -285,7 +302,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                     }
                     Command::Act(BoundAction::SelectNextPane) => {
                         let next = focus.and_then(|pane| tiling.next_after(pane));
-                        set_focus(&host, &mut focus, next.or_else(|| tiling.first_pane()));
+                        select_pane(&host, &mut focus, next.or_else(|| tiling.first_pane()));
                         // Only the CURSOR moved, and it is painted from the tiling this loop already
                         // holds — so the repaint is the whole point and the reconcile is not needed.
                         paint(
@@ -333,8 +350,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                             MouseEventKind::Release => dragging = None,
                             MouseEventKind::Drag => {
                                 if let Some(ratio) = divider.ratio_at(edge.col, edge.row) {
-                                    tiling =
-                                        drag_divider(&host, screen_area, &mut focus, id, ratio);
+                                    tiling = drag_divider(
+                                        &host,
+                                        screen_area,
+                                        &mut focus,
+                                        &mut seen_active,
+                                        id,
+                                        ratio,
+                                    );
                                     // Repainted here rather than left to the host's notification:
                                     // a divider that lags the pointer by a round trip is what a
                                     // user reads as a heavy client.
@@ -361,7 +384,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                         continue;
                     };
                     if edge.kind == MouseEventKind::Press && focus != Some(pane) {
-                        set_focus(&host, &mut focus, Some(pane));
+                        select_pane(&host, &mut focus, Some(pane));
                         paint(
                             &mut screen,
                             &host,
@@ -393,7 +416,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 // area has to reach the daemon BEFORE the tiling that depends on it — under the
                 // default `latest` policy this report IS the new window.
                 report_size(&host, screen_area);
-                tiling = reconcile(&host, screen_area, &mut focus);
+                tiling = reconcile(&host, screen_area, &mut focus, &mut seen_active);
                 mouse.follow(&host, &tiling);
                 paint(
                     &mut screen,
@@ -418,7 +441,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             // well as the cells, so a split made from another client — or a pane whose shell just
             // exited and was closed — changes which rectangles exist. Painting the old tiling would
             // put the new pane nowhere and leave the closed one's cells on screen.
-            tiling = reconcile(&host, screen_area, &mut focus);
+            tiling = reconcile(&host, screen_area, &mut focus, &mut seen_active);
             // A child that just enabled tracking woke this client the same way its output would,
             // so the mirror is re-read here and not on a timer.
             mouse.follow(&host, &tiling);
@@ -610,13 +633,34 @@ fn retitle(screen: &mut BufferedTerminal<SystemTerminal>, host: &WireHost, held:
 /// recompute — and because getting them out of step is what a partial update looks like: a focus on
 /// a pane that no longer has a rectangle sends keys into a program nobody can see, and a pane whose
 /// PTY still holds the old rectangle's size reflows to the wrong width.
-fn reconcile(host: &WireHost, screen: Rect, focus: &mut Option<PaneId>) -> Tiling {
+fn reconcile(
+    host: &WireHost,
+    screen: Rect,
+    focus: &mut Option<PaneId>,
+    seen_active: &mut Option<PaneId>,
+) -> Tiling {
     let tiling = tile(&host.layout().tree, window_area(host, screen));
-    // Keep the pane the user chose if it is still shown; fall back to the first otherwise. The
-    // fallback is reached by a pane exiting, by another client closing one, and by this terminal
-    // shrinking below what the arrangement needs — all of which leave a focus naming nothing.
-    let held = focus.filter(|pane| tiling.area_of(*pane).is_some());
-    set_focus(host, focus, held.or_else(|| tiling.first_pane()));
+    // FOLLOW the daemon's active pane WHEN IT MOVES, then this client's own, then the first pane
+    // shown — each step used only when the one before it names a pane this terminal is showing.
+    //
+    // The daemon leads because which pane the session is on is session state: another client's
+    // `select-pane`, a `sprag select-pane` from a shell, and a close handing off all move it with
+    // nothing local having happened, and a client that ignored it would be a second authority.
+    //
+    // It can still name a pane this terminal cannot show — the user FLOATED it, and a terminal
+    // client tiles the arrangement only. That is the one case the fallbacks below exist for, and
+    // they move the cursor LOCALLY without publishing: "I cannot display that" is not the user
+    // choosing something else, and telling the daemon otherwise would fight the client that can.
+    let shown = |pane: PaneId| tiling.area_of(pane).is_some();
+    let active = host.active_pane();
+    let moved = active != *seen_active;
+    *seen_active = active;
+    let wanted = active
+        .filter(|_| moved)
+        .filter(|pane| shown(*pane))
+        .or_else(|| focus.filter(|pane| shown(*pane)))
+        .or_else(|| tiling.first_pane());
+    set_focus(host, focus, wanted);
     // A pane of a session with an arbitrated window is sized by the DAEMON, which holds both inputs
     // (`tile(tree, window)`) and re-derives whenever either moves. This client writes a size only
     // when the host has no window to derive from — an older daemon, or one nothing has reported an
@@ -644,6 +688,7 @@ fn drag_divider(
     host: &WireHost,
     area: Rect,
     focus: &mut Option<PaneId>,
+    seen_active: &mut Option<PaneId>,
     id: SplitId,
     ratio: f32,
 ) -> Tiling {
@@ -651,15 +696,20 @@ fn drag_divider(
     if let Some(tree) = with_ratio(&snapshot.tree, id, ratio) {
         host.set_layout(tree, snapshot.revision);
     }
-    reconcile(host, area, focus)
+    reconcile(host, area, focus, seen_active)
 }
 
-/// Move focus to `next`, telling the panes on both ends of the move.
+/// Move THIS CLIENT's focus to `next`, telling the panes on both ends of the move.
 ///
 /// The host is told because a child that enabled DEC 1004 asked to be: an editor that reloads a
 /// changed file when it regains attention is reacting to exactly this edge, and a client that
 /// moved focus silently would leave it reacting to nothing. A no-op when focus does not move, so
 /// the callers can be blunt about calling it.
+///
+/// LOCAL: it reports an edge and moves the cursor, and says nothing about which pane the SESSION is
+/// on. [`select_pane`] is the half that does, and the split is deliberate — a client following the
+/// daemon, or falling back because it cannot show the active pane, must not publish a correction
+/// nobody asked for (see [`reconcile`]).
 fn set_focus(host: &WireHost, focus: &mut Option<PaneId>, next: Option<PaneId>) {
     if *focus == next {
         return;
@@ -673,6 +723,22 @@ fn set_focus(host: &WireHost, focus: &mut Option<PaneId>, next: Option<PaneId>) 
         let _ = host.focus(arriving, true);
     }
     *focus = next;
+}
+
+/// The USER moved to `next`: this client's focus AND the session's active pane.
+///
+/// Every path where a person chose a pane goes through here — a click, `select-pane` on the keymap,
+/// the pane a split just opened. The daemon is told because the choice is SESSION state: another
+/// attached client follows it, a reattaching one inherits it, and `sprag split-window -h` with no
+/// pane divides it. The publish is synchronous, so the next poll reads back what was just sent and
+/// [`reconcile`] cannot yank the cursor to where the user was a moment ago.
+fn select_pane(host: &WireHost, focus: &mut Option<PaneId>, next: Option<PaneId>) {
+    set_focus(host, focus, next);
+    if let Some(pane) = next {
+        // A refusal is not this client's to repair: the daemon has the authoritative pane set, so a
+        // pane it will not select is one that has left, and the next reconcile answers with what IS.
+        let _ = host.select_pane(pane);
+    }
 }
 
 /// Send one key, named in the wire's vocabulary, to the focused pane.

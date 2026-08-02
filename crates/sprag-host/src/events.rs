@@ -517,21 +517,27 @@ pub struct SessionJournal {
 /// | operation | records |
 /// |---|---|
 /// | spawn | 1 |
-/// | close | 1 |
+/// | close | 1 (2 when it closes the ACTIVE pane, which hands off) |
 /// | new window | 1 |
 /// | select window | 1 |
-/// | **split** | **2** (the pane AND the arrangement) |
+/// | select pane | 1 |
+/// | **split** | **3** (the pane, the ARRANGEMENT, and the active pane it moves to) |
+///
+/// The split's third record arrived with H7 and is the reason this table is a test rather than a
+/// paragraph: a split makes its new pane active (tmux's rule, applied in the daemon so every caller
+/// gets it), and that is a real change a reader must be told about. The number moved from 2 to 3
+/// under a change that had nothing to do with this ring, which is exactly what pinning it catches.
 ///
 /// ## The choice
 ///
 /// Building the widest workspace this project measures — 64 panes, the top of `sprag-latency`'s
-/// `REGISTRY_SIZES` — costs **126 records** by split, the two-record shape
-/// (`rpc::tests::a_workspace_scale_burst_fits_the_ring_with_room`). So this capacity holds a
-/// full workspace-scale reconstruction **twice over**, for 10 KB.
+/// `REGISTRY_SIZES` — costs **188 records** by split, the three-record shape
+/// (`rpc::tests::a_workspace_scale_burst_fits_the_ring_with_room`). So this capacity still holds a
+/// full workspace-scale reconstruction with a third to spare, for 10 KB.
 ///
 /// Erring large is the right direction rather than a hedge: an undersized ring costs a client the
 /// re-read it already does today, while the memory is 40 bytes a record. What the number buys is
-/// bounded and stateable — **128 worst-case operations between two reads by one client** — which is
+/// bounded and stateable — **85 worst-case operations between two reads by one client** — which is
 /// hours at a human's rate and seconds under a script hammering the mux, and the script is exactly
 /// the case `lost` exists to answer honestly.
 ///

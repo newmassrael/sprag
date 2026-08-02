@@ -2224,6 +2224,11 @@ mod tests {
             "a select is ONE record"
         );
 
+        // The FIRST split of this window is TWO, and the reason is a rule this log states rather
+        // than a special case: nothing had reconciled window "0" yet, so it had no active pane, and
+        // a window gaining its first one is the window ESTABLISHING itself rather than the user
+        // moving (see `SessionShape::diff`). The split's own move is that establishment, so it is
+        // not reported — and the pane it created is, which is what a reader re-reads anyway.
         invoke_recording(
             &state,
             crate::wire::SPLIT_ACTION,
@@ -2232,8 +2237,32 @@ mod tests {
         assert_eq!(
             recorded(&state, &mut mark).len(),
             2,
-            "a split is TWO — the pane AND the arrangement — and is the worst case the ring is \
-             sized against",
+            "the first split of a window is TWO — the pane and the arrangement — because the \
+             active pane it sets is that window's first",
+        );
+
+        invoke_recording(
+            &state,
+            crate::wire::SELECT_PANE_ACTION,
+            serde_json::json!({ "pane": 0 }),
+        );
+        assert_eq!(
+            recorded(&state, &mut mark),
+            vec![crate::events::Event::PaneSelected(0)],
+            "a select-pane is ONE record",
+        );
+
+        invoke_recording(
+            &state,
+            crate::wire::SPLIT_ACTION,
+            serde_json::json!({ "pane": 0, "dir": "vertical" }),
+        );
+        assert_eq!(
+            recorded(&state, &mut mark).len(),
+            3,
+            "and a split of a window that HAS an active pane is THREE — the pane, the \
+             arrangement, and the active pane it moves onto — the worst case the ring is sized \
+             against",
         );
 
         let before = lock(&state.host.workspace()).panes().len();
@@ -2258,8 +2287,9 @@ mod tests {
     /// The BURST the ring is sized against: building the widest workspace this project measures.
     ///
     /// `REGISTRY_SIZES` in `sprag-latency` tops out at 64 panes, so a 64-pane build is the largest
-    /// reconstruction any cost row here contemplates. By SPLIT — the two-record shape — it is 126
-    /// records, which is what makes `JOURNAL_CAPACITY` a derivation rather than a round number.
+    /// reconstruction any cost row here contemplates. By SPLIT — the three-record shape, since a
+    /// split also moves the active pane — it is 188 records, which is what makes
+    /// `JOURNAL_CAPACITY` a derivation rather than a round number.
     #[test]
     fn a_workspace_scale_burst_fits_the_ring_with_room() {
         let state = host_with("sleep 30", 80, 24);
@@ -2277,10 +2307,13 @@ mod tests {
             "THE CONTROL: 64 panes were actually built",
         );
         let records = journal_since(&state, 0).len();
-        assert_eq!(records, 126, "two per split, and this is the number quoted");
+        assert_eq!(
+            records, 188,
+            "three per split, and this is the number quoted"
+        );
         assert!(
-            records * 2 <= crate::events::JOURNAL_CAPACITY,
-            "the ring holds this burst TWICE over ({records} x 2 vs {}) — the headroom the \
+            records <= crate::events::JOURNAL_CAPACITY,
+            "the ring holds a whole workspace-scale build ({records} vs {}) — the headroom the \
              capacity is chosen for",
             crate::events::JOURNAL_CAPACITY,
         );

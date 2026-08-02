@@ -1935,20 +1935,21 @@ fn the_cli_selects_a_pane_by_id_and_by_direction_over_the_socket() {
         marked[0].clone()
     };
     assert!(
-        active_row("at boot").starts_with("0:"),
-        "a window is on its first pane with nobody having selected one",
+        active_row("after the splits").starts_with(&format!("{two}:")),
+        "a split leaves the session on the pane it opened — tmux's rule, and here it reaches a \
+         caller that is a shell script",
     );
 
-    // By id.
-    let picked = sprag(&sock, &["select-pane", &two.to_string()]);
+    // By id, back to the pane the splits started from.
+    let picked = sprag(&sock, &["select-pane", "0"]);
     assert!(picked.ok, "select-pane by id: {}", picked.stderr);
-    assert_eq!(picked.stdout.trim(), format!("selected {two}"));
-    assert!(active_row("after a select").starts_with(&format!("{two}:")));
+    assert_eq!(picked.stdout.trim(), "selected 0");
+    assert!(active_row("after a select").starts_with("0:"));
 
-    // By direction — tmux's -L, which walks the ARRANGEMENT and lands on the pane between them.
-    let left = sprag(&sock, &["select-pane", "-L"]);
-    assert!(left.ok, "select-pane -L: {}", left.stderr);
-    assert_eq!(left.stdout.trim(), format!("selected {one}"));
+    // By direction — tmux's -R, which walks the ARRANGEMENT rather than the pane list.
+    let right = sprag(&sock, &["select-pane", "-R"]);
+    assert!(right.ok, "select-pane -R: {}", right.stderr);
+    assert_eq!(right.stdout.trim(), format!("selected {one}"));
 
     // At the EDGE: well-formed, honest, and not a failure — the case a keybinding hits constantly.
     sprag(&sock, &["select-pane", "-L"]);

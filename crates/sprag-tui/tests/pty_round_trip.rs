@@ -51,7 +51,9 @@ use portable_pty::{
     Child as PtyChild, CommandBuilder, ExitStatus, MasterPty, PtySize, native_pty_system,
 };
 use serde_json::{Value, json};
-use sprag_host::wire::{FULL_TEXT_SLOT, PANES_SLOT, SESSIONS_SLOT, SPLIT_ACTION};
+use sprag_host::wire::{
+    FULL_TEXT_SLOT, PANES_SLOT, SELECT_PANE_ACTION, SESSIONS_SLOT, SPLIT_ACTION,
+};
 use sprag_host::{mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
 use sprag_vt::{Emulator, InputModes, MouseProtocol, VtPort};
@@ -1098,6 +1100,100 @@ fn a_split_made_by_another_client_re_tiles_this_one() {
         tui.span(0, 0..near),
         "mine",
         "and the pane this client was showing keeps its content",
+    );
+}
+
+/// A `select-pane` made by ANOTHER client moves THIS one's focus — the property that makes the
+/// active pane session state rather than each client's private idea of where it is looking.
+///
+/// The select is sent over the observer's connection, which is exactly what `sprag select-pane` or
+/// a second attached client does; no key is typed at the terminal for it. The proof is where the
+/// NEXT keystrokes land: pane 0 runs `cat` and echoes, so text typed after the outside select must
+/// reach it, and a client that kept its own focus would still be typing into the pane the split
+/// left it on.
+///
+/// The negative half matters as much: this client was focused on the NEW pane when the select
+/// arrived, so a client that always typed into pane 0 would pass the positive half alone.
+#[test]
+fn a_select_pane_made_by_another_client_moves_this_ones_focus() {
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client();
+
+    // Split from the terminal, which leaves this client focused on the NEW pane (tmux's rule).
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"%");
+    let (near, far) = halves(BOOT_PTY.0);
+    wait_for("the split to settle", || {
+        settled(
+            pane_sizes(&mut conn, &session),
+            &vec![(near, BOOT_PTY.1), (far, BOOT_PTY.1)],
+        )
+    });
+    // ...and then for THIS CLIENT to have re-tiled around it. The daemon publishes the new pane
+    // before the split's own reply reaches the client, so "the daemon has two panes" does not yet
+    // mean "the client has moved onto the new one" — and typing at that moment would land in the
+    // pane the user just split, which is what makes this wait part of the test rather than
+    // decoration. The divider is the visible proof, as `a_split_made_by_another_client_re_tiles`
+    // uses it.
+    wait_for("the client to re-tile around its own split", || {
+        let column = tui.column(near);
+        if column.chars().all(|glyph| glyph == '\u{2502}') {
+            Ok(())
+        } else {
+            Err(format!("column {near} reads {column:?}"))
+        }
+    });
+    tui.type_bytes(b"elsewhere");
+
+    // The outside select: pane 0, the one running `cat`.
+    conn.call(
+        "scene/invoke",
+        json!({
+            "session": session,
+            "path": mux_action_path(SELECT_PANE_ACTION),
+            "args": { "pane": 0 },
+        }),
+    )
+    .expect("the outside select answers");
+
+    // The client learns of the select on its next wake, so the first keystroke after it may still
+    // be in flight to the pane it was on. ONE character, typed until it lands, is the only
+    // observation of THIS CLIENT's focus available from outside it — and once it has landed,
+    // everything typed after goes to the same pane.
+    wait_for(
+        "this client's focus to follow a selection it did not make",
+        || {
+            tui.type_bytes(b".");
+            let held = pane_text(&mut conn, &session);
+            if held.contains('.') {
+                Ok(())
+            } else {
+                // The daemon's own answer rides the diagnostic: a client that failed to FOLLOW and
+                // a select that never landed are opposite bugs and look identical from pane 0.
+                let rows = conn
+                    .call(
+                        "scene/query",
+                        json!({ "session": session, "path": mux_action_path(PANES_SLOT) }),
+                    )
+                    .unwrap_or_default();
+                Err(format!(
+                    "pane 0 holds {held:?}; the daemon's panes are {rows}"
+                ))
+            }
+        },
+    );
+    tui.type_bytes(b"followed");
+    wait_for("the keys after it to reach that pane whole", || {
+        let held = pane_text(&mut conn, &session);
+        if held.contains("followed") {
+            Ok(())
+        } else {
+            Err(format!("pane 0 holds {held:?}"))
+        }
+    });
+    let held = pane_text(&mut conn, &session);
+    assert!(
+        !held.contains("elsewhere"),
+        "what was typed before the outside select stayed in the pane it was typed into: {held:?}",
     );
 }
 

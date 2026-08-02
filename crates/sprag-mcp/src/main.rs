@@ -535,6 +535,10 @@ struct PaneInfo {
     /// {id, pixel size, anchor cell}. An agent cannot OCR an image, but CAN learn one is present and
     /// where — tmux shows no inline images at all.
     images: Vec<ImageInfo>,
+    /// Whether this is the pane the session is ON — the daemon's active pane, which every attached
+    /// client follows and which a pane verb given no target acts on. Exactly one pane of a window
+    /// carries it. An agent reads it to know where a HUMAN is working before typing somewhere else.
+    active: bool,
     /// What the AGENT running in the pane is doing (H3), or `None` for a pane no manifest claims —
     /// which is every ordinary shell. The one fact here that is about a SIBLING AI rather than about
     /// a program: it is how an agent learns that the pane next to it is waiting for a human.
@@ -632,8 +636,11 @@ fn pane_summary(pane: &PaneInfo) -> String {
     } else {
         format!("{:?}", pane.title)
     };
+    // The ACTIVE marker rides the header line rather than an indented one: it is a property OF the
+    // pane's identity in the window, like its number, not a signal the pane raised.
+    let active = if pane.active { " (active)" } else { "" };
     let mut out = format!(
-        "  pane {}: id={} {}x{} command={} title={}\n",
+        "  pane {}: id={} {}x{} command={} title={}{active}\n",
         pane.number, pane.id, pane.cols, pane.rows, pane.command, title
     );
     // Surface an attention notification on its own indented line, so an agent scanning the
@@ -1286,6 +1293,7 @@ fn parse_pane_info(index: usize, pane: &Value) -> PaneInfo {
             .and_then(Value::as_array)
             .map(|arr| arr.iter().filter_map(parse_image_info).collect())
             .unwrap_or_default(),
+        active: pane.get("active").and_then(Value::as_bool).unwrap_or(false),
         agent: parse_agent_info(pane),
     }
 }
@@ -1573,6 +1581,7 @@ mod tests {
             rows: 24,
             notification: None,
             bell: 0,
+            active: false,
             shell: None,
             exit_status: None,
             mouse: Some("any".to_owned()),
@@ -1667,6 +1676,7 @@ mod tests {
             rows: 24,
             notification: None,
             bell: 0,
+            active: false,
             shell: None,
             exit_status: None,
             mouse: None,

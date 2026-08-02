@@ -366,6 +366,17 @@ impl WorkspaceExternal {
                 "the split's target left the tiling while its pane was being born; appended it",
             );
         }
+        // The new pane becomes ACTIVE — tmux's `split-window` behaviour, and it belongs HERE rather
+        // than in each client. A display client used to publish it after its own split answered,
+        // which raced anyone else's `select-pane` landing in between: the second write said "the
+        // user is here" about a decision taken before the first. One authority, one write, and a
+        // caller that draws nothing (`sprag split-window`, an agent) gets the same behaviour for
+        // free instead of being the one caller that ends up somewhere else.
+        let _ = crate::host::select_pane(
+            &self.registry,
+            &self.scope,
+            crate::host::PaneTarget::Named(id),
+        );
         // Both the pane set and the arrangement changed: one announce covers both, exactly as a
         // plain spawn's does for the set alone.
         self.announce();
@@ -4258,6 +4269,8 @@ mod tests {
 
     /// Two spawns and a split, giving a window whose arrangement is `0 | (1 over 2)` — the shape
     /// that separates a structural neighbour walk from "the next pane in the list".
+    ///
+    /// It leaves the session ON pane 2, because a split makes its new pane active (tmux's rule).
     fn three_pane_window(ext: &mut WorkspaceExternal) {
         for _ in 0..2 {
             ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
@@ -4279,20 +4292,21 @@ mod tests {
         three_pane_window(&mut ext);
         assert_eq!(
             active_row(&mut ext),
-            Some(0),
-            "a window is on its first pane without anyone selecting one",
+            Some(2),
+            "a split leaves the session on the pane it just opened — tmux's rule, applied in the \
+             daemon so a caller that draws nothing gets it too",
         );
         let before = rev.current();
 
         assert_eq!(
             ext.invoke(
                 SELECT_PANE_ACTION,
-                IntrospectValue::Json(json!({"pane": 2}))
+                IntrospectValue::Json(json!({"pane": 0}))
             ),
-            Ok(IntrospectValue::Json(json!({"pane": 2, "changed": true}))),
+            Ok(IntrospectValue::Json(json!({"pane": 0, "changed": true}))),
         );
 
-        assert_eq!(active_row(&mut ext), Some(2));
+        assert_eq!(active_row(&mut ext), Some(0));
         assert!(
             rev.current() > before,
             "a select wakes the session's clients"
@@ -4304,9 +4318,9 @@ mod tests {
         assert_eq!(
             ext.invoke(
                 SELECT_PANE_ACTION,
-                IntrospectValue::Json(json!({"pane": 2}))
+                IntrospectValue::Json(json!({"pane": 0}))
             ),
-            Ok(IntrospectValue::Json(json!({"pane": 2, "changed": false}))),
+            Ok(IntrospectValue::Json(json!({"pane": 0, "changed": false}))),
         );
         assert_eq!(rev.current(), settled, "an unchanged select wakes nobody");
     }
@@ -4319,21 +4333,16 @@ mod tests {
     fn select_pane_toward_a_direction_walks_the_arrangement() {
         let reg = registry();
         let (mut ext, _rev) = control(&reg);
-        three_pane_window(&mut ext);
+        three_pane_window(&mut ext); // the split leaves the session on pane 2, the bottom right
 
         assert_eq!(
             ext.invoke(
                 SELECT_PANE_ACTION,
-                IntrospectValue::Json(json!({"dir": "right"}))
+                IntrospectValue::Json(json!({"dir": "up"}))
             ),
             Ok(IntrospectValue::Json(json!({"pane": 1, "changed": true}))),
-        );
-        assert_eq!(
-            ext.invoke(
-                SELECT_PANE_ACTION,
-                IntrospectValue::Json(json!({"dir": "down"}))
-            ),
-            Ok(IntrospectValue::Json(json!({"pane": 2, "changed": true}))),
+            "UP from the bottom of the right column is the pane above it — and there is no 'up' \
+             in a pane list, which is what separates this from an index walk",
         );
         assert_eq!(
             ext.invoke(
@@ -4341,6 +4350,14 @@ mod tests {
                 IntrospectValue::Json(json!({"dir": "left"}))
             ),
             Ok(IntrospectValue::Json(json!({"pane": 0, "changed": true}))),
+        );
+        assert_eq!(
+            ext.invoke(
+                SELECT_PANE_ACTION,
+                IntrospectValue::Json(json!({"dir": "right"}))
+            ),
+            Ok(IntrospectValue::Json(json!({"pane": 1, "changed": true}))),
+            "and back to whichever of the right column's panes covers most of pane 0",
         );
     }
 
@@ -4352,6 +4369,11 @@ mod tests {
         let reg = registry();
         let (mut ext, _rev) = control(&reg);
         three_pane_window(&mut ext);
+        ext.invoke(
+            SELECT_PANE_ACTION,
+            IntrospectValue::Json(json!({"pane": 0})),
+        )
+        .expect("pane 0 is there to select");
 
         assert_eq!(
             ext.invoke(
@@ -4394,7 +4416,7 @@ mod tests {
         );
         assert_eq!(
             active_row(&mut ext),
-            Some(0),
+            Some(2),
             "every refusal left the window where it was",
         );
     }
@@ -4451,12 +4473,7 @@ mod tests {
     fn a_pane_action_with_no_target_acts_on_the_active_pane() {
         let reg = registry();
         let (mut ext, _rev) = control(&reg);
-        three_pane_window(&mut ext);
-        ext.invoke(
-            SELECT_PANE_ACTION,
-            IntrospectValue::Json(json!({"pane": 2})),
-        )
-        .unwrap();
+        three_pane_window(&mut ext); // which leaves the session on pane 2
 
         // A split with no `pane` divides the ACTIVE one: the new pane 3 lands beside pane 2, which
         // `neighbors` reports rather than a pane count could.
@@ -4470,23 +4487,24 @@ mod tests {
             json!(2),
             "the new pane opened beside the pane the user was on",
         );
-
-        // A close with no target closes the active pane, and the window hands off to its neighbour.
         assert_eq!(
             active_row(&mut ext),
-            Some(2),
-            "the split did not move the user"
+            Some(3),
+            "and the session moved onto it — tmux's split-window rule, which is why the next \
+             targetless verb acts on the NEW pane",
         );
+
+        // A close with no target closes the active pane, and the window hands off to its neighbour.
         ext.invoke(CLOSE_ACTION, IntrospectValue::Json(json!({})))
             .unwrap();
         assert!(
-            lock(&pool(&reg)).pane(PaneId(2)).is_none(),
+            lock(&pool(&reg)).pane(PaneId(3)).is_none(),
             "THE CONTROL: the close really took the active pane, not some default one",
         );
         assert_eq!(
             active_row(&mut ext),
-            Some(3),
-            "and the window is now on the neighbour that inherited",
+            Some(2),
+            "and the window is back on the neighbour that inherited",
         );
     }
 }
