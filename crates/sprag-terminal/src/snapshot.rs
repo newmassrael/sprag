@@ -143,6 +143,18 @@ pub struct WindowSnapshot {
     /// daemons had.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manual_size: Option<(u16, u16)>,
+    /// The pane the window was ON (tmux's active pane), or `None` for a window that held none.
+    ///
+    /// Restored on [`manual_size`](Self::manual_size)'s argument, unchanged: it is a DECISION
+    /// rather than a measurement, and a reboot is exactly the moment there is no client to ask.
+    /// Coming back to a workspace with the cursor on whichever pane happened to be first would
+    /// discard a fact the panes' own state cannot reconstruct.
+    ///
+    /// `#[serde(default)]` on the same additive terms: an older snapshot loads as `None`, and the
+    /// first reconcile after the restore selects the window's first pane — which is the behaviour
+    /// the daemons that wrote those snapshots had.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<PaneId>,
 }
 
 /// One pane's restore facts: enough to re-spawn a shell where the pane was and address it by its
@@ -200,6 +212,7 @@ pub fn snapshot(registry: &Arc<Mutex<SessionRegistry>>) -> Snapshot {
         layout: LayoutWire,
         floating: Vec<PaneId>,
         manual_size: Option<(u16, u16)>,
+        active: Option<PaneId>,
         pool: Arc<Mutex<crate::workspace::Workspace>>,
     }
     struct SessSkel {
@@ -228,6 +241,7 @@ pub fn snapshot(registry: &Arc<Mutex<SessionRegistry>>) -> Snapshot {
                             layout: LayoutWire::from(w.layout()),
                             floating,
                             manual_size: w.manual_size(),
+                            active: w.active_pane(),
                             pool: Arc::clone(w.workspace()),
                         }
                     })
@@ -265,6 +279,7 @@ pub fn snapshot(registry: &Arc<Mutex<SessionRegistry>>) -> Snapshot {
                         floating: w.floating,
                         panes,
                         manual_size: w.manual_size,
+                        active: w.active,
                     }
                 })
                 .collect(),
@@ -754,6 +769,7 @@ mod tests {
             floating: vec![],
             panes,
             manual_size: None,
+            active: None,
         }
     }
 

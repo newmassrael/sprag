@@ -30,7 +30,7 @@ pub mod workspace;
 pub use command::{command_from_parts, default_shell_command, shell_command_line};
 pub use layout::{
     LayoutError, LayoutNode, LayoutNodeWire, LayoutSnapshot, LayoutTree, LayoutWire, LeafHome,
-    MAX_LAYOUT_DEPTH, SplitDir, SplitId, SplitSide,
+    MAX_LAYOUT_DEPTH, PaneDir, SplitDir, SplitId, SplitSide,
 };
 pub use pane_pty::{CommandBuilder, PaneExit, PanePty, PanePtyError, PanePtyHandle, RawOutput};
 pub use registry::{

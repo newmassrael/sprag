@@ -99,6 +99,24 @@ pub struct Window {
     /// the same act as switching to it. See `sprag_host::window::WindowSize`.
     manual_size: Option<(u16, u16)>,
     layout_revision: u64,
+    /// The pane this window is ON — tmux's active pane, `None` only while the window holds none.
+    ///
+    /// It lives here for the reason [`floating`](Self::floating) and the arrangement do, and the
+    /// reason [`Session::current_window`] does one level up: which pane is current is a decision
+    /// about the SESSION, not a property of whoever is looking at it. Every attached client follows
+    /// it, a reattaching client inherits it, and a caller that draws nothing — an agent, a shell
+    /// running `sprag` — can finally say "here".
+    ///
+    /// A FLOATING pane may be active: it is still a pane of this window and still takes input.
+    /// Adjacency ([`LayoutTree::neighbor`]) simply has no answer for one, which is honest rather
+    /// than a special case.
+    ///
+    /// Healed against the live pool by [`reconcile_layout`](Self::reconcile_layout), which is also
+    /// where a closed active pane hands off to its neighbour. Moving it does NOT bump
+    /// [`layout_revision`](Self::layout_revision): the arrangement has not changed, and a client
+    /// that re-projected its whole tiling because the user pressed `select-pane -L` would be
+    /// answering the wrong question.
+    active: Option<PaneId>,
 }
 
 impl Window {
@@ -114,6 +132,9 @@ impl Window {
             homes: HashMap::new(),
             manual_size: None,
             layout_revision: 0,
+            // An empty window is on no pane; the first reconcile after its birth pane lands makes
+            // that pane active, so nothing has to remember to select a newly-born window's pane.
+            active: None,
         }
     }
 
@@ -134,12 +155,17 @@ impl Window {
     /// size is an OPERATOR's decision about the window itself — the same kind of fact as the
     /// arrangement, restored for the same reason. A reboot that reopened a pinned window at whatever
     /// the first client to attach happened to be would have thrown the decision away.
+    ///
+    /// [`active`](Self::active) comes back on exactly that argument: it is a decision, and a reboot
+    /// is precisely the moment there is no client to ask. If that pane failed to re-spawn, the first
+    /// reconcile hands it on the same way a close does.
     fn restore(
         name: &str,
         pool: Workspace,
         layout: LayoutWire,
         floating: Vec<PaneId>,
         manual_size: Option<(u16, u16)>,
+        active: Option<PaneId>,
     ) -> Result<Self, LayoutError> {
         let mut tree = LayoutTree::new();
         tree.set_from_wire(layout)?;
@@ -151,6 +177,7 @@ impl Window {
             homes: HashMap::new(),
             manual_size,
             layout_revision: 0,
+            active,
         })
     }
 
@@ -230,6 +257,12 @@ impl Window {
     pub fn reconcile_layout(&mut self, panes: &[PaneId]) -> &LayoutTree {
         let live: HashSet<PaneId> = panes.iter().copied().collect();
         self.bump_if_changed(|window| {
+            // FIRST, while the arrangement still holds the leaf of a pane that has just gone: the
+            // successor is a question about where the user WAS, and one step further on there is
+            // nothing left to ask it of. Inside the closure so it runs on every reconcile, and
+            // deliberately not part of what the closure COMPARES — the active pane is not the
+            // arrangement (see the field's docs).
+            window.heal_active(panes);
             // Prune INSIDE the compare: a floating pane that exits changes what a client
             // must draw (one fewer window) while leaving the tiling untouched, so pruning
             // outside would drop that change on the floor.
@@ -247,6 +280,66 @@ impl Window {
             window.layout.reconcile(&tiled, &mut window.homes);
         });
         &self.layout
+    }
+
+    /// The pane this window is ON, or `None` while it holds no panes — tmux's active pane.
+    #[must_use]
+    pub fn active_pane(&self) -> Option<PaneId> {
+        self.active
+    }
+
+    /// Make `pane` this window's active one — tmux `select-pane`. Answers whether it was there to
+    /// select.
+    ///
+    /// `panes` is the window's live pool, resolved by the caller under the WORKSPACE lock exactly
+    /// as [`reconcile_layout`](Self::reconcile_layout)'s is, so this stays pure and the two locks
+    /// stay sequential. Membership is checked against the POOL rather than the tiling, because a
+    /// floated pane is still a pane a user can be on.
+    ///
+    /// A pane the pool does not hold is REFUSED and nothing moves: silently keeping the old one
+    /// would answer "selected" for a pane that is not there, and silently clearing it would lose
+    /// the user's place over a typo.
+    pub fn select_pane(&mut self, pane: PaneId, panes: &[PaneId]) -> bool {
+        if !panes.contains(&pane) {
+            return false;
+        }
+        self.active = Some(pane);
+        true
+    }
+
+    /// Keep [`active`](Self::active) naming a pane that is actually in `panes`.
+    ///
+    /// Three cases, and the middle one is the whole design: a window that has just gained its first
+    /// pane takes it; one whose active pane is still there keeps it; and one whose active pane is
+    /// GONE hands off to [`successor`](Self::successor) — never to "the first pane", which would
+    /// throw a user from pane 7 of 8 back to the top of the window for closing one.
+    fn heal_active(&mut self, panes: &[PaneId]) {
+        match self.active {
+            Some(active) if panes.contains(&active) => {}
+            Some(gone) => {
+                self.active = self
+                    .successor(gone, panes)
+                    .or_else(|| panes.first().copied());
+            }
+            None => self.active = panes.first().copied(),
+        }
+    }
+
+    /// Who inherits when `gone` leaves: its neighbour in the arrangement AS IT STANDS — the next
+    /// pane in paint order, else the previous one.
+    ///
+    /// Paint order rather than [`LayoutTree::neighbor`], and the difference is the point: a
+    /// direction has to be chosen for the user and any choice of one is arbitrary, while "the next
+    /// one along" is total, is what the pane list already shows, and is what tmux does. `None` when
+    /// `gone` held no leaf (it was floating, or already reconciled away) — the caller falls back.
+    fn successor(&self, gone: PaneId, panes: &[PaneId]) -> Option<PaneId> {
+        let order = self.layout.panes();
+        let at = order.iter().position(|pane| *pane == gone)?;
+        order[at + 1..]
+            .iter()
+            .chain(order[..at].iter().rev())
+            .find(|pane| panes.contains(pane))
+            .copied()
     }
 
     /// Self-heal the arrangement against this window's OWN live pool — the caller-less form of
@@ -1173,9 +1266,15 @@ impl SessionRegistry {
                         rows: p.rows,
                     });
                 }
-                let window =
-                    Window::restore(&w.name, seed.sibling(), w.layout, w.floating, w.manual_size)
-                        .map_err(|e| SnapshotError::Layout(e.to_string()))?;
+                let window = Window::restore(
+                    &w.name,
+                    seed.sibling(),
+                    w.layout,
+                    w.floating,
+                    w.manual_size,
+                    w.active,
+                )
+                .map_err(|e| SnapshotError::Layout(e.to_string()))?;
                 windows.push(window);
             }
             let current_window = windows
@@ -1305,9 +1404,12 @@ impl SessionRegistry {
     ///     the pids via ONE shared `/proc` scan (`ProcScan`, built once, so the cost is a single
     ///     `/proc` pass for the whole list, not one per session).
     ///
-    /// cwd/branch use the current window's FIRST pane: sprag has no active-pane concept yet, so the
-    /// oldest pane of the window a client would see on attach is the honest, stable representative;
-    /// a session whose current window holds no pane carries neither. Ports span ALL panes of ALL the
+    /// cwd/branch use the current window's FIRST pane, DELIBERATELY, now that a window also holds
+    /// an [`active pane`](Window::active_pane) this could have used instead. A listing describes
+    /// sessions the reader is mostly NOT in, and the oldest pane of the window they would see on
+    /// attach is a stable representative: it does not move as somebody walks around inside that
+    /// session, so `sprag ls` does not flicker between directories while a user navigates. A
+    /// session whose current window holds no pane carries neither. Ports span ALL panes of ALL the
     /// session's windows — a listening server usually runs in a different pane than the one whose cwd
     /// is shown, so the honest "what is this session serving" answer aggregates the whole session; a
     /// session serving nothing carries an empty list.
@@ -3272,6 +3374,151 @@ mod tests {
             pool_ids(&reg, "0"),
             vec![a],
             "every refusal left the pane in place"
+        );
+    }
+
+    /// A window is on a pane as soon as it HAS one, and nobody had to select it. The birth path
+    /// spawns into the pool and the arrangement reconciles lazily, so the first reconcile is the
+    /// only place that could establish this — which is why the healing lives there rather than in
+    /// each of the seven callers that create a pane.
+    #[test]
+    fn a_windows_first_pane_becomes_active_without_anyone_selecting_it() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let window = default_window(&mut reg);
+        assert_eq!(window.active_pane(), None, "an empty window is on no pane");
+
+        window.reconcile_layout(&[PaneId(0), PaneId(1)]);
+
+        assert_eq!(window.active_pane(), Some(PaneId(0)));
+    }
+
+    /// Selecting names a pane of the POOL, not of the tiling: a FLOATED pane is still a pane the
+    /// user can be on. A pane the pool does not hold is refused whole — nothing moves, so a typo
+    /// cannot cost the user their place.
+    #[test]
+    fn select_takes_any_pane_of_the_pool_including_a_floated_one_and_refuses_the_rest() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let window = default_window(&mut reg);
+        let panes = [PaneId(0), PaneId(1), PaneId(2)];
+        window.reconcile_layout(&panes);
+        assert!(window.set_floating(PaneId(2), true, &panes));
+        // The float set collapses the leaf on the next reconcile (the tiling is reconciled over
+        // `panes − floating`), so take one before reading the tiling below.
+        window.reconcile_layout(&panes);
+
+        assert!(window.select_pane(PaneId(2), &panes));
+        assert_eq!(window.active_pane(), Some(PaneId(2)));
+        assert!(
+            !window.layout().panes().contains(&PaneId(2)),
+            "THE CONTROL: pane 2 really is out of the tiling, so this is not the tiled case \
+             passing by accident",
+        );
+
+        assert!(!window.select_pane(PaneId(9), &panes));
+        assert_eq!(
+            window.active_pane(),
+            Some(PaneId(2)),
+            "a refused select leaves the active pane exactly where it was",
+        );
+    }
+
+    /// Closing the active pane hands off to its NEIGHBOUR in the arrangement, not to the first pane
+    /// in the window. The control is the second half: closing a pane the user was NOT on moves
+    /// nothing, so the successor rule cannot be mistaken for "reset on every reconcile".
+    #[test]
+    fn a_closed_active_pane_hands_off_to_its_neighbour_not_to_the_first() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let window = default_window(&mut reg);
+        let all = [PaneId(0), PaneId(1), PaneId(2), PaneId(3)];
+        window.reconcile_layout(&all);
+        assert!(window.select_pane(PaneId(2), &all));
+
+        window.reconcile_layout(&[PaneId(0), PaneId(1), PaneId(3)]);
+
+        assert_eq!(
+            window.active_pane(),
+            Some(PaneId(3)),
+            "the pane AFTER it in paint order inherits — pane 0 would be the cheap answer and \
+             would throw a user across the whole window",
+        );
+
+        window.reconcile_layout(&[PaneId(0), PaneId(3)]);
+        assert_eq!(
+            window.active_pane(),
+            Some(PaneId(3)),
+            "THE CONTROL: closing a pane the user was not on moves nothing",
+        );
+
+        // The LAST pane has nobody after it, so the hand-off goes backwards rather than nowhere.
+        window.reconcile_layout(&[PaneId(0)]);
+        assert_eq!(window.active_pane(), Some(PaneId(0)));
+        window.reconcile_layout(&[]);
+        assert_eq!(
+            window.active_pane(),
+            None,
+            "and a window with no panes is on no pane, rather than on a ghost",
+        );
+    }
+
+    /// Selecting is not an ARRANGEMENT change: the revision a client watches to know its projection
+    /// is stale must not move, or every `select-pane -L` would make every attached client re-fetch
+    /// and re-project a tiling that is byte-identical to the one it holds.
+    #[test]
+    fn selecting_a_pane_does_not_move_the_layout_revision() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let window = default_window(&mut reg);
+        let panes = [PaneId(0), PaneId(1)];
+        window.reconcile_layout(&panes);
+        let settled = window.layout_revision();
+
+        assert!(window.select_pane(PaneId(1), &panes));
+
+        assert_eq!(window.layout_revision(), settled);
+        assert_eq!(
+            window.active_pane(),
+            Some(PaneId(1)),
+            "THE CONTROL: the select really happened, so an unmoved revision is the claim and \
+             not a no-op",
+        );
+    }
+
+    /// The active pane is a DECISION, so it survives a reboot the way a pinned size does — and a
+    /// decision naming a pane that did not come back is healed rather than kept as a ghost.
+    #[test]
+    fn the_active_pane_survives_a_snapshot_and_heals_when_its_pane_does_not_come_back() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        let panes = [PaneId(0), PaneId(1), PaneId(2)];
+        {
+            let window = default_window(&mut reg);
+            window.reconcile_layout(&panes);
+            assert!(window.select_pane(PaneId(1), &panes));
+        }
+        let snap = crate::snapshot::snapshot(&Arc::new(Mutex::new(reg)));
+
+        assert_eq!(
+            snap.sessions[0].windows[0].active,
+            Some(PaneId(1)),
+            "the file records the pane the user was on",
+        );
+
+        let (mut back, _) = SessionRegistry::from_snapshot(snap.clone()).unwrap();
+        let window = back
+            .window_mut(&default, "0")
+            .expect("the restored default session's window");
+        window.reconcile_layout(&panes);
+        assert_eq!(window.active_pane(), Some(PaneId(1)));
+
+        // The same snapshot restored into a world where pane 1's shell failed to re-spawn.
+        let (mut lossy, _) = SessionRegistry::from_snapshot(snap).unwrap();
+        let window = lossy
+            .window_mut(&default, "0")
+            .expect("the restored default session's window");
+        window.reconcile_layout(&[PaneId(0), PaneId(2)]);
+        assert_eq!(
+            window.active_pane(),
+            Some(PaneId(2)),
+            "the neighbour inherits, exactly as a live close would hand off",
         );
     }
 }

@@ -77,12 +77,92 @@ pub enum SplitDir {
     Vertical,
 }
 
+impl SplitDir {
+    /// The OTHER axis — what a move along this one is measured across.
+    fn across(self) -> Self {
+        match self {
+            Self::Horizontal => Self::Vertical,
+            Self::Vertical => Self::Horizontal,
+        }
+    }
+}
+
 /// Which side of its parent [`LayoutNode::Split`] a leaf occupies (`First` = left / top,
 /// matching [`SplitDir`]'s convention).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SplitSide {
     First,
     Second,
+}
+
+/// One of the four directions a pane can have a NEIGHBOUR in — tmux `select-pane -L/-R/-U/-D`.
+///
+/// Not a fifth vocabulary: a direction IS a pair this module already speaks — an axis
+/// ([`SplitDir`]) and a side of it ([`SplitSide`]). `Left` is the `First` side of a `Horizontal`
+/// division, `Down` the `Second` side of a `Vertical` one. Stating it that way is what lets
+/// [`LayoutTree::neighbor`] be a walk over the tree's own shape instead of a second geometry.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PaneDir {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+impl PaneDir {
+    /// Every direction, in the order tmux's own flags are conventionally listed (`-L -R -U -D`) —
+    /// what a caller asking for a pane's whole neighbourhood iterates.
+    pub const ALL: [Self; 4] = [Self::Left, Self::Right, Self::Up, Self::Down];
+
+    /// The axis this direction moves along: left/right divide a ROW (`Horizontal`), up/down a
+    /// COLUMN (`Vertical`).
+    #[must_use]
+    pub fn axis(self) -> SplitDir {
+        match self {
+            Self::Left | Self::Right => SplitDir::Horizontal,
+            Self::Up | Self::Down => SplitDir::Vertical,
+        }
+    }
+
+    /// Which side of a division on [`axis`](Self::axis) this direction points AT — so a pane has a
+    /// neighbour to its left exactly when some ancestor split on the horizontal axis was entered
+    /// from its `Second` side.
+    #[must_use]
+    pub fn side(self) -> SplitSide {
+        match self {
+            Self::Left | Self::Up => SplitSide::First,
+            Self::Right | Self::Down => SplitSide::Second,
+        }
+    }
+
+    /// Read a direction off the wire (`"left"` / `"right"` / `"up"` / `"down"`), `None` for
+    /// anything else.
+    ///
+    /// The ONE definition of this vocabulary, the way `sprag_detect`'s `AgentState::from_wire` is
+    /// for agent states: the wire action, the CLI flags and this walk read the same four words, so
+    /// a fifth spelling cannot appear in one of them alone.
+    #[must_use]
+    pub fn from_wire(word: &str) -> Option<Self> {
+        match word {
+            "left" => Some(Self::Left),
+            "right" => Some(Self::Right),
+            "up" => Some(Self::Up),
+            "down" => Some(Self::Down),
+            _ => None,
+        }
+    }
+
+    /// This direction's wire word — the inverse of [`from_wire`](Self::from_wire), and the key a
+    /// neighbourhood is published under.
+    #[must_use]
+    pub fn wire_str(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::Up => "up",
+            Self::Down => "down",
+        }
+    }
 }
 
 /// A leaf's place in the tiling, stated relative to a SIBLING: which pane it sits beside,
@@ -391,6 +471,117 @@ fn leaf_home_rec(node: &LayoutNode, target: PaneId) -> Option<LeafHome> {
     leaf_home_rec(first, target).or_else(|| leaf_home_rec(second, target))
 }
 
+/// A leaf's extent on ONE axis, as a fraction of the window (`start` and `len` in `0.0..=1.0`).
+///
+/// Unit space, never cells. "What is left of pane 3" is a question about the ARRANGEMENT, so its
+/// answer must not depend on the size of whichever client happens to be attached — the rival this
+/// was derived against answers it from the last COMPOSED FRAME's rectangles, which is why theirs
+/// moves with a sidebar, a tab bar and `u16` rounding.
+///
+/// It is used ONLY to RANK candidates the tree walk has already established exist. That is what
+/// makes a float honest here: a rounding difference can pick a different one of two equally
+/// overlapping neighbours, and can never invent or destroy one.
+#[derive(Clone, Copy, Debug)]
+struct Span {
+    start: f64,
+    len: f64,
+}
+
+impl Span {
+    /// The whole window on this axis — where every walk starts.
+    const FULL: Self = Self {
+        start: 0.0,
+        len: 1.0,
+    };
+
+    /// This span divided at `ratio`, keeping `side`.
+    fn divide(self, ratio: f32, side: SplitSide) -> Self {
+        // A tree written by a client carries the ratio it settled on; clamping here keeps a
+        // malformed share (already refused at `set_from_wire`) from producing a negative length
+        // that would order candidates nonsensically rather than merely oddly.
+        let ratio = f64::from(ratio).clamp(0.0, 1.0);
+        match side {
+            SplitSide::First => Self {
+                start: self.start,
+                len: self.len * ratio,
+            },
+            SplitSide::Second => Self {
+                start: self.start + self.len * ratio,
+                len: self.len * (1.0 - ratio),
+            },
+        }
+    }
+
+    /// How much of this span `other` covers — `0.0` when they merely touch or miss.
+    fn overlap(self, other: Self) -> f64 {
+        let start = self.start.max(other.start);
+        let end = (self.start + self.len).min(other.start + other.len);
+        (end - start).max(0.0)
+    }
+}
+
+/// The ancestors of `pane`'s leaf, outermost first: each split and the side the descent took.
+///
+/// `false` — with `out` left exactly as it was found — when this sub-tree holds no such leaf, so a
+/// caller can try siblings without clearing up after it.
+fn leaf_path<'a>(
+    node: &'a LayoutNode,
+    pane: PaneId,
+    out: &mut Vec<(&'a LayoutNode, SplitSide)>,
+) -> bool {
+    match node {
+        LayoutNode::Leaf(held) => *held == pane,
+        LayoutNode::Split { first, second, .. } => {
+            out.push((node, SplitSide::First));
+            if leaf_path(first, pane, out) {
+                return true;
+            }
+            out.pop();
+            out.push((node, SplitSide::Second));
+            if leaf_path(second, pane, out) {
+                return true;
+            }
+            out.pop();
+            false
+        }
+    }
+}
+
+/// The leaves of `node` that FACE a pane lying on the other side of a division on `dir`'s axis,
+/// each with its span across that axis — in paint order, which is what breaks a ranking tie.
+///
+/// Two rules, and they are the whole geometry:
+///
+/// * a division ACROSS the move puts both halves against the source, so both descend;
+/// * a division ALONG it puts only the NEARER half against the source — looking left, the
+///   sibling's own right-hand child — so the far half cannot be anyone's neighbour.
+fn facing_leaves(node: &LayoutNode, dir: PaneDir, span: Span, out: &mut Vec<(PaneId, Span)>) {
+    match node {
+        LayoutNode::Leaf(pane) => out.push((*pane, span)),
+        LayoutNode::Split {
+            dir: node_dir,
+            ratio,
+            first,
+            second,
+            ..
+        } => {
+            // Derived here rather than passed in: the axis a span is measured across is a function
+            // of `dir`, and a parameter carrying it would be a second copy of one fact that a
+            // caller could contradict.
+            if *node_dir == dir.axis().across() {
+                facing_leaves(first, dir, span.divide(*ratio, SplitSide::First), out);
+                facing_leaves(second, dir, span.divide(*ratio, SplitSide::Second), out);
+            } else {
+                let near = match dir.side() {
+                    SplitSide::First => second,
+                    SplitSide::Second => first,
+                };
+                facing_leaves(near, dir, span, out);
+            }
+        }
+    }
+}
+
 /// A window's logical layout tree: how its DOCKED panes are arranged, and nothing about
 /// pixels.
 ///
@@ -427,6 +618,88 @@ impl LayoutTree {
             .as_ref()
             .map(LayoutNode::panes)
             .unwrap_or_default()
+    }
+
+    /// The pane ADJACENT to `pane` in `dir`, or `None` when there is none — which is exactly the
+    /// statement "`pane` is at that edge of the window".
+    ///
+    /// Answers herdr's `pane.neighbor` AND its `pane.edges` with one derivation, deliberately:
+    /// their two methods reach the same fact by two different routes (a rect-vs-area comparison and
+    /// a walk over the other panes' rects) and nothing makes them agree. Here the edge IS the
+    /// absent neighbour, so the two halves cannot disagree — a shape that is unrepresentable rather
+    /// than merely forbidden.
+    ///
+    /// **Structural, not geometric.** Whether a neighbour EXISTS is decided by the tree's shape
+    /// alone: walk up to the first division on `dir`'s axis that this pane sits on the far side of.
+    /// Only the CHOICE between several candidates (a column of panes on the other side of one
+    /// divider) consults the ratios, as fractions of the window, and picks the greatest overlap across the
+    /// other axis with paint order as the tie-break. So the answer is the same for every client, at
+    /// every size, and with no client attached at all.
+    ///
+    /// `None` for a pane this tree holds no leaf for — one that exited, or that a client has
+    /// FLOATED out of the tiling. A floating pane is still a pane and can still be the active one;
+    /// it is simply not in the arrangement adjacency is a property of.
+    #[must_use]
+    pub fn neighbor(&self, pane: PaneId, dir: PaneDir) -> Option<PaneId> {
+        let root = self.root.as_ref()?;
+        let mut path = Vec::new();
+        if !leaf_path(root, pane, &mut path) {
+            return None;
+        }
+        // The span of each ancestor ACROSS the move, and — after the loop — of the pane's own
+        // leaf. Recorded before the node's own division is applied, which is what makes
+        // `spans[depth]` the span of the sub-tree that hangs off `path[depth]`.
+        let across = dir.axis().across();
+        let mut span = Span::FULL;
+        let mut spans = Vec::with_capacity(path.len());
+        for (node, side) in &path {
+            spans.push(span);
+            if let LayoutNode::Split {
+                dir: node_dir,
+                ratio,
+                ..
+            } = node
+                && *node_dir == across
+            {
+                span = span.divide(*ratio, *side);
+            }
+        }
+        let source = span;
+        // INNERMOST first: the nearest division on this axis is the one whose other half is
+        // actually adjacent. An outer one is only reached when every inner division runs the
+        // other way, which is precisely when the whole inner sub-tree faces that boundary.
+        for (depth, (node, side)) in path.iter().enumerate().rev() {
+            let LayoutNode::Split {
+                dir: node_dir,
+                first,
+                second,
+                ..
+            } = node
+            else {
+                continue;
+            };
+            if *node_dir != dir.axis() || *side == dir.side() {
+                continue;
+            }
+            let sibling = match dir.side() {
+                SplitSide::First => first,
+                SplitSide::Second => second,
+            };
+            let mut candidates = Vec::new();
+            facing_leaves(sibling, dir, spans[depth], &mut candidates);
+            return candidates
+                .into_iter()
+                .reduce(|best, next| {
+                    // Strictly greater, so a tie keeps the earlier one in paint order.
+                    if next.1.overlap(source) > best.1.overlap(source) {
+                        next
+                    } else {
+                        best
+                    }
+                })
+                .map(|(pane, _)| pane);
+        }
+        None
     }
 
     /// Mint the next never-reused split id.
@@ -1135,6 +1408,44 @@ mod tests {
                 out
             }
         }
+    }
+
+    /// A tree built by hand, so a test states the ARRANGEMENT it means rather than the sequence of
+    /// splits that happens to produce it.
+    fn split(dir: SplitDir, ratio: f32, first: LayoutNode, second: LayoutNode) -> LayoutNode {
+        LayoutNode::Split {
+            id: SplitId(0),
+            dir,
+            ratio,
+            first: Box::new(first),
+            second: Box::new(second),
+        }
+    }
+
+    fn leaf(pane: u64) -> LayoutNode {
+        LayoutNode::Leaf(PaneId(pane))
+    }
+
+    /// A [`LayoutTree`] over a hand-built root. The minting counter starts past any id the shape
+    /// uses, so a later mutation cannot collide with one.
+    fn tree_of(root: LayoutNode) -> LayoutTree {
+        LayoutTree {
+            root: Some(root),
+            next_split: 100,
+        }
+    }
+
+    /// `pane`'s four neighbours, keyed the way the wire publishes them.
+    fn around(tree: &LayoutTree, pane: u64) -> Vec<(&'static str, Option<u64>)> {
+        PaneDir::ALL
+            .iter()
+            .map(|dir| {
+                (
+                    dir.wire_str(),
+                    tree.neighbor(PaneId(pane), *dir).map(|id| id.0),
+                )
+            })
+            .collect()
     }
 
     #[test]
@@ -2053,6 +2364,209 @@ mod tests {
                 SplitSide::Second,
                 SplitDir::Vertical
             )),
+        );
+    }
+
+    /// The plain row, and the half of the claim that is easy to forget: the EDGE is not a second
+    /// answer, it is the absent neighbour. Pane 0 has nothing to its left and pane 2 nothing to its
+    /// right, and every pane in a row has nothing above or below.
+    #[test]
+    fn a_row_reports_each_neighbour_and_states_an_edge_as_no_neighbour() {
+        let mut tree = LayoutTree::new();
+        heal(&mut tree, &ids(3));
+
+        assert_eq!(
+            around(&tree, 0),
+            vec![
+                ("left", None),
+                ("right", Some(1)),
+                ("up", None),
+                ("down", None)
+            ],
+        );
+        assert_eq!(
+            around(&tree, 1),
+            vec![
+                ("left", Some(0)),
+                ("right", Some(2)),
+                ("up", None),
+                ("down", None)
+            ],
+        );
+        assert_eq!(
+            around(&tree, 2),
+            vec![
+                ("left", Some(1)),
+                ("right", None),
+                ("up", None),
+                ("down", None)
+            ],
+        );
+    }
+
+    /// Looking INTO a sub-tree: the pane against the boundary wins, never the one behind it.
+    /// `(0|1) | 2` — pane 2's left neighbour is 1, and 0 is not a candidate at all.
+    #[test]
+    fn the_half_of_a_subtree_against_the_boundary_is_the_neighbour() {
+        let tree = tree_of(split(
+            SplitDir::Horizontal,
+            0.5,
+            split(SplitDir::Horizontal, 0.5, leaf(0), leaf(1)),
+            leaf(2),
+        ));
+
+        assert_eq!(tree.neighbor(PaneId(2), PaneDir::Left), Some(PaneId(1)));
+        assert_eq!(tree.neighbor(PaneId(1), PaneDir::Right), Some(PaneId(2)));
+        assert_eq!(tree.neighbor(PaneId(0), PaneDir::Right), Some(PaneId(1)));
+    }
+
+    /// Several panes face the boundary, so the ratios pick — and the CONTROL is the same
+    /// arrangement with the share moved, which must move the answer. A test that only asserted the
+    /// `0.25` case would pass equally on "return the first candidate in paint order".
+    #[test]
+    fn the_candidate_that_overlaps_most_wins_and_the_share_moves_the_answer() {
+        // `0 | (1 over 2)`, the column's divider a quarter of the way down: pane 2 covers three
+        // quarters of pane 0's height, so it is what a move to the right lands on.
+        let low = tree_of(split(
+            SplitDir::Horizontal,
+            0.5,
+            leaf(0),
+            split(SplitDir::Vertical, 0.25, leaf(1), leaf(2)),
+        ));
+        assert_eq!(low.neighbor(PaneId(0), PaneDir::Right), Some(PaneId(2)));
+
+        let high = tree_of(split(
+            SplitDir::Horizontal,
+            0.5,
+            leaf(0),
+            split(SplitDir::Vertical, 0.75, leaf(1), leaf(2)),
+        ));
+        assert_eq!(
+            high.neighbor(PaneId(0), PaneDir::Right),
+            Some(PaneId(1)),
+            "THE CONTROL: only the share differs, so an implementation that ignored it would \
+             answer the same pane twice",
+        );
+
+        // Dead even: neither covers more, so paint order decides rather than the float noise.
+        let even = tree_of(split(
+            SplitDir::Horizontal,
+            0.5,
+            leaf(0),
+            split(SplitDir::Vertical, 0.5, leaf(1), leaf(2)),
+        ));
+        assert_eq!(even.neighbor(PaneId(0), PaneDir::Right), Some(PaneId(1)));
+    }
+
+    /// The property the whole structural walk exists for. A share this extreme lays the pane out
+    /// under one cell wide in any real window, and a neighbour walk that ran over a client's
+    /// ROUNDED rectangles would lose it — the rival's does, because its candidate filter needs a
+    /// positive overlap of `u16` extents. Nothing here has a size to round.
+    #[test]
+    fn a_share_too_small_to_round_to_a_cell_still_has_its_neighbours() {
+        let tree = tree_of(split(
+            SplitDir::Horizontal,
+            0.5,
+            leaf(0),
+            split(SplitDir::Vertical, 0.001, leaf(1), leaf(2)),
+        ));
+
+        assert_eq!(
+            tree.neighbor(PaneId(1), PaneDir::Left),
+            Some(PaneId(0)),
+            "a sliver pane still borders the pane beside it",
+        );
+        assert_eq!(tree.neighbor(PaneId(1), PaneDir::Down), Some(PaneId(2)));
+        assert_eq!(
+            tree.neighbor(PaneId(0), PaneDir::Right),
+            Some(PaneId(2)),
+            "and the sliver does not WIN the reverse question — the pane covering the rest does",
+        );
+    }
+
+    /// Up and down are the same walk on the other axis, checked on a shape where the two disagree:
+    /// a column of rows, where the row above pane 2 is a ROW, not the pane that happens to be first.
+    #[test]
+    fn the_vertical_walk_crosses_a_row_the_same_way() {
+        // (0 | 1) over (2 | 3), the row divider a third of the way across, so 0 is narrow.
+        let tree = tree_of(split(
+            SplitDir::Vertical,
+            0.5,
+            split(SplitDir::Horizontal, 0.33, leaf(0), leaf(1)),
+            split(SplitDir::Horizontal, 0.33, leaf(2), leaf(3)),
+        ));
+
+        assert_eq!(tree.neighbor(PaneId(2), PaneDir::Up), Some(PaneId(0)));
+        assert_eq!(tree.neighbor(PaneId(3), PaneDir::Up), Some(PaneId(1)));
+        assert_eq!(tree.neighbor(PaneId(0), PaneDir::Down), Some(PaneId(2)));
+        assert_eq!(
+            around(&tree, 0),
+            vec![
+                ("left", None),
+                ("right", Some(1)),
+                ("up", None),
+                ("down", Some(2))
+            ],
+        );
+    }
+
+    /// The two panes with no answer at all: the SOLE tiled pane (no division to cross) and one the
+    /// tiling does not hold — a pane that exited, or one a client has FLOATED out. A floating pane
+    /// can still be the ACTIVE pane; it is simply not in the arrangement adjacency is about.
+    #[test]
+    fn a_sole_pane_and_an_untiled_pane_have_no_neighbours() {
+        let mut tree = LayoutTree::new();
+        heal(&mut tree, &ids(1));
+
+        assert_eq!(
+            around(&tree, 0),
+            vec![
+                ("left", None),
+                ("right", None),
+                ("up", None),
+                ("down", None)
+            ],
+        );
+        assert_eq!(
+            around(&tree, 7),
+            vec![
+                ("left", None),
+                ("right", None),
+                ("up", None),
+                ("down", None)
+            ],
+            "a pane this tree holds no leaf for is not at an edge — it is not in the tiling",
+        );
+        assert_eq!(
+            around(&LayoutTree::new(), 0),
+            vec![
+                ("left", None),
+                ("right", None),
+                ("up", None),
+                ("down", None)
+            ],
+            "and an empty window answers rather than panicking",
+        );
+    }
+
+    /// The direction vocabulary has ONE definition, so a word the wire accepts is a word this walk
+    /// understands and back again.
+    #[test]
+    fn the_direction_words_round_trip_and_a_fifth_spelling_is_refused() {
+        for dir in PaneDir::ALL {
+            assert_eq!(PaneDir::from_wire(dir.wire_str()), Some(dir));
+        }
+        assert_eq!(PaneDir::from_wire("Left"), None);
+        assert_eq!(PaneDir::from_wire("west"), None);
+        assert_eq!(PaneDir::from_wire(""), None);
+        assert_eq!(
+            PaneDir::ALL.map(PaneDir::axis),
+            [
+                SplitDir::Horizontal,
+                SplitDir::Horizontal,
+                SplitDir::Vertical,
+                SplitDir::Vertical
+            ],
         );
     }
 }
