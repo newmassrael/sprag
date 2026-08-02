@@ -115,6 +115,36 @@ pub fn gui_client_prefix(pid: u32) -> String {
     format!("gui-{pid}-")
 }
 
+/// The bytes one request goes out as: the encoded value plus its terminating newline, built
+/// WHOLE before anything is written.
+///
+/// Separate from [`write_request`] on purpose — the pair is what keeps a request one syscall.
+/// See there for what the alternative cost.
+fn request_line(request: &Value) -> String {
+    let mut line = request.to_string();
+    line.push('\n');
+    line
+}
+
+/// Put one already-complete request line on the wire.
+///
+/// ## Why the line is built first, and why this is not `writeln!`
+///
+/// It was `writeln!(self.writer, "{request}")` against a **raw** `UnixStream` — the read half is
+/// buffered, the write half never was. `writeln!` lowers to `write_fmt`, and `serde_json::Value`'s
+/// `Display` writes the value TOKEN BY TOKEN, so with nothing buffering underneath, every brace,
+/// every quote and every key became its own `sendto`. Measured on the daemon's own `panes` request:
+/// **84 `sendto` calls for what is one 105-byte line**, and 202 syscalls for a CLI invocation that
+/// herdr answers in 52.
+///
+/// `write_all` of a finished line is one call into the kernel and cannot be half-sent, so the
+/// property holds by construction rather than by a `flush` somebody must remember: there is no
+/// buffered state here to leave unflushed, which is also why the writer stays a plain `UnixStream`
+/// and [`HostConn::shutdown_handle`] can keep cloning it.
+fn write_request(writer: &mut impl Write, line: &str) -> io::Result<()> {
+    writer.write_all(line.as_bytes())
+}
+
 /// A blocking JSON-RPC connection to a host socket — the client end of the wire.
 ///
 /// One request/response at a time (see the module docs). Construct with
@@ -272,8 +302,7 @@ impl HostConn {
             "method": method,
             "params": self.scoped(params),
         });
-        writeln!(self.writer, "{request}")?;
-        self.writer.flush()?;
+        write_request(&mut self.writer, &request_line(&request))?;
 
         // Read the next non-blank response line (the server terminates each reply
         // with a newline; blank lines, if any, are skipped).
@@ -312,6 +341,74 @@ impl HostConn {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An `io::Write` that reports what it was ASKED to do, not only what it received — the
+    /// instrument this file's one-syscall claim needs, since a socket peer cannot see write
+    /// boundaries (a `SOCK_STREAM` reader coalesces them, which is exactly why the defect
+    /// survived: nothing downstream could tell 84 writes from one).
+    #[derive(Default)]
+    struct CountingWriter {
+        writes: usize,
+        bytes: Vec<u8>,
+    }
+
+    impl Write for CountingWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// One request is ONE call into the writer, and the CONTROL shows the counter can move.
+    ///
+    /// The control is the whole test. `writes == 1` proves nothing on its own — a counter that
+    /// never increments passes it — so the retired form (`writeln!` of the value straight at the
+    /// writer, which is what this crate did) runs through the SAME instrument and must count
+    /// many. That is also the measurement in miniature: on the live socket that shape issued 84
+    /// `sendto` calls for this very request.
+    #[test]
+    fn a_request_reaches_the_writer_as_one_call() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "scene/query",
+            "params": { "session": "0", "path": "/sprag_mux/external/panes" },
+        });
+
+        let mut writer = CountingWriter::default();
+        write_request(&mut writer, &request_line(&request)).expect("the line is written");
+        assert_eq!(writer.writes, 1, "one request, one call into the writer");
+        assert!(
+            writer.bytes.ends_with(b"\n"),
+            "the line the server frames on is complete when it leaves",
+        );
+        // It is still the request, byte for byte — a cheaper write that dropped a field would
+        // pass the count above.
+        let sent: Value =
+            serde_json::from_slice(&writer.bytes).expect("what was written parses back");
+        assert_eq!(
+            sent, request,
+            "the encoding is unchanged, only the syscall count"
+        );
+
+        // CONTROL: the retired form, same instrument.
+        let mut retired = CountingWriter::default();
+        writeln!(retired, "{request}").expect("the control writes");
+        assert!(
+            retired.writes > 10,
+            "the instrument counts calls: the retired form issued {} of them",
+            retired.writes,
+        );
+        assert_eq!(
+            retired.bytes, writer.bytes,
+            "both forms put the same bytes on the wire — only the call count differs",
+        );
+    }
 
     /// The two halves that must not drift, pinned in ONE place: what a window MINTS is what its
     /// launcher MATCHES. Split across crates this is a convention nothing checks.
