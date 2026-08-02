@@ -1839,16 +1839,26 @@ fn check_a_window_and_a_terminal_agree_on_one_pane_size(smoke: &mut Smoke, repor
     // only input to the window, so a report larger than what it can draw comes straight back as
     // panes too big for their widgets — which is R241's stated reason a GUI could not simply be
     // handed the arbitrated window, and it would be silent without this line.
-    report.check(
-        "alone, the window paints every pane WHOLE",
-        smoke
-            .wait_for(|smoke| {
-                let grids = smoke.grid_facts();
-                (!grids.is_empty() && grids.iter().all(|(painted, buffer)| painted == buffer))
-                    .then_some(())
-            })
-            .is_ok(),
-    );
+    let whole = smoke
+        .wait_for(|smoke| {
+            let grids = smoke.grid_facts();
+            (!grids.is_empty() && grids.iter().all(|(painted, buffer)| painted == buffer))
+                .then_some(())
+        })
+        .is_ok();
+    if !whole {
+        // The grids as they actually stand, because "painted != buffer" has several causes that
+        // read identically from a bare fail: a pane cropped by one cell, a widget that never got
+        // its size, and an empty snapshot are three different bugs.
+        //
+        // It earned its place immediately. With H7 the client FOLLOWS the session's active pane, so
+        // the palette's split targets the focused pane and builds `wide | (narrow | narrow)` where
+        // this run used to build `(narrow | narrow) | wide` — and in that shape the daemon hands the
+        // wide pane 37 columns while this client's widget measures 38. The bare fail said only
+        // "not whole"; these numbers say WHICH pane, WHICH way, and by how much.
+        eprintln!("      grids (painted vs buffer): {:?}", smoke.grid_facts());
+    }
+    report.check("alone, the window paints every pane WHOLE", whole);
 
     // CLAIM 1: this window is IN the arbitration, which it can only be by reporting — and as the
     // only client, its report IS the window. Before this round it reported nothing, and no
