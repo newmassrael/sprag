@@ -142,10 +142,23 @@
 //!
 //! ## Winsize (§3): the window drives the size, resize reflows each PTY (R26, R36)
 //!
-//! The window opens at [`WINDOW_W`] x [`WINDOW_H`]; the tiling fills it, so each
-//! pane's resolved sub-rect IS its viewport and its `(cols, rows)` derive from
-//! `sub-rect / cell` ([`grid_dims`](terminal::grid_dims), the single derivation
-//! SSOT). Each pane's PTY boots at the full-window dims (the honest pre-layout
+//! The window opens at [`WINDOW_W`] x [`WINDOW_H`]; the tiling fills it, and each
+//! pane's resolved sub-rect is what this client can GIVE that pane, in cells
+//! ([`grid_dims`](terminal::grid_dims), the single px -> cells derivation SSOT).
+//!
+//! It is not the pane's size, and the difference is load-bearing. A pane of a session
+//! with an arbitrated window is sized by the DAEMON — `tile(tree, window)`, in cells,
+//! over a window folded from every attached client's report — so this client's
+//! measurement is an INPUT to that decision ([`fit_window`](sprag_terminal::fit_window)),
+//! never the decision. Two quantisations of one boundary (the daemon's in cells, this
+//! client's dock in pixels) leave a pane's widget spanning up to a cell more than the
+//! pane holds, so anything asking "how many cells does this pane have" must read the
+//! pane's own grid and never divide the widget's rect: see
+//! [`cell_index`](terminal::cell_index) for the pointer's half of that rule. Only where
+//! the session says nothing — a floating pane, or a host with no arbitrated window —
+//! does the sub-rect decide, which is what [`install_reflow`]'s `owns_its_own_size` gates.
+//!
+//! Each pane's PTY boots at the full-window dims (the honest pre-layout
 //! value) and a **per-pane** reflow Effect ([`install_reflow`]) keeps it live: it
 //! subscribes to pinion's R1012 per-pane viewport-size
 //! [`Signal`] (`use_pane_viewport_size(pane_tag)`)
@@ -754,7 +767,17 @@ impl WidgetCore for TerminalViewer {
             // gates + encodes the X10 / SGR report at the PTY boundary). The send lives here — where
             // `terminal.slots` is in scope — not in the oracle, mirroring the URI-open drain.
             let mouse_protocol = terminal.slots.pane_mouse_protocol(i);
-            hyperlink::reconcile_pane_hyperlinks(i, &buffer, mouse_protocol);
+            // The oracle needs BOTH halves of the pointer mapping from the same frame: the pane's
+            // grid (from `buffer`) and the extent of the widget the hover fraction is taken over.
+            // They are not the same number of cells — the daemon tiles in cells, this client lays
+            // out in pixels — so feeding only the grid aimed the pointer by a stretched scale.
+            hyperlink::reconcile_pane_hyperlinks(
+                i,
+                &buffer,
+                mouse_protocol,
+                pinion_core::use_pane_viewport_size(terminal::pane_tag(i)),
+                terminal.metric,
+            );
             for event in hyperlink::take_pane_mouse_reports(i) {
                 let _ = terminal.slots.mouse(i, event);
             }
@@ -2298,7 +2321,16 @@ mod tests {
                 sprag_vt::VtPort::screen(&em),
                 sprag_vt::VtPort::palette(&em),
             );
-            crate::hyperlink::reconcile_pane_hyperlinks(0, &buffer, sprag_vt::MouseProtocol::Click);
+            // The widget extent comes from the LAID-OUT rect this shell just published, exactly as
+            // the per-frame reconcile reads it — a hand-written extent here would prove the
+            // pointer path against geometry the window does not have.
+            crate::hyperlink::reconcile_pane_hyperlinks(
+                0,
+                &buffer,
+                sprag_vt::MouseProtocol::Click,
+                pinion_core::use_pane_viewport_size(terminal::pane_tag(0)),
+                terminal::use_terminal().metric,
+            );
         });
 
         // Hover the pane center so the raw router resolves the pane as the pointer target, then drive

@@ -68,7 +68,6 @@ use std::process::Command;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use pinion_core::GridBuffer;
 use pinion_core::composite_tag::split_send_payload;
 use pinion_core::external::{
     Backend, BackendFallback, BackendSupport, External, ExternalIntrospect, InterveneError,
@@ -77,6 +76,7 @@ use pinion_core::external::{
 use pinion_core::reactive::{Owner, Signal, use_repaint_sink};
 use pinion_core::term_grid::HyperlinkId;
 use pinion_core::widget_core::ExtraExternal;
+use pinion_core::{CellMetric, GridBuffer};
 use pinion_core::{
     NullRepaintSink, PointerButton, PointerButtons, PointerEdge, RawPointerButton, RepaintSink,
 };
@@ -84,7 +84,7 @@ use sprag_input::{Modifiers, MouseButton, MouseEventKind, MouseInput};
 use sprag_vt::MouseProtocol;
 
 use crate::input::to_input_mods;
-use crate::terminal::{pane_cache_key, pane_tag};
+use crate::terminal::{cell_index, pane_cache_key, pane_tag, rect_cells};
 
 /// The URI schemes a click is allowed to open — the safety gate so a hostile child
 /// cannot emit an OSC-8 link to a dangerous scheme that runs on click. tmux has no
@@ -114,9 +114,21 @@ impl std::fmt::Debug for RepaintHandle {
 /// the one instance, and feeding is a plain write rather than an `intervene`.
 #[derive(Debug)]
 pub(crate) struct HoverState {
-    /// Grid geometry the oracle maps a `[0,1]` hover fraction against.
+    /// Grid geometry the oracle maps a `[0,1]` hover fraction against: the pane's OWN grid
+    /// (the session's `(cols, rows)`, from the live buffer) and, separately, the extent of the
+    /// WIDGET the fraction is a fraction of ([`rect_cells`], fractional cells).
+    ///
+    /// Two numbers, because they are two facts and they are not equal: the daemon divides the
+    /// arbitrated window in CELLS while this client's dock divides its surface in PIXELS, so a
+    /// pane's widget routinely spans a cell more than the pane holds. Mapping the fraction with
+    /// `cols` alone stretched the pane's columns across the widget's span and put the pointer up
+    /// to a whole column left of the glyph under it — see [`cell_index`].
     cols: Cell<u16>,
     rows: Cell<u16>,
+    /// The widget's extent in fractional cells — the scale the `[0,1]` fraction is taken over.
+    /// `(0.0, 0.0)` until a layout has been measured, which [`HoverState::cell_at`] reads as
+    /// "no geometry yet" and answers with the origin cell.
+    rect_cells: Cell<(f32, f32)>,
     /// `(col, row)` -> the cell's link (its id in the pane's CURRENT buffer table,
     /// and the URI a click opens). Fed each frame from the live projection.
     links: RefCell<LinkMap>,
@@ -166,6 +178,7 @@ impl Default for HoverState {
         Self {
             cols: Cell::new(0),
             rows: Cell::new(0),
+            rect_cells: Cell::new((0.0, 0.0)),
             links: RefCell::new(HashMap::new()),
             hovered: Signal::new(None),
             activated: RefCell::new(None),
@@ -194,10 +207,17 @@ impl HoverState {
 
 impl HoverState {
     /// The cell a `[0,1]x[0,1]` pane-rect hover fraction lands on.
+    ///
+    /// The fraction is scaled by the WIDGET's extent ([`rect_cells`]) to recover the offset in
+    /// cells, and only then floored and clamped to the PANE's grid ([`cell_index`]). Scaling by
+    /// the grid's own count instead — which this did until the two were found to differ — spreads
+    /// `cols` columns evenly across a widget that spans more than `cols` of them, so every column
+    /// past the first drifts left of the glyph the user is pointing at.
     fn cell_at(&self, x_rel: f32, y_rel: f32) -> (u16, u16) {
+        let (span_x, span_y) = self.rect_cells.get();
         (
-            frac_to_index(x_rel, self.cols.get()),
-            frac_to_index(y_rel, self.rows.get()),
+            cell_index(x_rel * span_x, self.cols.get()),
+            cell_index(y_rel * span_y, self.rows.get()),
         )
     }
 
@@ -231,31 +251,6 @@ impl HoverState {
         // `use_repaint_sink()` HERE panics — a pointer event dispatches outside the Owner scope).
         // Mirrors the PTY `on_dirty` -> `request_repaint` seam; idempotent, and a Null sink no-ops.
         self.repaint.0.request_repaint();
-    }
-}
-
-/// Map a `[0,1]` rect fraction to a 0-based cell index in `[0, count-1]` (floor,
-/// clamped one short of the extent — the same rounding as
-/// `CellMetric::frac_to_px` + `px_to_cell`; an empty grid -> `0`).
-fn frac_to_index(frac: f32, count: u16) -> u16 {
-    if count == 0 {
-        return 0;
-    }
-    let scaled = frac * f32::from(count);
-    if scaled < 0.0 {
-        0
-    } else if scaled >= f32::from(count) {
-        count - 1
-    } else {
-        // 0 <= scaled < count <= u16::MAX, so the floor fits a u16.
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "scaled is clamped to [0, count) and count <= u16::MAX"
-        )]
-        {
-            scaled.floor() as u16
-        }
     }
 }
 
@@ -298,16 +293,25 @@ pub(crate) fn pane_mouse_capturing(i: usize) -> bool {
 /// `TermCell::hyperlink` + interning table so a click resolves the exact URI the
 /// hovered cell shows. A hovered id that no longer resolves (the buffer changed under
 /// a paused pointer) is cleared so a stale highlight cannot linger.
+///
+/// `rect_px` is the pane widget's laid-out extent (pinion R1012's per-pane viewport). It is
+/// fed here — beside the grid, from the same frame — because the two are the two halves of one
+/// mapping and a stale half is a mis-aimed pointer: the fraction pinion delivers is a fraction
+/// of the WIDGET, and the cell it names belongs to the PANE. Unmeasured is `(0, 0)`, which
+/// [`HoverState::cell_at`] answers with the origin cell.
 pub(crate) fn reconcile_pane_hyperlinks(
     i: usize,
     buffer: &GridBuffer,
     mouse_protocol: MouseProtocol,
+    rect_px: (u32, u32),
+    metric: CellMetric,
 ) {
     let state = use_pane_hover(i);
     let cols = buffer.cols();
     let rows = buffer.rows();
     state.cols.set(cols);
     state.rows.set(rows);
+    state.rect_cells.set(rect_cells(rect_px, metric));
     // Feed the live tracking level so `wants_raw_pointer_buttons` gates the next press + `pointer_move`
     // decides drag / motion forwarding correctly.
     state.mouse_protocol.set(mouse_protocol);
@@ -817,18 +821,107 @@ mod tests {
         }
     }
 
+    /// Feed pane `slot`'s oracle the way a frame does, with the widget laid out to EXACTLY the
+    /// buffer — the case where the two halves of the mapping agree, so a test about links or
+    /// mouse reports is not also a test about geometry. The divergent case (a widget wider than
+    /// the pane, which is the ordinary case on a tiled surface) is
+    /// `a_hover_lands_on_the_glyph_under_it_when_the_widget_is_wider_than_the_pane`.
+    fn feed(slot: usize, buffer: &GridBuffer, proto: MouseProtocol) {
+        let metric = CellMetric::DEFAULT;
+        let rect = crate::terminal::cell_px(metric, buffer.cols(), buffer.rows());
+        reconcile_pane_hyperlinks(slot, buffer, proto, rect, metric);
+    }
+
+    /// The pointer lands on the glyph it is over even when the pane's WIDGET spans more cells
+    /// than the pane holds — the ordinary case on a tiled surface, because the daemon divides the
+    /// arbitrated window in cells while this client's dock divides its surface in pixels.
+    ///
+    /// The measured shape: an 80-column, 24-row pane in a widget one cell wider and taller. The
+    /// retired form scaled the hover fraction by the pane's own count, spreading 80 columns
+    /// across 81 cells of pixels.
+    ///
+    /// **The probe points are chosen to DISCRIMINATE, and the first draft's were not.** The two
+    /// forms differ by `frac * (span - count)`, which is below one cell everywhere and therefore
+    /// crosses a cell boundary only for some fractions: at the widget's mid-point both answer 40,
+    /// so a test written there passes on the very implementation it excludes (it did). Column 60
+    /// and column 79 are past the crossing — `floor(0.7469 * 81) = 60` against
+    /// `floor(0.7469 * 80) = 59` — and row 20 is the same on the other axis.
     #[test]
-    fn frac_to_index_floors_and_clamps_one_short() {
-        assert_eq!(frac_to_index(0.0, 80), 0);
-        assert_eq!(frac_to_index(0.5, 80), 40);
-        assert_eq!(
-            frac_to_index(1.0, 80),
-            79,
-            "clamped one short of the extent"
+    fn a_hover_lands_on_the_glyph_under_it_when_the_widget_is_wider_than_the_pane() {
+        Owner::new().run(|| {
+            let metric = CellMetric::DEFAULT;
+            let (cols, rows) = (80_u16, 24_u16);
+            let mut screen = sprag_vt::Emulator::new(cols, rows);
+            sprag_vt::VtPort::advance(&mut screen, b".");
+            let buffer = sprag_grid::project(
+                sprag_vt::VtPort::screen(&screen),
+                sprag_vt::VtPort::palette(&screen),
+            );
+            // One cell of slack on each axis — what a pixel layout and a cell tiling routinely
+            // disagree by, and what the smoke measured live as 38 painted over a 37-col buffer.
+            let (span_x, span_y) = (f32::from(cols) + 1.0, f32::from(rows) + 1.0);
+            let widget = crate::terminal::cell_px(metric, cols + 1, rows + 1);
+            reconcile_pane_hyperlinks(6, &buffer, MouseProtocol::None, widget, metric);
+            let state = use_pane_hover(6);
+
+            // A pointer in the MIDDLE of the widget's cell `c` is the fraction `(c + 0.5) / span`.
+            let at = |col: u16, row: u16| {
+                (
+                    (f32::from(col) + 0.5) / span_x,
+                    (f32::from(row) + 0.5) / span_y,
+                )
+            };
+            assert_eq!(state.cell_at(0.0, 0.0), (0, 0), "the origin cell");
+            let (x, y) = at(60, 20);
+            assert_eq!(
+                state.cell_at(x, y),
+                (60, 20),
+                "the glyph under the pointer, not the one a stretched scale names",
+            );
+            let (x, y) = at(79, 23);
+            assert_eq!(
+                state.cell_at(x, y),
+                (79, 23),
+                "the pane's last cell is reachable — a stretched scale never gets there",
+            );
+            assert_eq!(
+                state.cell_at(1.0, 1.0),
+                (cols - 1, rows - 1),
+                "the widget's far edge clamps to the PANE's last cell, not the widget's",
+            );
+        });
+    }
+
+    /// The one pointer -> cell rule: an offset already in cells, floored, clamped one short of
+    /// the pane's own grid. (Was `frac_to_index`, whose signature took the count to SCALE by —
+    /// the shape that made the stretched mapping expressible.)
+    #[test]
+    fn cell_index_floors_and_clamps_one_short() {
+        use crate::terminal::cell_index;
+        assert_eq!(cell_index(0.0, 80), 0);
+        assert_eq!(cell_index(40.0, 80), 40);
+        assert_eq!(cell_index(40.9, 80), 40, "a part-cell offset floors");
+        assert_eq!(cell_index(79.0, 80), 79);
+        assert_eq!(cell_index(80.0, 80), 79, "the extent clamps one short");
+        assert_eq!(cell_index(-0.5, 80), 0, "negative clamps to 0");
+        assert_eq!(cell_index(200.0, 80), 79, "past the end clamps to last");
+        assert_eq!(cell_index(0.5, 0), 0, "empty grid -> 0");
+        assert_eq!(cell_index(f32::NAN, 80), 0, "an unmeasured scale -> 0");
+    }
+
+    /// A widget's extent in cells is FRACTIONAL, and a zero cell size cannot divide.
+    #[test]
+    fn rect_cells_measures_the_widget_in_fractional_cells() {
+        use crate::terminal::rect_cells;
+        let metric = CellMetric::DEFAULT;
+        let (cw, ch) = (metric.cell_w(), metric.cell_h());
+        assert_eq!(rect_cells((cw * 80, ch * 24), metric), (80.0, 24.0));
+        let (x, _) = rect_cells((cw * 80 + cw / 2, ch * 24), metric);
+        assert!(
+            (x - 80.5).abs() < f32::EPSILON,
+            "a sub-cell remainder is kept, not floored away: {x}",
         );
-        assert_eq!(frac_to_index(-0.5, 80), 0, "negative clamps to 0");
-        assert_eq!(frac_to_index(2.0, 80), 79, "past the end clamps to last");
-        assert_eq!(frac_to_index(0.5, 0), 0, "empty grid -> 0");
+        assert_eq!(rect_cells((0, 0), metric), (0.0, 0.0), "unmeasured");
     }
 
     /// A 6-char link on a 4-col screen (wraps) fed to the oracle: a hover over a link
@@ -847,7 +940,7 @@ mod tests {
                 sprag_vt::VtPort::screen(&screen),
                 sprag_vt::VtPort::palette(&screen),
             );
-            reconcile_pane_hyperlinks(0, &buffer, MouseProtocol::None);
+            feed(0, &buffer, MouseProtocol::None);
 
             let mut oracle = HyperlinkOracle {
                 state: use_pane_hover(0),
@@ -890,7 +983,7 @@ mod tests {
                 sprag_vt::VtPort::screen(&screen),
                 sprag_vt::VtPort::palette(&screen),
             );
-            reconcile_pane_hyperlinks(1, &buffer, MouseProtocol::None);
+            feed(1, &buffer, MouseProtocol::None);
             let mut oracle = HyperlinkOracle {
                 state: use_pane_hover(1),
             };
@@ -919,7 +1012,7 @@ mod tests {
             let state = use_pane_hover(2);
             *state.activated.borrow_mut() = Some("mailto:x@example.com".to_owned());
             let empty = GridBuffer::new(1, 1);
-            reconcile_pane_hyperlinks(2, &empty, MouseProtocol::None); // drains -> recorder (no spawn) + clears
+            feed(2, &empty, MouseProtocol::None); // drains -> recorder (no spawn) + clears
             assert_eq!(
                 opener.opened(),
                 vec!["mailto:x@example.com".to_owned()],
@@ -930,7 +1023,7 @@ mod tests {
                 "the activation was cleared after draining"
             );
             // A second reconcile with nothing activated opens nothing more.
-            reconcile_pane_hyperlinks(2, &empty, MouseProtocol::None);
+            feed(2, &empty, MouseProtocol::None);
             assert_eq!(
                 opener.opened().len(),
                 1,
@@ -999,7 +1092,7 @@ mod tests {
                 sprag_vt::VtPort::screen(&screen),
                 sprag_vt::VtPort::palette(&screen),
             );
-            reconcile_pane_hyperlinks(3, &buffer, MouseProtocol::Click); // the child is tracking
+            feed(3, &buffer, MouseProtocol::Click); // the child is tracking
             let mut oracle = HyperlinkOracle {
                 state: use_pane_hover(3),
             };
@@ -1050,7 +1143,7 @@ mod tests {
                 sprag_vt::VtPort::screen(&screen),
                 sprag_vt::VtPort::palette(&screen),
             );
-            reconcile_pane_hyperlinks(4, &buffer, MouseProtocol::None); // NOT tracking
+            feed(4, &buffer, MouseProtocol::None); // NOT tracking
             let mut oracle = HyperlinkOracle {
                 state: use_pane_hover(4),
             };
@@ -1139,7 +1232,7 @@ mod tests {
             sprag_vt::VtPort::screen(&screen),
             sprag_vt::VtPort::palette(&screen),
         );
-        reconcile_pane_hyperlinks(slot, &buffer, proto);
+        feed(slot, &buffer, proto);
         HyperlinkOracle {
             state: use_pane_hover(slot),
         }

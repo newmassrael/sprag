@@ -22,7 +22,7 @@
 //! VISIBLE grid (not its scrollback content), so scrolling a pane after selecting does
 //! not follow the text — a v1 limit, consistent with the visible-grid coordinate.
 
-use crate::terminal::{pane_index_of, pane_tag, use_terminal};
+use crate::terminal::{cell_index, pane_index_of, pane_tag, use_terminal};
 use pinion_core::reactive::{Owner, Signal};
 use pinion_core::{Clipboard, ClipboardSelection, GridBuffer, Scene};
 use serde::{Deserialize, Serialize};
@@ -333,31 +333,37 @@ pub(crate) fn pane_of_hit(hit_tag: Option<&str>) -> Option<usize> {
 }
 
 /// Map a window-local pixel `(x, y)` to a `(col, row)` cell of pane `pane`, clamped to
-/// the pane's visible grid (a drag past an edge lands on the edge cell). Uses the pane
-/// container's laid-out rect ([`Scene::rect_for_tag_absolute`]) and the measured cell
-/// size — the same geometry `grid_dims` derives the PTY winsize from. The ONE
-/// pixel→cell converter: a click-drag selection anchors through it AND a wheel-report
-/// over a tracking pane addresses its cell through it ([`apply_wheel`](crate::TerminalViewer)).
+/// the pane's visible grid (a drag past an edge lands on the edge cell). Takes the pane
+/// container's laid-out rect ([`Scene::rect_for_tag_absolute`]) for the ORIGIN only, and
+/// resolves the cell through [`cell_index`] — a click-drag selection anchors through it AND
+/// a wheel-report over a tracking pane addresses its cell through it
+/// ([`apply_wheel`](crate::TerminalViewer)).
+///
+/// The extent is the pane's OWN grid ([`SlotView::pane_grid_size`](crate::slotview::SlotView::pane_grid_size)
+/// — what the session gave it), NOT the rect's cell span. The two differ: the daemon divides
+/// the arbitrated window in CELLS while this client's dock divides its surface in PIXELS, so
+/// a pane's widget can hold a column more than the pane has. Clamping to the widget named
+/// that column, and a tracking child received a mouse report outside its own width — see
+/// [`cell_index`] for the rule stated once.
 #[allow(
     clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "grid coords are small non-negative counts that fit f32 then u16 after clamping"
+    reason = "a window-local pixel origin is far below f32's exact-integer range"
 )]
 pub(crate) fn cell_at(scene: &Scene, pane: usize, x: f32, y: f32) -> Option<Cell> {
     let rect = scene.rect_for_tag_absolute(pane_tag(pane))?;
-    let tv = use_terminal();
-    let cw = tv.metric.cell_w() as f32;
-    let ch = tv.metric.cell_h() as f32;
-    let (rx, ry, rw, rh) = (rect.x as f32, rect.y as f32, rect.w as f32, rect.h as f32);
-    if cw <= 0.0 || ch <= 0.0 || rw <= 0.0 || rh <= 0.0 {
+    if rect.w == 0 || rect.h == 0 {
         return None;
     }
-    let cols = (rw / cw).floor().max(1.0);
-    let rows = (rh / ch).floor().max(1.0);
-    let col = ((x - rx) / cw).floor().clamp(0.0, cols - 1.0);
-    let row = ((y - ry) / ch).floor().clamp(0.0, rows - 1.0);
-    Some((col as u16, row as u16))
+    let tv = use_terminal();
+    let (cols, rows) = tv.slots.pane_grid_size(pane);
+    let (cw, ch) = (tv.metric.cell_w(), tv.metric.cell_h());
+    if cw == 0 || ch == 0 {
+        return None;
+    }
+    Some((
+        cell_index((x - rect.x as f32) / cw as f32, cols),
+        cell_index((y - rect.y as f32) / ch as f32, rows),
+    ))
 }
 
 #[cfg(test)]
@@ -419,5 +425,50 @@ mod tests {
         assert_eq!(pane_of_hit(Some("sprag_gui.scrollbar.0")), None);
         assert_eq!(pane_of_hit(Some("terminal-2")), None);
         assert_eq!(pane_of_hit(None), None);
+    }
+
+    /// A press in the strip a pane's WIDGET has and the PANE does not lands on the pane's last
+    /// cell — never on a column the pane holds no cell for.
+    ///
+    /// The strip is not hypothetical: the daemon divides the arbitrated window in CELLS and this
+    /// client's dock divides its surface in PIXELS, so the two roundings differ by up to a cell
+    /// (measured live as a 37-column pane in a widget spanning 38). The retired form derived the
+    /// extent from the RECT — `floor(rect.w / cell_w)` — so this press answered `(10, 4)`, a cell
+    /// outside a 10x4 grid, which a tracking child then received as a mouse report past its own
+    /// width. Revert-proof: put the rect-derived extent back and the second assertion returns
+    /// `(10, 4)`.
+    ///
+    /// Boots the real in-process terminal (`cfg!(test)` selects it) for one reason: the extent
+    /// now comes from the HOST's answer for that pane, and a stubbed size would not prove the
+    /// converter reads it.
+    #[test]
+    fn cell_at_clamps_to_the_panes_own_grid_not_the_widget_it_is_drawn_in() {
+        use pinion_core::scene::{ContainerNode, Rect};
+        let owner = Owner::new();
+        owner.run(|| {
+            let tv = use_terminal();
+            let (cw, ch) = (tv.metric.cell_w(), tv.metric.cell_h());
+            let cell = |cols: f32, rows: f32| (cols * cw as f32, rows * ch as f32);
+            // The session gave this pane 10x4 cells...
+            tv.slots.resize(0, 10, 4, (cw as u16, ch as u16));
+            assert_eq!(tv.slots.pane_grid_size(0), (10, 4), "the pane's own grid");
+            // ...inside a widget spanning one cell more on each axis.
+            let mut node = ContainerNode::new(vec![]).with_tag(pane_tag(0));
+            node.rect = Rect::new(0, 0, cw * 11, ch * 5);
+            let scene = Scene::Container(node);
+
+            let (x, y) = cell(9.5, 3.5);
+            assert_eq!(
+                cell_at(&scene, 0, x, y),
+                Some((9, 3)),
+                "inside the pane: the cell under the pointer",
+            );
+            let (x, y) = cell(10.5, 4.5);
+            assert_eq!(
+                cell_at(&scene, 0, x, y),
+                Some((9, 3)),
+                "in the widget's surplus strip: the pane's LAST cell, not one it lacks",
+            );
+        });
     }
 }

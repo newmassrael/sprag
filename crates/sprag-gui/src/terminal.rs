@@ -273,6 +273,63 @@ pub(crate) fn cell_px(metric: CellMetric, cols: u16, rows: u16) -> (u32, u32) {
     )
 }
 
+/// A pane widget's laid-out extent measured in CELLS — **fractional on purpose**.
+///
+/// A pane's rect is not a whole number of cells, and pinion's `TextGrid` fills the sub-cell
+/// remainder with the terminal's own background (pinion R1028) rather than leaving it to the
+/// surface behind — so the remainder is invisible but real. Anything mapping a `[0, 1]`
+/// fraction OF THAT RECT back to a cell has to scale by this, not by a cell COUNT: see
+/// [`cell_index`] for what the count-scaled form gets wrong.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "a logical-pixel extent is far below f32's exact-integer range"
+)]
+pub(crate) fn rect_cells(rect_px: (u32, u32), metric: CellMetric) -> (f32, f32) {
+    let axis = |extent: u32, cell: u32| {
+        if cell == 0 {
+            0.0
+        } else {
+            extent as f32 / cell as f32
+        }
+    };
+    (
+        axis(rect_px.0, metric.cell_w()),
+        axis(rect_px.1, metric.cell_h()),
+    )
+}
+
+/// The 0-based cell an offset of `offset_cells` CELLS into a pane lands on, in a grid of
+/// `count` cells — the ONE pointer -> cell rule, and the reason it takes an offset already in
+/// cells rather than a fraction and a count.
+///
+/// Two halves, and BOTH are load-bearing:
+///
+/// * the offset is measured in CELLS (a pixel offset divided by the cell, or a rect fraction
+///   scaled by [`rect_cells`]) — never a fraction scaled by `count`. The count-scaled form
+///   stretches `count` cells across a rect that spans MORE than `count` of them, which lands
+///   the pointer up to a whole column left of where the user clicked;
+/// * `count` is the pane's OWN grid — what the session gave it — never the cell span of the
+///   widget holding it. The two are different numbers: the daemon divides the arbitrated
+///   window in CELLS ([`sprag_terminal::tiling`]) while this client's dock divides its surface
+///   in PIXELS, and the two roundings can differ by a cell. A converter clamped to the widget
+///   can name a column the pane does not have, which a tracking child then receives as a mouse
+///   report outside its own width.
+///
+/// Clamped rather than refused, because a drag past an edge lands on the edge cell — the
+/// gesture is still inside the pane. An empty grid -> `0`.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the value is floored then clamped to `count - 1`, a u16 by construction"
+)]
+pub(crate) fn cell_index(offset_cells: f32, count: u16) -> u16 {
+    let last = count.saturating_sub(1);
+    if last == 0 || !offset_cells.is_finite() || offset_cells <= 0.0 {
+        return 0;
+    }
+    offset_cells.floor().min(f32::from(last)) as u16
+}
+
 /// Self-create (once) the live terminal: measure the resolved monospace cell
 /// via the R1003 seam, derive `(cols, rows)` from the window + cell (§3), and boot
 /// the [`HostClient`] the GUI reaches its [`pane_count`] panes through.
