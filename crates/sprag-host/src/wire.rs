@@ -378,18 +378,25 @@ pub const SPAWN_ACTION: &str = "spawn";
 /// the wire and the tree. `before` (default `false`) puts the new pane on the other side
 /// instead — left of, or above — which is tmux's `-b`.
 ///
-/// `pane` is REQUIRED and has no default, because the daemon has no active-pane concept to mean
-/// "here" (the same fact that makes `select-pane` unbuilt): a direction is meaningless without
-/// the pane it is relative to, so the caller must name one.
+/// `pane` ABSENT means the current window's ACTIVE pane — tmux's "split where I am". It stopped
+/// being required when the daemon gained an active pane to mean "here"
+/// ([`SELECT_PANE_ACTION`]); before that a direction had no pane to be relative to and every
+/// caller had to name one, including the ones that draw nothing and had no way to know which.
+/// A window holding no pane at all has no "here", and a targetless split there is `Rejected`.
 ///
 /// REFUSED — with nothing spawned and the arrangement untouched — when `pane` holds no leaf in
 /// the scoped session's current window: it exited, it is floating, or it is another window's. A
 /// split that cannot reach its target must not quietly become an append, which is the same lie as
 /// accepting `-h` and ignoring it.
 pub const SPLIT_ACTION: &str = "split";
-/// The mux control external invoke action that closes a pane.
+/// The mux control external invoke action that closes a pane (`{id?}`) — tmux `kill-pane`.
+///
+/// `id` ABSENT means the current window's ACTIVE pane, the default [`SPLIT_ACTION`] takes and for
+/// the same reason. The window then hands the active pane on to the closed one's neighbour, so a
+/// caller can close repeatedly without naming anything and walk the window down.
 pub const CLOSE_ACTION: &str = "close";
-/// The mux control external invoke action that resizes a pane's PTY + emulator.
+/// The mux control external invoke action that resizes a pane's PTY + emulator (`{id?, cols, rows,
+/// cell_width?, cell_height?}`). `id` absent ⇒ the current window's ACTIVE pane.
 pub const RESIZE_ACTION: &str = "resize";
 /// The mux control external query slot: the live pane list as JSON.
 pub const PANES_SLOT: &str = "panes";
@@ -622,6 +629,56 @@ pub const NEW_WINDOW_ACTION: &str = "new_window";
 /// The mux control external invoke action that makes a window current in the SCOPED session
 /// (`{window}`) — tmux `select-window`. Session state: every attached client follows.
 pub const SELECT_WINDOW_ACTION: &str = "select_window";
+
+/// The mux control external invoke action that makes a pane ACTIVE in the scoped session's current
+/// window (`{pane?}` XOR `{dir?}`) — tmux `select-pane`. Answers `{pane, changed}`.
+///
+/// The pane half of [`SELECT_WINDOW_ACTION`], and session state for the same reason: which pane a
+/// user is ON outlives any one client, so every attached client follows it and a reattaching one
+/// inherits it. Before this the daemon had no such concept and each display client kept its own
+/// private answer, which is why nothing that draws nothing — an agent, a shell — could say "here".
+///
+/// Two ways to NAME the target, and exactly one of them per request (the shape
+/// [`RESIZE_WINDOW_ACTION`] uses for its four):
+///
+/// * `pane` — that pane, which must be one of the current window's. A FLOATING pane is a legal
+///   target: it is still a pane of the window and still takes input.
+/// * `dir` — `"left"` / `"right"` / `"up"` / `"down"`: the neighbour of the pane that is active NOW
+///   (tmux's `select-pane -L/-R/-U/-D`), resolved by
+///   [`LayoutTree::neighbor`](sprag_terminal::LayoutTree::neighbor) from the ARRANGEMENT rather
+///   than from any client's rectangles.
+/// * neither, or both ⇒ `TypeMismatch`. "Select nothing" and "select two things" are not requests
+///   with an obvious reading, and guessing one would make a client's bug silent.
+///
+/// **A direction with no neighbour is not an error.** The answer is `{pane, changed: false}` with
+/// the active pane unmoved: a key bound to `select-pane -L` pressed at the left edge is a
+/// well-formed request whose honest answer is "nothing to move to", and refusing it would log a
+/// failure every time a user reached the edge of their layout. A `pane` that names no pane of the
+/// current window IS refused (`Rejected`) — the rule [`SPLIT_ACTION`] already applies to its target.
+pub const SELECT_PANE_ACTION: &str = "select_pane";
+
+/// The arguments of [`NEIGHBORS_FIELD`] — one pane `id`, `Open` for [`PROJECT_ARGS`]' reason.
+const NEIGHBORS_ARGS: &[SchemaArg] = &[SchemaArg::open("pane", "int")];
+
+/// The mux control external query slot: what is ADJACENT to one pane in the scoped session's
+/// current window — `{left, right, up, down}`, each a pane id or `null`.
+///
+/// **`null` IS the edge**, and that is the whole design. herdr spends two methods here
+/// (`pane.neighbor` returns a pane, `pane.edges` returns four booleans) and derives them by two
+/// different routes — a rect-versus-area comparison and a walk over the other panes' rects — so
+/// nothing makes the two agree. Here they are one derivation and cannot disagree: a pane with no
+/// neighbour to its left IS a pane at the window's left edge.
+///
+/// Answered from the ARRANGEMENT ([`LayoutTree::neighbor`](sprag_terminal::LayoutTree::neighbor)),
+/// so it is the same answer for every client, at every size, and with no client attached at all —
+/// the rival computes it from the rectangles of its last composed FRAME, which moves with a
+/// sidebar, a tab bar and cell rounding.
+///
+/// All four are `null` for a pane the current window's tiling does not hold: one that has exited,
+/// one in another window, or one a client has FLOATED out. A floating pane can still be the ACTIVE
+/// pane; it is simply not in the arrangement adjacency is a property of.
+pub const NEIGHBORS_FIELD: SchemaField =
+    SchemaField::parametric("neighbors.<pane>", "object", NEIGHBORS_ARGS);
 
 /// The mux control external invoke action that renames a window of the SCOPED session
 /// (`{window?, name}`) — tmux `rename-window`. `window` absent ⇒ the current one; `name` is the

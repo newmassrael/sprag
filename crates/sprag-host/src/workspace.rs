@@ -62,7 +62,7 @@ use pinion_core::external::{
 };
 use serde_json::{Map, Value, json};
 use sprag_terminal::{
-    CommandBuilder, KillOutcome, LayoutSnapshot, LayoutWire, Pane, PaneId, SessionInfo,
+    CommandBuilder, KillOutcome, LayoutSnapshot, LayoutWire, Pane, PaneDir, PaneId, SessionInfo,
     SessionRegistry, SplitDir, SplitSide, SshRemote, WindowKillOutcome, Workspace,
 };
 
@@ -79,10 +79,11 @@ use crate::window::{SizeRequest, WindowSize};
 use crate::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DROP_FILE_ACTION,
     EVENTS_FIELD, GLOBAL_COMMANDS_SLOT, GRID_WORK_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION,
-    KILL_WINDOW_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT,
-    PROJECT_FIELD, RELEASE_AGENT_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION,
-    RESIZE_WINDOW_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION,
-    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, WINDOW_SIZE_SLOT, WINDOWS_SLOT,
+    KILL_WINDOW_ACTION, LAYOUT_SLOT, NEIGHBORS_FIELD, NEW_SESSION_ACTION, NEW_WINDOW_ACTION,
+    PANES_SLOT, PROJECT_FIELD, RELEASE_AGENT_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION,
+    RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
+    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, WINDOW_SIZE_SLOT,
+    WINDOWS_SLOT,
 };
 
 /// The mux-management engine `External`: a control surface over the shared
@@ -336,7 +337,7 @@ impl WorkspaceExternal {
     /// the same degradation an unhonorable [`LeafHome`](sprag_terminal::LeafHome) already takes.
     fn split(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let map = as_object(args)?;
-        let target = require_pane_id(map, "pane")?;
+        let target = self.pane_target(map, "pane")?;
         let dir = match map.get("dir").and_then(Value::as_str) {
             Some("horizontal") => SplitDir::Horizontal,
             Some("vertical") => SplitDir::Vertical,
@@ -377,7 +378,7 @@ impl WorkspaceExternal {
     /// here so the workspace guard drops first and the pane's blocking
     /// `Drop` (kill/wait/join) runs *outside* the lock.
     fn close(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
-        let id = require_pane_id(as_object(args)?, "id")?;
+        let id = self.pane_target(as_object(args)?, "id")?;
         let removed = lock(self.workspace()).close(id);
         if removed.is_some() {
             // The set shrank: wake parked waiters so a mirror drops the pane's
@@ -521,7 +522,7 @@ impl WorkspaceExternal {
     /// `resize` action: resize the pane with `id` to `cols x rows`.
     fn resize(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let map = as_object(args)?;
-        let id = require_pane_id(map, "id")?;
+        let id = self.pane_target(map, "id")?;
         let cols = opt_dim(map, "cols")?.ok_or(InvokeError::TypeMismatch)?;
         let rows = opt_dim(map, "rows")?.ok_or(InvokeError::TypeMismatch)?;
         // The display's cell pixel geometry, OPTIONAL: a GUI client sends it (its font metric) so
@@ -826,6 +827,65 @@ impl WorkspaceExternal {
         Ok(IntrospectValue::Json(Value::Null))
     }
 
+    /// `select_pane {pane?} | {dir?}` action: make a pane active in THIS request's session's
+    /// current window — tmux `select-pane`. See [`crate::wire::SELECT_PANE_ACTION`].
+    fn select_pane(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let empty = Map::new();
+        let map = match args {
+            IntrospectValue::Json(Value::Object(m)) => m,
+            IntrospectValue::Null => &empty,
+            _ => return Err(InvokeError::TypeMismatch),
+        };
+        let named = match map.get("pane") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(PaneId(value.as_u64().ok_or(InvokeError::TypeMismatch)?)),
+        };
+        let toward = match map.get("dir") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(word)) => {
+                Some(PaneDir::from_wire(word).ok_or(InvokeError::TypeMismatch)?)
+            }
+            Some(_) => return Err(InvokeError::TypeMismatch),
+        };
+        // Exactly one, because neither reading of the other two cases is obvious: "select nothing"
+        // and "select two things" are a caller's bug, and guessing one for them would hide it.
+        let target = match (named, toward) {
+            (Some(pane), None) => crate::host::PaneTarget::Named(pane),
+            (None, Some(dir)) => crate::host::PaneTarget::Toward(dir),
+            _ => return Err(InvokeError::TypeMismatch),
+        };
+        let (pane, changed) = crate::host::select_pane(&self.registry, &self.scope, target)
+            .ok_or(InvokeError::Rejected)?;
+        if changed {
+            // Only on a real move: the announce is what wakes every parked client to re-read, and
+            // a select that changed nothing has nothing for them to read.
+            self.announce();
+        }
+        Ok(IntrospectValue::Json(
+            serde_json::json!({ "pane": pane.0, "changed": changed }),
+        ))
+    }
+
+    /// The pane a request means when it names none: the current window's ACTIVE pane.
+    ///
+    /// The exact mirror of [`window_target`](Self::window_target) one level down, and the reason
+    /// the actions below can finally have an optional target at all — before the daemon held an
+    /// active pane there was no "here" for a default to resolve to.
+    ///
+    /// Deliberately NOT used by [`report_agent`](Self::report_agent) or
+    /// [`release_agent`](Self::release_agent): those are driven by a PROCESS inside a pane, which
+    /// reads its own id from `SPRAG_PANE`, and a default there would let a hook whose environment
+    /// was lost report on somebody else's pane. A person's command defaults to where the person is;
+    /// a process's must name what it speaks for.
+    fn pane_target(&self, map: &Map<String, Value>, key: &str) -> Result<PaneId, InvokeError> {
+        match map.get(key) {
+            None | Some(Value::Null) => {
+                crate::host::active_pane(&self.registry, &self.scope).ok_or(InvokeError::Rejected)
+            }
+            Some(value) => value.as_u64().map(PaneId).ok_or(InvokeError::TypeMismatch),
+        }
+    }
+
     /// `rename_window {window?, name}` action: rename a window of THIS request's session — tmux
     /// `rename-window`. `window` absent ⇒ the current one; `name` is the new name (required).
     fn rename_window(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
@@ -1071,6 +1131,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                     SchemaField::new(KILL_SESSION_ACTION, "action"),
                     SchemaField::new(NEW_WINDOW_ACTION, "action"),
                     SchemaField::new(SELECT_WINDOW_ACTION, "action"),
+                    SchemaField::new(SELECT_PANE_ACTION, "action"),
                     SchemaField::new(RENAME_WINDOW_ACTION, "action"),
                     SchemaField::new(KILL_WINDOW_ACTION, "action"),
                     SchemaField::new(RESIZE_WINDOW_ACTION, "action"),
@@ -1087,6 +1148,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                     SchemaField::new(GLOBAL_COMMANDS_SLOT, "object"),
                     SchemaField::new(AGENT_MANIFESTS_SLOT, "object"),
                     PROJECT_FIELD,
+                    NEIGHBORS_FIELD,
                     EVENTS_FIELD,
                 ]
             },
@@ -1140,6 +1202,11 @@ impl ExternalIntrospect for WorkspaceExternal {
                     });
                     (guard.list(), tokens, agents)
                 };
+                // AFTER the workspace guard above has dropped: this reconciles the window under the
+                // REGISTRY lock, and the two are never nested (see `crate::host::active_pane`).
+                // Reconciled rather than read raw, so a pane that has just exited cannot be marked
+                // active in the very list that no longer contains it.
+                let active = crate::host::active_pane(&self.registry, &self.scope);
                 let entries = panes
                     .iter()
                     .map(|p| {
@@ -1172,6 +1239,14 @@ impl ExternalIntrospect for WorkspaceExternal {
                         // the notification `seq`.
                         if p.bell_seq > 0 {
                             entry["bell_seq"] = serde_json::json!(p.bell_seq);
+                        }
+                        // Whether this is the window's ACTIVE pane — tmux's `select-pane` target,
+                        // the daemon's answer to "here". ADDITIVE on the same terms as every key
+                        // around it: present only on the ONE row it is true of, so a client that
+                        // has never heard of it reads the pre-active wire shape. Exactly one row
+                        // carries it because these rows ARE the current window's panes.
+                        if Some(PaneId(p.id)) == active {
+                            entry["active"] = serde_json::json!(true);
                         }
                         // Whether the pane's child has EXITED. ADDITIVE and one-way: the key is
                         // present only once it is true (a live pane is byte-identical to the
@@ -1436,6 +1511,19 @@ impl ExternalIntrospect for WorkspaceExternal {
                 };
                 Some(events_value(&self.channels, self.scope.session(), since))
             }
+            // What is ADJACENT to one pane. Parametric like the two above, and answered from the
+            // ARRANGEMENT rather than from any client's rectangles — see `NEIGHBORS_FIELD`.
+            path if path.starts_with(NEIGHBORS_FIELD.literal_prefix()) => {
+                let arg = path
+                    .strip_prefix(NEIGHBORS_FIELD.literal_prefix())
+                    .expect("the guard just matched this prefix");
+                // Present-but-empty for a malformed member of a family this surface ADVERTISES,
+                // never `None` — `events.<since>` states the taxonomy.
+                let Ok(pane) = arg.parse::<u64>() else {
+                    return Some(IntrospectValue::Null);
+                };
+                Some(neighbors_value(&self.registry, &self.scope, PaneId(pane)))
+            }
             path => {
                 let pane = path.strip_prefix("project.")?.parse::<u64>().ok()?;
                 Some(project_value(self.workspace(), PaneId(pane)))
@@ -1499,6 +1587,7 @@ impl WorkspaceExternal {
             KILL_SESSION_ACTION => self.kill_session(&args),
             NEW_WINDOW_ACTION => self.new_window(&args),
             SELECT_WINDOW_ACTION => self.select_window(&args),
+            SELECT_PANE_ACTION => self.select_pane(&args),
             RENAME_WINDOW_ACTION => self.rename_window(&args),
             KILL_WINDOW_ACTION => self.kill_window(&args),
             RESIZE_WINDOW_ACTION => self.resize_window(&args),
@@ -1629,6 +1718,7 @@ fn events_value(channels: &ChannelRegistry, session: &str, since: u64) -> Intros
                 serde_json::json!({ "type": "session_closed", "session": name })
             }
             Event::LayoutUpdated => serde_json::json!({ "type": "layout_updated" }),
+            Event::PaneSelected(id) => serde_json::json!({ "type": "pane_selected", "pane": id }),
             Event::AgentStateChanged(id) => {
                 serde_json::json!({ "type": "pane_agent_state_changed", "pane": id })
             }
@@ -1639,6 +1729,27 @@ fn events_value(channels: &ChannelRegistry, session: &str, since: u64) -> Intros
         "next": batch.next,
         "lost": batch.lost,
     }))
+}
+
+/// Serialise one pane's neighbourhood: `{left, right, up, down}`, each a pane id or `null`.
+///
+/// Keyed by [`PaneDir::wire_str`](sprag_terminal::PaneDir::wire_str) — the same four words the
+/// `select_pane` action reads a direction from, so a caller can feed one straight back to the
+/// other. `null` is not "unknown": it is the statement that the pane is at that EDGE of the window
+/// (see [`crate::wire::NEIGHBORS_FIELD`]).
+fn neighbors_value(
+    registry: &Arc<Mutex<SessionRegistry>>,
+    scope: &SessionScope,
+    pane: PaneId,
+) -> IntrospectValue {
+    let mut object = serde_json::Map::new();
+    for (dir, neighbor) in crate::host::neighbors(registry, scope, pane) {
+        object.insert(
+            dir.wire_str().to_owned(),
+            neighbor.map_or(Value::Null, |pane| serde_json::json!(pane.0)),
+        );
+    }
+    IntrospectValue::Json(Value::Object(object))
 }
 
 /// Serialise an arrangement for the wire — the ONE place a [`LayoutSnapshot`] becomes JSON,
@@ -2407,8 +2518,11 @@ mod tests {
         let (panes, tokens) = panes_without_projection(ext.query(PANES_SLOT));
         assert_eq!(
             panes,
-            // `title` is null until the child sets an OSC 0/2 window title (R128).
-            json!([{"id": 0, "cols": 40, "rows": 12, "command": "cat", "title": null}])
+            // `title` is null until the child sets an OSC 0/2 window title (R128). `active` rides
+            // because a window is ON its only pane the moment it has one — nobody selected it.
+            json!([{
+                "id": 0, "cols": 40, "rows": 12, "command": "cat", "title": null, "active": true,
+            }])
         );
         // ...and the token beside it describes the pane a client would fetch: one damage stamp per
         // row, at the pane's own width. A client compares it whole; this asserts it is not a stub.
@@ -3266,8 +3380,10 @@ mod tests {
         let (work, _w) = scoped_control(&reg, scope_of(&reg, "work"));
         assert_eq!(
             panes_without_projection(work.query(PANES_SLOT)).0,
-            json!([{"id": 0, "cols": 40, "rows": 12, "command": "cat", "title": null}]),
-            "the birth pane runs the request's cmd at its size",
+            json!([{
+                "id": 0, "cols": 40, "rows": 12, "command": "cat", "title": null, "active": true,
+            }]),
+            "the birth pane runs the request's cmd at its size, and the new session is ON it",
         );
         assert!(
             lock(&pool(&reg)).panes().is_empty(),
@@ -4119,6 +4235,258 @@ mod tests {
                 IntrospectValue::Json(json!({ "window": 42 })),
             ),
             Err(InvokeError::TypeMismatch),
+        );
+    }
+
+    /// Which pane each row of the `panes` slot says is ACTIVE — the wire's own answer, read the way
+    /// a client reads it rather than through the registry behind it.
+    fn active_row(ext: &mut WorkspaceExternal) -> Option<u64> {
+        let Some(IntrospectValue::Json(Value::Array(rows))) = ext.query(PANES_SLOT) else {
+            panic!("the panes slot answers a list");
+        };
+        let marked: Vec<u64> = rows
+            .iter()
+            .filter(|row| row["active"] == Value::Bool(true))
+            .map(|row| row["id"].as_u64().expect("a pane id"))
+            .collect();
+        assert!(
+            marked.len() <= 1,
+            "at most ONE row is active — these rows are one window's panes: {marked:?}",
+        );
+        marked.first().copied()
+    }
+
+    /// Two spawns and a split, giving a window whose arrangement is `0 | (1 over 2)` — the shape
+    /// that separates a structural neighbour walk from "the next pane in the list".
+    fn three_pane_window(ext: &mut WorkspaceExternal) {
+        for _ in 0..2 {
+            ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+                .unwrap();
+        }
+        ext.invoke(
+            SPLIT_ACTION,
+            IntrospectValue::Json(json!({"pane": 1, "dir": "vertical", "cmd": ["cat"]})),
+        )
+        .unwrap();
+    }
+
+    /// `select_pane {pane}` moves the daemon's active pane, and the `panes` slot says so — the two
+    /// halves of the fact herdr spends `pane.focus` and `pane.current` on.
+    #[test]
+    fn select_pane_moves_the_active_pane_and_the_pane_list_reports_it() {
+        let reg = registry();
+        let (mut ext, rev) = control(&reg);
+        three_pane_window(&mut ext);
+        assert_eq!(
+            active_row(&mut ext),
+            Some(0),
+            "a window is on its first pane without anyone selecting one",
+        );
+        let before = rev.current();
+
+        assert_eq!(
+            ext.invoke(
+                SELECT_PANE_ACTION,
+                IntrospectValue::Json(json!({"pane": 2}))
+            ),
+            Ok(IntrospectValue::Json(json!({"pane": 2, "changed": true}))),
+        );
+
+        assert_eq!(active_row(&mut ext), Some(2));
+        assert!(
+            rev.current() > before,
+            "a select wakes the session's clients"
+        );
+
+        // Re-selecting the pane the window is already on is accepted and changes nothing — a
+        // caller re-asserting where it is must not be an error, and must not wake anybody.
+        let settled = rev.current();
+        assert_eq!(
+            ext.invoke(
+                SELECT_PANE_ACTION,
+                IntrospectValue::Json(json!({"pane": 2}))
+            ),
+            Ok(IntrospectValue::Json(json!({"pane": 2, "changed": false}))),
+        );
+        assert_eq!(rev.current(), settled, "an unchanged select wakes nobody");
+    }
+
+    /// `select_pane {dir}` walks the ARRANGEMENT — the tmux `-L/-R/-U/-D` half. In `0 | (1 over 2)`
+    /// the pane to the right of 0 is whichever of 1 and 2 covers more of it, and from 1 the way
+    /// back is left. The last assertion is the one that separates this from an index walk: DOWN
+    /// from 1 is 2, and there is no "down" in a pane list.
+    #[test]
+    fn select_pane_toward_a_direction_walks_the_arrangement() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        three_pane_window(&mut ext);
+
+        assert_eq!(
+            ext.invoke(
+                SELECT_PANE_ACTION,
+                IntrospectValue::Json(json!({"dir": "right"}))
+            ),
+            Ok(IntrospectValue::Json(json!({"pane": 1, "changed": true}))),
+        );
+        assert_eq!(
+            ext.invoke(
+                SELECT_PANE_ACTION,
+                IntrospectValue::Json(json!({"dir": "down"}))
+            ),
+            Ok(IntrospectValue::Json(json!({"pane": 2, "changed": true}))),
+        );
+        assert_eq!(
+            ext.invoke(
+                SELECT_PANE_ACTION,
+                IntrospectValue::Json(json!({"dir": "left"}))
+            ),
+            Ok(IntrospectValue::Json(json!({"pane": 0, "changed": true}))),
+        );
+    }
+
+    /// Reaching the EDGE is not a failure. A key bound to `select-pane -L` pressed on the leftmost
+    /// pane is a well-formed request whose honest answer is "nothing to move to" — refusing it
+    /// would log an error every time a user walked into the side of their own layout.
+    #[test]
+    fn a_direction_with_no_neighbour_changes_nothing_and_is_not_an_error() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        three_pane_window(&mut ext);
+
+        assert_eq!(
+            ext.invoke(
+                SELECT_PANE_ACTION,
+                IntrospectValue::Json(json!({"dir": "left"}))
+            ),
+            Ok(IntrospectValue::Json(json!({"pane": 0, "changed": false}))),
+        );
+        assert_eq!(active_row(&mut ext), Some(0), "and nothing moved");
+    }
+
+    /// The argument shape: exactly ONE way of naming the target per request. Neither and both are
+    /// refused as malformed rather than guessed at, and an unknown pane is a REJECTION — the
+    /// well-formed-but-unhonorable answer `split` already gives its target.
+    #[test]
+    fn select_pane_takes_exactly_one_naming_and_refuses_a_pane_it_does_not_hold() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        three_pane_window(&mut ext);
+
+        for args in [
+            json!({}),
+            json!({"pane": 1, "dir": "left"}),
+            json!({"dir": "sideways"}),
+            json!({"dir": 3}),
+            json!({"pane": "1"}),
+        ] {
+            assert_eq!(
+                ext.invoke(SELECT_PANE_ACTION, IntrospectValue::Json(args.clone())),
+                Err(InvokeError::TypeMismatch),
+                "malformed: {args}",
+            );
+        }
+        assert_eq!(
+            ext.invoke(
+                SELECT_PANE_ACTION,
+                IntrospectValue::Json(json!({"pane": 99}))
+            ),
+            Err(InvokeError::Rejected),
+        );
+        assert_eq!(
+            active_row(&mut ext),
+            Some(0),
+            "every refusal left the window where it was",
+        );
+    }
+
+    /// `neighbors.<pane>` answers all four directions at once, and `null` IS the edge — the shape
+    /// that makes herdr's `pane.neighbor` and `pane.edges` one derivation instead of two that
+    /// nothing keeps in agreement.
+    #[test]
+    fn the_neighbours_slot_answers_four_directions_with_null_for_an_edge() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        three_pane_window(&mut ext); // 0 | (1 over 2)
+
+        assert_eq!(
+            answer_doc(ext.query("neighbors.1")),
+            json!({"left": 0, "right": null, "up": null, "down": 2}),
+        );
+        assert_eq!(
+            answer_doc(ext.query("neighbors.0")),
+            json!({"left": null, "right": 1, "up": null, "down": null}),
+            "the leftmost pane spans the height, so it has no vertical neighbour either",
+        );
+        // A pane the tiling does not hold answers all four `null` — it is not at an edge, it is
+        // not in the arrangement. Same answer for a pane that never existed and for a FLOATED one.
+        assert_eq!(
+            answer_doc(ext.query("neighbors.99")),
+            json!({"left": null, "right": null, "up": null, "down": null}),
+        );
+        ext.invoke(
+            SET_FLOATING_ACTION,
+            IntrospectValue::Json(json!({"id": 2, "floating": true})),
+        )
+        .unwrap();
+        assert_eq!(
+            answer_doc(ext.query("neighbors.2")),
+            json!({"left": null, "right": null, "up": null, "down": null}),
+            "a floated pane is out of the tiling adjacency is a property of",
+        );
+        assert_eq!(
+            answer_doc(ext.query("neighbors.1")),
+            json!({"left": 0, "right": null, "up": null, "down": null}),
+            "THE CONTROL: its old neighbour lost it too, so this is the live tiling and not a \
+             cached one",
+        );
+        // A malformed member of a family the schema ADVERTISES is present-but-empty, never an
+        // unknown path (the taxonomy `events.<since>` states).
+        assert_eq!(ext.query("neighbors.zzz"), Some(IntrospectValue::Null));
+    }
+
+    /// The sentence `SPLIT_ACTION`'s docs used to carry — *"`pane` is REQUIRED, because the daemon
+    /// has no active-pane concept to mean here"* — retired. A person's command defaults to where
+    /// the person is; a `close` with no target closes the same pane.
+    #[test]
+    fn a_pane_action_with_no_target_acts_on_the_active_pane() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        three_pane_window(&mut ext);
+        ext.invoke(
+            SELECT_PANE_ACTION,
+            IntrospectValue::Json(json!({"pane": 2})),
+        )
+        .unwrap();
+
+        // A split with no `pane` divides the ACTIVE one: the new pane 3 lands beside pane 2, which
+        // `neighbors` reports rather than a pane count could.
+        ext.invoke(
+            SPLIT_ACTION,
+            IntrospectValue::Json(json!({"dir": "horizontal", "cmd": ["cat"]})),
+        )
+        .unwrap();
+        assert_eq!(
+            answer_doc(ext.query("neighbors.3"))["left"],
+            json!(2),
+            "the new pane opened beside the pane the user was on",
+        );
+
+        // A close with no target closes the active pane, and the window hands off to its neighbour.
+        assert_eq!(
+            active_row(&mut ext),
+            Some(2),
+            "the split did not move the user"
+        );
+        ext.invoke(CLOSE_ACTION, IntrospectValue::Json(json!({})))
+            .unwrap();
+        assert!(
+            lock(&pool(&reg)).pane(PaneId(2)).is_none(),
+            "THE CONTROL: the close really took the active pane, not some default one",
+        );
+        assert_eq!(
+            active_row(&mut ext),
+            Some(3),
+            "and the window is now on the neighbour that inherited",
         );
     }
 }

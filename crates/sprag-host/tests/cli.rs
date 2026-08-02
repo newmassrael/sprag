@@ -1811,17 +1811,32 @@ fn the_cli_splits_lists_and_kills_panes_over_the_socket() {
     let again = sprag(&sock, &["kill-pane", &new_pane]);
     assert!(!again.ok, "a second kill fails");
     assert!(
-        again.stderr.contains(&format!("no pane {new_pane}")),
+        again.stderr.contains(&format!("pane {new_pane}")),
         "and names the miss: {}",
         again.stderr,
     );
 
-    // Argument errors are local, before any request goes out.
-    let noid = sprag(&sock, &["kill-pane"]);
+    // No id at all is tmux's form: kill the pane the session is ON. The boot pane is the only
+    // one left, so this empties the window — and the refusal above proves the id path still runs.
+    let bare = sprag(&sock, &["kill-pane"]);
+    assert!(bare.ok, "kill-pane with no target: {}", bare.stderr);
     assert!(
-        !noid.ok && noid.stderr.contains("needs a pane id"),
+        bare.stdout.contains("the active pane"),
+        "and says which pane it meant: {:?}",
+        bare.stdout,
+    );
+    assert_eq!(
+        sprag(&sock, &["panes"]).stdout.trim(),
+        "",
+        "the window is empty, so the bare form really acted on the pane the session was on",
+    );
+
+    // Argument errors are still local, before any request goes out.
+    let junk = sprag(&sock, &["kill-pane", "nope"]);
+    assert!(
+        !junk.ok && junk.stderr.contains("pane id"),
         "arg error: {}",
-        noid.stderr,
+        junk.stderr,
     );
 }
 
@@ -1889,6 +1904,84 @@ fn split_id(sock: &Path, args: &[&str]) -> u64 {
         .unwrap_or_else(|_| panic!("{args:?} prints the new pane id: {:?}", run.stdout))
 }
 
+/// `select-pane` from a shell, against a real daemon over the socket — the verb, the direction
+/// walk, and the two facts that make it session state rather than a client's private idea.
+///
+/// The listing is the READ half: `sprag panes` marks exactly one row `(active)`, and it moves when
+/// the select does. That pairing is what a live test adds over the unit ones — the action and the
+/// slot are different code paths on either side of a socket, and a select that moved nothing a
+/// reader could see would pass every test on one side alone.
+#[test]
+fn the_cli_selects_a_pane_by_id_and_by_direction_over_the_socket() {
+    let (_host, sock) = spawn_host();
+    // The boot pane, then two more to its right: `0 | 1 | 2` — a row wide enough that left and
+    // right are different answers and neither is the whole window.
+    let one = split_id(&sock, &["split-window", "-h", "0", "--", "cat"]);
+    let two = split_id(
+        &sock,
+        &["split-window", "-h", &one.to_string(), "--", "cat"],
+    );
+
+    let active_row = |marker: &str| {
+        let listed = sprag(&sock, &["panes"]);
+        assert!(listed.ok, "panes succeeded: {}", listed.stderr);
+        let marked: Vec<String> = listed
+            .stdout
+            .lines()
+            .filter(|line| line.contains("(active)"))
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(marked.len(), 1, "exactly one row is active {marker}");
+        marked[0].clone()
+    };
+    assert!(
+        active_row("at boot").starts_with("0:"),
+        "a window is on its first pane with nobody having selected one",
+    );
+
+    // By id.
+    let picked = sprag(&sock, &["select-pane", &two.to_string()]);
+    assert!(picked.ok, "select-pane by id: {}", picked.stderr);
+    assert_eq!(picked.stdout.trim(), format!("selected {two}"));
+    assert!(active_row("after a select").starts_with(&format!("{two}:")));
+
+    // By direction — tmux's -L, which walks the ARRANGEMENT and lands on the pane between them.
+    let left = sprag(&sock, &["select-pane", "-L"]);
+    assert!(left.ok, "select-pane -L: {}", left.stderr);
+    assert_eq!(left.stdout.trim(), format!("selected {one}"));
+
+    // At the EDGE: well-formed, honest, and not a failure — the case a keybinding hits constantly.
+    sprag(&sock, &["select-pane", "-L"]);
+    let edge = sprag(&sock, &["select-pane", "-L"]);
+    assert!(
+        edge.ok,
+        "walking into the edge is not an error: {}",
+        edge.stderr
+    );
+    assert_eq!(edge.stdout.trim(), "already on 0");
+    assert!(active_row("at the edge").starts_with("0:"));
+
+    // A pane the window does not hold is the daemon's refusal, and it names the miss.
+    let ghost = sprag(&sock, &["select-pane", "9999"]);
+    assert!(!ghost.ok, "an unknown pane is refused");
+    assert!(
+        ghost.stderr.contains("9999"),
+        "and names it: {}",
+        ghost.stderr,
+    );
+    // Both namings at once is the parser's refusal, before any request goes out.
+    let both = sprag(&sock, &["select-pane", "0", "-R"]);
+    assert!(
+        !both.ok && both.stderr.contains("give one"),
+        "{}",
+        both.stderr
+    );
+    assert!(
+        active_row("after two refusals").starts_with("0:"),
+        "every refusal left the session where it was",
+    );
+}
+
 /// The scoped window's arrangement, as the daemon serves it.
 fn layout_of(conn: &mut HostConn) -> sprag_terminal::LayoutTree {
     let value = conn
@@ -1917,17 +2010,16 @@ fn tiled(conn: &mut HostConn) -> Vec<u64> {
 /// The verb's two halves arrive together or not at all, and each refusal NAMES what is missing.
 ///
 /// This is the honesty guard the old direction-flag refusal became. sprag's daemon has no current
-/// pane, so tmux's bare `-h` cannot be honoured — and the two wrong answers are the ones this
-/// checks against: guessing a pane (the user's shell would land somewhere they never named) and
-/// accepting a pane with no axis (nothing to ask for). A refused request must also cost nothing,
-/// so each case re-counts the panes.
+/// A placement is a direction AND a pane, and the pane may now be left to the daemon — so the
+/// refusals left are the half-stated ones: a pane with no axis (nothing to ask for), `-b` with no
+/// side to be before, two axes, and a word that is neither. A refused request must also cost
+/// nothing, so each case re-counts the panes; the bare `-h` at the end is the form that used to be
+/// on this list and is now honoured.
 #[test]
-fn split_window_refuses_a_direction_without_a_pane_and_a_pane_without_a_direction() {
+fn split_window_refuses_a_half_stated_placement_and_honours_the_bare_form() {
     let (_host, sock) = spawn_host();
 
     for (args, expected) in [
-        (vec!["split-window", "-h"], "needs the pane to divide"),
-        (vec!["split-window", "-v"], "needs the pane to divide"),
         (vec!["split-window", "0"], "needs an axis"),
         (vec!["split-window", "-b"], "needs -h or -v"),
         (vec!["split-window", "-h", "-v", "0"], "only one"),
@@ -1960,6 +2052,16 @@ fn split_window_refuses_a_direction_without_a_pane_and_a_pane_without_a_directio
         sprag(&sock, &["panes"]).stdout.lines().count(),
         1,
         "a refused split spawns nothing",
+    );
+
+    // tmux's BARE `-h`: no pane, because the daemon holds the active one. This form was refused
+    // ("sprag has no current pane") until `select-pane` gave it a "here" to mean.
+    let here = sprag(&sock, &["split-window", "-h", "--", "cat"]);
+    assert!(here.ok, "the bare directional form: {}", here.stderr);
+    assert_eq!(
+        sprag(&sock, &["panes"]).stdout.lines().count(),
+        2,
+        "and it really divided the window",
     );
 }
 
@@ -3073,7 +3175,9 @@ fn a_daemon_born_pane_runs_the_users_default_command() {
     });
     assert!(born, "the boot pane appears");
     assert!(
-        boot.ends_with("cat"),
+        // The `(active)` marker trails the command on this row (a fresh window is on its only
+        // pane), so the command is what the line ends with once that is taken off.
+        boot.trim_end_matches("  (active)").ends_with("cat"),
         "the boot pane runs the user's default-command, not a shell: {boot:?}",
     );
 
@@ -3085,7 +3189,12 @@ fn a_daemon_born_pane_runs_the_users_default_command() {
     let labels: Vec<&str> = listed
         .stdout
         .lines()
-        .filter_map(|line| line.split_whitespace().last())
+        // The active pane's row trails its marker, so the LABEL is the last word before it.
+        .filter_map(|line| {
+            line.trim_end_matches("  (active)")
+                .split_whitespace()
+                .last()
+        })
         .collect();
     assert_eq!(
         labels,

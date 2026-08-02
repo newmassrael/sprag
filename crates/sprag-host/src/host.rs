@@ -50,8 +50,8 @@ use pinion_core::GridBuffer;
 use sprag_grid::ProjectionToken;
 use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{
-    CommandBuilder, HistoryLimitSource, LayoutSnapshot, LayoutWire, Pane, PaneEnvSource, PaneId,
-    PanePtyError, PanePtyHandle, PaneRebirth, SessionInfo, SessionRegistry, Snapshot,
+    CommandBuilder, HistoryLimitSource, LayoutSnapshot, LayoutWire, Pane, PaneDir, PaneEnvSource,
+    PaneId, PanePtyError, PanePtyHandle, PaneRebirth, SessionInfo, SessionRegistry, Snapshot,
     SnapshotError, SplitDir, SplitSide, WindowInfo, Workspace,
 };
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol, Screen, osc52_reply};
@@ -582,8 +582,12 @@ pub trait HostClient {
     /// to the tree. `before` puts it on the other side instead (left of, or above), which is tmux's
     /// `-b`.
     ///
-    /// `target` is required and has no default, because the daemon has no active-pane concept to
-    /// mean "here": a direction is meaningless without the pane it is relative to.
+    /// `target` is stated explicitly here even though the daemon now HOLDS an active pane
+    /// ([`crate::wire::SELECT_PANE_ACTION`]), and the two are not in tension: this is the
+    /// in-process trait, whose caller is code that already knows which pane it means. Defaulting a
+    /// Rust argument to session state would hide that choice inside a method signature; the WIRE
+    /// action, whose caller may be a person or an agent with no pane in hand, is where the default
+    /// belongs and is where it lives.
     ///
     /// **`None` means the split did not happen** — the target holds no leaf in the current window
     /// (it exited, it is floating, or it belongs to another window), or the child could not be
@@ -1460,6 +1464,97 @@ pub(crate) fn tiled_panes(
     registry
         .window_mut(scope.session(), scope.window())
         .map_or_else(Vec::new, |window| window.reconcile_layout(&panes).panes())
+}
+
+/// The pane the scoped window is ON, reconciled first — the daemon's answer to "here".
+///
+/// `None` for a window that holds no panes, and for a scope naming no window. Reconciled for
+/// [`tiled_panes`]' reason: a caller asking which pane is active wants the window as it IS, not as
+/// it was when someone last read it — a pane that has exited must not be answered.
+pub(crate) fn active_pane(
+    registry: &Arc<Mutex<SessionRegistry>>,
+    scope: &SessionScope,
+) -> Option<PaneId> {
+    let panes: Vec<PaneId> = lock(scope.workspace())
+        .panes()
+        .iter()
+        .map(Pane::id)
+        .collect();
+    let mut registry = lock(registry);
+    let window = registry.window_mut(scope.session(), scope.window())?;
+    window.reconcile_layout(&panes);
+    window.active_pane()
+}
+
+/// How a caller NAMES the pane it wants active — see [`crate::wire::SELECT_PANE_ACTION`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum PaneTarget {
+    /// That pane, by id.
+    Named(PaneId),
+    /// Whatever is adjacent to the ACTIVE pane in this direction — tmux `select-pane -L/-R/-U/-D`.
+    Toward(PaneDir),
+}
+
+/// Make a pane active in the scoped window — the ONE place the active pane moves.
+///
+/// Answers `(pane, changed)`: the pane the window is on AFTER the call, and whether that differs
+/// from what it was on before. `None` — refused — for a window that holds no panes, a scope naming
+/// no window, and a [`PaneTarget::Named`] pane the window does not hold.
+///
+/// A [`PaneTarget::Toward`] with no neighbour is NOT a refusal: it answers the unmoved active pane
+/// with `changed: false`, because reaching the edge of a layout is a normal outcome of a keypress
+/// rather than a caller's mistake (see the action's docs).
+///
+/// The resolve and the select happen under ONE registry lock, which is what makes them atomic: a
+/// caller that read the neighbour, released the lock, and then selected it could land the user on a
+/// pane that had exited in between. The pool ids are read under the workspace lock first and handed
+/// down, so the two locks stay sequential exactly as everywhere else in this file.
+pub(crate) fn select_pane(
+    registry: &Arc<Mutex<SessionRegistry>>,
+    scope: &SessionScope,
+    target: PaneTarget,
+) -> Option<(PaneId, bool)> {
+    let panes: Vec<PaneId> = lock(scope.workspace())
+        .panes()
+        .iter()
+        .map(Pane::id)
+        .collect();
+    let mut registry = lock(registry);
+    let window = registry.window_mut(scope.session(), scope.window())?;
+    window.reconcile_layout(&panes);
+    let was = window.active_pane()?;
+    let wanted = match target {
+        PaneTarget::Named(pane) => pane,
+        // No neighbour ⇒ stay where we are, which `select_pane` accepts and reports as unchanged.
+        PaneTarget::Toward(dir) => window.layout().neighbor(was, dir).unwrap_or(was),
+    };
+    window
+        .select_pane(wanted, &panes)
+        .then_some((wanted, wanted != was))
+}
+
+/// What is ADJACENT to `pane` in the scoped window, in every direction — see
+/// [`crate::wire::NEIGHBORS_FIELD`].
+///
+/// Reconciled first, so a pane that has just exited is not reported as somebody's neighbour. Each
+/// direction is independently `None` at an edge, and ALL are `None` for a pane the tiling does not
+/// hold (floating, gone, or another window's).
+pub(crate) fn neighbors(
+    registry: &Arc<Mutex<SessionRegistry>>,
+    scope: &SessionScope,
+    pane: PaneId,
+) -> [(PaneDir, Option<PaneId>); 4] {
+    let panes: Vec<PaneId> = lock(scope.workspace())
+        .panes()
+        .iter()
+        .map(Pane::id)
+        .collect();
+    let mut registry = lock(registry);
+    let tree = registry
+        .window_mut(scope.session(), scope.window())
+        .map(|window| window.reconcile_layout(&panes).clone())
+        .unwrap_or_default();
+    PaneDir::ALL.map(|dir| (dir, tree.neighbor(pane, dir)))
 }
 
 /// Divide `target`'s cell in the scoped window and put `pane` in the half on `side` — the ONE
@@ -2741,6 +2836,7 @@ mod tests {
                         },
                     ],
                     manual_size: None,
+                    active: None,
                 }],
             }],
         };
@@ -2800,6 +2896,7 @@ mod tests {
                         rows: 24,
                     }],
                     manual_size: None,
+                    active: None,
                 }],
             }],
         };
@@ -2867,6 +2964,7 @@ mod tests {
                         },
                     ],
                     manual_size: None,
+                    active: None,
                 }],
             }],
         };

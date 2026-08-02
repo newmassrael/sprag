@@ -132,6 +132,13 @@ struct WindowShape {
     /// says a projection is stale, not that the pane set moved — so the gate was reading a real
     /// number for a question it does not answer.
     layout: u64,
+    /// The pane this window is ON, or `None` while it holds none — the source of
+    /// [`Event::PaneSelected`] and nothing else.
+    ///
+    /// Read from the window itself rather than from the pane walk below, and the two are different
+    /// facts: the pane SET says what exists, this says where the user is. It costs one `Option<u64>`
+    /// copy per window on a walk that is already taking that window's lock.
+    active: Option<u64>,
     /// The window's pane ids, sorted. Read every time, under the window's workspace lock.
     ///
     /// No carry-forward: see [`layout`](Self::layout) for the one that was tried and was wrong. The
@@ -190,6 +197,7 @@ impl SessionShape {
                         current: name == current,
                         name,
                         layout,
+                        active: window.active_pane().map(|pane| pane.0),
                         panes,
                     }
                 })
@@ -237,6 +245,22 @@ impl SessionShape {
                     events.push(Event::PaneClosed(*id));
                 }
             }
+            // AFTER the pane events, so a reader applying this batch in order learns a pane exists
+            // before it is told the user moved onto it — the same rule that orders sessions before
+            // windows before panes.
+            //
+            // `had.active` must ALSO be set, which is the same rule a new window's panes follow
+            // above: a window going from no active pane to its first one is the window ESTABLISHING
+            // itself, not the user moving, and a reader that has just been told the pane exists
+            // re-reads the list and finds it marked. Reporting it would additionally make the event
+            // arrive whenever the daemon happened to reconcile that window — a moment no request
+            // asked for, which is how this was found: a `split` in one window recorded a select in
+            // another.
+            if let (Some(active), Some(_)) = (window.active, had.active)
+                && window.active != had.active
+            {
+                events.push(Event::PaneSelected(active));
+            }
             if window.layout != had.layout {
                 events.push(Event::LayoutUpdated);
             }
@@ -277,6 +301,14 @@ pub enum Event {
     /// reader answers it by re-reading the layout slot, which is what it would do for any subject
     /// this could name.
     LayoutUpdated,
+    /// The window's ACTIVE pane moved to this one — tmux `select-pane`, and the pane-level twin of
+    /// [`Event::WindowSelected`].
+    ///
+    /// Reported only when a pane BECOMES active. A window whose last pane closes has no active pane
+    /// and produces no event here: the fact a reader needs is that the pane is gone, which
+    /// [`Event::PaneClosed`] already carries, and "there is now nothing" is not a subject a reader
+    /// could re-read.
+    PaneSelected(u64),
     /// A pane's published AGENT verdict moved — the event this whole niche is about.
     ///
     /// Not derived at the dispatch funnel, and could not be: a verdict rests on what is on the pane's

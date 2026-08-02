@@ -301,6 +301,7 @@ mod tests {
                     floating: vec![],
                     panes: vec![],
                     manual_size: None,
+                    active: None,
                 }],
             }],
         }

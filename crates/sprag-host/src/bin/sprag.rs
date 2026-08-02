@@ -24,6 +24,13 @@
 //!                              durability snapshot AND every pane's saved scrollback (destroy
 //!                              the saved workspace, start fresh)
 //!
+//! sprag select-pane -t SESSION <PANE | -L|-R|-U|-D>
+//!                                         make a pane ACTIVE — by id, or by walking the
+//!                                         arrangement left/right/up/down from the pane the
+//!                                         session is on (tmux select-pane). Session state: every
+//!                                         attached client follows, and a pane verb given no
+//!                                         target acts on it
+//!
 //! sprag windows -t SESSION                list a session's windows (name, and which is current)
 //! sprag new-window -t SESSION [name]      create + select a window, born with a shell; print its name
 //! sprag select-window -t SESSION NAME     make NAME the session's current window
@@ -87,17 +94,20 @@
 //! verbs join them rather than inventing a third convention. Both kinds pass the same out-of-band
 //! `session` param the GUI sends, so there is one scoping vocabulary, not a CLI-only one.
 //!
-//! ## What the pane verbs deliberately do NOT offer
+//! ## The pane verbs and the pane they mean
 //!
-//! * **tmux's BARE `split-window -h` / `-v`** (the flag with no pane). The flags themselves are
-//!   built — they drive [`sprag_host::wire::SPLIT_ACTION`], which divides a pane the caller names
-//!   — but tmux's bare form means "split the CURRENT pane", and the daemon has no current pane to
-//!   mean (the same fact that leaves `select-pane` below unbuilt). So the pane is named
-//!   positionally and asking for a direction without one is refused with the reason.
-//! * **`select-pane`.** There is no active-pane concept in the daemon to select: the pane-input
-//!   `focus` action reports a focus EDGE to the child (DEC private mode 1004) on behalf of a client
-//!   whose own focus moved — it does not make a pane current, and nothing reads such a fact. A
-//!   `select-pane` built on it would send a program a focus-in report while no client focused it.
+//! `select-pane`, and with it tmux's BARE `split-window -h` / `-v`, are BUILT — both rest on the
+//! daemon's active pane ([`sprag_host::wire::SELECT_PANE_ACTION`]), which is session state every
+//! attached client follows rather than a display client's private idea of where its focus ring is.
+//! Until that existed this section listed both as impossible, and the reason it gave was right at
+//! the time: a direction is meaningless without a pane to be relative to, and there was no "here"
+//! for the daemon to resolve.
+//!
+//! It is a DIFFERENT fact from the pane-input `focus` action, which reports a focus EDGE to the
+//! child (DEC private mode 1004) on behalf of a client whose own OS focus moved. That one says
+//! "somebody is looking at your window"; this one says "this is the pane the session is on". A
+//! `select-pane` built on the former would have sent a program a focus-in report while no client
+//! had focused it.
 //!
 //! It drives the daemon over the SAME always-on socket the GUI connect-or-spawns
 //! (`$XDG_RUNTIME_DIR/sprag-host.sock`, override `SPRAG_HOST_RPC_SOCK`) via the SAME mux
@@ -127,9 +137,9 @@ use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, FULL_TEXT_SLOT,
     JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, NEW_SESSION_ACTION,
     NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, RELEASE_AGENT_ACTION, RENAME_WINDOW_ACTION,
-    REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
-    SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, events_slot_since, find_slot_for,
-    project_slot_for, regex_slot_for,
+    REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION,
+    SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT,
+    events_slot_since, find_slot_for, project_slot_for, regex_slot_for,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{HOST_SOCKET, HostConn, socket_path};
@@ -160,6 +170,7 @@ fn run() -> io::Result<()> {
         Some("windows") => windows(args.collect()),
         Some("new-window") => new_window(args.collect()),
         Some("select-window") => select_window(args.collect()),
+        Some("select-pane") => select_pane(args.collect()),
         Some("rename-window") => rename_window(args.collect()),
         Some("kill-window") => kill_window(args.collect()),
         Some("resize-window") => resize_window(args.collect()),
@@ -732,9 +743,10 @@ fn print_usage() {
          \x20             | resize-window [window]\n\
          \x20                 <-x COLS -y ROWS | -a | -A | -L/-R/-U/-D N | -u>\n\
          \x20             | break-pane PANE [name] | join-pane PANE WINDOW> -t SESSION\n\
-         \x20      sprag <panes | split-window [-h|-v [-b] PANE] [-- command…]\n\
-         \x20             | kill-pane PANE\n\
-         \x20             | resize-pane PANE -x COLS -y ROWS\n\
+         \x20      sprag <panes | select-pane <PANE | -L|-R|-U|-D>\n\
+         \x20             | split-window [-h|-v [-b] [PANE]] [-- command…]\n\
+         \x20             | kill-pane [PANE]\n\
+         \x20             | resize-pane [PANE] -x COLS -y ROWS\n\
          \x20             | send-keys PANE [-l] KEY… | capture-pane PANE [-p]\n\
          \x20             | agent [PANE]> [-t SESSION]\n\
          \x20      sprag report-agent <working|blocked|idle> [-t SESSION] [--pane N]\n\
@@ -2207,7 +2219,16 @@ fn panes(args: Vec<String>) -> io::Result<()> {
             Some(title) if !title.is_empty() => format!("  [{title}]"),
             _ => String::new(),
         };
-        println!("{id}: {cols}x{rows}  {command}{title}");
+        // The ACTIVE pane, marked the way tmux's own `list-panes` marks it — TRAILING, because
+        // this listing's leading field is a contract (`cut -d: -f1` feeds these ids to every other
+        // verb) and a marker in front of the id would break it. Exactly one row can carry it:
+        // these rows are one window's panes.
+        let active = if pane["active"] == json!(true) {
+            "  (active)"
+        } else {
+            ""
+        };
+        println!("{id}: {cols}x{rows}  {command}{title}{active}");
     }
     Ok(())
 }
@@ -2454,12 +2475,12 @@ fn events(args: Vec<String>) -> io::Result<()> {
 /// bare `split-window`. The id is printed on stdout because it is the argument every other pane
 /// verb takes, so a script can capture it (`pane=$(sprag split-window -v 3)`).
 ///
-/// The direction and the pane it divides are INSEPARABLE here, which is the one place this
-/// diverges from tmux and the divergence is forced: tmux's bare `-h` splits the CURRENT pane, and
-/// sprag's daemon has no current-pane concept to mean (the same fact that leaves `select-pane`
-/// unbuilt). So `-h` / `-v` take the pane POSITIONALLY — the convention `kill-pane PANE` and
-/// `resize-pane PANE` already set — and naming neither is the direction-less append tmux's bare
-/// form gives. Asking for one without the other is refused with the reason rather than guessed at.
+/// `-h` / `-v` take the pane POSITIONALLY — the convention `kill-pane [PANE]` and
+/// `resize-pane [PANE]` set — and OMITTING it is tmux's bare form: divide the pane the session is
+/// on. That form was refused until the daemon held an active pane to mean "here"
+/// ([`sprag_host::wire::SELECT_PANE_ACTION`]); this doc used to record the refusal as forced.
+/// Naming a pane with no direction is still refused with the reason: an axis is what turns a
+/// target into a placement, and the direction-less append is what naming NEITHER already asks for.
 ///
 /// `-b` puts the new pane BEFORE its target (left of, or above) — tmux `-b`.
 fn split_window(args: Vec<String>) -> io::Result<()> {
@@ -2503,18 +2524,13 @@ fn split_window(args: Vec<String>) -> io::Result<()> {
             }
         }
     }
-    // The two halves of a directional split arrive together or not at all: a direction with no
-    // pane has nothing to be relative to, and a pane with no direction has nothing to ask for.
+    // A pane with no direction has nothing to ask for. A DIRECTION with no pane is tmux's bare
+    // `-h` / `-v` — "divide where I am" — which was refused with "sprag has no current pane" until
+    // the daemon gained an active pane to mean it (`SELECT_PANE_ACTION`), and is now the same
+    // request with the target left to the daemon.
     let placement = match (dir, pane) {
-        (Some(dir), Some(pane)) => Some((dir, pane)),
+        (Some(dir), pane) => Some((dir, pane)),
         (None, None) => None,
-        (Some(dir), None) => {
-            return Err(bad(format!(
-                "split-window: {dir_flag} needs the pane to divide (sprag has no current pane): \
-                 sprag split-window {dir_flag} PANE",
-                dir_flag = if dir == "horizontal" { "-h" } else { "-v" },
-            )));
-        }
         (None, Some(pane)) => {
             return Err(bad(format!(
                 "split-window: pane {pane} needs an axis to be divided on — -h (right) or -v \
@@ -2524,8 +2540,7 @@ fn split_window(args: Vec<String>) -> io::Result<()> {
     };
     if before && placement.is_none() {
         return Err(bad(
-            "split-window: -b names which side of a target, so it needs -h or -v with a pane"
-                .to_owned(),
+            "split-window: -b names which side of a target, so it needs -h or -v".to_owned(),
         ));
     }
     let mut action_args = match &command {
@@ -2540,7 +2555,12 @@ fn split_window(args: Vec<String>) -> io::Result<()> {
     let action = match placement {
         Some((dir, pane)) => {
             let map = action_args.as_object_mut().expect("json! built an object");
-            map.insert("pane".to_owned(), json!(pane));
+            // Absent `pane` is the action's own "the active pane" default, so the bare form sends
+            // no target rather than the CLI resolving one — the daemon holds the fact, and a
+            // client that read it back to send it would be racing whoever moved it.
+            if let Some(pane) = pane {
+                map.insert("pane".to_owned(), json!(pane));
+            }
             map.insert("dir".to_owned(), json!(dir));
             if before {
                 map.insert("before".to_owned(), json!(true));
@@ -2570,11 +2590,16 @@ fn split_window(args: Vec<String>) -> io::Result<()> {
         Err(error) if error.kind() == io::ErrorKind::Other => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             match (placement, &command) {
-                (Some((_, pane)), _) => format!(
+                (Some((_, Some(pane))), _) => format!(
                     "split-window: pane {pane} is not in the window's tiling (it exited, it is \
                      floating, or it belongs to another window), or the pane's command could not \
                      be run"
                 ),
+                // The bare form named no pane, so the refusal is about the window rather than
+                // about a target the caller chose.
+                (Some((_, None)), _) => "split-window: this session's current window holds no \
+                     pane to divide, or the pane's command could not be run"
+                    .to_owned(),
                 (None, Some(command)) => {
                     format!("split-window: the pane's command could not be run: {command:?}")
                 }
@@ -2594,7 +2619,12 @@ fn split_window(args: Vec<String>) -> io::Result<()> {
 fn kill_pane(args: Vec<String>) -> io::Result<()> {
     let (session, rest) = scope_and_rest(args, "kill-pane")?;
     let mut rest = rest.into_iter();
-    let pane = parse_pane_id(rest.next(), "kill-pane")?;
+    // Absent ⇒ the active pane, which the DAEMON resolves (`CLOSE_ACTION`): a CLI that read it
+    // back to send it would be racing whoever moved it between the two calls.
+    let pane = rest
+        .next()
+        .map(|arg| parse_pane_id(Some(arg), "kill-pane"))
+        .transpose()?;
     if let Some(other) = rest.next() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -2607,23 +2637,27 @@ fn kill_pane(args: Vec<String>) -> io::Result<()> {
         scoped_invoke(
             session.as_deref(),
             mux_action_path(CLOSE_ACTION),
-            json!({ "id": pane }),
+            pane.map_or_else(|| json!({}), |pane| json!({ "id": pane })),
         ),
+    );
+    let named = pane.map_or_else(
+        || "the active pane".to_owned(),
+        |pane| format!("pane {pane}"),
     );
     match answer {
         Ok(_) => {
-            println!("killed pane {pane}");
+            println!("killed {named}");
             Ok(())
         }
         Err(error) if server_gone(&error) => {
-            println!("killed pane {pane} (server ended)");
+            println!("killed {named} (server ended)");
             Ok(())
         }
         // The session was pre-flighted, so the only refusal left is an unknown pane.
         Err(error) if error.kind() == io::ErrorKind::Other => Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!(
-                "kill-pane: no pane {pane} in {}",
+                "kill-pane: no such pane ({named}) in {}",
                 scope_name(session.as_deref())
             ),
         )),
@@ -2669,7 +2703,7 @@ fn resize_pane(args: Vec<String>) -> io::Result<()> {
             other => return Err(bad(format!("resize-pane: unexpected argument {other:?}"))),
         }
     }
-    let pane = pane.ok_or_else(|| bad("resize-pane needs a pane id".to_owned()))?;
+    // No pane id ⇒ the active one, resolved by the daemon exactly as `kill-pane`'s is.
     let (Some(cols), Some(rows)) = (cols, rows) else {
         return Err(bad(
             "resize-pane needs both dimensions (-x COLS -y ROWS)".to_owned()
@@ -2681,7 +2715,10 @@ fn resize_pane(args: Vec<String>) -> io::Result<()> {
         scoped_invoke(
             session.as_deref(),
             mux_action_path(RESIZE_ACTION),
-            json!({ "id": pane, "cols": cols, "rows": rows }),
+            pane.map_or_else(
+                || json!({ "cols": cols, "rows": rows }),
+                |pane| json!({ "id": pane, "cols": cols, "rows": rows }),
+            ),
         ),
     )
     .map(|_: Value| ())
@@ -2692,7 +2729,11 @@ fn resize_pane(args: Vec<String>) -> io::Result<()> {
             io::Error::new(
                 io::ErrorKind::NotFound,
                 format!(
-                    "resize-pane: no pane {pane} in {}, or {cols}x{rows} was refused",
+                    "resize-pane: no such pane ({}) in {}, or {cols}x{rows} was refused",
+                    pane.map_or_else(
+                        || "the active pane".to_owned(),
+                        |pane| format!("pane {pane}")
+                    ),
                     scope_name(session.as_deref())
                 ),
             )
@@ -2700,7 +2741,13 @@ fn resize_pane(args: Vec<String>) -> io::Result<()> {
             error
         }
     })?;
-    println!("resized pane {pane} to {cols}x{rows}");
+    println!(
+        "resized {} to {cols}x{rows}",
+        pane.map_or_else(
+            || "the active pane".to_owned(),
+            |pane| format!("pane {pane}")
+        ),
+    );
     Ok(())
 }
 
@@ -2957,6 +3004,100 @@ fn select_window(args: Vec<String>) -> io::Result<()> {
         &format!("no window named {window:?} in session {session:?}"),
     )?;
     println!("selected {window}");
+    Ok(())
+}
+
+/// `select-pane [-t SESSION] [PANE | -L|-R|-U|-D]`: make a pane active — tmux `select-pane`.
+///
+/// A pane id and a direction name the same thing two ways, so exactly one is given. A direction
+/// with no neighbour is not an error: it prints where the caller still is, because walking into the
+/// edge of a layout is what a keybinding does at the edge, not a mistake it should fail on.
+fn select_pane(args: Vec<String>) -> io::Result<()> {
+    let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
+    let (session, rest) = scope_and_rest(args, "select-pane")?;
+    let mut dir: Option<&'static str> = None;
+    let mut pane: Option<u64> = None;
+    for arg in rest {
+        let flag = match arg.as_str() {
+            "-L" => Some("left"),
+            "-R" => Some("right"),
+            "-U" => Some("up"),
+            "-D" => Some("down"),
+            _ => None,
+        };
+        match flag {
+            Some(word) => {
+                if dir.is_some() {
+                    return Err(bad(
+                        "select-pane: -L/-R/-U/-D name one direction; give only one".to_owned(),
+                    ));
+                }
+                dir = Some(word);
+            }
+            None => {
+                if pane.is_some() {
+                    return Err(bad(format!(
+                        "select-pane: unexpected argument {arg:?} (one pane id, or one direction)"
+                    )));
+                }
+                pane = Some(arg.parse::<u64>().map_err(|_| {
+                    bad(format!(
+                        "select-pane: {arg:?} is neither a direction flag nor a pane id"
+                    ))
+                })?);
+            }
+        }
+    }
+    let action_args = match (pane, dir) {
+        (Some(pane), None) => json!({ "pane": pane }),
+        (None, Some(dir)) => json!({ "dir": dir }),
+        (None, None) => {
+            return Err(bad(
+                "select-pane needs a pane id or a direction: sprag select-pane PANE | -L|-R|-U|-D"
+                    .to_owned(),
+            ));
+        }
+        (Some(_), Some(_)) => {
+            return Err(bad(
+                "select-pane: a pane id and a direction name the same target two ways; give one"
+                    .to_owned(),
+            ));
+        }
+    };
+    let mut conn = connect_scoped(session.as_deref())?;
+    let answer = conn
+        .call(
+            "scene/invoke",
+            scoped_invoke(
+                session.as_deref(),
+                mux_action_path(SELECT_PANE_ACTION),
+                action_args,
+            ),
+        )
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::Other {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    match pane {
+                        Some(pane) => format!("no pane {pane} in the current window"),
+                        None => "this session's current window holds no panes".to_owned(),
+                    },
+                )
+            } else {
+                error
+            }
+        })?;
+    let selected = answer["pane"].as_u64().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "select-pane: the daemon answered without a pane",
+        )
+    })?;
+    if answer["changed"] == json!(true) {
+        println!("selected {selected}");
+    } else {
+        println!("already on {selected}");
+    }
     Ok(())
 }
 
