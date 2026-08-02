@@ -233,6 +233,7 @@ use sprag_detect::{DEFAULT_SETTLE, Hysteresis, Ruleset, Tracker, built_ins, dete
 use sprag_grid::{project, projection_token};
 use sprag_host::agent::SWEEP_INTERVAL;
 use sprag_host::config::AgentManifests;
+use sprag_host::wire::SESSION_ACTIVITY_DISPLAY_MAX_AGE;
 use sprag_host::{
     AgentClock, CellFrame, ChannelRegistry, Host, HostState, PaneScrollFacts, handle_request,
     mux_action_path, sweep_once,
@@ -291,6 +292,20 @@ const REVISION: &str = r#"{"jsonrpc":"2.0","id":1,"method":"scene/revision","par
 /// The pane list a display client reads on every wake, and the slot R220's `ProjectionToken` rides
 /// on — so this row prices the fetch gate's input, tokens included.
 const PANES_READ: &str = r#"{"jsonrpc":"2.0","id":2,"method":"scene/query","params":{"path":"/sprag_mux/external/panes"}}"#;
+
+/// The registry-wide session list a display client re-reads on every poll wake — the question R281
+/// found was answering a yes/no by walking `/proc`, and the subject of the pair of rows below.
+const SESSIONS_READ: &str = r#"{"jsonrpc":"2.0","id":10,"method":"scene/query","params":{"path":"/sprag_mux/external/sessions"}}"#;
+
+/// A read of every session's SAMPLED activity at tolerance `max_age_ms` — the address R282 moved
+/// the `/proc` walk onto, so that asking where sessions are working is a different question from
+/// asking what they are called.
+fn activity_read(max_age_ms: u64) -> String {
+    format!(
+        r#"{{"jsonrpc":"2.0","id":11,"method":"scene/query","params":{{"path":"/sprag_mux/external/{}"}}}}"#,
+        sprag_host::wire::session_activity_at(max_age_ms),
+    )
+}
 
 /// One pane's cells: the client's steady-state fetch, and the unit R220 skips.
 const CELLS_READ: &str = r#"{"jsonrpc":"2.0","id":3,"method":"scene/query","params":{"path":"/pane_0/sprag_input/external/cells.0"}}"#;
@@ -1189,6 +1204,68 @@ fn main() -> ExitCode {
             black_box(handle_request(black_box(&state), PANES_READ));
         },
     );
+    // THE SESSION LIST, against a host that differs in ONE thing: whether any session holds a pane
+    // with a live child. That is the gate the enrichment sits behind — each session's cwd, its git
+    // branch, and its listening ports, the last of which reads `/proc/*/stat` for every process on
+    // the box. A display client re-reads this slot on every poll wake, and a wake is a batch of PTY
+    // output, so what these two rows differ by is paid at TYPING rate.
+    //
+    // The control moves one more thing than the walk, and saying so is cheaper than a reader
+    // assuming otherwise: an idle host lists NO session (a paneless, unattached anchor is not
+    // listable), so its reply is an empty array where the live one carries a row. The bytes column
+    // shows both replies are small — whatever separates these two rows, it is not serialisation.
+    let idle = HostState::new(
+        Host::new((COLS, ROWS)),
+        Arc::new(ChannelRegistry::default()),
+        None,
+    );
+    let sessions_idle = paired(
+        "request sessions slot (no live pane)",
+        &mut controls,
+        Some(reply_bytes(&idle, SESSIONS_READ)),
+        || {
+            black_box(handle_request(black_box(&idle), SESSIONS_READ));
+        },
+    );
+    let sessions_live = paired(
+        "request sessions slot (live panes)",
+        &mut controls,
+        Some(reply_bytes(&state, SESSIONS_READ)),
+        || {
+            black_box(handle_request(black_box(&state), SESSIONS_READ));
+        },
+    );
+    budget(
+        "the session list's enrichment",
+        sessions_live.min.saturating_sub(sessions_idle.min),
+    );
+    // THE SAMPLE, at the two tolerances the design has callers for. `sprag ls` passes zero and buys
+    // a `/proc` walk of the box; a display client passes a window it can live with and is answered
+    // from whatever the daemon already holds. The pair is what makes the split legible as a cost:
+    // the walk did not get cheaper, it stopped being attached to the question above.
+    let activity_fresh = paired(
+        "request session_activity (max_age 0)",
+        &mut controls,
+        Some(reply_bytes(&state, &activity_read(0))),
+        || {
+            black_box(handle_request(black_box(&state), &activity_read(0)));
+        },
+    );
+    let tolerated = u64::try_from(SESSION_ACTIVITY_DISPLAY_MAX_AGE.as_millis()).unwrap_or(u64::MAX);
+    let activity_held = paired(
+        "request session_activity (display tolerance)",
+        &mut controls,
+        Some(reply_bytes(&state, &activity_read(tolerated))),
+        || {
+            black_box(handle_request(black_box(&state), &activity_read(tolerated)));
+        },
+    );
+    budget(
+        "what a poll wake used to pay, and now does",
+        activity_held.min,
+    );
+    budget("what asking for a FRESH sample costs", activity_fresh.min);
+
     // THE DERIVE SITE, at the two ends of a realistic span. It runs after EVERY mutating dispatch,
     // and a keystroke is one (`key`/`text`/`paste`/`mouse` are all invokes) — so this is paid at
     // TYPING rate, which is the cost the H6 design argued about and did not measure. Measured with
