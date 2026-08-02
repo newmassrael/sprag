@@ -9,13 +9,18 @@
 //!
 //! It is a [Model Context Protocol](https://modelcontextprotocol.io) **stdio
 //! server**: Claude Code (or any MCP client) spawns it and it speaks newline-delimited
-//! JSON-RPC 2.0 on stdin/stdout. It advertises eleven self-describing tools —
+//! JSON-RPC 2.0 on stdin/stdout. It advertises thirteen self-describing tools —
 //! `list_panes`, `read_pane`, `read_last_command`, `read_pane_links`, `read_pane_images`,
-//! `find_in_pane`, `regex_in_pane`, `agent_state`, `agent_explain`, `write_pane`, `send_keys` — so an
-//! agent *immediately* understands "read/write a sibling pane" without reading any sprag
-//! source. The two `agent_*` tools are the surface for the one fact an agent cannot read off a
+//! `find_in_pane`, `regex_in_pane`, `agent_state`, `agent_explain`, `wait_for_change`,
+//! `write_pane`, `send_keys`, `select_pane` — so an agent *immediately* understands "read/write a
+//! sibling pane" without reading any sprag source. The two `agent_*` tools are the surface for the one fact an agent cannot read off a
 //! sibling's screen without interpreting it: whether the AI in that pane is waiting for a human
 //! (H3). They report the daemon's own verdict, so two agents watching one pane agree.
+//!
+//! `select_pane` is the one tool whose subject is the PERSON rather than a pane: it moves where the
+//! user's keystrokes go (H7's active pane), so an agent that has prepared something to look at can
+//! put them on it. `list_panes` marks that pane, which is also how an agent learns where a human is
+//! working before typing somewhere else.
 //!
 //! Each tool call bridges to the host wire via [`sprag_rpc::HostConn`], addressing panes with the
 //! [`sprag_host::wire`] path SSOT.
@@ -59,7 +64,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, FULL_TEXT_SLOT, KEY_ACTION, LAST_COMMAND_SLOT, LINKS_SLOT, PANES_SLOT,
-    TEXT_ACTION, events_slot_since, find_slot_for, regex_slot_for,
+    SELECT_PANE_ACTION, TEXT_ACTION, events_slot_since, find_slot_for, regex_slot_for,
 };
 use sprag_host::{PaneFind, mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
@@ -458,6 +463,21 @@ fn tools_list() -> Value {
                     "required": ["pane", "keys"],
                     "additionalProperties": false
                 }
+            },
+            {
+                "name": "select_pane",
+                "description": "Make a pane the ACTIVE one for this terminal session — where \
+                    the user's keystrokes go, what every attached window shows a focus ring \
+                    on, and what a pane command with no target acts on. Use it to put a human \
+                    on the pane you want them to look at, after opening or preparing it. \
+                    `list_panes` marks the active pane. This MOVES a person's cursor: prefer \
+                    it when you have something for them to see, not as a side effect.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "pane": pane_arg },
+                    "required": ["pane"],
+                    "additionalProperties": false
+                }
             }
         ]
     })
@@ -487,6 +507,7 @@ fn handle_tools_call(message: &Value) -> Value {
         "wait_for_change" => tool_wait_for_change(&args),
         "write_pane" => tool_write_pane(&args),
         "send_keys" => tool_send_keys(&args),
+        "select_pane" => tool_select_pane(&args),
         other => Err(format!("unknown tool: {other}")),
     };
     match outcome {
@@ -900,6 +921,29 @@ fn tool_write_pane(args: &Value) -> Result<String, String> {
         text.len(),
         if enter { " and pressed Enter" } else { "" }
     ))
+}
+
+/// `select_pane` — move the SESSION's active pane, which every attached client follows.
+///
+/// The answer names what actually happened rather than echoing the request: the daemon reports
+/// whether the pane MOVED, and a re-select of the pane the session is already on is a legitimate
+/// no-op an agent should not read as a failure.
+fn tool_select_pane(args: &Value) -> Result<String, String> {
+    let number = pane_number(args)?;
+    let id = pane_id_for(number)?;
+    let answer = host_call(
+        "scene/invoke",
+        json!({ "path": mux_action_path(SELECT_PANE_ACTION), "args": { "pane": id } }),
+    )?;
+    if answer["changed"] == json!(true) {
+        Ok(format!(
+            "Pane {number} is now the active pane of this session."
+        ))
+    } else {
+        Ok(format!(
+            "Pane {number} was already the active pane; nothing moved."
+        ))
+    }
 }
 
 fn tool_send_keys(args: &Value) -> Result<String, String> {
@@ -1413,7 +1457,8 @@ mod tests {
                 "wait_for_change",
                 "agent_explain",
                 "write_pane",
-                "send_keys"
+                "send_keys",
+                "select_pane"
             ]
         );
         for tool in tools["tools"].as_array().unwrap() {

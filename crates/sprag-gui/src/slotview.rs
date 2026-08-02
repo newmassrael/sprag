@@ -159,8 +159,25 @@ impl SlotView {
 
     /// The `PaneId` at `slot`, if occupied — the ONE slot->id resolver the delegating
     /// methods share; a hole yields each method's graceful default.
-    fn id(&self, slot: usize) -> Option<PaneId> {
+    pub(crate) fn id(&self, slot: usize) -> Option<PaneId> {
         self.slots.borrow().get(slot).copied().flatten()
+    }
+
+    /// The pane the SESSION is on, as the host mirror reports it — the daemon's active pane
+    /// ([`crate::active_pane`]), or `None` for a window holding none.
+    ///
+    /// A mirror read, no socket call: this is on the paint path, and the client reconciles its own
+    /// focus against it every frame.
+    pub(crate) fn active_pane(&self) -> Option<PaneId> {
+        self.host.active_pane()
+    }
+
+    /// Tell the daemon the user moved to `pane` — the publish half of [`crate::active_pane`].
+    ///
+    /// The answer is deliberately dropped: a refusal means the pane has left, and the next mirror
+    /// read reports what IS rather than what this client hoped.
+    pub(crate) fn select_pane(&self, pane: PaneId) {
+        let _ = self.host.select_pane(pane);
     }
 
     /// The display slot holding `pane` — the inverse of [`Self::id`], for PROJECTING

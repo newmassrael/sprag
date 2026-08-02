@@ -224,6 +224,7 @@
 #![allow(rustdoc::private_intra_doc_links)]
 
 mod a11y;
+mod active_pane;
 mod attention;
 mod clipboard_osc;
 mod command;
@@ -795,6 +796,12 @@ impl WidgetCore for TerminalViewer {
                 }
             });
         focus_report::reconcile_focus(&terminal.slots, effective_focus);
+        // (4d) (H7) The SESSION's active pane: FOLLOW it when it moved without this client acting
+        // (another attached client, a `sprag select-pane`, a split landing on its new pane, a close
+        // handing off), and PUBLISH this client's own move when it did. A different fact from (4c)
+        // above — that one tells a child its OS window gained the user's attention; this one is
+        // which pane the session is on, which is true whether or not any window is focused.
+        active_pane::reconcile(&terminal.slots, focused_pane);
         // (5) (R175) Auto-disarm a pending session kill whose captured session has VANISHED from the
         // live list (killed out of band while the `kill '<name>'?` strip was up), so the confirmation
         // strip cannot linger on a session that no longer exists. Like (2)/(3) above, this reconciles

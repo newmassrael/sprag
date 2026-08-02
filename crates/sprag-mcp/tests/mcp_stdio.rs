@@ -1137,6 +1137,68 @@ fn wait_for_change_blocks_and_reports_what_moved() {
     );
 }
 
+/// **THE live gate for `select_pane`**: the tool moves a fact that lives in the DAEMON and that
+/// another surface reports, so a wiring that answered plausibly while sending nothing — or that
+/// sent to the wrong pane — would satisfy every unit test of its wording.
+///
+/// Read back through `list_panes` rather than through the daemon directly, because that pairing is
+/// what an agent actually does: it moves the user, then reads the list to see where they are. Both
+/// halves are this crate's own surface, and they are wired by different code.
+#[test]
+fn select_pane_moves_the_session_and_list_panes_says_so() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
+    conn.call(
+        "scene/invoke",
+        json!({ "path": mux_action_path(SPAWN_ACTION), "args": {} }),
+    )
+    .expect("a second pane to move between");
+    let mut server = McpServer::spawn(&sock);
+
+    let listed = server.call_tool("list_panes", json!({}));
+    let active_line = |listed: &str| {
+        let marked: Vec<String> = listed
+            .lines()
+            .filter(|line| line.contains("(active)"))
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(marked.len(), 1, "exactly one pane is active: {listed}");
+        marked[0].clone()
+    };
+    assert!(
+        active_line(&listed).contains("pane 1:"),
+        "the session starts on its first pane: {listed}",
+    );
+
+    let moved = server.call_tool("select_pane", json!({ "pane": 2 }));
+    assert!(
+        moved.contains("Pane 2 is now the active pane"),
+        "the tool reports the move it made: {moved}",
+    );
+    assert!(
+        active_line(&server.call_tool("list_panes", json!({}))).contains("pane 2:"),
+        "and the pane list — the surface an agent re-reads — agrees",
+    );
+
+    // A re-select is a legitimate no-op, and it must not read as a failure to an agent.
+    let again = server.call_tool("select_pane", json!({ "pane": 2 }));
+    assert!(
+        again.contains("was already the active pane"),
+        "a re-select says nothing moved rather than claiming it did: {again}",
+    );
+
+    // A pane number nobody holds is an ERROR with the count, the way every pane tool answers one.
+    let ghost = server.call_tool_error("select_pane", json!({ "pane": 99 }));
+    assert!(
+        ghost.contains("no pane 99"),
+        "an unknown pane names itself: {ghost}",
+    );
+    assert!(
+        active_line(&server.call_tool("list_panes", json!({}))).contains("pane 2:"),
+        "and the refusal left the session where it was",
+    );
+}
+
 // ----- the socket resolve -----
 
 /// The child's own `SPRAG_HOST_RPC_SOCK` beats an ancestor's — the precedence this suite's safety
