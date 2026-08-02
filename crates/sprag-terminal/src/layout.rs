@@ -2064,6 +2064,42 @@ mod tests {
         );
     }
 
+    /// The migration runs ONE WAY, and this is what the other way costs — the diagnosis of a
+    /// failure that went five rounds without one (R278's `sprag-tui` boot, "reproduction lost").
+    ///
+    /// This build reads a legacy arrangement (the test above). A build from BEFORE the flattening
+    /// cannot read THIS one: its `root` was an externally tagged enum and ours is an arena INDEX,
+    /// so `serde_json`'s `deserialize_enum` refuses the integer with a message about types — the
+    /// exact sentence R278 chased. `LegacyNode` stands in for the deleted `LayoutNodeWire` because
+    /// the two are the same externally tagged shape and the message comes from the DESERIALISER,
+    /// not from the type's name.
+    ///
+    /// A single-pane window roots at index `0`, which is why the sentence said `integer 0` — a
+    /// fresh client boot is exactly that window.
+    ///
+    /// It is pinned here, beside the migration it is the underside of, so that the reason
+    /// [`sprag_rpc::WIRE_PROTOCOL`] exists cannot be read as caution about a hypothetical.
+    #[test]
+    fn an_older_build_cannot_read_this_ones_root_and_says_so_by_type() {
+        let mut tree = LayoutTree::new();
+        heal(&mut tree, &ids(1));
+        let flat = serde_json::to_value(LayoutWire::from(&tree)).expect("it serialises");
+        assert_eq!(
+            flat["root"],
+            serde_json::json!(0),
+            "a one-pane window roots at arena index 0 — the integer in the message",
+        );
+
+        let Err(refused) = serde_json::from_value::<LegacyNode>(flat["root"].clone()) else {
+            panic!("an older build's root is an enum, and an index is not one");
+        };
+        assert_eq!(
+            refused.to_string(),
+            "invalid type: integer `0`, expected string or map",
+            "the sentence R278 spent five hypotheses on is a version skew, spelled by serde",
+        );
+    }
+
     /// The write half's core promise: the host NAMES the dividers a client minted itself,
     /// and honors the identity of the ones it already knew.
     #[test]
