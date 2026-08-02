@@ -59,7 +59,20 @@ pub const SESSION_PARAM: &str = "session";
 /// A daemon serving two shapes at once would have to keep every retired shape alive forever. The
 /// daemon is restartable and its sessions survive the restart through the durability snapshot, so
 /// "restart the daemon" is a complete remedy and the mismatch message says exactly that.
-pub const WIRE_PROTOCOL: u32 = 1;
+///
+/// # What each number stands for
+///
+/// * **1** — the shape after R264 flattened the layout wire (`root` an arena index).
+/// * **2** — the cell frame's underline spelling. pinion R1540 gave `UnderlineStyle` a
+///   `rename_all = "lowercase"`, so a style that crossed as `"underline":"None"` now crosses as
+///   `"underline":"none"`, and a peer on either side of the pin bump cannot read the other's
+///   frame. **No sprag source line changed to cause it**: the cell frame carries pinion's own
+///   cell vocabulary verbatim (`sprag_grid::wire`'s `CellStyle`, deliberately, so an upstream
+///   ADDITION is a compile error rather than silent data loss) — and a respelling is neither an
+///   addition nor a compile error. That is why the shape pin renders the frame's bytes rather
+///   than trusting the diff: a dependency bump is a wire change this project cannot see in its
+///   own diff.
+pub const WIRE_PROTOCOL: u32 = 2;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request

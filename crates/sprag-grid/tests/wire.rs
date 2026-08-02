@@ -420,7 +420,7 @@ fn a_malformed_payload_is_rejected_with_its_reason() {
 
     // One well-formed style, spelled once — the cases differ in the ONE thing each is named for.
     const STYLE: &str = r#"{"fg":"Default","bg":"Default","attrs":{"bold":false,"dim":false,
-        "italic":false,"underline":"None","blink":false,"reverse":false,"hidden":false,
+        "italic":false,"underline":"none","blink":false,"reverse":false,"hidden":false,
         "strikethrough":false},"underline_color":null,"hyperlink":null,"width":"Narrow"}"#;
 
     for (name, payload, expected) in cases {
@@ -444,7 +444,7 @@ fn a_malformed_payload_is_rejected_with_its_reason() {
 #[test]
 fn a_non_maximal_payload_is_correct_and_accepted() {
     const STYLE: &str = r#"{"fg":"Default","bg":"Default","attrs":{"bold":false,"dim":false,
-        "italic":false,"underline":"None","blink":false,"reverse":false,"hidden":false,
+        "italic":false,"underline":"none","blink":false,"reverse":false,"hidden":false,
         "strikethrough":false},"underline_color":null,"hyperlink":null,"width":"Narrow"}"#;
     let split = format!(
         r#"{{"cells":{{"cols":4,"rows":1,"cursor":{{"col":0,"row":0,"shape":"Block",

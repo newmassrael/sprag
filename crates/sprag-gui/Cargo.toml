@@ -49,6 +49,11 @@ pinion-runtime = { workspace = true }
 pinion-a11y = { workspace = true }
 # The windowed GPU shell entry point (pinion_shell::run) + RepaintSink impl.
 pinion-shell = { workspace = true }
+# Named by the `vello_renderer_impl!` expansion below (R1537): the forge-emitted
+# renderer owns its wgpu device through pinion-gpu rather than vello's RenderContext,
+# so `GpuError` / `GpuContext` / `FrameTimer` / `GpuFrameClock` must resolve in this
+# crate's root. Not called directly by any sprag source line.
+pinion-gpu = { workspace = true }
 # view_splitter + SplitterExternal — the draggable pane dividers (R38).
 pinion-widget-paint = { workspace = true }
 # use_app_clipboard — mouse-drag select copy (PRIMARY/CLIPBOARD) + paste (R139).

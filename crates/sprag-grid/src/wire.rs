@@ -10,7 +10,7 @@
 //!
 //! ```json
 //! {"cluster":"a","fg":{"Rgb":{"r":229,"g":229,"b":229,"a":255}},"bg":{"Rgb":{…}},
-//!  "attrs":{"bold":false,"dim":false,"italic":false,"underline":"None",…},
+//!  "attrs":{"bold":false,"dim":false,"italic":false,"underline":"none",…},
 //!  "underline_color":null,"hyperlink":null,"width":"Narrow"}
 //! ```
 //!
