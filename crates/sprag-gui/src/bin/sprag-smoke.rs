@@ -1935,11 +1935,28 @@ fn check_a_window_and_a_terminal_agree_on_one_pane_size(smoke: &mut Smoke, repor
             return;
         }
     };
+    let attached = smoke
+        .wait_for(|_| (client_sizes(&mut daemon, &session).len() == 2).then_some(()))
+        .is_ok();
+    if !attached {
+        // The client is a PROCESS on a real pty, so the reason it did not register is on its own
+        // screen and nowhere else — and swallowing it costs a whole round. Measured here: a
+        // `sprag-tui` left over from before a `WIRE_PROTOCOL` bump is refused at the daemon's
+        // door, and this check reported only "did not attach" while the sentence naming the
+        // skew sat unread one function call away. Three checks downstream fail with it, so the
+        // reader gets four silent failures and no cause.
+        let screen = terminal.with_screen(|screen| {
+            (0..screen.rows())
+                .map(|row| screen.row_text(row).trim_end().to_owned())
+                .filter(|line| !line.is_empty())
+                .collect::<Vec<_>>()
+                .join(" | ")
+        });
+        eprintln!("      the terminal client's own screen says: {screen}");
+    }
     report.check(
         "a terminal client attaches to the window's session",
-        smoke
-            .wait_for(|_| (client_sizes(&mut daemon, &session).len() == 2).then_some(()))
-            .is_ok(),
+        attached,
     );
 
     // CLAIM 2: under `smallest` this window is the smaller client, so the window does not move and
