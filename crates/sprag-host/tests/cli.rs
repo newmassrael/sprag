@@ -384,6 +384,51 @@ fn a_session_the_listing_hides_is_still_addressable() {
     );
 }
 
+/// A refused agent report reaches the operator as a sentence about PANES, never as the wire's own
+/// vocabulary (R283).
+///
+/// These two verbs were the only CLI commands with no mapping at all: `sprag report-agent --pane
+/// 999` printed `scene/invoke /sprag_mux/external/report_agent: host rpc error: InvokeRejected` —
+/// a scene path and a Rust enum variant, neither of which an operator can act on.
+///
+/// The WHOLE sentence is pinned, not three fragments of it, because that is what a person reads
+/// (R279). Both verbs are checked: they share [`agent_refusal`], and a test of one would pass while
+/// the other still leaked. The CONTROL is the happy path in the same test — a refusal message
+/// cannot be produced by a command that is simply broken.
+#[test]
+fn a_refused_agent_report_names_the_pane_and_not_the_wire() {
+    let (_host, sock) = spawn_host();
+
+    for command in [
+        vec!["report-agent", "working", "--pane", "999"],
+        vec!["release-agent", "--pane", "999"],
+    ] {
+        let verb = command[0];
+        let run = sprag(&sock, &command);
+        assert!(!run.ok, "{verb} for a pane that is not there fails");
+        assert_eq!(
+            run.stderr.trim(),
+            format!(
+                "sprag: {verb}: the daemon refused pane 999 — either no pane 999 exists on it \
+                 (check `sprag panes`), or this host runs no agent detector. All it could say \
+                 was \"InvokeRejected\""
+            ),
+            "the refusal is the sentence a person reads",
+        );
+    }
+
+    // The control: the same two verbs against the pane that IS there. Without it, every assertion
+    // above would also pass against a build where both commands simply failed.
+    let reported = sprag(&sock, &["report-agent", "working", "--pane", "0"]);
+    assert!(
+        reported.ok,
+        "the boot pane accepts a report: {}",
+        reported.stderr
+    );
+    let released = sprag(&sock, &["release-agent", "--pane", "0"]);
+    assert!(released.ok, "and hands it back: {}", released.stderr);
+}
+
 /// `ls` still prints where each session is working, now that the fact comes from a SECOND read —
 /// and it joins the two by NAME, not by position (R282).
 ///

@@ -142,7 +142,9 @@ use sprag_host::wire::{
     events_slot_since, find_slot_for, project_slot_for, regex_slot_for, session_activity_at,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
-use sprag_rpc::{CallError, HOST_SOCKET, HostConn, HostEndpoint, INVALID_PARAMS, socket_path};
+use sprag_rpc::{
+    CallError, HOST_SOCKET, HostConn, HostEndpoint, INVALID_PARAMS, RpcFault, socket_path,
+};
 
 /// A management command is talking to an already-running daemon, so the socket either accepts
 /// at once or there is nothing to manage — no spawn-race retry to wait out.
@@ -1796,7 +1798,14 @@ fn pane_ids(conn: &mut HostConn, session: Option<&str>) -> io::Result<Vec<u64>> 
 /// the caller named a specific pane, and answering as if it were merely quiet would be an answer to
 /// a question they did not ask. It matters most for the verbs that address a pane's OWN external by
 /// path ([`send_keys`], [`capture_pane`]) — there a wrong id is an unknown ADDRESS, whose raw
-/// refusal says nothing about panes, unlike the mux actions' pane-level `Rejected`.
+/// refusal says nothing about panes.
+///
+/// The sentence that used to end here — "unlike the mux actions' pane-level `Rejected`" — was
+/// **false, and R283 measured it false**: a mux action's `Rejected` carries no payload at all, so
+/// `sprag report-agent --pane 999` reached the operator as `scene/invoke
+/// /sprag_mux/external/report_agent: host rpc error: InvokeRejected`. It is not pane-level; it is
+/// not any level. See [`agent_refusal`] for what those two verbs say now, and
+/// `claudedocs/PINION-PR82-*` for why they still cannot say only one thing.
 fn require_pane(
     conn: &mut HostConn,
     session: Option<&str>,
@@ -1814,6 +1823,44 @@ fn require_pane(
             scope_name(session)
         ),
     ))
+}
+
+/// Turn a refused agent invoke into a sentence about PANES — what [`report_agent`] and
+/// [`release_agent`] say instead of the raw refusal (R283).
+///
+/// # What the daemon actually refused, and why this is a disjunction
+///
+/// Both handlers answer `InvokeError::Rejected` for exactly two causes, read off their source:
+/// this host installs no agent detector, or it holds no pane with that id (daemon-WIDE — the agent
+/// memory is keyed by [`PaneId`](sprag_terminal::PaneId) alone, so a hook may report a pane in
+/// another session).
+/// `InvokeError` has no payload — not the trait's three-variant enum, not the RPC's — so **which of
+/// the two it was cannot cross the wire**, and no amount of care on this side recovers it. Filed as
+/// `claudedocs/PINION-PR82-*`; when it lands, this function's body is one line reading the reason
+/// the daemon attached.
+///
+/// So the sentence names both, in the order they are worth checking, and says which of them the
+/// daemon could not tell us. Naming one alone would be a guess dressed as a fact — and a guess that
+/// is right today only because `sprag-term` happens to install a detector, which is a claim about
+/// another file's wiring, not about this refusal.
+///
+/// Nothing is asked of the daemon to build it: this runs only when a call already failed, and a
+/// pane-list read here would still not settle the question (the `panes` slot is scoped to one
+/// window; the daemon's check is not).
+fn agent_refusal(command: &str, pane: u64, fault: &RpcFault) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::NotFound,
+        format!(
+            "{command}: the daemon refused pane {pane} — either no pane {pane} exists on it \
+             (check `sprag panes`), or this host runs no agent detector. All it could say was \
+             {:?}",
+            // The fault's own rendering, which prefers the `data` the peer attached over the
+            // JSON-RPC category in `message`. That is what makes the gap VISIBLE rather than
+            // described: the operator reads the exact token the wire carried, and it is a Rust
+            // variant name with no pane in it.
+            fault.to_string(),
+        ),
+    )
 }
 
 /// `report-agent STATE [-t SESSION] [--pane N] [--source S] [--name AGENT] [--seq N]`: say what the
@@ -1915,14 +1962,23 @@ fn report_agent(args: Vec<String>) -> io::Result<()> {
     if let Some(seq) = seq {
         params["seq"] = Value::from(seq);
     }
-    let answer: Value = conn.call(
-        "scene/invoke",
-        scoped_invoke(
-            session.as_deref(),
-            mux_action_path(REPORT_AGENT_ACTION),
-            params,
-        ),
-    )?;
+    // `try_call`, so a refusal stays a REFUSAL rather than becoming a rendered sentence this side
+    // would then have to match on ([`agent_refusal`]). A transport failure is passed through
+    // untouched: it is not about panes, and dressing it as if it were would be the same class of
+    // wrong answer this replaces.
+    let answer: Value = conn
+        .try_call(
+            "scene/invoke",
+            scoped_invoke(
+                session.as_deref(),
+                mux_action_path(REPORT_AGENT_ACTION),
+                params,
+            ),
+        )
+        .map_err(|error| match error {
+            CallError::Fault(fault) => agent_refusal("report-agent", pane, &fault),
+            CallError::Transport(error) => error,
+        })?;
     let accepted = answer["accepted"].as_bool().unwrap_or(false);
     println!(
         "pane {pane}: {} {} seq={}",
@@ -1972,14 +2028,19 @@ fn release_agent(args: Vec<String>) -> io::Result<()> {
     }
     let pane = pane.map_or_else(|| own_pane("release-agent"), Ok)?;
     let mut conn = connect_scoped(session.as_deref())?;
-    let answer: Value = conn.call(
-        "scene/invoke",
-        scoped_invoke(
-            session.as_deref(),
-            mux_action_path(RELEASE_AGENT_ACTION),
-            serde_json::json!({ "id": pane }),
-        ),
-    )?;
+    let answer: Value = conn
+        .try_call(
+            "scene/invoke",
+            scoped_invoke(
+                session.as_deref(),
+                mux_action_path(RELEASE_AGENT_ACTION),
+                serde_json::json!({ "id": pane }),
+            ),
+        )
+        .map_err(|error| match error {
+            CallError::Fault(fault) => agent_refusal("release-agent", pane, &fault),
+            CallError::Transport(error) => error,
+        })?;
     if answer["released"].as_bool().unwrap_or(false) {
         println!("pane {pane}: released — its state comes from the screen again");
     } else {
