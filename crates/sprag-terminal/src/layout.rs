@@ -349,6 +349,28 @@ impl LayoutNode {
         }
     }
 
+    /// Exchange the leaves holding `a` and `b`, leaving every division — id, direction and
+    /// ratio — exactly where it was.
+    ///
+    /// In place, and rewriting only the two leaves, because that is what makes the shape survive
+    /// BY CONSTRUCTION: nothing is removed, so no split can collapse, and nothing has to be
+    /// restored afterwards. A swap expressed as two removals plus two insertions would have to
+    /// put back the very ratios the user dragged, and would have to do it in an order that works
+    /// when the two panes are each other's sibling.
+    ///
+    /// A pane this sub-tree does not hold is simply not found; the caller checks membership.
+    fn swap_ids(&mut self, a: PaneId, b: PaneId) {
+        match self {
+            Self::Leaf(pane) if *pane == a => *pane = b,
+            Self::Leaf(pane) if *pane == b => *pane = a,
+            Self::Leaf(_) => {}
+            Self::Split { first, second, .. } => {
+                first.swap_ids(a, b);
+                second.swap_ids(a, b);
+            }
+        }
+    }
+
     /// This sub-tree's panes, left-to-right / top-to-bottom (paint order).
     fn panes(&self) -> Vec<PaneId> {
         let mut out = Vec::new();
@@ -721,12 +743,18 @@ impl LayoutTree {
         });
     }
 
-    /// Divide `target`'s cell and put `pane` in the half on `side`, along `dir` — a
-    /// DIRECTIONAL split (tmux `split-window -h` / `-v`). Returns whether `target` was there
-    /// to divide.
+    /// Divide `target`'s cell and put `pane` in the half on `side`, along `dir`. Returns whether
+    /// `target` was there to divide.
+    ///
+    /// **Two callers, one operation**, which is why the name says PLACE rather than split: the
+    /// pane being placed is a freshly spawned one for a directional split (tmux `split-window -h` /
+    /// `-v`) and an already-tiled one for a move (tmux `move-pane`), and the tree cannot tell the
+    /// two apart — nor should it, since the position asked for is the same position. It was called
+    /// `place_beside` while the split was its only caller, which hid the move inside it for as long
+    /// as nobody looked.
     ///
     /// This is the operation [`append_pane`](Self::append_pane) is the direction-less form of:
-    /// an append states WHERE only by convention (the rightmost spine), while a split states it
+    /// an append states WHERE only by convention (the rightmost spine), while a placement states it
     /// relative to a pane the caller named. Both end at the same insertion, so the tree has one
     /// positioning path regardless of which one asked.
     ///
@@ -735,11 +763,11 @@ impl LayoutTree {
     /// than falling back to an append: a direction the user spelled is a request, and silently
     /// appending instead would be the same lie as accepting `-h` and ignoring it.
     ///
-    /// `pane` is MOVED if it already holds a leaf, never duplicated. That is what makes the
-    /// outcome independent of whoever ran in between: a freshly spawned pane can be
-    /// [`reconcile`](Self::reconcile)d into place by another client's read before its split
-    /// lands, and the split must still put it where it was asked to go.
-    pub fn split_beside(
+    /// `pane` is MOVED if it already holds a leaf, never duplicated — the property the move caller
+    /// rests on entirely, and which the split caller needs for a different reason: a freshly spawned
+    /// pane can be [`reconcile`](Self::reconcile)d into place by another client's read before its
+    /// split lands, and the split must still put it where it was asked to go.
+    pub fn place_beside(
         &mut self,
         pane: PaneId,
         target: PaneId,
@@ -754,6 +782,39 @@ impl LayoutTree {
         // built next is still honorable — which is why this cannot half-apply.
         self.remove_pane(pane);
         self.insert_at_home(pane, &LeafHome::beside(target, side, dir))
+    }
+
+    /// Exchange the POSITIONS of two arranged panes — tmux `swap-pane`. Returns whether both
+    /// were there to exchange; `false` leaves the tree untouched.
+    ///
+    /// The sibling of [`place_beside`](Self::place_beside), and deliberately NOT expressible as a
+    /// pair of placements. A placement names where a pane goes; a swap names only that two panes
+    /// trade, and the shapes they trade into are whatever each already had. Doing it as two
+    /// placements would mean naming those shapes — reconstructing the ratio the user dragged, in
+    /// an order that still works when the two panes are each other's sibling. Exchanging the two
+    /// leaf ids where they sit keeps every division's id, direction and ratio by construction, so
+    /// there is nothing to reconstruct and nothing to get wrong.
+    ///
+    /// Swapping a pane with ITSELF is `false`, not a panic and not a silent success: it changes
+    /// nothing, and the caller reports "nothing moved" for it exactly as it does for a direction
+    /// with no neighbour.
+    ///
+    /// Both panes must hold a leaf HERE. A cross-window swap is not this function — the two panes
+    /// are in different trees and different pools, so it is the registry's
+    /// ([`SessionRegistry::swap_panes`](crate::SessionRegistry::swap_panes)), built out of
+    /// [`leaf_home`](Self::leaf_home) instead.
+    pub fn swap_panes(&mut self, a: PaneId, b: PaneId) -> bool {
+        if a == b {
+            return false;
+        }
+        let panes = self.panes();
+        if !panes.contains(&a) || !panes.contains(&b) {
+            return false;
+        }
+        if let Some(root) = self.root.as_mut() {
+            root.swap_ids(a, b);
+        }
+        true
     }
 
     /// Drop `pane`'s leaf; its sibling reclaims the space. A no-op if it is not arranged.
@@ -1407,6 +1468,34 @@ mod tests {
                 out.extend(split_ids(second));
                 out
             }
+        }
+    }
+
+    /// Every split's ratio in `node`, depth-first — [`split_ids`]' companion, so a test can assert
+    /// that a rearrangement kept the shares the user dragged as well as the dividers' identities.
+    fn ratios(node: &LayoutNode) -> Vec<f32> {
+        match node {
+            LayoutNode::Leaf(_) => Vec::new(),
+            LayoutNode::Split {
+                ratio,
+                first,
+                second,
+                ..
+            } => {
+                let mut out = vec![*ratio];
+                out.extend(ratios(first));
+                out.extend(ratios(second));
+                out
+            }
+        }
+    }
+
+    /// Drag the OUTERMOST divider of `tree` to `share` — a stand-in for the user having moved it,
+    /// so a test asserting that a rearrangement preserved the ratios has a ratio that is not the
+    /// default one every fresh split would coincidentally produce.
+    fn drag_outer_divider(tree: &mut LayoutTree, share: f32) {
+        if let Some(LayoutNode::Split { ratio, .. }) = tree.root.as_mut() {
+            *ratio = share;
         }
     }
 
@@ -2294,7 +2383,7 @@ mod tests {
         let mut tree = LayoutTree::new();
         heal(&mut tree, &ids(3)); // 0 | (1 | 2)
 
-        assert!(tree.split_beside(PaneId(3), PaneId(1), SplitSide::Second, SplitDir::Vertical));
+        assert!(tree.place_beside(PaneId(3), PaneId(1), SplitSide::Second, SplitDir::Vertical));
 
         assert_eq!(
             tree.leaf_home(PaneId(3)),
@@ -2318,7 +2407,7 @@ mod tests {
         let mut tree = LayoutTree::new();
         heal(&mut tree, &ids(3));
 
-        assert!(tree.split_beside(PaneId(3), PaneId(1), SplitSide::First, SplitDir::Horizontal));
+        assert!(tree.place_beside(PaneId(3), PaneId(1), SplitSide::First, SplitDir::Horizontal));
 
         assert_eq!(
             tree.leaf_home(PaneId(3)),
@@ -2338,19 +2427,89 @@ mod tests {
     /// reconciles it to the END, and only then does the split land. It must MOVE the pane rather
     /// than plant a second leaf for it — otherwise the outcome depends on who ran in between.
     ///
-    /// Revert-proof: drop `split_beside`'s `remove_pane` and `panes()` reports pane 3 TWICE.
+    /// Revert-proof: drop `place_beside`'s `remove_pane` and `panes()` reports pane 3 TWICE.
     #[test]
     fn a_split_moves_a_pane_an_earlier_reconcile_already_appended() {
         let mut tree = LayoutTree::new();
         heal(&mut tree, &ids(4)); // the interleaved reconcile: 0 | (1 | (2 | 3))
 
-        assert!(tree.split_beside(PaneId(3), PaneId(1), SplitSide::Second, SplitDir::Vertical));
+        assert!(tree.place_beside(PaneId(3), PaneId(1), SplitSide::Second, SplitDir::Vertical));
 
         assert_eq!(
             tree.panes(),
             vec![PaneId(0), PaneId(1), PaneId(3), PaneId(2)],
             "pane 3 moved beside its target and appears exactly once",
         );
+    }
+
+    /// A swap exchanges the two panes' POSITIONS and leaves every division exactly where it was —
+    /// the property that makes it different from two placements, asserted on the divisions
+    /// themselves rather than on the pane order alone.
+    ///
+    /// The control that makes it discriminate: the tree is given a NON-DEFAULT ratio first, so a
+    /// swap implemented as remove-and-reinsert (which mints a fresh split at the even share) fails
+    /// here while `panes()` alone would still read correct.
+    ///
+    /// Revert-proof: rewrite `swap_panes` as `remove_pane` + two `place_beside` calls and the split
+    /// ids come back different and the 0.8 share comes back 0.5.
+    #[test]
+    fn a_swap_exchanges_positions_and_keeps_every_division() {
+        let mut tree = LayoutTree::new();
+        heal(&mut tree, &ids(3)); // 0 | (1 | 2)
+        drag_outer_divider(&mut tree, 0.8);
+        let before = tree.root().expect("three panes are arranged").clone();
+
+        assert!(tree.swap_panes(PaneId(0), PaneId(2)));
+
+        assert_eq!(
+            tree.panes(),
+            vec![PaneId(2), PaneId(1), PaneId(0)],
+            "the two panes traded places and the untouched one stayed",
+        );
+        assert_eq!(
+            split_ids(tree.root().expect("still arranged")),
+            split_ids(&before),
+            "every divider kept its id — nothing was retired and re-minted",
+        );
+        assert_eq!(
+            ratios(tree.root().expect("still arranged")),
+            ratios(&before),
+            "and the share the user dragged is untouched",
+        );
+    }
+
+    /// Two panes that are each other's SIBLING are the case a remove-and-reinsert swap cannot do
+    /// in either order: removing the first collapses the very split the second would come home to.
+    /// Exchanging the ids in place has no order to get wrong.
+    #[test]
+    fn a_swap_of_two_siblings_needs_no_order() {
+        let mut tree = LayoutTree::new();
+        heal(&mut tree, &ids(2));
+        let before = tree.root().expect("two panes are arranged").clone();
+
+        assert!(tree.swap_panes(PaneId(0), PaneId(1)));
+
+        assert_eq!(tree.panes(), vec![PaneId(1), PaneId(0)]);
+        assert_eq!(
+            split_ids(tree.root().expect("still arranged")),
+            split_ids(&before),
+            "the divider between them is the same divider",
+        );
+    }
+
+    /// A pane this tree does not hold, and a pane swapped with itself, both answer `false` with the
+    /// arrangement untouched — the caller turns the first into a refusal and the second into
+    /// "nothing moved", and neither can be told apart from a partial application here.
+    #[test]
+    fn a_swap_that_cannot_happen_changes_nothing() {
+        let mut tree = LayoutTree::new();
+        heal(&mut tree, &ids(3));
+        let before = tree.clone();
+
+        assert!(!tree.swap_panes(PaneId(0), PaneId(9)), "9 is not arranged");
+        assert!(!tree.swap_panes(PaneId(9), PaneId(0)), "in either position");
+        assert!(!tree.swap_panes(PaneId(1), PaneId(1)), "nor with itself");
+        assert_eq!(tree, before, "and the arrangement never moved");
     }
 
     /// A target that holds no leaf here — it exited, it is floating, or it is another window's —
@@ -2362,7 +2521,7 @@ mod tests {
         heal(&mut tree, &ids(3));
         let before = tree.clone();
 
-        assert!(!tree.split_beside(PaneId(9), PaneId(7), SplitSide::Second, SplitDir::Vertical));
+        assert!(!tree.place_beside(PaneId(9), PaneId(7), SplitSide::Second, SplitDir::Vertical));
 
         assert_eq!(tree, before, "a refused split does not half-apply");
     }
@@ -2378,7 +2537,7 @@ mod tests {
         heal(&mut tree, &ids(3));
         let before = tree.clone();
 
-        assert!(!tree.split_beside(PaneId(1), PaneId(1), SplitSide::Second, SplitDir::Vertical));
+        assert!(!tree.place_beside(PaneId(1), PaneId(1), SplitSide::Second, SplitDir::Vertical));
 
         assert_eq!(tree, before, "the pane is still arranged where it was");
     }
@@ -2390,7 +2549,7 @@ mod tests {
         let mut tree = LayoutTree::new();
         heal(&mut tree, &ids(1));
 
-        assert!(tree.split_beside(PaneId(1), PaneId(0), SplitSide::Second, SplitDir::Vertical));
+        assert!(tree.place_beside(PaneId(1), PaneId(0), SplitSide::Second, SplitDir::Vertical));
 
         assert_eq!(tree.panes(), vec![PaneId(0), PaneId(1)]);
         assert_eq!(

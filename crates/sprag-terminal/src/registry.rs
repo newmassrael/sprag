@@ -342,6 +342,75 @@ impl Window {
             .copied()
     }
 
+    /// This window's live pool ids, read under its OWN workspace lock and returned — what
+    /// [`place_pane`](Self::place_pane) and [`select_pane`](Self::select_pane) take as `panes` on
+    /// the paths that start INSIDE the registry, where no host has resolved them already.
+    ///
+    /// The lock is taken and released here, never held across the call that consumes the answer,
+    /// so the registry-then-workspace order the module keeps is unbroken.
+    fn pane_ids(&self) -> Vec<PaneId> {
+        let pool = self
+            .workspace
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        pool.panes().iter().map(Pane::id).collect()
+    }
+
+    /// Whether this window TILES `pane` — it is in the pool and not floated out.
+    ///
+    /// Asked of the POOL and the float set rather than of the arrangement, which is the whole
+    /// point: the tree reconciles lazily, so a pane spawned since the last read holds no leaf yet
+    /// and a tree-membership test would refuse a target that is plainly there. Pool-minus-floating
+    /// is exactly the set [`reconcile_layout`](Self::reconcile_layout) arranges, so this answers
+    /// what the tree WILL say without depending on when anybody last read it.
+    fn tiles(&self, pane: PaneId) -> bool {
+        !self.floating.contains(&pane) && self.pane_ids().contains(&pane)
+    }
+
+    /// Exchange two TILED panes' positions in this window — the same-window half of
+    /// [`SessionRegistry::swap_panes`]. Answers whether both were there to exchange.
+    ///
+    /// RECONCILES FIRST, in [`place_pane`](Self::place_pane)'s exact shape and for its reason: a
+    /// pane that has not been arranged yet holds no leaf to exchange, and the swap must act on the
+    /// tiling as it IS rather than as it was when someone last read it. The exchange then goes
+    /// through [`bump_if_changed`](Self::bump_if_changed) like every other arrangement write, so a
+    /// swap that moved something bumps the revision and one that found nothing does not.
+    ///
+    /// [`active`](Self::active) is deliberately untouched: it names a PANE, and the pane the user
+    /// was on is still in this window. tmux and herdr both keep the user on the pane they swapped.
+    fn swap_tiled(&mut self, a: PaneId, b: PaneId) -> bool {
+        self.reconcile_own();
+        let mut swapped = false;
+        self.bump_if_changed(|window| {
+            swapped = window.layout.swap_panes(a, b);
+        });
+        swapped
+    }
+
+    /// Take in `arriving` at the place `leaving` just vacated — the destination half of a
+    /// CROSS-WINDOW [`swap`](SessionRegistry::swap_panes), where `home` was captured from this
+    /// window's own tree before `leaving`'s leaf collapsed.
+    ///
+    /// Reconciles first (which prunes the departed pane and would otherwise APPEND the arriving
+    /// one), then honors the home. `home` is `None` when `leaving` was this window's sole tiled
+    /// pane — nothing to be beside — and the reconcile's append is then the same arrangement by a
+    /// shorter route.
+    ///
+    /// **A window that was ON the departing pane lands on the arriving one**, and this is the one
+    /// place that answer is available: [`heal_active`](Self::heal_active) would hand off to a
+    /// neighbour, which is right when a pane merely closed and wrong here, because the cell the
+    /// user was looking at still exists and something specific took it.
+    fn adopt_at(&mut self, arriving: PaneId, home: Option<LeafHome>, leaving: PaneId) {
+        if let Some(home) = home {
+            self.homes.insert(arriving, home);
+        }
+        let was_on_it = self.active == Some(leaving);
+        self.reconcile_own();
+        if was_on_it {
+            self.active = Some(arriving);
+        }
+    }
+
     /// Self-heal the arrangement against this window's OWN live pool — the caller-less form of
     /// [`reconcile_layout`](Self::reconcile_layout), for the paths that change a window's pane set
     /// from INSIDE the registry (a cross-window move) rather than from a host that already holds
@@ -401,21 +470,28 @@ impl Window {
     }
 
     /// Divide `target`'s cell and put `pane` in the half on `side`, along `dir` — tmux
-    /// `split-window -h` / `-v`. Returns whether `target` was there to divide.
+    /// `split-window -h` / `-v` for a pane that was just born, tmux `move-pane` for one that is
+    /// already tiled here. Returns whether `target` was there to divide.
+    ///
+    /// ONE method for both because the two differ only in where the pane came from, which is a
+    /// fact about the CALLER: `LayoutTree::place_beside` moves an already-arranged pane rather
+    /// than duplicating it, so a split of a fresh pane and a re-placement of an existing one reach
+    /// the same insertion by the same path. A second method would be a second positioning rule to
+    /// keep in step with this one.
     ///
     /// RECONCILES FIRST, against the `panes` the caller resolved under the workspace lock, for
-    /// two reasons that are really one: the pane being placed was just spawned and is not in the
-    /// tree yet, and the target must be judged against the tiling as it IS rather than as it was
-    /// when someone last read it. Doing both inside this one `&mut Window` call is what makes the
-    /// placement atomic — [`reconcile_layout`](Self::reconcile_layout) is the only other thing
-    /// that moves a leaf, and it needs the same borrow, so no reconcile can land in between and
-    /// append the pane behind the split's back.
+    /// two reasons that are really one: the pane being placed may have been spawned a moment ago
+    /// and not be in the tree yet, and the target must be judged against the tiling as it IS
+    /// rather than as it was when someone last read it. Doing both inside this one `&mut Window`
+    /// call is what makes the placement atomic — [`reconcile_layout`](Self::reconcile_layout) is
+    /// the only other thing that moves a leaf, and it needs the same borrow, so no reconcile can
+    /// land in between and append the pane behind the placement's back.
     ///
     /// `false` leaves the window's arrangement exactly as the reconcile left it: the target is
     /// gone, floating, or another window's. The caller REFUSES on that — a direction the user
-    /// spelled is a request, not a hint, so a split that cannot reach its target must not
+    /// spelled is a request, not a hint, so a placement that cannot reach its target must not
     /// quietly become an append.
-    pub fn split_pane(
+    pub fn place_pane(
         &mut self,
         pane: PaneId,
         target: PaneId,
@@ -426,7 +502,7 @@ impl Window {
         self.reconcile_layout(panes);
         let mut placed = false;
         self.bump_if_changed(|window| {
-            placed = window.layout.split_beside(pane, target, side, dir);
+            placed = window.layout.place_beside(pane, target, side, dir);
         });
         placed
     }
@@ -577,6 +653,10 @@ pub enum PaneMoveError {
     DuplicateWindow(String),
     /// `join-pane` with the source and destination window being the SAME one — a no-op move.
     SameWindow(String),
+    /// `move-pane` with the pane and the target being the SAME pane. Refused rather than answered
+    /// "nothing moved", because unlike a swap this request has no reading at all: a pane cannot be
+    /// placed beside itself, and the division it asks for does not exist.
+    SamePane(PaneId),
 }
 
 impl std::fmt::Display for PaneMoveError {
@@ -588,6 +668,7 @@ impl std::fmt::Display for PaneMoveError {
             Self::LastPane => write!(f, "cannot break the only pane in a window"),
             Self::DuplicateWindow(name) => write!(f, "a window named {name:?} already exists"),
             Self::SameWindow(name) => write!(f, "source and destination window are both {name:?}"),
+            Self::SamePane(id) => write!(f, "cannot place pane {} beside itself", id.0),
         }
     }
 }
@@ -1068,6 +1149,172 @@ impl Session {
             self.windows[src_idx].reconcile_own();
             Ok(false)
         }
+    }
+
+    /// Put `pane` beside `target`, in the half on `side` along `dir` — tmux `move-pane`. Returns
+    /// whether the move CLOSED the source window (it does when the move emptied it).
+    ///
+    /// **Neither window is named**, and that is the design. A [`PaneId`] is registry-unique, so
+    /// `pane` implies its source window and `target` implies its destination — the rule
+    /// [`break_pane`](Self::break_pane) already applies to the source, applied to both ends. The
+    /// same call therefore re-places a pane inside its own window and moves it into another one,
+    /// with no mode flag and no second verb: whether the two windows differ is an OBSERVATION
+    /// about the two ids, never a choice the caller has to spell.
+    ///
+    /// This is to [`join_pane`](Self::join_pane) what a directional split is to a spawn — the same
+    /// move with a PLACE. `join_pane` remains the verb for a caller who knows the destination
+    /// window but not what is in it, and appends there; the two cover the two things a caller can
+    /// actually know, with nothing in between them.
+    ///
+    /// Every check runs BEFORE the pane leaves its pool, so a refusal moves nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`PaneMoveError::UnknownPane`] if no window of the session holds `pane` or `target`, or if
+    /// the destination window does not TILE `target` (it is floating there) — the placement rule
+    /// [`Window::place_pane`] states: a move that cannot reach its target must not quietly become
+    /// an append. [`PaneMoveError::SamePane`] if `pane` IS `target`.
+    pub fn move_pane(
+        &mut self,
+        pane: PaneId,
+        target: PaneId,
+        side: SplitSide,
+        dir: SplitDir,
+    ) -> Result<bool, PaneMoveError> {
+        if pane == target {
+            return Err(PaneMoveError::SamePane(pane));
+        }
+        let src_idx = self
+            .window_index_of_pane(pane)
+            .ok_or(PaneMoveError::UnknownPane(pane))?;
+        let dst_idx = self
+            .window_index_of_pane(target)
+            .ok_or(PaneMoveError::UnknownPane(target))?;
+        // The target must be TILED where it lives, checked before anything moves.
+        if !self.windows[dst_idx].tiles(target) {
+            return Err(PaneMoveError::UnknownPane(target));
+        }
+        if src_idx == dst_idx {
+            let panes = self.windows[dst_idx].pane_ids();
+            self.windows[dst_idx].place_pane(pane, target, side, dir, &panes);
+            return Ok(false);
+        }
+        let src_ws = Arc::clone(self.windows[src_idx].workspace());
+        let dst_ws = Arc::clone(self.windows[dst_idx].workspace());
+        // Take from the source, then adopt into the destination under a SEPARATE lock — never both
+        // pools held at once, the discipline `join_pane` keeps.
+        let taken = src_ws
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .close(pane)
+            .expect("window_index_of_pane found it in this pool");
+        dst_ws
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .adopt(taken);
+        let panes = self.windows[dst_idx].pane_ids();
+        self.windows[dst_idx].place_pane(pane, target, side, dir, &panes);
+        // tmux closes a source window a move emptied — `join_pane`'s rule, and reached the same
+        // way: the destination is a DIFFERENT window of this session, so removing the emptied
+        // source always leaves at least one behind.
+        let src_empty = src_ws
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .panes()
+            .is_empty();
+        if src_empty {
+            self.windows.remove(src_idx);
+            if self.current_window > src_idx {
+                self.current_window -= 1;
+            } else if self.current_window == src_idx {
+                self.current_window = src_idx.min(self.windows.len() - 1);
+            }
+            Ok(true)
+        } else {
+            self.windows[src_idx].reconcile_own();
+            Ok(false)
+        }
+    }
+
+    /// Exchange the POSITIONS of `a` and `b` — tmux `swap-pane`. Returns whether anything moved.
+    ///
+    /// Within ONE window this is a leaf exchange ([`LayoutTree::swap_panes`]) and every division
+    /// keeps its id, direction and ratio by construction. ACROSS two windows the panes trade pools
+    /// as well as places, which herdr refuses outright (`PaneSwapReason::CrossTab`) and tmux
+    /// allows; sprag allows it because [`move_pane`](Self::move_pane) already crosses a window, and
+    /// a swap that could not would be the same asymmetry in the other verb.
+    ///
+    /// The cross-window case is built from the float path's capture: each pane's
+    /// [`LeafHome`] is read while it still holds its leaf, and the other pane is inserted at it.
+    /// The two homes name siblings in DIFFERENT trees, so removing one cannot invalidate the
+    /// other — which is exactly why this is not two [`move_pane`](Self::move_pane) calls. A window
+    /// holding only the swapped pane has no home to give ([`LayoutTree::leaf_home`] answers `None`
+    /// for the sole leaf) and the incoming pane becomes its sole leaf, which is the same
+    /// arrangement by a shorter route.
+    ///
+    /// **The ACTIVE pane follows the pane within a window and the POSITION across two.** Within
+    /// one window nothing has to happen: `active` is a [`PaneId`], and the pane the user was on is
+    /// still in the window, merely elsewhere — tmux and herdr both keep the user on the pane they
+    /// swapped. Across two, the window whose active pane just LEFT cannot follow it, so it follows
+    /// the cell instead and lands on the arriving pane. That is a strictly better answer than
+    /// [`Window::reconcile_layout`]'s closed-pane successor (a neighbour), and it is available only
+    /// here, because only a swap knows what took the place.
+    ///
+    /// # Errors
+    ///
+    /// [`PaneMoveError::UnknownPane`] if no window of the session holds one of them, or if the
+    /// window that holds it does not TILE it. `a == b` is NOT an error: it is a well-formed request
+    /// that requires no motion, answered `false` like a direction with no neighbour.
+    pub fn swap_panes(&mut self, a: PaneId, b: PaneId) -> Result<bool, PaneMoveError> {
+        if a == b {
+            return Ok(false);
+        }
+        let a_idx = self
+            .window_index_of_pane(a)
+            .ok_or(PaneMoveError::UnknownPane(a))?;
+        let b_idx = self
+            .window_index_of_pane(b)
+            .ok_or(PaneMoveError::UnknownPane(b))?;
+        for (idx, pane) in [(a_idx, a), (b_idx, b)] {
+            if !self.windows[idx].tiles(pane) {
+                return Err(PaneMoveError::UnknownPane(pane));
+            }
+        }
+        if a_idx == b_idx {
+            return Ok(self.windows[a_idx].swap_tiled(a, b));
+        }
+        // Settle BOTH trees before reading a home off either: a home is a fact about where a leaf
+        // sits, and a pane arranged only in the pool has no leaf to describe yet.
+        self.windows[a_idx].reconcile_own();
+        self.windows[b_idx].reconcile_own();
+        // Capture BOTH homes before either leaf collapses — the moment they exist, exactly as the
+        // float path reads one. Different trees, so neither capture disturbs the other.
+        let (home_a, home_b) = (
+            self.windows[a_idx].layout().leaf_home(a),
+            self.windows[b_idx].layout().leaf_home(b),
+        );
+        let a_ws = Arc::clone(self.windows[a_idx].workspace());
+        let b_ws = Arc::clone(self.windows[b_idx].workspace());
+        // Take both out, then adopt both in: one pool lock at a time, never nested.
+        let taken_a = a_ws
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .close(a)
+            .expect("window_index_of_pane found it in this pool");
+        let taken_b = b_ws
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .close(b)
+            .expect("window_index_of_pane found it in this pool");
+        a_ws.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .adopt(taken_b);
+        b_ws.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .adopt(taken_a);
+        self.windows[a_idx].adopt_at(b, home_a, a);
+        self.windows[b_idx].adopt_at(a, home_b, b);
+        Ok(true)
     }
 }
 
@@ -1713,6 +1960,50 @@ impl SessionRegistry {
             .join_pane(pane, dst)
     }
 
+    /// Put `pane` beside `target` in the session named `session`, returning whether the source
+    /// window was closed — the registry-level entry the wire handler uses ([`Session::move_pane`]
+    /// derives BOTH windows from the two pane ids). tmux `move-pane`.
+    ///
+    /// # Errors
+    ///
+    /// [`PaneMoveError::UnknownSession`] if no session carries `session`; otherwise the refusals
+    /// [`Session::move_pane`] gives.
+    pub fn move_pane(
+        &mut self,
+        session: &str,
+        pane: PaneId,
+        target: PaneId,
+        side: SplitSide,
+        dir: SplitDir,
+    ) -> Result<bool, PaneMoveError> {
+        self.sessions
+            .iter_mut()
+            .find(|s| s.name == session)
+            .ok_or_else(|| PaneMoveError::UnknownSession(session.to_owned()))?
+            .move_pane(pane, target, side, dir)
+    }
+
+    /// Exchange the positions of `a` and `b` in the session named `session`, returning whether
+    /// anything moved — the registry-level entry the wire handler uses ([`Session::swap_panes`]
+    /// derives both windows). tmux `swap-pane`.
+    ///
+    /// # Errors
+    ///
+    /// [`PaneMoveError::UnknownSession`] if no session carries `session`; otherwise the refusals
+    /// [`Session::swap_panes`] gives.
+    pub fn swap_panes(
+        &mut self,
+        session: &str,
+        a: PaneId,
+        b: PaneId,
+    ) -> Result<bool, PaneMoveError> {
+        self.sessions
+            .iter_mut()
+            .find(|s| s.name == session)
+            .ok_or_else(|| PaneMoveError::UnknownSession(session.to_owned()))?
+            .swap_panes(a, b)
+    }
+
     /// Kill the window named `window` of the session named `session` — tmux `kill-window`.
     ///
     /// A NON-last window is removed and its panes drained ([`WindowKillOutcome::Removed`]),
@@ -2298,7 +2589,7 @@ mod tests {
         let window = default_window(&mut reg);
         let before = window.layout_revision();
 
-        assert!(window.split_pane(fresh, ids[0], SplitSide::Second, SplitDir::Vertical, &panes));
+        assert!(window.place_pane(fresh, ids[0], SplitSide::Second, SplitDir::Vertical, &panes));
 
         assert_eq!(
             window.layout().panes(),
@@ -2311,11 +2602,11 @@ mod tests {
         );
     }
 
-    /// The reconcile inside `split_pane` is what makes the target judged against the tiling as
+    /// The reconcile inside `place_pane` is what makes the target judged against the tiling as
     /// it IS: a pane that has EXITED still holds a leaf until something reconciles, and a split
     /// aimed at that stale leaf must be refused rather than dividing a ghost.
     ///
-    /// Revert-proof: drop `split_pane`'s `reconcile_layout` call and this split SUCCEEDS,
+    /// Revert-proof: drop `place_pane`'s `reconcile_layout` call and this split SUCCEEDS,
     /// putting the new pane beside a pane that is gone.
     #[test]
     fn a_split_refuses_a_target_that_has_exited_even_before_anyone_reconciled() {
@@ -2337,7 +2628,7 @@ mod tests {
         let window = default_window(&mut reg);
 
         assert!(
-            !window.split_pane(fresh, ids[1], SplitSide::Second, SplitDir::Vertical, &panes),
+            !window.place_pane(fresh, ids[1], SplitSide::Second, SplitDir::Vertical, &panes),
             "a split cannot divide a pane that is gone",
         );
         assert!(
@@ -3366,6 +3657,312 @@ mod tests {
             pool_ids(&reg, "0"),
             vec![a],
             "every refusal left the pane in place"
+        );
+    }
+
+    /// The arrangement the window named `w` tiles, in paint order — what a `move` / `swap` has to
+    /// be asserted against, since a pool order says only WHO is in a window, never where.
+    ///
+    /// Settles the window first, because the arrangement reconciles LAZILY and every production
+    /// read goes through one (`sprag_host::host::reconciled_layout`). A test reading the raw tree
+    /// would be reading a state no client can observe, and would call a freshly spawned pane
+    /// unarranged.
+    fn tiled(reg: &mut SessionRegistry, w: &str) -> Vec<PaneId> {
+        let name = default_name(reg);
+        let window = reg.window_mut(&name, w).expect("the window exists");
+        let panes: Vec<PaneId> = {
+            let pool = lock(window.workspace());
+            pool.panes().iter().map(Pane::id).collect()
+        };
+        window.reconcile_layout(&panes).panes()
+    }
+
+    /// The hole in herdr's pair of verbs, closed: `move-pane` re-places a pane INSIDE its own
+    /// window. herdr's `pane.move` answers `PaneMoveReason::SameTab` unchanged for this
+    /// (`src/app/api/panes.rs:685-707` at `9a4ce5e1`) and its `pane.swap` cannot express a
+    /// position, so the only way to say it there is a whole-tree `layout.apply`.
+    #[test]
+    fn move_pane_replaces_a_pane_inside_its_own_window() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        let ids = spawn_into(&reg, "0", 3);
+        let (a, b, c) = (ids[0], ids[1], ids[2]);
+        assert_eq!(
+            tiled(&mut reg, "0"),
+            vec![a, b, c],
+            "the append order it starts in"
+        );
+
+        assert!(
+            !reg.move_pane(&default, c, a, SplitSide::First, SplitDir::Horizontal)
+                .unwrap(),
+            "a within-window move closes no source window",
+        );
+
+        assert_eq!(
+            tiled(&mut reg, "0"),
+            vec![c, a, b],
+            "pane c landed LEFT of pane a, which is what was asked",
+        );
+        assert_eq!(
+            pool_ids(&reg, "0").len(),
+            3,
+            "and it moved rather than being duplicated",
+        );
+    }
+
+    /// The other cell of the same table: the SAME verb crosses a window, placing the pane beside a
+    /// target whose window it never had to name. herdr's `pane.swap` refuses to cross a tab and its
+    /// `pane.move` needs the destination spelled as a `tab_id`.
+    #[test]
+    fn move_pane_crosses_a_window_and_lands_where_it_was_asked() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        let src = spawn_into(&reg, "0", 2);
+        let (a, b) = (src[0], src[1]);
+        reg.new_window(&default, Some("1")).unwrap();
+        let dst = spawn_into(&reg, "1", 2);
+        let (c, d) = (dst[0], dst[1]);
+        reg.select_window(&default, "0").unwrap();
+        assert_eq!(tiled(&mut reg, "1"), vec![c, d]);
+
+        assert!(
+            !reg.move_pane(&default, b, c, SplitSide::Second, SplitDir::Vertical)
+                .unwrap(),
+            "the source kept a pane, so it was not closed",
+        );
+
+        assert_eq!(
+            tiled(&mut reg, "1"),
+            vec![c, b, d],
+            "b landed BELOW c — inside the row, not appended at the end join-pane would have chosen",
+        );
+        assert_eq!(tiled(&mut reg, "0"), vec![a], "and it left the source");
+        assert_eq!(
+            pool_ids(&reg, "1"),
+            vec![c, d, b],
+            "the pane moved pools whole"
+        );
+    }
+
+    /// A cross-window move that empties its source CLOSES it and re-clamps the current window —
+    /// `join_pane`'s rule, reached by the same path.
+    #[test]
+    fn move_pane_that_empties_the_source_closes_it() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        let a = spawn_into(&reg, "0", 1)[0];
+        reg.new_window(&default, Some("1")).unwrap();
+        let b = spawn_into(&reg, "1", 1)[0];
+        reg.select_window(&default, "0").unwrap();
+
+        assert!(
+            reg.move_pane(&default, a, b, SplitSide::Second, SplitDir::Horizontal)
+                .unwrap(),
+            "the source emptied, so it was closed",
+        );
+
+        let session = reg.session(&default).unwrap();
+        assert_eq!(session.windows().len(), 1, "only the destination remains");
+        assert_eq!(session.current_window().name(), "1");
+        assert_eq!(tiled(&mut reg, "1"), vec![b, a]);
+    }
+
+    /// `move-pane` refuses without moving anything: a pane beside ITSELF, an unknown pane in either
+    /// position, an unknown session, and — the placement rule — a target that is not TILED.
+    #[test]
+    fn move_pane_refuses_and_moves_nothing() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        let ids = spawn_into(&reg, "0", 3);
+        let (a, b, c) = (ids[0], ids[1], ids[2]);
+        let before = tiled(&mut reg, "0");
+
+        assert_eq!(
+            reg.move_pane(&default, a, a, SplitSide::Second, SplitDir::Horizontal)
+                .unwrap_err(),
+            PaneMoveError::SamePane(a),
+        );
+        assert_eq!(
+            reg.move_pane(
+                &default,
+                PaneId(999),
+                a,
+                SplitSide::Second,
+                SplitDir::Horizontal
+            )
+            .unwrap_err(),
+            PaneMoveError::UnknownPane(PaneId(999)),
+        );
+        assert_eq!(
+            reg.move_pane(
+                &default,
+                a,
+                PaneId(999),
+                SplitSide::Second,
+                SplitDir::Horizontal
+            )
+            .unwrap_err(),
+            PaneMoveError::UnknownPane(PaneId(999)),
+        );
+        assert_eq!(
+            reg.move_pane("nope", a, b, SplitSide::Second, SplitDir::Horizontal)
+                .unwrap_err(),
+            PaneMoveError::UnknownSession("nope".to_owned()),
+        );
+
+        // A FLOATING target holds no leaf, so there is no cell to divide. Refused rather than
+        // silently appended — the rule `place_pane` states.
+        let panes = pool_ids(&reg, "0");
+        let window = default_window(&mut reg);
+        assert!(window.set_floating(c, true, &panes));
+        window.reconcile_layout(&panes);
+        assert_eq!(
+            reg.move_pane(&default, a, c, SplitSide::Second, SplitDir::Horizontal)
+                .unwrap_err(),
+            PaneMoveError::UnknownPane(c),
+        );
+
+        assert_eq!(
+            tiled(&mut reg, "0"),
+            before
+                .iter()
+                .copied()
+                .filter(|pane| *pane != c)
+                .collect::<Vec<_>>(),
+            "every refusal left the arrangement as the float found it",
+        );
+    }
+
+    /// A cross-window swap — which herdr refuses outright (`PaneSwapReason::CrossTab`) and tmux
+    /// allows. Each pane takes the other's PLACE, not merely the other's window: pane `b` lands
+    /// where `d` sat inside the destination's row rather than appended after it.
+    #[test]
+    fn swap_panes_across_windows_trades_places_not_just_pools() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        let src = spawn_into(&reg, "0", 2);
+        let (a, b) = (src[0], src[1]);
+        reg.new_window(&default, Some("1")).unwrap();
+        let dst = spawn_into(&reg, "1", 3);
+        let (c, d, e) = (dst[0], dst[1], dst[2]);
+        assert_eq!(tiled(&mut reg, "1"), vec![c, d, e]);
+
+        assert!(reg.swap_panes(&default, b, d).unwrap());
+
+        assert_eq!(
+            tiled(&mut reg, "1"),
+            vec![c, b, e],
+            "b took d's place in the MIDDLE of the row, not the end",
+        );
+        assert_eq!(tiled(&mut reg, "0"), vec![a, d], "and d took b's");
+        assert_eq!(
+            reg.session(&default).unwrap().windows().len(),
+            2,
+            "no window closed"
+        );
+    }
+
+    /// The active pane follows the PANE within one window and the POSITION across two — the only
+    /// answer available to a window whose active pane just left, and a better one than the
+    /// closed-pane successor (a neighbour) `reconcile_layout` would otherwise reach for.
+    ///
+    /// Revert-proof: drop `adopt_at`'s `was_on_it` restore and the first assertion reads `a`,
+    /// the neighbour `heal_active` hands off to.
+    #[test]
+    fn a_swap_carries_the_user_with_the_pane_at_home_and_with_the_cell_abroad() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        let src = spawn_into(&reg, "0", 2);
+        let (a, b) = (src[0], src[1]);
+        reg.new_window(&default, Some("1")).unwrap();
+        let dst = spawn_into(&reg, "1", 2);
+        let (c, d) = (dst[0], dst[1]);
+
+        // Put each window ON the pane that is about to leave it.
+        for (window, pane) in [("0", b), ("1", d)] {
+            let panes = pool_ids(&reg, window);
+            let name = default_name(&reg);
+            assert!(
+                reg.window_mut(&name, window)
+                    .expect("the window exists")
+                    .select_pane(pane, &panes)
+            );
+        }
+
+        assert!(reg.swap_panes(&default, b, d).unwrap());
+
+        let session = reg.session(&default).unwrap();
+        let active = |w: &str| {
+            session
+                .windows()
+                .iter()
+                .find(|window| window.name() == w)
+                .expect("the window exists")
+                .active_pane()
+        };
+        assert_eq!(
+            active("0"),
+            Some(d),
+            "window 0 stayed on the cell it was on"
+        );
+        assert_eq!(active("1"), Some(b), "and so did window 1");
+
+        // Within ONE window nothing has to happen: the user stays on the pane they swapped.
+        let mut reg = reg;
+        let panes = pool_ids(&reg, "0");
+        let name = default_name(&reg);
+        assert!(
+            reg.window_mut(&name, "0")
+                .expect("the window exists")
+                .select_pane(a, &panes)
+        );
+        assert!(reg.swap_panes(&default, a, d).unwrap());
+        assert_eq!(
+            reg.session(&default)
+                .unwrap()
+                .windows()
+                .iter()
+                .find(|window| window.name() == "0")
+                .expect("the window exists")
+                .active_pane(),
+            Some(a),
+            "a same-window swap leaves the user on the pane, which merely moved",
+        );
+        assert_eq!(
+            tiled(&mut reg, "0"),
+            vec![d, a],
+            "and the two did trade places"
+        );
+        let _ = c;
+    }
+
+    /// `swap-pane` refuses an unreachable pane and answers "nothing moved" for a legal request that
+    /// needs no motion — the `select_pane` split between a typo and an edge.
+    #[test]
+    fn swap_panes_refuses_the_unreachable_and_answers_nothing_moved_for_the_idle() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        let ids = spawn_into(&reg, "0", 2);
+        let (a, b) = (ids[0], ids[1]);
+        let before = tiled(&mut reg, "0");
+
+        assert!(
+            !reg.swap_panes(&default, a, a).unwrap(),
+            "a pane swapped with itself is legal and moves nothing",
+        );
+        assert_eq!(
+            reg.swap_panes(&default, a, PaneId(999)).unwrap_err(),
+            PaneMoveError::UnknownPane(PaneId(999)),
+        );
+        assert_eq!(
+            reg.swap_panes("nope", a, b).unwrap_err(),
+            PaneMoveError::UnknownSession("nope".to_owned()),
+        );
+        assert_eq!(
+            tiled(&mut reg, "0"),
+            before,
+            "and nothing moved on any of them"
         );
     }
 

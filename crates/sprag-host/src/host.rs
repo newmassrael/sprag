@@ -1626,6 +1626,11 @@ pub(crate) fn neighbors(
 /// Divide `target`'s cell in the scoped window and put `pane` in the half on `side` — the ONE
 /// place a directional split lands (see [`crate::wire::SPLIT_ACTION`]).
 ///
+/// SCOPED to the current window, which is what separates it from
+/// [`SessionRegistry::move_pane`](sprag_terminal::SessionRegistry::move_pane): a split places a
+/// pane the caller just spawned INTO the window it is looking at, so both panes are that window's
+/// by construction, while a move names a target whose window is whatever holds it.
+///
 /// Returns whether the target was there to divide. The pool is read under the WORKSPACE lock and
 /// handed down, so the two locks stay sequential as everywhere else.
 pub(crate) fn split_pane(
@@ -1643,7 +1648,7 @@ pub(crate) fn split_pane(
         .collect();
     lock(registry)
         .window_mut(scope.session(), scope.window())
-        .is_some_and(|window| window.split_pane(pane, target, side, dir, &panes))
+        .is_some_and(|window| window.place_pane(pane, target, side, dir, &panes))
 }
 
 /// Take a pane out of the tiling or put it back, then answer with the resulting
