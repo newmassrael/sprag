@@ -41,3 +41,13 @@ tracing = { workspace = true }
 [dev-dependencies]
 # The wire tests boot a real `sprag-term` over a socket, so they need the daemon binary.
 sprag-host = { workspace = true }
+# The boot-rollback test drives the boot over an explicit endpoint and then probes the daemon
+# itself (HostEndpoint + HostConn), so it speaks the transport directly rather than through the
+# client under test.
+sprag-rpc = { workspace = true }
+# QuitSink: the frontend edge `WireHost::boot` takes. An integration test is an outside caller,
+# so it needs the trait by the same path a frontend does.
+pinion-core = { workspace = true }
+# The wire vocabulary the probe addresses its own reads with — the same builders the client uses,
+# never a hand-spelled path.
+serde_json = { workspace = true }

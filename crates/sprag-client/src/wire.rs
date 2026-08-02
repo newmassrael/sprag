@@ -70,6 +70,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::fmt;
 use std::io;
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
@@ -102,7 +103,7 @@ use sprag_host::{
 use sprag_input::{Modifiers, MouseButton, MouseEventKind, MouseInput};
 use sprag_rpc::{
     CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, CLIENT_SIZE_METHOD, COLS_PARAM,
-    HostConn, ROWS_PARAM, new_gui_client_id, runtime_path,
+    HostConn, HostEndpoint, ROWS_PARAM, new_gui_client_id,
 };
 use sprag_terminal::{
     LayoutSnapshot, LayoutWire, PaneExit, PaneId, SessionInfo, SplitDir, WindowInfo,
@@ -126,9 +127,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// produces output, so waiting forever is its contract rather than a hazard.
 const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
 
-/// Env override: the host socket path to connect-or-spawn on, instead of the well-known
-/// `sprag-host.sock` (a test's private socket, or an operator-run host).
-const HOST_SOCK_ENV: &str = "SPRAG_GUI_HOST_SOCK";
 /// Env override: the `sprag-term` binary to spawn (else the sibling of the GUI exe,
 /// else `sprag-term` on `PATH`).
 const HOST_BIN_ENV: &str = "SPRAG_GUI_HOST_BIN";
@@ -779,10 +777,13 @@ pub struct WireHost {
     /// the same session; re-pointed by [`switch_session`](WireHost::switch_session). `RefCell`
     /// because `WireHost` is UI-thread-only.
     session: RefCell<String>,
-    /// The host socket this client connect-or-spawned on — kept so a session switch can open a
+    /// The host endpoint this client connect-or-spawned on — kept so a session switch can open a
     /// FRESH poll connection to the same daemon (the request conn is re-scoped in place; the poll
     /// thread is torn down and a new one spawned on a new connection).
-    sock: PathBuf,
+    ///
+    /// The [`HostEndpoint`] rather than its path, so a later failure on this daemon is reported
+    /// the way the boot's was: naming WHICH daemon, and what pointed this client at it.
+    endpoint: HostEndpoint,
     /// The pane grid `(cols, rows)` this client booted at — the birth size a sidebar "+" gives a
     /// new session (it reflows to this window on first paint, like every boot pane).
     boot_dims: (u16, u16),
@@ -853,6 +854,218 @@ impl PollThread {
     }
 }
 
+/// What a client is booting: WHICH daemon, WHICH session, and the panes to open in it.
+///
+/// A struct rather than six positional arguments because these are the boot's INPUTS, and naming
+/// them is what lets [`WireHost::boot`] be a decision over its inputs instead of a reader of
+/// process globals — the same discipline the session resolution follows. It is also the extension
+/// point: a launcher that learns more about the session it wants (a working directory, an
+/// environment) adds a field here rather than a seventh argument at three call sites.
+pub struct BootSpec<'a> {
+    /// The daemon to connect-or-spawn on, WITH its provenance — every failure this boot reports
+    /// names it, so a client can never drive a daemon nobody named without saying so.
+    pub endpoint: &'a HostEndpoint,
+    /// The session to ATTACH to (adopting its live panes), or `None` to allocate a fresh one.
+    pub session: Option<&'a str>,
+    /// The command each booted pane runs, or `None` for the host's own `$SHELL`.
+    pub argv: Option<&'a [String]>,
+    /// The pane grid this client boots at.
+    pub cols: u16,
+    /// The pane grid this client boots at.
+    pub rows: u16,
+    /// How many panes to ensure when this boot CREATES its session (an attach adopts what is
+    /// there and ignores this).
+    pub panes: usize,
+}
+
+/// A session THIS boot created — and the obligation that comes with having created it.
+///
+/// The daemon outlives its clients by design, so a session a client made and then abandoned lives
+/// forever: it holds its name, it is restored from the durability snapshot, and nothing will ever
+/// come back for it. Nine such sessions accumulated on a live daemon in one afternoon
+/// (R278) before this type existed.
+///
+/// It is deliberately NOT a `Drop` guard. Drop cannot compose the error it must report into, and
+/// the whole point of the rollback is that the failure SAYS what it left behind — so the undo is
+/// an explicit consuming call with the cause in hand.
+struct BornSession<'a> {
+    /// Where the session was created, for the rollback's own connection and for the report.
+    endpoint: &'a HostEndpoint,
+    /// The name the daemon allocated.
+    session: String,
+}
+
+impl BornSession<'_> {
+    /// Undo the creation, then report `cause` with what the undo achieved.
+    ///
+    /// The kill goes over a **fresh** connection, not the boot's: the failure being guarded is
+    /// usually that connection being unusable — a `HostConn` whose read deadline tripped is
+    /// finished by design ([`HostConn::set_read_deadline`]) and would refuse the one request that
+    /// matters. A fresh connect also re-tests the daemon, which is the thing being asked about.
+    fn roll_back(self, cause: io::Error) -> BootError {
+        match self.kill() {
+            Ok(()) => {
+                tracing::info!(
+                    target: "sprag_gui::wire",
+                    endpoint = %self.endpoint,
+                    session = %self.session,
+                    "boot failed; removed the session it had created",
+                );
+                BootError {
+                    endpoint: self.endpoint.clone(),
+                    residue: BootResidue::Removed(self.session),
+                    cause,
+                }
+            }
+            Err(failure) => {
+                tracing::error!(
+                    target: "sprag_gui::wire",
+                    endpoint = %self.endpoint,
+                    session = %self.session,
+                    %failure,
+                    "boot failed and the session it created could NOT be removed; it is orphaned",
+                );
+                BootError {
+                    endpoint: self.endpoint.clone(),
+                    residue: BootResidue::Orphan {
+                        session: self.session,
+                        failure,
+                    },
+                    cause,
+                }
+            }
+        }
+    }
+
+    /// One `kill_session` over a connection opened for it, with its reply BOUNDED — a daemon that
+    /// accepts and then stops answering must not hold a client that is already failing.
+    ///
+    /// The connect gets NO retry window, unlike the boot's. [`CONNECT_TIMEOUT`] exists for the
+    /// spawn race — a daemon we just started has not bound yet — and this daemon answered a
+    /// request moments ago, so the three ways it can behave now are: it accepts (instantly, a
+    /// listening socket's backlog does not depend on the accept loop), it is gone (instantly
+    /// refused), or it is wedged (accepts, then the read deadline below applies). Retrying for
+    /// five seconds serves none of them, and it would spend those seconds with a failing client
+    /// showing nothing.
+    fn kill(&self) -> io::Result<()> {
+        let mut conn = HostConn::connect(self.endpoint.path(), Duration::ZERO)?;
+        conn.set_read_deadline(Some(REQUEST_DEADLINE))?;
+        conn.call(
+            "scene/invoke",
+            invoke(
+                &mux_action_path(KILL_SESSION_ACTION),
+                json!({ "name": self.session }),
+            ),
+        )?;
+        Ok(())
+    }
+}
+
+/// What a failed boot LEFT on the daemon.
+///
+/// Three states, and the type makes the wrong ones unrepresentable: an orphan always carries both
+/// the session's name and why removing it failed, because an operator told "something was left
+/// behind" without either of those has been told nothing actionable.
+#[derive(Debug)]
+enum BootResidue {
+    /// Nothing: the boot failed before it created a session, or it ATTACHED to one — which it
+    /// must never remove, having not made it.
+    None,
+    /// The boot created this session and has removed it again.
+    Removed(String),
+    /// The boot created this session and it is STILL on the daemon, because the removal failed.
+    Orphan { session: String, failure: io::Error },
+}
+
+/// Why a client's boot failed — including which daemon it was talking to and what it left there.
+///
+/// Returned inside an [`io::Error`] so every existing caller keeps its `io::Result`, and reachable
+/// with [`get_ref`](io::Error::get_ref) + `downcast_ref` for one that needs the facts rather than
+/// the prose. That is the point of it being a type: "did this boot leave a session behind?" is a
+/// question a caller — or a test — must be able to ask without parsing a sentence.
+#[derive(Debug)]
+pub struct BootError {
+    endpoint: HostEndpoint,
+    residue: BootResidue,
+    cause: io::Error,
+}
+
+impl BootError {
+    /// A failure with nothing left behind: the boot never got as far as creating a session, or it
+    /// ATTACHED to one — which is not this boot's to remove however badly the rest of it went.
+    fn left_nothing(endpoint: HostEndpoint, cause: io::Error) -> Self {
+        Self {
+            endpoint,
+            residue: BootResidue::None,
+            cause,
+        }
+    }
+
+    /// The daemon this boot was talking to, with the provenance of how it was chosen.
+    #[must_use]
+    pub fn endpoint(&self) -> &HostEndpoint {
+        &self.endpoint
+    }
+
+    /// The session this boot CREATED, whether or not it survived — `None` when the boot created
+    /// none (it failed earlier, or it attached to an existing session).
+    #[must_use]
+    pub fn created(&self) -> Option<&str> {
+        match &self.residue {
+            BootResidue::None => None,
+            BootResidue::Removed(session) | BootResidue::Orphan { session, .. } => Some(session),
+        }
+    }
+
+    /// The session this boot created and could NOT remove — `Some` only when it is still on the
+    /// daemon, which is exactly when a caller has something to act on.
+    #[must_use]
+    pub fn orphan(&self) -> Option<&str> {
+        match &self.residue {
+            BootResidue::Orphan { session, .. } => Some(session),
+            BootResidue::None | BootResidue::Removed(_) => None,
+        }
+    }
+}
+
+impl fmt::Display for BootError {
+    /// The endpoint, the cause, then what became of a created session — in that order, because
+    /// "which daemon" is the question the silent fallback made unanswerable and it belongs first.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.endpoint, self.cause)?;
+        match &self.residue {
+            BootResidue::None => Ok(()),
+            BootResidue::Removed(session) => {
+                write!(
+                    f,
+                    " (the session `{session}` this boot created was removed)"
+                )
+            }
+            BootResidue::Orphan { session, failure } => write!(
+                f,
+                " (the session `{session}` this boot created is STILL on that daemon — removing \
+                 it failed: {failure}; remove it with `sprag kill-session -t {session}`)",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for BootError {
+    /// The underlying wire failure, so a caller walking the chain reaches the real cause rather
+    /// than only this report of it.
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.cause)
+    }
+}
+
+impl From<BootError> for io::Error {
+    /// Carry the boot's own error KIND outward: a caller matching on `NotFound` or
+    /// `ConnectionRefused` sees what the wire saw, with the boot's report attached as the payload.
+    fn from(error: BootError) -> Self {
+        Self::new(error.cause.kind(), error)
+    }
+}
+
 impl WireHost {
     /// Connect-or-spawn a `sprag-term` daemon, resolve this client's session, and boot
     /// `n_panes` panes running `argv` (`None` = the host's default `$SHELL`) at `cols x rows`
@@ -870,7 +1083,8 @@ impl WireHost {
     ///
     /// Any failure to spawn the daemon, connect to its socket within `CONNECT_TIMEOUT`, or
     /// resolve the session / boot the panes over RPC. The daemon is NOT reaped on failure —
-    /// it is a detached process this GUI does not own.
+    /// it is a detached process this GUI does not own. Every failure carries a [`BootError`]
+    /// (naming the endpoint, and what became of a session this boot created); see [`boot`](Self::boot).
     pub fn spawn_or_attach(
         argv: Option<Vec<String>>,
         cols: u16,
@@ -879,23 +1093,66 @@ impl WireHost {
         on_change: Arc<dyn Fn() + Send + Sync>,
         quit: Arc<dyn QuitSink>,
     ) -> io::Result<Self> {
-        // Connect-or-spawn on the well-known socket. A daemon there outlives every client, so
+        // The ONE place this boot reads the process environment. [`SESSION_ENV`] names a session
+        // to ATTACH to (absent creates), and the endpoint resolves by the client precedence
+        // ([`HostEndpoint::client`]). Everything below decides on its INPUTS, which is what makes
+        // the boot testable against a private daemon without touching process globals.
+        let requested = std::env::var_os(SESSION_ENV)
+            .filter(|name| !name.is_empty())
+            .map(|name| name.to_string_lossy().into_owned());
+        Self::boot(
+            &BootSpec {
+                endpoint: &HostEndpoint::client(),
+                session: requested.as_deref(),
+                argv: argv.as_deref(),
+                cols,
+                rows,
+                panes: n_panes,
+            },
+            on_change,
+            quit,
+        )
+    }
+
+    /// The boot, over an EXPLICIT [`BootSpec`] — the body [`spawn_or_attach`](Self::spawn_or_attach)
+    /// wraps once it has read the environment, and the entry point for a caller that already knows
+    /// which daemon it means (a launcher that resolved the endpoint itself, a test harness with a
+    /// private socket).
+    ///
+    /// # The session this boot creates is this boot's to undo
+    ///
+    /// When the spec names no session, the session resolution CREATES one on a daemon that
+    /// outlives this client. Everything after that can still fail — panes, the mirrors, the poll
+    /// connection — and a client that just returned the error would leave that session behind
+    /// forever. So the tail runs as ONE fallible expression, and its failure is handed to the
+    /// rollback, which removes the session over a FRESH connection and reports what it managed to
+    /// do (see this module's `BornSession`).
+    ///
+    /// An ATTACHED session is never rolled back: a client that failed to attach must not remove a
+    /// session it did not make. That is structural here — the guard is only constructed on the
+    /// create path.
+    ///
+    /// # Errors
+    ///
+    /// Any failure to reach the daemon or to boot against it, always as a [`BootError`]: the
+    /// endpoint that was reached, the cause, and what became of a session this boot created.
+    pub fn boot(
+        spec: &BootSpec<'_>,
+        on_change: Arc<dyn Fn() + Send + Sync>,
+        quit: Arc<dyn QuitSink>,
+    ) -> io::Result<Self> {
+        // Connect-or-spawn on the resolved endpoint. A daemon there outlives every client, so
         // first try to JOIN one; only if none answers do we spawn a detached `--daemon` and
         // connect through the bind-race retry. We do NOT own its lifetime — no kill, no
         // PDEATHSIG — which is the whole point: the session survives this GUI. A spawn RACE is
         // safe, because the daemon's single-instance flock leaves exactly one alive and every
         // client connects to it.
-        let sock = host_socket();
-        let mut conn = match HostConn::connect(&sock, Duration::ZERO) {
-            Ok(conn) => {
-                tracing::info!(target: "sprag_gui::wire", path = %sock.display(), "joined a running host");
-                conn
-            }
-            Err(_) => {
-                spawn_daemon(&sock)?;
-                tracing::info!(target: "sprag_gui::wire", path = %sock.display(), "spawned a daemon host");
-                HostConn::connect(&sock, CONNECT_TIMEOUT)?
-            }
+        let endpoint = spec.endpoint;
+        let mut conn = match Self::reach_daemon(endpoint) {
+            Ok(conn) => conn,
+            // Nothing has been created yet, so there is no residue to report — only WHICH daemon
+            // could not be reached, which is the fact the silent fallback used to swallow.
+            Err(cause) => return Err(BootError::left_nothing(endpoint.clone(), cause).into()),
         };
         // Bound every UI-thread reply from here on ([`REQUEST_DEADLINE`]). This is the ONE request
         // connection for the client's whole life — `attach_in_place` re-scopes it rather than
@@ -917,13 +1174,59 @@ impl WireHost {
         // ALLOCATES a fresh one (spawn our own panes) — the "each launch is its own session"
         // model. `boot_panes` branches on `created`, replacing the old "did we spawn the host"
         // key with "did we create the session".
-        // Read the requested-session env HERE (not inside `resolve_session`, which stays a pure
-        // decision over its inputs): [`SESSION_ENV`] names a session to ATTACH to, absent creates.
-        let requested = std::env::var_os(SESSION_ENV)
-            .filter(|name| !name.is_empty())
-            .map(|name| name.to_string_lossy().into_owned());
         let (session, created) =
-            resolve_session(&mut conn, requested.as_deref(), argv.as_deref(), cols, rows)?;
+            match resolve_session(&mut conn, spec.session, spec.argv, spec.cols, spec.rows) {
+                Ok(resolved) => resolved,
+                Err(cause) => return Err(BootError::left_nothing(endpoint.clone(), cause).into()),
+            };
+        // From here on this boot OWNS the session if it made it. The guard is the only thing
+        // that knows how to undo the creation, and the single `match` below is the only place
+        // the tail's failure can reach — so no later edit can add an early return that skips it.
+        let born = created.then(|| BornSession {
+            endpoint,
+            session: session.clone(),
+        });
+        let booted = Self::boot_into_session(conn, spec, session, created, on_change, quit);
+        match (booted, born) {
+            (Ok(host), _) => Ok(host),
+            (Err(cause), Some(born)) => Err(born.roll_back(cause).into()),
+            (Err(cause), None) => Err(BootError::left_nothing(endpoint.clone(), cause).into()),
+        }
+    }
+
+    /// Join a running daemon on `endpoint`, else spawn one and connect through the bind-race
+    /// retry. Both outcomes are logged WITH the endpoint's provenance, so even a successful boot
+    /// records which daemon it chose and what pointed it there.
+    fn reach_daemon(endpoint: &HostEndpoint) -> io::Result<HostConn> {
+        match HostConn::connect(endpoint.path(), Duration::ZERO) {
+            Ok(conn) => {
+                tracing::info!(target: "sprag_gui::wire", %endpoint, "joined a running host");
+                Ok(conn)
+            }
+            Err(_) => {
+                spawn_daemon(endpoint.path())?;
+                tracing::info!(target: "sprag_gui::wire", %endpoint, "spawned a daemon host");
+                HostConn::connect(endpoint.path(), CONNECT_TIMEOUT)
+            }
+        }
+    }
+
+    /// Everything after the session exists: the panes, the mirrors, and the poll thread.
+    ///
+    /// Split out as ONE fallible expression so that [`boot`](Self::boot) has exactly one place to
+    /// catch a failure that must undo a created session. Any `?` added here is covered by that
+    /// rollback for free; a `?` added to `boot` itself after the creation would not be, which is
+    /// why the tail lives in its own function rather than behind a comment asking for care.
+    fn boot_into_session(
+        mut conn: HostConn,
+        spec: &BootSpec<'_>,
+        session: String,
+        created: bool,
+        on_change: Arc<dyn Fn() + Send + Sync>,
+        quit: Arc<dyn QuitSink>,
+    ) -> io::Result<Self> {
+        let endpoint = spec.endpoint;
+        let (cols, rows) = (spec.cols, spec.rows);
         conn.scope_to(session.clone());
         // R-PR67: this GUI is one attached CLIENT across its two connections. Announce the shared id
         // on the request conn and attach it to its session, so the daemon counts this window as a
@@ -932,7 +1235,7 @@ impl WireHost {
         let client_id = new_gui_client_id();
         send_hello(&mut conn, &client_id);
         send_attach(&mut conn);
-        let seeds = boot_panes(&mut conn, argv.as_deref(), cols, rows, n_panes, created)?;
+        let seeds = boot_panes(&mut conn, spec.argv, cols, rows, spec.panes, created)?;
 
         // Subscribe-then-snapshot: read the change-notification baseline BEFORE the
         // initial frame fetches, so output landing during boot makes the first `waitFor`
@@ -973,7 +1276,7 @@ impl WireHost {
             conn: RefCell::new(conn),
             client_id: client_id.clone(),
             session: RefCell::new(session.clone()),
-            sock: sock.clone(),
+            endpoint: endpoint.clone(),
             boot_dims: (cols, rows),
             lost_session: Arc::new(AtomicBool::new(false)),
             mru: RefCell::new(vec![session.clone()]),
@@ -984,7 +1287,7 @@ impl WireHost {
         // The poll thread's own connection — a parked `scene/waitFor` on it never blocks the
         // request connection above (separate host handler threads). Scoped to the SAME session, so
         // its `waitFor`/`revision`/re-queries watch the client's own session and never another's.
-        let mut poll_conn = HostConn::connect(&sock, CONNECT_TIMEOUT)?;
+        let mut poll_conn = HostConn::connect(endpoint.path(), CONNECT_TIMEOUT)?;
         poll_conn.scope_to(session);
         // The poll connection is a SECOND connection of the SAME client: announce the same id so the
         // daemon groups both under one attached client (not two). Only the request conn attaches.
@@ -1091,7 +1394,12 @@ impl WireHost {
         // A fresh poll connection scoped to the target (its own host handler thread) — connected
         // BEFORE the commit so a daemon that will not answer aborts the switch rather than leaving
         // the client with mirrors swapped but no live updates.
-        let mut poll_conn = HostConn::connect(&self.sock, CONNECT_TIMEOUT)?;
+        //
+        // Reported through the endpoint: this is the one failure a user meets AFTER the boot, and
+        // "Connection refused" naming no daemon is the same silence the boot's own failures were
+        // taught out of ([`HostEndpoint::context`](sprag_rpc::HostEndpoint::context)).
+        let mut poll_conn = HostConn::connect(self.endpoint.path(), CONNECT_TIMEOUT)
+            .map_err(|error| self.endpoint.context(&error))?;
         poll_conn.scope_to(session.to_owned());
         // The fresh poll conn is a new connection of the SAME client (the old one was torn down by
         // the switch): re-announce the shared id so the daemon keeps grouping both under one client.
@@ -2221,17 +2529,6 @@ fn host_bin() -> PathBuf {
         return sibling;
     }
     PathBuf::from("sprag-term")
-}
-
-/// The host socket the GUI connects to: `SPRAG_GUI_HOST_SOCK` if set (a test or an
-/// operator-run host), else the WELL-KNOWN `sprag-host.sock` under the runtime dir — the same
-/// default a spawned `sprag-term --daemon` binds, so a spawner and its daemon agree with no
-/// per-instance keying. One endpoint, whether we join an existing daemon or spawn one.
-fn host_socket() -> PathBuf {
-    match std::env::var_os(HOST_SOCK_ENV) {
-        Some(path) => PathBuf::from(path),
-        None => runtime_path(sprag_rpc::HOST_SOCKET_NAME),
-    }
 }
 
 /// Spawn a detached `sprag-term --daemon` bound to `sock`.
@@ -4972,6 +5269,158 @@ mod tests {
         assert!(
             seen.lock().expect("record lock").is_empty(),
             "attach sends no new_session — it must never birth a pane",
+        );
+    }
+
+    /// A host socket that accepts ONE connection, records every request and answers each with a
+    /// null result — for the rollback, whose subject is the connection it opens for ITSELF rather
+    /// than one it was handed.
+    ///
+    /// The accept is BOUNDED: a rollback that never connects (the state the revert-proof puts this
+    /// in) must make the test fail on its `seen` assertion, not hang on the join. A test that hangs
+    /// when the code is wrong is a test whose failure nobody can read.
+    fn a_kill_recording_host(
+        tag: &str,
+    ) -> (PathBuf, JoinHandle<()>, SockGuard, Arc<Mutex<Vec<Value>>>) {
+        use std::io::Write;
+        let path = sock_path(tag);
+        let listener = UnixListener::bind(&path).expect("bind the throwaway host socket");
+        listener
+            .set_nonblocking(true)
+            .expect("poll the listener rather than park on it");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_srv = Arc::clone(&seen);
+        let server = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            let stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break Some(stream),
+                    Err(_) if std::time::Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => break None,
+                }
+            };
+            let Some(stream) = stream else { return };
+            stream
+                .set_nonblocking(false)
+                .expect("serve the accepted connection blocking");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone the stream"));
+            let mut writer = stream;
+            let mut line = String::new();
+            while reader.read_line(&mut line).is_ok_and(|n| n > 0) {
+                let request: Value = serde_json::from_str(line.trim()).unwrap_or(Value::Null);
+                let id = request["id"].clone();
+                seen_srv.lock().expect("record lock").push(request);
+                let response = json!({ "jsonrpc": "2.0", "id": id, "result": Value::Null });
+                let _ = writeln!(writer, "{response}");
+                let _ = writer.flush();
+                line.clear();
+            }
+        });
+        (path.clone(), server, SockGuard(path), seen)
+    }
+
+    /// The rollback sends exactly ONE `kill_session` naming the session this boot created, over a
+    /// connection it opened itself, and reports the session as REMOVED.
+    ///
+    /// REVERT-PROOF: make [`BornSession::kill`] a no-op `Ok(())` and `seen` is empty — the daemon
+    /// was never asked, and the "was removed" this reports would be a lie.
+    #[test]
+    fn the_rollback_asks_the_daemon_to_kill_the_session_it_created() {
+        let (path, server, _guard, seen) = a_kill_recording_host("rollback");
+        let endpoint = HostEndpoint::given("the rollback test", path);
+        let born = BornSession {
+            endpoint: &endpoint,
+            session: "7".to_owned(),
+        };
+
+        let reported = born.roll_back(io::Error::other("the poll connection failed"));
+        server.join().expect("server thread exited");
+
+        let seen = seen.lock().expect("record lock");
+        assert_eq!(seen.len(), 1, "exactly one request — the kill — was sent");
+        assert_eq!(seen[0]["method"], "scene/invoke");
+        assert_eq!(
+            seen[0]["params"]["path"],
+            json!(mux_action_path(KILL_SESSION_ACTION)),
+        );
+        assert_eq!(seen[0]["params"]["args"], json!({ "name": "7" }));
+        assert_eq!(reported.created(), Some("7"));
+        assert_eq!(
+            reported.orphan(),
+            None,
+            "the daemon answered, so nothing is left behind",
+        );
+        assert!(
+            reported
+                .to_string()
+                .contains("the session `7` this boot created was removed"),
+            "the report says what it did about the session: {reported}",
+        );
+    }
+
+    /// When the rollback itself cannot run, the failure NAMES the orphan and the exact command
+    /// that removes it — the case R278 hit nine times, where the operator was told nothing.
+    ///
+    /// The whole SENTENCE is pinned rather than three fragments of it, because this string is the
+    /// deliverable: an operator reads it once, at the worst moment, and its order (which daemon →
+    /// what went wrong → what is still there → what to type) is what makes it usable. Only the
+    /// OS's own errno text is left unpinned, being the one part this code does not author.
+    ///
+    /// REVERT-PROOF: collapse [`BootResidue::Orphan`] into `Removed` (or drop the name from the
+    /// message) and both the `orphan()` fact and the remedy line go.
+    #[test]
+    fn an_unremovable_session_is_named_with_its_remedy() {
+        // A path nobody serves, spelled literally so the rendering below is exact: the rollback's
+        // own connect fails, which is precisely the state a boot that failed BECAUSE the daemon
+        // went away leaves behind.
+        let endpoint = HostEndpoint::given("the rollback test", "/nonexistent/dir/x.sock");
+        let born = BornSession {
+            endpoint: &endpoint,
+            session: "3".to_owned(),
+        };
+
+        let reported = born.roll_back(io::Error::other("the layout read failed"));
+
+        assert_eq!(reported.created(), Some("3"));
+        assert_eq!(reported.orphan(), Some("3"), "it is still on the daemon");
+        let rendered = reported.to_string();
+        let opening = "/nonexistent/dir/x.sock (given by the rollback test): the layout read \
+                       failed (the session `3` this boot created is STILL on that daemon — \
+                       removing it failed: ";
+        assert!(
+            rendered.starts_with(opening),
+            "the report reads: which daemon, what failed, what is still there — in that order.\n\
+             expected to start with: {opening}\n                    rendered: {rendered}",
+        );
+        assert!(
+            rendered.ends_with("; remove it with `sprag kill-session -t 3`)"),
+            "and it ends with the command that removes the orphan: {rendered}",
+        );
+    }
+
+    /// A boot that never created a session reports no residue at all — the ATTACH path must not
+    /// claim to have made (or removed) anything.
+    #[test]
+    fn a_boot_that_created_nothing_reports_no_residue() {
+        let endpoint = HostEndpoint::given("the rollback test", sock_path("unreached"));
+        let reported = BootError::left_nothing(
+            endpoint,
+            io::Error::new(io::ErrorKind::ConnectionRefused, "Connection refused"),
+        );
+
+        assert_eq!(reported.created(), None);
+        assert_eq!(reported.orphan(), None);
+        let as_io: io::Error = reported.into();
+        assert_eq!(
+            as_io.kind(),
+            io::ErrorKind::ConnectionRefused,
+            "the wire's own kind survives the wrapping, for a caller that matches on it",
+        );
+        assert!(
+            as_io.to_string().contains("(given by the rollback test)"),
+            "even a boot that reached nothing names the endpoint it tried: {as_io}",
         );
     }
 }

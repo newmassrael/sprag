@@ -55,3 +55,11 @@ pub use agent::{agent_phrase, agent_urgency};
 /// private so there is no second spelling of it, the same anti-aliasing rule
 /// [`sprag_host::wire`]'s address families follow.
 pub use wire::WireHost;
+
+/// The boot's own vocabulary: what a client is booting ([`BootSpec`]), and what a boot that failed
+/// did about the session it had created ([`BootError`]).
+///
+/// Public for the same reason [`WireHost`] is — a frontend that boots a client is the caller of
+/// [`WireHost::boot`], and a caller that must decide what to tell its user about a failed boot
+/// needs the facts (which daemon, what was left behind) rather than a formatted sentence.
+pub use wire::{BootError, BootSpec};
