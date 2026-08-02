@@ -142,7 +142,7 @@ use sprag_host::wire::{
     events_slot_since, find_slot_for, project_slot_for, regex_slot_for,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
-use sprag_rpc::{HOST_SOCKET, HostConn, socket_path};
+use sprag_rpc::{HOST_SOCKET, HostConn, HostEndpoint, socket_path};
 
 /// A management command is talking to an already-running daemon, so the socket either accepts
 /// at once or there is nothing to manage — no spawn-race retry to wait out.
@@ -790,12 +790,18 @@ fn clear_snapshot() {
 
 /// Connect to the running daemon, mapping a refused connection to a clear "no server" message
 /// rather than a raw errno — a management command needs the daemon to already exist.
+///
+/// The message names the endpoint WITH its provenance ([`sprag_rpc::HostEndpoint`]), not just its
+/// path: "no server running at
+/// /run/user/1000/sprag-host.sock" leaves an operator who overrode the socket — or who meant to
+/// and did not — with no way to tell which of those they are looking at. That ambiguity is how a
+/// probe pointed at one daemon ended up driving another (R278).
 fn connect() -> io::Result<HostConn> {
-    let sock = socket_path(HOST_SOCKET);
-    HostConn::connect(&sock, CONNECT_TIMEOUT).map_err(|_| {
+    let endpoint = HostEndpoint::for_opts(HOST_SOCKET);
+    HostConn::connect(endpoint.path(), CONNECT_TIMEOUT).map_err(|_| {
         io::Error::new(
             io::ErrorKind::NotFound,
-            format!("no server running at {}", sock.display()),
+            format!("no server running at {endpoint}"),
         )
     })
 }

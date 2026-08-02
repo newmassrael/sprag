@@ -25,10 +25,12 @@ use pinion_rpc::RpcIngress;
 use pinion_rpc_transport::{Exposure, TransportControl, UnixSocketTransport};
 
 pub mod client;
+pub mod endpoint;
 pub use client::{
     CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, CLIENT_SIZE_METHOD, COLS_PARAM,
     HostConn, ROWS_PARAM, SESSION_PARAM, gui_client_prefix, new_gui_client_id,
 };
+pub use endpoint::{CLIENT_SOCKET_ENV, CLIENT_SOCKET_ENVS, EndpointOrigin, HostEndpoint};
 
 /// The well-known host socket file name — the endpoint a `sprag-term` daemon binds and a
 /// `sprag-gui` client connect-or-spawns on. Defined here, in the shared transport crate, so
@@ -106,15 +108,19 @@ static ENDPOINT: OnceLock<TransportControl> = OnceLock::new();
 /// Non-fatal on bind failure (logged at `warn`; the caller's other transports,
 /// e.g. stdin, are unaffected). Call once per process.
 pub fn mount(ingress: Arc<dyn RpcIngress>, opts: SocketOpts) {
-    let path = socket_path(opts);
+    // The endpoint, not a bare path: what this process BINDS is reported with the same
+    // provenance a client reports what it CONNECTS to, so the two ends of one wire are read the
+    // same way in one log (`endpoint.rs`).
+    let endpoint = HostEndpoint::for_opts(opts);
     let exposure = Exposure::from_serving(boot_enabled(opts));
-    let control = match UnixSocketTransport::serve_with_exposure(&path, ingress, exposure) {
+    let control = match UnixSocketTransport::serve_with_exposure(endpoint.path(), ingress, exposure)
+    {
         Ok(control) => control,
         Err(error) => {
             tracing::warn!(
                 target: "sprag_rpc",
                 socket = opts.socket_name,
-                path = %path.display(),
+                endpoint = %endpoint,
                 %error,
                 "RPC socket bind failed; endpoint unavailable"
             );
@@ -131,7 +137,7 @@ pub fn mount(ingress: Arc<dyn RpcIngress>, opts: SocketOpts) {
     tracing::info!(
         target: "sprag_rpc",
         socket = opts.socket_name,
-        path = %path.display(),
+        endpoint = %endpoint,
         enabled,
         "RPC socket mounted (SIGUSR1 enables, SIGUSR2 disables)"
     );
@@ -187,13 +193,13 @@ fn install_control_signals(socket_name: &'static str) {
 /// uses, exposed so a daemon can derive per-endpoint sidecar files (its single-instance lock,
 /// its log) from the ONE path that identifies it, rather than from a second, independently
 /// spelled default that an override could desynchronize.
+///
+/// The PATH alone, for the callers whose subject is a file name derived from it. A caller that
+/// will REPORT the endpoint wants [`HostEndpoint::for_opts`] instead, which keeps the provenance
+/// this drops.
 #[must_use]
 pub fn socket_path(opts: SocketOpts) -> PathBuf {
-    resolve_socket_path(
-        std::env::var_os(opts.path_env),
-        std::env::var_os("XDG_RUNTIME_DIR"),
-        opts.socket_name,
-    )
+    HostEndpoint::for_opts(opts).into_path()
 }
 
 /// A runtime-directory path for `file_name` (`$XDG_RUNTIME_DIR/<file_name>`, else
@@ -211,7 +217,10 @@ pub fn runtime_path(file_name: &str) -> PathBuf {
 /// `XDG_RUNTIME_DIR`; with neither, under the temp dir. A fixed,
 /// execution-independent location is the point -- the endpoint is found the
 /// same way regardless of how the process was launched.
-fn resolve_socket_path(
+///
+/// `pub(crate)` for [`endpoint`], which layers provenance over this one resolution rather than
+/// spelling a second copy of the runtime-dir rule.
+pub(crate) fn resolve_socket_path(
     explicit: Option<OsString>,
     xdg_runtime: Option<OsString>,
     socket_name: &str,
