@@ -292,6 +292,36 @@ fn the_cli_manages_windows_over_the_socket() {
     );
 }
 
+/// `--version` answers off a socket with NO daemon behind it — R281.
+///
+/// The point is what it does NOT do. Every other command connects first, so a version that needed
+/// a server could not answer the one question asked of a misbehaving install: which build is this.
+/// The socket here is a path nothing is listening on, which is why the assertion is about the exit
+/// code and stdout rather than about the string alone — a command that failed to reach a daemon
+/// also prints nothing on stdout, and the two look identical if only stderr is read.
+#[test]
+fn version_answers_without_a_daemon() {
+    let sock = socket_path();
+    for flag in ["--version", "-V", "version"] {
+        let run = sprag(&sock, &[flag]);
+        assert!(run.ok, "{flag} succeeded with no server: {}", run.stderr);
+        assert_eq!(
+            run.stdout.trim(),
+            concat!("sprag ", env!("CARGO_PKG_VERSION")),
+            "{flag} prints the build on stdout",
+        );
+    }
+    // The control: the same absent daemon refuses a command that needs one, so the success above
+    // is `--version` not contacting it — not this socket happening to work.
+    let needs_one = sprag(&sock, &["ls"]);
+    assert!(!needs_one.ok, "ls has no server to answer it");
+    assert!(
+        needs_one.stderr.contains("no server running"),
+        "and says so: {}",
+        needs_one.stderr,
+    );
+}
+
 /// A session the LISTING hides is still one the CLI can address — R281.
 ///
 /// The two are different questions and the pre-flight used to answer the second with the first.

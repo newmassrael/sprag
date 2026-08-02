@@ -195,6 +195,10 @@ fn run() -> io::Result<()> {
         Some("unbind-key") => unbind_key(args.collect()),
         Some("show-options") => show_options(args.collect()),
         Some("set-option") => set_option(args.collect()),
+        Some("-V" | "--version" | "version") => {
+            print_version();
+            Ok(())
+        }
         Some("-h" | "--help" | "help") | None => {
             print_usage();
             Ok(())
@@ -757,8 +761,22 @@ fn print_usage() {
          \x20      sprag events [-t SESSION] [--since N] [-f]\n\
          \x20      sprag <list-keys | bind-key [-nr] [-T prefix|root] KEY ACTION…\n\
          \x20             | unbind-key [-n] [-T prefix|root] KEY>\n\
-         \x20      sprag <show-options [-v] [NAME] | set-option [-u] NAME [VALUE]> [-g]"
+         \x20      sprag <show-options [-v] [NAME] | set-option [-u] NAME [VALUE]> [-g]\n\
+         \x20      sprag <--version | --help>"
     );
+}
+
+/// `--version`: the build, on STDOUT, contacting no daemon.
+///
+/// Every other command here needs a running server; this one must not, because the first question
+/// asked of a tool that is behaving oddly is which build it is — and a version that only answers
+/// while the daemon is healthy cannot answer it. It is also the process-start CONTROL every
+/// latency comparison subtracts (R278's harness, R281's re-measurement): a command that does the
+/// fork/exec and nothing else. Until R281 sprag had none, so that control was measuring the
+/// unknown-command path — which prints usage to STDERR and exits 2, i.e. neither the same work nor
+/// a success, and the harness recorded the exit code for two rounds before anyone read it.
+fn print_version() {
+    println!("sprag {}", env!("CARGO_PKG_VERSION"));
 }
 
 /// Env override: the `sprag-gui` binary [`attach`] launches (else the sibling of this exe — they
