@@ -40,8 +40,10 @@ pub const SESSION_PARAM: &str = "session";
 /// the other's bytes.
 ///
 /// Bump it whenever a wire type's serialised shape changes in a way an older peer cannot read.
-/// You will not have to remember to: `sprag_host::wire`'s shape pin fails on any such change and
-/// names this constant.
+/// You will not have to remember to: `sprag_host::wire`'s shape pin renders one canonical value of
+/// each such type and fails on the bytes, naming this constant. It covers the shapes sprag owns
+/// AND the cell frame it borrows from pinion — the latter because a shape can move with no sprag
+/// source line changed at all (see version 2 below), which is the case a reviewer cannot catch.
 ///
 /// # Why it exists
 ///

@@ -945,8 +945,21 @@ mod tests {
     /// The hand-parsed slots (`panes`, `revision`) are deliberately absent: a client reads those
     /// key by key with explicit fallbacks, so adding a key cannot break one. What is pinned is what
     /// serde decodes WHOLE, which is where a shape change turns into a type error at slot nine.
+    ///
+    /// # The case that motivates rendering bytes rather than reading diffs
+    ///
+    /// [`CellFrame`](crate::CellFrame) is the biggest thing a client decodes whole, and sprag does
+    /// not own its shape: [`sprag_grid::wire`]'s interned style carries pinion's cell vocabulary
+    /// verbatim, on purpose, so that an upstream ADDITION is a compile error here instead of
+    /// silent data loss. A respelling is neither. pinion R1540 gave `UnderlineStyle` a
+    /// `rename_all = "lowercase"` and every sprag frame's `"underline"` changed value — **with no
+    /// sprag source line touched, in a commit whose entire sprag-side diff was a rev string**.
+    /// Version 1 of this pin would not have noticed; two unrelated tests holding literal payloads
+    /// did, by luck. So the frame is pinned here, where the failure names the number to move.
     #[test]
     fn the_wire_shape_is_what_this_protocol_number_stands_for() {
+        use pinion_core::term_grid::{CellAttrs, GridBuffer, Hyperlink, TermCell, UnderlineStyle};
+        use pinion_core::{Color, TermColor};
         use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId, SessionInfo, WindowInfo};
 
         assert_eq!(
@@ -989,6 +1002,49 @@ mod tests {
             })
             .expect("an arrangement serialises"),
             r#"{"revision":3,"tree":{"nodes":[{"leaf":1}],"root":0},"floating":[9]}"#,
+            "{}",
+            BUMP,
+        );
+
+        // The cell frame — the shape sprag BORROWS. Every field of the interned style is spelled
+        // by making the one cell carry a non-default value of it: a default-everywhere buffer
+        // would pin only the unit variants and would miss a rename of `Rgb` or `Curly`. The
+        // hyperlink table has the entry the cell's index names, so this canonical value is one
+        // `decode` accepts rather than merely one `encode` can emit.
+        // Built through the builders because `CellAttrs` is `#[non_exhaustive]` — which is the
+        // right shape for a pin anyway: an upstream field ADDED here does not fail to compile, it
+        // appears in the rendered bytes below, and that is the failure carrying the instruction.
+        let attrs = CellAttrs::empty()
+            .with_bold(true)
+            .with_dim(true)
+            .with_italic(true)
+            .with_underline_style(UnderlineStyle::Curly)
+            .with_blink(true)
+            .with_reverse(true)
+            .with_hidden(true)
+            .with_strikethrough(true);
+        let mut styled = TermCell::new(
+            "A",
+            TermColor::Rgb(Color::rgb(1, 2, 3)),
+            TermColor::Indexed(4),
+        )
+        .with_attrs(attrs)
+        .with_underline_color(TermColor::Indexed(5));
+        styled.hyperlink = Some(pinion_core::term_grid::HyperlinkId(0));
+        let cells = GridBuffer::new(1, 1)
+            .with_row(0, [styled])
+            .with_hyperlinks([Hyperlink::new("https://example.test")])
+            .with_row_generation(0, 7);
+        assert_eq!(
+            serde_json::to_string(&crate::CellFrame {
+                cells,
+                facts: crate::PaneScrollFacts {
+                    scrollback_len: 11,
+                    visible_rows: 1,
+                },
+            })
+            .expect("a cell frame serialises"),
+            r#"{"cells":{"cols":1,"rows":1,"cursor":{"col":0,"row":0,"shape":"Block","visible":false,"cursor_color":null,"blink":false},"screen":"Main","generations":[7],"styles":[{"fg":{"Rgb":{"r":1,"g":2,"b":3,"a":255}},"bg":{"Indexed":4},"attrs":{"bold":true,"dim":true,"italic":true,"underline":"curly","blink":true,"reverse":true,"hidden":true,"strikethrough":true},"underline_color":{"Indexed":5},"hyperlink":0,"width":"Narrow"}],"lines":[{"text":[[1,"A"]],"style":[[1,0]]}],"hyperlinks":[{"uri":"https://example.test","id":null}]},"scrollback_len":11,"visible_rows":1}"#,
             "{}",
             BUMP,
         );
