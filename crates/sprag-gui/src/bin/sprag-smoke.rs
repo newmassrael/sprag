@@ -97,6 +97,10 @@ fn main() -> ExitCode {
             // the one-pane correspondence that check has just established — and it leaves the pane
             // set exactly as it found it.
             check_an_agents_state_reaches_the_painted_pane_title(&mut smoke, &mut report);
+            // Beside the check above and for the same reason: it drives the DAEMON's pane and waits
+            // for the CLIENT to paint the consequence, so it needs the one-pane correspondence that
+            // check establishes. It leaves the pane set as it found it (a `cd` moves no pane).
+            check_a_sessions_sampled_activity_reaches_its_painted_row(&mut smoke, &mut report);
             // The keymap gate, HERE because it splits: after the check above, which needs exactly one
             // pane, and before the one below, which leaves several standing.
             check_the_gui_follows_the_users_keymap(&mut smoke, &mut report);
@@ -1179,6 +1183,124 @@ fn check_an_agents_state_reaches_the_painted_pane_title(smoke: &mut Smoke, repor
 /// (a title is one entry, the rows beside it others), and a phrase is looked for across the lot.
 fn joined(text: &[String]) -> String {
     text.join(" ")
+}
+
+/// R282's whole chain, in pixels: a fact SAMPLED from the operating system by the daemon reaches the
+/// session rail's subtitle over its own wire address, through a client mirror, joined onto the right
+/// row by name.
+///
+/// Until R282 the session list carried this fact, so a client got it for free — and paid a `/proc`
+/// walk of the box for the privilege on every poll wake. Now it is a separate question the client
+/// asks separately, which is four new places for it to be dropped: the daemon's sampler, the wire
+/// address, the poll thread's mirror, and the join in the sidebar. Every one of them has a unit test;
+/// none of those would notice if the rail simply stopped drawing the line.
+///
+/// The drive is a `cd` into a directory this run creates, holding a `.git/HEAD` that names a branch
+/// no repository on this machine has. That makes the assertion unfalsifiable by accident: the string
+/// cannot arrive from the box's own state, only from this pane's cwd being read and its `HEAD`
+/// parsed. The CONTROL is the same assertion taken BEFORE the drive — a check whose "after" state
+/// was already true proves nothing about the drive.
+fn check_a_sessions_sampled_activity_reaches_its_painted_row(
+    smoke: &mut Smoke,
+    report: &mut Report,
+) {
+    let branch = format!("r282-{}", std::process::id());
+    let dir = smoke.state.join(format!("worktree-{branch}"));
+    let made = std::fs::create_dir_all(dir.join(".git")).and_then(|()| {
+        std::fs::write(dir.join(".git/HEAD"), format!("ref: refs/heads/{branch}\n"))
+    });
+    report.check(
+        &format!("a work tree to drive a pane into ({made:?})"),
+        made.is_ok(),
+    );
+    if made.is_err() {
+        return;
+    }
+
+    let Some(session) = smoke.attached_session() else {
+        report.check("the client says which session to drive", false);
+        return;
+    };
+    let Ok(mut daemon) = smoke.daemon() else {
+        report.check("the daemon takes a second connection to drive it by", false);
+        return;
+    };
+    let ids = daemon_panes(&mut daemon, &session);
+    let Some(&id) = ids.first() else {
+        report.check(&format!("a pane to drive (daemon {ids:?})"), false);
+        return;
+    };
+
+    // The control: nothing paints this branch before the pane is in that work tree.
+    let already = smoke
+        .tags()
+        .map(|tags| {
+            tags.values()
+                .any(|node| joined(&node.text).contains(&branch))
+        })
+        .unwrap_or(false);
+    report.check(
+        "no session row claims the branch before a pane is working on it",
+        !already,
+    );
+
+    let cd = format!("cd {}\n", dir.display());
+    let drove: Result<Value, _> = daemon.call(
+        "scene/invoke",
+        json!({
+            "path": format!("/pane_{id}/sprag_input/external/text"),
+            "args": { "text": cd },
+            "session": session,
+        }),
+    );
+    // Waited on the painted CONDITION, not on the drive's answer: the text action returns when the
+    // bytes reach the PTY, and between there and a painted subtitle lie a shell's chdir, the
+    // daemon's next sample (bounded by the display tolerance, not by this call), the client's next
+    // poll wake, and a frame.
+    let painted = smoke.wait_for(|s| {
+        let tags = s.tags().ok()?;
+        tags.iter()
+            .find(|(tag, node)| {
+                tag.starts_with("sprag_gui.stab.") && joined(&node.text).contains(&branch)
+            })
+            .map(|(tag, node)| format!("{tag}: {:?}", node.text))
+    });
+    // The DAEMON's own answer, asked directly — the discriminator that splits this chain in half. If
+    // the sample carries the branch and the rail does not, the client's mirror or its join is at
+    // fault; if the sample does not carry it either, nothing downstream can be blamed.
+    let sampled: Result<Value, _> = daemon.call(
+        "scene/query",
+        json!({ "path": "/sprag_mux/external/session_activity.0" }),
+    );
+    // What the rail actually paints, reported WITH the verdict rather than left for a rerun: a gate
+    // that cannot say what it saw cannot be debugged, and this one has four places to break.
+    let rows: Vec<String> = smoke
+        .tags()
+        .map(|tags| {
+            tags.iter()
+                .filter(|(tag, _)| tag.starts_with("sprag_gui.stab."))
+                .map(|(tag, node)| format!("{tag}={:?}", node.text))
+                .collect()
+        })
+        .unwrap_or_default();
+    report.check(
+        &format!(
+            "the sampled branch is PAINTED on the session's own row ({painted:?}, drive {drove:?}, pane {id} of {ids:?} in {session}, rail {rows:?}, daemon {sampled:?})"
+        ),
+        painted.is_ok(),
+    );
+    // ...and the same string reaches the screen reader, through `sidebar_access_name` rather than
+    // through the painted subtitle — two readers of one sample, and the rail is the one surface
+    // where a sighted check cannot stand in for the announced one.
+    let announced = smoke
+        .access()
+        .values()
+        .filter_map(|node| node["name"].as_str().map(str::to_owned))
+        .find(|name| name.contains(&branch));
+    report.check(
+        &format!("and a screen reader is told the same thing ({announced:?})"),
+        announced.is_some(),
+    );
 }
 
 fn check_terminal_output_never_reaches_the_shaper(smoke: &mut Smoke, report: &mut Report) {
