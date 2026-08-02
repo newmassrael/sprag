@@ -26,7 +26,10 @@ use sprag_host::wire::{
     project_slot_for,
 };
 use sprag_host::{CellFrame, mux_action_path, pane_input_path};
-use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn};
+use sprag_rpc::{
+    CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn, PROTOCOL_FIELD,
+    PROTOCOL_PARAM, WIRE_PROTOCOL,
+};
 
 /// Kills + reaps the spawned host on scope exit (including a test panic), so a failed
 /// assertion never leaks a `sprag-term` — and unlinks its socket, so it leaks no file either.
@@ -2997,4 +3000,128 @@ fn a_report_outranks_the_daemons_scrape_and_a_release_gives_the_pane_back() {
         "the verdict is a rule's again: {entry}",
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A request written the way a client from BEFORE the shape agreement wrote one — no `protocol`
+/// key — put on the wire BY HAND, because the point is a request this build can no longer produce
+/// (`HostConn` adds the key at its one seam).
+///
+/// Returns the daemon's whole reply line, so the test reads exactly what an old client would have.
+/// The connect retries like [`HostConn::connect`] does, for the same reason: the daemon binds
+/// asynchronously and a bare connect would race it.
+fn raw_request(sock: &std::path::Path, line: &str) -> Value {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut stream = loop {
+        match UnixStream::connect(sock) {
+            Ok(stream) => break stream,
+            Err(error) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "the daemon never bound {}: {error}",
+                    sock.display(),
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    };
+    writeln!(stream, "{line}").expect("write the request");
+    stream.flush().expect("flush the request");
+    let mut reply = String::new();
+    BufReader::new(stream)
+        .read_line(&mut reply)
+        .expect("read the reply");
+    serde_json::from_str(reply.trim()).expect("the daemon answers JSON")
+}
+
+/// A daemon refuses a request written against a wire shape it does not speak — the half of the
+/// agreement a CLIENT cannot perform, because an old client contains no check to run.
+///
+/// This is the direction that bit. R264 flattened the layout wire; a `sprag-tui` left over from
+/// before it created a session and then died decoding the ninth reply with a serde message about
+/// an integer. With this, its FIRST request is refused with a sentence naming both numbers, and
+/// nothing is created at all.
+///
+/// REVERT-PROOF: delete the `protocol_refused` call in `dispatch_one` and this reads `result`
+/// where it expects `error`.
+#[test]
+fn a_request_without_the_wire_protocol_is_refused_by_name() {
+    let (_host, sock) = spawn_host();
+
+    let old = raw_request(
+        &sock,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "scene/query",
+            "params": { "path": mux_action_path(PANES_SLOT) },
+        })
+        .to_string(),
+    );
+
+    let message = old["error"]["message"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a client with no protocol must be refused, got: {old}"));
+    assert!(
+        message.contains(&format!("speaks wire protocol {WIRE_PROTOCOL}")),
+        "the refusal names what THIS daemon speaks: {message}",
+    );
+    assert!(
+        message.contains("a client older than this check"),
+        "and what the caller spoke, which is nothing: {message}",
+    );
+    assert!(
+        message.contains("sprag kill-server"),
+        "and the action that resolves it: {message}",
+    );
+}
+
+/// The CONTROL for the refusal above: the same request, carrying this build's protocol, is served.
+/// Without it, a daemon that refused everything would look like a passing test.
+#[test]
+fn the_same_request_carrying_this_protocol_is_served() {
+    let (_host, sock) = spawn_host();
+
+    let current = raw_request(
+        &sock,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "scene/query",
+            "params": { "path": mux_action_path(PANES_SLOT), PROTOCOL_PARAM: WIRE_PROTOCOL },
+        })
+        .to_string(),
+    );
+
+    assert!(
+        current["result"].is_array(),
+        "a request that declares this build's shape is answered: {current}",
+    );
+    assert!(current["error"].is_null(), "and is not refused: {current}");
+}
+
+/// The daemon ANSWERS with its own protocol, which is the other direction's only evidence: a
+/// daemon older than its client ignores the request param and serves happily, so a client can only
+/// learn the truth from a reply. `HostConn::handshake` is what reads it.
+#[test]
+fn the_hello_reply_carries_the_daemons_protocol() {
+    let (_host, sock) = spawn_host();
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+
+    let reply = conn
+        .call(
+            CLIENT_HELLO_METHOD,
+            json!({ CLIENT_PARAM: "cli-protocol-test" }),
+        )
+        .expect("the daemon answers a hello");
+
+    assert_eq!(
+        reply[PROTOCOL_FIELD],
+        json!(WIRE_PROTOCOL),
+        "a client learns the daemon's shape from the announcement it was already sending: {reply}",
+    );
+    conn.handshake("cli-protocol-test")
+        .expect("and the handshake over the same method agrees");
 }

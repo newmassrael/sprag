@@ -289,6 +289,17 @@ pub use sprag_rpc::{
     ROWS_PARAM,
 };
 
+/// The wire's SHAPE agreement, re-exported from the transport that defines it for the same reason
+/// the vocabulary above is: one spelling, both ends.
+///
+/// [`WIRE_PROTOCOL`] is the number this build speaks, [`PROTOCOL_PARAM`] the request key every
+/// client declares it in, and [`PROTOCOL_FIELD`] the [`CLIENT_HELLO_METHOD`] reply key the daemon
+/// answers with. The reader's contract — refuse at the door, before scope, before any handler —
+/// lives on [`crate::rpc`]'s `protocol_refused`; what keeps the NUMBER honest is this module's own
+/// `the_wire_shape_is_what_this_protocol_number_stands_for`, which fails on any change to a shape
+/// a client decodes whole.
+pub use sprag_rpc::{PROTOCOL_FIELD, PROTOCOL_PARAM, WIRE_PROTOCOL};
+
 /// The mux control external query slot: every session's name, plus which one an unscoped
 /// request acts on — how a client discovers what it can address with [`SESSION_PARAM`].
 ///
@@ -920,4 +931,72 @@ mod tests {
         assert_eq!(pane_container_tag(7), "pane_7");
         assert!(pane_input_path(7, KEY_ACTION).starts_with("/pane_7/"));
     }
+
+    /// THE SHAPE PIN — what keeps [`WIRE_PROTOCOL`] from being a number nobody remembers to move.
+    ///
+    /// A hand-maintained protocol version fails on the day someone changes a shape and forgets to
+    /// bump it, and the failure is silent until two builds meet. herdr's `PROTOCOL_VERSION`
+    /// (`9a4ce5e1`) has exactly that hole: nothing in their tree fails when a shape moves under it.
+    ///
+    /// So the pin makes the number a CONSEQUENCE of the shape rather than a promise about it: this
+    /// renders one canonical value of each type a client deserialises structurally and compares the
+    /// bytes. Change any of those shapes and this fails, right here, with the instruction.
+    ///
+    /// The hand-parsed slots (`panes`, `revision`) are deliberately absent: a client reads those
+    /// key by key with explicit fallbacks, so adding a key cannot break one. What is pinned is what
+    /// serde decodes WHOLE, which is where a shape change turns into a type error at slot nine.
+    #[test]
+    fn the_wire_shape_is_what_this_protocol_number_stands_for() {
+        use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId, SessionInfo, WindowInfo};
+
+        assert_eq!(
+            serde_json::to_string(&WindowInfo {
+                name: "0".to_owned(),
+                current: true,
+            })
+            .expect("a window serialises"),
+            r#"{"name":"0","current":true}"#,
+            "{}",
+            BUMP,
+        );
+
+        assert_eq!(
+            serde_json::to_string(&SessionInfo {
+                name: "0".to_owned(),
+                windows: 1,
+                panes: 2,
+                default: true,
+                cwd: Some("/tmp".to_owned()),
+                branch: Some("main".to_owned()),
+                ports: vec![8080],
+                attached: 1,
+            })
+            .expect("a session serialises"),
+            r#"{"name":"0","windows":1,"panes":2,"default":true,"cwd":"/tmp","branch":"main","ports":[8080],"attached":1}"#,
+            "{}",
+            BUMP,
+        );
+
+        // The arrangement — the shape whose last change (R264's flattening) is the reason this
+        // whole check exists. `root` is an arena INDEX here; it used to be a nested node.
+        let mut tree = sprag_terminal::LayoutTree::new();
+        tree.reconcile(&[PaneId(1)], &mut std::collections::HashMap::new());
+        assert_eq!(
+            serde_json::to_string(&LayoutSnapshot {
+                revision: 3,
+                tree: LayoutWire::from(&tree),
+                floating: vec![PaneId(9)],
+            })
+            .expect("an arrangement serialises"),
+            r#"{"revision":3,"tree":{"nodes":[{"leaf":1}],"root":0},"floating":[9]}"#,
+            "{}",
+            BUMP,
+        );
+    }
+
+    /// What a failing shape pin has to say, since the person reading it is the one who moved the
+    /// shape and is the only one who can decide the number.
+    const BUMP: &str = "THE WIRE SHAPE CHANGED. An older peer cannot read this, and it will find \
+                        out as a type error mid-boot rather than as a sentence. Bump \
+                        sprag_rpc::WIRE_PROTOCOL and update this pin, in that order.";
 }

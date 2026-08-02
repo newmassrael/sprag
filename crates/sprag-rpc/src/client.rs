@@ -36,6 +36,45 @@ use serde_json::{Value, json};
 /// session, a string → that session, anything else → refused whole).
 pub const SESSION_PARAM: &str = "session";
 
+/// The SHAPE this build speaks — the number both ends of the wire compare before either acts on
+/// the other's bytes.
+///
+/// Bump it whenever a wire type's serialised shape changes in a way an older peer cannot read.
+/// You will not have to remember to: `sprag_host::wire`'s shape pin fails on any such change and
+/// names this constant.
+///
+/// # Why it exists
+///
+/// Without it, a client and daemon whose shapes disagree find out as a serde message about a
+/// value's type, at whichever slot happens to have changed, AFTER doing real work. That is not
+/// hypothetical: R264 flattened the layout wire so a window's `root` became an arena index, and a
+/// `sprag-tui` left over from before it died on `invalid type: integer 0, expected string or map`
+/// at its ninth request — having already created a session it then abandoned. Five rounds
+/// excluded five hypotheses without finding it, because a version skew is invisible from either
+/// end alone (`sprag_terminal::layout`'s
+/// `an_older_build_cannot_read_this_ones_root_and_says_so_by_type` pins the sentence).
+///
+/// # Why a single number rather than a negotiation
+///
+/// A daemon serving two shapes at once would have to keep every retired shape alive forever. The
+/// daemon is restartable and its sessions survive the restart through the durability snapshot, so
+/// "restart the daemon" is a complete remedy and the mismatch message says exactly that.
+pub const WIRE_PROTOCOL: u32 = 1;
+
+/// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
+/// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request
+/// must carry belongs at the one seam that builds them all, never at each call site.
+pub const PROTOCOL_PARAM: &str = "protocol";
+
+/// The [`CLIENT_HELLO_METHOD`] REPLY key carrying the daemon's own [`WIRE_PROTOCOL`] — the other
+/// direction of the same check.
+///
+/// A daemon outlives its clients by design, so the common skew after a rebuild is a NEW client
+/// reaching an OLD daemon; the old one ignores the unknown request param and answers happily, so
+/// the client can only learn the truth from a reply. A reply with no such key is a daemon from
+/// before the handshake, which is a mismatch and is reported as one.
+pub const PROTOCOL_FIELD: &str = "protocol";
+
 /// The JSON-RPC method a connection sends ONCE to announce which CLIENT it belongs to
 /// (R-PR67 Stage 1) — `params: { "client": "<opaque client id>" }`.
 ///
@@ -264,12 +303,50 @@ impl HostConn {
     /// carrying a scope on a request that has no place for it is not something the wire client
     /// ever needs.
     fn scoped(&self, params: Value) -> Value {
-        match (&self.session, params) {
-            (Some(session), Value::Object(mut map)) => {
-                map.insert(SESSION_PARAM.to_owned(), Value::String(session.clone()));
-                Value::Object(map)
-            }
-            (_, params) => params,
+        let mut map = match params {
+            Value::Object(map) => map,
+            // A request with no params of its own still has to declare its SHAPE, so the object is
+            // created rather than the declaration dropped. Absent params and an empty object mean
+            // the same thing to every handler.
+            Value::Null => serde_json::Map::new(),
+            // Anything else is a caller spelling params in a form this wire has no key to add to.
+            // Left exactly as given: refusing here would turn a caller's mistake into a transport
+            // failure, and the daemon refuses it by name.
+            other => return other,
+        };
+        // EVERY request declares the shape it was written against ([`WIRE_PROTOCOL`]). Merged
+        // here, at the one seam that builds a request, so no client can omit it — including the
+        // ones that do not exist yet.
+        map.insert(PROTOCOL_PARAM.to_owned(), Value::from(WIRE_PROTOCOL));
+        if let Some(session) = &self.session {
+            map.insert(SESSION_PARAM.to_owned(), Value::String(session.clone()));
+        }
+        Value::Object(map)
+    }
+
+    /// Announce this connection's client id AND agree on the wire's shape — the door check every
+    /// client passes through, on traffic it was already sending.
+    ///
+    /// Sends [`CLIENT_HELLO_METHOD`] and reads [`PROTOCOL_FIELD`] out of the reply. The
+    /// daemon-side half of the agreement (an OLD client reaching a NEW daemon) is enforced by the
+    /// daemon on every request; this is the half only a client can make — a daemon OLDER than the
+    /// client answers the unknown protocol param happily and would otherwise be discovered slot by
+    /// slot.
+    ///
+    /// # Errors
+    ///
+    /// The hello failing, or the daemon answering with a different [`WIRE_PROTOCOL`] — or with
+    /// none, which means a daemon from before this handshake existed. Both are reported with both
+    /// numbers and the remedy, because a mismatched pair cannot be made to work by retrying.
+    pub fn handshake(&mut self, client_id: &str) -> io::Result<()> {
+        let reply = self.call(
+            CLIENT_HELLO_METHOD,
+            serde_json::json!({ CLIENT_PARAM: client_id }),
+        )?;
+        match reply.get(PROTOCOL_FIELD).and_then(Value::as_u64) {
+            Some(daemon) if daemon == u64::from(WIRE_PROTOCOL) => Ok(()),
+            Some(daemon) => Err(protocol_mismatch(&daemon.to_string())),
+            None => Err(protocol_mismatch("none (a daemon older than this check)")),
         }
     }
 
@@ -377,6 +454,23 @@ impl HostConn {
         }
         Ok(response.get("result").cloned().unwrap_or(Value::Null))
     }
+}
+
+/// The mismatch report: what this build speaks, what the other end does, and the one action that
+/// fixes it.
+///
+/// A restart is the WHOLE remedy because the daemon's sessions survive it (the durability
+/// snapshot), which is why this says so plainly rather than hedging — a message that leaves the
+/// reader wondering whether they are about to lose their panes is a message they will not act on.
+fn protocol_mismatch(daemon: &str) -> io::Error {
+    io::Error::new(
+        ErrorKind::InvalidData,
+        format!(
+            "this client speaks wire protocol {WIRE_PROTOCOL} and the daemon speaks {daemon}; \
+             they cannot understand each other. Restart the daemon to bring it to this build — \
+             `sprag kill-server` (sessions are restored from the durability snapshot)",
+        ),
+    )
 }
 
 #[cfg(test)]
@@ -563,10 +657,11 @@ mod tests {
 
         let mut conn =
             HostConn::connect(&path, Duration::from_secs(2)).expect("connect to the socket");
-        // Two calls prove the id increments and the read stream stays in sync.
+        // Two calls prove the id increments and the read stream stays in sync. Each carries the
+        // shape declaration every request does ([`WIRE_PROTOCOL`]), which the echo mirrors back.
         assert_eq!(
             conn.call("scene/echo", json!({"hello": "world"})).unwrap(),
-            json!({"hello": "world"})
+            json!({"hello": "world", PROTOCOL_PARAM: WIRE_PROTOCOL}),
         );
         assert_eq!(conn.call("scene/echo", json!(42)).unwrap(), json!(42));
 
@@ -639,11 +734,13 @@ mod tests {
         let mut conn =
             HostConn::connect(&path, Duration::from_secs(2)).expect("connect to the socket");
 
-        // Unscoped: params reach the host verbatim (the echo mirrors them back).
+        // Unscoped: no SESSION is added — but the shape declaration is, on every request there
+        // is. The two are different kinds of fact: a session is this connection's, and a
+        // protocol is this build's, so one is conditional and the other never.
         assert_eq!(
             conn.call("scene/query", json!({ "path": "p" })).unwrap(),
-            json!({ "path": "p" }),
-            "an unscoped connection adds nothing",
+            json!({ "path": "p", PROTOCOL_PARAM: WIRE_PROTOCOL }),
+            "an unscoped connection adds no session, and still declares its shape",
         );
 
         // Scope it, and EVERY subsequent request carries the session as a params sibling —
@@ -651,22 +748,24 @@ mod tests {
         conn.scope_to("work");
         assert_eq!(
             conn.call("scene/query", json!({ "path": "p" })).unwrap(),
-            json!({ "path": "p", "session": "work" }),
+            json!({ "path": "p", "session": "work", PROTOCOL_PARAM: WIRE_PROTOCOL }),
             "a scoped connection names its session on every request",
         );
         assert_eq!(
             conn.call("scene/invoke", json!({ "path": "spawn", "args": {} }))
                 .unwrap(),
-            json!({ "path": "spawn", "args": {}, "session": "work" }),
+            json!({ "path": "spawn", "args": {}, "session": "work", PROTOCOL_PARAM: WIRE_PROTOCOL }),
             "...including a different method with its own args",
         );
 
-        // A non-object params has no place for the key, so it is passed through untouched
-        // rather than reshaped — the wire client never scopes such a request.
+        // A non-object params has no place for either key, so it is passed through untouched
+        // rather than reshaped. It is also therefore a request no daemon of this build will
+        // serve — it carries no shape declaration — which is a caller's mistake to be refused by
+        // name, not one the transport should paper over by inventing an object around it.
         assert_eq!(
             conn.call("scene/echo", json!(42)).unwrap(),
             json!(42),
-            "a non-object params carries no scope",
+            "a non-object params carries neither scope nor shape",
         );
 
         drop(control);

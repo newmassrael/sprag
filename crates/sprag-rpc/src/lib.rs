@@ -28,7 +28,8 @@ pub mod client;
 pub mod endpoint;
 pub use client::{
     CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, CLIENT_SIZE_METHOD, COLS_PARAM,
-    HostConn, ROWS_PARAM, SESSION_PARAM, gui_client_prefix, new_gui_client_id,
+    HostConn, PROTOCOL_FIELD, PROTOCOL_PARAM, ROWS_PARAM, SESSION_PARAM, WIRE_PROTOCOL,
+    gui_client_prefix, new_gui_client_id,
 };
 pub use endpoint::{CLIENT_SOCKET_ENV, CLIENT_SOCKET_ENVS, EndpointOrigin, HostEndpoint};
 

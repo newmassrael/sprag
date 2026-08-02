@@ -45,7 +45,7 @@ use crate::runs::RunRegistry;
 use crate::scope::{ScopeError, SessionScope};
 use crate::wire::{
     CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, CLIENT_SIZE_METHOD, COLS_PARAM,
-    ROWS_PARAM,
+    PROTOCOL_FIELD, PROTOCOL_PARAM, ROWS_PARAM, WIRE_PROTOCOL,
 };
 
 /// The long-lived host state threaded through the serve loop: the booted [`Host`]
@@ -646,14 +646,74 @@ fn window_moved(state: &HostState, session: &str) {
 /// `client/hello` — register this connection under the client id its params carry, so the daemon
 /// groups a client's several connections into one attached unit. Identity only: no session, so it
 /// moves no attachment count and needs no scene bump.
+/// The reply also carries THIS daemon's [`WIRE_PROTOCOL`], which is the half of the shape
+/// agreement only a reply can make: a daemon OLDER than its client ignores the unknown protocol
+/// param and answers every request happily, so a client that never heard back about the shape
+/// would go on to misread the first slot that changed. A daemon outliving its clients is the
+/// design, so that skew is the ORDINARY one after a rebuild, not an exotic case.
 fn handle_hello(state: &HostState, conn: ConnId, request: &Request) -> Option<String> {
     match request.params.as_ref().and_then(|p| p.get(CLIENT_PARAM)) {
         Some(serde_json::Value::String(client)) => {
             lock(state.attachments()).hello(conn, client.clone());
-            lifecycle_ok(request)
+            let id = request.id.clone()?;
+            Some(
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { PROTOCOL_FIELD: WIRE_PROTOCOL },
+                })
+                .to_string(),
+            )
         }
         _ => lifecycle_invalid(request, format!("params.{CLIENT_PARAM} must be a string")),
     }
+}
+
+/// Refuse a request written against a wire shape this build does not speak — the door every
+/// socket client passes through, checked BEFORE the scope and before any handler.
+///
+/// `None` admits the request. `Some(reply)` is the refusal, and refusing here rather than letting
+/// the request through is the point: a skewed pair does not fail cleanly on its own. R264
+/// flattened the layout wire, and a `sprag-tui` left over from before it created a session, then
+/// died decoding the ninth reply with a serde message about an integer — no part of which named a
+/// version, a daemon, or an action.
+///
+/// **This is the half a CLIENT cannot perform.** An old client contains no check to run, so the
+/// only end that can catch it is the new one; a design that checks only client-side (herdr's, at
+/// `9a4ce5e1`) is silent in exactly this direction.
+///
+/// A request with no `protocol` at all is a client from before the handshake, reported as such
+/// rather than as a malformed request, because that is what it is.
+fn protocol_refused(request: &Request) -> Option<String> {
+    let spoken = request
+        .params
+        .as_ref()
+        .and_then(|params| params.get(PROTOCOL_PARAM))
+        .and_then(serde_json::Value::as_u64);
+    if spoken == Some(u64::from(WIRE_PROTOCOL)) {
+        return None;
+    }
+    let client = spoken.map_or_else(
+        || "none (a client older than this check)".to_owned(),
+        |value| value.to_string(),
+    );
+    let id = request.id.clone()?;
+    Some(
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": {
+                "code": -32602,
+                "message": format!(
+                    "this daemon speaks wire protocol {WIRE_PROTOCOL} and the client speaks \
+                     {client}; they cannot understand each other. Rebuild the client, or restart \
+                     this daemon to the client's build — `sprag kill-server` (sessions are \
+                     restored from the durability snapshot)",
+                ),
+            },
+        })
+        .to_string(),
+    )
 }
 
 /// `client/attach` — attach (or switch — tmux `switch-client`) this connection's client to the
@@ -877,6 +937,14 @@ fn dispatch_one(state: &HostState, frame: RpcFrame) {
     } = frame;
     match parse_request(&request) {
         Ok(parsed) => {
+            // THE DOOR. Every socket client's every request arrives here (the stdin transport
+            // funnels through this same frame channel), so one check covers them all — and it runs
+            // before the scope and before any handler, because a request written against a shape
+            // this build does not speak must not act, not even partly. See [`protocol_refused`].
+            if let Some(response) = protocol_refused(&parsed) {
+                reply.send(response);
+                return;
+            }
             // `client/hello` carries identity, not a session, so it is handled before scope
             // resolution: it registers this connection's client id (the group key a client's
             // several connections share) and returns.
@@ -2137,15 +2205,40 @@ mod tests {
     /// One frame through the real per-frame dispatch body (`dispatch_one`) with a
     /// recording reply, so the async park/immediate paths are exercised exactly as
     /// the serve loop runs them.
+    ///
+    /// It declares the wire's SHAPE the way a client does, at this one seam, because these tests
+    /// STAND IN for a wire client and `dispatch_one`'s door refuses anything that does not
+    /// ([`protocol_refused`]). Adding it per test would have been the same fact spelled thirty
+    /// times, and the first one written without it would have been read as a product bug.
     fn dispatch_recording(state: &HostState, request: &str, sink: &Arc<Mutex<Vec<String>>>) {
         dispatch_one(
             state,
             RpcFrame::new(
                 ConnId::allocate(),
-                request.to_owned(),
+                declaring_the_protocol(request),
                 recording_reply(sink),
             ),
         );
+    }
+
+    /// `request` with [`PROTOCOL_PARAM`] merged into its params — what `HostConn::call` does for
+    /// every real client, done here so a test's literal request stays readable.
+    ///
+    /// A request with no params at all gets an object holding only the declaration, which is the
+    /// same rule the transport follows: absent params and an empty object mean one thing to every
+    /// handler, but a missing SHAPE means "a client from before the agreement".
+    fn declaring_the_protocol(request: &str) -> String {
+        let mut value: serde_json::Value =
+            serde_json::from_str(request).expect("a test's request is JSON");
+        let params = value
+            .as_object_mut()
+            .expect("a request is an object")
+            .entry("params")
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(params) = params.as_object_mut() {
+            params.insert(PROTOCOL_PARAM.to_owned(), serde_json::json!(WIRE_PROTOCOL));
+        }
+        value.to_string()
     }
 
     /// One `scene/invoke` through the real per-frame dispatch body, discarding the reply.
