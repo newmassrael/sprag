@@ -17,6 +17,7 @@
 //! reply per request), so a connection never desyncs its read stream. A caller
 //! that needs concurrency uses more connections, not shared mutable access.
 
+use std::fmt;
 use std::io::{self, BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -418,14 +419,45 @@ impl HostConn {
             .map_err(|error| io::Error::new(error.kind(), format!("{label}: {error}")))
     }
 
+    /// [`call`](Self::call), but a JSON-RPC `error` object comes back as itself rather than as a
+    /// message — for the caller that has to ACT on which failure it was.
+    ///
+    /// [`call`](Self::call) renders every failure as text, which is right for a command that is
+    /// about to print it and stop. It is wrong for a caller deciding between "the daemon answered
+    /// no" and "the daemon is gone": those differ by the JSON-RPC `code`, and recovering a code
+    /// from a rendered sentence means one crate matching on another's wording. The refusal a
+    /// scoped pre-flight reads (`sprag`'s `session_exists`) is exactly that case.
+    ///
+    /// # Errors
+    ///
+    /// [`CallError::Transport`] for I/O failure or a malformed reply — named exactly as
+    /// [`call`](Self::call) names it, so nothing is lost by choosing this one — and
+    /// [`CallError::Fault`] for a JSON-RPC `error` object.
+    pub fn try_call(&mut self, method: &str, params: Value) -> Result<Value, CallError> {
+        let label = request_label(method, &params);
+        match self.call_inner(method, params) {
+            Ok(value) => Ok(value),
+            Err(CallFailure::Fault(fault)) => Err(CallError::Fault(fault)),
+            Err(CallFailure::Transport(error)) => Err(CallError::Transport(io::Error::new(
+                error.kind(),
+                format!("{label}: {error}"),
+            ))),
+        }
+    }
+
     /// [`call`](Self::call)'s body, wrapped by it so that EVERY exit is named — including the
     /// early refusal below, which is otherwise the one a `?` inside the body would skip.
-    fn call_inner(&mut self, method: &str, params: Value) -> io::Result<Value> {
+    ///
+    /// It keeps the daemon's `error` object apart from a transport failure ([`CallFailure`]) so
+    /// that [`try_call`](Self::try_call) can hand the object out; [`call`](Self::call) flattens
+    /// the two, which is the whole difference between them.
+    fn call_inner(&mut self, method: &str, params: Value) -> Result<Value, CallFailure> {
         if self.timed_out {
             return Err(io::Error::new(
                 ErrorKind::TimedOut,
                 "connection abandoned after a read deadline expired",
-            ));
+            )
+            .into());
         }
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
@@ -452,10 +484,9 @@ impl HostConn {
                 }
             })?;
             if read == 0 {
-                return Err(io::Error::new(
-                    ErrorKind::UnexpectedEof,
-                    "host closed the connection",
-                ));
+                return Err(
+                    io::Error::new(ErrorKind::UnexpectedEof, "host closed the connection").into(),
+                );
             }
             if !line.trim().is_empty() {
                 break;
@@ -465,9 +496,112 @@ impl HostConn {
         let response: Value = serde_json::from_str(line.trim())
             .map_err(|error| io::Error::new(ErrorKind::InvalidData, error))?;
         if let Some(error) = response.get("error") {
-            return Err(io::Error::other(format!("host rpc error: {error}")));
+            return Err(CallFailure::Fault(RpcFault::from_wire(error)));
         }
         Ok(response.get("result").cloned().unwrap_or(Value::Null))
+    }
+}
+
+/// The JSON-RPC `Invalid params` code — the one both ends of this wire already spell, now spelled
+/// once.
+///
+/// It is the code sprag's daemon answers a request whose SCOPE it cannot honour with, and the one
+/// a scoped pre-flight reads back off [`RpcFault::code`]. Defined here, in the transport both ends
+/// share, for the reason [`SESSION_PARAM`] is: a number the writer and the reader must agree on
+/// has one home.
+pub const INVALID_PARAMS: i64 = -32602;
+
+/// A JSON-RPC `error` object as its own fact — the code the peer chose, its message, and whatever
+/// `data` it attached.
+///
+/// Carried out of [`HostConn::try_call`] so a caller can branch on the CODE. The alternative is
+/// reading the code back out of a rendered sentence, which makes one crate depend on another's
+/// wording and fails silently on the day the wording improves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RpcFault {
+    /// The JSON-RPC error code — `-32602` for invalid params, which is what a refused scope is.
+    pub code: i64,
+    /// The peer's one-line reason.
+    pub message: String,
+    /// The peer's detail, when it attached one. sprag's daemon puts the specific sentence here
+    /// (`no session named "x"`) and keeps `message` at the JSON-RPC category.
+    pub data: Option<Value>,
+}
+
+impl RpcFault {
+    /// Read a JSON-RPC `error` object. Absent fields degrade rather than fail: a reply this
+    /// malformed is still a refusal, and reporting it as a transport error would be a lie about
+    /// which end went wrong.
+    fn from_wire(error: &Value) -> Self {
+        Self {
+            code: error["code"].as_i64().unwrap_or(0),
+            message: error["message"].as_str().unwrap_or_default().to_owned(),
+            data: error.get("data").cloned(),
+        }
+    }
+}
+
+impl fmt::Display for RpcFault {
+    /// The `data` sentence when there is one, because that is the specific thing the daemon had to
+    /// say; the JSON-RPC category otherwise.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.data.as_ref().and_then(Value::as_str) {
+            Some(detail) => write!(f, "{detail}"),
+            None => write!(f, "{}", self.message),
+        }
+    }
+}
+
+/// What a [`HostConn::try_call`] can fail as: the peer refusing, or the wire itself.
+#[derive(Debug)]
+pub enum CallError {
+    /// The peer answered a JSON-RPC `error` object — it heard the request and said no.
+    Fault(RpcFault),
+    /// The request never completed: I/O, a deadline, or a reply that is not JSON-RPC.
+    Transport(io::Error),
+}
+
+impl From<CallError> for io::Error {
+    /// Back to the flat form [`HostConn::call`] hands out, so a caller that opted into the typed
+    /// error can still `?` it into an `io::Result` without re-spelling the rendering.
+    fn from(error: CallError) -> Self {
+        match error {
+            CallError::Transport(error) => error,
+            CallError::Fault(fault) => Self::other(format!("host rpc error: {fault}")),
+        }
+    }
+}
+
+/// The internal half of [`CallError`] — the same split, before the label is applied.
+#[derive(Debug)]
+enum CallFailure {
+    Fault(RpcFault),
+    Transport(io::Error),
+}
+
+impl From<io::Error> for CallFailure {
+    fn from(error: io::Error) -> Self {
+        Self::Transport(error)
+    }
+}
+
+impl CallFailure {
+    /// The kind [`HostConn::call`]'s wrap preserves. A fault reached the peer and came back, so it
+    /// is [`ErrorKind::Other`] exactly as it was before the split.
+    fn kind(&self) -> ErrorKind {
+        match self {
+            Self::Transport(error) => error.kind(),
+            Self::Fault(_) => ErrorKind::Other,
+        }
+    }
+}
+
+impl fmt::Display for CallFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Transport(error) => write!(f, "{error}"),
+            Self::Fault(fault) => write!(f, "host rpc error: {fault}"),
+        }
     }
 }
 
