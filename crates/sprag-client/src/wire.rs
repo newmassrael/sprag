@@ -102,8 +102,8 @@ use sprag_host::{
 };
 use sprag_input::{Modifiers, MouseButton, MouseEventKind, MouseInput};
 use sprag_rpc::{
-    CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, CLIENT_SIZE_METHOD, COLS_PARAM,
-    HostConn, HostEndpoint, ROWS_PARAM, new_gui_client_id,
+    CLIENT_ATTACH_METHOD, CLIENT_SIZE_METHOD, COLS_PARAM, HostConn, HostEndpoint, ROWS_PARAM,
+    new_gui_client_id,
 };
 use sprag_terminal::{
     LayoutSnapshot, LayoutWire, PaneExit, PaneId, SessionInfo, SplitDir, WindowInfo,
@@ -483,9 +483,12 @@ fn store_window_size(layout: &Mutex<Mirrored>, size: Option<(u16, u16)>) {
 /// Report this client's own cell area to the daemon (`client/size`) — the input its `window-size`
 /// policy arbitrates over.
 ///
-/// BEST-EFFORT, like [`send_hello`]: a daemon that does not know the method leaves this client out
-/// of the arbitration, which degrades to the behaviour that predates it (the window is whatever the
-/// clients that DO report agree on, or nothing at all and every client uses its own surface).
+/// BEST-EFFORT, and it stays that way now that [`shake_hands`] is not: a daemon that does not know
+/// this method leaves this client out of the arbitration, which degrades to the behaviour that
+/// predates it (the window is whatever the clients that DO report agree on, or nothing at all and
+/// every client uses its own surface). Losing a vote in a size arbitration costs a size; reading a
+/// daemon whose wire shape you do not share costs correctness, which is why only one of the two is
+/// fatal.
 fn send_size(conn: &mut HostConn, cols: u16, rows: u16) {
     if let Err(error) = conn.call(
         CLIENT_SIZE_METHOD,
@@ -548,21 +551,24 @@ fn query_sessions(conn: &mut HostConn) -> io::Result<Vec<SessionInfo>> {
     read_slot(conn, mux_action_path(SESSIONS_SLOT))
 }
 
-/// Announce `conn`'s CLIENT id to the daemon (`client/hello`, R-PR67) — the group key a client's
-/// several connections share, so the daemon counts one GUI as one attached client, not one per
-/// connection. BEST-EFFORT: attachment drives only the sidebar viewer badge, and a daemon that does
-/// not know the method (older than R-PR67) simply leaves the badge empty, so a failure is logged and
-/// swallowed, never fatal to displaying panes.
-fn send_hello(conn: &mut HostConn, client_id: &str) {
-    if let Err(error) = conn.call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: client_id })) {
-        tracing::debug!(target: "sprag_gui::wire", %error, "client/hello failed; viewer badge disabled");
-    }
+/// Announce `conn`'s CLIENT id to the daemon and agree on the wire's SHAPE
+/// ([`HostConn::handshake`]) — the group key a client's several connections share, plus the check
+/// that this build and that daemon speak the same wire.
+///
+/// It used to be best-effort, because attachment drove only the sidebar's viewer badge. It is
+/// FATAL now, and the change of status is the point: the same call now carries a fact that decides
+/// whether anything else this client reads means what it says. A daemon that cannot answer it is
+/// either older than R-PR67 or older than the shape — and in both cases going on to paint from its
+/// replies is how R278's boot came to die nine requests later with a message about an integer.
+fn shake_hands(conn: &mut HostConn, client_id: &str) -> io::Result<()> {
+    conn.handshake(client_id)
 }
 
 /// Declare (or switch — tmux `switch-client`) this client's ATTACHED session to the one `conn` is
 /// scoped to (`client/attach`, R-PR67). The session rides the connection's scope, so no arg is
-/// needed; the daemon attributes the attach to the connection's client via its prior [`send_hello`].
-/// BEST-EFFORT, like [`send_hello`].
+/// needed; the daemon attributes the attach to the connection's client via its prior [`shake_hands`].
+/// BEST-EFFORT — like [`send_size`] and unlike [`shake_hands`]: what it drives is the sidebar's
+/// viewer badge, so a daemon that refuses it costs a count, not a correct reading.
 fn send_attach(conn: &mut HostConn) {
     if let Err(error) = conn.call(CLIENT_ATTACH_METHOD, json!({})) {
         tracing::debug!(target: "sprag_gui::wire", %error, "client/attach failed; viewer badge disabled");
@@ -768,7 +774,7 @@ pub struct WireHost {
     conn: RefCell<HostConn>,
     /// This GUI's opaque CLIENT id (R-PR67), shared by its request + poll connections so the daemon
     /// counts one window as ONE attached client, not one per connection. Announced on every
-    /// connection ([`send_hello`]) and used to attach ([`send_attach`]) on boot and each switch;
+    /// connection ([`shake_hands`]) and used to attach ([`send_attach`]) on boot and each switch;
     /// minted once per process ([`new_gui_client_id`]). A lifecycle token, not identity.
     client_id: String,
     /// The session this client is CURRENTLY attached to — a client-local fact (the wire's
@@ -1168,6 +1174,16 @@ impl WireHost {
             );
         }
 
+        // ANNOUNCE AND AGREE, before anything is created. The hello carries this client's id (the
+        // group key its connections share) and the wire's shape; a daemon this build cannot
+        // understand is refused HERE, where the only thing lost is a connection — not after a
+        // session has been made and a boot is nine requests deep, which is exactly how R278's
+        // client came to abandon one.
+        let client_id = new_gui_client_id();
+        if let Err(cause) = shake_hands(&mut conn, &client_id) {
+            return Err(BootError::left_nothing(endpoint.clone(), cause).into());
+        }
+
         // Resolve WHICH session this client acts on before booting panes, and scope every
         // request to it (both this connection and the poll one below), so a request can never
         // silently land in another session. Naming one ATTACHES (adopt its panes); naming none
@@ -1186,7 +1202,8 @@ impl WireHost {
             endpoint,
             session: session.clone(),
         });
-        let booted = Self::boot_into_session(conn, spec, session, created, on_change, quit);
+        let booted =
+            Self::boot_into_session(conn, spec, client_id, session, created, on_change, quit);
         match (booted, born) {
             (Ok(host), _) => Ok(host),
             (Err(cause), Some(born)) => Err(born.roll_back(cause).into()),
@@ -1220,6 +1237,7 @@ impl WireHost {
     fn boot_into_session(
         mut conn: HostConn,
         spec: &BootSpec<'_>,
+        client_id: String,
         session: String,
         created: bool,
         on_change: Arc<dyn Fn() + Send + Sync>,
@@ -1228,12 +1246,11 @@ impl WireHost {
         let endpoint = spec.endpoint;
         let (cols, rows) = (spec.cols, spec.rows);
         conn.scope_to(session.clone());
-        // R-PR67: this GUI is one attached CLIENT across its two connections. Announce the shared id
-        // on the request conn and attach it to its session, so the daemon counts this window as a
-        // viewer (the sidebar badge). Done before the `since0` baseline below so the attach's own
-        // scene bump is folded into the baseline, not a spurious first poll wake.
-        let client_id = new_gui_client_id();
-        send_hello(&mut conn, &client_id);
+        // R-PR67: this GUI is one attached CLIENT across its two connections — the id was minted
+        // and announced by the handshake in `boot`, before anything was created. Attaching it to
+        // the session makes the daemon count this window as a viewer (the sidebar badge), and is
+        // done before the `since0` baseline below so the attach's own scene bump is folded into
+        // the baseline rather than becoming a spurious first poll wake.
         send_attach(&mut conn);
         let seeds = boot_panes(&mut conn, spec.argv, cols, rows, spec.panes, created)?;
 
@@ -1291,7 +1308,7 @@ impl WireHost {
         poll_conn.scope_to(session);
         // The poll connection is a SECOND connection of the SAME client: announce the same id so the
         // daemon groups both under one attached client (not two). Only the request conn attaches.
-        send_hello(&mut poll_conn, &client_id);
+        shake_hands(&mut poll_conn, &client_id)?;
         host.spawn_poll_for(poll_conn, since0)?;
         Ok(host)
     }
@@ -1403,7 +1420,7 @@ impl WireHost {
         poll_conn.scope_to(session.to_owned());
         // The fresh poll conn is a new connection of the SAME client (the old one was torn down by
         // the switch): re-announce the shared id so the daemon keeps grouping both under one client.
-        send_hello(&mut poll_conn, &self.client_id);
+        shake_hands(&mut poll_conn, &self.client_id)?;
 
         // COMMIT: swap every mirror's CONTENTS (the `Arc`s themselves stay — shared with the paint
         // path and the poll thread), set the attached session, then start the poll. `merge_panes`
@@ -5397,6 +5414,43 @@ mod tests {
         assert!(
             rendered.ends_with("; remove it with `sprag kill-session -t 3`)"),
             "and it ends with the command that removes the orphan: {rendered}",
+        );
+    }
+
+    /// A daemon that answers a hello WITHOUT naming its wire shape is one from before the shape
+    /// agreement, and the client says so instead of going on to read it.
+    ///
+    /// This is the direction the daemon's own check cannot cover — an old daemon serves a request
+    /// carrying an unknown `protocol` param happily — and it is the ORDINARY skew here, because a
+    /// sprag daemon outlives the clients that rebuild around it.
+    ///
+    /// REVERT-PROOF: make [`HostConn::handshake`]'s `None` arm `Ok(())` and this passes a boot
+    /// through to a daemon whose shape nobody agreed on.
+    #[test]
+    fn a_daemon_that_names_no_protocol_is_refused_as_older() {
+        // `true` is what the pre-handshake daemon answered a hello with.
+        let (mut conn, server, _guard, _seen) = a_recording_host_conn("no-protocol", "unused");
+        let refused = conn
+            .handshake("gui-test")
+            .expect_err("a daemon that names no shape cannot be agreed with");
+        drop(conn);
+        server.join().expect("server thread exited");
+
+        let message = refused.to_string();
+        assert!(
+            message.contains("a daemon older than this check"),
+            "the report says WHICH end is behind: {message}",
+        );
+        assert!(
+            message.contains(&format!(
+                "client speaks wire protocol {}",
+                sprag_rpc::WIRE_PROTOCOL
+            )),
+            "and what this build speaks: {message}",
+        );
+        assert!(
+            message.contains("sprag kill-server"),
+            "and the action that resolves it: {message}",
         );
     }
 
