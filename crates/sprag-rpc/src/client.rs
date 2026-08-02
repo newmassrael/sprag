@@ -115,6 +115,20 @@ pub fn gui_client_prefix(pid: u32) -> String {
     format!("gui-{pid}-")
 }
 
+/// How a failed request names itself: the method, plus the `path` its params address when they
+/// carry one — `scene/query /sprag_mux/external/layout`.
+///
+/// The path and not the whole params, because the params are what makes a request BIG (a paste,
+/// a cell buffer) and an error line that quotes a screenful of text is unreadable in exactly the
+/// situation it is read in. `path` is the slot, which is the discriminating half — two failures
+/// of `scene/query` are told apart by it, and nothing else in the params tells them apart at all.
+fn request_label(method: &str, params: &Value) -> String {
+    match params.get("path").and_then(Value::as_str) {
+        Some(path) => format!("{method} {path}"),
+        None => method.to_owned(),
+    }
+}
+
 /// The bytes one request goes out as: the encoded value plus its terminating newline, built
 /// WHOLE before anything is written.
 ///
@@ -283,11 +297,38 @@ impl HostConn {
     /// reply until a pane produces output, so this read blocks (cheaply) until the
     /// change-notification fires — the long-poll a wire client repaints off.
     ///
+    /// # Every failure NAMES the request it came from
+    ///
+    /// A caller's boot issues a dozen of these, and until R278 a failure from any of them
+    /// arrived as the bare cause — `invalid type: integer 0, expected string or map` and nothing
+    /// else. That sentence identifies neither the step, nor the slot, nor the daemon, so the
+    /// reader has to bisect a sequence they cannot see; it cost a full session to find out which
+    /// call it was, and the answer turned out to be a step nobody suspected.
+    ///
+    /// So the funnel names it: every error out of here is prefixed with the method and, when the
+    /// params carry one, the path — `scene/query /sprag_mux/external/layout: <cause>`. Done HERE
+    /// rather than at each call site because there is one of these and dozens of those, and the
+    /// one that gets forgotten is always the one that fires.
+    ///
+    /// The [`ErrorKind`] is PRESERVED across the wrap. Callers switch on it (an
+    /// [`ErrorKind::UnexpectedEof`] means the host is gone and a client should exit rather than
+    /// retry), so a wrap that flattened every failure to `Other` would trade a readable message
+    /// for a behavioural regression.
+    ///
     /// # Errors
     ///
     /// I/O failure writing the request or reading the reply, a malformed reply, or
     /// a JSON-RPC `error` object in the response.
     pub fn call(&mut self, method: &str, params: Value) -> io::Result<Value> {
+        // The label is built BEFORE the call, because the params move into it.
+        let label = request_label(method, &params);
+        self.call_inner(method, params)
+            .map_err(|error| io::Error::new(error.kind(), format!("{label}: {error}")))
+    }
+
+    /// [`call`](Self::call)'s body, wrapped by it so that EVERY exit is named — including the
+    /// early refusal below, which is otherwise the one a `?` inside the body would skip.
+    fn call_inner(&mut self, method: &str, params: Value) -> io::Result<Value> {
         if self.timed_out {
             return Err(io::Error::new(
                 ErrorKind::TimedOut,
@@ -407,6 +448,44 @@ mod tests {
         assert_eq!(
             retired.bytes, writer.bytes,
             "both forms put the same bytes on the wire — only the call count differs",
+        );
+    }
+
+    /// A failed request says WHICH request it was, and stays the KIND it was.
+    ///
+    /// Both halves or neither: a message that names the slot but flattens every failure to
+    /// `Other` would be readable and would break the callers that exit on
+    /// [`ErrorKind::UnexpectedEof`] rather than retry. The control is the second case — a method
+    /// with no `path` must name the method alone rather than printing `null` or an empty gap,
+    /// because `client/hello` and `client/attach` fail for different reasons and neither carries
+    /// a path.
+    #[test]
+    fn a_failed_request_names_itself_and_keeps_its_kind() {
+        let with_path = request_label(
+            "scene/query",
+            &json!({ "path": "/sprag_mux/external/layout", "session": "1" }),
+        );
+        assert_eq!(with_path, "scene/query /sprag_mux/external/layout");
+        assert_eq!(
+            request_label("client/attach", &json!({ "session": "1" })),
+            "client/attach"
+        );
+        assert_eq!(request_label("ping", &json!(null)), "ping");
+
+        // The wrap `call` applies, exercised on the shape that cost R278 a session to find.
+        let cause = io::Error::new(
+            ErrorKind::InvalidData,
+            "invalid type: integer `0`, expected string or map",
+        );
+        let named = io::Error::new(cause.kind(), format!("{with_path}: {cause}"));
+        assert_eq!(
+            named.kind(),
+            ErrorKind::InvalidData,
+            "the kind survives, so a caller can still switch on it",
+        );
+        assert!(
+            named.to_string().contains("/sprag_mux/external/layout"),
+            "the message names the slot: {named}",
         );
     }
 

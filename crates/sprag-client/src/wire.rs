@@ -439,14 +439,32 @@ fn current_window_name(list: &[WindowInfo]) -> Option<String> {
         .map(|window| window.name.clone())
 }
 
+/// Read the slot at `path` and decode it, NAMING the slot when the decode fails.
+///
+/// `HostConn::call` already names a failed request. This is the other half, and the two failures
+/// are opposite facts that used to read identically: `invalid type: integer 0, expected string or
+/// map` says the same thing whether the daemon REFUSED the request or ANSWERED it with a shape
+/// this client's types do not describe. The second is a version skew between a client and a
+/// daemon — the failure a mixed-version machine actually has — and naming the slot is what turns
+/// it from a bisect into a sentence.
+///
+/// One helper rather than the four hand-rolled `from_value(..).map_err(..)` copies it replaces:
+/// they were identical except for the type, which is exactly the shape where the fifth copy
+/// forgets the `map_err` and re-opens the hole.
+fn read_slot<T: serde::de::DeserializeOwned>(conn: &mut HostConn, path: String) -> io::Result<T> {
+    let value = conn.call("scene/query", json!({ "path": path.clone() }))?;
+    serde_json::from_value(value).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{path} answered a shape this client cannot read: {error}"),
+        )
+    })
+}
+
 /// Read the host's arrangement off the wire — the ONE place the `layout` slot is queried,
 /// shared by the boot read and the poll thread's refresh.
 fn query_layout(conn: &mut HostConn) -> io::Result<LayoutSnapshot> {
-    let value = conn.call(
-        "scene/query",
-        json!({ "path": mux_action_path(LAYOUT_SLOT) }),
-    )?;
-    serde_json::from_value(value).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    read_slot(conn, mux_action_path(LAYOUT_SLOT))
 }
 
 /// Read the session's arbitrated window size off the wire — the ONE place the `window_size` slot is
@@ -455,12 +473,7 @@ fn query_layout(conn: &mut HostConn) -> io::Result<LayoutSnapshot> {
 /// A slot that answers `null` (no client has reported an area, or a host that tracks none) decodes
 /// to `None`, which is a value rather than a failure: the caller falls back to its own surface.
 fn query_window_size(conn: &mut HostConn) -> io::Result<Option<(u16, u16)>> {
-    let value = conn.call(
-        "scene/query",
-        json!({ "path": mux_action_path(WINDOW_SIZE_SLOT) }),
-    )?;
-    let size: Option<ClientSize> = serde_json::from_value(value)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let size: Option<ClientSize> = read_slot(conn, mux_action_path(WINDOW_SIZE_SLOT))?;
     Ok(size.map(|size| (size.cols, size.rows)))
 }
 
@@ -507,11 +520,7 @@ fn store_windows(windows: &Mutex<Vec<WindowInfo>>, list: Vec<WindowInfo>) {
 /// Read the scoped session's window list off the wire — the ONE place the `windows` slot is
 /// queried, shared by the boot read and the poll thread's refresh.
 fn query_windows(conn: &mut HostConn) -> io::Result<Vec<WindowInfo>> {
-    let value = conn.call(
-        "scene/query",
-        json!({ "path": mux_action_path(WINDOWS_SLOT) }),
-    )?;
-    serde_json::from_value(value).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    read_slot(conn, mux_action_path(WINDOWS_SLOT))
 }
 
 /// Every session on the host, mirrored — what a session SWITCHER draws (a vertical rail of every
@@ -538,11 +547,7 @@ fn store_sessions(sessions: &Mutex<Vec<SessionInfo>>, list: Vec<SessionInfo>) {
 /// Read every session off the wire (the registry-wide `sessions` slot) — the ONE place it is
 /// queried, shared by the boot read, the poll thread's refresh, and a switch's re-boot.
 fn query_sessions(conn: &mut HostConn) -> io::Result<Vec<SessionInfo>> {
-    let value = conn.call(
-        "scene/query",
-        json!({ "path": mux_action_path(SESSIONS_SLOT) }),
-    )?;
-    serde_json::from_value(value).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    read_slot(conn, mux_action_path(SESSIONS_SLOT))
 }
 
 /// Announce `conn`'s CLIENT id to the daemon (`client/hello`, R-PR67) — the group key a client's
