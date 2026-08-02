@@ -860,6 +860,70 @@ pub const BREAK_PANE_ACTION: &str = "break_pane";
 /// no window holds `pane`, or if `window` names no window.
 pub const JOIN_PANE_ACTION: &str = "join_pane";
 
+/// The mux control external invoke action that PLACES an existing pane beside another
+/// (`{pane, target, dir, before?}`) — tmux `move-pane`. Answers `{closed_source: bool}`.
+///
+/// This is to [`JOIN_PANE_ACTION`] exactly what [`SPLIT_ACTION`] is to [`SPAWN_ACTION`]: the same
+/// move with a PLACE. `join_pane` appends, which states where only by convention, so putting a pane
+/// at a chosen position meant rewriting the whole tree ([`SET_LAYOUT_ACTION`]) — which an author
+/// with pixels and a gesture can do, and a shell script or an agent cannot.
+///
+/// **NEITHER window is named**, and that is the design rather than a shorthand. A
+/// [`PaneId`](sprag_terminal::PaneId) is registry-unique, so `pane` implies its source window (the
+/// rule [`BREAK_PANE_ACTION`] already states) and `target` implies its destination. One request
+/// therefore covers both a re-placement inside one window and a move into another, with no mode
+/// flag: whether the two windows differ is an observation about the two ids, never a choice the
+/// caller has to spell. The rival needs two methods for this and still leaves a hole between them —
+/// herdr's `pane.swap` refuses to cross a tab and its `pane.move` refuses to stay inside one, so
+/// moving a pane WITHIN its own tab is expressible in neither.
+///
+/// `dir` and `before` are [`SPLIT_ACTION`]'s, verbatim: `"horizontal"` puts the moved pane RIGHT of
+/// `target` and `"vertical"` BELOW it, and `before` (default `false`) puts it on the other side
+/// instead. One vocabulary spans placing a NEW pane and placing an existing one, so a caller who can
+/// split can move.
+///
+/// `closed_source` reports whether the move emptied and therefore CLOSED the pane's old window
+/// (tmux's behaviour, and [`JOIN_PANE_ACTION`]'s answer) — always `false` for a within-window move,
+/// which is the honest value rather than an absent field.
+///
+/// REFUSED (`Rejected`), with nothing moved: `pane` or `target` naming no pane of the scoped
+/// session, `target` not being TILED where it lives (it exited, or a client floated it out), or the
+/// two being the SAME pane — a pane cannot be placed beside itself, and unlike a swap that request
+/// has no reading at all.
+pub const MOVE_PANE_ACTION: &str = "move_pane";
+
+/// The mux control external invoke action that EXCHANGES two panes' positions
+/// (`{pane?, with}` XOR `{pane?, dir}`) — tmux `swap-pane`. Answers `{a, b, changed}`.
+///
+/// The one arrangement gesture that is not a placement: a placement names where a pane goes, while a
+/// swap names only that two panes trade, and the shapes they trade into are whatever each already
+/// had. Every division keeps its id, direction and ratio — by construction, because the two leaves
+/// are exchanged where they sit rather than removed and put back.
+///
+/// `pane` ABSENT means the current window's ACTIVE pane, the default [`SPLIT_ACTION`] takes and for
+/// the same reason. Then exactly one of:
+///
+/// * `with` — that pane, which may live in ANOTHER window of the session. herdr refuses a
+///   cross-tab swap outright (`PaneSwapReason::CrossTab`); sprag allows it because
+///   [`MOVE_PANE_ACTION`] already crosses a window, and a swap that could not would be the same
+///   asymmetry in the other verb. Each window's ACTIVE pane then follows the CELL — it lands on the
+///   pane that arrived, since the one it was on has left.
+/// * `dir` — `"left"` / `"right"` / `"up"` / `"down"`: the neighbour of `pane`, resolved by
+///   [`LayoutTree::neighbor`](sprag_terminal::LayoutTree::neighbor) from the ARRANGEMENT rather than
+///   from any client's rectangles, exactly as [`SELECT_PANE_ACTION`] resolves its own. Same-window
+///   by construction — adjacency is a property of one tiling.
+/// * neither, or both ⇒ `TypeMismatch`, [`SELECT_PANE_ACTION`]'s rule.
+///
+/// **A direction with no neighbour is not an error**, and neither is a pane swapped with itself.
+/// Both answer `{changed: false}` with the arrangement unmoved, for [`SELECT_PANE_ACTION`]'s reason:
+/// a key bound to `swap-pane -L` pressed at the left edge is a well-formed request whose honest
+/// answer is "nothing to trade with", and refusing it would log a failure every time a user reaches
+/// the edge of their layout. A pane id that names no pane of the SESSION is refused (`Rejected`).
+///
+/// `a` and `b` answer with the two panes AS RESOLVED, so a `dir` caller learns who it swapped with;
+/// `b` is `null` when a direction found no neighbour.
+pub const SWAP_PANE_ACTION: &str = "swap_pane";
+
 /// The mux control external invoke action that delivers a DROPPED FILE to a pane (`{pane, path}`) —
 /// the wire form of a display client's drag-and-drop. Answers `{path}`: the path the pane is handed.
 ///

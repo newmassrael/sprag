@@ -79,11 +79,12 @@ use crate::window::{SizeRequest, WindowSize};
 use crate::wire::{
     AGENT_MANIFESTS_SLOT, ActivityWire, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION,
     DROP_FILE_ACTION, EVENTS_FIELD, GLOBAL_COMMANDS_SLOT, GRID_WORK_SLOT, JOIN_PANE_ACTION,
-    KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, NEIGHBORS_FIELD, NEW_SESSION_ACTION,
-    NEW_WINDOW_ACTION, PANES_SLOT, PROJECT_FIELD, RELEASE_AGENT_ACTION, RENAME_WINDOW_ACTION,
-    REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION,
-    SELECT_WINDOW_ACTION, SESSION_ACTIVITY_FIELD, SESSIONS_SLOT, SET_FLOATING_ACTION,
-    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, WINDOW_SIZE_SLOT, WINDOWS_SLOT,
+    KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, MOVE_PANE_ACTION, NEIGHBORS_FIELD,
+    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PROJECT_FIELD, RELEASE_AGENT_ACTION,
+    RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION,
+    SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSION_ACTIVITY_FIELD, SESSIONS_SLOT,
+    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION,
+    WINDOW_SIZE_SLOT, WINDOWS_SLOT,
 };
 
 /// The mux-management engine `External`: a control surface over the shared
@@ -349,18 +350,7 @@ impl WorkspaceExternal {
     fn split(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let map = as_object(args)?;
         let target = self.pane_target(map, "pane")?;
-        let dir = match map.get("dir").and_then(Value::as_str) {
-            Some("horizontal") => SplitDir::Horizontal,
-            Some("vertical") => SplitDir::Vertical,
-            _ => return Err(InvokeError::TypeMismatch),
-        };
-        // Absent is the common side (right / below); a non-bool is malformed rather than
-        // silently defaulted, the same rule every other optional flag on this external follows.
-        let side = match map.get("before") {
-            None | Some(Value::Null) | Some(Value::Bool(false)) => SplitSide::Second,
-            Some(Value::Bool(true)) => SplitSide::First,
-            Some(_) => return Err(InvokeError::TypeMismatch),
-        };
+        let (side, dir) = Self::parse_placement(map)?;
         // The birth spec is validated BEFORE the target is looked up, so a request that is
         // malformed in two ways reports the malformed-request error rather than the refusal.
         let spec = Self::parse_spawn(map)?;
@@ -1098,6 +1088,101 @@ impl WorkspaceExternal {
         ))
     }
 
+    /// `move_pane {pane, target, dir, before?}` action: place an existing pane beside another —
+    /// tmux `move-pane`. Answers `{closed_source}`. See [`crate::wire::MOVE_PANE_ACTION`].
+    ///
+    /// NEITHER window is named: both are derived from the two pane ids, so the one request covers a
+    /// re-placement inside one window and a move into another. The direction vocabulary is
+    /// [`split`](Self::split)'s, parsed here the same way — an absent `before` is the common side
+    /// and a non-bool is malformed rather than silently defaulted.
+    fn move_pane(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let map = as_object(args)?;
+        let pane = self.pane_target(map, "pane")?;
+        let target = require_pane_id(map, "target")?;
+        let (side, dir) = Self::parse_placement(map)?;
+        let closed = lock(&self.registry)
+            .move_pane(self.scope.session(), pane, target, side, dir)
+            .map_err(|error| {
+                tracing::debug!(target: "sprag_host", %error, "refused to move a pane");
+                InvokeError::Rejected
+            })?;
+        self.announce();
+        Ok(IntrospectValue::Json(
+            serde_json::json!({ "closed_source": closed }),
+        ))
+    }
+
+    /// `swap_pane {pane?, with}` XOR `{pane?, dir}` action: exchange two panes' positions — tmux
+    /// `swap-pane`. Answers `{a, b, changed}`. See [`crate::wire::SWAP_PANE_ACTION`].
+    ///
+    /// The naming shape is [`select_pane`](Self::select_pane)'s, and so is the split between a
+    /// refusal and a quiet "nothing moved": a direction that finds no neighbour is a well-formed
+    /// request at the edge of a layout, while a pane id naming nothing is a caller's mistake.
+    fn swap_pane(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let map = as_object(args)?;
+        let pane = self.pane_target(map, "pane")?;
+        let named = match map.get("with") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(PaneId(value.as_u64().ok_or(InvokeError::TypeMismatch)?)),
+        };
+        let toward = match map.get("dir") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(word)) => {
+                Some(PaneDir::from_wire(word).ok_or(InvokeError::TypeMismatch)?)
+            }
+            Some(_) => return Err(InvokeError::TypeMismatch),
+        };
+        // Exactly one, for `select_pane`'s reason: "swap with nothing" and "swap with two things"
+        // are a caller's bug, and guessing a reading for them would hide it.
+        let with = match (named, toward) {
+            (Some(with), None) => Some(with),
+            // A direction with no neighbour is the EDGE of the layout, not an error — the answer is
+            // "nothing to trade with", which is what a key bound to `swap-pane -L` deserves.
+            (None, Some(dir)) => crate::host::neighbor(&self.registry, &self.scope, pane, dir),
+            _ => return Err(InvokeError::TypeMismatch),
+        };
+        let Some(with) = with else {
+            return Ok(IntrospectValue::Json(
+                serde_json::json!({ "a": pane.0, "b": Value::Null, "changed": false }),
+            ));
+        };
+        let changed = lock(&self.registry)
+            .swap_panes(self.scope.session(), pane, with)
+            .map_err(|error| {
+                tracing::debug!(target: "sprag_host", %error, "refused to swap two panes");
+                InvokeError::Rejected
+            })?;
+        if changed {
+            // Only on a real move, `select_pane`'s rule: the announce wakes every parked client to
+            // re-read, and a swap that traded nothing has nothing for them to read.
+            self.announce();
+        }
+        Ok(IntrospectValue::Json(
+            serde_json::json!({ "a": pane.0, "b": with.0, "changed": changed }),
+        ))
+    }
+
+    /// The `{dir, before?}` half of a placement request — [`split`](Self::split)'s and
+    /// [`move_pane`](Self::move_pane)'s, parsed once so the two cannot drift into two spellings of
+    /// one vocabulary.
+    ///
+    /// `dir` names how the two halves are LAID OUT (tmux's own `-h` / `-v`), and `before` is tmux's
+    /// `-b`: absent is the common side (right / below), and a non-bool is malformed rather than
+    /// silently defaulted — the rule every other optional flag on this external follows.
+    fn parse_placement(map: &Map<String, Value>) -> Result<(SplitSide, SplitDir), InvokeError> {
+        let dir = match map.get("dir").and_then(Value::as_str) {
+            Some("horizontal") => SplitDir::Horizontal,
+            Some("vertical") => SplitDir::Vertical,
+            _ => return Err(InvokeError::TypeMismatch),
+        };
+        let side = match map.get("before") {
+            None | Some(Value::Null) | Some(Value::Bool(false)) => SplitSide::Second,
+            Some(Value::Bool(true)) => SplitSide::First,
+            Some(_) => return Err(InvokeError::TypeMismatch),
+        };
+        Ok((side, dir))
+    }
+
     /// `drop_file {pane, path}` action: deliver a file dropped on a display client to `pane`, and
     /// answer `{path}` — the path the pane is handed ([`crate::upload`] owns the paste-vs-upload
     /// policy). A refused delivery (no such pane, an unresolvable path) is `Rejected`.
@@ -1159,6 +1244,8 @@ impl ExternalIntrospect for WorkspaceExternal {
                     SchemaField::new(RESIZE_WINDOW_ACTION, "action"),
                     SchemaField::new(BREAK_PANE_ACTION, "action"),
                     SchemaField::new(JOIN_PANE_ACTION, "action"),
+                    SchemaField::new(MOVE_PANE_ACTION, "action"),
+                    SchemaField::new(SWAP_PANE_ACTION, "action"),
                     SchemaField::new(DROP_FILE_ACTION, "action"),
                     SchemaField::new(PANES_SLOT, "list"),
                     SchemaField::new(LAYOUT_SLOT, "tree"),
@@ -1629,6 +1716,8 @@ impl WorkspaceExternal {
             RESIZE_WINDOW_ACTION => self.resize_window(&args),
             BREAK_PANE_ACTION => self.break_pane(&args),
             JOIN_PANE_ACTION => self.join_pane(&args),
+            MOVE_PANE_ACTION => self.move_pane(&args),
+            SWAP_PANE_ACTION => self.swap_pane(&args),
             DROP_FILE_ACTION => self.drop_file(&args),
             REPORT_AGENT_ACTION => self.report_agent(&args),
             RELEASE_AGENT_ACTION => self.release_agent(&args),
@@ -4432,6 +4521,247 @@ mod tests {
             IntrospectValue::Json(json!({"pane": 1, "dir": "vertical", "cmd": ["cat"]})),
         )
         .unwrap();
+    }
+
+    /// The arrangement the `layout` slot serves, in paint order — decoded through
+    /// [`LayoutWire`](sprag_terminal::LayoutWire), the REAL consumer's type, so a test reads a
+    /// placement the way a client does rather than by hand-walking the arena.
+    fn tiled_order(ext: &mut WorkspaceExternal) -> Vec<u64> {
+        let wire: sprag_terminal::LayoutWire =
+            serde_json::from_value(answer_doc(ext.query(LAYOUT_SLOT))["tree"].clone())
+                .expect("the layout slot serves a decodable arrangement");
+        wire.panes().into_iter().map(|pane| pane.0).collect()
+    }
+
+    /// `move_pane` re-places a pane INSIDE its own window — the request herdr's two verbs leave a
+    /// hole for (`pane.swap` refuses to cross a tab; `pane.move` refuses to stay in one), and which
+    /// before this took a whole-tree `set_layout` write only a client with a tree could author.
+    #[test]
+    fn move_pane_re_places_a_pane_inside_its_own_window() {
+        let reg = registry();
+        let (mut ext, rev) = control(&reg);
+        three_pane_window(&mut ext); // 0 | (1 / 2)
+        assert_eq!(tiled_order(&mut ext), vec![0, 1, 2]);
+        let before = rev.current();
+
+        let answer = ext
+            .invoke(
+                MOVE_PANE_ACTION,
+                IntrospectValue::Json(
+                    json!({"pane": 2, "target": 0, "dir": "horizontal", "before": true}),
+                ),
+            )
+            .expect("a tiled target is placeable");
+
+        assert_eq!(answer_doc(Some(answer))["closed_source"], false);
+        assert_eq!(
+            tiled_order(&mut ext),
+            vec![2, 0, 1],
+            "pane 2 landed LEFT of pane 0, which is what -b asked for",
+        );
+        assert!(
+            rev.current() > before,
+            "and the arrangement change woke the clients"
+        );
+    }
+
+    /// The same verb crossing a window, with the destination never named — it is DERIVED from the
+    /// target's id. `join_pane` can only append into a window; this states the place.
+    #[test]
+    fn move_pane_crosses_a_window_without_naming_it() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        three_pane_window(&mut ext); // window "0": 0 | (1 / 2)
+        ext.invoke(
+            NEW_WINDOW_ACTION,
+            IntrospectValue::Json(json!({"name": "1"})),
+        )
+        .unwrap();
+        // A scope PINS the window it resolved against, so reading the new window needs a new
+        // surface — which is what production does too: one scope per request.
+        let name = lock(&reg).default_session().name().to_owned();
+        let (mut ext, _rev) = scoped_control(&reg, scope_of(&reg, &name));
+        let arrived = tiled_order(&mut ext);
+        assert_eq!(arrived.len(), 1, "a new window is born with one pane");
+        let host_pane = arrived[0];
+
+        let answer = ext
+            .invoke(
+                MOVE_PANE_ACTION,
+                IntrospectValue::Json(
+                    json!({"pane": 1, "target": host_pane, "dir": "vertical", "before": false}),
+                ),
+            )
+            .expect("a pane in another window is a legal target");
+
+        assert_eq!(
+            answer_doc(Some(answer))["closed_source"],
+            false,
+            "window 0 kept two panes, so it was not closed",
+        );
+        assert_eq!(
+            tiled_order(&mut ext),
+            vec![host_pane, 1],
+            "pane 1 arrived BELOW the window's own pane",
+        );
+    }
+
+    /// `move_pane` refuses without moving anything: a pane beside itself, an unknown pane, and a
+    /// target that is not tiled. A missing axis is MALFORMED rather than a refusal — the caller
+    /// has not said what it wants, which is a different mistake from asking for the impossible.
+    #[test]
+    fn move_pane_refuses_the_impossible_and_rejects_the_unsaid() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        three_pane_window(&mut ext);
+        let before = tiled_order(&mut ext);
+
+        for (args, expected) in [
+            (
+                json!({"pane": 1, "target": 1, "dir": "horizontal"}),
+                InvokeError::Rejected,
+            ),
+            (
+                json!({"pane": 9, "target": 1, "dir": "horizontal"}),
+                InvokeError::Rejected,
+            ),
+            (
+                json!({"pane": 1, "target": 9, "dir": "horizontal"}),
+                InvokeError::Rejected,
+            ),
+            (json!({"pane": 1, "target": 0}), InvokeError::TypeMismatch),
+            (
+                json!({"pane": 1, "target": 0, "dir": "sideways"}),
+                InvokeError::TypeMismatch,
+            ),
+            (
+                json!({"pane": 1, "target": 0, "dir": "horizontal", "before": "yes"}),
+                InvokeError::TypeMismatch,
+            ),
+        ] {
+            assert_eq!(
+                ext.invoke(MOVE_PANE_ACTION, IntrospectValue::Json(args.clone()))
+                    .unwrap_err(),
+                expected,
+                "{args}",
+            );
+        }
+        assert_eq!(
+            tiled_order(&mut ext),
+            before,
+            "and none of them moved a pane"
+        );
+    }
+
+    /// `swap_pane {with}` trades two panes' places and every divider survives — the whole reason it
+    /// is not two placements.
+    #[test]
+    fn swap_pane_trades_two_places_and_keeps_the_dividers() {
+        let reg = registry();
+        let (mut ext, rev) = control(&reg);
+        three_pane_window(&mut ext);
+        let shape = query_layout(&mut ext);
+        let before = rev.current();
+
+        let answer = answer_doc(Some(
+            ext.invoke(
+                SWAP_PANE_ACTION,
+                IntrospectValue::Json(json!({"pane": 0, "with": 2})),
+            )
+            .expect("both panes are tiled"),
+        ));
+
+        assert_eq!(answer, json!({"a": 0, "b": 2, "changed": true}));
+        assert_eq!(
+            tiled_order(&mut ext),
+            vec![2, 1, 0],
+            "the two traded places"
+        );
+        let after = query_layout(&mut ext);
+        assert_eq!(
+            after["nodes"].as_array().map(Vec::len),
+            shape["nodes"].as_array().map(Vec::len),
+            "the arena is the same size — nothing was retired and re-minted",
+        );
+        assert!(rev.current() > before);
+    }
+
+    /// A DIRECTION resolves through the same adjacency `select_pane -L` uses, and at the EDGE the
+    /// answer is "nothing to trade with" rather than a refusal — a key bound to `swap-pane -L`
+    /// pressed at the left edge is well-formed, and refusing it would log a failure every time a
+    /// user reaches the side of their layout.
+    #[test]
+    fn a_swap_toward_an_edge_is_answered_not_refused() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        three_pane_window(&mut ext); // 0 | (1 / 2), so pane 0 is at the left edge
+        let before = tiled_order(&mut ext);
+
+        assert_eq!(
+            answer_doc(Some(
+                ext.invoke(
+                    SWAP_PANE_ACTION,
+                    IntrospectValue::Json(json!({"pane": 0, "dir": "left"}))
+                )
+                .expect("an edge is not an error"),
+            )),
+            json!({"a": 0, "b": Value::Null, "changed": false}),
+        );
+        assert_eq!(tiled_order(&mut ext), before, "and nothing moved");
+
+        assert_eq!(
+            answer_doc(Some(
+                ext.invoke(
+                    SWAP_PANE_ACTION,
+                    IntrospectValue::Json(json!({"pane": 0, "dir": "right"}))
+                )
+                .expect("pane 1 is to the right"),
+            )),
+            json!({"a": 0, "b": 1, "changed": true}),
+            "and the direction resolved to the pane the arrangement says is adjacent",
+        );
+    }
+
+    /// The naming shape is `select_pane`'s: exactly one of `with` / `dir`, because neither "swap
+    /// with nothing" nor "swap with two things" has an obvious reading. A pane swapped with ITSELF
+    /// is legal and moves nothing; a pane id naming nothing is refused.
+    #[test]
+    fn swap_pane_takes_exactly_one_partner() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        three_pane_window(&mut ext);
+
+        for args in [
+            json!({"pane": 0}),
+            json!({"pane": 0, "with": 1, "dir": "right"}),
+            json!({"pane": 0, "dir": "sideways"}),
+        ] {
+            assert_eq!(
+                ext.invoke(SWAP_PANE_ACTION, IntrospectValue::Json(args.clone()))
+                    .unwrap_err(),
+                InvokeError::TypeMismatch,
+                "{args}",
+            );
+        }
+        assert_eq!(
+            answer_doc(Some(
+                ext.invoke(
+                    SWAP_PANE_ACTION,
+                    IntrospectValue::Json(json!({"pane": 1, "with": 1}))
+                )
+                .expect("a pane swapped with itself is legal"),
+            )),
+            json!({"a": 1, "b": 1, "changed": false}),
+        );
+        assert_eq!(
+            ext.invoke(
+                SWAP_PANE_ACTION,
+                IntrospectValue::Json(json!({"pane": 1, "with": 9}))
+            )
+            .unwrap_err(),
+            InvokeError::Rejected,
+            "a pane id naming nothing is a caller's mistake, not an edge",
+        );
     }
 
     /// `select_pane {pane}` moves the daemon's active pane, and the `panes` slot says so — the two

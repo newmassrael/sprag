@@ -135,11 +135,12 @@ use sprag_host::hooks::{self, HookError, Target};
 use sprag_host::keymap::{BoundAction, KeySpec, KeyTable};
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, FULL_TEXT_SLOT,
-    JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, NEW_SESSION_ACTION,
-    NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, RELEASE_AGENT_ACTION, RENAME_WINDOW_ACTION,
-    REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION,
-    SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT,
-    events_slot_since, find_slot_for, project_slot_for, regex_slot_for, session_activity_at,
+    JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, MOVE_PANE_ACTION,
+    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, RELEASE_AGENT_ACTION,
+    RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION,
+    SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION,
+    SWAP_PANE_ACTION, TEXT_ACTION, WINDOWS_SLOT, events_slot_since, find_slot_for,
+    project_slot_for, regex_slot_for, session_activity_at,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -178,6 +179,8 @@ fn run() -> io::Result<()> {
         Some("resize-window") => resize_window(args.collect()),
         Some("break-pane") => break_pane(args.collect()),
         Some("join-pane") => join_pane(args.collect()),
+        Some("move-pane") => move_pane(args.collect()),
+        Some("swap-pane") => swap_pane(args.collect()),
         Some("panes") => panes(args.collect()),
         Some("agent") => agent(args.collect()),
         Some("report-agent") => report_agent(args.collect()),
@@ -748,7 +751,9 @@ fn print_usage() {
          \x20             | rename-window [window] NAME | kill-window [window]\n\
          \x20             | resize-window [window]\n\
          \x20                 <-x COLS -y ROWS | -a | -A | -L/-R/-U/-D N | -u>\n\
-         \x20             | break-pane PANE [name] | join-pane PANE WINDOW> -t SESSION\n\
+         \x20             | break-pane PANE [name] | join-pane PANE WINDOW\n\
+         \x20             | move-pane PANE -h|-v [-b] TARGET\n\
+         \x20             | swap-pane [PANE] <WITH | -L|-R|-U|-D>> -t SESSION\n\
          \x20      sprag <panes | select-pane <PANE | -L|-R|-U|-D>\n\
          \x20             | split-window [-h|-v [-b] [PANE]] [-- command…]\n\
          \x20             | kill-pane [PANE]\n\
@@ -3657,6 +3662,176 @@ fn join_pane(args: Vec<String>) -> io::Result<()> {
             format!(
                 "join-pane refused: no window named {window:?} in session {session:?}, no pane {pane}, or it already lives there"
             ),
+        )),
+        Err(error) => Err(error),
+    }
+}
+
+/// `move-pane -t SESSION PANE -h|-v [-b] TARGET`: put PANE beside TARGET — tmux `move-pane`.
+///
+/// NEITHER window is named: both are derived from the two pane ids, so the same command re-places a
+/// pane inside its own window and moves it into another. `-h` puts it right of TARGET, `-v` below,
+/// `-b` on the other side — [`split_window`]'s flags, because it is [`split_window`]'s placement.
+fn move_pane(args: Vec<String>) -> io::Result<()> {
+    let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
+    let (session, rest) = target_and_rest(args, "move-pane")?;
+    let mut dir: Option<&'static str> = None;
+    let mut before = false;
+    let mut panes: Vec<u64> = Vec::new();
+    for arg in rest {
+        match arg.as_str() {
+            "-h" | "-v" => {
+                if dir.is_some() {
+                    return Err(bad(
+                        "move-pane: -h and -v name one axis; give only one".to_owned()
+                    ));
+                }
+                dir = Some(if arg == "-h" {
+                    "horizontal"
+                } else {
+                    "vertical"
+                });
+            }
+            "-b" => before = true,
+            other => {
+                if panes.len() == 2 {
+                    return Err(bad(format!("move-pane: unexpected argument {other:?}")));
+                }
+                panes.push(other.parse::<u64>().map_err(|_| {
+                    bad(format!(
+                        "move-pane: {other:?} is neither a flag nor a pane id"
+                    ))
+                })?);
+            }
+        }
+    }
+    let (&pane, &target) = match panes.as_slice() {
+        [pane, target] => (pane, target),
+        _ => {
+            return Err(bad(
+                "move-pane needs the pane to move and the pane to put it beside".to_owned(),
+            ));
+        }
+    };
+    // An axis is REQUIRED, unlike `split-window`'s bare form: a split with no axis has an append to
+    // fall back on ("put a shell in this window"), while a move with no axis has not said anything
+    // at all — the pane is already in a window, so `join-pane` is the verb for "somewhere in there".
+    let dir = dir.ok_or_else(|| {
+        bad(format!(
+            "move-pane: pane {pane} needs an axis to land on beside pane {target} — -h (right) or \
+             -v (below); use join-pane to append into a window instead"
+        ))
+    })?;
+    let mut conn = connect(None)?;
+    require_session(&mut conn, &session)?;
+    let answer = conn.call(
+        "scene/invoke",
+        json!({
+            "session": session,
+            "path": mux_action_path(MOVE_PANE_ACTION),
+            "args": { "pane": pane, "target": target, "dir": dir, "before": before },
+        }),
+    );
+    match answer {
+        Ok(answer) => {
+            if answer["closed_source"].as_bool().unwrap_or(false) {
+                println!("moved pane {pane} beside {target} (source window closed)");
+            } else {
+                println!("moved pane {pane} beside {target}");
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::Other => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "move-pane refused: session {session:?} has no pane {pane}, or pane {target} is not tiled there, or they are the same pane"
+            ),
+        )),
+        Err(error) => Err(error),
+    }
+}
+
+/// `swap-pane -t SESSION [PANE] <WITH | -L|-R|-U|-D>`: exchange two panes' positions — tmux
+/// `swap-pane`.
+///
+/// PANE omitted means the session's ACTIVE pane. The partner is either a pane id or a direction,
+/// exactly one of them; a direction at the edge of the layout prints "nothing to trade with" and
+/// succeeds, which is what a key bound to this deserves.
+fn swap_pane(args: Vec<String>) -> io::Result<()> {
+    let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
+    let (session, rest) = target_and_rest(args, "swap-pane")?;
+    let mut dir: Option<&'static str> = None;
+    let mut panes: Vec<u64> = Vec::new();
+    for arg in rest {
+        match arg.as_str() {
+            "-L" | "-R" | "-U" | "-D" => {
+                if dir.is_some() {
+                    return Err(bad("swap-pane: give only one direction".to_owned()));
+                }
+                dir = Some(match arg.as_str() {
+                    "-L" => "left",
+                    "-R" => "right",
+                    "-U" => "up",
+                    _ => "down",
+                });
+            }
+            other => {
+                if panes.len() == 2 {
+                    return Err(bad(format!("swap-pane: unexpected argument {other:?}")));
+                }
+                panes.push(other.parse::<u64>().map_err(|_| {
+                    bad(format!(
+                        "swap-pane: {other:?} is neither a flag nor a pane id"
+                    ))
+                })?);
+            }
+        }
+    }
+    let mut args = json!({});
+    // The two shapes, and exactly one of them — the wire refuses "both" and "neither" as malformed,
+    // so the CLI names the mistake here rather than letting it read as a daemon refusal.
+    match (panes.as_slice(), dir) {
+        ([pane, with], None) => {
+            args["pane"] = json!(pane);
+            args["with"] = json!(with);
+        }
+        ([with], None) => args["with"] = json!(with),
+        ([pane], Some(dir)) => {
+            args["pane"] = json!(pane);
+            args["dir"] = json!(dir);
+        }
+        ([], Some(dir)) => args["dir"] = json!(dir),
+        _ => {
+            return Err(bad(
+                "swap-pane takes a pane to swap with OR a direction (-L/-R/-U/-D), not both"
+                    .to_owned(),
+            ));
+        }
+    }
+    let mut conn = connect(None)?;
+    require_session(&mut conn, &session)?;
+    let answer = conn.call(
+        "scene/invoke",
+        json!({ "session": session, "path": mux_action_path(SWAP_PANE_ACTION), "args": args }),
+    );
+    match answer {
+        Ok(answer) => {
+            let a = answer["a"].as_u64();
+            match (
+                answer["changed"].as_bool().unwrap_or(false),
+                a,
+                answer["b"].as_u64(),
+            ) {
+                (true, Some(a), Some(b)) => println!("swapped pane {a} with {b}"),
+                (false, Some(a), Some(b)) => println!("pane {a} is already pane {b}"),
+                (_, Some(a), None) => println!("pane {a} has nothing to trade with that way"),
+                _ => println!("nothing to swap"),
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::Other => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("swap-pane refused: session {session:?} has no such pane, or it is not tiled"),
         )),
         Err(error) => Err(error),
     }

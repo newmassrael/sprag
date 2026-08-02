@@ -1623,6 +1623,25 @@ pub(crate) fn neighbors(
     PaneDir::ALL.map(|dir| (dir, tree.neighbor(pane, dir)))
 }
 
+/// What is adjacent to `pane` in ONE direction in the scoped window — [`neighbors`]' single-axis
+/// form, for the callers that resolve a direction into a pane rather than reporting all four.
+///
+/// Shares the derivation rather than re-deriving it, which is the point: `swap_pane -L` and
+/// `select_pane -L` must reach the same pane, and two walks over the same tree are two chances for
+/// them not to. `None` IS the edge — the caller decides whether that is a refusal or a quiet
+/// "nothing to do".
+pub(crate) fn neighbor(
+    registry: &Arc<Mutex<SessionRegistry>>,
+    scope: &SessionScope,
+    pane: PaneId,
+    dir: PaneDir,
+) -> Option<PaneId> {
+    neighbors(registry, scope, pane)
+        .into_iter()
+        .find_map(|(axis, found)| (axis == dir).then_some(found))
+        .flatten()
+}
+
 /// Divide `target`'s cell in the scoped window and put `pane` in the half on `side` — the ONE
 /// place a directional split lands (see [`crate::wire::SPLIT_ACTION`]).
 ///
