@@ -639,7 +639,12 @@ fn reconcile(
     focus: &mut Option<PaneId>,
     seen_active: &mut Option<PaneId>,
 ) -> Tiling {
-    let tiling = tile(&host.layout().tree, window_area(host, screen));
+    // The PROJECTION, so a zoomed session shows its one pane here as it does in the GUI and as the
+    // daemon has already sized its PTY. The `shown` fallbacks below then cover the zoom's hidden
+    // panes with no arm of their own — a pane the tiling does not name is a pane this terminal
+    // cannot display, which is the same sentence a float already made true.
+    let layout = host.layout();
+    let tiling = tile(&layout.projection(), window_area(host, screen));
     // FOLLOW the daemon's active pane WHEN IT MOVES, then this client's own, then the first pane
     // shown — each step used only when the one before it names a pane this terminal is showing.
     //

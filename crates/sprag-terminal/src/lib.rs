@@ -37,7 +37,7 @@ pub use layout::{
 pub use pane_pty::{CommandBuilder, PaneExit, PanePty, PanePtyError, PanePtyHandle, RawOutput};
 pub use registry::{
     KillOutcome, PaneMoveError, Session, SessionError, SessionInfo, SessionRegistry, Window,
-    WindowInfo, WindowKillOutcome,
+    WindowInfo, WindowKillOutcome, ZoomOutcome,
 };
 pub use remote::SshRemote;
 pub use snapshot::{
@@ -45,7 +45,7 @@ pub use snapshot::{
     SNAPSHOT_VERSION, SessionSnapshot, Snapshot, SnapshotError, WindowSnapshot, pane_histories,
     snapshot,
 };
-pub use tiling::{Divider, PaneRect, Rect, Tiling, fit_window, tile, with_ratio};
+pub use tiling::{Divider, PaneRect, Projection, Rect, Tiling, fit_window, tile, with_ratio};
 pub use workspace::{
     HistoryLimitSource, Pane, PaneEnvSource, PaneId, PaneInfo, PaneRebirth, Workspace,
 };

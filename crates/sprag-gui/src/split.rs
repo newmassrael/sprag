@@ -443,9 +443,15 @@ fn use_layout_sync() -> Rc<RefCell<LayoutSync>> {
 ///
 /// A divider whose id the host has just minted has no signal yet and is created at the
 /// right value.
+///
+/// What is adopted is the PROJECTION, not the arrangement: under a zoom this surface holds the one
+/// pane the host says fills the window, and the dividers and hidden panes are simply absent — the
+/// same lossiness [`project_layout`] already has for a pane this client cannot render, reached by a
+/// different route. The arrangement stays in `seen`, which is what [`pending_write`] compares
+/// against, so a zoomed client cannot write its one-pane surface back over the session's layout.
 pub(crate) fn adopt_layout(snapshot: &LayoutSnapshot, slots: &crate::slotview::SlotView) {
     let mut tree = LayoutTree::new();
-    if let Err(error) = tree.set_from_wire(snapshot.tree.clone()) {
+    if let Err(error) = tree.set_from_wire(snapshot.projection().to_wire()) {
         // The host validates every write, so this means the two ends disagree on the shape.
         // Keep what is on screen rather than blanking it on a fact we cannot parse.
         tracing::error!(
@@ -662,6 +668,11 @@ pub(crate) fn commit_layout(slots: &crate::slotview::SlotView) {
 ///   which the client re-projects and writes again — a permanent loop that also relocates the
 ///   pane. Membership is the Workspace's and never the client's to edit, so we render what we
 ///   can and write nothing until we can represent the whole set.
+///
+///   **A ZOOM lands here too**, and needs no rule of its own: the adopted surface is one pane and
+///   `seen.tree` is the whole arrangement, so the sets differ and nothing is written. That is the
+///   right answer for the right reason — a client showing one pane has seen no gesture that could
+///   author an arrangement — and it was already the answer before a zoom existed.
 /// * ALREADY the host's — the surface equals what the host holds, so there is nothing to record.
 fn pending_write(slots: &crate::slotview::SlotView) -> Option<(LayoutWire, u64)> {
     let current = unproject_layout(use_dock_topology().get().as_ref(), &|slot| {

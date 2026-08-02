@@ -1451,6 +1451,9 @@ pub(crate) fn reconciled_layout(
         revision: window.layout_revision(),
         tree,
         floating,
+        // Read from the SAME window under the SAME lock as the tree it filters, which is what makes
+        // `LayoutSnapshot::projection` a fact rather than a join of two readings.
+        zoomed: window.zoomed(),
     })
 }
 
@@ -2927,6 +2930,7 @@ mod tests {
                     ],
                     manual_size: None,
                     active: None,
+                    zoomed: None,
                 }],
             }],
         };
@@ -2987,6 +2991,7 @@ mod tests {
                     }],
                     manual_size: None,
                     active: None,
+                    zoomed: None,
                 }],
             }],
         };
@@ -3055,6 +3060,7 @@ mod tests {
                     ],
                     manual_size: None,
                     active: None,
+                    zoomed: None,
                 }],
             }],
         };

@@ -101,21 +101,27 @@ pub(crate) struct ReportMarker {
 /// pinion's own layout — this client therefore models none of its chrome. Those measurements fold
 /// back into one window through [`fit_window`], the inverse of the tiler that will consume it.
 ///
-/// `None` when the host tiles nothing, or while any tiled pane is still at pinion's `(0, 0)`
+/// `None` when the host shows nothing, or while any DISPLAYED pane is still at pinion's `(0, 0)`
 /// pre-layout sentinel: a report is a CLAIM about what this client can show, and a client that has
 /// not been laid out yet has none to make. Reporting only the panes it happens to know would name a
 /// window missing a pane's worth of cells.
+///
+/// The walk is over the PROJECTION rather than over the arrangement, both times it is used. Under a
+/// zoom this client draws ONE pane, so the panes the zoom hides have no surface to measure — asking
+/// for their rects would collect the pre-layout sentinel for each and report nothing at all, which
+/// would silently freeze the window at whatever it was before the zoom.
 fn reported_window(terminal: &TerminalView) -> Option<(u16, u16)> {
     let layout = terminal.slots.layout();
+    let projection = layout.projection();
     let mut measured = Vec::new();
-    for pane in layout.tree.panes() {
+    for pane in projection.panes() {
         let slot = terminal.slots.slot_of(pane)?;
         // A TRACKED read, and the reason this Effect re-runs: any pane's rect moving can change
         // what this client can give the arrangement.
         let rect = pinion_core::use_pane_viewport_size(pane_tag(slot));
         measured.push((pane, reflow_target(rect, terminal.metric)?));
     }
-    fit_window(&layout.tree, &measured)
+    fit_window(&projection, &measured)
 }
 
 /// Install (once) the [`Effect`] that keeps the host told how big this client is.
@@ -158,6 +164,14 @@ fn install_report(owner: &Owner, terminal: &Rc<TerminalView>) {
 ///   its own surface and its size is that surface's business.
 /// * A host with NO arbitrated window: an in-process host (one surface, so there is nothing to
 ///   arbitrate) or a daemon no client has reported an area to yet.
+///
+/// It asks the ARRANGEMENT rather than the projection, and that is deliberate: a pane a zoom is
+/// hiding is still the session's to size. The daemon's tiling does not name it, so it simply keeps
+/// the size it had — exactly as a pane the window is too small to show does — and a client that
+/// took the gap as licence to size it would be the second authority again, contradicted the moment
+/// the zoom ended. (It never reaches this in practice: a hidden pane has no surface, so its rect is
+/// the pre-layout sentinel and the Effect returns before asking. The answer is right anyway,
+/// because relying on the caller to not-ask would be relying on a coincidence.)
 fn owns_its_own_size(terminal: &TerminalView, index: usize) -> bool {
     if terminal.slots.window_size().is_none() {
         return false;

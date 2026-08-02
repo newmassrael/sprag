@@ -155,6 +155,18 @@ pub struct WindowSnapshot {
     /// the daemons that wrote those snapshots had.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active: Option<PaneId>,
+    /// The pane that was filling the window on its own (tmux's zoom), or `None` if none was.
+    ///
+    /// Restored on [`active`](Self::active)'s argument, and it is a pane ID rather than a flag for
+    /// a reason a reboot makes sharp: a stored boolean can only come back bound to whichever pane
+    /// the restore happens to make active, while an id either finds its pane or does not. If it
+    /// did not come back, the first post-restore reconcile ENDS the zoom instead of handing it to
+    /// a stranger.
+    ///
+    /// `#[serde(default)]` on the same additive terms: an older snapshot loads unzoomed, which is
+    /// what the daemons that wrote it could express.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zoomed: Option<PaneId>,
 }
 
 /// One pane's restore facts: enough to re-spawn a shell where the pane was and address it by its
@@ -213,6 +225,7 @@ pub fn snapshot(registry: &Arc<Mutex<SessionRegistry>>) -> Snapshot {
         floating: Vec<PaneId>,
         manual_size: Option<(u16, u16)>,
         active: Option<PaneId>,
+        zoomed: Option<PaneId>,
         pool: Arc<Mutex<crate::workspace::Workspace>>,
     }
     struct SessSkel {
@@ -242,6 +255,7 @@ pub fn snapshot(registry: &Arc<Mutex<SessionRegistry>>) -> Snapshot {
                             floating,
                             manual_size: w.manual_size(),
                             active: w.active_pane(),
+                            zoomed: w.zoomed(),
                             pool: Arc::clone(w.workspace()),
                         }
                     })
@@ -280,6 +294,7 @@ pub fn snapshot(registry: &Arc<Mutex<SessionRegistry>>) -> Snapshot {
                         panes,
                         manual_size: w.manual_size,
                         active: w.active,
+                        zoomed: w.zoomed,
                     }
                 })
                 .collect(),
@@ -770,6 +785,7 @@ mod tests {
             panes,
             manual_size: None,
             active: None,
+            zoomed: None,
         }
     }
 

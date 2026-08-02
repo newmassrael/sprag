@@ -48,6 +48,20 @@
 //! what makes the design's example exact: a 0.5 ratio over 81 columns is 40 and 40 with a divider
 //! column, not 40 and 41.
 //!
+//! # A zoom is a projection, never an edit
+//!
+//! One pane filling the window ([`Projection::Zoomed`], tmux's zoom) reaches the tiler as a
+//! different QUESTION about the same arrangement, not as a different arrangement. Which is what
+//! makes it belong here at all: the zoomed pane's `(cols, rows)` is the whole window, that is a
+//! size, and there is one function that decides sizes. Putting the filter in a client instead —
+//! where the rival has it, twice, in two render paths — would give the zoomed pane one size in the
+//! frontend that drew it and another everywhere else, which is the exact defect this module was
+//! extracted to remove.
+//!
+//! So the daemon reflows the zoomed pane's PTY to the full window (`sprag_host::window::retile`),
+//! every attached client shows the same one pane at the same cells, and the arrangement underneath
+//! is untouched and comes straight back when the zoom ends.
+//!
 //! # The bound: a region too small to hold both children shows ONE
 //!
 //! The arrangement is the host's and can hold more panes than the window has rows. A split whose
@@ -360,17 +374,99 @@ pub fn with_ratio(tree: &LayoutWire, id: SplitId, ratio: f32) -> Option<LayoutWi
     })
 }
 
-/// Lay `tree` out over `area` — the whole of the character-cell projection.
+/// WHAT of an arrangement is currently shown — the whole of it, or one pane filling the window.
+///
+/// [`tile`] takes this rather than a bare [`LayoutWire`], and that is the point rather than a
+/// signature detail: a zoom is a fact stored beside the arrangement, so a caller handed only the
+/// tree could lay out every pane while one of them was supposed to be filling the surface, and the
+/// mistake would be silent — a correct-looking tiling of the wrong question. There is no way to
+/// obtain one of these without answering "is anything zoomed?", which is exactly the omission the
+/// type exists to prevent.
+///
+/// Nothing is copied and nothing is rebuilt. A zoom is not an edit to the arrangement — the
+/// arrangement is untouched underneath and comes straight back when the zoom ends — so expressing
+/// it as a pruned tree would be both wasteful and a lie about what changed.
+// No `Eq`: a `LayoutWire` carries ratios, and an `f32` has no total equality. The same reason
+// `LayoutWire` itself stops at `PartialEq`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Projection<'a> {
+    /// Every tiled pane, where the arrangement puts it.
+    Whole(&'a LayoutWire),
+    /// One pane over the whole area, with no dividers — tmux's zoom.
+    Zoomed(PaneId),
+}
+
+impl<'a> Projection<'a> {
+    /// What a window showing `tree` with `zoomed` in force displays.
+    ///
+    /// `zoomed` naming a pane `tree` holds no leaf for falls back to [`Whole`](Self::Whole). The
+    /// host keeps the two facts consistent and serves them in ONE snapshot, so a disagreement
+    /// cannot arrive over the wire; this is here because the constructor is public and must be
+    /// total, and because filling the window with a pane the arrangement does not have would show
+    /// the user nothing at all — strictly worse than showing them the arrangement.
+    #[must_use]
+    pub fn of(tree: &'a LayoutWire, zoomed: Option<PaneId>) -> Self {
+        match zoomed {
+            Some(pane) if tree.panes().contains(&pane) => Self::Zoomed(pane),
+            _ => Self::Whole(tree),
+        }
+    }
+
+    /// The panes this projection SHOWS, in paint order — one, under a zoom.
+    ///
+    /// What a client walks when it needs a surface per displayed pane: measuring the arrangement's
+    /// panes instead would ask for the rects of panes it is not drawing, and get the pre-layout
+    /// sentinel for each.
+    #[must_use]
+    pub fn panes(&self) -> Vec<PaneId> {
+        match self {
+            Self::Whole(tree) => tree.panes(),
+            Self::Zoomed(pane) => vec![*pane],
+        }
+    }
+
+    /// This projection AS AN ARRANGEMENT — for a client whose surface is itself a tree rather than
+    /// a rectangle, which is `sprag-gui`'s dock and nothing else.
+    ///
+    /// The one place a zoom does become a tree, and it is a projection of the arrangement rather
+    /// than a replacement for it: the host's own arrangement is untouched, and a client holding
+    /// this must not write it back (`sprag-gui`'s `pending_write` refuses, because the pane set
+    /// does not match the host's).
+    #[must_use]
+    pub fn to_wire(&self) -> LayoutWire {
+        match self {
+            Self::Whole(tree) => (*tree).clone(),
+            Self::Zoomed(pane) => LayoutWire {
+                root: Some(LayoutNodeWire::Leaf(*pane)),
+            },
+        }
+    }
+}
+
+/// Lay `projection` out over `area` — the whole of the character-cell projection.
 ///
 /// Pure, and deliberately so: it takes an arrangement and a rectangle and returns where things go,
 /// which is a claim about geometry that can be asserted without a terminal, a host, or a socket.
 /// Every property this module promises — the exact partition, the stable rounding, the reserved
 /// divider — is a test over this function.
+///
+/// A [`Projection::Zoomed`] is the degenerate case of every one of those promises rather than an
+/// exception to them: one pane, the whole area, no divider to reserve and so nothing to round.
 #[must_use]
-pub fn tile(tree: &LayoutWire, area: Rect) -> Tiling {
+pub fn tile(projection: &Projection<'_>, area: Rect) -> Tiling {
     let mut tiling = Tiling::default();
-    if let Some(root) = tree.root.as_ref() {
-        tile_node(root, area, &mut tiling);
+    match projection {
+        // The empty check is [`tile_node`]'s, applied here for the same reason: a leaf never lands
+        // with zero cells, so a client can resize every pane it is handed without checking.
+        Projection::Zoomed(pane) if !area.is_empty() => {
+            tiling.panes.push(PaneRect { pane: *pane, area })
+        }
+        Projection::Zoomed(_) => {}
+        Projection::Whole(tree) => {
+            if let Some(root) = tree.root.as_ref() {
+                tile_node(root, area, &mut tiling);
+            }
+        }
     }
     tiling
 }
@@ -472,11 +568,17 @@ fn divide(extent: u16, ratio: f32) -> Option<(u16, u16)> {
     Some((near, avail - near))
 }
 
-/// The largest window whose tiling gives every pane of `tree` no more cells than `measured` says
-/// that pane's surface can hold — what a client REPORTS as the area it has to give an arrangement.
+/// The largest window whose tiling gives every pane `projection` SHOWS no more cells than
+/// `measured` says that pane's surface can hold — what a client REPORTS as the area it has to give
+/// an arrangement.
 ///
-/// `None` when the tree holds no pane, when a pane has no measurement yet, or when no window at all
-/// satisfies the tree (a surface too small to show every pane).
+/// `None` when the projection shows no pane, when a shown pane has no measurement yet, or when no
+/// window at all satisfies it (a surface too small to show every pane).
+///
+/// It takes the same [`Projection`] [`tile`] does because the two are inverses and a zoom must not
+/// be able to enter one of them alone: under a zoom the client is drawing ONE pane, so the window
+/// it can offer is that pane's own measurement, and folding the hidden panes' stale rects back in
+/// would report a window nothing on screen corresponds to.
 ///
 /// # Why a client cannot just report its surface
 ///
@@ -512,21 +614,31 @@ fn divide(extent: u16, ratio: f32) -> Option<(u16, u16)> {
 /// dividers partition the window exactly, so one more cell in the window is one more cell in some
 /// pane than its surface has.
 #[must_use]
-pub fn fit_window(tree: &LayoutWire, measured: &[(PaneId, (u16, u16))]) -> Option<(u16, u16)> {
-    let root = tree.root.as_ref()?;
+pub fn fit_window(
+    projection: &Projection<'_>,
+    measured: &[(PaneId, (u16, u16))],
+) -> Option<(u16, u16)> {
     let cells = |pane: PaneId| {
         measured
             .iter()
             .find(|(held, _)| *held == pane)
             .map(|(_, cells)| *cells)
     };
+    // A zoom needs no search at all. Everything below divides cells between siblings and pays a
+    // cell per divider; a projection with one pane and no dividers has neither to account for, so
+    // the window IS what that pane measured.
+    let tree = match projection {
+        Projection::Zoomed(pane) => return cells(*pane),
+        Projection::Whole(tree) => tree,
+    };
+    let root = tree.root.as_ref()?;
     let bound = fold_window(root, &cells)?;
     let panes = tree.panes().len();
     // A pane the window cannot hold is absent from the tiling, so "every pane is present" is part
     // of the question rather than a check to run after it: a window that shows two of three panes
     // is not an area this client can give the arrangement, however well those two fit.
     let holds = |window: (u16, u16), axis: fn(Rect) -> u16, limit: fn((u16, u16)) -> u16| {
-        let tiling = tile(tree, Rect::screen(window.0, window.1));
+        let tiling = tile(projection, Rect::screen(window.0, window.1));
         tiling.panes.len() == panes
             && tiling
                 .panes
@@ -584,6 +696,16 @@ fn fold_window(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Lay `tree` out with nothing zoomed — the projection every geometry case below is about.
+    ///
+    /// A helper rather than `Projection::Whole(tree)` spelled out twenty times, and it costs
+    /// nothing the type was bought for: what [`Projection`] prevents is a PRODUCTION path tiling an
+    /// arrangement while a stored zoom says otherwise, and these tests hold no window and therefore
+    /// no zoom to forget. The cases that DO exercise one say so by name.
+    fn whole(tree: &LayoutWire, area: Rect) -> Tiling {
+        tile(&Projection::Whole(tree), area)
+    }
 
     /// A leaf node for pane `id`.
     fn leaf(id: u64) -> LayoutNodeWire {
@@ -674,7 +796,7 @@ mod tests {
     /// A window tiling nothing lays out nothing — the honest zero-pane state, not an error.
     #[test]
     fn an_empty_arrangement_tiles_nothing() {
-        let tiling = tile(&LayoutWire::default(), Rect::screen(80, 24));
+        let tiling = whole(&LayoutWire::default(), Rect::screen(80, 24));
         assert!(tiling.panes.is_empty());
         assert!(tiling.dividers.is_empty());
     }
@@ -685,7 +807,7 @@ mod tests {
         let tree = LayoutWire {
             root: Some(leaf(7)),
         };
-        let tiling = tile(&tree, Rect::screen(80, 24));
+        let tiling = whole(&tree, Rect::screen(80, 24));
         assert_eq!(area(&tiling, 7), Rect::screen(80, 24));
         assert!(tiling.dividers.is_empty());
     }
@@ -701,7 +823,7 @@ mod tests {
     #[test]
     fn an_even_split_of_an_odd_width_is_forty_and_forty_with_a_divider() {
         let tree = split(SplitDir::Horizontal, 0.5, leaf(0), leaf(1));
-        let tiling = tile(&tree, Rect::screen(81, 24));
+        let tiling = whole(&tree, Rect::screen(81, 24));
         assert_eq!(area(&tiling, 0), Rect::new(0, 0, 40, 24));
         assert_eq!(area(&tiling, 1), Rect::new(41, 0, 40, 24));
         assert_eq!(
@@ -721,11 +843,11 @@ mod tests {
     #[test]
     fn the_odd_cell_always_lands_on_the_second_side() {
         let tree = split(SplitDir::Horizontal, 0.5, leaf(0), leaf(1));
-        let first = tile(&tree, Rect::screen(80, 24));
+        let first = whole(&tree, Rect::screen(80, 24));
         assert_eq!(area(&first, 0), Rect::new(0, 0, 39, 24));
         assert_eq!(area(&first, 1), Rect::new(40, 0, 40, 24));
         // Re-run it: a boundary that moved between two identical calls would redraw the screen.
-        assert_eq!(tile(&tree, Rect::screen(80, 24)), first);
+        assert_eq!(whole(&tree, Rect::screen(80, 24)), first);
     }
 
     /// A vertical split divides ROWS and reserves a row, mirroring the horizontal case on the other
@@ -734,7 +856,7 @@ mod tests {
     #[test]
     fn a_vertical_split_divides_rows_and_reserves_one() {
         let tree = split(SplitDir::Vertical, 0.5, leaf(0), leaf(1));
-        let tiling = tile(&tree, Rect::screen(80, 25));
+        let tiling = whole(&tree, Rect::screen(80, 25));
         assert_eq!(area(&tiling, 0), Rect::new(0, 0, 80, 12));
         assert_eq!(area(&tiling, 1), Rect::new(0, 13, 80, 12));
         assert_eq!(
@@ -753,7 +875,7 @@ mod tests {
     #[test]
     fn the_ratio_decides_the_share() {
         let tree = split(SplitDir::Horizontal, 0.25, leaf(0), leaf(1));
-        let tiling = tile(&tree, Rect::screen(41, 10));
+        let tiling = whole(&tree, Rect::screen(41, 10));
         // 41 columns, one for the divider, 40 to divide: floor(40 * 0.25) = 10.
         assert_eq!(area(&tiling, 0), Rect::new(0, 0, 10, 10));
         assert_eq!(area(&tiling, 1), Rect::new(11, 0, 30, 10));
@@ -782,7 +904,7 @@ mod tests {
             }),
         };
         let area = Rect::screen(37, 19);
-        let tiling = tile(&tree, area);
+        let tiling = whole(&tree, area);
         let owners = owners(&tiling, area);
         // The assertions `owners` makes are the point; this one pins that it saw a real tiling
         // rather than an empty one it could vacuously agree with.
@@ -809,7 +931,7 @@ mod tests {
                 }),
             }),
         };
-        let tiling = tile(&tree, Rect::screen(80, 24));
+        let tiling = whole(&tree, Rect::screen(80, 24));
         assert_eq!(
             tiling
                 .panes
@@ -826,7 +948,7 @@ mod tests {
     #[test]
     fn a_share_that_rounds_to_nothing_still_gets_a_cell() {
         let tree = split(SplitDir::Horizontal, 0.02, leaf(0), leaf(1));
-        let tiling = tile(&tree, Rect::screen(20, 5));
+        let tiling = whole(&tree, Rect::screen(20, 5));
         assert_eq!(area(&tiling, 0), Rect::new(0, 0, 1, 5));
         assert_eq!(area(&tiling, 1), Rect::new(2, 0, 18, 5));
     }
@@ -835,7 +957,7 @@ mod tests {
     #[test]
     fn a_share_that_rounds_to_everything_leaves_the_other_side_a_cell() {
         let tree = split(SplitDir::Horizontal, 1.0, leaf(0), leaf(1));
-        let tiling = tile(&tree, Rect::screen(20, 5));
+        let tiling = whole(&tree, Rect::screen(20, 5));
         assert_eq!(area(&tiling, 0), Rect::new(0, 0, 18, 5));
         assert_eq!(area(&tiling, 1), Rect::new(19, 0, 1, 5));
     }
@@ -844,7 +966,7 @@ mod tests {
     #[test]
     fn three_cells_is_exactly_enough_for_two_panes() {
         let tree = split(SplitDir::Horizontal, 0.5, leaf(0), leaf(1));
-        let tiling = tile(&tree, Rect::screen(3, 4));
+        let tiling = whole(&tree, Rect::screen(3, 4));
         assert_eq!(area(&tiling, 0), Rect::new(0, 0, 1, 4));
         assert_eq!(area(&tiling, 1), Rect::new(2, 0, 1, 4));
     }
@@ -854,7 +976,7 @@ mod tests {
     #[test]
     fn a_region_too_small_for_two_shows_the_first_and_drops_the_second() {
         let tree = split(SplitDir::Horizontal, 0.5, leaf(0), leaf(1));
-        let tiling = tile(&tree, Rect::screen(2, 4));
+        let tiling = whole(&tree, Rect::screen(2, 4));
         assert_eq!(area(&tiling, 0), Rect::new(0, 0, 2, 4));
         assert_eq!(tiling.area_of(PaneId(1)), None);
         assert!(tiling.dividers.is_empty(), "and no divider is drawn");
@@ -879,7 +1001,7 @@ mod tests {
                 second: Box::new(leaf(2)),
             }),
         };
-        let tiling = tile(&tree, Rect::screen(10, 2));
+        let tiling = whole(&tree, Rect::screen(10, 2));
         assert_eq!(area(&tiling, 0), Rect::new(0, 0, 10, 2));
         assert_eq!(tiling.panes.len(), 1, "the other two do not fit");
     }
@@ -889,8 +1011,8 @@ mod tests {
     #[test]
     fn a_zero_area_tiles_nothing() {
         let tree = split(SplitDir::Horizontal, 0.5, leaf(0), leaf(1));
-        assert_eq!(tile(&tree, Rect::screen(0, 24)), Tiling::default());
-        assert_eq!(tile(&tree, Rect::screen(80, 0)), Tiling::default());
+        assert_eq!(whole(&tree, Rect::screen(0, 24)), Tiling::default());
+        assert_eq!(whole(&tree, Rect::screen(80, 0)), Tiling::default());
     }
 
     /// A ratio outside `0.0..=1.0` — or `NaN`, which no comparison catches — falls back to an even
@@ -900,7 +1022,7 @@ mod tests {
     fn a_ratio_that_is_not_a_share_falls_back_to_even() {
         for ratio in [f32::NAN, -1.0, 2.0, f32::INFINITY] {
             let tree = split(SplitDir::Horizontal, ratio, leaf(0), leaf(1));
-            let tiling = tile(&tree, Rect::screen(21, 5));
+            let tiling = whole(&tree, Rect::screen(21, 5));
             assert_eq!(area(&tiling, 0), Rect::new(0, 0, 10, 5), "ratio {ratio}");
             assert_eq!(area(&tiling, 1), Rect::new(11, 0, 10, 5), "ratio {ratio}");
         }
@@ -911,7 +1033,7 @@ mod tests {
     #[test]
     fn cycling_wraps_and_an_unknown_pane_lands_on_the_first() {
         let tree = split(SplitDir::Horizontal, 0.5, leaf(4), leaf(9));
-        let tiling = tile(&tree, Rect::screen(80, 24));
+        let tiling = whole(&tree, Rect::screen(80, 24));
         assert_eq!(tiling.next_after(PaneId(4)), Some(PaneId(9)));
         assert_eq!(tiling.next_after(PaneId(9)), Some(PaneId(4)), "wraps");
         assert_eq!(tiling.next_after(PaneId(99)), Some(PaneId(4)));
@@ -941,7 +1063,7 @@ mod tests {
     fn a_cell_names_its_pane_and_its_place_inside_it() {
         // 21 columns: 10 | divider | 10, the partition the rounding test above pins.
         let tree = split(SplitDir::Horizontal, 0.5, leaf(0), leaf(1));
-        let tiling = tile(&tree, Rect::screen(21, 5));
+        let tiling = whole(&tree, Rect::screen(21, 5));
 
         assert_eq!(
             tiling.pane_at(0, 0),
@@ -975,14 +1097,14 @@ mod tests {
     fn a_drag_puts_the_divider_where_the_pointer_is() {
         let tree = split(SplitDir::Horizontal, 0.5, leaf(0), leaf(1));
         let screen = Rect::screen(21, 5);
-        let divider = tile(&tree, screen).dividers[0];
+        let divider = whole(&tree, screen).dividers[0];
         let id = SplitId(7);
 
         for column in 1..=19 {
             let ratio = divider
                 .ratio_at(column, 0)
                 .expect("a column inside the region has a ratio");
-            let moved = tile(
+            let moved = whole(
                 &with_ratio(&identified(&tree, id), id, ratio).expect("the split is there"),
                 screen,
             );
@@ -1000,11 +1122,11 @@ mod tests {
     fn a_drag_off_the_end_stops_at_one_cell() {
         let tree = split(SplitDir::Horizontal, 0.5, leaf(0), leaf(1));
         let screen = Rect::screen(21, 5);
-        let divider = tile(&tree, screen).dividers[0];
+        let divider = whole(&tree, screen).dividers[0];
         let id = SplitId(7);
         let landed = |col| {
             let ratio = divider.ratio_at(col, 0).expect("a ratio");
-            tile(
+            whole(
                 &with_ratio(&identified(&tree, id), id, ratio).expect("the split is there"),
                 screen,
             )
@@ -1073,7 +1195,7 @@ mod tests {
     #[test]
     fn a_divider_cell_belongs_to_no_pane() {
         let tree = split(SplitDir::Horizontal, 0.5, leaf(0), leaf(1));
-        let tiling = tile(&tree, Rect::screen(21, 5));
+        let tiling = whole(&tree, Rect::screen(21, 5));
 
         assert_eq!(tiling.pane_at(10, 2), None, "the divider column");
         assert_eq!(tiling.pane_at(21, 0), None, "one past the right edge");
@@ -1108,7 +1230,7 @@ mod tests {
     /// What every `fit_window` case must be able to say: lay the tree out over the answer and no
     /// pane got more cells than its surface measured, and none was dropped.
     fn every_pane_fits(tree: &LayoutWire, measured: &[(PaneId, (u16, u16))], window: (u16, u16)) {
-        let tiling = tile(tree, Rect::screen(window.0, window.1));
+        let tiling = whole(tree, Rect::screen(window.0, window.1));
         assert_eq!(
             tiling.panes.len(),
             measured.len(),
@@ -1138,7 +1260,10 @@ mod tests {
             root: Some(leaf(1)),
         };
         let measured = [(PaneId(1), (38, 17))];
-        assert_eq!(fit_window(&tree, &measured), Some((38, 17)));
+        assert_eq!(
+            fit_window(&Projection::Whole(&tree), &measured),
+            Some((38, 17))
+        );
     }
 
     #[test]
@@ -1148,10 +1273,13 @@ mod tests {
         // forgot it would be handed back 37 columns for a pane it measured at 38.
         let tree = split(SplitDir::Horizontal, 0.5, leaf(1), leaf(2));
         let measured = [(PaneId(1), (38, 17)), (PaneId(2), (38, 17))];
-        assert_eq!(fit_window(&tree, &measured), Some((77, 17)));
+        assert_eq!(
+            fit_window(&Projection::Whole(&tree), &measured),
+            Some((77, 17))
+        );
         // And laying that back out returns each pane to EXACTLY what it measured, which is the
         // round trip that makes a solo GUI's panes identical to what its own pixels gave them.
-        let tiling = tile(&tree, Rect::screen(77, 17));
+        let tiling = whole(&tree, Rect::screen(77, 17));
         assert_eq!(tiling.panes[0].area, Rect::new(0, 0, 38, 17));
         assert_eq!(tiling.panes[1].area, Rect::new(39, 0, 38, 17));
     }
@@ -1162,7 +1290,10 @@ mod tests {
         // than the shorter pane would over-fill it. 17 and 9 is 9, not 17 and not 13.
         let tree = split(SplitDir::Horizontal, 0.5, leaf(1), leaf(2));
         let measured = [(PaneId(1), (38, 17)), (PaneId(2), (38, 9))];
-        assert_eq!(fit_window(&tree, &measured), Some((77, 9)));
+        assert_eq!(
+            fit_window(&Projection::Whole(&tree), &measured),
+            Some((77, 9))
+        );
         every_pane_fits(&tree, &measured, (77, 9));
     }
 
@@ -1173,7 +1304,10 @@ mod tests {
         // depends on the shape of the tiling, which is why it is folded rather than subtracted.
         let tree = split(SplitDir::Vertical, 0.5, leaf(1), leaf(2));
         let measured = [(PaneId(1), (38, 7)), (PaneId(2), (38, 7))];
-        assert_eq!(fit_window(&tree, &measured), Some((38, 15)));
+        assert_eq!(
+            fit_window(&Projection::Whole(&tree), &measured),
+            Some((38, 15))
+        );
         every_pane_fits(&tree, &measured, (38, 15));
     }
 
@@ -1184,10 +1318,11 @@ mod tests {
         // one more cell in either dimension must break the property.
         let tree = split(SplitDir::Horizontal, 0.5, leaf(1), leaf(2));
         let measured = [(PaneId(1), (38, 17)), (PaneId(2), (38, 17))];
-        let (cols, rows) = fit_window(&tree, &measured).expect("both panes are measured");
+        let (cols, rows) =
+            fit_window(&Projection::Whole(&tree), &measured).expect("both panes are measured");
         every_pane_fits(&tree, &measured, (cols, rows));
         for bigger in [(cols + 1, rows), (cols, rows + 1)] {
-            let tiling = tile(&tree, Rect::screen(bigger.0, bigger.1));
+            let tiling = whole(&tree, Rect::screen(bigger.0, bigger.1));
             assert!(
                 tiling.panes.iter().any(|held| {
                     let (c, r) = measured
@@ -1218,7 +1353,7 @@ mod tests {
                 for dir in [SplitDir::Horizontal, SplitDir::Vertical] {
                     let tree = split(dir, ratio, leaf(1), leaf(2));
                     let measured = [(PaneId(1), first), (PaneId(2), second)];
-                    let window = fit_window(&tree, &measured)
+                    let window = fit_window(&Projection::Whole(&tree), &measured)
                         .unwrap_or_else(|| panic!("{dir:?} at {ratio} over {first:?} {second:?}"));
                     every_pane_fits(&tree, &measured, window);
                 }
@@ -1252,7 +1387,10 @@ mod tests {
         ];
         // Columns: 38 + divider + 38. Rows: the LEFT pane can show 17, but the right column can
         // only stack 7 + divider + 7, so the window is 15 — the shorter side of the tree decides.
-        assert_eq!(fit_window(&tree, &measured), Some((77, 15)));
+        assert_eq!(
+            fit_window(&Projection::Whole(&tree), &measured),
+            Some((77, 15))
+        );
         every_pane_fits(&tree, &measured, (77, 15));
     }
 
@@ -1262,10 +1400,16 @@ mod tests {
         // what this client can show, and a client that has not been laid out has none to make —
         // reporting the panes it does know would name a window missing a pane's worth of cells.
         let tree = split(SplitDir::Horizontal, 0.5, leaf(1), leaf(2));
-        assert_eq!(fit_window(&tree, &[(PaneId(1), (38, 17))]), None);
-        assert_eq!(fit_window(&tree, &[]), None);
+        assert_eq!(
+            fit_window(&Projection::Whole(&tree), &[(PaneId(1), (38, 17))]),
+            None
+        );
+        assert_eq!(fit_window(&Projection::Whole(&tree), &[]), None);
         // An empty arrangement is the same answer for the same reason: nothing to give cells to.
-        assert_eq!(fit_window(&LayoutWire { root: None }, &[]), None);
+        assert_eq!(
+            fit_window(&Projection::Whole(&LayoutWire { root: None }), &[]),
+            None
+        );
     }
 
     #[test]
@@ -1275,8 +1419,99 @@ mod tests {
         // arbitration rather than to report a window that would drop one.
         let tree = split(SplitDir::Horizontal, 0.5, leaf(1), leaf(2));
         assert_eq!(
-            fit_window(&tree, &[(PaneId(1), (0, 17)), (PaneId(2), (38, 17))]),
+            fit_window(
+                &Projection::Whole(&tree),
+                &[(PaneId(1), (0, 17)), (PaneId(2), (38, 17))]
+            ),
             None
+        );
+    }
+
+    /// A zoom is the whole area to ONE pane, with no divider and nothing else present — the
+    /// partition this module promises, in its degenerate case.
+    ///
+    /// The arrangement it is taken over is deliberately a three-pane one whose own tiling this
+    /// asserts alongside, so the two are compared at the same size: a build that ignored the
+    /// projection would produce the second answer for the first question.
+    #[test]
+    fn a_zoom_gives_one_pane_the_whole_area_and_draws_no_divider() {
+        let right = split(SplitDir::Vertical, 0.5, leaf(2), leaf(3))
+            .root
+            .expect("the helper always builds a root");
+        let tree = split(SplitDir::Horizontal, 0.5, leaf(1), right);
+        let screen = Rect::screen(81, 25);
+
+        let arranged = whole(&tree, screen);
+        assert_eq!(arranged.panes.len(), 3);
+        assert_eq!(arranged.dividers.len(), 2);
+
+        let zoomed = tile(&Projection::Zoomed(PaneId(2)), screen);
+        assert_eq!(
+            zoomed.panes,
+            vec![PaneRect {
+                pane: PaneId(2),
+                area: screen
+            }],
+            "the zoomed pane gets every cell, including the ones the dividers were taking",
+        );
+        assert!(
+            zoomed.dividers.is_empty(),
+            "there is nothing beside it to separate it from"
+        );
+    }
+
+    /// The constructor is the gate: it is the only way to reach [`tile`], so a caller cannot get
+    /// there without stating whether anything is zoomed — and it stays TOTAL, falling back to the
+    /// arrangement for a pane that arrangement does not hold.
+    ///
+    /// That case cannot arrive over the wire (the host heals the two facts together and serves them
+    /// in one snapshot), and the fallback is what it is because the alternative is worse: filling
+    /// the window with a pane nothing can render shows the user an empty screen, while showing the
+    /// arrangement shows them their panes.
+    #[test]
+    fn a_projection_falls_back_to_the_arrangement_for_a_pane_it_does_not_hold() {
+        let tree = split(SplitDir::Horizontal, 0.5, leaf(1), leaf(2));
+        assert_eq!(
+            Projection::of(&tree, Some(PaneId(2))),
+            Projection::Zoomed(PaneId(2))
+        );
+        assert_eq!(Projection::of(&tree, None), Projection::Whole(&tree));
+        assert_eq!(
+            Projection::of(&tree, Some(PaneId(9))),
+            Projection::Whole(&tree),
+            "a zoom on a pane the arrangement has no leaf for shows the arrangement",
+        );
+        assert_eq!(
+            Projection::Zoomed(PaneId(2)).panes(),
+            vec![PaneId(2)],
+            "and a zoom shows exactly the one pane, which is what a client must measure",
+        );
+    }
+
+    /// `fit_window` is `tile`'s inverse and takes the same projection, so a zoomed client reports
+    /// the window ITS ONE PANE can hold — not a fold of rects belonging to panes it is not drawing.
+    ///
+    /// The discriminator is in the numbers: the same two measurements fold to 79 columns as an
+    /// arrangement (two panes plus a divider) and to 39 under a zoom (one pane, no divider). A
+    /// build that kept the arrangement here would report a window nearly twice the surface.
+    #[test]
+    fn a_zoomed_client_reports_the_window_its_one_pane_can_hold() {
+        let tree = split(SplitDir::Horizontal, 0.5, leaf(1), leaf(2));
+        let measured = [(PaneId(1), (39, 17)), (PaneId(2), (39, 17))];
+        assert_eq!(
+            fit_window(&Projection::Whole(&tree), &measured),
+            Some((79, 17)),
+            "arranged: both panes plus the divider's column",
+        );
+        assert_eq!(
+            fit_window(&Projection::Zoomed(PaneId(1)), &measured),
+            Some((39, 17)),
+            "zoomed: the one pane on screen IS the window",
+        );
+        assert_eq!(
+            fit_window(&Projection::Zoomed(PaneId(9)), &measured),
+            None,
+            "and a pane with no measurement yet has no claim to make",
         );
     }
 }

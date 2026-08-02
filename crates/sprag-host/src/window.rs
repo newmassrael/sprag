@@ -349,7 +349,11 @@ pub(crate) fn retile(
     let Some(layout) = crate::host::reconciled_layout(registry, &scope) else {
         return;
     };
-    let tiling = tile(&layout.tree, Rect::screen(window.cols, window.rows));
+    // The PROJECTION, not the arrangement: a zoomed pane is sized to the WHOLE window, here, by the
+    // daemon, so every attached client shows the same one pane at the same cells — and the panes
+    // the zoom hides keep the size they had, exactly as a pane the window is too small to show
+    // does, because the tiling does not name them either.
+    let tiling = tile(&layout.projection(), Rect::screen(window.cols, window.rows));
     let pool = lock(scope.workspace());
     for held in &tiling.panes {
         // The no-op guard is against WORK, not against correctness: a resize is idempotent, but in
@@ -613,5 +617,93 @@ mod tests {
         // A word that names no rule is refused rather than mapped to something near it; the caller
         // answers with the list that works.
         assert_eq!(WindowSize::parse("automatic"), None);
+    }
+
+    /// **THE ZOOM'S POINT, end to end through the real reflow.** A zoomed pane's PTY is resized to
+    /// the WHOLE arbitrated window by the daemon — so the program in it reflows to the size every
+    /// attached client is showing, and it does so once, here, rather than per frontend.
+    ///
+    /// This is where sprag's placement of the filter pays: herdr applies its zoom in the renderer
+    /// and resizes the focused runtime there (`src/ui/panes.rs:169-197` at `9a4ce5e1`), a branch it
+    /// carries twice already and would need a third copy of for a second frontend. sprag has one
+    /// `tile`, so the GUI, the terminal client and this reflow cannot disagree about how big the
+    /// zoomed pane is.
+    ///
+    /// The other half is asserted alongside and is not a detail: the panes the zoom HIDES keep the
+    /// size they had. They are absent from the tiling exactly as a pane the window is too small to
+    /// show is, which is `tile`'s own stated rule rather than a decision taken for the zoom — and
+    /// it is what makes ending the zoom cost no reflow for the panes that never moved.
+    ///
+    /// Revert-proof: tile the ARRANGEMENT here instead of the projection and the first assertion
+    /// reads the zoomed pane's share of a three-way split, not the window.
+    #[test]
+    fn a_zoomed_pane_is_reflowed_to_the_whole_window_and_the_hidden_ones_are_left_alone() {
+        use sprag_terminal::{PaneId, SessionRegistry, Workspace};
+        use std::sync::Mutex;
+
+        let mut command = sprag_terminal::CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg("cat");
+        command.env("TERM", "dumb");
+        let registry = Arc::new(Mutex::new(SessionRegistry::new((80, 24))));
+        let session = lock(&registry).default_session().name().to_owned();
+        let pool = lock(&registry)
+            .workspace_of(&session)
+            .expect("the default session always resolves");
+        let panes: Vec<PaneId> = (0..3)
+            .map(|_| {
+                lock(&pool)
+                    .spawn(command.clone(), "sh".to_owned(), 80, 24)
+                    .expect("a pane spawns")
+            })
+            .collect();
+
+        // One attached client reporting 90x30 — with a single client every policy answers its area,
+        // so the arbitrated window is exactly that whatever the user's `window-size` is set to.
+        let attachments = Arc::new(Mutex::new(crate::attach::AttachmentRegistry::default()));
+        let conn = pinion_rpc::ConnId::allocate();
+        lock(&attachments).hello(conn, "client-under-test".to_owned());
+        lock(&attachments).attach(conn, session.clone());
+        lock(&attachments).size(conn, ClientSize { cols: 90, rows: 30 });
+        assert_eq!(
+            lock(&attachments).sizes(&session),
+            vec![ClientSize { cols: 90, rows: 30 }],
+            "the fixture's client is the one this session's window is arbitrated from",
+        );
+
+        retile(&registry, &attachments, &session);
+        let dims = |pane: PaneId| {
+            let pool: &Mutex<Workspace> = &pool;
+            lock(pool)
+                .pane(pane)
+                .map(|pane| pane.pty().dimensions())
+                .expect("the pane is alive")
+        };
+        let arranged = panes.iter().map(|pane| dims(*pane)).collect::<Vec<_>>();
+        assert!(
+            arranged.iter().all(|held| *held != (90, 30)),
+            "three tiled panes each get a SHARE of the window, so none of them is the whole of \
+             it — which is what makes the assertion below about the zoom: {arranged:?}",
+        );
+
+        assert!(
+            lock(&registry)
+                .zoom_pane(&session, panes[1], Some(true))
+                .expect("the pane is one of the window's")
+                .zoomed
+        );
+        retile(&registry, &attachments, &session);
+
+        assert_eq!(
+            dims(panes[1]),
+            (90, 30),
+            "the zoomed pane is the window, in the daemon's own reflow",
+        );
+        assert_eq!(
+            (dims(panes[0]), dims(panes[2])),
+            (arranged[0], arranged[2]),
+            "and the panes it hides keep the size they had — absent from a tiling is not resized \
+             to nothing",
+        );
     }
 }

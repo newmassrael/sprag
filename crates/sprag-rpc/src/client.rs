@@ -82,7 +82,12 @@ pub const SESSION_PARAM: &str = "session";
 ///   process on the box, on every poll wake of every attached client. A pre-R282 client reading a
 ///   post-R282 daemon would find every session working nowhere and serving nothing — a wrong answer
 ///   that decodes cleanly, which is exactly the failure this number exists to turn into a sentence.
-pub const WIRE_PROTOCOL: u32 = 3;
+/// * **4** — the arrangement gained a ZOOM (`LayoutSnapshot.zoomed`, R285): which pane, if any, is
+///   filling the window on its own. A pre-R285 client reading a post-R285 daemon would decode the
+///   snapshot cleanly, ignore the new key, and paint the whole arrangement while the daemon had
+///   already reflowed the zoomed pane's PTY to the full window — so its grid would be the wrong
+///   size for every pane on screen. The same wrong-answer-that-parses this number exists for.
+pub const WIRE_PROTOCOL: u32 = 4;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request

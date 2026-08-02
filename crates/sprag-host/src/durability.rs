@@ -302,6 +302,7 @@ mod tests {
                     panes: vec![],
                     manual_size: None,
                     active: None,
+                    zoomed: None,
                 }],
             }],
         }

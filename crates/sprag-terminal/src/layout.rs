@@ -1440,6 +1440,36 @@ pub struct LayoutSnapshot {
     /// client therefore restores WHICH panes float, and lets its window manager place them.
     #[serde(default)]
     pub floating: Vec<PaneId>,
+    /// The pane filling the window on its own, or `None` while none is — tmux's zoom.
+    ///
+    /// It travels HERE, in the same read as the arrangement it filters, and that is the whole
+    /// reason it is a pane id rather than the boolean the rival stores
+    /// (herdr `9a4ce5e1`, `src/workspace/tab.rs:48`, whose zoom target is derived at paint time
+    /// from whichever pane is focused). herdr can afford that: its renderer and its state are one
+    /// process under one lock, so the two facts cannot be read a moment apart. sprag PUBLISHES
+    /// them, and which pane is active is a different slot — so a boolean here would have to be
+    /// joined against a fact fetched at another instant, and a client that woke between the two
+    /// writes would fill the window with the wrong pane. Naming the pane makes the join
+    /// unnecessary instead of making it careful.
+    ///
+    /// **This is not what to DRAW** — see [`projection`](Self::projection). `tree` remains the
+    /// ARRANGEMENT: what `set_layout` writes back, what `move_pane` acts on, and what a caller
+    /// that draws nothing reads to know where things are. Serving only the filtered tree would be
+    /// tidier for a renderer and would blind exactly the audience those verbs exist for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zoomed: Option<PaneId>,
+}
+
+impl LayoutSnapshot {
+    /// What a client showing this window DRAWS — the arrangement as the zoom leaves it.
+    ///
+    /// The ONE place the two fields are combined, so the daemon's PTY reflow and both frontends
+    /// answer "what is on screen" with one function rather than three agreeing branches. See
+    /// [`Projection`](crate::Projection).
+    #[must_use]
+    pub fn projection(&self) -> crate::Projection<'_> {
+        crate::Projection::of(&self.tree, self.zoomed)
+    }
 }
 
 #[cfg(test)]
@@ -1971,6 +2001,7 @@ mod tests {
                 revision: 1,
                 tree: LayoutWire::from(&tree),
                 floating: Vec::new(),
+                zoomed: None,
             },
         })
         .to_string()

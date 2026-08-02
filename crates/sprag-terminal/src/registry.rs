@@ -117,6 +117,34 @@ pub struct Window {
     /// that re-projected its whole tiling because the user pressed `select-pane -L` would be
     /// answering the wrong question.
     active: Option<PaneId>,
+    /// The pane filling this window on its own, or `None` while none is — tmux's zoom.
+    ///
+    /// # The invariant, which is the whole design
+    ///
+    /// **A zoom names the pane this window is ON, and one it TILES, or there is no zoom.** So the
+    /// pane a user types into is always a pane they can see, and that is a property rather than a
+    /// convention: every way [`active`](Self::active) can move goes through
+    /// [`set_active`](Self::set_active), which ends a zoom that stops naming it, and every way the
+    /// TILED set can move goes through [`reconcile_layout`](Self::reconcile_layout), which does the
+    /// same.
+    ///
+    /// Nothing else in this crate or the host mentions the zoom. A split ends it because a split
+    /// selects its new pane; closing the zoomed pane ends it because the active pane hands off to a
+    /// successor; floating it ends it because it stops being tiled. None of those verbs knows the
+    /// zoom exists, and a verb added later still cannot forget it. The rival clears the flag at four
+    /// hand-written call sites instead (herdr `9a4ce5e1`, `src/workspace/tab.rs:414` `:483` `:505`
+    /// `:527`), which is four chances for a fifth verb to leave a zoom on a pane that is gone.
+    ///
+    /// A [`MOVE_PANE`](crate::SessionRegistry::move_pane) or a
+    /// [`swap`](crate::SessionRegistry::swap_panes) does NOT end it: the arrangement moved and the
+    /// filter did not, and because the zoom names a PANE rather than a position it follows the pane
+    /// through a swap. herdr refuses a move into or out of a zoomed tab outright
+    /// (`src/app/api/panes.rs:656`, `:708`).
+    ///
+    /// Durable ([`WindowSnapshot::zoomed`](crate::snapshot::WindowSnapshot::zoomed)) on
+    /// [`active`](Self::active)'s argument, and healed by the first reconcile after a restore if
+    /// the pane it names did not come back.
+    zoomed: Option<PaneId>,
 }
 
 impl Window {
@@ -135,6 +163,8 @@ impl Window {
             // An empty window is on no pane; the first reconcile after its birth pane lands makes
             // that pane active, so nothing has to remember to select a newly-born window's pane.
             active: None,
+            // A window with nothing in it has nothing to fill itself with.
+            zoomed: None,
         }
     }
 
@@ -159,6 +189,14 @@ impl Window {
     /// [`active`](Self::active) comes back on exactly that argument: it is a decision, and a reboot
     /// is precisely the moment there is no client to ask. If that pane failed to re-spawn, the first
     /// reconcile hands it on the same way a close does.
+    ///
+    /// So does [`zoomed`](Self::zoomed), and naming the PANE is what makes that restore exact: a
+    /// stored boolean would come back bound to whichever pane the restore happened to make active,
+    /// while an id either finds its pane or does not — and if it does not, the first reconcile ends
+    /// the zoom rather than moving it to a stranger. Restored WITHOUT re-checking the invariant
+    /// here on purpose: at this moment the pool is empty and every pane is still coming, so any
+    /// check would refuse the whole set. The first reconcile after the re-spawns is where the
+    /// question can be answered, and it is where it is answered.
     fn restore(
         name: &str,
         pool: Workspace,
@@ -166,6 +204,7 @@ impl Window {
         floating: Vec<PaneId>,
         manual_size: Option<(u16, u16)>,
         active: Option<PaneId>,
+        zoomed: Option<PaneId>,
     ) -> Result<Self, LayoutError> {
         let mut tree = LayoutTree::new();
         tree.set_from_wire(layout)?;
@@ -178,6 +217,7 @@ impl Window {
             manual_size,
             layout_revision: 0,
             active,
+            zoomed,
         })
     }
 
@@ -272,14 +312,29 @@ impl Window {
             // avoid an id collision — ids are minted from one registry-wide counter and are
             // never reused, so a stale home cannot be mistaken for a future pane's.)
             window.homes.retain(|pane, _| live.contains(pane));
-            let tiled: Vec<PaneId> = panes
-                .iter()
-                .copied()
-                .filter(|pane| !window.floating.contains(pane))
-                .collect();
+            let tiled = window.tiled(panes);
             window.layout.reconcile(&tiled, &mut window.homes);
+            // LAST, because it is a claim about where the user ended up and about what this window
+            // tiles, and both of those have just been decided above. This is the half of the zoom
+            // invariant that no verb triggers: a zoomed pane that EXITED, or that a client floated
+            // out, ends its zoom here rather than in whatever closed or floated it.
+            window.heal_zoom(&tiled);
         });
         &self.layout
+    }
+
+    /// The panes this window would TILE — its live pool minus what is floated out.
+    ///
+    /// Asked of the POOL and the float set rather than of the tree, which is R284's rule: the tree
+    /// reconciles LAZILY, so a question answered from it refuses a pane spawned since the last
+    /// read. This is exactly what a reconcile arranges, so the answer never depends on when anyone
+    /// last took one.
+    fn tiled(&self, panes: &[PaneId]) -> Vec<PaneId> {
+        panes
+            .iter()
+            .copied()
+            .filter(|pane| !self.floating.contains(pane))
+            .collect()
     }
 
     /// The pane this window is ON, or `None` while it holds no panes — tmux's active pane.
@@ -303,8 +358,83 @@ impl Window {
         if !panes.contains(&pane) {
             return false;
         }
-        self.active = Some(pane);
+        self.bump_if_changed(|window| {
+            let tiled = window.tiled(panes);
+            window.set_active(pane, &tiled);
+        });
         true
+    }
+
+    /// The pane filling this window on its own, or `None` while none is — tmux's zoom.
+    #[must_use]
+    pub fn zoomed(&self) -> Option<PaneId> {
+        self.zoomed
+    }
+
+    /// Fill this window with `pane` alone, or end the zoom — tmux `resize-pane -Z`.
+    ///
+    /// `on` absent TOGGLES the target's own zoom, so a key bound to it is a switch whichever pane
+    /// it is aimed at. Answers whether this window is zoomed AFTER the call, or `None` — refused —
+    /// for a pane the pool does not hold, which is [`select_pane`](Self::select_pane)'s rule for
+    /// [`select_pane`](Self::select_pane)'s reason: a typo must not silently move the user.
+    ///
+    /// **Zooming SELECTS**, because the invariant [`zoomed`](Self::zoomed) states leaves no other
+    /// coherent option: the pane filling the window is the pane the window is on. Turning a zoom
+    /// OFF by naming a pane selects it too — the caller named where it wants to be.
+    ///
+    /// A FLOATING target is not an error and not a zoom: it has no leaf, so there is nothing to
+    /// fill the window with. It is selected and the answer is "not zoomed" — R284's rule that an
+    /// edge is not an error while a typo is.
+    ///
+    /// The window's own SIZE is nowhere in this: a zoom changes which pane the arrangement projects
+    /// to, and how many cells that is remains `tile`'s answer over the session's arbitrated window.
+    pub fn zoom_pane(
+        &mut self,
+        pane: PaneId,
+        on: Option<bool>,
+        panes: &[PaneId],
+    ) -> Option<ZoomOutcome> {
+        if !panes.contains(&pane) {
+            return None;
+        }
+        // Read BEFORE the select, which can clear it: `zoom-pane <other>` with no mode is a request
+        // to zoom that other pane, never to un-zoom it because the select got there first.
+        let was = self.zoomed;
+        let want = on.unwrap_or(was != Some(pane));
+        self.bump_if_changed(|window| {
+            let tiled = window.tiled(panes);
+            window.set_active(pane, &tiled);
+            window.zoomed = (want && tiled.contains(&pane)).then_some(pane);
+        });
+        Some(ZoomOutcome {
+            zoomed: self.zoomed.is_some(),
+            // Compared as the two PANE ids rather than as two flags, so re-zooming a DIFFERENT pane
+            // — which is one request, not an un-zoom and a zoom — reports the change it is.
+            changed: self.zoomed != was,
+        })
+    }
+
+    /// Move [`active`](Self::active) to `pane` and end a zoom that no longer names it — the ONE
+    /// place the active pane is written, which is what makes the zoom invariant unforgettable
+    /// rather than merely documented.
+    ///
+    /// Membership is the caller's to check ([`select_pane`](Self::select_pane) refuses, a zoom
+    /// refuses, [`heal_active`](Self::heal_active) picks from the live set), because the three have
+    /// different answers for a pane that is not there and only one of them is a refusal.
+    fn set_active(&mut self, pane: PaneId, tiled: &[PaneId]) {
+        self.active = Some(pane);
+        self.heal_zoom(tiled);
+    }
+
+    /// End a zoom that no longer names a pane this window is ON and TILES — the invariant, stated
+    /// once and called from both places its inputs can move.
+    fn heal_zoom(&mut self, tiled: &[PaneId]) {
+        if self
+            .zoomed
+            .is_some_and(|pane| self.active != Some(pane) || !tiled.contains(&pane))
+        {
+            self.zoomed = None;
+        }
     }
 
     /// Keep [`active`](Self::active) naming a pane that is actually in `panes`.
@@ -577,16 +707,23 @@ impl Window {
     /// arrangement actually differed — the ONE place the revision moves, so "the number
     /// changed" and "a client's projection is stale" cannot come apart.
     ///
-    /// Compares the tree AND the float set, because both are state a client projects: a pane
-    /// that stops floating changes what the client must draw even on the rare path where the
-    /// tiling comes out identical. It does NOT compare `homes` — a home is not served and not
-    /// projected, so capturing one changes nothing a client could re-read. Bumping on it would
-    /// wake every client to fetch an arrangement identical to the one it holds.
+    /// Compares the tree, the float set AND the zoom, because all three are state a client
+    /// projects: a pane that stops floating changes what the client must draw even on the rare
+    /// path where the tiling comes out identical, and a zoom changes it far more than that while
+    /// leaving the tiling untouched by construction. It does NOT compare `homes` — a home is not
+    /// served and not projected, so capturing one changes nothing a client could re-read. Bumping
+    /// on it would wake every client to fetch an arrangement identical to the one it holds.
+    ///
+    /// It does not compare `active` either, and the asymmetry with the zoom is the point: which
+    /// pane a window is ON reaches clients as its own fact and does not re-divide anything, while
+    /// which pane FILLS it decides what there is to draw at all. So `select_pane` still bumps
+    /// nothing on the ordinary path, and bumps when — and only when — it ended a zoom.
     fn bump_if_changed(&mut self, change: impl FnOnce(&mut Self)) {
         let tree = self.layout.clone();
         let floating = self.floating.clone();
+        let zoomed = self.zoomed;
         change(self);
-        if self.layout != tree || self.floating != floating {
+        if self.layout != tree || self.floating != floating || self.zoomed != zoomed {
             self.layout_revision += 1;
         }
     }
@@ -607,6 +744,21 @@ impl Window {
         let ids: Vec<PaneId> = pool.panes().iter().map(Pane::id).collect();
         ids.into_iter().flat_map(|id| pool.close(id)).collect()
     }
+}
+
+/// What a zoom request did — the answer of [`Window::zoom_pane`].
+///
+/// Two bools with names, rather than a `(bool, bool)`: at a call site the pair would say nothing
+/// about which is which, and they are not interchangeable — one is a state and the other is a claim
+/// about a transition.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ZoomOutcome {
+    /// Whether ONE pane is filling the window after the call.
+    pub zoomed: bool,
+    /// Whether that differs from what was in force before it — what decides whether the daemon
+    /// wakes every parked client. False for a re-assertion of the state already in force and for a
+    /// FLOATING target, which is the honest answer in both cases and needs no special arm.
+    pub changed: bool,
 }
 
 /// Why a session operation was refused. The registry is unchanged in either case.
@@ -1254,6 +1406,25 @@ impl Session {
         self.windows[idx].layout().neighbor(pane, dir)
     }
 
+    /// Fill the window that HOLDS `pane` with it alone, or end that window's zoom — tmux
+    /// `resize-pane -Z`. Answers whether that window is zoomed after the call, `None` for a pane no
+    /// window of this session holds.
+    ///
+    /// The window is DERIVED from the pane for [`neighbor_of`](Self::neighbor_of)'s reason and by
+    /// the rule both move verbs follow at both ends: a [`PaneId`] is registry-unique, so the caller
+    /// never has to name a window, and zooming a pane of a window nobody is looking at is a
+    /// well-formed request rather than one to refuse. herdr's `pane.zoom` takes a tab-scoped target
+    /// and a per-tab flag, which cannot express it at all.
+    ///
+    /// Reconciles that window first, for [`neighbor_of`](Self::neighbor_of)'s reason: a pane
+    /// spawned since anyone last read is a candidate, and one that has exited is not.
+    pub fn zoom_pane(&mut self, pane: PaneId, on: Option<bool>) -> Option<ZoomOutcome> {
+        let idx = self.window_index_of_pane(pane)?;
+        self.windows[idx].reconcile_own();
+        let panes = self.windows[idx].pane_ids();
+        self.windows[idx].zoom_pane(pane, on, &panes)
+    }
+
     /// Exchange the POSITIONS of `a` and `b` — tmux `swap-pane`. Returns whether anything moved.
     ///
     /// Within ONE window this is a leaf exchange ([`LayoutTree::swap_panes`]) and every division
@@ -1518,6 +1689,7 @@ impl SessionRegistry {
                     w.floating,
                     w.manual_size,
                     w.active,
+                    w.zoomed,
                 )
                 .map_err(|e| SnapshotError::Layout(e.to_string()))?;
                 windows.push(window);
@@ -2011,6 +2183,21 @@ impl SessionRegistry {
             .neighbor_of(pane, dir)
     }
 
+    /// Zoom `pane` — or un-zoom its window — in whichever window of `session` holds it: the
+    /// registry-level entry the `zoom_pane` handler uses. See [`Session::zoom_pane`]. `None` for an
+    /// unknown session or a pane no window of it holds.
+    pub fn zoom_pane(
+        &mut self,
+        session: &str,
+        pane: PaneId,
+        on: Option<bool>,
+    ) -> Option<ZoomOutcome> {
+        self.sessions
+            .iter_mut()
+            .find(|s| s.name == session)?
+            .zoom_pane(pane, on)
+    }
+
     /// Exchange the positions of `a` and `b` in the session named `session`, returning whether
     /// anything moved — the registry-level entry the wire handler uses ([`Session::swap_panes`]
     /// derives both windows). tmux `swap-pane`.
@@ -2171,6 +2358,12 @@ impl SessionRegistry {
 mod tests {
     use super::*;
     use crate::{CommandBuilder, LayoutNode, Pane, SplitDir};
+
+    /// Whether a zoom answer says one pane is filling the window — for the cases that assert the
+    /// STATE and leave `changed` to the test that is about it.
+    fn zoom(outcome: Option<ZoomOutcome>) -> bool {
+        outcome.expect("the pane is one of the window's").zoomed
+    }
 
     /// A long-lived `cat` child so a spawned pane's PTY stays open across assertions.
     fn cmd() -> CommandBuilder {
@@ -3963,6 +4156,252 @@ mod tests {
             "and the two did trade places"
         );
         let _ = c;
+    }
+
+    /// The zoom invariant, from both directions: it names the pane the window is ON, or it is off.
+    ///
+    /// The first half is the reason a zoom SELECTS, the second the reason a select can END one —
+    /// together they are what makes "the pane you type into is a pane you can see" a property
+    /// rather than a habit. herdr keeps the same safety by RETARGETING (`ui/panes.rs:179-180` at
+    /// `9a4ce5e1` paints whatever is focused), which is a coherent different feature: its zoom is a
+    /// mode over the tab, sprag's is a fact about a pane.
+    ///
+    /// Revert-proof: drop `heal_zoom`'s call from `set_active` and the last assertion still reads
+    /// `Some(b)` while the window is on `a` — a hidden pane taking every keystroke.
+    #[test]
+    fn a_zoom_names_the_active_pane_or_there_is_no_zoom() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let ids = spawn_into(&reg, "0", 3);
+        let (a, b, _c) = (ids[0], ids[1], ids[2]);
+        let panes = pool_ids(&reg, "0");
+        let window = default_window(&mut reg);
+        window.reconcile_layout(&panes);
+
+        assert_eq!(
+            window.zoom_pane(b, None, &panes),
+            Some(ZoomOutcome {
+                zoomed: true,
+                changed: true
+            }),
+            "no mode toggles a pane that is not zoomed ON"
+        );
+        assert_eq!(window.zoomed(), Some(b));
+        assert_eq!(
+            window.active_pane(),
+            Some(b),
+            "zooming a pane is also going to it — the invariant leaves no other reading",
+        );
+
+        assert!(window.select_pane(a, &panes));
+        assert_eq!(
+            window.zoomed(),
+            None,
+            "moving to another pane ends the zoom rather than dragging it along",
+        );
+    }
+
+    /// A structural verb does NOT end the zoom, and that is the design: the arrangement moved, the
+    /// filter did not. Because the zoom names a PANE rather than a position it rides the swap.
+    ///
+    /// This is the hole in herdr's set, in the other verb R284 already found one in: herdr refuses
+    /// `pane.move` outright when either tab is zoomed (`PaneMoveReason::ZoomedTab`,
+    /// `src/app/api/panes.rs:656` and `:708` at `9a4ce5e1`), so a zoomed tab is a tab whose panes
+    /// cannot be re-arranged at all.
+    #[test]
+    fn a_zoom_survives_a_move_and_a_swap_and_follows_its_own_pane() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        let ids = spawn_into(&reg, "0", 3);
+        let (a, b, c) = (ids[0], ids[1], ids[2]);
+        let panes = pool_ids(&reg, "0");
+        assert_eq!(tiled(&mut reg, "0"), vec![a, b, c]);
+        assert!(zoom(default_window(&mut reg).zoom_pane(b, None, &panes)));
+
+        // Re-place a pane the zoom is NOT on: herdr cannot express this request at all.
+        assert!(
+            !reg.move_pane(&default, c, a, SplitSide::First, SplitDir::Horizontal)
+                .unwrap(),
+            "a within-window move closes no source window",
+        );
+        assert_eq!(tiled(&mut reg, "0"), vec![c, a, b], "the arrangement moved");
+        assert_eq!(
+            default_window(&mut reg).zoomed(),
+            Some(b),
+            "and the zoom did not notice, because it names a pane",
+        );
+
+        // Now trade the zoomed pane itself. It ends up somewhere else in the row, still filling
+        // the window: a swap exchanges positions, and the zoom was never about a position.
+        assert!(reg.swap_panes(&default, b, c).unwrap());
+        assert_eq!(tiled(&mut reg, "0"), vec![b, a, c]);
+        assert_eq!(default_window(&mut reg).zoomed(), Some(b));
+    }
+
+    /// The half of the invariant no verb triggers: a zoomed pane that EXITS, or that a client
+    /// floats out, stops being a tiled pane of the window — and the zoom ends at the reconcile,
+    /// which is the one place both of those facts are already settled.
+    ///
+    /// herdr writes this by hand at four sites (`src/workspace/tab.rs:414` `:483` `:505` `:527`),
+    /// one per structural verb, which is four chances for a fifth verb to forget.
+    ///
+    /// Revert-proof: delete `heal_zoom` from `reconcile_layout` and both halves keep reading
+    /// `Some(b)` — a zoom on a pane the window no longer shows.
+    #[test]
+    fn a_zoom_ends_when_its_pane_stops_being_tiled() {
+        // A pane that exits.
+        let mut reg = SessionRegistry::new((80, 24));
+        let ids = spawn_into(&reg, "0", 2);
+        let (a, b) = (ids[0], ids[1]);
+        let panes = pool_ids(&reg, "0");
+        assert!(zoom(default_window(&mut reg).zoom_pane(b, None, &panes)));
+        let ws = pool(&reg);
+        drop(lock(&ws).close(b));
+        assert_eq!(tiled(&mut reg, "0"), vec![a]);
+        assert_eq!(
+            default_window(&mut reg).zoomed(),
+            None,
+            "the zoomed pane is gone, so the zoom is",
+        );
+
+        // A pane a client floats OUT. It is alive and can still be the active pane, but it has no
+        // leaf, so there is nothing for it to fill the window with.
+        let mut reg = SessionRegistry::new((80, 24));
+        let ids = spawn_into(&reg, "0", 2);
+        let b = ids[1];
+        let panes = pool_ids(&reg, "0");
+        let window = default_window(&mut reg);
+        window.reconcile_layout(&panes);
+        assert!(zoom(window.zoom_pane(b, None, &panes)));
+        assert!(window.set_floating(b, true, &panes));
+        window.reconcile_layout(&panes);
+        assert_eq!(window.zoomed(), None, "a floated pane has no leaf to zoom");
+        assert_eq!(
+            window.active_pane(),
+            Some(b),
+            "but it is still a pane the user can be on — floating is not leaving",
+        );
+    }
+
+    /// The two edges, told apart the way R284 tells them apart: a request that names nothing is a
+    /// TYPO and is refused; a request whose honest answer is "there is nothing to do" is answered.
+    ///
+    /// Zooming a FLOATING pane is the second kind. It is a real pane and the caller may well have
+    /// meant to go to it, so it is selected — and it is not zoomed, because it has no leaf.
+    #[test]
+    fn a_zoom_refuses_a_typo_and_answers_an_edge() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let ids = spawn_into(&reg, "0", 2);
+        let (a, b) = (ids[0], ids[1]);
+        let panes = pool_ids(&reg, "0");
+        let window = default_window(&mut reg);
+        window.reconcile_layout(&panes);
+
+        assert_eq!(
+            window.zoom_pane(PaneId(9999), None, &panes),
+            None,
+            "a pane id naming nothing is refused, and nothing moves",
+        );
+        assert_eq!(window.active_pane(), Some(a), "not even the active pane");
+
+        assert!(window.set_floating(b, true, &panes));
+        window.reconcile_layout(&panes);
+        assert_eq!(
+            window.zoom_pane(b, Some(true), &panes),
+            Some(ZoomOutcome {
+                zoomed: false,
+                changed: false
+            }),
+            "a floating pane is not an error and is not a zoom",
+        );
+        assert_eq!(
+            window.active_pane(),
+            Some(b),
+            "the caller named where it wanted to be, and got there",
+        );
+    }
+
+    /// A zoom moves the layout REVISION and a plain select does not — the two facts a client acts
+    /// on differently. Which pane a window is ON reaches it as its own fact and re-divides nothing;
+    /// which pane FILLS it decides what there is to draw at all, so a client that did not re-read
+    /// would keep painting an arrangement that is no longer on screen.
+    ///
+    /// The float set is bumped for the weaker version of exactly this reason
+    /// (`bump_if_changed`'s own docs), so this is that rule applied, not a new one.
+    #[test]
+    fn a_zoom_bumps_the_revision_and_a_bare_select_does_not() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let ids = spawn_into(&reg, "0", 2);
+        let (a, b) = (ids[0], ids[1]);
+        let panes = pool_ids(&reg, "0");
+        let window = default_window(&mut reg);
+        window.reconcile_layout(&panes);
+
+        let settled = window.layout_revision();
+        assert!(window.select_pane(b, &panes));
+        assert_eq!(
+            window.layout_revision(),
+            settled,
+            "moving the user re-divides nothing",
+        );
+
+        assert!(zoom(window.zoom_pane(b, None, &panes)));
+        let zoomed_at = window.layout_revision();
+        assert_eq!(zoomed_at, settled + 1, "but filling the window does");
+
+        // Ending it the two ways it can end, each once: by mode, and by going elsewhere.
+        assert!(!zoom(window.zoom_pane(b, Some(false), &panes)));
+        assert_eq!(window.layout_revision(), zoomed_at + 1);
+        assert!(zoom(window.zoom_pane(b, Some(true), &panes)));
+        assert!(window.select_pane(a, &panes));
+        assert_eq!(
+            window.layout_revision(),
+            zoomed_at + 3,
+            "a select that ENDS a zoom bumps — it is the zoom that moved, not the user",
+        );
+    }
+
+    /// Naming the pane is what makes a zoom survive a reboot EXACTLY. A stored flag could only come
+    /// back bound to whichever pane the restore happened to make active; an id either finds its
+    /// pane or the first reconcile ends the zoom.
+    ///
+    /// Both halves here, because only the pair discriminates: a build that restored the flag and
+    /// re-bound it would pass the first and fail the second.
+    #[test]
+    fn a_restored_zoom_finds_its_own_pane_or_ends() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let ids = spawn_into(&reg, "0", 2);
+        let (a, b) = (ids[0], ids[1]);
+        let panes = pool_ids(&reg, "0");
+        default_window(&mut reg).reconcile_layout(&panes);
+        assert!(zoom(default_window(&mut reg).zoom_pane(b, None, &panes)));
+
+        let saved = crate::snapshot::snapshot(&Arc::new(Mutex::new(reg)));
+        assert_eq!(
+            saved.sessions[0].windows[0].zoomed,
+            Some(b),
+            "the pane travels, not a flag",
+        );
+
+        // Restored with both panes back: the zoom is exactly where it was.
+        let (mut back, _plan) =
+            SessionRegistry::from_snapshot(saved.clone()).expect("the snapshot restores");
+        let window = default_window(&mut back);
+        window.reconcile_layout(&[a, b]);
+        assert_eq!(window.zoomed(), Some(b));
+        assert_eq!(window.active_pane(), Some(b));
+
+        // Restored with the zoomed pane MISSING (its shell failed to come back): the first
+        // reconcile ends the zoom rather than handing it to the survivor.
+        let (mut orphaned, _plan) =
+            SessionRegistry::from_snapshot(saved).expect("the snapshot restores");
+        let window = default_window(&mut orphaned);
+        window.reconcile_layout(&[a]);
+        assert_eq!(window.zoomed(), None, "no pane, no zoom");
+        assert_eq!(
+            window.active_pane(),
+            Some(a),
+            "and the user lands on what is there"
+        );
     }
 
     /// A direction is resolved in the window that HOLDS the pane, not in the session's current one.

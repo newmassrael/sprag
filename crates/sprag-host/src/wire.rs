@@ -1205,9 +1205,10 @@ mod tests {
                 revision: 3,
                 tree: LayoutWire::from(&tree),
                 floating: vec![PaneId(9)],
+                zoomed: Some(PaneId(1)),
             })
             .expect("an arrangement serialises"),
-            r#"{"revision":3,"tree":{"nodes":[{"leaf":1}],"root":0},"floating":[9]}"#,
+            r#"{"revision":3,"tree":{"nodes":[{"leaf":1}],"root":0},"floating":[9],"zoomed":1}"#,
             "{}",
             BUMP,
         );
