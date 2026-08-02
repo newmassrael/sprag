@@ -1138,7 +1138,11 @@ impl WorkspaceExternal {
             (Some(with), None) => Some(with),
             // A direction with no neighbour is the EDGE of the layout, not an error — the answer is
             // "nothing to trade with", which is what a key bound to `swap-pane -L` deserves.
-            (None, Some(dir)) => crate::host::neighbor(&self.registry, &self.scope, pane, dir),
+            //
+            // Resolved in the window that HOLDS `pane`, not in the scoped one: this verb takes a
+            // pane the caller named, which may live in another window, and answering "no neighbour"
+            // there would be false rather than conservative.
+            (None, Some(dir)) => lock(&self.registry).neighbor_of(self.scope.session(), pane, dir),
             _ => return Err(InvokeError::TypeMismatch),
         };
         let Some(with) = with else {

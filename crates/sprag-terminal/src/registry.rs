@@ -42,7 +42,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::PaneId;
-use crate::layout::{LayoutError, LayoutTree, LayoutWire, LeafHome, SplitDir, SplitSide};
+use crate::layout::{LayoutError, LayoutTree, LayoutWire, LeafHome, PaneDir, SplitDir, SplitSide};
 use crate::snapshot::{
     MIN_READABLE_SNAPSHOT_VERSION, PaneRestore, RestorePlan, SNAPSHOT_VERSION, Snapshot,
     SnapshotError,
@@ -1236,6 +1236,24 @@ impl Session {
         }
     }
 
+    /// What is adjacent to `pane` in `dir`, IN THE WINDOW THAT HOLDS IT — the direction half of
+    /// [`swap_panes`](Self::swap_panes), and the reason it is here rather than on the host's
+    /// scope-bound reader.
+    ///
+    /// A pane's neighbour is a well-defined question wherever the pane lives, and this verb accepts
+    /// a pane the caller named rather than the one a client is looking at. Resolving it against the
+    /// SCOPED window would answer "no neighbour" for a pane in another window — which is not a
+    /// conservative answer but a false one, since there plainly is something to its left. So the
+    /// window is derived from the pane id, the same rule the two move verbs follow at both ends.
+    ///
+    /// Reconciles that window first, so a pane that has just spawned is a candidate and one that has
+    /// just exited is not. `None` at an edge, and `None` for a pane no window of this session tiles.
+    pub fn neighbor_of(&mut self, pane: PaneId, dir: PaneDir) -> Option<PaneId> {
+        let idx = self.window_index_of_pane(pane)?;
+        self.windows[idx].reconcile_own();
+        self.windows[idx].layout().neighbor(pane, dir)
+    }
+
     /// Exchange the POSITIONS of `a` and `b` — tmux `swap-pane`. Returns whether anything moved.
     ///
     /// Within ONE window this is a leaf exchange ([`LayoutTree::swap_panes`]) and every division
@@ -1981,6 +1999,16 @@ impl SessionRegistry {
             .find(|s| s.name == session)
             .ok_or_else(|| PaneMoveError::UnknownSession(session.to_owned()))?
             .move_pane(pane, target, side, dir)
+    }
+
+    /// What is adjacent to `pane` in `dir`, in whichever window of `session` holds it — the
+    /// registry-level entry the `swap_pane` handler's direction form uses. See
+    /// [`Session::neighbor_of`]. `None` for an unknown session, an unheld pane, or an edge.
+    pub fn neighbor_of(&mut self, session: &str, pane: PaneId, dir: PaneDir) -> Option<PaneId> {
+        self.sessions
+            .iter_mut()
+            .find(|s| s.name == session)?
+            .neighbor_of(pane, dir)
     }
 
     /// Exchange the positions of `a` and `b` in the session named `session`, returning whether
@@ -3935,6 +3963,43 @@ mod tests {
             "and the two did trade places"
         );
         let _ = c;
+    }
+
+    /// A direction is resolved in the window that HOLDS the pane, not in the session's current one.
+    /// Against the current window the answer for a pane living elsewhere would be "no neighbour" —
+    /// which is not conservative but FALSE, since there plainly is something beside it.
+    ///
+    /// Revert-proof: resolve through the current window's tree instead and the second assertion
+    /// reads `None` while pane 2 is sitting right next to pane 3.
+    #[test]
+    fn a_direction_is_answered_by_the_window_that_holds_the_pane() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        spawn_into(&reg, "0", 2);
+        reg.new_window(&default, Some("1")).unwrap();
+        let far = spawn_into(&reg, "1", 2);
+        let (c, d) = (far[0], far[1]);
+        // The session is CURRENT on "1"; select "0" so the far panes are in a non-current window.
+        reg.select_window(&default, "0").unwrap();
+        assert_eq!(tiled(&mut reg, "1"), vec![c, d]);
+
+        assert_eq!(
+            reg.neighbor_of(&default, c, PaneDir::Right),
+            Some(d),
+            "pane d is to c's right in the window that holds them both",
+        );
+        assert_eq!(
+            reg.neighbor_of(&default, d, PaneDir::Left),
+            Some(c),
+            "and the walk runs both ways in a window nobody is currently looking at",
+        );
+        assert_eq!(
+            reg.neighbor_of(&default, c, PaneDir::Left),
+            None,
+            "c is at that edge"
+        );
+        assert_eq!(reg.neighbor_of(&default, PaneId(999), PaneDir::Left), None);
+        assert_eq!(reg.neighbor_of("nope", c, PaneDir::Right), None);
     }
 
     /// `swap-pane` refuses an unreachable pane and answers "nothing moved" for a legal request that
