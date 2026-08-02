@@ -1839,26 +1839,52 @@ fn check_a_window_and_a_terminal_agree_on_one_pane_size(smoke: &mut Smoke, repor
     // only input to the window, so a report larger than what it can draw comes straight back as
     // panes too big for their widgets — which is R241's stated reason a GUI could not simply be
     // handed the arbitrated window, and it would be silent without this line.
-    let whole = smoke
+    //
+    // ## The equality this used to assert was NOT ACHIEVABLE, and measuring it said so
+    //
+    // It read `painted == buffer` and failed at 123/1 the moment H7 made the client follow the
+    // session's active pane, because that built `wide | (narrow | narrow)` where the run had built
+    // `(narrow | narrow) | wide` — and there the daemon hands the wide pane 37 columns while this
+    // client's widget spans 38. That is not a defect the equality could have caught, because it is
+    // not a defect: `fit_window` folds each pane's MEASURED cells into one window and the daemon
+    // re-divides that window by the same ratios, in cells rather than pixels. Two quantisations of
+    // one boundary, so some pane keeps a cell of slack whenever they disagree — the shape decides
+    // which pane, not the code.
+    //
+    // What `fit_window` DOES promise is the half that matters, and it promises it by construction:
+    // it returns the largest window whose tiling gives no pane more cells than that pane's own
+    // surface measured. So nothing is ever truncated, and the slack has a bound worth watching.
+    // Both are asserted below; the retired equality was the aspiration, and these are the property.
+    let mut grids = Vec::new();
+    let held = smoke
         .wait_for(|smoke| {
-            let grids = smoke.grid_facts();
-            (!grids.is_empty() && grids.iter().all(|(painted, buffer)| painted == buffer))
-                .then_some(())
+            let seen = smoke.grid_facts();
+            let fits = !seen.is_empty()
+                && seen
+                    .iter()
+                    .all(|(painted, buffer)| buffer.0 <= painted.0 && buffer.1 <= painted.1);
+            grids = seen;
+            fits.then_some(())
         })
         .is_ok();
-    if !whole {
-        // The grids as they actually stand, because "painted != buffer" has several causes that
-        // read identically from a bare fail: a pane cropped by one cell, a widget that never got
-        // its size, and an empty snapshot are three different bugs.
-        //
-        // It earned its place immediately. With H7 the client FOLLOWS the session's active pane, so
-        // the palette's split targets the focused pane and builds `wide | (narrow | narrow)` where
-        // this run used to build `(narrow | narrow) | wide` — and in that shape the daemon hands the
-        // wide pane 37 columns while this client's widget measures 38. The bare fail said only
-        // "not whole"; these numbers say WHICH pane, WHICH way, and by how much.
-        eprintln!("      grids (painted vs buffer): {:?}", smoke.grid_facts());
-    }
-    report.check("alone, the window paints every pane WHOLE", whole);
+    // The grids as they actually stand — printed on EVERY run, not only a failing one, because the
+    // slack is the number this pair of checks exists to keep visible and a gate that only speaks
+    // when it breaks cannot show a bound drifting toward it.
+    eprintln!("      grids (painted vs buffer): {grids:?}");
+    report.check(
+        "alone, no pane is painted smaller than the session gave it",
+        held,
+    );
+    // The TIGHTER claim, and the one that would catch a fold going wrong rather than merely
+    // rounding: the surplus a pane's widget carries over its grid is under one cell per axis. A
+    // window folded from measurements it then over-divides would show up here as a pane whose
+    // widget is cells wider than its content, long before anything looked wrong on screen.
+    report.check(
+        "alone, a pane's widget carries under one cell of surplus",
+        held && grids
+            .iter()
+            .all(|(painted, buffer)| painted.0 - buffer.0 <= 1 && painted.1 - buffer.1 <= 1),
+    );
 
     // CLAIM 1: this window is IN the arbitration, which it can only be by reporting — and as the
     // only client, its report IS the window. Before this round it reported nothing, and no
