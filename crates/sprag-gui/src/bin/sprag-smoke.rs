@@ -1855,6 +1855,14 @@ fn check_a_window_and_a_terminal_agree_on_one_pane_size(smoke: &mut Smoke, repor
     // it returns the largest window whose tiling gives no pane more cells than that pane's own
     // surface measured. So nothing is ever truncated, and the slack has a bound worth watching.
     // Both are asserted below; the retired equality was the aspiration, and these are the property.
+    //
+    // ## PINION-PR80 moved where the widget's span is read, and that is why it stayed a check
+    //
+    // The node used to DERIVE its `cols`/`rows` from its rect, so reading them was reading the
+    // widget. It now declares the daemon's grid instead, which makes `cols == buffer_cols` true by
+    // construction — so both checks below would have passed on `0 <= 0` forever while measuring
+    // nothing. The span is read from `rect / cell metric` instead: the same quantity, computed
+    // where it still lives, so the bound the equality could not be goes on being watched.
     let mut grids = Vec::new();
     let held = smoke
         .wait_for(|smoke| {
@@ -1862,7 +1870,7 @@ fn check_a_window_and_a_terminal_agree_on_one_pane_size(smoke: &mut Smoke, repor
             let fits = !seen.is_empty()
                 && seen
                     .iter()
-                    .all(|(painted, buffer)| buffer.0 <= painted.0 && buffer.1 <= painted.1);
+                    .all(|g| g.buffer.0 <= g.widget.0 && g.buffer.1 <= g.widget.1);
             grids = seen;
             fits.then_some(())
         })
@@ -1870,7 +1878,7 @@ fn check_a_window_and_a_terminal_agree_on_one_pane_size(smoke: &mut Smoke, repor
     // The grids as they actually stand — printed on EVERY run, not only a failing one, because the
     // slack is the number this pair of checks exists to keep visible and a gate that only speaks
     // when it breaks cannot show a bound drifting toward it.
-    eprintln!("      grids (painted vs buffer): {grids:?}");
+    eprintln!("      grids (widget vs declared vs buffer): {grids:?}");
     report.check(
         "alone, no pane is painted smaller than the session gave it",
         held,
@@ -1883,7 +1891,17 @@ fn check_a_window_and_a_terminal_agree_on_one_pane_size(smoke: &mut Smoke, repor
         "alone, a pane's widget carries under one cell of surplus",
         held && grids
             .iter()
-            .all(|(painted, buffer)| painted.0 - buffer.0 <= 1 && painted.1 - buffer.1 <= 1),
+            .all(|g| g.widget.0 - g.buffer.0 <= 1 && g.widget.1 - g.buffer.1 <= 1),
+    );
+    // PINION-PR80's own acceptance, live: the node states WHO sized it, and the size it states is
+    // the one the producer delivered. Before it, every tiled pane reported a permanent divergence
+    // that pinion's interpretation rule defines as an in-flight resize or a producer bug — over
+    // the very channel built for an AI client to read.
+    report.check(
+        "alone, a pane's grid names its daemon and matches what it delivered",
+        held && grids
+            .iter()
+            .all(|g| g.source == "producer" && g.declared == g.buffer),
     );
 
     // CLAIM 1: this window is IN the arbitration, which it can only be by reporting — and as the
@@ -3031,7 +3049,7 @@ fn every_pane_is_cropped(smoke: &mut Smoke, what: &str) -> bool {
             let cropped = !grids.is_empty()
                 && grids
                     .iter()
-                    .all(|(painted, buffer)| painted.0 < buffer.0 && painted.1 < buffer.1);
+                    .all(|g| g.widget.0 < g.buffer.0 && g.widget.1 < g.buffer.1);
             last = grids;
             cropped.then_some(())
         })
@@ -3042,7 +3060,25 @@ fn every_pane_is_cropped(smoke: &mut Smoke, what: &str) -> bool {
     held
 }
 
-type GridFacts = ((u64, u64), (u64, u64));
+/// The three sizes a pane grid carries, which used to be two.
+///
+/// Until PINION-PR80 landed, a node's `cols`/`rows` WERE the widget's span: pinion derived them
+/// from the laid-out rect, and the checks above read them as "what this client painted". The node
+/// now DECLARES the daemon's grid instead, so `cols == buffer_cols` by construction — which is the
+/// promotion, and which would have made those checks vacuously true had they gone on reading
+/// `cols`. The widget's span is not lost, it moved: it is `rect / cell metric`, the derivation the
+/// node stopped answering with, and the snapshot still carries both halves of it.
+#[derive(Debug)]
+struct GridFacts {
+    /// Whole cells the pane's WIDGET spans, from `rect` and the node-local cell metric.
+    widget: (u64, u64),
+    /// What the node declares the producer was sized to (`cols` / `rows`).
+    declared: (u64, u64),
+    /// What the producer last delivered (`buffer_cols` / `buffer_rows`).
+    buffer: (u64, u64),
+    /// Which authority the node names for `declared` — `"producer"` on every sprag grid.
+    source: String,
+}
 
 /// Every painted pane grid in `node`'s subtree, as [`GridFacts`].
 ///
@@ -3060,8 +3096,20 @@ fn collect_grids(node: &Value, out: &mut Vec<GridFacts>) {
             node["buffer_cols"].as_u64(),
             node["buffer_rows"].as_u64(),
         )
+        && let (Some((w, h)), Some(cell_w), Some(cell_h)) = (
+            rect_of(&node["rect"]),
+            node["cell_w"].as_u64(),
+            node["cell_h"].as_u64(),
+        )
+        && cell_w > 0
+        && cell_h > 0
     {
-        out.push(((cols, rows), (buffer_cols, buffer_rows)));
+        out.push(GridFacts {
+            widget: (u64::from(w) / cell_w, u64::from(h) / cell_h),
+            declared: (cols, rows),
+            buffer: (buffer_cols, buffer_rows),
+            source: node["winsize_source"].as_str().unwrap_or("").to_owned(),
+        });
     }
     for child in node["children"].as_array().into_iter().flatten() {
         collect_grids(child, out);

@@ -203,21 +203,46 @@ pub const INPUT_TAG: &str = "sprag_input";
 /// path; the projection itself is [`sprag_grid::project`] /
 /// [`sprag_grid::project_scrolled`]; this assembles the node around whatever cells
 /// the caller projected.
+///
+/// # Every sprag grid states that sprag sized it (PINION-PR80, pinion R1542)
+///
+/// A `TextGridNode`'s `(cols, rows)` are derived from its layout-resolved `rect` unless the node
+/// DECLARES them. Deriving is right when the layout is what sizes the producer. In sprag it never
+/// is: the daemon tiles a session's arbitrated window in CELLS
+/// ([`sprag_terminal::tile`]) and that division is both the PTY's
+/// `TIOCSWINSZ` and this buffer's size, while a display client lays the panes out in PIXELS. One
+/// boundary quantised twice leaves some pane a cell of slack, so no rect can carry both meanings —
+/// measured, in the steady state, as a pane painting 38 columns over a 37-column buffer.
+///
+/// So the declaration is UNCONDITIONAL rather than per-path: it is not a fact about this call
+/// site, it is a fact about sprag. A client reading `winsize_source` off any sprag grid finds
+/// `"producer"`, and `cols == buffer_cols` is the steady state — which is what pinion's own
+/// interpretation rule says a snapshot means, and what sprag's grids could not say before.
+///
+/// The one caller holding a placeholder buffer ([`PaneCells::Omitted`], a `0 x 0` grid no
+/// supported method can reach — see `rpc::pane_cells_for`) declares `0 x 0` with it, so the two
+/// modes still differ in cell content alone.
 fn grid_node(
     tag: impl Into<Cow<'static, str>>,
     metric: CellMetric,
     cells: GridBuffer,
 ) -> TextGridNode {
-    TextGridNode::new(metric).with_tag(tag).with_cells(cells)
+    let (cols, rows) = (cells.cols(), cells.rows());
+    TextGridNode::new(metric)
+        .with_tag(tag)
+        .with_cells(cells)
+        .with_winsize(cols, rows)
 }
 
 /// Project a [`Screen`] into the bare `TextGrid` node carrying the cell data
 /// (the headless data path: [`scene`] / [`pane_container`]). The one call site
 /// of [`sprag_grid::project`] for the data path, so the cell projection has one
 /// authority. The node carries no layout: the headless path leaves the GUI
-/// `rect` unset (the authoritative terminal size is the projected `GridBuffer`,
-/// read via [`TextGridSnapshot::buffer_cols`] / `buffer_rows`); the GUI seam
-/// adds layout + font size via [`view_text_grid`].
+/// `rect` unset, and since PINION-PR80 that costs a reader nothing — the node
+/// DECLARES its winsize ([`grid_node`]), so `cols`/`rows` answer the daemon's
+/// size rather than deriving `0` from the unset rect, and they agree with
+/// [`TextGridSnapshot::buffer_cols`] / `buffer_rows`. The GUI seam adds layout +
+/// font size via [`view_text_grid`].
 pub(crate) fn text_grid_node(
     screen: &Screen,
     palette: &Palette,
@@ -539,9 +564,14 @@ mod tests {
         let snap = snapshot_of(b"hi", 20, 3);
         // The authoritative terminal size is the producer's GridBuffer.
         assert_eq!((snap.buffer_cols, snap.buffer_rows), (20, 3));
-        // Headless: no layout pass, so the GUI rect-derived winsize is unset
-        // (the documented contract — not faked to mirror the buffer).
-        assert_eq!((snap.cols, snap.rows), (0, 0));
+        // PINION-PR80 restated this. It used to read `(0, 0)` — the derivation off an
+        // unset rect — with the note "not faked to mirror the buffer", because mirroring
+        // was the only way to make the numbers agree and a mirror says nothing about WHO
+        // decided them. A declaration does: `winsize_source` carries the authority, so the
+        // agreement below is sprag stating that its daemon sized this grid, not a rect that
+        // happens to match.
+        assert_eq!((snap.cols, snap.rows), (20, 3));
+        assert_eq!(snap.winsize_source, "producer");
         assert_eq!(snap.grid_rows.len(), 3);
         assert!(snap.grid_rows[0].text.starts_with("hi"));
         assert_eq!((snap.cursor.col, snap.cursor.row), (2, 0));
