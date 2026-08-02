@@ -61,3 +61,35 @@ reason = "Atomic decision_summary was a placeholder 'x' written by a CLI flag-pr
 applied_in = "Round 24"
 content_hash_before = "cac3fc8a279c08df99a50cde4a74171568f0009848655e484aadd3a5cd34486c"
 content_hash_after = "cabcc4e62a9c22dd324b65543d505cd78a9a96a73b536d42e71bcf0ad02974e1"
+
+# R281's atomic `impact_refs` named §39 and §41 — section ids this workspace has
+# never had (it has §1–§5). They were written in pinion's `§5.41` idiom without the
+# citation check this project already requires for a `Round N`, and the frozen
+# ledger cannot be rewritten, so the dangling refs are registered here and the
+# publishable view carries the sections the round actually touched (§3 the pinion
+# consumer contract, §5 delivery status + risk register).
+[[orphan_ledger]]
+kind = "atomic_entry_ref"
+doc = "<atomic-changelog>"
+from = "R281"
+to = "39"
+reason = "R281 impact_refs citation slip: no §39 exists in this workspace (§1-§5); publishable impact_refs corrected to §3,§5"
+since = "R281"
+
+[[orphan_ledger]]
+kind = "atomic_entry_ref"
+doc = "<atomic-changelog>"
+from = "R281"
+to = "41"
+reason = "R281 impact_refs citation slip: no §41 exists in this workspace (§1-§5); publishable impact_refs corrected to §3,§5"
+since = "R281"
+
+# Audit row for R281's impact_refs correction (see the orphan_ledger rows above).
+[[publishable_override_ledger]]
+kind = "redaction"
+target_id = "R281"
+fields = ["publishable_impact_refs"]
+reason = "R281's atomic impact_refs named 39 and 41, section ids this workspace has never had (it has 1-5) - written in pinion's section idiom without the citation check this project already requires for a Round N. The frozen ledger cannot be rewritten, so the publishable view carries the sections the round actually touched and the dangling atomic refs are registered in orphan_ledger."
+applied_in = "R281"
+content_hash_before = "b378b0527bcac6e7d44891dd0c425ca4c29845a032b2deb5b54519e8939fcb1f"
+content_hash_after = "539a776d4d4707ac08912cd47f905be1e0d8791d2d0682288ea4ab42f9abe93f"
