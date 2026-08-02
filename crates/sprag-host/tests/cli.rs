@@ -292,6 +292,68 @@ fn the_cli_manages_windows_over_the_socket() {
     );
 }
 
+/// A session the LISTING hides is still one the CLI can address — R281.
+///
+/// The two are different questions and the pre-flight used to answer the second with the first.
+/// `sessions` is the human listing and drops a resting empty anchor (`SessionInfo::is_listable`:
+/// no panes, nobody attached), which is a session the daemon holds, serves, and refuses to let
+/// anyone re-create. Scanning that list for an ADDRESS made the anchor unreachable from its own
+/// CLI — `panes -t 0` answered `no session named "0"` while `new 0` answered `a session named "0"
+/// already exists`, both true, both about the same daemon.
+///
+/// Both halves are asserted, and the first is what makes the second sharp: the listing must go on
+/// hiding it (this is not "show the anchor"), while every scoped command must go on reaching it.
+#[test]
+fn a_session_the_listing_hides_is_still_addressable() {
+    let (_host, sock) = spawn_host();
+
+    // A second session, so emptying the anchor cannot drain the last one and end the daemon.
+    assert!(sprag(&sock, &["new", "work"]).ok, "a second session");
+    // Empty the boot anchor. Nothing is attached in this harness, so it now satisfies neither
+    // half of `is_listable` and drops out of the listing.
+    assert!(
+        sprag(&sock, &["kill-pane", "0", "-t", "0"]).ok,
+        "the anchor's only pane is closed",
+    );
+
+    let listed = sprag(&sock, &["ls"]);
+    assert!(listed.ok, "ls succeeded: {}", listed.stderr);
+    assert!(
+        !listed.stdout.contains("0:"),
+        "the resting anchor stays HIDDEN — the listing rule is unchanged: {}",
+        listed.stdout,
+    );
+    assert!(
+        listed.stdout.contains("work"),
+        "the guard is vacuous unless ls answered at all: {}",
+        listed.stdout,
+    );
+
+    // ...and it is addressable anyway, because the daemon's scope resolver — not the listing —
+    // is what decides that.
+    let scoped = sprag(&sock, &["panes", "-t", "0"]);
+    assert!(
+        scoped.ok,
+        "a scoped command reaches the hidden anchor: {}",
+        scoped.stderr,
+    );
+    assert!(
+        scoped.stdout.trim().is_empty(),
+        "and it honestly holds no panes: {}",
+        scoped.stdout,
+    );
+
+    // The refusal a real unknown name gets is unchanged, so this did not buy addressability by
+    // accepting everything.
+    let ghost = sprag(&sock, &["panes", "-t", "ghost"]);
+    assert!(!ghost.ok, "an unknown session still fails");
+    assert!(
+        ghost.stderr.contains("no session named"),
+        "clean error: {}",
+        ghost.stderr,
+    );
+}
+
 /// break-pane and join-pane MOVE a pane between windows over the CLI (plus the refusal paths). The
 /// pane set-up (spawn a second pane, read ids) goes over the wire — the CLI has no pane-spawn verb —
 /// while the moves themselves go through the `sprag` binary, so its arg parsing, dispatch, and

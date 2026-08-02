@@ -45,7 +45,7 @@ use crate::runs::RunRegistry;
 use crate::scope::{ScopeError, SessionScope};
 use crate::wire::{
     CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, CLIENT_SIZE_METHOD, COLS_PARAM,
-    PROTOCOL_FIELD, PROTOCOL_PARAM, ROWS_PARAM, WIRE_PROTOCOL,
+    INVALID_PARAMS, PROTOCOL_FIELD, PROTOCOL_PARAM, ROWS_PARAM, WIRE_PROTOCOL,
 };
 
 /// The long-lived host state threaded through the serve loop: the booted [`Host`]
@@ -621,7 +621,7 @@ fn lifecycle_invalid(request: &Request, message: String) -> Option<String> {
         serde_json::json!({
             "jsonrpc": "2.0",
             "id": id,
-            "error": { "code": -32602, "message": message },
+            "error": { "code": INVALID_PARAMS, "message": message },
         })
         .to_string(),
     )
@@ -703,7 +703,7 @@ fn protocol_refused(request: &Request) -> Option<String> {
             "jsonrpc": "2.0",
             "id": id,
             "error": {
-                "code": -32602,
+                "code": INVALID_PARAMS,
                 "message": format!(
                     "this daemon speaks wire protocol {WIRE_PROTOCOL} and the client speaks \
                      {client}; they cannot understand each other. Rebuild the client, or restart \

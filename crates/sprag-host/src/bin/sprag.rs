@@ -142,7 +142,7 @@ use sprag_host::wire::{
     events_slot_since, find_slot_for, project_slot_for, regex_slot_for,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
-use sprag_rpc::{HOST_SOCKET, HostConn, HostEndpoint, socket_path};
+use sprag_rpc::{CallError, HOST_SOCKET, HostConn, HostEndpoint, INVALID_PARAMS, socket_path};
 
 /// A management command is talking to an already-running daemon, so the socket either accepts
 /// at once or there is nothing to manage — no spawn-race retry to wait out.
@@ -1418,18 +1418,46 @@ fn own_session(cmd: &mut Command) -> &mut Command {
     }
 }
 
-/// Whether the running daemon holds a session named `name` — the [`attach`] pre-flight, over the
-/// same `sessions` slot [`ls`] reads.
+/// Whether the running daemon can ADDRESS a session named `name` — asked of the scope resolver,
+/// which is the only authority for it, by making the cheapest scoped request there is and reading
+/// whether the scope resolved.
+///
+/// # Why not the `sessions` listing, which this used to scan
+///
+/// It was wrong twice, and R281 measured both.
+///
+/// **Wrong as an answer.** `sessions` is the HUMAN listing: it drops a resting empty anchor
+/// (`SessionInfo::is_listable`), which is a session the daemon holds, serves, and refuses to let
+/// anyone re-create. Validating an ADDRESS against a list filtered for reading made that session
+/// unaddressable from its own CLI — on a fresh daemon, `sprag panes -t 0` answered `no session
+/// named "0"` in the same breath as `sprag new 0` answered `a session named "0" already exists`.
+/// A listing and an address book are different questions, and only one of them may hide a row.
+///
+/// **Wrong as a cost.** That listing attributes each session's listening ports through a whole
+/// `/proc` walk (`ProcScan::scan`), which no caller of this function reads. Measured on the R278
+/// harness: the same request costs **0.010 ms** with no live pane anywhere and **4.111 ms** with
+/// one — and since every scoped command pre-flights through here, that was **87% of a `sprag`
+/// invocation's wall time**, spent to answer a yes/no. (The listing paying it for a reader that
+/// does want ports is a separate, still-open item; this one simply stops asking.)
+///
+/// `windows` is the request because a scope is resolved BEFORE any handler runs (`crate::rpc`'s
+/// `handle_parsed`), so any scoped path answers the question; this is the cheapest one, and its
+/// own answer is discarded.
 fn session_exists(conn: &mut HostConn, name: &str) -> io::Result<bool> {
-    let sessions = conn.call(
+    match conn.try_call(
         "scene/query",
-        json!({ "path": mux_action_path(SESSIONS_SLOT) }),
-    )?;
-    Ok(sessions
-        .as_array()
-        .into_iter()
-        .flatten()
-        .any(|session| session["name"].as_str() == Some(name)))
+        json!({ "session": name, "path": mux_action_path(WINDOWS_SLOT) }),
+    ) {
+        Ok(_) => Ok(true),
+        // The daemon heard the request and refused the SCOPE — that IS the answer. Read from the
+        // JSON-RPC code rather than from its sentence: a scoped query carries nothing else that
+        // can be invalid, and matching wording would make this file depend on how another crate
+        // phrases itself.
+        Err(CallError::Fault(fault)) if fault.code == INVALID_PARAMS => Ok(false),
+        // Anything else — a dead socket, a protocol mismatch, a fault of another code — is this
+        // call FAILING, and must never read as "no such session".
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// `attach --remote HOST NAME`: run this client on HOST instead, over ssh.

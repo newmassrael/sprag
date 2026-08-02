@@ -298,7 +298,7 @@ pub use sprag_rpc::{
 /// lives on [`crate::rpc`]'s `protocol_refused`; what keeps the NUMBER honest is this module's own
 /// `the_wire_shape_is_what_this_protocol_number_stands_for`, which fails on any change to a shape
 /// a client decodes whole.
-pub use sprag_rpc::{PROTOCOL_FIELD, PROTOCOL_PARAM, WIRE_PROTOCOL};
+pub use sprag_rpc::{INVALID_PARAMS, PROTOCOL_FIELD, PROTOCOL_PARAM, WIRE_PROTOCOL};
 
 /// The mux control external query slot: every session's name, plus which one an unscoped
 /// request acts on — how a client discovers what it can address with [`SESSION_PARAM`].
