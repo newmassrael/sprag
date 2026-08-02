@@ -130,7 +130,8 @@ use crate::external::lock;
 
 /// What a DAEMON shares into a scene assembly, and an in-process host does not have.
 ///
-/// Every field is `None` for a non-daemon, and it is worth naming who those actually are, because the
+/// Every OPTIONAL field is `None` for a non-daemon (the sampler is not one of them — see its own
+/// note), and it is worth naming who those actually are, because the
 /// older comments around this file say "the GUI's in-process host" and no such host exists: nothing
 /// outside this crate builds a [`HostState`]. The real non-daemon owners are `sprag-latency` — which
 /// measures the pane list and must not have a detector it did not ask for landing in the instrument —
@@ -153,10 +154,22 @@ pub struct DaemonShared {
     ///
     /// Whoever sets this must also drive the settle waker — see [`AgentClock`] and `sprag-term`.
     pub agents: Option<Arc<AgentClock>>,
+    /// The host's [session-activity sampler](sprag_terminal::ActivitySampler) (R282), read when the
+    /// `session_activity` slot is served.
+    ///
+    /// NOT an `Option`, unlike its neighbours, and the difference is the point: those three are
+    /// facts only a daemon HAS (a reaper, wire clients, a detector), so a host without one states
+    /// `None` and the wire answers honestly that there is nothing to report. A sampler is not like
+    /// that — every host can answer where its sessions are working — so making it optional would be
+    /// inventing a mode in which the question has no answer. What a caller passes here decides only
+    /// WHO SHARES the sample: one taken from [`Host::activity`] is the whole host's, and a fresh one
+    /// is nobody else's.
+    pub activity: Arc<sprag_terminal::ActivitySampler>,
 }
 
 impl DaemonShared {
-    /// Not a daemon: no reaper hook, no attachment map, no detector.
+    /// Not a daemon: no reaper hook, no attachment map, no detector — and a sampler of its own,
+    /// shared with nothing, since there is no other arm here to share it with.
     #[must_use]
     pub fn none() -> Self {
         Self::default()
@@ -484,6 +497,7 @@ pub fn workspace_scene(
         on_pane_exit,
         attachments,
         agents,
+        activity,
     } = daemon;
     // The scoped session's pool, resolved when the scope was (never re-derived here — one
     // question, one answer). The registry lock is not held, so taking the workspace lock
@@ -507,6 +521,7 @@ pub fn workspace_scene(
             on_pane_exit.clone(),
             attachments,
             agents,
+            activity,
         )))
         .with_tag(MUX_TAG),
     ));

@@ -307,6 +307,117 @@ pub use sprag_rpc::{INVALID_PARAMS, PROTOCOL_FIELD, PROTOCOL_PARAM, WIRE_PROTOCO
 /// must guess at, and the whole point of the scene-as-data surface is that a peer ASKS.
 pub const SESSIONS_SLOT: &str = "sessions";
 
+/// The mux control external query FAMILY: every session's live ACTIVITY — where it is working, on
+/// what branch, and what it is serving — with the AGE of the sample they were all taken in.
+///
+/// Registry-WIDE like [`SESSIONS_SLOT`], and split out of it by R282 for a reason that is about
+/// KINDS of fact rather than about cost. [`SESSIONS_SLOT`] answers the registry's own structure,
+/// which moves when this daemon performs an event the scene revision already announces. This answers
+/// the operating system, which moves with nothing the daemon can see — so it must be SAMPLED, and a
+/// sample has an age. Serving them together made the cheapest question in the mux cost a `/proc`
+/// walk of every process on the box, on every poll wake of every attached client, for three facts a
+/// printed character says nothing about.
+///
+/// The address carries the caller's staleness TOLERANCE — `session_activity.<max_age_ms>`, where
+/// `session_activity.0` admits nothing and always samples afresh. The answer ([`ActivityWire`])
+/// carries the age it actually has. See [`sprag_terminal::ActivitySampler`] for what a read does and
+/// does not pay for.
+///
+/// That tolerance is the design's ONLY cadence control, and it is deliberately the CALLER's: `sprag
+/// ls` is a one-shot human command that would rather wait than print a stale port, and a sidebar
+/// poll would rather paint a second-old subtitle than make somebody's keystroke walk `/proc`. One
+/// constant shared between them would have to be wrong for one of them.
+///
+/// A QUERY, not an invoke, and R152's livelock is why: a display client reads this on the same wake
+/// it reads everything else, and an invoke bumps the scene revision — so serving it as an action
+/// would wake the very `waitFor` it was answering. Sampling is not a mutation of the scene; it
+/// observes a world the scene does not own.
+///
+/// The argument rides the PATH because that is what a `query` can carry (`cells.<offset>`'s lesson,
+/// PR-61): the signature takes a path and nothing else. It is [`SchemaArg::open`] rather than an
+/// index — a tolerance is not bounded by anything the surface can count, and saying `IndexOf` some
+/// list would be inventing a domain to look precise.
+pub const SESSION_ACTIVITY_FIELD: SchemaField = SchemaField::parametric(
+    "session_activity.<max_age_ms>",
+    "object",
+    SESSION_ACTIVITY_ARGS,
+);
+
+/// [`SESSION_ACTIVITY_FIELD`]'s argument: how stale an answer this caller will accept, in
+/// milliseconds. Open, because nothing on this surface bounds it.
+const SESSION_ACTIVITY_ARGS: &[SchemaArg] = &[SchemaArg::open("max_age_ms", "int")];
+
+/// The staleness a LIVE DISPLAY accepts for [`SESSION_ACTIVITY_FIELD`] — what a session sidebar's
+/// subtitle may be behind the world, stated once so every display path agrees.
+///
+/// Used by a wire client's poll thread (which asks the daemon for this window) and by the
+/// in-process arm (which samples at it), so a sidebar drawn over a daemon and one drawn in process
+/// show facts of the same age. `sprag ls` does NOT use it: a one-shot human command asks for zero
+/// and waits, because it prints once and is then read for as long as the operator looks at it.
+///
+/// One second, and the reasoning is about what the facts DO rather than about a budget. A cwd
+/// changes when somebody types `cd`, a branch when they check one out, a port when a server binds:
+/// all human-paced acts whose result a person expects to see "in a moment", not in the same frame.
+/// A second is under that threshold and two orders of magnitude above what the sample costs, so the
+/// walk lands at most once per second per host however many clients are attached and however fast
+/// anyone types. herdr's counterpart for its git facts is 1500 ms (`GIT_REMOTE_STATUS_REFRESH_
+/// INTERVAL` at `9a4ce5e1`), reached by the same reasoning about the same kind of fact — a rival's
+/// number is not evidence, but a rival arriving nearby is worth recording.
+pub const SESSION_ACTIVITY_DISPLAY_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// [`SESSION_ACTIVITY_FIELD`]'s address with the tolerance filled in — `session_activity_at(0)` is
+/// the always-fresh read.
+///
+/// Built from the declared field rather than by re-spelling `"session_activity."`, so the address a
+/// client sends and the prefix the host strips cannot drift — `cells_slot_at`'s discipline, for the
+/// same reason.
+#[must_use]
+pub fn session_activity_at(max_age_ms: u64) -> String {
+    format!("{}{max_age_ms}", SESSION_ACTIVITY_FIELD.literal_prefix())
+}
+
+/// What [`SESSION_ACTIVITY_FIELD`] answers: every session's [activity](sprag_terminal::SessionActivity),
+/// and how long ago the reading they all came from was taken.
+///
+/// The age is on the wire, in the ENVELOPE rather than on each row, because one pass produces them
+/// all — the `/proc` walk that attributes listening sockets is shared across every session, so no
+/// row is fresher than another and a per-row age would invite a reader to believe otherwise.
+///
+/// Why it is carried at all: a sampled fact read without its age is one whose freshness the reader
+/// has to assume, and the assumption is wrong exactly when it matters — a `ports` list that predates
+/// the server somebody just started looks identical to one that does not. A client can render
+/// staleness, an operator can distrust a number for a reason, and neither has to know what tolerance
+/// some other caller asked for.
+///
+/// Milliseconds, not a `Duration`: this is the wire, and `Duration`'s serialised form is a pair of
+/// integers whose meaning a non-Rust peer would have to be told.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ActivityWire {
+    /// How long ago the [`sessions`](Self::sessions) below were sampled, in milliseconds. `0` for a
+    /// sample taken to answer this very request.
+    pub sampled_ms_ago: u64,
+    /// One row per session, in the registry's own order — the same order [`SESSIONS_SLOT`] answers
+    /// in, though a reader should join on [`name`](sprag_terminal::SessionActivity::name) rather
+    /// than on position: the two answers are separate requests, and a session can be created between
+    /// them.
+    pub sessions: Vec<sprag_terminal::SessionActivity>,
+}
+
+impl From<sprag_terminal::ActivityReading> for ActivityWire {
+    /// The one conversion from the in-process reading to the wire's shape — the seam where a
+    /// `Duration` becomes the integer a peer can read.
+    ///
+    /// Saturating rather than wrapping: a sample old enough to overflow a `u64` of milliseconds
+    /// cannot exist (it would predate the daemon by half a billion years), but "impossible" is not a
+    /// reason to let the arithmetic decide what happens if it did.
+    fn from(reading: sprag_terminal::ActivityReading) -> Self {
+        Self {
+            sampled_ms_ago: u64::try_from(reading.age.as_millis()).unwrap_or(u64::MAX),
+            sessions: reading.sessions,
+        }
+    }
+}
+
 /// The mux control external query slot: every currently-ATTACHED client and the session it is
 /// viewing (`[{client, session}]`) — tmux `list-clients`, behind the `sprag list-clients` CLI.
 ///
@@ -960,7 +1071,9 @@ mod tests {
     fn the_wire_shape_is_what_this_protocol_number_stands_for() {
         use pinion_core::term_grid::{CellAttrs, GridBuffer, Hyperlink, TermCell, UnderlineStyle};
         use pinion_core::{Color, TermColor};
-        use sprag_terminal::{LayoutSnapshot, LayoutWire, PaneId, SessionInfo, WindowInfo};
+        use sprag_terminal::{
+            LayoutSnapshot, LayoutWire, PaneId, SessionActivity, SessionInfo, WindowInfo,
+        };
 
         assert_eq!(
             serde_json::to_string(&WindowInfo {
@@ -979,13 +1092,42 @@ mod tests {
                 windows: 1,
                 panes: 2,
                 default: true,
-                cwd: Some("/tmp".to_owned()),
-                branch: Some("main".to_owned()),
-                ports: vec![8080],
                 attached: 1,
             })
             .expect("a session serialises"),
-            r#"{"name":"0","windows":1,"panes":2,"default":true,"cwd":"/tmp","branch":"main","ports":[8080],"attached":1}"#,
+            r#"{"name":"0","windows":1,"panes":2,"default":true,"attached":1}"#,
+            "{}",
+            BUMP,
+        );
+
+        // The SAMPLE, split out of the line above by R282. Two shapes, pinned for two different
+        // reasons: a client decodes the row whole, and the reading's envelope is what carries the
+        // sample's AGE — a client that read the rows without it would be reading a fact whose
+        // freshness it had to assume.
+        assert_eq!(
+            serde_json::to_string(&SessionActivity {
+                name: "0".to_owned(),
+                cwd: Some("/tmp".to_owned()),
+                branch: Some("main".to_owned()),
+                ports: vec![8080],
+            })
+            .expect("an activity row serialises"),
+            r#"{"name":"0","cwd":"/tmp","branch":"main","ports":[8080]}"#,
+            "{}",
+            BUMP,
+        );
+        assert_eq!(
+            serde_json::to_string(&ActivityWire {
+                sampled_ms_ago: 12,
+                sessions: vec![SessionActivity {
+                    name: "0".to_owned(),
+                    cwd: None,
+                    branch: None,
+                    ports: Vec::new(),
+                }],
+            })
+            .expect("a reading serialises"),
+            r#"{"sampled_ms_ago":12,"sessions":[{"name":"0"}]}"#,
             "{}",
             BUMP,
         );

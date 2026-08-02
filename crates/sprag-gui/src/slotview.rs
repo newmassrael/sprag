@@ -446,6 +446,21 @@ impl SlotView {
         self.host.sessions()
     }
 
+    /// Every session's live ACTIVITY — the sidebar's subtitle facts, and the ROWS ONLY: the reading's
+    /// age is dropped here, deliberately.
+    ///
+    /// The rail paints no staleness yet, and handing the paint path a number it does not use would
+    /// invite a later reader to think it does. The age is on the wire and on
+    /// [`HostClient::session_activity`] for whoever needs
+    /// it; this accessor states exactly what the sidebar consumes.
+    ///
+    /// NOT joined onto [`sessions`](Self::sessions) here: the two are separate answers, and a caller
+    /// that needs both joins them by NAME (a session's address) rather than by position, which the
+    /// sidebar does.
+    pub(crate) fn session_activity(&self) -> Vec<sprag_terminal::SessionActivity> {
+        self.host.session_activity().sessions
+    }
+
     /// The session this client is attached to — for the sidebar's current-row highlight.
     pub(crate) fn current_session(&self) -> String {
         self.host.current_session()
@@ -1094,6 +1109,15 @@ mod tests {
             String::new()
         }
         fn kill_window(&self, _name: &str) {}
+        /// No sample: these fixtures exercise the ROUTING over a session list, not the facts a row
+        /// paints. An empty reading of age zero is the honest "nothing sampled here" (see
+        /// `HostClient::session_activity`), and it keeps every subtitle out of the fixture's way.
+        fn session_activity(&self) -> sprag_terminal::ActivityReading {
+            sprag_terminal::ActivityReading {
+                age: std::time::Duration::ZERO,
+                sessions: Vec::new(),
+            }
+        }
         fn sessions(&self) -> Vec<SessionInfo> {
             Vec::new()
         }

@@ -61,6 +61,7 @@ use pinion_core::theme::{ColorRole, Theme};
 use pinion_core::widget_core::ExtraExternal;
 use pinion_core::widgets::button::ButtonExternal;
 use pinion_core::{Color, Intent, Scene};
+use sprag_terminal::SessionActivity;
 use std::borrow::Cow;
 
 use crate::slotview::SlotView;
@@ -306,6 +307,9 @@ pub(crate) fn session_sidebar_access_nodes(
     } else {
         None
     };
+    // The sampled half, joined by NAME below — the same read the paint does, for the same reason
+    // (an announced name and a painted row must state the same facts).
+    let activity = slots.session_activity();
     let mut nodes: Vec<AccessNode> = Vec::with_capacity(count + 2);
     let mut tablist = AccessNode::new(SESSION_TABLIST_TAG, AriaRole::TabList).with_name("Sessions");
     for i in 0..count {
@@ -315,7 +319,10 @@ pub(crate) fn session_sidebar_access_nodes(
     for (i, session) in sessions.iter().enumerate().take(MAX_SESSION_TABS) {
         nodes.push(
             AccessNode::new(row_tag(i), AriaRole::Tab)
-                .with_name(sidebar_access_name(session))
+                .with_name(sidebar_access_name(
+                    session,
+                    activity.iter().find(|row| row.name == session.name),
+                ))
                 .with_selected(session.name == attached)
                 .with_set_position(i, count)
                 .with_focused(cursor_idx == Some(i)),
@@ -340,18 +347,30 @@ pub(crate) fn session_sidebar_access_nodes(
 /// A session tab's spoken accessible name — the same facts the row PAINTS, phrased for a screen
 /// reader: `"work, 2 windows, sprag, main"` (name, window count, cwd basename, git branch). The
 /// listening ports are display-only glanceable state, omitted from the announced name.
-fn sidebar_access_name(session: &sprag_terminal::SessionInfo) -> String {
+///
+/// `activity` is this session's row of the SAMPLE (R282), which is a separate answer from the
+/// session list and may be absent for a session the sample has not seen — a session created since
+/// the last one was taken. Absent reads exactly like a session with no cwd: the name states the
+/// window count and stops. That is the honest degradation, and it is why this takes an `Option`
+/// rather than defaulting the fields.
+fn sidebar_access_name(
+    session: &sprag_terminal::SessionInfo,
+    activity: Option<&SessionActivity>,
+) -> String {
     let mut name = format!(
         "{}, {} window{}",
         session.name,
         session.windows,
         if session.windows == 1 { "" } else { "s" }
     );
-    if let Some(dir) = session.cwd.as_deref().and_then(basename) {
+    if let Some(dir) = activity
+        .and_then(|row| row.cwd.as_deref())
+        .and_then(basename)
+    {
         name.push_str(", ");
         name.push_str(dir);
     }
-    if let Some(branch) = session.branch.as_deref() {
+    if let Some(branch) = activity.and_then(|row| row.branch.as_deref()) {
         name.push_str(", ");
         name.push_str(branch);
     }
@@ -422,6 +441,10 @@ pub(crate) fn create_session_externals() -> Vec<ExtraExternal> {
 /// call on the paint path. Mounted ONLY on the main window (via [`view::compose`](crate::view)).
 pub(crate) fn view_session_sidebar(slots: &SlotView, theme: &Theme) -> Scene {
     let sessions = slots.sessions();
+    // The sampled half, read from the same mirror the list came from and JOINED BY NAME rather than
+    // by position: the two are separate answers over separate requests, so a session created between
+    // them would shift every row after it if this indexed. A name is a session's address.
+    let activity = slots.session_activity();
     let current = slots.current_session();
     // The keyboard cursor's row — highlighted ONLY while the tablist actually owns focus (so the
     // ring appears on Tab-in and clears on Tab-out). Reading both signals subscribes the paint, so
@@ -445,9 +468,7 @@ pub(crate) fn view_session_sidebar(slots: &SlotView, theme: &Theme) -> Scene {
             session.windows,
             session.name == current,
             cursor_idx == Some(i),
-            session.cwd.as_deref(),
-            session.branch.as_deref(),
-            &session.ports,
+            activity.iter().find(|row| row.name == session.name),
             session.attached,
             theme,
         ));
@@ -495,9 +516,10 @@ pub(crate) fn view_session_sidebar(slots: &SlotView, theme: &Theme) -> Scene {
 /// ARMS a kill of it — captured by NAME and confirmed via the footer's `kill '<name>'?` prompt (see
 /// [`handle_session_intent`]), never an immediate kill.
 ///
-/// `cwd` / `branch` (Slice 2) / `ports` (Slice 3) are host-derived facts carried on the
-/// [`SessionInfo`](sprag_terminal::SessionInfo): the client only displays them, never reads a path,
-/// runs git, or scans `/proc` itself.
+/// `activity` is this session's row of the host's SAMPLE — cwd, git branch, listening ports, all
+/// host-derived ([`SessionActivity`]), so the client only displays
+/// them and never reads a path, runs git, or scans `/proc` itself. `None` for a session the sample
+/// has not seen yet, which paints the row without its subtitle rather than inventing one.
 #[allow(clippy::too_many_arguments)]
 fn row_node(
     i: usize,
@@ -505,9 +527,7 @@ fn row_node(
     windows: usize,
     attached: bool,
     is_cursor: bool,
-    cwd: Option<&str>,
-    branch: Option<&str>,
-    ports: &[u16],
+    activity: Option<&SessionActivity>,
     viewers: usize,
     theme: &Theme,
 ) -> Scene {
@@ -521,7 +541,12 @@ fn row_node(
     };
     // "name  ·  Nw" — the session name with its window count, the same facts `sprag ls` prints.
     let mut lines = vec![text_line(&format!("{name}  ·  {windows}w"), 13, fg)];
-    let subtitle = subtitle(cwd, branch, ports, viewers);
+    let subtitle = subtitle(
+        activity.and_then(|row| row.cwd.as_deref()),
+        activity.and_then(|row| row.branch.as_deref()),
+        activity.map_or(&[][..], |row| row.ports.as_slice()),
+        viewers,
+    );
     if !subtitle.is_empty() {
         lines.push(text_line(
             &subtitle,
@@ -853,6 +878,15 @@ mod tests {
     }
 
     impl HostClient for RecordingHost {
+        /// No sample: these fixtures exercise the ROUTING over a session list, not the facts a row
+        /// paints. An empty reading of age zero is the honest "nothing sampled here" (see
+        /// `HostClient::session_activity`), and it keeps every subtitle out of the fixture's way.
+        fn session_activity(&self) -> sprag_terminal::ActivityReading {
+            sprag_terminal::ActivityReading {
+                age: std::time::Duration::ZERO,
+                sessions: Vec::new(),
+            }
+        }
         fn sessions(&self) -> Vec<SessionInfo> {
             self.names
                 .borrow()
@@ -862,9 +896,6 @@ mod tests {
                     windows: 1,
                     panes: 1,
                     default: false,
-                    cwd: None,
-                    branch: None,
-                    ports: Vec::new(),
                     attached: 0,
                 })
                 .collect()
@@ -1263,9 +1294,12 @@ mod tests {
             2,
             false,
             false,
-            Some("/home/coin/sprag"),
-            Some("main"),
-            &[3000],
+            Some(&SessionActivity {
+                name: "work".to_owned(),
+                cwd: Some("/home/coin/sprag".to_owned()),
+                branch: Some("main".to_owned()),
+                ports: vec![3000],
+            }),
             0,
             &theme,
         );
@@ -1666,8 +1700,8 @@ mod tests {
         let theme = Theme::default();
         let is_outlined =
             |scene: &Scene| matches!(scene, Scene::Container(c) if c.style.border.is_some());
-        let cursor = row_node(0, "work", 1, false, true, None, None, &[], 0, &theme);
-        let plain = row_node(0, "work", 1, false, false, None, None, &[], 0, &theme);
+        let cursor = row_node(0, "work", 1, false, true, None, 0, &theme);
+        let plain = row_node(0, "work", 1, false, false, None, 0, &theme);
         assert!(is_outlined(&cursor), "the cursor row is outlined");
         assert!(!is_outlined(&plain), "a non-cursor row is not outlined");
     }

@@ -139,7 +139,7 @@ use sprag_host::wire::{
     NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, RELEASE_AGENT_ACTION, RENAME_WINDOW_ACTION,
     REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION,
     SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT,
-    events_slot_since, find_slot_for, project_slot_for, regex_slot_for,
+    events_slot_since, find_slot_for, project_slot_for, regex_slot_for, session_activity_at,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{CallError, HOST_SOCKET, HostConn, HostEndpoint, INVALID_PARAMS, socket_path};
@@ -860,13 +860,34 @@ fn cli_client_id() -> String {
 /// `ls`: one line per session — its name, its window count, which one an unscoped request lands
 /// in, how many clients are attached (viewing) it, and (where known) its current working
 /// directory, git branch, and the TCP ports it is listening on. The GUI sidebar shows only the
-/// cwd's basename to fit the rail; the FULL path is here, from the same `sessions` slot read.
+/// cwd's basename to fit the rail; the FULL path is here.
+///
+/// # Two reads, and why this one asks for a FRESH sample
+///
+/// The structure comes from the `sessions` slot and the last three facts from
+/// `session_activity` (R282), joined by NAME — a session's address — rather than by position,
+/// since a session created between the two requests would otherwise shift every row after it.
+///
+/// The activity read declares a tolerance of ZERO, so the daemon samples for this command rather
+/// than handing it whatever a GUI's poll last took. A sidebar can be a second behind the world; a
+/// one-shot command an operator runs to see which port is taken cannot, because its answer stops
+/// updating the instant it is printed and is then read for as long as somebody looks at it. That
+/// costs this command one `/proc` walk, which is a cost it asked for.
 fn ls() -> io::Result<()> {
     let mut conn = connect(None)?;
     let sessions = conn.call(
         "scene/query",
         json!({ "path": mux_action_path(SESSIONS_SLOT) }),
     )?;
+    // Best-effort: a daemon too old to serve the family leaves every line in its structural form
+    // rather than failing a listing (`sprag ls` answers "what may I name?" first and foremost). The
+    // wire protocol makes that skew a refusal at the door, so this is belt to that suspenders.
+    let activity = conn
+        .call(
+            "scene/query",
+            json!({ "path": mux_action_path(&session_activity_at(0)) }),
+        )
+        .unwrap_or(Value::Null);
     for session in sessions.as_array().into_iter().flatten() {
         let name = session["name"].as_str().unwrap_or("?");
         let windows = session["windows"].as_u64().unwrap_or(0);
@@ -875,18 +896,24 @@ fn ls() -> io::Result<()> {
         } else {
             ""
         };
-        // cwd + branch are Slice 2's live fields — absent (older daemon) or null (no pane / no
-        // repo) just fall away, so the line degrades to the pre-Slice-2 form.
-        let cwd = session["cwd"].as_str().unwrap_or("");
-        let suffix = match (cwd, session["branch"].as_str()) {
+        // This session's row of the sample, by name. `Null` for a session the sample does not carry
+        // — an older daemon, or one created since it was taken — and every field below then falls
+        // away, degrading the line to its structural form rather than inventing a fact.
+        let row = activity["sessions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|row| row["name"].as_str() == Some(name))
+            .unwrap_or(&Value::Null);
+        let cwd = row["cwd"].as_str().unwrap_or("");
+        let suffix = match (cwd, row["branch"].as_str()) {
             ("", None) => String::new(),
             ("", Some(branch)) => format!("  [{branch}]"),
             (cwd, None) => format!("  {cwd}"),
             (cwd, Some(branch)) => format!("  {cwd} [{branch}]"),
         };
-        // ports is Slice 3's live field — a `:3000 :8080` badge; absent (older daemon) or empty
-        // (serving nothing) it falls away, degrading the line to the pre-Slice-3 form.
-        let ports = session["ports"]
+        // A `:3000 :8080` badge; empty (serving nothing, or no sample) falls away.
+        let ports = row["ports"]
             .as_array()
             .into_iter()
             .flatten()

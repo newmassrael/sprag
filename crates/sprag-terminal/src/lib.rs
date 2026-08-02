@@ -13,6 +13,7 @@
 //! abstraction — never on pinion (DESIGN.md §3: the producer owns state; the
 //! host projects it).
 
+pub mod activity;
 pub mod command;
 /// Deriving a directory's current git branch — a session-sidebar display fact (crate-internal).
 mod git;
@@ -27,6 +28,7 @@ pub mod snapshot;
 pub mod tiling;
 pub mod workspace;
 
+pub use activity::{ActivityReading, ActivitySampler, SessionActivity};
 pub use command::{command_from_parts, default_shell_command, shell_command_line};
 pub use layout::{
     LayoutError, LayoutNode, LayoutNodeWire, LayoutSnapshot, LayoutTree, LayoutWire, LeafHome,

@@ -77,9 +77,9 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -87,14 +87,16 @@ use pinion_core::{GridBuffer, QuitSink};
 use serde_json::{Value, json};
 use sprag_grid::ProjectionToken;
 use sprag_host::ClientSize;
+use sprag_host::wire::ActivityWire;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT,
     CLOSE_ACTION, DROP_FILE_ACTION, FOCUS_ACTION, FULL_TEXT_SLOT, GLOBAL_COMMANDS_SLOT,
     JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
     MOUSE_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION,
-    PROMPT_MARKS_SLOT, RESIZE_ACTION, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
-    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION,
-    WINDOW_SIZE_SLOT, WINDOWS_SLOT, cells_slot_at, find_slot_for, project_slot_for, regex_slot_for,
+    PROMPT_MARKS_SLOT, RESIZE_ACTION, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION,
+    SESSION_ACTIVITY_DISPLAY_MAX_AGE, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
+    SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOW_SIZE_SLOT, WINDOWS_SLOT, cells_slot_at,
+    find_slot_for, project_slot_for, regex_slot_for, session_activity_at,
 };
 use sprag_host::{
     CellFrame, HostClient, PaneAgent, PaneClipboardQuery, PaneClipboardWrite, PaneFind,
@@ -551,6 +553,60 @@ fn query_sessions(conn: &mut HostConn) -> io::Result<Vec<SessionInfo>> {
     read_slot(conn, mux_action_path(SESSIONS_SLOT))
 }
 
+/// The last activity reading this client has, and WHEN it landed here — the two halves of an honest
+/// age (R282).
+///
+/// The daemon's `sampled_ms_ago` is how old the sample was when it was ANSWERED; it keeps ageing
+/// while it sits in this mirror. Storing the arrival instant beside it is what lets
+/// [`HostClient::session_activity`] add the difference back in, so a client that has been parked for
+/// a minute reports a minute-old subtitle rather than the one-second-old one it was handed.
+///
+/// Dropping the arrival instant and reporting the daemon's number alone would be the quiet kind of
+/// wrong: every reading would look fresh, and the age would be decoration rather than a fact.
+struct ActivityMirrorEntry {
+    reading: sprag_terminal::ActivityReading,
+    arrived: Instant,
+}
+
+/// Every session's live activity, mirrored — the sidebar's subtitle line. Filled by the poll thread
+/// and read by the UI thread, like the session list beside it, and for the same reason: the paint
+/// path must make no socket call.
+type ActivityMirror = Arc<Mutex<Option<ActivityMirrorEntry>>>;
+
+/// Lock the mirrored activity, poison-tolerant (see [`lock_cache`] for the discipline).
+fn lock_activity(
+    activity: &Mutex<Option<ActivityMirrorEntry>>,
+) -> MutexGuard<'_, Option<ActivityMirrorEntry>> {
+    activity.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Replace the mirrored activity, stamping its arrival — the ONE place it is written.
+fn store_activity(
+    activity: &Mutex<Option<ActivityMirrorEntry>>,
+    reading: sprag_terminal::ActivityReading,
+) {
+    *lock_activity(activity) = Some(ActivityMirrorEntry {
+        reading,
+        arrived: Instant::now(),
+    });
+}
+
+/// Read every session's ACTIVITY off the wire, accepting an answer up to
+/// [`SESSION_ACTIVITY_DISPLAY_MAX_AGE`] old — the ONE place the family is queried.
+///
+/// The tolerance is what keeps this call cheap on the wake it rides. The poll thread wakes on every
+/// batch of PTY output, and the facts here move at human pace, so asking the daemon to re-walk
+/// `/proc` for each of them would be paying a keystroke's worth of latency for an answer that has
+/// not changed. The daemon answers from its held sample instead, and says how old it is.
+fn query_activity(conn: &mut HostConn) -> io::Result<sprag_terminal::ActivityReading> {
+    let max_age = u64::try_from(SESSION_ACTIVITY_DISPLAY_MAX_AGE.as_millis()).unwrap_or(u64::MAX);
+    let wire: ActivityWire = read_slot(conn, mux_action_path(&session_activity_at(max_age)))?;
+    Ok(sprag_terminal::ActivityReading {
+        age: Duration::from_millis(wire.sampled_ms_ago),
+        sessions: wire.sessions,
+    })
+}
+
 /// Announce `conn`'s CLIENT id to the daemon and agree on the wire's SHAPE
 /// ([`HostConn::handshake`]) — the group key a client's several connections share, plus the check
 /// that this build and that daemon speak the same wire.
@@ -768,6 +824,12 @@ pub struct WireHost {
     /// Registry-wide (not this client's own scope); the poll thread re-reads it on every scene
     /// change, and a session switch / create re-boots it for immediate feedback.
     sessions: SessionsMirror,
+    /// Every session's live ACTIVITY, mirrored ([`ActivityMirror`]) — the sidebar's subtitle line.
+    /// Beside the session list rather than inside it because R282 made them separate questions: that
+    /// one is the registry's structure, this is a SAMPLE of the operating system, and only one of
+    /// the two has an age. `None` until the first read lands, which is an honest "this client has
+    /// not been told yet" rather than a row of empty facts.
+    activity: ActivityMirror,
     /// The UI thread's request connection (reads / input / resize). `RefCell`, not
     /// `Mutex`: `WireHost` is UI-thread-only (see the module docs), and the poll thread
     /// owns a SEPARATE connection. A session SWITCH re-scopes this connection in place.
@@ -822,6 +884,13 @@ pub struct WireHost {
     /// `RefCell` (UI-thread-only) so a `&self` switch can replace it; `Option` is the between-state
     /// (`None` only transiently mid-swap and after Drop).
     poll: RefCell<Option<PollThread>>,
+    /// The SAMPLED facts' own clock ([`ActivityThread`]) — spawned once at boot and never swapped,
+    /// unlike [`Self::poll`]: the activity question is registry-WIDE, so a session switch changes
+    /// nothing about what this thread asks or which sessions it hears about. `Option` is the
+    /// after-Drop state, and the `None` a client that could not spawn it boots with — a rail whose
+    /// subtitle goes stale is worse than one that never appears, but neither is worth refusing to
+    /// start a terminal over.
+    activity_thread: RefCell<Option<ActivityThread>>,
 }
 
 /// The background change-notification -> repaint poll thread and the two handles that stop it —
@@ -858,6 +927,102 @@ impl PollThread {
             let _ = handle.join();
         }
     }
+}
+
+/// The thread that keeps the SAMPLED facts live — the session rail's subtitle (R282).
+///
+/// # Why the poll thread cannot do this
+///
+/// The poll thread parks on `scene/waitFor`, which wakes when the SCENE moves — a batch of PTY
+/// output, a pane opening, a window changing. Where a session is working, on what branch, and what
+/// it is serving move with none of those. They move when a shell chdirs, when a server binds a port,
+/// when somebody checks out a branch — and while a `cd` does happen to print a prompt, the wake it
+/// causes races the sample: the daemon can answer that wake from a sample taken a moment BEFORE the
+/// chdir, and then nothing bumps the revision again, so the rail shows the old directory until the
+/// next unrelated keystroke. Measured, not reasoned about: the pixel smoke's sidebar check timed out
+/// exactly that way before this thread existed.
+///
+/// So a fact nothing announces needs a reader with its own clock. This is that clock, and it is the
+/// CLIENT's rather than the daemon's on purpose: a daemon that sampled on a timer would walk `/proc`
+/// forever on a box nobody is looking at, while this runs only while a client is attached and asks
+/// for a tolerance the daemon serves from one held sample however many clients ask
+/// ([`sprag_terminal::ActivitySampler`]).
+struct ActivityThread {
+    /// Set to stop the loop, with the condvar below signalled so a sleeping refresh wakes at once
+    /// rather than after its remaining tolerance.
+    stop: Arc<(Mutex<bool>, Condvar)>,
+    /// The thread handle, joined by [`stop`](Self::stop) (taken once).
+    handle: Option<JoinHandle<()>>,
+}
+
+impl ActivityThread {
+    /// Stop the refresh thread and join it: flag, signal, join.
+    ///
+    /// No socket shutdown, unlike [`PollThread::stop`]: this thread never parks host-side. It is
+    /// either inside a bounded request or asleep on the condvar, and the signal ends the sleep — so
+    /// the join is deterministic without cancelling a read.
+    fn stop(&mut self) {
+        let (flag, wake) = &*self.stop;
+        *flag.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        wake.notify_all();
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// Re-read the sampled activity every [`SESSION_ACTIVITY_DISPLAY_MAX_AGE`] until stopped, repainting
+/// only when it CHANGED.
+///
+/// The change check is what keeps an idle window idle: without it every client would repaint once a
+/// second forever, which is a worse regression than the staleness this fixes. With it, a box where
+/// nothing moves costs one round trip per second per client and not one frame.
+fn spawn_activity_refresh(
+    mut conn: HostConn,
+    activity: ActivityMirror,
+    on_change: Arc<dyn Fn() + Send + Sync>,
+    stop: Arc<(Mutex<bool>, Condvar)>,
+) -> io::Result<JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("sprag-gui-wire-activity".to_owned())
+        .spawn(move || {
+            let (flag, wake) = &*stop;
+            loop {
+                {
+                    let guard = flag.lock().unwrap_or_else(PoisonError::into_inner);
+                    if *guard {
+                        break;
+                    }
+                    // Sleep FIRST: the boot already took a reading, so refreshing immediately would
+                    // spend a round trip re-asking a question just answered.
+                    let (guard, _) = wake
+                        .wait_timeout(guard, SESSION_ACTIVITY_DISPLAY_MAX_AGE)
+                        .unwrap_or_else(PoisonError::into_inner);
+                    if *guard {
+                        break;
+                    }
+                }
+                match query_activity(&mut conn) {
+                    Ok(reading) => {
+                        let moved = lock_activity(&activity)
+                            .as_ref()
+                            .is_none_or(|held| held.reading.sessions != reading.sessions);
+                        store_activity(&activity, reading);
+                        if moved {
+                            on_change();
+                        }
+                    }
+                    // Kept, not fatal: this thread drives a SUBTITLE. A daemon that will not answer
+                    // it is reported by the poll thread, which is the one whose failure means the
+                    // client can no longer paint.
+                    Err(error) => tracing::debug!(
+                        target: "sprag_gui::wire",
+                        %error,
+                        "activity refresh failed; keeping the last-known sample",
+                    ),
+                }
+            }
+        })
 }
 
 /// What a client is booting: WHICH daemon, WHICH session, and the panes to open in it.
@@ -1281,6 +1446,14 @@ impl WireHost {
         // EVERY session, mirrored for the switcher sidebar — booted like the window list and for the
         // same reason (a switcher draws it and must never fetch it from the paint path).
         let sessions: SessionsMirror = Arc::new(Mutex::new(query_sessions(&mut conn)?));
+        // The sidebar's SAMPLED half. Best-effort, unlike the list above: a client that cannot read
+        // it draws every row without its subtitle, which is a poorer sidebar and a working one — the
+        // same degradation the window size takes, and for the same reason (nothing a client paints
+        // its panes from depends on it).
+        let activity: ActivityMirror = Arc::new(Mutex::new(None));
+        if let Ok(reading) = query_activity(&mut conn) {
+            store_activity(&activity, reading);
+        }
 
         // Construct the client with NO poll thread yet, then spawn the initial one through the SAME
         // path a session switch re-spawns through ([`spawn_poll_for`]) — one poll-spawn SSOT for
@@ -1290,6 +1463,7 @@ impl WireHost {
             layout,
             windows,
             sessions,
+            activity,
             conn: RefCell::new(conn),
             client_id: client_id.clone(),
             session: RefCell::new(session.clone()),
@@ -1300,6 +1474,7 @@ impl WireHost {
             on_change,
             quit,
             poll: RefCell::new(None),
+            activity_thread: RefCell::new(None),
         };
         // The poll thread's own connection — a parked `scene/waitFor` on it never blocks the
         // request connection above (separate host handler threads). Scoped to the SAME session, so
@@ -1310,7 +1485,53 @@ impl WireHost {
         // daemon groups both under one attached client (not two). Only the request conn attaches.
         shake_hands(&mut poll_conn, &client_id)?;
         host.spawn_poll_for(poll_conn, since0)?;
+        // A THIRD connection, for the one fact no wake announces (see [`ActivityThread`]). Its own,
+        // because the poll connection is parked host-side for as long as the scene is quiet — which
+        // is exactly when this thread has work.
+        //
+        // Best-effort, unlike the two above: what it drives is a subtitle. A client that cannot get
+        // a connection for it paints the rail without live facts rather than refusing to open a
+        // terminal, which is the same call `send_attach` makes about the viewer badge.
+        match HostConn::connect(endpoint.path(), CONNECT_TIMEOUT) {
+            Ok(mut activity_conn) => {
+                if shake_hands(&mut activity_conn, &client_id).is_ok() {
+                    host.spawn_activity_for(activity_conn);
+                }
+            }
+            Err(error) => tracing::debug!(
+                target: "sprag_gui::wire",
+                %error,
+                "no connection for the activity refresh; the session rail's subtitle will not update",
+            ),
+        }
         Ok(host)
+    }
+
+    /// Install the activity refresh thread on `conn` — the ONE spawn site, called once at boot.
+    ///
+    /// Best-effort like its connection: a thread that cannot be spawned leaves the rail's subtitle
+    /// at whatever the boot read, which the poll thread still refreshes on every wake. What is lost
+    /// is only the healing of a sample that went stale while nothing else happened.
+    fn spawn_activity_for(&self, conn: HostConn) {
+        let stop = Arc::new((Mutex::new(false), Condvar::new()));
+        match spawn_activity_refresh(
+            conn,
+            Arc::clone(&self.activity),
+            Arc::clone(&self.on_change),
+            Arc::clone(&stop),
+        ) {
+            Ok(handle) => {
+                *self.activity_thread.borrow_mut() = Some(ActivityThread {
+                    stop,
+                    handle: Some(handle),
+                });
+            }
+            Err(error) => tracing::debug!(
+                target: "sprag_gui::wire",
+                %error,
+                "the activity refresh thread would not spawn; the session rail's subtitle will not update",
+            ),
+        }
     }
 
     /// Install a fresh poll thread on `poll_conn` (already scoped to the target session), watching
@@ -1330,6 +1551,7 @@ impl WireHost {
             Arc::clone(&self.layout),
             Arc::clone(&self.windows),
             Arc::clone(&self.sessions),
+            Arc::clone(&self.activity),
             Arc::clone(&self.on_change),
             Arc::clone(&self.quit),
             Arc::new(detach_on_destroy),
@@ -1377,6 +1599,7 @@ impl WireHost {
             layout_snapshot,
             window_size,
             session_list,
+            activity,
             since0,
         ) = {
             let mut conn = self.conn.borrow_mut();
@@ -1397,6 +1620,9 @@ impl WireHost {
             // joined has its own attached clients and its own answer.
             let window_size = query_window_size(&mut conn).unwrap_or_default();
             let session_list = query_sessions(&mut conn)?;
+            // Best-effort like the window size, and re-read for the same reason the list is: the
+            // subtitle belongs to the sidebar, which is registry-wide and survives the switch.
+            let activity = query_activity(&mut conn).ok();
             (
                 fetched,
                 seeds,
@@ -1405,6 +1631,7 @@ impl WireHost {
                 layout_snapshot,
                 window_size,
                 session_list,
+                activity,
                 since0,
             )
         };
@@ -1434,6 +1661,9 @@ impl WireHost {
         };
         store_windows(&self.windows, window_list);
         store_sessions(&self.sessions, session_list);
+        if let Some(reading) = activity {
+            store_activity(&self.activity, reading);
+        }
         *self.session.borrow_mut() = session.to_owned();
         // Record the just-attached session as most-recently-used, for a `detach-on-destroy off`
         // switch to walk (the current session lands at the MRU front, its predecessor next).
@@ -1872,6 +2102,30 @@ impl HostClient for WireHost {
     /// draw the switcher every frame (see `SessionsMirror`).
     fn sessions(&self) -> Vec<SessionInfo> {
         lock_sessions(&self.sessions).clone()
+    }
+
+    /// The mirrored activity, AGED FORWARD to now — a lock and a clone, never a socket call, for the
+    /// same reason the list above is not fetched here.
+    ///
+    /// The age this returns is the daemon's `sampled_ms_ago` PLUS however long the reading has sat
+    /// in this mirror, which is the only honest answer: a client parked for a minute holds a
+    /// minute-old subtitle, whatever the daemon said when it handed it over. Reporting the daemon's
+    /// number alone would make every reading look fresh and turn the age into decoration.
+    ///
+    /// Nothing mirrored yet — a boot whose best-effort read failed, or a daemon too old to serve the
+    /// family — answers an empty reading of age zero. That is the honest shape for "no rows", not a
+    /// claim of freshness: there is nothing here whose age could be wrong.
+    fn session_activity(&self) -> sprag_terminal::ActivityReading {
+        lock_activity(&self.activity).as_ref().map_or_else(
+            || sprag_terminal::ActivityReading {
+                age: Duration::ZERO,
+                sessions: Vec::new(),
+            },
+            |entry| sprag_terminal::ActivityReading {
+                age: entry.reading.age + entry.arrived.elapsed(),
+                sessions: entry.reading.sessions.clone(),
+            },
+        )
     }
 
     /// The session this client is attached to — a client-local fact (the wire carries no
@@ -2492,6 +2746,12 @@ impl Drop for WireHost {
         let running = self.poll.borrow_mut().take();
         if let Some(mut poll) = running {
             poll.stop();
+        }
+        // Same take-then-stop ordering, and for the same borrow reason. After the poll: this one
+        // only reads, so nothing depends on it stopping first.
+        let refreshing = self.activity_thread.borrow_mut().take();
+        if let Some(mut activity) = refreshing {
+            activity.stop();
         }
     }
 }
@@ -3182,6 +3442,7 @@ fn spawn_poll(
     layout: LayoutMirror,
     windows: WindowsMirror,
     sessions: SessionsMirror,
+    activity: ActivityMirror,
     on_change: Arc<dyn Fn() + Send + Sync>,
     quit: Arc<dyn QuitSink>,
     policy: Arc<dyn Fn() -> DetachOnDestroy + Send + Sync>,
@@ -3363,6 +3624,19 @@ fn spawn_poll(
                         "sessions re-read failed this wake; keeping the last-known list",
                     ),
                 }
+                // And the sidebar's SAMPLED half, at the display tolerance rather than at this
+                // wake's cadence: a wake is a batch of PTY output, and nothing about a cwd, a branch
+                // or a listening port follows from a character being printed. The daemon answers
+                // from its held sample unless that sample is older than the tolerance, so this
+                // request costs a round trip and not a `/proc` walk (R282).
+                match query_activity(&mut conn) {
+                    Ok(reading) => store_activity(&activity, reading),
+                    Err(error) => tracing::debug!(
+                        target: "sprag_gui::wire",
+                        %error,
+                        "activity re-read failed this wake; keeping the last-known sample",
+                    ),
+                }
                 on_change();
             }
         })
@@ -3542,9 +3816,6 @@ mod tests {
                 windows: 1,
                 panes: 1,
                 default: false,
-                cwd: None,
-                branch: None,
-                ports: Vec::new(),
                 attached: 0,
             })
             .collect()
@@ -3701,9 +3972,6 @@ mod tests {
                 windows: 1,
                 panes: 1,
                 default: false,
-                cwd: None,
-                branch: None,
-                ports: Vec::new(),
                 attached: *attached,
             })
             .collect()
@@ -3898,6 +4166,7 @@ mod tests {
             Arc::new(Mutex::new(Mirrored::default())),
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(None)),
             Arc::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
             Arc::new(|| DetachOnDestroy::Detach),
@@ -3977,6 +4246,7 @@ mod tests {
             Arc::new(Mutex::new(Mirrored::default())),
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(None)),
             Arc::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
             Arc::new(|| DetachOnDestroy::Detach),
@@ -4059,6 +4329,7 @@ mod tests {
             Arc::new(Mutex::new(Mirrored::default())),
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(None)),
             on_change,
             Arc::clone(&quit) as Arc<dyn QuitSink>,
             Arc::new(|| DetachOnDestroy::Detach),
@@ -4117,6 +4388,7 @@ mod tests {
                 Arc::new(Mutex::new(Mirrored::default())),
                 Arc::new(Mutex::new(Vec::new())),
                 Arc::new(Mutex::new(Vec::new())),
+                Arc::new(Mutex::new(None)),
                 on_change,
                 Arc::clone(&quit) as Arc<dyn QuitSink>,
                 Arc::new(move || policy),
@@ -4162,6 +4434,7 @@ mod tests {
             Arc::new(Mutex::new(Mirrored::default())),
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(None)),
             Arc::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
             Arc::new(|| DetachOnDestroy::Next),
@@ -4208,6 +4481,7 @@ mod tests {
             Arc::new(Mutex::new(Mirrored::default())),
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(None)),
             Arc::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
             Arc::new(|| DetachOnDestroy::Next),
@@ -4277,6 +4551,7 @@ mod tests {
             Arc::new(Mutex::new(Mirrored::default())),
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(None)),
             Arc::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
             Arc::new(|| DetachOnDestroy::Detach),

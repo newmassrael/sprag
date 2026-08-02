@@ -50,9 +50,9 @@ use pinion_core::GridBuffer;
 use sprag_grid::ProjectionToken;
 use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{
-    CommandBuilder, HistoryLimitSource, LayoutSnapshot, LayoutWire, Pane, PaneDir, PaneEnvSource,
-    PaneId, PanePtyError, PanePtyHandle, PaneRebirth, SessionInfo, SessionRegistry, Snapshot,
-    SnapshotError, SplitDir, SplitSide, WindowInfo, Workspace,
+    ActivityReading, CommandBuilder, HistoryLimitSource, LayoutSnapshot, LayoutWire, Pane, PaneDir,
+    PaneEnvSource, PaneId, PanePtyError, PanePtyHandle, PaneRebirth, SessionInfo, SessionRegistry,
+    Snapshot, SnapshotError, SplitDir, SplitSide, WindowInfo, Workspace,
 };
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol, Screen, osc52_reply};
 
@@ -793,6 +793,27 @@ pub trait HostClient {
     /// focused feature it set out to be.
     fn sessions(&self) -> Vec<SessionInfo>;
 
+    /// Every session's live ACTIVITY — where it is working, on what branch, what it is serving — as
+    /// fresh as this host has it, and carrying the AGE it actually has (R282).
+    ///
+    /// A SEPARATE call from [`sessions`](Self::sessions), and the separation is the design: that one
+    /// answers the registry, which moves when this host performs an event, while this samples the
+    /// operating system, which moves with nothing the host can see. Serving both from one call meant
+    /// the cheapest question cost a `/proc` walk of the whole box on every poll wake — see
+    /// [`sprag_terminal::ActivitySampler`].
+    ///
+    /// # Why this takes no tolerance, when the wire address does
+    ///
+    /// A tolerance is a promise to SAMPLE if the held answer is too old, and one implementer of this
+    /// trait cannot keep it: a wire client's paint path must make no socket call, so it answers from
+    /// a mirror its poll thread fills. A parameter one arm silently ignored would be worse than no
+    /// parameter at all. So this trait asks the question every arm can answer honestly — "what have
+    /// you got, and how old is it" — and the tolerance lives where the sampling decision is really
+    /// made: on the wire address for a caller that can wait, and in
+    /// [`SESSION_ACTIVITY_DISPLAY_MAX_AGE`](crate::wire::SESSION_ACTIVITY_DISPLAY_MAX_AGE) for the
+    /// display path both arms serve.
+    fn session_activity(&self) -> ActivityReading;
+
     /// The name of the session THIS client is currently attached to — a CLIENT-LOCAL fact. The
     /// wire carries no "attached" marker ([`sessions`](Self::sessions)'s `default` answers a
     /// DIFFERENT question — where an unscoped request lands), so a switcher reads this to highlight
@@ -1030,6 +1051,15 @@ pub trait HostClient {
 /// `Arc<Mutex<Workspace>>` and never learn about the tree above them.
 pub struct Host {
     registry: Arc<Mutex<SessionRegistry>>,
+    /// The one place this host's [session activity](sprag_terminal::SessionActivity) is sampled and
+    /// held between reads (R282).
+    ///
+    /// It belongs to the HOST rather than to the dispatch state because both arms that answer the
+    /// question reach it from here — the wire slot, through [`crate::DaemonShared`], and this type's
+    /// own [`HostClient`] arm — so one sample serves every reader and neither arm can drift from the
+    /// other about what a field means. A per-arm cache would have multiplied the `/proc` walk by the
+    /// number of readers, which is the cost the split exists to remove.
+    activity: Arc<sprag_terminal::ActivitySampler>,
     /// How a pane born through [`HostClient::new_pane`] is wired to its client — see
     /// [`with_pane_hooks`](Self::with_pane_hooks). `None` leaves such a pane unwired.
     pane_hooks: Option<PaneHooks>,
@@ -1108,9 +1138,17 @@ impl Host {
         registry.set_history_limit_source(history_limit_source());
         Self {
             registry: Arc::new(Mutex::new(registry)),
+            activity: Arc::new(sprag_terminal::ActivitySampler::new()),
             pane_hooks: None,
             pane_env: None,
         }
+    }
+
+    /// This host's [session-activity sampler](sprag_terminal::ActivitySampler), shared with whatever
+    /// else serves the question — see the field for why there is exactly one per host.
+    #[must_use]
+    pub fn activity(&self) -> &Arc<sprag_terminal::ActivitySampler> {
+        &self.activity
     }
 
     /// Install the `on_dirty` factory every pane born through [`HostClient::new_pane`] is wired
@@ -2055,10 +2093,9 @@ impl HostClient for Host {
     }
 
     /// Every session in the registry — the SAME registry-wide list the wire `sessions` slot serves
-    /// (both built by [`SessionRegistry::session_infos_live`], the ONE enriched builder), marking
-    /// the default and carrying each session's live cwd + git branch. Not narrowed to the default
-    /// even though this arm only renders that one: the list's whole purpose is to enumerate the
-    /// scopes a switcher could name.
+    /// (both built by [`SessionRegistry::session_infos_live`], the ONE builder), marking the
+    /// default. Not narrowed to the default even though this arm only renders that one: the list's
+    /// whole purpose is to enumerate the scopes a switcher could name.
     fn sessions(&self) -> Vec<SessionInfo> {
         let mut infos = SessionRegistry::session_infos_live(&self.registry);
         // Same human-facing filter the wire `sessions` slot applies (the SSOT rule), so the
@@ -2067,6 +2104,26 @@ impl HostClient for Host {
         // pane count alone — the empty anchor drops, a working session stays.
         infos.retain(SessionInfo::is_listable);
         infos
+    }
+
+    /// Read this host's own sampler — the SAME one the wire `session_activity` family serves from
+    /// ([`Host::activity`]), so the two arms share one sample and cannot drift about what a field
+    /// means or pay twice for the walk that produced it.
+    ///
+    /// Unfiltered, unlike [`sessions`](HostClient::sessions): the listability rule is about which
+    /// sessions a HUMAN LIST shows, and this answers rows a caller joins onto a list it already
+    /// filtered. Filtering here as well would be the same rule in two places, which is how two
+    /// places come to disagree.
+    ///
+    /// This arm CAN sample, so it does, at the display tolerance both arms serve
+    /// ([`SESSION_ACTIVITY_DISPLAY_MAX_AGE`](crate::wire::SESSION_ACTIVITY_DISPLAY_MAX_AGE)) — the
+    /// same window a wire client's poll thread asks the daemon for, so a sidebar drawn over this
+    /// host and one drawn over a daemon show facts of the same age.
+    fn session_activity(&self) -> ActivityReading {
+        self.activity.read(
+            &self.registry,
+            crate::wire::SESSION_ACTIVITY_DISPLAY_MAX_AGE,
+        )
     }
 
     /// The in-process arm renders the DEFAULT session (see [`Host::workspace`]), so that is the

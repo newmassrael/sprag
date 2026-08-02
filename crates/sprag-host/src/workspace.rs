@@ -54,7 +54,7 @@
 use std::fmt;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use pinion_core::external::{
     ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError, RawJson,
@@ -77,13 +77,13 @@ use crate::window::{SizeRequest, WindowSize};
 // The mux control action names + query slots are the shared wire ABI vocabulary
 // ([`crate::wire`]) — the SAME consts a client addresses for pane lifecycle.
 use crate::wire::{
-    AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DROP_FILE_ACTION,
-    EVENTS_FIELD, GLOBAL_COMMANDS_SLOT, GRID_WORK_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION,
-    KILL_WINDOW_ACTION, LAYOUT_SLOT, NEIGHBORS_FIELD, NEW_SESSION_ACTION, NEW_WINDOW_ACTION,
-    PANES_SLOT, PROJECT_FIELD, RELEASE_AGENT_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION,
-    RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
-    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, WINDOW_SIZE_SLOT,
-    WINDOWS_SLOT,
+    AGENT_MANIFESTS_SLOT, ActivityWire, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION,
+    DROP_FILE_ACTION, EVENTS_FIELD, GLOBAL_COMMANDS_SLOT, GRID_WORK_SLOT, JOIN_PANE_ACTION,
+    KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, NEIGHBORS_FIELD, NEW_SESSION_ACTION,
+    NEW_WINDOW_ACTION, PANES_SLOT, PROJECT_FIELD, RELEASE_AGENT_ACTION, RENAME_WINDOW_ACTION,
+    REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION,
+    SELECT_WINDOW_ACTION, SESSION_ACTIVITY_FIELD, SESSIONS_SLOT, SET_FLOATING_ACTION,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, WINDOW_SIZE_SLOT, WINDOWS_SLOT,
 };
 
 /// The mux-management engine `External`: a control surface over the shared
@@ -140,6 +140,15 @@ pub struct WorkspaceExternal {
     /// The lock is taken INSIDE the workspace lock (the screen is only reachable there) and never
     /// the other way round.
     agents: Option<Arc<crate::AgentClock>>,
+    /// The HOST's session-activity sampler ([`sprag_terminal::ActivitySampler`], R282), read when the
+    /// `session_activity` slot is served.
+    ///
+    /// Like [`Self::agents`] it cannot be a plain value on this struct — a `WorkspaceExternal` is
+    /// rebuilt for every JSON-RPC request, so a sampler owned here would hold nothing at the moment
+    /// it was asked and every request would take its own `/proc` walk, which is exactly the cost the
+    /// split was made to remove. Unlike `agents` it is not `Option`: there is no host that cannot
+    /// answer where its sessions are working.
+    activity: Arc<sprag_terminal::ActivitySampler>,
 }
 
 /// A VALIDATED pane-spawn request — the command, its label, and any explicit dims. Produced by
@@ -168,6 +177,7 @@ impl WorkspaceExternal {
         on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
         attachments: Option<Arc<Mutex<crate::AttachmentRegistry>>>,
         agents: Option<Arc<crate::AgentClock>>,
+        activity: Arc<sprag_terminal::ActivitySampler>,
     ) -> Self {
         Self {
             registry,
@@ -176,6 +186,7 @@ impl WorkspaceExternal {
             on_pane_exit,
             attachments,
             agents,
+            activity,
         }
     }
 
@@ -1161,12 +1172,26 @@ impl ExternalIntrospect for WorkspaceExternal {
                     PROJECT_FIELD,
                     NEIGHBORS_FIELD,
                     EVENTS_FIELD,
+                    SESSION_ACTIVITY_FIELD,
                 ]
             },
         )
     }
 
     fn query(&self, path: &str) -> Option<IntrospectValue> {
+        // The parametric family goes FIRST, before the exact-path arms: its argument rides the path,
+        // so it is matched by prefix rather than by equality (`cells.<offset>`'s shape, and the
+        // reason a malformed member answers `Null` rather than `None` — `session_activity.zzz` IS in
+        // this surface's schema, so denying the address exists would be the wrong refusal).
+        if let Some(arg) = path.strip_prefix(SESSION_ACTIVITY_FIELD.literal_prefix()) {
+            return Some(arg.parse::<u64>().map_or(IntrospectValue::Null, |max_age| {
+                let reading = self
+                    .activity
+                    .read(&self.registry, Duration::from_millis(max_age));
+                encoded_answer(&ActivityWire::from(reading), "session activity")
+                    .unwrap_or(IntrospectValue::Null)
+            }));
+        }
         match path {
             PANES_SLOT => {
                 // The DTOs and each pane's PROJECTION TOKEN, read under ONE workspace lock so the
@@ -1878,6 +1903,7 @@ fn opt_delta(map: &Map<String, Value>, key: &str) -> Result<Option<i32>, InvokeE
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wire::session_activity_at;
     use pinion_core::SceneRevision;
     use serde_json::json;
     use sprag_terminal::PaneId;
@@ -1919,6 +1945,15 @@ mod tests {
         scoped_control(reg, scope)
     }
 
+    /// A sampler for a surface built one test at a time. Fresh per call, deliberately: a test builds
+    /// its surface after arranging its registry, so a sampler shared across tests could hand one of
+    /// them a reading taken before its own sessions existed. In production there is exactly one per
+    /// host ([`crate::Host::activity`]), which is what makes the sample shared; here the sharing is
+    /// what would leak.
+    fn sampler() -> Arc<sprag_terminal::ActivitySampler> {
+        Arc::new(sprag_terminal::ActivitySampler::new())
+    }
+
     /// A control surface scoped to `scope` — what the assembly builds for a request that
     /// named a session.
     fn scoped_control(
@@ -1928,7 +1963,15 @@ mod tests {
         let channels = Arc::new(ChannelRegistry::default());
         let revision = channels.revision(scope.session());
         (
-            WorkspaceExternal::new(Arc::clone(reg), scope, channels, None, None, None),
+            WorkspaceExternal::new(
+                Arc::clone(reg),
+                scope,
+                channels,
+                None,
+                None,
+                None,
+                sampler(),
+            ),
             revision,
         )
     }
@@ -1949,6 +1992,7 @@ mod tests {
                 None,
                 None,
                 Some(Arc::clone(&agents)),
+                sampler(),
             ),
             agents,
         )
@@ -3239,6 +3283,109 @@ mod tests {
         );
     }
 
+    /// R282's SPLIT, at the surface that serves both halves: the session list carries no sampled
+    /// field, and the sampled fields have their own address that answers them for every session.
+    ///
+    /// The two together are the property — either alone would pass under a mistake. A `sessions`
+    /// answer with no `cwd` key would also be produced by a daemon that simply lost the fact, and an
+    /// activity row would also be produced by one that kept serving it in both places. Asserting
+    /// that the fact moved means asserting it left one address AND arrived at the other.
+    #[test]
+    fn the_session_list_carries_no_sampled_field_and_the_activity_address_does() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Null).unwrap();
+
+        let Value::Array(listed) = answer_doc(ext.query(SESSIONS_SLOT)) else {
+            panic!("the sessions slot answers with a JSON array");
+        };
+        let row = listed.first().expect("the session holding the pane lists");
+        for sampled in ["cwd", "branch", "ports"] {
+            assert!(
+                row.get(sampled).is_none(),
+                "the session list must not carry {sampled}: {row}",
+            );
+        }
+
+        // ZERO tolerance: this read samples for itself, so what it answers describes the pane just
+        // spawned rather than anything held from before it existed.
+        let reading = answer_doc(ext.query(&session_activity_at(0)));
+        assert!(
+            reading["sampled_ms_ago"].is_u64(),
+            "the reading states its own age: {reading}",
+        );
+        let rows = reading["sessions"]
+            .as_array()
+            .expect("the reading carries a row per session");
+        assert_eq!(
+            rows.iter().map(|r| r["name"].as_str()).collect::<Vec<_>>(),
+            vec![Some("0")],
+            "one row, addressed by the same name the list uses: {reading}",
+        );
+        // The pane's cwd is wherever this test process runs, which is not a fact worth pinning; that
+        // the sampled fact ARRIVED here is. `cwd` is the one of the three every live pane has.
+        assert!(
+            rows[0]["cwd"].is_string(),
+            "a live pane's session reports where it is working: {reading}",
+        );
+    }
+
+    /// A malformed member of the activity family answers `Null` — present-but-empty — rather than
+    /// absence, the taxonomy `cells.<offset>` established: `session_activity.zzz` IS in this
+    /// surface's schema, so denying the address exists would be the wrong refusal.
+    #[test]
+    fn a_malformed_activity_tolerance_is_empty_not_absent() {
+        let reg = registry();
+        let (ext, _rev) = control(&reg);
+        assert!(
+            matches!(
+                ext.query("session_activity.zzz"),
+                Some(IntrospectValue::Null)
+            ),
+            "a malformed tolerance is a malformed MEMBER, not an unknown path",
+        );
+        assert!(
+            ext.query("session_activity").is_none(),
+            "and the family's bare name is not itself an address",
+        );
+    }
+
+    /// A tolerance the held sample already meets is answered from THAT sample — the coalescing that
+    /// makes N readers cost what one does.
+    ///
+    /// The control is the registry's own content rather than a clock: a session created between the
+    /// two reads appears only in an answer that was freshly sampled. So the second read admitting a
+    /// wide tolerance must NOT see it, and a third read admitting none must.
+    #[test]
+    fn a_tolerated_read_reuses_the_held_sample_and_a_zero_one_does_not() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Null).unwrap();
+        let rows = |value: Option<IntrospectValue>| -> usize {
+            answer_doc(value)["sessions"]
+                .as_array()
+                .expect("a reading carries rows")
+                .len()
+        };
+        assert_eq!(rows(ext.query(&session_activity_at(0))), 1, "one session");
+
+        ext.invoke(
+            NEW_SESSION_ACTION,
+            IntrospectValue::Json(json!({"name": "work"})),
+        )
+        .unwrap();
+        assert_eq!(
+            rows(ext.query(&session_activity_at(3_600_000))),
+            1,
+            "an hour of tolerance is met by the held sample, which predates the new session",
+        );
+        assert_eq!(
+            rows(ext.query(&session_activity_at(0))),
+            2,
+            "and a caller admitting no staleness pays for a sample that sees it",
+        );
+    }
+
     /// The tmux-SUPERIOR half of the listing rule: an EMPTY session a client is attached to still
     /// lists (so the client can see where it is), even though it holds no pane. tmux cannot reach
     /// this state at all — killing the last pane there destroys the session — so honestly showing it
@@ -3271,6 +3418,7 @@ mod tests {
             None,
             Some(attachments),
             None,
+            sampler(),
         );
         assert_eq!(
             session_names(ext.query(SESSIONS_SLOT)),
@@ -3644,6 +3792,7 @@ mod tests {
             Some(signal),
             None,
             None,
+            sampler(),
         );
         // `new_session` sends exactly one signal by itself: the [`crate::BirthPin`] it takes fires
         // on release, deliberately, so a birth that FAILED still lets an idle daemon go. A BLOCKING
@@ -3807,6 +3956,7 @@ mod tests {
             Some(signal),
             None,
             None,
+            sampler(),
         );
 
         assert_eq!(
@@ -4093,6 +4243,7 @@ mod tests {
             Some(signal),
             None,
             None,
+            sampler(),
         );
 
         assert_eq!(

@@ -384,6 +384,47 @@ fn a_session_the_listing_hides_is_still_addressable() {
     );
 }
 
+/// `ls` still prints where each session is working, now that the fact comes from a SECOND read —
+/// and it joins the two by NAME, not by position (R282).
+///
+/// The two answers are different lengths ON PURPOSE and this test builds the state where that
+/// bites: `sessions` is the human listing and hides a resting empty anchor, while the activity
+/// reading describes EVERY session the registry holds, hidden ones included. So with the anchor
+/// emptied, `work` is row 0 of the listing and row 1 of the reading.
+///
+/// That makes the assertion below a real discriminator rather than a smoke check. A positional join
+/// would hand `work` the anchor's row — a session with no pane, hence no cwd — and the line would
+/// come out bare. It is bare too if the second read is dropped altogether, which is the other way
+/// this can break. One assertion, both failure modes.
+#[test]
+fn ls_joins_the_activity_sample_onto_the_session_it_belongs_to() {
+    let (_host, sock) = spawn_host();
+
+    assert!(sprag(&sock, &["new", "work"]).ok, "a second session");
+    // Empty the boot anchor, so the listing hides it and the two answers stop lining up.
+    assert!(
+        sprag(&sock, &["kill-pane", "0", "-t", "0"]).ok,
+        "the anchor's only pane is closed",
+    );
+
+    let listed = sprag(&sock, &["ls"]);
+    assert!(listed.ok, "ls succeeded: {}", listed.stderr);
+    let work = listed
+        .stdout
+        .lines()
+        .find(|line| line.starts_with("work:"))
+        .unwrap_or_else(|| panic!("ls lists the working session: {}", listed.stdout));
+    // The pane inherits the daemon's working directory, which is wherever this harness ran it — so
+    // WHICH path it is is not a fact worth pinning. That there is one is.
+    let (_, after_windows) = work
+        .split_once("window(s)")
+        .expect("the line states its window count");
+    assert!(
+        after_windows.contains('/'),
+        "the working session's line carries the cwd its own pane reports: {work:?}",
+    );
+}
+
 /// break-pane and join-pane MOVE a pane between windows over the CLI (plus the refusal paths). The
 /// pane set-up (spawn a second pane, read ids) goes over the wire — the CLI has no pane-spawn verb —
 /// while the moves themselves go through the `sprag` binary, so its arg parsing, dispatch, and

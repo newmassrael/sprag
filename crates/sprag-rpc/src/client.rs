@@ -75,7 +75,14 @@ pub const SESSION_PARAM: &str = "session";
 ///   addition nor a compile error. That is why the shape pin renders the frame's bytes rather
 ///   than trusting the diff: a dependency bump is a wire change this project cannot see in its
 ///   own diff.
-pub const WIRE_PROTOCOL: u32 = 2;
+/// * **3** — the session list stopped carrying what it had to SAMPLE. R282 took `cwd`, `branch` and
+///   `ports` off `SessionInfo` and gave them their own address (`session_activity.<max_age_ms>`),
+///   because the registry's structure and the operating system are different kinds of fact and
+///   serving them together made the cheapest question in the mux cost a `/proc` walk of every
+///   process on the box, on every poll wake of every attached client. A pre-R282 client reading a
+///   post-R282 daemon would find every session working nowhere and serving nothing — a wrong answer
+///   that decodes cleanly, which is exactly the failure this number exists to turn into a sentence.
+pub const WIRE_PROTOCOL: u32 = 3;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request
